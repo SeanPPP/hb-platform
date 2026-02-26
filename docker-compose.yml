@@ -1,0 +1,29 @@
+version: '3.8'
+
+services:
+  hb-api:
+    build:
+      context: .
+      dockerfile: BlazorApp.Api/Dockerfile
+    image: hb-platform-api:local
+    container_name: hb-api
+    ports:
+      - "5001:5001"
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Production
+      - ASPNETCORE_URLS=http://+:5001
+      - ConnectionString=REDACTED
+      - ConnectionString=REDACTED
+      - ConnectionString=REDACTED
+      - ConnectionString=REDACTED
+      - ConnectionString=REDACTED
+      - ConnectionString=REDACTED
+      - Jwt__Key=中华人民共和国万岁中国人民万岁
+      - Translation__Kimi__ApiKey=REDACTED
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5001/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s

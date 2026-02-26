@@ -1,0 +1,156 @@
+using BlazorApp.Api.Data;
+using BlazorApp.Api.Interfaces.React;
+using BlazorApp.Shared.Models.HqEntities;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
+
+namespace BlazorApp.Api.Controllers.React
+{
+    [ApiController]
+    [Route("api/react/v1/hq-products/translate-names")]
+   // [Authorize]
+    public class ReactHqProductTranslationController : ControllerBase
+    {
+        private readonly IHqProductTranslationReactService _service;
+        private readonly ILogger<ReactHqProductTranslationController> _logger;
+        private readonly HqSqlSugarContext _hq;
+
+        public ReactHqProductTranslationController(
+            IHqProductTranslationReactService service,
+            ILogger<ReactHqProductTranslationController> logger,
+            HqSqlSugarContext hq
+        )
+        {
+            _service = service;
+            _logger = logger;
+            _hq = hq;
+        }
+
+        public class TranslateRequest
+        {
+            public string Scope { get; set; } = "byContainers"; // all|byContainers
+            public List<string>? ContainerGuids { get; set; }
+            public bool OverwriteExisting { get; set; } = false;
+        }
+
+        [HttpPost]
+        [Authorize(Roles = "Admin,WarehouseManager")]
+        public async Task<IActionResult> Translate([FromBody] TranslateRequest request)
+        {
+            try
+            {
+                if (string.Equals(request.Scope, "all", StringComparison.OrdinalIgnoreCase))
+                {
+                    var res = await _service.TranslateNamesAllAsync(request.OverwriteExisting);
+                    return Ok(new { success = true, data = res });
+                }
+                else
+                {
+                    var guids = request.ContainerGuids ?? new List<string>();
+                    var res = await _service.TranslateNamesByContainersAsync(
+                        guids,
+                        request.OverwriteExisting
+                    );
+                    return Ok(new { success = true, data = res });
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "批量翻译英文名失败");
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
+        public class TranslateByNumberRequest
+        {
+            public List<string> ContainerNumbers { get; set; } = new();
+            public bool OverwriteExisting { get; set; } = false;
+        }
+
+        /// <summary>
+        /// 按货柜编号批量翻译对应明细商品的英文名称
+        /// </summary>
+        [HttpPost("by-container-number")]
+        [Authorize(Roles = "Admin,WarehouseManager")]
+        public async Task<IActionResult> TranslateByContainerNumber(
+            [FromBody] TranslateByNumberRequest request
+        )
+        {
+            try
+            {
+                if (request.ContainerNumbers == null || !request.ContainerNumbers.Any())
+                {
+                    return BadRequest(new { success = false, message = "容器编号列表不能为空" });
+                }
+
+                var hguids = await _hq
+                    .Db.Queryable<CPT_RED_货柜单主表Store>()
+                    .Where(x => x.货柜编号 != null && request.ContainerNumbers.Contains(x.货柜编号))
+                    .Select(x => x.HGUID)
+                    .ToListAsync();
+
+                var validGuids = hguids
+                    .Where(g => !string.IsNullOrWhiteSpace(g))
+                    .Distinct()
+                    .ToList()!;
+
+                if (!validGuids.Any())
+                {
+                    return NotFound(new { success = false, message = "未找到对应的主表GUID" });
+                }
+
+                var res = await _service.TranslateNamesByContainersAsync(
+                    validGuids!,
+                    request.OverwriteExisting
+                );
+                return Ok(new { success = true, data = res });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "按货柜编号批量翻译失败");
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
+        /// <summary>
+        /// 按单个货柜编号翻译对应明细商品的英文名称
+        /// </summary>
+        [HttpPost("by-container-number/{containerNumber}")]
+      //  [Authorize(Roles = "Admin,WarehouseManager")]
+        public async Task<IActionResult> TranslateByContainerNumberSingle(
+            string containerNumber,
+            [FromQuery] bool overwriteExisting = false
+        )
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(containerNumber))
+                {
+                    return BadRequest(new { success = false, message = "容器编号不能为空" });
+                }
+
+                var guid = await _hq
+                    .Db.Queryable<CPT_RED_货柜单主表Store>()
+                    .Where(x => x.货柜编号 == containerNumber)
+                    .Select(x => x.HGUID)
+                    .FirstAsync();
+
+                if (string.IsNullOrWhiteSpace(guid))
+                {
+                    return NotFound(new { success = false, message = "未找到对应的主表GUID" });
+                }
+
+                var res = await _service.TranslateNamesByContainersAsync(
+                    new List<string> { guid },
+                    overwriteExisting
+                );
+                return Ok(new { success = true, data = res });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "按货柜编号翻译失败: {ContainerNumber}", containerNumber);
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+    }
+}

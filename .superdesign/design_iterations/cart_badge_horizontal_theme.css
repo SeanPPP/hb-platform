@@ -1,0 +1,205 @@
+:root {
+  /* 购物车徽章主题 - 水平布局优化版本 */
+  --cart-primary: #667eea;
+  --cart-secondary: #764ba2;
+  --cart-mobile-primary: #1890ff;
+  --cart-mobile-secondary: #52c41a;
+  --cart-text: #ffffff;
+  --cart-text-secondary: rgba(255, 255, 255, 0.8);
+  --cart-hover-accent: #ffd700;
+  --cart-shadow: rgba(102, 126, 234, 0.3);
+  
+  /* 字体 */
+  --cart-font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  --cart-font-size-base: 14px;
+  --cart-font-size-small: 12px;
+  --cart-font-size-mobile: 11px;
+  
+  /* 间距 */
+  --cart-padding-desktop: 12px 20px;
+  --cart-padding-mobile: 8px 12px;
+  --cart-gap-desktop: 20px;
+  --cart-gap-mobile: 12px;
+  --cart-item-gap: 8px;
+  
+  /* 圆角和阴影 */
+  --cart-radius: 8px;
+  --cart-radius-mobile: 6px;
+  --cart-shadow-main: 0 2px 8px var(--cart-shadow);
+  --cart-shadow-hover: 0 4px 12px var(--cart-shadow);
+  
+  /* 动画 */
+  --cart-transition: all 0.3s ease;
+  --cart-hover-transform: translateY(-2px);
+}
+
+/* 购物车徽章主容器 */
+.cart-badge-container {
+  display: flex;
+  align-items: center;
+  font-family: var(--cart-font-family);
+  position: relative;
+  z-index: 9999;
+  transition: var(--cart-transition);
+}
+
+.cart-badge-container:hover {
+  transform: var(--cart-hover-transform);
+}
+
+/* 桌面端样式 */
+.desktop-cart-summary {
+  display: flex;
+  align-items: center;
+  gap: var(--cart-gap-desktop);
+  padding: var(--cart-padding-desktop);
+  background: linear-gradient(135deg, var(--cart-primary) 0%, var(--cart-secondary) 100%);
+  border-radius: var(--cart-radius);
+  color: var(--cart-text);
+  box-shadow: var(--cart-shadow-main);
+  transition: var(--cart-transition);
+  min-height: 44px; /* 确保足够的点击区域 */
+}
+
+.desktop-cart-summary:hover {
+  box-shadow: var(--cart-shadow-hover);
+}
+
+/* 购物车信息容器 - 水平布局 */
+.cart-info {
+  display: flex;
+  align-items: center;
+  gap: var(--cart-gap-desktop);
+  flex: 1;
+}
+
+/* 购物车单项 - 水平排列icon、value、label */
+.cart-item {
+  display: flex;
+  align-items: center;
+  gap: var(--cart-item-gap);
+  color: var(--cart-text);
+  font-size: var(--cart-font-size-base);
+  white-space: nowrap; /* 防止换行 */
+}
+
+.cart-icon {
+  font-size: 16px;
+  color: var(--cart-text);
+  opacity: 0.9;
+}
+
+.cart-value {
+  font-weight: 600;
+  font-size: var(--cart-font-size-base);
+  color: var(--cart-text);
+  transition: color 0.3s ease;
+}
+
+.cart-label {
+  font-size: var(--cart-font-size-small);
+  color: var(--cart-text-secondary);
+  font-weight: 400;
+}
+
+.cart-badge-container:hover .cart-value {
+  color: var(--cart-hover-accent);
+}
+
+/* 操作按钮容器 */
+.cart-actions {
+  display: flex;
+  align-items: center;
+  margin-left: auto; /* 推到右侧 */
+}
+
+/* 移动端样式 */
+.mobile-cart-summary {
+  display: flex;
+  align-items: center;
+  gap: var(--cart-gap-mobile);
+  padding: var(--cart-padding-mobile);
+  background: linear-gradient(90deg, var(--cart-mobile-primary), var(--cart-mobile-secondary));
+  border-radius: var(--cart-radius-mobile);
+  color: var(--cart-text);
+  font-size: var(--cart-font-size-mobile);
+  min-height: 40px; /* 移动端稍小但仍足够点击 */
+  transition: var(--cart-transition);
+}
+
+.mobile-cart-item {
+  display: flex;
+  align-items: center;
+  gap: 4px; /* 移动端更紧凑的间距 */
+  color: var(--cart-text);
+  font-size: var(--cart-font-size-mobile);
+  white-space: nowrap;
+}
+
+.mobile-cart-icon {
+  font-size: 12px;
+  opacity: 0.9;
+}
+
+.mobile-cart-value {
+  font-weight: 600;
+  font-size: var(--cart-font-size-mobile);
+}
+
+.mobile-cart-label {
+  font-size: 10px;
+  color: var(--cart-text-secondary);
+  font-weight: 400;
+}
+
+.mobile-cart-action {
+  background: rgba(255, 255, 255, 0.2);
+  border: none;
+  border-radius: 4px;
+  padding: 6px 8px;
+  color: var(--cart-text);
+  cursor: pointer;
+  transition: background-color 0.2s;
+  margin-left: auto; /* 推到右侧 */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 32px;
+  min-height: 28px;
+}
+
+.mobile-cart-action:hover {
+  background: rgba(255, 255, 255, 0.3);
+}
+
+/* 响应式断点 */
+@media (max-width: 768px) {
+  .desktop-cart-summary {
+    display: none;
+  }
+  
+  .mobile-cart-summary {
+    display: flex;
+  }
+}
+
+@media (min-width: 769px) {
+  .mobile-cart-summary {
+    display: none;
+  }
+  
+  .desktop-cart-summary {
+    display: flex;
+  }
+}
+
+/* 辅助样式 - 确保内容不会被截断 */
+.cart-badge-container * {
+  box-sizing: border-box;
+}
+
+/* 防止flex容器收缩 */
+.cart-item,
+.mobile-cart-item {
+  flex-shrink: 0;
+}

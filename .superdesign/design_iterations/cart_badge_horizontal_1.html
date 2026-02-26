@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>购物车徽章 - 水平布局优化版</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+    <link rel="stylesheet" href="cart_badge_horizontal_theme.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+</head>
+<body style="margin: 0; padding: 40px; background: #f5f5f5; font-family: 'Inter', sans-serif;">
+    
+    <!-- 演示背景 -->
+    <div style="max-width: 1200px; margin: 0 auto; background: white; border-radius: 12px; padding: 30px; box-shadow: 0 4px 20px rgba(0,0,0,0.1);">
+        
+        <h1 style="text-align: center; color: #1f2937; margin-bottom: 40px; font-size: 24px; font-weight: 600;">
+            购物车徽章组件 - 水平布局优化版
+        </h1>
+        
+        <!-- 桌面端展示 -->
+        <div style="margin-bottom: 40px;">
+            <h2 style="color: #374151; margin-bottom: 20px; font-size: 18px; font-weight: 500;">桌面端样式</h2>
+            <div style="background: #f9fafb; padding: 20px; border-radius: 8px; display: flex; justify-content: center;">
+                
+                <!-- 桌面端购物车徽章 -->
+                <div class="cart-badge-container">
+                    <div class="desktop-cart-summary">
+                        <div class="cart-info">
+                            <div class="cart-item">
+                                <i data-lucide="shopping-cart" class="cart-icon"></i>
+                                <span class="cart-value">12</span>
+                                <span class="cart-label">Items</span>
+                            </div>
+                            
+                            <div class="cart-item">
+                                <i data-lucide="dollar-sign" class="cart-icon"></i>
+                                <span class="cart-value">$156.78</span>
+                                <span class="cart-label">Total Amount</span>
+                            </div>
+                            
+                            <div class="cart-item">
+                                <i data-lucide="package" class="cart-icon"></i>
+                                <span class="cart-value">2.5m³</span>
+                                <span class="cart-label">Total Volume</span>
+                            </div>
+                        </div>
+                        
+                        <div class="cart-actions">
+                            <button style="
+                                background: rgba(255, 255, 255, 0.2);
+                                border: none !important;
+                                outline: none !important;
+                                box-shadow: none !important;
+                                border-radius: 6px;
+                                padding: 8px 16px;
+                                color: white;
+                                font-size: 14px;
+                                font-weight: 500;
+                                cursor: pointer;
+                                display: flex;
+                                align-items: center;
+                                gap: 6px;
+                                transition: all 0.2s ease;
+                            " onmouseover="this.style.background='rgba(255, 255, 255, 0.3)'; this.style.border='none'; this.style.outline='none'; this.style.boxShadow='none';" onmouseout="this.style.background='rgba(255, 255, 255, 0.2)'; this.style.border='none'; this.style.outline='none'; this.style.boxShadow='none';" onfocus="this.style.border='none'; this.style.outline='none'; this.style.boxShadow='none';">
+                                <i data-lucide="eye" style="width: 16px; height: 16px;"></i>
+                                View Cart
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                
+            </div>
+        </div>
+        
+        <!-- 移动端展示 -->
+        <div style="margin-bottom: 40px;">
+            <h2 style="color: #374151; margin-bottom: 20px; font-size: 18px; font-weight: 500;">移动端样式</h2>
+            <div style="background: #f9fafb; padding: 20px; border-radius: 8px; display: flex; justify-content: center;">
+                
+                <!-- 移动端购物车徽章 -->
+                <div class="cart-badge-container" style="max-width: 300px;">
+                    <div class="mobile-cart-summary">
+                        <div class="mobile-cart-item">
+                            <i data-lucide="shopping-cart" class="mobile-cart-icon"></i>
+                            <span class="mobile-cart-value">12</span>
+                            <span class="mobile-cart-label">pcs</span>
+                        </div>
+                        
+                        <div class="mobile-cart-item">
+                            <i data-lucide="dollar-sign" class="mobile-cart-icon"></i>
+                            <span class="mobile-cart-value">$156</span>
+                            <span class="mobile-cart-label">Amount</span>
+                        </div>
+                        
+                        <div class="mobile-cart-item">
+                            <i data-lucide="package" class="mobile-cart-icon"></i>
+                            <span class="mobile-cart-value">2.5m³</span>
+                            <span class="mobile-cart-label">Volume</span>
+                        </div>
+                        
+                        <button class="mobile-cart-action" aria-label="View Cart" title="View Cart">
+                            <i data-lucide="eye" style="width: 16px; height: 16px;"></i>
+                        </button>
+                    </div>
+                </div>
+                
+            </div>
+        </div>
+        
+        <!-- 实际尺寸对比展示 -->
+        <div style="margin-bottom: 40px;">
+            <h2 style="color: #374151; margin-bottom: 20px; font-size: 18px; font-weight: 500;">不同数据状态展示</h2>
+            
+            <!-- 空购物车状态 -->
+            <div style="background: #f9fafb; padding: 15px; border-radius: 8px; margin-bottom: 15px;">
+                <p style="color: #6b7280; margin-bottom: 10px; font-size: 14px;">空购物车状态：</p>
+                <div class="cart-badge-container">
+                    <div class="desktop-cart-summary">
+                        <div class="cart-info">
+                            <div class="cart-item">
+                                <i data-lucide="shopping-cart" class="cart-icon"></i>
+                                <span class="cart-value">0</span>
+                                <span class="cart-label">Items</span>
+                            </div>
+                            
+                            <div class="cart-item">
+                                <i data-lucide="dollar-sign" class="cart-icon"></i>
+                                <span class="cart-value">$0.00</span>
+                                <span class="cart-label">Total Amount</span>
+                            </div>
+                            
+                            <div class="cart-item">
+                                <i data-lucide="package" class="cart-icon"></i>
+                                <span class="cart-value">0.0m³</span>
+                                <span class="cart-label">Total Volume</span>
+                            </div>
+                        </div>
+                        
+                        <div class="cart-actions">
+                            <button style="
+                                background: rgba(255, 255, 255, 0.2);
+                                border: none !important;
+                                outline: none !important;
+                                box-shadow: none !important;
+                                border-radius: 6px;
+                                padding: 8px 16px;
+                                color: white;
+                                font-size: 14px;
+                                font-weight: 500;
+                                cursor: pointer;
+                                display: flex;
+                                align-items: center;
+                                gap: 6px;
+                                opacity: 0.7;
+                            ">
+                                <i data-lucide="eye" style="width: 16px; height: 16px;"></i>
+                                View Cart
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- 大数值状态 -->
+            <div style="background: #f9fafb; padding: 15px; border-radius: 8px; margin-bottom: 15px;">
+                <p style="color: #6b7280; margin-bottom: 10px; font-size: 14px;">大数值状态：</p>
+                <div class="cart-badge-container">
+                    <div class="desktop-cart-summary">
+                        <div class="cart-info">
+                            <div class="cart-item">
+                                <i data-lucide="shopping-cart" class="cart-icon"></i>
+                                <span class="cart-value">999</span>
+                                <span class="cart-label">Items</span>
+                            </div>
+                            
+                            <div class="cart-item">
+                                <i data-lucide="dollar-sign" class="cart-icon"></i>
+                                <span class="cart-value">$12,345.67</span>
+                                <span class="cart-label">Total Amount</span>
+                            </div>
+                            
+                            <div class="cart-item">
+                                <i data-lucide="package" class="cart-icon"></i>
+                                <span class="cart-value">156.8m³</span>
+                                <span class="cart-label">Total Volume</span>
+                            </div>
+                        </div>
+                        
+                        <div class="cart-actions">
+                            <button style="
+                                background: rgba(255, 255, 255, 0.2);
+                                border: none !important;
+                                outline: none !important;
+                                box-shadow: none !important;
+                                border-radius: 6px;
+                                padding: 8px 16px;
+                                color: white;
+                                font-size: 14px;
+                                font-weight: 500;
+                                cursor: pointer;
+                                display: flex;
+                                align-items: center;
+                                gap: 6px;
+                                transition: all 0.2s ease;
+                            " onmouseover="this.style.background='rgba(255, 255, 255, 0.3)'; this.style.border='none'; this.style.outline='none'; this.style.boxShadow='none';" onmouseout="this.style.background='rgba(255, 255, 255, 0.2)'; this.style.border='none'; this.style.outline='none'; this.style.boxShadow='none';" onfocus="this.style.border='none'; this.style.outline='none'; this.style.boxShadow='none';">
+                                <i data-lucide="eye" style="width: 16px; height: 16px;"></i>
+                                View Cart
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- 响应式测试说明 -->
+        <div style="background: #e0f2fe; padding: 20px; border-radius: 8px; border-left: 4px solid #0288d1;">
+            <h3 style="color: #01579b; margin-bottom: 10px; font-size: 16px; font-weight: 600;">🔧 优化要点</h3>
+            <ul style="color: #0277bd; margin: 0; padding-left: 20px; line-height: 1.6;">
+                <li><strong>水平布局：</strong> icon、value、label在同一行水平排列，节省垂直空间</li>
+                <li><strong>弹性布局：</strong> 使用flexbox确保内容不会被截断或压缩</li>
+                <li><strong>响应式适配：</strong> 桌面端和移动端使用不同的间距和字体大小</li>
+                <li><strong>防溢出：</strong> 设置white-space: nowrap和flex-shrink: 0防止内容换行和收缩</li>
+                <li><strong>触摸友好：</strong> 移动端按钮有足够的点击区域（44px最小高度）</li>
+            </ul>
+        </div>
+        
+    </div>
+    
+    <!-- 响应式测试工具 -->
+    <div style="position: fixed; bottom: 20px; right: 20px; background: white; padding: 15px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); font-size: 12px;">
+        <p style="margin: 0 0 8px 0; color: #374151; font-weight: 600;">当前视窗宽度：</p>
+        <p id="viewport-width" style="margin: 0; color: #059669; font-weight: 600;"></p>
+    </div>
+    
+    <script>
+        // 初始化Lucide图标
+        lucide.createIcons();
+        
+        // 显示当前视窗宽度
+        function updateViewportWidth() {
+            document.getElementById('viewport-width').textContent = window.innerWidth + 'px';
+        }
+        
+        updateViewportWidth();
+        window.addEventListener('resize', updateViewportWidth);
+        
+        // 购物车交互演示
+        document.querySelectorAll('.cart-actions button, .mobile-cart-action').forEach(button => {
+            button.addEventListener('click', function() {
+                alert('购物车面板将会在这里打开！\n\n当前购物车内容：\n• 12个商品\n• 总金额：$156.78\n• 总体积：2.5m³');
+            });
+        });
+        
+        // 添加计数动画效果
+        function animateNumber(element, start, end, duration) {
+            const startTime = performance.now();
+            const isDecimal = end.toString().includes('.');
+            
+            function update(currentTime) {
+                const elapsed = currentTime - startTime;
+                const progress = Math.min(elapsed / duration, 1);
+                
+                const current = start + (end - start) * progress;
+                
+                if (isDecimal) {
+                    element.textContent = current.toFixed(2);
+                } else {
+                    element.textContent = Math.round(current);
+                }
+                
+                if (progress < 1) {
+                    requestAnimationFrame(update);
+                }
+            }
+            
+            requestAnimationFrame(update);
+        }
+        
+        // 页面加载时播放数字动画
+        window.addEventListener('load', function() {
+            const cartValues = document.querySelectorAll('.cart-value');
+            cartValues.forEach((element, index) => {
+                const text = element.textContent;
+                const numbers = text.match(/[\d.]+/);
+                if (numbers) {
+                    const value = parseFloat(numbers[0]);
+                    element.textContent = text.replace(numbers[0], '0');
+                    setTimeout(() => {
+                        animateNumber(element, 0, value, 1000);
+                    }, index * 200);
+                }
+            });
+        });
+    </script>
+    
+</body>
+</html>

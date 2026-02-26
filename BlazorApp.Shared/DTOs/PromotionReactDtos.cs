@@ -1,0 +1,115 @@
+using System;
+using System.Collections.Generic;
+
+namespace BlazorApp.Shared.DTOs
+{
+    public class PromotionListDto
+    {
+        public string Id { get; set; } = string.Empty;
+        public string Name { get; set; } = string.Empty;
+        public DateTime EffectiveStart { get; set; }
+        public DateTime EffectiveEnd { get; set; }
+        public bool IsEnabled { get; set; }
+        public bool IsExclusive { get; set; }
+        public int Priority { get; set; }
+        public int ApplyQuantity { get; set; }
+        public decimal FixedPrice { get; set; }
+        public int ProductsCount { get; set; }
+        public int StoresCount { get; set; }
+    }
+
+    public class PromotionDetailDto
+    {
+        public string Id { get; set; } = string.Empty;
+        public string Name { get; set; } = string.Empty;
+        public string? Description { get; set; }
+        public DateTime EffectiveStart { get; set; }
+        public DateTime EffectiveEnd { get; set; }
+        public bool IsEnabled { get; set; }
+        public bool IsExclusive { get; set; }
+        public int Priority { get; set; }
+        public int ApplyQuantity { get; set; }
+        public decimal FixedPrice { get; set; }
+        public int? MaxApplicationsPerOrder { get; set; }
+        public List<PromotionProductItemDto> Products { get; set; } = new();
+        public List<PromotionStoreItemDto> Stores { get; set; } = new();
+    }
+
+    public class PromotionProductItemDto
+    {
+        public string Id { get; set; } = string.Empty;
+        public string ProductCode { get; set; } = string.Empty;
+        public int UnitWeight { get; set; } = 1;
+    }
+
+    public class PromotionStoreItemDto
+    {
+        public string Id { get; set; } = string.Empty;
+        public string StoreCode { get; set; } = string.Empty;
+    }
+
+    public class CreatePromotionDto
+    {
+        public string Name { get; set; } = string.Empty;
+        public string? Description { get; set; }
+        public DateTime EffectiveStart { get; set; }
+        public DateTime EffectiveEnd { get; set; }
+        public bool IsEnabled { get; set; } = true;
+        public bool IsExclusive { get; set; } = true;
+        public int Priority { get; set; } = 0;
+        public int ApplyQuantity { get; set; }
+        public decimal FixedPrice { get; set; }
+        public int? MaxApplicationsPerOrder { get; set; }
+        public List<PromotionProductItemDto> Products { get; set; } = new();
+        public List<PromotionStoreItemDto> Stores { get; set; } = new();
+    }
+
+    public class UpdatePromotionDto
+    {
+        public string Name { get; set; } = string.Empty;
+        public string? Description { get; set; }
+        public DateTime EffectiveStart { get; set; }
+        public DateTime EffectiveEnd { get; set; }
+        public bool IsEnabled { get; set; } = true;
+        public bool IsExclusive { get; set; } = true;
+        public int Priority { get; set; } = 0;
+        public int ApplyQuantity { get; set; }
+        public decimal FixedPrice { get; set; }
+        public int? MaxApplicationsPerOrder { get; set; }
+        public List<PromotionProductItemDto> Products { get; set; } = new();
+        public List<PromotionStoreItemDto> Stores { get; set; } = new();
+    }
+
+    public class PromotionEvaluateRequest
+    {
+        public string StoreCode { get; set; } = string.Empty;
+        public List<CartItemInputDto> Items { get; set; } = new();
+    }
+
+    public class CartItemInputDto
+    {
+        public string ProductCode { get; set; } = string.Empty;
+        public int Qty { get; set; }
+        public decimal UnitPrice { get; set; }
+    }
+
+    public class PromotionEvaluateResponse
+    {
+        public List<AppliedPromotionInfo> AppliedPromotions { get; set; } = new();
+        public List<PriceAdjustmentDto> AdjustedItems { get; set; } = new();
+        public decimal TotalDiscount { get; set; }
+    }
+
+    public class AppliedPromotionInfo
+    {
+        public string PromotionId { get; set; } = string.Empty;
+        public int AppliedBundles { get; set; }
+    }
+
+    public class PriceAdjustmentDto
+    {
+        public string ProductCode { get; set; } = string.Empty;
+        public int QtyAdjusted { get; set; }
+        public decimal AdjustedUnitPrice { get; set; }
+    }
+}

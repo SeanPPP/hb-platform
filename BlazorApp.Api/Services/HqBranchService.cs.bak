@@ -1,0 +1,241 @@
+using BlazorApp.Api.Data;
+using BlazorApp.Api.Models;
+using Microsoft.Extensions.Logging;
+using SqlSugar;
+
+namespace BlazorApp.Api.Services
+{
+    /// <summary>
+    /// HQ分店服务实现
+    /// </summary>
+    public class HqBranchService : IHqBranchService
+    {
+        private readonly HqSqlSugarContext _hqContext;
+        private readonly ILogger<HqBranchService> _logger;
+
+        public HqBranchService(
+            HqSqlSugarContext hqContext,
+            ILogger<HqBranchService> logger)
+        {
+            _hqContext = hqContext;
+            _logger = logger;
+        }
+
+        /// <summary>
+        /// 获取所有分店
+        /// </summary>
+        public async Task<List<HqBranch>> GetAllBranchesAsync()
+        {
+            try
+            {
+                return await _hqContext.HqBranchDb
+                    .GetListAsync(x => !x.IsDeleted);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "获取所有分店失败");
+                throw;
+            }
+        }
+
+        /// <summary>
+        /// 根据ID获取分店
+        /// </summary>
+        public async Task<HqBranch?> GetBranchByIdAsync(int id)
+        {
+            try
+            {
+                return await _hqContext.HqBranchDb
+                    .GetByIdAsync(id);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "根据ID获取分店失败: {Id}", id);
+                throw;
+            }
+        }
+
+        /// <summary>
+        /// 根据分店代码获取分店
+        /// </summary>
+        public async Task<HqBranch?> GetBranchByCodeAsync(string branchCode)
+        {
+            try
+            {
+                return await _hqContext.HqBranchDb
+                    .GetSingleAsync(x => x.BranchCode == branchCode && !x.IsDeleted);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "根据分店代码获取分店失败: {BranchCode}", branchCode);
+                throw;
+            }
+        }
+
+        /// <summary>
+        /// 创建分店
+        /// </summary>
+        public async Task<HqBranch> CreateBranchAsync(HqBranch branch)
+        {
+            try
+            {
+                // 检查分店代码是否存在
+                var exists = await IsBranchCodeExistsAsync(branch.BranchCode);
+                if (exists)
+                {
+                    throw new InvalidOperationException($"分店代码 '{branch.BranchCode}' 已存在");
+                }
+
+                branch.CreatedAt = DateTime.UtcNow;
+                branch.UpdatedAt = DateTime.UtcNow;
+                branch.IsDeleted = false;
+
+                var result = await _hqContext.HqBranchDb.InsertReturnEntityAsync(branch);
+                
+                _logger.LogInformation("创建分店成功: {BranchCode} - {BranchName}", 
+                    result.BranchCode, result.BranchName);
+                
+                return result;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "创建分店失败: {BranchCode}", branch.BranchCode);
+                throw;
+            }
+        }
+
+        /// <summary>
+        /// 更新分店
+        /// </summary>
+        public async Task<HqBranch> UpdateBranchAsync(HqBranch branch)
+        {
+            try
+            {
+                // 检查分店是否存在
+                var existingBranch = await GetBranchByIdAsync(branch.Id);
+                if (existingBranch == null)
+                {
+                    throw new InvalidOperationException($"分店不存在: {branch.Id}");
+                }
+
+                // 检查分店代码是否重复（排除当前记录）
+                var codeExists = await IsBranchCodeExistsAsync(branch.BranchCode, branch.Id);
+                if (codeExists)
+                {
+                    throw new InvalidOperationException($"分店代码 '{branch.BranchCode}' 已被其他分店使用");
+                }
+
+                branch.UpdatedAt = DateTime.UtcNow;
+                
+                await _hqContext.HqBranchDb.UpdateAsync(branch);
+                
+                _logger.LogInformation("更新分店成功: {BranchCode} - {BranchName}", 
+                    branch.BranchCode, branch.BranchName);
+                
+                return branch;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "更新分店失败: {Id}", branch.Id);
+                throw;
+            }
+        }
+
+        /// <summary>
+        /// 删除分店（软删除）
+        /// </summary>
+        public async Task<bool> DeleteBranchAsync(int id)
+        {
+            try
+            {
+                var branch = await GetBranchByIdAsync(id);
+                if (branch == null)
+                {
+                    throw new InvalidOperationException($"分店不存在: {id}");
+                }
+
+                branch.IsDeleted = true;
+                branch.UpdatedAt = DateTime.UtcNow;
+                
+                await _hqContext.HqBranchDb.UpdateAsync(branch);
+                
+                _logger.LogInformation("删除分店成功: {BranchCode} - {BranchName}", 
+                    branch.BranchCode, branch.BranchName);
+                
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "删除分店失败: {Id}", id);
+                throw;
+            }
+        }
+
+        /// <summary>
+        /// 搜索分店
+        /// </summary>
+        public async Task<List<HqBranch>> SearchBranchesAsync(string keyword)
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(keyword))
+                {
+                    return await GetAllBranchesAsync();
+                }
+
+                return await _hqContext.HqBranchDb
+                    .GetListAsync(x => !x.IsDeleted && 
+                        (x.BranchCode.Contains(keyword) || 
+                         x.BranchName.Contains(keyword) ||
+                         (x.ManagerName != null && x.ManagerName.Contains(keyword)) ||
+                         (x.Address != null && x.Address.Contains(keyword))));
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "搜索分店失败: {Keyword}", keyword);
+                throw;
+            }
+        }
+
+        /// <summary>
+        /// 获取活跃的分店
+        /// </summary>
+        public async Task<List<HqBranch>> GetActiveBranchesAsync()
+        {
+            try
+            {
+                return await _hqContext.HqBranchDb
+                    .GetListAsync(x => !x.IsDeleted && x.IsActive);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "获取活跃分店失败");
+                throw;
+            }
+        }
+
+        /// <summary>
+        /// 检查分店代码是否存在
+        /// </summary>
+        public async Task<bool> IsBranchCodeExistsAsync(string branchCode, int? excludeId = null)
+        {
+            try
+            {
+                var query = _hqContext.Db.Queryable<HqBranch>()
+                    .Where(x => x.BranchCode == branchCode && !x.IsDeleted);
+
+                if (excludeId.HasValue)
+                {
+                    query = query.Where(x => x.Id != excludeId.Value);
+                }
+
+                return await query.AnyAsync();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "检查分店代码是否存在失败: {BranchCode}", branchCode);
+                throw;
+            }
+        }
+    }
+}

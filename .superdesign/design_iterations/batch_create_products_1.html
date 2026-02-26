@@ -1,0 +1,825 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>批量新建套装商品 - HB Platform</title>
+  <link rel="stylesheet" href="theme_batch_create.css">
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <style>
+    .container {
+      max-width: 1400px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+
+    .modal-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 20px 24px;
+      background: white;
+      border-bottom: 1px solid var(--border-light);
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      box-shadow: var(--shadow-sm);
+    }
+
+    .modal-title {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-size: 24px;
+      font-weight: 600;
+      color: var(--text-primary);
+    }
+
+    .modal-actions {
+      display: flex;
+      gap: 12px;
+    }
+
+    .form-row {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+      gap: 16px;
+      margin-bottom: 16px;
+    }
+
+    .form-group {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .form-label {
+      font-size: 14px;
+      font-weight: 500;
+      color: var(--text-primary);
+    }
+
+    .form-label-required::after {
+      content: '*';
+      color: var(--danger);
+      margin-left: 4px;
+    }
+
+    .radio-group {
+      display: flex;
+      gap: 24px;
+      align-items: center;
+    }
+
+    .radio-option {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .radio-option input[type="radio"] {
+      width: 16px;
+      height: 16px;
+      cursor: pointer;
+      accent-color: var(--primary);
+    }
+
+    .product-item {
+      display: grid;
+      grid-template-columns: 40px 2fr 2fr 1fr 80px;
+      gap: 12px;
+      align-items: center;
+      padding: 12px;
+      background: var(--bg-secondary);
+      border-radius: var(--radius-sm);
+      margin-bottom: 8px;
+      transition: all var(--transition-fast);
+    }
+
+    .product-item:hover {
+      background: var(--bg-hover);
+      box-shadow: var(--shadow-sm);
+    }
+
+    .product-number {
+      font-weight: 600;
+      color: var(--text-secondary);
+      text-align: center;
+    }
+
+    .add-product-btn {
+      width: 100%;
+      padding: 12px;
+      border: 2px dashed var(--border-color);
+      background: var(--bg-secondary);
+      color: var(--text-secondary);
+      border-radius: var(--radius-sm);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      transition: all var(--transition-fast);
+    }
+
+    .add-product-btn:hover {
+      border-color: var(--primary);
+      color: var(--primary);
+      background: var(--primary-light);
+    }
+
+    .price-table {
+      max-height: 500px;
+      overflow-y: auto;
+      border: 1px solid var(--border-light);
+      border-radius: var(--radius-sm);
+    }
+
+    .price-row {
+      display: grid;
+      grid-template-columns: 80px 1fr 1fr 1fr;
+      gap: 12px;
+      padding: 12px;
+      border-bottom: 1px solid var(--border-light);
+      align-items: center;
+      background: white;
+      transition: background var(--transition-fast);
+    }
+
+    .price-row:hover {
+      background: var(--bg-hover);
+    }
+
+    .price-row:nth-child(even) {
+      background: var(--bg-secondary);
+    }
+
+    .price-row:nth-child(even):hover {
+      background: var(--bg-hover);
+    }
+
+    .price-index {
+      font-weight: 600;
+      color: var(--text-primary);
+      text-align: center;
+      font-size: 16px;
+    }
+
+    .stats-bar {
+      display: flex;
+      gap: 16px;
+      padding: 16px;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      border-radius: var(--radius-md);
+      color: white;
+      margin-top: 16px;
+    }
+
+    .stat-item {
+      flex: 1;
+      text-align: center;
+    }
+
+    .stat-value {
+      font-size: 28px;
+      font-weight: 700;
+      margin-bottom: 4px;
+    }
+
+    .stat-label {
+      font-size: 13px;
+      opacity: 0.9;
+    }
+
+    .preview-section {
+      background: var(--bg-secondary);
+      border: 2px solid var(--border-light);
+      border-radius: var(--radius-md);
+      padding: 20px;
+    }
+
+    .preview-list {
+      list-style: none;
+      margin-top: 16px;
+    }
+
+    .preview-item {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 12px;
+      background: white;
+      border-radius: var(--radius-sm);
+      margin-bottom: 8px;
+      border-left: 4px solid var(--success);
+      transition: all var(--transition-fast);
+    }
+
+    .preview-item:hover {
+      transform: translateX(4px);
+      box-shadow: var(--shadow-sm);
+    }
+
+    .footer-actions {
+      position: sticky;
+      bottom: 0;
+      background: white;
+      border-top: 1px solid var(--border-light);
+      padding: 16px 24px;
+      display: flex;
+      justify-content: flex-end;
+      gap: 12px;
+      box-shadow: 0 -2px 8px rgba(0, 0, 0, 0.08);
+      z-index: 100;
+    }
+
+    .btn-large {
+      padding: 12px 32px;
+      font-size: 16px;
+    }
+
+    .toolbar {
+      display: flex;
+      gap: 12px;
+      margin-bottom: 16px;
+      flex-wrap: wrap;
+    }
+
+    /* 数量徽章 */
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 20px;
+      height: 20px;
+      padding: 0 6px;
+      background: var(--danger);
+      color: white;
+      border-radius: 10px;
+      font-size: 12px;
+      font-weight: 600;
+    }
+
+    /* 动画 */
+    @keyframes fadeInUp {
+      from {
+        opacity: 0;
+        transform: translateY(20px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    .section-card {
+      animation: fadeInUp 0.3s ease-out forwards;
+    }
+
+    .section-card:nth-child(2) {
+      animation-delay: 0.1s;
+    }
+
+    .section-card:nth-child(3) {
+      animation-delay: 0.2s;
+    }
+
+    .section-card:nth-child(4) {
+      animation-delay: 0.3s;
+    }
+
+    /* 响应式 */
+    @media (max-width: 768px) {
+      .form-row {
+        grid-template-columns: 1fr;
+      }
+      
+      .product-item {
+        grid-template-columns: 1fr;
+      }
+      
+      .price-row {
+        grid-template-columns: 1fr;
+        gap: 8px;
+      }
+      
+      .toolbar {
+        flex-direction: column;
+      }
+    }
+  </style>
+</head>
+<body>
+  <!-- 顶部导航 -->
+  <div class="modal-header">
+    <div class="modal-title">
+      <i data-lucide="package-plus" style="width: 28px; height: 28px; color: var(--primary);"></i>
+      批量新建套装商品
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-default">
+        <i data-lucide="save" style="width: 16px; height: 16px;"></i>
+        保存为模板
+      </button>
+      <button class="btn btn-default">
+        <i data-lucide="help-circle" style="width: 16px; height: 16px;"></i>
+      </button>
+      <button class="btn btn-default" onclick="window.close()">
+        <i data-lucide="x" style="width: 16px; height: 16px;"></i>
+      </button>
+    </div>
+  </div>
+
+  <div class="container">
+    <!-- 基本配置 -->
+    <div class="section-card">
+      <div class="section-title">
+        <i data-lucide="settings" style="width: 18px; height: 18px; display: inline; vertical-align: middle;"></i>
+        基本配置
+      </div>
+      
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label form-label-required">供应商</label>
+          <select class="input-field" id="supplier">
+            <option value="">请选择供应商</option>
+            <option value="SUP001" selected>永嘉华博礼品有限公司</option>
+            <option value="SUP002">杭州创意礼品有限公司</option>
+            <option value="SUP003">广州精品礼盒厂</option>
+          </select>
+        </div>
+        
+        <div class="form-group">
+          <label class="form-label">前缀代码</label>
+          <input type="text" class="input-field" placeholder="HB (可选)" value="HB" />
+        </div>
+      </div>
+
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label form-label-required">套装规格</label>
+          <div class="radio-group">
+            <label class="radio-option">
+              <input type="radio" name="setType" value="10" checked onchange="applyDefaultPrices(10)" />
+              <span>套10</span>
+            </label>
+            <label class="radio-option">
+              <input type="radio" name="setType" value="15" onchange="applyDefaultPrices(15)" />
+              <span>套15</span>
+            </label>
+            <label class="radio-option">
+              <input type="radio" name="setType" value="custom" onchange="clearPrices()" />
+              <span>自定义</span>
+            </label>
+          </div>
+        </div>
+        
+        <div class="form-group">
+          <label class="form-label form-label-required">商品数量</label>
+          <input type="number" class="input-field" placeholder="输入商品数量" value="5" min="1" id="productCount" onchange="updatePreview()" />
+        </div>
+      </div>
+    </div>
+
+    <!-- 商品列表 -->
+    <div class="section-card">
+      <div class="section-title">
+        <i data-lucide="list" style="width: 18px; height: 18px; display: inline; vertical-align: middle;"></i>
+        商品列表
+        <span class="badge" id="productCountBadge">5</span>
+      </div>
+
+      <div class="toolbar">
+        <button class="btn btn-primary" onclick="addProduct()">
+          <i data-lucide="plus" style="width: 16px; height: 16px;"></i>
+          添加商品
+        </button>
+        <button class="btn btn-default">
+          <i data-lucide="upload" style="width: 16px; height: 16px;"></i>
+          批量导入
+        </button>
+      </div>
+
+      <div id="productList">
+        <div class="product-item">
+          <div class="product-number">1</div>
+          <input type="text" class="input-field" placeholder="商品名称" value="圣诞礼品盒A" />
+          <input type="text" class="input-field" placeholder="英文名称" value="Christmas Gift Box A" />
+          <input type="text" class="input-field" placeholder="规格" value="盒" />
+          <button class="btn btn-danger" onclick="removeProduct(this)">
+            <i data-lucide="trash-2" style="width: 16px; height: 16px;"></i>
+          </button>
+        </div>
+
+        <div class="product-item">
+          <div class="product-number">2</div>
+          <input type="text" class="input-field" placeholder="商品名称" value="圣诞礼品盒B" />
+          <input type="text" class="input-field" placeholder="英文名称" value="Christmas Gift Box B" />
+          <input type="text" class="input-field" placeholder="规格" value="盒" />
+          <button class="btn btn-danger" onclick="removeProduct(this)">
+            <i data-lucide="trash-2" style="width: 16px; height: 16px;"></i>
+          </button>
+        </div>
+
+        <div class="product-item">
+          <div class="product-number">3</div>
+          <input type="text" class="input-field" placeholder="商品名称" value="圣诞礼品盒C" />
+          <input type="text" class="input-field" placeholder="英文名称" value="Christmas Gift Box C" />
+          <input type="text" class="input-field" placeholder="规格" value="盒" />
+          <button class="btn btn-danger" onclick="removeProduct(this)">
+            <i data-lucide="trash-2" style="width: 16px; height: 16px;"></i>
+          </button>
+        </div>
+
+        <div class="product-item">
+          <div class="product-number">4</div>
+          <input type="text" class="input-field" placeholder="商品名称" value="圣诞礼品盒D" />
+          <input type="text" class="input-field" placeholder="英文名称" value="Christmas Gift Box D" />
+          <input type="text" class="input-field" placeholder="规格" value="盒" />
+          <button class="btn btn-danger" onclick="removeProduct(this)">
+            <i data-lucide="trash-2" style="width: 16px; height: 16px;"></i>
+          </button>
+        </div>
+
+        <div class="product-item">
+          <div class="product-number">5</div>
+          <input type="text" class="input-field" placeholder="商品名称" value="圣诞礼品盒E" />
+          <input type="text" class="input-field" placeholder="英文名称" value="Christmas Gift Box E" />
+          <input type="text" class="input-field" placeholder="规格" value="盒" />
+          <button class="btn btn-danger" onclick="removeProduct(this)">
+            <i data-lucide="trash-2" style="width: 16px; height: 16px;"></i>
+          </button>
+        </div>
+      </div>
+
+      <button class="add-product-btn" onclick="addProduct()">
+        <i data-lucide="plus-circle" style="width: 20px; height: 20px;"></i>
+        点击添加更多商品
+      </button>
+    </div>
+
+    <!-- 套装配置 -->
+    <div class="section-card">
+      <div class="section-title">
+        <i data-lucide="layers" style="width: 18px; height: 18px; display: inline; vertical-align: middle;"></i>
+        套装配置 (套10规格)
+      </div>
+
+      <div class="alert alert-info">
+        <i data-lucide="info" style="width: 20px; height: 20px; flex-shrink: 0;"></i>
+        <div>
+          <strong>提示：</strong>每个商品将自动生成10个套装明细，价格配置将应用到所有商品。
+        </div>
+      </div>
+
+      <div class="toolbar">
+        <button class="btn btn-primary" onclick="applyDefaultPrices(10)">
+          <i data-lucide="zap" style="width: 16px; height: 16px;"></i>
+          应用套10默认价格
+        </button>
+        <button class="btn btn-default" onclick="applyDefaultPrices(15)">
+          <i data-lucide="zap" style="width: 16px; height: 16px;"></i>
+          应用套15默认价格
+        </button>
+        <button class="btn btn-default" onclick="clearPrices()">
+          <i data-lucide="eraser" style="width: 16px; height: 16px;"></i>
+          清空
+        </button>
+        <button class="btn btn-default">
+          <i data-lucide="percent" style="width: 16px; height: 16px;"></i>
+          批量调整价格
+        </button>
+      </div>
+
+      <div class="price-table" id="priceTable">
+        <!-- 价格行将通过JS动态生成 -->
+      </div>
+
+      <div class="stats-bar">
+        <div class="stat-item">
+          <div class="stat-value" id="avgPrice">$4.39</div>
+          <div class="stat-label">平均价格</div>
+        </div>
+        <div class="stat-item">
+          <div class="stat-value" id="priceRange">$2.50 - $5.99</div>
+          <div class="stat-label">价格区间</div>
+        </div>
+        <div class="stat-item">
+          <div class="stat-value" id="totalItems">50</div>
+          <div class="stat-label">套装明细总数</div>
+        </div>
+      </div>
+
+      <div class="alert alert-warning" style="margin-top: 16px;">
+        <i data-lucide="alert-triangle" style="width: 20px; height: 20px; flex-shrink: 0;"></i>
+        <div>
+          <strong>注意：</strong>此价格配置将应用到所有 <strong id="totalProducts">5</strong> 个商品，每个商品生成 <strong id="setCount">10</strong> 个套装，
+          总共将创建：<strong id="totalProductsCalc">5</strong> 个商品 × <strong id="setCountCalc">10</strong> 个套装 = <strong id="totalSetsCalc">50</strong> 个套装明细
+        </div>
+      </div>
+    </div>
+
+    <!-- 预览 -->
+    <div class="section-card">
+      <div class="section-title">
+        <i data-lucide="eye" style="width: 18px; height: 18px; display: inline; vertical-align: middle;"></i>
+        创建预览
+      </div>
+
+      <div class="preview-section">
+        <h3 style="margin-bottom: 16px; color: var(--text-primary);">即将创建：</h3>
+        
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 24px;">
+          <div class="stat-card">
+            <div class="stat-number" id="previewProducts">5</div>
+            <div class="stat-label">套装商品</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-number" id="previewSets">50</div>
+            <div class="stat-label">套装明细</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-number">自动生成</div>
+            <div class="stat-label">货号和条码</div>
+          </div>
+        </div>
+
+        <h4 style="margin-bottom: 12px; color: var(--text-primary);">商品列表：</h4>
+        <ul class="preview-list" id="previewList">
+          <li class="preview-item">
+            <i data-lucide="check-circle" style="width: 20px; height: 20px; color: var(--success);"></i>
+            <div style="flex: 1;">
+              <strong>圣诞礼品盒A</strong> (HB001) → 10个套装 (HB001-S10-01~10)
+            </div>
+          </li>
+          <li class="preview-item">
+            <i data-lucide="check-circle" style="width: 20px; height: 20px; color: var(--success);"></i>
+            <div style="flex: 1;">
+              <strong>圣诞礼品盒B</strong> (HB002) → 10个套装 (HB002-S10-01~10)
+            </div>
+          </li>
+          <li class="preview-item">
+            <i data-lucide="check-circle" style="width: 20px; height: 20px; color: var(--success);"></i>
+            <div style="flex: 1;">
+              <strong>圣诞礼品盒C</strong> (HB003) → 10个套装 (HB003-S10-01~10)
+            </div>
+          </li>
+          <li class="preview-item">
+            <i data-lucide="check-circle" style="width: 20px; height: 20px; color: var(--success);"></i>
+            <div style="flex: 1;">
+              <strong>圣诞礼品盒D</strong> (HB004) → 10个套装 (HB004-S10-01~10)
+            </div>
+          </li>
+          <li class="preview-item">
+            <i data-lucide="check-circle" style="width: 20px; height: 20px; color: var(--success);"></i>
+            <div style="flex: 1;">
+              <strong>圣诞礼品盒E</strong> (HB005) → 10个套装 (HB005-S10-01~10)
+            </div>
+          </li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <!-- 底部操作栏 -->
+  <div class="footer-actions">
+    <button class="btn btn-default btn-large">
+      <i data-lucide="x" style="width: 18px; height: 18px;"></i>
+      取消
+    </button>
+    <button class="btn btn-default btn-large">
+      <i data-lucide="save" style="width: 18px; height: 18px;"></i>
+      保存草稿
+    </button>
+    <button class="btn btn-primary btn-large" onclick="createProducts()">
+      <i data-lucide="check" style="width: 18px; height: 18px;"></i>
+      立即创建 (<span id="createCount">50</span>)
+    </button>
+  </div>
+
+  <script>
+    // 初始化 Lucide 图标
+    lucide.createIcons();
+
+    // 套10默认价格
+    const set10Prices = [2.50, 2.99, 3.50, 3.99, 4.50, 4.99, 5.50, 5.50, 5.99, 5.99];
+    
+    // 套15默认价格
+    const set15Prices = [2.99, 2.99, 3.50, 3.50, 3.99, 3.99, 4.50, 4.50, 4.99, 4.99, 5.50, 5.50, 5.99, 5.99, 6.99];
+
+    let currentSetCount = 10;
+
+    // 初始化价格表格
+    function initPriceTable(count = 10) {
+      currentSetCount = count;
+      const container = document.getElementById('priceTable');
+      container.innerHTML = '';
+      
+      // 添加表头
+      const header = document.createElement('div');
+      header.className = 'price-row';
+      header.style.position = 'sticky';
+      header.style.top = '0';
+      header.style.background = 'var(--bg-secondary)';
+      header.style.fontWeight = '600';
+      header.style.zIndex = '10';
+      header.innerHTML = `
+        <div class="price-index">序号</div>
+        <div>国内价格 ($)</div>
+        <div>进口价格 ($)</div>
+        <div>贴牌价格 ($)</div>
+      `;
+      container.appendChild(header);
+
+      // 添加价格行
+      for (let i = 0; i < count; i++) {
+        const row = document.createElement('div');
+        row.className = 'price-row';
+        row.innerHTML = `
+          <div class="price-index">${i + 1}</div>
+          <input type="number" class="input-field" placeholder="0.00" step="0.01" min="0" value="" data-type="domestic" data-index="${i}" onchange="updateStats()" />
+          <input type="number" class="input-field" placeholder="0.00" step="0.01" min="0" value="" data-type="import" data-index="${i}" />
+          <input type="number" class="input-field" placeholder="0.00" step="0.01" min="0" value="" data-type="oem" data-index="${i}" />
+        `;
+        container.appendChild(row);
+      }
+      
+      lucide.createIcons();
+    }
+
+    // 应用默认价格
+    function applyDefaultPrices(setType) {
+      const prices = setType === 10 ? set10Prices : set15Prices;
+      initPriceTable(setType);
+      
+      const inputs = document.querySelectorAll('#priceTable input[data-type="domestic"]');
+      inputs.forEach((input, index) => {
+        if (index < prices.length) {
+          input.value = prices[index].toFixed(2);
+        }
+      });
+      
+      updateStats();
+      updatePreview();
+    }
+
+    // 清空价格
+    function clearPrices() {
+      const inputs = document.querySelectorAll('#priceTable input');
+      inputs.forEach(input => input.value = '');
+      updateStats();
+    }
+
+    // 更新统计信息
+    function updateStats() {
+      const inputs = document.querySelectorAll('#priceTable input[data-type="domestic"]');
+      const prices = Array.from(inputs)
+        .map(input => parseFloat(input.value) || 0)
+        .filter(price => price > 0);
+      
+      if (prices.length > 0) {
+        const avg = (prices.reduce((a, b) => a + b, 0) / prices.length).toFixed(2);
+        const min = Math.min(...prices).toFixed(2);
+        const max = Math.max(...prices).toFixed(2);
+        
+        document.getElementById('avgPrice').textContent = `$${avg}`;
+        document.getElementById('priceRange').textContent = `$${min} - $${max}`;
+      } else {
+        document.getElementById('avgPrice').textContent = '$0.00';
+        document.getElementById('priceRange').textContent = '$0.00 - $0.00';
+      }
+      
+      updatePreview();
+    }
+
+    // 更新预览
+    function updatePreview() {
+      const productCount = document.querySelectorAll('.product-item').length;
+      const setCount = currentSetCount;
+      const totalSets = productCount * setCount;
+      
+      document.getElementById('productCountBadge').textContent = productCount;
+      document.getElementById('totalProducts').textContent = productCount;
+      document.getElementById('setCount').textContent = setCount;
+      document.getElementById('totalProductsCalc').textContent = productCount;
+      document.getElementById('setCountCalc').textContent = setCount;
+      document.getElementById('totalSetsCalc').textContent = totalSets;
+      document.getElementById('totalItems').textContent = totalSets;
+      document.getElementById('previewProducts').textContent = productCount;
+      document.getElementById('previewSets').textContent = totalSets;
+      document.getElementById('createCount').textContent = totalSets;
+      
+      // 更新预览列表
+      updatePreviewList();
+    }
+
+    // 更新预览列表
+    function updatePreviewList() {
+      const products = document.querySelectorAll('.product-item');
+      const previewList = document.getElementById('previewList');
+      previewList.innerHTML = '';
+      
+      products.forEach((product, index) => {
+        const name = product.querySelector('input[placeholder="商品名称"]').value || `商品${index + 1}`;
+        const productNo = `HB${String(index + 1).padStart(3, '0')}`;
+        const setType = currentSetCount === 10 ? 'S10' : currentSetCount === 15 ? 'S15' : 'SX';
+        
+        const li = document.createElement('li');
+        li.className = 'preview-item';
+        li.innerHTML = `
+          <i data-lucide="check-circle" style="width: 20px; height: 20px; color: var(--success);"></i>
+          <div style="flex: 1;">
+            <strong>${name}</strong> (${productNo}) → ${currentSetCount}个套装 (${productNo}-${setType}-01~${String(currentSetCount).padStart(2, '0')})
+          </div>
+        `;
+        previewList.appendChild(li);
+      });
+      
+      lucide.createIcons();
+    }
+
+    // 添加商品
+    function addProduct() {
+      const productList = document.getElementById('productList');
+      const count = productList.querySelectorAll('.product-item').length + 1;
+      
+      const div = document.createElement('div');
+      div.className = 'product-item';
+      div.style.opacity = '0';
+      div.innerHTML = `
+        <div class="product-number">${count}</div>
+        <input type="text" class="input-field" placeholder="商品名称" onchange="updatePreview()" />
+        <input type="text" class="input-field" placeholder="英文名称" />
+        <input type="text" class="input-field" placeholder="规格" value="盒" />
+        <button class="btn btn-danger" onclick="removeProduct(this)">
+          <i data-lucide="trash-2" style="width: 16px; height: 16px;"></i>
+        </button>
+      `;
+      
+      productList.appendChild(div);
+      
+      // 动画
+      setTimeout(() => {
+        div.style.transition = 'opacity 0.3s ease-out';
+        div.style.opacity = '1';
+      }, 10);
+      
+      lucide.createIcons();
+      updatePreview();
+    }
+
+    // 删除商品
+    function removeProduct(btn) {
+      const item = btn.closest('.product-item');
+      item.style.transition = 'all 0.3s ease-out';
+      item.style.opacity = '0';
+      item.style.transform = 'translateX(-20px)';
+      
+      setTimeout(() => {
+        item.remove();
+        renumberProducts();
+        updatePreview();
+      }, 300);
+    }
+
+    // 重新编号
+    function renumberProducts() {
+      const products = document.querySelectorAll('.product-item');
+      products.forEach((product, index) => {
+        product.querySelector('.product-number').textContent = index + 1;
+      });
+    }
+
+    // 创建商品
+    function createProducts() {
+      const productCount = document.querySelectorAll('.product-item').length;
+      const totalSets = productCount * currentSetCount;
+      
+      if (confirm(`确认创建 ${productCount} 个商品和 ${totalSets} 个套装明细吗？`)) {
+        // 显示加载状态
+        const btn = event.target.closest('button');
+        btn.disabled = true;
+        btn.innerHTML = '<div class="loading-spinner"></div> 创建中...';
+        
+        // 模拟API调用
+        setTimeout(() => {
+          alert(`成功创建 ${productCount} 个商品和 ${totalSets} 个套装明细！`);
+          btn.disabled = false;
+          btn.innerHTML = '<i data-lucide="check" style="width: 18px; height: 18px;"></i> 立即创建 (' + totalSets + ')';
+          lucide.createIcons();
+        }, 2000);
+      }
+    }
+
+    // 初始化
+    document.addEventListener('DOMContentLoaded', () => {
+      initPriceTable(10);
+      applyDefaultPrices(10);
+      updatePreview();
+    });
+  </script>
+</body>
+</html>
+

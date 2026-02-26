@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BlazorDatasheet Excel风格实例</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Excel风格表格样式 */
+        .datasheet-container {
+            border: 1px solid #c0c0c0;
+            border-radius: 0;
+            overflow: hidden;
+            height: 500px;
+            background-color: #ffffff;
+            box-shadow: none;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+        
+        /* 模拟表格样式 */
+        .excel-table {
+            width: 100%;
+            border-collapse: separate;
+            border-spacing: 0;
+            font-family: 'Segoe UI', Arial, sans-serif;
+            font-size: 12px;
+        }
+        
+        .excel-cell {
+            border: 1px solid #c0c0c0;
+            border-top: none;
+            border-left: none;
+            padding: 4px 6px;
+            background-color: #ffffff;
+            color: #000000;
+            line-height: 1.2;
+            min-height: 20px;
+            vertical-align: middle;
+            transition: background-color 0.1s ease;
+        }
+        
+        .excel-cell:first-child {
+            border-left: 1px solid #c0c0c0;
+        }
+        
+        .excel-cell:hover {
+            background-color: #e6f3ff;
+        }
+        
+        .excel-header {
+            background: linear-gradient(to bottom, #f0f0f0 0%, #e0e0e0 100%);
+            border: 1px solid #a0a0a0;
+            border-top: 1px solid #c0c0c0;
+            border-left: none;
+            font-weight: 600;
+            text-align: center;
+            color: #000000;
+            padding: 6px 4px;
+            font-size: 11px;
+            height: 24px;
+        }
+        
+        .excel-header:first-child {
+            border-left: 1px solid #a0a0a0;
+        }
+        
+        .excel-row-header {
+            background: linear-gradient(to right, #f0f0f0 0%, #e0e0e0 100%);
+            border: 1px solid #a0a0a0;
+            border-top: none;
+            border-left: 1px solid #c0c0c0;
+            font-weight: 500;
+            text-align: center;
+            color: #000000;
+            width: 35px;
+            min-width: 35px;
+            font-size: 11px;
+            padding: 4px 2px;
+        }
+        
+        .excel-row-header:first-child {
+            border-top: 1px solid #a0a0a0;
+        }
+    </style>
+</head>
+<body class="bg-gray-50 p-8">
+    <div class="max-w-6xl mx-auto">
+        <!-- 标题 -->
+        <h1 class="text-3xl font-bold text-gray-800 mb-8">BlazorDatasheet Excel风格实例</h1>
+        
+        <!-- 文档链接 -->
+        <div class="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-8">
+            <h2 class="text-lg font-semibold text-blue-800 mb-2">📖 BlazorDatasheet 官方文档</h2>
+            <p class="text-blue-700 mb-2">官方文档地址：<a href="https://anmcgrath.github.io/BlazorDatasheet/" class="underline" target="_blank">https://anmcgrath.github.io/BlazorDatasheet/</a></p>
+            <p class="text-blue-600 text-sm">用于创建类似Excel的电子表格组件，支持数据编辑、复制粘贴等功能。</p>
+        </div>
+        
+        <!-- 基本用法 -->
+        <div class="bg-white rounded-lg shadow-md p-6 mb-8">
+            <h2 class="text-xl font-semibold mb-4">🔧 基本用法</h2>
+            <div class="bg-gray-100 rounded-lg p-4">
+                <pre class="text-sm"><code>@using BlazorDatasheet.Core.Data
+
+&lt;Datasheet Sheet="_sheet"/&gt;
+
+@code {
+    private Sheet _sheet = null!;
+
+    protected override void OnInitialized()
+    {
+        _sheet = new Sheet(5, 5); // 5行5列
+    }
+}</code></pre>
+            </div>
+        </div>
+        
+        <!-- Excel风格表格演示 -->
+        <div class="bg-white rounded-lg shadow-md p-6 mb-8">
+            <h2 class="text-xl font-semibold mb-4">📊 Excel风格表格效果演示</h2>
+            <p class="text-gray-600 mb-4">以下展示了Excel风格的表格样式，包括列标题(A、B、C、D、E)和行号：</p>
+            
+            <div class="datasheet-container">
+                <table class="excel-table">
+                    <thead>
+                        <tr>
+                            <th class="excel-header"></th>
+                            <th class="excel-header">A</th>
+                            <th class="excel-header">B</th>
+                            <th class="excel-header">C</th>
+                            <th class="excel-header">D</th>
+                            <th class="excel-header">E</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td class="excel-row-header">1</td>
+                            <td class="excel-cell">ItemNo (A)</td>
+                            <td class="excel-cell">Quantity (B)</td>
+                            <td class="excel-cell">Price (C)</td>
+                            <td class="excel-cell">Discount (D)</td>
+                            <td class="excel-cell">Total (E)</td>
+                        </tr>
+                        <tr>
+                            <td class="excel-row-header">2</td>
+                            <td class="excel-cell">SAMPLE001</td>
+                            <td class="excel-cell">10</td>
+                            <td class="excel-cell">25.50</td>
+                            <td class="excel-cell">0.1</td>
+                            <td class="excel-cell">22.95</td>
+                        </tr>
+                        <tr>
+                            <td class="excel-row-header">3</td>
+                            <td class="excel-cell">SAMPLE002</td>
+                            <td class="excel-cell">5</td>
+                            <td class="excel-cell">15.00</td>
+                            <td class="excel-cell">0</td>
+                            <td class="excel-cell">75.00</td>
+                        </tr>
+                        <tr>
+                            <td class="excel-row-header">4</td>
+                            <td class="excel-cell">SAMPLE003</td>
+                            <td class="excel-cell">20</td>
+                            <td class="excel-cell">8.00</td>
+                            <td class="excel-cell">0.05</td>
+                            <td class="excel-cell">152.00</td>
+                        </tr>
+                        <tr>
+                            <td class="excel-row-header">5</td>
+                            <td class="excel-cell"></td>
+                            <td class="excel-cell"></td>
+                            <td class="excel-cell"></td>
+                            <td class="excel-cell"></td>
+                            <td class="excel-cell"></td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        
+        <!-- 实际实现代码 -->
+        <div class="bg-white rounded-lg shadow-md p-6 mb-8">
+            <h2 class="text-xl font-semibold mb-4">💻 实际实现代码</h2>
+            <p class="text-gray-600 mb-4">在OrderDetail.razor中的完整实现：</p>
+            
+            <div class="space-y-4">
+                <!-- Razor 标记 -->
+                <div>
+                    <h3 class="font-semibold text-gray-700 mb-2">1. Razor 标记部分：</h3>
+                    <div class="bg-gray-100 rounded-lg p-4">
+                        <pre class="text-sm"><code>@using BlazorDatasheet.Core.Data
+@using BlazorDatasheet.Core.Data.Cells
+@using BlazorDatasheet.DataStructures.Geometry
+@using BlazorDatasheet.DataStructures.Store
+@using BlazorDatasheet
+
+&lt;div style="margin-bottom: 20px;"&gt;
+    &lt;h4&gt;Excel风格数据表格 (Ctrl+V 粘贴数据)&lt;/h4&gt;
+    &lt;div class="datasheet-container"&gt;
+        &lt;Datasheet Sheet="@pasteDataSheet" /&gt;
+    &lt;/div&gt;
+    &lt;div style="margin-top: 8px; color: #666; font-size: 12px;"&gt;
+        &lt;Icon Type="@IconType.Outline.InfoCircle" style="margin-right: 4px;" /&gt;
+        Excel风格表格：A列-货号，B列-数量，C列-单价，D列-折扣率，E列-总价。支持Ctrl+V粘贴Excel数据。
+    &lt;/div&gt;
+&lt;/div&gt;</code></pre>
+                    </div>
+                </div>
+                
+                <!-- C# 代码 -->
+                <div>
+                    <h3 class="font-semibold text-gray-700 mb-2">2. C# 代码部分：</h3>
+                    <div class="bg-gray-100 rounded-lg p-4">
+                        <pre class="text-sm"><code>@code {
+    // BlazorDatasheet 相关
+    private Sheet pasteDataSheet = new(20, 5); // 20行5列的表格 (A, B, C, D, E)
+
+    protected override async Task OnInitializedAsync()
+    {
+        InitializePasteDataSheet();
+    }
+
+    private void InitializePasteDataSheet()
+    {
+        // 创建新的表格，使用更多列模拟Excel风格
+        pasteDataSheet = new Sheet(20, 5); // 20行5列：A, B, C, D, E列
+        
+        // 设置列标题为Excel风格的A, B, C, D, E
+        pasteDataSheet.Cells[0, 0].Value = "ItemNo (A)";
+        pasteDataSheet.Cells[0, 1].Value = "Quantity (B)"; 
+        pasteDataSheet.Cells[0, 2].Value = "Price (C)";
+        pasteDataSheet.Cells[0, 3].Value = "Discount (D)";
+        pasteDataSheet.Cells[0, 4].Value = "Total (E)";
+    }
+
+    private void AddSampleData()
+    {
+        InitializePasteDataSheet();
+        
+        // 添加示例数据
+        pasteDataSheet.Cells[1, 0].Value = "SAMPLE001";
+        pasteDataSheet.Cells[1, 1].Value = "10";
+        pasteDataSheet.Cells[1, 2].Value = "25.50";
+        pasteDataSheet.Cells[1, 3].Value = "0.1";
+        pasteDataSheet.Cells[1, 4].Value = "22.95";
+        
+        pasteDataSheet.Cells[2, 0].Value = "SAMPLE002";
+        pasteDataSheet.Cells[2, 1].Value = "5";
+        pasteDataSheet.Cells[2, 2].Value = "15.00";
+        pasteDataSheet.Cells[2, 3].Value = "0";
+        pasteDataSheet.Cells[2, 4].Value = "75.00";
+    }
+}</code></pre>
+                    </div>
+                </div>
+                
+                <!-- CSS 样式 -->
+                <div>
+                    <h3 class="font-semibold text-gray-700 mb-2">3. Excel风格CSS样式：</h3>
+                    <div class="bg-gray-100 rounded-lg p-4">
+                        <pre class="text-sm"><code>/* Excel风格表格样式 */
+.datasheet-container {
+    border: 1px solid #c0c0c0;
+    border-radius: 0;
+    overflow: hidden;
+    height: 500px;
+    background-color: #ffffff;
+    box-shadow: none;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+}
+
+/* 普通单元格样式 - Excel风格 */
+.datasheet-container .sheet-container .cell {
+    border: 1px solid #c0c0c0 !important;
+    border-top: none !important;
+    border-left: none !important;
+    padding: 4px 6px !important;
+    background-color: #ffffff !important;
+    color: #000000 !important;
+    line-height: 1.2 !important;
+    min-height: 20px !important;
+    vertical-align: middle !important;
+    transition: background-color 0.1s ease !important;
+    font-size: 12px !important;
+}
+
+/* 列标题样式 - Excel A, B, C, D, E风格 */
+.datasheet-container .sheet-container .header-cell {
+    background: linear-gradient(to bottom, #f0f0f0 0%, #e0e0e0 100%) !important;
+    border: 1px solid #a0a0a0 !important;
+    border-top: 1px solid #c0c0c0 !important;
+    border-left: none !important;
+    font-weight: 600 !important;
+    text-align: center !important;
+    color: #000000 !important;
+    padding: 6px 4px !important;
+    font-size: 11px !important;
+    height: 24px !important;
+}
+
+/* 行号样式 - Excel风格 */
+.datasheet-container .sheet-container .row-header {
+    background: linear-gradient(to right, #f0f0f0 0%, #e0e0e0 100%) !important;
+    border: 1px solid #a0a0a0 !important;
+    border-top: none !important;
+    border-left: 1px solid #c0c0c0 !important;
+    font-weight: 500 !important;
+    text-align: center !important;
+    color: #000000 !important;
+    width: 35px !important;
+    min-width: 35px !important;
+    font-size: 11px !important;
+    padding: 4px 2px !important;
+}</code></pre>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- 功能特性 -->
+        <div class="bg-white rounded-lg shadow-md p-6">
+            <h2 class="text-xl font-semibold mb-4">✨ 功能特性</h2>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div>
+                    <h3 class="font-semibold text-gray-700 mb-2">🎨 视觉效果</h3>
+                    <ul class="text-gray-600 space-y-1">
+                        <li>• Excel风格的列标题 (A, B, C, D, E)</li>
+                        <li>• 清晰的网格线和边框</li>
+                        <li>• 渐变背景的表头和行号</li>
+                        <li>• Hover交互效果</li>
+                        <li>• 专业的单元格样式</li>
+                    </ul>
+                </div>
+                <div>
+                    <h3 class="font-semibold text-gray-700 mb-2">🚀 功能特性</h3>
+                    <ul class="text-gray-600 space-y-1">
+                        <li>• 支持Ctrl+V粘贴Excel数据</li>
+                        <li>• 支持直接单元格编辑</li>
+                        <li>• 支持多列数据(货号、数量、价格等)</li>
+                        <li>• 自动折扣率计算</li>
+                        <li>• 数据验证和错误处理</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+</body>
+</html>

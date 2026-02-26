@@ -1,0 +1,53 @@
+### 修复 Admin 用户分店问题的解决方案
+
+### 1. 重新初始化数据（推荐）
+GET http://localhost:5001/api/debug/init-data
+Content-Type: application/json
+
+###
+
+### 2. 检查当前用户分店状况
+GET http://localhost:5001/api/users/stores
+Authorization: Bearer {{jwt_token}}
+Content-Type: application/json
+
+###
+
+### 3. 获取所有分店（检查是否有分店数据）
+GET http://localhost:5001/api/stores
+Authorization: Bearer {{jwt_token}}
+Content-Type: application/json
+
+###
+
+### 4. 手动为当前用户分配默认分店（如果存在）
+POST http://localhost:5001/api/stores/assign-user
+Authorization: Bearer {{jwt_token}}
+Content-Type: application/json
+
+{
+    "storeGuid": "default",
+    "userGuid": "admin"
+}
+
+###
+
+### 5. 创建默认分店（如果不存在）
+POST http://localhost:5001/api/stores
+Authorization: Bearer {{jwt_token}}
+Content-Type: application/json
+
+{
+    "storeCode": "DEFAULT",
+    "storeName": "Default Store", 
+    "address": "Default Store Address",
+    "phone": "000-0000-0000",
+    "isActive": true
+}
+
+###
+
+### 6. 检查修复结果
+GET http://localhost:5001/api/users/stores
+Authorization: Bearer {{jwt_token}}
+Content-Type: application/json
