@@ -710,7 +710,9 @@ namespace BlazorApp.Api.Services.React
                 // 1. 分店筛选
                 if (filter.StoreCodes != null && filter.StoreCodes.Any())
                 {
-                    q = q.Where(o => o.StoreCode != null && filter.StoreCodes!.Contains(o.StoreCode));
+                    q = q.Where(o =>
+                        o.StoreCode != null && filter.StoreCodes!.Contains(o.StoreCode)
+                    );
                 }
                 else if (!string.IsNullOrWhiteSpace(filter.StoreCode))
                 {
@@ -762,7 +764,20 @@ namespace BlazorApp.Api.Services.React
                 // 2. 状态筛选
                 if (filter.StatusList != null && filter.StatusList.Any())
                 {
-                    q = q.Where(o => filter.StatusList.Contains(o.FlowStatus ?? 0));
+                    // 处理状态 2 (已完成 = FlowStatus=1 且 InboundStatus=1)
+                    if (filter.StatusList.Contains(2))
+                    {
+                        // 如果筛选包含 2,需要单独处理
+                        var statusListWithout2 = filter.StatusList.Where(x => x != 2).ToList();
+                        q = q.Where(o =>
+                            (o.InboundStatus == 1 && o.FlowStatus == 1) // 状态 2 的条件
+                            || (statusListWithout2.Any() && statusListWithout2.Contains(o.FlowStatus ?? 0)) // 其他状态
+                        );
+                    }
+                    else
+                    {
+                        q = q.Where(o => filter.StatusList.Contains(o.FlowStatus ?? 0));
+                    }
                 }
 
                 // 3. 日期筛选
@@ -831,7 +846,7 @@ namespace BlazorApp.Api.Services.React
                         OrderNo = o.OrderNo,
                         StoreCode = o.StoreCode,
                         OrderDate = o.OrderDate,
-                        FlowStatus = o.FlowStatus ?? 0,
+                        FlowStatus = (o.InboundStatus == 1 && o.FlowStatus == 1) ? 2 : (o.FlowStatus ?? 0),
 
                         // TotalAmount -> 实际发货金额
                         TotalAmount = SqlFunc
