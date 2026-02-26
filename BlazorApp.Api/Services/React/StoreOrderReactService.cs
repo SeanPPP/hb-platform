@@ -1,3 +1,4 @@
+using AutoMapper;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Shared.DTOs;
@@ -16,13 +17,15 @@ namespace BlazorApp.Api.Services.React
         private readonly Microsoft.AspNetCore.Http.IHttpContextAccessor _httpContextAccessor;
         private readonly IOrderNumberGenerator _orderNumberGenerator;
         private readonly IConfiguration _configuration;
+        private readonly IMapper _mapper;
 
         public StoreOrderReactService(
             SqlSugarContext context,
             ILogger<StoreOrderReactService> logger,
             Microsoft.AspNetCore.Http.IHttpContextAccessor httpContextAccessor,
             IOrderNumberGenerator orderNumberGenerator,
-            IConfiguration configuration
+            IConfiguration configuration,
+            IMapper mapper
         )
         {
             _db = context.Db;
@@ -30,6 +33,7 @@ namespace BlazorApp.Api.Services.React
             _httpContextAccessor = httpContextAccessor;
             _orderNumberGenerator = orderNumberGenerator;
             _configuration = configuration;
+            _mapper = mapper;
         }
 
         public async Task<PagedListReactDto<StoreOrderProductDto>> GetPagedListAsync(
@@ -764,20 +768,10 @@ namespace BlazorApp.Api.Services.React
                 // 2. 状态筛选
                 if (filter.StatusList != null && filter.StatusList.Any())
                 {
-                    // 处理状态 2 (已完成 = FlowStatus=1 且 InboundStatus=1)
-                    if (filter.StatusList.Contains(2))
-                    {
-                        // 如果筛选包含 2,需要单独处理
-                        var statusListWithout2 = filter.StatusList.Where(x => x != 2).ToList();
-                        q = q.Where(o =>
-                            (o.InboundStatus == 1 && o.FlowStatus == 1) // 状态 2 的条件
-                            || (statusListWithout2.Any() && statusListWithout2.Contains(o.FlowStatus ?? 0)) // 其他状态
-                        );
-                    }
-                    else
-                    {
-                        q = q.Where(o => filter.StatusList.Contains(o.FlowStatus ?? 0));
-                    }
+                    // 不包含状态 2，直接使用 StatusList
+                    q = q.Where(o =>
+                        o.FlowStatus != null && filter.StatusList.Contains(o.FlowStatus.Value)
+                    );
                 }
 
                 // 3. 日期筛选
@@ -846,7 +840,7 @@ namespace BlazorApp.Api.Services.React
                         OrderNo = o.OrderNo,
                         StoreCode = o.StoreCode,
                         OrderDate = o.OrderDate,
-                        FlowStatus = (o.InboundStatus == 1 && o.FlowStatus == 1) ? 2 : (o.FlowStatus ?? 0),
+                        FlowStatus = o.FlowStatus ?? 0,
 
                         // TotalAmount -> 实际发货金额
                         TotalAmount = SqlFunc
@@ -1850,25 +1844,14 @@ namespace BlazorApp.Api.Services.React
                 // 3. 转换 HQ 订单数据为本地格式
                 foreach (var hqOrder in hqOrders)
                 {
-                    var localOrder = new WareHouseOrder
-                    {
-                        OrderGUID = hqOrder.HGUID ?? Guid.NewGuid().ToString("N"),
-                        StoreCode = hqOrder.分店代码,
-                        OrderNo = hqOrder.订单号,
-                        OrderDate = hqOrder.订单日期,
-                        OutboundDate = hqOrder.出库日期,
-                        ShippingFee = hqOrder.运输费用,
-                        ImportTotalAmount = hqOrder.进口总金额,
-                        OEMTotalAmount = hqOrder.贴牌总金额,
-                        Remarks = hqOrder.备注,
-                        FlowStatus = hqOrder.流程状态,
-                        InboundStatus = hqOrder.入库状态,
-                        IsDeleted = false,
-                        CreatedAt = hqOrder.FGC_CreateDate ?? DateTime.Now,
-                        UpdatedAt = hqOrder.FGC_LastModifyDate ?? DateTime.Now,
-                        CreatedBy = hqOrder.FGC_Creator ?? "HQ同步",
-                        UpdatedBy = hqOrder.FGC_LastModifier ?? "HQ同步",
-                    };
+                    var localOrder = _mapper.Map<WareHouseOrder>(hqOrder);
+
+                    localOrder.IsDeleted = false;
+                    localOrder.CreatedAt = hqOrder.FGC_CreateDate ?? DateTime.Now;
+                    localOrder.UpdatedAt = hqOrder.FGC_LastModifyDate ?? DateTime.Now;
+                    localOrder.CreatedBy = hqOrder.FGC_Creator ?? "HQ同步";
+                    localOrder.UpdatedBy = hqOrder.FGC_LastModifier ?? "HQ同步";
+
                     newOrders.Add(localOrder);
                     newOrderGuids.Add(localOrder.OrderGUID);
                 }
@@ -1891,26 +1874,14 @@ namespace BlazorApp.Api.Services.React
 
                     foreach (var hqDetail in hqDetails)
                     {
-                        var localDetail = new WareHouseOrderDetails
-                        {
-                            DetailGUID = hqDetail.HGUID ?? Guid.NewGuid().ToString("N"),
-                            OrderGUID = hqDetail.主表GUID,
-                            StoreCode = hqDetail.分店代码,
-                            StoreProductCode = hqDetail.分店商品编码,
-                            ProductCode = hqDetail.商品编码,
-                            Quantity = hqDetail.数量,
-                            AllocQuantity = hqDetail.配货数量,
-                            LastCost = hqDetail.上次成本,
-                            ImportPrice = hqDetail.进口价格,
-                            ImportAmount = hqDetail.合计进口金额,
-                            OEMPrice = hqDetail.贴牌价格,
-                            OEMAmount = hqDetail.合计贴牌金额,
-                            IsDeleted = false,
-                            CreatedAt = hqDetail.FGC_CreateDate ?? DateTime.Now,
-                            UpdatedAt = hqDetail.FGC_LastModifyDate ?? DateTime.Now,
-                            CreatedBy = hqDetail.FGC_Creator ?? "HQ同步",
-                            UpdatedBy = hqDetail.FGC_LastModifier ?? "HQ同步",
-                        };
+                        var localDetail = _mapper.Map<WareHouseOrderDetails>(hqDetail);
+
+                        localDetail.IsDeleted = false;
+                        localDetail.CreatedAt = hqDetail.FGC_CreateDate ?? DateTime.Now;
+                        localDetail.UpdatedAt = hqDetail.FGC_LastModifyDate ?? DateTime.Now;
+                        localDetail.CreatedBy = hqDetail.FGC_Creator ?? "HQ同步";
+                        localDetail.UpdatedBy = hqDetail.FGC_LastModifier ?? "HQ同步";
+
                         newDetails.Add(localDetail);
                     }
 

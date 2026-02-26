@@ -28,7 +28,10 @@ namespace BlazorApp.Api.Mappings.Profiles.React
                 )
                 .ForMember(dest => dest.OEMTotalAmount, opt => opt.MapFrom(src => src.贴牌总金额))
                 .ForMember(dest => dest.Remarks, opt => opt.MapFrom(src => TrimLen(src.备注, 1000)))
-                .ForMember(dest => dest.FlowStatus, opt => opt.MapFrom(src => src.流程状态))
+                .ForMember(
+                    dest => dest.FlowStatus,
+                    opt => opt.MapFrom(src => (src.流程状态 == 1 && src.入库状态 == 1) ? 2 : 1)
+                )
                 .ForMember(dest => dest.InboundStatus, opt => opt.MapFrom(src => src.入库状态));
         }
 
