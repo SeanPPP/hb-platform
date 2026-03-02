@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.ComponentModel.DataAnnotations;
 
 namespace BlazorApp.Shared.DTOs
 {
@@ -74,11 +75,17 @@ namespace BlazorApp.Shared.DTOs
     public class StoreRetailPriceUpsertItemDto
     {
         public string? UUID { get; set; }
+        [Required(ErrorMessage = "StoreCode 不能为空")]
         public string StoreCode { get; set; } = string.Empty;
+        [Required(ErrorMessage = "ProductCode 不能为空")]
         public string ProductCode { get; set; } = string.Empty;
+        [Required(ErrorMessage = "SupplierCode 不能为空")]
         public string SupplierCode { get; set; } = string.Empty;
+        [Range(0, double.MaxValue, ErrorMessage = "PurchasePrice 必须大于或等于 0")]
         public decimal? PurchasePrice { get; set; }
+        [Range(0, double.MaxValue, ErrorMessage = "StoreRetailPriceValue 必须大于或等于 0")]
         public decimal? StoreRetailPriceValue { get; set; }
+        [Range(0, 1, ErrorMessage = "DiscountRate 必须在 0 到 1 之间")]
         public decimal? DiscountRate { get; set; }
         public bool? IsActive { get; set; }
         public bool? IsAutoPricing { get; set; }
@@ -100,5 +107,11 @@ namespace BlazorApp.Shared.DTOs
         public decimal? DiscountRate { get; set; }
         public bool? IsActive { get; set; }
         public bool? IsAutoPricing { get; set; }
+    }
+
+    public class BatchDeleteByProductCodesDto
+    {
+        public List<string> ProductCodes { get; set; } = new();
+        public List<string> StoreCodes { get; set; } = new();
     }
 }

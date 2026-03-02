@@ -798,6 +798,10 @@ namespace BlazorApp.Api.Services.React
                 var updateList = new List<StoreRetailPrice>();
                 var errors = new List<string>();
 
+                _logger.LogInformation(
+                    $"BatchUpsertAsync 开始, 操作人: {updatedBy}, 数据条数: {items.Count}"
+                );
+
                 await db.Ado.BeginTranAsync();
                 try
                 {
@@ -819,28 +823,43 @@ namespace BlazorApp.Api.Services.React
                         .Select(p => p!.Trim())
                         .Distinct()
                         .ToList();
-                    var supplierCodes = items
-                        .Select(it => it.SupplierCode)
-                        .Where(s => !string.IsNullOrWhiteSpace(s))
-                        .Select(s => s!.Trim())
-                        .Distinct()
-                        .ToList();
+
+                    _logger.LogInformation(
+                        $"查询条件 - UUIDs: {uuids.Count}, StoreCodes: {string.Join(",", storeCodes)}, ProductCodes: {string.Join(",", productCodes)}"
+                    );
+
                     var q = db.Queryable<StoreRetailPrice>().Where(x => x.IsDeleted == false);
                     if (uuids.Any())
                         q = q.Where(x => x.UUID != null && uuids.Contains(x.UUID));
-                    if (storeCodes.Any() && productCodes.Any() && supplierCodes.Any())
+                    if (storeCodes.Any() && productCodes.Any())
                         q = q.Where(x =>
-                            x.StoreCode != null && storeCodes.Contains(x.StoreCode)
-                            && x.ProductCode != null && productCodes.Contains(x.ProductCode)
-                            && x.SupplierCode != null && supplierCodes.Contains(x.SupplierCode)
+                            x.StoreCode != null
+                            && storeCodes.Contains(x.StoreCode)
+                            && x.ProductCode != null
+                            && productCodes.Contains(x.ProductCode)
                         );
                     var existing = await q.ToListAsync();
+                    _logger.LogInformation($"查询到现有记录: {existing.Count} 条");
+
                     var byUuid = existing
                         .Where(x => !string.IsNullOrWhiteSpace(x.UUID))
                         .ToDictionary(x => x.UUID);
-                    var byKey = existing.ToDictionary(x =>
-                        $"{x.StoreCode}|{x.ProductCode}|{x.SupplierCode}"
-                    );
+
+                    // 使用 StoreCode + ProductCode 组合判断是否已存在分店价格
+                    var byKey = existing
+                        .GroupBy(x => $"{x.StoreCode}|{x.ProductCode}")
+                        .ToDictionary(
+                            g => g.Key,
+                            g => g.OrderByDescending(x => x.UpdatedAt ?? x.CreatedAt).First()
+                        );
+
+                    if (existing.Count != byKey.Count)
+                    {
+                        _logger.LogWarning(
+                            $"检测到重复数据: 查询到 {existing.Count} 条记录,去重后 {byKey.Count} 条"
+                        );
+                    }
+
                     foreach (var it in items)
                     {
                         try
@@ -855,18 +874,16 @@ namespace BlazorApp.Api.Services.React
                             {
                                 var sc = it.StoreCode?.Trim();
                                 var pc = it.ProductCode?.Trim();
-                                var sp = it.SupplierCode?.Trim();
                                 if (
                                     string.IsNullOrWhiteSpace(sc)
                                     || string.IsNullOrWhiteSpace(pc)
-                                    || string.IsNullOrWhiteSpace(sp)
                                 )
                                 {
                                     throw new Exception(
-                                        "缺少关键键值(storeCode/productCode/supplierCode)"
+                                        "缺少关键键值(storeCode/productCode)"
                                     );
                                 }
-                                var key = $"{sc}|{pc}|{sp}";
+                                var key = $"{sc}|{pc}";
                                 if (byKey.TryGetValue(key, out var foundByKey))
                                     entity = foundByKey;
                             }
@@ -878,7 +895,7 @@ namespace BlazorApp.Api.Services.React
                                     StoreCode = it.StoreCode,
                                     ProductCode = it.ProductCode,
                                     SupplierCode = it.SupplierCode,
-                                    StoreProductCode = UuidHelper.GenerateUuid7(),
+                                    StoreProductCode = it.StoreCode+ it.ProductCode,
                                     PurchasePrice = it.PurchasePrice,
                                     StoreRetailPriceValue = it.StoreRetailPriceValue,
                                     DiscountRate = it.DiscountRate,
@@ -891,6 +908,9 @@ namespace BlazorApp.Api.Services.React
                                     IsDeleted = false,
                                 };
                                 insertList.Add(entity);
+                                _logger.LogDebug(
+                                    $"准备插入: StoreCode={entity.StoreCode}, ProductCode={entity.ProductCode}, SupplierCode={entity.SupplierCode}"
+                                );
                             }
                             else
                             {
@@ -910,19 +930,32 @@ namespace BlazorApp.Api.Services.React
                                 entity.UpdatedAt = now;
                                 entity.UpdatedBy = updatedBy;
                                 updateList.Add(entity);
+                                _logger.LogDebug(
+                                    $"准备更新: UUID={entity.UUID}, StoreCode={entity.StoreCode}, ProductCode={entity.ProductCode}, SupplierCode={entity.SupplierCode}"
+                                );
                             }
                         }
                         catch (Exception exItem)
                         {
-                            errors.Add(exItem.Message);
+                            var errorMsg =
+                                $"处理数据失败: {exItem.Message}, 数据: {System.Text.Json.JsonSerializer.Serialize(it)}";
+                            errors.Add(errorMsg);
+                            _logger.LogError(exItem, errorMsg);
                         }
                     }
 
                     if (insertList.Any())
-                        await db.Insertable(insertList).ExecuteCommandAsync();
+                    {
+                        var inserted = await db.Insertable(insertList).ExecuteCommandAsync();
+                        _logger.LogInformation($"插入完成: {inserted} 条");
+                    }
                     if (updateList.Any())
-                        await db.Updateable(updateList).ExecuteCommandAsync();
+                    {
+                        var updated = await db.Updateable(updateList).ExecuteCommandAsync();
+                        _logger.LogInformation($"更新完成: {updated} 条");
+                    }
                     await db.Ado.CommitTranAsync();
+                    _logger.LogInformation("事务提交成功");
 
                     var result = new BatchResultDto
                     {
@@ -936,14 +969,20 @@ namespace BlazorApp.Api.Services.React
                 catch (Exception ex)
                 {
                     await db.Ado.RollbackTranAsync();
-                    _logger.LogError(ex, "批量保存事务失败");
-                    return ApiResponse<BatchResultDto>.Error("批量保存失败", "BATCH_UPSERT_ERROR");
+                    _logger.LogError(ex, "批量保存事务失败, 事务已回滚");
+                    return ApiResponse<BatchResultDto>.Error(
+                        $"批量保存失败: {ex.Message}",
+                        "BATCH_UPSERT_ERROR"
+                    );
                 }
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "批量保存失败");
-                return ApiResponse<BatchResultDto>.Error("批量保存失败", "BATCH_UPSERT_ERROR");
+                return ApiResponse<BatchResultDto>.Error(
+                    $"批量保存失败: {ex.Message}",
+                    "BATCH_UPSERT_ERROR"
+                );
             }
         }
 
@@ -1026,7 +1065,10 @@ namespace BlazorApp.Api.Services.React
                         (p, prod, sup) => p.SupplierCode == sup.LocalSupplierCode
                     )
                     .LeftJoin<Store>((p, prod, sup, st) => p.StoreCode == st.StoreCode)
-                    .Where((p, prod, sup, st) => p.UUID != null && uuids.Contains(p.UUID) && p.IsDeleted == false)
+                    .Where(
+                        (p, prod, sup, st) =>
+                            p.UUID != null && uuids.Contains(p.UUID) && p.IsDeleted == false
+                    )
                     .Select(
                         (p, prod, sup, st) =>
                             new StoreRetailPriceListDto
@@ -1061,6 +1103,89 @@ namespace BlazorApp.Api.Services.React
                 return ApiResponse<List<StoreRetailPriceListDto>>.Error(
                     "查询失败",
                     "BATCH_BY_UUIDS_ERROR"
+                );
+            }
+        }
+
+        public async Task<ApiResponse<BatchResultDto>> BatchDeleteByProductCodesAsync(
+            List<string> productCodes,
+            List<string> storeCodes,
+            string updatedBy
+        )
+        {
+            try
+            {
+                var db = _context.Db;
+                var now = DateTime.UtcNow;
+                var errors = new List<string>();
+                var deleted = 0;
+
+                _logger.LogInformation(
+                    $"BatchDeleteByProductCodesAsync 开始, 操作人: {updatedBy}, 商品编码数量: {productCodes.Count}, 分店数量: {storeCodes.Count}"
+                );
+
+                await db.Ado.BeginTranAsync();
+                try
+                {
+                    var q = db.Queryable<StoreRetailPrice>().Where(x => x.IsDeleted == false);
+
+                    if (productCodes.Any())
+                    {
+                        q = q.Where(x =>
+                            x.ProductCode != null && productCodes.Contains(x.ProductCode)
+                        );
+                    }
+
+                    if (storeCodes.Any())
+                    {
+                        q = q.Where(x => x.StoreCode != null && storeCodes.Contains(x.StoreCode));
+                    }
+
+                    var toDelete = await q.ToListAsync();
+                    _logger.LogInformation($"查询到待删除记录: {toDelete.Count} 条");
+
+                    if (toDelete.Any())
+                    {
+                        foreach (var entity in toDelete)
+                        {
+                            entity.IsDeleted = true;
+                            entity.UpdatedAt = now;
+                            entity.UpdatedBy = updatedBy;
+                        }
+
+                        deleted = await db.Updateable(toDelete).ExecuteCommandAsync();
+                        _logger.LogInformation($"已删除: {deleted} 条记录");
+                    }
+
+                    await db.Ado.CommitTranAsync();
+                    _logger.LogInformation("事务提交成功");
+
+                    var result = new BatchResultDto
+                    {
+                        Inserted = 0,
+                        Updated = 0,
+                        Failed = errors.Count,
+                        Errors = errors,
+                    };
+
+                    return ApiResponse<BatchResultDto>.OK(result, $"成功删除 {deleted} 条记录");
+                }
+                catch (Exception ex)
+                {
+                    await db.Ado.RollbackTranAsync();
+                    _logger.LogError(ex, "批量删除事务失败, 事务已回滚");
+                    return ApiResponse<BatchResultDto>.Error(
+                        $"批量删除失败: {ex.Message}",
+                        "BATCH_DELETE_BY_PRODUCT_CODES_ERROR"
+                    );
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "批量删除失败");
+                return ApiResponse<BatchResultDto>.Error(
+                    $"批量删除失败: {ex.Message}",
+                    "BATCH_DELETE_BY_PRODUCT_CODES_ERROR"
                 );
             }
         }

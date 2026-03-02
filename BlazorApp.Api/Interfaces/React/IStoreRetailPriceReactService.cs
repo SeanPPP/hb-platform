@@ -93,5 +93,11 @@ namespace BlazorApp.Api.Interfaces.React
             List<StoreRetailPriceUpsertForActiveStoresItemDto> items,
             string updatedBy
         );
+
+        Task<ApiResponse<BatchResultDto>> BatchDeleteByProductCodesAsync(
+            List<string> productCodes,
+            List<string> storeCodes,
+            string updatedBy
+        );
     }
 }

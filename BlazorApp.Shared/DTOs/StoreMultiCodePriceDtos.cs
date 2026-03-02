@@ -27,7 +27,10 @@ namespace BlazorApp.Shared.DTOs
     {
         public string? UUID { get; set; }
         public string? StoreCode { get; set; }
+        /// <summary>主商品编码，对应 StoreMultiCodeProduct.ProductCode</summary>
         public string? ProductCode { get; set; }
+        /// <summary>多码商品编码，对应 StoreMultiCodeProduct.MultiCodeProductCode；提供时按 (StoreCode, MultiCodeProductCode) 匹配</summary>
+        public string? MultiCodeProductCode { get; set; }
         public decimal? PurchasePrice { get; set; }
         public decimal? MultiCodeRetailPrice { get; set; }
         public decimal? DiscountRate { get; set; }

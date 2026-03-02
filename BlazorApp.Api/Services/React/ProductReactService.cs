@@ -6,6 +6,7 @@ using System.Threading.Tasks;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Shared.DTOs;
+using BlazorApp.Shared.Helper;
 using BlazorApp.Shared.Models;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging;
@@ -245,7 +246,7 @@ namespace BlazorApp.Api.Services.React
         }
 
         /// <summary>
-        /// 创建商品
+        /// 创建商品（事务内插入 Product，并为全部启用分店默认创建 StoreRetailPrice）
         /// </summary>
         public async Task<ApiResponse<ProductDto>> CreateAsync(CreateProductDto dto)
         {
@@ -272,7 +273,52 @@ namespace BlazorApp.Api.Services.React
                     UpdatedAt = DateTime.Now,
                 };
 
-                await _db.Insertable(product).ExecuteCommandAsync();
+                await _db.Ado.UseTranAsync(async () =>
+                {
+                    await _db.Insertable(product).ExecuteCommandAsync();
+
+                    var storeCodes = await _db.Queryable<Store>()
+                        .Where(s => s.IsActive == true && s.IsDeleted == false)
+                        .Select(s => s.StoreCode)
+                        .ToListAsync();
+
+                    var supplierCode = !string.IsNullOrWhiteSpace(product.LocalSupplierCode)
+                        ? product.LocalSupplierCode
+                        : "200";
+                    var now = DateTime.Now;
+                    var currentUser =
+                        _httpContextAccessor.HttpContext?.User?.Identity?.Name ?? "System";
+
+                    var storePriceList = new List<StoreRetailPrice>();
+                    foreach (var storeCode in storeCodes ?? Enumerable.Empty<string>())
+                    {
+                        if (string.IsNullOrWhiteSpace(storeCode))
+                            continue;
+
+                        storePriceList.Add(new StoreRetailPrice
+                        {
+                            UUID = UuidHelper.GenerateUuid7(),
+                            StoreCode = storeCode,
+                            ProductCode = product.ProductCode,
+                            StoreProductCode = storeCode + (product.ProductCode ?? string.Empty),
+                            SupplierCode = supplierCode,
+                            PurchasePrice = product.PurchasePrice,
+                            StoreRetailPriceValue = product.RetailPrice,
+                            DiscountRate = null,
+                            IsActive = product.IsActive,
+                            IsAutoPricing = product.IsAutoPricing,
+                            IsSpecialProduct = product.IsSpecialProduct,
+                            CreatedAt = now,
+                            UpdatedAt = now,
+                            CreatedBy = currentUser,
+                            UpdatedBy = currentUser,
+                            IsDeleted = false,
+                        });
+                    }
+
+                    if (storePriceList.Count > 0)
+                        await _db.Insertable(storePriceList).ExecuteCommandAsync();
+                });
 
                 var resultDto = await GetByIdAsync(product.ProductCode);
                 return resultDto;
@@ -289,7 +335,7 @@ namespace BlazorApp.Api.Services.React
         }
 
         /// <summary>
-        /// 更新商品
+        /// 更新商品（改码时级联更新 StoreMultiCodeProduct、StoreRetailPrice、ProductSetCode 的 ProductCode）
         /// </summary>
         public async Task<ApiResponse<ProductDto>> UpdateAsync(
             string productCode,
@@ -307,7 +353,19 @@ namespace BlazorApp.Api.Services.React
                     return new ApiResponse<ProductDto> { Success = false, Message = "商品不存在" };
                 }
 
-                // 更新字段
+                var newProductCode = dto.ProductCode?.Trim();
+                var isCodeChange = !string.IsNullOrEmpty(newProductCode) && newProductCode != productCode;
+
+                if (isCodeChange)
+                {
+                    await _db.Ado.UseTranAsync(async () =>
+                    {
+                        await UpdateProductAndCascadeProductCodeAsync(productCode, product, dto, newProductCode!);
+                    });
+                    return await GetByIdAsync(newProductCode!);
+                }
+
+                // 未改码：仅更新主表
                 product.ProductCategoryGUID = dto.ProductCategoryGUID;
                 product.LocalSupplierCode = dto.LocalSupplierCode;
                 product.ItemNumber = dto.ItemNumber;
@@ -328,7 +386,6 @@ namespace BlazorApp.Api.Services.React
                 product.UpdatedBy = currentUser;
 
                 await _db.Updateable(product).ExecuteCommandAsync();
-
                 return await GetByIdAsync(productCode);
             }
             catch (Exception ex)
@@ -342,22 +399,69 @@ namespace BlazorApp.Api.Services.React
             }
         }
 
+        private async Task UpdateProductAndCascadeProductCodeAsync(
+            string oldProductCode,
+            Product product,
+            UpdateProductDto dto,
+            string newProductCode
+        )
+        {
+            product.ProductCode = newProductCode;
+            product.ProductCategoryGUID = dto.ProductCategoryGUID;
+            product.LocalSupplierCode = dto.LocalSupplierCode;
+            product.ItemNumber = dto.ItemNumber;
+            product.Barcode = dto.Barcode;
+            product.ProductName = dto.ProductName;
+            product.ProductType = dto.ProductType;
+            product.MiddlePackageQuantity = dto.MiddlePackageQuantity;
+            product.PurchasePrice = dto.PurchasePrice;
+            product.RetailPrice = dto.RetailPrice;
+            product.IsAutoPricing = dto.IsAutoPricing;
+            product.ProductImage = dto.ProductImage;
+            product.IsActive = dto.IsActive;
+            product.IsSpecialProduct = dto.IsSpecialProduct;
+            product.WarehouseCategoryGUID = dto.WarehouseCategoryGUID;
+            product.UpdatedAt = DateTime.Now;
+            var currentUser =
+                _httpContextAccessor.HttpContext?.User?.Identity?.Name ?? "System";
+            product.UpdatedBy = currentUser;
+
+            await _db.Updateable(product).ExecuteCommandAsync();
+
+            await _db.Updateable<StoreMultiCodeProduct>()
+                .SetColumns(m => m.ProductCode == newProductCode)
+                .Where(m => m.ProductCode == oldProductCode)
+                .ExecuteCommandAsync();
+
+            await _db.Updateable<StoreRetailPrice>()
+                .SetColumns(s => s.ProductCode == newProductCode)
+                .Where(s => s.ProductCode == oldProductCode)
+                .ExecuteCommandAsync();
+
+            await _db.Updateable<ProductSetCode>()
+                .SetColumns(psc => psc.ProductCode == newProductCode)
+                .Where(psc => psc.ProductCode == oldProductCode)
+                .ExecuteCommandAsync();
+        }
+
         /// <summary>
-        /// 删除商品
+        /// 删除商品（级联物理删除：ProductSetCode → StoreMultiCodeProduct → StoreRetailPrice → Product）
         /// </summary>
         public async Task<ApiResponse<bool>> DeleteAsync(string productCode)
         {
             try
             {
-                var result = await _db.Deleteable<Product>()
-                    .Where(p => p.ProductCode == productCode)
-                    .ExecuteCommandAsync();
+                var productDeleted = 0;
+                await _db.Ado.UseTranAsync(async () =>
+                {
+                    productDeleted = await CascadeDeleteProductAsync(productCode);
+                });
 
                 return new ApiResponse<bool>
                 {
-                    Success = result > 0,
-                    Data = result > 0,
-                    Message = result > 0 ? "删除成功" : "商品不存在",
+                    Success = productDeleted > 0,
+                    Data = productDeleted > 0,
+                    Message = productDeleted > 0 ? "删除成功" : "商品不存在",
                 };
             }
             catch (Exception ex)
@@ -369,6 +473,49 @@ namespace BlazorApp.Api.Services.React
                     Message = $"删除商品失败: {ex.Message}",
                 };
             }
+        }
+
+        /// <summary>
+        /// 级联物理删除商品及其关联表（ProductSetCode、StoreMultiCodeProduct、StoreRetailPrice、Product），供单删与批量删共用。
+        /// </summary>
+        /// <returns>删除的 Product 行数（0 或 1）</returns>
+        private async Task<int> CascadeDeleteProductAsync(string productCode)
+        {
+            if (string.IsNullOrWhiteSpace(productCode))
+                return 0;
+
+            // 1. ProductSetCode：主商品编码为此商品 或 SetProductCode 属于该商品的多码
+            await _db.Deleteable<ProductSetCode>()
+                .Where(psc => psc.ProductCode == productCode)
+                .ExecuteCommandAsync();
+
+            var multiCodeProductCodes = await _db.Queryable<StoreMultiCodeProduct>()
+                .Where(m => m.ProductCode == productCode)
+                .Select(m => m.MultiCodeProductCode)
+                .ToListAsync();
+            if (multiCodeProductCodes != null && multiCodeProductCodes.Any())
+            {
+                await _db.Deleteable<ProductSetCode>()
+                    .Where(psc => psc.SetProductCode != null && multiCodeProductCodes.Contains(psc.SetProductCode))
+                    .ExecuteCommandAsync();
+            }
+
+            // 2. StoreMultiCodeProduct
+            await _db.Deleteable<StoreMultiCodeProduct>()
+                .Where(m => m.ProductCode == productCode)
+                .ExecuteCommandAsync();
+
+            // 3. StoreRetailPrice
+            await _db.Deleteable<StoreRetailPrice>()
+                .Where(s => s.ProductCode == productCode)
+                .ExecuteCommandAsync();
+
+            // 4. Product
+            var productRows = await _db.Deleteable<Product>()
+                .Where(p => p.ProductCode == productCode)
+                .ExecuteCommandAsync();
+
+            return productRows;
         }
 
         /// <summary>
@@ -466,21 +613,16 @@ namespace BlazorApp.Api.Services.React
 
             try
             {
-                // 使用事务
+                // 使用事务，级联物理删除
                 await _db.Ado.UseTranAsync(async () =>
                 {
                     foreach (var code in productCodes)
                     {
                         try
                         {
-                            var deleteResult = await _db.Deleteable<Product>()
-                                .Where(p => p.ProductCode == code)
-                                .ExecuteCommandAsync();
-
-                            if (deleteResult > 0)
-                            {
+                            var productDeleted = await CascadeDeleteProductAsync(code);
+                            if (productDeleted > 0)
                                 result.SuccessCount++;
-                            }
                             else
                             {
                                 result.Errors.Add($"商品不存在: {code}");

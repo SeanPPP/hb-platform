@@ -426,18 +426,32 @@ namespace BlazorApp.Api.Services.React
                         .Select(p => p!.Trim())
                         .Distinct()
                         .ToList();
+                    var multiCodeProductCodes = items
+                        .Select(it => it.MultiCodeProductCode)
+                        .Where(p => !string.IsNullOrWhiteSpace(p))
+                        .Select(p => p!.Trim())
+                        .Distinct()
+                        .ToList();
                     var q = db.Queryable<StoreMultiCodeProduct>().Where(x => x.IsDeleted == false);
                     if (uuids.Any())
                         q = q.Where(x => x.UUID != null && uuids.Contains(x.UUID));
-                    if (storeCodes.Any() && productCodes.Any())
-                        q = q.Where(x =>
-                            x.StoreCode != null && storeCodes.Contains(x.StoreCode) && x.ProductCode != null && productCodes.Contains(x.ProductCode)
-                        );
+                    if (storeCodes.Any())
+                    {
+                        q = q.Where(x => x.StoreCode != null && storeCodes.Contains(x.StoreCode));
+                        // 仅对非空列表使用 Contains，避免 SqlSugar 解析空列表时索引越界
+                        if (productCodes.Any() && multiCodeProductCodes.Any())
+                            q = q.Where(x => (x.ProductCode != null && productCodes.Contains(x.ProductCode)) || (x.MultiCodeProductCode != null && multiCodeProductCodes.Contains(x.MultiCodeProductCode)));
+                        else if (productCodes.Any())
+                            q = q.Where(x => x.ProductCode != null && productCodes.Contains(x.ProductCode));
+                        else if (multiCodeProductCodes.Any())
+                            q = q.Where(x => x.MultiCodeProductCode != null && multiCodeProductCodes.Contains(x.MultiCodeProductCode));
+                    }
                     var existing = await q.ToListAsync();
                     var byUuid = existing
                         .Where(x => !string.IsNullOrWhiteSpace(x.UUID))
                         .ToDictionary(x => x.UUID);
-                    var byKey = existing.ToDictionary(x => $"{x.StoreCode}|{x.ProductCode}");
+                    var byKeyMain = existing.GroupBy(x => $"{x.StoreCode}|{x.ProductCode}").ToDictionary(g => g.Key, g => g.OrderByDescending(x => x.UpdatedAt ?? x.CreatedAt).First());
+                    var byKeyMulti = existing.GroupBy(x => $"{x.StoreCode}|{x.MultiCodeProductCode}").ToDictionary(g => g.Key, g => g.OrderByDescending(x => x.UpdatedAt ?? x.CreatedAt).First());
                     foreach (var it in items)
                     {
                         try
@@ -451,22 +465,34 @@ namespace BlazorApp.Api.Services.React
                             if (entity == null)
                             {
                                 var sc = it.StoreCode?.Trim();
-                                var pc = it.ProductCode?.Trim();
-                                if (string.IsNullOrWhiteSpace(sc) || string.IsNullOrWhiteSpace(pc))
-                                    throw new Exception("缺少关键键值(storeCode/productCode)");
-
-                                var key = $"{sc}|{pc}";
-                                if (byKey.TryGetValue(key, out var foundByKey))
-                                    entity = foundByKey;
+                                if (string.IsNullOrWhiteSpace(sc))
+                                    throw new Exception("缺少关键键值(storeCode)");
+                                if (!string.IsNullOrWhiteSpace(it.MultiCodeProductCode))
+                                {
+                                    var keyMulti = $"{sc}|{it.MultiCodeProductCode!.Trim()}";
+                                    if (byKeyMulti.TryGetValue(keyMulti, out var foundByKey))
+                                        entity = foundByKey;
+                                }
+                                if (entity == null && !string.IsNullOrWhiteSpace(it.ProductCode))
+                                {
+                                    var pc = it.ProductCode?.Trim();
+                                    var keyMain = $"{sc}|{pc}";
+                                    if (byKeyMain.TryGetValue(keyMain, out var foundByKey))
+                                        entity = foundByKey;
+                                }
                             }
                             if (entity == null)
                             {
+                                var pc = it.ProductCode?.Trim();
+                                if (string.IsNullOrWhiteSpace(pc))
+                                    throw new Exception("缺少关键键值(storeCode/productCode)");
                                 entity = new StoreMultiCodeProduct
                                 {
                                     UUID = UuidHelper.GenerateUuid7(),
                                     StoreCode = it.StoreCode,
                                     ProductCode = it.ProductCode,
-                                    StoreMultiCodeProductCode = UuidHelper.GenerateUuid7(),
+                                    MultiCodeProductCode = it.MultiCodeProductCode,
+                                    StoreMultiCodeProductCode = !string.IsNullOrWhiteSpace(it.MultiCodeProductCode) ? it.StoreCode + it.MultiCodeProductCode : it.StoreCode + it.MultiCodeRetailPrice,
                                     PurchasePrice = it.PurchasePrice,
                                     MultiCodeRetailPrice = it.MultiCodeRetailPrice,
                                     DiscountRate = it.DiscountRate,
@@ -479,6 +505,12 @@ namespace BlazorApp.Api.Services.React
                                     IsDeleted = false,
                                 };
                                 insertList.Add(entity);
+                                var sk = $"{entity.StoreCode}|{entity.ProductCode}";
+                                var skm = !string.IsNullOrWhiteSpace(entity.MultiCodeProductCode) ? $"{entity.StoreCode}|{entity.MultiCodeProductCode}" : null;
+                                if (!byKeyMain.ContainsKey(sk))
+                                    byKeyMain[sk] = entity;
+                                if (skm != null && !byKeyMulti.ContainsKey(skm))
+                                    byKeyMulti[skm] = entity;
                             }
                             else
                             {

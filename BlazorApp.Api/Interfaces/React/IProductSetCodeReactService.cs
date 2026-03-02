@@ -25,5 +25,14 @@ namespace BlazorApp.Api.Interfaces.React
             List<CreateSetCodeItemDto> items,
             string updatedBy
         );
+        Task<ApiResponse<BatchResultDto>> BatchCreateWithStoreSyncAsync(
+            List<CreateSetCodeWithStoreSyncDto> items,
+            string updatedBy
+        );
+        Task<ApiResponse<BatchResultDto>> BatchDeleteWithStoreSyncAsync(
+            List<string> ids,
+            List<string> storeCodes,
+            string updatedBy
+        );
     }
 }

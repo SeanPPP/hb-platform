@@ -7,6 +7,7 @@ using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Helper;
 using BlazorApp.Shared.Models;
+using Microsoft.Extensions.Logging;
 using SqlSugar;
 
 namespace BlazorApp.Api.Services.React
@@ -14,10 +15,18 @@ namespace BlazorApp.Api.Services.React
     public class ProductSetCodeReactService : IProductSetCodeReactService
     {
         private readonly SqlSugarContext _context;
+        private readonly IStoreRetailPriceReactService _storeRetailPriceService;
+        private readonly ILogger<ProductSetCodeReactService> _logger;
 
-        public ProductSetCodeReactService(SqlSugarContext context)
+        public ProductSetCodeReactService(
+            SqlSugarContext context,
+            IStoreRetailPriceReactService storeRetailPriceService,
+            ILogger<ProductSetCodeReactService> logger
+        )
         {
             _context = context;
+            _storeRetailPriceService = storeRetailPriceService;
+            _logger = logger;
         }
 
         public async Task<GridResponseDto<ProductSetCodeGridDto>> GetGridDataAsync(
@@ -258,6 +267,7 @@ namespace BlazorApp.Api.Services.React
                             {
                                 SetCodeId = psc.SetCodeId,
                                 ProductCode = psc.ProductCode,
+                                SetProductCode = psc.SetProductCode,
                                 SupplierCode = p.LocalSupplierCode,
                                 SupplierName = ls.Name,
                                 ItemNumber = p.ItemNumber,
@@ -430,6 +440,19 @@ namespace BlazorApp.Api.Services.React
                     .ToListAsync();
                 var productMap = products.ToDictionary(p => p.ProductCode!, p => p);
 
+                // 按商品提前获取库中已有 SetItemNumber，避免同批多条生成重复货号
+                var existingSetNosByProduct = new Dictionary<string, List<string>>();
+                foreach (var pc in productCodes)
+                {
+                    var existing = await db.Queryable<ProductSetCode>()
+                        .Where(x => x.ProductCode == pc && !x.IsDeleted)
+                        .Select(x => x.SetItemNumber)
+                        .ToListAsync();
+                    existingSetNosByProduct[pc] = existing ?? new List<string>();
+                }
+
+                var assignedInBatchByProduct = new Dictionary<string, List<string>>();
+
                 var newRows = new List<ProductSetCode>();
                 foreach (var it in items)
                 {
@@ -439,20 +462,30 @@ namespace BlazorApp.Api.Services.React
                     )
                         continue;
 
-                    var existingSetNos = await db.Queryable<ProductSetCode>()
-                        .Where(x => x.ProductCode == it.ProductCode && !x.IsDeleted)
-                        .Select(x => x.SetItemNumber)
-                        .ToListAsync();
+                    var productCode = it.ProductCode!;
+                    if (!assignedInBatchByProduct.ContainsKey(productCode))
+                        assignedInBatchByProduct[productCode] = new List<string>();
+
+                    var existingSetNos = existingSetNosByProduct.TryGetValue(productCode, out var existing)
+                        ? existing
+                        : new List<string>();
+                    var usedSetNos = existingSetNos
+                        .Concat(assignedInBatchByProduct[productCode])
+                        .ToList();
 
                     var baseItemNumber = prod.ItemNumber ?? string.Empty;
                     var setItemNumber = string.IsNullOrWhiteSpace(it.SetItemNumber)
-                        ? ItemNumberHelper.GenerateSetItemNumber(baseItemNumber, existingSetNos)
+                        ? ItemNumberHelper.GenerateSetItemNumber(baseItemNumber, usedSetNos)
                         : it.SetItemNumber!;
+
+                    if (string.IsNullOrWhiteSpace(it.SetItemNumber))
+                        assignedInBatchByProduct[productCode].Add(setItemNumber);
 
                     var row = new ProductSetCode
                     {
                         SetCodeId = UuidHelper.GenerateUuid7(),
-                        ProductCode = it.ProductCode ?? string.Empty,
+                        ProductCode = it.ProductCode,
+                        SetProductCode = UuidHelper.GenerateUuid7(),
                         SetItemNumber = setItemNumber,
                         SetBarcode = it.SetBarcode,
                         SetPurchasePrice = it.SetPurchasePrice,
@@ -472,13 +505,368 @@ namespace BlazorApp.Api.Services.React
                 if (newRows.Count == 0)
                     return ApiResponse<List<string>>.OK(new List<string>(), "无可创建的记录");
 
-                var count = await db.Insertable(newRows).ExecuteCommandAsync();
-                var ids = newRows.Select(r => r.SetCodeId).ToList();
-                return ApiResponse<List<string>>.OK(ids, $"已创建 {count} 条记录");
+                await db.Ado.BeginTranAsync();
+                try
+                {
+                    var count = await db.Insertable(newRows).ExecuteCommandAsync();
+                    var ids = newRows.Select(r => r.SetCodeId).ToList();
+
+                    // 自动为有效分店写入分店一品多码表（StoreMultiCodeProduct）
+                    var activeStoreCodes = await db.Queryable<Store>()
+                        .Where(s => s.IsActive == true && s.IsDeleted == false)
+                        .Select(s => s.StoreCode)
+                        .ToListAsync();
+
+                    if (activeStoreCodes != null && activeStoreCodes.Count > 0)
+                    {
+                        var multiCodeList = new List<StoreMultiCodeProduct>();
+                        foreach (var row in newRows)
+                        {
+                            var mainProduct = productMap.TryGetValue(row.ProductCode, out var p) ? p : null;
+                            foreach (var storeCode in activeStoreCodes)
+                            {
+                                if (string.IsNullOrWhiteSpace(storeCode))
+                                    continue;
+
+                                multiCodeList.Add(new StoreMultiCodeProduct
+                                {
+                                    UUID = UuidHelper.GenerateUuid7(),
+                                    StoreCode = storeCode,
+                                    ProductCode = row.ProductCode,
+                                    MultiCodeProductCode = row.SetProductCode,
+                                    StoreMultiCodeProductCode = storeCode + (row.SetProductCode ?? string.Empty),
+                                    MultiBarcode = row.SetBarcode,
+                                    PurchasePrice = row.SetPurchasePrice,
+                                    MultiCodeRetailPrice = row.SetRetailPrice,
+                                    DiscountRate = null,
+                                    IsAutoPricing = false,
+                                    IsSpecialProduct = mainProduct?.IsSpecialProduct ?? false,
+                                    IsActive = row.IsActive,
+                                    CreatedAt = now,
+                                    UpdatedAt = now,
+                                    CreatedBy = updatedBy,
+                                    UpdatedBy = updatedBy,
+                                    IsDeleted = false,
+                                });
+                            }
+                        }
+
+                        if (multiCodeList.Count > 0)
+                        {
+                            await db.Insertable(multiCodeList).ExecuteCommandAsync();
+                            _logger.LogInformation(
+                                "添加条码后已为 {StoreCount} 个分店写入 {Count} 条一品多码",
+                                activeStoreCodes.Count,
+                                multiCodeList.Count
+                            );
+                        }
+                    }
+
+                    await db.Ado.CommitTranAsync();
+                    return ApiResponse<List<string>>.OK(
+                        ids,
+                        $"已创建 {count} 条记录"
+                        + (
+                            activeStoreCodes != null && activeStoreCodes.Count > 0
+                                ? $"，已同步至 {activeStoreCodes.Count} 个分店"
+                                : ""
+                        )
+                    );
+                }
+                catch (Exception ex)
+                {
+                    await db.Ado.RollbackTranAsync();
+                    throw;
+                }
             }
             catch (Exception ex)
             {
                 return ApiResponse<List<string>>.Error($"批量创建失败: {ex.Message}");
+            }
+        }
+
+        public async Task<ApiResponse<BatchResultDto>> BatchCreateWithStoreSyncAsync(
+            List<CreateSetCodeWithStoreSyncDto> items,
+            string updatedBy
+        )
+        {
+            try
+            {
+                var db = _context.Db;
+                var now = DateTime.UtcNow;
+                var errors = new List<string>();
+                var insertedSetCodes = 0;
+                var syncedCount = 0;
+
+                _logger.LogInformation(
+                    $"BatchCreateWithStoreSyncAsync 开始, 操作人: {updatedBy}, 数据条数: {items.Count}"
+                );
+
+                await db.Ado.BeginTranAsync();
+                try
+                {
+                    var productCodes = items
+                        .Select(i => i.ProductCode)
+                        .Where(pc => !string.IsNullOrEmpty(pc))
+                        .Distinct()
+                        .ToList();
+                    var products = await db.Queryable<Product>()
+                        .Where(p =>
+                            p.ProductCode != null
+                            && productCodes.Contains(p.ProductCode)
+                            && !p.IsDeleted
+                        )
+                        .ToListAsync();
+                    var productMap = products.ToDictionary(p => p.ProductCode!, p => p);
+
+                    var newSetCodeRows = new List<ProductSetCode>();
+                    var storePriceUpsertItems = new List<StoreRetailPriceUpsertItemDto>();
+
+                    foreach (var it in items)
+                    {
+                        try
+                        {
+                            if (
+                                string.IsNullOrEmpty(it.ProductCode)
+                                || !productMap.TryGetValue(it.ProductCode!, out var prod)
+                            )
+                            {
+                                errors.Add($"商品不存在: {it.ProductCode}");
+                                continue;
+                            }
+
+                            var existingSetNos = await db.Queryable<ProductSetCode>()
+                                .Where(x => x.ProductCode == it.ProductCode && !x.IsDeleted)
+                                .Select(x => x.SetItemNumber)
+                                .ToListAsync();
+
+                            var baseItemNumber = prod.ItemNumber ?? string.Empty;
+                            var setItemNumber = string.IsNullOrWhiteSpace(it.SetItemNumber)
+                                ? ItemNumberHelper.GenerateSetItemNumber(
+                                    baseItemNumber,
+                                    existingSetNos
+                                )
+                                : it.SetItemNumber!;
+
+                            var setCodeRow = new ProductSetCode
+                            {
+                                SetCodeId = UuidHelper.GenerateUuid7(),
+                                ProductCode = it.ProductCode ?? string.Empty,
+                                SetItemNumber = setItemNumber,
+                                SetBarcode = it.SetBarcode,
+                                SetPurchasePrice = it.SetPurchasePrice,
+                                SetRetailPrice = it.SetRetailPrice,
+                                SetQuantity = 1,
+                                SetType = 2,
+                                IsActive = it.IsActive ?? true,
+                                CreatedAt = now,
+                                UpdatedAt = now,
+                                CreatedBy = updatedBy,
+                                UpdatedBy = updatedBy,
+                                IsDeleted = false,
+                            };
+                            newSetCodeRows.Add(setCodeRow);
+
+                            if (!string.IsNullOrWhiteSpace(it.SetBarcode) && it.StoreCodes.Any())
+                            {
+                                foreach (var storeCode in it.StoreCodes)
+                                {
+                                    storePriceUpsertItems.Add(
+                                        new StoreRetailPriceUpsertItemDto
+                                        {
+                                            ProductCode = it.SetBarcode,
+                                            StoreCode = storeCode,
+                                            SupplierCode = it.SupplierCode,
+                                            PurchasePrice = it.SetPurchasePrice,
+                                            StoreRetailPriceValue = it.SetRetailPrice,
+                                            IsActive = it.IsActive ?? true,
+                                            IsAutoPricing = false,
+                                        }
+                                    );
+                                }
+                            }
+                        }
+                        catch (Exception exItem)
+                        {
+                            var errorMsg =
+                                $"处理数据失败: {exItem.Message}, 商品: {it.ProductCode}";
+                            errors.Add(errorMsg);
+                            _logger.LogError(exItem, errorMsg);
+                        }
+                    }
+
+                    if (newSetCodeRows.Count == 0)
+                    {
+                        await db.Ado.RollbackTranAsync();
+                        return ApiResponse<BatchResultDto>.OK(
+                            new BatchResultDto { Inserted = 0, Updated = 0, Failed = errors.Count, Errors = errors },
+                            "无可创建的记录"
+                        );
+                    }
+
+                    insertedSetCodes = await db.Insertable(newSetCodeRows).ExecuteCommandAsync();
+                    _logger.LogInformation($"插入套装条码: {insertedSetCodes} 条");
+
+                    if (storePriceUpsertItems.Any())
+                    {
+                        var syncResult = await _storeRetailPriceService.BatchUpsertAsync(
+                            storePriceUpsertItems,
+                            updatedBy
+                        );
+                        if (!syncResult.Success)
+                        {
+                            await db.Ado.RollbackTranAsync();
+                            _logger.LogError("同步到分店失败: {Message}", syncResult.Message);
+                            return ApiResponse<BatchResultDto>.Error(
+                                $"同步到分店失败: {syncResult.Message}",
+                                "SYNC_TO_STORES_ERROR"
+                            );
+                        }
+                        syncedCount = syncResult.Data.Inserted + syncResult.Data.Updated;
+                        _logger.LogInformation($"同步到分店: {syncedCount} 条");
+
+                        if (syncResult.Data.Errors.Any())
+                        {
+                            errors.AddRange(syncResult.Data.Errors);
+                        }
+                    }
+
+                    await db.Ado.CommitTranAsync();
+                    _logger.LogInformation("事务提交成功");
+
+                    var result = new BatchResultDto
+                    {
+                        Inserted = insertedSetCodes,
+                        Updated = syncedCount,
+                        Failed = errors.Count,
+                        Errors = errors,
+                    };
+
+                    return ApiResponse<BatchResultDto>.OK(
+                        result,
+                        $"成功创建 {insertedSetCodes} 条套装条码, 同步 {syncedCount} 条到分店"
+                    );
+                }
+                catch (Exception ex)
+                {
+                    await db.Ado.RollbackTranAsync();
+                    _logger.LogError(ex, "批量创建并同步事务失败, 事务已回滚");
+                    return ApiResponse<BatchResultDto>.Error(
+                        $"批量创建并同步失败: {ex.Message}",
+                        "BATCH_CREATE_SYNC_ERROR"
+                    );
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "批量创建并同步失败");
+                return ApiResponse<BatchResultDto>.Error(
+                    $"批量创建并同步失败: {ex.Message}",
+                    "BATCH_CREATE_SYNC_ERROR"
+                );
+            }
+        }
+
+        /// <summary>
+        /// 删除条码并同步删除分店一品多码表（StoreMultiCodeProduct），全部物理删除。
+        /// </summary>
+        public async Task<ApiResponse<BatchResultDto>> BatchDeleteWithStoreSyncAsync(
+            List<string> ids,
+            List<string> storeCodes,
+            string updatedBy
+        )
+        {
+            try
+            {
+                var db = _context.Db;
+                var errors = new List<string>();
+                var deletedSetCodes = 0;
+                var deletedMultiCode = 0;
+
+                _logger.LogInformation(
+                    $"BatchDeleteWithStoreSyncAsync 开始, 操作人: {updatedBy}, 套装条码ID数量: {ids.Count}, 分店数量: {storeCodes?.Count ?? 0}"
+                );
+
+                await db.Ado.BeginTranAsync();
+                try
+                {
+                    var toDeleteSetCodes = await db.Queryable<ProductSetCode>()
+                        .Where(x => ids.Contains(x.SetCodeId) && !x.IsDeleted)
+                        .ToListAsync();
+
+                    _logger.LogInformation($"查询到待删除套装条码: {toDeleteSetCodes.Count} 条");
+
+                    if (toDeleteSetCodes.Any())
+                    {
+                        var setProductCodes = toDeleteSetCodes
+                            .Where(x => !string.IsNullOrWhiteSpace(x.SetProductCode))
+                            .Select(x => x.SetProductCode!)
+                            .Distinct()
+                            .ToList();
+
+                        if (setProductCodes.Any())
+                        {
+                            if (storeCodes != null && storeCodes.Count > 0)
+                            {
+                                deletedMultiCode = await db.Deleteable<StoreMultiCodeProduct>()
+                                    .Where(m =>
+                                        m.MultiCodeProductCode != null
+                                        && setProductCodes.Contains(m.MultiCodeProductCode)
+                                        && m.StoreCode != null
+                                        && storeCodes.Contains(m.StoreCode))
+                                    .ExecuteCommandAsync();
+                            }
+                            else
+                            {
+                                deletedMultiCode = await db.Deleteable<StoreMultiCodeProduct>()
+                                    .Where(m =>
+                                        m.MultiCodeProductCode != null
+                                        && setProductCodes.Contains(m.MultiCodeProductCode))
+                                    .ExecuteCommandAsync();
+                            }
+
+                            _logger.LogInformation($"物理删除分店一品多码: {deletedMultiCode} 条");
+                        }
+
+                        deletedSetCodes = await db.Deleteable<ProductSetCode>()
+                            .Where(x => ids.Contains(x.SetCodeId))
+                            .ExecuteCommandAsync();
+                        _logger.LogInformation($"物理删除套装条码: {deletedSetCodes} 条");
+                    }
+
+                    await db.Ado.CommitTranAsync();
+                    _logger.LogInformation("事务提交成功");
+
+                    var result = new BatchResultDto
+                    {
+                        Inserted = 0,
+                        Updated = 0,
+                        Failed = errors.Count,
+                        Errors = errors,
+                    };
+
+                    return ApiResponse<BatchResultDto>.OK(
+                        result,
+                        $"成功删除 {deletedSetCodes} 条套装条码和 {deletedMultiCode} 条分店一品多码"
+                    );
+                }
+                catch (Exception ex)
+                {
+                    await db.Ado.RollbackTranAsync();
+                    _logger.LogError(ex, "批量删除并同步事务失败, 事务已回滚");
+                    return ApiResponse<BatchResultDto>.Error(
+                        $"批量删除并同步失败: {ex.Message}",
+                        "BATCH_DELETE_SYNC_ERROR"
+                    );
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "批量删除并同步失败");
+                return ApiResponse<BatchResultDto>.Error(
+                    $"批量删除并同步失败: {ex.Message}",
+                    "BATCH_DELETE_SYNC_ERROR"
+                );
             }
         }
     }

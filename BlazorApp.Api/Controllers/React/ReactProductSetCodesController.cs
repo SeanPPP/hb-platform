@@ -1,10 +1,12 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
 using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Shared.DTOs;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Logging;
 
 namespace BlazorApp.Api.Controllers.React
 {
@@ -168,6 +170,64 @@ namespace BlazorApp.Api.Controllers.React
             catch (Exception ex)
             {
                 _logger.LogError(ex, "批量创建套装多码失败");
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
+        [HttpPost("batch-create-with-store-sync")]
+        [Authorize(Roles = "Admin")]
+        public async Task<IActionResult> BatchCreateWithStoreSync(
+            [FromBody] BatchCreateSetCodeWithStoreSyncDto dto
+        )
+        {
+            try
+            {
+                if (dto.Items == null || !dto.Items.Any())
+                {
+                    return BadRequest(new { success = false, message = "创建列表不能为空" });
+                }
+                var updatedBy = User.Identity?.Name ?? "system";
+                var result = await _service.BatchCreateWithStoreSyncAsync(dto.Items, updatedBy);
+                if (result.Success)
+                {
+                    return Ok(new { success = true, data = result.Data, message = result.Message });
+                }
+                return BadRequest(new { success = false, message = result.Message });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "批量创建并同步到分店失败");
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
+        [HttpDelete("batch-delete-with-store-sync")]
+        [Authorize(Roles = "Admin")]
+        public async Task<IActionResult> BatchDeleteWithStoreSync(
+            [FromBody] BatchDeleteSetCodeWithStoreSyncDto dto
+        )
+        {
+            try
+            {
+                if (dto.Ids == null || !dto.Ids.Any())
+                {
+                    return BadRequest(new { success = false, message = "删除列表不能为空" });
+                }
+                var updatedBy = User.Identity?.Name ?? "system";
+                var result = await _service.BatchDeleteWithStoreSyncAsync(
+                    dto.Ids,
+                    dto.StoreCodes,
+                    updatedBy
+                );
+                if (result.Success)
+                {
+                    return Ok(new { success = true, data = result.Data, message = result.Message });
+                }
+                return BadRequest(new { success = false, message = result.Message });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "批量删除并同步到分店失败");
                 return StatusCode(500, new { success = false, message = "服务器内部错误" });
             }
         }

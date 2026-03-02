@@ -6,6 +6,10 @@ namespace BlazorApp.Shared.DTOs
     {
         public string SetCodeId { get; set; } = string.Empty;
         public string ProductCode { get; set; } = string.Empty;
+        /// <summary>
+        /// 多码商品编码，对应 StoreMultiCodeProduct.MultiCodeProductCode，用于同步分店多码表
+        /// </summary>
+        public string? SetProductCode { get; set; }
         public string? SupplierCode { get; set; }
         public string? SupplierName { get; set; }
         public string? ItemNumber { get; set; }
@@ -66,5 +70,28 @@ namespace BlazorApp.Shared.DTOs
     public class BatchCreateSetCodesDto
     {
         public List<CreateSetCodeItemDto> Items { get; set; } = new();
+    }
+
+    public class CreateSetCodeWithStoreSyncDto
+    {
+        public string ProductCode { get; set; } = string.Empty;
+        public string? SetItemNumber { get; set; }
+        public string? SetBarcode { get; set; }
+        public decimal? SetPurchasePrice { get; set; }
+        public decimal? SetRetailPrice { get; set; }
+        public bool? IsActive { get; set; }
+        public List<string> StoreCodes { get; set; } = new();
+        public string SupplierCode { get; set; } = "200";
+    }
+
+    public class BatchCreateSetCodeWithStoreSyncDto
+    {
+        public List<CreateSetCodeWithStoreSyncDto> Items { get; set; } = new();
+    }
+
+    public class BatchDeleteSetCodeWithStoreSyncDto
+    {
+        public List<string> Ids { get; set; } = new();
+        public List<string> StoreCodes { get; set; } = new();
     }
 }
