@@ -105,6 +105,11 @@ namespace BlazorApp.Shared.DTOs
         /// 中包装数量
         /// </summary>
         public int? MiddlePackageQuantity { get; set; }
+
+        /// <summary>
+        /// 是否自动定价
+        /// </summary>
+        public bool? IsAutoPricing { get; set; }
     }
 
     /// <summary>

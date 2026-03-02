@@ -336,6 +336,7 @@ builder.Services.AddScoped<ITaxInvoiceService, TaxInvoiceService>();
 builder.Services.AddScoped<ISalesDashboardReactService, SalesDashboardReactService>();
 builder.Services.AddScoped<ISalesDashboardCacheWarmer, SalesDashboardCacheWarmer>();
 builder.Services.AddScoped<IHolidayProductReactService, HolidayProductReactService>();
+builder.Services.AddScoped<IStoreManagerProductReactService, StoreManagerProductReactService>();
 builder.Services.AddScoped<
     BlazorApp.Api.Interfaces.IStoreOrderCacheWarmer,
     BlazorApp.Api.Cache.StoreOrderCacheWarmer

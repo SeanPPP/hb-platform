@@ -386,6 +386,12 @@ namespace BlazorApp.Api.Services.React
                 product.UpdatedBy = currentUser;
 
                 await _db.Updateable(product).ExecuteCommandAsync();
+                
+                await _db.Updateable<StoreRetailPrice>()
+                    .SetColumns(srp => srp.IsAutoPricing == product.IsAutoPricing)
+                    .Where(srp => srp.ProductCode == product.ProductCode)
+                    .ExecuteCommandAsync();
+                
                 return await GetByIdAsync(productCode);
             }
             catch (Exception ex)
@@ -427,6 +433,11 @@ namespace BlazorApp.Api.Services.React
             product.UpdatedBy = currentUser;
 
             await _db.Updateable(product).ExecuteCommandAsync();
+            
+            await _db.Updateable<StoreRetailPrice>()
+                .SetColumns(srp => srp.IsAutoPricing == product.IsAutoPricing)
+                .Where(srp => srp.ProductCode == newProductCode)
+                .ExecuteCommandAsync();
 
             await _db.Updateable<StoreMultiCodeProduct>()
                 .SetColumns(m => m.ProductCode == newProductCode)
@@ -560,6 +571,8 @@ namespace BlazorApp.Api.Services.React
                                 product.IsActive = item.IsActive.Value;
                             if (item.MiddlePackageQuantity.HasValue)
                                 product.MiddlePackageQuantity = item.MiddlePackageQuantity;
+                            if (item.IsAutoPricing.HasValue)
+                                product.IsAutoPricing = item.IsAutoPricing.Value;
 
                             product.UpdatedAt = DateTime.Now;
                             var currentUser =
@@ -567,6 +580,15 @@ namespace BlazorApp.Api.Services.React
                             product.UpdatedBy = currentUser;
 
                             await _db.Updateable(product).ExecuteCommandAsync();
+                            
+                            if (item.IsAutoPricing.HasValue)
+                            {
+                                await _db.Updateable<StoreRetailPrice>()
+                                    .SetColumns(srp => srp.IsAutoPricing == item.IsAutoPricing.Value)
+                                    .Where(srp => srp.ProductCode == item.ProductCode)
+                                    .ExecuteCommandAsync();
+                            }
+                            
                             result.SuccessCount++;
                         }
                         catch (Exception ex)
