@@ -78,13 +78,7 @@ namespace BlazorApp.Shared.Models
         [Display(Name = "单件体积")]
         public decimal? Volume { get; set; }
 
-        /// <summary>
-        /// 行版本号（乐观锁，用于并发控制）
-        /// SqlSugar自动处理，每次更新时自动递增
-        /// </summary>
-        [SugarColumn(IsEnableUpdateVersionValidation = true, IsNullable = true)]
-        [Display(Name = "版本号")]
-        public byte[]? RowVersion { get; set; }
+ 
 
         [Navigate(NavigateType.OneToOne, nameof(ProductCode))]
         public Product? Product { get; set; }

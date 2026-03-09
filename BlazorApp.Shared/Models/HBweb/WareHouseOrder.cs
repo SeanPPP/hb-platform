@@ -67,7 +67,7 @@ namespace BlazorApp.Shared.Models
         public string? Remarks { get; set; }
 
         /// <summary>
-        /// 流程状态（如：草稿/审核中/已完成）
+        /// 流程状态（如：草稿/1已提交/2已完成/3配货中）
         /// </summary>
         [SugarColumn(IsNullable = true)]
         public int? FlowStatus { get; set; }

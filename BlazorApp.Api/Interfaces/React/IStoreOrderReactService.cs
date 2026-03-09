@@ -112,5 +112,15 @@ namespace BlazorApp.Api.Interfaces.React
         /// <param name="storeCode">分店代码</param>
         /// <returns>同步结果</returns>
         Task<SyncMissingOrdersResultDto> SyncMissingOrdersFromHqAsync(string? storeCode);
+
+        /// <summary>
+        /// 完成订单 (FlowStatus -> 2)
+        /// </summary>
+        Task<ApiResponse<bool>> CompleteOrderAsync(string orderGuid);
+
+        /// <summary>
+        /// 开始配货 (FlowStatus -> 3)
+        /// </summary>
+        Task<ApiResponse<bool>> StartPickingAsync(string orderGuid);
     }
 }

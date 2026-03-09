@@ -190,20 +190,23 @@ namespace BlazorApp.Api.Services.React
                 var wpList = new List<WarehouseProduct>();
                 if (productCodes.Any())
                 {
-                    var wpByCodes = await _context.Db.Queryable<WarehouseProduct>()
+                    var wpByCodes = await _context
+                        .Db.Queryable<WarehouseProduct>()
                         .Where(w => productCodes.Contains(w.ProductCode))
                         .ToListAsync();
                     wpList.AddRange(wpByCodes);
                 }
                 if (itemNumbers.Any())
                 {
-                    var codesFromItems = await _context.Db.Queryable<Product>()
+                    var codesFromItems = await _context
+                        .Db.Queryable<Product>()
                         .Where(p => p.ItemNumber != null && itemNumbers.Contains(p.ItemNumber))
                         .Select(p => p.ProductCode)
                         .ToListAsync();
                     if (codesFromItems.Any())
                     {
-                        var wpByItems = await _context.Db.Queryable<WarehouseProduct>()
+                        var wpByItems = await _context
+                            .Db.Queryable<WarehouseProduct>()
                             .Where(w => codesFromItems.Contains(w.ProductCode))
                             .ToListAsync();
                         wpList.AddRange(wpByItems);
@@ -215,7 +218,8 @@ namespace BlazorApp.Api.Services.React
                 var itemToCode = new Dictionary<string, string>();
                 if (itemNumbers.Any())
                 {
-                    var codeMap = await _context.Db.Queryable<Product>()
+                    var codeMap = await _context
+                        .Db.Queryable<Product>()
                         .Where(p => p.ItemNumber != null && itemNumbers.Contains(p.ItemNumber))
                         .Select(p => new { p.ItemNumber, p.ProductCode })
                         .ToListAsync();
@@ -324,7 +328,8 @@ namespace BlazorApp.Api.Services.React
 
                 if (toUpdateWp.Any())
                 {
-                    await _context.Db.Updateable(toUpdateWp)
+                    await _context
+                        .Db.Updateable(toUpdateWp)
                         .UpdateColumns(w => new
                         {
                             w.DomesticPrice,
@@ -345,7 +350,8 @@ namespace BlazorApp.Api.Services.React
 
                 if (codesWithImportPrice.Any())
                 {
-                    var products = await _context.Db.Queryable<Product>()
+                    var products = await _context
+                        .Db.Queryable<Product>()
                         .Where(p =>
                             p.ProductCode != null && codesWithImportPrice.Contains(p.ProductCode)
                         )
@@ -373,7 +379,8 @@ namespace BlazorApp.Api.Services.React
                     }
                     if (products.Any())
                     {
-                        await _context.Db.Updateable(products)
+                        await _context
+                            .Db.Updateable(products)
                             .UpdateColumns(p => new { p.PurchasePrice, p.UpdatedAt })
                             .ExecuteCommandAsync();
                     }
@@ -403,7 +410,6 @@ namespace BlazorApp.Api.Services.React
                 _context.Db.Ado.BeginTran();
                 var now = DateTime.Now;
 
-                // 浜屾妫€鏌ワ細宸插瓨鍦?ProductCode 鎴?ItemNumber 鍒欒烦杩?
                 var codes = items
                     .Select(i => i.ProductCode)
                     .Where(c => !string.IsNullOrWhiteSpace(c))
@@ -455,7 +461,8 @@ namespace BlazorApp.Api.Services.React
                         .Select(x => x!)
                         .Distinct()
                         .ToList();
-                    var wpExisting = await _context.Db.Queryable<WarehouseProduct>()
+                    var wpExisting = await _context
+                        .Db.Queryable<WarehouseProduct>()
                         .Where(w => mappedCodes.Contains(w.ProductCode))
                         .Select(w => w.ProductCode)
                         .ToListAsync();
@@ -488,7 +495,8 @@ namespace BlazorApp.Api.Services.React
                             itemToCode[e.ItemNumber] = e.ProductCode;
                         }
                     }
-                    var wpExisting = await _context.Db.Queryable<WarehouseProduct>()
+                    var wpExisting = await _context
+                        .Db.Queryable<WarehouseProduct>()
                         .Where(w => codes.Contains(w.ProductCode))
                         .Select(w => w.ProductCode)
                         .ToListAsync();
@@ -529,7 +537,8 @@ namespace BlazorApp.Api.Services.React
                         .Select(x => x!)
                         .Distinct()
                         .ToList();
-                    var wpExisting = await _context.Db.Queryable<WarehouseProduct>()
+                    var wpExisting = await _context
+                        .Db.Queryable<WarehouseProduct>()
                         .Where(w => mappedCodes.Contains(w.ProductCode))
                         .Select(w => w.ProductCode)
                         .ToListAsync();
@@ -548,7 +557,6 @@ namespace BlazorApp.Api.Services.React
 
                 foreach (var item in items)
                 {
-                    // 鏍￠獙
                     if (string.IsNullOrWhiteSpace(item.ItemNumber))
                     {
                         result.Errors.Add("ItemNumber 涓嶈兘涓虹┖");
@@ -641,7 +649,8 @@ namespace BlazorApp.Api.Services.React
 
                     if (item.IsSetProduct)
                     {
-                        var setProducts = await _context.Db.Queryable<DomesticSetProduct>()
+                        var setProducts = await _context
+                            .Db.Queryable<DomesticSetProduct>()
                             .Where(sp => sp.ProductCode == code && !sp.IsDeleted)
                             .ToListAsync();
 
@@ -705,7 +714,8 @@ namespace BlazorApp.Api.Services.React
         > GetAntdTableDataAsync(ReactTableRequestDto request)
         {
             var resp = new ReactTableResponseDto<WarehouseProductReactListDto>();
-            var query = _context.Db.Queryable<WarehouseProduct>()
+            var query = _context
+                .Db.Queryable<WarehouseProduct>()
                 .LeftJoin<DomesticProduct>((w, dp) => dp.ProductCode == w.ProductCode)
                 .LeftJoin<ChinaSupplier>((w, dp, s) => dp.SupplierCode == s.SupplierCode)
                 .InnerJoin<Product>((w, dp, s, p) => p.ProductCode == w.ProductCode)
@@ -1224,7 +1234,8 @@ namespace BlazorApp.Api.Services.React
                     domesticProduct.UnitVolume = request.Volume;
                     domesticProduct.ProductType = (int)request.ProductType;
                     domesticProduct.UpdatedAt = now;
-                    await _context.Db.Updateable(domesticProduct)
+                    await _context
+                        .Db.Updateable(domesticProduct)
                         .UpdateColumns(dp => new
                         {
                             dp.ProductName,
@@ -1266,7 +1277,8 @@ namespace BlazorApp.Api.Services.React
                     warehouseProduct.Volume = request.Volume;
                     warehouseProduct.IsActive = request.IsActive;
                     warehouseProduct.UpdatedAt = now;
-                    await _context.Db.Updateable(warehouseProduct)
+                    await _context
+                        .Db.Updateable(warehouseProduct)
                         .UpdateColumns(wp => new
                         {
                             wp.DomesticPrice,
@@ -1285,15 +1297,18 @@ namespace BlazorApp.Api.Services.React
                 // 9. 套装商品：先删旧再批量插入 DomesticSetProduct + ProductSetCode，SetProductCode 自动生成
                 if (request.ProductType == ProductTypeEnum.Set && request.SetItems?.Any() == true)
                 {
-                    var existingSetProducts = await _context.Db.Queryable<DomesticSetProduct>()
+                    var existingSetProducts = await _context
+                        .Db.Queryable<DomesticSetProduct>()
                         .Where(sp => sp.ProductCode == productCode && !sp.IsDeleted)
                         .ToListAsync();
 
-                    await _context.Db.Deleteable<DomesticSetProduct>()
+                    await _context
+                        .Db.Deleteable<DomesticSetProduct>()
                         .Where(sp => sp.ProductCode == productCode)
                         .ExecuteCommandAsync();
 
-                    await _context.Db.Deleteable<ProductSetCode>()
+                    await _context
+                        .Db.Deleteable<ProductSetCode>()
                         .Where(psc => psc.ProductCode == productCode)
                         .ExecuteCommandAsync();
 
@@ -1345,7 +1360,8 @@ namespace BlazorApp.Api.Services.React
                     && request.MultiCodeItems?.Any() == true
                 )
                 {
-                    var existingMultiBarcodes = await _context.Db.Queryable<StoreMultiCodeProduct>()
+                    var existingMultiBarcodes = await _context
+                        .Db.Queryable<StoreMultiCodeProduct>()
                         .Where(mcp => mcp.ProductCode == productCode && mcp.MultiBarcode != null)
                         .Select(mcp => mcp.MultiBarcode!)
                         .ToListAsync();
@@ -1365,7 +1381,8 @@ namespace BlazorApp.Api.Services.React
                         resolvedBarcodes.Add(barcode);
                     }
 
-                    await _context.Db.Deleteable<StoreMultiCodeProduct>()
+                    await _context
+                        .Db.Deleteable<StoreMultiCodeProduct>()
                         .Where(mcp => mcp.ProductCode == productCode)
                         .ExecuteCommandAsync();
 
@@ -1410,7 +1427,8 @@ namespace BlazorApp.Api.Services.React
                 // 10. 分店零售价：有传则按传入覆盖并设 StoreProductCode；未传则按活跃门店用默认价（OEMPrice）补充
                 if (request.StorePrices?.Any() == true)
                 {
-                    await _context.Db.Deleteable<StoreRetailPrice>()
+                    await _context
+                        .Db.Deleteable<StoreRetailPrice>()
                         .Where(srp => srp.ProductCode == productCode)
                         .ExecuteCommandAsync();
 
@@ -1437,7 +1455,8 @@ namespace BlazorApp.Api.Services.React
                 else
                 {
                     // 未传分店价：仅对尚未有分店价的门店补充默认价（StoreProductCode = storeCode + productCode）
-                    var existingStoreCodes = await _context.Db.Queryable<StoreRetailPrice>()
+                    var existingStoreCodes = await _context
+                        .Db.Queryable<StoreRetailPrice>()
                         .Where(srp => srp.ProductCode == productCode && !srp.IsDeleted)
                         .Select(srp => srp.StoreCode)
                         .ToListAsync();
@@ -1500,7 +1519,8 @@ namespace BlazorApp.Api.Services.React
         {
             var resp = new ReactTableResponseDto<DomesticProductNotInWarehouseDto>();
 
-            var query = _context.Db.Queryable<DomesticProduct>()
+            var query = _context
+                .Db.Queryable<DomesticProduct>()
                 .LeftJoin<ChinaSupplier>(
                     (dp, s) => dp.SupplierCode == s.SupplierCode && dp.SupplierCode != null
                 )
@@ -1706,11 +1726,13 @@ namespace BlazorApp.Api.Services.React
             var productCodes = result.Select(i => i.ProductCode).ToList();
             if (productCodes.Any())
             {
-                var setProducts = await _context.Db.Queryable<DomesticSetProduct>()
+                var setProducts = await _context
+                    .Db.Queryable<DomesticSetProduct>()
                     .Where(sp => productCodes.Contains(sp.ProductCode) && !sp.IsDeleted)
                     .Select(sp => sp.ProductCode)
                     .ToListAsync();
-                var multiCodes = await _context.Db.Queryable<StoreMultiCodeProduct>()
+                var multiCodes = await _context
+                    .Db.Queryable<StoreMultiCodeProduct>()
                     .Where(mcp => productCodes.Contains(mcp.ProductCode) && !mcp.IsDeleted)
                     .Select(mcp => mcp.ProductCode)
                     .ToListAsync();
@@ -1752,7 +1774,8 @@ namespace BlazorApp.Api.Services.React
                 foreach (var productCode in request.ProductCodes)
                 {
                     var result = new ImportResultDetailDto { ProductCode = productCode };
-                    var domesticProduct = await _context.Db.Queryable<DomesticProduct>()
+                    var domesticProduct = await _context
+                        .Db.Queryable<DomesticProduct>()
                         .Where(dp => dp.ProductCode == productCode && !dp.IsDeleted)
                         .FirstAsync();
 
@@ -1771,7 +1794,8 @@ namespace BlazorApp.Api.Services.React
                         domesticProduct.HBProductNo ?? domesticProduct.ProductCode
                     );
 
-                    var existingWp = await _context.Db.Queryable<WarehouseProduct>()
+                    var existingWp = await _context
+                        .Db.Queryable<WarehouseProduct>()
                         .Where(wp => wp.ProductCode == productCode)
                         .FirstAsync();
 
@@ -1834,7 +1858,8 @@ namespace BlazorApp.Api.Services.React
                     }
 
                     // 同步更新国内商品表的价格与体积
-                    await _context.Db.Updateable<DomesticProduct>()
+                    await _context
+                        .Db.Updateable<DomesticProduct>()
                         .SetColumns(dp => new DomesticProduct
                         {
                             DomesticPrice = domesticPrice,
@@ -1847,7 +1872,8 @@ namespace BlazorApp.Api.Services.React
                         .Where(dp => dp.ProductCode == productCode)
                         .ExecuteCommandAsync();
 
-                    var existingProduct = await _context.Db.Queryable<Product>()
+                    var existingProduct = await _context
+                        .Db.Queryable<Product>()
                         .Where(p => p.ProductCode == productCode)
                         .FirstAsync();
 
@@ -1877,7 +1903,8 @@ namespace BlazorApp.Api.Services.React
                         await _context.Db.Insertable(product).ExecuteCommandAsync();
                     }
 
-                    var setProducts = await _context.Db.Queryable<DomesticSetProduct>()
+                    var setProducts = await _context
+                        .Db.Queryable<DomesticSetProduct>()
                         .Where(sp => sp.ProductCode == productCode && !sp.IsDeleted)
                         .ToListAsync();
 
@@ -1888,7 +1915,8 @@ namespace BlazorApp.Api.Services.React
                             .Select(sp => sp.SetProductCode)
                             .Distinct()
                             .ToList();
-                        var existingSetCodeIds = await _context.Db.Queryable<ProductSetCode>()
+                        var existingSetCodeIds = await _context
+                            .Db.Queryable<ProductSetCode>()
                             .Where(psc =>
                                 psc.ProductCode == productCode && setCodeIds.Contains(psc.SetCodeId)
                             )
@@ -1922,12 +1950,15 @@ namespace BlazorApp.Api.Services.React
                             );
                         }
                         if (productSetCodesToInsert.Count > 0)
-                            await _context.Db.Insertable(productSetCodesToInsert).ExecuteCommandAsync();
+                            await _context
+                                .Db.Insertable(productSetCodesToInsert)
+                                .ExecuteCommandAsync();
                     }
 
                     if (request.SyncMultiCodes)
                     {
-                        var activeStores = await _context.Db.Queryable<Store>()
+                        var activeStores = await _context
+                            .Db.Queryable<Store>()
                             .Where(s => s.IsActive == true && s.IsDeleted == false)
                             .Select(s => s.StoreCode)
                             .ToListAsync();
@@ -1941,7 +1972,8 @@ namespace BlazorApp.Api.Services.React
                         var existingKeys = new HashSet<(string?, string?)>();
                         if (setBarcodes.Count > 0)
                         {
-                            var existingList = await _context.Db.Queryable<StoreMultiCodeProduct>()
+                            var existingList = await _context
+                                .Db.Queryable<StoreMultiCodeProduct>()
                                 .Where(smc =>
                                     smc.ProductCode == productCode
                                     && !smc.IsDeleted
@@ -1996,13 +2028,15 @@ namespace BlazorApp.Api.Services.React
 
                     if (request.SyncStorePrices)
                     {
-                        var existingStorePrices = await _context.Db.Queryable<StoreRetailPrice>()
+                        var existingStorePrices = await _context
+                            .Db.Queryable<StoreRetailPrice>()
                             .Where(srp => srp.ProductCode == productCode && !srp.IsDeleted)
                             .ToListAsync();
 
                         if (!existingStorePrices.Any())
                         {
-                            var activeStores = await _context.Db.Queryable<Store>()
+                            var activeStores = await _context
+                                .Db.Queryable<Store>()
                                 .Where(s => s.IsActive == true && s.IsDeleted == false)
                                 .Select(s => s.StoreCode)
                                 .ToListAsync();
@@ -2031,7 +2065,8 @@ namespace BlazorApp.Api.Services.React
                             }
                             if (storeRetailPricesToInsert.Count > 0)
                             {
-                                await _context.Db.Insertable(storeRetailPricesToInsert)
+                                await _context
+                                    .Db.Insertable(storeRetailPricesToInsert)
                                     .ExecuteCommandAsync();
                             }
                         }
@@ -2090,10 +2125,12 @@ namespace BlazorApp.Api.Services.React
                 _context.Db.Ado.BeginTran();
 
                 // 1. 顺序查询，一次性取列表（同一 db，不并行）
-                var domesticProduct = await _context.Db.Queryable<DomesticProduct>()
+                var domesticProduct = await _context
+                    .Db.Queryable<DomesticProduct>()
                     .Where(p => p.ProductCode == productCode && !p.IsDeleted)
                     .FirstAsync();
-                var product = await _context.Db.Queryable<Product>()
+                var product = await _context
+                    .Db.Queryable<Product>()
                     .Where(p => p.ProductCode == productCode)
                     .FirstAsync();
                 if (product == null)
@@ -2102,7 +2139,8 @@ namespace BlazorApp.Api.Services.React
                     result.Message = "商品不存在（Product 表无此 ProductCode）";
                     return result;
                 }
-                var warehouseProduct = await _context.Db.Queryable<WarehouseProduct>()
+                var warehouseProduct = await _context
+                    .Db.Queryable<WarehouseProduct>()
                     .Where(w => w.ProductCode == productCode)
                     .FirstAsync();
                 if (warehouseProduct == null)
@@ -2111,13 +2149,16 @@ namespace BlazorApp.Api.Services.React
                     result.Message = "仓库商品不存在";
                     return result;
                 }
-                var storeRetailPrices = await _context.Db.Queryable<StoreRetailPrice>()
+                var storeRetailPrices = await _context
+                    .Db.Queryable<StoreRetailPrice>()
                     .Where(srp => srp.ProductCode == productCode && !srp.IsDeleted)
                     .ToListAsync();
-                var storeMultiCodeProducts = await _context.Db.Queryable<StoreMultiCodeProduct>()
+                var storeMultiCodeProducts = await _context
+                    .Db.Queryable<StoreMultiCodeProduct>()
                     .Where(mcp => mcp.ProductCode == productCode && !mcp.IsDeleted)
                     .ToListAsync();
-                var productSetCodes = await _context.Db.Queryable<ProductSetCode>()
+                var productSetCodes = await _context
+                    .Db.Queryable<ProductSetCode>()
                     .Where(psc => psc.ProductCode == productCode && !psc.IsDeleted)
                     .ToListAsync();
 
@@ -2172,6 +2213,7 @@ namespace BlazorApp.Api.Services.React
                 if (dto.WarehouseCategoryGUID != null)
                     product.WarehouseCategoryGUID = dto.WarehouseCategoryGUID;
                 product.ProductType = dto.ProductType;
+                product.IsAutoPricing = dto.IsAutoPricing;
                 if (dto.MiddlePackQuantity.HasValue)
                     product.MiddlePackageQuantity = dto.MiddlePackQuantity;
                 if (dto.LocalSupplierCode != null)
@@ -2185,7 +2227,8 @@ namespace BlazorApp.Api.Services.React
                 }
                 product.IsActive = dto.IsActive;
                 product.UpdatedAt = now;
-                await _context.Db.Updateable(product)
+                await _context
+                    .Db.Updateable(product)
                     .UpdateColumns(p => new
                     {
                         p.ProductName,
@@ -2194,6 +2237,7 @@ namespace BlazorApp.Api.Services.React
                         p.RetailPrice,
                         p.WarehouseCategoryGUID,
                         p.ProductType,
+                        p.IsAutoPricing,
                         p.MiddlePackageQuantity,
                         p.LocalSupplierCode,
                         p.ProductImage,
@@ -2215,7 +2259,8 @@ namespace BlazorApp.Api.Services.React
                     warehouseProduct.MinOrderQuantity = dto.MinOrderQuantity;
                 warehouseProduct.IsActive = dto.IsActive;
                 warehouseProduct.UpdatedAt = now;
-                await _context.Db.Updateable(warehouseProduct)
+                await _context
+                    .Db.Updateable(warehouseProduct)
                     .UpdateColumns(w => new
                     {
                         w.DomesticPrice,
@@ -2240,7 +2285,8 @@ namespace BlazorApp.Api.Services.React
                 }
                 if (storeRetailPrices.Any())
                 {
-                    await _context.Db.Updateable(storeRetailPrices)
+                    await _context
+                        .Db.Updateable(storeRetailPrices)
                         .UpdateColumns(srp => new
                         {
                             srp.StoreRetailPriceValue,
@@ -2261,7 +2307,8 @@ namespace BlazorApp.Api.Services.React
                 }
                 if (storeMultiCodeProducts.Any())
                 {
-                    await _context.Db.Updateable(storeMultiCodeProducts)
+                    await _context
+                        .Db.Updateable(storeMultiCodeProducts)
                         .UpdateColumns(mcp => new
                         {
                             mcp.MultiCodeRetailPrice,
@@ -2333,7 +2380,8 @@ namespace BlazorApp.Api.Services.React
                     }
                     if (productSetCodes.Any())
                     {
-                        await _context.Db.Updateable(productSetCodes)
+                        await _context
+                            .Db.Updateable(productSetCodes)
                             .UpdateColumns(psc => new
                             {
                                 psc.SetRetailPrice,
@@ -2344,7 +2392,8 @@ namespace BlazorApp.Api.Services.React
                     }
                     if (storeMultiCodeProducts.Any())
                     {
-                        await _context.Db.Updateable(storeMultiCodeProducts)
+                        await _context
+                            .Db.Updateable(storeMultiCodeProducts)
                             .UpdateColumns(mcp => new
                             {
                                 mcp.MultiCodeRetailPrice,
@@ -2377,7 +2426,8 @@ namespace BlazorApp.Api.Services.React
             if (string.IsNullOrWhiteSpace(productCode))
                 return new List<BarcodePriceItemDto>();
 
-            var setCodes = await _context.Db.Queryable<ProductSetCode>()
+            var setCodes = await _context
+                .Db.Queryable<ProductSetCode>()
                 .Where(psc => psc.ProductCode == productCode && !psc.IsDeleted)
                 .Select(psc => new BarcodePriceItemDto
                 {
@@ -2387,7 +2437,8 @@ namespace BlazorApp.Api.Services.React
                     SetCodeId = psc.SetCodeId,
                 })
                 .ToListAsync();
-            var multiCodes = await _context.Db.Queryable<StoreMultiCodeProduct>()
+            var multiCodes = await _context
+                .Db.Queryable<StoreMultiCodeProduct>()
                 .Where(mcp => mcp.ProductCode == productCode && !mcp.IsDeleted)
                 .Select(mcp => new BarcodePriceItemDto
                 {
@@ -2412,6 +2463,229 @@ namespace BlazorApp.Api.Services.React
                 list.Add(m);
             }
             return list;
+        }
+
+        public async Task<
+            ReactTableResponseDto<NonHotbargainProductNotInWarehouseDto>
+        > GetNonHotbargainProductsNotInWarehouseAsync(
+            GetNonHotbargainProductsNotInWarehouseRequestDto request
+        )
+        {
+            var resp = new ReactTableResponseDto<NonHotbargainProductNotInWarehouseDto>();
+            var query = _context
+                .Db.Queryable<Product>()
+                .LeftJoin<HBLocalSupplier>((p, s) => p.LocalSupplierCode == s.LocalSupplierCode)
+                .Where(
+                    (p, s) =>
+                        p.LocalSupplierCode != "200"
+                        && !p.IsDeleted
+                        && p.IsActive
+                        && p.ProductCode != null
+                )
+                .Where(
+                    (p, s) =>
+                        !SqlFunc
+                            .Subqueryable<WarehouseProduct>()
+                            .Where(wp => wp.ProductCode == p.ProductCode && !wp.IsDeleted)
+                            .Any()
+                );
+
+            if (!string.IsNullOrWhiteSpace(request.GlobalSearch))
+            {
+                var keyword = request.GlobalSearch.Trim().ToLower();
+                query = query.Where(
+                    (p, s) =>
+                        (p.ProductName != null && p.ProductName.ToLower().Contains(keyword))
+                        || (p.EnglishName != null && p.EnglishName.ToLower().Contains(keyword))
+                        || (p.ItemNumber != null && p.ItemNumber.ToLower().Contains(keyword))
+                        || (p.Barcode != null && p.Barcode.ToLower().Contains(keyword))
+                        || (
+                            p.LocalSupplierCode != null
+                            && p.LocalSupplierCode.ToLower().Contains(keyword)
+                        )
+                        || (s.Name != null && s.Name.ToLower().Contains(keyword))
+                );
+            }
+
+            if (request.Filters != null && request.Filters.Any())
+            {
+                foreach (var kv in request.Filters)
+                {
+                    var key = kv.Key?.ToLower();
+                    var values =
+                        kv.Value?.Where(v => !string.IsNullOrWhiteSpace(v)).ToList()
+                        ?? new List<string>();
+                    if (!values.Any())
+                        continue;
+
+                    switch (key)
+                    {
+                        case "itemnumber":
+                            {
+                                var lowers = values.Select(v => v.ToLower()).ToList();
+                                query = query.Where(
+                                    (p, s) =>
+                                        p.ItemNumber != null
+                                        && lowers.Any(v => p.ItemNumber.ToLower().Contains(v))
+                                );
+                            }
+                            break;
+                        case "localsuppliercode":
+                        case "suppliercode":
+                            {
+                                var lowers = values.Select(v => v.ToLower()).ToList();
+                                query = query.Where(
+                                    (p, s) =>
+                                        p.LocalSupplierCode != null
+                                        && lowers.Any(v =>
+                                            p.LocalSupplierCode.ToLower().Contains(v)
+                                        )
+                                );
+                            }
+                            break;
+                        case "localsuppliername":
+                            {
+                                var lowers = values.Select(v => v.ToLower()).ToList();
+                                query = query.Where(
+                                    (p, s) =>
+                                        s.Name != null
+                                        && lowers.Any(v => s.Name.ToLower().Contains(v))
+                                );
+                            }
+                            break;
+                    }
+                }
+            }
+
+            var total = await query.Clone().CountAsync();
+            var list = await query
+                .OrderByDescending((p, s) => p.UpdatedAt)
+                .Select(
+                    (p, s) =>
+                        new NonHotbargainProductNotInWarehouseDto
+                        {
+                            ProductCode = p.ProductCode!,
+                            ItemNumber = p.ItemNumber ?? "",
+                            Barcode = p.Barcode,
+                            ProductName = p.ProductName,
+                            EnglishName = p.EnglishName,
+                            ProductType = (ProductTypeEnum)(p.ProductType ?? 0),
+                            PurchasePrice = p.PurchasePrice,
+                            RetailPrice = p.RetailPrice,
+                            LocalSupplierCode = p.LocalSupplierCode,
+                            LocalSupplierName = s.Name,
+                            ProductImage = p.ProductImage,
+                        }
+                )
+                .Skip((request.Page - 1) * request.PageSize)
+                .Take(request.PageSize)
+                .ToListAsync();
+
+            // 补全图片 URL
+            foreach (var item in list)
+            {
+                item.ProductImage = ProductImageUrlHelper.EnsureImageUrl(
+                    item.ProductImage,
+                    item.ItemNumber
+                );
+            }
+
+            resp.Items = list;
+            resp.Total = total;
+            return resp;
+        }
+
+        public async Task<ImportFromDomesticResponseDto> ImportNonHotbargainProductsAsync(
+            ImportNonHotbargainRequestDto request
+        )
+        {
+            var response = new ImportFromDomesticResponseDto
+            {
+                Success = true,
+                Message = "导入完成",
+            };
+
+            if (request.ProductCodes == null || !request.ProductCodes.Any())
+            {
+                response.Message = "请选择要导入的商品";
+                response.Success = false;
+                return response;
+            }
+
+            try
+            {
+                _context.Db.Ado.BeginTran();
+                var now = DateTime.Now;
+
+                foreach (var productCode in request.ProductCodes)
+                {
+                    var result = new ImportResultDetailDto { ProductCode = productCode };
+
+                    var product = await _context
+                        .Db.Queryable<Product>()
+                        .Where(p => p.ProductCode == productCode)
+                        .FirstAsync();
+
+                    if (product == null)
+                    {
+                        result.Success = false;
+                        result.Message = "商品不存在";
+                        response.Results.Add(result);
+                        response.FailedCount++;
+                        continue;
+                    }
+
+                    var exists = await _context
+                        .Db.Queryable<WarehouseProduct>()
+                        .Where(w => w.ProductCode == productCode)
+                        .AnyAsync();
+
+                    if (exists)
+                    {
+                        result.Success = false;
+                        result.Message = "商品已存在于仓库中";
+                        response.Results.Add(result);
+                        response.FailedCount++;
+                        continue;
+                    }
+
+                    var wp = new WarehouseProduct
+                    {
+                        ProductCode = productCode,
+                        DomesticPrice = 0,
+                        OEMPrice = 0,
+                        ImportPrice = product.PurchasePrice ?? 0,
+                        StockQuantity = 0,
+                        IsActive = true,
+                        IsDeleted = false,
+                        CreatedAt = now,
+                        UpdatedAt = now,
+                    };
+                    await _context.Db.Insertable(wp).ExecuteCommandAsync();
+
+                    result.Success = true;
+                    result.Message = "导入成功";
+                    response.Results.Add(result);
+                    response.SuccessCount++;
+                }
+
+                _context.Db.Ado.CommitTran();
+
+                if (response.SuccessCount == 0 && response.FailedCount > 0)
+                {
+                    response.Success = false;
+                    response.Message = "所有商品导入失败";
+                }
+            }
+            catch (Exception ex)
+            {
+                _context.Db.Ado.RollbackTran();
+                _logger.LogError(ex, "导入非 Hotbargain 商品失败");
+                response.Success = false;
+                response.Message = "导入失败: " + ex.Message;
+            }
+
+            return response;
         }
     }
 }

@@ -114,6 +114,11 @@ namespace BlazorApp.Shared.DTOs
 
     public int TotalSKU { get; set; }
 
+    /// <summary>
+    /// 流程状态（0=草稿, 1=已提交, 2=已完成, 3=配货中）
+    /// </summary>
+    public int? FlowStatus { get; set; }
+
     public List<StoreOrderCartItemDto> Items { get; set; } = new();
   }
 

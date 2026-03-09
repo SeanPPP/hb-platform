@@ -588,7 +588,10 @@ namespace BlazorApp.Api.Services.React
                     isAsc ? OrderByType.Asc : OrderByType.Desc
                 ),
                 "itemNumber" => query.OrderBy(
-                    p => p.HBProductNo,
+                    p =>
+                        SqlFunc.ToInt32(
+                            SqlFunc.Substring(p.HBProductNo, SqlFunc.Length(p.HBProductNo) - 2, 3)
+                        ),
                     isAsc ? OrderByType.Asc : OrderByType.Desc
                 ),
                 "barcode" => query.OrderBy(

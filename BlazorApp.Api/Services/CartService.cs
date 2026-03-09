@@ -1,6 +1,7 @@
 using AutoMapper;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces;
+using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
@@ -17,21 +18,21 @@ namespace BlazorApp.Api.Services
         private readonly IMapper _mapper;
         private readonly ILogger<CartService> _logger;
         private readonly IWarehouseProductService _productService;
-
-        // 应用层锁，用于订单号生成（当数据库不支持FOR UPDATE时）
-        private static readonly SemaphoreSlim _orderNumberLock = new(1, 1);
+        private readonly IOrderNumberGenerator _orderNumberGenerator;
 
         public CartService(
             SqlSugarContext context,
             IMapper mapper,
             ILogger<CartService> logger,
-            IWarehouseProductService productService
+            IWarehouseProductService productService,
+            IOrderNumberGenerator orderNumberGenerator
         )
         {
             _context = context;
             _mapper = mapper;
             _logger = logger;
             _productService = productService;
+            _orderNumberGenerator = orderNumberGenerator;
         }
 
         public async Task<CartDto?> GetUserCartAsync(string userGuid)
@@ -1110,99 +1111,13 @@ namespace BlazorApp.Api.Services
         }
 
         /// <summary>
-        /// 生成下一个订单号（格式：ORD-YYYY-0001）- 使用应用层锁保证并发安全
+        /// 生成下一个订单号（格式：YYYY-NNNN）
         /// </summary>
         public async Task<string> GenerateNextOrderNumberAsync()
         {
-            var currentYear = DateTime.Now.Year;
-
-            // 使用应用层锁保证同一时刻只有一个线程在生成订单号
-            await _orderNumberLock.WaitAsync();
-
-            try
-            {
-                _logger.LogDebug(
-                    "Acquired lock for order number generation, year: {Year}",
-                    currentYear
-                );
-
-                // 在锁保护下查询所有当前年份的订单号
-                var orderNumbers = await _context
-                    .Db.Queryable<Cart>()
-                    .Where(x =>
-                        x.OrderNumber != null && x.OrderNumber.StartsWith($"ORD-{currentYear}-")
-                    )
-                    .Select(x => x.OrderNumber)
-                    .ToListAsync();
-
-                // 找到最大的订单号
-                string? maxOrderNumber = null;
-                if (orderNumbers.Any())
-                {
-                    maxOrderNumber = orderNumbers
-                        .Where(x => !string.IsNullOrEmpty(x))
-                        .OrderByDescending(x => x)
-                        .FirstOrDefault();
-                }
-
-                // 计算下一个序列号（从1000开始）
-                int nextSequence = OrderNumberGenerator.StartingSequence;
-                if (!string.IsNullOrEmpty(maxOrderNumber))
-                {
-                    var parsed = OrderNumberGenerator.Parse(maxOrderNumber);
-                    if (parsed.HasValue && parsed.Value.year == currentYear)
-                    {
-                        // 确保下一个序列号至少是起始序列号
-                        nextSequence = Math.Max(
-                            parsed.Value.sequence + 1,
-                            OrderNumberGenerator.StartingSequence
-                        );
-                    }
-                }
-
-                var orderNumber = OrderNumberGenerator.Generate(currentYear, nextSequence);
-
-                _logger.LogInformation(
-                    "Generated order number {OrderNumber} for year {Year} (sequence: {Sequence})",
-                    orderNumber,
-                    currentYear,
-                    nextSequence
-                );
-
-                return orderNumber;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(
-                    ex,
-                    "Failed to generate order number for year {Year}",
-                    currentYear
-                );
-
-                // 备用方案：使用时间戳生成序列号，确保从1000开始
-                var now = DateTime.Now;
-                var timeSequence =
-                    (now.Hour * 100 + now.Minute) + OrderNumberGenerator.StartingSequence;
-                var random = Random.Shared.Next(0, 99); // 添加随机数避免同一分钟内的冲突
-                var fallbackSequence = timeSequence + random;
-
-                var fallbackOrderNumber = OrderNumberGenerator.Generate(
-                    currentYear,
-                    fallbackSequence
-                );
-
-                _logger.LogWarning(
-                    "Using fallback order number: {OrderNumber} (sequence: {Sequence})",
-                    fallbackOrderNumber,
-                    fallbackSequence
-                );
-                return fallbackOrderNumber;
-            }
-            finally
-            {
-                _orderNumberLock.Release();
-                _logger.LogDebug("Released lock for order number generation");
-            }
+            var orderNumber = await _orderNumberGenerator.GetNextOrderNoAsync();
+            _logger.LogInformation("Generated order number: {OrderNumber}", orderNumber);
+            return orderNumber;
         }
 
         #endregion

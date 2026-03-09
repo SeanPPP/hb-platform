@@ -236,6 +236,64 @@ namespace BlazorApp.Api.Controllers.React
             }
         }
 
+        [HttpPost("non-hb-not-in-warehouse")]
+        [Authorize(Roles = "Admin,WarehouseManager,User")]
+        public async Task<IActionResult> NonHotbargainNotInWarehouse(
+            [FromBody] GetNonHotbargainProductsNotInWarehouseRequestDto request
+        )
+        {
+            try
+            {
+                if (request == null)
+                    return BadRequest(new { success = false, message = "请求数据不能为空" });
+
+                var data = await _service.GetNonHotbargainProductsNotInWarehouseAsync(request);
+                return Ok(
+                    new
+                    {
+                        success = true,
+                        data = data.Items,
+                        total = data.Total,
+                    }
+                );
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "获取非Hotbargain商品不在仓库列表失败");
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
+        [HttpPost("import-non-hb")]
+        [Authorize(Roles = "Admin,WarehouseManager")]
+        public async Task<IActionResult> ImportNonHotbargain(
+            [FromBody] ImportNonHotbargainRequestDto request
+        )
+        {
+            try
+            {
+                if (request == null)
+                    return BadRequest(new { success = false, message = "请求数据不能为空" });
+
+                var resp = await _service.ImportNonHotbargainProductsAsync(request);
+                return Ok(
+                    new
+                    {
+                        success = resp.Success,
+                        message = resp.Message,
+                        successCount = resp.SuccessCount,
+                        failedCount = resp.FailedCount,
+                        results = resp.Results,
+                    }
+                );
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "导入非Hotbargain商品失败");
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
         /// <summary>
         /// 仓库商品完整更新（六表 + 国内商品联动）
         /// </summary>

@@ -616,5 +616,49 @@ namespace BlazorApp.Api.Controllers.React
                 return StatusCode(500, new { success = false, message = "服务器内部错误" });
             }
         }
+
+        /// <summary>
+        /// 完成订单 (FlowStatus -> 2)
+        /// </summary>
+        [HttpPost("complete/{orderGuid}")]
+        public async Task<IActionResult> CompleteOrder(string orderGuid)
+        {
+            try
+            {
+                var result = await _service.CompleteOrderAsync(orderGuid);
+                if (result.Success)
+                {
+                    return Ok(new { success = true, data = result.Data });
+                }
+                return BadRequest(new { success = false, message = result.Message });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "CompleteOrder failed");
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
+        /// <summary>
+        /// 开始配货 (FlowStatus -> 3)
+        /// </summary>
+        [HttpPost("start-picking/{orderGuid}")]
+        public async Task<IActionResult> StartPicking(string orderGuid)
+        {
+            try
+            {
+                var result = await _service.StartPickingAsync(orderGuid);
+                if (result.Success)
+                {
+                    return Ok(new { success = true, data = result.Data });
+                }
+                return BadRequest(new { success = false, message = result.Message });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "StartPicking failed");
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
     }
 }

@@ -1,6 +1,7 @@
 using AutoMapper;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces;
+using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
 using BlazorApp.Shared.Models.HBweb;
@@ -15,18 +16,21 @@ namespace BlazorApp.Api.Services
         private readonly IMapper _mapper;
         private readonly ILogger<PDAWarehouseOrderService> _logger;
         private readonly IWarehouseProductService _warehouseProductService;
+        private readonly IOrderNumberGenerator _orderNumberGenerator;
 
         public PDAWarehouseOrderService(
             SqlSugarContext context,
             IMapper mapper,
             ILogger<PDAWarehouseOrderService> logger,
-            IWarehouseProductService warehouseProductService
+            IWarehouseProductService warehouseProductService,
+            IOrderNumberGenerator orderNumberGenerator
         )
         {
             _context = context;
             _mapper = mapper;
             _logger = logger;
             _warehouseProductService = warehouseProductService;
+            _orderNumberGenerator = orderNumberGenerator;
         }
 
         private ISqlSugarClient Db => _context.Db;
@@ -294,7 +298,7 @@ namespace BlazorApp.Api.Services
                 {
                     OrderGUID = Guid.NewGuid().ToString("N"),
                     StoreCode = request.StoreCode,
-                    OrderNo = await GenerateOrderNoAsync(request.StoreCode),
+                    OrderNo = await _orderNumberGenerator.GetNextOrderNoAsync(),
                     OrderDate = request.OrderDate ?? DateTime.Now,
                     FlowStatus = 0,
                     InboundStatus = 0,
@@ -1219,40 +1223,6 @@ namespace BlazorApp.Api.Services
         #endregion
 
         #region 私有方法
-
-        private async Task<string> GenerateOrderNoAsync(string storeCode)
-        {
-            try
-            {
-                var db = _context.Db;
-                var today = DateTime.Today;
-                var dateString = today.ToString("yyMMdd");
-                var prefix = $"ORD-{storeCode}-{dateString}-";
-
-                var maxOrderNo = await db.Queryable<WareHouseOrder>()
-                    .Where(o => o.OrderNo != null && o.OrderNo.StartsWith(prefix))
-                    .OrderByDescending(o => o.OrderNo)
-                    .Select(o => o.OrderNo)
-                    .FirstAsync();
-
-                int sequence = 1;
-                if (!string.IsNullOrEmpty(maxOrderNo))
-                {
-                    var lastSequence = maxOrderNo.Substring(prefix.Length);
-                    if (int.TryParse(lastSequence, out int lastNum))
-                    {
-                        sequence = lastNum + 1;
-                    }
-                }
-
-                return $"{prefix}{sequence:D4}";
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "生成订单号失败");
-                return $"ORD-{storeCode}-{DateTime.Today:yyMMdd}-0001";
-            }
-        }
 
         private async Task RecalculateOrderTotalsAsync(string orderGuid)
         {

@@ -283,17 +283,6 @@ namespace BlazorApp.Api.Services
                                 continue;
                             }
 
-                            // 乐观锁检查：比较RowVersion
-                            if (dto.RowVersion != null && existing.RowVersion != null)
-                            {
-                                if (!dto.RowVersion.SequenceEqual(existing.RowVersion))
-                                {
-                                    result.DetailErrors![dto.ProductCode] = "数据已被其他用户修改，请刷新后重试";
-                                    result.FailedProductCodes!.Add(dto.ProductCode);
-                                    failedCount++;
-                                    continue;
-                                }
-                            }
 
                             // 更新字段
                             existing.DomesticPrice = dto.DomesticPrice;
@@ -400,14 +389,6 @@ namespace BlazorApp.Api.Services
                                 continue;
                             }
 
-                            // 乐观锁检查
-                            if (dto.RowVersion != null && existing.RowVersion != null && 
-                                !dto.RowVersion.SequenceEqual(existing.RowVersion))
-                            {
-                                result.FailedDetails![dto.ProductCode] = "数据已被其他用户修改";
-                                result.FailedCount++;
-                                continue;
-                            }
 
                             // 更新字段
                             existing.DomesticPrice = dto.DomesticPrice;
@@ -735,7 +716,6 @@ namespace BlazorApp.Api.Services
                 StockAlertQuantity = wp.StockAlertQuantity,
                 Volume = wp.Volume,
                 IsActive = wp.IsActive,
-                RowVersion = wp.RowVersion,
                 CreatedAt = wp.CreatedAt,
                 UpdatedAt = wp.UpdatedAt
             };

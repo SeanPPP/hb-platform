@@ -1105,6 +1105,7 @@ namespace BlazorApp.Api.Services.React
                 Remarks = order.Order.Remarks,
                 StoreAddress = order.StoreAddress,
                 ShippingFee = order.Order.ShippingFee,
+                FlowStatus = order.Order.FlowStatus,
                 Items = baseDetails,
             };
 
@@ -1902,6 +1903,91 @@ namespace BlazorApp.Api.Services.React
                 result.Message = $"同步失败：{ex.Message}";
                 _logger.LogError(ex, "同步缺失订单失败，分店代码：{StoreCode}", storeCode);
                 return result;
+            }
+        }
+
+        public async Task<ApiResponse<bool>> CompleteOrderAsync(string orderGuid)
+        {
+            try
+            {
+                var order = await _db.Queryable<WareHouseOrder>()
+                    .Where(o => o.OrderGUID == orderGuid && !o.IsDeleted)
+                    .FirstAsync();
+
+                if (order == null)
+                {
+                    return new ApiResponse<bool> { Success = false, Message = "订单不存在" };
+                }
+
+                if (order.FlowStatus != 1)
+                {
+                    return new ApiResponse<bool>
+                    {
+                        Success = false,
+                        Message = "只有已提交状态的订单才能标记为完成",
+                    };
+                }
+
+                order.FlowStatus = 2;
+                order.UpdatedAt = DateTime.Now;
+                order.UpdatedBy =
+                    _httpContextAccessor.HttpContext?.User?.Identity?.Name ?? "System";
+
+                await _db.Updateable(order)
+                    .UpdateColumns(o => new { o.FlowStatus, o.UpdatedAt, o.UpdatedBy })
+                    .ExecuteCommandAsync();
+
+                return new ApiResponse<bool> { Success = true, Data = true };
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "CompleteOrderAsync failed");
+                return new ApiResponse<bool> { Success = false, Message = ex.Message };
+            }
+        }
+
+        public async Task<ApiResponse<bool>> StartPickingAsync(string orderGuid)
+        {
+            try
+            {
+                var order = await _db.Queryable<WareHouseOrder>()
+                    .Where(o => o.OrderGUID == orderGuid && !o.IsDeleted)
+                    .FirstAsync();
+
+                if (order == null)
+                {
+                    return new ApiResponse<bool> { Success = false, Message = "订单不存在" };
+                }
+
+                if (order.FlowStatus == 2 || order.FlowStatus == 3)
+                {
+                    return new ApiResponse<bool> { Success = true, Data = true };
+                }
+
+                if (order.FlowStatus != 1)
+                {
+                    return new ApiResponse<bool>
+                    {
+                        Success = false,
+                        Message = "只有已提交状态的订单才能开始配货",
+                    };
+                }
+
+                order.FlowStatus = 3;
+                order.UpdatedAt = DateTime.Now;
+                order.UpdatedBy =
+                    _httpContextAccessor.HttpContext?.User?.Identity?.Name ?? "System";
+
+                await _db.Updateable(order)
+                    .UpdateColumns(o => new { o.FlowStatus, o.UpdatedAt, o.UpdatedBy })
+                    .ExecuteCommandAsync();
+
+                return new ApiResponse<bool> { Success = true, Data = true };
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "StartPickingAsync failed");
+                return new ApiResponse<bool> { Success = false, Message = ex.Message };
             }
         }
     }

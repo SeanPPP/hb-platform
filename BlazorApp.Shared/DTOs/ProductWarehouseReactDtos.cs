@@ -329,6 +329,11 @@ namespace BlazorApp.Shared.DTOs
         public int ProductType { get; set; } = 0;
         public int? MiddlePackQuantity { get; set; }
 
+        /// <summary>
+        /// 是否自动定价（对应 Product.IsAutoPricing）
+        /// </summary>
+        public bool IsAutoPricing { get; set; } = false;
+
         // ---------- 分类与供应商 ----------
         public string? WarehouseCategoryGUID { get; set; }
         public string? SupplierCode { get; set; }
@@ -348,5 +353,38 @@ namespace BlazorApp.Shared.DTOs
     {
         public bool Success { get; set; }
         public string Message { get; set; } = string.Empty;
+    }
+
+    /// <summary>
+    /// 获取非 Hotbargain 商品不在仓库的请求 DTO
+    /// </summary>
+    public class GetNonHotbargainProductsNotInWarehouseRequestDto : ReactTableRequestDto
+    {
+    }
+
+    /// <summary>
+    /// 非 Hotbargain 商品不在仓库的 DTO
+    /// </summary>
+    public class NonHotbargainProductNotInWarehouseDto
+    {
+        public string ProductCode { get; set; } = string.Empty;
+        public string ItemNumber { get; set; } = string.Empty;
+        public string? Barcode { get; set; }
+        public string ProductName { get; set; } = string.Empty;
+        public string? EnglishName { get; set; }
+        public ProductTypeEnum ProductType { get; set; }
+        public decimal? PurchasePrice { get; set; }
+        public decimal? RetailPrice { get; set; }
+        public string? LocalSupplierCode { get; set; }
+        public string? LocalSupplierName { get; set; }
+        public string? ProductImage { get; set; }
+    }
+
+    /// <summary>
+    /// 导入非 Hotbargain 商品请求 DTO
+    /// </summary>
+    public class ImportNonHotbargainRequestDto
+    {
+        public List<string> ProductCodes { get; set; } = new List<string>();
     }
 }
