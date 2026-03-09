@@ -20,7 +20,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPost("grid")]
-     
+
         public async Task<IActionResult> Grid([FromBody] GridRequestDto request)
         {
             var result = await _service.GetGridDataAsync(request);
@@ -48,7 +48,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPost("batch-upsert")]
-    
+
         public async Task<IActionResult> BatchUpsert(
             [FromBody] List<StoreMultiCodePriceUpsertItemDto> items
         )
@@ -68,7 +68,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPost("upsert-active-stores")]
-      
+
         public async Task<IActionResult> UpsertForActiveStores(
             [FromBody] List<StoreMultiCodePriceUpsertForActiveStoresItemDto> items
         )
@@ -88,7 +88,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPut("batch-special")]
-      
+
         public async Task<IActionResult> BatchSpecial([FromBody] BatchUpdateSpecialRequestDtoMC dto)
         {
             var user = User.Identity?.Name ?? "system";
@@ -110,7 +110,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPost("batch-by-uuids")]
-    
+
         public async Task<IActionResult> BatchByUuids([FromBody] List<string> uuids)
         {
             var result = await _service.GetListByUuidsAsync(uuids);

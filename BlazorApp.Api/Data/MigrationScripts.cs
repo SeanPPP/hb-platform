@@ -23,7 +23,7 @@ namespace BlazorApp.Api.Data
         {
             // 简化版本：检查新表是否存在
             var tablesToCheck = new[] { "Product", "Order", "OrderItem", "HqBranch", "WarehouseCategory", "DIC_仓库商品信息" };
-            
+
             foreach (var tableName in tablesToCheck)
             {
                 if (!_db.DbMaintenance.IsAnyTable(tableName))
@@ -31,7 +31,7 @@ namespace BlazorApp.Api.Data
                     return true;
                 }
             }
-            
+
             return false;
         }
 
@@ -39,11 +39,11 @@ namespace BlazorApp.Api.Data
         {
             // 创建新表
             _db.CodeFirst.InitTables(typeof(Product));
-          
+
             _db.CodeFirst.InitTables(typeof(HqBranch));
             _db.CodeFirst.InitTables(typeof(WarehouseCategory));
             _db.CodeFirst.InitTables(typeof(WarehouseProduct));
-            
+
             await Task.CompletedTask;
         }
 

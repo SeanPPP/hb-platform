@@ -68,7 +68,7 @@ namespace BlazorApp.Api.Controllers
                 }
 
                 var result = await _containerService.UpdateContainerAsync(containerGuid, dto);
-                
+
                 if (result)
                 {
                     return Ok(new { success = true, message = "更新成功" });
@@ -205,9 +205,10 @@ namespace BlazorApp.Api.Controllers
                 }
 
                 var totalUpdated = await _containerService.BatchUpdateDetailsAsync(updates);
-                
-                return Ok(new { 
-                    success = true, 
+
+                return Ok(new
+                {
+                    success = true,
                     message = $"成功更新 {totalUpdated} 条明细",
                     data = new { totalUpdated, totalRequested = updates.Count }
                 });
@@ -241,9 +242,10 @@ namespace BlazorApp.Api.Controllers
                 }
 
                 var containerGuid = await _containerService.CreateContainerAsync(dto);
-                
-                return Ok(new { 
-                    success = true, 
+
+                return Ok(new
+                {
+                    success = true,
                     message = "创建成功",
                     data = new { containerGuid }
                 });

@@ -22,10 +22,10 @@ namespace BlazorApp.Api.Data
 
                 // 创建基础索引
                 await CreateBasicIndexesAsync(db);
-                
+
                 // 创建复合索引
                 await CreateCompositeIndexesAsync(db);
-                
+
                 // 创建外键表索引
                 await CreateRelatedTableIndexesAsync(db);
 
@@ -48,30 +48,30 @@ namespace BlazorApp.Api.Data
             {
                 // 商品名称搜索索引
                 ["IX_WarehouseProduct_ProductName"] = "CREATE NONCLUSTERED INDEX [IX_WarehouseProduct_ProductName] ON [WarehouseProduct] ([ProductName])",
-                
+
                 // 商品编码唯一索引
                 ["IX_WarehouseProduct_ProductCode"] = "CREATE UNIQUE NONCLUSTERED INDEX [IX_WarehouseProduct_ProductCode] ON [WarehouseProduct] ([ProductCode])",
-                
+
                 // 条码索引
                 ["IX_WarehouseProduct_Barcode"] = "CREATE NONCLUSTERED INDEX [IX_WarehouseProduct_Barcode] ON [WarehouseProduct] ([Barcode]) WHERE [Barcode] IS NOT NULL",
-                
+
                 // 品牌索引
                 ["IX_WarehouseProduct_Brand"] = "CREATE NONCLUSTERED INDEX [IX_WarehouseProduct_Brand] ON [WarehouseProduct] ([Brand]) WHERE [Brand] IS NOT NULL",
-                
+
                 // 分类GUID索引
                 ["IX_WarehouseProduct_CategoryGUID"] = "CREATE NONCLUSTERED INDEX [IX_WarehouseProduct_CategoryGUID] ON [WarehouseProduct] ([CategoryGUID]) WHERE [CategoryGUID] IS NOT NULL",
-                
+
                 // 状态索引
                 ["IX_WarehouseProduct_IsActive"] = "CREATE NONCLUSTERED INDEX [IX_WarehouseProduct_IsActive] ON [WarehouseProduct] ([IsActive])",
-                
+
                 // 库存数量索引
                 ["IX_WarehouseProduct_StockQuantity"] = "CREATE NONCLUSTERED INDEX [IX_WarehouseProduct_StockQuantity] ON [WarehouseProduct] ([StockQuantity]) WHERE [StockQuantity] IS NOT NULL",
-                
+
                 // 价格索引
                 ["IX_WarehouseProduct_DomesticPrice"] = "CREATE NONCLUSTERED INDEX [IX_WarehouseProduct_DomesticPrice] ON [WarehouseProduct] ([DomesticPrice]) WHERE [DomesticPrice] IS NOT NULL",
                 ["IX_WarehouseProduct_OEMPrice"] = "CREATE NONCLUSTERED INDEX [IX_WarehouseProduct_OEMPrice] ON [WarehouseProduct] ([OEMPrice]) WHERE [OEMPrice] IS NOT NULL",
                 ["IX_WarehouseProduct_ImportPrice"] = "CREATE NONCLUSTERED INDEX [IX_WarehouseProduct_ImportPrice] ON [WarehouseProduct] ([ImportPrice]) WHERE [ImportPrice] IS NOT NULL",
-                
+
                 // 时间索引
                 ["IX_WarehouseProduct_CreatedAt"] = "CREATE NONCLUSTERED INDEX [IX_WarehouseProduct_CreatedAt] ON [WarehouseProduct] ([CreatedAt])",
                 ["IX_WarehouseProduct_UpdatedAt"] = "CREATE NONCLUSTERED INDEX [IX_WarehouseProduct_UpdatedAt] ON [WarehouseProduct] ([UpdatedAt])"
@@ -87,9 +87,9 @@ namespace BlazorApp.Api.Data
                         FROM sys.indexes i
                         INNER JOIN sys.objects o ON i.object_id = o.object_id
                         WHERE i.name = '{index.Key}' AND o.name = 'WarehouseProduct'";
-                    
+
                     var indexExists = await db.Ado.SqlQuerySingleAsync<int>(existsQuery);
-                    
+
                     if (indexExists == 0)
                     {
                         await db.Ado.ExecuteCommandAsync(index.Value);
@@ -116,13 +116,13 @@ namespace BlazorApp.Api.Data
             {
                 // 库存预警复合索引
                 ["IX_WarehouseProduct_StockAlert"] = "CREATE NONCLUSTERED INDEX [IX_WarehouseProduct_StockAlert] ON [WarehouseProduct] ([IsActive], [StockQuantity], [StockAlertQuantity]) WHERE [StockQuantity] IS NOT NULL AND [StockAlertQuantity] IS NOT NULL",
-                
+
                 // 分类+状态复合索引
                 ["IX_WarehouseProduct_Category_Active"] = "CREATE NONCLUSTERED INDEX [IX_WarehouseProduct_Category_Active] ON [WarehouseProduct] ([CategoryGUID], [IsActive]) WHERE [CategoryGUID] IS NOT NULL",
-                
+
                 // 品牌+状态复合索引
                 ["IX_WarehouseProduct_Brand_Active"] = "CREATE NONCLUSTERED INDEX [IX_WarehouseProduct_Brand_Active] ON [WarehouseProduct] ([Brand], [IsActive]) WHERE [Brand] IS NOT NULL",
-                
+
                 // 关键字搜索复合索引
                 ["IX_WarehouseProduct_Search"] = "CREATE NONCLUSTERED INDEX [IX_WarehouseProduct_Search] ON [WarehouseProduct] ([ProductName], [ProductCode], [Barcode], [Brand], [IsActive])"
             };
@@ -137,9 +137,9 @@ namespace BlazorApp.Api.Data
                         FROM sys.indexes i
                         INNER JOIN sys.objects o ON i.object_id = o.object_id
                         WHERE i.name = '{index.Key}' AND o.name = 'WarehouseProduct'";
-                    
+
                     var indexExists = await db.Ado.SqlQuerySingleAsync<int>(existsQuery);
-                    
+
                     if (indexExists == 0)
                     {
                         await db.Ado.ExecuteCommandAsync(index.Value);
@@ -168,13 +168,13 @@ namespace BlazorApp.Api.Data
                 ["IX_ProductLocation_ProductCode"] = ("ProductLocation", "CREATE NONCLUSTERED INDEX [IX_ProductLocation_ProductCode] ON [ProductLocation] ([ProductCode])"),
                 ["IX_ProductLocation_LocationGuid"] = ("ProductLocation", "CREATE NONCLUSTERED INDEX [IX_ProductLocation_LocationGuid] ON [ProductLocation] ([LocationGuid]) WHERE [LocationGuid] IS NOT NULL"),
                 ["IX_ProductLocation_Product_Location"] = ("ProductLocation", "CREATE NONCLUSTERED INDEX [IX_ProductLocation_Product_Location] ON [ProductLocation] ([ProductCode], [LocationGuid]) WHERE [LocationGuid] IS NOT NULL"),
-                
+
                 // WarehouseCategory表索引
                 ["IX_WarehouseCategory_ParentGUID"] = ("WarehouseCategory", "CREATE NONCLUSTERED INDEX [IX_WarehouseCategory_ParentGUID] ON [WarehouseCategory] ([ParentGUID]) WHERE [ParentGUID] IS NOT NULL"),
                 ["IX_WarehouseCategory_Parent_Active"] = ("WarehouseCategory", "CREATE NONCLUSTERED INDEX [IX_WarehouseCategory_Parent_Active] ON [WarehouseCategory] ([ParentGUID], [IsActive])"),
                 ["IX_WarehouseCategory_SortOrder"] = ("WarehouseCategory", "CREATE NONCLUSTERED INDEX [IX_WarehouseCategory_SortOrder] ON [WarehouseCategory] ([SortOrder]) WHERE [SortOrder] IS NOT NULL"),
                 ["IX_WarehouseCategory_CategoryName"] = ("WarehouseCategory", "CREATE NONCLUSTERED INDEX [IX_WarehouseCategory_CategoryName] ON [WarehouseCategory] ([CategoryName])"),
-                
+
                 // Product表索引（支持与WarehouseProduct的关联查询）
                 ["IX_Product_ProductCode"] = ("Product", "CREATE UNIQUE NONCLUSTERED INDEX [IX_Product_ProductCode] ON [Product] ([ProductCode])"),
                 ["IX_Product_ProductName"] = ("Product", "CREATE NONCLUSTERED INDEX [IX_Product_ProductName] ON [Product] ([ProductName])"),
@@ -196,9 +196,9 @@ namespace BlazorApp.Api.Data
                         FROM sys.indexes i
                         INNER JOIN sys.objects o ON i.object_id = o.object_id
                         WHERE i.name = '{index.Key}' AND o.name = '{index.Value.tableName}'";
-                    
+
                     var indexExists = await db.Ado.SqlQuerySingleAsync<int>(existsQuery);
-                    
+
                     if (indexExists == 0)
                     {
                         await db.Ado.ExecuteCommandAsync(index.Value.sql);
@@ -240,7 +240,7 @@ namespace BlazorApp.Api.Data
                                AND StockQuantity IS NOT NULL 
                                THEN 1 END) as OutOfStockCount
                 FROM WarehouseProduct",
-                
+
                 // 按分类统计视图
                 ["V_WarehouseProductStatsByCategory"] = @"
                 CREATE VIEW [V_WarehouseProductStatsByCategory] AS
@@ -266,9 +266,9 @@ namespace BlazorApp.Api.Data
                         SELECT COUNT(*) 
                         FROM INFORMATION_SCHEMA.VIEWS 
                         WHERE TABLE_NAME = '{view.Key}'";
-                    
+
                     var viewExists = await db.Ado.SqlQuerySingleAsync<int>(existsQuery);
-                    
+
                     if (viewExists == 0)
                     {
                         await db.Ado.ExecuteCommandAsync(view.Value);
@@ -297,7 +297,7 @@ namespace BlazorApp.Api.Data
 
                 // SQL Server使用UPDATE STATISTICS更新统计信息
                 var tables = new[] { "WarehouseProduct", "ProductLocation", "WarehouseCategory", "Product" };
-                
+
                 foreach (var table in tables)
                 {
                     try
@@ -337,7 +337,7 @@ namespace BlazorApp.Api.Data
             {
                 // 忽略解析错误
             }
-            
+
             return "Unknown";
         }
 
@@ -353,7 +353,7 @@ namespace BlazorApp.Api.Data
                     FROM sys.indexes i
                     INNER JOIN sys.objects o ON i.object_id = o.object_id
                     WHERE i.name = @indexName AND o.name = @tableName";
-                
+
                 var count = await db.Ado.SqlQuerySingleAsync<int>(existsQuery, new { indexName, tableName });
                 return count > 0;
             }
@@ -379,9 +379,9 @@ namespace BlazorApp.Api.Data
                       AND i.name NOT LIKE 'FK_%'
                       AND i.name LIKE 'IX_%'
                     ORDER BY i.name";
-                
+
                 var result = await db.Ado.GetDataTableAsync(query);
-                
+
                 return result.AsEnumerable()
                     .Select(row => row["name"].ToString() ?? "")
                     .Where(name => !string.IsNullOrEmpty(name))

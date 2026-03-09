@@ -1325,17 +1325,17 @@ namespace BlazorApp.Api.Services
                         DisplayName = g.Key, // 暂时使用Category作为显示名，实际可以加字典表
                         Description = $"{g.Key}相关权限",
                         Permissions = g.Select(p => new PermissionDto
-                            {
-                                Name = p.Code,
-                                DisplayName = p.Name,
-                                Description = p.Description,
-                                Category = p.Category,
-                                IsSystemPermission = false, // 从数据库加载的权限默认为自定义权限
-                                CreatedAt = p.CreatedAt,
-                                CreatedBy = p.CreatedBy,
-                                UpdatedAt = p.UpdatedAt,
-                                UpdatedBy = p.UpdatedBy,
-                            })
+                        {
+                            Name = p.Code,
+                            DisplayName = p.Name,
+                            Description = p.Description,
+                            Category = p.Category,
+                            IsSystemPermission = false, // 从数据库加载的权限默认为自定义权限
+                            CreatedAt = p.CreatedAt,
+                            CreatedBy = p.CreatedBy,
+                            UpdatedAt = p.UpdatedAt,
+                            UpdatedBy = p.UpdatedBy,
+                        })
                             .ToList(),
                     })
                     .ToList();
@@ -1740,8 +1740,8 @@ namespace BlazorApp.Api.Services
 
                         var newCode = $"{dto.Code}.{action}";
                         var newName = $"{dto.Name} - {suffix}";
-                        var newDescription = !string.IsNullOrWhiteSpace(dto.Description) 
-                            ? $"{dto.Description} - {suffix}" 
+                        var newDescription = !string.IsNullOrWhiteSpace(dto.Description)
+                            ? $"{dto.Description} - {suffix}"
                             : $"{newName}";
 
                         permissionDtos.Add(new SysPermission
@@ -1792,13 +1792,13 @@ namespace BlazorApp.Api.Services
                     }
                     else
                     {
-                         _logger.LogWarning("权限代码已存在，跳过创建: {Code}", permission.Code);
+                        _logger.LogWarning("权限代码已存在，跳过创建: {Code}", permission.Code);
                     }
                 }
 
                 if (!createdPermissions.Any())
                 {
-                     return ApiResponse<List<SysPermission>>.Error("未创建任何权限（可能代码已存在）", "NO_PERMISSION_CREATED");
+                    return ApiResponse<List<SysPermission>>.Error("未创建任何权限（可能代码已存在）", "NO_PERMISSION_CREATED");
                 }
 
                 return ApiResponse<List<SysPermission>>.OK(createdPermissions, $"成功创建 {createdPermissions.Count} 个权限");

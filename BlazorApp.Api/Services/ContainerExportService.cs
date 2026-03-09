@@ -48,7 +48,7 @@ namespace BlazorApp.Api.Services
                 worksheet.Cell(row, 2).Value = container.ContainerNumber;
                 worksheet.Cell(row, 3).Value = "装柜日期";
                 worksheet.Cell(row, 4).Value = container.LoadingDate?.ToString("yyyy-MM-dd");
-                
+
                 row++;
                 worksheet.Cell(row, 1).Value = "预计到岸";
                 worksheet.Cell(row, 2).Value = container.EstimatedArrivalDate?.ToString("yyyy-MM-dd");
@@ -119,7 +119,7 @@ namespace BlazorApp.Api.Services
 
                 // 按货号升序排列数据
                 var sortedDetails = details.OrderBy(d => d.Product?.ItemNumber).ToList();
-                
+
                 // 填充数据
                 row = headerRow + 1;
                 foreach (var detail in sortedDetails)
@@ -208,7 +208,7 @@ namespace BlazorApp.Api.Services
                 using var stream = new MemoryStream();
                 var document = new Document(PageSize.A4.Rotate(), 20, 20, 30, 30);
                 var writer = PdfWriter.GetInstance(document, stream);
-                
+
                 document.Open();
 
                 // 设置中文字体
@@ -307,7 +307,7 @@ namespace BlazorApp.Api.Services
                         "remarks" => "备注",
                         _ => column
                     };
-                    
+
                     detailTable.AddCell(new PdfPCell(new Phrase(headerText, headerFont))
                     {
                         BackgroundColor = new BaseColor(240, 240, 240),
@@ -318,14 +318,14 @@ namespace BlazorApp.Api.Services
 
                 // 按货号升序排列数据
                 var sortedDetails = details.OrderBy(d => d.Product?.ItemNumber).ToList();
-                
+
                 // 数据行
                 foreach (var detail in sortedDetails)
                 {
                     foreach (var column in exportColumns)
                     {
                         PdfPCell cell;
-                        
+
                         if (column == "image")
                         {
                             // 处理图片列
@@ -360,7 +360,7 @@ namespace BlazorApp.Api.Services
                                 VerticalAlignment = Element.ALIGN_MIDDLE
                             };
                         }
-                        
+
                         detailTable.AddCell(cell);
                     }
                 }
@@ -392,7 +392,7 @@ namespace BlazorApp.Api.Services
         private async Task InsertImageToCell(IXLWorksheet worksheet, int row, int col, string? imageUrl, Dictionary<string, byte[]>? imageDict)
         {
             var imageCell = worksheet.Cell(row, col);
-            
+
             if (!string.IsNullOrEmpty(imageUrl) && imageDict != null && imageDict.TryGetValue(imageUrl, out var imageBytes))
             {
                 try
@@ -405,23 +405,23 @@ namespace BlazorApp.Api.Services
 
                     // 创建内存流并添加图片
                     using var imageStream = new MemoryStream(imageBytes);
-                    
+
                     // 使用ClosedXML正确方式嵌入图片到单元格
                     var imageId = Interlocked.Increment(ref _imageCounter);
                     var imageName = $"Img_{imageId}";
                     var picture = worksheet.AddPicture(imageStream, imageName);
-                    
+
                     // 先将图片定位到单元格（这样才能设置尺寸）
                     picture.MoveTo(imageCell, 5, 5); // 5像素边距，确保图片完全在单元格内
-                    
+
                     // 然后设置固定图片尺寸（避免覆盖其他列）
                     picture.Width = 60;  // 固定宽度60像素
                     picture.Height = 60; // 固定高度60像素
-                    
+
                     // 设置图片单元格样式
                     imageCell.Style.Alignment.Horizontal = XLAlignmentHorizontalValues.Center;
                     imageCell.Style.Alignment.Vertical = XLAlignmentVerticalValues.Center;
-                    
+
                     _logger.LogDebug("成功插入图片到Excel: {ImageUrl}, 大小: {Width}x{Height}", imageUrl, picture.Width, picture.Height);
                 }
                 catch (Exception ex)
@@ -510,19 +510,19 @@ namespace BlazorApp.Api.Services
                 {
                     // 创建图片对象
                     var image = iTextSharp.text.Image.GetInstance(imageBytes);
-                    
+
                     // 设置固定的单元格尺寸限制
                     float maxWidth = 50f;
                     float maxHeight = 50f;
-                    
+
                     // 计算缩放比例，保持宽高比
                     float scaleX = maxWidth / image.Width;
                     float scaleY = maxHeight / image.Height;
                     float scale = Math.Min(scaleX, scaleY); // 选择较小的缩放比例以确保图片完全适配
-                    
+
                     // 应用缩放（使用ScalePercent而不是ScaleAbsolute）
                     image.ScalePercent(scale * 100);
-                    
+
                     // 创建包含图片的单元格
                     var cell = new PdfPCell(image, true)
                     {
@@ -531,7 +531,7 @@ namespace BlazorApp.Api.Services
                         FixedHeight = 55f, // 固定单元格高度
                         Padding = 2f
                     };
-                    
+
                     return cell;
                 }
                 else if (!string.IsNullOrEmpty(imageUrl))

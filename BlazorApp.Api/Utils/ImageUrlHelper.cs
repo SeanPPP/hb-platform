@@ -39,7 +39,7 @@ namespace BlazorApp.Api.Utils
 
             // 检查是否包含重复的http协议头
             var httpCount = Regex.Matches(url, @"https?://", RegexOptions.IgnoreCase).Count;
-            
+
             if (httpCount <= 1)
             {
                 // 只有一个http协议头，没有重复问题
@@ -50,10 +50,10 @@ namespace BlazorApp.Api.Utils
             int lastHttpIndex = -1;
             int lastHttpsIndex = url.LastIndexOf("https://", StringComparison.OrdinalIgnoreCase);
             int lastHttpIndex2 = url.LastIndexOf("http://", StringComparison.OrdinalIgnoreCase);
-            
+
             // 取最后出现的位置
             lastHttpIndex = Math.Max(lastHttpsIndex, lastHttpIndex2);
-            
+
             if (lastHttpIndex > 0)
             {
                 // 从最后一个http/https位置开始到结尾就是正确的URL

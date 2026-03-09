@@ -244,7 +244,7 @@ namespace BlazorApp.Api.Services
                         Border = PdfRectangle.NO_BORDER,
                     }
                 );
-               
+
                 infoTable.AddCell(
                     new PdfPCell(new Phrase("Device:", boldFont))
                     {

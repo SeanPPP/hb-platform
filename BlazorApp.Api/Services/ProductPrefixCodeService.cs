@@ -44,7 +44,7 @@ namespace BlazorApp.Api.Services
                 // 应用搜索条件
                 if (!string.IsNullOrWhiteSpace(query.Search))
                 {
-                    prefixQuery = prefixQuery.Where((p, s) => 
+                    prefixQuery = prefixQuery.Where((p, s) =>
                         p.PrefixName.Contains(query.Search) ||
                         (p.PrefixDescription != null && p.PrefixDescription.Contains(query.Search)) ||
                         (s.SupplierName != null && s.SupplierName.Contains(query.Search)));
@@ -158,10 +158,10 @@ namespace BlazorApp.Api.Services
                         UpdatedAt = p.UpdatedAt,
                         CreatedBy = p.CreatedBy,
                         UpdatedBy = p.UpdatedBy,
-                        Supplier = new ChinaSupplier 
-                        { 
+                        Supplier = new ChinaSupplier
+                        {
                             SupplierCode = s.SupplierCode,
-                            SupplierName = s.SupplierName 
+                            SupplierName = s.SupplierName
                         }
                     })
                     .FirstAsync();
@@ -317,9 +317,9 @@ namespace BlazorApp.Api.Services
 
                 // 检查前缀代码是否已存在（排除当前记录）
                 var existingPrefix = await db.Queryable<ProductPrefixCode>()
-                    .Where(p => p.SupplierCode == prefix.SupplierCode && 
-                               p.PrefixName == dto.PrefixName && 
-                               p.PrefixCode != prefixCode && 
+                    .Where(p => p.SupplierCode == prefix.SupplierCode &&
+                               p.PrefixName == dto.PrefixName &&
+                               p.PrefixCode != prefixCode &&
                                !p.IsDeleted)
                     .FirstAsync();
 
@@ -500,7 +500,7 @@ namespace BlazorApp.Api.Services
                 if (duplicatePrefixes.Any())
                 {
                     return ApiResponse<List<ProductPrefixCodeDto>>.Error(
-                        $"以下前缀代码已存在: {string.Join(", ", duplicatePrefixes)}", 
+                        $"以下前缀代码已存在: {string.Join(", ", duplicatePrefixes)}",
                         "PREFIX_NAMES_EXISTS");
                 }
 
@@ -582,7 +582,7 @@ namespace BlazorApp.Api.Services
                 if (usedPrefixes.Any())
                 {
                     return ApiResponse<bool>.Error(
-                        $"以下前缀已被商品使用，无法删除: {string.Join(", ", usedPrefixes)}", 
+                        $"以下前缀已被商品使用，无法删除: {string.Join(", ", usedPrefixes)}",
                         "PREFIXES_IN_USE");
                 }
 

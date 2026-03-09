@@ -106,23 +106,23 @@ namespace BlazorApp.Api.Services
                 switch (request.SortBy.ToLower())
                 {
                     case "loadingdate":
-                        query = request.SortDirection.ToLower() == "asc" 
-                            ? query.OrderBy(c => c.LoadingDate) 
+                        query = request.SortDirection.ToLower() == "asc"
+                            ? query.OrderBy(c => c.LoadingDate)
                             : query.OrderByDescending(c => c.LoadingDate);
                         break;
                     case "estimatedarrivaldate":
-                        query = request.SortDirection.ToLower() == "asc" 
-                            ? query.OrderBy(c => c.EstimatedArrivalDate) 
+                        query = request.SortDirection.ToLower() == "asc"
+                            ? query.OrderBy(c => c.EstimatedArrivalDate)
                             : query.OrderByDescending(c => c.EstimatedArrivalDate);
                         break;
                     case "actualarrivaldate":
-                        query = request.SortDirection.ToLower() == "asc" 
-                            ? query.OrderBy(c => c.ActualArrivalDate) 
+                        query = request.SortDirection.ToLower() == "asc"
+                            ? query.OrderBy(c => c.ActualArrivalDate)
                             : query.OrderByDescending(c => c.ActualArrivalDate);
                         break;
                     case "containernumber":
-                        query = request.SortDirection.ToLower() == "asc" 
-                            ? query.OrderBy(c => c.ContainerNumber) 
+                        query = request.SortDirection.ToLower() == "asc"
+                            ? query.OrderBy(c => c.ContainerNumber)
                             : query.OrderByDescending(c => c.ContainerNumber);
                         break;
                     default:
@@ -450,7 +450,7 @@ namespace BlazorApp.Api.Services
                     return null;
 
                 var detailDto = _mapper.Map<YiwuContainerDetailDto>(detail);
-                
+
                 // 手动计算体积：装柜件数 × 单件体积
                 if (detailDto.LoadingPieces.HasValue && detailDto.UnitVolume.HasValue)
                 {
@@ -620,7 +620,7 @@ namespace BlazorApp.Api.Services
                 var products = await _context.Db.Queryable<DomesticProduct>()
                     .Where(p => itemNumbers.Contains(p.HBProductNo!) && !p.IsDeleted)
                     .ToListAsync();
-                
+
                 var productDict = products.Where(p => !string.IsNullOrEmpty(p.HBProductNo))
                     .ToDictionary(p => p.HBProductNo!, p => p);
 
@@ -628,11 +628,11 @@ namespace BlazorApp.Api.Services
                 var productCodes = products.Select(p => p.ProductCode).Where(x => !string.IsNullOrEmpty(x)).ToList();
                 var existingDetails = await _context.ContainerDetailDb
                     .AsQueryable()
-                    .Where(d => d.ContainerCode == request.ContainerCode 
-                           && productCodes.Contains(d.ProductCode!) 
+                    .Where(d => d.ContainerCode == request.ContainerCode
+                           && productCodes.Contains(d.ProductCode!)
                            && !d.IsDeleted)
                     .ToListAsync();
-                
+
                 var existingDetailDict = existingDetails.Where(d => !string.IsNullOrEmpty(d.ProductCode))
                     .ToDictionary(d => d.ProductCode!, d => d);
 
@@ -664,7 +664,7 @@ namespace BlazorApp.Api.Services
                             existingDetail.PackingQuantity = product.PackingQuantity;
                             existingDetail.UnitVolume = product.UnitVolume;
                             existingDetail.UpdatedAt = DateTime.UtcNow;
-                            
+
                             // 合并备注信息
                             if (!string.IsNullOrEmpty(item.Remarks))
                             {
@@ -680,7 +680,7 @@ namespace BlazorApp.Api.Services
 
                             // 重新计算字段
                             existingDetail.UpdateCalculatedFields();
-                            
+
                             detailsToUpdate.Add(existingDetail);
                             response.UpdatedCount++;
                         }
@@ -707,11 +707,11 @@ namespace BlazorApp.Api.Services
 
                             // 计算字段
                             detail.UpdateCalculatedFields();
-                            
+
                             detailsToInsert.Add(detail);
                             response.CreatedCount++;
                         }
-                        
+
                         response.SuccessCount++;
                     }
                     catch (Exception ex)
@@ -781,7 +781,7 @@ namespace BlazorApp.Api.Services
                 // 检查哪些明细不存在
                 var existingDetailCodes = existingDetails.Select(d => d.DetailCode).ToHashSet();
                 var notFoundDetails = detailCodes.Where(code => !existingDetailCodes.Contains(code)).ToList();
-                
+
                 // 记录不存在的明细
                 foreach (var notFoundCode in notFoundDetails)
                 {
@@ -807,7 +807,7 @@ namespace BlazorApp.Api.Services
                         .ExecuteCommandAsync();
 
                     response.SuccessCount = affectedRows;
-                    
+
                     if (affectedRows != existingDetails.Count)
                     {
                         var expectedCount = existingDetails.Count;
@@ -908,9 +908,9 @@ namespace BlazorApp.Api.Services
                         // 使用SqlSugar的批量更新功能
                         var updateResult = await _context.Db.Updateable(validDetailsToUpdate)
                             .ExecuteCommandAsync();
-                        
+
                         response.SuccessCount = updateResult;
-                        
+
                         if (updateResult != validDetailsToUpdate.Count)
                         {
                             var failedCount = validDetailsToUpdate.Count - updateResult;
@@ -986,8 +986,8 @@ namespace BlazorApp.Api.Services
                         TotalPieces = g.Sum(d => d.LoadingPieces ?? 0),
                         TotalQuantity = g.Sum(d => d.LoadingQuantity ?? 0),
                         TotalAmount = g.Sum(d => d.TotalAmount ?? 0),
-                        TotalVolume = g.Sum(d => (d.LoadingPieces.HasValue && d.UnitVolume.HasValue) 
-                            ? Math.Round(d.LoadingPieces.Value * d.UnitVolume.Value, 3) 
+                        TotalVolume = g.Sum(d => (d.LoadingPieces.HasValue && d.UnitVolume.HasValue)
+                            ? Math.Round(d.LoadingPieces.Value * d.UnitVolume.Value, 3)
                             : (d.TotalVolume ?? 0))
                     })
                     .ToList();
@@ -1011,13 +1011,13 @@ namespace BlazorApp.Api.Services
                 var results = await Task.WhenAll(updateTasks);
                 var successCount = results.Count(r => r > 0);
                 var totalCount = containerCodes?.Count ?? 0;
-                _logger.LogInformation("批量重新计算货柜汇总信息完成，成功更新 {SuccessCount}/{TotalCount} 个货柜", 
+                _logger.LogInformation("批量重新计算货柜汇总信息完成，成功更新 {SuccessCount}/{TotalCount} 个货柜",
                     successCount, totalCount);
                 return successCount == totalCount;
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "批量重新计算货柜汇总信息失败, ContainerCodes: {ContainerCodes}", 
+                _logger.LogError(ex, "批量重新计算货柜汇总信息失败, ContainerCodes: {ContainerCodes}",
                     string.Join(", ", containerCodes ?? Enumerable.Empty<string>()));
                 throw;
             }
@@ -1040,8 +1040,8 @@ namespace BlazorApp.Api.Services
                 var totalVolume = details.Sum(d => d.TotalVolume ?? 0);
 
                 var success = await _context.Db.Updateable<Container>()
-                    .SetColumns(c => new Container 
-                    { 
+                    .SetColumns(c => new Container
+                    {
                         TotalPieces = totalPieces,
                         TotalQuantity = totalQuantity,
                         TotalAmount = totalAmount,
@@ -1222,7 +1222,7 @@ namespace BlazorApp.Api.Services
 
                 // 调用翻译服务
                 var translationResult = await _translationService.BatchTranslateToEnglishAsync(chineseNames);
-                
+
                 _logger.LogInformation("批量翻译商品名称完成，翻译 {Count} 个名称", translationResult.Count);
                 return translationResult;
             }
@@ -1240,7 +1240,7 @@ namespace BlazorApp.Api.Services
         public async Task<BatchOperationResponse> BatchUpdateDomesticProductsAsync(List<DomesticProductDto> products)
         {
             var response = new BatchOperationResponse();
-            
+
             try
             {
                 if (products == null || !products.Any())
@@ -1289,12 +1289,13 @@ namespace BlazorApp.Api.Services
 
                         // 保存更改
                         await _context.Db.Updateable(existingProduct)
-                            .UpdateColumns(p => new { 
-                                p.ProductName, 
-                                p.EnglishProductName, 
-                                p.OEMPrice, 
-                                p.ImportPrice, 
-                                p.UpdatedAt 
+                            .UpdateColumns(p => new
+                            {
+                                p.ProductName,
+                                p.EnglishProductName,
+                                p.OEMPrice,
+                                p.ImportPrice,
+                                p.UpdatedAt
                             })
                             .ExecuteCommandAsync();
 
@@ -1351,7 +1352,7 @@ namespace BlazorApp.Api.Services
 
                 // 获取明细数据
                 var allDetails = await GetContainerDetailsAsync(request.ContainerCode);
-                var detailsToExport = request.Details.Any() 
+                var detailsToExport = request.Details.Any()
                     ? allDetails.Where(d => request.Details.Contains(d.DetailCode)).ToList()
                     : allDetails;
 
@@ -1411,7 +1412,7 @@ namespace BlazorApp.Api.Services
 
                 // 获取明细数据
                 var allDetails = await GetContainerDetailsAsync(request.ContainerCode);
-                var detailsToExport = request.Details.Any() 
+                var detailsToExport = request.Details.Any()
                     ? allDetails.Where(d => request.Details.Contains(d.DetailCode)).ToList()
                     : allDetails;
 

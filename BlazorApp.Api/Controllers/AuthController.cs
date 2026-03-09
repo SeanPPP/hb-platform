@@ -216,15 +216,15 @@ namespace BlazorApp.Api.Controllers
                     UpdatedAt = user.UpdatedAt ?? user.CreatedAt,
                     Roles =
                         user.Roles?.Select(r => new RoleDto
-                            {
-                                RoleGUID = r.RoleGUID,
-                                RoleName = r.RoleName,
-                                Description = r.Description,
-                                IsActive = r.IsActive,
-                                CreatedAt = r.CreatedAt,
-                                UpdatedAt = r.UpdatedAt ?? r.CreatedAt,
-                                UserCount = 0, // 这里不需要计算用户数
-                            })
+                        {
+                            RoleGUID = r.RoleGUID,
+                            RoleName = r.RoleName,
+                            Description = r.Description,
+                            IsActive = r.IsActive,
+                            CreatedAt = r.CreatedAt,
+                            UpdatedAt = r.UpdatedAt ?? r.CreatedAt,
+                            UserCount = 0, // 这里不需要计算用户数
+                        })
                             .ToList() ?? new List<RoleDto>(),
                     RoleNames = user.Roles?.Select(r => r.RoleName).ToList() ?? new List<string>(),
                     Permissions = allPermissions.Distinct().ToList(), // 🔐 添加权限列表（去重）

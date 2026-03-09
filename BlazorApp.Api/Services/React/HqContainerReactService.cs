@@ -62,23 +62,23 @@ namespace BlazorApp.Api.Services.React
                 .ToListAsync();
 
             var list = rows.Select(x => new ContainerMainDto
-                {
-                    ID = x.ID,
-                    HGUID = x.HGUID,
-                    货柜编号 = x.货柜编号,
-                    装柜日期 = x.装柜日期,
-                    预计到岸日期 = x.预计到岸日期,
-                    实际到货日期 = x.实际到货日期,
-                    合计件数 = x.合计件数,
-                    合计数量 = x.合计数量,
-                    合计金额 = x.合计金额,
-                    总体积 = x.总体积,
-                    成本浮率 = x.成本浮率,
-                    汇率 = x.汇率,
-                    运费 = x.运费,
-                    备注 = x.备注,
-                    状态 = x.状态,
-                })
+            {
+                ID = x.ID,
+                HGUID = x.HGUID,
+                货柜编号 = x.货柜编号,
+                装柜日期 = x.装柜日期,
+                预计到岸日期 = x.预计到岸日期,
+                实际到货日期 = x.实际到货日期,
+                合计件数 = x.合计件数,
+                合计数量 = x.合计数量,
+                合计金额 = x.合计金额,
+                总体积 = x.总体积,
+                成本浮率 = x.成本浮率,
+                汇率 = x.汇率,
+                运费 = x.运费,
+                备注 = x.备注,
+                状态 = x.状态,
+            })
                 .ToList();
 
             return new ContainerListResponse

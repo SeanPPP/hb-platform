@@ -455,7 +455,7 @@ namespace BlazorApp.Api.Services
         {
             var user = await _dbContext.Db.Queryable<User>()
                 .FirstAsync(u => u.UserGUID == userGuid);
-          var pwcheck = HashPassword(dto.NewPassword);
+            var pwcheck = HashPassword(dto.NewPassword);
 
             if (user == null) return false;
 

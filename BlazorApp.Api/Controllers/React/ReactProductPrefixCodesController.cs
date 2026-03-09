@@ -58,10 +58,10 @@ namespace BlazorApp.Api.Controllers.React
             catch (Exception ex)
             {
                 _logger.LogError(ex, "获取供应商前缀列表失败，SupplierCode: {SupplierCode}", supplierCode);
-                return StatusCode(500, new 
-                { 
-                    success = false, 
-                    message = "获取前缀列表失败" 
+                return StatusCode(500, new
+                {
+                    success = false,
+                    message = "获取前缀列表失败"
                 });
             }
         }
@@ -80,10 +80,10 @@ namespace BlazorApp.Api.Controllers.React
                 if (!ModelState.IsValid)
                 {
                     var errors = ModelState.Values.SelectMany(v => v.Errors.Select(e => e.ErrorMessage));
-                    return BadRequest(new 
-                    { 
-                        success = false, 
-                        message = $"输入验证失败: {string.Join(", ", errors)}" 
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = $"输入验证失败: {string.Join(", ", errors)}"
                     });
                 }
 
@@ -119,10 +119,10 @@ namespace BlazorApp.Api.Controllers.React
             catch (Exception ex)
             {
                 _logger.LogError(ex, "创建商品前缀失败");
-                return StatusCode(500, new 
-                { 
-                    success = false, 
-                    message = "前缀创建失败" 
+                return StatusCode(500, new
+                {
+                    success = false,
+                    message = "前缀创建失败"
                 });
             }
         }
@@ -141,10 +141,10 @@ namespace BlazorApp.Api.Controllers.React
             {
                 if (!ModelState.IsValid)
                 {
-                    return BadRequest(new 
-                    { 
-                        success = false, 
-                        message = "请求参数验证失败" 
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "请求参数验证失败"
                     });
                 }
 
@@ -178,10 +178,10 @@ namespace BlazorApp.Api.Controllers.React
             catch (Exception ex)
             {
                 _logger.LogError(ex, "更新商品前缀失败，PrefixCode: {PrefixCode}", prefixCode);
-                return StatusCode(500, new 
-                { 
-                    success = false, 
-                    message = "前缀更新失败" 
+                return StatusCode(500, new
+                {
+                    success = false,
+                    message = "前缀更新失败"
                 });
             }
         }
@@ -236,10 +236,10 @@ namespace BlazorApp.Api.Controllers.React
             catch (Exception ex)
             {
                 _logger.LogError(ex, "删除商品前缀失败，PrefixCode: {PrefixCode}", prefixCode);
-                return StatusCode(500, new 
-                { 
-                    success = false, 
-                    message = "前缀删除失败" 
+                return StatusCode(500, new
+                {
+                    success = false,
+                    message = "前缀删除失败"
                 });
             }
         }

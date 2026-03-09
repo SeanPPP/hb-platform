@@ -37,9 +37,9 @@ namespace BlazorApp.Api.Controllers
             {
                 _logger.LogInformation("开始执行基础查询性能测试");
 
-                var testHelper = new PerformanceTestHelper(_warehouseProductService, 
+                var testHelper = new PerformanceTestHelper(_warehouseProductService,
                     HttpContext.RequestServices.GetRequiredService<ILogger<PerformanceTestHelper>>());
-                
+
                 var result = await testHelper.RunBasicQueryPerformanceTestAsync();
                 var report = testHelper.GeneratePerformanceReport(result);
 
@@ -78,9 +78,9 @@ namespace BlazorApp.Api.Controllers
             {
                 _logger.LogInformation("开始执行大数据量查询性能测试");
 
-                var testHelper = new PerformanceTestHelper(_warehouseProductService, 
+                var testHelper = new PerformanceTestHelper(_warehouseProductService,
                     HttpContext.RequestServices.GetRequiredService<ILogger<PerformanceTestHelper>>());
-                
+
                 var result = await testHelper.RunLargeDataQueryPerformanceTestAsync();
                 var report = testHelper.GeneratePerformanceReport(result);
 
@@ -130,9 +130,9 @@ namespace BlazorApp.Api.Controllers
 
                 _logger.LogInformation("开始执行并发查询性能测试，并发数量: {ConcurrentCount}", concurrentCount);
 
-                var testHelper = new PerformanceTestHelper(_warehouseProductService, 
+                var testHelper = new PerformanceTestHelper(_warehouseProductService,
                     HttpContext.RequestServices.GetRequiredService<ILogger<PerformanceTestHelper>>());
-                
+
                 var result = await testHelper.RunConcurrentQueryPerformanceTestAsync(concurrentCount);
                 var report = testHelper.GeneratePerformanceReport(result);
 
@@ -172,7 +172,7 @@ namespace BlazorApp.Api.Controllers
             {
                 _logger.LogInformation("开始执行完整性能测试套件");
 
-                var testHelper = new PerformanceTestHelper(_warehouseProductService, 
+                var testHelper = new PerformanceTestHelper(_warehouseProductService,
                     HttpContext.RequestServices.GetRequiredService<ILogger<PerformanceTestHelper>>());
 
                 var results = new List<object>();
@@ -286,7 +286,7 @@ namespace BlazorApp.Api.Controllers
         private string GenerateSummaryReport(List<PerformanceTestResult> results)
         {
             var report = new System.Text.StringBuilder();
-            
+
             report.AppendLine("=== 性能测试套件汇总报告 ===");
             report.AppendLine($"测试时间: {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss} UTC");
             report.AppendLine($"总测试套件数量: {results.Count}");

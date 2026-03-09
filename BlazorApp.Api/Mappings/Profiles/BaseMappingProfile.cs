@@ -18,7 +18,7 @@ namespace BlazorApp.Api.Mappings.Profiles
         {
             if (string.IsNullOrEmpty(value))
                 return value;
-            
+
             return value.Length <= maxLength ? value : value.Substring(0, maxLength);
         }
     }

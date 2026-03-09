@@ -30,56 +30,56 @@ namespace BlazorApp.Api.Utils
 
             // 测试用例1: 简单分页查询
             var simpleQuery = new WarehouseProductQueryDto { PageNumber = 1, PageSize = 20 };
-            var result1 = await MeasureQueryPerformanceAsync("简单分页查询", 
+            var result1 = await MeasureQueryPerformanceAsync("简单分页查询",
                 () => _warehouseProductService.GetPagedProductsAsync(simpleQuery));
             results.Add(result1);
 
             // 测试用例2: 关键字搜索
-            var keywordQuery = new WarehouseProductQueryDto 
-            { 
-                PageNumber = 1, 
-                PageSize = 20, 
-                Keyword = "测试" 
+            var keywordQuery = new WarehouseProductQueryDto
+            {
+                PageNumber = 1,
+                PageSize = 20,
+                Keyword = "测试"
             };
-            var result2 = await MeasureQueryPerformanceAsync("关键字搜索查询", 
+            var result2 = await MeasureQueryPerformanceAsync("关键字搜索查询",
                 () => _warehouseProductService.GetPagedProductsAsync(keywordQuery));
             results.Add(result2);
 
             // 测试用例3: 分类过滤查询
-            var categoryQuery = new WarehouseProductQueryDto 
-            { 
-                PageNumber = 1, 
-                PageSize = 20, 
+            var categoryQuery = new WarehouseProductQueryDto
+            {
+                PageNumber = 1,
+                PageSize = 20,
                 CategoryGUID = "test-category-guid",
                 IncludeSubCategories = true
             };
-            var result3 = await MeasureQueryPerformanceAsync("分类过滤查询", 
+            var result3 = await MeasureQueryPerformanceAsync("分类过滤查询",
                 () => _warehouseProductService.GetPagedProductsAsync(categoryQuery));
             results.Add(result3);
 
             // 测试用例4: 复合条件查询
-            var complexQuery = new WarehouseProductQueryDto 
-            { 
-                PageNumber = 1, 
-                PageSize = 20, 
+            var complexQuery = new WarehouseProductQueryDto
+            {
+                PageNumber = 1,
+                PageSize = 20,
                 Keyword = "手机",
-               
+
                 MinPrice = 1000,
                 MaxPrice = 5000,
                 IsActive = true,
                 HasStockAlert = false
             };
-            var result4 = await MeasureQueryPerformanceAsync("复合条件查询", 
+            var result4 = await MeasureQueryPerformanceAsync("复合条件查询",
                 () => _warehouseProductService.GetPagedProductsAsync(complexQuery));
             results.Add(result4);
 
             // 测试用例5: 统计查询
-            var result5 = await MeasureQueryPerformanceAsync("统计查询", 
+            var result5 = await MeasureQueryPerformanceAsync("统计查询",
                 () => _warehouseProductService.GetProductStatsAsync());
             results.Add(result5);
 
             // 测试用例6: 库存预警查询
-            var result6 = await MeasureQueryPerformanceAsync("库存预警查询", 
+            var result6 = await MeasureQueryPerformanceAsync("库存预警查询",
                 () => _warehouseProductService.GetStockAlertProductsAsync());
             results.Add(result6);
 
@@ -103,32 +103,32 @@ namespace BlazorApp.Api.Utils
 
             // 测试不同页码的查询性能
             var pageNumbers = new[] { 1, 10, 50, 100, 500 };
-            
+
             foreach (var pageNumber in pageNumbers)
             {
-                var query = new WarehouseProductQueryDto 
-                { 
-                    PageNumber = pageNumber, 
-                    PageSize = 50 
+                var query = new WarehouseProductQueryDto
+                {
+                    PageNumber = pageNumber,
+                    PageSize = 50
                 };
-                
-                var result = await MeasureQueryPerformanceAsync($"第{pageNumber}页查询", 
+
+                var result = await MeasureQueryPerformanceAsync($"第{pageNumber}页查询",
                     () => _warehouseProductService.GetPagedProductsAsync(query));
                 results.Add(result);
             }
 
             // 测试不同页面大小的查询性能
             var pageSizes = new[] { 10, 20, 50, 100, 200 };
-            
+
             foreach (var pageSize in pageSizes)
             {
-                var query = new WarehouseProductQueryDto 
-                { 
-                    PageNumber = 1, 
-                    PageSize = pageSize 
+                var query = new WarehouseProductQueryDto
+                {
+                    PageNumber = 1,
+                    PageSize = pageSize
                 };
-                
-                var result = await MeasureQueryPerformanceAsync($"每页{pageSize}条记录查询", 
+
+                var result = await MeasureQueryPerformanceAsync($"每页{pageSize}条记录查询",
                     () => _warehouseProductService.GetPagedProductsAsync(query));
                 results.Add(result);
             }
@@ -158,7 +158,7 @@ namespace BlazorApp.Api.Utils
             for (int i = 0; i < concurrentCount; i++)
             {
                 var taskIndex = i;
-                var task = MeasureQueryPerformanceAsync($"并发查询-{taskIndex + 1}", 
+                var task = MeasureQueryPerformanceAsync($"并发查询-{taskIndex + 1}",
                     () => _warehouseProductService.GetPagedProductsAsync(query));
                 tasks.Add(task);
             }
@@ -238,7 +238,7 @@ namespace BlazorApp.Api.Utils
         public string GeneratePerformanceReport(PerformanceTestResult result)
         {
             var report = new System.Text.StringBuilder();
-            
+
             report.AppendLine($"=== {result.TestName} ===");
             report.AppendLine($"测试时间: {result.TestDateTime:yyyy-MM-dd HH:mm:ss} UTC");
             report.AppendLine($"测试用例数量: {result.TestCases.Count}");
@@ -252,7 +252,7 @@ namespace BlazorApp.Api.Utils
             {
                 var status = testCase.Success ? "✓" : "✗";
                 report.AppendLine($"{status} {testCase.TestName}: {testCase.ResponseTimeMs}ms ({testCase.ResultCount} 条结果)");
-                
+
                 if (!testCase.Success && !string.IsNullOrEmpty(testCase.ErrorMessage))
                 {
                     report.AppendLine($"   错误: {testCase.ErrorMessage}");
@@ -261,7 +261,7 @@ namespace BlazorApp.Api.Utils
 
             report.AppendLine();
             report.AppendLine("性能分析:");
-            
+
             var slowQueries = result.TestCases.Where(tc => tc.ResponseTimeMs > 200).ToList();
             if (slowQueries.Any())
             {

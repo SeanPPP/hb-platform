@@ -126,7 +126,7 @@ namespace BlazorApp.Api.Controllers
             try
             {
                 var product = await _productService.CreateAsync(createDto);
-                return CreatedAtAction(nameof(GetProduct), new { productGuid = product.ProductCode }, 
+                return CreatedAtAction(nameof(GetProduct), new { productGuid = product.ProductCode },
                     new { success = true, data = product });
             }
             catch (ValidationException ex)

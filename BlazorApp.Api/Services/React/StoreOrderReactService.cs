@@ -1336,8 +1336,8 @@ namespace BlazorApp.Api.Services.React
                         order,
                         item.ProductCode,
                         item.Quantity ?? 0, // 如果未传Quantity，在AddOrUpdateDetailAsync内部需要处理（或者不允许单独更新价格而不传数量？）
-                        // 注意：AddOrUpdateDetailAsync 目前设计是接收 Quantity。如果是只更新价格，需要重构。
-                        // 重构 AddOrUpdateDetailAsync 以支持可选参数。
+                                            // 注意：AddOrUpdateDetailAsync 目前设计是接收 Quantity。如果是只更新价格，需要重构。
+                                            // 重构 AddOrUpdateDetailAsync 以支持可选参数。
                         item.ImportPrice,
                         isUpdate: true,
                         isBatch: true, // 标记为批量操作

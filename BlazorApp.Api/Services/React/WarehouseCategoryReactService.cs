@@ -226,19 +226,19 @@ namespace BlazorApp.Api.Services.React
         {
             var sw = Stopwatch.StartNew();
             var query = _context.WarehouseProductDb.AsQueryable().Includes(p => p.Product);
-            
+
             if (!string.IsNullOrWhiteSpace(categoryGuid))
             {
                 // 获取当前分类及其所有子分类的GUID
                 var categoryIds = GetAllSubCategoryIds(categoryGuid);
-                
+
                 query = query.Where(w =>
                     SqlSugar.SqlFunc.Subqueryable<Product>()
                         .Where(p => p.ProductCode == w.ProductCode && categoryIds.Contains(p.WarehouseCategoryGUID))
                         .Any()
                 );
             }
-            
+
             if (!string.IsNullOrWhiteSpace(filter.ProductName))
             {
                 var keyword = filter.ProductName.Trim();
@@ -280,7 +280,7 @@ namespace BlazorApp.Api.Services.React
 
         private List<string> GetAllSubCategoryIds(string categoryGuid)
         {
-            try 
+            try
             {
                 // 一次性查询所有分类以构建树
                 var allCategories = _context.WarehouseCategoryDb.AsQueryable().ToList();

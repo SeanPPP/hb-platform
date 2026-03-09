@@ -8,7 +8,7 @@ namespace BlazorApp.Api.Controllers.React
 {
     [ApiController]
     [Route("api/react/v1/hq-products/translate-names")]
-   // [Authorize]
+    // [Authorize]
     public class ReactHqProductTranslationController : ControllerBase
     {
         private readonly IHqProductTranslationReactService _service;
@@ -116,7 +116,7 @@ namespace BlazorApp.Api.Controllers.React
         /// 按单个货柜编号翻译对应明细商品的英文名称
         /// </summary>
         [HttpPost("by-container-number/{containerNumber}")]
-      //  [Authorize(Roles = "Admin,WarehouseManager")]
+        //  [Authorize(Roles = "Admin,WarehouseManager")]
         public async Task<IActionResult> TranslateByContainerNumberSingle(
             string containerNumber,
             [FromQuery] bool overwriteExisting = false

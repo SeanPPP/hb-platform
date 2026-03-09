@@ -61,12 +61,12 @@ namespace BlazorApp.Api.Controllers
                 };
 
                 var result = await _productPrefixCodeService.GetProductPrefixCodesAsync(query);
-                
+
                 if (result.Success)
                 {
                     return Ok(result);
                 }
-                
+
                 return BadRequest(result);
             }
             catch (Exception ex)
@@ -88,17 +88,17 @@ namespace BlazorApp.Api.Controllers
             try
             {
                 var result = await _productPrefixCodeService.GetProductPrefixCodeByCodeAsync(prefixCode);
-                
+
                 if (result.Success)
                 {
                     return Ok(result);
                 }
-                
+
                 if (result.ErrorCode == "PREFIX_NOT_FOUND")
                 {
                     return NotFound(result);
                 }
-                
+
                 return BadRequest(result);
             }
             catch (Exception ex)
@@ -120,12 +120,12 @@ namespace BlazorApp.Api.Controllers
             try
             {
                 var result = await _productPrefixCodeService.GetPrefixesBySupplierCodeAsync(supplierCode);
-                
+
                 if (result.Success)
                 {
                     return Ok(result);
                 }
-                
+
                 return BadRequest(result);
             }
             catch (Exception ex)
@@ -147,12 +147,12 @@ namespace BlazorApp.Api.Controllers
             try
             {
                 var result = await _productPrefixCodeService.GetActivePrefixesAsync(supplierCode);
-                
+
                 if (result.Success)
                 {
                     return Ok(result);
                 }
-                
+
                 return BadRequest(result);
             }
             catch (Exception ex)
@@ -179,23 +179,23 @@ namespace BlazorApp.Api.Controllers
                 }
 
                 var result = await _productPrefixCodeService.CreateProductPrefixCodeAsync(dto);
-                
+
                 if (result.Success)
                 {
-                    return CreatedAtAction(nameof(GetProductPrefixCodeByCode), 
+                    return CreatedAtAction(nameof(GetProductPrefixCodeByCode),
                         new { prefixCode = result.Data?.PrefixCode }, result);
                 }
-                
+
                 if (result.ErrorCode == "SUPPLIER_NOT_FOUND")
                 {
                     return BadRequest(result);
                 }
-                
+
                 if (result.ErrorCode == "PREFIX_NAME_EXISTS")
                 {
                     return Conflict(result);
                 }
-                
+
                 return BadRequest(result);
             }
             catch (Exception ex)
@@ -223,22 +223,22 @@ namespace BlazorApp.Api.Controllers
                 }
 
                 var result = await _productPrefixCodeService.UpdateProductPrefixCodeAsync(prefixCode, dto);
-                
+
                 if (result.Success)
                 {
                     return Ok(result);
                 }
-                
+
                 if (result.ErrorCode == "PREFIX_NOT_FOUND")
                 {
                     return NotFound(result);
                 }
-                
+
                 if (result.ErrorCode == "PREFIX_NAME_EXISTS")
                 {
                     return Conflict(result);
                 }
-                
+
                 return BadRequest(result);
             }
             catch (Exception ex)
@@ -260,22 +260,22 @@ namespace BlazorApp.Api.Controllers
             try
             {
                 var result = await _productPrefixCodeService.DeleteProductPrefixCodeAsync(prefixCode);
-                
+
                 if (result.Success)
                 {
                     return Ok(result);
                 }
-                
+
                 if (result.ErrorCode == "PREFIX_NOT_FOUND")
                 {
                     return NotFound(result);
                 }
-                
+
                 if (result.ErrorCode == "PREFIX_IN_USE")
                 {
                     return Conflict(result);
                 }
-                
+
                 return BadRequest(result);
             }
             catch (Exception ex)
@@ -298,17 +298,17 @@ namespace BlazorApp.Api.Controllers
             try
             {
                 var result = await _productPrefixCodeService.TogglePrefixStatusAsync(prefixCode, isActive);
-                
+
                 if (result.Success)
                 {
                     return Ok(result);
                 }
-                
+
                 if (result.ErrorCode == "PREFIX_NOT_FOUND")
                 {
                     return NotFound(result);
                 }
-                
+
                 return BadRequest(result);
             }
             catch (Exception ex)
@@ -335,17 +335,17 @@ namespace BlazorApp.Api.Controllers
             try
             {
                 var result = await _productPrefixCodeService.CheckPrefixNameExistsAsync(supplierCode, prefixName, excludePrefixCode);
-                
+
                 if (result.Success)
                 {
                     return Ok(result);
                 }
-                
+
                 return BadRequest(result);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "检查前缀代码是否存在失败，SupplierCode: {SupplierCode}, PrefixName: {PrefixName}", 
+                _logger.LogError(ex, "检查前缀代码是否存在失败，SupplierCode: {SupplierCode}, PrefixName: {PrefixName}",
                     supplierCode, prefixName);
                 return StatusCode(500, ApiResponse<object>.Error("服务器内部错误", "INTERNAL_SERVER_ERROR"));
             }
@@ -368,22 +368,22 @@ namespace BlazorApp.Api.Controllers
                 }
 
                 var result = await _productPrefixCodeService.BatchCreateProductPrefixCodesAsync(dto);
-                
+
                 if (result.Success)
                 {
                     return Ok(result);
                 }
-                
+
                 if (result.ErrorCode == "SUPPLIER_NOT_FOUND")
                 {
                     return BadRequest(result);
                 }
-                
+
                 if (result.ErrorCode == "PREFIX_NAMES_EXISTS")
                 {
                     return Conflict(result);
                 }
-                
+
                 return BadRequest(result);
             }
             catch (Exception ex)
@@ -410,22 +410,22 @@ namespace BlazorApp.Api.Controllers
                 }
 
                 var result = await _productPrefixCodeService.BatchDeleteProductPrefixCodesAsync(prefixCodes);
-                
+
                 if (result.Success)
                 {
                     return Ok(result);
                 }
-                
+
                 if (result.ErrorCode == "SOME_PREFIXES_NOT_FOUND")
                 {
                     return BadRequest(result);
                 }
-                
+
                 if (result.ErrorCode == "PREFIXES_IN_USE")
                 {
                     return Conflict(result);
                 }
-                
+
                 return BadRequest(result);
             }
             catch (Exception ex)
@@ -452,17 +452,17 @@ namespace BlazorApp.Api.Controllers
                 }
 
                 var result = await _productPrefixCodeService.UpdatePrefixSortOrderAsync(prefixCodes);
-                
+
                 if (result.Success)
                 {
                     return Ok(result);
                 }
-                
+
                 if (result.ErrorCode == "SOME_PREFIXES_NOT_FOUND")
                 {
                     return BadRequest(result);
                 }
-                
+
                 return BadRequest(result);
             }
             catch (Exception ex)

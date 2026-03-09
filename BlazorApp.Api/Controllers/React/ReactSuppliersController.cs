@@ -37,7 +37,7 @@ namespace BlazorApp.Api.Controllers.React
             try
             {
                 var suppliers = await _supplierReactService.GetActiveSupplierListAsync();
-                
+
                 return Ok(new
                 {
                     success = true,
@@ -54,10 +54,10 @@ namespace BlazorApp.Api.Controllers.React
             catch (Exception ex)
             {
                 _logger.LogError(ex, "获取启用供应商列表失败");
-                return StatusCode(500, new 
-                { 
-                    success = false, 
-                    message = "获取供应商列表失败" 
+                return StatusCode(500, new
+                {
+                    success = false,
+                    message = "获取供应商列表失败"
                 });
             }
         }
@@ -75,21 +75,21 @@ namespace BlazorApp.Api.Controllers.React
             {
                 if (string.IsNullOrWhiteSpace(supplierCode))
                 {
-                    return BadRequest(new 
-                    { 
-                        success = false, 
-                        message = "供应商编码不能为空" 
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "供应商编码不能为空"
                     });
                 }
 
                 var supplier = await _supplierReactService.GetSupplierByCodeAsync(supplierCode);
-                
+
                 if (supplier == null)
                 {
-                    return NotFound(new 
-                    { 
-                        success = false, 
-                        message = "供应商不存在" 
+                    return NotFound(new
+                    {
+                        success = false,
+                        message = "供应商不存在"
                     });
                 }
 
@@ -103,10 +103,10 @@ namespace BlazorApp.Api.Controllers.React
             catch (Exception ex)
             {
                 _logger.LogError(ex, "根据编码获取供应商详情失败: {SupplierCode}", supplierCode);
-                return StatusCode(500, new 
-                { 
-                    success = false, 
-                    message = "获取供应商详情失败" 
+                return StatusCode(500, new
+                {
+                    success = false,
+                    message = "获取供应商详情失败"
                 });
             }
         }

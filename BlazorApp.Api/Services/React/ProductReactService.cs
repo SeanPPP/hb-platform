@@ -386,12 +386,12 @@ namespace BlazorApp.Api.Services.React
                 product.UpdatedBy = currentUser;
 
                 await _db.Updateable(product).ExecuteCommandAsync();
-                
+
                 await _db.Updateable<StoreRetailPrice>()
                     .SetColumns(srp => srp.IsAutoPricing == product.IsAutoPricing)
                     .Where(srp => srp.ProductCode == product.ProductCode)
                     .ExecuteCommandAsync();
-                
+
                 return await GetByIdAsync(productCode);
             }
             catch (Exception ex)
@@ -433,7 +433,7 @@ namespace BlazorApp.Api.Services.React
             product.UpdatedBy = currentUser;
 
             await _db.Updateable(product).ExecuteCommandAsync();
-            
+
             await _db.Updateable<StoreRetailPrice>()
                 .SetColumns(srp => srp.IsAutoPricing == product.IsAutoPricing)
                 .Where(srp => srp.ProductCode == newProductCode)
@@ -580,7 +580,7 @@ namespace BlazorApp.Api.Services.React
                             product.UpdatedBy = currentUser;
 
                             await _db.Updateable(product).ExecuteCommandAsync();
-                            
+
                             if (item.IsAutoPricing.HasValue)
                             {
                                 await _db.Updateable<StoreRetailPrice>()
@@ -588,7 +588,7 @@ namespace BlazorApp.Api.Services.React
                                     .Where(srp => srp.ProductCode == item.ProductCode)
                                     .ExecuteCommandAsync();
                             }
-                            
+
                             result.SuccessCount++;
                         }
                         catch (Exception ex)

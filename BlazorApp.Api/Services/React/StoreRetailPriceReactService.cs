@@ -895,7 +895,7 @@ namespace BlazorApp.Api.Services.React
                                     StoreCode = it.StoreCode,
                                     ProductCode = it.ProductCode,
                                     SupplierCode = it.SupplierCode,
-                                    StoreProductCode = it.StoreCode+ it.ProductCode,
+                                    StoreProductCode = it.StoreCode + it.ProductCode,
                                     PurchasePrice = it.PurchasePrice,
                                     StoreRetailPriceValue = it.StoreRetailPriceValue,
                                     DiscountRate = it.DiscountRate,

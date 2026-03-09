@@ -43,37 +43,37 @@ namespace BlazorApp.Api.Services
                     .LeftJoin<Product>((wp, p) => wp.ProductCode == p.ProductCode)
                     .LeftJoin<DomesticProduct>((wp, p, dp) => wp.ProductCode == dp.ProductCode)
                     .LeftJoin<ChinaSupplier>((wp, p, dp, cs) => dp.SupplierCode == cs.SupplierCode)
-                    .WhereIF(!string.IsNullOrEmpty(filter.ProductCode), 
+                    .WhereIF(!string.IsNullOrEmpty(filter.ProductCode),
                         (wp, p, dp, cs) => wp.ProductCode.Contains(filter.ProductCode!))
-                    .WhereIF(!string.IsNullOrEmpty(filter.ProductName), 
-                        (wp, p, dp, cs) => p.ProductName != null && 
-                                   (p.ProductName.Contains(filter.ProductName!) || 
+                    .WhereIF(!string.IsNullOrEmpty(filter.ProductName),
+                        (wp, p, dp, cs) => p.ProductName != null &&
+                                   (p.ProductName.Contains(filter.ProductName!) ||
                                     (p.EnglishName != null && p.EnglishName.Contains(filter.ProductName!))))
-                    .WhereIF(!string.IsNullOrEmpty(filter.ItemNumber), 
+                    .WhereIF(!string.IsNullOrEmpty(filter.ItemNumber),
                         (wp, p, dp, cs) => p.ItemNumber != null && p.ItemNumber.Contains(filter.ItemNumber!))
-                    .WhereIF(!string.IsNullOrEmpty(filter.LocalSupplierCode), 
+                    .WhereIF(!string.IsNullOrEmpty(filter.LocalSupplierCode),
                         (wp, p, dp, cs) => (dp.SupplierCode != null && dp.SupplierCode.Contains(filter.LocalSupplierCode!)) ||
                                            (cs.SupplierCode != null && cs.SupplierCode.Contains(filter.LocalSupplierCode!)) ||
                                            (cs.SupplierName != null && cs.SupplierName.Contains(filter.LocalSupplierCode!)))
-                    .WhereIF(filter.DomesticPriceMin.HasValue, 
+                    .WhereIF(filter.DomesticPriceMin.HasValue,
                         (wp, p, dp, cs) => wp.DomesticPrice >= filter.DomesticPriceMin)
-                    .WhereIF(filter.DomesticPriceMax.HasValue, 
+                    .WhereIF(filter.DomesticPriceMax.HasValue,
                         (wp, p, dp, cs) => wp.DomesticPrice <= filter.DomesticPriceMax)
-                    .WhereIF(filter.OEMPriceMin.HasValue, 
+                    .WhereIF(filter.OEMPriceMin.HasValue,
                         (wp, p, dp, cs) => wp.OEMPrice >= filter.OEMPriceMin)
-                    .WhereIF(filter.OEMPriceMax.HasValue, 
+                    .WhereIF(filter.OEMPriceMax.HasValue,
                         (wp, p, dp, cs) => wp.OEMPrice <= filter.OEMPriceMax)
-                    .WhereIF(filter.ImportPriceMin.HasValue, 
+                    .WhereIF(filter.ImportPriceMin.HasValue,
                         (wp, p, dp, cs) => wp.ImportPrice >= filter.ImportPriceMin)
-                    .WhereIF(filter.ImportPriceMax.HasValue, 
+                    .WhereIF(filter.ImportPriceMax.HasValue,
                         (wp, p, dp, cs) => wp.ImportPrice <= filter.ImportPriceMax)
-                    .WhereIF(filter.StockQuantityMin.HasValue, 
+                    .WhereIF(filter.StockQuantityMin.HasValue,
                         (wp, p, dp, cs) => wp.StockQuantity >= filter.StockQuantityMin)
-                    .WhereIF(filter.StockQuantityMax.HasValue, 
+                    .WhereIF(filter.StockQuantityMax.HasValue,
                         (wp, p, dp, cs) => wp.StockQuantity <= filter.StockQuantityMax)
-                    .WhereIF(filter.IsActive.HasValue, 
+                    .WhereIF(filter.IsActive.HasValue,
                         (wp, p, dp, cs) => wp.IsActive == filter.IsActive)
-                    .WhereIF(filter.ProductCodes != null && filter.ProductCodes.Any(), 
+                    .WhereIF(filter.ProductCodes != null && filter.ProductCodes.Any(),
                         (wp, p, dp, cs) => filter.ProductCodes!.Contains(wp.ProductCode)); // 外部传入的商品集合
 
                 // 仓位过滤（需要Join查询）
@@ -89,10 +89,10 @@ namespace BlazorApp.Api.Services
                 var sortField = string.IsNullOrEmpty(filter.SortField) ? "itemnumber" : filter.SortField.ToLower();
                 var sortOrder = string.IsNullOrEmpty(filter.SortOrder) ? "desc" : filter.SortOrder;
                 var isAsc = string.Equals(sortOrder, "asc", StringComparison.OrdinalIgnoreCase);
-                
+
                 // 对于货号排序，先按字符串排序（用于数据库查询），后面在内存中重新排序
                 var isItemNumberSort = sortField == "itemnumber";
-                
+
                 // 使用Lambda表达式进行排序
                 query = sortField switch
                 {
@@ -114,7 +114,7 @@ namespace BlazorApp.Api.Services
                 // 由于SqlSugar多表Join后Select有问题，我们使用SQL片段
                 var sqlable = query.Skip((pageIndex - 1) * pageSize).Take(pageSize);
                 var sql = sqlable.ToSql();
-                
+
                 var productCodesInPage = await _db.Ado.SqlQueryAsync<string>(
                     $"SELECT ProductCode FROM ({sql.Key}) AS t",
                     sql.Value
@@ -194,7 +194,7 @@ namespace BlazorApp.Api.Services
                 // 如果是按货号排序，在内存中重新按数字部分排序
                 if (isItemNumberSort)
                 {
-                    dtos = isAsc 
+                    dtos = isAsc
                         ? dtos.OrderBy(dto => ExtractItemNumberForSort(dto.ItemNumber)).ToList()
                         : dtos.OrderByDescending(dto => ExtractItemNumberForSort(dto.ItemNumber)).ToList();
                 }
@@ -343,7 +343,7 @@ namespace BlazorApp.Api.Services
                     return new { successCount, failedCount };
                 });
 
-                _logger.LogInformation("批量更新完成：成功{Success}条，失败{Failed}条", 
+                _logger.LogInformation("批量更新完成：成功{Success}条，失败{Failed}条",
                     updateResult.Data.successCount, updateResult.Data.failedCount);
 
                 return result;
@@ -510,7 +510,7 @@ namespace BlazorApp.Api.Services
                     result.AffectedCount = affected;
                     result.Success = affected > 0;
 
-                    _logger.LogInformation("批量设置{PriceType}价格为{Price}，影响{Count}条", 
+                    _logger.LogInformation("批量设置{PriceType}价格为{Price}，影响{Count}条",
                         request.PriceType, request.Price, affected);
                 });
 
@@ -573,7 +573,7 @@ namespace BlazorApp.Api.Services
                     result.AffectedCount = affected;
                     result.Success = affected > 0;
 
-                    _logger.LogInformation("批量调整库存{AdjustType} {Quantity}，影响{Count}条", 
+                    _logger.LogInformation("批量调整库存{AdjustType} {Quantity}，影响{Count}条",
                         request.AdjustType, request.Quantity, affected);
                 });
 
@@ -640,7 +640,7 @@ namespace BlazorApp.Api.Services
                     result.AffectedCount = count;
                     result.Success = count > 0;
 
-                    _logger.LogInformation("批量设置仓位{LocationGuid}，影响{Count}条", 
+                    _logger.LogInformation("批量设置仓位{LocationGuid}，影响{Count}条",
                         request.LocationGuid, count);
                 });
 
@@ -726,7 +726,7 @@ namespace BlazorApp.Api.Services
                 dto.ProductName = wp.Product.ProductName;
                 dto.ItemNumber = wp.Product.ItemNumber;
                 dto.LocalSupplierCode = wp.Product.LocalSupplierCode;
-                
+
                 // 使用ProductImage字段，如果为空则使用腾讯云COS URL + 货号.jpg
                 if (!string.IsNullOrWhiteSpace(wp.Product.ProductImage))
                 {

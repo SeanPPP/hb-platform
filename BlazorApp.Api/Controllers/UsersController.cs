@@ -474,7 +474,7 @@ namespace BlazorApp.Api.Controllers
         /// 从用户移除角色
         /// </summary>
         [HttpDelete("guid/{guid}/roles/{roleGuid}")]
-         [Authorize(Roles = "Admin,WarehouseManager")] // 暂时注释掉授权
+        [Authorize(Roles = "Admin,WarehouseManager")] // 暂时注释掉授权
         public async Task<IActionResult> RemoveRoleFromUser(string guid, string roleGuid)
         {
             try
@@ -501,7 +501,7 @@ namespace BlazorApp.Api.Controllers
         /// 从用户移除分店
         /// </summary>
         [HttpDelete("guid/{guid}/stores/{storeGuid}")]
-       [Authorize(Roles = "Admin,WarehouseManager")] // 暂时注释掉授权
+        [Authorize(Roles = "Admin,WarehouseManager")] // 暂时注释掉授权
         public async Task<IActionResult> RemoveStoreFromUser(string guid, string storeGuid)
         {
             try
@@ -604,7 +604,7 @@ namespace BlazorApp.Api.Controllers
         /// 获取用户统计信息
         /// </summary>
         [HttpGet("statistics")]
-         [Authorize(Roles = "Admin,WarehouseManager")] // 暂时注释掉授权
+        [Authorize(Roles = "Admin,WarehouseManager")] // 暂时注释掉授权
         public async Task<IActionResult> GetUserStatistics()
         {
             try
@@ -698,7 +698,7 @@ namespace BlazorApp.Api.Controllers
         /// 锁定/解锁用户
         /// </summary>
         [HttpPut("guid/{guid}/lock")]
-       [Authorize(Roles = "Admin,WarehouseManager")] // 暂时注释掉授权
+        [Authorize(Roles = "Admin,WarehouseManager")] // 暂时注释掉授权
         public async Task<IActionResult> LockUser(string guid, [FromBody] bool isLocked)
         {
             try

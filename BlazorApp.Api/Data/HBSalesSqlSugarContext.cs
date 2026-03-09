@@ -71,7 +71,7 @@ namespace BlazorApp.Api.Data
         public SimpleClient<CPT_DIC_商品信息字典表> CPT_DIC_商品信息字典表Db =>
             new SimpleClient<CPT_DIC_商品信息字典表>(_db);
 
-              /// <summary>
+        /// <summary>
         /// CBP国内供应商信息表访问器
         /// </summary>
         public SimpleClient<CBP_DIC_国内供应商信息表> CBP_DIC_国内供应商信息表Db =>

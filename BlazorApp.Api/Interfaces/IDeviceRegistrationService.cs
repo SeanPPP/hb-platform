@@ -146,11 +146,11 @@ namespace BlazorApp.Api.Interfaces
         /// <param name="keyword">关键词搜索</param>
         /// <returns></returns>
         Task<(List<POSM_设备注册信息表> devices, int total)> GetDevicesPagedAsync(
-            int page = 1, 
-            int pageSize = 20, 
-            string? storeCode = null, 
-            string? deviceType = null, 
-            int? status = null, 
+            int page = 1,
+            int pageSize = 20,
+            string? storeCode = null,
+            string? deviceType = null,
+            int? status = null,
             string? keyword = null);
     }
 }

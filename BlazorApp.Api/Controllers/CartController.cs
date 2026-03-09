@@ -38,7 +38,7 @@ namespace BlazorApp.Api.Controllers
                     return Unauthorized(new { success = false, message = "User not logged in" });
 
                 var cart = await _cartService.GetUserCartAsync(userGuid);
-                
+
                 return Ok(new { success = true, data = cart });
             }
             catch (Exception ex)
@@ -62,7 +62,7 @@ namespace BlazorApp.Api.Controllers
                     return Unauthorized(new { success = false, message = "User not logged in" });
 
                 var cart = await _cartService.GetOrCreateUserCartAsync(userGuid);
-                
+
                 return Ok(new { success = true, data = cart });
             }
             catch (Exception ex)
@@ -90,7 +90,7 @@ namespace BlazorApp.Api.Controllers
                     return BadRequest(new { success = false, message = "Invalid request parameters", errors = ModelState });
 
                 var result = await _cartService.AddToCartAsync(userGuid, request);
-                
+
                 if (result)
                     return Ok(new { success = true, message = "Product added to cart" });
                 else
@@ -121,7 +121,7 @@ namespace BlazorApp.Api.Controllers
                     return BadRequest(new { success = false, message = "购物车项GUID不能为空" });
 
                 var result = await _cartService.RemoveFromCartAsync(userGuid, cartItemGuid);
-                
+
                 if (result)
                     return Ok(new { success = true, message = "商品已从购物车移除" });
                 else
@@ -164,7 +164,7 @@ namespace BlazorApp.Api.Controllers
                 return StatusCode(500, new { success = false, message = "服务器内部错误" });
             }
         }
-       
+
 
 
         /// <summary>
@@ -181,7 +181,7 @@ namespace BlazorApp.Api.Controllers
                     return Unauthorized(new { success = false, message = "User not logged in" });
 
                 var result = await _cartService.ClearCartAsync(userGuid);
-                
+
                 return Ok(new { success = true, message = "Cart cleared successfully" });
             }
             catch (Exception ex)
@@ -191,7 +191,7 @@ namespace BlazorApp.Api.Controllers
             }
         }
 
-      
+
 
         /// <summary>
         /// 批量更新购物车项数量
@@ -211,7 +211,7 @@ namespace BlazorApp.Api.Controllers
                     return BadRequest(ApiResponse<object>.Error("更新数据不能为空", "INVALID_REQUEST"));
 
                 var result = await _cartService.BatchUpdateCartItemQuantitiesAsync(userGuid, request.Updates);
-                
+
                 if (result)
                     return Ok(ApiResponse<object>.CreateSuccess("批量更新完成"));
                 else
@@ -242,7 +242,7 @@ namespace BlazorApp.Api.Controllers
                     return BadRequest(new { success = false, message = "购物车项GUID列表不能为空" });
 
                 var result = await _cartService.BatchRemoveCartItemsAsync(userGuid, request.CartItemGuids);
-                
+
                 if (result)
                     return Ok(new { success = true, message = "批量删除完成" });
                 else
@@ -269,7 +269,7 @@ namespace BlazorApp.Api.Controllers
                     return Unauthorized(new { success = false, message = "User not logged in" });
 
                 var summary = await _cartService.GetCartSummaryAsync(userGuid);
-                
+
                 return Ok(new { success = true, data = summary });
             }
             catch (Exception ex)
@@ -298,10 +298,12 @@ namespace BlazorApp.Api.Controllers
 
                 var inCart = await _cartService.IsProductInCartAsync(userGuid, productCode);
                 var quantity = await _cartService.GetProductQuantityInCartAsync(userGuid, productCode);
-                
-                return Ok(new { 
-                    success = true, 
-                    data = new { 
+
+                return Ok(new
+                {
+                    success = true,
+                    data = new
+                    {
                         inCart = inCart,
                         quantity = quantity
                     }
@@ -313,7 +315,7 @@ namespace BlazorApp.Api.Controllers
                 return StatusCode(500, new { success = false, message = "Internal server error" });
             }
         }
-        
+
         /// <summary>
         /// 批量检查商品是否在购物车中
         /// </summary>
@@ -332,12 +334,14 @@ namespace BlazorApp.Api.Controllers
                     return BadRequest(new { success = false, message = "Product codes cannot be empty" });
 
                 var results = await _cartService.BatchCheckProductsInCartAsync(userGuid, request.ProductCodes);
-                
-                return Ok(new { 
-                    success = true, 
+
+                return Ok(new
+                {
+                    success = true,
                     data = results.ToDictionary(
-                        x => x.Key, 
-                        x => new { 
+                        x => x.Key,
+                        x => new
+                        {
                             inCart = x.Value.InCart,
                             quantity = x.Value.Quantity
                         }
@@ -362,7 +366,7 @@ namespace BlazorApp.Api.Controllers
             try
             {
                 var count = await _cartService.CleanExpiredCartsAsync();
-                
+
                 return Ok(new { success = true, data = new { cleanedCount = count }, message = $"已清理 {count} 个过期购物车" });
             }
             catch (Exception ex)
@@ -403,19 +407,21 @@ namespace BlazorApp.Api.Controllers
                     return BadRequest(new { success = false, message = "Invalid request parameters", errors = ModelState });
 
                 var result = await _cartService.CreateOrderFromCartAsync(userGuid, request);
-                
+
                 if (!string.IsNullOrEmpty(result))
                 {
-                    return Ok(new { 
-                        success = true, 
+                    return Ok(new
+                    {
+                        success = true,
                         message = "Cart processed successfully",
                         result = result
                     });
                 }
                 else
                 {
-                    return BadRequest(new { 
-                        success = false, 
+                    return BadRequest(new
+                    {
+                        success = false,
                         message = "Failed to process cart"
                     });
                 }
@@ -445,7 +451,7 @@ namespace BlazorApp.Api.Controllers
                     return BadRequest(new { success = false, message = "Invalid request parameters", errors = ModelState });
 
                 var result = await _cartService.SaveCartStatusAsync(userGuid, request);
-                
+
                 if (result)
                     return Ok(new { success = true, message = "购物车已保存" });
                 else
@@ -476,7 +482,7 @@ namespace BlazorApp.Api.Controllers
                     return BadRequest(new { success = false, message = "Invalid request parameters", errors = ModelState });
 
                 var cartNumber = await _cartService.SubmitCartAsync(userGuid, request);
-                
+
                 if (!string.IsNullOrEmpty(cartNumber))
                     return Ok(new { success = true, message = "Cart submitted successfully (status updated only)", data = new { OrderNumber = cartNumber } });
                 else
@@ -525,7 +531,7 @@ namespace BlazorApp.Api.Controllers
                 };
 
                 var result = await _cartService.GetCartListAsync(userGuid, request);
-                
+
                 return Ok(new { success = true, data = result });
             }
             catch (Exception ex)
@@ -555,7 +561,7 @@ namespace BlazorApp.Api.Controllers
                 var cart = await _cartService.GetCartByIdAsync(cartGuid);
                 if (cart == null)
                     return NotFound(new { success = false, message = "Cart not found" });
-                
+
                 return Ok(new { success = true, data = cart });
             }
             catch (Exception ex)
@@ -583,7 +589,7 @@ namespace BlazorApp.Api.Controllers
                     return BadRequest(new { success = false, message = "Cart GUID cannot be empty" });
 
                 var cartItems = await _cartService.GetCartItemsByCartGuidAsync(cartGuid);
-                
+
                 return Ok(new { success = true, data = cartItems });
             }
             catch (Exception ex)
@@ -618,7 +624,7 @@ namespace BlazorApp.Api.Controllers
                     return BadRequest(new { success = false, message = "Reason cannot be empty" });
 
                 var result = await _cartService.ChangeOrderStoreAsync(userGuid, cartGuid, request.NewStoreGuid, request.Reason);
-                
+
                 if (result)
                     return Ok(new { success = true, message = "Store changed successfully" });
                 else
@@ -645,7 +651,7 @@ namespace BlazorApp.Api.Controllers
                     return Unauthorized(new { success = false, message = "User not logged in" });
 
                 var result = await _cartService.CheckActiveCartAsync(userGuid);
-                
+
                 return Ok(new { success = true, data = result });
             }
             catch (Exception ex)
@@ -673,7 +679,7 @@ namespace BlazorApp.Api.Controllers
                     return BadRequest(new { success = false, message = "Invalid request parameters", errors = ModelState });
 
                 var result = await _cartService.SwitchCartStatusAsync(userGuid, request);
-                
+
                 if (result)
                     return Ok(new { success = true, message = "购物车状态切换成功" });
                 else
@@ -704,7 +710,7 @@ namespace BlazorApp.Api.Controllers
                     return BadRequest(new { success = false, message = "Invalid request parameters", errors = ModelState });
 
                 var result = await _cartService.MergeCartsAsync(userGuid, request);
-                
+
                 if (result)
                     return Ok(new { success = true, message = "购物车合并成功" });
                 else
@@ -761,7 +767,7 @@ namespace BlazorApp.Api.Controllers
                     return BadRequest(new { success = false, message = "Cart GUID cannot be empty" });
 
                 var result = await _cartService.SoftDeleteCartAsync(userGuid, cartGuid);
-                
+
                 if (result)
                     return Ok(new { success = true, message = "Cart deleted successfully" });
                 else
@@ -792,7 +798,7 @@ namespace BlazorApp.Api.Controllers
                     return BadRequest(new { success = false, message = "Cart GUID cannot be empty" });
 
                 var result = await _cartService.RestoreCartAsync(userGuid, cartGuid);
-                
+
                 if (result)
                     return Ok(new { success = true, message = "Cart restored successfully" });
                 else
@@ -820,7 +826,7 @@ namespace BlazorApp.Api.Controllers
                     return Unauthorized(new { success = false, message = "User not logged in" });
 
                 var result = await _cartService.UpdateCartRemarksAsync(userGuid, request.Remarks);
-                
+
                 if (result)
                     return Ok(new { success = true, message = "Cart remarks updated successfully" });
                 else
@@ -896,7 +902,7 @@ namespace BlazorApp.Api.Controllers
                     return BadRequest(new { success = false, message = "购物车GUID不能为空" });
 
                 var result = await _cartService.UpdateCartDiscountAndFreightAsync(cartGuid, request.Discount, request.FreightFee, userGuid);
-                
+
                 if (result)
                     return Ok(new { success = true, message = "购物车折扣和运费更新成功" });
                 else
@@ -932,19 +938,21 @@ namespace BlazorApp.Api.Controllers
                     return Unauthorized(new { success = false, message = "用户未登录" });
 
                 var cart = await _cartService.CreateStoreOrderAsync(userGuid, request);
-                
+
                 if (cart != null)
                 {
-                    return Ok(new { 
-                        success = true, 
+                    return Ok(new
+                    {
+                        success = true,
                         message = "订单创建成功",
                         data = cart
                     });
                 }
                 else
                 {
-                    return BadRequest(new { 
-                        success = false, 
+                    return BadRequest(new
+                    {
+                        success = false,
                         message = "订单创建失败"
                     });
                 }
@@ -972,9 +980,10 @@ namespace BlazorApp.Api.Controllers
                     return BadRequest(new { success = false, message = "请求参数无效", errors = ModelState });
 
                 var products = await _cartService.BatchSearchProductsAsync(request.ItemNumbers);
-                
-                return Ok(new { 
-                    success = true, 
+
+                return Ok(new
+                {
+                    success = true,
                     data = products
                 });
             }
@@ -1004,9 +1013,10 @@ namespace BlazorApp.Api.Controllers
                     return Unauthorized(new { success = false, message = "用户未登录" });
 
                 var result = await _cartService.BatchAddItemsToCartAsync(request, userGuid);
-                
-                return Ok(new { 
-                    success = true, 
+
+                return Ok(new
+                {
+                    success = true,
                     message = "商品批量添加完成",
                     data = result
                 });
@@ -1065,7 +1075,7 @@ namespace BlazorApp.Api.Controllers
         {
             try
             {
-                _logger.LogInformation("仓库管理员批量删除购物车项请求: CartGuid={CartGuid}, ItemCount={ItemCount}", 
+                _logger.LogInformation("仓库管理员批量删除购物车项请求: CartGuid={CartGuid}, ItemCount={ItemCount}",
                     cartGuid, request.CartItemGuids?.Count ?? 0);
 
                 var userGuid = GetCurrentUserGuid();
@@ -1104,7 +1114,7 @@ namespace BlazorApp.Api.Controllers
         {
             try
             {
-                _logger.LogInformation("Excel导入API调用: CartGUID={CartGUID}, ItemCount={ItemCount}", 
+                _logger.LogInformation("Excel导入API调用: CartGUID={CartGUID}, ItemCount={ItemCount}",
                     request.CartGUID, request.Items.Count);
 
                 var userGuid = GetCurrentUserGuid();
@@ -1113,8 +1123,9 @@ namespace BlazorApp.Api.Controllers
 
                 var result = await _cartService.ImportExcelItemsToCartAsync(request, userGuid);
 
-                return Ok(new { 
-                    success = true, 
+                return Ok(new
+                {
+                    success = true,
                     data = result,
                     message = $"导入完成：成功 {result.SuccessCount} 个，失败 {result.FailureCount} 个，共 {result.TotalCount} 个"
                 });
@@ -1122,10 +1133,11 @@ namespace BlazorApp.Api.Controllers
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Excel导入API失败: CartGUID={CartGUID}", request.CartGUID);
-                return StatusCode(500, new { 
-                    success = false, 
+                return StatusCode(500, new
+                {
+                    success = false,
                     message = "Excel导入失败",
-                    error = ex.Message 
+                    error = ex.Message
                 });
             }
         }
@@ -1140,13 +1152,13 @@ namespace BlazorApp.Api.Controllers
         [HttpPost("upload-excel/{cartGuid}")]
         [Authorize(Roles = "Admin,Manager,WarehouseManager")]
         public async Task<IActionResult> UploadExcelFile(
-            string cartGuid, 
-            IFormFile file, 
+            string cartGuid,
+            IFormFile file,
             [FromForm] bool clearExisting = true)
         {
             try
             {
-                _logger.LogInformation("Excel文件上传请求: CartGuid={CartGuid}, FileName={FileName}, Size={Size}KB", 
+                _logger.LogInformation("Excel文件上传请求: CartGuid={CartGuid}, FileName={FileName}, Size={Size}KB",
                     cartGuid, file?.FileName, file?.Length / 1024);
 
                 if (string.IsNullOrEmpty(cartGuid))
@@ -1186,20 +1198,22 @@ namespace BlazorApp.Api.Controllers
                 // 执行导入
                 var result = await _cartService.ImportExcelItemsToCartAsync(importRequest, userGuid);
 
-                return Ok(new { 
-                    success = true, 
+                return Ok(new
+                {
+                    success = true,
                     data = result,
                     message = $"Excel导入完成：成功 {result.SuccessCount} 个，失败 {result.FailureCount} 个，共 {result.TotalCount} 个"
                 });
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Excel文件上传失败: CartGuid={CartGuid}, FileName={FileName}", 
+                _logger.LogError(ex, "Excel文件上传失败: CartGuid={CartGuid}, FileName={FileName}",
                     cartGuid, file?.FileName);
-                return StatusCode(500, new { 
-                    success = false, 
+                return StatusCode(500, new
+                {
+                    success = false,
                     message = "Excel文件处理失败",
-                    error = ex.Message 
+                    error = ex.Message
                 });
             }
         }
@@ -1280,7 +1294,7 @@ namespace BlazorApp.Api.Controllers
                         Price = price
                     });
 
-                    _logger.LogDebug("解析Excel行 {Row}: 货号={ItemNumber}, 数量={Quantity}, 价格={Price}", 
+                    _logger.LogDebug("解析Excel行 {Row}: 货号={ItemNumber}, 数量={Quantity}, 价格={Price}",
                         row, itemNumber, quantity, price);
                 }
                 catch (Exception ex)
@@ -1302,25 +1316,25 @@ namespace BlazorApp.Api.Controllers
         private int FindHeaderRow(ClosedXML.Excel.IXLWorksheet worksheet)
         {
             var maxRowToCheck = Math.Min(10, worksheet.LastRowUsed()?.RowNumber() ?? 1);
-            
+
             for (int row = 1; row <= maxRowToCheck; row++)
             {
                 var rowRange = worksheet.Row(row);
                 var cellValues = rowRange.CellsUsed().Select(c => c.GetString().Trim().ToLower()).ToList();
-                
+
                 // 检查是否包含必要的列名
-                var hasItemNumber = cellValues.Any(v => v.Contains("货号") || v.Contains("商品编码") || v.Contains("产品编码") || 
+                var hasItemNumber = cellValues.Any(v => v.Contains("货号") || v.Contains("商品编码") || v.Contains("产品编码") ||
                                                        v.Contains("itemnumber") || v.Contains("productcode"));
-                var hasQuantity = cellValues.Any(v => v.Contains("数量") || v.Contains("订货数量") || 
+                var hasQuantity = cellValues.Any(v => v.Contains("数量") || v.Contains("订货数量") ||
                                                      v.Contains("quantity") || v.Contains("qty"));
-                
+
                 if (hasItemNumber && hasQuantity)
                 {
                     _logger.LogInformation("找到表头行: 第{Row}行", row);
                     return row;
                 }
             }
-            
+
             return 0;
         }
 
@@ -1336,7 +1350,7 @@ namespace BlazorApp.Api.Controllers
         {
             var headerRowRange = worksheet.Row(headerRow);
             var lastColumn = headerRowRange.LastCellUsed()?.Address.ColumnNumber ?? 1;
-            
+
             for (int col = 1; col <= lastColumn; col++)
             {
                 var cellValue = worksheet.Cell(headerRow, col).GetString().Trim().ToLower();
@@ -1346,10 +1360,10 @@ namespace BlazorApp.Api.Controllers
                     return col;
                 }
             }
-            
+
             if (required)
                 _logger.LogWarning("未找到必需的列: {ColumnNames}", string.Join(",", columnNames));
-            
+
             return 0;
         }
 

@@ -15,18 +15,18 @@ namespace BlazorApp.Api.Mappings.Profiles
             CreateMap<DomesticSetProduct, DomesticSetProductDto>()
                 .ForMember(dest => dest.ProductName, opt => opt.MapFrom(src => src.DomesticProduct != null ? src.DomesticProduct.ProductName : null))
                 .ForMember(dest => dest.SupplierCode, opt => opt.MapFrom(src => src.DomesticProduct != null ? src.DomesticProduct.SupplierCode : null))
-                .ForMember(dest => dest.SupplierName, opt => opt.MapFrom(src => 
-                    src.DomesticProduct != null && src.DomesticProduct.Supplier != null 
-                        ? src.DomesticProduct.Supplier.SupplierName 
+                .ForMember(dest => dest.SupplierName, opt => opt.MapFrom(src =>
+                    src.DomesticProduct != null && src.DomesticProduct.Supplier != null
+                        ? src.DomesticProduct.Supplier.SupplierName
                         : null));
 
             // DomesticSetProduct -> DomesticSetProductDetailDto
             CreateMap<DomesticSetProduct, DomesticSetProductDetailDto>()
                 .ForMember(dest => dest.ProductName, opt => opt.MapFrom(src => src.DomesticProduct != null ? src.DomesticProduct.ProductName : null))
                 .ForMember(dest => dest.SupplierCode, opt => opt.MapFrom(src => src.DomesticProduct != null ? src.DomesticProduct.SupplierCode : null))
-                .ForMember(dest => dest.SupplierName, opt => opt.MapFrom(src => 
-                    src.DomesticProduct != null && src.DomesticProduct.Supplier != null 
-                        ? src.DomesticProduct.Supplier.SupplierName 
+                .ForMember(dest => dest.SupplierName, opt => opt.MapFrom(src =>
+                    src.DomesticProduct != null && src.DomesticProduct.Supplier != null
+                        ? src.DomesticProduct.Supplier.SupplierName
                         : null))
                 .ForMember(dest => dest.Product, opt => opt.MapFrom(src => src.DomesticProduct));
 

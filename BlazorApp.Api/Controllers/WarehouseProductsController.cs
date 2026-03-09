@@ -39,7 +39,7 @@ namespace BlazorApp.Api.Controllers
                 _logger.LogInformation("开始分页查询仓库商品，查询条件：{@Query}", query);
 
                 var result = await _warehouseProductService.GetPagedProductsAsync(query);
-                
+
                 _logger.LogInformation("分页查询仓库商品成功，返回 {Count} 条记录", result.Items.Count);
 
                 return Ok(new ApiResponse<WarehouseProductPagedResultDto>
@@ -81,7 +81,7 @@ namespace BlazorApp.Api.Controllers
                 }
 
                 var product = await _warehouseProductService.GetProductByCodeAsync(productCode);
-                
+
                 if (product == null)
                 {
                     return NotFound(new ApiResponse<object>
@@ -213,7 +213,7 @@ namespace BlazorApp.Api.Controllers
                 }
 
                 var product = await _warehouseProductService.UpdateProductAsync(productCode, productDto);
-                
+
                 if (product == null)
                 {
                     return NotFound(new ApiResponse<object>
@@ -262,7 +262,7 @@ namespace BlazorApp.Api.Controllers
                 }
 
                 var success = await _warehouseProductService.DeleteProductAsync(productCode);
-                
+
                 if (!success)
                 {
                     return NotFound(new ApiResponse<object>

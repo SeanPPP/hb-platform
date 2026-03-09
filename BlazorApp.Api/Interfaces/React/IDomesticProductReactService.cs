@@ -15,11 +15,11 @@ namespace BlazorApp.Api.Interfaces.React
         Task<ApiResponse<List<BatchProductDetectionResultDto>>> BatchDetectProductsAsync(BatchProductDetectionDto dto);
         Task<ApiResponse<BatchProductOperationResultDto>> BatchCreateAndUpdateProductsAsync(BatchProductOperationDto dto);
         Task<ApiResponse<DomesticProductDto>> UpdateDomesticProductAsync(string productCode, UpdateDomesticProductDto dto);
-    Task<ApiResponse<BatchProductOperationResultDto>> BatchUpdateDomesticProductsAsync(BatchUpdateDomesticProductsDto dto);
-    Task<ApiResponse<bool>> BatchDeleteAsync(List<string> productCodes);
-    Task<ApiResponse<List<DomesticSetProductDto>>> GetSetItemsAsync(string productCode);
-    Task<ApiResponse<bool>> UpdateSetItemsAsync(string productCode, List<SetItemUpdateDto> items);
-    Task<ApiResponse<BatchCreateSetProductsResultDto>> BatchCreateSetProductsAsync(BatchCreateSetProductsDto dto);
-    Task<ApiResponse<SyncResult>> SyncSelectedToHBSalesAsync(List<string> productCodes);
-}
+        Task<ApiResponse<BatchProductOperationResultDto>> BatchUpdateDomesticProductsAsync(BatchUpdateDomesticProductsDto dto);
+        Task<ApiResponse<bool>> BatchDeleteAsync(List<string> productCodes);
+        Task<ApiResponse<List<DomesticSetProductDto>>> GetSetItemsAsync(string productCode);
+        Task<ApiResponse<bool>> UpdateSetItemsAsync(string productCode, List<SetItemUpdateDto> items);
+        Task<ApiResponse<BatchCreateSetProductsResultDto>> BatchCreateSetProductsAsync(BatchCreateSetProductsDto dto);
+        Task<ApiResponse<SyncResult>> SyncSelectedToHBSalesAsync(List<string> productCodes);
+    }
 }

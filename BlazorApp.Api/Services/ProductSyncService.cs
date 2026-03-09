@@ -148,7 +148,7 @@ namespace BlazorApp.Api.Services
                 // 🔥 使用导航属性一次性查询 WarehouseProduct 和关联的 Product
                 var allWarehouseProducts = await _db.Queryable<WarehouseProduct>()
                     .Includes(w => w.Product) // 使用导航属性加载关联的 Product
-                    .Where(w => productCodes.Contains(w.ProductCode) || 
+                    .Where(w => productCodes.Contains(w.ProductCode) ||
                                (itemNumbers.Any() && w.Product != null && w.Product.ItemNumber != null && itemNumbers.Contains(w.Product.ItemNumber)))
                     .ToListAsync();
 
@@ -177,12 +177,12 @@ namespace BlazorApp.Api.Services
                     if (!warehouseDictByCode.TryGetValue(item.ProductCode, out warehouse))
                     {
                         // 🔥 如果商品编码匹配不到，尝试使用货号匹配
-                        if (!string.IsNullOrEmpty(item.ItemNumber) && 
+                        if (!string.IsNullOrEmpty(item.ItemNumber) &&
                             itemNumberToProductCodeDict.TryGetValue(item.ItemNumber, out var matchedProductCode) &&
                             warehouseDictByCode.TryGetValue(matchedProductCode, out warehouse))
                         {
                             matchType = "货号";
-                            _logger.LogInformation("商品编码 {RequestProductCode} 未找到，使用货号 {ItemNumber} 匹配到仓库商品 {WarehouseProductCode}", 
+                            _logger.LogInformation("商品编码 {RequestProductCode} 未找到，使用货号 {ItemNumber} 匹配到仓库商品 {WarehouseProductCode}",
                                 item.ProductCode, item.ItemNumber, warehouse.ProductCode);
                         }
                     }
@@ -213,7 +213,7 @@ namespace BlazorApp.Api.Services
                     {
                         // 🔥 使用仓库中实际的商品编码（因为可能是通过货号匹配的）
                         productCodesWithImportPrice.Add(warehouse.ProductCode);
-                        
+
                         // 准备Product更新数据
                         productsToUpdate.Add(new Product
                         {
@@ -221,8 +221,8 @@ namespace BlazorApp.Api.Services
                             PurchasePrice = item.ImportPrice.Value,
                             UpdatedAt = updateTime
                         });
-                        
-                        _logger.LogDebug("准备更新商品 {ProductCode}（通过{MatchType}匹配）的进货价为 {PurchasePrice}", 
+
+                        _logger.LogDebug("准备更新商品 {ProductCode}（通过{MatchType}匹配）的进货价为 {PurchasePrice}",
                             warehouse.ProductCode, matchType, item.ImportPrice.Value);
                     }
                 }
@@ -422,7 +422,7 @@ namespace BlazorApp.Api.Services
                         ProductCode = item.ProductCode,
                         ItemNumber = item.ItemNumber,
                         Barcode = item.Barcode,
-                        LocalSupplierCode ="200",//默认供应商是hotbargain 这个供应商code
+                        LocalSupplierCode = "200",//默认供应商是hotbargain 这个供应商code
                         ProductName = item.ChineseName ?? item.ItemNumber,
                         EnglishName = item.EnglishName,
                         PurchasePrice = item.ImportPrice,

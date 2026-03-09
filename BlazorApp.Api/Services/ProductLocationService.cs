@@ -342,9 +342,9 @@ namespace BlazorApp.Api.Services
                 var products = await GetProductsByLocationAsync(locationGuid);
 
                 return new LocationWithProductsDto
-                { 
-                    LocationGuid = location.LocationGuid?? string.Empty,
-                    LocationCode = location.LocationCode?? string.Empty,
+                {
+                    LocationGuid = location.LocationGuid ?? string.Empty,
+                    LocationCode = location.LocationCode ?? string.Empty,
                     Products = products
                 }
 ;

@@ -60,16 +60,16 @@ namespace BlazorApp.Api.Controllers
                 }
 
                 var translation = await _translationService.TranslateToEnglishAsync(request.Text);
-                
-                return Ok(new 
-                { 
-                    success = true, 
-                    data = new 
-                    { 
+
+                return Ok(new
+                {
+                    success = true,
+                    data = new
+                    {
                         originalText = request.Text,
                         translatedText = translation,
                         containsChinese = _translationService.ContainsChinese(request.Text)
-                    } 
+                    }
                 });
             }
             catch (Exception ex)
@@ -100,15 +100,15 @@ namespace BlazorApp.Api.Controllers
                 }
 
                 var translations = await _translationService.BatchTranslateToEnglishAsync(request.Texts);
-                
-                return Ok(new 
-                { 
-                    success = true, 
-                    data = new 
-                    { 
+
+                return Ok(new
+                {
+                    success = true,
+                    data = new
+                    {
                         count = translations.Count,
                         translations = translations
-                    } 
+                    }
                 });
             }
             catch (Exception ex)
@@ -129,16 +129,16 @@ namespace BlazorApp.Api.Controllers
             try
             {
                 var cached = await _translationService.GetCachedTranslationAsync(text);
-                
-                return Ok(new 
-                { 
-                    success = true, 
-                    data = new 
-                    { 
+
+                return Ok(new
+                {
+                    success = true,
+                    data = new
+                    {
                         text,
                         cachedTranslation = cached,
                         hasCached = !string.IsNullOrEmpty(cached)
-                    } 
+                    }
                 });
             }
             catch (Exception ex)

@@ -650,19 +650,19 @@ namespace BlazorApp.Api.Services
 
                                 // 使用ClosedXML正确方式嵌入图片到单元格
                                 var picture = worksheet.AddPicture(imageStream, $"Image_{row}");
-                                
+
                                 // 将图片锚定到单元格 - 这是嵌入图片的正确方式
                                 picture.MoveTo(imageCell);
-                                
+
                                 // 设置图片大小以填充单元格（固定尺寸：80x80）
                                 var cellWidthInPixels = 80 * 7; // 固定列宽80转像素
                                 var cellHeightInPixels = 80 * 1.33; // 固定行高80转像素
-                                
+
                                 // 计算适合的图片尺寸，保持宽高比
                                 var aspectRatio = (double)picture.Width / picture.Height;
                                 var targetWidth = cellWidthInPixels - 4; // 留出4像素边距
                                 var targetHeight = cellHeightInPixels - 4;
-                                
+
                                 if (targetWidth / aspectRatio <= targetHeight)
                                 {
                                     // 宽度是限制因素
@@ -675,12 +675,12 @@ namespace BlazorApp.Api.Services
                                     picture.Height = (int)targetHeight;
                                     picture.Width = (int)(targetHeight * aspectRatio);
                                 }
-                                
+
                                 // 设置图片在单元格中居中
                                 var offsetX = Math.Max(0, (cellWidthInPixels - picture.Width) / 2);
                                 var offsetY = Math.Max(0, (cellHeightInPixels - picture.Height) / 2);
                                 picture.MoveTo(imageCell, (int)offsetX, (int)offsetY);
-                                
+
                                 // 设置图片单元格样式
                                 imageCell.Style.Alignment.Horizontal = XLAlignmentHorizontalValues.Center;
                                 imageCell.Style.Alignment.Vertical = XLAlignmentVerticalValues.Center;
@@ -861,19 +861,19 @@ namespace BlazorApp.Api.Services
 
                                     // 使用ClosedXML正确方式嵌入图片到单元格
                                     var picture = worksheet.AddPicture(imageStream, $"BatchImage_{row}");
-                                    
+
                                     // 将图片锚定到单元格 - 这是嵌入图片的正确方式
                                     picture.MoveTo(imageCell);
-                                    
+
                                     // 设置图片大小以填充单元格（固定尺寸：80x80）
                                     var cellWidthInPixels = 80 * 7; // 固定列宽80转像素
                                     var cellHeightInPixels = 80 * 1.33; // 固定行高80转像素
-                                    
+
                                     // 计算适合的图片尺寸，保持宽高比
                                     var aspectRatio = (double)picture.Width / picture.Height;
                                     var targetWidth = cellWidthInPixels - 4; // 留出4像素边距
                                     var targetHeight = cellHeightInPixels - 4;
-                                    
+
                                     if (targetWidth / aspectRatio <= targetHeight)
                                     {
                                         // 宽度是限制因素
@@ -886,12 +886,12 @@ namespace BlazorApp.Api.Services
                                         picture.Height = (int)targetHeight;
                                         picture.Width = (int)(targetHeight * aspectRatio);
                                     }
-                                    
+
                                     // 设置图片在单元格中居中
                                     var offsetX = Math.Max(0, (cellWidthInPixels - picture.Width) / 2);
                                     var offsetY = Math.Max(0, (cellHeightInPixels - picture.Height) / 2);
                                     picture.MoveTo(imageCell, (int)offsetX, (int)offsetY);
-                                    
+
                                     // 设置图片单元格居中对齐
                                     imageCell.Style.Alignment.Horizontal = XLAlignmentHorizontalValues.Center;
                                     imageCell.Style.Alignment.Vertical = XLAlignmentVerticalValues.Center;

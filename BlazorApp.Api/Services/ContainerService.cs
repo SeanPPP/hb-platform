@@ -172,7 +172,7 @@ namespace BlazorApp.Api.Services
                 // 添加货号过滤
                 if (!string.IsNullOrEmpty(request.ItemNumberFilter))
                 {
-                    productsQuery = productsQuery.Where(x => 
+                    productsQuery = productsQuery.Where(x =>
                         (x.Product != null && x.Product.HBProductNo != null && x.Product.HBProductNo.Contains(request.ItemNumberFilter))
                     );
                 }
@@ -241,7 +241,7 @@ namespace BlazorApp.Api.Services
                 {
                     var weekStart = now.AddDays(i * 7);
                     var weekEnd = weekStart.AddDays(6);
-                    
+
                     options.Add(new DateFilterOption
                     {
                         Label = i == 0 ? "Estimated Arrival This Week" : $"Estimated Arrival in Week {i + 1}",
@@ -488,7 +488,7 @@ namespace BlazorApp.Api.Services
                 var result = await _localContext.Db.Insertable(container)
                     .ExecuteReturnEntityAsync();
 
-                _logger.LogInformation("创建货柜成功: {ContainerCode}, 货柜编号: {ContainerNumber}", 
+                _logger.LogInformation("创建货柜成功: {ContainerCode}, 货柜编号: {ContainerNumber}",
                     result.ContainerCode, result.ContainerNumber);
 
                 return result.ContainerCode;

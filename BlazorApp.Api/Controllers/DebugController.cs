@@ -34,13 +34,13 @@ namespace BlazorApp.Api.Controllers
                 {
                     // 检查角色表
                     roles = await _dbContext.Db.Queryable<Role>().ToListAsync(),
-                    
+
                     // 检查用户角色关联表
                     userRoles = await _dbContext.Db.Queryable<UserRole>().ToListAsync(),
-                    
+
                     // 检查用户表
                     users = await _dbContext.Db.Queryable<User>().ToListAsync(),
-                    
+
                     // 测试导航查询
                     navigationTest = await TestNavigationQuery("admin")
                 };
@@ -263,7 +263,7 @@ namespace BlazorApp.Api.Controllers
                     };
                 }
 
-             
+
 
                 // 测试10：UserStore -> User
                 var userStore = await _dbContext.Db.Queryable<UserStore>().FirstAsync();
@@ -578,4 +578,4 @@ namespace BlazorApp.Api.Controllers
             }
         }
     }
-} 
+}

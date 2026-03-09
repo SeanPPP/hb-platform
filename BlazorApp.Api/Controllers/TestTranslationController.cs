@@ -43,7 +43,7 @@ namespace BlazorApp.Api.Controllers
 
                 // 检测是否包含中文
                 var containsChinese = await _translationService.DetectChineseAsync(text);
-                
+
                 // 执行翻译
                 var translation = await _translationService.TranslateToEnglishAsync(text);
 

@@ -14,22 +14,22 @@ namespace BlazorApp.Api.Services
         Task<T?> QueryFirstOrDefaultAsync<T>(string sql, object? parameters = null);
         Task<int> ExecuteAsync(string sql, object? parameters = null);
     }
-    
+
     public class PostgreSqlService : IPostgreSqlService
     {
         private readonly ILogger<PostgreSqlService> _logger;
         private readonly ISqlSugarClient _sqlSugarClient;
-        
+
         public PostgreSqlService(ILogger<PostgreSqlService> logger, IConfiguration configuration)
         {
             _logger = logger;
-            
+
             var connectionString = configuration.GetConnectionString("PostgresConnection");
             if (string.IsNullOrEmpty(connectionString))
             {
                 throw new ArgumentException("PostgreSQL连接字符串未配置");
             }
-            
+
             _sqlSugarClient = new SqlSugarClient(new ConnectionConfig
             {
                 ConnectionString = connectionString,
@@ -55,7 +55,7 @@ namespace BlazorApp.Api.Services
                     IsAutoRemoveDataCache = true
                 }
             });
-            
+
             // 配置日志
             _sqlSugarClient.Aop.OnLogExecuting = (sql, pars) =>
             {
@@ -65,18 +65,18 @@ namespace BlazorApp.Api.Services
                     _logger.LogInformation("参数: {Parameters}", string.Join(", ", pars.Select(p => $"{p.ParameterName}={p.Value}")));
                 }
             };
-            
+
             _sqlSugarClient.Aop.OnError = (exp) =>
             {
                 _logger.LogError(exp, "SQL执行错误: {Message}", exp.Message);
             };
         }
-        
+
         public ISqlSugarClient GetClient()
         {
             return _sqlSugarClient;
         }
-        
+
         public async Task<bool> TestConnectionAsync()
         {
             try
@@ -91,7 +91,7 @@ namespace BlazorApp.Api.Services
                 return false;
             }
         }
-        
+
         public async Task<List<T>> QueryAsync<T>(string sql, object? parameters = null)
         {
             try
@@ -108,7 +108,7 @@ namespace BlazorApp.Api.Services
                 throw;
             }
         }
-        
+
         public async Task<T?> QueryFirstOrDefaultAsync<T>(string sql, object? parameters = null)
         {
             try
@@ -122,7 +122,7 @@ namespace BlazorApp.Api.Services
                 throw;
             }
         }
-        
+
         public async Task<int> ExecuteAsync(string sql, object? parameters = null)
         {
             try
@@ -139,7 +139,7 @@ namespace BlazorApp.Api.Services
                 throw;
             }
         }
-        
+
         public void Dispose()
         {
             _sqlSugarClient?.Dispose();

@@ -15,7 +15,7 @@ namespace BlazorApp.Api.Controllers
     {
         private readonly ILogger<PostgreSqlTestController> _logger;
         private readonly IPostgreSqlService _postgreSqlService;
-        
+
         public PostgreSqlTestController(
             ILogger<PostgreSqlTestController> logger,
             IPostgreSqlService postgreSqlService)
@@ -23,7 +23,7 @@ namespace BlazorApp.Api.Controllers
             _logger = logger;
             _postgreSqlService = postgreSqlService;
         }
-        
+
         /// <summary>
         /// 测试PostgreSQL数据库连接
         /// </summary>
@@ -35,15 +35,15 @@ namespace BlazorApp.Api.Controllers
             try
             {
                 _logger.LogInformation("开始测试PostgreSQL数据库连接");
-                
+
                 var isConnected = await _postgreSqlService.TestConnectionAsync();
-                
+
                 if (isConnected)
                 {
                     _logger.LogInformation("PostgreSQL数据库连接测试成功");
-                    return Ok(new 
-                    { 
-                        success = true, 
+                    return Ok(new
+                    {
+                        success = true,
                         message = "PostgreSQL数据库连接成功",
                         timestamp = DateTime.UtcNow
                     });
@@ -51,9 +51,9 @@ namespace BlazorApp.Api.Controllers
                 else
                 {
                     _logger.LogWarning("PostgreSQL数据库连接测试失败");
-                    return StatusCode(500, new 
-                    { 
-                        success = false, 
+                    return StatusCode(500, new
+                    {
+                        success = false,
                         message = "PostgreSQL数据库连接失败",
                         timestamp = DateTime.UtcNow
                     });
@@ -62,15 +62,15 @@ namespace BlazorApp.Api.Controllers
             catch (Exception ex)
             {
                 _logger.LogError(ex, "测试PostgreSQL连接时发生异常");
-                return StatusCode(500, new 
-                { 
-                    success = false, 
+                return StatusCode(500, new
+                {
+                    success = false,
                     message = "数据库连接测试异常：" + ex.Message,
                     timestamp = DateTime.UtcNow
                 });
             }
         }
-        
+
         /// <summary>
         /// 获取PostgreSQL版本信息
         /// </summary>
@@ -82,13 +82,13 @@ namespace BlazorApp.Api.Controllers
             try
             {
                 _logger.LogInformation("获取PostgreSQL版本信息");
-                
+
                 var versionInfo = await _postgreSqlService.QueryFirstOrDefaultAsync<string>("SELECT version()");
-                
-                return Ok(new 
-                { 
-                    success = true, 
-                    data = new 
+
+                return Ok(new
+                {
+                    success = true,
+                    data = new
                     {
                         version = versionInfo,
                         database_type = "PostgreSQL"
@@ -99,15 +99,15 @@ namespace BlazorApp.Api.Controllers
             catch (Exception ex)
             {
                 _logger.LogError(ex, "获取PostgreSQL版本信息时发生异常");
-                return StatusCode(500, new 
-                { 
-                    success = false, 
+                return StatusCode(500, new
+                {
+                    success = false,
                     message = "获取数据库版本失败：" + ex.Message,
                     timestamp = DateTime.UtcNow
                 });
             }
         }
-        
+
         /// <summary>
         /// 执行简单的PostgreSQL查询测试
         /// </summary>
@@ -119,7 +119,7 @@ namespace BlazorApp.Api.Controllers
             try
             {
                 _logger.LogInformation("执行PostgreSQL查询测试");
-                
+
                 // 执行一个简单的查询测试
                 var result = await _postgreSqlService.QueryAsync<dynamic>(@"
                     SELECT 
@@ -128,10 +128,10 @@ namespace BlazorApp.Api.Controllers
                         CURRENT_DATABASE() as database_name,
                         CURRENT_USER as current_user
                 ");
-                
-                return Ok(new 
-                { 
-                    success = true, 
+
+                return Ok(new
+                {
+                    success = true,
                     data = result.FirstOrDefault(),
                     message = "PostgreSQL查询测试成功",
                     timestamp = DateTime.UtcNow
@@ -140,15 +140,15 @@ namespace BlazorApp.Api.Controllers
             catch (Exception ex)
             {
                 _logger.LogError(ex, "PostgreSQL查询测试时发生异常");
-                return StatusCode(500, new 
-                { 
-                    success = false, 
+                return StatusCode(500, new
+                {
+                    success = false,
                     message = "查询测试失败：" + ex.Message,
                     timestamp = DateTime.UtcNow
                 });
             }
         }
-        
+
         /// <summary>
         /// 获取数据库基本信息
         /// </summary>
@@ -160,7 +160,7 @@ namespace BlazorApp.Api.Controllers
             try
             {
                 _logger.LogInformation("获取PostgreSQL数据库基本信息");
-                
+
                 // 获取数据库基本信息
                 var dbInfo = await _postgreSqlService.QueryAsync<dynamic>(@"
                     SELECT 
@@ -171,18 +171,18 @@ namespace BlazorApp.Api.Controllers
                         INET_SERVER_PORT() as server_port,
                         PG_POSTMASTER_START_TIME() as server_start_time
                 ");
-                
+
                 // 获取数据库大小
                 var dbSize = await _postgreSqlService.QueryFirstOrDefaultAsync<string>(@"
                     SELECT pg_size_pretty(pg_database_size(current_database()))
                 ");
-                
+
                 var info = dbInfo.FirstOrDefault();
-                
-                return Ok(new 
-                { 
-                    success = true, 
-                    data = new 
+
+                return Ok(new
+                {
+                    success = true,
+                    data = new
                     {
                         database_info = info,
                         database_size = dbSize,
@@ -195,9 +195,9 @@ namespace BlazorApp.Api.Controllers
             catch (Exception ex)
             {
                 _logger.LogError(ex, "获取PostgreSQL数据库信息时发生异常");
-                return StatusCode(500, new 
-                { 
-                    success = false, 
+                return StatusCode(500, new
+                {
+                    success = false,
                     message = "获取数据库信息失败：" + ex.Message,
                     timestamp = DateTime.UtcNow
                 });

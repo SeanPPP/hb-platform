@@ -29,14 +29,14 @@ namespace BlazorApp.Api.Services
             try
             {
                 var db = _context.Db;
-                
+
                 // 构建基础查询
                 var supplierQuery = db.Queryable<ChinaSupplier>();
 
                 // 搜索条件 - 供应商名称、代码、联系人
                 if (!string.IsNullOrEmpty(query.Search))
                 {
-                    supplierQuery = supplierQuery.Where(s => 
+                    supplierQuery = supplierQuery.Where(s =>
                         (s.SupplierName != null && s.SupplierName.Contains(query.Search)) ||
                         (s.SupplierCode != null && s.SupplierCode.Contains(query.Search)) ||
                         (s.ShopNumber != null && s.ShopNumber.Contains(query.Search)) ||
@@ -61,30 +61,30 @@ namespace BlazorApp.Api.Services
                 // 排序处理
                 if (!string.IsNullOrEmpty(query.SortField))
                 {
-                    var isDescending = !string.IsNullOrEmpty(query.SortDirection) && 
+                    var isDescending = !string.IsNullOrEmpty(query.SortDirection) &&
                                      query.SortDirection.ToLower() == "desc";
-                    
+
                     supplierQuery = query.SortField.ToLower() switch
                     {
-                        "suppliercode" => isDescending 
+                        "suppliercode" => isDescending
                             ? supplierQuery.OrderByDescending(s => s.SupplierCode)
                             : supplierQuery.OrderBy(s => s.SupplierCode),
-                        "suppliername" => isDescending 
+                        "suppliername" => isDescending
                             ? supplierQuery.OrderByDescending(s => s.SupplierName)
                             : supplierQuery.OrderBy(s => s.SupplierName),
-                        "shopnumber" => isDescending 
+                        "shopnumber" => isDescending
                             ? supplierQuery.OrderByDescending(s => s.ShopNumber)
                             : supplierQuery.OrderBy(s => s.ShopNumber),
-                        "contactperson" => isDescending 
+                        "contactperson" => isDescending
                             ? supplierQuery.OrderByDescending(s => s.ContactPerson)
                             : supplierQuery.OrderBy(s => s.ContactPerson),
-                        "phone" => isDescending 
+                        "phone" => isDescending
                             ? supplierQuery.OrderByDescending(s => s.Phone)
                             : supplierQuery.OrderBy(s => s.Phone),
-                        "status" => isDescending 
+                        "status" => isDescending
                             ? supplierQuery.OrderByDescending(s => s.Status)
                             : supplierQuery.OrderBy(s => s.Status),
-                        "fgc_createdate" or "createdate" => isDescending 
+                        "fgc_createdate" or "createdate" => isDescending
                             ? supplierQuery.OrderByDescending(s => s.FGC_CreateDate)
                             : supplierQuery.OrderBy(s => s.FGC_CreateDate),
                         _ => supplierQuery.OrderByDescending(s => s.FGC_CreateDate) // 默认按创建时间降序
@@ -171,7 +171,7 @@ namespace BlazorApp.Api.Services
                     return ApiResponse<ChinaSupplierDetailDto>.Error("国内供应商不存在", "CHINA_SUPPLIER_NOT_FOUND");
                 }
 
-             
+
 
                 return ApiResponse<ChinaSupplierDetailDto>.OK(supplier);
             }
@@ -349,7 +349,7 @@ namespace BlazorApp.Api.Services
 
                 // 执行删除
                 var deleteResult = await db.Deleteable<ChinaSupplier>().Where(s => s.Guid == guid).ExecuteCommandAsync();
-                
+
                 if (deleteResult > 0)
                 {
                     _logger.LogInformation("成功删除国内供应商，GUID: {SupplierGUID}, Name: {SupplierName}", guid, supplier.SupplierName);
@@ -433,7 +433,7 @@ namespace BlazorApp.Api.Services
                 var db = _context.Db;
 
                 var query = db.Queryable<ChinaSupplier>().Where(s => s.SupplierCode == supplierCode);
-                
+
                 if (!string.IsNullOrEmpty(excludeGuid))
                 {
                     query = query.Where(s => s.Guid != excludeGuid);
@@ -547,7 +547,7 @@ namespace BlazorApp.Api.Services
 
                 var nextCode = $"HB{(maxNumber + 1):D3}";
                 _logger.LogInformation("生成下一个供应商编码: {SupplierCode}", nextCode);
-                
+
                 return ApiResponse<string>.OK(nextCode);
             }
             catch (Exception ex)

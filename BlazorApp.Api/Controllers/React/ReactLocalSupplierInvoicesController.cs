@@ -18,7 +18,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPost("grid")]
-      //  [Authorize(Roles = "Admin,WarehouseManager,Manager")]
+        //  [Authorize(Roles = "Admin,WarehouseManager,Manager")]
         public async Task<IActionResult> Grid([FromBody] GridRequestDto request)
         {
             var result = await _service.GetGridDataAsync(request);
@@ -46,7 +46,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpGet("{invoiceGuid}")]
-       // [Authorize(Roles = "Admin,WarehouseManager,Manager")]
+        // [Authorize(Roles = "Admin,WarehouseManager,Manager")]
         public async Task<IActionResult> GetInvoice(string invoiceGuid)
         {
             var result = await _service.GetInvoiceAsync(invoiceGuid);
@@ -63,7 +63,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpGet("{invoiceGuid}/details")]
-      
+
         public async Task<IActionResult> GetDetails(string invoiceGuid)
         {
             var result = await _service.GetDetailsAsync(invoiceGuid);
@@ -80,7 +80,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPost]
-     
+
         public async Task<IActionResult> Create([FromBody] CreateInvoiceRequest dto)
         {
             var result = await _service.CreateAsync(dto);
@@ -97,7 +97,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPut("{invoiceGuid}")]
-      
+
         public async Task<IActionResult> Update(
             string invoiceGuid,
             [FromBody] UpdateInvoiceRequest dto
@@ -117,7 +117,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPost("{invoiceGuid}/details/batch-upsert")]
-       
+
         public async Task<IActionResult> BatchUpsertDetails(
             string invoiceGuid,
             [FromBody] List<InvoiceDetailUpsertItemDto> items
@@ -138,7 +138,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpDelete("{invoiceGuid}")]
-      
+
         public async Task<IActionResult> Delete(string invoiceGuid)
         {
             var user = User.Identity?.Name ?? "system";
@@ -156,7 +156,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPost("detect/supplier-item")]
-      
+
         public async Task<IActionResult> DetectSupplierItem(
             [FromBody] DetectSupplierItemRequest dto
         )
@@ -175,7 +175,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPost("detect/barcode")]
-      
+
         public async Task<IActionResult> DetectBarcode([FromBody] DetectBarcodeRequest dto)
         {
             var result = await _service.DetectBarcodeAsync(dto);

@@ -27,23 +27,23 @@ namespace BlazorApp.Api.Mappings.Profiles
                 .ForMember(dest => dest.RoleNames, opt => opt.MapFrom(src => src.Roles != null ? src.Roles.Select(r => r.RoleName).ToList() : new List<string>()))
                 .ForMember(dest => dest.StoreNames, opt => opt.MapFrom(src => src.Stores != null ? src.Stores.Select(s => s.StoreName).ToList() : new List<string>()))
                 .ForMember(dest => dest.UpdatedAt, opt => opt.MapFrom(src => src.UpdatedAt ?? src.CreatedAt))
-                .ForMember(dest => dest.Roles, opt => opt.MapFrom(src => src.Roles != null ? src.Roles.Select(r => new RoleDto 
-                { 
-                    RoleGUID = r.RoleGUID, 
-                    RoleName = r.RoleName, 
-                    Description = r.Description, 
-                    IsActive = r.IsActive, 
-                    CreatedAt = r.CreatedAt, 
-                    UpdatedAt = r.UpdatedAt ?? r.CreatedAt 
+                .ForMember(dest => dest.Roles, opt => opt.MapFrom(src => src.Roles != null ? src.Roles.Select(r => new RoleDto
+                {
+                    RoleGUID = r.RoleGUID,
+                    RoleName = r.RoleName,
+                    Description = r.Description,
+                    IsActive = r.IsActive,
+                    CreatedAt = r.CreatedAt,
+                    UpdatedAt = r.UpdatedAt ?? r.CreatedAt
                 }).ToList() : new List<RoleDto>()))
-                .ForMember(dest => dest.Stores, opt => opt.MapFrom(src => src.Stores != null ? src.Stores.Select(s => new StoreDto 
-                { 
-                    StoreGUID = s.StoreGUID, 
-                    StoreName = s.StoreName, 
-                    StoreCode = s.StoreCode, 
-                    IsActive = s.IsActive, 
-                    CreatedAt = s.CreatedAt, 
-                    UpdatedAt = s.UpdatedAt ?? s.CreatedAt 
+                .ForMember(dest => dest.Stores, opt => opt.MapFrom(src => src.Stores != null ? src.Stores.Select(s => new StoreDto
+                {
+                    StoreGUID = s.StoreGUID,
+                    StoreName = s.StoreName,
+                    StoreCode = s.StoreCode,
+                    IsActive = s.IsActive,
+                    CreatedAt = s.CreatedAt,
+                    UpdatedAt = s.UpdatedAt ?? s.CreatedAt
                 }).ToList() : new List<StoreDto>()));
         }
 

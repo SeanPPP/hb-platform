@@ -20,7 +20,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpGet]
-     
+
         public async Task<IActionResult> GetList([FromQuery] int pageIndex = 1, [FromQuery] int pageSize = 20, [FromQuery] string? keyword = null, [FromQuery] int? status = null, [FromQuery] string? sortBy = null, [FromQuery] string? sortOrder = null)
         {
             try
@@ -36,7 +36,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpGet("active")]
-       
+
         public async Task<IActionResult> GetActive()
         {
             try

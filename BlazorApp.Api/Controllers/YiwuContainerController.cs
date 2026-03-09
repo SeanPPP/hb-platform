@@ -716,5 +716,5 @@ namespace BlazorApp.Api.Controllers
         #endregion
     }
 
-} 
+}
 #endregion

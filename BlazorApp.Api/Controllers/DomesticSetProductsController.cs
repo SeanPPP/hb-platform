@@ -37,12 +37,12 @@ namespace BlazorApp.Api.Controllers
             try
             {
                 var result = await _domesticSetProductService.GetDomesticSetProductsAsync(query);
-                
+
                 if (result.Success)
                 {
                     return Ok(result);
                 }
-                
+
                 return BadRequest(result);
             }
             catch (Exception ex)
@@ -63,17 +63,17 @@ namespace BlazorApp.Api.Controllers
             try
             {
                 var result = await _domesticSetProductService.GetDomesticSetProductByCodeAsync(setProductCode);
-                
+
                 if (result.Success)
                 {
                     return Ok(result);
                 }
-                
+
                 if (result.ErrorCode == "SET_PRODUCT_NOT_FOUND")
                 {
                     return NotFound(result);
                 }
-                
+
                 return BadRequest(result);
             }
             catch (Exception ex)
@@ -94,12 +94,12 @@ namespace BlazorApp.Api.Controllers
             try
             {
                 var result = await _domesticSetProductService.GetSetProductsByProductCodeAsync(productCode);
-                
+
                 if (result.Success)
                 {
                     return Ok(result);
                 }
-                
+
                 return BadRequest(result);
             }
             catch (Exception ex)
@@ -120,12 +120,12 @@ namespace BlazorApp.Api.Controllers
             try
             {
                 var result = await _domesticSetProductService.GetSetProductsBySupplierCodeAsync(supplierCode);
-                
+
                 if (result.Success)
                 {
                     return Ok(result);
                 }
-                
+
                 return BadRequest(result);
             }
             catch (Exception ex)
@@ -151,25 +151,25 @@ namespace BlazorApp.Api.Controllers
                 }
 
                 var result = await _domesticSetProductService.CreateDomesticSetProductAsync(dto);
-                
+
                 if (result.Success)
                 {
                     return CreatedAtAction(
-                        nameof(GetDomesticSetProductByCode), 
-                        new { setProductCode = result.Data!.SetProductCode }, 
+                        nameof(GetDomesticSetProductByCode),
+                        new { setProductCode = result.Data!.SetProductCode },
                         result);
                 }
-                
+
                 if (result.ErrorCode == "PRODUCT_NOT_FOUND")
                 {
                     return NotFound(result);
                 }
-                
+
                 if (result.ErrorCode == "SET_PRODUCT_NO_EXISTS" || result.ErrorCode == "SET_BARCODE_EXISTS")
                 {
                     return Conflict(result);
                 }
-                
+
                 return BadRequest(result);
             }
             catch (Exception ex)
@@ -196,17 +196,17 @@ namespace BlazorApp.Api.Controllers
                 }
 
                 var result = await _domesticSetProductService.UpdateDomesticSetProductAsync(setProductCode, dto);
-                
+
                 if (result.Success)
                 {
                     return Ok(result);
                 }
-                
+
                 if (result.ErrorCode == "SET_PRODUCT_NOT_FOUND")
                 {
                     return NotFound(result);
                 }
-                
+
                 return BadRequest(result);
             }
             catch (Exception ex)
@@ -227,17 +227,17 @@ namespace BlazorApp.Api.Controllers
             try
             {
                 var result = await _domesticSetProductService.DeleteDomesticSetProductAsync(setProductCode);
-                
+
                 if (result.Success)
                 {
                     return Ok(result);
                 }
-                
+
                 if (result.ErrorCode == "SET_PRODUCT_NOT_FOUND")
                 {
                     return NotFound(result);
                 }
-                
+
                 return BadRequest(result);
             }
             catch (Exception ex)
@@ -263,12 +263,12 @@ namespace BlazorApp.Api.Controllers
                 }
 
                 var result = await _domesticSetProductService.GenerateNextSetProductNoAsync(baseItemNumber);
-                
+
                 if (result.Success)
                 {
                     return Ok(result);
                 }
-                
+
                 return BadRequest(result);
             }
             catch (Exception ex)
@@ -294,12 +294,12 @@ namespace BlazorApp.Api.Controllers
                 }
 
                 var result = await _domesticSetProductService.GenerateSetProductBarcodeAsync(supplierCode);
-                
+
                 if (result.Success)
                 {
                     return Ok(result);
                 }
-                
+
                 return BadRequest(result);
             }
             catch (Exception ex)
@@ -328,12 +328,12 @@ namespace BlazorApp.Api.Controllers
                 }
 
                 var result = await _domesticSetProductService.CheckSetProductNoExistsAsync(setProductNo, excludeSetProductCode);
-                
+
                 if (result.Success)
                 {
                     return Ok(result);
                 }
-                
+
                 return BadRequest(result);
             }
             catch (Exception ex)
@@ -362,12 +362,12 @@ namespace BlazorApp.Api.Controllers
                 }
 
                 var result = await _domesticSetProductService.CheckSetBarcodeExistsAsync(setBarcode, excludeSetProductCode);
-                
+
                 if (result.Success)
                 {
                     return Ok(result);
                 }
-                
+
                 return BadRequest(result);
             }
             catch (Exception ex)
@@ -393,17 +393,17 @@ namespace BlazorApp.Api.Controllers
                 }
 
                 var result = await _domesticSetProductService.BatchCreateDomesticSetProductsAsync(dto);
-                
+
                 if (result.Success)
                 {
                     return Ok(result);
                 }
-                
+
                 if (result.ErrorCode == "PRODUCT_NOT_FOUND")
                 {
                     return NotFound(result);
                 }
-                
+
                 return BadRequest(result);
             }
             catch (Exception ex)
@@ -429,17 +429,17 @@ namespace BlazorApp.Api.Controllers
                 }
 
                 var result = await _domesticSetProductService.BatchDeleteDomesticSetProductsAsync(request.SetProductCodes);
-                
+
                 if (result.Success)
                 {
                     return Ok(result);
                 }
-                
+
                 if (result.ErrorCode == "SOME_SET_PRODUCTS_NOT_FOUND")
                 {
                     return NotFound(result);
                 }
-                
+
                 return BadRequest(result);
             }
             catch (Exception ex)
@@ -465,17 +465,17 @@ namespace BlazorApp.Api.Controllers
                 }
 
                 var result = await _domesticSetProductService.CopySetProductStructureAsync(request.SourceProductCode, request.TargetProductCode);
-                
+
                 if (result.Success)
                 {
                     return Ok(result);
                 }
-                
+
                 if (result.ErrorCode == "PRODUCT_NOT_FOUND")
                 {
                     return NotFound(result);
                 }
-                
+
                 return BadRequest(result);
             }
             catch (Exception ex)
@@ -499,12 +499,12 @@ namespace BlazorApp.Api.Controllers
             try
             {
                 var result = await _domesticSetProductService.GetSetProductPriceStatisticsAsync(productCode, supplierCode);
-                
+
                 if (result.Success)
                 {
                     return Ok(result);
                 }
-                
+
                 return BadRequest(result);
             }
             catch (Exception ex)

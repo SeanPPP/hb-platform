@@ -17,7 +17,7 @@ namespace BlazorApp.Api.Mappings
         {
             // 注册所有分离的映射配置文件
             // 每个Profile负责一个特定的业务领域
-            
+
             // ⚠️ 注意：AutoMapper会自动扫描并包含同一程序集中的所有Profile类
             // 不需要手动IncludeProfile，只要Profile类继承自Profile即可
             // 

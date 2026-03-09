@@ -30,7 +30,7 @@ namespace BlazorApp.Api.Utils
         /// <param name="entities">要插入的实体列表</param>
         /// <param name="batchSize">批次大小</param>
         /// <returns>插入的记录数</returns>
-        public static async Task<int> BatchInsertAsync<T>(ISqlSugarClient db, List<T> entities, int batchSize = DEFAULT_BATCH_SIZE) 
+        public static async Task<int> BatchInsertAsync<T>(ISqlSugarClient db, List<T> entities, int batchSize = DEFAULT_BATCH_SIZE)
             where T : class, new()
         {
             if (entities == null || !entities.Any())
@@ -49,7 +49,7 @@ namespace BlazorApp.Api.Utils
         /// <param name="entities">要更新的实体列表</param>
         /// <param name="batchSize">批次大小</param>
         /// <returns>更新的记录数</returns>
-        public static async Task<int> BatchUpdateAsync<T>(ISqlSugarClient db, List<T> entities, int batchSize = DEFAULT_BATCH_SIZE) 
+        public static async Task<int> BatchUpdateAsync<T>(ISqlSugarClient db, List<T> entities, int batchSize = DEFAULT_BATCH_SIZE)
             where T : class, new()
         {
             if (entities == null || !entities.Any())
@@ -68,7 +68,7 @@ namespace BlazorApp.Api.Utils
         /// <param name="entities">要删除的实体列表</param>
         /// <param name="batchSize">批次大小</param>
         /// <returns>删除的记录数</returns>
-        public static async Task<int> BatchSoftDeleteAsync<T>(ISqlSugarClient db, List<T> entities, int batchSize = DEFAULT_BATCH_SIZE) 
+        public static async Task<int> BatchSoftDeleteAsync<T>(ISqlSugarClient db, List<T> entities, int batchSize = DEFAULT_BATCH_SIZE)
             where T : class, new()
         {
             if (entities == null || !entities.Any())
@@ -87,7 +87,7 @@ namespace BlazorApp.Api.Utils
         /// <param name="ids">要删除的ID列表</param>
         /// <param name="batchSize">批次大小</param>
         /// <returns>删除的记录数</returns>
-        public static async Task<int> BatchDeleteByIdsAsync<T>(ISqlSugarClient db, List<object> ids, int batchSize = DEFAULT_BATCH_SIZE) 
+        public static async Task<int> BatchDeleteByIdsAsync<T>(ISqlSugarClient db, List<object> ids, int batchSize = DEFAULT_BATCH_SIZE)
             where T : class, new()
         {
             if (ids == null || !ids.Any())
@@ -115,7 +115,7 @@ namespace BlazorApp.Api.Utils
         /// <param name="entities">要合并的实体列表</param>
         /// <param name="batchSize">批次大小</param>
         /// <returns>操作的记录数</returns>
-        public static async Task<int> BatchMergeAsync<T>(ISqlSugarClient db, List<T> entities, int batchSize = DEFAULT_BATCH_SIZE) 
+        public static async Task<int> BatchMergeAsync<T>(ISqlSugarClient db, List<T> entities, int batchSize = DEFAULT_BATCH_SIZE)
             where T : class, new()
         {
             if (entities == null || !entities.Any())
@@ -134,8 +134,8 @@ namespace BlazorApp.Api.Utils
         /// <param name="processor">处理函数</param>
         /// <returns>处理结果</returns>
         public static async Task<List<TResult>> ProcessInBatchesAsync<T, TResult>(
-            IEnumerable<T> items, 
-            int batchSize, 
+            IEnumerable<T> items,
+            int batchSize,
             Func<IEnumerable<T>, Task<IEnumerable<TResult>>> processor)
         {
             var results = new List<TResult>();
@@ -180,9 +180,9 @@ namespace BlazorApp.Api.Utils
         /// <param name="values">要验证的值</param>
         /// <returns>已存在的值列表</returns>
         public static async Task<List<TKey>> ValidateUniquenessAsync<T, TKey>(
-            ISqlSugarClient db, 
-            System.Linq.Expressions.Expression<Func<T, TKey>> keySelector, 
-            List<TKey> values) 
+            ISqlSugarClient db,
+            System.Linq.Expressions.Expression<Func<T, TKey>> keySelector,
+            List<TKey> values)
             where T : class, new()
         {
             if (values == null || !values.Any())
@@ -198,7 +198,7 @@ namespace BlazorApp.Api.Utils
                     .Where(x => batch.Contains(keySelector.Compile()(x)))
                     .Select(keySelector)
                     .ToListAsync();
-                
+
                 existingValues.AddRange(batchExisting);
             }
 
