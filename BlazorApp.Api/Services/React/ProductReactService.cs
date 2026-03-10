@@ -35,6 +35,135 @@ namespace BlazorApp.Api.Services.React
             _httpContextAccessor = httpContextAccessor;
         }
 
+        #region 筛选辅助方法
+
+        /// <summary>
+        /// 应用文本筛选到查询
+        /// </summary>
+        private void ApplyTextFilter(
+            ref ISugarQueryable<Product> query,
+            string? value,
+            TextFilterType filterType,
+            string fieldName
+        )
+        {
+            if (string.IsNullOrWhiteSpace(value))
+                return;
+
+            var keyword = value.Trim().ToLower();
+
+            switch (filterType)
+            {
+                case TextFilterType.equals:
+                    query = query.Where($"LOWER({fieldName}) = @0", keyword);
+                    break;
+                case TextFilterType.notEquals:
+                    query = query.Where($"LOWER({fieldName}) != @0", keyword);
+                    break;
+                case TextFilterType.startsWith:
+                    query = query.Where($"LOWER({fieldName}) LIKE @0", keyword + "%");
+                    break;
+                case TextFilterType.endsWith:
+                    query = query.Where($"LOWER({fieldName}) LIKE @0", "%" + keyword);
+                    break;
+                case TextFilterType.notContains:
+                    query = query.Where($"LOWER({fieldName}) NOT LIKE @0", "%" + keyword + "%");
+                    break;
+                case TextFilterType.contains:
+                default:
+                    query = query.Where($"LOWER({fieldName}) LIKE @0", "%" + keyword + "%");
+                    break;
+            }
+        }
+
+        /// <summary>
+        /// 应用数字范围筛选到查询（decimal类型）
+        /// </summary>
+        private void ApplyNumberFilter(
+            ref ISugarQueryable<Product> query,
+            decimal? minValue,
+            decimal? maxValue,
+            NumberFilterType filterType,
+            string fieldName
+        )
+        {
+            if (!minValue.HasValue && !maxValue.HasValue)
+                return;
+
+            switch (filterType)
+            {
+                case NumberFilterType.equals when minValue.HasValue:
+                    query = query.Where($"{fieldName} = @0", minValue.Value);
+                    break;
+                case NumberFilterType.notEquals when minValue.HasValue:
+                    query = query.Where($"{fieldName} != @0", minValue.Value);
+                    break;
+                case NumberFilterType.greaterThan when minValue.HasValue:
+                    query = query.Where($"{fieldName} > @0", minValue.Value);
+                    break;
+                case NumberFilterType.greaterThanOrEqual when minValue.HasValue:
+                    query = query.Where($"{fieldName} >= @0", minValue.Value);
+                    break;
+                case NumberFilterType.lessThan when minValue.HasValue:
+                    query = query.Where($"{fieldName} < @0", minValue.Value);
+                    break;
+                case NumberFilterType.lessThanOrEqual when minValue.HasValue:
+                    query = query.Where($"{fieldName} <= @0", minValue.Value);
+                    break;
+                case NumberFilterType.between:
+                    if (minValue.HasValue)
+                        query = query.Where($"{fieldName} >= @0", minValue.Value);
+                    if (maxValue.HasValue)
+                        query = query.Where($"{fieldName} <= @0", maxValue.Value);
+                    break;
+            }
+        }
+
+        /// <summary>
+        /// 应用数字范围筛选到查询（int类型）
+        /// </summary>
+        private void ApplyNumberFilter(
+            ref ISugarQueryable<Product> query,
+            int? minValue,
+            int? maxValue,
+            NumberFilterType filterType,
+            string fieldName
+        )
+        {
+            if (!minValue.HasValue && !maxValue.HasValue)
+                return;
+
+            switch (filterType)
+            {
+                case NumberFilterType.equals when minValue.HasValue:
+                    query = query.Where($"{fieldName} = @0", minValue.Value);
+                    break;
+                case NumberFilterType.notEquals when minValue.HasValue:
+                    query = query.Where($"{fieldName} != @0", minValue.Value);
+                    break;
+                case NumberFilterType.greaterThan when minValue.HasValue:
+                    query = query.Where($"{fieldName} > @0", minValue.Value);
+                    break;
+                case NumberFilterType.greaterThanOrEqual when minValue.HasValue:
+                    query = query.Where($"{fieldName} >= @0", minValue.Value);
+                    break;
+                case NumberFilterType.lessThan when minValue.HasValue:
+                    query = query.Where($"{fieldName} < @0", minValue.Value);
+                    break;
+                case NumberFilterType.lessThanOrEqual when minValue.HasValue:
+                    query = query.Where($"{fieldName} <= @0", minValue.Value);
+                    break;
+                case NumberFilterType.between:
+                    if (minValue.HasValue)
+                        query = query.Where($"{fieldName} >= @0", minValue.Value);
+                    if (maxValue.HasValue)
+                        query = query.Where($"{fieldName} <= @0", maxValue.Value);
+                    break;
+            }
+        }
+
+        #endregion
+
         /// <summary>
         /// 分页查询商品列表（支持排序和过滤）
         /// </summary>
@@ -83,21 +212,45 @@ namespace BlazorApp.Api.Services.React
                     q = q.Where(p => p.ProductType == query.ProductType.Value);
                 }
 
-                if (!string.IsNullOrWhiteSpace(query.UpdatedBy))
-                {
-                    var name = query.UpdatedBy.Trim().ToLower();
-                    q = q.Where(p => p.UpdatedBy != null && p.UpdatedBy.ToLower().Contains(name));
-                }
+                #region 文本字段高级筛选
 
-                if (query.MinPrice.HasValue)
-                {
-                    q = q.Where(p => p.RetailPrice >= query.MinPrice.Value);
-                }
+                ApplyTextFilter(ref q, query.ItemNumber, query.ItemNumberFilterType, "ItemNumber");
+                ApplyTextFilter(ref q, query.Barcode, query.BarcodeFilterType, "Barcode");
+                ApplyTextFilter(
+                    ref q,
+                    query.ProductName,
+                    query.ProductNameFilterType,
+                    "ProductName"
+                );
+                ApplyTextFilter(ref q, query.UpdatedBy, query.UpdatedByFilterType, "UpdatedBy");
 
-                if (query.MaxPrice.HasValue)
-                {
-                    q = q.Where(p => p.RetailPrice <= query.MaxPrice.Value);
-                }
+                #endregion
+
+                #region 数字字段高级筛选
+
+                ApplyNumberFilter(
+                    ref q,
+                    query.PurchasePriceMin,
+                    query.PurchasePriceMax,
+                    query.PurchasePriceFilterType,
+                    "PurchasePrice"
+                );
+                ApplyNumberFilter(
+                    ref q,
+                    query.RetailPriceMin,
+                    query.RetailPriceMax,
+                    query.RetailPriceFilterType,
+                    "RetailPrice"
+                );
+                ApplyNumberFilter(
+                    ref q,
+                    query.MiddlePackageQuantityMin,
+                    query.MiddlePackageQuantityMax,
+                    query.MiddlePackageQuantityFilterType,
+                    "MiddlePackageQuantity"
+                );
+
+                #endregion
 
                 // 应用排序
                 if (!string.IsNullOrWhiteSpace(query.SortBy))
@@ -295,25 +448,28 @@ namespace BlazorApp.Api.Services.React
                         if (string.IsNullOrWhiteSpace(storeCode))
                             continue;
 
-                        storePriceList.Add(new StoreRetailPrice
-                        {
-                            UUID = UuidHelper.GenerateUuid7(),
-                            StoreCode = storeCode,
-                            ProductCode = product.ProductCode,
-                            StoreProductCode = storeCode + (product.ProductCode ?? string.Empty),
-                            SupplierCode = supplierCode,
-                            PurchasePrice = product.PurchasePrice,
-                            StoreRetailPriceValue = product.RetailPrice,
-                            DiscountRate = null,
-                            IsActive = product.IsActive,
-                            IsAutoPricing = product.IsAutoPricing,
-                            IsSpecialProduct = product.IsSpecialProduct,
-                            CreatedAt = now,
-                            UpdatedAt = now,
-                            CreatedBy = currentUser,
-                            UpdatedBy = currentUser,
-                            IsDeleted = false,
-                        });
+                        storePriceList.Add(
+                            new StoreRetailPrice
+                            {
+                                UUID = UuidHelper.GenerateUuid7(),
+                                StoreCode = storeCode,
+                                ProductCode = product.ProductCode,
+                                StoreProductCode =
+                                    storeCode + (product.ProductCode ?? string.Empty),
+                                SupplierCode = supplierCode,
+                                PurchasePrice = product.PurchasePrice,
+                                StoreRetailPriceValue = product.RetailPrice,
+                                DiscountRate = null,
+                                IsActive = product.IsActive,
+                                IsAutoPricing = product.IsAutoPricing,
+                                IsSpecialProduct = product.IsSpecialProduct,
+                                CreatedAt = now,
+                                UpdatedAt = now,
+                                CreatedBy = currentUser,
+                                UpdatedBy = currentUser,
+                                IsDeleted = false,
+                            }
+                        );
                     }
 
                     if (storePriceList.Count > 0)
@@ -354,13 +510,19 @@ namespace BlazorApp.Api.Services.React
                 }
 
                 var newProductCode = dto.ProductCode?.Trim();
-                var isCodeChange = !string.IsNullOrEmpty(newProductCode) && newProductCode != productCode;
+                var isCodeChange =
+                    !string.IsNullOrEmpty(newProductCode) && newProductCode != productCode;
 
                 if (isCodeChange)
                 {
                     await _db.Ado.UseTranAsync(async () =>
                     {
-                        await UpdateProductAndCascadeProductCodeAsync(productCode, product, dto, newProductCode!);
+                        await UpdateProductAndCascadeProductCodeAsync(
+                            productCode,
+                            product,
+                            dto,
+                            newProductCode!
+                        );
                     });
                     return await GetByIdAsync(newProductCode!);
                 }
@@ -428,8 +590,7 @@ namespace BlazorApp.Api.Services.React
             product.IsSpecialProduct = dto.IsSpecialProduct;
             product.WarehouseCategoryGUID = dto.WarehouseCategoryGUID;
             product.UpdatedAt = DateTime.Now;
-            var currentUser =
-                _httpContextAccessor.HttpContext?.User?.Identity?.Name ?? "System";
+            var currentUser = _httpContextAccessor.HttpContext?.User?.Identity?.Name ?? "System";
             product.UpdatedBy = currentUser;
 
             await _db.Updateable(product).ExecuteCommandAsync();
@@ -507,7 +668,10 @@ namespace BlazorApp.Api.Services.React
             if (multiCodeProductCodes != null && multiCodeProductCodes.Any())
             {
                 await _db.Deleteable<ProductSetCode>()
-                    .Where(psc => psc.SetProductCode != null && multiCodeProductCodes.Contains(psc.SetProductCode))
+                    .Where(psc =>
+                        psc.SetProductCode != null
+                        && multiCodeProductCodes.Contains(psc.SetProductCode)
+                    )
                     .ExecuteCommandAsync();
             }
 
@@ -584,7 +748,9 @@ namespace BlazorApp.Api.Services.React
                             if (item.IsAutoPricing.HasValue)
                             {
                                 await _db.Updateable<StoreRetailPrice>()
-                                    .SetColumns(srp => srp.IsAutoPricing == item.IsAutoPricing.Value)
+                                    .SetColumns(srp =>
+                                        srp.IsAutoPricing == item.IsAutoPricing.Value
+                                    )
                                     .Where(srp => srp.ProductCode == item.ProductCode)
                                     .ExecuteCommandAsync();
                             }
@@ -705,9 +871,7 @@ namespace BlazorApp.Api.Services.React
                 // 应用分店过滤条件(优化:先过滤StoreCode)
                 if (filter.StoreCodes != null && filter.StoreCodes.Any())
                 {
-                    query = query.Where(
-                        (p, sp, s, ls) => filter.StoreCodes.Contains(sp.StoreCode)
-                    );
+                    query = query.Where((p, sp, s, ls) => filter.StoreCodes.Contains(sp.StoreCode));
                 }
 
                 // 应用商品主表过滤条件
@@ -760,8 +924,7 @@ namespace BlazorApp.Api.Services.React
                 {
                     var name = filter.UpdatedBy.Trim();
                     query = query.Where(
-                        (p, sp, s, ls) =>
-                            p.UpdatedBy != null && p.UpdatedBy.Contains(name)
+                        (p, sp, s, ls) => p.UpdatedBy != null && p.UpdatedBy.Contains(name)
                     );
                 }
 
