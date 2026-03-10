@@ -51,27 +51,34 @@ namespace BlazorApp.Api.Services.React
                 return;
 
             var keyword = value.Trim().ToLower();
+            var paramName = $"p_{fieldName}";
 
             switch (filterType)
             {
                 case TextFilterType.equals:
-                    query = query.Where($"LOWER({fieldName}) = @0", keyword);
+                    query = query.Where($"LOWER({fieldName}) = @{paramName}", 
+                        new Dictionary<string, object> { { paramName, keyword } });
                     break;
                 case TextFilterType.notEquals:
-                    query = query.Where($"LOWER({fieldName}) != @0", keyword);
+                    query = query.Where($"LOWER({fieldName}) != @{paramName}", 
+                        new Dictionary<string, object> { { paramName, keyword } });
                     break;
                 case TextFilterType.startsWith:
-                    query = query.Where($"LOWER({fieldName}) LIKE @0", keyword + "%");
+                    query = query.Where($"LOWER({fieldName}) LIKE @{paramName}", 
+                        new Dictionary<string, object> { { paramName, keyword + "%" } });
                     break;
                 case TextFilterType.endsWith:
-                    query = query.Where($"LOWER({fieldName}) LIKE @0", "%" + keyword);
+                    query = query.Where($"LOWER({fieldName}) LIKE @{paramName}", 
+                        new Dictionary<string, object> { { paramName, "%" + keyword } });
                     break;
                 case TextFilterType.notContains:
-                    query = query.Where($"LOWER({fieldName}) NOT LIKE @0", "%" + keyword + "%");
+                    query = query.Where($"LOWER({fieldName}) NOT LIKE @{paramName}", 
+                        new Dictionary<string, object> { { paramName, "%" + keyword + "%" } });
                     break;
                 case TextFilterType.contains:
                 default:
-                    query = query.Where($"LOWER({fieldName}) LIKE @0", "%" + keyword + "%");
+                    query = query.Where($"LOWER({fieldName}) LIKE @{paramName}", 
+                        new Dictionary<string, object> { { paramName, "%" + keyword + "%" } });
                     break;
             }
         }
