@@ -138,6 +138,12 @@ namespace BlazorApp.Api.Services
                     return ApiResponse<VersionInfoDto>.Error("版本号已存在", "VERSION_ALREADY_EXISTS");
                 }
 
+                _logger.LogInformation(
+                    "=== 创建版本调试 ===\nFileName: {FileName}\nDownloadFromPath: {DownloadFromPath}\n====================",
+                    dto.FileName,
+                    dto.DownloadFromPath
+                );
+
                 var versionInfo = new VersionInfo
                 {
                     Version = dto.Version,
@@ -158,7 +164,13 @@ namespace BlazorApp.Api.Services
 
                 await db.InsertAsync(versionInfo);
 
-                _logger.LogInformation("创建版本成功，Version: {Version}, SoftName: {SoftName}", dto.Version, dto.SoftName);
+                _logger.LogInformation(
+                    "=== 创建版本成功 ===\nVersion: {Version}\nSoftName: {SoftName}\nSavedFileName: {FileName}\nSavedDownloadPath: {DownloadFromPath}\n====================",
+                    dto.Version,
+                    dto.SoftName,
+                    versionInfo.FileName,
+                    versionInfo.DownloadFromPath
+                );
 
                 return ApiResponse<VersionInfoDto>.OK(MapToDto(versionInfo));
             }

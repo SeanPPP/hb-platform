@@ -92,10 +92,13 @@ namespace BlazorApp.Shared.DTOs
         public string Version { get; set; } = string.Empty;
 
         /// <summary>
-        /// 软件平台信息（必填）WIN_POS/PDA_WH/PDA_Store/ios
+        /// 软件平台信息（必填）WIN_POS/PDA_WH/PDA_Store/ios/wp/PDA/wp_update/test
         /// </summary>
         [Required(ErrorMessage = "软件平台不能为空")]
-        [RegularExpression("WIN_POS|PDA_WH|PDA_Store|ios", ErrorMessage = "软件平台必须是WIN_POS、PDA_WH、PDA_Store或ios")]
+        [RegularExpression(
+            "WIN_POS|PDA_WH|PDA_Store|ios|wp|PDA|wp_update|test",
+            ErrorMessage = "软件平台必须是WIN_POS、PDA_WH、PDA_Store、ios、wp、PDA、wp_update或test"
+        )]
         public string SoftName { get; set; } = string.Empty;
 
         /// <summary>
@@ -153,9 +156,12 @@ namespace BlazorApp.Shared.DTOs
     public class UpdateVersionInfoDto
     {
         /// <summary>
-        /// 软件平台信息 WIN_POS/PDA_WH/PDA_Store/ios
+        /// 软件平台信息 WIN_POS/PDA_WH/PDA_Store/ios/wp/PDA/wp_update/test
         /// </summary>
-        [RegularExpression("WIN_POS|PDA_WH|PDA_Store|ios", ErrorMessage = "软件平台必须是WIN_POS、PDA_WH、PDA_Store或ios")]
+        [RegularExpression(
+            "WIN_POS|PDA_WH|PDA_Store|ios|wp|PDA|wp_update|test",
+            ErrorMessage = "软件平台必须是WIN_POS、PDA_WH、PDA_Store、ios、wp、PDA、wp_update或test"
+        )]
         public string? SoftName { get; set; }
 
         /// <summary>

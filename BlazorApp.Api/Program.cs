@@ -125,6 +125,9 @@ builder.Services.AddHttpContextAccessor();
 // 注册内存缓存服务
 builder.Services.AddMemoryCache();
 
+builder.Services.Configure<TencentCloudSettings>(
+    builder.Configuration.GetSection("TencentCloud")
+);
 builder.Services.AddScoped<SalesStatisticsJobService>();
 builder.Services.AddScoped<HBSalesRecordStatisticsService>();
 builder.Services.AddScoped<ScheduledTaskLogService>();
@@ -292,6 +295,7 @@ builder.Services.AddScoped<
 builder.Services.AddScoped<IDeviceRegistrationService, DeviceRegistrationService>(); // POSM设备注册管理服务
 builder.Services.AddScoped<IProductSyncService, ProductSyncService>(); // 货柜商品同步服务（检测、批量创建、批量更新）
 builder.Services.AddScoped<IWarehouseProductBatchService, WarehouseProductBatchService>(); // 仓库商品批量管理服务
+builder.Services.AddScoped<TencentCloudUploadService>();
 
 // 🚧 已禁用的服务（如需启用请取消注释）
 // builder.Services.AddScoped<IHqBranchService, HqBranchService>(); // 总部分支服务
