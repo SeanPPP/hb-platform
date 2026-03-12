@@ -296,27 +296,94 @@ namespace BlazorApp.Api.Services.React
         public async Task<ApiResponse<bool>> BatchUpdateStatusAsync(
             List<string> ids,
             bool isActive,
-            string updatedBy
+            string updatedBy,
+            List<string>? storeCodes = null
         )
         {
             try
             {
                 var db = _context.Db;
                 var now = DateTime.UtcNow;
-                var count = await db.Updateable<ProductSetCode>()
-                    .SetColumns(psc => new ProductSetCode
-                    {
-                        IsActive = isActive,
-                        UpdatedAt = now,
-                        UpdatedBy = updatedBy,
-                    })
-                    .Where(psc => ids.Contains(psc.SetCodeId) && !psc.IsDeleted)
-                    .ExecuteCommandAsync();
+                var updatedCount = 0;
+                var updatedMultiCodeCount = 0;
 
-                return ApiResponse<bool>.OK(true, $"已更新 {count} 条状态");
+                _logger.LogInformation(
+                    $"BatchUpdateStatusAsync 开始, 操作人: {updatedBy}, 套装条码ID数量: {ids.Count}, 分店数量: {storeCodes?.Count ?? 0}"
+                );
+
+                await db.Ado.BeginTranAsync();
+                try
+                {
+                    var count = await db.Updateable<ProductSetCode>()
+                        .SetColumns(psc => new ProductSetCode
+                        {
+                            IsActive = isActive,
+                            UpdatedAt = now,
+                            UpdatedBy = updatedBy,
+                        })
+                        .Where(psc => ids.Contains(psc.SetCodeId) && !psc.IsDeleted)
+                        .ExecuteCommandAsync();
+
+                    _logger.LogInformation($"更新套装条码状态: {count} 条");
+                    updatedCount = count;
+
+                    // 如果提供了分店列表，同步更新 StoreMultiCodeProduct
+                    if (storeCodes != null && storeCodes.Count > 0 && ids.Any())
+                    {
+                        var setProductCodes = await db.Queryable<ProductSetCode>()
+                            .Where(x => ids.Contains(x.SetCodeId) && !x.IsDeleted)
+                            .Select(x => x.SetProductCode)
+                            .ToListAsync();
+
+                        if (setProductCodes.Any())
+                        {
+                            var distinctSetProductCodes = setProductCodes
+                                .Where(x => !string.IsNullOrWhiteSpace(x))
+                                .Distinct()
+                                .ToList();
+
+                            if (distinctSetProductCodes.Any())
+                            {
+                                updatedMultiCodeCount = await db.Updateable<StoreMultiCodeProduct>()
+                                    .SetColumns(m => new StoreMultiCodeProduct
+                                    {
+                                        IsActive = isActive,
+                                        UpdatedAt = now,
+                                        UpdatedBy = updatedBy,
+                                    })
+                                    .Where(m =>
+                                        m.MultiCodeProductCode != null
+                                        && distinctSetProductCodes.Contains(m.MultiCodeProductCode)
+                                        && m.StoreCode != null
+                                        && storeCodes.Contains(m.StoreCode))
+                                    .ExecuteCommandAsync();
+
+                                _logger.LogInformation($"同步更新分店一品多码状态: {updatedMultiCodeCount} 条");
+                            }
+                        }
+                    }
+
+                    await db.Ado.CommitTranAsync();
+                    _logger.LogInformation("事务提交成功");
+
+                    var message = $"已更新 {updatedCount} 条状态";
+                    if (updatedMultiCodeCount > 0)
+                    {
+                        message += $"，已同步到 {updatedMultiCodeCount} 条分店一品多码";
+                    }
+
+                    return ApiResponse<bool>.OK(true, message);
+                }
+                catch (Exception ex)
+                {
+                    await db.Ado.RollbackTranAsync();
+                    _logger.LogError(ex, "批量更新状态事务失败, 事务已回滚");
+                    throw;
+                }
             }
             catch (Exception ex)
             {
+                _logger.LogError(ex, "批量更新状态失败");
                 return ApiResponse<bool>.Error($"批量更新状态失败: {ex.Message}");
             }
         }
@@ -330,6 +397,8 @@ namespace BlazorApp.Api.Services.React
             {
                 var db = _context.Db;
                 var now = DateTime.UtcNow;
+                var updatedCount = 0;
+                var updatedMultiCodeCount = 0;
 
                 foreach (var it in items)
                 {
@@ -344,20 +413,101 @@ namespace BlazorApp.Api.Services.React
                     .Where(x => ids.Contains(x.SetCodeId) && !x.IsDeleted)
                     .ToListAsync();
 
-                foreach (var row in list)
+                await db.Ado.BeginTranAsync();
+                try
                 {
-                    var upd = items.First(x => x.Id == row.SetCodeId);
-                    row.SetPurchasePrice = upd.SetPurchasePrice ?? row.SetPurchasePrice;
-                    row.SetRetailPrice = upd.SetRetailPrice ?? row.SetRetailPrice;
-                    row.UpdatedAt = now;
-                    row.UpdatedBy = updatedBy;
-                }
+                    foreach (var row in list)
+                    {
+                        var upd = items.First(x => x.Id == row.SetCodeId);
+                        row.SetPurchasePrice = upd.SetPurchasePrice ?? row.SetPurchasePrice;
+                        row.SetRetailPrice = upd.SetRetailPrice ?? row.SetRetailPrice;
+                        row.UpdatedAt = now;
+                        row.UpdatedBy = updatedBy;
+                    }
 
-                var count = await db.Updateable(list).ExecuteCommandAsync();
-                return ApiResponse<bool>.OK(true, $"已更新 {count} 条价格");
+                    var count = await db.Updateable(list).ExecuteCommandAsync();
+                    _logger.LogInformation($"更新套装条码价格: {count} 条");
+                    updatedCount = count;
+
+                    // 如果提供了分店列表，同步更新 StoreMultiCodeProduct 的价格
+                    var storeCodes = items
+                        .Where(x => x.StoreCodes != null && x.StoreCodes.Count > 0)
+                        .SelectMany(x => x.StoreCodes!)
+                        .Distinct()
+                        .ToList();
+
+                    if (storeCodes.Count > 0 && list.Any())
+                    {
+                        var setProductCodes = list
+                            .Where(x => !string.IsNullOrWhiteSpace(x.SetProductCode))
+                            .Select(x => x.SetProductCode!)
+                            .Distinct()
+                            .ToList();
+
+                        var priceUpdates = list
+                            .Where(x => !string.IsNullOrWhiteSpace(x.SetProductCode))
+                            .ToDictionary(
+                                x => x.SetProductCode!,
+                                x => new { PurchasePrice = x.SetPurchasePrice, RetailPrice = x.SetRetailPrice }
+                            );
+
+                        if (setProductCodes.Any() && priceUpdates.Any())
+                        {
+                            var multiCodeList = await db.Queryable<StoreMultiCodeProduct>()
+                                .Where(m =>
+                                    m.MultiCodeProductCode != null
+                                    && setProductCodes.Contains(m.MultiCodeProductCode)
+                                    && m.StoreCode != null
+                                    && storeCodes.Contains(m.StoreCode))
+                                .ToListAsync();
+
+                            foreach (var multiCode in multiCodeList)
+                            {
+                                if (priceUpdates.TryGetValue(multiCode.MultiCodeProductCode!, out var prices))
+                                {
+                                    if (prices.PurchasePrice.HasValue)
+                                    {
+                                        multiCode.PurchasePrice = prices.PurchasePrice;
+                                    }
+                                    if (prices.RetailPrice.HasValue)
+                                    {
+                                        multiCode.MultiCodeRetailPrice = prices.RetailPrice;
+                                    }
+                                    multiCode.UpdatedAt = now;
+                                    multiCode.UpdatedBy = updatedBy;
+                                }
+                            }
+
+                            if (multiCodeList.Count > 0)
+                            {
+                                await db.Updateable(multiCodeList).ExecuteCommandAsync();
+                                _logger.LogInformation($"同步更新分店一品多码价格: {multiCodeList.Count} 条");
+                                updatedMultiCodeCount = multiCodeList.Count;
+                            }
+                        }
+                    }
+
+                    await db.Ado.CommitTranAsync();
+                    _logger.LogInformation("事务提交成功");
+
+                    var message = $"已更新 {updatedCount} 条价格";
+                    if (updatedMultiCodeCount > 0)
+                    {
+                        message += $"，已同步到 {updatedMultiCodeCount} 条分店一品多码";
+                    }
+
+                    return ApiResponse<bool>.OK(true, message);
+                }
+                catch (Exception ex)
+                {
+                    await db.Ado.RollbackTranAsync();
+                    _logger.LogError(ex, "批量更新价格事务失败, 事务已回滚");
+                    throw;
+                }
             }
             catch (Exception ex)
             {
+                _logger.LogError(ex, "批量更新价格失败");
                 return ApiResponse<bool>.Error($"批量更新价格失败: {ex.Message}");
             }
         }
@@ -367,20 +517,66 @@ namespace BlazorApp.Api.Services.React
             try
             {
                 var db = _context.Db;
-                var now = DateTime.UtcNow;
-                var count = await db.Updateable<ProductSetCode>()
-                    .SetColumns(psc => new ProductSetCode
+                var deletedCount = 0;
+                var deletedMultiCode = 0;
+
+                _logger.LogInformation(
+                    $"BatchDeleteAsync 开始, 操作人: {updatedBy}, 套装条码ID数量: {ids.Count}"
+                );
+
+                await db.Ado.BeginTranAsync();
+                try
+                {
+                    var toDeleteSetCodes = await db.Queryable<ProductSetCode>()
+                        .Where(x => ids.Contains(x.SetCodeId) && !x.IsDeleted)
+                        .ToListAsync();
+
+                    _logger.LogInformation($"查询到待删除套装条码: {toDeleteSetCodes.Count} 条");
+
+                    if (toDeleteSetCodes.Any())
                     {
-                        IsDeleted = true,
-                        UpdatedAt = now,
-                        UpdatedBy = updatedBy,
-                    })
-                    .Where(psc => ids.Contains(psc.SetCodeId) && !psc.IsDeleted)
-                    .ExecuteCommandAsync();
-                return ApiResponse<bool>.OK(true, $"已删除 {count} 条记录");
+                        var setProductCodes = toDeleteSetCodes
+                            .Where(x => !string.IsNullOrWhiteSpace(x.SetProductCode))
+                            .Select(x => x.SetProductCode!)
+                            .Distinct()
+                            .ToList();
+
+                        if (setProductCodes.Any())
+                        {
+                            deletedMultiCode = await db.Deleteable<StoreMultiCodeProduct>()
+                                .Where(m =>
+                                    m.MultiCodeProductCode != null
+                                    && setProductCodes.Contains(m.MultiCodeProductCode))
+                                .ExecuteCommandAsync();
+
+                            _logger.LogInformation($"物理删除分店一品多码: {deletedMultiCode} 条");
+                        }
+
+                        deletedCount = await db.Deleteable<ProductSetCode>()
+                            .Where(x => ids.Contains(x.SetCodeId))
+                            .ExecuteCommandAsync();
+
+                        _logger.LogInformation($"物理删除套装条码: {deletedCount} 条");
+                    }
+
+                    await db.Ado.CommitTranAsync();
+                    _logger.LogInformation("事务提交成功");
+
+                    return ApiResponse<bool>.OK(
+                        true,
+                        $"成功删除 {deletedCount} 条套装条码和 {deletedMultiCode} 条分店一品多码"
+                    );
+                }
+                catch (Exception ex)
+                {
+                    await db.Ado.RollbackTranAsync();
+                    _logger.LogError(ex, "批量删除事务失败, 事务已回滚");
+                    throw;
+                }
             }
             catch (Exception ex)
             {
+                _logger.LogError(ex, "批量删除失败");
                 return ApiResponse<bool>.Error($"批量删除失败: {ex.Message}");
             }
         }
@@ -399,19 +595,74 @@ namespace BlazorApp.Api.Services.React
                     .Where(x => ids.Contains(x.SetCodeId) && !x.IsDeleted)
                     .ToListAsync();
 
-                foreach (var row in list)
+                await db.Ado.BeginTranAsync();
+                try
                 {
-                    var upd = items.First(x => x.Id == row.SetCodeId);
-                    row.SetBarcode = upd.SetBarcode; // 允许为空或重复
-                    row.UpdatedAt = now;
-                    row.UpdatedBy = updatedBy;
-                }
+                    foreach (var row in list)
+                    {
+                        var upd = items.First(x => x.Id == row.SetCodeId);
+                        row.SetBarcode = upd.SetBarcode; // 允许为空或重复
+                        row.UpdatedAt = now;
+                        row.UpdatedBy = updatedBy;
+                    }
 
-                var count = await db.Updateable(list).ExecuteCommandAsync();
-                return ApiResponse<bool>.OK(true, $"已更新 {count} 条条码");
+                    var count = await db.Updateable(list).ExecuteCommandAsync();
+                    _logger.LogInformation($"更新套装条码: {count} 条");
+
+                    // 同步更新所有分店的 StoreMultiCodeProduct
+                    if (list.Any())
+                    {
+                        var setProductCodes = list
+                            .Where(x => !string.IsNullOrWhiteSpace(x.SetProductCode))
+                            .Select(x => x.SetProductCode!)
+                            .Distinct()
+                            .ToList();
+
+                        var barcodeUpdates = list
+                            .Where(x => !string.IsNullOrWhiteSpace(x.SetProductCode))
+                            .ToDictionary(x => x.SetProductCode!, x => x.SetBarcode);
+
+                        if (setProductCodes.Any() && barcodeUpdates.Any())
+                        {
+                            var multiCodeList = await db.Queryable<StoreMultiCodeProduct>()
+                                .Where(m =>
+                                    m.MultiCodeProductCode != null
+                                    && setProductCodes.Contains(m.MultiCodeProductCode))
+                                .ToListAsync();
+
+                            foreach (var multiCode in multiCodeList)
+                            {
+                                if (barcodeUpdates.TryGetValue(multiCode.MultiCodeProductCode!, out var barcode))
+                                {
+                                    multiCode.MultiBarcode = barcode;
+                                    multiCode.UpdatedAt = now;
+                                    multiCode.UpdatedBy = updatedBy;
+                                }
+                            }
+
+                            if (multiCodeList.Count > 0)
+                            {
+                                await db.Updateable(multiCodeList).ExecuteCommandAsync();
+                                _logger.LogInformation($"同步更新分店一品多码条码: {multiCodeList.Count} 条");
+                            }
+                        }
+                    }
+
+                    await db.Ado.CommitTranAsync();
+                    _logger.LogInformation("事务提交成功");
+
+                    return ApiResponse<bool>.OK(true, $"已更新 {count} 条条码");
+                }
+                catch (Exception ex)
+                {
+                    await db.Ado.RollbackTranAsync();
+                    _logger.LogError(ex, "批量更新条码事务失败, 事务已回滚");
+                    throw;
+                }
             }
             catch (Exception ex)
             {
+                _logger.LogError(ex, "批量更新条码失败");
                 return ApiResponse<bool>.Error($"批量更新条码失败: {ex.Message}");
             }
         }
@@ -706,6 +957,57 @@ namespace BlazorApp.Api.Services.React
 
                     insertedSetCodes = await db.Insertable(newSetCodeRows).ExecuteCommandAsync();
                     _logger.LogInformation($"插入套装条码: {insertedSetCodes} 条");
+
+                    // 自动为有效分店写入分店一品多码表（StoreMultiCodeProduct）
+                    var activeStoreCodes = await db.Queryable<Store>()
+                        .Where(s => s.IsActive == true && s.IsDeleted == false)
+                        .Select(s => s.StoreCode)
+                        .ToListAsync();
+
+                    if (activeStoreCodes != null && activeStoreCodes.Count > 0)
+                    {
+                        var multiCodeList = new List<StoreMultiCodeProduct>();
+                        foreach (var row in newSetCodeRows)
+                        {
+                            var mainProduct = productMap.TryGetValue(row.ProductCode, out var p) ? p : null;
+                            foreach (var storeCode in activeStoreCodes)
+                            {
+                                if (string.IsNullOrWhiteSpace(storeCode))
+                                    continue;
+
+                                multiCodeList.Add(new StoreMultiCodeProduct
+                                {
+                                    UUID = UuidHelper.GenerateUuid7(),
+                                    StoreCode = storeCode,
+                                    ProductCode = row.ProductCode,
+                                    MultiCodeProductCode = row.SetProductCode,
+                                    StoreMultiCodeProductCode = storeCode + (row.SetProductCode ?? string.Empty),
+                                    MultiBarcode = row.SetBarcode,
+                                    PurchasePrice = row.SetPurchasePrice,
+                                    MultiCodeRetailPrice = row.SetRetailPrice,
+                                    DiscountRate = null,
+                                    IsAutoPricing = false,
+                                    IsSpecialProduct = mainProduct?.IsSpecialProduct ?? false,
+                                    IsActive = row.IsActive,
+                                    CreatedAt = now,
+                                    UpdatedAt = now,
+                                    CreatedBy = updatedBy,
+                                    UpdatedBy = updatedBy,
+                                    IsDeleted = false,
+                                });
+                            }
+                        }
+
+                        if (multiCodeList.Count > 0)
+                        {
+                            await db.Insertable(multiCodeList).ExecuteCommandAsync();
+                            _logger.LogInformation(
+                                "添加条码后已为 {StoreCount} 个分店写入 {Count} 条一品多码",
+                                activeStoreCodes.Count,
+                                multiCodeList.Count
+                            );
+                        }
+                    }
 
                     if (storePriceUpsertItems.Any())
                     {

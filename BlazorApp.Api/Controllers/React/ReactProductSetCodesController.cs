@@ -56,7 +56,7 @@ namespace BlazorApp.Api.Controllers.React
 
         [HttpPut("batch-status")]
         [Authorize(Roles = "Admin")]
-        public async Task<IActionResult> BatchStatus([FromBody] BatchUpdateStatusDto dto)
+        public async Task<IActionResult> BatchStatus([FromBody] BatchUpdateStatusWithStoreDto dto)
         {
             try
             {
@@ -64,7 +64,8 @@ namespace BlazorApp.Api.Controllers.React
                 var result = await _service.BatchUpdateStatusAsync(
                     dto.Ids,
                     dto.IsActive,
-                    updatedBy
+                    updatedBy,
+                    dto.StoreCodes
                 );
                 if (result.Success)
                 {

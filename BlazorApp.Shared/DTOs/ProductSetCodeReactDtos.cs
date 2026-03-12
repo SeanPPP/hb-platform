@@ -29,11 +29,26 @@ namespace BlazorApp.Shared.DTOs
         public bool IsActive { get; set; }
     }
 
+    public class BatchUpdateStatusWithStoreDto
+    {
+        public List<string> Ids { get; set; } = new();
+        public bool IsActive { get; set; }
+        /// <summary>
+        /// 指定要更新的分店列表，为空则不更新 StoreMultiCodeProduct
+        /// </summary>
+        public List<string>? StoreCodes { get; set; }
+        public string UpdatedBy { get; set; } = string.Empty;
+    }
+
     public class BatchUpdatePricesItemDto
     {
         public string Id { get; set; } = string.Empty;
         public decimal? SetPurchasePrice { get; set; }
         public decimal? SetRetailPrice { get; set; }
+        /// <summary>
+        /// 指定要更新的分店列表，为空则不更新 StoreMultiCodeProduct
+        /// </summary>
+        public List<string>? StoreCodes { get; set; }
     }
 
     public class BatchUpdatePricesDto

@@ -9,8 +9,10 @@ services:
     container_name: hb-api
     ports:
       - "5001:5001"
+    env_file:
+      - .env
     environment:
-      - ASPNETCORE_ENVIRONMENT=Production
+      - ASPNETCORE_ENVIRONMENT=${ASPNETCORE_ENVIRONMENT:-Production}
       - ASPNETCORE_URLS=http://+:5001
       - ConnectionString=REDACTED
       - ConnectionString=REDACTED
@@ -18,8 +20,15 @@ services:
       - ConnectionString=REDACTED
       - ConnectionString=REDACTED
       - ConnectionString=REDACTED
-      - Jwt__Key=中华人民共和国万岁中国人民万岁
+      - Jwt__Key=${JWT_KEY}
+      - Jwt__Issuer=${JWT_ISSUER:-BlazorApp}
+      - Jwt__Audience=${JWT_AUDIENCE:-BlazorAppUsers}
+      - Jwt__ExpireMinutes=${JWT_EXPIRE_MINUTES:-480}
       - Translation__Kimi__ApiKey=REDACTED
+      - TencentCloud__SecretId=${TENCENT_SECRET_ID}
+      - TencentCloud__SecretKey=${TENCENT_SECRET_KEY}
+      - TencentCloud__BucketName=${TENCENT_BUCKET_NAME}
+      - TencentCloud__Region=${TENCENT_REGION}
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5001/api/health"]

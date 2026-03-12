@@ -10,7 +10,8 @@ namespace BlazorApp.Api.Interfaces.React
         Task<ApiResponse<bool>> BatchUpdateStatusAsync(
             List<string> ids,
             bool isActive,
-            string updatedBy
+            string updatedBy,
+            List<string>? storeCodes = null
         );
         Task<ApiResponse<bool>> BatchUpdatePricesAsync(
             List<BatchUpdatePricesItemDto> items,
