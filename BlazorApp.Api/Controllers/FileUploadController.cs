@@ -22,60 +22,6 @@ namespace BlazorApp.Api.Controllers
             _logger = logger;
         }
 
-        [HttpPost("upload")]
-        [RequestSizeLimit(2147483648L)]
-        public async Task<IActionResult> UploadFile(
-            IFormFile file,
-            [FromForm] string? objectKey = null,
-            CancellationToken cancellationToken = default
-        )
-        {
-            try
-            {
-                if (file == null || file.Length == 0)
-                {
-                    return BadRequest(ApiResponse<UploadResult>.Error("请选择文件", "NO_FILE"));
-                }
-
-                _logger.LogInformation(
-                    "开始上传文件，FileName: {FileName}, FileSize: {FileSize}MB, ObjectKey: {ObjectKey}",
-                    file.FileName,
-                    file.Length / (1024.0 * 1024.0),
-                    objectKey ?? "(自动生成)"
-                );
-
-                var progress = new Progress<UploadProgress>();
-                var fileStream = file.OpenReadStream();
-
-                // 确保使用传入的 objectKey（包含目录路径）
-                var result = await _uploadService.UploadFileAsync(
-                    fileStream,
-                    file.FileName,
-                    file.ContentType,
-                    objectKey, // 直接使用前端传入的 objectKey
-                    progress,
-                    cancellationToken
-                );
-
-                _logger.LogInformation(
-                    "=== 文件上传成功调试 ===\nObjectKey: {ObjectKey}\nDownloadUrl: {DownloadUrl}\nFileSize: {FileSize}\n=====================",
-                    result.Data?.ObjectKey,
-                    result.Data?.DownloadUrl,
-                    result.Data?.FileSize
-                );
-
-                return Ok(result);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "文件上传失败，ObjectKey: {ObjectKey}", objectKey);
-                return StatusCode(
-                    500,
-                    ApiResponse<UploadResult>.Error("服务器内部错误", "INTERNAL_SERVER_ERROR")
-                );
-            }
-        }
-
         [HttpGet("test")]
         public IActionResult TestUploadPermission()
         {
@@ -246,13 +192,15 @@ namespace BlazorApp.Api.Controllers
                 var result = await _uploadService.CompleteMultipartUploadForClientAsync(
                     request.ObjectKey,
                     request.UploadId,
-                    request.Parts
+                    request.Parts,
+                    request.FileSize
                 );
 
                 _logger.LogInformation(
-                    "完成分片上传，ObjectKey: {ObjectKey}, Parts: {PartsCount}",
+                    "完成分片上传，ObjectKey: {ObjectKey}, Parts: {PartsCount}, FileSize: {FileSize}",
                     result.Data?.ObjectKey,
-                    request.Parts.Count
+                    request.Parts.Count,
+                    request.FileSize
                 );
 
                 return Ok(result);

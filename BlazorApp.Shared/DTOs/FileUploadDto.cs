@@ -61,5 +61,6 @@ namespace BlazorApp.Shared.DTOs
         public string ObjectKey { get; set; } = string.Empty;
         public string UploadId { get; set; } = string.Empty;
         public List<PartETag> Parts { get; set; } = new();
+        public long FileSize { get; set; }
     }
 }
