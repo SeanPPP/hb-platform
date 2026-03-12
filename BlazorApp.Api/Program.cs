@@ -45,6 +45,10 @@ builder
             .Serialization
             .JsonIgnoreCondition
             .WhenWritingNull;
+    })
+    .AddMvcOptions(options =>
+    {
+        options.Filters.Add<BlazorApp.Api.Filters.ApiExceptionFilter>();
     });
 
 // 注册HttpClient服务，供翻译服务等需要HTTP调用的服务使用
