@@ -1,10 +1,10 @@
-using Microsoft.AspNetCore.Mvc;
-using Microsoft.AspNetCore.Authorization;
-using BlazorApp.Api.Services;
+using System.ComponentModel.DataAnnotations;
 using BlazorApp.Api.Interfaces;
+using BlazorApp.Api.Services;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
-using System.ComponentModel.DataAnnotations;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
 
 namespace BlazorApp.Api.Controllers
 {
@@ -14,11 +14,17 @@ namespace BlazorApp.Api.Controllers
     public class ProductsController : ControllerBase
     {
         private readonly IProductService _productService;
+        private readonly IProductStoreSyncService _productStoreSyncService;
         private readonly ILogger<ProductsController> _logger;
 
-        public ProductsController(IProductService productService, ILogger<ProductsController> logger)
+        public ProductsController(
+            IProductService productService,
+            IProductStoreSyncService productStoreSyncService,
+            ILogger<ProductsController> logger
+        )
         {
             _productService = productService;
+            _productStoreSyncService = productStoreSyncService;
             _logger = logger;
         }
 
@@ -84,17 +90,28 @@ namespace BlazorApp.Api.Controllers
         /// 根据仓库分类获取商品
         /// </summary>
         [HttpGet("warehouse-category/{warehouseCategoryGuid}")]
-        public async Task<IActionResult> GetProductsByWarehouseCategory(string warehouseCategoryGuid)
+        public async Task<IActionResult> GetProductsByWarehouseCategory(
+            string warehouseCategoryGuid
+        )
         {
             try
             {
-                var products = await _productService.GetByWarehouseCategoryAsync(warehouseCategoryGuid);
+                var products = await _productService.GetByWarehouseCategoryAsync(
+                    warehouseCategoryGuid
+                );
                 return Ok(new { success = true, data = products });
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "根据仓库分类获取商品失败: {WarehouseCategoryGuid}", warehouseCategoryGuid);
-                return StatusCode(500, new { success = false, message = "根据仓库分类获取商品失败" });
+                _logger.LogError(
+                    ex,
+                    "根据仓库分类获取商品失败: {WarehouseCategoryGuid}",
+                    warehouseCategoryGuid
+                );
+                return StatusCode(
+                    500,
+                    new { success = false, message = "根据仓库分类获取商品失败" }
+                );
             }
         }
 
@@ -126,8 +143,11 @@ namespace BlazorApp.Api.Controllers
             try
             {
                 var product = await _productService.CreateAsync(createDto);
-                return CreatedAtAction(nameof(GetProduct), new { productGuid = product.ProductCode },
-                    new { success = true, data = product });
+                return CreatedAtAction(
+                    nameof(GetProduct),
+                    new { productGuid = product.ProductCode },
+                    new { success = true, data = product }
+                );
             }
             catch (ValidationException ex)
             {
@@ -145,7 +165,10 @@ namespace BlazorApp.Api.Controllers
         /// </summary>
         [HttpPut("{productGuid}")]
         [Authorize(Roles = "Admin,Manager")]
-        public async Task<IActionResult> UpdateProduct(string productGuid, [FromBody] UpdateProductDto updateDto)
+        public async Task<IActionResult> UpdateProduct(
+            string productGuid,
+            [FromBody] UpdateProductDto updateDto
+        )
         {
             try
             {
@@ -232,7 +255,10 @@ namespace BlazorApp.Api.Controllers
             catch (Exception ex)
             {
                 _logger.LogError(ex, "检查商品编码是否存在失败: {ProductCode}", productCode);
-                return StatusCode(500, new { success = false, message = "检查商品编码是否存在失败" });
+                return StatusCode(
+                    500,
+                    new { success = false, message = "检查商品编码是否存在失败" }
+                );
             }
         }
 

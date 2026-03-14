@@ -17,7 +17,7 @@ namespace BlazorApp.Shared.Helper
         {
             //返回大写字符串
             //无连字符
-            //return Uuid.NewDatabaseFriendly(Database.SqlServer).ToString().ToUpper();
+          
             return Uuid.NewDatabaseFriendly(Database.SqlServer)
                 .ToString()
                 .Replace("-", "")
@@ -30,7 +30,7 @@ namespace BlazorApp.Shared.Helper
         /// <returns>UUID7格式字符串（带连字符）</returns>
         public static string GenerateUuid7WithHyphens()
         {
-            return Uuid.NewDatabaseFriendly(Database.SqlServer).ToString().ToUpper();
+            return Uuid.NewDatabaseFriendly(Database.SqlServer).ToString();
         }
 
         /// <summary>

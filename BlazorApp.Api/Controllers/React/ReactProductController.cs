@@ -1,4 +1,5 @@
 using BlazorApp.Api.Interfaces.React;
+using BlazorApp.Api.Services;
 using BlazorApp.Shared.DTOs;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -15,14 +16,17 @@ namespace BlazorApp.Api.Controllers.React
     public class ReactProductController : ControllerBase
     {
         private readonly IProductReactService _service;
+        private readonly IProductStoreSyncService _productStoreSyncService;
         private readonly ILogger<ReactProductController> _logger;
 
         public ReactProductController(
             IProductReactService service,
+            IProductStoreSyncService productStoreSyncService,
             ILogger<ReactProductController> logger
         )
         {
             _service = service;
+            _productStoreSyncService = productStoreSyncService;
             _logger = logger;
         }
 
@@ -410,5 +414,58 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         #endregion
+
+        /// <summary>
+        /// 同步商品到分店
+        /// </summary>
+        [HttpPost("sync-to-stores")]
+        public async Task<IActionResult> SyncProductsToStores(
+            [FromBody] SyncProductsToStoresRequest request
+        )
+        {
+            try
+            {
+                if (request == null)
+                {
+                    return BadRequest(new { success = false, message = "请求参数不能为空" });
+                }
+
+                _logger.LogInformation(
+                    "同步商品到分店: {ProductCount} 个商品, {StoreCount} 个分店",
+                    request.ProductCodes?.Count ?? 0,
+                    request.StoreCodes?.Count ?? 0
+                );
+
+                var result = await _productStoreSyncService.SyncProductsToStoresAsync(request);
+
+                if (result.Success)
+                {
+                    return Ok(
+                        new
+                        {
+                            success = true,
+                            data = result.Data,
+                            message = result.Message,
+                        }
+                    );
+                }
+                else
+                {
+                    return BadRequest(
+                        new
+                        {
+                            success = false,
+                            message = result.Message,
+                            errorCode = result.ErrorCode,
+                        }
+                    );
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "同步商品到分店失败");
+                return StatusCode(500, new { success = false, message = "同步商品到分店失败" });
+            }
+        }
     }
 }

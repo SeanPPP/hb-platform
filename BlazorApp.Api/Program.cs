@@ -274,6 +274,7 @@ builder.Services.AddScoped<IChinaSupplierService, ChinaSupplierService>(); // �
 builder.Services.AddScoped<IDomesticSupplierService, DomesticSupplierService>(); // 义乌采购国内供应商服务
 builder.Services.AddScoped<IWarehouseCategoryService, WarehouseCategoryService>(); // 仓库分类服务
 builder.Services.AddScoped<IProductService, ProductService>(); // 商品服务
+builder.Services.AddScoped<IProductStoreSyncService, ProductStoreSyncService>(); // 商品分店同步服务
 builder.Services.AddScoped<IWarehouseProductService, WarehouseProductService>(); // 仓库商品服务
 builder.Services.AddScoped<ILocationService, LocationService>(); // 位置服务
 builder.Services.AddScoped<IProductLocationService, ProductLocationService>(); // 商品位置服务
