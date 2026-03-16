@@ -254,7 +254,7 @@ namespace BlazorApp.Api.Services
                     {
                         await independentDb
                             .Fastest<StoreMultiCodeProduct>()
-                            .PageSize(1000)
+                            .PageSize(2000)
                             .BulkCopyAsync(newMultiCodeRecords);
                         result.StoreMultiCodeProductCreatedCount = newMultiCodeRecords.Count;
                         result.CreatedCount += newMultiCodeRecords.Count;
@@ -336,7 +336,7 @@ namespace BlazorApp.Api.Services
                 {
                     await independentDb
                         .Fastest<StoreRetailPrice>()
-                        .PageSize(1000)
+                        .PageSize(2000)
                         .BulkCopyAsync(newRetailPriceRecords);
                     result.StoreRetailPriceCreatedCount = newRetailPriceRecords.Count;
                     result.CreatedCount += newRetailPriceRecords.Count;

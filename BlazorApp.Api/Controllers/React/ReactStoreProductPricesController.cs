@@ -1,0 +1,58 @@
+using System.Threading.Tasks;
+using BlazorApp.Api.Interfaces.React;
+using BlazorApp.Shared.DTOs;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Logging;
+
+namespace BlazorApp.Api.Controllers.React
+{
+    [ApiController]
+    [Route("api/react/v1/store-product-prices")]
+    [Authorize]
+    public class ReactStoreProductPricesController : ControllerBase
+    {
+        private readonly IStoreProductPriceReactService _service;
+        private readonly ILogger<ReactStoreProductPricesController> _logger;
+
+        public ReactStoreProductPricesController(
+            IStoreProductPriceReactService service,
+            ILogger<ReactStoreProductPricesController> logger
+        )
+        {
+            _service = service;
+            _logger = logger;
+        }
+
+        [HttpPost("grid")]
+        public async Task<IActionResult> Grid([FromBody] StoreProductPriceQueryDto query)
+        {
+            if (string.IsNullOrWhiteSpace(query.StoreCode))
+            {
+                return Ok(new
+                {
+                    success = false,
+                    message = "请选择分店"
+                });
+            }
+
+            var result = await _service.GetGridDataAsync(query);
+            if (result.Success)
+            {
+                return Ok(new
+                {
+                    success = true,
+                    data = new { Items = result.Items, Total = result.Total },
+                    message = result.Message
+                });
+            }
+
+            return Ok(new
+            {
+                success = false,
+                data = new { Items = result.Items, Total = result.Total },
+                message = result.Message
+            });
+        }
+    }
+}

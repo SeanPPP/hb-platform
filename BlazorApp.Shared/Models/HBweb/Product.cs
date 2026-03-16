@@ -112,5 +112,6 @@ namespace BlazorApp.Shared.Models
         // 导航属性
         [Navigate(NavigateType.OneToOne, nameof(WarehouseCategoryGUID))]
         public WarehouseCategory? WarehouseCategory { get; set; }
+
     }
 }
