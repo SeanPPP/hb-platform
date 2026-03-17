@@ -54,5 +54,31 @@ namespace BlazorApp.Api.Controllers.React
                 message = result.Message
             });
         }
+
+        [HttpPost("batch-update")]
+        public async Task<IActionResult> BatchUpdate([FromBody] BatchUpdateStoreRetailPriceDto dto)
+        {
+            var updatedBy = User.Identity?.Name ?? "system";
+            var result = await _service.BatchUpdateStoreRetailPricesAsync(dto, updatedBy);
+            if (result.Success)
+            {
+                return Ok(result);
+            }
+
+            return BadRequest(result);
+        }
+
+        [HttpPost("sync-to-other-stores")]
+        public async Task<IActionResult> SyncToOtherStores([FromBody] SyncToOtherStoresDto dto)
+        {
+            var updatedBy = User.Identity?.Name ?? "system";
+            var result = await _service.SyncToOtherStoresAsync(dto, updatedBy);
+            if (result.Success)
+            {
+                return Ok(result);
+            }
+
+            return BadRequest(result);
+        }
     }
 }

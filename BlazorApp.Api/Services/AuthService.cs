@@ -6,6 +6,7 @@ using BlazorApp.Api.Data;
 using BlazorApp.Api.Utils;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
+using Microsoft.AspNetCore.Http;
 using Microsoft.IdentityModel.Tokens;
 using SqlSugar;
 
@@ -23,6 +24,7 @@ namespace BlazorApp.Api.Services
             string ipAddress,
             string userAgent
         );
+        Task<TokenResponse?> RefreshTokensAsync(HttpContext context, string ipAddress, string userAgent);
         Task<bool> RevokeRefreshTokenAsync(string refreshToken);
         Task<bool> ChangePasswordAsync(string userGuid, ChangePasswordDto dto);
     }
@@ -31,11 +33,17 @@ namespace BlazorApp.Api.Services
     {
         private readonly SqlSugarContext _dbContext;
         private readonly IConfiguration _configuration;
+        private readonly IHttpContextAccessor _httpContextAccessor;
 
-        public AuthService(SqlSugarContext dbContext, IConfiguration configuration)
+        public AuthService(
+            SqlSugarContext dbContext,
+            IConfiguration configuration,
+            IHttpContextAccessor httpContextAccessor
+        )
         {
             _dbContext = dbContext;
             _configuration = configuration;
+            _httpContextAccessor = httpContextAccessor;
         }
 
         /// <summary>
@@ -409,6 +417,39 @@ namespace BlazorApp.Api.Services
 
             // 🔄 生成新的令牌对
             return await GenerateTokensAsync(user, ipAddress, userAgent);
+        }
+
+        /// <summary>
+        /// 从 HttpContext 刷新令牌方法（Cookie 认证方案）
+        /// 🔄 从 Cookie 中读取令牌并刷新，支持 Cookie 认证
+        /// </summary>
+        /// <param name="context">HTTP 上下文，用于读取 Cookie</param>
+        /// <param name="ipAddress">客户端IP地址</param>
+        /// <param name="userAgent">客户端用户代理</param>
+        /// <returns>新的令牌对，验证失败返回null</returns>
+        public async Task<TokenResponse?> RefreshTokensAsync(
+            HttpContext context,
+            string ipAddress,
+            string userAgent
+        )
+        {
+            // 🍪 从 Cookie 中读取令牌
+            var accessToken = CookieHelper.GetAccessToken(context);
+            var refreshToken = CookieHelper.GetRefreshToken(context);
+
+            // ❌ 如果 Cookie 中没有令牌，返回 null
+            if (string.IsNullOrEmpty(accessToken) && string.IsNullOrEmpty(refreshToken))
+            {
+                return null;
+            }
+
+            // 🔄 调用原有的刷新令牌方法
+            return await RefreshTokensAsync(
+                accessToken ?? string.Empty,
+                refreshToken ?? string.Empty,
+                ipAddress,
+                userAgent
+            );
         }
 
         /// <summary>

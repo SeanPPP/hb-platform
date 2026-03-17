@@ -114,4 +114,37 @@ namespace BlazorApp.Shared.DTOs
         public List<string> ProductCodes { get; set; } = new();
         public List<string> StoreCodes { get; set; } = new();
     }
+
+    public class BatchUpdateStoreRetailPriceDto
+    {
+        /// <summary>
+        /// 分店编码
+        /// </summary>
+        public string StoreCode { get; set; } = string.Empty;
+        public List<string> ProductCodes { get; set; } = new List<string>();
+        public decimal? PurchasePrice { get; set; }
+        public decimal? StoreRetailPriceValue { get; set; }
+        public bool? IsAutoPricing { get; set; }
+        public bool? IsSpecialProduct { get; set; }
+        public decimal? DiscountRate { get; set; }
+    }
+
+    public class SyncModeConstants
+    {
+        public const string Overwrite = "Overwrite";
+        public const string OnlyUpdateNull = "OnlyUpdateNull";
+    }
+
+    public class SyncToOtherStoresDto
+    {
+        public List<string> ProductCodes { get; set; } = new List<string>();
+        public string SourceStoreCode { get; set; } = string.Empty;
+        public List<string> TargetStoreCodes { get; set; } = new List<string>();
+        public bool SyncPurchasePrice { get; set; }
+        public bool SyncRetailPrice { get; set; }
+        public bool SyncIsAutoPricing { get; set; }
+        public bool SyncIsSpecialProduct { get; set; }
+        public bool SyncDiscountRate { get; set; }
+        public string Mode { get; set; } = SyncModeConstants.Overwrite;
+    }
 }

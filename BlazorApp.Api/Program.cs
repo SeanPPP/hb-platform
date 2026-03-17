@@ -3,6 +3,7 @@ using System.Linq;
 using System.Text; // 字符串编码
 using AutoMapper; // AutoMapper映射服务
 using BlazorApp.Api.Data; // 数据访问层
+using BlazorApp.Api.Mappings; // AutoMapper 映射配置
 using BlazorApp.Api.Filters;
 using BlazorApp.Api.Interfaces; // 数据模型
 using BlazorApp.Api.Interfaces.React; // React 接口命名空间
@@ -11,6 +12,7 @@ using BlazorApp.Api.Services; // 业务服务层
 using BlazorApp.Api.Services.Background; // 后台定时服务
 using BlazorApp.Api.Services.Pricing; // 自动定价服务
 using BlazorApp.Api.Services.React; // React 专用服务层
+using BlazorApp.Api.Utils; // Cookie 配置辅助类
 using Microsoft.AspNetCore.Authentication.JwtBearer; // JWT Bearer认证
 using Microsoft.IdentityModel.Tokens; // JWT令牌验证
 
@@ -126,6 +128,9 @@ builder.Services.AddSwaggerGen(c =>
 // 获取HttpContext的服务（用于在服务层读取当前用户）
 builder.Services.AddHttpContextAccessor();
 
+// 初始化 Cookie 配置辅助类
+CookieOptionsHelper.Initialize(builder.Configuration);
+
 // 注册内存缓存服务
 builder.Services.AddMemoryCache();
 
@@ -142,28 +147,52 @@ builder.Services.Configure<ScheduledTaskOptions>(
 builder.Services.AddHostedService<ScheduledTaskService>();
 
 // --------------------- CORS配置 ---------------------
+// 🌐 配置跨域资源共享策略，支持 Cookie 认证方案
+// ⚠️ 重要：AllowCredentials() 必须与 WithOrigins() 一起使用，不能与 AllowAnyOrigin() 一起使用
+// 原因：当使用凭据时，必须明确指定允许的源，不能使用通配符 "*"
 builder.Services.AddCors(options =>
 {
     options.AddPolicy(
         "AllowSpecific",
         policy =>
         {
-            policy
-                .WithOrigins(
-                    "http://localhost:8000",
-                    "http://localhost:3000",
-                    "http://localhost:5001",
-                    "https://localhost", // ⭐ 支持 HTTPS localhost（宝塔面板）
+            // 🔍 从配置文件读取允许的域名列表
+            var allowedOriginsSection = builder.Configuration.GetSection("Cors:AllowedOrigins");
+            var allowedOrigins = allowedOriginsSection.Get<string[]>();
+
+            // 📝 如果配置文件中没有指定，则使用默认列表
+            var origins = allowedOrigins?.Length > 0
+                ? allowedOrigins
+                : new[]
+                {
+                    // 🔧 开发环境默认域名
+                    "http://localhost:8000",  // 前端开发服务器
+                    "http://localhost:3000",  // 备用前端端口
+                    "http://localhost:5001",  // 后端 API 端口
+                    "https://localhost",       // 支持 HTTPS localhost（宝塔面板）
+
+                    // 🌐 生产环境域名
                     "https://www.dats.com.au",
                     "https://www.malmar.com.au",
                     "https://www.yatstal.com.au",
                     "https://hb-sales-2019-1300114625.cos.ap-singapore.myqcloud.com",
                     "https://hotbargain-yw-2023-1300114625.cos.ap-shanghai.myqcloud.com",
                     "http://hotbargain.vip"
-                )
-                .AllowAnyMethod()
-                .AllowAnyHeader()
-                .AllowCredentials();
+                };
+
+            // 📋 记录允许的域名列表到日志
+            var logger = builder.Services.BuildServiceProvider()
+                .GetRequiredService<ILogger<Program>>();
+            logger.LogInformation("CORS 允许的域名: {Origins}", string.Join(", ", origins));
+
+            // ✅ 配置 CORS 策略
+            policy
+                .WithOrigins(origins)  // 📍 指定允许的源（域名列表）
+                .AllowAnyMethod()      // 🔓 允许所有 HTTP 方法（GET, POST, PUT, DELETE 等）
+                .AllowAnyHeader()      // 🔓 允许所有请求头
+                .AllowCredentials();   // 🍪 允许发送凭据（Cookie、Authorization 头等）
+                                       // ⚠️ 这是 Cookie 认证的关键配置
+                                       // ✅ 前端请求时必须设置 withCredentials: true 或 credentials: 'include'
         }
     );
 });
@@ -216,6 +245,30 @@ builder
             RoleClaimType = System.Security.Claims.ClaimTypes.Role, // 🎭 指定角色声明类型，用于[Authorize(Roles="Admin")]
             NameClaimType = System.Security.Claims.ClaimTypes.Name, // 👤 指定用户名声明类型，用于HttpContext.User.Identity.Name
         };
+
+        // 🍪 从 Cookie 中读取 token（支持 Cookie 认证方案）
+        options.Events = new JwtBearerEvents
+        {
+            OnMessageReceived = context =>
+            {
+                // 优先从 Authorization header 读取 token
+                var accessToken = context.Request.Headers["Authorization"].FirstOrDefault()?.Split(" ").Last();
+
+                // 如果 header 中没有 token，尝试从 Cookie 读取
+                if (string.IsNullOrEmpty(accessToken))
+                {
+                    context.Request.Cookies.TryGetValue("access_token", out accessToken);
+                }
+
+                // 如果找到 token，设置到 Token 属性
+                if (!string.IsNullOrEmpty(accessToken))
+                {
+                    context.Token = accessToken;
+                }
+
+                return Task.CompletedTask;
+            }
+        };
     });
 
 // 🛡️ 注册动态权限授权服务
@@ -254,11 +307,11 @@ builder.Services.AddScoped<DataSyncService>(); // 数据同步服务
 builder.Services.AddScoped<PostgresDataSyncService>(); // PostgreSQL数据同步服务
 
 // --------------------- AutoMapper配置 ---------------------
-// 🗺️ 配置对象映射服务，用于DTO和实体之间的自动转换
+// 注册AutoMapper服务，自动扫描程序集中所有继承自Profile的类
 // AutoMapper可以大大简化数据传输对象和领域模型之间的转换代码
 // 例如：UserDto -> User, CreateOrderDto -> Order 等
 // 注册AutoMapper服务，自动扫描程序集中所有继承自Profile的类
-builder.Services.AddAutoMapper(typeof(Program).Assembly);
+builder.Services.AddAutoMapper(cfg => { }, typeof(MappingProfile).Assembly);
 
 // 🔧 业务服务层 - 使用作用域模式（Scoped）
 // 作用域：每个HTTP请求创建一次实例，请求结束时销毁

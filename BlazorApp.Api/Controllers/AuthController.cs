@@ -1,6 +1,7 @@
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Services;
+using BlazorApp.Api.Utils;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
 using Microsoft.AspNetCore.Authorization;
@@ -108,21 +109,40 @@ namespace BlazorApp.Api.Controllers
             // 生成JWT访问令牌和刷新令牌
             var tokenResponse = await _authService.GenerateTokensAsync(user, ipAddress, userAgent);
 
+            // 🍪 将令牌存储到 Cookie 中
+            Response.Cookies.Append(
+                "access_token",
+                tokenResponse.AccessToken,
+                CookieOptionsHelper.CreateAccessTokenCookieOptions()
+            );
+
+            Response.Cookies.Append(
+                "refresh_token",
+                tokenResponse.RefreshToken,
+                CookieOptionsHelper.CreateRefreshTokenCookieOptions()
+            );
+
             return ApiResponse<TokenResponse>.OK(tokenResponse, "登录成功");
         }
 
         /// <summary>
         /// 刷新访问令牌接口
         /// </summary>
-        /// <param name="request">刷新令牌请求，包含当前访问令牌和刷新令牌</param>
+        /// <param name="request">刷新令牌请求，包含当前访问令牌和刷新令牌（可选，向后兼容）</param>
         /// <returns>新的访问令牌和刷新令牌</returns>
         /// <remarks>
         /// 令牌刷新流程：
-        /// 1. 验证请求数据格式
-        /// 2. 获取客户端IP地址和用户代理信息
-        /// 3. 验证当前访问令牌和刷新令牌的有效性
-        /// 4. 生成新的访问令牌和刷新令牌
-        /// 5. 返回新的令牌对
+        /// 1. 优先从 Cookie 读取 accessToken 和 refreshToken（如果存在）
+        /// 2. 如果 Cookie 中没有令牌，则从请求体参数读取（向后兼容）
+        /// 3. 获取客户端IP地址和用户代理信息
+        /// 4. 验证当前访问令牌和刷新令牌的有效性
+        /// 5. 生成新的访问令牌和刷新令牌
+        /// 6. 更新 Cookie 中的令牌
+        /// 7. 返回新的令牌对
+        ///
+        /// 支持两种令牌传递方式：
+        /// - Cookie 认证：令牌自动从 Cookie 读取（推荐）
+        /// - 请求体认证：在请求体中显式传递 accessToken 和 refreshToken（向后兼容）
         /// </remarks>
         [HttpPost("refresh")]
         [AllowAnonymous] // 🔓 允许匿名访问，令牌刷新不需要认证
@@ -130,31 +150,60 @@ namespace BlazorApp.Api.Controllers
             [FromBody] RefreshTokenRequest request
         )
         {
-            // 验证请求模型状态
-            if (!ModelState.IsValid)
-            {
-                return ApiResponse<TokenResponse>.Error("请求数据格式无效");
-            }
-
             // 获取客户端IP地址和用户代理信息（用于安全审计）
             var ipAddress =
                 Request.HttpContext.Connection.RemoteIpAddress?.ToString() ?? "127.0.0.1";
             var userAgent = Request.Headers["User-Agent"].ToString();
 
+            // 🍪 优先从 Cookie 中读取令牌（支持 Cookie 认证方案）
+            var cookieAccessToken = CookieHelper.GetAccessToken(Request.HttpContext);
+            var cookieRefreshToken = CookieHelper.GetRefreshToken(Request.HttpContext);
+
+            // 📦 如果 Cookie 中存在令牌，使用 Cookie 中的令牌
+            if (!string.IsNullOrEmpty(cookieAccessToken) || !string.IsNullOrEmpty(cookieRefreshToken))
+            {
+                var tokenResponse = await _authService.RefreshTokensAsync(
+                    Request.HttpContext,
+                    ipAddress,
+                    userAgent
+                );
+
+                if (tokenResponse == null)
+                {
+                    return ApiResponse<TokenResponse>.Error("刷新令牌无效或已过期");
+                }
+
+                // 🍪 更新 Cookie 中的令牌
+                CookieHelper.SetTokens(Response, tokenResponse.AccessToken, tokenResponse.RefreshToken);
+
+                return ApiResponse<TokenResponse>.OK(tokenResponse, "令牌刷新成功");
+            }
+
+            // 🔙 向后兼容：如果 Cookie 中没有令牌，从请求体读取（支持传统的请求体认证方案）
+            var accessToken = request?.AccessToken ?? string.Empty;
+            var refreshToken = request?.RefreshToken ?? string.Empty;
+
             // 调用认证服务刷新令牌
-            var tokenResponse = await _authService.RefreshTokensAsync(
-                request.AccessToken,
-                request.RefreshToken,
+            var tokenResponseFromBody = await _authService.RefreshTokensAsync(
+                accessToken,
+                refreshToken,
                 ipAddress,
                 userAgent
             );
 
-            if (tokenResponse == null)
+            if (tokenResponseFromBody == null)
             {
                 return ApiResponse<TokenResponse>.Error("刷新令牌无效或已过期");
             }
 
-            return ApiResponse<TokenResponse>.OK(tokenResponse, "令牌刷新成功");
+            // 🍪 更新 Cookie 中的令牌
+            CookieHelper.SetTokens(
+                Response,
+                tokenResponseFromBody.AccessToken,
+                tokenResponseFromBody.RefreshToken
+            );
+
+            return ApiResponse<TokenResponse>.OK(tokenResponseFromBody, "令牌刷新成功");
         }
 
         /// <summary>
@@ -248,7 +297,8 @@ namespace BlazorApp.Api.Controllers
         /// 登出流程：
         /// 1. 验证刷新令牌是否存在
         /// 2. 调用认证服务撤销刷新令牌（使其失效）
-        /// 3. 返回登出成功响应
+        /// 3. 清除 Cookie 中的访问令牌和刷新令牌
+        /// 4. 返回登出成功响应
         ///
         /// 注意：此操作会使当前的刷新令牌失效，用户需要重新登录才能获取新的令牌
         /// </remarks>
@@ -260,6 +310,19 @@ namespace BlazorApp.Api.Controllers
             {
                 await _authService.RevokeRefreshTokenAsync(request.RefreshToken);
             }
+
+            // 🍪 清除 Cookie 中的令牌
+            Response.Cookies.Append(
+                "access_token",
+                "",
+                CookieOptionsHelper.CreateExpiredCookieOptions()
+            );
+
+            Response.Cookies.Append(
+                "refresh_token",
+                "",
+                CookieOptionsHelper.CreateExpiredCookieOptions()
+            );
 
             return ApiResponse<object>.CreateSuccess("登出成功");
         }
@@ -309,6 +372,19 @@ namespace BlazorApp.Api.Controllers
                 registeredUser,
                 ipAddress,
                 userAgent
+            );
+
+            // 🍪 将令牌存储到 Cookie 中
+            Response.Cookies.Append(
+                "access_token",
+                tokenResponse.AccessToken,
+                CookieOptionsHelper.CreateAccessTokenCookieOptions()
+            );
+
+            Response.Cookies.Append(
+                "refresh_token",
+                tokenResponse.RefreshToken,
+                CookieOptionsHelper.CreateRefreshTokenCookieOptions()
             );
 
             return ApiResponse<TokenResponse>.OK(tokenResponse, "注册成功");
