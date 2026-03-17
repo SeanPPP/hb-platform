@@ -298,80 +298,139 @@ namespace BlazorApp.Api.Services.React
 
                     var sourcePriceMap = sourcePrices.ToDictionary(x => x.ProductCode);
 
-                    foreach (var targetStoreCode in dto.TargetStoreCodes)
+                    var updateable = db.Updateable<StoreRetailPrice>()
+                        .SetColumns(x => x.UpdatedAt == DateTime.Now)
+                        .SetColumns(x => x.UpdatedBy == updatedBy);
+
+                    if (dto.Mode == SyncModeConstants.Overwrite)
                     {
-                        var targetRecords = await db.Queryable<StoreRetailPrice>()
-                            .With(SqlWith.NoLock)
-                            .Where(x => x.StoreCode == targetStoreCode && 
-                                       dto.ProductCodes.Contains(x.ProductCode) && 
-                                       x.IsDeleted == false)
-                            .ToListAsync();
-
-                        foreach (var targetRecord in targetRecords)
+                        if (dto.SyncPurchasePrice)
                         {
-                            if (!sourcePriceMap.TryGetValue(targetRecord.ProductCode, out var sourcePrice))
-                            {
-                                continue;
-                            }
-
-                            var updateable = db.Updateable<StoreRetailPrice>()
-                                .SetColumns(x => x.UpdatedAt == DateTime.Now)
-                                .SetColumns(x => x.UpdatedBy == updatedBy);
-
-                            if (dto.SyncPurchasePrice && dto.Mode == SyncModeConstants.Overwrite)
-                            {
-                                updateable.SetColumns(x => x.PurchasePrice == sourcePrice.PurchasePrice);
-                            }
-                            else if (dto.SyncPurchasePrice && dto.Mode == SyncModeConstants.OnlyUpdateNull && !targetRecord.PurchasePrice.HasValue)
-                            {
-                                updateable.SetColumns(x => x.PurchasePrice == sourcePrice.PurchasePrice);
-                            }
-
-                            if (dto.SyncRetailPrice && dto.Mode == SyncModeConstants.Overwrite)
-                            {
-                                updateable.SetColumns(x => x.StoreRetailPriceValue == sourcePrice.StoreRetailPriceValue);
-                            }
-                            else if (dto.SyncRetailPrice && dto.Mode == SyncModeConstants.OnlyUpdateNull && !targetRecord.StoreRetailPriceValue.HasValue)
-                            {
-                                updateable.SetColumns(x => x.StoreRetailPriceValue == sourcePrice.StoreRetailPriceValue);
-                            }
-
-                            if (dto.SyncIsAutoPricing && dto.Mode == SyncModeConstants.Overwrite)
-                            {
-                                updateable.SetColumns(x => x.IsAutoPricing == sourcePrice.IsAutoPricing);
-                            }
-                            else if (dto.SyncIsAutoPricing && dto.Mode == SyncModeConstants.OnlyUpdateNull && !targetRecord.IsAutoPricing)
-                            {
-                                updateable.SetColumns(x => x.IsAutoPricing == sourcePrice.IsAutoPricing);
-                            }
-
-                            if (dto.SyncIsSpecialProduct && dto.Mode == SyncModeConstants.Overwrite)
-                            {
-                                updateable.SetColumns(x => x.IsSpecialProduct == sourcePrice.IsSpecialProduct);
-                            }
-                            else if (dto.SyncIsSpecialProduct && dto.Mode == SyncModeConstants.OnlyUpdateNull && !targetRecord.IsSpecialProduct)
-                            {
-                                updateable.SetColumns(x => x.IsSpecialProduct == sourcePrice.IsSpecialProduct);
-                            }
-
-                            if (dto.SyncDiscountRate && dto.Mode == SyncModeConstants.Overwrite)
-                            {
-                                updateable.SetColumns(x => x.DiscountRate == sourcePrice.DiscountRate);
-                            }
-                            else if (dto.SyncDiscountRate && dto.Mode == SyncModeConstants.OnlyUpdateNull && !targetRecord.DiscountRate.HasValue)
-                            {
-                                updateable.SetColumns(x => x.DiscountRate == sourcePrice.DiscountRate);
-                            }
-
-                            updateable.Where(x => x.UUID == targetRecord.UUID);
-                            await updateable.ExecuteCommandAsync();
+                            updateable.SetColumns(x =>
+                                x.PurchasePrice == SqlFunc.Subqueryable<StoreRetailPrice>()
+                                    .Where(s => s.StoreCode == dto.SourceStoreCode &&
+                                               s.ProductCode == x.ProductCode &&
+                                               s.IsDeleted == false)
+                                    .Select(s => s.PurchasePrice)
+                            );
                         }
-                }
 
-                await db.Ado.CommitTranAsync();
+                        if (dto.SyncRetailPrice)
+                        {
+                            updateable.SetColumns(x =>
+                                x.StoreRetailPriceValue == SqlFunc.Subqueryable<StoreRetailPrice>()
+                                    .Where(s => s.StoreCode == dto.SourceStoreCode &&
+                                               s.ProductCode == x.ProductCode &&
+                                               s.IsDeleted == false)
+                                    .Select(s => s.StoreRetailPriceValue)
+                            );
+                        }
 
-                var totalSynced = dto.ProductCodes.Count * dto.TargetStoreCodes.Count;
-                return ApiResponse<object>.CreateSuccess($"成功同步 {totalSynced} 条记录");
+                        if (dto.SyncIsAutoPricing)
+                        {
+                            updateable.SetColumns(x =>
+                                x.IsAutoPricing == SqlFunc.Subqueryable<StoreRetailPrice>()
+                                    .Where(s => s.StoreCode == dto.SourceStoreCode &&
+                                               s.ProductCode == x.ProductCode &&
+                                               s.IsDeleted == false)
+                                    .Select(s => s.IsAutoPricing)
+                            );
+                        }
+
+                        if (dto.SyncIsSpecialProduct)
+                        {
+                            updateable.SetColumns(x =>
+                                x.IsSpecialProduct == SqlFunc.Subqueryable<StoreRetailPrice>()
+                                    .Where(s => s.StoreCode == dto.SourceStoreCode &&
+                                               s.ProductCode == x.ProductCode &&
+                                               s.IsDeleted == false)
+                                    .Select(s => s.IsSpecialProduct)
+                            );
+                        }
+
+                        if (dto.SyncDiscountRate)
+                        {
+                            updateable.SetColumns(x =>
+                                x.DiscountRate == SqlFunc.Subqueryable<StoreRetailPrice>()
+                                    .Where(s => s.StoreCode == dto.SourceStoreCode &&
+                                               s.ProductCode == x.ProductCode &&
+                                               s.IsDeleted == false)
+                                    .Select(s => s.DiscountRate)
+                            );
+                        }
+                    }
+                    else if (dto.Mode == SyncModeConstants.OnlyUpdateNull)
+                    {
+                        if (dto.SyncPurchasePrice)
+                        {
+                            updateable.SetColumns(x =>
+                                x.PurchasePrice == SqlFunc.Subqueryable<StoreRetailPrice>()
+                                    .Where(s => s.StoreCode == dto.SourceStoreCode &&
+                                               s.ProductCode == x.ProductCode &&
+                                               s.IsDeleted == false)
+                                    .Select(s => s.PurchasePrice)
+                            );
+                            updateable.Where(x => x.PurchasePrice == null);
+                        }
+
+                        if (dto.SyncRetailPrice)
+                        {
+                            updateable.SetColumns(x =>
+                                x.StoreRetailPriceValue == SqlFunc.Subqueryable<StoreRetailPrice>()
+                                    .Where(s => s.StoreCode == dto.SourceStoreCode &&
+                                               s.ProductCode == x.ProductCode &&
+                                               s.IsDeleted == false)
+                                    .Select(s => s.StoreRetailPriceValue)
+                            );
+                            updateable.Where(x => x.StoreRetailPriceValue == null);
+                        }
+
+                        if (dto.SyncIsAutoPricing)
+                        {
+                            updateable.SetColumns(x =>
+                                x.IsAutoPricing == SqlFunc.Subqueryable<StoreRetailPrice>()
+                                    .Where(s => s.StoreCode == dto.SourceStoreCode &&
+                                               s.ProductCode == x.ProductCode &&
+                                               s.IsDeleted == false)
+                                    .Select(s => s.IsAutoPricing)
+                            );
+                            updateable.Where(x => x.IsAutoPricing == false);
+                        }
+
+                        if (dto.SyncIsSpecialProduct)
+                        {
+                            updateable.SetColumns(x =>
+                                x.IsSpecialProduct == SqlFunc.Subqueryable<StoreRetailPrice>()
+                                    .Where(s => s.StoreCode == dto.SourceStoreCode &&
+                                               s.ProductCode == x.ProductCode &&
+                                               s.IsDeleted == false)
+                                    .Select(s => s.IsSpecialProduct)
+                            );
+                            updateable.Where(x => x.IsSpecialProduct == false);
+                        }
+
+                        if (dto.SyncDiscountRate)
+                        {
+                            updateable.SetColumns(x =>
+                                x.DiscountRate == SqlFunc.Subqueryable<StoreRetailPrice>()
+                                    .Where(s => s.StoreCode == dto.SourceStoreCode &&
+                                               s.ProductCode == x.ProductCode &&
+                                               s.IsDeleted == false)
+                                    .Select(s => s.DiscountRate)
+                            );
+                            updateable.Where(x => x.DiscountRate == null);
+                        }
+                    }
+
+                    var affectedRows = await updateable
+                        .Where(x => dto.TargetStoreCodes.Contains(x.StoreCode) &&
+                                   dto.ProductCodes.Contains(x.ProductCode) &&
+                                   x.IsDeleted == false)
+                        .ExecuteCommandAsync();
+
+                    await db.Ado.CommitTranAsync();
+
+                    return ApiResponse<object>.CreateSuccess($"成功同步 {affectedRows} 条记录");
             }
             catch (Exception)
             {

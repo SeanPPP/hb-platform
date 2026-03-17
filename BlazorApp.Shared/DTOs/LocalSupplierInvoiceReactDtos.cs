@@ -15,6 +15,7 @@ namespace BlazorApp.Shared.DTOs
         public decimal? ReceivedTotalAmount { get; set; }
         public int? FlowStatus { get; set; }
         public int? InboundStatus { get; set; }
+        public string? Remarks { get; set; }
         public DateTime CreatedAt { get; set; }
         public DateTime? UpdatedAt { get; set; }
     }

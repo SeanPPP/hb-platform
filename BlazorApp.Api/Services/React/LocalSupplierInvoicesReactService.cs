@@ -63,6 +63,43 @@ namespace BlazorApp.Api.Services.React
                                 case "invoiceNo":
                                     query = ApplyText(query, op, v, x => x.InvoiceNo);
                                     break;
+                                case "storeName":
+                                    query = query.Where((h, st, sup) => st.StoreName.Contains(v));
+                                    break;
+                                case "supplierName":
+                                    query = query.Where((h, st, sup) => sup.Name.Contains(v));
+                                    break;
+                                case "remarks":
+                                    query = ApplyText(query, op, v, x => x.Remarks);
+                                    break;
+                            }
+                        }
+                        else if (type == "number" && f.Filter != null)
+                        {
+                            if (decimal.TryParse(f.Filter.ToString(), out var numValue))
+                            {
+                                var op = (f.Type ?? "equals").ToLower();
+                                switch (col)
+                                {
+                                    case "totalAmount":
+                                        query = ApplyNumber(
+                                            query,
+                                            op,
+                                            x => x.TotalAmount,
+                                            numValue,
+                                            f.FilterTo
+                                        );
+                                        break;
+                                    case "receivedTotalAmount":
+                                        query = ApplyNumber(
+                                            query,
+                                            op,
+                                            x => x.ReceivedTotalAmount,
+                                            numValue,
+                                            f.FilterTo
+                                        );
+                                        break;
+                                }
                             }
                         }
                     }
@@ -135,6 +172,7 @@ namespace BlazorApp.Api.Services.React
                                 ReceivedTotalAmount = h.ReceivedTotalAmount,
                                 FlowStatus = h.FlowStatus,
                                 InboundStatus = h.InboundStatus,
+                                Remarks = h.Remarks,
                                 CreatedAt = h.CreatedAt,
                                 UpdatedAt = h.UpdatedAt,
                             }
@@ -1195,6 +1233,73 @@ namespace BlazorApp.Api.Services.React
                 ),
                 _ => query,
             };
+        }
+
+        private ISugarQueryable<StoreLocalSupplierInvoice, Store, HBLocalSupplier> ApplyNumber(
+            ISugarQueryable<StoreLocalSupplierInvoice, Store, HBLocalSupplier> query,
+            string? operation,
+            System.Linq.Expressions.Expression<System.Func<StoreLocalSupplierInvoice, decimal?>> selector,
+            decimal value,
+            object? filterTo
+        )
+        {
+            var oldParam = selector.Parameters[0];
+            var newParam = System.Linq.Expressions.Expression.Parameter(
+                typeof(StoreLocalSupplierInvoice),
+                "h"
+            );
+            var member = new ParamReplaceVisitor(oldParam, newParam).Visit(selector.Body);
+            var constantValue = System.Linq.Expressions.Expression.Convert(
+                System.Linq.Expressions.Expression.Constant(value),
+                typeof(decimal?)
+            );
+            System.Linq.Expressions.Expression? condition = operation switch
+            {
+                "equals" => System.Linq.Expressions.Expression.Equal(member, constantValue),
+                "notequal" => System.Linq.Expressions.Expression.NotEqual(member, constantValue),
+                "lessthan" => System.Linq.Expressions.Expression.LessThan(member, constantValue),
+                "lessthanorequal" => System.Linq.Expressions.Expression.LessThanOrEqual(
+                    member,
+                    constantValue
+                ),
+                "greaterthan" => System.Linq.Expressions.Expression.GreaterThan(
+                    member,
+                    constantValue
+                ),
+                "greaterthanorequal" => System.Linq.Expressions.Expression.GreaterThanOrEqual(
+                    member,
+                    constantValue
+                ),
+                _ => null,
+            };
+
+            if (condition != null)
+            {
+                var lambda = System.Linq.Expressions.Expression.Lambda<
+                    System.Func<StoreLocalSupplierInvoice, bool>
+                >(condition, newParam);
+                query = query.Where(lambda);
+            }
+
+            if (filterTo != null && operation == "inrange")
+            {
+                var constantValueTo = System.Linq.Expressions.Expression.Convert(
+                    System.Linq.Expressions.Expression.Constant(
+                        System.Convert.ToDecimal(filterTo)
+                    ),
+                    typeof(decimal?)
+                );
+                var conditionTo = System.Linq.Expressions.Expression.LessThanOrEqual(
+                    member,
+                    constantValueTo
+                );
+                var lambdaTo = System.Linq.Expressions.Expression.Lambda<
+                    System.Func<StoreLocalSupplierInvoice, bool>
+                >(conditionTo, newParam);
+                query = query.Where(lambdaTo);
+            }
+
+            return query;
         }
 
         private sealed class ParamReplaceVisitor : System.Linq.Expressions.ExpressionVisitor
