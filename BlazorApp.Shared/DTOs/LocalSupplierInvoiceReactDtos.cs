@@ -1,3 +1,5 @@
+using System.ComponentModel.DataAnnotations;
+
 namespace BlazorApp.Shared.DTOs
 {
     public class LocalSupplierInvoiceListDto
@@ -184,5 +186,91 @@ namespace BlazorApp.Shared.DTOs
         public decimal? PricingFloatRate { get; set; }
         public decimal? NewAutoRetailPrice { get; set; }
         public bool? IsSpecialProduct { get; set; }
+    }
+
+    /// <summary>
+    /// 更新到分店价格请求DTO
+    /// </summary>
+    public class UpdateToStorePricesRequest
+    {
+        /// <summary>
+        /// 订单GUID
+        /// </summary>
+        [Required]
+        public string InvoiceGuid { get; set; } = string.Empty;
+
+        /// <summary>
+        /// 要更新的明细GUID列表
+        /// </summary>
+        [Required]
+        public List<string> DetailGuids { get; set; } = new();
+
+        /// <summary>
+        /// 目标分店代码列表
+        /// </summary>
+        [Required]
+        public List<string> TargetStoreCodes { get; set; } = new();
+
+        /// <summary>
+        /// 要更新的字段配置
+        /// </summary>
+        [Required]
+        public UpdateToStorePricesFields UpdateFields { get; set; } = new();
+    }
+
+    /// <summary>
+    /// 更新到分店价格字段配置DTO
+    /// </summary>
+    public class UpdateToStorePricesFields
+    {
+        /// <summary>
+        /// 是否更新进价
+        /// </summary>
+        public bool UpdatePurchasePrice { get; set; }
+
+        /// <summary>
+        /// 进价值（当UpdatePurchasePrice为true时使用）
+        /// </summary>
+        public decimal? PurchasePrice { get; set; }
+
+        /// <summary>
+        /// 是否更新零售价
+        /// </summary>
+        public bool UpdateRetailPrice { get; set; }
+
+        /// <summary>
+        /// 零售价值（当UpdateRetailPrice为true时使用）
+        /// </summary>
+        public decimal? RetailPrice { get; set; }
+
+        /// <summary>
+        /// 是否更新自动定价标志
+        /// </summary>
+        public bool UpdateIsAutoPricing { get; set; }
+
+        /// <summary>
+        /// 自动定价标志值（当UpdateIsAutoPricing为true时使用）
+        /// </summary>
+        public bool? IsAutoPricing { get; set; }
+
+        /// <summary>
+        /// 是否更新特价产品标志
+        /// </summary>
+        public bool UpdateIsSpecialProduct { get; set; }
+
+        /// <summary>
+        /// 特价产品标志值（当UpdateIsSpecialProduct为true时使用）
+        /// </summary>
+        public bool? IsSpecialProduct { get; set; }
+
+        /// <summary>
+        /// 是否更新折扣率
+        /// </summary>
+        public bool UpdateDiscountRate { get; set; }
+
+        /// <summary>
+        /// 折扣率值（当UpdateDiscountRate为true时使用）
+        /// </summary>
+        public decimal? DiscountRate { get; set; }
     }
 }

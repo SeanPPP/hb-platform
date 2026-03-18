@@ -964,7 +964,7 @@ namespace BlazorApp.Api.Services.React
                                 .Select(x => new StoreProductCodeProjection
                                 {
                                     ProductCode = x.ProductCode!,
-                                    StoreProductCode = x.StoreProductCode
+                                    StoreProductCode = x.StoreProductCode,
                                 })
                                 .ToListAsync()
                     );
@@ -1238,7 +1238,10 @@ namespace BlazorApp.Api.Services.React
         private ISugarQueryable<StoreLocalSupplierInvoice, Store, HBLocalSupplier> ApplyNumber(
             ISugarQueryable<StoreLocalSupplierInvoice, Store, HBLocalSupplier> query,
             string? operation,
-            System.Linq.Expressions.Expression<System.Func<StoreLocalSupplierInvoice, decimal?>> selector,
+            System.Linq.Expressions.Expression<System.Func<
+                StoreLocalSupplierInvoice,
+                decimal?
+            >> selector,
             decimal value,
             object? filterTo
         )
@@ -1275,27 +1278,27 @@ namespace BlazorApp.Api.Services.React
 
             if (condition != null)
             {
-                var lambda = System.Linq.Expressions.Expression.Lambda<
-                    System.Func<StoreLocalSupplierInvoice, bool>
-                >(condition, newParam);
+                var lambda = System.Linq.Expressions.Expression.Lambda<System.Func<
+                    StoreLocalSupplierInvoice,
+                    bool
+                >>(condition, newParam);
                 query = query.Where(lambda);
             }
 
             if (filterTo != null && operation == "inrange")
             {
                 var constantValueTo = System.Linq.Expressions.Expression.Convert(
-                    System.Linq.Expressions.Expression.Constant(
-                        System.Convert.ToDecimal(filterTo)
-                    ),
+                    System.Linq.Expressions.Expression.Constant(System.Convert.ToDecimal(filterTo)),
                     typeof(decimal?)
                 );
                 var conditionTo = System.Linq.Expressions.Expression.LessThanOrEqual(
                     member,
                     constantValueTo
                 );
-                var lambdaTo = System.Linq.Expressions.Expression.Lambda<
-                    System.Func<StoreLocalSupplierInvoice, bool>
-                >(conditionTo, newParam);
+                var lambdaTo = System.Linq.Expressions.Expression.Lambda<System.Func<
+                    StoreLocalSupplierInvoice,
+                    bool
+                >>(conditionTo, newParam);
                 query = query.Where(lambdaTo);
             }
 
@@ -1338,6 +1341,194 @@ namespace BlazorApp.Api.Services.React
             public decimal? PurchasePrice { get; set; }
             public decimal? Retail { get; set; }
             public string? StoreProductCode { get; set; }
+        }
+
+        public async Task<ApiResponse<BatchResultDto>> UpdateDetailsToStorePricesAsync(
+            UpdateToStorePricesRequest dto,
+            string updatedBy
+        )
+        {
+            try
+            {
+                var db = _context.Db;
+
+                // 获取订单明细
+                var details = await db.Queryable<StoreLocalSupplierInvoiceDetails>()
+                    .Where(d =>
+                        d.InvoiceGUID == dto.InvoiceGuid
+                        && dto.DetailGuids.Contains(d.DetailGUID)
+                        && d.IsDeleted == false
+                    )
+                    .ToListAsync();
+
+                if (details == null || details.Count == 0)
+                {
+                    return ApiResponse<BatchResultDto>.Error("未找到要更新的明细记录", "NOT_FOUND");
+                }
+
+                var now = DateTime.UtcNow;
+                var totalUpdated = 0;
+
+                var productCodes = details
+                    .Where(d => d.ProductCode != null)
+                    .Select(d => d.ProductCode!)
+                    .Distinct()
+                    .ToList();
+
+                var allPotentialPrices = await db.Queryable<StoreRetailPrice>()
+                    .Where(sp =>
+                        sp.IsDeleted == false
+                        && dto.TargetStoreCodes.Contains(sp.StoreCode)
+                        && productCodes.Contains(sp.ProductCode!)
+                    )
+                    .ToListAsync();
+
+                var priceDict = allPotentialPrices.ToDictionary(
+                    sp => $"{sp.StoreCode}_{sp.ProductCode}",
+                    sp => sp
+                );
+
+                await db.Ado.BeginTranAsync();
+                try
+                {
+                    // 步骤2: 批量更新所有记录
+                    var updates = new List<StoreRetailPrice>();
+
+                    foreach (var storeCode in dto.TargetStoreCodes)
+                    {
+                        foreach (var detail in details)
+                        {
+                            if (detail.ProductCode == null)
+                                continue;
+
+                            var key = $"{storeCode}_{detail.ProductCode}";
+
+                            if (priceDict.TryGetValue(key, out var storePrice))
+                            {
+                                // 记录存在，准备更新
+                                if (dto.UpdateFields.UpdatePurchasePrice)
+                                {
+                                    // 如果请求中提供了新值，使用新值；否则使用进货单明细中的值
+                                    decimal? purchasePriceToUpdate = dto.UpdateFields.PurchasePrice;
+                                    if (purchasePriceToUpdate == null)
+                                    {
+                                        purchasePriceToUpdate = detail.PurchasePrice;
+                                    }
+
+                                    if (purchasePriceToUpdate != null)
+                                    {
+                                        storePrice.PurchasePrice = purchasePriceToUpdate.Value;
+                                    }
+                                }
+
+                                if (dto.UpdateFields.UpdateRetailPrice)
+                                {
+                                    // 如果请求中提供了新值，使用新值；否则使用进货单明细中的值
+                                    decimal? retailPriceToUpdate = dto.UpdateFields.RetailPrice;
+                                    if (retailPriceToUpdate == null)
+                                    {
+                                        retailPriceToUpdate = detail.RetailPrice;
+                                    }
+
+                                    if (retailPriceToUpdate != null)
+                                    {
+                                        storePrice.StoreRetailPriceValue = retailPriceToUpdate.Value;
+                                    }
+                                }
+
+                                if (dto.UpdateFields.UpdateIsAutoPricing)
+                                {
+                                    // 如果请求中提供了新值，使用新值；否则使用进货单明细中的值
+                                    bool? isAutoPricingToUpdate = dto.UpdateFields.IsAutoPricing;
+                                    if (isAutoPricingToUpdate == null)
+                                    {
+                                        isAutoPricingToUpdate = detail.AutoPricing;
+                                    }
+
+                                    if (isAutoPricingToUpdate != null)
+                                    {
+                                        storePrice.IsAutoPricing = isAutoPricingToUpdate.Value;
+                                    }
+                                }
+
+                                if (dto.UpdateFields.UpdateIsSpecialProduct)
+                                {
+                                    // 如果请求中提供了新值，使用新值；否则使用进货单明细中的值
+                                    bool? isSpecialProductToUpdate = dto.UpdateFields.IsSpecialProduct;
+                                    if (isSpecialProductToUpdate == null)
+                                    {
+                                        isSpecialProductToUpdate = detail.IsSpecialProduct;
+                                    }
+
+                                    if (isSpecialProductToUpdate != null)
+                                    {
+                                        storePrice.IsSpecialProduct = isSpecialProductToUpdate.Value;
+                                    }
+                                }
+
+                                if (dto.UpdateFields.UpdateDiscountRate)
+                                {
+                                    // 如果请求中提供了新值，使用新值；否则使用进货单明细中的值
+                                    decimal? discountRateToUpdate = dto.UpdateFields.DiscountRate;
+                                    if (discountRateToUpdate == null)
+                                    {
+                                        discountRateToUpdate = detail.DiscountRate;
+                                    }
+
+                                    if (discountRateToUpdate != null)
+                                    {
+                                        storePrice.DiscountRate = discountRateToUpdate.Value;
+                                    }
+                                }
+
+                                storePrice.UpdatedAt = DateTime.Now;
+                                storePrice.UpdatedBy = updatedBy;
+
+                                updates.Add(storePrice);
+                                totalUpdated++;
+                            }
+                        }
+                    }
+
+                    // 批量更新
+                    if (updates.Count > 0)
+                    {
+                        await db.Updateable(updates).ExecuteCommandAsync();
+                        _logger.LogInformation(
+                            "批量更新分店价格表成功，共更新 {Count} 条记录",
+                            updates.Count
+                        );
+                    }
+                    else
+                    {
+                        _logger.LogWarning("没有找到需要更新的分店价格记录");
+                    }
+
+                    await db.Ado.CommitTranAsync();
+
+                    return ApiResponse<BatchResultDto>.OK(
+                        new BatchResultDto
+                        {
+                            Inserted = 0,
+                            Updated = totalUpdated,
+                            Failed = 0,
+                        }
+                    );
+                }
+                catch (Exception exTran)
+                {
+                    await db.Ado.RollbackTranAsync();
+                    _logger.LogError(exTran, "更新到分店价格表事务失败");
+                    var msg = exTran.InnerException?.Message ?? exTran.Message ?? "更新失败";
+                    return ApiResponse<BatchResultDto>.Error(msg, "UPDATE_ERROR");
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "更新到分店价格表失败");
+                var msg = ex.InnerException?.Message ?? ex.Message ?? "更新失败";
+                return ApiResponse<BatchResultDto>.Error(msg, "UPDATE_ERROR");
+            }
         }
     }
 }

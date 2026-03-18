@@ -190,5 +190,25 @@ namespace BlazorApp.Api.Controllers.React
                 );
             return BadRequest(new { success = false, message = result.Message });
         }
+
+        [HttpPost("update-to-store-prices")]
+
+        public async Task<IActionResult> UpdateToStorePrices(
+            [FromBody] UpdateToStorePricesRequest dto
+        )
+        {
+            var user = User.Identity?.Name ?? "system";
+            var result = await _service.UpdateDetailsToStorePricesAsync(dto, user);
+            if (result.Success)
+                return Ok(
+                    new
+                    {
+                        success = true,
+                        data = result.Data,
+                        message = result.Message,
+                    }
+                );
+            return BadRequest(new { success = false, message = result.Message });
+        }
     }
 }
