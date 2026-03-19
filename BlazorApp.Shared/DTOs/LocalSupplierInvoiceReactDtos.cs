@@ -350,6 +350,7 @@ namespace BlazorApp.Shared.DTOs
         public string? ProductName { get; set; }
         public decimal? PurchasePrice { get; set; }
         public decimal? RetailPrice { get; set; }
+        public string? ProductImage { get; set; }
     }
 
     /// <summary>
@@ -423,5 +424,52 @@ namespace BlazorApp.Shared.DTOs
         /// 操作类型：0=无操作，1=新建商品，2=更新进货价，3=等待操作
         /// </summary>
         public int Action { get; set; }
+    }
+
+    /// <summary>
+    /// 条码异常匹配商品DTO
+    /// </summary>
+    public class BarcodeAbnormalMatchedProductDto
+    {
+        public string ProductCode { get; set; } = string.Empty;
+        public string ProductName { get; set; } = string.Empty;
+        public string SupplierCode { get; set; } = string.Empty;
+        public string? SupplierName { get; set; }
+        public string? ItemNumber { get; set; }
+        public string Barcode { get; set; } = string.Empty;
+        public string? ProductImage { get; set; }
+        public bool IsMultiCode { get; set; }
+        public bool IsBundle { get; set; }
+    }
+
+    /// <summary>
+    /// 条码异常明细DTO
+    /// </summary>
+    public class BarcodeAbnormalDetailDto
+    {
+        public string DetailGuid { get; set; } = string.Empty;
+        public string ItemNumber { get; set; } = string.Empty;
+        public string Barcode { get; set; } = string.Empty;
+        public string ProductName { get; set; } = string.Empty;
+        public int ProductStatus { get; set; }
+        public string? MatchedProductCode { get; set; }
+        public List<BarcodeAbnormalMatchedProductDto> MatchedProducts { get; set; } = new();
+    }
+
+    /// <summary>
+    /// 获取条码异常明细响应DTO
+    /// </summary>
+    public class GetBarcodeAbnormalDetailsResponse
+    {
+        public List<BarcodeAbnormalDetailDto> Details { get; set; } = new();
+    }
+
+    /// <summary>
+    /// 按条码查询匹配商品响应DTO
+    /// </summary>
+    public class GetProductsByBarcodeResponse
+    {
+        public string Barcode { get; set; } = string.Empty;
+        public List<BarcodeAbnormalMatchedProductDto> MatchedProducts { get; set; } = new();
     }
 }

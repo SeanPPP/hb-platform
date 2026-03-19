@@ -272,7 +272,6 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpDelete("{invoiceGuid}/details")]
-
         public async Task<IActionResult> DeleteDetails(
             [FromRoute] string invoiceGuid,
             [FromBody] List<string> detailGuids
@@ -280,6 +279,43 @@ namespace BlazorApp.Api.Controllers.React
         {
             var user = User.Identity?.Name ?? "system";
             var result = await _service.DeleteDetailsAsync(invoiceGuid, detailGuids, user);
+            if (result.Success)
+                return Ok(
+                    new
+                    {
+                        success = true,
+                        data = result.Data,
+                        message = result.Message,
+                    }
+                );
+            return BadRequest(new { success = false, message = result.Message });
+        }
+
+        [HttpGet("{invoiceGuid}/barcode-abnormal-details")]
+        public async Task<IActionResult> GetBarcodeAbnormalDetails(
+            [FromRoute] string invoiceGuid
+        )
+        {
+            var result = await _service.GetBarcodeAbnormalDetailsAsync(invoiceGuid);
+            if (result.Success)
+                return Ok(
+                    new
+                    {
+                        success = true,
+                        data = result.Data,
+                        message = result.Message,
+                    }
+                );
+            return BadRequest(new { success = false, message = result.Message });
+        }
+
+        [HttpGet("{invoiceGuid}/products-by-barcode")]
+        public async Task<IActionResult> GetProductsByBarcode(
+            [FromRoute] string invoiceGuid,
+            [FromQuery] string barcode
+        )
+        {
+            var result = await _service.GetProductsByBarcodeAsync(invoiceGuid, barcode);
             if (result.Success)
                 return Ok(
                     new

@@ -1,4 +1,4 @@
-﻿using System.Linq;
+using System.Linq;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Shared.DTOs;
@@ -1432,7 +1432,8 @@ namespace BlazorApp.Api.Services.React
 
                                     if (retailPriceToUpdate != null)
                                     {
-                                        storePrice.StoreRetailPriceValue = retailPriceToUpdate.Value;
+                                        storePrice.StoreRetailPriceValue =
+                                            retailPriceToUpdate.Value;
                                     }
                                 }
 
@@ -1454,7 +1455,8 @@ namespace BlazorApp.Api.Services.React
                                 if (dto.UpdateFields.UpdateIsSpecialProduct)
                                 {
                                     // 如果请求中提供了新值，使用新值；否则使用进货单明细中的值
-                                    bool? isSpecialProductToUpdate = dto.UpdateFields.IsSpecialProduct;
+                                    bool? isSpecialProductToUpdate =
+                                        dto.UpdateFields.IsSpecialProduct;
                                     if (isSpecialProductToUpdate == null)
                                     {
                                         isSpecialProductToUpdate = detail.IsSpecialProduct;
@@ -1462,7 +1464,8 @@ namespace BlazorApp.Api.Services.React
 
                                     if (isSpecialProductToUpdate != null)
                                     {
-                                        storePrice.IsSpecialProduct = isSpecialProductToUpdate.Value;
+                                        storePrice.IsSpecialProduct =
+                                            isSpecialProductToUpdate.Value;
                                     }
                                 }
 
@@ -1696,6 +1699,7 @@ namespace BlazorApp.Api.Services.React
                             result.ProductInfo = new ProductCheckInfoDto();
                             result.ProductInfo.ProductCode = product.ProductCode;
                             result.ProductInfo.ProductName = product.ProductName;
+                            result.ProductInfo.ProductImage = product.ProductImage;
 
                             if (
                                 !string.IsNullOrWhiteSpace(product.ProductCode)
@@ -1913,7 +1917,8 @@ namespace BlazorApp.Api.Services.React
                 return ApiResponse<bool>.OK(true);
             }
             catch (Exception ex)
-            { _logger.LogError(ex, "更新明细操作类型失败");
+            {
+                _logger.LogError(ex, "更新明细操作类型失败");
                 return ApiResponse<bool>.Error("更新失败", "UPDATE_ERROR");
             }
         }
@@ -1956,8 +1961,375 @@ namespace BlazorApp.Api.Services.React
                 return ApiResponse<bool>.OK(true, $"成功删除 {affected} 条明细");
             }
             catch (Exception ex)
-            { _logger.LogError(ex, "删除明细失败");
+            {
+                _logger.LogError(ex, "删除明细失败");
                 return ApiResponse<bool>.Error("删除失败", "DELETE_ERROR");
+            }
+        }
+
+        public async Task<
+            ApiResponse<GetBarcodeAbnormalDetailsResponse>
+        > GetBarcodeAbnormalDetailsAsync(string invoiceGuid)
+        {
+            try
+            {
+                var db = _context.Db;
+
+                var header = await db.Queryable<StoreLocalSupplierInvoice>()
+                    .Where(x => x.InvoiceGUID == invoiceGuid && x.IsDeleted == false)
+                    .FirstAsync();
+
+                if (header == null)
+                    return ApiResponse<GetBarcodeAbnormalDetailsResponse>.Error(
+                        "订单不存在",
+                        "NOT_FOUND"
+                    );
+
+                var details = await db.Queryable<StoreLocalSupplierInvoiceDetails>()
+                    .Where(x => x.InvoiceGUID == invoiceGuid && x.IsDeleted == false)
+                    .ToListAsync();
+
+                var barcodes = details
+                    .Select(x => x.Barcode?.Trim())
+                    .Where(x => !string.IsNullOrWhiteSpace(x))
+                    .Distinct()
+                    .ToList();
+
+                var itemNumbers = details
+                    .Select(x => x.ItemNumber?.Trim())
+                    .Where(x => !string.IsNullOrWhiteSpace(x))
+                    .Distinct()
+                    .ToList();
+
+                var productByItemNumber = new Dictionary<string, Product>();
+                if (itemNumbers.Count > 0)
+                {
+                    var products = await QueryInChunksAsync<Product, string>(
+                        itemNumbers,
+                        1000,
+                        async chunk =>
+                            await db.Queryable<Product>()
+                                .Where(p =>
+                                    p.LocalSupplierCode == header.SupplierCode
+                                    && p.ItemNumber != null
+                                    && chunk.Contains(p.ItemNumber)
+                                    && p.IsDeleted == false
+                                )
+                                .ToListAsync()
+                    );
+                    foreach (var p in products)
+                    {
+                        if (!string.IsNullOrWhiteSpace(p.ItemNumber))
+                            productByItemNumber[p.ItemNumber] = p;
+                    }
+                }
+
+                var productByBarcode = new Dictionary<string, List<string>>();
+                if (barcodes.Count > 0)
+                {
+                    var prods = await QueryInChunksAsync<Product, string>(
+                        barcodes,
+                        1000,
+                        async chunk =>
+                            await db.Queryable<Product>()
+                                .Where(p =>
+                                    p.IsDeleted == false
+                                    && p.Barcode != null
+                                    && chunk.Contains(p.Barcode)
+                                )
+                                .ToListAsync()
+                    );
+                    foreach (var p in prods)
+                    {
+                        if (!string.IsNullOrWhiteSpace(p.Barcode))
+                        {
+                            if (!productByBarcode.ContainsKey(p.Barcode))
+                                productByBarcode[p.Barcode] = new List<string>();
+                            productByBarcode[p.Barcode].Add(p.ProductCode);
+                        }
+                    }
+
+                    var multiCodes = await QueryInChunksAsync<StoreMultiCodeProduct, string>(
+                        barcodes,
+                        1000,
+                        async chunk =>
+                            await db.Queryable<StoreMultiCodeProduct>()
+                                .Where(x =>
+                                    x.StoreCode == header.StoreCode
+                                    && x.MultiBarcode != null
+                                    && chunk.Contains(x.MultiBarcode)
+                                    && x.IsDeleted == false
+                                )
+                                .ToListAsync()
+                    );
+                    foreach (var mc in multiCodes)
+                    {
+                        if (!string.IsNullOrWhiteSpace(mc.MultiBarcode))
+                        {
+                            if (!productByBarcode.ContainsKey(mc.MultiBarcode))
+                                productByBarcode[mc.MultiBarcode] = new List<string>();
+                            productByBarcode[mc.MultiBarcode].Add(mc.ProductCode);
+                        }
+                    }
+                }
+
+                var productCodes = new HashSet<string>();
+                foreach (var codes in productByBarcode.Values)
+                {
+                    foreach (var code in codes)
+                        productCodes.Add(code);
+                }
+
+                var productDetails = new Dictionary<string, Product>();
+                if (productCodes.Count > 0)
+                {
+                    var prods = await QueryInChunksAsync<Product, string>(
+                        productCodes.ToList(),
+                        1000,
+                        async chunk =>
+                            await db.Queryable<Product>()
+                                .Where(p => chunk.Contains(p.ProductCode) && p.IsDeleted == false)
+                                .ToListAsync()
+                    );
+                    foreach (var p in prods)
+                        productDetails[p.ProductCode] = p;
+                }
+
+                var supplierCodes = productDetails
+                    .Values.Select(p => p.LocalSupplierCode)
+                    .Where(c => !string.IsNullOrWhiteSpace(c))
+                    .Distinct()
+                    .ToList();
+
+                var suppliers = new Dictionary<string, string>();
+                if (supplierCodes.Count > 0)
+                {
+                    var supplierList = await db.Queryable<HBLocalSupplier>()
+                        .Where(x =>
+                            supplierCodes.Contains(x.LocalSupplierCode) && x.IsDeleted == false
+                        )
+                        .Select(x => new { x.LocalSupplierCode, x.Name })
+                        .ToListAsync();
+                    foreach (var s in supplierList)
+                        suppliers[s.LocalSupplierCode] = s.Name;
+                }
+
+                var result = new GetBarcodeAbnormalDetailsResponse();
+                var abnormalDetails = new List<BarcodeAbnormalDetailDto>();
+
+                foreach (var detail in details)
+                {
+                    var itemNumber = detail.ItemNumber?.Trim();
+                    var barcode = detail.Barcode?.Trim();
+
+                    string? matchedProductCode = null;
+                    if (
+                        !string.IsNullOrWhiteSpace(itemNumber)
+                        && productByItemNumber.TryGetValue(itemNumber, out var product)
+                    )
+                    {
+                        matchedProductCode = product.ProductCode;
+                    }
+
+                    if (string.IsNullOrWhiteSpace(barcode))
+                        continue;
+
+                    if (!productByBarcode.TryGetValue(barcode, out var matchedCodes))
+                        continue;
+
+                    var productStatus =
+                        !string.IsNullOrWhiteSpace(itemNumber)
+                        && productByItemNumber.ContainsKey(itemNumber)
+                            ? 1
+                            : 2;
+
+                    bool isAbnormal = false;
+                    if (productStatus == 1 && !string.IsNullOrWhiteSpace(matchedProductCode))
+                    {
+                        isAbnormal = !matchedCodes.Contains(matchedProductCode);
+                    }
+
+                    if (!isAbnormal)
+                        continue;
+
+                    var detailDto = new BarcodeAbnormalDetailDto
+                    {
+                        DetailGuid = detail.DetailGUID,
+                        ItemNumber = detail.ItemNumber ?? string.Empty,
+                        Barcode = detail.Barcode ?? string.Empty,
+                        ProductName = detail.ProductName ?? string.Empty,
+                        ProductStatus = productStatus,
+                        MatchedProductCode = matchedProductCode,
+                    };
+
+                    foreach (var code in matchedCodes)
+                    {
+                        if (productDetails.TryGetValue(code, out var matchedProduct))
+                        {
+                            detailDto.MatchedProducts.Add(
+                                new BarcodeAbnormalMatchedProductDto
+                                {
+                                    ProductCode = matchedProduct.ProductCode,
+                                    ProductName = matchedProduct.ProductName ?? string.Empty,
+                                    SupplierCode = matchedProduct.LocalSupplierCode ?? string.Empty,
+                                    SupplierName = suppliers.GetValueOrDefault(
+                                        matchedProduct.LocalSupplierCode ?? string.Empty
+                                    ),
+                                    ItemNumber = matchedProduct.ItemNumber,
+                                    Barcode = matchedProduct.Barcode ?? string.Empty,
+                                    ProductImage = matchedProduct.ProductImage,
+                                    IsMultiCode = false,
+                                    IsBundle = false,
+                                }
+                            );
+                        }
+                    }
+
+                    abnormalDetails.Add(detailDto);
+                }
+
+                result.Details = abnormalDetails;
+                return ApiResponse<GetBarcodeAbnormalDetailsResponse>.OK(result, "获取成功");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "获取条码异常明细失败");
+                return ApiResponse<GetBarcodeAbnormalDetailsResponse>.Error(
+                    "获取失败",
+                    "GET_ERROR"
+                );
+            }
+        }
+
+        public async Task<ApiResponse<GetProductsByBarcodeResponse>> GetProductsByBarcodeAsync(
+            string invoiceGuid,
+            string barcode
+        )
+        {
+            try
+            {
+                var db = _context.Db;
+
+                var header = await db.Queryable<StoreLocalSupplierInvoice>()
+                    .Where(x => x.InvoiceGUID == invoiceGuid && x.IsDeleted == false)
+                    .FirstAsync();
+
+                if (header == null)
+                    return ApiResponse<GetProductsByBarcodeResponse>.Error(
+                        "订单不存在",
+                        "NOT_FOUND"
+                    );
+
+                if (string.IsNullOrWhiteSpace(barcode))
+                    return ApiResponse<GetProductsByBarcodeResponse>.Error(
+                        "条码不能为空",
+                        "VALIDATION_ERROR"
+                    );
+
+                var trimmedBarcode = barcode.Trim();
+                var matchedProductCodes = new HashSet<string>();
+                var productDetails = new Dictionary<string, Product>();
+
+                var prods = await db.Queryable<Product>()
+                    .Where(p =>
+                        p.IsDeleted == false && p.Barcode != null && p.Barcode == trimmedBarcode
+                    )
+                    .ToListAsync();
+
+                foreach (var p in prods)
+                {
+                    if (!string.IsNullOrWhiteSpace(p.ProductCode))
+                    {
+                        matchedProductCodes.Add(p.ProductCode);
+                        if (!productDetails.ContainsKey(p.ProductCode))
+                            productDetails[p.ProductCode] = p;
+                    }
+                }
+
+                var multiCodes = await db.Queryable<StoreMultiCodeProduct>()
+                    .Where(x =>
+                        x.StoreCode == header.StoreCode
+                        && x.MultiBarcode != null
+                        && x.MultiBarcode == trimmedBarcode
+                        && x.IsDeleted == false
+                    )
+                    .ToListAsync();
+
+                foreach (var mc in multiCodes)
+                {
+                    if (!string.IsNullOrWhiteSpace(mc.ProductCode))
+                    {
+                        matchedProductCodes.Add(mc.ProductCode);
+
+                        if (!productDetails.ContainsKey(mc.ProductCode))
+                        {
+                            var product = await db.Queryable<Product>()
+                                .Where(p => p.ProductCode == mc.ProductCode && p.IsDeleted == false)
+                                .FirstAsync();
+                            if (product != null)
+                                productDetails[mc.ProductCode] = product;
+                        }
+                    }
+                }
+
+                if (matchedProductCodes.Count > 0 && productDetails.Count == 0)
+                {
+                    var allProducts = await db.Queryable<Product>()
+                        .Where(p =>
+                            matchedProductCodes.Contains(p.ProductCode!) && p.IsDeleted == false
+                        )
+                        .ToListAsync();
+
+                    foreach (var p in allProducts)
+                        productDetails[p.ProductCode] = p;
+                }
+
+                var supplierCodes = productDetails
+                    .Values.Select(p => p.LocalSupplierCode)
+                    .Where(c => !string.IsNullOrWhiteSpace(c))
+                    .Distinct()
+                    .ToList();
+
+                var suppliers = new Dictionary<string, string>();
+                if (supplierCodes.Count > 0)
+                {
+                    var supplierList = await db.Queryable<HBLocalSupplier>()
+                        .Where(x =>
+                            supplierCodes.Contains(x.LocalSupplierCode) && x.IsDeleted == false
+                        )
+                        .Select(x => new { x.LocalSupplierCode, x.Name })
+                        .ToListAsync();
+                    foreach (var s in supplierList)
+                        suppliers[s.LocalSupplierCode] = s.Name;
+                }
+
+                var result = new GetProductsByBarcodeResponse
+                {
+                    Barcode = trimmedBarcode,
+                    MatchedProducts = productDetails
+                        .Values.Select(p => new BarcodeAbnormalMatchedProductDto
+                        {
+                            ProductCode = p.ProductCode,
+                            ProductName = p.ProductName ?? string.Empty,
+                            SupplierCode = p.LocalSupplierCode ?? string.Empty,
+                            SupplierName = suppliers.GetValueOrDefault(
+                                p.LocalSupplierCode ?? string.Empty
+                            ),
+                            ItemNumber = p.ItemNumber,
+                            Barcode = p.Barcode ?? string.Empty,
+                            ProductImage = p.ProductImage,
+                            IsMultiCode = multiCodes.Any(mc => mc.ProductCode == p.ProductCode),
+                            IsBundle = false,
+                        })
+                        .ToList(),
+                };
+
+                return ApiResponse<GetProductsByBarcodeResponse>.OK(result, "获取成功");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "按条码查询匹配商品失败");
+                return ApiResponse<GetProductsByBarcodeResponse>.Error("获取失败", "GET_ERROR");
             }
         }
     }

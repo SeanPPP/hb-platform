@@ -40,5 +40,12 @@ namespace BlazorApp.Api.Interfaces.React
             List<string> detailGuids,
             string updatedBy
         );
+        Task<ApiResponse<GetBarcodeAbnormalDetailsResponse>> GetBarcodeAbnormalDetailsAsync(
+            string invoiceGuid
+        );
+        Task<ApiResponse<GetProductsByBarcodeResponse>> GetProductsByBarcodeAsync(
+            string invoiceGuid,
+            string barcode
+        );
     }
 }
