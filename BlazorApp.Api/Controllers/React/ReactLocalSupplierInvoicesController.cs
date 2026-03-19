@@ -210,5 +210,86 @@ namespace BlazorApp.Api.Controllers.React
                 );
             return BadRequest(new { success = false, message = result.Message });
         }
+
+        [HttpPost("check-products")]
+
+        public async Task<IActionResult> CheckProducts([FromBody] CheckProductsRequest dto)
+        {
+            var result = await _service.CheckProductsAsync(dto);
+            if (result.Success)
+                return Ok(
+                    new
+                    {
+                        success = true,
+                        data = result.Data,
+                        message = result.Message,
+                    }
+                );
+            return BadRequest(new { success = false, message = result.Message });
+        }
+
+        [HttpPost("{invoiceGuid}/details/paste")]
+
+        public async Task<IActionResult> PasteDetails(
+            [FromRoute] string invoiceGuid,
+            [FromBody] PasteDetailsRequest dto
+        )
+        {
+            var user = User.Identity?.Name ?? "system";
+            dto.InvoiceGuid = invoiceGuid;
+            var result = await _service.PasteDetailsAsync(dto, user);
+            if (result.Success)
+                return Ok(
+                    new
+                    {
+                        success = true,
+                        data = result.Data,
+                        message = result.Message,
+                    }
+                );
+            return BadRequest(new { success = false, message = result.Message });
+        }
+
+        [HttpPut("{invoiceGuid}/details/{detailGuid}/action")]
+
+        public async Task<IActionResult> UpdateDetailAction(
+            [FromRoute] string invoiceGuid,
+            [FromRoute] string detailGuid,
+            [FromBody] UpdateDetailActionRequest dto
+        )
+        {
+            var result = await _service.UpdateDetailActionAsync(invoiceGuid, detailGuid, dto.Action);
+            if (result.Success)
+                return Ok(
+                    new
+                    {
+                        success = true,
+                        data = result.Data,
+                        message = result.Message,
+                    }
+                );
+            return BadRequest(new { success = false, message = result.Message });
+        }
+
+        [HttpDelete("{invoiceGuid}/details")]
+
+        public async Task<IActionResult> DeleteDetails(
+            [FromRoute] string invoiceGuid,
+            [FromBody] List<string> detailGuids
+        )
+        {
+            var user = User.Identity?.Name ?? "system";
+            var result = await _service.DeleteDetailsAsync(invoiceGuid, detailGuids, user);
+            if (result.Success)
+                return Ok(
+                    new
+                    {
+                        success = true,
+                        data = result.Data,
+                        message = result.Message,
+                    }
+                );
+            return BadRequest(new { success = false, message = result.Message });
+        }
     }
 }

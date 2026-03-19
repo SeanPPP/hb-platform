@@ -273,4 +273,155 @@ namespace BlazorApp.Shared.DTOs
         /// </summary>
         public decimal? DiscountRate { get; set; }
     }
+
+    /// <summary>
+    /// 检测商品请求DTO
+    /// </summary>
+    public class CheckProductsRequest
+    {
+        /// <summary>
+        /// 订单GUID
+        /// </summary>
+        public string InvoiceGuid { get; set; } = string.Empty;
+
+        /// <summary>
+        /// 要检测的明细GUID列表（为空则检测所有）
+        /// </summary>
+        public List<string>? DetailGuids { get; set; }
+    }
+
+    /// <summary>
+    /// 检测商品结果DTO
+    /// </summary>
+    public class ProductCheckResultDto
+    {
+        /// <summary>
+        /// 明细GUID
+        /// </summary>
+        public string DetailGuid { get; set; } = string.Empty;
+
+        /// <summary>
+        /// 商品状态：0=未检测，1=已存在，2=不存在
+        /// </summary>
+        public int ProductStatus { get; set; }
+
+        /// <summary>
+        /// 条码状态：0=未检测，1=正常，2=异常
+        /// </summary>
+        public int BarcodeStatus { get; set; }
+
+        /// <summary>
+        /// 商品存在数量
+        /// </summary>
+        public int ExistingProductCount { get; set; }
+
+        /// <summary>
+        /// 自动定价
+        /// </summary>
+        public bool? AutoPricing { get; set; }
+
+        /// <summary>
+        /// 是否特殊商品
+        /// </summary>
+        public bool? IsSpecialProduct { get; set; }
+
+        /// <summary>
+        /// 折扣率
+        /// </summary>
+        public decimal? DiscountRate { get; set; }
+
+        /// <summary>
+        /// 商品信息
+        /// </summary>
+        public ProductCheckInfoDto? ProductInfo { get; set; }
+
+        /// <summary>
+        /// 条码匹配数量
+        /// </summary>
+        public int BarcodeMatchCount { get; set; }
+    }
+
+    /// <summary>
+    /// 商品信息DTO（用于检测）
+    /// </summary>
+    public class ProductCheckInfoDto
+    {
+        public string? ProductCode { get; set; }
+        public string? ProductName { get; set; }
+        public decimal? PurchasePrice { get; set; }
+        public decimal? RetailPrice { get; set; }
+    }
+
+    /// <summary>
+    /// 检测商品响应DTO
+    /// </summary>
+    public class CheckProductsResponseDto
+    {
+        /// <summary>
+        /// 检测结果列表
+        /// </summary>
+        public List<ProductCheckResultDto> Results { get; set; } = new();
+
+        /// <summary>
+        /// 汇总信息
+        /// </summary>
+        public CheckProductsSummaryDto Summary { get; set; } = new();
+    }
+
+    /// <summary>
+    /// 检测商品汇总DTO
+    /// </summary>
+    public class CheckProductsSummaryDto
+    {
+        public int Total { get; set; }
+        public int ProductExists { get; set; }
+        public int ProductNotExists { get; set; }
+        public int BarcodeNormal { get; set; }
+        public int BarcodeAbnormal { get; set; }
+    }
+
+    /// <summary>
+    /// 粘贴数据请求DTO
+    /// </summary>
+    public class PasteDetailsRequest
+    {
+        /// <summary>
+        /// 订单GUID
+        /// </summary>
+        public string InvoiceGuid { get; set; } = string.Empty;
+
+        /// <summary>
+        /// 模式：append=追加，replace=覆盖
+        /// </summary>
+        public string Mode { get; set; } = "replace";
+
+        /// <summary>
+        /// 要粘贴的明细列表
+        /// </summary>
+        public List<PastedDetailItemDto> Items { get; set; } = new();
+    }
+
+    /// <summary>
+    /// 粘贴的明细项DTO
+    /// </summary>
+    public class PastedDetailItemDto
+    {
+        public string? ItemNumber { get; set; }
+        public string? Barcode { get; set; }
+        public string? ProductName { get; set; }
+        public decimal? Quantity { get; set; }
+        public decimal? PurchasePrice { get; set; }
+        public decimal? NewAutoRetailPrice { get; set; }
+    }
+
+    /// <summary>
+    /// 更新明细操作类型请求DTO
+    /// </summary>
+    public class UpdateDetailActionRequest
+    {
+        /// <summary>
+        /// 操作类型：0=无操作，1=新建商品，2=更新进货价，3=等待操作
+        /// </summary>
+        public int Action { get; set; }
+    }
 }

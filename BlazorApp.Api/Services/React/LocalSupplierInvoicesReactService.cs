@@ -1,4 +1,4 @@
-using System.Linq;
+﻿using System.Linq;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Shared.DTOs;
@@ -1528,6 +1528,436 @@ namespace BlazorApp.Api.Services.React
                 _logger.LogError(ex, "更新到分店价格表失败");
                 var msg = ex.InnerException?.Message ?? ex.Message ?? "更新失败";
                 return ApiResponse<BatchResultDto>.Error(msg, "UPDATE_ERROR");
+            }
+        }
+
+        public async Task<ApiResponse<CheckProductsResponseDto>> CheckProductsAsync(
+            CheckProductsRequest dto
+        )
+        {
+            try
+            {
+                var db = _context.Db;
+
+                var header = await db.Queryable<StoreLocalSupplierInvoice>()
+                    .Where(x => x.InvoiceGUID == dto.InvoiceGuid && x.IsDeleted == false)
+                    .FirstAsync();
+
+                if (header == null)
+                    return ApiResponse<CheckProductsResponseDto>.Error("订单不存在", "NOT_FOUND");
+
+                var detailsQuery = db.Queryable<StoreLocalSupplierInvoiceDetails>()
+                    .Where(x => x.InvoiceGUID == dto.InvoiceGuid && x.IsDeleted == false);
+
+                if (dto.DetailGuids != null && dto.DetailGuids.Count > 0)
+                {
+                    detailsQuery = detailsQuery.Where(x => dto.DetailGuids.Contains(x.DetailGUID));
+                }
+
+                var details = await detailsQuery.ToListAsync();
+
+                var itemNumbers = details
+                    .Select(x => x.ItemNumber?.Trim())
+                    .Where(x => !string.IsNullOrWhiteSpace(x))
+                    .Distinct()
+                    .ToList();
+
+                var barcodes = details
+                    .Select(x => x.Barcode?.Trim())
+                    .Where(x => !string.IsNullOrWhiteSpace(x))
+                    .Distinct()
+                    .ToList();
+
+                var productByItemNumber = new Dictionary<string, Product>();
+                if (itemNumbers.Count > 0)
+                {
+                    var products = await QueryInChunksAsync<Product, string>(
+                        itemNumbers,
+                        1000,
+                        async chunk =>
+                            await db.Queryable<Product>()
+                                .Where(p =>
+                                    p.LocalSupplierCode == header.SupplierCode
+                                    && p.ItemNumber != null
+                                    && chunk.Contains(p.ItemNumber)
+                                    && p.IsDeleted == false
+                                )
+                                .ToListAsync()
+                    );
+                    foreach (var p in products)
+                    {
+                        if (!string.IsNullOrWhiteSpace(p.ItemNumber))
+                            productByItemNumber[p.ItemNumber] = p;
+                    }
+                }
+
+                var storePricesByCode = new Dictionary<string, StoreRetailPrice>();
+                var productCodes = productByItemNumber
+                    .Values.Select(p => p.ProductCode)
+                    .Where(c => !string.IsNullOrWhiteSpace(c))
+                    .Distinct()
+                    .ToList();
+
+                if (productCodes.Count > 0)
+                {
+                    var storePrices = await QueryInChunksAsync<StoreRetailPrice, string>(
+                        productCodes,
+                        1000,
+                        async chunk =>
+                            await db.Queryable<StoreRetailPrice>()
+                                .Where(x =>
+                                    x.StoreCode == header.StoreCode
+                                    && x.ProductCode != null
+                                    && chunk.Contains(x.ProductCode)
+                                    && x.IsDeleted == false
+                                )
+                                .ToListAsync()
+                    );
+                    foreach (var sp in storePrices)
+                    {
+                        if (!string.IsNullOrWhiteSpace(sp.ProductCode))
+                            storePricesByCode[sp.ProductCode] = sp;
+                    }
+                }
+
+                var productByBarcode = new Dictionary<string, int>();
+                if (barcodes.Count > 0)
+                {
+                    var prods = await QueryInChunksAsync<Product, string>(
+                        barcodes,
+                        1000,
+                        async chunk =>
+                            await db.Queryable<Product>()
+                                .Where(p =>
+                                    p.IsDeleted == false
+                                    && p.Barcode != null
+                                    && chunk.Contains(p.Barcode)
+                                )
+                                .ToListAsync()
+                    );
+                    foreach (var p in prods)
+                    {
+                        if (!string.IsNullOrWhiteSpace(p.Barcode))
+                        {
+                            if (!productByBarcode.ContainsKey(p.Barcode))
+                                productByBarcode[p.Barcode] = 0;
+                            productByBarcode[p.Barcode]++;
+                        }
+                    }
+
+                    var multiCodes = await QueryInChunksAsync<StoreMultiCodeProduct, string>(
+                        barcodes,
+                        1000,
+                        async chunk =>
+                            await db.Queryable<StoreMultiCodeProduct>()
+                                .Where(x =>
+                                    x.StoreCode == header.StoreCode
+                                    && x.MultiBarcode != null
+                                    && chunk.Contains(x.MultiBarcode)
+                                    && x.IsDeleted == false
+                                )
+                                .ToListAsync()
+                    );
+                    foreach (var mc in multiCodes)
+                    {
+                        if (!string.IsNullOrWhiteSpace(mc.MultiBarcode))
+                        {
+                            if (!productByBarcode.ContainsKey(mc.MultiBarcode))
+                                productByBarcode[mc.MultiBarcode] = 0;
+                            productByBarcode[mc.MultiBarcode]++;
+                        }
+                    }
+                }
+
+                var results = new List<ProductCheckResultDto>();
+                var summary = new CheckProductsSummaryDto { Total = details.Count };
+
+                foreach (var detail in details)
+                {
+                    var itemNumber = detail.ItemNumber?.Trim();
+                    var barcode = detail.Barcode?.Trim();
+
+                    var result = new ProductCheckResultDto
+                    {
+                        DetailGuid = detail.DetailGUID,
+                        ProductStatus = 0,
+                        BarcodeStatus = 0,
+                        ExistingProductCount = 0,
+                    };
+
+                    if (!string.IsNullOrWhiteSpace(itemNumber))
+                    {
+                        if (productByItemNumber.TryGetValue(itemNumber, out var product))
+                        {
+                            result.ProductStatus = 1;
+                            result.ExistingProductCount = 1;
+                            summary.ProductExists++;
+
+                            result.ProductInfo = new ProductCheckInfoDto();
+                            result.ProductInfo.ProductCode = product.ProductCode;
+                            result.ProductInfo.ProductName = product.ProductName;
+
+                            if (
+                                !string.IsNullOrWhiteSpace(product.ProductCode)
+                                && storePricesByCode.TryGetValue(
+                                    product.ProductCode,
+                                    out var storePrice
+                                )
+                            )
+                            {
+                                result.ProductInfo.PurchasePrice = storePrice.PurchasePrice;
+                                result.ProductInfo.RetailPrice = storePrice.StoreRetailPriceValue;
+                                result.AutoPricing = storePrice.IsAutoPricing;
+                                result.IsSpecialProduct = storePrice.IsSpecialProduct;
+                                result.DiscountRate = storePrice.DiscountRate;
+                            }
+                        }
+                        else
+                        {
+                            result.ProductStatus = 2;
+                            summary.ProductNotExists++;
+                        }
+                    }
+
+                    if (!string.IsNullOrWhiteSpace(barcode))
+                    {
+                        if (productByBarcode.TryGetValue(barcode, out var matchCount))
+                        {
+                            result.BarcodeMatchCount = matchCount;
+
+                            if (result.ProductStatus == 1)
+                            {
+                                result.BarcodeStatus = matchCount > 0 ? 1 : 2;
+                            }
+                            else
+                            {
+                                result.BarcodeStatus = matchCount == 0 ? 1 : 2;
+                            }
+
+                            if (result.BarcodeStatus == 1)
+                                summary.BarcodeNormal++;
+                            else
+                                summary.BarcodeAbnormal++;
+                        }
+                        else
+                        {
+                            if (result.ProductStatus == 1)
+                            {
+                                result.BarcodeStatus = 2;
+                                summary.BarcodeAbnormal++;
+                            }
+                            else
+                            {
+                                result.BarcodeStatus = 1;
+                                summary.BarcodeNormal++;
+                            }
+                        }
+                    }
+
+                    results.Add(result);
+                }
+
+                var updateNow = DateTime.UtcNow;
+                await db.Ado.BeginTranAsync();
+                try
+                {
+                    var updateItems = results
+                        .Select(r => new StoreLocalSupplierInvoiceDetails
+                        {
+                            DetailGUID = r.DetailGuid,
+                            ExistingProductCount = r.ExistingProductCount,
+                            UpdatedAt = updateNow,
+                        })
+                        .ToList();
+
+                    if (updateItems.Count > 0)
+                    {
+                        await db.Updateable(updateItems)
+                            .UpdateColumns(x => new { x.ExistingProductCount, x.UpdatedAt })
+                            .ExecuteCommandAsync();
+                    }
+
+                    await db.Ado.CommitTranAsync();
+                }
+                catch (Exception)
+                {
+                    await db.Ado.RollbackTranAsync();
+                    throw;
+                }
+
+                return ApiResponse<CheckProductsResponseDto>.OK(
+                    new CheckProductsResponseDto { Results = results, Summary = summary }
+                );
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "检测商品失败");
+                return ApiResponse<CheckProductsResponseDto>.Error("检测失败", "CHECK_ERROR");
+            }
+        }
+
+        public async Task<ApiResponse<BatchResultDto>> PasteDetailsAsync(
+            PasteDetailsRequest dto,
+            string updatedBy
+        )
+        {
+            try
+            {
+                var db = _context.Db;
+
+                var header = await db.Queryable<StoreLocalSupplierInvoice>()
+                    .Where(x => x.InvoiceGUID == dto.InvoiceGuid && x.IsDeleted == false)
+                    .FirstAsync();
+
+                if (header == null)
+                    return ApiResponse<BatchResultDto>.Error("订单不存在", "NOT_FOUND");
+
+                var now = DateTime.UtcNow;
+
+                if (dto.Mode == "replace")
+                {
+                    await db.Deleteable<StoreLocalSupplierInvoiceDetails>()
+                        .Where(x => x.InvoiceGUID == dto.InvoiceGuid && x.IsDeleted == false)
+                        .ExecuteCommandAsync();
+                }
+
+                var items = dto.Items ?? new List<PastedDetailItemDto>();
+                var validItems = items
+                    .Where(i =>
+                        !string.IsNullOrWhiteSpace(i.ItemNumber)
+                        || !string.IsNullOrWhiteSpace(i.Barcode)
+                    )
+                    .ToList();
+
+                var detailRows = validItems
+                    .Select(i => new StoreLocalSupplierInvoiceDetails
+                    {
+                        DetailGUID = UuidHelper.GenerateUuid7(),
+                        InvoiceGUID = dto.InvoiceGuid,
+                        StoreCode = header.StoreCode,
+                        SupplierCode = header.SupplierCode,
+                        ItemNumber = i.ItemNumber,
+                        Barcode = i.Barcode,
+                        ProductName = i.ProductName,
+                        Quantity = i.Quantity ?? 1,
+                        PurchasePrice = i.PurchasePrice,
+                        NewAutoRetailPrice = i.NewAutoRetailPrice,
+                        Amount = (i.Quantity ?? 1) * (i.PurchasePrice ?? 0),
+                        CreatedAt = now,
+                        UpdatedAt = now,
+                        CreatedBy = updatedBy,
+                        UpdatedBy = updatedBy,
+                        IsDeleted = false,
+                    })
+                    .ToList();
+
+                var inserted = 0;
+                if (detailRows.Count > 0)
+                {
+                    inserted = await db.Insertable(detailRows).ExecuteCommandAsync();
+                }
+
+                var total = await db.Queryable<StoreLocalSupplierInvoiceDetails>()
+                    .Where(x => x.InvoiceGUID == dto.InvoiceGuid && x.IsDeleted == false)
+                    .SumAsync(x => x.Amount ?? 0);
+
+                await db.Updateable<StoreLocalSupplierInvoice>()
+                    .SetColumns(x => x.TotalAmount == total)
+                    .SetColumns(x => x.UpdatedAt == now)
+                    .Where(x => x.InvoiceGUID == dto.InvoiceGuid)
+                    .ExecuteCommandAsync();
+
+                return ApiResponse<BatchResultDto>.OK(
+                    new BatchResultDto
+                    {
+                        Inserted = inserted,
+                        Updated = 0,
+                        Failed = 0,
+                    }
+                );
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "粘贴数据失败");
+                return ApiResponse<BatchResultDto>.Error("粘贴失败", "PASTE_ERROR");
+            }
+        }
+
+        public async Task<ApiResponse<bool>> UpdateDetailActionAsync(
+            string invoiceGuid,
+            string detailGuid,
+            int action
+        )
+        {
+            try
+            {
+                var db = _context.Db;
+
+                var exists = await db.Queryable<StoreLocalSupplierInvoiceDetails>()
+                    .AnyAsync(x =>
+                        x.DetailGUID == detailGuid
+                        && x.InvoiceGUID == invoiceGuid
+                        && x.IsDeleted == false
+                    );
+
+                if (!exists)
+                    return ApiResponse<bool>.Error("明细不存在", "NOT_FOUND");
+
+                var now = DateTime.UtcNow;
+                await db.Updateable<StoreLocalSupplierInvoiceDetails>()
+                    .SetColumns(x => x.ActivityType == action)
+                    .SetColumns(x => x.UpdatedAt == now)
+                    .Where(x => x.DetailGUID == detailGuid)
+                    .ExecuteCommandAsync();
+
+                return ApiResponse<bool>.OK(true);
+            }
+            catch (Exception ex)
+            { _logger.LogError(ex, "更新明细操作类型失败");
+                return ApiResponse<bool>.Error("更新失败", "UPDATE_ERROR");
+            }
+        }
+
+        public async Task<ApiResponse<bool>> DeleteDetailsAsync(
+            string invoiceGuid,
+            List<string> detailGuids,
+            string updatedBy
+        )
+        {
+            try
+            {
+                var db = _context.Db;
+
+                if (detailGuids == null || detailGuids.Count == 0)
+                    return ApiResponse<bool>.Error("未选择任何明细", "VALIDATION_ERROR");
+
+                var now = DateTime.UtcNow;
+                var affected = await db.Updateable<StoreLocalSupplierInvoiceDetails>()
+                    .SetColumns(x => x.IsDeleted == true)
+                    .SetColumns(x => x.UpdatedAt == now)
+                    .SetColumns(x => x.UpdatedBy == updatedBy)
+                    .Where(x =>
+                        x.InvoiceGUID == invoiceGuid
+                        && detailGuids.Contains(x.DetailGUID)
+                        && x.IsDeleted == false
+                    )
+                    .ExecuteCommandAsync();
+
+                var total = await db.Queryable<StoreLocalSupplierInvoiceDetails>()
+                    .Where(x => x.InvoiceGUID == invoiceGuid && x.IsDeleted == false)
+                    .SumAsync(x => x.Amount ?? 0);
+
+                await db.Updateable<StoreLocalSupplierInvoice>()
+                    .SetColumns(x => x.TotalAmount == total)
+                    .SetColumns(x => x.UpdatedAt == now)
+                    .Where(x => x.InvoiceGUID == invoiceGuid)
+                    .ExecuteCommandAsync();
+
+                return ApiResponse<bool>.OK(true, $"成功删除 {affected} 条明细");
+            }
+            catch (Exception ex)
+            { _logger.LogError(ex, "删除明细失败");
+                return ApiResponse<bool>.Error("删除失败", "DELETE_ERROR");
             }
         }
     }
