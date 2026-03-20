@@ -129,7 +129,7 @@ builder.Services.AddSwaggerGen(c =>
 builder.Services.AddHttpContextAccessor();
 
 // 初始化 Cookie 配置辅助类
-CookieOptionsHelper.Initialize(builder.Configuration);
+CookieOptionsHelper.Initialize(builder.Configuration, builder.Environment);
 
 // 注册内存缓存服务
 builder.Services.AddMemoryCache();

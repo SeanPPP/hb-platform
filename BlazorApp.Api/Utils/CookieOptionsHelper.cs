@@ -12,14 +12,23 @@ namespace BlazorApp.Api.Utils
     {
         private static IConfiguration? _configuration;
         private static CookieSettings? _settings;
+        private static IWebHostEnvironment? _environment;
 
         /// <summary>
         /// 初始化 Cookie 配置（在 Program.cs 中调用）
         /// </summary>
-        public static void Initialize(IConfiguration configuration)
+        /// <param name="configuration">应用程序配置</param>
+        /// <param name="environment">主机环境（可选，用于开发环境自动禁用 Secure）</param>
+        public static void Initialize(IConfiguration configuration, IWebHostEnvironment? environment = null)
         {
             _configuration = configuration;
+            _environment = environment;
             _settings = configuration.GetSection("Cookie").Get<CookieSettings>() ?? new CookieSettings();
+
+            if (_environment?.IsDevelopment() == true)
+            {
+                _settings.Secure = false;
+            }
         }
 
         /// <summary>

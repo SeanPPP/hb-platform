@@ -24,6 +24,10 @@ services:
       - Jwt__Issuer=${JWT_ISSUER:-BlazorApp}
       - Jwt__Audience=${JWT_AUDIENCE:-BlazorAppUsers}
       - Jwt__ExpireMinutes=${JWT_EXPIRE_MINUTES:-480}
+      - Cookie__Secure=true
+      - Cookie__SameSite=Lax
+      - Cookie__AccessTokenExpiryMinutes=15
+      - Cookie__RefreshTokenExpiryDays=7
       - Translation__Kimi__ApiKey=REDACTED
       - TencentCloud__SecretId=${TENCENT_SECRET_ID}
       - TencentCloud__SecretKey=${TENCENT_SECRET_KEY}

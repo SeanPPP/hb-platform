@@ -1996,7 +1996,11 @@ namespace BlazorApp.Api.Services.React
                 {
                     var updatedCount = await db.Updateable<StoreLocalSupplierInvoiceDetails>()
                         .SetColumns(x => x.ActivityType == dto.Action && x.UpdatedAt == now)
-                        .Where(x => dto.DetailGuids.Contains(x.DetailGUID) && x.InvoiceGUID == invoiceGuid && x.IsDeleted == false)
+                        .Where(x =>
+                            dto.DetailGuids.Contains(x.DetailGUID)
+                            && x.InvoiceGUID == invoiceGuid
+                            && x.IsDeleted == false
+                        )
                         .ExecuteCommandAsync();
 
                     await db.Ado.CommitTranAsync();
