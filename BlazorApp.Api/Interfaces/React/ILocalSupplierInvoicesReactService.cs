@@ -23,9 +23,7 @@ namespace BlazorApp.Api.Interfaces.React
             UpdateToStorePricesRequest dto,
             string updatedBy
         );
-        Task<ApiResponse<CheckProductsResponseDto>> CheckProductsAsync(
-            CheckProductsRequest dto
-        );
+        Task<ApiResponse<CheckProductsResponseDto>> CheckProductsAsync(CheckProductsRequest dto);
         Task<ApiResponse<BatchResultDto>> PasteDetailsAsync(
             PasteDetailsRequest dto,
             string updatedBy
@@ -34,6 +32,10 @@ namespace BlazorApp.Api.Interfaces.React
             string invoiceGuid,
             string detailGuid,
             int action
+        );
+        Task<ApiResponse<BatchResultDto>> BatchUpdateDetailActionAsync(
+            string invoiceGuid,
+            BatchUpdateDetailActionRequest dto
         );
         Task<ApiResponse<bool>> DeleteDetailsAsync(
             string invoiceGuid,
@@ -46,6 +48,10 @@ namespace BlazorApp.Api.Interfaces.React
         Task<ApiResponse<GetProductsByBarcodeResponse>> GetProductsByBarcodeAsync(
             string invoiceGuid,
             string barcode
+        );
+        Task<ApiResponse<InvoiceNoCheckResult>> CheckInvoiceNoExistsAsync(
+            string supplierCode,
+            string invoiceNo
         );
     }
 }

@@ -37,6 +37,7 @@ namespace BlazorApp.Api.Services.React
                     )
                     .Where((h, st, sup) => h.IsDeleted == false);
 
+                string? productKeyword = null;
                 if (request.FilterModel != null && request.FilterModel.Any())
                 {
                     foreach (var kv in request.FilterModel)
@@ -46,6 +47,13 @@ namespace BlazorApp.Api.Services.React
                         if (f == null || f.FilterType == null)
                             continue;
                         var type = f.FilterType.ToLower();
+
+                        if (col == "productKeyword" && f.Filter != null)
+                        {
+                            productKeyword = f.Filter?.ToString()?.Trim();
+                            continue;
+                        }
+
                         if (type == "text" && f.Filter != null)
                         {
                             var v = f.Filter?.ToString()?.Trim();
@@ -102,6 +110,37 @@ namespace BlazorApp.Api.Services.React
                                 }
                             }
                         }
+                    }
+                }
+
+                if (!string.IsNullOrWhiteSpace(productKeyword))
+                {
+                    var keyword = productKeyword;
+                    var matchingInvoiceGuids =
+                        await db.Queryable<StoreLocalSupplierInvoiceDetails>()
+                            .Where(d =>
+                                d.IsDeleted == false
+                                && (
+                                    d.ItemNumber.Contains(keyword)
+                                    || (d.Barcode != null && d.Barcode.Contains(keyword))
+                                    || (
+                                        d.StoreProductCode != null
+                                        && d.StoreProductCode.Contains(keyword)
+                                    )
+                                )
+                            )
+                            .Select(d => d.InvoiceGUID)
+                            .Distinct()
+                            .ToListAsync();
+
+                    if (matchingInvoiceGuids.Any())
+                    {
+                        var invoiceGuidSet = matchingInvoiceGuids.ToHashSet();
+                        query = query.Where((h, st, sup) => invoiceGuidSet.Contains(h.InvoiceGUID));
+                    }
+                    else
+                    {
+                        query = query.Where((h, st, sup) => false);
                     }
                 }
 
@@ -1714,6 +1753,7 @@ namespace BlazorApp.Api.Services.React
                                 result.AutoPricing = storePrice.IsAutoPricing;
                                 result.IsSpecialProduct = storePrice.IsSpecialProduct;
                                 result.DiscountRate = storePrice.DiscountRate;
+                                result.LastPurchasePrice = storePrice.PurchasePrice;
                             }
                         }
                         else
@@ -1920,6 +1960,66 @@ namespace BlazorApp.Api.Services.React
             {
                 _logger.LogError(ex, "更新明细操作类型失败");
                 return ApiResponse<bool>.Error("更新失败", "UPDATE_ERROR");
+            }
+        }
+
+        public async Task<ApiResponse<BatchResultDto>> BatchUpdateDetailActionAsync(
+            string invoiceGuid,
+            BatchUpdateDetailActionRequest dto
+        )
+        {
+            try
+            {
+                var db = _context.Db;
+                var now = DateTime.UtcNow;
+
+                if (dto.DetailGuids == null || dto.DetailGuids.Count == 0)
+                {
+                    return ApiResponse<BatchResultDto>.Error("未选择任何明细", "VALIDATION_ERROR");
+                }
+
+                var detailsToUpdate = await db.Queryable<StoreLocalSupplierInvoiceDetails>()
+                    .Where(x =>
+                        x.InvoiceGUID == invoiceGuid
+                        && dto.DetailGuids.Contains(x.DetailGUID)
+                        && x.IsDeleted == false
+                    )
+                    .ToListAsync();
+
+                if (detailsToUpdate.Count == 0)
+                {
+                    return ApiResponse<BatchResultDto>.Error("没有找到要更新的明细", "NOT_FOUND");
+                }
+
+                await db.Ado.BeginTranAsync();
+                try
+                {
+                    var updatedCount = await db.Updateable<StoreLocalSupplierInvoiceDetails>()
+                        .SetColumns(x => x.ActivityType == dto.Action && x.UpdatedAt == now)
+                        .Where(x => dto.DetailGuids.Contains(x.DetailGUID) && x.InvoiceGUID == invoiceGuid && x.IsDeleted == false)
+                        .ExecuteCommandAsync();
+
+                    await db.Ado.CommitTranAsync();
+
+                    return ApiResponse<BatchResultDto>.OK(
+                        new BatchResultDto
+                        {
+                            Updated = updatedCount,
+                            Inserted = 0,
+                            Failed = detailsToUpdate.Count - updatedCount,
+                        }
+                    );
+                }
+                catch (Exception)
+                {
+                    await db.Ado.RollbackTranAsync();
+                    throw;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "批量更新操作类型失败");
+                return ApiResponse<BatchResultDto>.Error("批量更新失败", "BATCH_UPDATE_ERROR");
             }
         }
 
@@ -2330,6 +2430,51 @@ namespace BlazorApp.Api.Services.React
             {
                 _logger.LogError(ex, "按条码查询匹配商品失败");
                 return ApiResponse<GetProductsByBarcodeResponse>.Error("获取失败", "GET_ERROR");
+            }
+        }
+
+        public async Task<ApiResponse<InvoiceNoCheckResult>> CheckInvoiceNoExistsAsync(
+            string supplierCode,
+            string invoiceNo
+        )
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(supplierCode) || string.IsNullOrWhiteSpace(invoiceNo))
+                    return ApiResponse<InvoiceNoCheckResult>.OK(
+                        new InvoiceNoCheckResult { Exists = false }
+                    );
+
+                var db = _context.Db;
+                var existing = await db.Queryable<StoreLocalSupplierInvoice>()
+                    .Where(x =>
+                        x.SupplierCode == supplierCode
+                        && x.InvoiceNo == invoiceNo.Trim()
+                        && x.IsDeleted == false
+                    )
+                    .Select(x => new { x.InvoiceNo, x.CreatedAt })
+                    .FirstAsync();
+
+                if (existing != null)
+                {
+                    return ApiResponse<InvoiceNoCheckResult>.OK(
+                        new InvoiceNoCheckResult
+                        {
+                            Exists = true,
+                            ExistingInvoiceNo = existing.InvoiceNo,
+                            ExistingCreatedAt = existing.CreatedAt,
+                        }
+                    );
+                }
+
+                return ApiResponse<InvoiceNoCheckResult>.OK(
+                    new InvoiceNoCheckResult { Exists = false }
+                );
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "检查随货单号是否存在失败");
+                return ApiResponse<InvoiceNoCheckResult>.Error("检查失败", "CHECK_ERROR");
             }
         }
     }

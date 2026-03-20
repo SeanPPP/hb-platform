@@ -271,6 +271,18 @@ namespace BlazorApp.Api.Controllers.React
             return BadRequest(new { success = false, message = result.Message });
         }
 
+        [HttpPut("{invoiceGuid}/details/batch-action")]
+        public async Task<IActionResult> BatchUpdateDetailAction(
+            [FromRoute] string invoiceGuid,
+            [FromBody] BatchUpdateDetailActionRequest dto
+        )
+        {
+            var result = await _service.BatchUpdateDetailActionAsync(invoiceGuid, dto);
+            if (result.Success)
+                return Ok(new { success = true, data = result.Data });
+            return BadRequest(new { success = false, message = result.Message });
+        }
+
         [HttpDelete("{invoiceGuid}/details")]
         public async Task<IActionResult> DeleteDetails(
             [FromRoute] string invoiceGuid,
@@ -316,6 +328,22 @@ namespace BlazorApp.Api.Controllers.React
         )
         {
             var result = await _service.GetProductsByBarcodeAsync(invoiceGuid, barcode);
+            if (result.Success)
+                return Ok(
+                    new
+                    {
+                        success = true,
+                        data = result.Data,
+                        message = result.Message,
+                    }
+                );
+            return BadRequest(new { success = false, message = result.Message });
+        }
+
+        [HttpPost("check-invoice-no")]
+        public async Task<IActionResult> CheckInvoiceNoExists([FromBody] CheckInvoiceNoExistsRequest dto)
+        {
+            var result = await _service.CheckInvoiceNoExistsAsync(dto.SupplierCode, dto.InvoiceNo);
             if (result.Success)
                 return Ok(
                     new

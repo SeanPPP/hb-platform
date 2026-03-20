@@ -19,9 +19,7 @@ namespace BlazorApp.Shared.Helper
             //无连字符
           
             return Uuid.NewDatabaseFriendly(Database.SqlServer)
-                .ToString()
-                .Replace("-", "")
-                .ToUpper();
+                .ToString();
         }
 
         /// <summary>

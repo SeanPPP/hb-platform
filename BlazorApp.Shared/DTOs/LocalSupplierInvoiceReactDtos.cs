@@ -331,6 +331,21 @@ namespace BlazorApp.Shared.DTOs
         public decimal? DiscountRate { get; set; }
 
         /// <summary>
+        /// 分店商品编码
+        /// </summary>
+        public string? StoreProductCode { get; set; }
+
+        /// <summary>
+        /// 上次进货价
+        /// </summary>
+        public decimal? LastPurchasePrice { get; set; }
+
+        /// <summary>
+        /// 定价浮动率
+        /// </summary>
+        public decimal? PricingFloatRate { get; set; }
+
+        /// <summary>
         /// 商品信息
         /// </summary>
         public ProductCheckInfoDto? ProductInfo { get; set; }
@@ -427,6 +442,22 @@ namespace BlazorApp.Shared.DTOs
     }
 
     /// <summary>
+    /// 批量更新明细操作类型请求DTO
+    /// </summary>
+    public class BatchUpdateDetailActionRequest
+    {
+        /// <summary>
+        /// 明细GUID列表
+        /// </summary>
+        public List<string> DetailGuids { get; set; } = new();
+
+        /// <summary>
+        /// 操作类型：0=无操作，1=新建商品，2=更新进货价，3=等待操作
+        /// </summary>
+        public int Action { get; set; }
+    }
+
+    /// <summary>
     /// 条码异常匹配商品DTO
     /// </summary>
     public class BarcodeAbnormalMatchedProductDto
@@ -471,5 +502,24 @@ namespace BlazorApp.Shared.DTOs
     {
         public string Barcode { get; set; } = string.Empty;
         public List<BarcodeAbnormalMatchedProductDto> MatchedProducts { get; set; } = new();
+    }
+
+    /// <summary>
+    /// 检查随货单号是否存在请求DTO
+    /// </summary>
+    public class CheckInvoiceNoExistsRequest
+    {
+        public string SupplierCode { get; set; } = string.Empty;
+        public string InvoiceNo { get; set; } = string.Empty;
+    }
+
+    /// <summary>
+    /// 检查随货单号是否存在响应DTO
+    /// </summary>
+    public class InvoiceNoCheckResult
+    {
+        public bool Exists { get; set; }
+        public string? ExistingInvoiceNo { get; set; }
+        public DateTime? ExistingCreatedAt { get; set; }
     }
 }
