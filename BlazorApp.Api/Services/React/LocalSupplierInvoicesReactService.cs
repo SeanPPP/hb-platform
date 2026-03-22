@@ -317,6 +317,8 @@ namespace BlazorApp.Api.Services.React
                                 RetailPrice = d.RetailPrice,
                                 Amount = d.Amount,
                                 ExistingProductCount = d.ExistingProductCount,
+                                BarcodeStatus = d.BarcodeStatus,
+                                BarcodeMatchCount = d.BarcodeMatchCount,
                                 ProductImage = p.ProductImage,
                                 ActivityType = d.ActivityType,
                                 DiscountRate = d.DiscountRate,
@@ -1573,6 +1575,13 @@ namespace BlazorApp.Api.Services.React
             }
         }
 
+        /// <summary>
+        /// 检测商品
+        /// 根据货号匹配商品信息，根据条码检测条码状态
+        /// 检测完成后直接将匹配结果写入订单明细（ProductCode, StoreProductCode, LastPurchasePrice 等字段）
+        /// </summary>
+        /// <param name="dto">检测请求，包含订单GUID和可选的明细GUID列表</param>
+        /// <returns>检测结果，包含每个明细的匹配状态和汇总信息</returns>
         public async Task<ApiResponse<CheckProductsResponseDto>> CheckProductsAsync(
             CheckProductsRequest dto
         )
@@ -1581,6 +1590,7 @@ namespace BlazorApp.Api.Services.React
             {
                 var db = _context.Db;
 
+                // 第一步：获取订单头信息
                 var header = await db.Queryable<StoreLocalSupplierInvoice>()
                     .Where(x => x.InvoiceGUID == dto.InvoiceGuid && x.IsDeleted == false)
                     .FirstAsync();
@@ -1588,6 +1598,7 @@ namespace BlazorApp.Api.Services.React
                 if (header == null)
                     return ApiResponse<CheckProductsResponseDto>.Error("订单不存在", "NOT_FOUND");
 
+                // 第二步：获取订单明细（支持按明细GUID筛选）
                 var detailsQuery = db.Queryable<StoreLocalSupplierInvoiceDetails>()
                     .Where(x => x.InvoiceGUID == dto.InvoiceGuid && x.IsDeleted == false);
 
@@ -1598,6 +1609,7 @@ namespace BlazorApp.Api.Services.React
 
                 var details = await detailsQuery.ToListAsync();
 
+                // 第三步：提取货号和条码列表
                 var itemNumbers = details
                     .Select(x => x.ItemNumber?.Trim())
                     .Where(x => !string.IsNullOrWhiteSpace(x))
@@ -1610,6 +1622,7 @@ namespace BlazorApp.Api.Services.React
                     .Distinct()
                     .ToList();
 
+                // 第四步：根据货号查询商品（按供应商过滤）
                 var productByItemNumber = new Dictionary<string, Product>();
                 if (itemNumbers.Count > 0)
                 {
@@ -1617,22 +1630,27 @@ namespace BlazorApp.Api.Services.React
                         itemNumbers,
                         1000,
                         async chunk =>
-                            await db.Queryable<Product>()
+                        {
+                            // 将查询条件转为大写以实现不区分大小写的匹配
+                            var upperChunk = chunk.Select(x => x.ToUpper()).ToList();
+                            return await db.Queryable<Product>()
                                 .Where(p =>
                                     p.LocalSupplierCode == header.SupplierCode
                                     && p.ItemNumber != null
-                                    && chunk.Contains(p.ItemNumber)
+                                    && upperChunk.Contains(p.ItemNumber.ToUpper())
                                     && p.IsDeleted == false
                                 )
-                                .ToListAsync()
+                                .ToListAsync();
+                        }
                     );
                     foreach (var p in products)
                     {
                         if (!string.IsNullOrWhiteSpace(p.ItemNumber))
-                            productByItemNumber[p.ItemNumber] = p;
+                            productByItemNumber[p.ItemNumber.ToUpper()] = p;
                     }
                 }
 
+                // 第五步：根据商品编码查询分店零售价信息
                 var storePricesByCode = new Dictionary<string, StoreRetailPrice>();
                 var productCodes = productByItemNumber
                     .Values.Select(p => p.ProductCode)
@@ -1662,9 +1680,11 @@ namespace BlazorApp.Api.Services.React
                     }
                 }
 
+                // 第六步：根据条码查询商品和条码映射
                 var productByBarcode = new Dictionary<string, int>();
                 if (barcodes.Count > 0)
                 {
+                    // 查询商品表中的条码
                     var prods = await QueryInChunksAsync<Product, string>(
                         barcodes,
                         1000,
@@ -1687,6 +1707,7 @@ namespace BlazorApp.Api.Services.React
                         }
                     }
 
+                    // 查询多条码映射表
                     var multiCodes = await QueryInChunksAsync<StoreMultiCodeProduct, string>(
                         barcodes,
                         1000,
@@ -1711,6 +1732,7 @@ namespace BlazorApp.Api.Services.React
                     }
                 }
 
+                // 第七步：遍历明细，生成检测结果
                 var results = new List<ProductCheckResultDto>();
                 var summary = new CheckProductsSummaryDto { Total = details.Count };
 
@@ -1727,19 +1749,23 @@ namespace BlazorApp.Api.Services.React
                         ExistingProductCount = 0,
                     };
 
+                    // 检测货号是否匹配商品
                     if (!string.IsNullOrWhiteSpace(itemNumber))
                     {
-                        if (productByItemNumber.TryGetValue(itemNumber, out var product))
+                        if (productByItemNumber.TryGetValue(itemNumber.ToUpper(), out var product))
                         {
+                            // 货号匹配成功，标记商品存在
                             result.ProductStatus = 1;
                             result.ExistingProductCount = 1;
                             summary.ProductExists++;
 
+                            // 填充商品基本信息
                             result.ProductInfo = new ProductCheckInfoDto();
                             result.ProductInfo.ProductCode = product.ProductCode;
                             result.ProductInfo.ProductName = product.ProductName;
                             result.ProductInfo.ProductImage = product.ProductImage;
 
+                            // 填充分店零售价信息
                             if (
                                 !string.IsNullOrWhiteSpace(product.ProductCode)
                                 && storePricesByCode.TryGetValue(
@@ -1750,6 +1776,7 @@ namespace BlazorApp.Api.Services.React
                             {
                                 result.ProductInfo.PurchasePrice = storePrice.PurchasePrice;
                                 result.ProductInfo.RetailPrice = storePrice.StoreRetailPriceValue;
+                                result.ProductInfo.StoreProductCode = storePrice.StoreProductCode;
                                 result.AutoPricing = storePrice.IsAutoPricing;
                                 result.IsSpecialProduct = storePrice.IsSpecialProduct;
                                 result.DiscountRate = storePrice.DiscountRate;
@@ -1758,23 +1785,28 @@ namespace BlazorApp.Api.Services.React
                         }
                         else
                         {
+                            // 货号未匹配到商品
                             result.ProductStatus = 2;
                             summary.ProductNotExists++;
                         }
                     }
 
+                    // 检测条码是否正常
                     if (!string.IsNullOrWhiteSpace(barcode))
                     {
                         if (productByBarcode.TryGetValue(barcode, out var matchCount))
                         {
                             result.BarcodeMatchCount = matchCount;
 
+                            // 根据商品状态判断条码状态
                             if (result.ProductStatus == 1)
                             {
+                                // 商品存在时，条码匹配数>0为正常
                                 result.BarcodeStatus = matchCount > 0 ? 1 : 2;
                             }
                             else
                             {
+                                // 商品不存在时，条码匹配数=0为正常
                                 result.BarcodeStatus = matchCount == 0 ? 1 : 2;
                             }
 
@@ -1785,6 +1817,7 @@ namespace BlazorApp.Api.Services.React
                         }
                         else
                         {
+                            // 条码未匹配到商品
                             if (result.ProductStatus == 1)
                             {
                                 result.BarcodeStatus = 2;
@@ -1801,6 +1834,7 @@ namespace BlazorApp.Api.Services.React
                     results.Add(result);
                 }
 
+                // 第八步：批量更新订单明细，将检测结果写入数据库
                 var updateNow = DateTime.UtcNow;
                 await db.Ado.BeginTranAsync();
                 try
@@ -1809,15 +1843,59 @@ namespace BlazorApp.Api.Services.React
                         .Select(r => new StoreLocalSupplierInvoiceDetails
                         {
                             DetailGUID = r.DetailGuid,
+                            ProductCode = r.ProductInfo?.ProductCode,
+                            StoreProductCode = r.ProductInfo?.StoreProductCode,
+                            LastPurchasePrice = r.LastPurchasePrice,
+                            AutoPricing = r.AutoPricing,
+                            IsSpecialProduct = r.IsSpecialProduct,
+                            DiscountRate = r.DiscountRate,
                             ExistingProductCount = r.ExistingProductCount,
+                            BarcodeStatus = r.BarcodeStatus,
+                            BarcodeMatchCount = r.BarcodeMatchCount,
                             UpdatedAt = updateNow,
                         })
                         .ToList();
 
                     if (updateItems.Count > 0)
                     {
+                        // 判断哪些字段有值，只更新非空字段
+                        var hasProductCode = results.Any(r => r.ProductInfo?.ProductCode != null);
+                        var hasStoreProductCode = results.Any(r =>
+                            r.ProductInfo?.StoreProductCode != null
+                        );
+                        var hasLastPurchasePrice = results.Any(r => r.LastPurchasePrice != null);
+                        var hasAutoPricing = results.Any(r => r.AutoPricing != null);
+                        var hasIsSpecialProduct = results.Any(r => r.IsSpecialProduct != null);
+                        var hasDiscountRate = results.Any(r => r.DiscountRate != null);
+                        var hasExistingProductCount = results.Any(r => r.ExistingProductCount > 0);
+                        var hasBarcodeStatus = results.Any(r => r.BarcodeStatus != 0);
+                        var hasBarcodeMatchCount = results.Any(r => r.BarcodeMatchCount != 0);
+
+                        // 构建需要更新的列
+                        var updateColumns = new List<string> { "UpdatedAt" };
+
+                        if (hasProductCode)
+                            updateColumns.Add("ProductCode");
+                        if (hasStoreProductCode)
+                            updateColumns.Add("StoreProductCode");
+                        if (hasLastPurchasePrice)
+                            updateColumns.Add("LastPurchasePrice");
+                        if (hasAutoPricing)
+                            updateColumns.Add("AutoPricing");
+                        if (hasIsSpecialProduct)
+                            updateColumns.Add("IsSpecialProduct");
+                        if (hasDiscountRate)
+                            updateColumns.Add("DiscountRate");
+                        if (hasExistingProductCount)
+                            updateColumns.Add("ExistingProductCount");
+                        if (hasBarcodeStatus)
+                            updateColumns.Add("BarcodeStatus");
+                        if (hasBarcodeMatchCount)
+                            updateColumns.Add("BarcodeMatchCount");
+
+                        // 使用 UpdateColumns 只更新指定列
                         await db.Updateable(updateItems)
-                            .UpdateColumns(x => new { x.ExistingProductCount, x.UpdatedAt })
+                            .UpdateColumns(updateColumns.ToArray())
                             .ExecuteCommandAsync();
                     }
 

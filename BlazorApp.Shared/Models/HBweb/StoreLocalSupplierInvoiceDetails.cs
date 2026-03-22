@@ -138,6 +138,18 @@ namespace BlazorApp.Shared.Models
         public int? ExistingProductCount { get; set; }
 
         /// <summary>
+        /// 条码状态：0=未检测，1=正常，2=异常
+        /// </summary>
+        [SugarColumn(IsNullable = true)]
+        public int? BarcodeStatus { get; set; }
+
+        /// <summary>
+        /// 条码匹配数量
+        /// </summary>
+        [SugarColumn(IsNullable = true)]
+        public int? BarcodeMatchCount { get; set; }
+
+        /// <summary>
         /// 商品图片（存储路径或URL）
         /// </summary>
         [SugarColumn(IsIgnore = true)]

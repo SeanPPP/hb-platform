@@ -67,6 +67,8 @@ namespace BlazorApp.Shared.DTOs
         public decimal? RetailPrice { get; set; }
         public decimal? Amount { get; set; }
         public int? ExistingProductCount { get; set; }
+        public int? BarcodeStatus { get; set; }
+        public int? BarcodeMatchCount { get; set; }
         public string? ProductImage { get; set; }
         public int? ActivityType { get; set; }
         public decimal? DiscountRate { get; set; }
@@ -366,6 +368,7 @@ namespace BlazorApp.Shared.DTOs
         public decimal? PurchasePrice { get; set; }
         public decimal? RetailPrice { get; set; }
         public string? ProductImage { get; set; }
+        public string? StoreProductCode { get; set; }
     }
 
     /// <summary>
