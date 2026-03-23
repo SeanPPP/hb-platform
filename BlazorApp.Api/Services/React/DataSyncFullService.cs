@@ -235,11 +235,13 @@ namespace BlazorApp.Api.Services.React
                 maxConcurrency ?? _configuration.GetValue<int>("Database:SyncMaxConcurrency", 5);
             var effectiveBatchSize =
                 batchSize ?? _configuration.GetValue<int>("Database:SyncBatchSize", 50000);
+            var actualBatchSize = effectiveBatchSize;
 
             // 并发控制信号量：限制并发分店数，避免数据库压力过大
             var semaphore = new SemaphoreSlim(effectiveMaxConcurrency, effectiveMaxConcurrency);
             // 进度锁：跨任务汇总统计时保持原子性
             var progressLock = new object();
+            var storeErrors = new List<StoreSyncError>();
 
             var totalProcessed = 0;
             var totalAdded = 0;
@@ -330,7 +332,8 @@ namespace BlazorApp.Api.Services.React
                             int added,
                             int errors,
                             double queryTime,
-                            double insertTime
+                            double insertTime,
+                            StoreSyncError? error
                         )>
                     >();
                 var completedStores = 0;
@@ -358,6 +361,10 @@ namespace BlazorApp.Api.Services.React
                             totalErrors += r.errors;
                             totalQueryTime += r.queryTime;
                             totalInsertTime += r.insertTime;
+                            if (r.error != null)
+                            {
+                                storeErrors.Add(r.error);
+                            }
                             completedStores++;
                         }
                     }
@@ -385,12 +392,40 @@ namespace BlazorApp.Api.Services.React
                     totalErrors == 0 ? "分店零售价同步成功" : "分店零售价同步完成，但存在错误";
 
                 var finalDuration = DateTime.Now - processStart;
+                result.EndTime = DateTime.Now;
+                result.Duration = finalDuration;
+
+                result.TotalCount = totalProcessed;
+                result.TotalStores = storeCodesToProcess.Count;
+                result.SuccessStores = completedStores - storeErrors.Count;
+                result.FailedStores = storeErrors.Count;
+                result.StoreErrors = storeErrors;
+
+                var successRate = result.TotalCount > 0
+                    ? (double)result.SuccessCount / result.TotalCount * 100
+                    : 0;
+
+                result.Message = totalErrors == 0
+                    ? $"分店零售价同步成功：共处理{result.TotalCount:N0}条记录，{result.SuccessStores}个分店全部成功，成功率{successRate:F1}%"
+                    : $"分店零售价同步完成：共处理{result.TotalCount:N0}条记录，成功{result.SuccessCount:N0}条，失败{result.ErrorCount:N0}条，{result.SuccessStores}个分店成功，{result.FailedStores}个分店失败，成功率{successRate:F1}%";
+
+                if (storeErrors.Any())
+                {
+                    var errorDetails = storeErrors
+                        .Select(e => $"分店{e.StoreCode}: {e.ErrorMessage} (处理{e.ProcessedCount:N0}条, 成功{e.InsertedCount:N0}条, 耗时{e.DurationSeconds:F1}s)")
+                        .ToList();
+
+                    result.Details = "错误分店列表：\n" + string.Join("\n", errorDetails);
+                }
+
                 _logger.LogInformation(
-                    "[ReactSync] 分店同步完成：门店{StoreCount} 记录{Processed:N0} 耗时{Seconds:F1}s 错误{Errors:N0}",
+                    "[ReactSync] 分店同步完成：门店{StoreCount} 记录{Processed:N0} 成功{Added:N0} 失败{Errors:N0} 耗时{Seconds:F1}s 成功率{Rate:F1}%",
                     storeCodesToProcess.Count,
                     totalProcessed,
+                    totalAdded,
+                    totalErrors,
                     finalDuration.TotalSeconds,
-                    totalErrors
+                    successRate
                 );
             }
             catch (Exception ex)
@@ -422,7 +457,8 @@ namespace BlazorApp.Api.Services.React
             int added,
             int errors,
             double queryTime,
-            double insertTime
+            double insertTime,
+            StoreSyncError? error
         )> ProcessSingleStoreAsync(
             int storeIndex,
             string storeCode,
@@ -435,10 +471,13 @@ namespace BlazorApp.Api.Services.React
 
             ISqlSugarClient? localDb = null;
             ISqlSugarClient? hqDb = null;
+            var processed = 0;
+            var added = 0;
+            var errors = 0;
+            var storeStart = DateTime.Now;
+
             try
             {
-                var storeStart = DateTime.Now;
-
                 // 为当前分店创建独立的本地与 HQ 连接，避免连接复用导致争用
                 localDb = SqlSugarContext.CreateConcurrentConnection(_configuration);
                 hqDb = HqSqlSugarContext.CreateConcurrentConnection(_configuration);
@@ -463,27 +502,10 @@ namespace BlazorApp.Api.Services.React
                 if (totalCount == 0)
                 {
                     _logger.LogWarning("[ReactSync] 分店{Store}无数据", storeCode);
-                    return (0, 0, 0, qDuration.TotalSeconds, 0);
+                    return (0, 0, 0, qDuration.TotalSeconds, 0, null);
                 }
 
-                // 🚀 在全量插入前，先清空该分店的历史数据，避免主键冲突（Duplicate Key）
-                // 这保证了本地数据与 HQ 完全一致，且避免了 BulkCopy 插入时的冲突
-                var deleteStart = DateTime.Now;
-                var deletedCount = await localDb
-                    .Deleteable<StoreRetailPrice>()
-                    .Where(x => x.StoreCode == storeCode)
-                    .ExecuteCommandAsync();
-                _logger.LogInformation(
-                    "[ReactSync] 分店{Store} 清理旧数据完成：删除{Deleted}条，耗时{Sec:F1}s",
-                    storeCode,
-                    deletedCount,
-                    (DateTime.Now - deleteStart).TotalSeconds
-                );
-
                 var pages = (int)Math.Ceiling(totalCount / (double)batchSize);
-                var processed = 0;
-                var added = 0;
-                var errors = 0;
                 var insertTotalSeconds = 0.0;
 
                 for (var page = 1; page <= pages; page++)
@@ -600,12 +622,25 @@ namespace BlazorApp.Api.Services.React
                     insertTotalSeconds
                 );
 
-                return (processed, added, errors, qDuration.TotalSeconds, insertTotalSeconds);
+                return (processed, added, errors, qDuration.TotalSeconds, insertTotalSeconds, null);
             }
             catch (Exception ex)
             {
+                var error = new StoreSyncError
+                {
+                    StoreCode = storeCode,
+                    ErrorMessage = ex.Message,
+                    ExceptionType = ex.GetType().Name,
+                    IsRetried = false,
+                    RetryCount = 0,
+                    ProcessedCount = processed,
+                    InsertedCount = added,
+                    FailedCount = errors,
+                    DurationSeconds = (DateTime.Now - storeStart).TotalSeconds
+                };
+
                 _logger.LogError(ex, "[ReactSync] 分店{Store}处理异常", storeCode);
-                return (0, 0, 1, 0, 0);
+                return (0, 0, 1, 0, 0, error);
             }
             finally
             {
@@ -628,7 +663,7 @@ namespace BlazorApp.Api.Services.React
         private async Task<int> RetryBulkInsertAsync<T>(
             ISqlSugarClient db,
             List<T> data,
-            int maxRetries = 3,
+            int maxRetries = 5,
             int? initialPageSize = null,
             int? timeoutSeconds = null
         )
@@ -636,14 +671,17 @@ namespace BlazorApp.Api.Services.React
         {
             var defaultPageSize =
                 initialPageSize
-                ?? _configuration.GetValue<int>("Database:BulkCopyInitialPageSize", 10000);
+                ?? _configuration.GetValue<int>("Database:BulkCopyInitialPageSize", 5000);
             var defaultTimeout =
                 timeoutSeconds
-                ?? _configuration.GetValue<int>("Database:BulkCopyCommandTimeoutSeconds", 600);
+                ?? _configuration.GetValue<int>("Database:BulkCopyCommandTimeoutSeconds", 900);
+
+            var dataCount = data.Count;
+            var dynamicTimeout = Math.Max(defaultTimeout, (dataCount / 1000) * 60);
 
             var retries = 0;
             var pageSize = defaultPageSize;
-            var currentTimeout = defaultTimeout;
+            var currentTimeout = dynamicTimeout;
             int inserted = 0;
 
             while (retries < maxRetries)
@@ -673,6 +711,28 @@ namespace BlazorApp.Api.Services.React
                     _logger.LogWarning(
                         ex,
                         "[ReactSync] 批量插入超时（PageSize={PageSize}, Timeout={Timeout}s），重试{Retry}/{Max}，新PageSize={NewPageSize}, 新Timeout={NewTimeout}s",
+                        pageSize * 2,
+                        currentTimeout / 2,
+                        retries,
+                        maxRetries,
+                        pageSize,
+                        currentTimeout
+                    );
+
+                    await Task.Delay(TimeSpan.FromSeconds(Math.Pow(2, retries)));
+                }
+                catch (SqlException ex) when (ex.Number == 1205 && retries < maxRetries - 1)
+                {
+                    retries++;
+                    pageSize = Math.Max(
+                        _configuration.GetValue<int>("Database:BulkCopyMinPageSize", 1000),
+                        pageSize / 2
+                    );
+                    currentTimeout = Math.Min(currentTimeout * 2, 1800);
+
+                    _logger.LogWarning(
+                        ex,
+                        "[ReactSync] 批量插入死锁（PageSize={PageSize}, Timeout={Timeout}s），重试{Retry}/{Max}，新PageSize={NewPageSize}, 新Timeout={NewTimeout}s",
                         pageSize * 2,
                         currentTimeout / 2,
                         retries,
@@ -727,9 +787,10 @@ namespace BlazorApp.Api.Services.React
             var result = new SyncResult { StartTime = DateTime.Now };
 
             var effectiveMaxConcurrency =
-                maxConcurrency ?? _configuration.GetValue<int>("Database:SyncMaxConcurrency", 5);
+                maxConcurrency ?? _configuration.GetValue<int>("Database:SyncMaxConcurrency", 2);
             var effectiveBatchSize =
                 batchSize ?? _configuration.GetValue<int>("Database:SyncBatchSize", 50000);
+            var actualBatchSize = effectiveBatchSize;
             try
             {
                 _hqContext.CheckConnection();
@@ -789,18 +850,18 @@ namespace BlazorApp.Api.Services.React
                         return result;
                     }
 
-                    var pages = (int)Math.Ceiling(totalCount / (double)effectiveBatchSize);
+                    var pages = (int)Math.Ceiling(totalCount / (double)actualBatchSize);
                     var totalAdded = 0;
                     var totalErrors = 0;
 
                     for (var page = 1; page <= pages; page++)
                     {
-                        var skip = (page - 1) * effectiveBatchSize;
+                        var skip = (page - 1) * actualBatchSize;
                         var pageStart = DateTime.Now;
                         var hqPage = await baseQuery
                             .OrderBy(c => c.ID)
                             .Skip(skip)
-                            .Take(effectiveBatchSize)
+                            .Take(actualBatchSize)
                             .ToListAsync();
                         var pageQuerySec = (DateTime.Now - pageStart).TotalSeconds;
                         _logger.LogInformation(
@@ -808,7 +869,7 @@ namespace BlazorApp.Api.Services.React
                             page,
                             pages,
                             hqPage.Count,
-                            pageQuerySec
+                            (double)pageQuerySec
                         );
 
                         if (!hqPage.Any())
@@ -848,6 +909,23 @@ namespace BlazorApp.Api.Services.React
                     result.IsSuccess = totalErrors == 0;
                     result.Message =
                         totalErrors == 0 ? "分店清货价同步成功" : "分店清货价同步完成，但存在错误";
+
+                    var finalDuration = DateTime.Now - result.StartTime;
+                    result.EndTime = DateTime.Now;
+                    result.Duration = finalDuration;
+
+                    result.TotalCount = totalAdded + totalErrors;
+                    result.TotalStores = 0;
+                    result.SuccessStores = 0;
+                    result.FailedStores = 0;
+
+                    var successRate = result.TotalCount > 0
+                        ? (double)result.SuccessCount / result.TotalCount * 100
+                        : 0;
+
+                    result.Message = totalErrors == 0
+                        ? $"分店清货价同步成功：共处理{result.TotalCount:N0}条记录，成功率{successRate:F1}%"
+                        : $"分店清货价同步完成：共处理{result.TotalCount:N0}条记录，成功{result.SuccessCount:N0}条，失败{result.ErrorCount:N0}条，成功率{successRate:F1}%";
                 }
                 catch (Exception exTran)
                 {
@@ -875,7 +953,8 @@ namespace BlazorApp.Api.Services.React
             int added,
             int errors,
             double queryTime,
-            double insertTime
+            double insertTime,
+            StoreSyncError? error
         )> ProcessSingleStoreClearanceAsync(
             int storeIndex,
             string storeCode,
@@ -886,9 +965,13 @@ namespace BlazorApp.Api.Services.React
             await semaphore.WaitAsync();
             ISqlSugarClient? localDb = null;
             ISqlSugarClient? hqDb = null;
+            var processed = 0;
+            var added = 0;
+            var errors = 0;
+            var storeStart = DateTime.Now;
             try
             {
-                var storeStart = DateTime.Now;
+                storeStart = DateTime.Now;
                 localDb = SqlSugarContext.CreateConcurrentConnection(_configuration);
                 hqDb = HqSqlSugarContext.CreateConcurrentConnection(_configuration);
 
@@ -907,12 +990,9 @@ namespace BlazorApp.Api.Services.React
                     .CountAsync();
                 var qDuration = DateTime.Now - countStart;
                 if (totalCount == 0)
-                    return (0, 0, 0, qDuration.TotalSeconds, 0);
+                    return (0, 0, 0, qDuration.TotalSeconds, 0, null);
 
                 var pages = (int)Math.Ceiling(totalCount / (double)batchSize);
-                var processed = 0;
-                var added = 0;
-                var errors = 0;
                 var insertTotalSeconds = 0.0;
 
                 for (var page = 1; page <= pages; page++)
@@ -1021,12 +1101,25 @@ namespace BlazorApp.Api.Services.React
                     errors,
                     storeDuration.TotalSeconds
                 );
-                return (processed, added, errors, qDuration.TotalSeconds, insertTotalSeconds);
+                return (processed, added, errors, qDuration.TotalSeconds, insertTotalSeconds, null);
             }
             catch (Exception ex)
             {
+                var error = new StoreSyncError
+                {
+                    StoreCode = storeCode,
+                    ErrorMessage = ex.Message,
+                    ExceptionType = ex.GetType().Name,
+                    IsRetried = false,
+                    RetryCount = 0,
+                    ProcessedCount = processed,
+                    InsertedCount = added,
+                    FailedCount = errors,
+                    DurationSeconds = (DateTime.Now - storeStart).TotalSeconds
+                };
+
                 _logger.LogError(ex, "[ReactSync] 分店{Store} 清货价处理异常", storeCode);
-                return (0, 0, 1, 0, 0);
+                return (0, 0, 1, 0, 0, error);
             }
             finally
             {
@@ -1055,6 +1148,7 @@ namespace BlazorApp.Api.Services.React
 
             var semaphore = new SemaphoreSlim(effectiveMaxConcurrency, effectiveMaxConcurrency);
             var progressLock = new object();
+            var storeErrors = new List<StoreSyncError>();
 
             var totalProcessed = 0;
             var totalAdded = 0;
@@ -1128,7 +1222,8 @@ namespace BlazorApp.Api.Services.React
                             int added,
                             int errors,
                             double queryTime,
-                            double insertTime
+                            double insertTime,
+                            StoreSyncError? error
                         )>
                     >();
                 var processStart = DateTime.Now;
@@ -1158,6 +1253,10 @@ namespace BlazorApp.Api.Services.React
                             totalErrors += r.errors;
                             totalQueryTime += r.queryTime;
                             totalInsertTime += r.insertTime;
+                            if (r.error != null)
+                            {
+                                storeErrors.Add(r.error);
+                            }
                         }
                     }
                 }
@@ -1172,6 +1271,10 @@ namespace BlazorApp.Api.Services.React
                         totalErrors += r.errors;
                         totalQueryTime += r.queryTime;
                         totalInsertTime += r.insertTime;
+                        if (r.error != null)
+                        {
+                            storeErrors.Add(r.error);
+                        }
                     }
                 }
 
@@ -1182,6 +1285,32 @@ namespace BlazorApp.Api.Services.React
                     totalErrors == 0 ? "分店一品多码同步成功" : "分店一品多码同步完成，但存在错误";
 
                 var finalDuration = DateTime.Now - processStart;
+                result.EndTime = DateTime.Now;
+                result.Duration = finalDuration;
+
+                result.TotalCount = totalProcessed;
+                result.TotalStores = storeCodesToProcess.Count;
+                result.SuccessStores = storeCodesToProcess.Count - storeErrors.Count;
+                result.FailedStores = storeErrors.Count;
+                result.StoreErrors = storeErrors;
+
+                var successRate = result.TotalCount > 0
+                    ? (double)result.SuccessCount / result.TotalCount * 100
+                    : 0;
+
+                result.Message = totalErrors == 0
+                    ? $"分店一品多码同步成功：共处理{result.TotalCount:N0}条记录，{result.SuccessStores}个分店全部成功，成功率{successRate:F1}%"
+                    : $"分店一品多码同步完成：共处理{result.TotalCount:N0}条记录，成功{result.SuccessCount:N0}条，失败{result.ErrorCount:N0}条，{result.SuccessStores}个分店成功，{result.FailedStores}个分店失败，成功率{successRate:F1}%";
+
+                if (storeErrors.Any())
+                {
+                    var errorDetails = storeErrors
+                        .Select(e => $"分店{e.StoreCode}: {e.ErrorMessage} (处理{e.ProcessedCount:N0}条, 成功{e.InsertedCount:N0}条, 耗时{e.DurationSeconds:F1}s)")
+                        .ToList();
+
+                    result.Details = "错误分店列表：\n" + string.Join("\n", errorDetails);
+                }
+
                 _logger.LogInformation(
                     "[ReactSync] 一品多码分店同步完成：门店{StoreCount} 记录{Processed:N0} 耗时{Seconds:F1}s 错误{Errors:N0}",
                     storeCodesToProcess.Count,
@@ -1211,7 +1340,8 @@ namespace BlazorApp.Api.Services.React
             int added,
             int errors,
             double queryTime,
-            double insertTime
+            double insertTime,
+            StoreSyncError? error
         )> ProcessSingleStoreMultiCodeAsync(
             int storeIndex,
             string storeCode,
@@ -1223,9 +1353,13 @@ namespace BlazorApp.Api.Services.React
 
             ISqlSugarClient? localDb = null;
             ISqlSugarClient? hqDb = null;
+            var processed = 0;
+            var added = 0;
+            var errors = 0;
+            var storeStart = DateTime.Now;
             try
             {
-                var storeStart = DateTime.Now;
+                storeStart = DateTime.Now;
                 localDb = SqlSugarContext.CreateConcurrentConnection(_configuration);
                 hqDb = HqSqlSugarContext.CreateConcurrentConnection(_configuration);
 
@@ -1245,12 +1379,9 @@ namespace BlazorApp.Api.Services.React
                     .CountAsync();
                 var qDuration = DateTime.Now - countStart;
                 if (totalCount == 0)
-                    return (0, 0, 0, qDuration.TotalSeconds, 0);
+                    return (0, 0, 0, qDuration.TotalSeconds, 0, null);
 
                 var pages = (int)Math.Ceiling(totalCount / (double)batchSize);
-                var processed = 0;
-                var added = 0;
-                var errors = 0;
                 var insertTotalSeconds = 0.0;
 
                 for (var page = 1; page <= pages; page++)
@@ -1360,12 +1491,25 @@ namespace BlazorApp.Api.Services.React
                     errors,
                     storeDuration.TotalSeconds
                 );
-                return (processed, added, errors, qDuration.TotalSeconds, insertTotalSeconds);
+                return (processed, added, errors, qDuration.TotalSeconds, insertTotalSeconds, null);
             }
             catch (Exception ex)
             {
+                var error = new StoreSyncError
+                {
+                    StoreCode = storeCode,
+                    ErrorMessage = ex.Message,
+                    ExceptionType = ex.GetType().Name,
+                    IsRetried = false,
+                    RetryCount = 0,
+                    ProcessedCount = processed,
+                    InsertedCount = added,
+                    FailedCount = errors,
+                    DurationSeconds = (DateTime.Now - storeStart).TotalSeconds
+                };
+
                 _logger.LogError(ex, "[ReactSync] 分店{Store} 一品多码处理异常", storeCode);
-                return (0, 0, 1, 0, 0);
+                return (0, 0, 1, 0, 0, error);
             }
             finally
             {
