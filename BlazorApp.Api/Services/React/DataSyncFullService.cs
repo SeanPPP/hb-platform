@@ -7,6 +7,7 @@ using BlazorApp.Shared.Models.HBweb;
 using BlazorApp.Shared.Models.HqEntities;
 using BlazorApp.Shared.Models.POSM;
 using DocumentFormat.OpenXml.Spreadsheet;
+using Microsoft.Data.SqlClient;
 using SqlSugar;
 
 namespace BlazorApp.Api.Services.React
@@ -42,6 +43,7 @@ namespace BlazorApp.Api.Services.React
             _logger = logger;
             _taskLogService = taskLogService;
         }
+
         /// <summary>
         /// 全量同步商品：HQ 商品字典表 → 本地 Product 表
         /// 流程：
@@ -223,14 +225,19 @@ namespace BlazorApp.Api.Services.React
         /// </summary>
         public async Task<SyncResult> SyncStoreRetailPricesFromHqConcurrentAsync(
             List<string>? selectedStoreCodes = null,
-            int maxConcurrency = 20,
-            int batchSize = 200000
+            int? maxConcurrency = null,
+            int? batchSize = null
         )
         {
             var result = new SyncResult { StartTime = DateTime.Now };
 
+            var effectiveMaxConcurrency =
+                maxConcurrency ?? _configuration.GetValue<int>("Database:SyncMaxConcurrency", 5);
+            var effectiveBatchSize =
+                batchSize ?? _configuration.GetValue<int>("Database:SyncBatchSize", 50000);
+
             // 并发控制信号量：限制并发分店数，避免数据库压力过大
-            var semaphore = new SemaphoreSlim(maxConcurrency, maxConcurrency);
+            var semaphore = new SemaphoreSlim(effectiveMaxConcurrency, effectiveMaxConcurrency);
             // 进度锁：跨任务汇总统计时保持原子性
             var progressLock = new object();
 
@@ -298,7 +305,9 @@ namespace BlazorApp.Api.Services.React
                     );
                     deleted = await _localContext
                         .Db.Deleteable<StoreRetailPrice>()
-                        .Where(x => x.StoreCode != null && storeCodesToProcess.Contains(x.StoreCode))
+                        .Where(x =>
+                            x.StoreCode != null && storeCodesToProcess.Contains(x.StoreCode)
+                        )
                         .ExecuteCommandAsync();
                 }
                 finally
@@ -332,11 +341,11 @@ namespace BlazorApp.Api.Services.React
                     var storeCode = storeCodesToProcess[i];
                     // 使用线程池并发执行，确保每分店独立连接与独立写入
                     var t = Task.Run(async () =>
-                        await ProcessSingleStoreAsync(i, storeCode, batchSize, semaphore)
+                        await ProcessSingleStoreAsync(i, storeCode, effectiveBatchSize, semaphore)
                     );
                     tasks.Add(t);
 
-                    if (tasks.Count >= maxConcurrency)
+                    if (tasks.Count >= effectiveMaxConcurrency)
                     {
                         // 达到并发上限后收集一个已完成任务，释放窗口
                         var done = await Task.WhenAny(tasks);
@@ -545,16 +554,31 @@ namespace BlazorApp.Api.Services.React
                     var insertStart = DateTime.Now;
                     try
                     {
-                        await RetryBulkInsertAsync(localDb, localBatch, 3);
-                        added += localBatch.Count;
+                        var inserted = await RetryBulkInsertAsync(localDb, localBatch, 1);
+                        added += inserted;
+                        errors += localBatch.Count - inserted;
+
+                        var insertDuration = DateTime.Now - insertStart;
+                        _logger.LogInformation(
+                            "[ReactSync] 分店{Store} 页{Page}/{Pages} 插入成功：{Inserted:N0}/{Total:N0}条，耗时{Sec:F1}s",
+                            storeCode,
+                            page,
+                            pages,
+                            inserted,
+                            localBatch.Count,
+                            insertDuration.TotalSeconds
+                        );
                     }
                     catch (Exception ex)
                     {
+                        var insertDuration = DateTime.Now - insertStart;
                         _logger.LogError(
                             ex,
-                            "[ReactSync] 分店{Store} 页{Page} 插入失败",
+                            "[ReactSync] 分店{Store} 页{Page}/{Pages} 插入失败，耗时{Sec:F1}s",
                             storeCode,
-                            page
+                            page,
+                            pages,
+                            insertDuration.TotalSeconds
                         );
                         errors += localBatch.Count;
                     }
@@ -593,38 +617,101 @@ namespace BlazorApp.Api.Services.React
         }
 
         /// <summary>
-        /// 批量插入重试封装：指数退避（1s→2s→4s），最大重试次数可配置
+        /// 批量插入重试封装：动态批量大小 + 分级超时 + 指数退避
         /// 说明：
         /// - 使用 SqlSugar Fastest BulkCopy 提升吞吐；
-        /// - 捕获异常并进行有限次数重试；
-        /// - 最终失败则抛出异常交由上层统计。
+        /// - 动态调整批量大小：超时时降级到更小的批量（10000→5000→2500→1000）；
+        /// - 分级超时策略：重试时增加超时时间（600s→1200s→1800s）；
+        /// - 指数退避：每次重试前等待（1s→2s→4s）；
+        /// - 返回实际插入的记录数，便于上层统计。
         /// </summary>
-        private async Task RetryBulkInsertAsync<T>(ISqlSugarClient db, List<T> data, int maxRetries)
+        private async Task<int> RetryBulkInsertAsync<T>(
+            ISqlSugarClient db,
+            List<T> data,
+            int maxRetries = 3,
+            int? initialPageSize = null,
+            int? timeoutSeconds = null
+        )
             where T : class, new()
         {
+            var defaultPageSize =
+                initialPageSize
+                ?? _configuration.GetValue<int>("Database:BulkCopyInitialPageSize", 10000);
+            var defaultTimeout =
+                timeoutSeconds
+                ?? _configuration.GetValue<int>("Database:BulkCopyCommandTimeoutSeconds", 600);
+
             var retries = 0;
+            var pageSize = defaultPageSize;
+            var currentTimeout = defaultTimeout;
+            int inserted = 0;
+
             while (retries < maxRetries)
             {
                 try
                 {
-                    await db.Fastest<T>().PageSize(50000).BulkCopyAsync(data);
-                    return;
+                    db.Ado.CommandTimeOut = currentTimeout;
+
+                    for (int i = 0; i < data.Count; i += pageSize)
+                    {
+                        var batch = data.Skip(i).Take(pageSize).ToList();
+                        await db.Fastest<T>().BulkCopyAsync(batch);
+                        inserted += batch.Count;
+                    }
+
+                    return inserted;
+                }
+                catch (SqlException ex) when (ex.Number == -2 && retries < maxRetries - 1)
+                {
+                    retries++;
+                    pageSize = Math.Max(
+                        _configuration.GetValue<int>("Database:BulkCopyMinPageSize", 1000),
+                        pageSize / 2
+                    );
+                    currentTimeout = Math.Min(currentTimeout * 2, 1800);
+
+                    _logger.LogWarning(
+                        ex,
+                        "[ReactSync] 批量插入超时（PageSize={PageSize}, Timeout={Timeout}s），重试{Retry}/{Max}，新PageSize={NewPageSize}, 新Timeout={NewTimeout}s",
+                        pageSize * 2,
+                        currentTimeout / 2,
+                        retries,
+                        maxRetries,
+                        pageSize,
+                        currentTimeout
+                    );
+
+                    await Task.Delay(TimeSpan.FromSeconds(Math.Pow(2, retries)));
                 }
                 catch (Exception ex) when (retries < maxRetries - 1)
                 {
                     retries++;
-                    var delay = TimeSpan.FromSeconds(Math.Pow(2, retries));
+                    currentTimeout = Math.Min(currentTimeout * 2, 1800);
+
                     _logger.LogWarning(
-                        "[ReactSync] 批量插入失败，重试{Retry}/{Max}，等待{Delay}s：{Msg}",
+                        ex,
+                        "[ReactSync] 批量插入失败（Timeout={Timeout}s），重试{Retry}/{Max}，新Timeout={NewTimeout}s：{Msg}",
+                        currentTimeout / 2,
                         retries,
                         maxRetries,
-                        delay.TotalSeconds,
+                        currentTimeout,
                         ex.Message
                     );
-                    await Task.Delay(delay);
+
+                    await Task.Delay(TimeSpan.FromSeconds(Math.Pow(2, retries)));
+                }
+                finally
+                {
+                    db.Ado.CommandTimeOut = _configuration.GetValue<int>(
+                        "Database:ConcurrentCommandTimeoutSeconds",
+                        300
+                    );
                 }
             }
-            throw new Exception("批量插入最终失败");
+
+            throw new Exception(
+                $"批量插入最终失败：已重试 {maxRetries} 次，成功插入 {inserted}/{data.Count} 条记录"
+            );
         }
 
         /// <summary>
@@ -633,11 +720,16 @@ namespace BlazorApp.Api.Services.React
         /// </summary>
         public async Task<SyncResult> SyncStoreClearancePricesFromHqConcurrentAsync(
             List<string>? selectedStoreCodes = null,
-            int maxConcurrency = 12,
-            int batchSize = 10000
+            int? maxConcurrency = null,
+            int? batchSize = null
         )
         {
             var result = new SyncResult { StartTime = DateTime.Now };
+
+            var effectiveMaxConcurrency =
+                maxConcurrency ?? _configuration.GetValue<int>("Database:SyncMaxConcurrency", 5);
+            var effectiveBatchSize =
+                batchSize ?? _configuration.GetValue<int>("Database:SyncBatchSize", 50000);
             try
             {
                 _hqContext.CheckConnection();
@@ -697,18 +789,18 @@ namespace BlazorApp.Api.Services.React
                         return result;
                     }
 
-                    var pages = (int)Math.Ceiling(totalCount / (double)batchSize);
+                    var pages = (int)Math.Ceiling(totalCount / (double)effectiveBatchSize);
                     var totalAdded = 0;
                     var totalErrors = 0;
 
                     for (var page = 1; page <= pages; page++)
                     {
-                        var skip = (page - 1) * batchSize;
+                        var skip = (page - 1) * effectiveBatchSize;
                         var pageStart = DateTime.Now;
                         var hqPage = await baseQuery
                             .OrderBy(c => c.ID)
                             .Skip(skip)
-                            .Take(batchSize)
+                            .Take(effectiveBatchSize)
                             .ToListAsync();
                         var pageQuerySec = (DateTime.Now - pageStart).TotalSeconds;
                         _logger.LogInformation(
@@ -886,16 +978,31 @@ namespace BlazorApp.Api.Services.React
                     var insertStart = DateTime.Now;
                     try
                     {
-                        await RetryBulkInsertAsync(localDb, localBatch, 3);
-                        added += localBatch.Count;
+                        var inserted = await RetryBulkInsertAsync(localDb, localBatch, 3);
+                        added += inserted;
+                        errors += localBatch.Count - inserted;
+
+                        var insertDuration = DateTime.Now - insertStart;
+                        _logger.LogInformation(
+                            "[ReactSync] 分店{Store} 清货价 页{Page}/{Pages} 插入成功：{Inserted:N0}/{Total:N0}条，耗时{Sec:F1}s",
+                            storeCode,
+                            page,
+                            pages,
+                            inserted,
+                            localBatch.Count,
+                            insertDuration.TotalSeconds
+                        );
                     }
                     catch (Exception ex)
                     {
+                        var insertDuration = DateTime.Now - insertStart;
                         _logger.LogError(
                             ex,
-                            "[ReactSync] 分店{Store} 清货价 页{Page} 插入失败",
+                            "[ReactSync] 分店{Store} 清货价 页{Page}/{Pages} 插入失败，耗时{Sec:F1}s",
                             storeCode,
-                            page
+                            page,
+                            pages,
+                            insertDuration.TotalSeconds
                         );
                         errors += localBatch.Count;
                     }
@@ -935,12 +1042,18 @@ namespace BlazorApp.Api.Services.React
         /// </summary>
         public async Task<SyncResult> SyncStoreMultiCodeProductsFromHqConcurrentAsync(
             List<string>? selectedStoreCodes = null,
-            int maxConcurrency = 12,
-            int batchSize = 200000
+            int? maxConcurrency = null,
+            int? batchSize = null
         )
         {
             var result = new SyncResult { StartTime = DateTime.Now };
-            var semaphore = new SemaphoreSlim(maxConcurrency, maxConcurrency);
+
+            var effectiveMaxConcurrency =
+                maxConcurrency ?? _configuration.GetValue<int>("Database:SyncMaxConcurrency", 5);
+            var effectiveBatchSize =
+                batchSize ?? _configuration.GetValue<int>("Database:SyncBatchSize", 50000);
+
+            var semaphore = new SemaphoreSlim(effectiveMaxConcurrency, effectiveMaxConcurrency);
             var progressLock = new object();
 
             var totalProcessed = 0;
@@ -1024,11 +1137,16 @@ namespace BlazorApp.Api.Services.React
                 {
                     var storeCode = storeCodesToProcess[i];
                     var t = Task.Run(async () =>
-                        await ProcessSingleStoreMultiCodeAsync(i, storeCode, batchSize, semaphore)
+                        await ProcessSingleStoreMultiCodeAsync(
+                            i,
+                            storeCode,
+                            effectiveBatchSize,
+                            semaphore
+                        )
                     );
                     tasks.Add(t);
 
-                    if (tasks.Count >= maxConcurrency)
+                    if (tasks.Count >= effectiveMaxConcurrency)
                     {
                         var done = await Task.WhenAny(tasks);
                         tasks.Remove(done);
@@ -1199,16 +1317,31 @@ namespace BlazorApp.Api.Services.React
                     var insertStart = DateTime.Now;
                     try
                     {
-                        await RetryBulkInsertAsync(localDb, localBatch, 3);
-                        added += localBatch.Count;
+                        var inserted = await RetryBulkInsertAsync(localDb, localBatch, 3);
+                        added += inserted;
+                        errors += localBatch.Count - inserted;
+
+                        var insertDuration = DateTime.Now - insertStart;
+                        _logger.LogInformation(
+                            "[ReactSync] 分店{Store} 一品多码 页{Page}/{Pages} 插入成功：{Inserted:N0}/{Total:N0}条，耗时{Sec:F1}s",
+                            storeCode,
+                            page,
+                            pages,
+                            inserted,
+                            localBatch.Count,
+                            insertDuration.TotalSeconds
+                        );
                     }
                     catch (Exception ex)
                     {
+                        var insertDuration = DateTime.Now - insertStart;
                         _logger.LogError(
                             ex,
-                            "[ReactSync] 分店{Store} 一品多码 页{Page} 插入失败",
+                            "[ReactSync] 分店{Store} 一品多码 页{Page}/{Pages} 插入失败，耗时{Sec:F1}s",
                             storeCode,
-                            page
+                            page,
+                            pages,
+                            insertDuration.TotalSeconds
                         );
                         errors += localBatch.Count;
                     }
@@ -1927,7 +2060,7 @@ namespace BlazorApp.Api.Services.React
                 {
                     CustomParameters = new Dictionary<string, object>
                     {
-                        ["MasterGuids"] = masterGuids,
+                        ["MasterGuids"] = masterGuids ?? new List<string>(),
                     },
                 },
                 TaskTrigger.Manual
@@ -3397,7 +3530,5 @@ namespace BlazorApp.Api.Services.React
             }
             return result;
         }
-
     }
-
 }

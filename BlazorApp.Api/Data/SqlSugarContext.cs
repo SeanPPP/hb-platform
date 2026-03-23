@@ -267,7 +267,7 @@ namespace BlazorApp.Api.Data
 
                 // 智能初始化：只在需要时创建或更新表
                 //  InitializeTablesIfNeeded();
-                CreateNormalIndexes();
+               // CreateNormalIndexes();
 
                 Console.WriteLine("数据库表检查完成！");
             }
@@ -352,6 +352,7 @@ namespace BlazorApp.Api.Data
                 typeof(ChinaSupplierStoreSalesDetail),
                 typeof(ScheduledTaskLog),
                 typeof(HolidayProduct),
+
             };
 
             // 检查并创建不存在的表
@@ -383,16 +384,6 @@ namespace BlazorApp.Api.Data
                 }
             }
 
-            // 检查并创建索引
-            try
-            {
-                Console.WriteLine("检查索引状态...");
-                CreateIndexesIfNotExists();
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"创建索引时出现警告: {ex.Message}");
-            }
         }
 
         private void RecreateAllTables()
