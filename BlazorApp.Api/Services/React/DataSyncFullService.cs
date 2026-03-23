@@ -232,7 +232,7 @@ namespace BlazorApp.Api.Services.React
             var result = new SyncResult { StartTime = DateTime.Now };
 
             var effectiveMaxConcurrency =
-                maxConcurrency ?? _configuration.GetValue<int>("Database:SyncMaxConcurrency", 5);
+                maxConcurrency ?? _configuration.GetValue<int>("Database:SyncMaxConcurrency", 10);
             var effectiveBatchSize =
                 batchSize ?? _configuration.GetValue<int>("Database:SyncBatchSize", 50000);
             var actualBatchSize = effectiveBatchSize;
