@@ -1008,5 +1008,144 @@ namespace BlazorApp.Api.Controllers.React
                 return StatusCode(500, new { success = false, message = "缓存预热失败" });
             }
         }
+
+        /// <summary>
+        /// 获取 Executive Dashboard 分店业绩排名
+        /// GET api/react/v1/dashboard/executive-branch-performance
+        /// </summary>
+        /// <param name="startDate">开始日期</param>
+        /// <param name="endDate">结束日期</param>
+        /// <param name="compareStartDate">对比开始日期（可选）</param>
+        /// <param name="compareEndDate">对比结束日期（可选）</param>
+        /// <param name="compareMode">对比模式</param>
+        /// <param name="topN">返回前N条记录</param>
+        /// <param name="branchCodes">分店代码列表（可选）</param>
+        /// <returns>分店业绩排名列表</returns>
+        [HttpGet("executive-branch-performance")]
+        public async Task<IActionResult> GetExecutiveBranchPerformance(
+            [FromQuery] DateTime startDate,
+            [FromQuery] DateTime endDate,
+            [FromQuery] DateTime? compareStartDate = null,
+            [FromQuery] DateTime? compareEndDate = null,
+            [FromQuery] CompareMode compareMode = CompareMode.ByDate,
+            [FromQuery] int topN = 100,
+            [FromQuery] List<string>? branchCodes = null
+        )
+        {
+            try
+            {
+                // 构建日期范围DTO
+                var dateRange = new DateRangeDto
+                {
+                    StartDate = startDate,
+                    EndDate = endDate,
+                    CompareStartDate = compareStartDate,
+                    CompareEndDate = compareEndDate,
+                    CompareMode = compareMode,
+                };
+
+                // 调用服务获取 Executive 分店业绩
+                var result = await _service.GetExecutiveBranchPerformanceAsync(
+                    dateRange,
+                    topN,
+                    branchCodes
+                );
+                return Ok(new { success = true, data = result });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "GetExecutiveBranchPerformance failed");
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
+        /// <summary>
+        /// 获取 Executive Dashboard 每小时流量密度
+        /// GET api/react/v1/dashboard/executive-hourly-traffic
+        /// </summary>
+        /// <param name="startDate">开始日期</param>
+        /// <param name="endDate">结束日期</param>
+        /// <param name="compareStartDate">对比开始日期（可选）</param>
+        /// <param name="compareEndDate">对比结束日期（可选）</param>
+        /// <param name="compareMode">对比模式</param>
+        /// <param name="branchCodes">分店代码列表（可选）</param>
+        /// <returns>每小时流量密度列表</returns>
+        [HttpGet("executive-hourly-traffic")]
+        public async Task<IActionResult> GetExecutiveHourlyTraffic(
+            [FromQuery] DateTime startDate,
+            [FromQuery] DateTime endDate,
+            [FromQuery] DateTime? compareStartDate = null,
+            [FromQuery] DateTime? compareEndDate = null,
+            [FromQuery] CompareMode compareMode = CompareMode.ByDate,
+            [FromQuery] List<string>? branchCodes = null
+        )
+        {
+            try
+            {
+                // 构建日期范围DTO
+                var dateRange = new DateRangeDto
+                {
+                    StartDate = startDate,
+                    EndDate = endDate,
+                    CompareStartDate = compareStartDate,
+                    CompareEndDate = compareEndDate,
+                    CompareMode = compareMode,
+                };
+
+                // 调用服务获取 Executive 每小时流量
+                var result = await _service.GetExecutiveHourlyTrafficAsync(dateRange, branchCodes);
+                return Ok(new { success = true, data = result });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "GetExecutiveHourlyTraffic failed");
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
+        /// <summary>
+        /// 获取周业绩层级数据
+        /// GET api/react/v1/dashboard/weekly-performance-hierarchy
+        /// </summary>
+        /// <param name="startDate">开始日期</param>
+        /// <param name="endDate">结束日期</param>
+        /// <param name="compareStartDate">对比开始日期（可选）</param>
+        /// <param name="compareEndDate">对比结束日期（可选）</param>
+        /// <param name="compareMode">对比模式</param>
+        /// <param name="branchCodes">分店代码列表（可选）</param>
+        /// <returns>周业绩层级数据列表</returns>
+        [HttpGet("weekly-performance-hierarchy")]
+        public async Task<IActionResult> GetWeeklyPerformanceHierarchy(
+            [FromQuery] DateTime startDate,
+            [FromQuery] DateTime endDate,
+            [FromQuery] DateTime? compareStartDate = null,
+            [FromQuery] DateTime? compareEndDate = null,
+            [FromQuery] CompareMode compareMode = CompareMode.ByDate,
+            [FromQuery] List<string>? branchCodes = null
+        )
+        {
+            try
+            {
+                var dateRange = new DateRangeDto
+                {
+                    StartDate = startDate,
+                    EndDate = endDate,
+                    CompareStartDate = compareStartDate,
+                    CompareEndDate = compareEndDate,
+                    CompareMode = compareMode,
+                };
+
+                var result = await _service.GetWeeklyPerformanceHierarchyAsync(
+                    dateRange,
+                    branchCodes
+                );
+                return Ok(new { success = true, data = result });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "GetWeeklyPerformanceHierarchy failed");
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
     }
 }

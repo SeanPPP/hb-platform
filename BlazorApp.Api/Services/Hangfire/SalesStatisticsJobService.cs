@@ -15,34 +15,42 @@ namespace BlazorApp.Api.Services
         /// 是否成功
         /// </summary>
         public bool Success { get; set; }
+
         /// <summary>
         /// 总天数
         /// </summary>
         public int TotalDays { get; set; }
+
         /// <summary>
         /// 已处理天数
         /// </summary>
         public int ProcessedDays { get; set; }
+
         /// <summary>
         /// 失败日期列表
         /// </summary>
         public List<string> FailedDates { get; set; } = new();
+
         /// <summary>
         /// 结果消息
         /// </summary>
         public string Message { get; set; } = string.Empty;
+
         /// <summary>
         /// 总月数
         /// </summary>
         public int TotalMonths { get; set; }
+
         /// <summary>
         /// 已处理月数
         /// </summary>
         public int ProcessedMonths { get; set; }
+
         /// <summary>
         /// 失败月份列表
         /// </summary>
         public List<string> FailedMonths { get; set; } = new();
+
         /// <summary>
         /// 任务ID
         /// </summary>
@@ -58,10 +66,12 @@ namespace BlazorApp.Api.Services
         /// 开始日期
         /// </summary>
         public DateTime StartDate { get; set; }
+
         /// <summary>
         /// 结束日期
         /// </summary>
         public DateTime EndDate { get; set; }
+
         /// <summary>
         /// 天数
         /// </summary>
@@ -78,6 +88,7 @@ namespace BlazorApp.Api.Services
         /// 批量操作每批处理数量
         /// </summary>
         private const int BatchSize = 5000;
+
         /// <summary>
         /// 数据库命令超时时间（秒）
         /// </summary>
@@ -87,30 +98,37 @@ namespace BlazorApp.Api.Services
         /// POSM数据库上下文
         /// </summary>
         private readonly POSMSqlSugarContext _posmContext;
+
         /// <summary>
         /// 主数据库上下文
         /// </summary>
         private readonly SqlSugarContext _context;
+
         /// <summary>
         /// 日志记录器
         /// </summary>
         private readonly ILogger<SalesStatisticsJobService> _logger;
+
         /// <summary>
         /// 配置服务
         /// </summary>
         private readonly IConfiguration _configuration;
+
         /// <summary>
         /// 服务作用域工厂（用于并发时创建独立的数据库上下文）
         /// </summary>
         private readonly IServiceScopeFactory _serviceScopeFactory;
+
         /// <summary>
         /// 最大并发更新数
         /// </summary>
         private readonly int _maxConcurrentUpdates;
+
         /// <summary>
         /// 并发更新支持的最大天数
         /// </summary>
         private readonly int _maxDaysForConcurrentUpdate;
+
         /// <summary>
         /// 每个并发块包含的最大天数
         /// </summary>
@@ -284,7 +302,7 @@ namespace BlazorApp.Api.Services
 
         /// <summary>
         /// 更新分时统计数据
-        /// 按小时和分店维度聚合销售数据，包含全店汇总记录
+        /// 按小时和分店维度聚合销售数据，包含全店汇总记录，按支付明细统计营业额
         /// </summary>
         /// <param name="date">目标日期</param>
         /// <param name="hour">指定小时，为空则更新全天24小时</param>
@@ -303,32 +321,41 @@ namespace BlazorApp.Api.Services
                     hour.HasValue ? hour.Value.ToString() : "0-23"
                 );
 
-                // 从POSM数据库查询分时销售数据
+                // 从POSM数据库查询分时销售数据，按支付明细统计营业额
                 var allHourlyData = await _posmContext
-                    .Db.Queryable<SalesOrder>()
-                    .Where(o =>
-                        o.Status != null
-                        && (o.Status == 1 || o.Status == 4)
-                        && o.OrderTime != null
-                        && o.OrderTime.Value.Date == date
-                        && targetHours.Contains(o.OrderTime.Value.Hour)
+                    .Db.Queryable<PaymentDetail, SalesOrder>(
+                        (pd, so) => pd.OrderGuid == so.OrderGuid
                     )
-                    .GroupBy(o => new
-                    {
-                        Date = o.OrderTime.Value.Date,
-                        Hour = o.OrderTime.Value.Hour,
-                        o.BranchCode,
-                    })
-                    .Select(o => new
-                    {
-                        Date = o.OrderTime.Value.Date,
-                        Hour = o.OrderTime.Value.Hour,
-                        BranchCode = o.BranchCode,
-                        TotalAmount = SqlFunc.AggregateSum(o.TotalAmount - o.DiscountAmount) ?? 0m,
-                        TotalQuantity = SqlFunc.AggregateSum(o.ItemCount) ?? 0,
-                        OrderCount = SqlFunc.AggregateCount(o.OrderGuid),
-                        CustomerCount = SqlFunc.AggregateCount(o.OrderGuid),
-                    })
+                    .Where(
+                        (pd, so) =>
+                            so.Status != null
+                            && (so.Status == 1 || so.Status == 4)
+                            && so.OrderTime != null
+                            && so.OrderTime.Value.Date == date
+                            && targetHours.Contains(so.OrderTime.Value.Hour)
+                    )
+                    .GroupBy(
+                        (pd, so) =>
+                            new
+                            {
+                                Date = so.OrderTime.Value.Date,
+                                Hour = so.OrderTime.Value.Hour,
+                                so.BranchCode,
+                            }
+                    )
+                    .Select(
+                        (pd, so) =>
+                            new
+                            {
+                                Date = so.OrderTime.Value.Date,
+                                Hour = so.OrderTime.Value.Hour,
+                                BranchCode = so.BranchCode,
+                                TotalAmount = SqlFunc.AggregateSum(pd.Amount) ?? 0m,
+                                TotalQuantity = SqlFunc.AggregateSum(so.ItemCount) ?? 0,
+                                OrderCount = SqlFunc.AggregateCount(so.OrderGuid),
+                                CustomerCount = SqlFunc.AggregateCount(so.OrderGuid),
+                            }
+                    )
                     .ToListAsync();
 
                 if (!allHourlyData.Any())
@@ -445,7 +472,7 @@ namespace BlazorApp.Api.Services
 
         /// <summary>
         /// 更新分店统计数据（所有分店）
-        /// 按分店维度聚合销售数据
+        /// 按分店维度聚合销售数据，按支付明细统计营业额
         /// </summary>
         /// <param name="date">目标日期，为空则更新当天</param>
         public async Task UpdateStoreStatistics(DateTime? date = null)
@@ -456,25 +483,31 @@ namespace BlazorApp.Api.Services
 
                 _logger.LogInformation("开始更新分店统计数据: {Date}", targetDate);
 
-                // 从POSM数据库查询分店销售数据并聚合
+                // 从POSM数据库查询分店销售数据并聚合，按支付明细统计营业额
                 var storeData = await _posmContext
-                    .Db.Queryable<SalesOrder>()
-                    .Where(o =>
-                        o.Status != null
-                        && (o.Status == 1 || o.Status == 4)
-                        && o.OrderTime != null
-                        && o.OrderTime.Value.Date == targetDate
+                    .Db.Queryable<PaymentDetail, SalesOrder>(
+                        (pd, so) => pd.OrderGuid == so.OrderGuid
                     )
-                    .GroupBy(o => new { Date = o.OrderTime.Value.Date, o.BranchCode })
-                    .Select(o => new
-                    {
-                        Date = o.OrderTime.Value.Date,
-                        BranchCode = o.BranchCode,
-                        TotalAmount = SqlFunc.AggregateSum(o.TotalAmount - o.DiscountAmount) ?? 0m,
-                        TotalQuantity = SqlFunc.AggregateSum(o.ItemCount) ?? 0,
-                        OrderCount = SqlFunc.AggregateCount(o.OrderGuid),
-                        CustomerCount = SqlFunc.AggregateCount(o.OrderGuid),
-                    })
+                    .Where(
+                        (pd, so) =>
+                            so.Status != null
+                            && (so.Status == 1 || so.Status == 4)
+                            && so.OrderTime != null
+                            && so.OrderTime.Value.Date == targetDate
+                    )
+                    .GroupBy((pd, so) => new { Date = so.OrderTime.Value.Date, so.BranchCode })
+                    .Select(
+                        (pd, so) =>
+                            new
+                            {
+                                Date = so.OrderTime.Value.Date,
+                                BranchCode = so.BranchCode,
+                                TotalAmount = SqlFunc.AggregateSum(pd.Amount) ?? 0m,
+                                TotalQuantity = SqlFunc.AggregateSum(so.ItemCount) ?? 0,
+                                OrderCount = SqlFunc.AggregateCount(so.OrderGuid),
+                                CustomerCount = SqlFunc.AggregateCount(so.OrderGuid),
+                            }
+                    )
                     .ToListAsync();
 
                 // 获取所有分店代码

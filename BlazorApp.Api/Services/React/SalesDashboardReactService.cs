@@ -1,3 +1,4 @@
+using System.Globalization;
 using AutoMapper;
 using BlazorApp.Api.Cache;
 using BlazorApp.Api.Data;
@@ -2334,6 +2335,681 @@ namespace BlazorApp.Api.Services.React
                 _logger.LogError(ex, "GetChinaSupplierStoreSalesDetailsAsync failed");
                 return new List<ChinaSupplierStoreSalesDetailDto>();
             }
+        }
+
+        /// <summary>
+        /// 获取 Executive Dashboard 分店业绩排名
+        /// 用于 Executive Sales Intelligence 页面
+        /// 查询分店的销售总额，按销售额排序并计算 YoY
+        /// </summary>
+        /// <param name="dateRange">日期范围</param>
+        /// <param name="topN">返回前N条记录</param>
+        /// <param name="branchCodes">分店代码列表（可选）</param>
+        /// <returns>分店业绩排名列表</returns>
+        public async Task<List<ExecutiveBranchPerformanceDto>> GetExecutiveBranchPerformanceAsync(
+            DateRangeDto dateRange,
+            int topN = 100,
+            List<string>? branchCodes = null
+        )
+        {
+            try
+            {
+                ValidateDateRange(dateRange);
+
+                var compareStartStr = dateRange.CompareStartDate?.ToString("yyyyMMdd") ?? "null";
+                var compareEndStr = dateRange.CompareEndDate?.ToString("yyyyMMdd") ?? "null";
+                var cacheKey =
+                    $"ExecutiveBranchPerformance_{dateRange.StartDate:yyyyMMdd}_{dateRange.EndDate:yyyyMMdd}_{compareStartStr}_{compareEndStr}_{topN}_{string.Join(",", branchCodes ?? new List<string>())}";
+
+                if (
+                    _cache.TryGetValue<List<ExecutiveBranchPerformanceDto>>(
+                        cacheKey,
+                        out var cachedResult
+                    )
+                )
+                {
+                    _logger.LogInformation("从缓存获取 Executive 分店业绩: {CacheKey}", cacheKey);
+                    return cachedResult;
+                }
+
+                var startDate = dateRange.StartDate.Date;
+                var endDate = dateRange.EndDate.Date;
+
+                // 获取所有分店
+                var stores = await _context
+                    .Db.Queryable<Store>()
+                    .Where(s => !s.IsDeleted)
+                    .Select(s => new { s.StoreCode, s.StoreName })
+                    .ToListAsync();
+
+                var storeDict = stores.ToDictionary(
+                    s => s.StoreCode ?? string.Empty,
+                    s => s.StoreName ?? s.StoreCode ?? string.Empty
+                );
+
+                // 查询当前期分店销售数据
+                var currentQuery = _context
+                    .Db.Queryable<DailySalesStatistic>()
+                    .Where(s => s.Date >= startDate && s.Date <= endDate);
+
+                if (branchCodes != null && branchCodes.Any())
+                {
+                    // 需要从 StoreSalesStatistic 表获取分店级别的数据
+                    currentQuery = null!;
+                }
+
+                // 使用 StoreSalesStatistic 表查询分店销售数据
+                var branchCurrentQuery = _context
+                    .Db.Queryable<StoreSalesStatistic>()
+                    .Where(s => s.Date >= startDate && s.Date <= endDate);
+
+                if (branchCodes != null && branchCodes.Any())
+                {
+                    branchCurrentQuery = branchCurrentQuery.Where(s =>
+                        branchCodes.Contains(s.BranchCode)
+                    );
+                }
+
+                var currentData = await branchCurrentQuery
+                    .GroupBy(s => s.BranchCode)
+                    .Select(s => new
+                    {
+                        BranchCode = s.BranchCode,
+                        Revenue = SqlFunc.AggregateSum(s.TotalAmount),
+                        OrderCount = SqlFunc.AggregateSum(s.OrderCount),
+                        Aov = SqlFunc.AggregateSum(s.TotalAmount)
+                            / SqlFunc.AggregateSum(s.OrderCount),
+                    })
+                    .ToListAsync();
+
+                var lyStartDate = dateRange.CompareStartDate;
+                var lyEndDate = dateRange.CompareEndDate;
+
+                var lyQuery = _context
+                    .Db.Queryable<StoreSalesStatistic>()
+                    .Where(s => s.Date >= lyStartDate && s.Date <= lyEndDate);
+
+                if (branchCodes != null && branchCodes.Any())
+                {
+                    lyQuery = lyQuery.Where(s => branchCodes.Contains(s.BranchCode));
+                }
+
+                var lyData = await lyQuery
+                    .GroupBy(s => s.BranchCode)
+                    .Select(s => new
+                    {
+                        BranchCode = s.BranchCode,
+                        RevenueLY = SqlFunc.AggregateSum(s.TotalAmount),
+                        OrderCountLY = SqlFunc.AggregateSum(s.OrderCount),
+                        AovLY = SqlFunc.AggregateSum(s.TotalAmount)
+                            / SqlFunc.AggregateSum(s.OrderCount),
+                    })
+                    .ToListAsync();
+
+                var lyDict = lyData.ToDictionary(
+                    s => s.BranchCode,
+                    s => new
+                    {
+                        s.RevenueLY,
+                        s.OrderCountLY,
+                        s.AovLY,
+                    }
+                );
+
+                // 构建结果并排序
+                var result = currentData
+                    .Select(
+                        (item, index) =>
+                            new ExecutiveBranchPerformanceDto
+                            {
+                                Rank = index + 1,
+                                BranchCode = item.BranchCode,
+                                BranchName = storeDict.TryGetValue(
+                                    item.BranchCode,
+                                    out var branchName
+                                )
+                                    ? branchName
+                                    : item.BranchCode,
+                                Revenue = item.Revenue,
+                                RevenueLY = lyDict.TryGetValue(item.BranchCode, out var lyItem)
+                                    ? lyItem.RevenueLY
+                                    : 0,
+                                OrderCount = item.OrderCount,
+                                OrderCountLY = lyDict.TryGetValue(item.BranchCode, out var lyItem2)
+                                    ? lyItem2.OrderCountLY
+                                    : 0,
+                                Aov = item.Aov,
+                                AovLY = lyDict.TryGetValue(item.BranchCode, out var lyItem3)
+                                    ? lyItem3.AovLY
+                                    : 0,
+                            }
+                    )
+                    .OrderByDescending(x => x.Revenue)
+                    .Take(topN)
+                    .Select(
+                        (item, index) =>
+                            new ExecutiveBranchPerformanceDto
+                            {
+                                Rank = index + 1,
+                                BranchCode = item.BranchCode,
+                                BranchName = item.BranchName,
+                                Revenue = item.Revenue,
+                                RevenueLY = item.RevenueLY,
+                                OrderCount = item.OrderCount,
+                                OrderCountLY = item.OrderCountLY,
+                                Aov = item.Aov,
+                                AovLY = item.AovLY,
+                            }
+                    )
+                    .ToList();
+
+                // 缓存结果
+                var cacheOptions = new MemoryCacheEntryOptions()
+                    .SetAbsoluteExpiration(RANKING_CACHE_DURATION)
+                    .SetSlidingExpiration(TimeSpan.FromMinutes(5));
+
+                _cache.Set(cacheKey, result, cacheOptions);
+
+                return result;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "GetExecutiveBranchPerformanceAsync failed");
+                return new List<ExecutiveBranchPerformanceDto>();
+            }
+        }
+
+        /// <summary>
+        /// 获取 Executive Dashboard 每小时流量密度
+        /// 用于 Executive Sales Intelligence 页面的每小时流量展示
+        /// </summary>
+        /// <param name="dateRange">日期范围</param>
+        /// <param name="branchCodes">分店代码列表（可选）</param>
+        /// <returns>每小时流量密度列表</returns>
+        public async Task<List<ExecutiveHourlyTrafficDto>> GetExecutiveHourlyTrafficAsync(
+            DateRangeDto dateRange,
+            List<string>? branchCodes = null
+        )
+        {
+            try
+            {
+                ValidateDateRange(dateRange);
+
+                var compareStartStr = dateRange.CompareStartDate?.ToString("yyyyMMdd") ?? "null";
+                var compareEndStr = dateRange.CompareEndDate?.ToString("yyyyMMdd") ?? "null";
+                var cacheKey =
+                    $"ExecutiveHourlyTraffic_{dateRange.StartDate:yyyyMMdd}_{dateRange.EndDate:yyyyMMdd}_{compareStartStr}_{compareEndStr}_{string.Join(",", branchCodes ?? new List<string>())}";
+
+                if (
+                    _cache.TryGetValue<List<ExecutiveHourlyTrafficDto>>(
+                        cacheKey,
+                        out var cachedResult
+                    )
+                )
+                {
+                    _logger.LogInformation("从缓存获取 Executive 每小时流量: {CacheKey}", cacheKey);
+                    return cachedResult;
+                }
+
+                var startDate = dateRange.StartDate.Date;
+                var endDate = dateRange.EndDate.Date;
+
+                var query = _context
+                    .Db.Queryable<HourlySalesStatistic>()
+                    .Where(s => s.Date >= startDate && s.Date <= endDate);
+
+                if (branchCodes != null && branchCodes.Any())
+                {
+                    query = query.Where(s => branchCodes.Contains(s.BranchCode));
+                }
+
+                var hourlyData = await query
+                    .GroupBy(s => new { s.BranchCode, s.Hour })
+                    .Select(s => new
+                    {
+                        BranchCode = s.BranchCode,
+                        Hour = s.Hour,
+                        Revenue = SqlFunc.AggregateSum(s.TotalAmount),
+                    })
+                    .OrderBy(s => s.BranchCode)
+                    .ToListAsync()
+                    .ContinueWith(t => t.Result.OrderBy(x => x.Hour).ToList());
+
+                var branchCodeSet = hourlyData.Select(h => h.BranchCode).Distinct().ToHashSet();
+                var storeMap = await GetStoreNameMapAsync(branchCodeSet);
+
+                var lyStartDate = dateRange.CompareStartDate;
+                var lyEndDate = dateRange.CompareEndDate;
+
+                var lyQuery = _context
+                    .Db.Queryable<HourlySalesStatistic>()
+                    .Where(s => s.Date >= lyStartDate && s.Date <= lyEndDate);
+
+                if (branchCodes != null && branchCodes.Any())
+                {
+                    lyQuery = lyQuery.Where(s => branchCodes.Contains(s.BranchCode));
+                }
+
+                var lyHourlyData = await lyQuery
+                    .GroupBy(s => new { s.BranchCode, s.Hour })
+                    .Select(s => new
+                    {
+                        BranchCode = s.BranchCode,
+                        Hour = s.Hour,
+                        RevenueLY = SqlFunc.AggregateSum(s.TotalAmount),
+                    })
+                    .ToListAsync();
+
+                var lyDict = lyHourlyData.ToDictionary(
+                    s => (s.BranchCode, s.Hour),
+                    s => s.RevenueLY
+                );
+
+                var result = hourlyData
+                    .GroupBy(h => h.BranchCode)
+                    .Select(branchGroup =>
+                    {
+                        var branchCode = branchGroup.Key ?? string.Empty;
+                        var branchName = storeMap.TryGetValue(branchCode, out var name)
+                            ? name
+                            : branchCode;
+                        var branchMaxRevenue = branchGroup.Max(x => x.Revenue);
+                        var peakThreshold = branchMaxRevenue * 0.8m;
+
+                        return branchGroup.Select(item => new ExecutiveHourlyTrafficDto
+                        {
+                            Hour = $"{item.Hour:D2}:00",
+                            BranchCode = branchCode,
+                            BranchName = branchName,
+                            Revenue = item.Revenue,
+                            RevenueLY = lyDict.TryGetValue(
+                                (branchCode, item.Hour),
+                                out var lyRevenue
+                            )
+                                ? lyRevenue
+                                : 0,
+                            Percentage =
+                                branchMaxRevenue > 0
+                                    ? (int)(item.Revenue * 100 / branchMaxRevenue)
+                                    : 0,
+                            IsPeak = item.Revenue >= peakThreshold,
+                        });
+                    })
+                    .SelectMany(x => x)
+                    .ToList();
+
+                // 缓存结果
+                var cacheOptions = new MemoryCacheEntryOptions()
+                    .SetAbsoluteExpiration(RANKING_CACHE_DURATION)
+                    .SetSlidingExpiration(TimeSpan.FromMinutes(5));
+
+                _cache.Set(cacheKey, result, cacheOptions);
+
+                return result;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "GetExecutiveHourlyTrafficAsync failed");
+                return new List<ExecutiveHourlyTrafficDto>();
+            }
+        }
+
+        /// <summary>
+        /// 获取周业绩层级数据
+        /// 用于 Executive Sales Intelligence 页面的 Weekly Performance Hierarchy 组件
+        /// 返回周→分店→日期三层嵌套结构
+        /// </summary>
+        /// <param name="dateRange">日期范围</param>
+        /// <param name="branchCodes">分店代码列表（可选）</param>
+        /// <returns>周业绩层级数据列表</returns>
+        public async Task<List<WeeklyPerformanceHierarchyDto>> GetWeeklyPerformanceHierarchyAsync(
+            DateRangeDto dateRange,
+            List<string>? branchCodes = null
+        )
+        {
+            try
+            {
+                ValidateDateRange(dateRange);
+
+                var startDate = dateRange.StartDate.Date;
+                var endDate = dateRange.EndDate.Date;
+
+                var cacheKey =
+                    $"WeeklyPerformanceHierarchy_{startDate:yyyyMMdd}_{endDate:yyyyMMdd}_{string.Join(",", branchCodes ?? new List<string>())}";
+
+                if (
+                    _cache.TryGetValue<List<WeeklyPerformanceHierarchyDto>>(
+                        cacheKey,
+                        out var cachedResult
+                    )
+                )
+                {
+                    _logger.LogInformation("从缓存获取周业绩层级数据: {CacheKey}", cacheKey);
+                    return cachedResult;
+                }
+
+                var query = _context
+                    .Db.Queryable<StoreSalesStatistic>()
+                    .Where(s => s.Date >= startDate && s.Date <= endDate);
+
+                if (branchCodes != null && branchCodes.Any())
+                {
+                    query = query.Where(s => branchCodes.Contains(s.BranchCode));
+                }
+
+                var currentData = await query
+                    .Select(s => new
+                    {
+                        s.Date,
+                        s.BranchCode,
+                        s.BranchName,
+                        s.TotalAmount,
+                        s.TotalQuantity,
+                        s.OrderCount,
+                        s.AverageOrderValue,
+                    })
+                    .ToListAsync();
+
+                var currentYear = ISOWeek.GetYear(startDate);
+                var currentWeekStart = ISOWeek.GetWeekOfYear(startDate);
+                var currentWeekEnd = ISOWeek.GetWeekOfYear(endDate);
+                var lastYear = currentYear - 1;
+
+                var firstDayOfWeek = ISOWeek.ToDateTime(
+                    lastYear,
+                    currentWeekStart,
+                    DayOfWeek.Monday
+                );
+                var lastDayOfWeek = ISOWeek.ToDateTime(lastYear, currentWeekEnd, DayOfWeek.Sunday);
+
+                var lyQuery = _context
+                    .Db.Queryable<StoreSalesStatistic>()
+                    .Where(s => s.Date >= firstDayOfWeek && s.Date <= lastDayOfWeek);
+
+                if (branchCodes != null && branchCodes.Any())
+                {
+                    lyQuery = lyQuery.Where(s => branchCodes.Contains(s.BranchCode));
+                }
+
+                var lastYearData = await lyQuery
+                    .Select(s => new
+                    {
+                        s.Date,
+                        s.BranchCode,
+                        s.BranchName,
+                        s.TotalAmount,
+                        s.TotalQuantity,
+                        s.OrderCount,
+                        s.AverageOrderValue,
+                    })
+                    .ToListAsync();
+
+                var lyDataDict = lastYearData.ToDictionary(
+                    x =>
+                        $"{ISOWeek.GetYear(x.Date)}-W{ISOWeek.GetWeekOfYear(x.Date):D2}|{x.BranchCode}|{x.Date:yyyy-MM-dd}",
+                    x => x
+                );
+
+                var lyWeekBranchDict = lastYearData
+                    .GroupBy(x =>
+                        $"{ISOWeek.GetYear(x.Date)}-W{ISOWeek.GetWeekOfYear(x.Date):D2}|{x.BranchCode}"
+                    )
+                    .ToDictionary(
+                        g => g.Key,
+                        g => new
+                        {
+                            Revenue = g.Sum(x => x.TotalAmount),
+                            Orders = g.Sum(x => x.OrderCount),
+                        }
+                    );
+
+                var lyWeekDict = lastYearData
+                    .GroupBy(x => $"{ISOWeek.GetYear(x.Date)}-W{ISOWeek.GetWeekOfYear(x.Date):D2}")
+                    .ToDictionary(
+                        g => g.Key,
+                        g => new
+                        {
+                            Revenue = g.Sum(x => x.TotalAmount),
+                            Orders = g.Sum(x => x.OrderCount),
+                        }
+                    );
+
+                var storeDict = currentData
+                    .GroupBy(s => s.BranchCode)
+                    .ToDictionary(g => g.Key, g => g.First().BranchName);
+
+                var weekGroups = currentData
+                    .GroupBy(s => new
+                    {
+                        Year = ISOWeek.GetYear(s.Date),
+                        Week = ISOWeek.GetWeekOfYear(s.Date),
+                        s.BranchCode,
+                    })
+                    .OrderByDescending(g => g.Key.Year)
+                    .ThenByDescending(g => g.Key.Week)
+                    .ThenByDescending(g => g.Sum(x => x.TotalAmount))
+                    .ToList();
+
+                var result = new List<WeeklyPerformanceHierarchyDto>();
+
+                foreach (var weekGroup in weekGroups)
+                {
+                    var weekKey = $"w{weekGroup.Key.Year}-{weekGroup.Key.Week:D2}";
+                    var weekLabel = $"{weekGroup.Key.Year}-W{weekGroup.Key.Week:D2}";
+
+                    var weekRevenue = weekGroup.Sum(x => x.TotalAmount);
+                    var weekOrders = weekGroup.Sum(x => x.OrderCount);
+                    var weekAov = weekOrders > 0 ? weekRevenue / weekOrders : 0;
+
+                    var weekDto = result.FirstOrDefault(w => w.Key == weekKey);
+                    if (weekDto == null)
+                    {
+                        var lyWeekKey = $"{weekGroup.Key.Year - 1}-W{weekGroup.Key.Week:D2}";
+                        lyWeekDict.TryGetValue(lyWeekKey, out var lyWeekData);
+
+                        var revenueLY = lyWeekData?.Revenue ?? 0;
+                        var ordersLY = lyWeekData?.Orders ?? 0;
+                        var aovLY = ordersLY > 0 ? revenueLY / ordersLY : 0;
+                        var yoyChange =
+                            revenueLY > 0
+                                ? ((weekRevenue - revenueLY) / revenueLY) * 100
+                                : (decimal?)null;
+
+                        weekDto = new WeeklyPerformanceHierarchyDto
+                        {
+                            Key = weekKey,
+                            Level = "week",
+                            Hierarchy = weekLabel,
+                            Revenue = weekRevenue,
+                            RevenueLY = revenueLY,
+                            Orders = weekOrders,
+                            OrdersLY = ordersLY,
+                            Aov = weekAov,
+                            AovLY = aovLY,
+                            YoYChange = yoyChange,
+                            Children = new List<WeeklyPerformanceHierarchyDto>(),
+                        };
+                        result.Add(weekDto);
+                    }
+
+                    var branchGroups = weekGroup
+                        .GroupBy(s => s.BranchCode)
+                        .OrderByDescending(g => g.Sum(x => x.TotalAmount))
+                        .ToList();
+
+                    foreach (var branchGroup in branchGroups)
+                    {
+                        var branchCode = branchGroup.Key;
+                        var branchName = storeDict.GetValueOrDefault(branchCode, branchCode);
+
+                        var branchRevenue = branchGroup.Sum(x => x.TotalAmount);
+                        var branchOrders = branchGroup.Sum(x => x.OrderCount);
+                        var branchAov = branchOrders > 0 ? branchRevenue / branchOrders : 0;
+
+                        var branchDto = weekDto.Children!.FirstOrDefault(b =>
+                            b.Key == $"{weekKey}-{branchCode}"
+                        );
+                        if (branchDto == null)
+                        {
+                            var lyBranchKey =
+                                $"{weekGroup.Key.Year - 1}-W{weekGroup.Key.Week:D2}|{branchCode}";
+                            lyWeekBranchDict.TryGetValue(lyBranchKey, out var lyBranchData);
+
+                            var branchRevenueLY = lyBranchData?.Revenue ?? 0;
+                            var branchOrdersLY = lyBranchData?.Orders ?? 0;
+                            var branchAovLY =
+                                branchOrdersLY > 0 ? branchRevenueLY / branchOrdersLY : 0;
+                            var branchYoYChange =
+                                branchRevenueLY > 0
+                                    ? ((branchRevenue - branchRevenueLY) / branchRevenueLY) * 100
+                                    : (decimal?)null;
+
+                            branchDto = new WeeklyPerformanceHierarchyDto
+                            {
+                                Key = $"{weekKey}-{branchCode}",
+                                Level = "branch",
+                                Hierarchy = branchName,
+                                Revenue = branchRevenue,
+                                RevenueLY = branchRevenueLY,
+                                Orders = branchOrders,
+                                OrdersLY = branchOrdersLY,
+                                Aov = branchAov,
+                                AovLY = branchAovLY,
+                                YoYChange = branchYoYChange,
+                                Children = new List<WeeklyPerformanceHierarchyDto>(),
+                            };
+                            weekDto.Children.Add(branchDto);
+                        }
+
+                        var dateGroups = branchGroup.OrderByDescending(x => x.Date).ToList();
+
+                        foreach (var dateItem in dateGroups)
+                        {
+                            var dateKey = $"{weekKey}-{branchCode}-{dateItem.Date:yyyyMMdd}";
+                            var dateAov =
+                                dateItem.OrderCount > 0
+                                    ? dateItem.TotalAmount / dateItem.OrderCount
+                                    : 0;
+
+                            var lastYearDate = GetLastYearSameWeekday(dateItem.Date);
+                            var lyDateKey =
+                                $"{weekGroup.Key.Year - 1}-W{weekGroup.Key.Week:D2}|{branchCode}|{lastYearDate:yyyy-MM-dd}";
+                            lyDataDict.TryGetValue(lyDateKey, out var lyDateData);
+
+                            var dateRevenueLY = lyDateData?.TotalAmount ?? 0;
+                            var dateOrdersLY = lyDateData?.OrderCount ?? 0;
+                            var dateAovLY = lyDateData?.AverageOrderValue ?? 0;
+                            var dateYoYChange =
+                                dateRevenueLY > 0
+                                    ? ((dateItem.TotalAmount - dateRevenueLY) / dateRevenueLY) * 100
+                                    : (decimal?)null;
+
+                            var dateDto = new WeeklyPerformanceHierarchyDto
+                            {
+                                Key = dateKey,
+                                Level = "date",
+                                Hierarchy = dateItem.Date.ToString("yyyy-MM-dd"),
+                                Revenue = dateItem.TotalAmount,
+                                RevenueLY = dateRevenueLY,
+                                Orders = dateItem.OrderCount,
+                                OrdersLY = dateOrdersLY,
+                                Aov = dateAov,
+                                AovLY = dateAovLY,
+                                YoYChange = dateYoYChange,
+                                Children = null,
+                            };
+                            branchDto.Children!.Add(dateDto);
+                        }
+
+                        branchDto.Revenue = branchDto.Children!.Sum(c => c.Revenue);
+                        branchDto.Orders = branchDto.Children!.Sum(c => c.Orders);
+                        branchDto.RevenueLY = branchDto.Children!.Sum(c => c.RevenueLY);
+                        branchDto.OrdersLY = branchDto.Children!.Sum(c => c.OrdersLY);
+                        branchDto.Aov =
+                            branchDto.Orders > 0 ? branchDto.Revenue / branchDto.Orders : 0;
+                        branchDto.AovLY =
+                            branchDto.OrdersLY > 0 ? branchDto.RevenueLY / branchDto.OrdersLY : 0;
+                    }
+
+                    weekDto.Revenue = weekDto.Children!.Sum(c => c.Revenue);
+                    weekDto.Orders = weekDto.Children!.Sum(c => c.Orders);
+                    weekDto.RevenueLY = weekDto.Children!.Sum(c => c.RevenueLY);
+                    weekDto.OrdersLY = weekDto.Children!.Sum(c => c.OrdersLY);
+                    weekDto.Aov = weekDto.Orders > 0 ? weekDto.Revenue / weekDto.Orders : 0;
+                    weekDto.AovLY = weekDto.OrdersLY > 0 ? weekDto.RevenueLY / weekDto.OrdersLY : 0;
+                    weekDto.YoYChange =
+                        weekDto.RevenueLY > 0
+                            ? ((weekDto.Revenue - weekDto.RevenueLY) / weekDto.RevenueLY) * 100
+                            : (decimal?)null;
+
+                    if (
+                        weekDto.Children!.Count > 0
+                        && weekDto.Children!.Any(c => c.Children!.Count > 0)
+                    )
+                    {
+                        var firstBranchWithDates = weekDto.Children!.FirstOrDefault(c =>
+                            c.Children!.Count > 0
+                        );
+                        if (firstBranchWithDates != null)
+                        {
+                            weekDto.Children = weekDto
+                                .Children!.OrderByDescending(c => c.Revenue)
+                                .ToList();
+                        }
+                    }
+                }
+
+                var cacheOptions = new MemoryCacheEntryOptions()
+                    .SetAbsoluteExpiration(RANKING_CACHE_DURATION)
+                    .SetSlidingExpiration(TimeSpan.FromMinutes(5));
+
+                _cache.Set(cacheKey, result, cacheOptions);
+
+                return result;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "GetWeeklyPerformanceHierarchyAsync failed");
+                return new List<WeeklyPerformanceHierarchyDto>();
+            }
+        }
+
+        private DateTime GetLastYearSameWeekday(DateTime date)
+        {
+            var compareDate = date.AddYears(-1);
+            var originalDayOfWeek = date.DayOfWeek;
+            var compareDayOfWeek = compareDate.DayOfWeek;
+
+            if (originalDayOfWeek != compareDayOfWeek)
+            {
+                var diff = (int)originalDayOfWeek - (int)compareDayOfWeek;
+                if (diff > 3)
+                    diff -= 7;
+                if (diff < -3)
+                    diff += 7;
+                compareDate = compareDate.AddDays(diff);
+            }
+
+            return compareDate;
+        }
+
+        private async Task<Dictionary<string, string>> GetStoreNameMapAsync(
+            HashSet<string> branchCodes
+        )
+        {
+            if (!branchCodes.Any())
+                return new Dictionary<string, string>();
+
+            var stores = await _context
+                .Db.Queryable<Store>()
+                .Where(s => branchCodes.Contains(s.StoreCode))
+                .Select(s => new { s.StoreCode, s.StoreName })
+                .ToListAsync();
+
+            return stores.ToDictionary(
+                s => s.StoreCode ?? string.Empty,
+                s => s.StoreName ?? string.Empty
+            );
         }
     }
 }

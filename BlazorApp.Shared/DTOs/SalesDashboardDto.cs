@@ -849,4 +849,161 @@ namespace BlazorApp.Shared.DTOs
         /// </summary>
         public DateTime UpdateTime { get; set; }
     }
+
+    /// <summary>
+    /// Executive Dashboard 分店业绩 DTO
+    /// 用于 Executive Sales Intelligence 页面
+    /// </summary>
+    public class ExecutiveBranchPerformanceDto
+    {
+        /// <summary>
+        /// 排名
+        /// </summary>
+        public int Rank { get; set; }
+
+        /// <summary>
+        /// 分店代码
+        /// </summary>
+        public string BranchCode { get; set; } = string.Empty;
+
+        /// <summary>
+        /// 分店名称
+        /// </summary>
+        public string BranchName { get; set; } = string.Empty;
+
+        /// <summary>
+        /// 当前期销售额
+        /// </summary>
+        public decimal Revenue { get; set; }
+
+        /// <summary>
+        /// 去年同期销售额
+        /// </summary>
+        public decimal RevenueLY { get; set; }
+
+        /// <summary>
+        /// 当前期订单数
+        /// </summary>
+        public int OrderCount { get; set; }
+
+        /// <summary>
+        /// 去年同期订单数
+        /// </summary>
+        public int OrderCountLY { get; set; }
+
+        /// <summary>
+        /// 当前期平均订单价值
+        /// </summary>
+        public decimal Aov { get; set; }
+
+        /// <summary>
+        /// 去年同期平均订单价值
+        /// </summary>
+        public decimal AovLY { get; set; }
+    }
+
+    /// <summary>
+    /// Executive Dashboard 每小时流量 DTO
+    /// 用于 Executive Sales Intelligence 页面的每小时流量密度展示
+    /// </summary>
+    public class ExecutiveHourlyTrafficDto
+    {
+        /// <summary>
+        /// 小时 (格式: "HH:mm")
+        /// </summary>
+        public string Hour { get; set; } = string.Empty;
+
+        /// <summary>
+        /// 分店代码
+        /// </summary>
+        public string BranchCode { get; set; } = string.Empty;
+
+        /// <summary>
+        /// 分店名称
+        /// </summary>
+        public string BranchName { get; set; } = string.Empty;
+
+        /// <summary>
+        /// 当前期销售额
+        /// </summary>
+        public decimal Revenue { get; set; }
+
+        /// <summary>
+        /// 去年同期销售额
+        /// </summary>
+        public decimal RevenueLY { get; set; }
+
+        /// <summary>
+        /// 占高峰期的百分比 (0-100)
+        /// </summary>
+        public int Percentage { get; set; }
+
+        /// <summary>
+        /// 是否为高峰时段
+        /// </summary>
+        public bool IsPeak { get; set; }
+    }
+
+    /// <summary>
+    /// 周业绩层级数据 DTO
+    /// 用于 Weekly Performance Hierarchy 组件
+    /// 支持周、分店、日期三层嵌套结构
+    /// </summary>
+    public class WeeklyPerformanceHierarchyDto
+    {
+        /// <summary>
+        /// 唯一标识键
+        /// </summary>
+        public string Key { get; set; } = string.Empty;
+
+        /// <summary>
+        /// 层级类型: week | branch | date
+        /// </summary>
+        public string Level { get; set; } = string.Empty;
+
+        /// <summary>
+        /// 层级显示名称 (如: 2023-W42, Nexus Downtown, 2023-10-20)
+        /// </summary>
+        public string Hierarchy { get; set; } = string.Empty;
+
+        /// <summary>
+        /// 当前期销售额
+        /// </summary>
+        public decimal Revenue { get; set; }
+
+        /// <summary>
+        /// 去年同期销售额
+        /// </summary>
+        public decimal RevenueLY { get; set; }
+
+        /// <summary>
+        /// 当前期订单数
+        /// </summary>
+        public int Orders { get; set; }
+
+        /// <summary>
+        /// 去年同期订单数
+        /// </summary>
+        public int OrdersLY { get; set; }
+
+        /// <summary>
+        /// 当前期平均订单价值
+        /// </summary>
+        public decimal Aov { get; set; }
+
+        /// <summary>
+        /// 去年同期平均订单价值
+        /// </summary>
+        public decimal AovLY { get; set; }
+
+        /// <summary>
+        /// 同比变化率 (%)
+        /// </summary>
+        public decimal? YoYChange { get; set; }
+
+        /// <summary>
+        /// 子节点列表
+        /// </summary>
+        public List<WeeklyPerformanceHierarchyDto>? Children { get; set; }
+    }
 }

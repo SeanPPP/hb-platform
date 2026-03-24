@@ -234,7 +234,7 @@ namespace BlazorApp.Api.Services.React
             var effectiveMaxConcurrency =
                 maxConcurrency ?? _configuration.GetValue<int>("Database:SyncMaxConcurrency", 10);
             var effectiveBatchSize =
-                batchSize ?? _configuration.GetValue<int>("Database:SyncBatchSize", 50000);
+                batchSize ?? _configuration.GetValue<int>("Database:SyncBatchSize", 100000);
             var actualBatchSize = effectiveBatchSize;
 
             // 并发控制信号量：限制并发分店数，避免数据库压力过大
@@ -576,7 +576,7 @@ namespace BlazorApp.Api.Services.React
                     var insertStart = DateTime.Now;
                     try
                     {
-                        var inserted = await RetryBulkInsertAsync(localDb, localBatch, 1);
+                        var inserted = await RetryBulkInsertAsync(localDb, localBatch, 5);
                         added += inserted;
                         errors += localBatch.Count - inserted;
 
@@ -671,7 +671,7 @@ namespace BlazorApp.Api.Services.React
         {
             var defaultPageSize =
                 initialPageSize
-                ?? _configuration.GetValue<int>("Database:BulkCopyInitialPageSize", 5000);
+                ?? _configuration.GetValue<int>("Database:BulkCopyInitialPageSize", 10000);
             var defaultTimeout =
                 timeoutSeconds
                 ?? _configuration.GetValue<int>("Database:BulkCopyCommandTimeoutSeconds", 900);
@@ -703,7 +703,7 @@ namespace BlazorApp.Api.Services.React
                 {
                     retries++;
                     pageSize = Math.Max(
-                        _configuration.GetValue<int>("Database:BulkCopyMinPageSize", 1000),
+                        _configuration.GetValue<int>("Database:BulkCopyMinPageSize", 10000),
                         pageSize / 2
                     );
                     currentTimeout = Math.Min(currentTimeout * 2, 1800);
@@ -742,6 +742,29 @@ namespace BlazorApp.Api.Services.React
                     );
 
                     await Task.Delay(TimeSpan.FromSeconds(Math.Pow(2, retries)));
+                }
+                catch (Exception ex) when (
+                    (ex.Message?.Contains("transport-level error") == true ||
+                     ex.Message?.Contains("Cannot access destination table") == true ||
+                     (ex.InnerException != null &&
+                      (ex.InnerException.Message?.Contains("transport-level error") == true ||
+                       ex.InnerException.Message?.Contains("Cannot access destination table") == true))) &&
+                    retries < maxRetries - 1)
+                {
+                    retries++;
+                    currentTimeout = Math.Min(currentTimeout * 2, 1800);
+                    var delaySeconds = Math.Pow(2, retries + 1);
+
+                    _logger.LogWarning(
+                        ex,
+                        "[ReactSync] 批量插入传输层错误，等待{Delay}s后重试 {Retry}/{Max}：{Msg}",
+                        delaySeconds,
+                        retries,
+                        maxRetries,
+                        ex.Message
+                    );
+
+                    await Task.Delay(TimeSpan.FromSeconds(delaySeconds));
                 }
                 catch (Exception ex) when (retries < maxRetries - 1)
                 {
