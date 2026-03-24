@@ -230,30 +230,36 @@ namespace BlazorApp.Api.Services
 
                 _logger.LogInformation("开始更新每日统计数据: {Date}", date);
 
-                // 从POSM数据库查询并聚合当日销售数据
+                // 从POSM数据库查询并聚合当日销售数据，按支付明细统计营业额
                 var summary = await _posmContext
-                    .Db.Queryable<SalesOrder>()
-                    .Where(o =>
-                        o.Status != null
-                        && (o.Status == 1 || o.Status == 4)
-                        && o.OrderTime != null
-                        && o.OrderTime.Value.Date == date
+                    .Db.Queryable<PaymentDetail, SalesOrder>(
+                        (pd, so) => pd.OrderGuid == so.OrderGuid
                     )
-                    .GroupBy(o => new { Date = o.OrderTime.Value.Date })
-                    .Select(o => new
-                    {
-                        Date = o.OrderTime.Value.Date,
-                        // 计算总金额（减去折扣）
-                        TotalAmount = SqlFunc.AggregateSum(o.TotalAmount - o.DiscountAmount) ?? 0m,
-                        // 计算总数量
-                        TotalQuantity = SqlFunc.AggregateSum(o.ItemCount) ?? 0,
-                        // 计算订单数
-                        OrderCount = SqlFunc.AggregateCount(o.OrderGuid),
-                        // 计算SKU数（这里暂时用订单数代替）
-                        SkuCount = SqlFunc.AggregateCount(o.OrderGuid),
-                        // 计算客户数（这里暂时用订单数代替）
-                        CustomerCount = SqlFunc.AggregateCount(o.OrderGuid),
-                    })
+                    .Where(
+                        (pd, so) =>
+                            so.Status != null
+                            && (so.Status == 1 || so.Status == 4)
+                            && so.OrderTime != null
+                            && so.OrderTime.Value.Date == date
+                    )
+                    .GroupBy((pd, so) => new { Date = so.OrderTime.Value.Date })
+                    .Select(
+                        (pd, so) =>
+                            new
+                            {
+                                Date = so.OrderTime.Value.Date,
+                                // 按支付明细统计总金额
+                                TotalAmount = SqlFunc.AggregateSum(pd.Amount) ?? 0m,
+                                // 计算总数量
+                                TotalQuantity = SqlFunc.AggregateSum(so.ItemCount) ?? 0,
+                                // 计算订单数
+                                OrderCount = SqlFunc.AggregateCount(so.OrderGuid),
+                                // 计算SKU数（这里暂时用订单数代替）
+                                SkuCount = SqlFunc.AggregateCount(so.OrderGuid),
+                                // 计算客户数（这里暂时用订单数代替）
+                                CustomerCount = SqlFunc.AggregateCount(so.OrderGuid),
+                            }
+                    )
                     .FirstAsync();
 
                 if (summary != null)
@@ -713,34 +719,40 @@ namespace BlazorApp.Api.Services
                     branchCodes != null ? string.Join(", ", branchCodes) : "All"
                 );
 
-                // 构建查询
+                // 构建查询，按支付明细统计营业额
                 var query = _posmContext
-                    .Db.Queryable<SalesOrder>()
-                    .Where(o =>
-                        o.Status != null
-                        && (o.Status == 1 || o.Status == 4)
-                        && o.OrderTime != null
-                        && o.OrderTime.Value.Date == date
+                    .Db.Queryable<PaymentDetail, SalesOrder>(
+                        (pd, so) => pd.OrderGuid == so.OrderGuid
+                    )
+                    .Where(
+                        (pd, so) =>
+                            so.Status != null
+                            && (so.Status == 1 || so.Status == 4)
+                            && so.OrderTime != null
+                            && so.OrderTime.Value.Date == date
                     );
 
                 // 如果指定了分店代码，添加过滤条件
                 if (branchCodes != null && branchCodes.Any())
                 {
-                    query = query.Where(o => branchCodes.Contains(o.BranchCode));
+                    query = query.Where((pd, so) => branchCodes.Contains(so.BranchCode));
                 }
 
                 // 查询并聚合销售数据
                 var storeData = await query
-                    .GroupBy(o => new { Date = o.OrderTime.Value.Date, o.BranchCode })
-                    .Select(o => new
-                    {
-                        Date = o.OrderTime.Value.Date,
-                        BranchCode = o.BranchCode,
-                        TotalAmount = SqlFunc.AggregateSum(o.TotalAmount - o.DiscountAmount) ?? 0m,
-                        TotalQuantity = SqlFunc.AggregateSum(o.ItemCount) ?? 0,
-                        OrderCount = SqlFunc.AggregateCount(o.OrderGuid),
-                        CustomerCount = SqlFunc.AggregateCount(o.OrderGuid),
-                    })
+                    .GroupBy((pd, so) => new { Date = so.OrderTime.Value.Date, so.BranchCode })
+                    .Select(
+                        (pd, so) =>
+                            new
+                            {
+                                Date = so.OrderTime.Value.Date,
+                                BranchCode = so.BranchCode,
+                                TotalAmount = SqlFunc.AggregateSum(pd.Amount) ?? 0m,
+                                TotalQuantity = SqlFunc.AggregateSum(so.ItemCount) ?? 0,
+                                OrderCount = SqlFunc.AggregateCount(so.OrderGuid),
+                                CustomerCount = SqlFunc.AggregateCount(so.OrderGuid),
+                            }
+                    )
                     .ToListAsync();
 
                 // 获取所有分店代码
@@ -2548,25 +2560,31 @@ namespace BlazorApp.Api.Services
 
                 logger.LogInformation("开始更新每日统计数据: {Date}", date);
 
-                // 从POSM数据库查询并聚合当日销售数据
+                // 从POSM数据库查询并聚合当日销售数据，按支付明细统计营业额
                 var summary = await posmContext
-                    .Db.Queryable<SalesOrder>()
-                    .Where(o =>
-                        o.Status != null
-                        && (o.Status == 1 || o.Status == 4)
-                        && o.OrderTime != null
-                        && o.OrderTime.Value.Date == date
+                    .Db.Queryable<PaymentDetail, SalesOrder>(
+                        (pd, so) => pd.OrderGuid == so.OrderGuid
                     )
-                    .GroupBy(o => new { Date = o.OrderTime.Value.Date })
-                    .Select(o => new
-                    {
-                        Date = o.OrderTime.Value.Date,
-                        TotalAmount = SqlFunc.AggregateSum(o.TotalAmount - o.DiscountAmount) ?? 0m,
-                        TotalQuantity = SqlFunc.AggregateSum(o.ItemCount) ?? 0,
-                        OrderCount = SqlFunc.AggregateCount(o.OrderGuid),
-                        SkuCount = SqlFunc.AggregateCount(o.OrderGuid),
-                        CustomerCount = SqlFunc.AggregateCount(o.OrderGuid),
-                    })
+                    .Where(
+                        (pd, so) =>
+                            so.Status != null
+                            && (so.Status == 1 || so.Status == 4)
+                            && so.OrderTime != null
+                            && so.OrderTime.Value.Date == date
+                    )
+                    .GroupBy((pd, so) => new { Date = so.OrderTime.Value.Date })
+                    .Select(
+                        (pd, so) =>
+                            new
+                            {
+                                Date = so.OrderTime.Value.Date,
+                                TotalAmount = SqlFunc.AggregateSum(pd.Amount) ?? 0m,
+                                TotalQuantity = SqlFunc.AggregateSum(so.ItemCount) ?? 0,
+                                OrderCount = SqlFunc.AggregateCount(so.OrderGuid),
+                                SkuCount = SqlFunc.AggregateCount(so.OrderGuid),
+                                CustomerCount = SqlFunc.AggregateCount(so.OrderGuid),
+                            }
+                    )
                     .FirstAsync();
 
                 if (summary != null)
@@ -2641,32 +2659,41 @@ namespace BlazorApp.Api.Services
                     hour.HasValue ? hour.Value.ToString() : "0-23"
                 );
 
-                // 从POSM数据库查询分时销售数据
+                // 从POSM数据库查询分时销售数据，按支付明细统计营业额
                 var allHourlyData = await posmContext
-                    .Db.Queryable<SalesOrder>()
-                    .Where(o =>
-                        o.Status != null
-                        && (o.Status == 1 || o.Status == 4)
-                        && o.OrderTime != null
-                        && o.OrderTime.Value.Date == date
-                        && targetHours.Contains(o.OrderTime.Value.Hour)
+                    .Db.Queryable<PaymentDetail, SalesOrder>(
+                        (pd, so) => pd.OrderGuid == so.OrderGuid
                     )
-                    .GroupBy(o => new
-                    {
-                        Date = o.OrderTime.Value.Date,
-                        Hour = o.OrderTime.Value.Hour,
-                        o.BranchCode,
-                    })
-                    .Select(o => new
-                    {
-                        Date = o.OrderTime.Value.Date,
-                        Hour = o.OrderTime.Value.Hour,
-                        BranchCode = o.BranchCode,
-                        TotalAmount = SqlFunc.AggregateSum(o.TotalAmount - o.DiscountAmount) ?? 0m,
-                        TotalQuantity = SqlFunc.AggregateSum(o.ItemCount) ?? 0,
-                        OrderCount = SqlFunc.AggregateCount(o.OrderGuid),
-                        CustomerCount = SqlFunc.AggregateCount(o.OrderGuid),
-                    })
+                    .Where(
+                        (pd, so) =>
+                            so.Status != null
+                            && (so.Status == 1 || so.Status == 4)
+                            && so.OrderTime != null
+                            && so.OrderTime.Value.Date == date
+                            && targetHours.Contains(so.OrderTime.Value.Hour)
+                    )
+                    .GroupBy(
+                        (pd, so) =>
+                            new
+                            {
+                                Date = so.OrderTime.Value.Date,
+                                Hour = so.OrderTime.Value.Hour,
+                                so.BranchCode,
+                            }
+                    )
+                    .Select(
+                        (pd, so) =>
+                            new
+                            {
+                                Date = so.OrderTime.Value.Date,
+                                Hour = so.OrderTime.Value.Hour,
+                                BranchCode = so.BranchCode,
+                                TotalAmount = SqlFunc.AggregateSum(pd.Amount) ?? 0m,
+                                TotalQuantity = SqlFunc.AggregateSum(so.ItemCount) ?? 0,
+                                OrderCount = SqlFunc.AggregateCount(so.OrderGuid),
+                                CustomerCount = SqlFunc.AggregateCount(so.OrderGuid),
+                            }
+                    )
                     .ToListAsync();
 
                 if (!allHourlyData.Any())
@@ -2831,33 +2858,36 @@ namespace BlazorApp.Api.Services
                     branchCodes != null ? string.Join(", ", branchCodes) : "All"
                 );
 
-                // 构建查询
+                // 构建查询，按支付明细统计营业额
                 var query = posmContext
-                    .Db.Queryable<SalesOrder>()
-                    .Where(o =>
-                        o.Status != null
-                        && (o.Status == 1 || o.Status == 4)
-                        && o.OrderTime != null
-                        && o.OrderTime.Value.Date == date
+                    .Db.Queryable<PaymentDetail, SalesOrder>(
+                        (pd, so) => pd.OrderGuid == so.OrderGuid
+                    )
+                    .Where(
+                        (pd, so) =>
+                            so.Status != null
+                            && (so.Status == 1 || so.Status == 4)
+                            && so.OrderTime != null
+                            && so.OrderTime.Value.Date == date
                     );
 
                 // 如果指定了分店代码，添加过滤条件
                 if (branchCodes != null && branchCodes.Any())
                 {
-                    query = query.Where(o => branchCodes.Contains(o.BranchCode));
+                    query = query.Where((pd, so) => branchCodes.Contains(so.BranchCode));
                 }
 
                 // 查询并聚合销售数据
                 var storeData = await query
-                    .GroupBy(o => new { Date = o.OrderTime.Value.Date, o.BranchCode })
-                    .Select(o => new
+                    .GroupBy((pd, so) => new { Date = so.OrderTime.Value.Date, so.BranchCode })
+                    .Select((pd, so) => new
                     {
-                        Date = o.OrderTime.Value.Date,
-                        BranchCode = o.BranchCode,
-                        TotalAmount = SqlFunc.AggregateSum(o.TotalAmount - o.DiscountAmount) ?? 0m,
-                        TotalQuantity = SqlFunc.AggregateSum(o.ItemCount) ?? 0,
-                        OrderCount = SqlFunc.AggregateCount(o.OrderGuid),
-                        CustomerCount = SqlFunc.AggregateCount(o.OrderGuid),
+                        Date = so.OrderTime.Value.Date,
+                        BranchCode = so.BranchCode,
+                        TotalAmount = SqlFunc.AggregateSum(pd.Amount) ?? 0m,
+                        TotalQuantity = SqlFunc.AggregateSum(so.ItemCount) ?? 0,
+                        OrderCount = SqlFunc.AggregateCount(so.OrderGuid),
+                        CustomerCount = SqlFunc.AggregateCount(so.OrderGuid),
                     })
                     .ToListAsync();
 
