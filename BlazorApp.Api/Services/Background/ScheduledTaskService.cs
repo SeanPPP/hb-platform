@@ -231,7 +231,7 @@ namespace BlazorApp.Api.Services.Background
         private async Task ExecuteHourlyTask()
         {
             var now = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, _sydneyTimeZone);
-            var startHour = 8;
+            var startHour = 7;
             var endHour = now.DayOfWeek == DayOfWeek.Thursday ? 23 : 20;
 
             // 检查是否在允许的时间段内 (8:00 - endHour:00)

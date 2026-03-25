@@ -3,10 +3,10 @@ using System.Linq;
 using System.Text; // 字符串编码
 using AutoMapper; // AutoMapper映射服务
 using BlazorApp.Api.Data; // 数据访问层
-using BlazorApp.Api.Mappings; // AutoMapper 映射配置
 using BlazorApp.Api.Filters;
 using BlazorApp.Api.Interfaces; // 数据模型
 using BlazorApp.Api.Interfaces.React; // React 接口命名空间
+using BlazorApp.Api.Mappings; // AutoMapper 映射配置
 using BlazorApp.Api.Models;
 using BlazorApp.Api.Services; // 业务服务层
 using BlazorApp.Api.Services.Background; // 后台定时服务
@@ -134,9 +134,7 @@ CookieOptionsHelper.Initialize(builder.Configuration, builder.Environment);
 // 注册内存缓存服务
 builder.Services.AddMemoryCache();
 
-builder.Services.Configure<TencentCloudSettings>(
-    builder.Configuration.GetSection("TencentCloud")
-);
+builder.Services.Configure<TencentCloudSettings>(builder.Configuration.GetSection("TencentCloud"));
 builder.Services.AddScoped<SalesStatisticsJobService>();
 builder.Services.AddScoped<HBSalesRecordStatisticsService>();
 builder.Services.AddScoped<ScheduledTaskLogService>();
@@ -161,38 +159,39 @@ builder.Services.AddCors(options =>
             var allowedOrigins = allowedOriginsSection.Get<string[]>();
 
             // 📝 如果配置文件中没有指定，则使用默认列表
-            var origins = allowedOrigins?.Length > 0
-                ? allowedOrigins
-                : new[]
-                {
-                    // 🔧 开发环境默认域名
-                    "http://localhost:8000",  // 前端开发服务器
-                    "http://localhost:3000",  // 备用前端端口
-                    "http://localhost:5001",  // 后端 API 端口
-                    "https://localhost",       // 支持 HTTPS localhost（宝塔面板）
-
-                    // 🌐 生产环境域名
-                    "https://www.dats.com.au",
-                    "https://www.malmar.com.au",
-                    "https://www.yatstal.com.au",
-                    "https://hb-sales-2019-1300114625.cos.ap-singapore.myqcloud.com",
-                    "https://hotbargain-yw-2023-1300114625.cos.ap-shanghai.myqcloud.com",
-                    "http://hotbargain.vip"
-                };
+            var origins =
+                allowedOrigins?.Length > 0
+                    ? allowedOrigins
+                    : new[]
+                    {
+                        // 🔧 开发环境默认域名
+                        "http://localhost:8000", // 前端开发服务器
+                        "http://localhost:3000", // 备用前端端口
+                        "http://localhost:5001", // 后端 API 端口
+                        "https://localhost", // 支持 HTTPS localhost（宝塔面板）
+                        // 🌐 生产环境域名
+                        "https://www.dats.com.au",
+                        "https://www.malmar.com.au",
+                        "https://www.yatstal.com.au",
+                        "https://hb-sales-2019-1300114625.cos.ap-singapore.myqcloud.com",
+                        "https://hotbargain-yw-2023-1300114625.cos.ap-shanghai.myqcloud.com",
+                        "http://hotbargain.vip",
+                    };
 
             // 📋 记录允许的域名列表到日志
-            var logger = builder.Services.BuildServiceProvider()
+            var logger = builder
+                .Services.BuildServiceProvider()
                 .GetRequiredService<ILogger<Program>>();
             logger.LogInformation("CORS 允许的域名: {Origins}", string.Join(", ", origins));
 
             // ✅ 配置 CORS 策略
             policy
-                .WithOrigins(origins)  // 📍 指定允许的源（域名列表）
-                .AllowAnyMethod()      // 🔓 允许所有 HTTP 方法（GET, POST, PUT, DELETE 等）
-                .AllowAnyHeader()      // 🔓 允许所有请求头
-                .AllowCredentials();   // 🍪 允许发送凭据（Cookie、Authorization 头等）
-                                       // ⚠️ 这是 Cookie 认证的关键配置
-                                       // ✅ 前端请求时必须设置 withCredentials: true 或 credentials: 'include'
+                .WithOrigins(origins) // 📍 指定允许的源（域名列表）
+                .AllowAnyMethod() // 🔓 允许所有 HTTP 方法（GET, POST, PUT, DELETE 等）
+                .AllowAnyHeader() // 🔓 允许所有请求头
+                .AllowCredentials(); // 🍪 允许发送凭据（Cookie、Authorization 头等）
+            // ⚠️ 这是 Cookie 认证的关键配置
+            // ✅ 前端请求时必须设置 withCredentials: true 或 credentials: 'include'
         }
     );
 });
@@ -252,7 +251,11 @@ builder
             OnMessageReceived = context =>
             {
                 // 优先从 Authorization header 读取 token
-                var accessToken = context.Request.Headers["Authorization"].FirstOrDefault()?.Split(" ").Last();
+                var accessToken = context
+                    .Request.Headers["Authorization"]
+                    .FirstOrDefault()
+                    ?.Split(" ")
+                    .Last();
 
                 // 如果 header 中没有 token，尝试从 Cookie 读取
                 if (string.IsNullOrEmpty(accessToken))
@@ -267,7 +270,7 @@ builder
                 }
 
                 return Task.CompletedTask;
-            }
+            },
         };
     });
 
@@ -342,7 +345,7 @@ builder.Services.AddScoped<IProductPrefixCodeService, ProductPrefixCodeService>(
 builder.Services.AddScoped<IDomesticProductService, DomesticProductService>(); // 国内商品管理服务
 builder.Services.AddScoped<IDomesticSetProductService, DomesticSetProductService>(); // 套装商品管理服务
 builder.Services.AddScoped<ItemBarcodeService>(); // 货号条码生成服务
-builder.Services.AddScoped<AutoPricingService>(); // 自动定价计算服务
+builder.Services.AddScoped<IAutoPricingService, AutoPricingService>(); // 自动定价计算服务
 builder.Services.AddScoped<IVersionInfoService, VersionInfoService>(); // 版本管理服务
 
 // React 专用：仅限 Product 与 WarehouseProduct 的商品检测/更新/新建服务
@@ -507,7 +510,7 @@ try
         // 🔄 智能模式：增量更新数据库结构
         // 只创建不存在的表，更新表结构，保留现有数据
         Console.WriteLine("🧠 使用智能初始化模式（保留现有数据）");
-         dbContext.CreateTable();
+        dbContext.CreateTable();
         //await posmDbContext.InitializeTablesAsync();
         Console.WriteLine("✅ 主数据库表检查完成");
 

@@ -287,6 +287,8 @@ namespace BlazorApp.Api.Controllers.React
         /// <param name="compareEndDate">对比结束日期（可选）</param>
         /// <param name="compareMode">对比模式</param>
         /// <param name="topN">返回前N条记录</param>
+        /// <param name="branchCodes">分店代码列表（可选）</param>
+        /// <param name="supplierCode">供应商代码（可选，用于联动过滤）</param>
         /// <returns>供应商销售排行列表</returns>
         [HttpGet("supplier-sales-rank")]
         public async Task<IActionResult> GetSupplierSalesRank(
@@ -295,13 +297,34 @@ namespace BlazorApp.Api.Controllers.React
             [FromQuery] DateTime? compareStartDate = null,
             [FromQuery] DateTime? compareEndDate = null,
             [FromQuery] CompareMode compareMode = CompareMode.ByDate,
-            [FromQuery] int topN = 200
+            [FromQuery] int topN = 200,
+            [FromQuery] List<string>? branchCodes = null,
+            [FromQuery] string? supplierCode = null
         )
         {
             try
             {
                 // 获取用户可访问的分店代码
-                var branchCodes = await GetUserBranchCodesAsync();
+                var userBranchCodes = await GetUserBranchCodesAsync();
+                List<string>? targetBranchCodes = userBranchCodes;
+
+                // 权限校验：取请求分店与用户可访问分店的交集
+                if (branchCodes != null && branchCodes.Any())
+                {
+                    if (userBranchCodes != null)
+                    {
+                        targetBranchCodes = branchCodes.Intersect(userBranchCodes).ToList();
+
+                        if (!targetBranchCodes.Any())
+                        {
+                            return Ok(new { success = true, data = new List<object>() });
+                        }
+                    }
+                    else
+                    {
+                        targetBranchCodes = branchCodes;
+                    }
+                }
 
                 // 构建日期范围DTO
                 var dateRange = new DateRangeDto
@@ -314,7 +337,12 @@ namespace BlazorApp.Api.Controllers.React
                 };
 
                 // 调用服务获取供应商销售排行
-                var result = await _service.GetSupplierSalesRankAsync(dateRange, branchCodes, topN);
+                var result = await _service.GetSupplierSalesRankAsync(
+                    dateRange,
+                    targetBranchCodes,
+                    topN,
+                    supplierCode
+                );
                 return Ok(new { success = true, data = result });
             }
             catch (Exception ex)
@@ -335,6 +363,7 @@ namespace BlazorApp.Api.Controllers.React
         /// <param name="compareMode">对比模式</param>
         /// <param name="topN">返回前N条记录</param>
         /// <param name="branchCodes">分店代码列表（可选）</param>
+        /// <param name="supplierCode">供应商代码（可选，用于联动过滤）</param>
         /// <returns>中国供应商销售排行列表</returns>
         [HttpGet("china-supplier-sales-rank")]
         public async Task<IActionResult> GetChinaSupplierSalesRankAsync(
@@ -343,8 +372,9 @@ namespace BlazorApp.Api.Controllers.React
             [FromQuery] DateTime? compareStartDate = null,
             [FromQuery] DateTime? compareEndDate = null,
             [FromQuery] CompareMode compareMode = CompareMode.ByDate,
-            [FromQuery] int topN = 100,
-            [FromQuery] List<string>? branchCodes = null
+            [FromQuery] int topN = 200,
+            [FromQuery] List<string>? branchCodes = null,
+            [FromQuery] string? supplierCode = null
         )
         {
             try
@@ -385,7 +415,8 @@ namespace BlazorApp.Api.Controllers.React
                 var result = await _service.GetChinaSupplierSalesRankAsync(
                     dateRange,
                     targetBranchCodes,
-                    topN
+                    topN,
+                    supplierCode
                 );
                 return Ok(new { success = true, data = result });
             }
@@ -850,6 +881,9 @@ namespace BlazorApp.Api.Controllers.React
         {
             try
             {
+                _logger.LogInformation("[GetEnhancedSalesProductDetails] Received request: StartDate={StartDate}, EndDate={EndDate}, CompareStartDate={CompareStartDate}, CompareEndDate={CompareEndDate}, CompareMode={CompareMode}, PageIndex={PageIndex}, PageSize={PageSize}",
+                    startDate, endDate, compareStartDate, compareEndDate, compareMode, pageIndex, pageSize);
+
                 // 获取用户可访问的分店代码
                 var userBranchCodes = await GetUserBranchCodesAsync();
                 List<string>? targetBranchCodes = userBranchCodes;
@@ -1144,6 +1178,79 @@ namespace BlazorApp.Api.Controllers.React
             catch (Exception ex)
             {
                 _logger.LogError(ex, "GetWeeklyPerformanceHierarchy failed");
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
+        /// <summary>
+        /// 获取分店销售聚合数据
+        /// GET api/react/v1/dashboard/branch-sales-aggregate
+        /// 用于 SalesDetailAnalysisV2 门店分布卡，直接返回分店级别的聚合数据
+        /// </summary>
+        /// <param name="startDate">开始日期</param>
+        /// <param name="endDate">结束日期</param>
+        /// <param name="compareStartDate">对比开始日期（可选）</param>
+        /// <param name="compareEndDate">对比结束日期（可选）</param>
+        /// <param name="branchCodes">分店代码列表（可选）</param>
+        /// <param name="supplierCodes">供应商代码列表（可选，用于过滤）</param>
+        /// <returns>分店销售聚合数据列表</returns>
+        [HttpGet("branch-sales-aggregate")]
+        public async Task<IActionResult> GetBranchSalesAggregate(
+            [FromQuery] DateTime startDate,
+            [FromQuery] DateTime endDate,
+            [FromQuery] DateTime? compareStartDate = null,
+            [FromQuery] DateTime? compareEndDate = null,
+            [FromQuery] List<string>? branchCodes = null,
+            [FromQuery] List<string>? supplierCodes = null
+        )
+        {
+            try
+            {
+                var userBranchCodes = await GetUserBranchCodesAsync();
+                List<string>? targetBranchCodes = userBranchCodes;
+
+                if (branchCodes != null && branchCodes.Any())
+                {
+                    if (userBranchCodes != null)
+                    {
+                        targetBranchCodes = branchCodes.Intersect(userBranchCodes).ToList();
+
+                        if (!targetBranchCodes.Any())
+                        {
+                            return Ok(new { success = true, data = new List<object>() });
+                        }
+                    }
+                    else
+                    {
+                        targetBranchCodes = branchCodes;
+                    }
+                }
+
+                var dateRange = new DateRangeDto { StartDate = startDate, EndDate = endDate };
+
+                DateRangeDto? compareDateRange = null;
+                if (compareStartDate.HasValue && compareEndDate.HasValue)
+                {
+                    compareDateRange = new DateRangeDto
+                    {
+                        StartDate = compareStartDate.Value,
+                        EndDate = compareEndDate.Value,
+                        CompareStartDate = compareStartDate,
+                        CompareEndDate = compareEndDate,
+                    };
+                }
+
+                var result = await _service.GetBranchSalesAggregateAsync(
+                    dateRange,
+                    compareDateRange,
+                    targetBranchCodes,
+                    supplierCodes
+                );
+                return Ok(new { success = true, data = result });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "GetBranchSalesAggregate failed");
                 return StatusCode(500, new { success = false, message = "服务器内部错误" });
             }
         }

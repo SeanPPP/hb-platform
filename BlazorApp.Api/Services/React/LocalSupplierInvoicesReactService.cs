@@ -1,5 +1,6 @@
 using System.Linq;
 using BlazorApp.Api.Data;
+using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Helper;
@@ -13,14 +14,17 @@ namespace BlazorApp.Api.Services.React
     {
         private readonly SqlSugarContext _context;
         private readonly ILogger<LocalSupplierInvoicesReactService> _logger;
+        private readonly IAutoPricingService _autoPricingService;
 
         public LocalSupplierInvoicesReactService(
             SqlSugarContext context,
-            ILogger<LocalSupplierInvoicesReactService> logger
+            ILogger<LocalSupplierInvoicesReactService> logger,
+            IAutoPricingService autoPricingService
         )
         {
             _context = context;
             _logger = logger;
+            _autoPricingService = autoPricingService;
         }
 
         public async Task<GridResponseDto<LocalSupplierInvoiceListDto>> GetGridDataAsync(
@@ -1831,6 +1835,19 @@ namespace BlazorApp.Api.Services.React
                         }
                     }
 
+                    // 【新增】对所有有进货价的明细，通过 AutoPricingService 计算定价浮率和自动零售价
+                    if (detail.PurchasePrice.HasValue && detail.PurchasePrice > 0)
+                    {
+                        var purchasePrice = detail.PurchasePrice.Value;
+                        var strategy = await _autoPricingService.FindStrategyForPriceAsync(
+                            purchasePrice,
+                            header.SupplierCode,
+                            header.StoreCode
+                        );
+                        result.PricingFloatRate = _autoPricingService.CalculateRate(purchasePrice, strategy);
+                        result.NewAutoRetailPrice = _autoPricingService.CalculateRetailPrice(purchasePrice, strategy);
+                    }
+
                     results.Add(result);
                 }
 
@@ -1852,6 +1869,8 @@ namespace BlazorApp.Api.Services.React
                             ExistingProductCount = r.ExistingProductCount,
                             BarcodeStatus = r.BarcodeStatus,
                             BarcodeMatchCount = r.BarcodeMatchCount,
+                            PricingFloatRate = r.PricingFloatRate,
+                            NewAutoRetailPrice = r.NewAutoRetailPrice,
                             UpdatedAt = updateNow,
                         })
                         .ToList();
@@ -1870,6 +1889,8 @@ namespace BlazorApp.Api.Services.React
                         var hasExistingProductCount = results.Any(r => r.ExistingProductCount > 0);
                         var hasBarcodeStatus = results.Any(r => r.BarcodeStatus != 0);
                         var hasBarcodeMatchCount = results.Any(r => r.BarcodeMatchCount != 0);
+                        var hasPricingFloatRate = results.Any(r => r.PricingFloatRate != null);
+                        var hasNewAutoRetailPrice = results.Any(r => r.NewAutoRetailPrice != null);
 
                         // 构建需要更新的列
                         var updateColumns = new List<string> { "UpdatedAt" };
@@ -1892,6 +1913,10 @@ namespace BlazorApp.Api.Services.React
                             updateColumns.Add("BarcodeStatus");
                         if (hasBarcodeMatchCount)
                             updateColumns.Add("BarcodeMatchCount");
+                        if (hasPricingFloatRate)
+                            updateColumns.Add("PricingFloatRate");
+                        if (hasNewAutoRetailPrice)
+                            updateColumns.Add("NewAutoRetailPrice");
 
                         // 使用 UpdateColumns 只更新指定列
                         await db.Updateable(updateItems)
@@ -2073,7 +2098,8 @@ namespace BlazorApp.Api.Services.React
                 try
                 {
                     var updatedCount = await db.Updateable<StoreLocalSupplierInvoiceDetails>()
-                        .SetColumns(x => x.ActivityType == dto.Action && x.UpdatedAt == now)
+                        .SetColumns(x => x.ActivityType == dto.Action)
+                        .SetColumns(x => x.UpdatedAt == now)
                         .Where(x =>
                             dto.DetailGuids.Contains(x.DetailGUID)
                             && x.InvoiceGUID == invoiceGuid
@@ -2515,6 +2541,100 @@ namespace BlazorApp.Api.Services.React
             }
         }
 
+        public async Task<
+            ApiResponse<GetProductsByProductCodeResponse>
+        > GetProductsByProductCodeAsync(string invoiceGuid, string productCode)
+        {
+            try
+            {
+                var db = _context.Db;
+
+                var header = await db.Queryable<StoreLocalSupplierInvoice>()
+                    .Where(x => x.InvoiceGUID == invoiceGuid && x.IsDeleted == false)
+                    .FirstAsync();
+
+                if (header == null)
+                    return ApiResponse<GetProductsByProductCodeResponse>.Error(
+                        "订单不存在",
+                        "NOT_FOUND"
+                    );
+
+                if (string.IsNullOrWhiteSpace(productCode))
+                    return ApiResponse<GetProductsByProductCodeResponse>.Error(
+                        "商品编码不能为空",
+                        "VALIDATION_ERROR"
+                    );
+
+                var trimmedProductCode = productCode.Trim();
+                var productDetails = new Dictionary<string, Product>();
+
+                var prods = await db.Queryable<Product>()
+                    .Where(p =>
+                        p.IsDeleted == false
+                        && p.ProductCode != null
+                        && p.ProductCode == trimmedProductCode
+                    )
+                    .ToListAsync();
+
+                foreach (var p in prods)
+                {
+                    if (!string.IsNullOrWhiteSpace(p.ProductCode))
+                    {
+                        if (!productDetails.ContainsKey(p.ProductCode))
+                            productDetails[p.ProductCode] = p;
+                    }
+                }
+
+                var supplierCodes = productDetails
+                    .Values.Select(p => p.LocalSupplierCode)
+                    .Where(c => !string.IsNullOrWhiteSpace(c))
+                    .Distinct()
+                    .ToList();
+
+                var suppliers = new Dictionary<string, string>();
+                if (supplierCodes.Count > 0)
+                {
+                    var supplierList = await db.Queryable<HBLocalSupplier>()
+                        .Where(x =>
+                            supplierCodes.Contains(x.LocalSupplierCode) && x.IsDeleted == false
+                        )
+                        .Select(x => new { x.LocalSupplierCode, x.Name })
+                        .ToListAsync();
+                    foreach (var s in supplierList)
+                        suppliers[s.LocalSupplierCode] = s.Name;
+                }
+
+                var result = new GetProductsByProductCodeResponse
+                {
+                    ProductCode = trimmedProductCode,
+                    MatchedProducts = productDetails
+                        .Values.Select(p => new BarcodeAbnormalMatchedProductDto
+                        {
+                            ProductCode = p.ProductCode ?? string.Empty,
+                            ProductName = p.ProductName ?? string.Empty,
+                            SupplierCode = p.LocalSupplierCode ?? string.Empty,
+                            SupplierName = suppliers.GetValueOrDefault(
+                                p.LocalSupplierCode ?? string.Empty
+                            ),
+                            ItemNumber = p.ItemNumber,
+                            Barcode = p.Barcode ?? string.Empty,
+                            ProductImage = p.ProductImage,
+                            IsMultiCode = false,
+                            IsBundle = false,
+                            ProductType = p.ProductType,
+                        })
+                        .ToList(),
+                };
+
+                return ApiResponse<GetProductsByProductCodeResponse>.OK(result, "获取成功");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "按商品编码查询匹配商品失败");
+                return ApiResponse<GetProductsByProductCodeResponse>.Error("获取失败", "GET_ERROR");
+            }
+        }
+
         public async Task<ApiResponse<InvoiceNoCheckResult>> CheckInvoiceNoExistsAsync(
             string supplierCode,
             string invoiceNo
@@ -2558,6 +2678,604 @@ namespace BlazorApp.Api.Services.React
                 _logger.LogError(ex, "检查随货单号是否存在失败");
                 return ApiResponse<InvoiceNoCheckResult>.Error("检查失败", "CHECK_ERROR");
             }
+        }
+
+        public async Task<ApiResponse<BatchExecuteActionsResultDto>> BatchExecuteActionsAsync(
+            string invoiceGuid,
+            List<string> detailGuids,
+            string userName
+        )
+        {
+            try
+            {
+                var result = new BatchExecuteActionsResultDto();
+                var db = _context.Db;
+
+                // 1. 获取进货单头信息
+                var header = await db.Queryable<StoreLocalSupplierInvoice>()
+                    .Where(x => x.InvoiceGUID == invoiceGuid && x.IsDeleted == false)
+                    .FirstAsync();
+
+                if (header == null)
+                {
+                    return ApiResponse<BatchExecuteActionsResultDto>.Error(
+                        "进货单不存在",
+                        "NOT_FOUND"
+                    );
+                }
+
+                // 2. 获取明细列表
+                var detailsQuery = db.Queryable<StoreLocalSupplierInvoiceDetails>()
+                    .Where(x => x.InvoiceGUID == invoiceGuid && x.IsDeleted == false);
+
+                if (detailGuids != null && detailGuids.Count > 0)
+                {
+                    detailsQuery = detailsQuery.Where(x => detailGuids.Contains(x.DetailGUID));
+                }
+
+                var details = await detailsQuery.ToListAsync();
+
+                // 3. 获取已有商品的 ItemNumber（用于判断是否需要更新货号）
+                var productCodes = details
+                    .Where(x => !string.IsNullOrWhiteSpace(x.ProductCode))
+                    .Select(x => x.ProductCode!)
+                    .Distinct()
+                    .ToList();
+
+                var productItemNumbers = new Dictionary<string, string>();
+                if (productCodes.Count > 0)
+                {
+                    var products = await db.Queryable<Product>()
+                        .Where(x => productCodes.Contains(x.ProductCode!) && x.IsDeleted == false)
+                        .Select(x => new { x.ProductCode, x.ItemNumber })
+                        .ToListAsync();
+
+                    foreach (var p in products)
+                    {
+                        if (
+                            !string.IsNullOrWhiteSpace(p.ProductCode)
+                            && !string.IsNullOrWhiteSpace(p.ItemNumber)
+                        )
+                        {
+                            productItemNumbers[p.ProductCode] = p.ItemNumber;
+                        }
+                    }
+                }
+
+                // 4. 按 action 分组（仅做分类，不操作数据库）
+                var groupedDetails =
+                    new Dictionary<DetailAction, List<StoreLocalSupplierInvoiceDetails>>();
+
+                foreach (var detail in details)
+                {
+                    var action = GetActionForDetail(detail, productItemNumbers);
+
+                    if (!groupedDetails.ContainsKey(action))
+                    {
+                        groupedDetails[action] = new List<StoreLocalSupplierInvoiceDetails>();
+                    }
+                    groupedDetails[action].Add(detail);
+                }
+
+                // 5. 批量处理每个 action 组
+                // ========== 创建商品 ==========
+                if (
+                    groupedDetails.TryGetValue(DetailAction.CreateProduct, out var createList)
+                    && createList.Count > 0
+                )
+                {
+                    var createResult = await BatchCreateProductsAsync(createList, header, userName);
+                    result.CreatedProducts = createResult.SuccessCount;
+                    result.Failed += createResult.FailedCount;
+                    result.Errors.AddRange(createResult.Errors);
+                    result.Skipped += createResult.SkippedCount;
+                }
+
+                // ========== 更新进货价 ==========
+                if (
+                    groupedDetails.TryGetValue(DetailAction.UpdatePurchasePrice, out var priceList)
+                    && priceList.Count > 0
+                )
+                {
+                    var priceResult = await BatchUpdatePurchasePriceAsync(priceList, userName);
+                    result.UpdatedPurchasePrices = priceResult.SuccessCount;
+                    result.Failed += priceResult.FailedCount;
+                    result.Errors.AddRange(priceResult.Errors);
+                    result.Skipped += priceResult.SkippedCount;
+                }
+
+                // ========== 更新货号 ==========
+                if (
+                    groupedDetails.TryGetValue(DetailAction.UpdateItemNumber, out var itemList)
+                    && itemList.Count > 0
+                )
+                {
+                    var itemResult = await BatchUpdateItemNumberAsync(
+                        itemList,
+                        productItemNumbers,
+                        userName
+                    );
+                    result.UpdatedItemNumbers = itemResult.SuccessCount;
+                    result.Failed += itemResult.FailedCount;
+                    result.Errors.AddRange(itemResult.Errors);
+                    result.Skipped += itemResult.SkippedCount;
+                }
+
+                // ========== 添加多码 ==========
+                if (
+                    groupedDetails.TryGetValue(DetailAction.AddMultiCode, out var multiCodeList)
+                    && multiCodeList.Count > 0
+                )
+                {
+                    var multiCodeResult = await BatchAddMultiCodesAsync(
+                        multiCodeList,
+                        header,
+                        userName
+                    );
+                    result.AddedMultiCodes = multiCodeResult.SuccessCount;
+                    result.Failed += multiCodeResult.FailedCount;
+                    result.Errors.AddRange(multiCodeResult.Errors);
+                    result.Skipped += multiCodeResult.SkippedCount;
+                }
+
+                // ========== 无操作/等待操作 ==========
+                if (groupedDetails.TryGetValue(DetailAction.None, out var noneList))
+                {
+                    result.Skipped += noneList.Count;
+                }
+                if (groupedDetails.TryGetValue(DetailAction.WaitForOperation, out var waitList))
+                {
+                    result.Skipped += waitList.Count;
+                }
+
+                // 6. 批量更新明细的 ActivityType
+                var allDetailGuids = details.Select(d => d.DetailGUID).ToList();
+                await BatchUpdateDetailActivityTypeAsync(allDetailGuids, userName);
+
+                return ApiResponse<BatchExecuteActionsResultDto>.OK(result, "批量执行完成");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "批量执行操作失败");
+                return ApiResponse<BatchExecuteActionsResultDto>.Error(
+                    "批量执行失败",
+                    "BATCH_EXECUTE_ERROR"
+                );
+            }
+        }
+
+        private DetailAction GetActionForDetail(
+            StoreLocalSupplierInvoiceDetails detail,
+            Dictionary<string, string> productItemNumbers
+        )
+        {
+            // 记录诊断信息
+            _logger.LogDebug(
+                "GetActionForDetail: ProductCode={ProductCode}, ExistingProductCount={ExistingProductCount}, BarcodeStatus={BarcodeStatus}",
+                detail.ProductCode,
+                detail.ExistingProductCount,
+                detail.BarcodeStatus
+            );
+
+            // 先检查进货价
+            if (detail.PurchasePrice == null || detail.PurchasePrice <= 0)
+            {
+                return DetailAction.None;
+            }
+
+            // 商品存在判断
+            bool productExists = detail.ExistingProductCount > 0;
+            bool barcodeNormal = detail.BarcodeStatus == 1;
+
+            // 商品不存在，条码正常 -> 创建商品
+            if (!productExists && barcodeNormal)
+            {
+                return DetailAction.CreateProduct;
+            }
+
+            // 商品存在，条码异常 -> 添加多码
+            if (productExists && !barcodeNormal)
+            {
+                return DetailAction.AddMultiCode;
+            }
+
+            // 商品存在，条码正常 -> 更新进货价
+            if (productExists && barcodeNormal)
+            {
+                // 判断是否需要更新货号（货号不一致）
+                if (!string.IsNullOrWhiteSpace(detail.ItemNumber)
+                    && !string.IsNullOrWhiteSpace(detail.ProductCode)
+                    && productItemNumbers.TryGetValue(detail.ProductCode, out var existingItemNumber)
+                    && !string.IsNullOrWhiteSpace(existingItemNumber)
+                    && existingItemNumber != detail.ItemNumber)
+                {
+                    return DetailAction.UpdateItemNumber;
+                }
+
+                return DetailAction.UpdatePurchasePrice;
+            }
+
+            // 其他情况 -> 等待操作
+            return DetailAction.WaitForOperation;
+        }
+
+        private async Task<BatchOperationResult> BatchCreateProductsAsync(
+            List<StoreLocalSupplierInvoiceDetails> details,
+            StoreLocalSupplierInvoice header,
+            string userName
+        )
+        {
+            var result = new BatchOperationResult();
+            var db = _context.Db;
+            var now = DateTime.UtcNow;
+
+            // 获取所有激活分店
+            var activeStores = await db.Queryable<Store>()
+                .Where(s => s.IsActive == true)
+                .Select(s => s.StoreCode)
+                .ToListAsync();
+
+            var productsToCreate = new List<Product>();
+            var storePricesToCreate = new List<StoreRetailPrice>();
+
+            foreach (var detail in details)
+            {
+                // 验证必填字段
+                if (string.IsNullOrWhiteSpace(detail.ItemNumber))
+                {
+                    result.Errors.Add($"创建商品失败：货号不能为空");
+                    result.FailedCount++;
+                    continue;
+                }
+
+                if (string.IsNullOrWhiteSpace(detail.Barcode))
+                {
+                    result.Errors.Add($"创建商品失败：条码不能为空");
+                    result.FailedCount++;
+                    continue;
+                }
+
+                if (detail.PurchasePrice == null || detail.PurchasePrice <= 0)
+                {
+                    result.Errors.Add($"创建商品失败：进货价必须大于0");
+                    result.FailedCount++;
+                    continue;
+                }
+
+                // 生成商品 UUID
+                var productUUID = UuidHelper.GenerateUuid7();
+
+                // 计算零售价：如果明细中有指定零售价或新自动零售价则使用，否则使用 AutoPricingService 计算
+                decimal calculatedRetailPrice = 0;
+                if (detail.RetailPrice.HasValue && detail.RetailPrice > 0)
+                {
+                    calculatedRetailPrice = detail.RetailPrice.Value;
+                }
+                else if (detail.NewAutoRetailPrice.HasValue && detail.NewAutoRetailPrice > 0)
+                {
+                    calculatedRetailPrice = detail.NewAutoRetailPrice.Value;
+                }
+                else if (detail.PurchasePrice.HasValue && detail.PurchasePrice > 0 && (detail.AutoPricing ?? true))
+                {
+                    var strategy = await _autoPricingService.FindStrategyForPriceAsync(
+                        detail.PurchasePrice.Value,
+                        header.SupplierCode,
+                        null
+                    );
+                    calculatedRetailPrice = _autoPricingService.CalculateRetailPrice(detail.PurchasePrice.Value, strategy);
+                }
+                else
+                {
+                    calculatedRetailPrice = (detail.PurchasePrice ?? 0) * 2.5m; // 默认加价 250%
+                }
+
+                var product = new Product
+                {
+                    UUID = productUUID,
+                    ProductCode = productUUID, // ProductCode 使用 UUID
+                    ItemNumber = detail.ItemNumber,
+                    Barcode = detail.Barcode,
+                    ProductName = detail.ProductName ?? string.Empty,
+                    LocalSupplierCode = header.SupplierCode,
+                    PurchasePrice = detail.PurchasePrice ?? 0,
+                    RetailPrice = calculatedRetailPrice,
+                    IsAutoPricing = detail.AutoPricing ?? true,
+                    IsSpecialProduct = detail.IsSpecialProduct ?? false,
+                    ProductImage = detail.ProductImage,
+                    ProductType = 0,
+                    IsActive = true,
+                    CreatedAt = now,
+                    UpdatedAt = now,
+                    CreatedBy = userName,
+                    UpdatedBy = userName,
+                };
+                productsToCreate.Add(product);
+
+                // 为所有激活分店创建 StoreRetailPrice
+                foreach (var storeCode in activeStores)
+                {
+                    var storePrice = new StoreRetailPrice
+                    {
+                        UUID = UuidHelper.GenerateUuid7(),
+                        StoreCode = storeCode,
+                        ProductCode = productUUID,
+                        StoreProductCode = storeCode + productUUID,
+                        SupplierCode = header.SupplierCode,
+                        PurchasePrice = detail.PurchasePrice ?? 0,
+                        StoreRetailPriceValue = calculatedRetailPrice,
+                        IsAutoPricing = detail.AutoPricing ?? true,
+                        IsSpecialProduct = detail.IsSpecialProduct ?? false,
+                        DiscountRate = detail.DiscountRate,
+                        IsActive = true,
+                        IsDeleted = false,
+                        CreatedAt = now,
+                        UpdatedAt = now,
+                        CreatedBy = userName,
+                        UpdatedBy = userName,
+                    };
+                    storePricesToCreate.Add(storePrice);
+                }
+
+                result.SuccessCount++;
+            }
+
+            if (productsToCreate.Count > 0)
+            {
+                await db.Fastest<Product>().BulkCopyAsync(productsToCreate);
+            }
+
+            if (storePricesToCreate.Count > 0)
+            {
+                await db.Fastest<StoreRetailPrice>().BulkCopyAsync(storePricesToCreate);
+            }
+
+            return result;
+        }
+
+        private async Task<BatchOperationResult> BatchUpdatePurchasePriceAsync(
+            List<StoreLocalSupplierInvoiceDetails> details,
+            string userName
+        )
+        {
+            var result = new BatchOperationResult();
+            var db = _context.Db;
+            var now = DateTime.UtcNow;
+
+            foreach (var detail in details)
+            {
+                if (detail.PurchasePrice == null || detail.PurchasePrice <= 0)
+                {
+                    result.Errors.Add($"更新进货价失败：新进货价必须大于0");
+                    result.FailedCount++;
+                    continue;
+                }
+
+                if (string.IsNullOrWhiteSpace(detail.ProductCode))
+                {
+                    result.Errors.Add($"更新进货价失败：未找到商品编码");
+                    result.FailedCount++;
+                    continue;
+                }
+
+                // ProductCode 实际上存储的是 UUID
+                await db.Updateable<Product>()
+                    .SetColumns(p => p.PurchasePrice == detail.PurchasePrice)
+                    .SetColumns(p => p.UpdatedAt == now)
+                    .SetColumns(p => p.UpdatedBy == userName)
+                    .Where(p => p.UUID == detail.ProductCode && p.IsDeleted == false)
+                    .ExecuteCommandAsync();
+
+                await db.Updateable<StoreRetailPrice>()
+                    .SetColumns(srp => srp.PurchasePrice == detail.PurchasePrice)
+                    .SetColumns(srp => srp.UpdatedAt == now)
+                    .SetColumns(srp => srp.UpdatedBy == userName)
+                    .Where(srp => srp.ProductCode == detail.ProductCode && srp.IsDeleted == false)
+                    .ExecuteCommandAsync();
+
+                result.SuccessCount++;
+            }
+
+            return result;
+        }
+
+        private async Task<BatchOperationResult> BatchUpdateItemNumberAsync(
+            List<StoreLocalSupplierInvoiceDetails> details,
+            Dictionary<string, string> productItemNumbers,
+            string userName
+        )
+        {
+            var result = new BatchOperationResult();
+            var db = _context.Db;
+            var now = DateTime.UtcNow;
+
+            foreach (var detail in details)
+            {
+                if (string.IsNullOrWhiteSpace(detail.ItemNumber))
+                {
+                    result.Errors.Add($"更新货号失败：新货号不能为空");
+                    result.FailedCount++;
+                    continue;
+                }
+
+                if (string.IsNullOrWhiteSpace(detail.ProductCode))
+                {
+                    result.Errors.Add($"更新货号失败：未找到商品编码");
+                    result.FailedCount++;
+                    continue;
+                }
+
+                // ProductCode 实际上存储的是 UUID
+                await db.Updateable<Product>()
+                    .SetColumns(p => p.ItemNumber == detail.ItemNumber)
+                    .SetColumns(p => p.UpdatedAt == now)
+                    .SetColumns(p => p.UpdatedBy == userName)
+                    .Where(p => p.UUID == detail.ProductCode && p.IsDeleted == false)
+                    .ExecuteCommandAsync();
+
+                result.SuccessCount++;
+            }
+
+            return result;
+        }
+
+        private async Task<BatchOperationResult> BatchAddMultiCodesAsync(
+            List<StoreLocalSupplierInvoiceDetails> details,
+            StoreLocalSupplierInvoice header,
+            string userName
+        )
+        {
+            var result = new BatchOperationResult();
+            var db = _context.Db;
+            var now = DateTime.UtcNow;
+
+            // 1. 获取所有有效分店
+            var activeStores = await db.Queryable<Store>()
+                .Where(s => s.IsActive == true)
+                .Select(s => s.StoreCode)
+                .ToListAsync();
+
+            // 2. 收集需要修改商品类型的数据
+            var productCodesToUpdate = details
+                .Where(x => !string.IsNullOrWhiteSpace(x.ProductCode))
+                .Select(x => x.ProductCode!)
+                .Distinct()
+                .ToList();
+
+            if (productCodesToUpdate.Count > 0)
+            {
+                var products = await db.Queryable<Product>()
+                    .Where(p => productCodesToUpdate.Contains(p.ProductCode) && p.IsDeleted == false)
+                    .Select(p => new { p.ProductCode, p.ProductType })
+                    .ToListAsync();
+
+                var uuidsToUpdate = products
+                    .Where(p => p.ProductType != 1)
+                    .Select(p => p.ProductCode)
+                    .ToList();
+
+                if (uuidsToUpdate.Count > 0)
+                {
+                    await db.Updateable<Product>()
+                        .SetColumns(p => p.ProductType == 1)
+                        .SetColumns(p => p.UpdatedAt == now)
+                        .SetColumns(p => p.UpdatedBy == userName)
+                        .Where(p => uuidsToUpdate.Contains(p.ProductCode) && p.IsDeleted == false)
+                        .ExecuteCommandAsync();
+                }
+            }
+
+            // 3. 准备创建 StoreMultiCodeProduct 和 ProductSetCode
+            var multiCodesToCreate = new List<StoreMultiCodeProduct>();
+            var productSetCodesToCreate = new List<ProductSetCode>();
+
+            foreach (var detail in details)
+            {
+                if (string.IsNullOrWhiteSpace(detail.ProductCode))
+                {
+                    result.Errors.Add($"添加多码失败：未找到商品编码");
+                    result.FailedCount++;
+                    continue;
+                }
+
+                if (string.IsNullOrWhiteSpace(detail.Barcode))
+                {
+                    result.Errors.Add($"添加多码失败：条码不能为空");
+                    result.FailedCount++;
+                    continue;
+                }
+                // 生成 StoreMultiCodeProduct UUID
+                var multiCodeUUID = UuidHelper.GenerateUuid7();
+                // 创建 ProductSetCode 关联记录
+                var productSetCode = new ProductSetCode
+                {
+                    SetCodeId = UuidHelper.GenerateUuid7(),
+                    ProductCode = detail.ProductCode,
+                    SetProductCode = multiCodeUUID,
+                    SetItemNumber = detail.ItemNumber ?? string.Empty,
+                    SetBarcode = detail.Barcode,
+                    SetPurchasePrice = detail.PurchasePrice,
+                    SetRetailPrice = detail.RetailPrice,
+                    SetQuantity = 1,
+                    SetType = 2,
+                    IsActive = true,
+                    IsDeleted = false,
+                    CreatedAt = now,
+                    UpdatedAt = now,
+                    CreatedBy = userName,
+                    UpdatedBy = userName,
+                };
+                productSetCodesToCreate.Add(productSetCode);
+
+                // 为每个有效分店创建记录
+                foreach (var storeCode in activeStores)
+                {
+                   
+
+                    // 创建 StoreMultiCodeProduct
+                    var multiCode = new StoreMultiCodeProduct
+                    {
+                        UUID = UuidHelper.GenerateUuid7(),
+                        StoreCode = storeCode,
+                        ProductCode = detail.ProductCode,
+                        MultiCodeProductCode = multiCodeUUID,
+                        StoreMultiCodeProductCode = storeCode + multiCodeUUID,
+                        MultiBarcode = detail.Barcode,
+                        PurchasePrice = detail.PurchasePrice,
+                        MultiCodeRetailPrice = detail.RetailPrice,
+                        DiscountRate = detail.DiscountRate,
+                        IsAutoPricing = detail.AutoPricing ?? true,
+                        IsSpecialProduct = detail.IsSpecialProduct ?? false,
+                        IsActive = true,
+                        IsDeleted = false,
+                        CreatedAt = now,
+                        UpdatedAt = now,
+                        CreatedBy = userName,
+                        UpdatedBy = userName,
+                    };
+                    multiCodesToCreate.Add(multiCode);
+                }
+
+
+                result.SuccessCount++;
+            }
+
+            // 4. 批量插入 StoreMultiCodeProduct
+            if (multiCodesToCreate.Count > 0)
+            {
+                await db.Fastest<StoreMultiCodeProduct>().BulkCopyAsync(multiCodesToCreate);
+            }
+
+            // 5. 批量插入 ProductSetCode
+            if (productSetCodesToCreate.Count > 0)
+            {
+                await db.Fastest<ProductSetCode>().BulkCopyAsync(productSetCodesToCreate);
+            }
+
+            return result;
+        }
+
+        private async Task BatchUpdateDetailActivityTypeAsync(
+            List<string> detailGuids,
+            string userName
+        )
+        {
+            var db = _context.Db;
+            var now = DateTime.UtcNow;
+
+            await db.Updateable<StoreLocalSupplierInvoiceDetails>()
+                .SetColumns(x => x.ActivityType == 99)
+                .SetColumns(x => x.UpdatedAt == now)
+                .SetColumns(x => x.UpdatedBy == userName)
+                .Where(x => detailGuids.Contains(x.DetailGUID))
+                .ExecuteCommandAsync();
+        }
+
+        private class BatchOperationResult
+        {
+            public int SuccessCount { get; set; }
+            public int FailedCount { get; set; }
+            public int SkippedCount { get; set; }
+            public List<string> Errors { get; set; } = new();
         }
     }
 }

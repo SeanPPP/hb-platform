@@ -1,10 +1,11 @@
 using BlazorApp.Api.Data;
+using BlazorApp.Api.Interfaces;
 using BlazorApp.Shared.Models.HBweb;
 using SqlSugar;
 
 namespace BlazorApp.Api.Services.Pricing
 {
-    public class AutoPricingService
+    public class AutoPricingService : IAutoPricingService
     {
         private readonly SqlSugarContext _context;
 

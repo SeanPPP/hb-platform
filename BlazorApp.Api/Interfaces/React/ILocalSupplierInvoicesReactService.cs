@@ -49,9 +49,18 @@ namespace BlazorApp.Api.Interfaces.React
             string invoiceGuid,
             string barcode
         );
+        Task<ApiResponse<GetProductsByProductCodeResponse>> GetProductsByProductCodeAsync(
+            string invoiceGuid,
+            string productCode
+        );
         Task<ApiResponse<InvoiceNoCheckResult>> CheckInvoiceNoExistsAsync(
             string supplierCode,
             string invoiceNo
+        );
+        Task<ApiResponse<BatchExecuteActionsResultDto>> BatchExecuteActionsAsync(
+            string invoiceGuid,
+            List<string> detailGuids,
+            string userName
         );
     }
 }

@@ -119,7 +119,10 @@ namespace BlazorApp.Api.Services.React
 
                 var cacheKey = SalesDashboardCacheKeys.Summary(dateRange, null);
 
-                if (_cache.TryGetValue<DashboardSummaryDto>(cacheKey, out var cachedResult))
+                if (
+                    _cache.TryGetValue<DashboardSummaryDto>(cacheKey, out var cachedResult)
+                    && cachedResult != null
+                )
                 {
                     _logger.LogInformation("从缓存获取仪表板汇总数据: {CacheKey}", cacheKey);
                     return cachedResult;
@@ -249,7 +252,11 @@ namespace BlazorApp.Api.Services.React
 
                 var cacheKey = SalesDashboardCacheKeys.Hourly(dateRange, branchCodes, null);
 
-                if (_cache.TryGetValue<List<HourlySalesDto>>(cacheKey, out var cachedResult))
+                if (
+                    _cache.TryGetValue<List<HourlySalesDto>>(cacheKey, out var cachedResult)
+                    && cachedResult != null
+                    && cachedResult.Count != 0
+                )
                 {
                     _logger.LogInformation("从缓存获取小时销售数据: {CacheKey}", cacheKey);
                     return cachedResult;
@@ -395,7 +402,11 @@ namespace BlazorApp.Api.Services.React
 
                 var cacheKey = SalesDashboardCacheKeys.StoreRank(dateRange, branchCodes, topN);
 
-                if (_cache.TryGetValue<List<StoreSalesRankDto>>(cacheKey, out var cachedResult))
+                if (
+                    _cache.TryGetValue<List<StoreSalesRankDto>>(cacheKey, out var cachedResult)
+                    && cachedResult != null
+                    && cachedResult.Count != 0
+                )
                 {
                     _logger.LogInformation("从缓存获取分店销售排名: {CacheKey}", cacheKey);
                     return cachedResult;
@@ -561,17 +572,18 @@ namespace BlazorApp.Api.Services.React
 
         /// <summary>
         /// 获取供应商销售排名
-        /// 按销售额降序排列，返回前 N 名供应商
-        /// 特殊处理：将中国供应商数据合并到供应商代码为"200"的记录中
+        /// 从 AustralianSupplierStoreSalesDetail 表查询，按供应商汇总
         /// </summary>
         /// <param name="dateRange">日期范围</param>
         /// <param name="branchCodes">分店代码列表（可选）</param>
         /// <param name="topN">返回前 N 名，默认 20</param>
+        /// <param name="supplierCode">供应商代码（可选，用于联动过滤）</param>
         /// <returns>供应商销售排名列表</returns>
         public async Task<List<SupplierSalesRankDto>> GetSupplierSalesRankAsync(
             DateRangeDto dateRange,
             List<string>? branchCodes = null,
-            int topN = 20
+            int topN = 200,
+            string? supplierCode = null
         )
         {
             try
@@ -580,13 +592,17 @@ namespace BlazorApp.Api.Services.React
 
                 var cacheKey = SalesDashboardCacheKeys.SupplierRank(dateRange, branchCodes, topN);
 
-                if (_cache.TryGetValue<List<SupplierSalesRankDto>>(cacheKey, out var cachedResult))
+                if (
+                    _cache.TryGetValue<List<SupplierSalesRankDto>>(cacheKey, out var cachedResult)
+                    && cachedResult != null
+                    && cachedResult.Count != 0
+                )
                 {
                     _logger.LogInformation("从缓存获取供应商销售排名: {CacheKey}", cacheKey);
                     return cachedResult;
                 }
 
-                if (!ValidateDatabaseConnection<StoreSupplierSalesDetail>())
+                if (!ValidateDatabaseConnection<AustralianSupplierStoreSalesDetail>())
                 {
                     return new List<SupplierSalesRankDto>();
                 }
@@ -595,20 +611,26 @@ namespace BlazorApp.Api.Services.React
                 var endDate = dateRange.EndDate.Date;
 
                 _logger.LogInformation(
-                    "开始查询供应商销售排名: {StartDate} - {EndDate}, BranchCodes: {BranchCodes}, TopN: {TopN}",
+                    "从 AustralianSupplierStoreSalesDetail 表查询供应商销售排名: {StartDate} - {EndDate}, BranchCodes: {BranchCodes}, TopN: {TopN}, SupplierCode: {SupplierCode}",
                     startDate,
                     endDate,
                     branchCodes != null ? string.Join(",", branchCodes) : "All",
-                    topN
+                    topN,
+                    supplierCode ?? "All"
                 );
 
                 var query = _context
-                    .Db.Queryable<StoreSupplierSalesDetail>()
-                    .Where(s => s.Date >= startDate && s.Date <= endDate && s.IsDomestic != true);
+                    .Db.Queryable<AustralianSupplierStoreSalesDetail>()
+                    .Where(s => s.Date >= startDate && s.Date <= endDate);
 
                 if (branchCodes != null && branchCodes.Any())
                 {
                     query = query.Where(s => branchCodes.Contains(s.BranchCode));
+                }
+
+                if (!string.IsNullOrEmpty(supplierCode))
+                {
+                    query = query.Where(s => s.SupplierCode == supplierCode);
                 }
 
                 var currentData = await query
@@ -625,45 +647,8 @@ namespace BlazorApp.Api.Services.React
                     .Take(topN)
                     .ToListAsync();
 
-                _logger.LogInformation("查询到 {Count} 条普通供应商数据", currentData.Count);
+                _logger.LogInformation("查询到 {Count} 条澳洲供应商数据", currentData.Count);
 
-                // 查询中国供应商数据
-                var chinaSupplierQuery = _context
-                    .Db.Queryable<StoreSupplierSalesDetail>()
-                    .Where(s => s.Date >= startDate && s.Date <= endDate && s.IsDomestic == true);
-
-                // 如果指定了分店代码，则进行过滤
-                if (branchCodes != null && branchCodes.Any())
-                {
-                    chinaSupplierQuery = chinaSupplierQuery.Where(s =>
-                        branchCodes.Contains(s.BranchCode)
-                    );
-                }
-
-                // 获取中国供应商的总金额、总数量和分店数量
-                var chinaSupplierDataList = await chinaSupplierQuery
-                    .Select(s => new
-                    {
-                        TotalAmount = SqlFunc.AggregateSum(s.TotalAmount),
-                        TotalQuantity = SqlFunc.AggregateSum(s.TotalQuantity),
-                        StoreCount = SqlFunc.AggregateCount(s.BranchCode),
-                    })
-                    .ToListAsync();
-
-                var chinaSupplierData = chinaSupplierDataList.FirstOrDefault();
-                int chinaSupplierStoreCount = chinaSupplierData?.StoreCount ?? 0;
-                decimal chinaSupplierTotalAmount = chinaSupplierData?.TotalAmount ?? 0;
-                int chinaSupplierTotalQuantity = chinaSupplierData?.TotalQuantity ?? 0;
-
-                _logger.LogInformation(
-                    "中国供应商汇总数据: StoreCount={StoreCount}, TotalAmount={TotalAmount}, TotalQuantity={TotalQuantity}",
-                    chinaSupplierStoreCount,
-                    chinaSupplierTotalAmount,
-                    chinaSupplierTotalQuantity
-                );
-
-                // 初始化对比数据变量
-                var chinaCompareData = (decimal?)null;
                 Dictionary<string, decimal> compareDict = new Dictionary<string, decimal>();
 
                 if (dateRange.CompareStartDate.HasValue && dateRange.CompareEndDate.HasValue)
@@ -677,43 +662,14 @@ namespace BlazorApp.Api.Services.React
                         compareEndDate
                     );
 
-                    // 获取中国供应商对比数据
-                    var chinaCompareQuery = _context
-                        .Db.Queryable<StoreSupplierSalesDetail>()
-                        .Where(s =>
-                            s.Date >= compareStartDate
-                            && s.Date <= compareEndDate
-                            && s.IsDomestic == true
-                        );
-
-                    if (branchCodes != null && branchCodes.Any())
-                    {
-                        chinaCompareQuery = chinaCompareQuery.Where(s =>
-                            branchCodes.Contains(s.BranchCode)
-                        );
-                    }
-
-                    var compareResultList = await chinaCompareQuery
-                        .Select(s => new { TotalAmount = SqlFunc.AggregateSum(s.TotalAmount) })
-                        .ToListAsync();
-                    var compareResult = compareResultList.FirstOrDefault();
-                    chinaCompareData = compareResult?.TotalAmount ?? 0;
-
-                    _logger.LogInformation(
-                        "中国供应商对比数据: CompareAmount={CompareAmount}",
-                        chinaCompareData
-                    );
-
-                    // 批量获取普通供应商对比数据
                     var supplierCodes = currentData.Select(s => s.SupplierCode).ToList();
                     if (supplierCodes.Any())
                     {
                         var compareQuery = _context
-                            .Db.Queryable<StoreSupplierSalesDetail>()
+                            .Db.Queryable<AustralianSupplierStoreSalesDetail>()
                             .Where(s =>
                                 s.Date >= compareStartDate
                                 && s.Date <= compareEndDate
-                                && s.IsDomestic != true
                                 && supplierCodes.Contains(s.SupplierCode)
                             );
 
@@ -742,21 +698,21 @@ namespace BlazorApp.Api.Services.React
 
                 var result = new List<SupplierSalesRankDto>();
 
-                // 遍历当前数据，构建供应商排名列表
                 foreach (var item in currentData)
                 {
                     decimal totalAmount = item.TotalAmount;
-                    int totalQuantity = item.TotalQuantity;
-                    int storeCount = item.StoreCount;
                     decimal? compareTotalAmount = null;
 
-                    // 如果供应商代码为"200"，将中国供应商的数据合并到该供应商
-                    if (item.SupplierCode == "200")
+                    if (dateRange.CompareStartDate.HasValue && dateRange.CompareEndDate.HasValue)
                     {
-                        totalAmount += chinaSupplierTotalAmount;
-                        totalQuantity += chinaSupplierTotalQuantity;
-                        storeCount = item.StoreCount + chinaSupplierStoreCount;
-                        compareTotalAmount = chinaCompareData;
+                        if (compareDict.TryGetValue(item.SupplierCode, out var amount))
+                        {
+                            compareTotalAmount = amount;
+                        }
+                        else
+                        {
+                            compareTotalAmount = 0;
+                        }
                     }
 
                     var dto = new SupplierSalesRankDto
@@ -766,25 +722,16 @@ namespace BlazorApp.Api.Services.React
                         SupplierCode = item.SupplierCode,
                         SupplierName = item.SupplierName,
                         TotalAmount = totalAmount,
-                        TotalQuantity = totalQuantity,
-                        StoreCount = storeCount,
+                        TotalQuantity = item.TotalQuantity,
+                        StoreCount = item.StoreCount,
+                        CompareTotalAmount = compareTotalAmount,
                     };
 
-                    if (dateRange.CompareStartDate.HasValue && dateRange.CompareEndDate.HasValue)
+                    if (compareTotalAmount.HasValue)
                     {
-                        // 获取当前供应商的对比数据
-                        decimal supplierCompareAmount = 0;
-                        if (compareDict.TryGetValue(item.SupplierCode, out var amount))
-                        {
-                            supplierCompareAmount = amount;
-                        }
-
-                        // 合并 "200" 的对比数据
-                        dto.CompareTotalAmount = supplierCompareAmount + (compareTotalAmount ?? 0);
-
                         dto.TotalAmountGrowth = CalculateGrowth(
                             totalAmount,
-                            dto.CompareTotalAmount ?? 0
+                            compareTotalAmount.Value
                         );
                     }
 
@@ -813,16 +760,18 @@ namespace BlazorApp.Api.Services.React
 
         /// <summary>
         /// 获取中国供应商销售排名
-        /// 专门统计 IsDomestic 为 true 的中国供应商数据
+        /// 从 ChinaSupplierStoreSalesDetail 表查询，按供应商汇总
         /// </summary>
         /// <param name="dateRange">日期范围</param>
         /// <param name="branchCodes">分店代码列表（可选）</param>
         /// <param name="topN">返回前 N 名，默认 20</param>
+        /// <param name="supplierCode">供应商代码（可选，用于联动过滤）</param>
         /// <returns>中国供应商销售排名列表</returns>
         public async Task<List<ChinaSupplierSalesRankDto>> GetChinaSupplierSalesRankAsync(
             DateRangeDto dateRange,
             List<string>? branchCodes = null,
-            int topN = 20
+            int topN = 20,
+            string? supplierCode = null
         )
         {
             try
@@ -840,13 +789,15 @@ namespace BlazorApp.Api.Services.React
                         cacheKey,
                         out var cachedResult
                     )
+                    && cachedResult != null
+                    && cachedResult.Count != 0
                 )
                 {
                     _logger.LogInformation("从缓存获取中国供应商销售排名: {CacheKey}", cacheKey);
                     return cachedResult;
                 }
 
-                if (!ValidateDatabaseConnection<StoreSupplierSalesDetail>())
+                if (!ValidateDatabaseConnection<ChinaSupplierStoreSalesDetail>())
                 {
                     return new List<ChinaSupplierSalesRankDto>();
                 }
@@ -854,13 +805,27 @@ namespace BlazorApp.Api.Services.React
                 var startDate = dateRange.StartDate.Date;
                 var endDate = dateRange.EndDate.Date;
 
+                _logger.LogInformation(
+                    "从 ChinaSupplierStoreSalesDetail 表查询中国供应商销售排名: {StartDate} - {EndDate}, BranchCodes: {BranchCodes}, TopN: {TopN}, SupplierCode: {SupplierCode}",
+                    startDate,
+                    endDate,
+                    branchCodes != null ? string.Join(",", branchCodes) : "All",
+                    topN,
+                    supplierCode ?? "All"
+                );
+
                 var query = _context
-                    .Db.Queryable<StoreSupplierSalesDetail>()
-                    .Where(s => s.Date >= startDate && s.Date <= endDate && s.IsDomestic == true);
+                    .Db.Queryable<ChinaSupplierStoreSalesDetail>()
+                    .Where(s => s.Date >= startDate && s.Date <= endDate);
 
                 if (branchCodes != null && branchCodes.Any())
                 {
                     query = query.Where(s => branchCodes.Contains(s.BranchCode));
+                }
+
+                if (!string.IsNullOrEmpty(supplierCode))
+                {
+                    query = query.Where(s => s.SupplierCode == supplierCode);
                 }
 
                 var currentData = await query
@@ -877,9 +842,10 @@ namespace BlazorApp.Api.Services.React
                     .Take(topN)
                     .ToListAsync();
 
+                _logger.LogInformation("查询到 {Count} 条中国供应商数据", currentData.Count);
+
                 var result = new List<ChinaSupplierSalesRankDto>();
 
-                // 批量获取对比数据
                 Dictionary<string, decimal> compareDict = new Dictionary<string, decimal>();
 
                 if (dateRange.CompareStartDate.HasValue && dateRange.CompareEndDate.HasValue)
@@ -891,11 +857,10 @@ namespace BlazorApp.Api.Services.React
                     if (supplierCodes.Any())
                     {
                         var compareQuery = _context
-                            .Db.Queryable<StoreSupplierSalesDetail>()
+                            .Db.Queryable<ChinaSupplierStoreSalesDetail>()
                             .Where(s =>
                                 s.Date >= compareStartDate
                                 && s.Date <= compareEndDate
-                                && s.IsDomestic == true
                                 && supplierCodes.Contains(s.SupplierCode)
                             );
 
@@ -924,6 +889,15 @@ namespace BlazorApp.Api.Services.React
 
                 foreach (var item in currentData)
                 {
+                    decimal compareTotalAmount = 0;
+                    if (dateRange.CompareStartDate.HasValue && dateRange.CompareEndDate.HasValue)
+                    {
+                        if (compareDict.TryGetValue(item.SupplierCode, out var amount))
+                        {
+                            compareTotalAmount = amount;
+                        }
+                    }
+
                     var dto = new ChinaSupplierSalesRankDto
                     {
                         StartDate = startDate,
@@ -933,17 +907,11 @@ namespace BlazorApp.Api.Services.React
                         TotalAmount = item.TotalAmount,
                         TotalQuantity = item.TotalQuantity,
                         StoreCount = item.StoreCount,
+                        CompareTotalAmount = compareTotalAmount,
                     };
 
                     if (dateRange.CompareStartDate.HasValue && dateRange.CompareEndDate.HasValue)
                     {
-                        decimal compareTotalAmount = 0;
-                        if (compareDict.TryGetValue(item.SupplierCode, out var amount))
-                        {
-                            compareTotalAmount = amount;
-                        }
-
-                        dto.CompareTotalAmount = compareTotalAmount;
                         dto.TotalAmountGrowth = CalculateGrowth(
                             item.TotalAmount,
                             compareTotalAmount
@@ -999,7 +967,11 @@ namespace BlazorApp.Api.Services.React
                     branchCodes
                 );
 
-                if (_cache.TryGetValue<List<SupplierStoreSalesDto>>(cacheKey, out var cachedResult))
+                if (
+                    _cache.TryGetValue<List<SupplierStoreSalesDto>>(cacheKey, out var cachedResult)
+                    && cachedResult != null
+                    && cachedResult.Count != 0
+                )
                 {
                     _logger.LogInformation("从缓存获取供应商分店销售数据: {CacheKey}", cacheKey);
                     return cachedResult;
@@ -1169,7 +1141,11 @@ namespace BlazorApp.Api.Services.React
 
                 var cacheKey = SalesDashboardCacheKeys.StoreSupplier(dateRange, branchCodes, topN);
 
-                if (_cache.TryGetValue<List<StoreSupplierSalesDto>>(cacheKey, out var cachedResult))
+                if (
+                    _cache.TryGetValue<List<StoreSupplierSalesDto>>(cacheKey, out var cachedResult)
+                    && cachedResult != null
+                    && cachedResult.Count != 0
+                )
                 {
                     _logger.LogInformation("从缓存获取分店供应商销售数据: {CacheKey}", cacheKey);
                     return cachedResult;
@@ -1421,7 +1397,10 @@ namespace BlazorApp.Api.Services.React
                     pageSize
                 );
 
-                if (_cache.TryGetValue<PagedSalesProductDetailDto>(cacheKey, out var cachedResult))
+                if (
+                    _cache.TryGetValue<PagedSalesProductDetailDto>(cacheKey, out var cachedResult)
+                    && cachedResult != null
+                )
                 {
                     _logger.LogInformation("从缓存获取产品销售明细: {CacheKey}", cacheKey);
                     return cachedResult;
@@ -1700,6 +1679,10 @@ namespace BlazorApp.Api.Services.React
             {
                 ValidateDateRange(dateRange);
 
+                _logger.LogInformation("[GetEnhancedSalesProductDetailsAsync] Processing request: StartDate={StartDate}, EndDate={EndDate}, CompareStartDate={CompareStartDate}, CompareEndDate={CompareEndDate}, HasSupplierFilter={HasSupplierFilter}",
+                    dateRange.StartDate, dateRange.EndDate, dateRange.CompareStartDate, dateRange.CompareEndDate,
+                    (localSupplierCodes != null && localSupplierCodes.Any()) || (chinaSupplierCodes != null && chinaSupplierCodes.Any()));
+
                 // 步骤 1: 生成缓存键
                 var cacheKey = SalesDashboardCacheKeys.EnhancedProductDetail(
                     dateRange,
@@ -1716,6 +1699,7 @@ namespace BlazorApp.Api.Services.React
                         cacheKey,
                         out var cachedResult
                     )
+                    && cachedResult != null
                 )
                 {
                     _logger.LogInformation("从缓存获取增强产品销售明细: {CacheKey}", cacheKey);
@@ -1725,6 +1709,15 @@ namespace BlazorApp.Api.Services.React
                 // 步骤 3: 准备日期范围
                 var startDate = dateRange.StartDate.Date;
                 var endDate = dateRange.EndDate.Date.AddDays(1);
+
+                // 步骤 3.5: 准备对比期日期范围
+                DateTime? compareStartDate = null;
+                DateTime? compareEndDate = null;
+                if (dateRange.CompareStartDate.HasValue && dateRange.CompareEndDate.HasValue)
+                {
+                    compareStartDate = dateRange.CompareStartDate.Value.Date;
+                    compareEndDate = dateRange.CompareEndDate.Value.Date.AddDays(1);
+                }
 
                 // 步骤 4: 判断是否有供应商过滤条件
                 var hasSupplierFilter =
@@ -1824,27 +1817,108 @@ namespace BlazorApp.Api.Services.React
                     // 步骤 10: 构建产品字典以便快速查找
                     var productDict = products.ToDictionary(p => p.ProductCode);
 
+                    // 步骤 10.5: 查询对比期数据
+                    var compareDataDict = new Dictionary<string, (int Quantity, int DiscountedQuantity, decimal SalesAmount, decimal TotalOriginalAmount, int OrderCount)>();
+                    if (compareStartDate.HasValue && compareEndDate.HasValue)
+                    {
+                        _logger.LogInformation("[GetEnhancedSalesProductDetailsAsync] Querying compare period data: CompareStartDate={CompareStartDate}, CompareEndDate={CompareEndDate}",
+                            compareStartDate.Value, compareEndDate.Value);
+
+                        var compareBaseQuery = _posmContext
+                            .Db.Queryable<SalesOrder, SalesOrderDetail, PosmProductSupplierMapping>(
+                                (o, d, m) =>
+                                    o.OrderGuid == d.OrderGuid
+                                    && d.ProductCode == m.ProductCode
+                                    && !m.IsDeleted
+                            )
+                            .Where((o, d, m) => o.OrderTime >= compareStartDate.Value && o.OrderTime < compareEndDate.Value);
+
+                        if (branchCodes != null && branchCodes.Any())
+                        {
+                            compareBaseQuery = compareBaseQuery.Where(
+                                (o, d, m) => branchCodes.Contains(o.BranchCode ?? string.Empty)
+                            );
+                        }
+
+                        if (localSupplierCodes != null && localSupplierCodes.Any())
+                        {
+                            compareBaseQuery = compareBaseQuery.Where(
+                                (o, d, m) => localSupplierCodes.Contains(m.LocalSupplierCode)
+                            );
+                        }
+
+                        if (chinaSupplierCodes != null && chinaSupplierCodes.Any())
+                        {
+                            compareBaseQuery = compareBaseQuery.Where(
+                                (o, d, m) =>
+                                    chinaSupplierCodes.Contains(m.ChinaSupplierCode ?? string.Empty)
+                            );
+                        }
+
+                        var compareGroupedData = await compareBaseQuery
+                            .GroupBy((o, d, m) => d.ProductCode)
+                            .Select(
+                                (o, d, m) =>
+                                    new
+                                    {
+                                        ProductCode = d.ProductCode ?? string.Empty,
+                                        Quantity = SqlFunc.AggregateSum(d.Quantity) ?? 0,
+                                        DiscountedQuantity = SqlFunc.AggregateSum(
+                                            SqlFunc.IIF(d.DiscountAmount > 0, d.Quantity, 0)
+                                        ) ?? 0,
+                                        SalesAmount = SqlFunc.AggregateSum(d.ActualAmount) ?? 0,
+                                        TotalOriginalAmount = SqlFunc.AggregateSum(d.Subtotal) ?? 0,
+                                        OrderCount = SqlFunc.AggregateDistinctCount(o.OrderGuid),
+                                    }
+                            )
+                            .ToListAsync();
+
+                        compareDataDict = compareGroupedData
+                            .ToDictionary(x => x.ProductCode, x => (x.Quantity, x.DiscountedQuantity, x.SalesAmount, x.TotalOriginalAmount, x.OrderCount));
+                    }
+
                     // 步骤 11: 组装最终结果数据
                     data = groupedData
-                        .Select(x => new SalesProductDetailWithDiscountDto
+                        .Select(x =>
                         {
-                            ProductCode = x.ProductCode,
-                            ItemNumber = productDict.TryGetValue(x.ProductCode, out var p)
-                                ? (string?)p.ItemNumber
-                                : null,
-                            ProductImage = productDict.TryGetValue(x.ProductCode, out var p2)
-                                ? (string?)p2.ProductImage
-                                : null,
-                            ProductName = x.ProductName,
-                            Quantity = x.Quantity,
-                            DiscountedQuantity = x.DiscountedQuantity,
-                            SalesAmount = x.SalesAmount,
-                            AverageUnitPrice = x.Quantity > 0 ? x.SalesAmount / x.Quantity : 0,
-                            AverageOriginalPrice =
-                                x.Quantity > 0
-                                    ? x.TotalOriginalAmount / x.Quantity
-                                    : (decimal?)null,
-                            OrderCount = x.OrderCount,
+                            var result = new SalesProductDetailWithDiscountDto
+                            {
+                                ProductCode = x.ProductCode,
+                                ItemNumber = productDict.TryGetValue(x.ProductCode, out var p)
+                                    ? (string?)p.ItemNumber
+                                    : null,
+                                ProductImage = productDict.TryGetValue(x.ProductCode, out var p2)
+                                    ? (string?)p2.ProductImage
+                                    : null,
+                                ProductName = x.ProductName,
+                                Quantity = x.Quantity,
+                                DiscountedQuantity = x.DiscountedQuantity,
+                                SalesAmount = x.SalesAmount,
+                                AverageUnitPrice = x.Quantity > 0 ? x.SalesAmount / x.Quantity : 0,
+                                AverageOriginalPrice =
+                                    x.Quantity > 0
+                                        ? x.TotalOriginalAmount / x.Quantity
+                                        : (decimal?)null,
+                                OrderCount = x.OrderCount,
+                            };
+
+                            if (compareDataDict.TryGetValue(x.ProductCode, out var compareData))
+                            {
+                                result.QuantityLY = compareData.Quantity;
+                                result.DiscountedQuantityLY = compareData.DiscountedQuantity;
+                                result.SalesAmountLY = compareData.SalesAmount;
+                                result.AverageUnitPriceLY = compareData.Quantity > 0 ? compareData.SalesAmount / compareData.Quantity : 0;
+                                result.AverageOriginalPriceLY = compareData.Quantity > 0
+                                    ? compareData.TotalOriginalAmount / compareData.Quantity
+                                    : null;
+                                result.OrderCountLY = compareData.OrderCount;
+                            }
+                            else
+                            {
+                                _logger.LogWarning("[GetEnhancedSalesProductDetailsAsync] Product {ProductCode} not found in compare data dictionary", x.ProductCode);
+                            }
+
+                            return result;
                         })
                         .ToList();
                 }
@@ -1918,27 +1992,83 @@ namespace BlazorApp.Api.Services.React
                     // 步骤 10: 构建产品字典
                     var productDict = products.ToDictionary(p => p.ProductCode);
 
+                    // 步骤 10.5: 查询对比期数据
+                    var compareDataDict = new Dictionary<string, (int Quantity, int DiscountedQuantity, decimal SalesAmount, decimal TotalOriginalAmount, int OrderCount)>();
+                    if (compareStartDate.HasValue && compareEndDate.HasValue)
+                    {
+                        var compareBaseQuery = _posmContext
+                            .Db.Queryable<SalesOrder, SalesOrderDetail>(
+                                (o, d) => o.OrderGuid == d.OrderGuid
+                            )
+                            .Where((o, d) => o.OrderTime >= compareStartDate.Value && o.OrderTime < compareEndDate.Value);
+
+                        if (branchCodes != null && branchCodes.Any())
+                        {
+                            compareBaseQuery = compareBaseQuery.Where(
+                                (o, d) => branchCodes.Contains(o.BranchCode ?? string.Empty)
+                            );
+                        }
+
+                        var compareGroupedData = await compareBaseQuery
+                            .GroupBy((o, d) => d.ProductCode)
+                            .Select(
+                                (o, d) =>
+                                    new
+                                    {
+                                        ProductCode = d.ProductCode ?? string.Empty,
+                                        Quantity = SqlFunc.AggregateSum(d.Quantity) ?? 0,
+                                        DiscountedQuantity = SqlFunc.AggregateSum(
+                                            SqlFunc.IIF(d.DiscountAmount > 0, d.Quantity, 0)
+                                        ) ?? 0,
+                                        SalesAmount = SqlFunc.AggregateSum(d.ActualAmount) ?? 0,
+                                        TotalOriginalAmount = SqlFunc.AggregateSum(d.Subtotal) ?? 0,
+                                        OrderCount = SqlFunc.AggregateDistinctCount(o.OrderGuid),
+                                    }
+                            )
+                            .ToListAsync();
+
+                        compareDataDict = compareGroupedData
+                            .ToDictionary(x => x.ProductCode, x => (x.Quantity, x.DiscountedQuantity, x.SalesAmount, x.TotalOriginalAmount, x.OrderCount));
+                    }
+
                     // 步骤 11: 组装最终结果数据
                     data = groupedData
-                        .Select(x => new SalesProductDetailWithDiscountDto
+                        .Select(x =>
                         {
-                            ProductCode = x.ProductCode,
-                            ItemNumber = productDict.TryGetValue(x.ProductCode, out var p)
-                                ? (string?)p.ItemNumber
-                                : null,
-                            ProductImage = productDict.TryGetValue(x.ProductCode, out var p2)
-                                ? (string?)p2.ProductImage
-                                : null,
-                            ProductName = x.ProductName,
-                            Quantity = x.Quantity,
-                            DiscountedQuantity = x.DiscountedQuantity,
-                            SalesAmount = x.SalesAmount,
-                            AverageUnitPrice = x.Quantity > 0 ? x.SalesAmount / x.Quantity : 0,
-                            AverageOriginalPrice =
-                                x.Quantity > 0
-                                    ? x.TotalOriginalAmount / x.Quantity
-                                    : (decimal?)null,
-                            OrderCount = x.OrderCount,
+                            var result = new SalesProductDetailWithDiscountDto
+                            {
+                                ProductCode = x.ProductCode,
+                                ItemNumber = productDict.TryGetValue(x.ProductCode, out var p)
+                                    ? (string?)p.ItemNumber
+                                    : null,
+                                ProductImage = productDict.TryGetValue(x.ProductCode, out var p2)
+                                    ? (string?)p2.ProductImage
+                                    : null,
+                                ProductName = x.ProductName,
+                                Quantity = x.Quantity,
+                                DiscountedQuantity = x.DiscountedQuantity,
+                                SalesAmount = x.SalesAmount,
+                                AverageUnitPrice = x.Quantity > 0 ? x.SalesAmount / x.Quantity : 0,
+                                AverageOriginalPrice =
+                                    x.Quantity > 0
+                                        ? x.TotalOriginalAmount / x.Quantity
+                                        : (decimal?)null,
+                                OrderCount = x.OrderCount,
+                            };
+
+                            if (compareDataDict.TryGetValue(x.ProductCode, out var compareData))
+                            {
+                                result.QuantityLY = compareData.Quantity;
+                                result.DiscountedQuantityLY = compareData.DiscountedQuantity;
+                                result.SalesAmountLY = compareData.SalesAmount;
+                                result.AverageUnitPriceLY = compareData.Quantity > 0 ? compareData.SalesAmount / compareData.Quantity : 0;
+                                result.AverageOriginalPriceLY = compareData.Quantity > 0
+                                    ? compareData.TotalOriginalAmount / compareData.Quantity
+                                    : null;
+                                result.OrderCountLY = compareData.OrderCount;
+                            }
+
+                            return result;
                         })
                         .ToList();
                 }
@@ -1996,7 +2126,11 @@ namespace BlazorApp.Api.Services.React
 
                 var cacheKey = SalesDashboardCacheKeys.ProductBranch(dateRange, productCode);
 
-                if (_cache.TryGetValue<List<ProductBranchSalesDto>>(cacheKey, out var cachedResult))
+                if (
+                    _cache.TryGetValue<List<ProductBranchSalesDto>>(cacheKey, out var cachedResult)
+                    && cachedResult != null
+                    && cachedResult.Count != 0
+                )
                 {
                     _logger.LogInformation("从缓存获取产品各分店销售数据: {CacheKey}", cacheKey);
                     return cachedResult;
@@ -2104,6 +2238,8 @@ namespace BlazorApp.Api.Services.React
                         cacheKey,
                         out var cachedResult
                     )
+                    && cachedResult != null
+                    && cachedResult.Count != 0
                 )
                 {
                     _logger.LogInformation(
@@ -2338,6 +2474,201 @@ namespace BlazorApp.Api.Services.React
         }
 
         /// <summary>
+        /// 获取分店销售聚合数据
+        /// 用于 SalesDetailAnalysisV2 门店分布卡，直接返回分店级别的聚合数据
+        /// 避免前端接收大量明细数据后再进行聚合
+        /// </summary>
+        /// <param name="dateRange">日期范围（当前期）</param>
+        /// <param name="compareDateRange">日期范围（去年同期，可选）</param>
+        /// <param name="branchCodes">分店代码列表（可选）</param>
+        /// <param name="supplierCodes">供应商代码列表（可选，用于过滤）</param>
+        /// <returns>分店销售聚合数据列表</returns>
+        public async Task<List<BranchSalesAggregateDto>> GetBranchSalesAggregateAsync(
+            DateRangeDto dateRange,
+            DateRangeDto? compareDateRange = null,
+            List<string>? branchCodes = null,
+            List<string>? supplierCodes = null
+        )
+        {
+            try
+            {
+                ValidateDateRange(dateRange);
+
+                if (!ValidateDatabaseConnection<AustralianSupplierStoreSalesDetail>())
+                {
+                    return new List<BranchSalesAggregateDto>();
+                }
+
+                var startDate = dateRange.StartDate.Date;
+                var endDate = dateRange.EndDate.Date;
+
+                var query = _context
+                    .Db.Queryable<AustralianSupplierStoreSalesDetail>()
+                    .Where(s => s.Date >= startDate && s.Date <= endDate);
+
+                if (branchCodes != null && branchCodes.Any())
+                {
+                    query = query.Where(s => branchCodes.Contains(s.BranchCode));
+                }
+
+                if (supplierCodes != null && supplierCodes.Any())
+                {
+                    query = query.Where(s => supplierCodes.Contains(s.SupplierCode));
+                }
+
+                var currentData = await query
+                    .GroupBy(s => s.BranchCode)
+                    .Select(s => new
+                    {
+                        BranchCode = s.BranchCode,
+                        TotalRevenue = SqlFunc.AggregateSum(s.TotalAmount),
+                        TotalQuantity = SqlFunc.AggregateSum(s.TotalQuantity),
+                        OrderCount = SqlFunc.AggregateSum(s.OrderCount),
+                    })
+                    .ToListAsync();
+
+                var hbRevenueQuery = _context
+                    .Db.Queryable<AustralianSupplierStoreSalesDetail>()
+                    .Where(s => s.Date >= startDate && s.Date <= endDate);
+
+                if (branchCodes != null && branchCodes.Any())
+                {
+                    hbRevenueQuery = hbRevenueQuery.Where(s => branchCodes.Contains(s.BranchCode));
+                }
+
+                hbRevenueQuery = hbRevenueQuery.Where(s =>
+                    s.SupplierCode == "#200" || s.SupplierCode == "200"
+                );
+
+                var hbRevenueData = await hbRevenueQuery
+                    .GroupBy(s => s.BranchCode)
+                    .Select(s => new
+                    {
+                        BranchCode = s.BranchCode,
+                        HbRevenue = SqlFunc.AggregateSum(s.TotalAmount),
+                    })
+                    .ToListAsync();
+
+                var hbRevenueDict = hbRevenueData.ToDictionary(x => x.BranchCode, x => x.HbRevenue);
+
+                var branchCodesList = currentData.Select(s => s.BranchCode).ToList();
+
+                var branchNameQuery = _context
+                    .Db.Queryable<StoreSalesStatistic>()
+                    .Where(s => branchCodesList.Contains(s.BranchCode))
+                    .Select(s => new { s.BranchCode, s.BranchName })
+                    .Distinct();
+
+                var branchNames = await branchNameQuery.ToListAsync();
+                var branchNameDict = branchNames.ToDictionary(x => x.BranchCode, x => x.BranchName);
+
+                var result = currentData
+                    .Select(s => new BranchSalesAggregateDto
+                    {
+                        BranchCode = s.BranchCode,
+                        BranchName = branchNameDict.GetValueOrDefault(s.BranchCode, s.BranchCode),
+                        TotalRevenue = s.TotalRevenue,
+                        TotalRevenueLY = 0,
+                        TotalQuantity = s.TotalQuantity,
+                        TotalQuantityLY = 0,
+                        OrderCount = (int)s.OrderCount,
+                        OrderCountLY = 0,
+                        HbRevenue = hbRevenueDict.GetValueOrDefault(s.BranchCode, 0),
+                        HbRevenueLY = 0,
+                    })
+                    .ToList();
+
+                if (
+                    compareDateRange != null
+                    && compareDateRange.CompareStartDate.HasValue
+                    && compareDateRange.CompareEndDate.HasValue
+                )
+                {
+                    var compareStartDate = compareDateRange.CompareStartDate.Value.Date;
+                    var compareEndDate = compareDateRange.CompareEndDate.Value.Date;
+
+                    var compareQuery = _context
+                        .Db.Queryable<AustralianSupplierStoreSalesDetail>()
+                        .Where(s => s.Date >= compareStartDate && s.Date <= compareEndDate);
+
+                    if (branchCodes != null && branchCodes.Any())
+                    {
+                        compareQuery = compareQuery.Where(s => branchCodes.Contains(s.BranchCode));
+                    }
+
+                    if (supplierCodes != null && supplierCodes.Any())
+                    {
+                        compareQuery = compareQuery.Where(s =>
+                            supplierCodes.Contains(s.SupplierCode)
+                        );
+                    }
+
+                    var compareData = await compareQuery
+                        .GroupBy(s => s.BranchCode)
+                        .Select(s => new
+                        {
+                            BranchCode = s.BranchCode,
+                            TotalRevenue = SqlFunc.AggregateSum(s.TotalAmount),
+                            TotalQuantity = SqlFunc.AggregateSum(s.TotalQuantity),
+                            OrderCount = SqlFunc.AggregateSum(s.OrderCount),
+                        })
+                        .ToListAsync();
+
+                    var compareHbRevenueQuery = _context
+                        .Db.Queryable<AustralianSupplierStoreSalesDetail>()
+                        .Where(s => s.Date >= compareStartDate && s.Date <= compareEndDate);
+
+                    if (branchCodes != null && branchCodes.Any())
+                    {
+                        compareHbRevenueQuery = compareHbRevenueQuery.Where(s =>
+                            branchCodes.Contains(s.BranchCode)
+                        );
+                    }
+
+                    compareHbRevenueQuery = compareHbRevenueQuery.Where(s =>
+                        s.SupplierCode == "#200" || s.SupplierCode == "200"
+                    );
+
+                    var compareHbRevenueData = await compareHbRevenueQuery
+                        .GroupBy(s => s.BranchCode)
+                        .Select(s => new
+                        {
+                            BranchCode = s.BranchCode,
+                            HbRevenue = SqlFunc.AggregateSum(s.TotalAmount),
+                        })
+                        .ToListAsync();
+
+                    var compareHbRevenueDict = compareHbRevenueData.ToDictionary(
+                        x => x.BranchCode,
+                        x => x.HbRevenue
+                    );
+                    var compareDataDict = compareData.ToDictionary(x => x.BranchCode);
+
+                    foreach (var item in result)
+                    {
+                        if (compareDataDict.TryGetValue(item.BranchCode, out var compareItem))
+                        {
+                            item.TotalRevenueLY = compareItem.TotalRevenue;
+                            item.TotalQuantityLY = compareItem.TotalQuantity;
+                            item.OrderCountLY = (int)compareItem.OrderCount;
+                            item.HbRevenueLY = compareHbRevenueDict.GetValueOrDefault(
+                                item.BranchCode,
+                                0
+                            );
+                        }
+                    }
+                }
+
+                return result.OrderByDescending(r => r.TotalRevenue).ToList();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "GetBranchSalesAggregateAsync failed");
+                return new List<BranchSalesAggregateDto>();
+            }
+        }
+
+        /// <summary>
         /// 获取 Executive Dashboard 分店业绩排名
         /// 用于 Executive Sales Intelligence 页面
         /// 查询分店的销售总额，按销售额排序并计算 YoY
@@ -2366,6 +2697,8 @@ namespace BlazorApp.Api.Services.React
                         cacheKey,
                         out var cachedResult
                     )
+                    && cachedResult != null
+                    && cachedResult.Count != 0
                 )
                 {
                     _logger.LogInformation("从缓存获取 Executive 分店业绩: {CacheKey}", cacheKey);
@@ -2545,6 +2878,8 @@ namespace BlazorApp.Api.Services.React
                         cacheKey,
                         out var cachedResult
                     )
+                    && cachedResult != null
+                    && cachedResult.Count != 0
                 )
                 {
                     _logger.LogInformation("从缓存获取 Executive 每小时流量: {CacheKey}", cacheKey);
@@ -2682,6 +3017,8 @@ namespace BlazorApp.Api.Services.React
                         cacheKey,
                         out var cachedResult
                     )
+                    && cachedResult != null
+                    && cachedResult.Count != 0
                 )
                 {
                     _logger.LogInformation("从缓存获取周业绩层级数据: {CacheKey}", cacheKey);

@@ -658,6 +658,36 @@ namespace BlazorApp.Shared.DTOs
         /// 订单数量
         /// </summary>
         public int OrderCount { get; set; }
+
+        /// <summary>
+        /// 对比期销售总数量
+        /// </summary>
+        public int QuantityLY { get; set; }
+
+        /// <summary>
+        /// 对比期折扣销售数量
+        /// </summary>
+        public int DiscountedQuantityLY { get; set; }
+
+        /// <summary>
+        /// 对比期销售总金额
+        /// </summary>
+        public decimal SalesAmountLY { get; set; }
+
+        /// <summary>
+        /// 对比期平均单价
+        /// </summary>
+        public decimal AverageUnitPriceLY { get; set; }
+
+        /// <summary>
+        /// 对比期平均原价
+        /// </summary>
+        public decimal? AverageOriginalPriceLY { get; set; }
+
+        /// <summary>
+        /// 对比期订单数量
+        /// </summary>
+        public int OrderCountLY { get; set; }
     }
 
     /// <summary>
@@ -1005,5 +1035,63 @@ namespace BlazorApp.Shared.DTOs
         /// 子节点列表
         /// </summary>
         public List<WeeklyPerformanceHierarchyDto>? Children { get; set; }
+    }
+
+    /// <summary>
+    /// 分店销售聚合数据 DTO
+    /// 用于 SalesDetailAnalysisV2 门店分布卡，直接返回分店级别的聚合数据
+    /// 避免前端接收大量明细数据后再进行聚合
+    /// </summary>
+    public class BranchSalesAggregateDto
+    {
+        /// <summary>
+        /// 分店代码
+        /// </summary>
+        public string BranchCode { get; set; } = string.Empty;
+
+        /// <summary>
+        /// 分店名称
+        /// </summary>
+        public string BranchName { get; set; } = string.Empty;
+
+        /// <summary>
+        /// 当前期总销售额
+        /// </summary>
+        public decimal TotalRevenue { get; set; }
+
+        /// <summary>
+        /// 去年同期总销售额
+        /// </summary>
+        public decimal TotalRevenueLY { get; set; }
+
+        /// <summary>
+        /// 当前期总销售数量
+        /// </summary>
+        public int TotalQuantity { get; set; }
+
+        /// <summary>
+        /// 去年同期总销售数量
+        /// </summary>
+        public int TotalQuantityLY { get; set; }
+
+        /// <summary>
+        /// 当前期订单数
+        /// </summary>
+        public int OrderCount { get; set; }
+
+        /// <summary>
+        /// 去年同期订单数
+        /// </summary>
+        public int OrderCountLY { get; set; }
+
+        /// <summary>
+        /// 当前期 Hot Bargain 供应商 (#200) 销售额
+        /// </summary>
+        public decimal HbRevenue { get; set; }
+
+        /// <summary>
+        /// 去年同期 Hot Bargain 供应商 (#200) 销售额
+        /// </summary>
+        public decimal HbRevenueLY { get; set; }
     }
 }

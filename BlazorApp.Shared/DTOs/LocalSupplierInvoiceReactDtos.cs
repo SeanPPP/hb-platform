@@ -348,6 +348,11 @@ namespace BlazorApp.Shared.DTOs
         public decimal? PricingFloatRate { get; set; }
 
         /// <summary>
+        /// 新自动零售价
+        /// </summary>
+        public decimal? NewAutoRetailPrice { get; set; }
+
+        /// <summary>
         /// 商品信息
         /// </summary>
         public ProductCheckInfoDto? ProductInfo { get; set; }
@@ -474,6 +479,7 @@ namespace BlazorApp.Shared.DTOs
         public string? ProductImage { get; set; }
         public bool IsMultiCode { get; set; }
         public bool IsBundle { get; set; }
+        public int? ProductType { get; set; }
     }
 
     /// <summary>
@@ -508,6 +514,15 @@ namespace BlazorApp.Shared.DTOs
     }
 
     /// <summary>
+    /// 按商品编码查询匹配商品响应DTO
+    /// </summary>
+    public class GetProductsByProductCodeResponse
+    {
+        public string ProductCode { get; set; } = string.Empty;
+        public List<BarcodeAbnormalMatchedProductDto> MatchedProducts { get; set; } = new();
+    }
+
+    /// <summary>
     /// 检查随货单号是否存在请求DTO
     /// </summary>
     public class CheckInvoiceNoExistsRequest
@@ -524,5 +539,86 @@ namespace BlazorApp.Shared.DTOs
         public bool Exists { get; set; }
         public string? ExistingInvoiceNo { get; set; }
         public DateTime? ExistingCreatedAt { get; set; }
+    }
+
+    /// <summary>
+    /// 明细操作类型枚举
+    /// </summary>
+    public enum DetailAction
+    {
+        /// <summary>无操作</summary>
+        None = 0,
+
+        /// <summary>新建商品</summary>
+        CreateProduct = 1,
+
+        /// <summary>更新进货价</summary>
+        UpdatePurchasePrice = 2,
+
+        /// <summary>等待操作</summary>
+        WaitForOperation = 3,
+
+        /// <summary>更新货号</summary>
+        UpdateItemNumber = 4,
+
+        /// <summary>添加多码</summary>
+        AddMultiCode = 5,
+    }
+
+    /// <summary>
+    /// 批量执行操作请求DTO
+    /// </summary>
+    public class BatchExecuteActionsRequestDto
+    {
+        /// <summary>
+        /// 进货单GUID
+        /// </summary>
+        public string InvoiceGuid { get; set; } = string.Empty;
+
+        /// <summary>
+        /// 要执行的明细GUID列表
+        /// </summary>
+        public List<string> DetailGuids { get; set; } = new();
+    }
+
+    /// <summary>
+    /// 批量执行操作结果DTO
+    /// </summary>
+    public class BatchExecuteActionsResultDto
+    {
+        /// <summary>
+        /// 创建商品成功数
+        /// </summary>
+        public int CreatedProducts { get; set; }
+
+        /// <summary>
+        /// 更新进货价成功数
+        /// </summary>
+        public int UpdatedPurchasePrices { get; set; }
+
+        /// <summary>
+        /// 更新货号成功数
+        /// </summary>
+        public int UpdatedItemNumbers { get; set; }
+
+        /// <summary>
+        /// 添加多码成功数
+        /// </summary>
+        public int AddedMultiCodes { get; set; }
+
+        /// <summary>
+        /// 跳过数（无操作/等待操作）
+        /// </summary>
+        public int Skipped { get; set; }
+
+        /// <summary>
+        /// 失败数
+        /// </summary>
+        public int Failed { get; set; }
+
+        /// <summary>
+        /// 错误信息列表
+        /// </summary>
+        public List<string> Errors { get; set; } = new();
     }
 }

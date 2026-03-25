@@ -63,7 +63,6 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpGet("{invoiceGuid}/details")]
-
         public async Task<IActionResult> GetDetails(string invoiceGuid)
         {
             var result = await _service.GetDetailsAsync(invoiceGuid);
@@ -80,7 +79,6 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPost]
-
         public async Task<IActionResult> Create([FromBody] CreateInvoiceRequest dto)
         {
             var result = await _service.CreateAsync(dto);
@@ -97,7 +95,6 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPut("{invoiceGuid}")]
-
         public async Task<IActionResult> Update(
             string invoiceGuid,
             [FromBody] UpdateInvoiceRequest dto
@@ -117,7 +114,6 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPost("{invoiceGuid}/details/batch-upsert")]
-
         public async Task<IActionResult> BatchUpsertDetails(
             string invoiceGuid,
             [FromBody] List<InvoiceDetailUpsertItemDto> items
@@ -138,7 +134,6 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpDelete("{invoiceGuid}")]
-
         public async Task<IActionResult> Delete(string invoiceGuid)
         {
             var user = User.Identity?.Name ?? "system";
@@ -156,7 +151,6 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPost("detect/supplier-item")]
-
         public async Task<IActionResult> DetectSupplierItem(
             [FromBody] DetectSupplierItemRequest dto
         )
@@ -175,7 +169,6 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPost("detect/barcode")]
-
         public async Task<IActionResult> DetectBarcode([FromBody] DetectBarcodeRequest dto)
         {
             var result = await _service.DetectBarcodeAsync(dto);
@@ -192,7 +185,6 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPost("update-to-store-prices")]
-
         public async Task<IActionResult> UpdateToStorePrices(
             [FromBody] UpdateToStorePricesRequest dto
         )
@@ -212,7 +204,6 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPost("check-products")]
-
         public async Task<IActionResult> CheckProducts([FromBody] CheckProductsRequest dto)
         {
             var result = await _service.CheckProductsAsync(dto);
@@ -229,7 +220,6 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPost("{invoiceGuid}/details/paste")]
-
         public async Task<IActionResult> PasteDetails(
             [FromRoute] string invoiceGuid,
             [FromBody] PasteDetailsRequest dto
@@ -251,14 +241,17 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPut("{invoiceGuid}/details/{detailGuid}/action")]
-
         public async Task<IActionResult> UpdateDetailAction(
             [FromRoute] string invoiceGuid,
             [FromRoute] string detailGuid,
             [FromBody] UpdateDetailActionRequest dto
         )
         {
-            var result = await _service.UpdateDetailActionAsync(invoiceGuid, detailGuid, dto.Action);
+            var result = await _service.UpdateDetailActionAsync(
+                invoiceGuid,
+                detailGuid,
+                dto.Action
+            );
             if (result.Success)
                 return Ok(
                     new
@@ -304,9 +297,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpGet("{invoiceGuid}/barcode-abnormal-details")]
-        public async Task<IActionResult> GetBarcodeAbnormalDetails(
-            [FromRoute] string invoiceGuid
-        )
+        public async Task<IActionResult> GetBarcodeAbnormalDetails([FromRoute] string invoiceGuid)
         {
             var result = await _service.GetBarcodeAbnormalDetailsAsync(invoiceGuid);
             if (result.Success)
@@ -340,6 +331,25 @@ namespace BlazorApp.Api.Controllers.React
             return BadRequest(new { success = false, message = result.Message });
         }
 
+        [HttpGet("{invoiceGuid}/products-by-product-code")]
+        public async Task<IActionResult> GetProductsByProductCode(
+            [FromRoute] string invoiceGuid,
+            [FromQuery] string productCode
+        )
+        {
+            var result = await _service.GetProductsByProductCodeAsync(invoiceGuid, productCode);
+            if (result.Success)
+                return Ok(
+                    new
+                    {
+                        success = true,
+                        data = result.Data,
+                        message = result.Message,
+                    }
+                );
+            return BadRequest(new { success = false, message = result.Message });
+        }
+
         [HttpPost("check-invoice-no")]
         public async Task<IActionResult> CheckInvoiceNoExists([FromBody] CheckInvoiceNoExistsRequest dto)
         {
@@ -353,6 +363,20 @@ namespace BlazorApp.Api.Controllers.React
                         message = result.Message,
                     }
                 );
+            return BadRequest(new { success = false, message = result.Message });
+        }
+
+        [HttpPost("{invoiceGuid}/details/batch-execute")]
+        [Authorize(Roles = "Admin,WarehouseManager,Manager")]
+        public async Task<IActionResult> BatchExecuteActions(
+            [FromRoute] string invoiceGuid,
+            [FromBody] BatchExecuteActionsRequestDto dto
+        )
+        {
+            var user = User.Identity?.Name ?? "system";
+            var result = await _service.BatchExecuteActionsAsync(invoiceGuid, dto.DetailGuids, user);
+            if (result.Success)
+                return Ok(new { success = true, data = result.Data, message = result.Message });
             return BadRequest(new { success = false, message = result.Message });
         }
     }

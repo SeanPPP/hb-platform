@@ -20,13 +20,15 @@ namespace BlazorApp.Api.Interfaces.React
         Task<List<SupplierSalesRankDto>> GetSupplierSalesRankAsync(
             DateRangeDto dateRange,
             List<string>? branchCodes = null,
-            int topN = 20
+            int topN = 20,
+            string? supplierCode = null
         );
 
         Task<List<ChinaSupplierSalesRankDto>> GetChinaSupplierSalesRankAsync(
             DateRangeDto dateRange,
             List<string>? branchCodes = null,
-            int topN = 20
+            int topN = 20,
+            string? supplierCode = null
         );
 
         Task<List<SupplierStoreSalesDto>> GetSupplierStoreSalesAsync(
@@ -120,6 +122,23 @@ namespace BlazorApp.Api.Interfaces.React
         Task<List<WeeklyPerformanceHierarchyDto>> GetWeeklyPerformanceHierarchyAsync(
             DateRangeDto dateRange,
             List<string>? branchCodes = null
+        );
+
+        /// <summary>
+        /// 获取分店销售聚合数据
+        /// 用于 SalesDetailAnalysisV2 门店分布卡，直接返回分店级别的聚合数据
+        /// 避免前端接收大量明细数据后再进行聚合
+        /// </summary>
+        /// <param name="dateRange">日期范围（当前期）</param>
+        /// <param name="compareDateRange">日期范围（去年同期，可选）</param>
+        /// <param name="branchCodes">分店代码列表（可选）</param>
+        /// <param name="supplierCodes">供应商代码列表（可选，用于过滤）</param>
+        /// <returns>分店销售聚合数据列表</returns>
+        Task<List<BranchSalesAggregateDto>> GetBranchSalesAggregateAsync(
+            DateRangeDto dateRange,
+            DateRangeDto? compareDateRange = null,
+            List<string>? branchCodes = null,
+            List<string>? supplierCodes = null
         );
     }
 }
