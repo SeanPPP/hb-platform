@@ -361,6 +361,11 @@ namespace BlazorApp.Shared.DTOs
         /// 条码匹配数量
         /// </summary>
         public int BarcodeMatchCount { get; set; }
+
+        /// <summary>
+        /// 默认操作类型
+        /// </summary>
+        public int DefaultAction { get; set; }
     }
 
     /// <summary>
@@ -436,6 +441,10 @@ namespace BlazorApp.Shared.DTOs
         public decimal? Quantity { get; set; }
         public decimal? PurchasePrice { get; set; }
         public decimal? NewAutoRetailPrice { get; set; }
+        /// <summary>
+        /// 零售价（如果有值，则写入并关闭自动定价）
+        /// </summary>
+        public decimal? RetailPrice { get; set; }
     }
 
     /// <summary>

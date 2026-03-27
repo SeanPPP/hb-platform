@@ -195,6 +195,21 @@ namespace BlazorApp.Shared.DTOs
         public ContainerProductInfoDto? 商品信息 { get; set; }
 
         public bool 是否新商品 { get; set; }
+
+        /// <summary>
+        /// 仓库当前进货价
+        /// </summary>
+        public decimal? WarehouseImportPrice { get; set; }
+
+        /// <summary>
+        /// 仓库当前贴牌价格
+        /// </summary>
+        public decimal? WarehouseOEMPrice { get; set; }
+
+        /// <summary>
+        /// 仓库商品是否上架
+        /// </summary>
+        public bool? WarehouseIsActive { get; set; }
     }
 
     /// <summary>
@@ -304,6 +319,11 @@ namespace BlazorApp.Shared.DTOs
         /// 贴牌价格
         /// </summary>
         public decimal? 贴牌价格 { get; set; }
+
+        /// <summary>
+        /// 是否上架
+        /// </summary>
+        public bool? IsActive { get; set; }
     }
 
     /// <summary>

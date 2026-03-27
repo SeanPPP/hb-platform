@@ -401,18 +401,22 @@ namespace BlazorApp.Api.Services.React
                 result.FailedStores = storeErrors.Count;
                 result.StoreErrors = storeErrors;
 
-                var successRate = result.TotalCount > 0
-                    ? (double)result.SuccessCount / result.TotalCount * 100
-                    : 0;
+                var successRate =
+                    result.TotalCount > 0
+                        ? (double)result.SuccessCount / result.TotalCount * 100
+                        : 0;
 
-                result.Message = totalErrors == 0
-                    ? $"分店零售价同步成功：共处理{result.TotalCount:N0}条记录，{result.SuccessStores}个分店全部成功，成功率{successRate:F1}%"
-                    : $"分店零售价同步完成：共处理{result.TotalCount:N0}条记录，成功{result.SuccessCount:N0}条，失败{result.ErrorCount:N0}条，{result.SuccessStores}个分店成功，{result.FailedStores}个分店失败，成功率{successRate:F1}%";
+                result.Message =
+                    totalErrors == 0
+                        ? $"分店零售价同步成功：共处理{result.TotalCount:N0}条记录，{result.SuccessStores}个分店全部成功，成功率{successRate:F1}%"
+                        : $"分店零售价同步完成：共处理{result.TotalCount:N0}条记录，成功{result.SuccessCount:N0}条，失败{result.ErrorCount:N0}条，{result.SuccessStores}个分店成功，{result.FailedStores}个分店失败，成功率{successRate:F1}%";
 
                 if (storeErrors.Any())
                 {
                     var errorDetails = storeErrors
-                        .Select(e => $"分店{e.StoreCode}: {e.ErrorMessage} (处理{e.ProcessedCount:N0}条, 成功{e.InsertedCount:N0}条, 耗时{e.DurationSeconds:F1}s)")
+                        .Select(e =>
+                            $"分店{e.StoreCode}: {e.ErrorMessage} (处理{e.ProcessedCount:N0}条, 成功{e.InsertedCount:N0}条, 耗时{e.DurationSeconds:F1}s)"
+                        )
                         .ToList();
 
                     result.Details = "错误分店列表：\n" + string.Join("\n", errorDetails);
@@ -636,7 +640,7 @@ namespace BlazorApp.Api.Services.React
                     ProcessedCount = processed,
                     InsertedCount = added,
                     FailedCount = errors,
-                    DurationSeconds = (DateTime.Now - storeStart).TotalSeconds
+                    DurationSeconds = (DateTime.Now - storeStart).TotalSeconds,
                 };
 
                 _logger.LogError(ex, "[ReactSync] 分店{Store}处理异常", storeCode);
@@ -743,13 +747,23 @@ namespace BlazorApp.Api.Services.React
 
                     await Task.Delay(TimeSpan.FromSeconds(Math.Pow(2, retries)));
                 }
-                catch (Exception ex) when (
-                    (ex.Message?.Contains("transport-level error") == true ||
-                     ex.Message?.Contains("Cannot access destination table") == true ||
-                     (ex.InnerException != null &&
-                      (ex.InnerException.Message?.Contains("transport-level error") == true ||
-                       ex.InnerException.Message?.Contains("Cannot access destination table") == true))) &&
-                    retries < maxRetries - 1)
+                catch (Exception ex)
+                    when ((
+                            ex.Message?.Contains("transport-level error") == true
+                            || ex.Message?.Contains("Cannot access destination table") == true
+                            || (
+                                ex.InnerException != null
+                                && (
+                                    ex.InnerException.Message?.Contains("transport-level error")
+                                        == true
+                                    || ex.InnerException.Message?.Contains(
+                                        "Cannot access destination table"
+                                    ) == true
+                                )
+                            )
+                        )
+                        && retries < maxRetries - 1
+                    )
                 {
                     retries++;
                     currentTimeout = Math.Min(currentTimeout * 2, 1800);
@@ -942,13 +956,15 @@ namespace BlazorApp.Api.Services.React
                     result.SuccessStores = 0;
                     result.FailedStores = 0;
 
-                    var successRate = result.TotalCount > 0
-                        ? (double)result.SuccessCount / result.TotalCount * 100
-                        : 0;
+                    var successRate =
+                        result.TotalCount > 0
+                            ? (double)result.SuccessCount / result.TotalCount * 100
+                            : 0;
 
-                    result.Message = totalErrors == 0
-                        ? $"分店清货价同步成功：共处理{result.TotalCount:N0}条记录，成功率{successRate:F1}%"
-                        : $"分店清货价同步完成：共处理{result.TotalCount:N0}条记录，成功{result.SuccessCount:N0}条，失败{result.ErrorCount:N0}条，成功率{successRate:F1}%";
+                    result.Message =
+                        totalErrors == 0
+                            ? $"分店清货价同步成功：共处理{result.TotalCount:N0}条记录，成功率{successRate:F1}%"
+                            : $"分店清货价同步完成：共处理{result.TotalCount:N0}条记录，成功{result.SuccessCount:N0}条，失败{result.ErrorCount:N0}条，成功率{successRate:F1}%";
                 }
                 catch (Exception exTran)
                 {
@@ -1138,7 +1154,7 @@ namespace BlazorApp.Api.Services.React
                     ProcessedCount = processed,
                     InsertedCount = added,
                     FailedCount = errors,
-                    DurationSeconds = (DateTime.Now - storeStart).TotalSeconds
+                    DurationSeconds = (DateTime.Now - storeStart).TotalSeconds,
                 };
 
                 _logger.LogError(ex, "[ReactSync] 分店{Store} 清货价处理异常", storeCode);
@@ -1317,18 +1333,22 @@ namespace BlazorApp.Api.Services.React
                 result.FailedStores = storeErrors.Count;
                 result.StoreErrors = storeErrors;
 
-                var successRate = result.TotalCount > 0
-                    ? (double)result.SuccessCount / result.TotalCount * 100
-                    : 0;
+                var successRate =
+                    result.TotalCount > 0
+                        ? (double)result.SuccessCount / result.TotalCount * 100
+                        : 0;
 
-                result.Message = totalErrors == 0
-                    ? $"分店一品多码同步成功：共处理{result.TotalCount:N0}条记录，{result.SuccessStores}个分店全部成功，成功率{successRate:F1}%"
-                    : $"分店一品多码同步完成：共处理{result.TotalCount:N0}条记录，成功{result.SuccessCount:N0}条，失败{result.ErrorCount:N0}条，{result.SuccessStores}个分店成功，{result.FailedStores}个分店失败，成功率{successRate:F1}%";
+                result.Message =
+                    totalErrors == 0
+                        ? $"分店一品多码同步成功：共处理{result.TotalCount:N0}条记录，{result.SuccessStores}个分店全部成功，成功率{successRate:F1}%"
+                        : $"分店一品多码同步完成：共处理{result.TotalCount:N0}条记录，成功{result.SuccessCount:N0}条，失败{result.ErrorCount:N0}条，{result.SuccessStores}个分店成功，{result.FailedStores}个分店失败，成功率{successRate:F1}%";
 
                 if (storeErrors.Any())
                 {
                     var errorDetails = storeErrors
-                        .Select(e => $"分店{e.StoreCode}: {e.ErrorMessage} (处理{e.ProcessedCount:N0}条, 成功{e.InsertedCount:N0}条, 耗时{e.DurationSeconds:F1}s)")
+                        .Select(e =>
+                            $"分店{e.StoreCode}: {e.ErrorMessage} (处理{e.ProcessedCount:N0}条, 成功{e.InsertedCount:N0}条, 耗时{e.DurationSeconds:F1}s)"
+                        )
                         .ToList();
 
                     result.Details = "错误分店列表：\n" + string.Join("\n", errorDetails);
@@ -1528,7 +1548,7 @@ namespace BlazorApp.Api.Services.React
                     ProcessedCount = processed,
                     InsertedCount = added,
                     FailedCount = errors,
-                    DurationSeconds = (DateTime.Now - storeStart).TotalSeconds
+                    DurationSeconds = (DateTime.Now - storeStart).TotalSeconds,
                 };
 
                 _logger.LogError(ex, "[ReactSync] 分店{Store} 一品多码处理异常", storeCode);

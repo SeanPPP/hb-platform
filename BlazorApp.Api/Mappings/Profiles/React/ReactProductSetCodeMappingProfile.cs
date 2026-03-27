@@ -12,7 +12,7 @@ namespace BlazorApp.Api.Mappings.Profiles.React
             CreateMap<DIC_一品多码表, ProductSetCode>()
                 .ForMember(
                     dest => dest.SetCodeId,
-                    opt => opt.MapFrom(src => UuidHelper.GenerateUuid7().ToString())
+                    opt => opt.MapFrom(src => src.HGUID ?? UuidHelper.GenerateUuid7().ToString())
                 )
                 .ForMember(
                     dest => dest.ProductCode,

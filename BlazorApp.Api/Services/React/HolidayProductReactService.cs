@@ -488,6 +488,20 @@ namespace BlazorApp.Api.Services.React
         /// </summary>
         /// <param name="storeCode">分店代码</param>
         /// <returns>返回分店名称，未找到时返回分店代码</returns>
+        /// <remarks>
+        /// ⚠️ 警告：此方法每次调用都会执行一次数据库查询。
+        /// 请勿在循环中调用此方法，否则会产生 N+1 查询问题。
+        /// 
+        /// 推荐做法：在循环外批量获取门店数据，使用字典查找：
+        /// <code>
+        /// var storeDict = (await _context.Db.Queryable&lt;Store&gt;().ToListAsync())
+        ///     .ToDictionary(s => s.StoreCode, s => s.StoreName);
+        /// foreach (var item in items)
+        /// {
+        ///     var storeName = storeDict.GetValueOrDefault(item.StoreCode, item.StoreCode);
+        /// }
+        /// </code>
+        /// </remarks>
         private string GetStoreName(string storeCode)
         {
             var store = _context.Db.Queryable<Store>().Where(s => s.StoreCode == storeCode).First();

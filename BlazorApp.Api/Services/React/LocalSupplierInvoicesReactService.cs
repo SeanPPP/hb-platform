@@ -625,110 +625,85 @@ namespace BlazorApp.Api.Services.React
                         inserted = await db.Insertable(toInsert).ExecuteCommandAsync();
                     if (toUpdate.Count > 0)
                     {
-                        foreach (var u in toUpdate)
+                        // 修复 N+1 问题：先批量查询现有记录，分离更新和插入
+                        var detailGuids = toUpdate.Select(x => x.DetailGUID).ToList();
+                        var existingRecords = await db.Queryable<StoreLocalSupplierInvoiceDetails>()
+                            .Where(x => detailGuids.Contains(x.DetailGUID) && x.IsDeleted == false)
+                            .ToListAsync();
+                        var existingDict = existingRecords.ToDictionary(x => x.DetailGUID);
+
+                        // 分离：已存在的需要更新，不存在的需要插入
+                        var needUpdate = toUpdate.Where(x => existingDict.ContainsKey(x.DetailGUID)).ToList();
+                        var needInsert = toUpdate.Where(x => !existingDict.ContainsKey(x.DetailGUID)).ToList();
+
+                        // 批量处理需要插入的记录（回落插入逻辑）
+                        if (needInsert.Count > 0)
                         {
-                            var eff = await db.Updateable<StoreLocalSupplierInvoiceDetails>()
-                                .SetColumnsIF(
-                                    u.StoreProductCode != null,
-                                    x => x.StoreProductCode == u.StoreProductCode
-                                )
-                                .SetColumnsIF(
-                                    u.ProductCode != null,
-                                    x => x.ProductCode == u.ProductCode
-                                )
-                                .SetColumnsIF(
-                                    u.ItemNumber != null,
-                                    x => x.ItemNumber == u.ItemNumber
-                                )
-                                .SetColumnsIF(u.Barcode != null, x => x.Barcode == u.Barcode)
-                                .SetColumnsIF(
-                                    u.ProductName != null,
-                                    x => x.ProductName == u.ProductName
-                                )
-                                .SetColumnsIF(
-                                    u.ProductCategoryGUID != null,
-                                    x => x.ProductCategoryGUID == u.ProductCategoryGUID
-                                )
-                                .SetColumnsIF(u.Quantity != null, x => x.Quantity == u.Quantity)
-                                .SetColumnsIF(
-                                    u.LastPurchasePrice != null,
-                                    x => x.LastPurchasePrice == u.LastPurchasePrice
-                                )
-                                .SetColumnsIF(
-                                    u.PurchasePrice != null,
-                                    x => x.PurchasePrice == u.PurchasePrice
-                                )
-                                .SetColumnsIF(
-                                    u.RetailPrice != null,
-                                    x => x.RetailPrice == u.RetailPrice
-                                )
-                                .SetColumnsIF(u.Amount != null, x => x.Amount == u.Amount)
-                                .SetColumnsIF(
-                                    u.ActivityType != null,
-                                    x => x.ActivityType == u.ActivityType
-                                )
-                                .SetColumnsIF(
-                                    u.DiscountRate != null,
-                                    x => x.DiscountRate == u.DiscountRate
-                                )
-                                .SetColumnsIF(
-                                    u.AutoPricing != null,
-                                    x => x.AutoPricing == u.AutoPricing
-                                )
-                                .SetColumnsIF(
-                                    u.PricingFloatRate != null,
-                                    x => x.PricingFloatRate == u.PricingFloatRate
-                                )
-                                .SetColumnsIF(
-                                    u.NewAutoRetailPrice != null,
-                                    x => x.NewAutoRetailPrice == u.NewAutoRetailPrice
-                                )
-                                .SetColumnsIF(
-                                    u.IsSpecialProduct != null,
-                                    x => x.IsSpecialProduct == u.IsSpecialProduct
-                                )
-                                .SetColumns(x => x.UpdatedAt == now)
-                                .SetColumns(x => x.UpdatedBy == updatedBy)
-                                .Where(x => x.DetailGUID == u.DetailGUID)
+                            var insertList = needInsert.Select(u => new StoreLocalSupplierInvoiceDetails
+                            {
+                                DetailGUID = BlazorApp.Shared.Helper.UuidHelper.GenerateUuid7(),
+                                InvoiceGUID = invoiceGuid,
+                                StoreCode = storeCode,
+                                SupplierCode = supplierCode,
+                                StoreProductCode = u.StoreProductCode,
+                                ProductCode = u.ProductCode,
+                                ItemNumber = u.ItemNumber,
+                                Barcode = u.Barcode,
+                                ProductName = u.ProductName,
+                                ProductCategoryGUID = u.ProductCategoryGUID,
+                                Quantity = u.Quantity,
+                                LastPurchasePrice = u.LastPurchasePrice,
+                                PurchasePrice = u.PurchasePrice,
+                                RetailPrice = u.RetailPrice,
+                                Amount = u.Amount,
+                                ActivityType = u.ActivityType,
+                                DiscountRate = u.DiscountRate,
+                                AutoPricing = u.AutoPricing,
+                                PricingFloatRate = u.PricingFloatRate,
+                                NewAutoRetailPrice = u.NewAutoRetailPrice,
+                                IsSpecialProduct = u.IsSpecialProduct,
+                                CreatedAt = now,
+                                UpdatedAt = now,
+                                CreatedBy = updatedBy,
+                                UpdatedBy = updatedBy,
+                                IsDeleted = false,
+                            }).ToList();
+                            inserted += await db.Insertable(insertList).ExecuteCommandAsync();
+                        }
+
+                        // 批量处理需要更新的记录：在内存中合并更新值，然后批量更新
+                        if (needUpdate.Count > 0)
+                        {
+                            var mergedList = new List<StoreLocalSupplierInvoiceDetails>(needUpdate.Count);
+                            foreach (var u in needUpdate)
+                            {
+                                var existing = existingDict[u.DetailGUID];
+                                // 合并更新：只更新非 null 字段，保持条件更新语义
+                                if (u.StoreProductCode != null) existing.StoreProductCode = u.StoreProductCode;
+                                if (u.ProductCode != null) existing.ProductCode = u.ProductCode;
+                                if (u.ItemNumber != null) existing.ItemNumber = u.ItemNumber;
+                                if (u.Barcode != null) existing.Barcode = u.Barcode;
+                                if (u.ProductName != null) existing.ProductName = u.ProductName;
+                                if (u.ProductCategoryGUID != null) existing.ProductCategoryGUID = u.ProductCategoryGUID;
+                                if (u.Quantity != null) existing.Quantity = u.Quantity;
+                                if (u.LastPurchasePrice != null) existing.LastPurchasePrice = u.LastPurchasePrice;
+                                if (u.PurchasePrice != null) existing.PurchasePrice = u.PurchasePrice;
+                                if (u.RetailPrice != null) existing.RetailPrice = u.RetailPrice;
+                                if (u.Amount != null) existing.Amount = u.Amount;
+                                if (u.ActivityType != null) existing.ActivityType = u.ActivityType;
+                                if (u.DiscountRate != null) existing.DiscountRate = u.DiscountRate;
+                                if (u.AutoPricing != null) existing.AutoPricing = u.AutoPricing;
+                                if (u.PricingFloatRate != null) existing.PricingFloatRate = u.PricingFloatRate;
+                                if (u.NewAutoRetailPrice != null) existing.NewAutoRetailPrice = u.NewAutoRetailPrice;
+                                if (u.IsSpecialProduct != null) existing.IsSpecialProduct = u.IsSpecialProduct;
+                                existing.UpdatedAt = now;
+                                existing.UpdatedBy = updatedBy;
+                                mergedList.Add(existing);
+                            }
+                            // 使用 SqlSugar 批量更新，按主键 DetailGUID 匹配
+                            updated += await db.Updateable(mergedList)
+                                .WhereColumns(x => x.DetailGUID)
                                 .ExecuteCommandAsync();
-                            if (eff == 0)
-                            {
-                                // 回落插入：更新未命中则作为新行插入
-                                var ins = new StoreLocalSupplierInvoiceDetails
-                                {
-                                    DetailGUID = BlazorApp.Shared.Helper.UuidHelper.GenerateUuid7(),
-                                    InvoiceGUID = invoiceGuid,
-                                    StoreCode = storeCode,
-                                    SupplierCode = supplierCode,
-                                    StoreProductCode = u.StoreProductCode,
-                                    ProductCode = u.ProductCode,
-                                    ItemNumber = u.ItemNumber,
-                                    Barcode = u.Barcode,
-                                    ProductName = u.ProductName,
-                                    ProductCategoryGUID = u.ProductCategoryGUID,
-                                    Quantity = u.Quantity,
-                                    LastPurchasePrice = u.LastPurchasePrice,
-                                    PurchasePrice = u.PurchasePrice,
-                                    RetailPrice = u.RetailPrice,
-                                    Amount = u.Amount,
-                                    ActivityType = u.ActivityType,
-                                    DiscountRate = u.DiscountRate,
-                                    AutoPricing = u.AutoPricing,
-                                    PricingFloatRate = u.PricingFloatRate,
-                                    NewAutoRetailPrice = u.NewAutoRetailPrice,
-                                    IsSpecialProduct = u.IsSpecialProduct,
-                                    CreatedAt = now,
-                                    UpdatedAt = now,
-                                    CreatedBy = updatedBy,
-                                    UpdatedBy = updatedBy,
-                                    IsDeleted = false,
-                                };
-                                inserted += await db.Insertable(ins).ExecuteCommandAsync();
-                            }
-                            else
-                            {
-                                updated += eff;
-                            }
                         }
                     }
                     await db.Ado.CommitTranAsync();
@@ -1124,6 +1099,89 @@ namespace BlazorApp.Api.Services.React
                 }
             }
             return result;
+        }
+
+        /// <summary>
+        /// 并行分块查询，用于提升大数据量查询性能
+        /// 使用事务控制连接生命周期，确保并发查询时连接不会被提前关闭
+        /// 参考：https://www.donet5.com/home/doc?masterId=1&typeId=2349
+        /// </summary>
+        private async Task<List<T>> QueryInChunksParallelAsync<T, TKey>(
+            IReadOnlyList<TKey> keys,
+            int chunkSize,
+            Func<ISqlSugarClient, List<TKey>, Task<List<T>>> fetch,
+            int maxConcurrency = 5
+        )
+        {
+            if (keys == null || keys.Count == 0)
+                return new List<T>();
+
+            var chunks = new List<List<TKey>>();
+            var total = keys.Count;
+            for (var i = 0; i < total; i += chunkSize)
+            {
+                var chunk = new List<TKey>(Math.Min(chunkSize, total - i));
+                for (var j = i; j < Math.Min(i + chunkSize, total); j++)
+                {
+                    chunk.Add(keys[j]);
+                }
+                chunks.Add(chunk);
+            }
+
+            if (chunks.Count == 0)
+                return new List<T>();
+
+            var db = _context.Db;
+
+            if (chunks.Count == 1)
+            {
+                var singleResult = await fetch(db, chunks[0]);
+                return singleResult ?? new List<T>();
+            }
+
+            db.Ado.BeginTran();
+            try
+            {
+                var result = new List<T>[chunks.Count];
+                var semaphore = new SemaphoreSlim(maxConcurrency, maxConcurrency);
+
+                var tasks = chunks
+                    .Select(
+                        (chunk, index) =>
+                        {
+                            return Task.Run(async () =>
+                            {
+                                await semaphore.WaitAsync();
+                                try
+                                {
+                                    var part = await fetch(db, chunk);
+                                    result[index] = part ?? new List<T>();
+                                }
+                                finally
+                                {
+                                    semaphore.Release();
+                                }
+                            });
+                        }
+                    )
+                    .ToArray();
+
+                await Task.WhenAll(tasks);
+                db.Ado.CommitTran();
+
+                var finalResult = new List<T>(result.Sum(r => r?.Count ?? 0));
+                foreach (var r in result)
+                {
+                    if (r != null && r.Count > 0)
+                        finalResult.AddRange(r);
+                }
+                return finalResult;
+            }
+            catch
+            {
+                db.Ado.RollbackTran();
+                throw;
+            }
         }
 
         private static bool IsLikelyBarcode(string? s)
@@ -1617,12 +1675,14 @@ namespace BlazorApp.Api.Services.React
                 var itemNumbers = details
                     .Select(x => x.ItemNumber?.Trim())
                     .Where(x => !string.IsNullOrWhiteSpace(x))
+                    .Cast<string>()
                     .Distinct()
                     .ToList();
 
                 var barcodes = details
                     .Select(x => x.Barcode?.Trim())
                     .Where(x => !string.IsNullOrWhiteSpace(x))
+                    .Cast<string>()
                     .Distinct()
                     .ToList();
 
@@ -1630,14 +1690,13 @@ namespace BlazorApp.Api.Services.React
                 var productByItemNumber = new Dictionary<string, Product>();
                 if (itemNumbers.Count > 0)
                 {
-                    var products = await QueryInChunksAsync<Product, string>(
+                    var products = await QueryInChunksParallelAsync<Product, string>(
                         itemNumbers,
-                        1000,
-                        async chunk =>
+                        200,
+                        (db, chunk) =>
                         {
-                            // 将查询条件转为大写以实现不区分大小写的匹配
                             var upperChunk = chunk.Select(x => x.ToUpper()).ToList();
-                            return await db.Queryable<Product>()
+                            return db.Queryable<Product>()
                                 .Where(p =>
                                     p.LocalSupplierCode == header.SupplierCode
                                     && p.ItemNumber != null
@@ -1664,11 +1723,11 @@ namespace BlazorApp.Api.Services.React
 
                 if (productCodes.Count > 0)
                 {
-                    var storePrices = await QueryInChunksAsync<StoreRetailPrice, string>(
+                    var storePrices = await QueryInChunksParallelAsync<StoreRetailPrice, string>(
                         productCodes,
-                        1000,
-                        async chunk =>
-                            await db.Queryable<StoreRetailPrice>()
+                        200,
+                        (db, chunk) =>
+                            db.Queryable<StoreRetailPrice>()
                                 .Where(x =>
                                     x.StoreCode == header.StoreCode
                                     && x.ProductCode != null
@@ -1689,11 +1748,11 @@ namespace BlazorApp.Api.Services.React
                 if (barcodes.Count > 0)
                 {
                     // 查询商品表中的条码
-                    var prods = await QueryInChunksAsync<Product, string>(
+                    var prods = await QueryInChunksParallelAsync<Product, string>(
                         barcodes,
-                        1000,
-                        async chunk =>
-                            await db.Queryable<Product>()
+                        200,
+                        (db, chunk) =>
+                            db.Queryable<Product>()
                                 .Where(p =>
                                     p.IsDeleted == false
                                     && p.Barcode != null
@@ -1712,11 +1771,14 @@ namespace BlazorApp.Api.Services.React
                     }
 
                     // 查询多条码映射表
-                    var multiCodes = await QueryInChunksAsync<StoreMultiCodeProduct, string>(
+                    var multiCodes = await QueryInChunksParallelAsync<
+                        StoreMultiCodeProduct,
+                        string
+                    >(
                         barcodes,
-                        1000,
-                        async chunk =>
-                            await db.Queryable<StoreMultiCodeProduct>()
+                        200,
+                        (db, chunk) =>
+                            db.Queryable<StoreMultiCodeProduct>()
                                 .Where(x =>
                                     x.StoreCode == header.StoreCode
                                     && x.MultiBarcode != null
@@ -1736,7 +1798,27 @@ namespace BlazorApp.Api.Services.React
                     }
                 }
 
-                // 第七步：遍历明细，生成检测结果
+                // 第七步：预加载定价策略，避免 N+1 查询
+                var allStrategies = await _autoPricingService.GetAllActiveStrategiesAsync();
+                var supplierStrategies = allStrategies
+                    .Where(s =>
+                        s.Targets?.Any(t =>
+                            t.TargetType == "Supplier" && t.TargetCode == header.SupplierCode
+                        ) ?? false
+                    )
+                    .ToList();
+                var storeStrategies = allStrategies
+                    .Where(s =>
+                        s.Targets?.Any(t =>
+                            t.TargetType == "Store" && t.TargetCode == header.StoreCode
+                        ) ?? false
+                    )
+                    .ToList();
+                var globalStrategies = allStrategies
+                    .Where(s => s.Level == "Global" || (s.Targets == null || s.Targets.Count == 0))
+                    .ToList();
+
+                // 第八步：遍历明细，生成检测结果
                 var results = new List<ProductCheckResultDto>();
                 var summary = new CheckProductsSummaryDto { Total = details.Count };
 
@@ -1835,23 +1917,56 @@ namespace BlazorApp.Api.Services.React
                         }
                     }
 
-                    // 【新增】对所有有进货价的明细，通过 AutoPricingService 计算定价浮率和自动零售价
+                    // 使用预加载的策略在内存中计算定价浮率和自动零售价，避免 N+1 查询
                     if (detail.PurchasePrice.HasValue && detail.PurchasePrice > 0)
                     {
                         var purchasePrice = detail.PurchasePrice.Value;
-                        var strategy = await _autoPricingService.FindStrategyForPriceAsync(
+                        var strategy = _autoPricingService.FindBestStrategyForPrice(
                             purchasePrice,
-                            header.SupplierCode,
-                            header.StoreCode
+                            supplierStrategies,
+                            storeStrategies,
+                            globalStrategies
                         );
-                        result.PricingFloatRate = _autoPricingService.CalculateRate(purchasePrice, strategy);
-                        result.NewAutoRetailPrice = _autoPricingService.CalculateRetailPrice(purchasePrice, strategy);
+                        result.PricingFloatRate = _autoPricingService.CalculateRate(
+                            purchasePrice,
+                            strategy
+                        );
+                        result.NewAutoRetailPrice = _autoPricingService.CalculateRetailPrice(
+                            purchasePrice,
+                            strategy
+                        );
                     }
+
+                    // 【新增】计算默认操作
+                    var defaultAction = 0;
+                    if (detail.PurchasePrice.HasValue && detail.PurchasePrice.Value > 0)
+                    {
+                        bool productExists = result.ProductStatus == 1;
+                        bool barcodeNormal = result.BarcodeStatus == 1;
+
+                        if (!productExists && barcodeNormal)
+                        {
+                            defaultAction = 1; // CreateProduct
+                        }
+                        else if (productExists && !barcodeNormal)
+                        {
+                            defaultAction = 5; // AddMultiCode
+                        }
+                        else if (productExists && barcodeNormal)
+                        {
+                            defaultAction = 2; // UpdatePurchasePrice
+                        }
+                        else
+                        {
+                            defaultAction = 3; // WaitForOperation
+                        }
+                    }
+                    result.DefaultAction = defaultAction;
 
                     results.Add(result);
                 }
 
-                // 第八步：批量更新订单明细，将检测结果写入数据库
+                // 第九步：批量更新订单明细，将检测结果写入数据库
                 var updateNow = DateTime.UtcNow;
                 await db.Ado.BeginTranAsync();
                 try
@@ -1871,6 +1986,7 @@ namespace BlazorApp.Api.Services.React
                             BarcodeMatchCount = r.BarcodeMatchCount,
                             PricingFloatRate = r.PricingFloatRate,
                             NewAutoRetailPrice = r.NewAutoRetailPrice,
+                            ActivityType = r.DefaultAction,
                             UpdatedAt = updateNow,
                         })
                         .ToList();
@@ -1891,6 +2007,7 @@ namespace BlazorApp.Api.Services.React
                         var hasBarcodeMatchCount = results.Any(r => r.BarcodeMatchCount != 0);
                         var hasPricingFloatRate = results.Any(r => r.PricingFloatRate != null);
                         var hasNewAutoRetailPrice = results.Any(r => r.NewAutoRetailPrice != null);
+                        var hasDefaultAction = results.Any(r => r.DefaultAction != 0);
 
                         // 构建需要更新的列
                         var updateColumns = new List<string> { "UpdatedAt" };
@@ -1917,6 +2034,8 @@ namespace BlazorApp.Api.Services.React
                             updateColumns.Add("PricingFloatRate");
                         if (hasNewAutoRetailPrice)
                             updateColumns.Add("NewAutoRetailPrice");
+                        if (hasDefaultAction)
+                            updateColumns.Add("ActivityType");
 
                         // 使用 UpdateColumns 只更新指定列
                         await db.Updateable(updateItems)
@@ -1989,6 +2108,8 @@ namespace BlazorApp.Api.Services.React
                         Quantity = i.Quantity ?? 1,
                         PurchasePrice = i.PurchasePrice,
                         NewAutoRetailPrice = i.NewAutoRetailPrice,
+                        RetailPrice = i.RetailPrice,
+                        AutoPricing = i.RetailPrice.HasValue && i.RetailPrice > 0 ? false : true,
                         Amount = (i.Quantity ?? 1) * (i.PurchasePrice ?? 0),
                         CreatedAt = now,
                         UpdatedAt = now,
@@ -2883,11 +3004,16 @@ namespace BlazorApp.Api.Services.React
             if (productExists && barcodeNormal)
             {
                 // 判断是否需要更新货号（货号不一致）
-                if (!string.IsNullOrWhiteSpace(detail.ItemNumber)
+                if (
+                    !string.IsNullOrWhiteSpace(detail.ItemNumber)
                     && !string.IsNullOrWhiteSpace(detail.ProductCode)
-                    && productItemNumbers.TryGetValue(detail.ProductCode, out var existingItemNumber)
+                    && productItemNumbers.TryGetValue(
+                        detail.ProductCode,
+                        out var existingItemNumber
+                    )
                     && !string.IsNullOrWhiteSpace(existingItemNumber)
-                    && existingItemNumber != detail.ItemNumber)
+                    && existingItemNumber != detail.ItemNumber
+                )
                 {
                     return DetailAction.UpdateItemNumber;
                 }
@@ -2945,28 +3071,43 @@ namespace BlazorApp.Api.Services.React
                 // 生成商品 UUID
                 var productUUID = UuidHelper.GenerateUuid7();
 
-                // 计算零售价：如果明细中有指定零售价或新自动零售价则使用，否则使用 AutoPricingService 计算
+                // 计算零售价：根据自动定价标志决定使用哪个零售价
                 decimal calculatedRetailPrice = 0;
-                if (detail.RetailPrice.HasValue && detail.RetailPrice > 0)
+                if (detail.AutoPricing == true)
                 {
-                    calculatedRetailPrice = detail.RetailPrice.Value;
-                }
-                else if (detail.NewAutoRetailPrice.HasValue && detail.NewAutoRetailPrice > 0)
-                {
-                    calculatedRetailPrice = detail.NewAutoRetailPrice.Value;
-                }
-                else if (detail.PurchasePrice.HasValue && detail.PurchasePrice > 0 && (detail.AutoPricing ?? true))
-                {
-                    var strategy = await _autoPricingService.FindStrategyForPriceAsync(
-                        detail.PurchasePrice.Value,
-                        header.SupplierCode,
-                        null
-                    );
-                    calculatedRetailPrice = _autoPricingService.CalculateRetailPrice(detail.PurchasePrice.Value, strategy);
+                    // 自动定价开启时，使用新自动零售价
+                    if (detail.NewAutoRetailPrice.HasValue && detail.NewAutoRetailPrice > 0)
+                    {
+                        calculatedRetailPrice = detail.NewAutoRetailPrice.Value;
+                    }
+                    else if (detail.PurchasePrice.HasValue && detail.PurchasePrice > 0)
+                    {
+                        var strategy = await _autoPricingService.FindStrategyForPriceAsync(
+                            detail.PurchasePrice.Value,
+                            header.SupplierCode,
+                            null
+                        );
+                        calculatedRetailPrice = _autoPricingService.CalculateRetailPrice(
+                            detail.PurchasePrice.Value,
+                            strategy
+                        );
+                    }
+                    else
+                    {
+                        calculatedRetailPrice = (detail.PurchasePrice ?? 0) * 2.5m; // 默认加价 250%
+                    }
                 }
                 else
                 {
-                    calculatedRetailPrice = (detail.PurchasePrice ?? 0) * 2.5m; // 默认加价 250%
+                    // 自动定价关闭时，使用指定零售价
+                    if (detail.RetailPrice.HasValue && detail.RetailPrice > 0)
+                    {
+                        calculatedRetailPrice = detail.RetailPrice.Value;
+                    }
+                    else
+                    {
+                        calculatedRetailPrice = (detail.PurchasePrice ?? 0) * 2.5m; // 默认加价 250%
+                    }
                 }
 
                 var product = new Product
@@ -3069,7 +3210,9 @@ namespace BlazorApp.Api.Services.React
                     .SetColumns(srp => srp.PurchasePrice == detail.PurchasePrice)
                     .SetColumns(srp => srp.UpdatedAt == now)
                     .SetColumns(srp => srp.UpdatedBy == userName)
-                    .Where(srp => srp.ProductCode == detail.ProductCode && srp.IsDeleted == false)
+                    .Where(srp => srp.ProductCode == detail.ProductCode
+                        && srp.StoreCode == detail.StoreCode
+                        && srp.IsDeleted == false)
                     .ExecuteCommandAsync();
 
                 result.SuccessCount++;
@@ -3144,7 +3287,9 @@ namespace BlazorApp.Api.Services.React
             if (productCodesToUpdate.Count > 0)
             {
                 var products = await db.Queryable<Product>()
-                    .Where(p => productCodesToUpdate.Contains(p.ProductCode) && p.IsDeleted == false)
+                    .Where(p =>
+                        productCodesToUpdate.Contains(p.ProductCode) && p.IsDeleted == false
+                    )
                     .Select(p => new { p.ProductCode, p.ProductType })
                     .ToListAsync();
 
@@ -3209,8 +3354,6 @@ namespace BlazorApp.Api.Services.React
                 // 为每个有效分店创建记录
                 foreach (var storeCode in activeStores)
                 {
-                   
-
                     // 创建 StoreMultiCodeProduct
                     var multiCode = new StoreMultiCodeProduct
                     {
@@ -3234,7 +3377,6 @@ namespace BlazorApp.Api.Services.React
                     };
                     multiCodesToCreate.Add(multiCode);
                 }
-
 
                 result.SuccessCount++;
             }

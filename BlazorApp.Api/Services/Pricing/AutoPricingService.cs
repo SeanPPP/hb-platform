@@ -374,5 +374,121 @@ namespace BlazorApp.Api.Services.Pricing
                 return purchasePrice;
             return CalculateRetailPrice(purchasePrice, strategy);
         }
+
+        /// <summary>
+        /// 获取所有启用的定价策略（包含明细和目标），用于批量计算时预加载避免N+1查询
+        /// </summary>
+        public async Task<List<PricingStrategy>> GetAllActiveStrategiesAsync()
+        {
+            var flatRows = await _context
+                .PricingStrategyDb.AsQueryable()
+                .LeftJoin<PricingStrategyDetail>((s, d) => s.Id == d.StrategyId)
+                .LeftJoin<PricingStrategyTarget>((s, d, t) => s.Id == t.StrategyId)
+                .Where((s, d, t) => s.IsEnabled)
+                .Select(
+                    (s, d, t) =>
+                        new
+                        {
+                            StrategyId = s.Id,
+                            StrategyName = s.Name,
+                            StrategyLevel = s.Level,
+                            StrategyTargetCode = s.TargetCode,
+                            StrategyPriority = s.Priority,
+                            DetailId = d.Id,
+                            DetailMinPrice = d.MinPrice,
+                            DetailMaxPrice = d.MaxPrice,
+                            DetailStartRate = d.StartRate,
+                            DetailEndRate = d.EndRate,
+                            DetailAlgorithm = d.Algorithm,
+                            TargetId = t.Id,
+                            TargetType = t.TargetType,
+                            TargetCode = t.TargetCode,
+                        }
+                )
+                .ToListAsync();
+
+            var strategies = flatRows
+                .GroupBy(r => new
+                {
+                    r.StrategyId,
+                    r.StrategyName,
+                    r.StrategyLevel,
+                    r.StrategyTargetCode,
+                    r.StrategyPriority,
+                })
+                .Select(g => new PricingStrategy
+                {
+                    Id = g.Key.StrategyId,
+                    Name = g.Key.StrategyName,
+                    Level = g.Key.StrategyLevel,
+                    TargetCode = g.Key.StrategyTargetCode,
+                    Priority = g.Key.StrategyPriority,
+                    Details = g.Where(x => x.DetailId != null)
+                        .GroupBy(x => x.DetailId)
+                        .Select(gg => new PricingStrategyDetail
+                        {
+                            Id = gg.Key!,
+                            StrategyId = g.Key.StrategyId,
+                            MinPrice = gg.First().DetailMinPrice,
+                            MaxPrice = gg.First().DetailMaxPrice,
+                            StartRate = gg.First().DetailStartRate,
+                            EndRate = gg.First().DetailEndRate,
+                            Algorithm = gg.First().DetailAlgorithm,
+                        })
+                        .ToList(),
+                    Targets = g.Where(x => x.TargetId != null)
+                        .GroupBy(x => x.TargetId)
+                        .Select(gg => new PricingStrategyTarget
+                        {
+                            Id = gg.Key!,
+                            StrategyId = g.Key.StrategyId,
+                            TargetType = gg.First().TargetType,
+                            TargetCode = gg.First().TargetCode,
+                        })
+                        .ToList(),
+                })
+                .ToList();
+
+            return strategies;
+        }
+
+        /// <summary>
+        /// 在内存中查找最佳定价策略（用于批量计算时避免N+1查询）
+        /// 优先级：供应商+分店 > 供应商 > 分店 > 全局
+        /// </summary>
+        public PricingStrategy? FindBestStrategyForPrice(
+            decimal purchasePrice,
+            List<PricingStrategy> supplierStrategies,
+            List<PricingStrategy> storeStrategies,
+            List<PricingStrategy> globalStrategies
+        )
+        {
+            List<PricingStrategy> MatchByPrice(List<PricingStrategy> list)
+            {
+                return list
+                    .Where(s =>
+                        s.Details?.Any(d =>
+                            purchasePrice >= d.MinPrice && purchasePrice <= d.MaxPrice
+                        ) ?? false
+                    )
+                    .OrderByDescending(s => s.Priority)
+                    .ToList();
+            }
+
+            var matchedSupplier = MatchByPrice(supplierStrategies);
+            var matchedStore = MatchByPrice(storeStrategies);
+            var matchedGlobal = MatchByPrice(globalStrategies);
+
+            if (matchedSupplier.Count > 0)
+                return matchedSupplier[0];
+
+            if (matchedStore.Count > 0)
+                return matchedStore[0];
+
+            if (matchedGlobal.Count > 0)
+                return matchedGlobal[0];
+
+            return null;
+        }
     }
 }

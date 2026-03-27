@@ -12,7 +12,7 @@ namespace BlazorApp.Api.Mappings.Profiles.React
             CreateMap<DIC_商品信息字典表, Product>()
                 .ForMember(
                     dest => dest.UUID,
-                    opt => opt.MapFrom(src => UuidHelper.GenerateUuid7().ToString())
+                    opt => opt.MapFrom(src => src.HGUID ?? UuidHelper.GenerateUuid7().ToString())
                 )
                 .ForMember(
                     dest => dest.ProductCode,

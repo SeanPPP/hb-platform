@@ -15,7 +15,8 @@ using SqlSugar;
 namespace BlazorApp.Api.Services.React
 {
     /// <summary>
-    /// React
+    /// 仓库商品服务 - React 前端专用
+    /// 提供仓库商品的 CRUD 操作、批量导入、价格同步等功能
     /// </summary>
     public class ProductWarehouseReactService : IProductWarehouseReactService
     {
@@ -37,6 +38,12 @@ namespace BlazorApp.Api.Services.React
             _itemBarcodeService = itemBarcodeService;
         }
 
+        /// <summary>
+        /// 检测商品是否已存在于仓库中
+        /// 通过 ProductCode 或 ItemNumber 进行匹配
+        /// </summary>
+        /// <param name="items">待检测的商品列表</param>
+        /// <returns>检测结果列表</returns>
         public async Task<List<DetectionResultDto>> DetectAsync(List<DetectionItemDto> items)
         {
             var results = new List<DetectionResultDto>();
@@ -166,16 +173,24 @@ namespace BlazorApp.Api.Services.React
             return results;
         }
 
+        /// <summary>
+        /// 批量更新仓库商品
+        /// 支持通过 ProductCode 或 ItemNumber 匹配商品进行更新
+        /// </summary>
+        /// <param name="items">待更新的商品列表</param>
+        /// <returns>批量操作结果</returns>
         public async Task<BatchOperationResultDto> BatchUpdateAsync(List<UpdateItemDto> items)
         {
-            var result = new BatchOperationResultDto { Success = true, Message = "鏇存柊瀹屾垚" };
+            var result = new BatchOperationResultDto { Success = true, Message = "更新完成" };
             if (items == null || items.Count == 0)
                 return result;
 
             try
             {
+                // 开启事务
                 _context.Db.Ado.BeginTran();
 
+                // 收集需要查询的 ProductCode 和 ItemNumber
                 var productCodes = items
                     .Select(i => i.ProductCode)
                     .Where(c => !string.IsNullOrWhiteSpace(c))
@@ -187,6 +202,7 @@ namespace BlazorApp.Api.Services.React
                     .Distinct()
                     .ToList();
 
+                // 批量查询仓库商品（避免 N+1 问题）
                 var wpList = new List<WarehouseProduct>();
                 if (productCodes.Any())
                 {
@@ -196,6 +212,7 @@ namespace BlazorApp.Api.Services.React
                         .ToListAsync();
                     wpList.AddRange(wpByCodes);
                 }
+                // 通过 ItemNumber 查询对应的仓库商品
                 if (itemNumbers.Any())
                 {
                     var codesFromItems = await _context
@@ -384,6 +401,35 @@ namespace BlazorApp.Api.Services.React
                             .UpdateColumns(p => new { p.PurchasePrice, p.UpdatedAt })
                             .ExecuteCommandAsync();
                     }
+
+                    var storeRetailPrices = await _context
+                        .Db.Queryable<StoreRetailPrice>()
+                        .Where(srp =>
+                            srp.ProductCode != null
+                            && codesWithImportPrice.Contains(srp.ProductCode)
+                        )
+                        .ToListAsync();
+
+                    foreach (var srp in storeRetailPrices)
+                    {
+                        if (importDict.TryGetValue(srp.ProductCode!, out var importPrice))
+                        {
+                            srp.PurchasePrice = importPrice;
+                            srp.UpdatedAt = DateTime.Now;
+                        }
+                    }
+
+                    if (storeRetailPrices.Any())
+                    {
+                        await _context
+                            .Db.Updateable(storeRetailPrices)
+                            .UpdateColumns(srp => new { srp.PurchasePrice, srp.UpdatedAt })
+                            .ExecuteCommandAsync();
+                        _logger.LogInformation(
+                            "更新了 {Count} 条分店价格记录的进货价",
+                            storeRetailPrices.Count
+                        );
+                    }
                 }
 
                 _context.Db.Ado.CommitTran();
@@ -399,6 +445,12 @@ namespace BlazorApp.Api.Services.React
             return result;
         }
 
+        /// <summary>
+        /// 批量创建仓库商品
+        /// 支持普通商品和套装商品，自动跳过已存在的商品
+        /// </summary>
+        /// <param name="items">待创建的商品列表</param>
+        /// <returns>批量操作结果</returns>
         public async Task<BatchOperationResultDto> BatchCreateAsync(List<CreateItemDto> items)
         {
             var result = new BatchOperationResultDto { Success = true, Message = "创建完成" };
@@ -407,9 +459,11 @@ namespace BlazorApp.Api.Services.React
 
             try
             {
+                // 开启事务
                 _context.Db.Ado.BeginTran();
                 var now = DateTime.Now;
 
+                // 收集所有需要查询的 ProductCode 和 ItemNumber
                 var codes = items
                     .Select(i => i.ProductCode)
                     .Where(c => !string.IsNullOrWhiteSpace(c))
@@ -425,6 +479,8 @@ namespace BlazorApp.Api.Services.React
                 HashSet<string> existingItems;
                 Dictionary<string, string> itemToCode = new Dictionary<string, string>();
                 HashSet<string> existingWpCodes = new HashSet<string>();
+
+                // 批量查询已存在的商品（避免 N+1 问题）
                 if (codes.Any() && itemNumbers.Any())
                 {
                     queryProducts = queryProducts.Where(p =>
@@ -551,31 +607,72 @@ namespace BlazorApp.Api.Services.React
                     existingWpCodes = new HashSet<string>();
                 }
 
+                // 待创建的商品、仓库商品、套装编码列表
                 var toCreateProducts = new List<Product>();
                 var toCreateWps = new List<WarehouseProduct>();
                 var toCreateSetCodes = new List<ProductSetCode>();
 
+                // 收集所有套装商品的 ProductCode（用于批量查询，避免 N+1 问题）
+                var setProductCodesToQuery = new HashSet<string>();
                 foreach (var item in items)
                 {
+                    if (!item.IsSetProduct)
+                        continue;
+                    var code = item.ProductCode;
+                    if (string.IsNullOrWhiteSpace(code))
+                    {
+                        if (
+                            !string.IsNullOrWhiteSpace(item.ItemNumber)
+                            && itemToCode.TryGetValue(item.ItemNumber!, out var mapped)
+                        )
+                        {
+                            code = mapped;
+                        }
+                    }
+                    if (!string.IsNullOrWhiteSpace(code))
+                        setProductCodesToQuery.Add(code!);
+                }
+
+                // 批量查询套装商品关联数据（一次性查询，避免 N+1）
+                var setProductsByCode = setProductCodesToQuery.Any()
+                    ? (
+                        await _context
+                            .Db.Queryable<DomesticSetProduct>()
+                            .Where(sp =>
+                                setProductCodesToQuery.Contains(sp.ProductCode) && !sp.IsDeleted
+                            )
+                            .ToListAsync()
+                    )
+                        .GroupBy(sp => sp.ProductCode)
+                        .ToDictionary(g => g.Key, g => g.ToList())
+                    : new Dictionary<string, List<DomesticSetProduct>>();
+
+                // 遍历处理每个商品
+                foreach (var item in items)
+                {
+                    // 验证必填字段
                     if (string.IsNullOrWhiteSpace(item.ItemNumber))
                     {
-                        result.Errors.Add("ItemNumber 涓嶈兘涓虹┖");
+                        result.Errors.Add("ItemNumber cannot be empty");
                         result.FailedCount++;
                         continue;
                     }
                     if (item.OEMPrice <= 0)
                     {
-                        result.Errors.Add($"璐寸墝浠锋牸蹇呴』澶т簬0: {item.ItemNumber}");
+                        result.Errors.Add($"OEM price must be greater than 0: {item.ItemNumber}");
                         result.FailedCount++;
                         continue;
                     }
                     if (item.ImportPrice <= 0)
                     {
-                        result.Errors.Add($"杩涘彛浠锋牸蹇呴』澶т簬0: {item.ItemNumber}");
+                        result.Errors.Add(
+                            $"Import price must be greater than 0: {item.ItemNumber}"
+                        );
                         result.FailedCount++;
                         continue;
                     }
 
+                    // 确定 ProductCode（如果未提供则自动生成）
                     var code = item.ProductCode;
                     if (string.IsNullOrWhiteSpace(code))
                     {
@@ -592,6 +689,7 @@ namespace BlazorApp.Api.Services.React
                         }
                     }
 
+                    // 检查是否已存在
                     var wpExists =
                         !string.IsNullOrWhiteSpace(code) && existingWpCodes.Contains(code!);
                     var productExists =
@@ -601,6 +699,7 @@ namespace BlazorApp.Api.Services.React
                             && existingItems.Contains(item.ItemNumber!)
                         );
 
+                    // 跳过已存在的仓库商品
                     if (wpExists)
                     {
                         result.SkippedItems.Add(item.ItemNumber);
@@ -608,6 +707,7 @@ namespace BlazorApp.Api.Services.React
                         continue;
                     }
 
+                    // 创建商品记录（如果不存在）
                     if (!productExists)
                     {
                         var product = new Product
@@ -616,7 +716,10 @@ namespace BlazorApp.Api.Services.React
                             ItemNumber = item.ItemNumber,
                             Barcode = item.Barcode,
                             LocalSupplierCode = "200",
-                            ProductName = item.ChineseName,
+                            ProductName =
+                                !string.IsNullOrWhiteSpace(item.EnglishName) ? item.EnglishName
+                                : !string.IsNullOrWhiteSpace(item.ChineseName) ? item.ChineseName
+                                : item.ItemNumber,
                             EnglishName = item.EnglishName,
                             PurchasePrice = item.ImportPrice,
                             ProductImage = ProductImageUrlHelper.EnsureImageUrl(
@@ -632,6 +735,7 @@ namespace BlazorApp.Api.Services.React
                         toCreateProducts.Add(product);
                     }
 
+                    // 创建仓库商品记录
                     var wp = new WarehouseProduct
                     {
                         ProductCode = code,
@@ -647,49 +751,140 @@ namespace BlazorApp.Api.Services.React
                     };
                     toCreateWps.Add(wp);
 
-                    if (item.IsSetProduct)
+                    // 处理套装商品（使用内存查找，避免 N+1）
+                    if (item.IsSetProduct && !string.IsNullOrWhiteSpace(code))
                     {
-                        var setProducts = await _context
-                            .Db.Queryable<DomesticSetProduct>()
-                            .Where(sp => sp.ProductCode == code && !sp.IsDeleted)
-                            .ToListAsync();
-
-                        foreach (var sp in setProducts)
+                        if (setProductsByCode.TryGetValue(code!, out var setProducts))
                         {
-                            // SetCodeId 浣跨敤 DomesticSetProduct.SetProductCode锛堥渶姹傛寚瀹氾級
-                            var setCode = new ProductSetCode
+                            foreach (var sp in setProducts)
                             {
-                                SetCodeId = sp.SetProductCode!,
-                                ProductCode = code,
-                                SetItemNumber = sp.SetProductNo,
-                                SetBarcode = sp.SetBarcode,
-                                SetPurchasePrice = sp.ImportPrice ?? item.ImportPrice,
-                                SetRetailPrice = sp.OEMPrice ?? item.OEMPrice,
-                                SetQuantity = 1,
-                                SetType = 1,
-                                IsActive = true,
-                                IsDeleted = false,
-                                CreatedAt = now,
-                                UpdatedAt = now,
-                            };
-                            toCreateSetCodes.Add(setCode);
+                                var setCode = new ProductSetCode
+                                {
+                                    SetCodeId = sp.SetProductCode!,
+                                    ProductCode = code,
+                                    SetItemNumber = sp.SetProductNo,
+                                    SetBarcode = sp.SetBarcode,
+                                    SetPurchasePrice = sp.ImportPrice ?? item.ImportPrice,
+                                    SetRetailPrice = sp.OEMPrice ?? item.OEMPrice,
+                                    SetQuantity = 1,
+                                    SetType = 1,
+                                    IsActive = true,
+                                    IsDeleted = false,
+                                    CreatedAt = now,
+                                    UpdatedAt = now,
+                                };
+                                toCreateSetCodes.Add(setCode);
+                            }
                         }
                     }
 
                     result.SuccessCount++;
                 }
 
+                // 批量插入商品
                 if (toCreateProducts.Any())
                 {
                     await _context.Db.Insertable(toCreateProducts).ExecuteCommandAsync();
                 }
+                // 批量插入仓库商品
                 if (toCreateWps.Any())
                 {
                     await _context.Db.Insertable(toCreateWps).ExecuteCommandAsync();
                 }
+                // 批量插入套装编码
                 if (toCreateSetCodes.Any())
                 {
                     await _context.Db.Insertable(toCreateSetCodes).ExecuteCommandAsync();
+                }
+
+                // 同步到门店零售价和多码商品表
+                var activeStores = await _context
+                    .Db.Queryable<Store>()
+                    .Where(s => s.IsActive == true && s.IsDeleted == false)
+                    .Select(s => s.StoreCode)
+                    .ToListAsync();
+
+                if (activeStores.Any() && toCreateProducts.Any())
+                {
+                    var toCreateStoreRetailPrices = new List<StoreRetailPrice>();
+                    var toCreateStoreMultiCodeProducts = new List<StoreMultiCodeProduct>();
+
+                    var createdProductsDict = toCreateProducts.ToDictionary(p => p.ProductCode);
+
+                    foreach (var product in toCreateProducts)
+                    {
+                        foreach (var storeCode in activeStores)
+                        {
+                            toCreateStoreRetailPrices.Add(
+                                new StoreRetailPrice
+                                {
+                                    UUID = UuidHelper.GenerateUuid7(),
+                                    StoreCode = storeCode,
+                                    ProductCode = product.ProductCode,
+                                    StoreProductCode = storeCode + product.ProductCode,
+                                    SupplierCode = product.LocalSupplierCode,
+                                    PurchasePrice = product.PurchasePrice,
+                                    StoreRetailPriceValue = null,
+                                    DiscountRate = null,
+                                    IsActive = true,
+                                    IsAutoPricing = false,
+                                    IsSpecialProduct = false,
+                                    CreatedAt = now,
+                                    UpdatedAt = now,
+                                }
+                            );
+                        }
+                    }
+
+                    foreach (var setCode in toCreateSetCodes)
+                    {
+                        foreach (var storeCode in activeStores)
+                        {
+                            toCreateStoreMultiCodeProducts.Add(
+                                new StoreMultiCodeProduct
+                                {
+                                    UUID = UuidHelper.GenerateUuid7(),
+                                    StoreCode = storeCode,
+                                    ProductCode = setCode.ProductCode,
+                                    MultiCodeProductCode = setCode.SetProductCode,
+                                    StoreMultiCodeProductCode = storeCode + setCode.SetProductCode,
+                                    MultiBarcode = setCode.SetBarcode,
+                                    PurchasePrice = setCode.SetPurchasePrice,
+                                    MultiCodeRetailPrice = setCode.SetRetailPrice,
+                                    DiscountRate = null,
+                                    IsActive = true,
+                                    IsAutoPricing = false,
+                                    IsSpecialProduct = false,
+                                    CreatedAt = now,
+                                    UpdatedAt = now,
+                                }
+                            );
+                        }
+                    }
+
+                    if (toCreateStoreRetailPrices.Any())
+                    {
+                        await _context
+                            .Db.Insertable(toCreateStoreRetailPrices)
+                            .PageSize(1000)
+                            .ExecuteCommandAsync();
+                        _logger.LogInformation(
+                            "创建了 {Count} 条分店价格记录",
+                            toCreateStoreRetailPrices.Count
+                        );
+                    }
+
+                    if (toCreateStoreMultiCodeProducts.Any())
+                    {
+                        await _context
+                            .Db.Insertable(toCreateStoreMultiCodeProducts)
+                            .PageSize(1000)
+                            .ExecuteCommandAsync();
+                        _logger.LogInformation(
+                            "创建了 {Count} 条分店多码记录",
+                            toCreateStoreMultiCodeProducts.Count
+                        );
+                    }
                 }
 
                 _context.Db.Ado.CommitTran();
@@ -709,11 +904,19 @@ namespace BlazorApp.Api.Services.React
             return result;
         }
 
+        /// <summary>
+        /// 获取仓库商品列表（Antd Table 格式）
+        /// 支持分类筛选、关键词搜索、分页
+        /// 关联查询：仓库商品 + 国内商品 + 中国供应商 + 商品 + 仓库分类
+        /// </summary>
+        /// <param name="request">表格请求参数</param>
+        /// <returns>分页后的仓库商品列表</returns>
         public async Task<
             ReactTableResponseDto<WarehouseProductReactListDto>
         > GetAntdTableDataAsync(ReactTableRequestDto request)
         {
             var resp = new ReactTableResponseDto<WarehouseProductReactListDto>();
+            // 多表关联查询（使用 LeftJoin 避免 N+1 问题）
             var query = _context
                 .Db.Queryable<WarehouseProduct>()
                 .LeftJoin<DomesticProduct>((w, dp) => dp.ProductCode == w.ProductCode)
@@ -723,6 +926,7 @@ namespace BlazorApp.Api.Services.React
                     (w, dp, s, p, c) => p.WarehouseCategoryGUID == c.CategoryGUID
                 );
 
+            // 分类筛选（支持包含子分类）
             if (request.CategoryGuids != null && request.CategoryGuids.Any())
             {
                 var guids = request.IncludeSubCategories
@@ -1749,6 +1953,12 @@ namespace BlazorApp.Api.Services.React
             return resp;
         }
 
+        /// <summary>
+        /// 从国内商品导入到仓库商品
+        /// 支持价格覆盖、套装商品同步、门店零售价同步、多码商品同步
+        /// </summary>
+        /// <param name="request">导入请求，包含商品编码列表和可选的价格覆盖</param>
+        /// <returns>导入结果</returns>
         public async Task<ImportFromDomesticResponseDto> ImportFromDomesticAsync(
             ImportFromDomesticRequestDto request
         )
@@ -1768,18 +1978,122 @@ namespace BlazorApp.Api.Services.React
 
             try
             {
+                // 开启事务
                 _context.Db.Ado.BeginTran();
                 var now = DateTime.Now;
+                var codes = request.ProductCodes.Distinct().ToList();
 
-                foreach (var productCode in request.ProductCodes)
+                // ===== 批量预加载数据（避免 N+1 问题）=====
+                // 1. 批量查询国内商品
+                var domesticProductsDict = (
+                    await _context
+                        .Db.Queryable<DomesticProduct>()
+                        .Where(dp => codes.Contains(dp.ProductCode) && !dp.IsDeleted)
+                        .ToListAsync()
+                ).ToDictionary(dp => dp.ProductCode);
+
+                // 2. 批量查询仓库商品
+                var warehouseProductsDict = (
+                    await _context
+                        .Db.Queryable<WarehouseProduct>()
+                        .Where(wp => codes.Contains(wp.ProductCode))
+                        .ToListAsync()
+                ).ToDictionary(wp => wp.ProductCode);
+
+                // 3. 批量查询商品表
+                var productsDict = (
+                    await _context
+                        .Db.Queryable<Product>()
+                        .Where(p => codes.Contains(p.ProductCode))
+                        .ToListAsync()
+                ).ToDictionary(p => p.ProductCode);
+
+                // 4. 批量查询套装商品关联数据
+                var allSetProducts = await _context
+                    .Db.Queryable<DomesticSetProduct>()
+                    .Where(sp => codes.Contains(sp.ProductCode) && !sp.IsDeleted)
+                    .ToListAsync();
+                var setProductsByCode = allSetProducts
+                    .GroupBy(sp => sp.ProductCode)
+                    .ToDictionary(g => g.Key, g => g.ToList());
+
+                // 5. 批量查询已存在的套装编码
+                var allSetCodeIds = allSetProducts
+                    .Select(sp => sp.SetProductCode)
+                    .Where(x => x != null)
+                    .Distinct()
+                    .ToList();
+                var existingProductSetCodes = allSetCodeIds.Any()
+                    ? (
+                        await _context
+                            .Db.Queryable<ProductSetCode>()
+                            .Where(psc =>
+                                codes.Contains(psc.ProductCode)
+                                && allSetCodeIds.Contains(psc.SetCodeId)
+                            )
+                            .Select(psc => new { psc.ProductCode, psc.SetCodeId })
+                            .ToListAsync()
+                    )
+                        .GroupBy(x => x.ProductCode)
+                        .ToDictionary(g => g.Key, g => g.Select(x => x.SetCodeId).ToHashSet())
+                    : new Dictionary<string, HashSet<string?>>();
+
+                // 6. 批量查询活跃门店
+                var activeStores = await _context
+                    .Db.Queryable<Store>()
+                    .Where(s => s.IsActive == true && s.IsDeleted == false)
+                    .Select(s => s.StoreCode)
+                    .ToListAsync();
+
+                // 7. 批量查询已存在的多码商品
+                var allSetBarcodes = allSetProducts
+                    .Where(sp => sp.SetBarcode != null)
+                    .Select(sp => sp.SetBarcode!)
+                    .Distinct()
+                    .ToList();
+                var existingMultiCodeKeys = allSetBarcodes.Any() ? (
+                        await _context
+                            .Db.Queryable<StoreMultiCodeProduct>()
+                            .Where(smc =>
+                                codes.Contains(smc.ProductCode)
+                                && !smc.IsDeleted
+                                && allSetBarcodes.Contains(smc.MultiBarcode!)
+                            )
+                            .Select(smc => new
+                            {
+                                smc.ProductCode,
+                                smc.MultiBarcode,
+                                smc.StoreCode,
+                            })
+                            .ToListAsync()
+                    ).GroupBy(x => x.ProductCode).ToDictionary(g => g.Key, g => g.Select(x => (x.MultiBarcode, x.StoreCode)).ToHashSet()) : new Dictionary<string, HashSet<(string?, string?)>>();
+
+                // 8. 批量查询门店零售价
+                var storeRetailPricesByCode = (
+                    await _context
+                        .Db.Queryable<StoreRetailPrice>()
+                        .Where(srp => codes.Contains(srp.ProductCode) && !srp.IsDeleted)
+                        .ToListAsync()
+                )
+                    .GroupBy(srp => srp.ProductCode)
+                    .ToDictionary(g => g.Key, g => g.ToList());
+
+                // 待操作的列表（批量插入/更新）
+                var toUpdateWarehouseProducts = new List<WarehouseProduct>();
+                var toInsertWarehouseProducts = new List<WarehouseProduct>();
+                var toInsertProducts = new List<Product>();
+                var toUpdateDomesticProducts = new List<DomesticProduct>();
+                var toInsertProductSetCodes = new List<ProductSetCode>();
+                var toInsertStoreMultiCodeProducts = new List<StoreMultiCodeProduct>();
+                var toInsertStoreRetailPrices = new List<StoreRetailPrice>();
+
+                // ===== 遍历处理每个商品 =====
+                foreach (var productCode in codes)
                 {
                     var result = new ImportResultDetailDto { ProductCode = productCode };
-                    var domesticProduct = await _context
-                        .Db.Queryable<DomesticProduct>()
-                        .Where(dp => dp.ProductCode == productCode && !dp.IsDeleted)
-                        .FirstAsync();
 
-                    if (domesticProduct == null)
+                    // 检查国内商品是否存在
+                    if (!domesticProductsDict.TryGetValue(productCode, out var domesticProduct))
                     {
                         result.Success = false;
                         result.Message = "商品不存在";
@@ -1788,17 +2102,16 @@ namespace BlazorApp.Api.Services.React
                         continue;
                     }
 
-                    // 0. 补全国内商品图片（如果为空或不是 http 开头，则按货号规则生成）
+                    // 补全图片 URL
                     var finalImageUrl = ProductImageUrlHelper.EnsureImageUrl(
                         domesticProduct.ProductImage,
                         domesticProduct.HBProductNo ?? domesticProduct.ProductCode
                     );
 
-                    var existingWp = await _context
-                        .Db.Queryable<WarehouseProduct>()
-                        .Where(wp => wp.ProductCode == productCode)
-                        .FirstAsync();
+                    // 获取已存在的仓库商品
+                    warehouseProductsDict.TryGetValue(productCode, out var existingWp);
 
+                    // 获取价格覆盖（如果有）
                     ImportPriceOverrideDto? priceOverride = null;
                     if (
                         request.PriceOverrides != null
@@ -1808,11 +2121,13 @@ namespace BlazorApp.Api.Services.React
                         priceOverride = priceValue;
                     }
 
+                    // 确定最终价格
                     var domesticPrice =
                         priceOverride?.DomesticPrice ?? domesticProduct.DomesticPrice;
                     var oemPrice = priceOverride?.OEMPrice ?? domesticProduct.OEMPrice;
                     var importPrice = priceOverride?.ImportPrice ?? domesticProduct.ImportPrice;
 
+                    // 验证价格
                     if (
                         (domesticPrice ?? 0) <= 0
                         || (oemPrice ?? 0) <= 0
@@ -1829,6 +2144,7 @@ namespace BlazorApp.Api.Services.React
                     var unitVolume = priceOverride?.Volume ?? domesticProduct.UnitVolume;
                     WarehouseProduct wp;
 
+                    // 更新或创建仓库商品
                     if (existingWp != null)
                     {
                         existingWp.DomesticPrice = domesticPrice;
@@ -1836,7 +2152,7 @@ namespace BlazorApp.Api.Services.React
                         existingWp.ImportPrice = importPrice;
                         existingWp.Volume = unitVolume;
                         existingWp.UpdatedAt = now;
-                        await _context.Db.Updateable(existingWp).ExecuteCommandAsync();
+                        toUpdateWarehouseProducts.Add(existingWp);
                         wp = existingWp;
                     }
                     else
@@ -1854,30 +2170,20 @@ namespace BlazorApp.Api.Services.React
                             CreatedAt = now,
                             UpdatedAt = now,
                         };
-                        await _context.Db.Insertable(wp).ExecuteCommandAsync();
+                        toInsertWarehouseProducts.Add(wp);
                     }
 
                     // 同步更新国内商品表的价格与体积
-                    await _context
-                        .Db.Updateable<DomesticProduct>()
-                        .SetColumns(dp => new DomesticProduct
-                        {
-                            DomesticPrice = domesticPrice,
-                            OEMPrice = oemPrice,
-                            ImportPrice = importPrice,
-                            UnitVolume = unitVolume,
-                            ProductImage = finalImageUrl,
-                            UpdatedAt = now,
-                        })
-                        .Where(dp => dp.ProductCode == productCode)
-                        .ExecuteCommandAsync();
+                    domesticProduct.DomesticPrice = domesticPrice;
+                    domesticProduct.OEMPrice = oemPrice;
+                    domesticProduct.ImportPrice = importPrice;
+                    domesticProduct.UnitVolume = unitVolume;
+                    domesticProduct.ProductImage = finalImageUrl;
+                    domesticProduct.UpdatedAt = now;
+                    toUpdateDomesticProducts.Add(domesticProduct);
 
-                    var existingProduct = await _context
-                        .Db.Queryable<Product>()
-                        .Where(p => p.ProductCode == productCode)
-                        .FirstAsync();
-
-                    if (existingProduct == null)
+                    // 创建商品记录（如果不存在）
+                    if (!productsDict.TryGetValue(productCode, out var existingProduct))
                     {
                         var product = new Product
                         {
@@ -1900,37 +2206,25 @@ namespace BlazorApp.Api.Services.React
                             CreatedAt = now,
                             UpdatedAt = now,
                         };
-                        await _context.Db.Insertable(product).ExecuteCommandAsync();
+                        toInsertProducts.Add(product);
                     }
 
-                    var setProducts = await _context
-                        .Db.Queryable<DomesticSetProduct>()
-                        .Where(sp => sp.ProductCode == productCode && !sp.IsDeleted)
-                        .ToListAsync();
+                    // 处理套装商品（使用内存查找，避免 N+1）
+                    setProductsByCode.TryGetValue(productCode, out var setProducts);
+                    setProducts ??= new List<DomesticSetProduct>();
 
                     var isSetProduct = domesticProduct.ProductType > 0;
                     if (isSetProduct && setProducts.Count > 0)
                     {
-                        var setCodeIds = setProducts
-                            .Select(sp => sp.SetProductCode)
-                            .Distinct()
-                            .ToList();
-                        var existingSetCodeIds = await _context
-                            .Db.Queryable<ProductSetCode>()
-                            .Where(psc =>
-                                psc.ProductCode == productCode && setCodeIds.Contains(psc.SetCodeId)
-                            )
-                            .Select(psc => psc.SetCodeId)
-                            .ToListAsync();
-                        var existingSet = new HashSet<string?>(existingSetCodeIds);
+                        existingProductSetCodes.TryGetValue(productCode, out var existingSet);
+                        existingSet ??= new HashSet<string?>();
 
-                        var productSetCodesToInsert = new List<ProductSetCode>();
                         foreach (var sp in setProducts)
                         {
                             if (existingSet.Contains(sp.SetProductCode))
                                 continue;
                             existingSet.Add(sp.SetProductCode);
-                            productSetCodesToInsert.Add(
+                            toInsertProductSetCodes.Add(
                                 new ProductSetCode
                                 {
                                     SetCodeId = sp.SetProductCode,
@@ -1949,46 +2243,14 @@ namespace BlazorApp.Api.Services.React
                                 }
                             );
                         }
-                        if (productSetCodesToInsert.Count > 0)
-                            await _context
-                                .Db.Insertable(productSetCodesToInsert)
-                                .ExecuteCommandAsync();
                     }
 
+                    // 同步多码商品到门店
                     if (request.SyncMultiCodes)
                     {
-                        var activeStores = await _context
-                            .Db.Queryable<Store>()
-                            .Where(s => s.IsActive == true && s.IsDeleted == false)
-                            .Select(s => s.StoreCode)
-                            .ToListAsync();
+                        existingMultiCodeKeys.TryGetValue(productCode, out var existingKeys);
+                        existingKeys ??= new HashSet<(string?, string?)>();
 
-                        var setBarcodes = setProducts
-                            .Where(sp => sp.SetBarcode != null)
-                            .Select(sp => sp.SetBarcode!)
-                            .Distinct()
-                            .ToList();
-
-                        var existingKeys = new HashSet<(string?, string?)>();
-                        if (setBarcodes.Count > 0)
-                        {
-                            var existingList = await _context
-                                .Db.Queryable<StoreMultiCodeProduct>()
-                                .Where(smc =>
-                                    smc.ProductCode == productCode
-                                    && !smc.IsDeleted
-                                    && activeStores.Contains(smc.StoreCode!)
-                                    && setBarcodes.Contains(smc.MultiBarcode!)
-                                )
-                                .Select(smc => new { smc.MultiBarcode, smc.StoreCode })
-                                .ToListAsync();
-                            foreach (var x in existingList)
-                            {
-                                existingKeys.Add((x.MultiBarcode, x.StoreCode));
-                            }
-                        }
-
-                        var toInsert = new List<StoreMultiCodeProduct>();
                         foreach (var sp in setProducts)
                         {
                             if (sp.SetBarcode == null)
@@ -1998,7 +2260,7 @@ namespace BlazorApp.Api.Services.React
                                 if (existingKeys.Contains((sp.SetBarcode, storeCode)))
                                     continue;
                                 existingKeys.Add((sp.SetBarcode, storeCode));
-                                toInsert.Add(
+                                toInsertStoreMultiCodeProducts.Add(
                                     new StoreMultiCodeProduct
                                     {
                                         UUID = UuidHelper.GenerateUuid7(),
@@ -2020,31 +2282,16 @@ namespace BlazorApp.Api.Services.React
                                 );
                             }
                         }
-                        if (toInsert.Count > 0)
-                        {
-                            await _context.Db.Insertable(toInsert).ExecuteCommandAsync();
-                        }
                     }
 
+                    // 同步门店零售价
                     if (request.SyncStorePrices)
                     {
-                        var existingStorePrices = await _context
-                            .Db.Queryable<StoreRetailPrice>()
-                            .Where(srp => srp.ProductCode == productCode && !srp.IsDeleted)
-                            .ToListAsync();
-
-                        if (!existingStorePrices.Any())
+                        if (!storeRetailPricesByCode.ContainsKey(productCode))
                         {
-                            var activeStores = await _context
-                                .Db.Queryable<Store>()
-                                .Where(s => s.IsActive == true && s.IsDeleted == false)
-                                .Select(s => s.StoreCode)
-                                .ToListAsync();
-
-                            var storeRetailPricesToInsert = new List<StoreRetailPrice>();
                             foreach (var storeCode in activeStores)
                             {
-                                storeRetailPricesToInsert.Add(
+                                toInsertStoreRetailPrices.Add(
                                     new StoreRetailPrice
                                     {
                                         ProductCode = productCode,
@@ -2063,12 +2310,6 @@ namespace BlazorApp.Api.Services.React
                                     }
                                 );
                             }
-                            if (storeRetailPricesToInsert.Count > 0)
-                            {
-                                await _context
-                                    .Db.Insertable(storeRetailPricesToInsert)
-                                    .ExecuteCommandAsync();
-                            }
                         }
                     }
 
@@ -2078,9 +2319,61 @@ namespace BlazorApp.Api.Services.React
                     response.SuccessCount++;
                 }
 
+                // ===== 批量执行数据库操作 =====
+                if (toUpdateWarehouseProducts.Any())
+                {
+                    await _context
+                        .Db.Updateable(toUpdateWarehouseProducts)
+                        .UpdateColumns(wp => new
+                        {
+                            wp.DomesticPrice,
+                            wp.OEMPrice,
+                            wp.ImportPrice,
+                            wp.Volume,
+                            wp.UpdatedAt,
+                        })
+                        .ExecuteCommandAsync();
+                }
+                if (toInsertWarehouseProducts.Any())
+                {
+                    await _context.Db.Insertable(toInsertWarehouseProducts).ExecuteCommandAsync();
+                }
+                if (toUpdateDomesticProducts.Any())
+                {
+                    await _context
+                        .Db.Updateable(toUpdateDomesticProducts)
+                        .UpdateColumns(dp => new
+                        {
+                            dp.DomesticPrice,
+                            dp.OEMPrice,
+                            dp.ImportPrice,
+                            dp.UnitVolume,
+                            dp.ProductImage,
+                            dp.UpdatedAt,
+                        })
+                        .ExecuteCommandAsync();
+                }
+                if (toInsertProducts.Any())
+                {
+                    await _context.Db.Insertable(toInsertProducts).ExecuteCommandAsync();
+                }
+                if (toInsertProductSetCodes.Any())
+                {
+                    await _context.Db.Insertable(toInsertProductSetCodes).ExecuteCommandAsync();
+                }
+                if (toInsertStoreMultiCodeProducts.Any())
+                {
+                    await _context
+                        .Db.Insertable(toInsertStoreMultiCodeProducts)
+                        .ExecuteCommandAsync();
+                }
+                if (toInsertStoreRetailPrices.Any())
+                {
+                    await _context.Db.Insertable(toInsertStoreRetailPrices).ExecuteCommandAsync();
+                }
+
                 _context.Db.Ado.CommitTran();
 
-                // 全部失败时整体视为失败
                 if (response.SuccessCount == 0 && response.FailedCount > 0)
                 {
                     response.Success = false;
@@ -2595,6 +2888,12 @@ namespace BlazorApp.Api.Services.React
             return resp;
         }
 
+        /// <summary>
+        /// 从非 Hotbargain 商品导入到仓库商品
+        /// 将已有商品（Product 表）导入到仓库商品表（WarehouseProduct）
+        /// </summary>
+        /// <param name="request">导入请求，包含商品编码列表</param>
+        /// <returns>导入结果</returns>
         public async Task<ImportFromDomesticResponseDto> ImportNonHotbargainProductsAsync(
             ImportNonHotbargainRequestDto request
         )
@@ -2614,19 +2913,38 @@ namespace BlazorApp.Api.Services.React
 
             try
             {
+                // 开启事务
                 _context.Db.Ado.BeginTran();
                 var now = DateTime.Now;
+                var codes = request.ProductCodes.Distinct().ToList();
 
-                foreach (var productCode in request.ProductCodes)
+                // 批量查询商品表（避免 N+1 问题）
+                var productsDict = (
+                    await _context
+                        .Db.Queryable<Product>()
+                        .Where(p => codes.Contains(p.ProductCode))
+                        .ToListAsync()
+                ).ToDictionary(p => p.ProductCode);
+
+                // 批量查询已存在的仓库商品编码（避免 N+1 问题）
+                var existingWpCodes = (
+                    await _context
+                        .Db.Queryable<WarehouseProduct>()
+                        .Where(wp => codes.Contains(wp.ProductCode))
+                        .Select(wp => wp.ProductCode)
+                        .ToListAsync()
+                ).ToHashSet();
+
+                // 待插入的仓库商品列表
+                var toInsertWarehouseProducts = new List<WarehouseProduct>();
+
+                // 遍历处理每个商品
+                foreach (var productCode in codes)
                 {
                     var result = new ImportResultDetailDto { ProductCode = productCode };
 
-                    var product = await _context
-                        .Db.Queryable<Product>()
-                        .Where(p => p.ProductCode == productCode)
-                        .FirstAsync();
-
-                    if (product == null)
+                    // 检查商品是否存在
+                    if (!productsDict.TryGetValue(productCode, out var product))
                     {
                         result.Success = false;
                         result.Message = "商品不存在";
@@ -2635,12 +2953,8 @@ namespace BlazorApp.Api.Services.React
                         continue;
                     }
 
-                    var exists = await _context
-                        .Db.Queryable<WarehouseProduct>()
-                        .Where(w => w.ProductCode == productCode)
-                        .AnyAsync();
-
-                    if (exists)
+                    // 检查是否已存在于仓库
+                    if (existingWpCodes.Contains(productCode))
                     {
                         result.Success = false;
                         result.Message = "商品已存在于仓库中";
@@ -2649,6 +2963,7 @@ namespace BlazorApp.Api.Services.React
                         continue;
                     }
 
+                    // 创建仓库商品记录
                     var wp = new WarehouseProduct
                     {
                         ProductCode = productCode,
@@ -2661,7 +2976,7 @@ namespace BlazorApp.Api.Services.React
                         CreatedAt = now,
                         UpdatedAt = now,
                     };
-                    await _context.Db.Insertable(wp).ExecuteCommandAsync();
+                    toInsertWarehouseProducts.Add(wp);
 
                     result.Success = true;
                     result.Message = "导入成功";
@@ -2669,8 +2984,16 @@ namespace BlazorApp.Api.Services.React
                     response.SuccessCount++;
                 }
 
+                // 批量插入仓库商品
+                if (toInsertWarehouseProducts.Any())
+                {
+                    await _context.Db.Insertable(toInsertWarehouseProducts).ExecuteCommandAsync();
+                }
+
+                // 提交事务
                 _context.Db.Ado.CommitTran();
 
+                // 全部失败时整体视为失败
                 if (response.SuccessCount == 0 && response.FailedCount > 0)
                 {
                     response.Success = false;

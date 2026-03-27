@@ -229,6 +229,16 @@ namespace BlazorApp.Shared.Models
         public int? Status { get; set; }
 
         /// <summary>
+        /// 是否上架
+        /// 说明：控制明细记录是否上架销售
+        /// true - 已上架（可销售）
+        /// false - 已下架（不可销售）
+        /// </summary>
+        [SugarColumn(IsNullable = true)]
+        [Display(Name = "是否上架")]
+        public bool? IsActive { get; set; }
+
+        /// <summary>
         /// 备注
         /// 说明：明细相关的备注信息
         /// 长度：最大500个字符
@@ -257,7 +267,6 @@ namespace BlazorApp.Shared.Models
         [Navigate(NavigateType.OneToOne, nameof(ProductCode), nameof(DomesticProduct.ProductCode))]
         [SugarColumn(IsIgnore = true)]
         public DomesticProduct? Product { get; set; }
-
 
         /// <summary>
         /// 关联本地商品

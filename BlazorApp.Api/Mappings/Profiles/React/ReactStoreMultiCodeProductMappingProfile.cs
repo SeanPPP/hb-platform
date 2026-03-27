@@ -10,7 +10,11 @@ namespace BlazorApp.Api.Mappings.Profiles.React
         public ReactStoreMultiCodeProductMappingProfile()
         {
             CreateMap<DIC_分店一品多码表, StoreMultiCodeProduct>()
-                .ForMember(dest => dest.UUID, opt => opt.MapFrom(src => src.HGUID))
+                .ForMember(
+                    dest => dest.UUID,
+                    opt =>
+                        opt.MapFrom(src => src.HGUID ?? UuidHelper.GenerateUuid7().ToString())
+                )
                 .ForMember(dest => dest.StoreCode, opt => opt.MapFrom(src => src.H分店代码))
                 .ForMember(dest => dest.ProductCode, opt => opt.MapFrom(src => src.H商品编码))
                 .ForMember(

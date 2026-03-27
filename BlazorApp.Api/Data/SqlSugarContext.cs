@@ -266,7 +266,7 @@ namespace BlazorApp.Api.Data
                 Console.WriteLine("开始检查和初始化数据库表...");
 
                 // 智能初始化：只在需要时创建或更新表
-                //  InitializeTablesIfNeeded();
+                // InitializeTablesIfNeeded();
                // CreateNormalIndexes();
 
                 Console.WriteLine("数据库表检查完成！");
