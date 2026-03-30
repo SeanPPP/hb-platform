@@ -45,7 +45,7 @@ namespace BlazorApp.Api.Services.React
                 .LeftJoin<WarehouseCategory>(
                     (p, wp, wc) => p.WarehouseCategoryGUID == wc.CategoryGUID
                 )
-                .Where((p, wp, wc) => p.IsActive && !p.IsDeleted);
+                .Where((p, wp, wc) => p.IsActive && !p.IsDeleted && !wp.IsDeleted && wp.IsActive);
 
             // 1. 分类筛选
             if (!string.IsNullOrWhiteSpace(filter.CategoryGUID))
