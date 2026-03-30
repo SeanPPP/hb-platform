@@ -1,3 +1,4 @@
+using System.Threading;
 using System.Threading.Tasks;
 using BlazorApp.Shared.DTOs;
 
@@ -20,6 +21,12 @@ namespace BlazorApp.Api.Interfaces.React
         Task<ApiResponse<CopyStoreDataResultDto>> CopyStoreDataAsync(
             CopyStoreDataDto dto,
             string updatedBy
+        );
+
+        IAsyncEnumerable<CopyProgressDto> CopyStoreDataWithProgressAsync(
+            CopyStoreDataDto dto,
+            string updatedBy,
+            CancellationToken cancellationToken = default
         );
     }
 }

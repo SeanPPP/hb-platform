@@ -23,4 +23,17 @@ namespace BlazorApp.Shared.DTOs
         public int StoreRetailPriceCopied { get; set; }
         public int StoreMultiCodeProductCopied { get; set; }
     }
+
+    public class CopyProgressDto
+    {
+        public string EventType { get; set; } = string.Empty;
+        public string StoreCode { get; set; } = string.Empty;
+        public int StoreIndex { get; set; }
+        public int TotalStores { get; set; }
+        public int RetailPriceCopied { get; set; }
+        public int MultiCodeCopied { get; set; }
+        public string Message { get; set; } = string.Empty;
+        public int BatchCount { get; set; }
+        public DateTime Timestamp { get; set; }
+    }
 }

@@ -1,3 +1,5 @@
+using System.Text.Json;
+using System.Threading;
 using System.Threading.Tasks;
 using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Shared.DTOs;
@@ -92,6 +94,70 @@ namespace BlazorApp.Api.Controllers.React
             }
 
             return BadRequest(result);
+        }
+
+        [HttpGet("copy-store-data/stream")]
+        public async Task CopyStoreDataStream(
+            [FromQuery] string sourceStoreCode,
+            [FromQuery] string[] targetStoreCodes,
+            [FromQuery] string mode,
+            [FromQuery] bool syncMultiCode,
+            CancellationToken cancellationToken)
+        {
+            if (targetStoreCodes == null || targetStoreCodes.Length == 0)
+            {
+                Response.ContentType = "application/json";
+                await Response.WriteAsync(
+                    JsonSerializer.Serialize(new { success = false, message = "请选择目标分店" }),
+                    cancellationToken
+                );
+                return;
+            }
+
+            Response.ContentType = "text/event-stream";
+            Response.StatusCode = 200;
+            Response.Headers["Cache-Control"] = "no-cache, no-store";
+            Response.Headers["Connection"] = "keep-alive";
+            Response.Headers["X-Accel-Buffering"] = "no";
+
+            var dto = new CopyStoreDataDto
+            {
+                SourceStoreCode = sourceStoreCode,
+                TargetStoreCodes = new System.Collections.Generic.List<string>(targetStoreCodes),
+                Mode = mode ?? "Overwrite",
+                SyncMultiCode = syncMultiCode
+            };
+
+            var updatedBy = User.Identity?.Name ?? "system";
+
+            try
+            {
+                await foreach (var progress in _service.CopyStoreDataWithProgressAsync(dto, updatedBy, cancellationToken))
+                {
+                    if (cancellationToken.IsCancellationRequested)
+                        break;
+
+                    var json = JsonSerializer.Serialize(progress);
+                    await Response.WriteAsync($"data: {json}\n\n", cancellationToken);
+                    await Response.Body.FlushAsync(cancellationToken);
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                _logger.LogInformation("SSE 连接已断开");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "SSE 流异常");
+                var errorJson = JsonSerializer.Serialize(new CopyProgressDto
+                {
+                    EventType = "error",
+                    Message = ex.Message,
+                    Timestamp = DateTime.UtcNow
+                });
+                await Response.WriteAsync($"data: {errorJson}\n\n", cancellationToken);
+                await Response.Body.FlushAsync(cancellationToken);
+            }
         }
     }
 }

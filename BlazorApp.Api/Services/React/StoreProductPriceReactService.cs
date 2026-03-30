@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Runtime.CompilerServices;
+using System.Threading;
 using System.Threading.Channels;
 using System.Threading.Tasks;
 using BlazorApp.Api.Data;
@@ -629,23 +631,28 @@ namespace BlazorApp.Api.Services.React
                                     sourcePageSize,
                                     mergeBatchSize,
                                     producerLimiter,
-                                    consumerLimiter
+                                    consumerLimiter,
+                                    null,
+                                    CancellationToken.None
                                 );
 
                                 int multiCount = 0;
                                 if (dto.SyncMultiCode)
                                 {
-                                    multiCount = await ProcessStoreMultiCodePipelineAsync(
-                                        db.CopyNew(),
-                                        dto.SourceStoreCode,
-                                        store,
-                                        dto,
-                                        updatedBy,
-                                        sourcePageSize,
-                                        mergeBatchSize,
-                                        producerLimiter,
-                                        consumerLimiter
-                                    );
+                                    multiCount =
+                                        await ProcessStoreMultiCodePipelineAsync(
+                                            db.CopyNew(),
+                                            dto.SourceStoreCode,
+                                            store,
+                                            dto,
+                                            updatedBy,
+                                            sourcePageSize,
+                                            mergeBatchSize,
+                                            producerLimiter,
+                                            consumerLimiter,
+                                            null,
+                                            CancellationToken.None
+                                        );
                                 }
 
                                 return (retailCount, multiCount);
@@ -692,6 +699,178 @@ namespace BlazorApp.Api.Services.React
             }
         }
 
+        public async IAsyncEnumerable<CopyProgressDto> CopyStoreDataWithProgressAsync(
+            CopyStoreDataDto dto,
+            string updatedBy,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default
+        )
+        {
+            if (string.IsNullOrWhiteSpace(dto.SourceStoreCode))
+            {
+                yield return new CopyProgressDto
+                {
+                    EventType = "error",
+                    Message = "请选择源分店",
+                    Timestamp = DateTime.UtcNow
+                };
+                yield break;
+            }
+
+            if (dto.TargetStoreCodes == null || !dto.TargetStoreCodes.Any())
+            {
+                yield return new CopyProgressDto
+                {
+                    EventType = "error",
+                    Message = "请至少选择一个目标分店",
+                    Timestamp = DateTime.UtcNow
+                };
+                yield break;
+            }
+
+            if (dto.TargetStoreCodes.Contains(dto.SourceStoreCode))
+            {
+                yield return new CopyProgressDto
+                {
+                    EventType = "error",
+                    Message = "目标分店不能包含源分店",
+                    Timestamp = DateTime.UtcNow
+                };
+                yield break;
+            }
+
+            _logger.LogInformation(
+                "开始复制分店数据（SSE进度模式）：源分店={SourceStore}，目标分店={TargetStores}，模式={Mode}，操作人={User}",
+                dto.SourceStoreCode,
+                string.Join(",", dto.TargetStoreCodes),
+                dto.Mode,
+                updatedBy
+            );
+
+            const int sourcePageSize = 40000;
+            const int mergeBatchSize = 10000;
+            var db = _context.Db;
+
+            var storeLimiter = new SemaphoreSlim(3, 3);
+            var producerLimiter = new SemaphoreSlim(3, 3);
+            var consumerLimiter = new SemaphoreSlim(5, 5);
+
+            var progressChannel = Channel.CreateBounded<CopyProgressDto>(
+                new BoundedChannelOptions(50)
+                {
+                    FullMode = BoundedChannelFullMode.Wait,
+                    SingleReader = true,
+                    SingleWriter = true,
+                }
+            );
+
+            int totalRetail = 0;
+            int totalMulti = 0;
+            int storeIndex = 0;
+
+            var processingTask = Task.Run(async () =>
+            {
+                foreach (var targetStore in dto.TargetStoreCodes)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    await storeLimiter.WaitAsync(cancellationToken);
+                    var store = targetStore;
+                    storeIndex++;
+
+                    await progressChannel.Writer.WriteAsync(new CopyProgressDto
+                    {
+                        EventType = "store_started",
+                        StoreCode = store,
+                        StoreIndex = storeIndex,
+                        TotalStores = dto.TargetStoreCodes.Count,
+                        Message = $"开始处理分店 {store}...",
+                        Timestamp = DateTime.UtcNow
+                    }, cancellationToken);
+
+                    try
+                    {
+                        var progress = new Progress<CopyProgressDto>(p =>
+                        {
+                            p.StoreIndex = storeIndex;
+                            p.TotalStores = dto.TargetStoreCodes.Count;
+                            progressChannel.Writer.TryWrite(p);
+                        });
+
+                        var retailTask = ProcessStoreRetailPricePipelineAsync(
+                            db.CopyNew(),
+                            dto.SourceStoreCode,
+                            store,
+                            dto,
+                            updatedBy,
+                            sourcePageSize,
+                            mergeBatchSize,
+                            producerLimiter,
+                            consumerLimiter,
+                            progress,
+                            cancellationToken
+                        );
+
+                        var multiTask = dto.SyncMultiCode
+                            ? ProcessStoreMultiCodePipelineAsync(
+                                db.CopyNew(),
+                                dto.SourceStoreCode,
+                                store,
+                                dto,
+                                updatedBy,
+                                sourcePageSize,
+                                mergeBatchSize,
+                                producerLimiter,
+                                consumerLimiter,
+                                progress,
+                                cancellationToken
+                            )
+                            : Task.FromResult(0);
+
+                        await Task.WhenAll(retailTask, multiTask);
+
+                        int retailCount = retailTask.Result;
+                        int multiCount = multiTask.Result;
+                        totalRetail += retailCount;
+                        totalMulti += multiCount;
+
+                        await progressChannel.Writer.WriteAsync(new CopyProgressDto
+                        {
+                            EventType = "store_completed",
+                            StoreCode = store,
+                            StoreIndex = storeIndex,
+                            TotalStores = dto.TargetStoreCodes.Count,
+                            RetailPriceCopied = totalRetail,
+                            MultiCodeCopied = totalMulti,
+                            Message = $"分店 {store} 完成",
+                            Timestamp = DateTime.UtcNow
+                        }, cancellationToken);
+                    }
+                    finally
+                    {
+                        storeLimiter.Release();
+                    }
+                }
+
+                progressChannel.Writer.Complete();
+            }, cancellationToken);
+
+            await foreach (var progress in progressChannel.Reader.ReadAllAsync(cancellationToken))
+            {
+                yield return progress;
+            }
+
+            await processingTask;
+
+            yield return new CopyProgressDto
+            {
+                EventType = "completed",
+                TotalStores = dto.TargetStoreCodes.Count,
+                RetailPriceCopied = totalRetail,
+                MultiCodeCopied = totalMulti,
+                Message = $"全部完成：零售价 {totalRetail} 条，多码 {totalMulti} 条",
+                Timestamp = DateTime.UtcNow
+            };
+        }
+
         private async Task<int> ProcessStoreRetailPricePipelineAsync(
             ISqlSugarClient db,
             string sourceStoreCode,
@@ -701,7 +880,9 @@ namespace BlazorApp.Api.Services.React
             int sourcePageSize,
             int mergeBatchSize,
             SemaphoreSlim producerLimiter,
-            SemaphoreSlim consumerLimiter
+            SemaphoreSlim consumerLimiter,
+            IProgress<CopyProgressDto>? progress,
+            CancellationToken cancellationToken = default
         )
         {
             var channel = Channel.CreateBounded<List<StoreRetailPrice>>(
@@ -803,6 +984,7 @@ namespace BlazorApp.Api.Services.React
 
                 var toMerge = new List<StoreRetailPrice>();
                 int totalCopied = 0;
+                int batchCount = 0;
 
                 await foreach (var sourcePage in channel.Reader.ReadAllAsync())
                 {
@@ -925,6 +1107,16 @@ namespace BlazorApp.Api.Services.React
                                     targetStoreCode,
                                     count
                                 );
+                                batchCount++;
+                                progress?.Report(new CopyProgressDto
+                                {
+                                    EventType = "batch_completed",
+                                    StoreCode = targetStoreCode,
+                                    RetailPriceCopied = totalCopied,
+                                    BatchCount = batchCount,
+                                    Message = $"[零售价] 批量写入 {count} 条 (累计 {totalCopied})",
+                                    Timestamp = DateTime.UtcNow
+                                });
                             }
                             catch (Exception)
                             {
@@ -954,6 +1146,16 @@ namespace BlazorApp.Api.Services.React
                                 .BulkMergeAsync(toMerge);
                             await batchDb.Ado.CommitTranAsync();
                             totalCopied += count;
+                            batchCount++;
+                            progress?.Report(new CopyProgressDto
+                            {
+                                EventType = "batch_completed",
+                                StoreCode = targetStoreCode,
+                                RetailPriceCopied = totalCopied,
+                                BatchCount = batchCount,
+                                Message = $"[零售价] 最终批量写入 {count} 条",
+                                Timestamp = DateTime.UtcNow
+                            });
                         }
                         catch (Exception)
                         {
@@ -972,6 +1174,14 @@ namespace BlazorApp.Api.Services.React
                     targetStoreCode,
                     totalCopied
                 );
+                progress?.Report(new CopyProgressDto
+                {
+                    EventType = "store_completed",
+                    StoreCode = targetStoreCode,
+                    RetailPriceCopied = totalCopied,
+                    Message = $"[零售价] 分店 {targetStoreCode} 完成，共 {totalCopied} 条",
+                    Timestamp = DateTime.UtcNow
+                });
                 return totalCopied;
             });
 
@@ -988,7 +1198,9 @@ namespace BlazorApp.Api.Services.React
             int sourcePageSize,
             int mergeBatchSize,
             SemaphoreSlim producerLimiter,
-            SemaphoreSlim consumerLimiter
+            SemaphoreSlim consumerLimiter,
+            IProgress<CopyProgressDto>? progress,
+            CancellationToken cancellationToken = default
         )
         {
             var channel = Channel.CreateBounded<List<StoreMultiCodeProduct>>(
@@ -1091,6 +1303,7 @@ namespace BlazorApp.Api.Services.React
 
                 var toMerge = new List<StoreMultiCodeProduct>();
                 int totalCopied = 0;
+                int batchCount = 0;
 
                 await foreach (var sourcePage in channel.Reader.ReadAllAsync())
                 {
@@ -1217,6 +1430,16 @@ namespace BlazorApp.Api.Services.React
                                     targetStoreCode,
                                     count
                                 );
+                                batchCount++;
+                                progress?.Report(new CopyProgressDto
+                                {
+                                    EventType = "batch_completed",
+                                    StoreCode = targetStoreCode,
+                                    MultiCodeCopied = totalCopied,
+                                    BatchCount = batchCount,
+                                    Message = $"[多码] 批量写入 {count} 条 (累计 {totalCopied})",
+                                    Timestamp = DateTime.UtcNow
+                                });
                             }
                             catch (Exception)
                             {
@@ -1246,6 +1469,16 @@ namespace BlazorApp.Api.Services.React
                                 .BulkMergeAsync(toMerge);
                             await batchDb.Ado.CommitTranAsync();
                             totalCopied += count;
+                            batchCount++;
+                            progress?.Report(new CopyProgressDto
+                            {
+                                EventType = "batch_completed",
+                                StoreCode = targetStoreCode,
+                                MultiCodeCopied = totalCopied,
+                                BatchCount = batchCount,
+                                Message = $"[多码] 最终批量写入 {count} 条",
+                                Timestamp = DateTime.UtcNow
+                            });
                         }
                         catch (Exception)
                         {
@@ -1264,6 +1497,14 @@ namespace BlazorApp.Api.Services.React
                     targetStoreCode,
                     totalCopied
                 );
+                progress?.Report(new CopyProgressDto
+                {
+                    EventType = "store_completed",
+                    StoreCode = targetStoreCode,
+                    MultiCodeCopied = totalCopied,
+                    Message = $"[多码] 分店 {targetStoreCode} 完成，共 {totalCopied} 条",
+                    Timestamp = DateTime.UtcNow
+                });
                 return totalCopied;
             });
 
