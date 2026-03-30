@@ -1,4 +1,5 @@
 using System.Threading.Tasks;
+using BlazorApp.Api.Services;
 using BlazorApp.Shared.Models;
 using BlazorApp.Shared.Models.HBweb;
 using BlazorApp.Shared.Models.HqEntities;
@@ -12,7 +13,11 @@ namespace BlazorApp.Api.Data
         private readonly ISqlSugarClient _db;
         private readonly ILogger<SqlSugarContext> _logger;
 
-        public SqlSugarContext(IConfiguration configuration, ILogger<SqlSugarContext> logger)
+        public SqlSugarContext(
+            IConfiguration configuration,
+            ILogger<SqlSugarContext> logger,
+            ICurrentUserService currentUserService
+        )
         {
             _logger = logger;
 
@@ -103,6 +108,40 @@ namespace BlazorApp.Api.Data
                 if (configuration.GetValue<bool>("Database:EnableSqlLogging", false))
                 {
                     _logger.LogDebug("SQL执行: {Sql}", sql);
+                }
+            };
+
+            _db.Aop.DataExecuting = (oldValue, entityInfo) =>
+            {
+                if (entityInfo.EntityValue is not BaseEntity)
+                    return;
+
+                var username = currentUserService.GetCurrentUsername();
+
+                switch (entityInfo.OperationType)
+                {
+                    case DataFilterType.InsertByObject:
+                        if (
+                            entityInfo.PropertyName == "CreatedBy"
+                            && string.IsNullOrEmpty((string?)oldValue)
+                        )
+                            entityInfo.SetValue(username);
+                        if (entityInfo.PropertyName == "CreatedAt")
+                            entityInfo.SetValue(DateTime.UtcNow);
+                        if (
+                            entityInfo.PropertyName == "UpdatedBy"
+                            && string.IsNullOrEmpty((string?)oldValue)
+                        )
+                            entityInfo.SetValue(username);
+                        if (entityInfo.PropertyName == "UpdatedAt")
+                            entityInfo.SetValue(DateTime.UtcNow);
+                        break;
+                    case DataFilterType.UpdateByObject:
+                        if (entityInfo.PropertyName == "UpdatedBy")
+                            entityInfo.SetValue(username);
+                        if (entityInfo.PropertyName == "UpdatedAt")
+                            entityInfo.SetValue(DateTime.UtcNow);
+                        break;
                 }
             };
 
@@ -267,7 +306,7 @@ namespace BlazorApp.Api.Data
 
                 // 智能初始化：只在需要时创建或更新表
                 // InitializeTablesIfNeeded();
-               // CreateNormalIndexes();
+                // CreateNormalIndexes();
 
                 Console.WriteLine("数据库表检查完成！");
             }
@@ -352,7 +391,6 @@ namespace BlazorApp.Api.Data
                 typeof(ChinaSupplierStoreSalesDetail),
                 typeof(ScheduledTaskLog),
                 typeof(HolidayProduct),
-
             };
 
             // 检查并创建不存在的表
@@ -383,7 +421,6 @@ namespace BlazorApp.Api.Data
                     }
                 }
             }
-
         }
 
         private void RecreateAllTables()

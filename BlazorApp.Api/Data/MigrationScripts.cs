@@ -1,6 +1,7 @@
 using SqlSugar;
 using BlazorApp.Shared.Models;
 using BlazorApp.Shared.Models.HqEntities;
+using BlazorApp.Api.Services;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Configuration;
 
@@ -11,12 +12,18 @@ namespace BlazorApp.Api.Data
         private readonly ISqlSugarClient _db;
         private readonly ILogger<MigrationScripts> _logger;
         private readonly ILoggerFactory _loggerFactory;
+        private readonly ICurrentUserService _currentUserService;
 
-        public MigrationScripts(ISqlSugarClient db, ILogger<MigrationScripts> logger, ILoggerFactory loggerFactory)
+        public MigrationScripts(
+            ISqlSugarClient db,
+            ILogger<MigrationScripts> logger,
+            ILoggerFactory loggerFactory,
+            ICurrentUserService currentUserService)
         {
             _db = db;
             _logger = logger;
             _loggerFactory = loggerFactory;
+            _currentUserService = currentUserService;
         }
 
         public bool NeedsMigration()
@@ -52,7 +59,7 @@ namespace BlazorApp.Api.Data
             // 强制重新创建所有表
             var configuration = new ConfigurationBuilder().Build();
             var sqlSugarLogger = _loggerFactory.CreateLogger<SqlSugarContext>() ?? throw new InvalidOperationException("Failed to create logger for SqlSugarContext");
-            var context = new SqlSugarContext(configuration, sqlSugarLogger);
+            var context = new SqlSugarContext(configuration, sqlSugarLogger, _currentUserService);
             context.ForceRecreateAllTables();
 
             await Task.CompletedTask;

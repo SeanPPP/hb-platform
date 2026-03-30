@@ -1,4 +1,5 @@
 using BlazorApp.Shared.Models.HqEntities;
+using BlazorApp.Api.Services;
 using Microsoft.Extensions.Configuration;
 using SqlSugar;
 
@@ -16,7 +17,9 @@ namespace BlazorApp.Api.Data
         /// </summary>
         public IConfiguration Configuration { get; }
 
-        public HqSqlSugarContext(IConfiguration configuration)
+        public HqSqlSugarContext(
+            IConfiguration configuration,
+            ICurrentUserService currentUserService)
         {
             Configuration = configuration;
             // 确保HQ连接字符串包含MARS支持
@@ -58,6 +61,31 @@ namespace BlazorApp.Api.Data
             _db.Aop.OnLogExecuting = (sql, pars) =>
             {
                 Console.WriteLine($"[HQ Database] {sql}");
+            };
+
+            _db.Aop.DataExecuting = (oldValue, entityInfo) =>
+            {
+                var username = currentUserService.GetCurrentUsername();
+
+                switch (entityInfo.OperationType)
+                {
+                    case DataFilterType.InsertByObject:
+                        if (entityInfo.PropertyName == "CreatedBy" && string.IsNullOrEmpty((string?)oldValue))
+                            entityInfo.SetValue(username);
+                        if (entityInfo.PropertyName == "CreatedAt")
+                            entityInfo.SetValue(DateTime.UtcNow);
+                        if (entityInfo.PropertyName == "UpdatedBy" && string.IsNullOrEmpty((string?)oldValue))
+                            entityInfo.SetValue(username);
+                        if (entityInfo.PropertyName == "UpdatedAt")
+                            entityInfo.SetValue(DateTime.UtcNow);
+                        break;
+                    case DataFilterType.UpdateByObject:
+                        if (entityInfo.PropertyName == "UpdatedBy")
+                            entityInfo.SetValue(username);
+                        if (entityInfo.PropertyName == "UpdatedAt")
+                            entityInfo.SetValue(DateTime.UtcNow);
+                        break;
+                }
             };
 
             // 配置索引

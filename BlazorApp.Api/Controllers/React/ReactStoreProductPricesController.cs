@@ -80,5 +80,18 @@ namespace BlazorApp.Api.Controllers.React
 
             return BadRequest(result);
         }
+
+        [HttpPost("copy-store-data")]
+        public async Task<IActionResult> CopyStoreData([FromBody] CopyStoreDataDto dto)
+        {
+            var updatedBy = User.Identity?.Name ?? "system";
+            var result = await _service.CopyStoreDataAsync(dto, updatedBy);
+            if (result.Success)
+            {
+                return Ok(result);
+            }
+
+            return BadRequest(result);
+        }
     }
 }

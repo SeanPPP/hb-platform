@@ -16,5 +16,10 @@ namespace BlazorApp.Api.Interfaces.React
             SyncToOtherStoresDto dto,
             string updatedBy
         );
+
+        Task<ApiResponse<CopyStoreDataResultDto>> CopyStoreDataAsync(
+            CopyStoreDataDto dto,
+            string updatedBy
+        );
     }
 }

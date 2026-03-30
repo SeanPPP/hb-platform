@@ -1,5 +1,6 @@
-using BlazorApp.Shared.Models.POSM;
+using BlazorApp.Api.Services;
 using BlazorApp.Service.Models.HBPOSM_POSM;
+using BlazorApp.Shared.Models.POSM;
 using SqlSugar;
 
 namespace BlazorApp.Api.Data
@@ -12,7 +13,10 @@ namespace BlazorApp.Api.Data
     {
         private readonly ISqlSugarClient _db;
 
-        public POSMSqlSugarContext(IConfiguration configuration)
+        public POSMSqlSugarContext(
+            IConfiguration configuration,
+            ICurrentUserService currentUserService
+        )
         {
             // 获取POSM数据库连接字符串
             var connectionString =
@@ -56,6 +60,39 @@ namespace BlazorApp.Api.Data
             _db.Aop.OnLogExecuting = (sql, pars) =>
             {
                 Console.WriteLine($"[POSM DB] {sql}");
+            };
+
+            _db.Aop.DataExecuting = (oldValue, entityInfo) =>
+            {
+                var username = currentUserService.GetCurrentUsername();
+
+                switch (entityInfo.OperationType)
+                {
+                    case DataFilterType.InsertByObject:
+                        if (
+                            entityInfo.PropertyName == "CreatedBy"
+                            && string.IsNullOrEmpty((string?)oldValue)
+                        )
+                            entityInfo.SetValue(username);
+                        if (entityInfo.PropertyName == "CreatedTime")
+                            entityInfo.SetValue(DateTime.Now);
+                        if (
+                            entityInfo.PropertyName == "UpdatedBy"
+                            && string.IsNullOrEmpty((string?)oldValue)
+                        )
+                            entityInfo.SetValue(username);
+                        if (entityInfo.PropertyName == "UpdatedTime")
+                            entityInfo.SetValue(DateTime.Now);
+                        break;
+                    case DataFilterType.UpdateByObject:
+                        if (entityInfo.PropertyName == "UpdatedBy")
+                            entityInfo.SetValue(username);
+                        if (entityInfo.PropertyName == "UpdatedTime")
+                            entityInfo.SetValue(DateTime.Now);
+                        if (entityInfo.PropertyName == "ModifiedBy")
+                            entityInfo.SetValue(username);
+                        break;
+                }
             };
         }
 
@@ -295,7 +332,7 @@ namespace BlazorApp.Api.Data
                 // 定义需要初始化的表类型
                 var tableTypes = new Type[]
                 {
-                  //  typeof(POSM_设备注册信息表),
+                    //  typeof(POSM_设备注册信息表),
                     typeof(PosmProductSupplierMapping),
                 };
 
@@ -420,7 +457,9 @@ namespace BlazorApp.Api.Data
                     typeof(POSM_设备注册信息表),
                     typeof(PosmProductSupplierMapping)
                 );
-                Console.WriteLine("[POSM DB] ✓ POSM_设备注册信息表 和 posm_product_supplier_mapping 重新创建成功");
+                Console.WriteLine(
+                    "[POSM DB] ✓ POSM_设备注册信息表 和 posm_product_supplier_mapping 重新创建成功"
+                );
 
                 Console.WriteLine("[POSM DB] 所有表重新创建完成！");
             }

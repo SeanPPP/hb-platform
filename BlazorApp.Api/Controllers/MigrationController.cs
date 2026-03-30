@@ -1,4 +1,5 @@
 using BlazorApp.Api.Data;
+using BlazorApp.Api.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
@@ -12,17 +13,20 @@ namespace BlazorApp.Api.Controllers
     {
         private readonly SqlSugarContext _context;
         private readonly ILogger<MigrationController> _logger;
-        private readonly ILoggerFactory _loggerFactory;
+        private readonly ICurrentUserService _currentUserService;
+        private readonly MigrationScripts _migration;
 
         public MigrationController(
             SqlSugarContext context,
             ILogger<MigrationController> logger,
-            ILoggerFactory loggerFactory
+            ICurrentUserService currentUserService,
+            MigrationScripts migration
         )
         {
             _context = context;
             _logger = logger;
-            _loggerFactory = loggerFactory;
+            _currentUserService = currentUserService;
+            _migration = migration;
         }
 
         /// <summary>
@@ -33,12 +37,7 @@ namespace BlazorApp.Api.Controllers
         {
             try
             {
-                var migration = new MigrationScripts(
-                    _context.Db,
-                    _logger as ILogger<MigrationScripts>,
-                    _loggerFactory
-                );
-                var needsMigration = migration.NeedsMigration();
+                var needsMigration = _migration.NeedsMigration();
 
                 return Ok(
                     new
@@ -72,18 +71,12 @@ namespace BlazorApp.Api.Controllers
         {
             try
             {
-                var migration = new MigrationScripts(
-                    _context.Db,
-                    _logger as ILogger<MigrationScripts>,
-                    _loggerFactory
-                );
-
-                if (!migration.NeedsMigration())
+                if (!_migration.NeedsMigration())
                 {
                     return Ok(new { success = true, message = "数据库已是最新结构，无需迁移" });
                 }
 
-                await migration.MigrateToGuidPrimaryKeys();
+                await _migration.MigrateToGuidPrimaryKeys();
 
                 return Ok(new { success = true, message = "GUID主键迁移执行成功" });
             }
@@ -110,14 +103,8 @@ namespace BlazorApp.Api.Controllers
         {
             try
             {
-                var migration = new MigrationScripts(
-                    _context.Db,
-                    _logger as ILogger<MigrationScripts>,
-                    _loggerFactory
-                );
-                await migration.ForceRecreateAllTablesWithGuidKeys();
+                await _migration.ForceRecreateAllTablesWithGuidKeys();
 
-                // 重新创建索引
                 _context.CreateIndexes();
 
                 return Ok(new { success = true, message = "所有表强制重新创建完成（GUID主键）" });
