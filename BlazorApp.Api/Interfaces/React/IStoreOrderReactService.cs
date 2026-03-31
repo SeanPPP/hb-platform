@@ -30,6 +30,11 @@ namespace BlazorApp.Api.Interfaces.React
         Task<ApiResponse<bool>> RemoveFromCartAsync(RemoveFromCartRequestDto request);
 
         /// <summary>
+        /// 清空购物车 (删除 FlowStatus=0 的订单的所有明细)
+        /// </summary>
+        Task<ApiResponse<StoreOrderCartDto?>> ClearCartAsync(string storeCode);
+
+        /// <summary>
         /// 提交订单 (FlowStatus 0 -> 1)
         /// </summary>
         Task<ApiResponse<bool>> SubmitOrderAsync(SubmitStoreOrderRequestDto request);

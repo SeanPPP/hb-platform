@@ -238,6 +238,32 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         /// <summary>
+        /// 清空购物车
+        /// </summary>
+        [HttpPost("cart/clear")]
+        public async Task<IActionResult> ClearCart([FromBody] ClearCartRequestDto request)
+        {
+            try
+            {
+                var result = await _service.ClearCartAsync(request.StoreCode);
+                if (result.Success)
+                {
+                    return Ok(result);
+                }
+                return BadRequest(result);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "ClearCart failed");
+                return StatusCode(500, new ApiResponse<object>
+                {
+                    Success = false,
+                    Message = "Internal server error"
+                });
+            }
+        }
+
+        /// <summary>
         /// 提交订单
         /// </summary>
         [HttpPost("submit")]

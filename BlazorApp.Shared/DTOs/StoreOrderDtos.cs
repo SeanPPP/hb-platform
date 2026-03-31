@@ -209,6 +209,15 @@ namespace BlazorApp.Shared.DTOs
   }
 
   /// <summary>
+  /// 清空购物车请求
+  /// </summary>
+  public class ClearCartRequestDto
+  {
+    [Required]
+    public string StoreCode { get; set; } = string.Empty;
+  }
+
+  /// <summary>
   /// 提交订单请求
   /// </summary>
   public class SubmitStoreOrderRequestDto

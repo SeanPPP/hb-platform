@@ -493,6 +493,52 @@ namespace BlazorApp.Api.Services.React
             }
         }
 
+        public async Task<ApiResponse<StoreOrderCartDto?>> ClearCartAsync(string storeCode)
+        {
+            try
+            {
+                var cart = await _db.Queryable<WareHouseOrder>()
+                    .Where(o => o.StoreCode == storeCode && o.FlowStatus == 0 && !o.IsDeleted)
+                    .FirstAsync();
+
+                if (cart == null)
+                {
+                    return new ApiResponse<StoreOrderCartDto?>
+                    {
+                        Success = true,
+                        Data = null,
+                        Message = "Cart is already empty"
+                    };
+                }
+
+                await _db.Deleteable<WareHouseOrderDetails>()
+                    .Where(d => d.OrderGUID == cart.OrderGUID)
+                    .ExecuteCommandAsync();
+
+                await _db.Deleteable<WareHouseOrder>()
+                    .Where(o => o.OrderGUID == cart.OrderGUID)
+                    .ExecuteCommandAsync();
+
+                _logger.LogInformation("Cleared cart for store: {StoreCode}", storeCode);
+
+                return new ApiResponse<StoreOrderCartDto?>
+                {
+                    Success = true,
+                    Data = null,
+                    Message = "Cart cleared successfully"
+                };
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to clear cart for store: {StoreCode}", storeCode);
+                return new ApiResponse<StoreOrderCartDto?>
+                {
+                    Success = false,
+                    Message = "Failed to clear cart"
+                };
+            }
+        }
+
         public async Task<ApiResponse<bool>> SubmitOrderAsync(SubmitStoreOrderRequestDto request)
         {
             try
