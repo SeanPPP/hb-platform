@@ -62,17 +62,16 @@ namespace BlazorApp.Api.Services.React
                 _logger.LogInformation("[ReactSync] 商品同步：检查HQ连接");
                 _hqContext.CheckConnection();
 
+                // 创建独立的本地数据库连接用于全量同步
+                using var syncLocalDb = SqlSugarContext.CreateConcurrentConnection(_configuration);
                 // 开启本地事务，确保清空与写入的一致性
-                await _localContext.Db.Ado.BeginTranAsync();
+                syncLocalDb.Ado.BeginTran();
 
                 try
                 {
                     // 为保证全量同步的正确性，先清空本地 Product 表
                     _logger.LogInformation("[ReactSync] 清空本地 Product 表");
-                    await _localContext
-                        .Db.Deleteable<Product>()
-                        .AS("Product")
-                        .ExecuteCommandAsync();
+                    await syncLocalDb.Deleteable<Product>().AS("Product").ExecuteCommandAsync();
                     const int batchSize = 20000;
                     const int writePageSize = 5000;
                     const int maxConcurrency = 8;
@@ -90,35 +89,49 @@ namespace BlazorApp.Api.Services.React
                     var totalErrors = 0;
                     var fetchErrors = 0;
 
-                    // 消费者：单线程在事务中批量插入
+                    // 消费者：使用独立连接在事务中批量插入
                     var consumer = Task.Run(async () =>
                     {
-                        await foreach (var localBatch in channel.Reader.ReadAllAsync())
+                        // 创建独立的消费者数据库连接
+                        using var consumerDb = SqlSugarContext.CreateConcurrentConnection(
+                            _configuration
+                        );
+                        consumerDb.Ado.BeginTran();
+                        try
                         {
-                            try
+                            await foreach (var localBatch in channel.Reader.ReadAllAsync())
                             {
-                                await _localContext
-                                    .Db.Fastest<Product>()
-                                    .AS("Product")
-                                    .PageSize(writePageSize)
-                                    .BulkCopyAsync(localBatch);
-                                totalAdded += localBatch.Count;
-                                _logger.LogInformation(
-                                    "[ReactSync] 商品第{Page}批：{Count}",
-                                    localBatch,
-                                    localBatch.Count
-                                );
+                                try
+                                {
+                                    await consumerDb
+                                        .Fastest<Product>()
+                                        .AS("Product")
+                                        .PageSize(writePageSize)
+                                        .BulkCopyAsync(localBatch);
+                                    totalAdded += localBatch.Count;
+                                    _logger.LogInformation(
+                                        "[ReactSync] 商品第{Page}批：{Count}",
+                                        localBatch,
+                                        localBatch.Count
+                                    );
+                                }
+                                catch (Exception ex)
+                                {
+                                    _logger.LogError(
+                                        ex,
+                                        "[ReactSync] 商品批量插入失败（批大小:{Size}）",
+                                        localBatch.Count
+                                    );
+                                    totalErrors += localBatch.Count;
+                                    await Task.Delay(1500);
+                                }
                             }
-                            catch (Exception ex)
-                            {
-                                _logger.LogError(
-                                    ex,
-                                    "[ReactSync] 商品批量插入失败（批大小:{Size}）",
-                                    localBatch.Count
-                                );
-                                totalErrors += localBatch.Count;
-                                await Task.Delay(1500);
-                            }
+                            consumerDb.Ado.CommitTran();
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogError(ex, "[ReactSync] 消费者任务异常");
+                            consumerDb.Ado.RollbackTran();
                         }
                     });
 
@@ -184,7 +197,7 @@ namespace BlazorApp.Api.Services.React
                     await consumer; // 消费完毕
 
                     // 提交事务：清空 + 批量写入整体成功
-                    await _localContext.Db.Ado.CommitTranAsync();
+                    syncLocalDb.Ado.CommitTran();
 
                     result.AddedCount = totalAdded;
                     result.ErrorCount = totalErrors + fetchErrors;
@@ -194,7 +207,7 @@ namespace BlazorApp.Api.Services.React
                 catch (Exception exTran)
                 {
                     // 异常时回滚事务，保证数据一致性
-                    await _localContext.Db.Ado.RollbackTranAsync();
+                    syncLocalDb.Ado.RollbackTran();
                     throw new Exception("商品同步事务失败", exTran);
                 }
             }
@@ -251,6 +264,10 @@ namespace BlazorApp.Api.Services.React
 
             try
             {
+                // 创建独立的数据库连接用于全量同步
+                using var syncHqDb = HqSqlSugarContext.CreateConcurrentConnection(_configuration);
+                using var syncLocalDb = SqlSugarContext.CreateConcurrentConnection(_configuration);
+
                 List<string> storeCodesToProcess;
                 if (selectedStoreCodes?.Any() == true)
                 {
@@ -261,8 +278,8 @@ namespace BlazorApp.Api.Services.React
                 {
                     // 扫描 HQ：查询存在有效价格且商品可用的分店代码
                     var startQuery = DateTime.Now;
-                    storeCodesToProcess = await _hqContext
-                        .Db.Queryable<DIC_商品零售价表, DIC_商品信息字典表>(
+                    storeCodesToProcess = await syncHqDb
+                        .Queryable<DIC_商品零售价表, DIC_商品信息字典表>(
                             (price, product) =>
                                 new JoinQueryInfos(
                                     JoinType.Inner,
@@ -297,16 +314,16 @@ namespace BlazorApp.Api.Services.React
 
                 // 仅清理目标分店的历史价格数据，避免数据重复（大批量删除使用更长超时）
                 var deleteStart = DateTime.Now;
-                var prevTimeout = _localContext.Db.Ado.CommandTimeOut;
+                var prevTimeout = syncLocalDb.Ado.CommandTimeOut;
                 int deleted = 0;
                 try
                 {
-                    _localContext.Db.Ado.CommandTimeOut = _configuration.GetValue<int>(
+                    syncLocalDb.Ado.CommandTimeOut = _configuration.GetValue<int>(
                         "Database:BulkCopyCommandTimeoutSeconds",
                         600
                     );
-                    deleted = await _localContext
-                        .Db.Deleteable<StoreRetailPrice>()
+                    deleted = await syncLocalDb
+                        .Deleteable<StoreRetailPrice>()
                         .Where(x =>
                             x.StoreCode != null && storeCodesToProcess.Contains(x.StoreCode)
                         )
@@ -314,7 +331,7 @@ namespace BlazorApp.Api.Services.React
                 }
                 finally
                 {
-                    _localContext.Db.Ado.CommandTimeOut = prevTimeout;
+                    syncLocalDb.Ado.CommandTimeOut = prevTimeout;
                 }
 
                 var deleteDuration = DateTime.Now - deleteStart;

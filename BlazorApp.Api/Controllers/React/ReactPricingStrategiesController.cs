@@ -1,5 +1,6 @@
 using System.Threading.Tasks;
 using BlazorApp.Api.Interfaces.React;
+using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Services.Pricing;
 using BlazorApp.Shared.DTOs;
 using Microsoft.AspNetCore.Authorization;
@@ -13,11 +14,11 @@ namespace BlazorApp.Api.Controllers.React
     public class ReactPricingStrategiesController : ControllerBase
     {
         private readonly IPricingStrategyReactService _service;
-        private readonly AutoPricingService _autoPricing;
+        private readonly IAutoPricingService _autoPricing;
 
         public ReactPricingStrategiesController(
             IPricingStrategyReactService service,
-            AutoPricingService autoPricing
+            IAutoPricingService autoPricing
         )
         {
             _service = service;

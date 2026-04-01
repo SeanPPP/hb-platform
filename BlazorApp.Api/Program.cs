@@ -418,6 +418,7 @@ builder.Services.AddScoped<ISalesDashboardReactService, SalesDashboardReactServi
 builder.Services.AddScoped<ISalesDashboardCacheWarmer, SalesDashboardCacheWarmer>();
 builder.Services.AddScoped<IHolidayProductReactService, HolidayProductReactService>();
 builder.Services.AddScoped<IStoreManagerProductReactService, StoreManagerProductReactService>();
+builder.Services.AddScoped<ILocationReactService, LocationReactService>();
 builder.Services.AddScoped<
     BlazorApp.Api.Interfaces.IStoreOrderCacheWarmer,
     BlazorApp.Api.Cache.StoreOrderCacheWarmer

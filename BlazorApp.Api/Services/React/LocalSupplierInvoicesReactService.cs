@@ -131,6 +131,7 @@ namespace BlazorApp.Api.Services.React
                                         d.StoreProductCode != null
                                         && d.StoreProductCode.Contains(keyword)
                                     )
+                                    || (d.ProductName != null && d.ProductName.Contains(keyword))
                                 )
                             )
                             .Select(d => d.InvoiceGUID)
