@@ -42,15 +42,11 @@ namespace BlazorApp.Api.Services.React
         /// 支持按分店筛选：selectedStoreCodes
         /// </summary>
         public async Task<SyncResult> SyncStoreRetailPricesFromHqConcurrentAsync(
-            List<string>? selectedStoreCodes = null,
-            int maxConcurrency = 30,
-            int batchSize = 200000
+            List<string>? selectedStoreCodes = null
         )
         {
             return await _fullSyncService.SyncStoreRetailPricesFromHqConcurrentAsync(
-                selectedStoreCodes,
-                maxConcurrency,
-                batchSize
+                selectedStoreCodes
             );
         }
 
@@ -185,16 +181,10 @@ namespace BlazorApp.Api.Services.React
         /// 支持按主表GUID筛选：masterGuids
         /// </summary>
         public async Task<SyncResult> SyncContainerDetailsFromHqAsync(
-            List<string>? masterGuids = null,
-            int hqBatchSize = 50000,
-            int writePageSize = 10000
+            List<string>? masterGuids = null
         )
         {
-            return await _fullSyncService.SyncContainerDetailsFromHqAsync(
-                masterGuids,
-                hqBatchSize,
-                writePageSize
-            );
+            return await _fullSyncService.SyncContainerDetailsFromHqAsync(masterGuids);
         }
 
         /// <summary>
@@ -243,15 +233,9 @@ namespace BlazorApp.Api.Services.React
         /// 全量同步：分店供应商发票详情
         /// 数据源：RED_进货单详情表 → 目标：StoreLocalSupplierInvoiceDetails
         /// </summary>
-        public async Task<SyncResult> SyncStoreLocalSupplierInvoiceDetailsFromHqAsync(
-            int hqBatchSize = 100000,
-            int writePageSize = 50000
-        )
+        public async Task<SyncResult> SyncStoreLocalSupplierInvoiceDetailsFromHqAsync()
         {
-            return await _fullSyncService.SyncStoreLocalSupplierInvoiceDetailsFromHqAsync(
-                hqBatchSize,
-                writePageSize
-            );
+            return await _fullSyncService.SyncStoreLocalSupplierInvoiceDetailsFromHqAsync();
         }
 
         /// <summary>
@@ -288,15 +272,9 @@ namespace BlazorApp.Api.Services.React
         /// 全量同步：仓库订单详情
         /// 数据源：CBP_RED_分店订单详情表 → 目标：WareHouseOrderDetails
         /// </summary>
-        public async Task<SyncResult> SyncWareHouseOrderDetailsFromHqAsync(
-            int hqBatchSize = 100000,
-            int writePageSize = 50000
-        )
+        public async Task<SyncResult> SyncWareHouseOrderDetailsFromHqAsync()
         {
-            return await _fullSyncService.SyncWareHouseOrderDetailsFromHqAsync(
-                hqBatchSize,
-                writePageSize
-            );
+            return await _fullSyncService.SyncWareHouseOrderDetailsFromHqAsync();
         }
 
         /// <summary>

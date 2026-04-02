@@ -17,7 +17,7 @@ namespace BlazorApp.Shared.Models
         public string UUID { get; set; } = UuidHelper.GenerateUuid7();
 
         /// <summary>
-        /// 产品类别GUID
+        /// 产品编码
         /// </summary>
         [SugarColumn(IsNullable = true, Length = 50)]
         public string? ProductCode { get; set; }

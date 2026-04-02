@@ -46,180 +46,224 @@ namespace BlazorApp.Api.Services.React
 
         /// <summary>
         /// 全量同步商品：HQ 商品字典表 → 本地 Product 表
+        ///
+        /// 架构：生产者-消费者 Channel 管道模式
+        /// ┌──────────────────┐     ┌──────────────────┐
+        /// │  生产者（4并发）   │     │  消费者（6并发）   │
+        /// │  分页查询HQ 40K   │────▶│  分块20K BulkCopy │
+        /// │  SemaphoreSlim   │     │  分页10K 插入     │
+        /// └──────────────────┘     └──────────────────┘
+        ///
         /// 流程：
         /// 1) 检查 HQ 连接；
-        /// 2) 开启本地事务并清空 Product；
-        /// 3) 分页（50,000）拉取 HQ 数据，转换为 Product 后以 10,000 批量写入；
-        /// 4) 统计新增/错误数与耗时，提交事务；异常则回滚。
+        /// 2) 清空本地 Product 表；
+        /// 3) 生产者并发（上限4）分页（40,000）拉取 HQ 数据，通过 Channel 传递给消费者；
+        /// 4) 消费者并发（6个）分块（20,000）执行 BulkCopy，分页（10,000）插入；
+        /// 5) 统计新增/错误数与耗时。
         /// </summary>
         public async Task<SyncResult> SyncProductsFromHqAsync()
         {
             var result = new SyncResult { StartTime = DateTime.Now };
+            Console.WriteLine("📦 [商品同步] ===== 开始全量同步商品 =====");
 
             try
             {
-                // 检查 HQ 数据库连接是否可用
+                // 步骤1：检查 HQ 数据库连接
                 _logger.LogInformation("[ReactSync] 商品同步：检查HQ连接");
                 _hqContext.CheckConnection();
+                Console.WriteLine("✅ [商品同步] HQ连接检查通过");
 
-                // 创建独立的本地数据库连接用于全量同步
+                // 步骤2：清空本地 Product 表（全量同步先清后写）
                 using var syncLocalDb = SqlSugarContext.CreateConcurrentConnection(_configuration);
-                // 开启本地事务，确保清空与写入的一致性
-                syncLocalDb.Ado.BeginTran();
+                _logger.LogInformation("[ReactSync] 清空本地 Product 表");
+                await syncLocalDb.Deleteable<Product>().AS("Product").ExecuteCommandAsync();
+                Console.WriteLine("🗑️ [商品同步] 本地 Product 表已清空");
 
-                try
+                // 并发参数配置
+                const int batchSize = 40000; // 生产者每批查询 HQ 数据量
+                const int producerConcurrency = 4; // 生产者最大并发数
+                const int consumerConcurrency = 6; // 消费者并发数
+                const int chunkSize = 20000; // 消费者每次 BulkCopy 的分块大小
+                const int writePageSize = 10000; // BulkCopy 内部分页大小
+
+                // 步骤3：统计 HQ 总数据量，计算分页数
+                using var hqCountDb = HqSqlSugarContext.CreateConcurrentConnection(_configuration);
+                var totalCount = await hqCountDb.Queryable<DIC_商品信息字典表>().CountAsync();
+                var pageCount = (int)Math.Ceiling(totalCount / (double)batchSize);
+                Console.WriteLine(
+                    $"📊 [商品同步] HQ总数据量: {totalCount:N0} 条, 分页数: {pageCount}, 每批: {batchSize:N0} 条"
+                );
+                Console.WriteLine(
+                    $"⚙️ [商品同步] 生产者并发: {producerConcurrency}, 消费者并发: {consumerConcurrency}, 分块: {chunkSize:N0}, 写入分页: {writePageSize:N0}"
+                );
+
+                // 创建有界 Channel：容量=消费者数×2，超出时生产者阻塞（背压机制）
+                var channel = System.Threading.Channels.Channel.CreateBounded<List<Product>>(
+                    capacity: consumerConcurrency * 2
+                );
+
+                // 线程安全的统计计数器（多消费者并发写入时使用 Interlocked 操作）
+                var totalAdded = 0;
+                var totalErrors = 0;
+                var fetchErrors = 0;
+
+                // ===== 启动消费者（6个并发） =====
+                // 每个消费者独立数据库连接，从 Channel 读取数据后分块 BulkCopy
+                var consumers = new List<Task>();
+                for (int i = 0; i < consumerConcurrency; i++)
                 {
-                    // 为保证全量同步的正确性，先清空本地 Product 表
-                    _logger.LogInformation("[ReactSync] 清空本地 Product 表");
-                    await syncLocalDb.Deleteable<Product>().AS("Product").ExecuteCommandAsync();
-                    const int batchSize = 20000;
-                    const int writePageSize = 5000;
-                    const int maxConcurrency = 8;
-
-                    var hqCountDb = HqSqlSugarContext.CreateConcurrentConnection(_configuration);
-                    var totalCount = await hqCountDb.Queryable<DIC_商品信息字典表>().CountAsync();
-                    hqCountDb.Dispose();
-                    var pageCount = (int)Math.Ceiling(totalCount / (double)batchSize);
-
-                    var channel = System.Threading.Channels.Channel.CreateBounded<List<Product>>(
-                        capacity: Math.Min(12, Math.Max(4, maxConcurrency * 2))
-                    );
-
-                    var totalAdded = 0;
-                    var totalErrors = 0;
-                    var fetchErrors = 0;
-
-                    // 消费者：使用独立连接在事务中批量插入
-                    var consumer = Task.Run(async () =>
+                    var consumerIdx = i;
+                    var c = Task.Run(async () =>
                     {
-                        // 创建独立的消费者数据库连接
+                        // 每个消费者创建独立的数据库连接
                         using var consumerDb = SqlSugarContext.CreateConcurrentConnection(
                             _configuration
                         );
-                        consumerDb.Ado.BeginTran();
-                        try
+                        // BulkCopy 大批量写入易超时，使用更长命令超时
+                        consumerDb.Ado.CommandTimeOut = _configuration.GetValue<int>(
+                            "Database:BulkCopyCommandTimeoutSeconds",
+                            600
+                        );
+
+                        // 从 Channel 持续读取数据，直到 Channel 关闭
+                        await foreach (var batch in channel.Reader.ReadAllAsync())
                         {
-                            await foreach (var localBatch in channel.Reader.ReadAllAsync())
+                            // 将生产者的一批数据分块处理，避免单次 BulkCopy 过大
+                            for (int offset = 0; offset < batch.Count; offset += chunkSize)
                             {
+                                var chunk = batch.Skip(offset).Take(chunkSize).ToList();
                                 try
                                 {
                                     await consumerDb
                                         .Fastest<Product>()
                                         .AS("Product")
                                         .PageSize(writePageSize)
-                                        .BulkCopyAsync(localBatch);
-                                    totalAdded += localBatch.Count;
+                                        .BulkCopyAsync(chunk);
+                                    System.Threading.Interlocked.Add(ref totalAdded, chunk.Count);
                                     _logger.LogInformation(
-                                        "[ReactSync] 商品第{Page}批：{Count}",
-                                        localBatch,
-                                        localBatch.Count
+                                        "[ReactSync] 商品消费者{Idx}写入：{Count}",
+                                        consumerIdx,
+                                        chunk.Count
                                     );
                                 }
                                 catch (Exception ex)
                                 {
                                     _logger.LogError(
                                         ex,
-                                        "[ReactSync] 商品批量插入失败（批大小:{Size}）",
-                                        localBatch.Count
+                                        "[ReactSync] 商品消费者{Idx}写入失败（批大小:{Size}）",
+                                        consumerIdx,
+                                        chunk.Count
                                     );
-                                    totalErrors += localBatch.Count;
+                                    System.Threading.Interlocked.Add(ref totalErrors, chunk.Count);
+                                    Console.WriteLine(
+                                        $"❌ [商品同步] 消费者{consumerIdx}写入失败: {chunk.Count} 条, 错误: {ex.Message}"
+                                    );
                                     await Task.Delay(1500);
                                 }
                             }
-                            consumerDb.Ado.CommitTran();
+                        }
+                    });
+                    consumers.Add(c);
+                }
+                Console.WriteLine(
+                    $"🚀 [商品同步] 已启动 {consumerConcurrency} 个消费者，等待数据..."
+                );
+
+                // ===== 启动生产者（SemaphoreSlim 控制并发上限4） =====
+                var semaphore = new SemaphoreSlim(producerConcurrency, producerConcurrency);
+                _logger.LogInformation(
+                    "[ReactSync] 商品并发读取初始化：Total={Total}, Pages={Pages}, BatchSize={Batch}, Producers={Producers}, Consumers={Consumers}",
+                    totalCount,
+                    pageCount,
+                    batchSize,
+                    producerConcurrency,
+                    consumerConcurrency
+                );
+
+                var producers = new List<Task>();
+                for (var page = 1; page <= pageCount; page++)
+                {
+                    var pageIndex = page;
+                    var p = Task.Run(async () =>
+                    {
+                        // 等待信号量许可，控制同时执行的生产者数量
+                        await semaphore.WaitAsync();
+                        try
+                        {
+                            var skip = (pageIndex - 1) * batchSize;
+                            // 为每个生产者创建独立的 HQ 连接，避免并发冲突
+                            using var hqDb = HqSqlSugarContext.CreateConcurrentConnection(
+                                _configuration
+                            );
+                            var hqBatch = await hqDb.Queryable<DIC_商品信息字典表>()
+                                .Skip(skip)
+                                .Take(batchSize)
+                                .ToListAsync();
+
+                            if (hqBatch.Any())
+                            {
+                                Console.WriteLine(
+                                    $"📥 [商品同步] 生产者查询第{pageIndex}/{pageCount}批: {hqBatch.Count:N0} 条"
+                                );
+                                _logger.LogInformation(
+                                    "[ReactSync] 商品第{Page}批：{Count}",
+                                    pageIndex,
+                                    hqBatch.Count
+                                );
+                                // 映射为本地 Product 实体后写入 Channel
+                                var localBatch = _mapper.Map<List<Product>>(hqBatch);
+                                await channel.Writer.WriteAsync(localBatch);
+                            }
                         }
                         catch (Exception ex)
                         {
-                            _logger.LogError(ex, "[ReactSync] 消费者任务异常");
-                            consumerDb.Ado.RollbackTran();
+                            _logger.LogError(
+                                ex,
+                                "[ReactSync] 商品第{Page}批查询/映射失败",
+                                pageIndex
+                            );
+                            System.Threading.Interlocked.Increment(ref fetchErrors);
+                            Console.WriteLine(
+                                $"❌ [商品同步] 第{pageIndex}批查询失败: {ex.Message}"
+                            );
+                        }
+                        finally
+                        {
+                            semaphore.Release();
                         }
                     });
-
-                    // 生产者：并发分页读取+映射
-                    var semaphore = new SemaphoreSlim(maxConcurrency, maxConcurrency);
-                    _logger.LogInformation(
-                        "[ReactSync] 商品并发读取初始化：Total={Total}, Pages={Pages}, BatchSize={Batch}",
-                        totalCount,
-                        pageCount,
-                        batchSize
-                    );
-
-                    var producers = new List<Task>();
-                    for (var page = 1; page <= pageCount; page++)
-                    {
-                        var pageIndex = page; // 关键：在闭包外捕获当前页索引，避免并发闭包变量问题
-                        var p = Task.Run(async () =>
-                        {
-                            await semaphore.WaitAsync();
-                            try
-                            {
-                                var skip = (pageIndex - 1) * batchSize;
-                                var hqDb = HqSqlSugarContext.CreateConcurrentConnection(
-                                    _configuration
-                                );
-                                var hqBatch = await hqDb.Queryable<DIC_商品信息字典表>()
-                                    .Skip(skip)
-                                    .Take(batchSize)
-                                    .ToListAsync();
-
-                                if (hqBatch.Any())
-                                {
-                                    _logger.LogInformation(
-                                        "[ReactSync] 商品第{Page}批：{Count}",
-                                        pageIndex,
-                                        hqBatch.Count
-                                    );
-                                    var localBatch = _mapper.Map<List<Product>>(hqBatch);
-                                    await channel.Writer.WriteAsync(localBatch);
-                                }
-                                hqDb.Dispose();
-                            }
-                            catch (Exception ex)
-                            {
-                                _logger.LogError(
-                                    ex,
-                                    "[ReactSync] 商品第{Page}批查询/映射失败",
-                                    pageIndex
-                                );
-                                fetchErrors++;
-                            }
-                            finally
-                            {
-                                semaphore.Release();
-                            }
-                        });
-                        producers.Add(p);
-                    }
-
-                    // 等待生产结束并关闭通道
-                    await Task.WhenAll(producers);
-                    channel.Writer.Complete();
-                    await consumer; // 消费完毕
-
-                    // 提交事务：清空 + 批量写入整体成功
-                    syncLocalDb.Ado.CommitTran();
-
-                    result.AddedCount = totalAdded;
-                    result.ErrorCount = totalErrors + fetchErrors;
-                    result.IsSuccess = (totalErrors == 0 && fetchErrors == 0);
-                    result.Message = totalErrors == 0 ? "商品同步成功" : "商品同步完成，但存在错误";
+                    producers.Add(p);
                 }
-                catch (Exception exTran)
-                {
-                    // 异常时回滚事务，保证数据一致性
-                    syncLocalDb.Ado.RollbackTran();
-                    throw new Exception("商品同步事务失败", exTran);
-                }
+
+                // 步骤4：等待所有生产者完成 → 关闭 Channel → 等待所有消费者完成
+                await Task.WhenAll(producers);
+                Console.WriteLine("📥 [商品同步] 所有生产者已完成，关闭 Channel");
+                channel.Writer.Complete();
+                await Task.WhenAll(consumers);
+                Console.WriteLine("📤 [商品同步] 所有消费者已完成");
+
+                // 步骤5：汇总统计结果
+                result.AddedCount = totalAdded;
+                result.ErrorCount = totalErrors + fetchErrors;
+                result.IsSuccess = (totalErrors == 0 && fetchErrors == 0);
+                result.Message = totalErrors == 0 ? "商品同步成功" : "商品同步完成，但存在错误";
+
+                Console.WriteLine(
+                    $"📊 [商品同步] 同步完成: 新增 {totalAdded:N0} 条, 写入错误 {totalErrors:N0} 条, 查询错误 {fetchErrors} 批"
+                );
+                Console.WriteLine(
+                    $"⏱️ [商品同步] 总耗时: {DateTime.Now - result.StartTime:hh\\:mm\\:ss}"
+                );
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "[ReactSync] 商品同步异常");
                 result.IsSuccess = false;
                 result.Message = "商品同步异常";
+                Console.WriteLine($"💥 [商品同步] 同步异常: {ex.Message}");
             }
             finally
             {
-                // 记录耗时统计
                 result.EndTime = DateTime.Now;
                 result.Duration = result.EndTime - result.StartTime;
             }
@@ -229,54 +273,62 @@ namespace BlazorApp.Api.Services.React
 
         /// <summary>
         /// 全量同步分店零售价（按分店并发）：HQ 价格表 → 本地 StoreRetailPrice
+        ///
+        /// 架构：两层并发 + Channel Pipeline 管道模式
+        ///
+        /// 外层：每次5个分店并发处理
+        /// ┌─────────────────────────────────────────────────────────┐
+        /// │  分店批次（每组5个分店并发，完成后再处理下一组）            │
+        /// │  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐ │
+        /// │  │ 分店A     │ │ 分店B     │ │ 分店C     │ │ 分店D     │ │ 分店E     │ │
+        /// │  │ Pipeline  │ │ Pipeline  │ │ Pipeline  │ │ Pipeline  │ │ Pipeline  │ │
+        /// │  └──────────┘ └──────────┘ └──────────┘ └──────────┘ └──────────┘ │
+        /// └─────────────────────────────────────────────────────────┘
+        ///
+        /// 内层（每个分店独立 Pipeline）：
+        /// ┌──────────────────┐     ┌──────────────────┐
+        /// │  生产者（4并发）   │     │  消费者（6并发）   │
+        /// │  分页查询HQ 50K   │────▶│  分块20K BulkCopy │
+        /// │  SemaphoreSlim   │     │  分页10K 插入     │
+        /// └──────────────────┘     └──────────────────┘
+        ///
         /// 流程：
         /// 1) 选定分店列表（为空则扫描 HQ 有数据的分店）；
-        /// 2) 清理本地目标分店历史价格数据（避免重复累计）；
-        /// 3) 使用 SemaphoreSlim 控并发，为每个分店创建独立 HQ/本地连接；
-        /// 4) 分店级 JOIN 过滤有效商品与价格，仅写入有效记录；
-        /// 5) 批量写入 + 重试机制，汇总统计新增/错误与耗时。
+        /// 2) 清理本地目标分店历史价格数据；
+        /// 3) 每5个分店一组并发，每个分店独立 Pipeline 同步；
+        /// 4) 汇总统计新增/错误数与耗时。
         /// </summary>
         public async Task<SyncResult> SyncStoreRetailPricesFromHqConcurrentAsync(
-            List<string>? selectedStoreCodes = null,
-            int? maxConcurrency = null,
-            int? batchSize = null
+            List<string>? selectedStoreCodes = null
         )
         {
             var result = new SyncResult { StartTime = DateTime.Now };
+            Console.WriteLine("💰 [零售价同步] ===== 开始全量同步分店零售价 =====");
 
-            var effectiveMaxConcurrency =
-                maxConcurrency ?? _configuration.GetValue<int>("Database:SyncMaxConcurrency", 10);
-            var effectiveBatchSize =
-                batchSize ?? _configuration.GetValue<int>("Database:SyncBatchSize", 100000);
-            var actualBatchSize = effectiveBatchSize;
+            const int storeConcurrency = 10;
+            const int batchSize = 50000;
+            const int producerConcurrency = 4;
+            const int consumerConcurrency = 8;
+            const int chunkSize = 20000;
+            const int writePageSize = 10000;
 
-            // 并发控制信号量：限制并发分店数，避免数据库压力过大
-            var semaphore = new SemaphoreSlim(effectiveMaxConcurrency, effectiveMaxConcurrency);
-            // 进度锁：跨任务汇总统计时保持原子性
-            var progressLock = new object();
-            var storeErrors = new List<StoreSyncError>();
-
-            var totalProcessed = 0;
             var totalAdded = 0;
             var totalErrors = 0;
-            var totalQueryTime = 0.0;
-            var totalInsertTime = 0.0;
+            var storeErrors = new List<StoreSyncError>();
 
             try
             {
-                // 创建独立的数据库连接用于全量同步
                 using var syncHqDb = HqSqlSugarContext.CreateConcurrentConnection(_configuration);
                 using var syncLocalDb = SqlSugarContext.CreateConcurrentConnection(_configuration);
 
+                // 步骤1：获取需要同步的分店列表
                 List<string> storeCodesToProcess;
                 if (selectedStoreCodes?.Any() == true)
                 {
-                    // 使用前端传入的分店列表
                     storeCodesToProcess = selectedStoreCodes;
                 }
                 else
                 {
-                    // 扫描 HQ：查询存在有效价格且商品可用的分店代码
                     var startQuery = DateTime.Now;
                     storeCodesToProcess = await syncHqDb
                         .Queryable<DIC_商品零售价表, DIC_商品信息字典表>(
@@ -292,27 +344,24 @@ namespace BlazorApp.Api.Services.React
                                 && !string.IsNullOrEmpty(price.H分店代码)
                                 && price.H使用状态 == true
                                 && product.H使用状态 == true
-                        )
+                        ) 
                         .GroupBy((price, product) => price.H分店代码)
                         .Select((price, product) => price.H分店代码)
                         .ToListAsync();
                     var duration = DateTime.Now - startQuery;
-                    _logger.LogInformation(
-                        "[ReactSync] 发现分店{Count}个，查询耗时{Seconds:F1}s",
-                        storeCodesToProcess.Count,
-                        duration.TotalSeconds
+                    Console.WriteLine(
+                        $"📊 [零售价同步] 扫描HQ发现 {storeCodesToProcess.Count} 个分店，耗时 {duration.TotalSeconds:F1}s"
                     );
                 }
 
                 if (!storeCodesToProcess.Any())
                 {
-                    // 无需同步，直接返回成功
                     result.IsSuccess = true;
                     result.Message = "未发现需要同步的分店";
                     return result;
                 }
 
-                // 仅清理目标分店的历史价格数据，避免数据重复（大批量删除使用更长超时）
+                // 步骤2：清理目标分店历史价格数据（避免重复累计）
                 var deleteStart = DateTime.Now;
                 var prevTimeout = syncLocalDb.Ado.CommandTimeOut;
                 int deleted = 0;
@@ -333,88 +382,71 @@ namespace BlazorApp.Api.Services.React
                 {
                     syncLocalDb.Ado.CommandTimeOut = prevTimeout;
                 }
-
-                var deleteDuration = DateTime.Now - deleteStart;
-                _logger.LogInformation(
-                    "[ReactSync] 清理本地分店数据：删除{Deleted:N0}条，耗时{Seconds:F1}s",
-                    deleted,
-                    deleteDuration.TotalSeconds
+                Console.WriteLine(
+                    $"🗑️ [零售价同步] 清理目标分店历史数据：删除 {deleted:N0} 条，耗时 {(DateTime.Now - deleteStart).TotalSeconds:F1}s"
                 );
 
-                // 按分店并发执行同步任务
-                var tasks =
-                    new List<
-                        Task<(
-                            int processed,
-                            int added,
-                            int errors,
-                            double queryTime,
-                            double insertTime,
-                            StoreSyncError? error
-                        )>
-                    >();
-                var completedStores = 0;
+                // 步骤3：按分店分组并发处理（每组 storeConcurrency 个分店）
+                var totalBatches = (int)
+                    Math.Ceiling(storeCodesToProcess.Count / (double)storeConcurrency);
+                Console.WriteLine(
+                    $"⚙️ [零售价同步] 共 {storeCodesToProcess.Count} 个分店，每组 {storeConcurrency} 个，共 {totalBatches} 组"
+                );
+                Console.WriteLine(
+                    $"⚙️ [零售价同步] 内层参数: 查询{batchSize:N0}/批, 生产者{producerConcurrency}并发, 消费者{consumerConcurrency}并发, 分块{chunkSize:N0}, 写入分页{writePageSize:N0}"
+                );
+
                 var processStart = DateTime.Now;
 
-                for (int i = 0; i < storeCodesToProcess.Count; i++)
+                for (int batchIdx = 0; batchIdx < totalBatches; batchIdx++)
                 {
-                    var storeCode = storeCodesToProcess[i];
-                    // 使用线程池并发执行，确保每分店独立连接与独立写入
-                    var t = Task.Run(async () =>
-                        await ProcessSingleStoreAsync(i, storeCode, effectiveBatchSize, semaphore)
-                    );
-                    tasks.Add(t);
+                    var batchStores = storeCodesToProcess
+                        .Skip(batchIdx * storeConcurrency)
+                        .Take(storeConcurrency)
+                        .ToList();
 
-                    if (tasks.Count >= effectiveMaxConcurrency)
+                    Console.WriteLine(
+                        $"🏪 [零售价同步] ===== 开始处理第{batchIdx + 1}/{totalBatches}组分店({batchStores.Count}个): [{string.Join(", ", batchStores)}] ====="
+                    );
+
+                    // 每组分店并发执行，每个分店独立 Pipeline
+                    var batchTasks = batchStores
+                        .Select(storeCode =>
+                            ProcessSingleStorePipelineAsync(
+                                storeCode,
+                                batchSize,
+                                producerConcurrency,
+                                consumerConcurrency,
+                                chunkSize,
+                                writePageSize
+                            )
+                        )
+                        .ToArray();
+
+                    var batchResults = await Task.WhenAll(batchTasks);
+
+                    // 汇总当前批次结果
+                    foreach (var r in batchResults)
                     {
-                        // 达到并发上限后收集一个已完成任务，释放窗口
-                        var done = await Task.WhenAny(tasks);
-                        tasks.Remove(done);
-                        var r = await done;
-                        lock (progressLock)
+                        System.Threading.Interlocked.Add(ref totalAdded, r.added);
+                        System.Threading.Interlocked.Add(ref totalErrors, r.errors);
+                        if (r.error != null)
                         {
-                            totalProcessed += r.processed;
-                            totalAdded += r.added;
-                            totalErrors += r.errors;
-                            totalQueryTime += r.queryTime;
-                            totalInsertTime += r.insertTime;
-                            if (r.error != null)
-                            {
-                                storeErrors.Add(r.error);
-                            }
-                            completedStores++;
+                            storeErrors.Add(r.error);
                         }
                     }
+
+                    Console.WriteLine($"🏪 [零售价同步] 第{batchIdx + 1}/{totalBatches}组完成");
                 }
 
-                // 等待剩余任务完成并汇总
-                var rest = await Task.WhenAll(tasks);
-                foreach (var r in rest)
-                {
-                    lock (progressLock)
-                    {
-                        totalProcessed += r.processed;
-                        totalAdded += r.added;
-                        totalErrors += r.errors;
-                        totalQueryTime += r.queryTime;
-                        totalInsertTime += r.insertTime;
-                        completedStores++;
-                    }
-                }
-
+                // 步骤4：汇总统计
+                var completedStores = storeCodesToProcess.Count - storeErrors.Count;
                 result.AddedCount = totalAdded;
                 result.ErrorCount = totalErrors;
                 result.IsSuccess = totalErrors == 0;
-                result.Message =
-                    totalErrors == 0 ? "分店零售价同步成功" : "分店零售价同步完成，但存在错误";
-
-                var finalDuration = DateTime.Now - processStart;
-                result.EndTime = DateTime.Now;
-                result.Duration = finalDuration;
-
-                result.TotalCount = totalProcessed;
+                result.TotalCount = totalAdded + totalErrors;
                 result.TotalStores = storeCodesToProcess.Count;
-                result.SuccessStores = completedStores - storeErrors.Count;
+                result.SuccessStores = completedStores;
                 result.FailedStores = storeErrors.Count;
                 result.StoreErrors = storeErrors;
 
@@ -435,14 +467,21 @@ namespace BlazorApp.Api.Services.React
                             $"分店{e.StoreCode}: {e.ErrorMessage} (处理{e.ProcessedCount:N0}条, 成功{e.InsertedCount:N0}条, 耗时{e.DurationSeconds:F1}s)"
                         )
                         .ToList();
-
                     result.Details = "错误分店列表：\n" + string.Join("\n", errorDetails);
                 }
 
+                var finalDuration = DateTime.Now - processStart;
+                result.EndTime = DateTime.Now;
+                result.Duration = finalDuration;
+
+                Console.WriteLine(
+                    $"📊 [零售价同步] 同步完成: {result.TotalStores}个分店, 新增{totalAdded:N0}条, 错误{totalErrors:N0}条"
+                );
+                Console.WriteLine($"⏱️ [零售价同步] 总耗时: {finalDuration:hh\\:mm\\:ss}");
+
                 _logger.LogInformation(
-                    "[ReactSync] 分店同步完成：门店{StoreCount} 记录{Processed:N0} 成功{Added:N0} 失败{Errors:N0} 耗时{Seconds:F1}s 成功率{Rate:F1}%",
+                    "[ReactSync] 分店同步完成：门店{StoreCount} 成功{Added:N0} 失败{Errors:N0} 耗时{Seconds:F1}s 成功率{Rate:F1}%",
                     storeCodesToProcess.Count,
-                    totalProcessed,
                     totalAdded,
                     totalErrors,
                     finalDuration.TotalSeconds,
@@ -454,11 +493,10 @@ namespace BlazorApp.Api.Services.React
                 _logger.LogError(ex, "[ReactSync] 分店零售价同步异常");
                 result.IsSuccess = false;
                 result.Message = "分店零售价同步异常";
+                Console.WriteLine($"💥 [零售价同步] 同步异常: {ex.Message}");
             }
             finally
             {
-                // 释放并发控制资源并记录耗时
-                semaphore.Dispose();
                 result.EndTime = DateTime.Now;
                 result.Duration = result.EndTime - result.StartTime;
             }
@@ -467,11 +505,19 @@ namespace BlazorApp.Api.Services.React
         }
 
         /// <summary>
-        /// 处理单个分店的同步：
-        /// - 独立创建 HQ 与本地数据库连接；
-        /// - JOIN 过滤有效商品与价格；
-        /// - 映射为本地实体并批量插入（带重试）；
-        /// - 返回该分店的处理统计与耗时。
+        /// 单个分店的 Channel Pipeline 同步：
+        ///
+        /// ┌──────────────────┐     ┌──────────────────┐
+        /// │  生产者（4并发）   │     │  消费者（8并发）   │
+        /// │  分页查询HQ 50K   │────▶│  分块20K BulkCopy │
+        /// │  SemaphoreSlim   │     │  分页10K 插入     │
+        /// └──────────────────┘     └──────────────────┘
+        ///
+        /// 流程：
+        /// 1) 查询该分店总数；
+        /// 2) 启动 consumerConcurrency 个消费者从 Channel 读取并写入；
+        /// 3) 启动 producerConcurrency 个生产者分页查询 HQ 并写入 Channel；
+        /// 4) 等待完成并返回统计。
         /// </summary>
         private async Task<(
             int processed,
@@ -480,32 +526,27 @@ namespace BlazorApp.Api.Services.React
             double queryTime,
             double insertTime,
             StoreSyncError? error
-        )> ProcessSingleStoreAsync(
-            int storeIndex,
+        )> ProcessSingleStorePipelineAsync(
             string storeCode,
             int batchSize,
-            SemaphoreSlim semaphore
+            int producerConcurrency,
+            int consumerConcurrency,
+            int chunkSize,
+            int writePageSize
         )
         {
-            // 使用信号量限制并发，避免超出最大并发数
-            await semaphore.WaitAsync();
-
-            ISqlSugarClient? localDb = null;
-            ISqlSugarClient? hqDb = null;
+            var storeStart = DateTime.Now;
             var processed = 0;
             var added = 0;
             var errors = 0;
-            var storeStart = DateTime.Now;
 
             try
             {
-                // 为当前分店创建独立的本地与 HQ 连接，避免连接复用导致争用
-                localDb = SqlSugarContext.CreateConcurrentConnection(_configuration);
-                hqDb = HqSqlSugarContext.CreateConcurrentConnection(_configuration);
-
-                // 分店级总数
+                // 查询该分店的有效价格总数
                 var countStart = DateTime.Now;
-                var totalCount = await hqDb.Queryable<DIC_商品零售价表>()
+                using var hqCountDb = HqSqlSugarContext.CreateConcurrentConnection(_configuration);
+                var totalCount = await hqCountDb
+                    .Queryable<DIC_商品零售价表>()
                     .Where(price =>
                         !string.IsNullOrEmpty(price.H商品编码)
                         && price.H分店代码 == storeCode
@@ -522,128 +563,181 @@ namespace BlazorApp.Api.Services.React
 
                 if (totalCount == 0)
                 {
-                    _logger.LogWarning("[ReactSync] 分店{Store}无数据", storeCode);
+                    Console.WriteLine($"  ⚠️ [分店{storeCode}] 无数据，跳过");
                     return (0, 0, 0, qDuration.TotalSeconds, 0, null);
                 }
 
-                var pages = (int)Math.Ceiling(totalCount / (double)batchSize);
-                var insertTotalSeconds = 0.0;
-
-                for (var page = 1; page <= pages; page++)
-                {
-                    // 每页查询重试
-                    var retries = 0;
-                    List<DIC_商品零售价表> hqPage = new();
-                    while (true)
-                    {
-                        try
-                        {
-                            var skip = (page - 1) * batchSize;
-                            var pageStart = DateTime.Now;
-                            hqPage = await hqDb.Queryable<DIC_商品零售价表>()
-                                .Where(price =>
-                                    !string.IsNullOrEmpty(price.H商品编码)
-                                    && price.H分店代码 == storeCode
-                                    && price.H使用状态 == true
-                                    && SqlFunc
-                                        .Subqueryable<DIC_商品信息字典表>()
-                                        .Where(product =>
-                                            product.H商品编码 == price.H商品编码
-                                            && product.H使用状态 == true
-                                        )
-                                        .Any()
-                                )
-                                .OrderBy(price => price.ID)
-                                .Skip(skip)
-                                .Take(batchSize)
-                                .ToListAsync();
-                            var pageQuerySec = (DateTime.Now - pageStart).TotalSeconds;
-                            _logger.LogInformation(
-                                "[ReactSync] 分店{Store} 页{Page}/{Pages} 拉取{Count} 用时{Sec:F1}s",
-                                storeCode,
-                                page,
-                                pages,
-                                hqPage.Count,
-                                pageQuerySec
-                            );
-                            break;
-                        }
-                        catch (SqlSugarException ex) when (retries < 3)
-                        {
-                            retries++;
-                            var delay = TimeSpan.FromSeconds(Math.Pow(2, retries));
-                            _logger.LogWarning(
-                                ex,
-                                "[ReactSync] 分店{Store} 页{Page} 查询失败，重试{Retry}/3，等待{Delay}s",
-                                storeCode,
-                                page,
-                                retries,
-                                delay.TotalSeconds
-                            );
-                            await Task.Delay(delay);
-                            // 重建 HQ 连接
-                            hqDb?.Dispose();
-                            hqDb = HqSqlSugarContext.CreateConcurrentConnection(_configuration);
-                            continue;
-                        }
-                    }
-
-                    if (!hqPage.Any())
-                    {
-                        continue;
-                    }
-
-                    var localBatch = _mapper.Map<List<StoreRetailPrice>>(hqPage);
-                    var insertStart = DateTime.Now;
-                    try
-                    {
-                        var inserted = await RetryBulkInsertAsync(localDb, localBatch, 5);
-                        added += inserted;
-                        errors += localBatch.Count - inserted;
-
-                        var insertDuration = DateTime.Now - insertStart;
-                        _logger.LogInformation(
-                            "[ReactSync] 分店{Store} 页{Page}/{Pages} 插入成功：{Inserted:N0}/{Total:N0}条，耗时{Sec:F1}s",
-                            storeCode,
-                            page,
-                            pages,
-                            inserted,
-                            localBatch.Count,
-                            insertDuration.TotalSeconds
-                        );
-                    }
-                    catch (Exception ex)
-                    {
-                        var insertDuration = DateTime.Now - insertStart;
-                        _logger.LogError(
-                            ex,
-                            "[ReactSync] 分店{Store} 页{Page}/{Pages} 插入失败，耗时{Sec:F1}s",
-                            storeCode,
-                            page,
-                            pages,
-                            insertDuration.TotalSeconds
-                        );
-                        errors += localBatch.Count;
-                    }
-                    insertTotalSeconds += (DateTime.Now - insertStart).TotalSeconds;
-                    processed += hqPage.Count;
-                    hqPage.Clear();
-                    localBatch.Clear();
-                }
-
-                var storeDuration = DateTime.Now - storeStart;
-                _logger.LogInformation(
-                    "[ReactSync] 分店{Store}完成：处理{Processed:N0} 成功{Added:N0} 失败{Errors:N0} 总耗时{Sec:F1}s 查询{Q:F1}s 插入{I:F1}s",
-                    storeCode,
-                    processed,
-                    added,
-                    errors,
-                    storeDuration.TotalSeconds,
-                    qDuration.TotalSeconds,
-                    insertTotalSeconds
+                var pageCount = (int)Math.Ceiling(totalCount / (double)batchSize);
+                Console.WriteLine(
+                    $"  📦 [分店{storeCode}] Pipeline启动：总数{totalCount:N0}条, {pageCount}页, 生产者{producerConcurrency}并发, 消费者{consumerConcurrency}并发"
                 );
 
-                return (processed, added, errors, qDuration.TotalSeconds, insertTotalSeconds, null);
+                // 创建有界 Channel：容量=消费者数×2，超出时生产者阻塞（背压机制）
+                var channel = System.Threading.Channels.Channel.CreateBounded<
+                    List<StoreRetailPrice>
+                >(capacity: consumerConcurrency * 2);
+
+                // ===== 启动消费者（6个并发） =====
+                // 每个消费者独立数据库连接，从 Channel 读取数据后分块 BulkCopy
+                var consumers = new List<Task>();
+                for (int i = 0; i < consumerConcurrency; i++)
+                {
+                    var consumerIdx = i;
+                    var c = Task.Run(async () =>
+                    {
+                        // 每个消费者创建独立的本地数据库连接
+                        using var consumerDb = SqlSugarContext.CreateConcurrentConnection(
+                            _configuration
+                        );
+                        consumerDb.Ado.CommandTimeOut = _configuration.GetValue<int>(
+                            "Database:BulkCopyCommandTimeoutSeconds",
+                            600
+                        );
+
+                        // 从 Channel 持续读取数据，直到 Channel 关闭
+                        await foreach (var batch in channel.Reader.ReadAllAsync())
+                        {
+                            // 将生产者的一批数据分块处理，避免单次 BulkCopy 过大
+                            for (int offset = 0; offset < batch.Count; offset += chunkSize)
+                            {
+                                var chunk = batch.Skip(offset).Take(chunkSize).ToList();
+                                try
+                                {
+                                    await consumerDb
+                                        .Fastest<StoreRetailPrice>()
+                                        .AS("StoreRetailPrice")
+                                        .PageSize(writePageSize)
+                                        .BulkCopyAsync(chunk);
+                                    System.Threading.Interlocked.Add(ref added, chunk.Count);
+                                }
+                                catch (Exception ex)
+                                {
+                                    _logger.LogError(
+                                        ex,
+                                        "[ReactSync] 分店{Store}消费者{Idx}写入失败（批大小:{Size}）",
+                                        storeCode,
+                                        consumerIdx,
+                                        chunk.Count
+                                    );
+                                    System.Threading.Interlocked.Add(ref errors, chunk.Count);
+                                    Console.WriteLine(
+                                        $"  ❌ [分店{storeCode}] 消费者{consumerIdx}写入失败: {chunk.Count}条, {ex.Message}"
+                                    );
+                                    await Task.Delay(500);
+                                }
+                            }
+                        }
+                    });
+                    consumers.Add(c);
+                }
+
+                // ===== 启动生产者（SemaphoreSlim 控制并发上限4） =====
+                var semaphore = new SemaphoreSlim(producerConcurrency, producerConcurrency);
+                var producers = new List<Task>();
+
+                for (var page = 1; page <= pageCount; page++)
+                {
+                    var pageIndex = page;
+                    var p = Task.Run(async () =>
+                    {
+                        // 等待信号量许可，控制同时执行的生产者数量
+                        await semaphore.WaitAsync();
+                        try
+                        {
+                            var skip = (pageIndex - 1) * batchSize;
+
+                            // 查询重试机制：最多3次，指数退避 + 重建连接
+                            var retries = 0;
+                            List<DIC_商品零售价表> hqBatch = new();
+                            while (true)
+                            {
+                                try
+                                {
+                                    // 为每个生产者创建独立的 HQ 连接
+                                    using var hqDb = HqSqlSugarContext.CreateConcurrentConnection(
+                                        _configuration
+                                    );
+                                    hqBatch = await hqDb.Queryable<DIC_商品零售价表>()
+                                        .Where(price =>
+                                            !string.IsNullOrEmpty(price.H商品编码)
+                                            && price.H分店代码 == storeCode
+                                            && price.H使用状态 == true
+                                            && SqlFunc
+                                                .Subqueryable<DIC_商品信息字典表>()
+                                                .Where(product =>
+                                                    product.H商品编码 == price.H商品编码
+                                                    && product.H使用状态 == true
+                                                )
+                                                .Any()
+                                        )
+                                        .OrderBy(price => price.ID)
+                                        .Skip(skip)
+                                        .Take(batchSize)
+                                        .ToListAsync();
+                                    break;
+                                }
+                                catch (SqlSugarException ex) when (retries < 3)
+                                {
+                                    retries++;
+                                    var delay = TimeSpan.FromSeconds(Math.Pow(2, retries));
+                                    _logger.LogWarning(
+                                        ex,
+                                        "[ReactSync] 分店{Store}页{Page}查询失败，重试{Retry}/3",
+                                        storeCode,
+                                        pageIndex,
+                                        retries
+                                    );
+                                    Console.WriteLine(
+                                        $"  ⚠️ [分店{storeCode}] 第{pageIndex}页查询失败，重试{retries}/3，等待{delay.TotalSeconds:F0}s"
+                                    );
+                                    await Task.Delay(delay);
+                                }
+                            }
+
+                            if (hqBatch.Any())
+                            {
+                                Console.WriteLine(
+                                    $"  📥 [分店{storeCode}] 生产者查询第{pageIndex}/{pageCount}页: {hqBatch.Count:N0}条"
+                                );
+                                processed += hqBatch.Count;
+                                var localBatch = _mapper.Map<List<StoreRetailPrice>>(hqBatch);
+                                await channel.Writer.WriteAsync(localBatch);
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogError(
+                                ex,
+                                "[ReactSync] 分店{Store}第{Page}页处理失败",
+                                storeCode,
+                                pageIndex
+                            );
+                            Console.WriteLine(
+                                $"  ❌ [分店{storeCode}] 第{pageIndex}页处理失败: {ex.Message}"
+                            );
+                        }
+                        finally
+                        {
+                            semaphore.Release();
+                        }
+                    });
+                    producers.Add(p);
+                }
+
+                // 等待所有生产者完成 → 关闭 Channel → 等待所有消费者完成
+                await Task.WhenAll(producers);
+                channel.Writer.Complete();
+                await Task.WhenAll(consumers);
+
+                semaphore.Dispose();
+
+                var storeDuration = DateTime.Now - storeStart;
+                var insertTime = storeDuration.TotalSeconds - qDuration.TotalSeconds;
+                Console.WriteLine(
+                    $"  ✅ [分店{storeCode}] 完成: 处理{totalCount:N0}条, 成功{added:N0}条, 失败{errors:N0}条, 耗时{storeDuration.TotalSeconds:F1}s"
+                );
+
+                return (totalCount, added, errors, qDuration.TotalSeconds, insertTime, null);
             }
             catch (Exception ex)
             {
@@ -654,21 +748,15 @@ namespace BlazorApp.Api.Services.React
                     ExceptionType = ex.GetType().Name,
                     IsRetried = false,
                     RetryCount = 0,
-                    ProcessedCount = processed,
-                    InsertedCount = added,
-                    FailedCount = errors,
+                    ProcessedCount = 0,
+                    InsertedCount = 0,
+                    FailedCount = 0,
                     DurationSeconds = (DateTime.Now - storeStart).TotalSeconds,
                 };
 
-                _logger.LogError(ex, "[ReactSync] 分店{Store}处理异常", storeCode);
+                _logger.LogError(ex, "[ReactSync] 分店{Store}Pipeline异常", storeCode);
+                Console.WriteLine($"  💥 [分店{storeCode}] Pipeline异常: {ex.Message}");
                 return (0, 0, 1, 0, 0, error);
-            }
-            finally
-            {
-                // 释放连接与并发锁
-                localDb?.Dispose();
-                hqDb?.Dispose();
-                semaphore.Release();
             }
         }
 
@@ -1435,6 +1523,12 @@ namespace BlazorApp.Api.Services.React
                                 product.H商品编码 == mc.H商品编码 && product.H使用状态 == true
                             )
                             .Any()
+                        && SqlFunc
+                            .Subqueryable<DIC_一品多码表>()
+                            .Where(ypp =>
+                                ypp.H商品编码 == mc.H商品编码 && (ypp.H使用状态 ?? false) == true
+                            )
+                            .Any()
                     )
                     .CountAsync();
                 var qDuration = DateTime.Now - countStart;
@@ -1464,6 +1558,13 @@ namespace BlazorApp.Api.Services.React
                                         .Where(product =>
                                             product.H商品编码 == mc.H商品编码
                                             && product.H使用状态 == true
+                                        )
+                                        .Any()
+                                    && SqlFunc
+                                        .Subqueryable<DIC_一品多码表>()
+                                        .Where(ypp =>
+                                            ypp.H商品编码 == mc.H商品编码
+                                            && (ypp.H使用状态 ?? false) == true
                                         )
                                         .Any()
                                 )
@@ -1608,6 +1709,12 @@ namespace BlazorApp.Api.Services.React
                             !string.IsNullOrEmpty(x.H商品编码)
                             && (SqlFunc.HasValue(x.H多码商品编号) || SqlFunc.HasValue(x.H主条形码))
                             && (x.H使用状态 ?? false) == true
+                            && SqlFunc
+                                .Subqueryable<DIC_商品信息字典表>()
+                                .Where(product =>
+                                    product.H商品编码 == x.H商品编码 && product.H使用状态 == true
+                                )
+                                .Any()
                         )
                         .CountAsync();
                     hqCountDb.Dispose();
@@ -1666,6 +1773,13 @@ namespace BlazorApp.Api.Services.React
                                             || SqlFunc.HasValue(x.H主条形码)
                                         )
                                         && (x.H使用状态 ?? false) == true
+                                        && SqlFunc
+                                            .Subqueryable<DIC_商品信息字典表>()
+                                            .Where(product =>
+                                                product.H商品编码 == x.H商品编码
+                                                && product.H使用状态 == true
+                                            )
+                                            .Any()
                                     )
                                     .OrderBy(x => x.ID)
                                     .Skip(skip)
@@ -2249,15 +2363,19 @@ namespace BlazorApp.Api.Services.React
 
         /// <summary>
         /// 全量同步货柜详情：HQ 详情表 → 本地 ContainerDetail（不派生主表 Container）。
-        /// 支持主表GUID筛选；事务保障，失败回滚。
+        /// 支持主表GUID筛选；Channel Pipeline 并发读写。
+        ///
+        /// 架构：
+        ///   生产者(N×SemaphoreSlim=4) ──→ Channel&lt;List&lt;T&gt;&gt; ──→ 消费者(6并发)
+        ///         HQ 分页查询               有界背压(12)           分块 BulkCopy
         /// </summary>
         public async Task<SyncResult> SyncContainerDetailsFromHqAsync(
-            List<string>? masterGuids = null,
-            int hqBatchSize = 50000,
-            int writePageSize = 10000
+            List<string>? masterGuids = null
         )
         {
             var result = new SyncResult { StartTime = DateTime.Now };
+            Console.WriteLine("📦 [货柜详情同步] ===== 开始全量同步货柜详情 =====");
+
             var taskLog = await _taskLogService.LogTaskStartAsync(
                 TaskType.SyncContainerDetails,
                 new TaskParameters
@@ -2272,90 +2390,194 @@ namespace BlazorApp.Api.Services.React
             try
             {
                 _hqContext.CheckConnection();
-                await _localContext.Db.Ado.BeginTranAsync();
-                try
+                Console.WriteLine("✅ [货柜详情同步] HQ连接检查通过");
+
+                using var syncLocalDb = SqlSugarContext.CreateConcurrentConnection(_configuration);
+                await syncLocalDb
+                    .Deleteable<ContainerDetail>()
+                    .AS("ContainerDetail")
+                    .ExecuteCommandAsync();
+                Console.WriteLine("🗑️ [货柜详情同步] 本地 ContainerDetail 表已清空");
+
+                const int batchSize = 50000;
+                const int producerConcurrency = 4;
+                const int consumerConcurrency = 6;
+                const int chunkSize = 20000;
+                const int writePageSize = 10000;
+
+                var hasFilter = masterGuids != null && masterGuids.Count > 0;
+
+                using var hqCountDb = HqSqlSugarContext.CreateConcurrentConnection(_configuration);
+                var totalCount = await hqCountDb
+                    .Queryable<CPT_RED_货柜单详情表Store>()
+                    .Where(x => !string.IsNullOrEmpty(x.主表GUID))
+                    .WhereIF(hasFilter, x => SqlFunc.ContainsArray(masterGuids!, x.主表GUID))
+                    .CountAsync();
+                var pageCount = (int)Math.Ceiling(totalCount / (double)batchSize);
+                Console.WriteLine(
+                    $"📊 [货柜详情同步] HQ总数据量: {totalCount:N0} 条, 分页数: {pageCount}, 每批: {batchSize:N0} 条"
+                );
+                Console.WriteLine(
+                    $"⚙️ [货柜详情同步] 生产者并发: {producerConcurrency}, 消费者并发: {consumerConcurrency}, 分块: {chunkSize:N0}, 写入分页: {writePageSize:N0}"
+                );
+
+                var channel = System.Threading.Channels.Channel.CreateBounded<
+                    List<ContainerDetail>
+                >(capacity: consumerConcurrency * 2);
+
+                var totalAdded = 0;
+                var totalErrors = 0;
+                var fetchErrors = 0;
+
+                var consumers = new List<Task>();
+                for (int i = 0; i < consumerConcurrency; i++)
                 {
-                    await _localContext
-                        .Db.Deleteable<ContainerDetail>()
-                        .AS("ContainerDetail")
-                        .ExecuteCommandAsync();
-                    // 不再清理或派生主表 Container，仅同步详情
-
-                    var hqDb = HqSqlSugarContext.CreateConcurrentConnection(_configuration);
-                    var hasFilter = masterGuids != null && masterGuids.Count > 0;
-
-                    // 不派生主表 Container：移除 distinctMasters 与 Container 批量写入逻辑
-
-                    var total = await hqDb.Queryable<CPT_RED_货柜单详情表Store>()
-                        .Where(x => !string.IsNullOrEmpty(x.主表GUID))
-                        .WhereIF(hasFilter, x => SqlFunc.ContainsArray(masterGuids!, x.主表GUID))
-                        .CountAsync();
-                    var pages = (int)Math.Ceiling(total / (double)hqBatchSize);
-                    var added = 0;
-                    var errors = 0;
-                    for (var page = 1; page <= pages; page++)
+                    var consumerIdx = i;
+                    var c = Task.Run(async () =>
                     {
-                        var skip = (page - 1) * hqBatchSize;
-                        var batch = await hqDb.Queryable<CPT_RED_货柜单详情表Store>()
-                            .Where(x => !string.IsNullOrEmpty(x.主表GUID))
-                            .WhereIF(
-                                hasFilter,
-                                x => SqlFunc.ContainsArray(masterGuids!, x.主表GUID)
-                            )
-                            .OrderBy(x => x.ID)
-                            .Skip(skip)
-                            .Take(hqBatchSize)
-                            .ToListAsync();
-                        if (!batch.Any())
-                            continue;
-                        var localBatch = _mapper
-                            .Map<List<ContainerDetail>>(batch)
-                            .Where(x => !string.IsNullOrWhiteSpace(x.ContainerCode))
-                            .ToList();
+                        using var consumerDb = SqlSugarContext.CreateConcurrentConnection(
+                            _configuration
+                        );
+                        consumerDb.Ado.CommandTimeOut = _configuration.GetValue<int>(
+                            "Database:BulkCopyCommandTimeoutSeconds",
+                            600
+                        );
+
+                        await foreach (var batch in channel.Reader.ReadAllAsync())
+                        {
+                            for (int offset = 0; offset < batch.Count; offset += chunkSize)
+                            {
+                                var chunk = batch.Skip(offset).Take(chunkSize).ToList();
+                                try
+                                {
+                                    await consumerDb
+                                        .Fastest<ContainerDetail>()
+                                        .AS("ContainerDetail")
+                                        .PageSize(writePageSize)
+                                        .BulkCopyAsync(chunk);
+                                    System.Threading.Interlocked.Add(ref totalAdded, chunk.Count);
+                                }
+                                catch (Exception ex)
+                                {
+                                    _logger.LogError(
+                                        ex,
+                                        "[ReactSync] 货柜详情消费者{Idx}写入失败（批大小:{Size}）",
+                                        consumerIdx,
+                                        chunk.Count
+                                    );
+                                    System.Threading.Interlocked.Add(ref totalErrors, chunk.Count);
+                                    Console.WriteLine(
+                                        $"❌ [货柜详情同步] 消费者{consumerIdx}写入失败: {chunk.Count} 条, 错误: {ex.Message}"
+                                    );
+                                    await Task.Delay(1500);
+                                }
+                            }
+                        }
+                    });
+                    consumers.Add(c);
+                }
+                Console.WriteLine(
+                    $"🚀 [货柜详情同步] 已启动 {consumerConcurrency} 个消费者，等待数据..."
+                );
+
+                var semaphore = new SemaphoreSlim(producerConcurrency, producerConcurrency);
+                _logger.LogInformation(
+                    "[ReactSync] 货柜详情并发读取初始化：Total={Total}, Pages={Pages}, BatchSize={Batch}, Producers={Producers}, Consumers={Consumers}",
+                    totalCount,
+                    pageCount,
+                    batchSize,
+                    producerConcurrency,
+                    consumerConcurrency
+                );
+
+                var producers = new List<Task>();
+                for (var page = 1; page <= pageCount; page++)
+                {
+                    var pageIndex = page;
+                    var p = Task.Run(async () =>
+                    {
+                        await semaphore.WaitAsync();
                         try
                         {
-                            await _localContext
-                                .Db.Fastest<ContainerDetail>()
-                                .AS("ContainerDetail")
-                                .PageSize(writePageSize)
-                                .BulkCopyAsync(localBatch);
-                            added += localBatch.Count;
+                            var skip = (pageIndex - 1) * batchSize;
+                            using var hqDb = HqSqlSugarContext.CreateConcurrentConnection(
+                                _configuration
+                            );
+                            var hqBatch = await hqDb.Queryable<CPT_RED_货柜单详情表Store>()
+                                .Where(x => !string.IsNullOrEmpty(x.主表GUID))
+                                .WhereIF(
+                                    hasFilter,
+                                    x => SqlFunc.ContainsArray(masterGuids!, x.主表GUID)
+                                )
+                                .OrderBy(x => x.ID)
+                                .Skip(skip)
+                                .Take(batchSize)
+                                .ToListAsync();
+
+                            if (hqBatch.Any())
+                            {
+                                Console.WriteLine(
+                                    $"📥 [货柜详情同步] 生产者查询第{pageIndex}/{pageCount}批: {hqBatch.Count:N0} 条"
+                                );
+                                _logger.LogInformation(
+                                    "[ReactSync] 货柜详情第{Page}批：{Count}",
+                                    pageIndex,
+                                    hqBatch.Count
+                                );
+                                var localBatch = _mapper
+                                    .Map<List<ContainerDetail>>(hqBatch)
+                                    .Where(x => !string.IsNullOrWhiteSpace(x.ContainerCode))
+                                    .ToList();
+                                await channel.Writer.WriteAsync(localBatch);
+                            }
                         }
                         catch (Exception ex)
                         {
                             _logger.LogError(
                                 ex,
-                                "[ReactSync] ContainerDetail 批{Page} 插入失败 批大小{Size}",
-                                page,
-                                localBatch.Count
+                                "[ReactSync] 货柜详情第{Page}批查询/映射失败",
+                                pageIndex
                             );
-                            errors += localBatch.Count;
-                            await Task.Delay(1500);
+                            System.Threading.Interlocked.Increment(ref fetchErrors);
+                            Console.WriteLine(
+                                $"❌ [货柜详情同步] 第{pageIndex}批查询失败: {ex.Message}"
+                            );
                         }
-                        batch.Clear();
-                        localBatch.Clear();
-                    }
-                    hqDb.Dispose();
-                    await _localContext.Db.Ado.CommitTranAsync();
-                    result.AddedCount = added;
-                    result.ErrorCount = errors;
-                    result.IsSuccess = errors == 0;
-                    result.Message =
-                        errors == 0
-                            ? "ContainerDetail 同步成功"
-                            : "ContainerDetail 同步完成，但存在错误";
+                        finally
+                        {
+                            semaphore.Release();
+                        }
+                    });
+                    producers.Add(p);
                 }
-                catch (Exception exTran)
-                {
-                    await _localContext.Db.Ado.RollbackTranAsync();
-                    throw new Exception("ContainerDetail 同步事务失败", exTran);
-                }
+
+                await Task.WhenAll(producers);
+                Console.WriteLine("📥 [货柜详情同步] 所有生产者已完成，关闭 Channel");
+                channel.Writer.Complete();
+                await Task.WhenAll(consumers);
+                Console.WriteLine("📤 [货柜详情同步] 所有消费者已完成");
+
+                result.AddedCount = totalAdded;
+                result.ErrorCount = totalErrors + fetchErrors;
+                result.IsSuccess = (totalErrors == 0 && fetchErrors == 0);
+                result.Message =
+                    (totalErrors == 0 && fetchErrors == 0)
+                        ? "ContainerDetail 同步成功"
+                        : "ContainerDetail 同步完成，但存在错误";
+
+                Console.WriteLine(
+                    $"📊 [货柜详情同步] 同步完成: 新增 {totalAdded:N0} 条, 写入错误 {totalErrors:N0} 条, 查询错误 {fetchErrors} 批"
+                );
+                Console.WriteLine(
+                    $"⏱️ [货柜详情同步] 总耗时: {DateTime.Now - result.StartTime:hh\\:mm\\:ss}"
+                );
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "[ReactSync] ContainerDetail 同步异常");
                 result.IsSuccess = false;
                 result.Message = "ContainerDetail 同步异常";
+                Console.WriteLine($"💥 [货柜详情同步] 同步异常: {ex.Message}");
                 await _taskLogService.LogTaskFailureAsync(taskLog.Id, ex.Message);
             }
             finally
@@ -2668,12 +2890,19 @@ namespace BlazorApp.Api.Services.React
             return result;
         }
 
-        public async Task<SyncResult> SyncStoreLocalSupplierInvoiceDetailsFromHqAsync(
-            int hqBatchSize = 100000,
-            int writePageSize = 50000
-        )
+        /// <summary>
+        /// 全量同步进货单详情：HQ → 本地 StoreLocalSupplierInvoiceDetails。
+        /// Channel Pipeline 并发读写。
+        ///
+        /// 架构：
+        ///   生产者(N×SemaphoreSlim=4) ──→ Channel&lt;List&lt;T&gt;&gt; ──→ 消费者(6并发)
+        ///         HQ 分页查询               有界背压(12)           分块 BulkCopy
+        /// </summary>
+        public async Task<SyncResult> SyncStoreLocalSupplierInvoiceDetailsFromHqAsync()
         {
             var result = new SyncResult { StartTime = DateTime.Now };
+            Console.WriteLine("📦 [进货详情同步] ===== 开始全量同步进货单详情 =====");
+
             var taskLog = await _taskLogService.LogTaskStartAsync(
                 TaskType.SyncStoreLocalSupplierInvoiceDetails,
                 new TaskParameters(),
@@ -2682,110 +2911,192 @@ namespace BlazorApp.Api.Services.React
             try
             {
                 _hqContext.CheckConnection();
-                await _localContext.Db.Ado.UseTranAsync(async () =>
-                {
-                    await _localContext
-                        .Db.Deleteable<StoreLocalSupplierInvoiceDetails>()
-                        .AS("StoreLocalSupplierInvoiceDetails")
-                        .ExecuteCommandAsync();
-                });
-                var total = await _hqContext
-                    .Db.Queryable<RED_进货单详情表Store>()
+                Console.WriteLine("✅ [进货详情同步] HQ连接检查通过");
+
+                using var syncLocalDb = SqlSugarContext.CreateConcurrentConnection(_configuration);
+                await syncLocalDb
+                    .Deleteable<StoreLocalSupplierInvoiceDetails>()
+                    .AS("StoreLocalSupplierInvoiceDetails")
+                    .ExecuteCommandAsync();
+                Console.WriteLine(
+                    "🗑️ [进货详情同步] 本地 StoreLocalSupplierInvoiceDetails 表已清空"
+                );
+
+                const int batchSize = 50000;
+                const int producerConcurrency = 4;
+                const int consumerConcurrency = 6;
+                const int chunkSize = 20000;
+                const int writePageSize = 10000;
+
+                using var hqCountDb = HqSqlSugarContext.CreateConcurrentConnection(_configuration);
+                var totalCount = await hqCountDb
+                    .Queryable<RED_进货单详情表Store>()
                     .Where(x => SqlFunc.HasValue(x.H主表GUID))
                     .CountAsync();
-                var pages = (int)Math.Ceiling(total / (double)hqBatchSize);
-                var added = 0;
-                var errors = 0;
+                var pageCount = (int)Math.Ceiling(totalCount / (double)batchSize);
+                Console.WriteLine(
+                    $"📊 [进货详情同步] HQ总数据量: {totalCount:N0} 条, 分页数: {pageCount}, 每批: {batchSize:N0} 条"
+                );
+                Console.WriteLine(
+                    $"⚙️ [进货详情同步] 生产者并发: {producerConcurrency}, 消费者并发: {consumerConcurrency}, 分块: {chunkSize:N0}, 写入分页: {writePageSize:N0}"
+                );
 
-                var writeConcurrency = 4;
                 var channel = System.Threading.Channels.Channel.CreateBounded<
                     List<StoreLocalSupplierInvoiceDetails>
-                >(writeConcurrency * 2);
+                >(capacity: consumerConcurrency * 2);
+
+                var totalAdded = 0;
+                var totalErrors = 0;
+                var fetchErrors = 0;
 
                 var consumers = new List<Task>();
-                for (int i = 0; i < writeConcurrency; i++)
+                for (int i = 0; i < consumerConcurrency; i++)
                 {
-                    var consumer = Task.Run(async () =>
+                    var consumerIdx = i;
+                    var c = Task.Run(async () =>
                     {
-                        using var localDb = SqlSugarContext.CreateConcurrentConnection(
+                        using var consumerDb = SqlSugarContext.CreateConcurrentConnection(
                             _configuration
                         );
-                        // BulkCopy 大批量写入易超时，使用更长命令超时（默认 600 秒，可配置）
-                        localDb.Ado.CommandTimeOut = _configuration.GetValue<int>(
+                        consumerDb.Ado.CommandTimeOut = _configuration.GetValue<int>(
                             "Database:BulkCopyCommandTimeoutSeconds",
                             600
                         );
-                        await foreach (var localBatch in channel.Reader.ReadAllAsync())
+
+                        await foreach (var batch in channel.Reader.ReadAllAsync())
                         {
-                            try
+                            for (int offset = 0; offset < batch.Count; offset += chunkSize)
                             {
-                                await localDb
-                                    .Fastest<StoreLocalSupplierInvoiceDetails>()
-                                    .AS("StoreLocalSupplierInvoiceDetails")
-                                    .PageSize(writePageSize)
-                                    .BulkCopyAsync(localBatch);
-                                System.Threading.Interlocked.Add(ref added, localBatch.Count);
-                            }
-                            catch (Exception ex)
-                            {
-                                _logger.LogError(
-                                    ex,
-                                    "[ReactSync] 详情并发写入失败 批大小{Size}",
-                                    localBatch.Count
-                                );
-                                System.Threading.Interlocked.Add(ref errors, localBatch.Count);
-                                await Task.Delay(TimeSpan.FromSeconds(3));
+                                var chunk = batch.Skip(offset).Take(chunkSize).ToList();
+                                try
+                                {
+                                    await consumerDb
+                                        .Fastest<StoreLocalSupplierInvoiceDetails>()
+                                        .AS("StoreLocalSupplierInvoiceDetails")
+                                        .PageSize(writePageSize)
+                                        .BulkCopyAsync(chunk);
+                                    System.Threading.Interlocked.Add(ref totalAdded, chunk.Count);
+                                }
+                                catch (Exception ex)
+                                {
+                                    _logger.LogError(
+                                        ex,
+                                        "[ReactSync] 进货详情消费者{Idx}写入失败（批大小:{Size}）",
+                                        consumerIdx,
+                                        chunk.Count
+                                    );
+                                    System.Threading.Interlocked.Add(ref totalErrors, chunk.Count);
+                                    Console.WriteLine(
+                                        $"❌ [进货详情同步] 消费者{consumerIdx}写入失败: {chunk.Count} 条, 错误: {ex.Message}"
+                                    );
+                                    await Task.Delay(1500);
+                                }
                             }
                         }
                     });
-                    consumers.Add(consumer);
+                    consumers.Add(c);
                 }
+                Console.WriteLine(
+                    $"🚀 [进货详情同步] 已启动 {consumerConcurrency} 个消费者，等待数据..."
+                );
 
-                for (var page = 1; page <= pages; page++)
+                var semaphore = new SemaphoreSlim(producerConcurrency, producerConcurrency);
+                _logger.LogInformation(
+                    "[ReactSync] 进货详情并发读取初始化：Total={Total}, Pages={Pages}, BatchSize={Batch}, Producers={Producers}, Consumers={Consumers}",
+                    totalCount,
+                    pageCount,
+                    batchSize,
+                    producerConcurrency,
+                    consumerConcurrency
+                );
+
+                var producers = new List<Task>();
+                for (var page = 1; page <= pageCount; page++)
                 {
-                    var skip = (page - 1) * hqBatchSize;
-                    var batch = await _hqContext
-                        .Db.Queryable<RED_进货单详情表Store>()
-                        .Where(x => SqlFunc.HasValue(x.H主表GUID))
-                        .OrderBy(x => x.ID)
-                        .Skip(skip)
-                        .Take(hqBatchSize)
-                        .ToListAsync();
-                    if (!batch.Any())
-                        continue;
-                    var localBatch = _mapper
-                        .Map<List<StoreLocalSupplierInvoiceDetails>>(batch)
-                        .Where(x =>
-                            !string.IsNullOrWhiteSpace(x.DetailGUID)
-                            && !string.IsNullOrWhiteSpace(x.InvoiceGUID)
-                        )
-                        .ToList();
-                    _logger.LogInformation(
-                        "[ReactSync] 详情页{Page}/{Pages} 准备写入批{Count}",
-                        page,
-                        pages,
-                        localBatch.Count
-                    );
-                    await channel.Writer.WriteAsync(localBatch);
-                    batch.Clear();
+                    var pageIndex = page;
+                    var p = Task.Run(async () =>
+                    {
+                        await semaphore.WaitAsync();
+                        try
+                        {
+                            var skip = (pageIndex - 1) * batchSize;
+                            using var hqDb = HqSqlSugarContext.CreateConcurrentConnection(
+                                _configuration
+                            );
+                            var hqBatch = await hqDb.Queryable<RED_进货单详情表Store>()
+                                .Where(x => SqlFunc.HasValue(x.H主表GUID))
+                                .OrderBy(x => x.ID)
+                                .Skip(skip)
+                                .Take(batchSize)
+                                .ToListAsync();
+
+                            if (hqBatch.Any())
+                            {
+                                Console.WriteLine(
+                                    $"📥 [进货详情同步] 生产者查询第{pageIndex}/{pageCount}批: {hqBatch.Count:N0} 条"
+                                );
+                                _logger.LogInformation(
+                                    "[ReactSync] 进货详情第{Page}批：{Count}",
+                                    pageIndex,
+                                    hqBatch.Count
+                                );
+                                var localBatch = _mapper
+                                    .Map<List<StoreLocalSupplierInvoiceDetails>>(hqBatch)
+                                    .Where(x =>
+                                        !string.IsNullOrWhiteSpace(x.DetailGUID)
+                                        && !string.IsNullOrWhiteSpace(x.InvoiceGUID)
+                                    )
+                                    .ToList();
+                                await channel.Writer.WriteAsync(localBatch);
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogError(
+                                ex,
+                                "[ReactSync] 进货详情第{Page}批查询/映射失败",
+                                pageIndex
+                            );
+                            System.Threading.Interlocked.Increment(ref fetchErrors);
+                            Console.WriteLine(
+                                $"❌ [进货详情同步] 第{pageIndex}批查询失败: {ex.Message}"
+                            );
+                        }
+                        finally
+                        {
+                            semaphore.Release();
+                        }
+                    });
+                    producers.Add(p);
                 }
 
+                await Task.WhenAll(producers);
+                Console.WriteLine("📥 [进货详情同步] 所有生产者已完成，关闭 Channel");
                 channel.Writer.Complete();
                 await Task.WhenAll(consumers);
+                Console.WriteLine("📤 [进货详情同步] 所有消费者已完成");
 
-                result.AddedCount = added;
-                result.ErrorCount = errors;
-                result.IsSuccess = errors == 0;
+                result.AddedCount = totalAdded;
+                result.ErrorCount = totalErrors + fetchErrors;
+                result.IsSuccess = (totalErrors == 0 && fetchErrors == 0);
                 result.Message =
-                    errors == 0
+                    (totalErrors == 0 && fetchErrors == 0)
                         ? "StoreLocalSupplierInvoiceDetails 同步成功"
                         : "StoreLocalSupplierInvoiceDetails 同步完成，但存在错误";
+
+                Console.WriteLine(
+                    $"📊 [进货详情同步] 同步完成: 新增 {totalAdded:N0} 条, 写入错误 {totalErrors:N0} 条, 查询错误 {fetchErrors} 批"
+                );
+                Console.WriteLine(
+                    $"⏱️ [进货详情同步] 总耗时: {DateTime.Now - result.StartTime:hh\\:mm\\:ss}"
+                );
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "[ReactSync] StoreLocalSupplierInvoiceDetails 同步异常");
                 result.IsSuccess = false;
                 result.Message = "StoreLocalSupplierInvoiceDetails 同步异常";
+                Console.WriteLine($"💥 [进货详情同步] 同步异常: {ex.Message}");
                 await _taskLogService.LogTaskFailureAsync(taskLog.Id, ex.Message);
             }
             finally
@@ -2817,10 +3128,7 @@ namespace BlazorApp.Api.Services.React
                     hqBatchSize,
                     writePageSize
                 );
-                var detailResult = await SyncStoreLocalSupplierInvoiceDetailsFromHqAsync(
-                    hqBatchSize,
-                    writePageSize
-                );
+                var detailResult = await SyncStoreLocalSupplierInvoiceDetailsFromHqAsync();
                 result = new SyncResult
                 {
                     StartTime = mainResult.StartTime,
@@ -2938,12 +3246,19 @@ namespace BlazorApp.Api.Services.React
             return result;
         }
 
-        public async Task<SyncResult> SyncWareHouseOrderDetailsFromHqAsync(
-            int hqBatchSize = 50000,
-            int writePageSize = 10000
-        )
+        /// <summary>
+        /// 全量同步订货单详情：HQ → 本地 WareHouseOrderDetails。
+        /// Channel Pipeline 并发读写。
+        ///
+        /// 架构：
+        ///   生产者(N×SemaphoreSlim=4) ──→ Channel&lt;List&lt;T&gt;&gt; ──→ 消费者(6并发)
+        ///         HQ 分页查询               有界背压(12)           分块 BulkCopy
+        /// </summary>
+        public async Task<SyncResult> SyncWareHouseOrderDetailsFromHqAsync()
         {
             var result = new SyncResult { StartTime = DateTime.Now };
+            Console.WriteLine("📦 [订货详情同步] ===== 开始全量同步订货单详情 =====");
+
             var taskLog = await _taskLogService.LogTaskStartAsync(
                 TaskType.SyncWareHouseOrderDetails,
                 new TaskParameters(),
@@ -2952,108 +3267,190 @@ namespace BlazorApp.Api.Services.React
             try
             {
                 _hqContext.CheckConnection();
-                await _localContext.Db.Ado.UseTranAsync(async () =>
-                {
-                    await _localContext
-                        .Db.Deleteable<WareHouseOrderDetails>()
-                        .AS("WareHouseOrderDetails")
-                        .ExecuteCommandAsync();
-                });
+                Console.WriteLine("✅ [订货详情同步] HQ连接检查通过");
 
-                var total = await _hqContext
-                    .Db.Queryable<CBP_RED_分店订单详情表Store>()
+                using var syncLocalDb = SqlSugarContext.CreateConcurrentConnection(_configuration);
+                await syncLocalDb
+                    .Deleteable<WareHouseOrderDetails>()
+                    .AS("WareHouseOrderDetails")
+                    .ExecuteCommandAsync();
+                Console.WriteLine("🗑️ [订货详情同步] 本地 WareHouseOrderDetails 表已清空");
+
+                const int batchSize = 50000;
+                const int producerConcurrency = 4;
+                const int consumerConcurrency = 6;
+                const int chunkSize = 20000;
+                const int writePageSize = 10000;
+
+                using var hqCountDb = HqSqlSugarContext.CreateConcurrentConnection(_configuration);
+                var totalCount = await hqCountDb
+                    .Queryable<CBP_RED_分店订单详情表Store>()
                     .Where(x => SqlFunc.HasValue(x.主表GUID))
                     .CountAsync();
-                var pages = (int)Math.Ceiling(total / (double)hqBatchSize);
-                var added = 0;
-                var errors = 0;
+                var pageCount = (int)Math.Ceiling(totalCount / (double)batchSize);
+                Console.WriteLine(
+                    $"📊 [订货详情同步] HQ总数据量: {totalCount:N0} 条, 分页数: {pageCount}, 每批: {batchSize:N0} 条"
+                );
+                Console.WriteLine(
+                    $"⚙️ [订货详情同步] 生产者并发: {producerConcurrency}, 消费者并发: {consumerConcurrency}, 分块: {chunkSize:N0}, 写入分页: {writePageSize:N0}"
+                );
 
-                var writeConcurrency = 4;
                 var channel = System.Threading.Channels.Channel.CreateBounded<
                     List<WareHouseOrderDetails>
-                >(writeConcurrency * 2);
+                >(capacity: consumerConcurrency * 2);
+
+                var totalAdded = 0;
+                var totalErrors = 0;
+                var fetchErrors = 0;
+
                 var consumers = new List<Task>();
-                for (int i = 0; i < writeConcurrency; i++)
+                for (int i = 0; i < consumerConcurrency; i++)
                 {
-                    var consumer = Task.Run(async () =>
+                    var consumerIdx = i;
+                    var c = Task.Run(async () =>
                     {
-                        using var localDb = SqlSugarContext.CreateConcurrentConnection(
+                        using var consumerDb = SqlSugarContext.CreateConcurrentConnection(
                             _configuration
                         );
-                        localDb.Ado.CommandTimeOut = _configuration.GetValue<int>(
+                        consumerDb.Ado.CommandTimeOut = _configuration.GetValue<int>(
                             "Database:BulkCopyCommandTimeoutSeconds",
                             600
                         );
-                        await foreach (var localBatch in channel.Reader.ReadAllAsync())
+
+                        await foreach (var batch in channel.Reader.ReadAllAsync())
                         {
-                            try
+                            for (int offset = 0; offset < batch.Count; offset += chunkSize)
                             {
-                                await localDb
-                                    .Fastest<WareHouseOrderDetails>()
-                                    .AS("WareHouseOrderDetails")
-                                    .PageSize(writePageSize)
-                                    .BulkCopyAsync(localBatch);
-                                System.Threading.Interlocked.Add(ref added, localBatch.Count);
-                            }
-                            catch (Exception ex)
-                            {
-                                _logger.LogError(
-                                    ex,
-                                    "[ReactSync] WareHouseOrderDetails 并发写入失败 批大小{Size}",
-                                    localBatch.Count
-                                );
-                                System.Threading.Interlocked.Add(ref errors, localBatch.Count);
-                                await Task.Delay(TimeSpan.FromSeconds(3));
+                                var chunk = batch.Skip(offset).Take(chunkSize).ToList();
+                                try
+                                {
+                                    await consumerDb
+                                        .Fastest<WareHouseOrderDetails>()
+                                        .AS("WareHouseOrderDetails")
+                                        .PageSize(writePageSize)
+                                        .BulkCopyAsync(chunk);
+                                    System.Threading.Interlocked.Add(ref totalAdded, chunk.Count);
+                                }
+                                catch (Exception ex)
+                                {
+                                    _logger.LogError(
+                                        ex,
+                                        "[ReactSync] 订货详情消费者{Idx}写入失败（批大小:{Size}）",
+                                        consumerIdx,
+                                        chunk.Count
+                                    );
+                                    System.Threading.Interlocked.Add(ref totalErrors, chunk.Count);
+                                    Console.WriteLine(
+                                        $"❌ [订货详情同步] 消费者{consumerIdx}写入失败: {chunk.Count} 条, 错误: {ex.Message}"
+                                    );
+                                    await Task.Delay(1500);
+                                }
                             }
                         }
                     });
-                    consumers.Add(consumer);
+                    consumers.Add(c);
+                }
+                Console.WriteLine(
+                    $"🚀 [订货详情同步] 已启动 {consumerConcurrency} 个消费者，等待数据..."
+                );
+
+                var semaphore = new SemaphoreSlim(producerConcurrency, producerConcurrency);
+                _logger.LogInformation(
+                    "[ReactSync] 订货详情并发读取初始化：Total={Total}, Pages={Pages}, BatchSize={Batch}, Producers={Producers}, Consumers={Consumers}",
+                    totalCount,
+                    pageCount,
+                    batchSize,
+                    producerConcurrency,
+                    consumerConcurrency
+                );
+
+                var producers = new List<Task>();
+                for (var page = 1; page <= pageCount; page++)
+                {
+                    var pageIndex = page;
+                    var p = Task.Run(async () =>
+                    {
+                        await semaphore.WaitAsync();
+                        try
+                        {
+                            var skip = (pageIndex - 1) * batchSize;
+                            using var hqDb = HqSqlSugarContext.CreateConcurrentConnection(
+                                _configuration
+                            );
+                            var hqBatch = await hqDb.Queryable<CBP_RED_分店订单详情表Store>()
+                                .Where(x => SqlFunc.HasValue(x.主表GUID))
+                                .OrderBy(x => x.ID)
+                                .Skip(skip)
+                                .Take(batchSize)
+                                .ToListAsync();
+
+                            if (hqBatch.Any())
+                            {
+                                Console.WriteLine(
+                                    $"📥 [订货详情同步] 生产者查询第{pageIndex}/{pageCount}批: {hqBatch.Count:N0} 条"
+                                );
+                                _logger.LogInformation(
+                                    "[ReactSync] 订货详情第{Page}批：{Count}",
+                                    pageIndex,
+                                    hqBatch.Count
+                                );
+                                var localBatch = _mapper
+                                    .Map<List<WareHouseOrderDetails>>(hqBatch)
+                                    .Where(x =>
+                                        !string.IsNullOrWhiteSpace(x.DetailGUID)
+                                        && !string.IsNullOrWhiteSpace(x.OrderGUID)
+                                    )
+                                    .ToList();
+                                await channel.Writer.WriteAsync(localBatch);
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogError(
+                                ex,
+                                "[ReactSync] 订货详情第{Page}批查询/映射失败",
+                                pageIndex
+                            );
+                            System.Threading.Interlocked.Increment(ref fetchErrors);
+                            Console.WriteLine(
+                                $"❌ [订货详情同步] 第{pageIndex}批查询失败: {ex.Message}"
+                            );
+                        }
+                        finally
+                        {
+                            semaphore.Release();
+                        }
+                    });
+                    producers.Add(p);
                 }
 
-                for (var page = 1; page <= pages; page++)
-                {
-                    var skip = (page - 1) * hqBatchSize;
-                    var batch = await _hqContext
-                        .Db.Queryable<CBP_RED_分店订单详情表Store>()
-                        .Where(x => SqlFunc.HasValue(x.主表GUID))
-                        .OrderBy(x => x.ID)
-                        .Skip(skip)
-                        .Take(hqBatchSize)
-                        .ToListAsync();
-                    if (!batch.Any())
-                        continue;
-                    var localBatch = _mapper
-                        .Map<List<WareHouseOrderDetails>>(batch)
-                        .Where(x =>
-                            !string.IsNullOrWhiteSpace(x.DetailGUID)
-                            && !string.IsNullOrWhiteSpace(x.OrderGUID)
-                        )
-                        .ToList();
-                    _logger.LogInformation(
-                        "[ReactSync] 订货详情页{Page}/{Pages} 准备写入批{Count}",
-                        page,
-                        pages,
-                        localBatch.Count
-                    );
-                    await channel.Writer.WriteAsync(localBatch);
-                    batch.Clear();
-                }
+                await Task.WhenAll(producers);
+                Console.WriteLine("📥 [订货详情同步] 所有生产者已完成，关闭 Channel");
                 channel.Writer.Complete();
                 await Task.WhenAll(consumers);
+                Console.WriteLine("📤 [订货详情同步] 所有消费者已完成");
 
-                result.AddedCount = added;
-                result.ErrorCount = errors;
-                result.IsSuccess = errors == 0;
+                result.AddedCount = totalAdded;
+                result.ErrorCount = totalErrors + fetchErrors;
+                result.IsSuccess = (totalErrors == 0 && fetchErrors == 0);
                 result.Message =
-                    errors == 0
+                    (totalErrors == 0 && fetchErrors == 0)
                         ? "WareHouseOrderDetails 同步成功"
                         : "WareHouseOrderDetails 同步完成，但存在错误";
+
+                Console.WriteLine(
+                    $"📊 [订货详情同步] 同步完成: 新增 {totalAdded:N0} 条, 写入错误 {totalErrors:N0} 条, 查询错误 {fetchErrors} 批"
+                );
+                Console.WriteLine(
+                    $"⏱️ [订货详情同步] 总耗时: {DateTime.Now - result.StartTime:hh\\:mm\\:ss}"
+                );
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "[ReactSync] WareHouseOrderDetails 同步异常");
                 result.IsSuccess = false;
                 result.Message = "WareHouseOrderDetails 同步异常";
+                Console.WriteLine($"💥 [订货详情同步] 同步异常: {ex.Message}");
                 await _taskLogService.LogTaskFailureAsync(taskLog.Id, ex.Message);
             }
             finally
@@ -3082,7 +3479,7 @@ namespace BlazorApp.Api.Services.React
             try
             {
                 var main = await SyncWareHouseOrdersFromHqAsync(hqBatchSize, writePageSize);
-                var det = await SyncWareHouseOrderDetailsFromHqAsync(hqBatchSize, writePageSize);
+                var det = await SyncWareHouseOrderDetailsFromHqAsync();
                 result = new SyncResult
                 {
                     StartTime = main.StartTime,

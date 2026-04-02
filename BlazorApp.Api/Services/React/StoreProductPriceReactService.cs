@@ -1380,11 +1380,11 @@ namespace BlazorApp.Api.Services.React
                                     StoreCode = targetStoreCode,
                                     ProductCode = source.ProductCode,
                                     MultiCodeProductCode = source.MultiCodeProductCode,
-                                    StoreMultiCodeProductCode =  targetStoreCode + source.MultiCodeProductCode,
+                                    StoreMultiCodeProductCode = targetStoreCode + source.MultiCodeProductCode,
                                     MultiBarcode = source.MultiBarcode,
                                     PurchasePrice = dto.SyncPurchasePrice
                                         ? source.PurchasePrice
-                                        : null, 
+                                        : null,
                                     MultiCodeRetailPrice = dto.SyncMultiCodeRetailPrice
                                         ? source.MultiCodeRetailPrice
                                         : null,

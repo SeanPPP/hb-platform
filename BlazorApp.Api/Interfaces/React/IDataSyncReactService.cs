@@ -19,9 +19,7 @@ namespace BlazorApp.Api.Interfaces.React
         /// 分店零售价并发同步（HQ 零售价 → 本地 StoreRetailPrice）。
         /// </summary>
         Task<SyncResult> SyncStoreRetailPricesFromHqConcurrentAsync(
-          List<string>? selectedStoreCodes = null,
-          int maxConcurrency = 30,
-          int batchSize = 200000
+          List<string>? selectedStoreCodes = null
         );
 
         /// <summary>
@@ -95,9 +93,7 @@ namespace BlazorApp.Api.Interfaces.React
         /// 货柜详情同步（HQ → 本地 ContainerDetail，支持主表GUID筛选）。
         /// </summary>
         Task<SyncResult> SyncContainerDetailsFromHqAsync(
-          List<string>? masterGuids = null,
-          int hqBatchSize = 50000,
-          int writePageSize = 10000
+          List<string>? masterGuids = null
         );
 
         /// <summary>
@@ -124,10 +120,7 @@ namespace BlazorApp.Api.Interfaces.React
         /// <summary>
         /// 分店本地进货单详情同步（HQ → 本地 StoreLocalSupplierInvoiceDetails）。并发写入。
         /// </summary>
-        Task<SyncResult> SyncStoreLocalSupplierInvoiceDetailsFromHqAsync(
-          int hqBatchSize = 100000,
-          int writePageSize = 50000
-        );
+        Task<SyncResult> SyncStoreLocalSupplierInvoiceDetailsFromHqAsync();
 
         /// <summary>
         /// 分店本地进货单主+详情顺序同步，返回汇总结果。
@@ -148,10 +141,7 @@ namespace BlazorApp.Api.Interfaces.React
         /// <summary>
         /// 分店订货单详情同步（HQ → 本地 WareHouseOrderDetails）。并发写入。
         /// </summary>
-        Task<SyncResult> SyncWareHouseOrderDetailsFromHqAsync(
-          int hqBatchSize = 100000,
-          int writePageSize = 50000
-        );
+        Task<SyncResult> SyncWareHouseOrderDetailsFromHqAsync();
 
         /// <summary>
         /// 分店订货单主+详情顺序同步，返回汇总结果。

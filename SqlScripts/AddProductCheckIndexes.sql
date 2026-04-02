@@ -25,6 +25,9 @@ ON "StoreRetailPrice"("StoreCode", ProductCode) WHERE "IsDeleted" = false;
 CREATE INDEX IF NOT EXISTS IX_StoreMultiCodeProduct_StoreCode_MultiBarcode 
 ON "StoreMultiCodeProduct"("StoreCode", "MultiBarcode") WHERE "IsDeleted" = false;
 
+CREATE INDEX IF NOT EXISTS IX_StoreMultiCodeProduct_StoreCode_ProductCode_MultiCode
+ON "StoreMultiCodeProduct"("StoreCode", "ProductCode", "MultiCodeProductCode") WHERE "IsDeleted" = false;
+
 -- =====================================================
 -- SQL Server 版本
 -- 如果使用 SQL Server，请执行以下语句：
@@ -46,6 +49,9 @@ IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_StoreRetailPrice_Store
 -- StoreMultiCodeProduct 复合索引
 IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_StoreMultiCodeProduct_StoreCode_MultiBarcode' AND object_id = OBJECT_ID('StoreMultiCodeProduct'))
     CREATE INDEX IX_StoreMultiCodeProduct_StoreCode_MultiBarcode ON [StoreMultiCodeProduct](StoreCode, MultiBarcode) WHERE IsDeleted = 0;
+
+IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_StoreMultiCodeProduct_StoreCode_ProductCode_MultiCode' AND object_id = OBJECT_ID('StoreMultiCodeProduct'))
+    CREATE INDEX IX_StoreMultiCodeProduct_StoreCode_ProductCode_MultiCode ON [StoreMultiCodeProduct](StoreCode, ProductCode, MultiCodeProductCode) WHERE IsDeleted = 0;
 
 -- =====================================================
 -- 验证索引创建

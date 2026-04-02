@@ -7,9 +7,7 @@ namespace BlazorApp.Api.Interfaces.React
         Task<SyncResult> SyncProductsFromHqAsync();
 
         Task<SyncResult> SyncStoreRetailPricesFromHqConcurrentAsync(
-            List<string>? selectedStoreCodes = null,
-            int? maxConcurrency = null,
-            int? batchSize = null
+            List<string>? selectedStoreCodes = null
         );
 
         Task<SyncResult> SyncStoreMultiCodeProductsFromHqConcurrentAsync(
@@ -56,9 +54,7 @@ namespace BlazorApp.Api.Interfaces.React
         );
 
         Task<SyncResult> SyncContainerDetailsFromHqAsync(
-            List<string>? masterGuids = null,
-            int hqBatchSize = 50000,
-            int writePageSize = 10000
+            List<string>? masterGuids = null
         );
 
         Task<SyncResult> SyncContainersFromHqAsync(
@@ -76,10 +72,7 @@ namespace BlazorApp.Api.Interfaces.React
             int writePageSize = 10000
         );
 
-        Task<SyncResult> SyncStoreLocalSupplierInvoiceDetailsFromHqAsync(
-            int hqBatchSize = 100000,
-            int writePageSize = 50000
-        );
+        Task<SyncResult> SyncStoreLocalSupplierInvoiceDetailsFromHqAsync();
 
         Task<SyncResult> SyncStoreLocalSupplierInvoicesAndDetailsFromHqAsync(
             int hqBatchSize = 50000,
@@ -91,10 +84,7 @@ namespace BlazorApp.Api.Interfaces.React
             int writePageSize = 10000
         );
 
-        Task<SyncResult> SyncWareHouseOrderDetailsFromHqAsync(
-            int hqBatchSize = 100000,
-            int writePageSize = 50000
-        );
+        Task<SyncResult> SyncWareHouseOrderDetailsFromHqAsync();
 
         Task<SyncResult> SyncWareHouseOrdersAllFromHqAsync(
             int hqBatchSize = 50000,
