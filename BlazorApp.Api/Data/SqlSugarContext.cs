@@ -184,6 +184,8 @@ namespace BlazorApp.Api.Data
 
         public SimpleClient<WarehouseCategory> WarehouseCategoryDb =>
             new SimpleClient<WarehouseCategory>(_db);
+        public SimpleClient<ProductCategory> ProductCategoryDb =>
+            new SimpleClient<ProductCategory>(_db);
         public SimpleClient<WarehouseProduct> WarehouseProductDb =>
             new SimpleClient<WarehouseProduct>(_db);
 

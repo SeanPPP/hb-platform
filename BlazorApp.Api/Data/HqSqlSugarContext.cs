@@ -98,6 +98,8 @@ namespace BlazorApp.Api.Data
         public SimpleClient<HqBranch> HqBranchDb => new SimpleClient<HqBranch>(_db);
         public SimpleClient<CBP_DIC_商品分类码表> CBP_DIC_商品分类码表Db =>
             new SimpleClient<CBP_DIC_商品分类码表>(_db);
+        public SimpleClient<DIC_商品分类码表> DIC_商品分类码表Db =>
+            new SimpleClient<DIC_商品分类码表>(_db);
         public SimpleClient<CBP_DIC_商品库存表> CBP_DIC_商品库存表Db =>
             new SimpleClient<CBP_DIC_商品库存表>(_db);
         public SimpleClient<CBP_DIC_国内供应商信息表> CBP_DIC_国内供应商信息表Db =>

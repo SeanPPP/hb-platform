@@ -4131,5 +4131,90 @@ namespace BlazorApp.Api.Services.React
             }
             return result;
         }
+
+        public async Task<SyncResult> SyncProductCategoriesFromHqAsync(
+            int hqBatchSize = 50000,
+            int writePageSize = 10000
+        )
+        {
+            var result = new SyncResult { StartTime = DateTime.Now };
+            try
+            {
+                _hqContext.CheckConnection();
+                await _localContext.Db.Ado.BeginTranAsync();
+                try
+                {
+                    await _localContext
+                        .Db.Deleteable<ProductCategory>()
+                        .AS("ProductCategory")
+                        .ExecuteCommandAsync();
+                    var hqDb = HqSqlSugarContext.CreateConcurrentConnection(_configuration);
+                    var total = await hqDb.Queryable<DIC_商品分类码表>().CountAsync();
+                    var pages = (int)Math.Ceiling(total / (double)hqBatchSize);
+                    var added = 0;
+                    var errors = 0;
+                    for (var page = 1; page <= pages; page++)
+                    {
+                        var skip = (page - 1) * hqBatchSize;
+                        var batch = await hqDb.Queryable<DIC_商品分类码表>()
+                            .OrderBy(x => x.ID)
+                            .Skip(skip)
+                            .Take(hqBatchSize)
+                            .ToListAsync();
+                        if (!batch.Any())
+                            continue;
+                        var localBatch = _mapper.Map<List<ProductCategory>>(batch);
+                        try
+                        {
+                            await _localContext
+                                .Db.Fastest<ProductCategory>()
+                                .AS("ProductCategory")
+                                .PageSize(writePageSize)
+                                .BulkCopyAsync(localBatch);
+                            added += localBatch.Count;
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogError(
+                                ex,
+                                "[ReactSync] ProductCategory 批{Page} 插入失败 批大小{Size}",
+                                page,
+                                localBatch.Count
+                            );
+                            errors += localBatch.Count;
+                            await Task.Delay(1500);
+                        }
+                        batch.Clear();
+                        localBatch.Clear();
+                    }
+                    hqDb.Dispose();
+                    await _localContext.Db.Ado.CommitTranAsync();
+                    result.AddedCount = added;
+                    result.ErrorCount = errors;
+                    result.IsSuccess = errors == 0;
+                    result.Message =
+                        errors == 0
+                            ? "ProductCategory 同步成功"
+                            : "ProductCategory 同步完成，但存在错误";
+                }
+                catch (Exception exTran)
+                {
+                    await _localContext.Db.Ado.RollbackTranAsync();
+                    throw new Exception("ProductCategory 同步事务失败", exTran);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "[ReactSync] ProductCategory 同步异常");
+                result.IsSuccess = false;
+                result.Message = "ProductCategory 同步异常";
+            }
+            finally
+            {
+                result.EndTime = DateTime.Now;
+                result.Duration = result.EndTime - result.StartTime;
+            }
+            return result;
+        }
     }
 }

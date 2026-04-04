@@ -456,7 +456,9 @@ namespace BlazorApp.Api.Services
                     Console.WriteLine($"  [StoreRetailPrice] 基础商品总数: {productDict.Count}");
 
                     var semaphore = new SemaphoreSlim(5);
-                    var storeReports = activeStoreCodes.Select(async storeCode =>
+
+                    // 阶段一：并发查询，收集变更计划
+                    var queryTasks = activeStoreCodes.Select(async storeCode =>
                     {
                         await semaphore.WaitAsync();
                         ISqlSugarClient? storeDb = null;
@@ -464,9 +466,6 @@ namespace BlazorApp.Api.Services
                         {
                             storeDb = SqlSugarContext.CreateConcurrentConnection(_configuration);
                             storeDb.Ado.CommandTimeOut = CommandTimeoutSeconds;
-
-                            var deleted = 0;
-                            var added = 0;
 
                             var storeRecords = await storeDb
                                 .Queryable<StoreRetailPrice>()
@@ -488,76 +487,13 @@ namespace BlazorApp.Api.Services
                                 $"    [分店 {storeCode}] 现有: {storeRecords.Count}, 孤立: {orphanedProductCodes.Count}, 缺失: {missingProductCodes.Count}"
                             );
 
-                            if (orphanedProductCodes.Count > 0)
+                            return new StoreRetailPriceChangePlan
                             {
-                                if (dryRun)
-                                {
-                                    deleted = orphanedProductCodes.Count;
-                                }
-                                else
-                                {
-                                    deleted = await storeDb
-                                        .Updateable<StoreRetailPrice>()
-                                        .SetColumns(sr => sr.IsDeleted == true)
-                                        .SetColumns(sr => sr.UpdatedAt == DateTime.UtcNow)
-                                        .SetColumns(sr => sr.UpdatedBy == "IntegrityFix")
-                                        .Where(sr =>
-                                            sr.StoreCode == storeCode
-                                            && sr.IsDeleted == false
-                                            && orphanedProductCodes.Contains(sr.ProductCode)
-                                        )
-                                        .ExecuteCommandAsync();
-                                }
-                            }
-
-                            if (missingProductCodes.Count > 0)
-                            {
-                                var newRecords = missingProductCodes
-                                    .Select(pc =>
-                                    {
-                                        var p = productDict[pc];
-                                        return new StoreRetailPrice
-                                        {
-                                            UUID = UuidHelper.GenerateUuid7(),
-                                            StoreCode = storeCode,
-                                            ProductCode = pc,
-                                            StoreProductCode = pc,
-                                            SupplierCode = p.LocalSupplierCode,
-                                            PurchasePrice = p.PurchasePrice,
-                                            StoreRetailPriceValue = p.RetailPrice,
-                                            DiscountRate = 1.0000m,
-                                            IsActive = p.IsActive,
-                                            IsAutoPricing = p.IsAutoPricing,
-                                            IsSpecialProduct = p.IsSpecialProduct,
-                                            IsDeleted = false,
-                                            CreatedAt = DateTime.UtcNow,
-                                            CreatedBy = "IntegrityFix",
-                                        };
-                                    })
-                                    .ToList();
-
-                                if (dryRun)
-                                {
-                                    added = newRecords.Count;
-                                }
-                                else
-                                {
-                                    await BatchOperationHelper.BatchInsertAsync(
-                                        storeDb,
-                                        newRecords,
-                                        BatchOperationHelper.LARGE_BATCH_SIZE
-                                    );
-                                    added = newRecords.Count;
-                                }
-                            }
-
-                            Console.WriteLine(
-                                dryRun
-                                    ? $"    [分店 {storeCode}] DryRun 预计删除 {deleted}，新增 {added}"
-                                    : $"    [分店 {storeCode}] 已删除 {deleted}，已新增 {added}"
-                            );
-
-                            return (Deleted: deleted, Added: added);
+                                StoreCode = storeCode,
+                                OrphanedProductCodes = orphanedProductCodes,
+                                OrphanedCount = orphanedProductCodes.Count,
+                                MissingProductCodes = missingProductCodes,
+                            };
                         }
                         finally
                         {
@@ -565,10 +501,112 @@ namespace BlazorApp.Api.Services
                             storeDb?.Dispose();
                         }
                     });
+                    var changePlans = (await Task.WhenAll(queryTasks)).ToList();
 
-                    var results = await Task.WhenAll(storeReports);
-                    report.DeletedCount = results.Sum(r => r.Deleted);
-                    report.AddedCount = results.Sum(r => r.Added);
+                    // 阶段二：并发执行软删除（只有UPDATE，不会死锁）
+                    var deleteTasks = changePlans
+                        .Where(p => p.OrphanedCount > 0)
+                        .Select(async plan =>
+                        {
+                            if (dryRun)
+                                return (plan.StoreCode, Deleted: plan.OrphanedCount);
+
+                            await semaphore.WaitAsync();
+                            ISqlSugarClient? storeDb = null;
+                            try
+                            {
+                                storeDb = SqlSugarContext.CreateConcurrentConnection(_configuration);
+                                storeDb.Ado.CommandTimeOut = CommandTimeoutSeconds;
+
+                                var deleted = await storeDb
+                                    .Updateable<StoreRetailPrice>()
+                                    .SetColumns(sr => sr.IsDeleted == true)
+                                    .SetColumns(sr => sr.UpdatedAt == DateTime.UtcNow)
+                                    .SetColumns(sr => sr.UpdatedBy == "IntegrityFix")
+                                    .Where(sr =>
+                                        sr.StoreCode == plan.StoreCode
+                                        && sr.IsDeleted == false
+                                        && plan.OrphanedProductCodes.Contains(sr.ProductCode)
+                                    )
+                                    .ExecuteCommandAsync();
+
+                                Console.WriteLine(
+                                    $"    [分店 {plan.StoreCode}] 已删除 {deleted}"
+                                );
+                                return (plan.StoreCode, Deleted: deleted);
+                            }
+                            finally
+                            {
+                                semaphore.Release();
+                                storeDb?.Dispose();
+                            }
+                        });
+                    var deleteResults = await Task.WhenAll(deleteTasks);
+                    report.DeletedCount = deleteResults.Sum(r => r.Deleted);
+
+                    // 阶段三：并发执行插入（只有INSERT，不会死锁）
+                    var insertTasks = changePlans
+                        .Where(p => p.MissingProductCodes.Count > 0)
+                        .Select(async plan =>
+                        {
+                            var newRecords = plan.MissingProductCodes
+                                .Select(pc =>
+                                {
+                                    var p = productDict[pc];
+                                    return new StoreRetailPrice
+                                    {
+                                        UUID = UuidHelper.GenerateUuid7(),
+                                        StoreCode = plan.StoreCode,
+                                        ProductCode = pc,
+                                        StoreProductCode = pc,
+                                        SupplierCode = p.LocalSupplierCode,
+                                        PurchasePrice = p.PurchasePrice,
+                                        StoreRetailPriceValue = p.RetailPrice,
+                                        DiscountRate = 1.0000m,
+                                        IsActive = p.IsActive,
+                                        IsAutoPricing = p.IsAutoPricing,
+                                        IsSpecialProduct = p.IsSpecialProduct,
+                                        IsDeleted = false,
+                                        CreatedAt = DateTime.UtcNow,
+                                        CreatedBy = "IntegrityFix",
+                                    };
+                                })
+                                .ToList();
+
+                            if (dryRun)
+                            {
+                                Console.WriteLine(
+                                    $"    [分店 {plan.StoreCode}] DryRun 预计新增 {newRecords.Count}"
+                                );
+                                return (plan.StoreCode, Added: newRecords.Count);
+                            }
+
+                            await semaphore.WaitAsync();
+                            ISqlSugarClient? storeDb = null;
+                            try
+                            {
+                                storeDb = SqlSugarContext.CreateConcurrentConnection(_configuration);
+                                storeDb.Ado.CommandTimeOut = CommandTimeoutSeconds;
+
+                                await BatchOperationHelper.BatchInsertAsync(
+                                    storeDb,
+                                    newRecords,
+                                    BatchOperationHelper.LARGE_BATCH_SIZE
+                                );
+                                Console.WriteLine(
+                                    $"    [分店 {plan.StoreCode}] 已新增 {newRecords.Count}"
+                                );
+                                return (plan.StoreCode, Added: newRecords.Count);
+                            }
+                            finally
+                            {
+                                semaphore.Release();
+                                storeDb?.Dispose();
+                            }
+                        });
+                    var insertResults = await Task.WhenAll(insertTasks);
+                    report.AddedCount = insertResults.Sum(r => r.Added);
+
                     Console.WriteLine(
                         $"  [StoreRetailPrice] 总计删除: {report.DeletedCount}，新增: {report.AddedCount}"
                     );
@@ -632,7 +670,10 @@ namespace BlazorApp.Api.Services
                     );
 
                     var semaphore = new SemaphoreSlim(5);
-                    var storeReports = activeStoreCodes.Select(async storeCode =>
+
+                    // 阶段一：并发查询，收集变更计划
+                    var changePlans = new List<StoreMultiCodeChangePlan>();
+                    var queryTasks = activeStoreCodes.Select(async storeCode =>
                     {
                         await semaphore.WaitAsync();
                         ISqlSugarClient? storeDb = null;
@@ -640,9 +681,6 @@ namespace BlazorApp.Api.Services
                         {
                             storeDb = SqlSugarContext.CreateConcurrentConnection(_configuration);
                             storeDb.Ado.CommandTimeOut = CommandTimeoutSeconds;
-
-                            var deleted = 0;
-                            var added = 0;
 
                             var storeRecords = await storeDb
                                 .Queryable<StoreMultiCodeProduct>()
@@ -676,83 +714,16 @@ namespace BlazorApp.Api.Services
                                 $"    [分店 {storeCode}] 现有: {storeRecords.Count}, 孤立: {orphanedRecords.Count}, 缺失: {missingEntries.Count}"
                             );
 
-                            if (orphanedRecords.Count > 0)
+                            return new StoreMultiCodeChangePlan
                             {
-                                if (dryRun)
-                                {
-                                    deleted = orphanedRecords.Count;
-                                }
-                                else
-                                {
-                                    var orphanedProductCodes = orphanedRecords
-                                        .Select(r => r.ProductCode)
-                                        .Distinct()
-                                        .ToList();
-                                    var orphanedMultiCodes = orphanedRecords
-                                        .Select(r => r.MultiCodeProductCode)
-                                        .Distinct()
-                                        .ToList();
-
-                                    deleted = await storeDb
-                                        .Updateable<StoreMultiCodeProduct>()
-                                        .SetColumns(sm => sm.IsDeleted == true)
-                                        .SetColumns(sm => sm.UpdatedAt == DateTime.UtcNow)
-                                        .SetColumns(sm => sm.UpdatedBy == "IntegrityFix")
-                                        .Where(sm =>
-                                            sm.StoreCode == storeCode
-                                            && sm.IsDeleted == false
-                                            && orphanedProductCodes.Contains(sm.ProductCode)
-                                            && orphanedMultiCodes.Contains(sm.MultiCodeProductCode)
-                                        )
-                                        .ExecuteCommandAsync();
-                                }
-                            }
-
-                            if (missingEntries.Count > 0)
-                            {
-                                var newRecords = missingEntries
-                                    .Select(sc => new StoreMultiCodeProduct
-                                    {
-                                        UUID = UuidHelper.GenerateUuid7(),
-                                        StoreCode = storeCode,
-                                        ProductCode = sc.ProductCode,
-                                        MultiCodeProductCode = sc.SetProductCode,
-                                        StoreMultiCodeProductCode = sc.SetProductCode,
-                                        MultiBarcode = sc.SetBarcode,
-                                        PurchasePrice = sc.SetPurchasePrice,
-                                        MultiCodeRetailPrice = sc.SetRetailPrice,
-                                        DiscountRate = 0m,
-                                        IsAutoPricing = false,
-                                        IsSpecialProduct = false,
-                                        IsActive = true,
-                                        IsDeleted = false,
-                                        CreatedAt = DateTime.UtcNow,
-                                        CreatedBy = "IntegrityFix",
-                                    })
-                                    .ToList();
-
-                                if (dryRun)
-                                {
-                                    added = newRecords.Count;
-                                }
-                                else
-                                {
-                                    await BatchOperationHelper.BatchInsertAsync(
-                                        storeDb,
-                                        newRecords,
-                                        BatchOperationHelper.LARGE_BATCH_SIZE
-                                    );
-                                    added = newRecords.Count;
-                                }
-                            }
-
-                            Console.WriteLine(
-                                dryRun
-                                    ? $"    [分店 {storeCode}] DryRun 预计删除 {deleted}，新增 {added}"
-                                    : $"    [分店 {storeCode}] 已删除 {deleted}，已新增 {added}"
-                            );
-
-                            return (Deleted: deleted, Added: added);
+                                StoreCode = storeCode,
+                                OrphanedProductCodes = orphanedRecords
+                                    .Select(r => r.ProductCode).Distinct().ToList(),
+                                OrphanedMultiCodes = orphanedRecords
+                                    .Select(r => r.MultiCodeProductCode).Distinct().ToList(),
+                                OrphanedCount = orphanedRecords.Count,
+                                MissingEntries = missingEntries,
+                            };
                         }
                         finally
                         {
@@ -760,10 +731,110 @@ namespace BlazorApp.Api.Services
                             storeDb?.Dispose();
                         }
                     });
+                    changePlans = (await Task.WhenAll(queryTasks)).ToList();
 
-                    var results = await Task.WhenAll(storeReports);
-                    report.DeletedCount = results.Sum(r => r.Deleted);
-                    report.AddedCount = results.Sum(r => r.Added);
+                    // 阶段二：并发执行软删除（只有UPDATE，不会死锁）
+                    var deleteTasks = changePlans
+                        .Where(p => p.OrphanedCount > 0)
+                        .Select(async plan =>
+                        {
+                            if (dryRun)
+                                return (plan.StoreCode, Deleted: plan.OrphanedCount);
+
+                            await semaphore.WaitAsync();
+                            ISqlSugarClient? storeDb = null;
+                            try
+                            {
+                                storeDb = SqlSugarContext.CreateConcurrentConnection(_configuration);
+                                storeDb.Ado.CommandTimeOut = CommandTimeoutSeconds;
+
+                                var deleted = await storeDb
+                                    .Updateable<StoreMultiCodeProduct>()
+                                    .SetColumns(sm => sm.IsDeleted == true)
+                                    .SetColumns(sm => sm.UpdatedAt == DateTime.UtcNow)
+                                    .SetColumns(sm => sm.UpdatedBy == "IntegrityFix")
+                                    .Where(sm =>
+                                        sm.StoreCode == plan.StoreCode
+                                        && sm.IsDeleted == false
+                                        && plan.OrphanedProductCodes.Contains(sm.ProductCode)
+                                        && plan.OrphanedMultiCodes.Contains(sm.MultiCodeProductCode)
+                                    )
+                                    .ExecuteCommandAsync();
+
+                                Console.WriteLine(
+                                    $"    [分店 {plan.StoreCode}] 已删除 {deleted}"
+                                );
+                                return (plan.StoreCode, Deleted: deleted);
+                            }
+                            finally
+                            {
+                                semaphore.Release();
+                                storeDb?.Dispose();
+                            }
+                        });
+                    var deleteResults = await Task.WhenAll(deleteTasks);
+                    report.DeletedCount = deleteResults.Sum(r => r.Deleted);
+
+                    // 阶段三：并发执行插入（只有INSERT，不会死锁）
+                    var insertTasks = changePlans
+                        .Where(p => p.MissingEntries.Count > 0)
+                        .Select(async plan =>
+                        {
+                            var newRecords = plan.MissingEntries
+                                .Select(sc => new StoreMultiCodeProduct
+                                {
+                                    UUID = UuidHelper.GenerateUuid7(),
+                                    StoreCode = plan.StoreCode,
+                                    ProductCode = sc.ProductCode,
+                                    MultiCodeProductCode = sc.SetProductCode,
+                                    StoreMultiCodeProductCode = sc.SetProductCode,
+                                    MultiBarcode = sc.SetBarcode,
+                                    PurchasePrice = sc.SetPurchasePrice,
+                                    MultiCodeRetailPrice = sc.SetRetailPrice,
+                                    DiscountRate = 0m,
+                                    IsAutoPricing = false,
+                                    IsSpecialProduct = false,
+                                    IsActive = true,
+                                    IsDeleted = false,
+                                    CreatedAt = DateTime.UtcNow,
+                                    CreatedBy = "IntegrityFix",
+                                })
+                                .ToList();
+
+                            if (dryRun)
+                            {
+                                Console.WriteLine(
+                                    $"    [分店 {plan.StoreCode}] DryRun 预计新增 {newRecords.Count}"
+                                );
+                                return (plan.StoreCode, Added: newRecords.Count);
+                            }
+
+                            await semaphore.WaitAsync();
+                            ISqlSugarClient? storeDb = null;
+                            try
+                            {
+                                storeDb = SqlSugarContext.CreateConcurrentConnection(_configuration);
+                                storeDb.Ado.CommandTimeOut = CommandTimeoutSeconds;
+
+                                await BatchOperationHelper.BatchInsertAsync(
+                                    storeDb,
+                                    newRecords,
+                                    BatchOperationHelper.LARGE_BATCH_SIZE
+                                );
+                                Console.WriteLine(
+                                    $"    [分店 {plan.StoreCode}] 已新增 {newRecords.Count}"
+                                );
+                                return (plan.StoreCode, Added: newRecords.Count);
+                            }
+                            finally
+                            {
+                                semaphore.Release();
+                                storeDb?.Dispose();
+                            }
+                        });
+                    var insertResults = await Task.WhenAll(insertTasks);
+                    report.AddedCount = insertResults.Sum(r => r.Added);
+
                     Console.WriteLine(
                         $"  [StoreMultiCodeProduct] 总计删除: {report.DeletedCount}，新增: {report.AddedCount}"
                     );
@@ -891,6 +962,23 @@ namespace BlazorApp.Api.Services
             }
 
             return await query.ToListAsync();
+        }
+
+        private class StoreMultiCodeChangePlan
+        {
+            public string StoreCode { get; set; } = "";
+            public List<string> OrphanedProductCodes { get; set; } = new();
+            public List<string> OrphanedMultiCodes { get; set; } = new();
+            public int OrphanedCount { get; set; }
+            public List<ProductSetCode> MissingEntries { get; set; } = new();
+        }
+
+        private class StoreRetailPriceChangePlan
+        {
+            public string StoreCode { get; set; } = "";
+            public List<string> OrphanedProductCodes { get; set; } = new();
+            public int OrphanedCount { get; set; }
+            public List<string> MissingProductCodes { get; set; } = new();
         }
 
         #endregion

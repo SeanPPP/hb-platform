@@ -397,5 +397,21 @@ namespace BlazorApp.Api.Services.React
         {
             return await _incrementalSyncService.SyncWareHouseOrdersFromHqIncrementalAsync();
         }
+
+        public async Task<SyncResult> SyncProductCategoriesFromHqAsync(
+            int hqBatchSize = 50000,
+            int writePageSize = 10000
+        )
+        {
+            return await _fullSyncService.SyncProductCategoriesFromHqAsync(
+                hqBatchSize,
+                writePageSize
+            );
+        }
+
+        public async Task<SyncResult> SyncProductCategoriesFromHqIncrementalAsync()
+        {
+            return await _incrementalSyncService.SyncProductCategoriesFromHqIncrementalAsync();
+        }
     }
 }

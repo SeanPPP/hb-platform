@@ -57,5 +57,7 @@ namespace BlazorApp.Api.Interfaces.React
         Task<SyncResult> SyncCashRegisterUsersFromHqIncrementalAsync(DateTime? startDateFromRequest = null);
 
         Task<SyncResult> SyncPosmProductSupplierMappingsIncrementalAsync(DateTime? startDateFromRequest = null);
+
+        Task<SyncResult> SyncProductCategoriesFromHqIncrementalAsync(DateTime? startDateFromRequest = null);
     }
 }

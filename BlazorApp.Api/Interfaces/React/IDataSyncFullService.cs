@@ -107,5 +107,10 @@ namespace BlazorApp.Api.Interfaces.React
         );
 
         Task<SyncResult> SyncPosmProductSupplierMappingsAsync();
+
+        Task<SyncResult> SyncProductCategoriesFromHqAsync(
+            int hqBatchSize = 50000,
+            int writePageSize = 10000
+        );
     }
 }

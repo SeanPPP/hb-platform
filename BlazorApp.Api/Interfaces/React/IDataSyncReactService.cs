@@ -208,5 +208,19 @@ namespace BlazorApp.Api.Interfaces.React
         /// 基于最近一次成功同步的时间点，默认100天内
         /// </summary>
         Task<SyncResult> SyncWareHouseOrdersFromHqIncrementalAsync();
+
+        /// <summary>
+        /// 全量同步商品分类：HQ DIC_商品分类码表 → 本地 ProductCategory
+        /// </summary>
+        Task<SyncResult> SyncProductCategoriesFromHqAsync(
+            int hqBatchSize = 50000,
+            int writePageSize = 10000
+        );
+
+        /// <summary>
+        /// 增量同步商品分类：HQ DIC_商品分类码表 → 本地 ProductCategory
+        /// 按 FGC_LastModifyDate 字段增量同步
+        /// </summary>
+        Task<SyncResult> SyncProductCategoriesFromHqIncrementalAsync();
     }
 }

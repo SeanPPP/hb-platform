@@ -1155,6 +1155,75 @@ namespace BlazorApp.Api.Controllers.React
                 );
             }
         }
+
+        /// <summary>
+        /// 全量同步商品分类：HQ DIC_商品分类码表 → 本地 ProductCategory
+        /// </summary>
+        [HttpPost("product-categories")]
+        public async Task<IActionResult> SyncProductCategories(
+            [FromBody] ReactStoreSyncRequest? request = null
+        )
+        {
+            try
+            {
+                _logger.LogInformation("[ReactSync] 开始全量同步商品分类");
+                var result = await _dataSyncService.SyncProductCategoriesFromHqAsync();
+                if (result.IsSuccess)
+                {
+                    _logger.LogInformation(
+                        "[ReactSync] 商品分类同步成功: 新增{Added}",
+                        result.AddedCount
+                    );
+                    return Ok(ApiResponse<SyncResult>.OK(result, "商品分类同步成功"));
+                }
+                return Ok(ApiResponse<SyncResult>.OK(result, "商品分类同步完成，但存在错误"));
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "[ReactSync] 商品分类同步异常");
+                return StatusCode(
+                    500,
+                    ApiResponse<SyncResult>.Error("商品分类同步异常", "INTERNAL_ERROR")
+                );
+            }
+        }
+
+        /// <summary>
+        /// 增量同步商品分类：HQ DIC_商品分类码表 → 本地 ProductCategory
+        /// 按 FGC_LastModifyDate 字段增量同步
+        /// </summary>
+        [HttpPost("product-categories-incremental")]
+        public async Task<IActionResult> SyncProductCategoriesIncremental(
+            [FromBody] IncrementalSyncRequest? request = null
+        )
+        {
+            try
+            {
+                _logger.LogInformation("[ReactSync] 开始增量同步商品分类");
+                var result =
+                    await _incrementalSyncService.SyncProductCategoriesFromHqIncrementalAsync(
+                        request?.StartDate
+                    );
+                if (result.IsSuccess)
+                {
+                    _logger.LogInformation(
+                        "[ReactSync] 商品分类增量同步成功: 新增{Added}, 更新{Updated}",
+                        result.AddedCount,
+                        result.UpdatedCount
+                    );
+                    return Ok(ApiResponse<SyncResult>.OK(result, "商品分类增量同步成功"));
+                }
+                return Ok(ApiResponse<SyncResult>.OK(result, "商品分类增量同步完成，但存在错误"));
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "[ReactSync] 商品分类增量同步异常");
+                return StatusCode(
+                    500,
+                    ApiResponse<SyncResult>.Error("商品分类增量同步异常", "INTERNAL_ERROR")
+                );
+            }
+        }
     }
 }
 

@@ -389,6 +389,7 @@ builder.Services.AddScoped<IProductPrefixCodeReactService, ProductPrefixCodeReac
 builder.Services.AddScoped<IDomesticSupplierReactService, DomesticSupplierReactService>();
 builder.Services.AddScoped<ILocalSuppliersReactService, LocalSupplierReactService>();
 builder.Services.AddScoped<IWarehouseCategoryReactService, WarehouseCategoryReactService>();
+builder.Services.AddScoped<IProductCategoryReactService, ProductCategoryReactService>();
 builder.Services.AddScoped<IProductReactService, ProductReactService>(); // Product CRUD和批量操作服务
 builder.Services.AddScoped<IProductSetCodeReactService, ProductSetCodeReactService>();
 builder.Services.AddScoped<IStoreRetailPriceReactService, StoreRetailPriceReactService>();

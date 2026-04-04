@@ -4138,5 +4138,184 @@ namespace BlazorApp.Api.Services.React
                 return result;
             }
         }
+
+        public async Task<SyncResult> SyncProductCategoriesFromHqIncrementalAsync(
+            DateTime? startDateFromRequest = null
+        )
+        {
+            var result = new SyncResult();
+            var taskLog = await _taskLogService.LogTaskStartAsync(
+                "SyncProductCategoriesIncremental",
+                new TaskParameters(),
+                TaskTrigger.Manual
+            );
+
+            try
+            {
+                _logger.LogInformation("[ReactSync] 商品分类增量同步：开始");
+
+                DateTime effectiveStart;
+                if (startDateFromRequest.HasValue)
+                {
+                    effectiveStart = startDateFromRequest.Value;
+                    _logger.LogInformation(
+                        "[ReactSync] 商品分类增量：使用请求指定起始日期: {Time}",
+                        effectiveStart
+                    );
+                }
+                else
+                {
+                    var recentTasks = await _taskLogService.GetRecentTasksAsync(
+                        1,
+                        "SyncProductCategoriesIncremental"
+                    );
+                    var lastSuccessTask = recentTasks.FirstOrDefault(t =>
+                        t.Status == BlazorApp.Shared.Models.HBweb.TaskStatus.Success
+                    );
+
+                    DateTime? syncStartTime = lastSuccessTask?.StartedAt;
+                    var daysRange = 30;
+
+                    if (syncStartTime.HasValue)
+                    {
+                        daysRange = Math.Min(
+                            daysRange,
+                            (int)(DateTime.UtcNow - syncStartTime.Value).TotalDays
+                        );
+                        _logger.LogInformation(
+                            "[ReactSync] 商品分类增量：上次成功同步时间: {Time}, 范围: {Days} 天",
+                            syncStartTime,
+                            daysRange
+                        );
+                    }
+                    else
+                    {
+                        _logger.LogInformation(
+                            "[ReactSync] 商品分类增量：未找到历史记录，同步最近 {Days} 天的数据",
+                            daysRange
+                        );
+                    }
+
+                    var startDate = DateTime.UtcNow.AddDays(-daysRange);
+                    effectiveStart = startDate;
+                }
+
+                var hqDb = HqSqlSugarContext.CreateConcurrentConnection(_configuration);
+
+                var total = await hqDb.Queryable<DIC_商品分类码表>()
+                    .Where(x => x.FGC_LastModifyDate >= effectiveStart)
+                    .CountAsync();
+                hqDb.Dispose();
+
+                if (total == 0)
+                {
+                    _logger.LogInformation("[ReactSync] 商品分类增量：没有新数据需要同步");
+                    result.IsSuccess = true;
+                    result.Message = "没有新数据需要同步";
+                    await _taskLogService.LogTaskSuccessAsync(taskLog.Id);
+                    return result;
+                }
+
+                const int hqBatchSize = 50000;
+                const int writePageSize = 10000;
+                var pages = (int)Math.Ceiling(total / (double)hqBatchSize);
+                var added = 0;
+                var updated = 0;
+                var errors = 0;
+
+                var existingGuids = await _localContext
+                    .Db.Queryable<ProductCategory>()
+                    .Select(x => x.CategoryGUID)
+                    .ToListAsync();
+                var existingSet = new HashSet<string>(existingGuids);
+
+                for (var page = 1; page <= pages; page++)
+                {
+                    var skip = (page - 1) * hqBatchSize;
+                    hqDb = HqSqlSugarContext.CreateConcurrentConnection(_configuration);
+                    var batch = await hqDb.Queryable<DIC_商品分类码表>()
+                        .Where(x => x.FGC_LastModifyDate >= effectiveStart)
+                        .OrderBy(x => x.FGC_LastModifyDate)
+                        .Skip(skip)
+                        .Take(hqBatchSize)
+                        .ToListAsync();
+                    hqDb.Dispose();
+
+                    if (!batch.Any())
+                        continue;
+
+                    var localBatch = _mapper.Map<List<ProductCategory>>(batch);
+
+                    var toInsert = localBatch
+                        .Where(x => !existingSet.Contains(x.CategoryGUID!))
+                        .ToList();
+                    var toUpdate = localBatch
+                        .Where(x => existingSet.Contains(x.CategoryGUID!))
+                        .ToList();
+
+                    try
+                    {
+                        if (toUpdate.Any())
+                        {
+                            await _localContext
+                                .Db.Fastest<ProductCategory>()
+                                .AS("ProductCategory")
+                                .PageSize(writePageSize)
+                                .BulkUpdateAsync(toUpdate);
+                            updated += toUpdate.Count;
+                        }
+                        if (toInsert.Any())
+                        {
+                            await _localContext
+                                .Db.Fastest<ProductCategory>()
+                                .AS("ProductCategory")
+                                .PageSize(writePageSize)
+                                .BulkCopyAsync(toInsert);
+                            added += toInsert.Count;
+                        }
+                        _logger.LogInformation(
+                            "[ReactSync] 商品分类增量页{Page}: 插入{Inserted}, 更新{Updated}",
+                            page,
+                            toInsert.Count,
+                            toUpdate.Count
+                        );
+                    }
+                    catch (Exception ex)
+                    {
+                        errors++;
+                        _logger.LogError(
+                            ex,
+                            "[ReactSync] 商品分类增量页{Page}出错: {Error}",
+                            page,
+                            ex.Message
+                        );
+                    }
+                }
+
+                result.IsSuccess = errors == 0;
+                result.Message =
+                    errors == 0
+                        ? $"增量同步完成，新增 {added} 条，更新 {updated} 条"
+                        : $"增量同步部分完成，新增 {added} 条，更新 {updated} 条，{errors} 页出错";
+                result.AddedCount = added;
+                result.UpdatedCount = updated;
+                result.ErrorCount = errors;
+
+                if (result.IsSuccess)
+                    await _taskLogService.LogTaskSuccessAsync(taskLog.Id);
+                else
+                    await _taskLogService.LogTaskFailureAsync(taskLog.Id, result.Message);
+
+                return result;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "[ReactSync] 商品分类增量同步异常: {Error}", ex.Message);
+                await _taskLogService.LogTaskFailureAsync(taskLog.Id, ex.Message);
+                result.IsSuccess = false;
+                result.Message = $"同步失败: {ex.Message}";
+                return result;
+            }
+        }
     }
 }
