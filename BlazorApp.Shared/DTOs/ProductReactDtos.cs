@@ -191,6 +191,11 @@ namespace BlazorApp.Shared.DTOs
         /// 仓库类别GUID过滤
         /// </summary>
         public string? WarehouseCategoryGUID { get; set; }
+
+        /// <summary>
+        /// 商品分类GUID过滤（支持多个）
+        /// </summary>
+        public List<string>? ProductCategoryGUIDs { get; set; }
         public int? ProductType { get; set; }
 
         #endregion
@@ -261,6 +266,16 @@ namespace BlazorApp.Shared.DTOs
         /// 是否自动定价
         /// </summary>
         public bool? IsAutoPricing { get; set; }
+
+        /// <summary>
+        /// 商品分类GUID
+        /// </summary>
+        public string? ProductCategoryGUID { get; set; }
+
+        /// <summary>
+        /// 本地供应商编码
+        /// </summary>
+        public string? LocalSupplierCode { get; set; }
     }
 
     /// <summary>

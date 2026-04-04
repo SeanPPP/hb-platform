@@ -53,21 +53,18 @@ namespace BlazorApp.Api.Services.React
 
             var totalCount = await query.CountAsync();
 
-            query = filter.SortDescending
-                ? query.OrderByDescending(
-                    filter.SortBy == "SortOrder"
-                        ? "SortOrder"
-                        : filter.SortBy == "IsActive"
-                            ? "IsActive"
-                            : "CategoryName"
-                )
-                : query.OrderBy(
-                    filter.SortBy == "SortOrder"
-                        ? "SortOrder"
-                        : filter.SortBy == "IsActive"
-                            ? "IsActive"
-                            : "CategoryName"
-                );
+            query = filter.SortBy switch
+            {
+                "SortOrder" => filter.SortDescending
+                    ? query.OrderByDescending(x => x.SortOrder)
+                    : query.OrderBy(x => x.SortOrder),
+                "IsActive" => filter.SortDescending
+                    ? query.OrderByDescending(x => x.IsActive)
+                    : query.OrderBy(x => x.IsActive),
+                _ => filter.SortDescending
+                    ? query.OrderByDescending(x => x.CategoryName)
+                    : query.OrderBy(x => x.CategoryName),
+            };
 
             var items = await query
                 .Skip((filter.PageNumber - 1) * filter.PageSize)

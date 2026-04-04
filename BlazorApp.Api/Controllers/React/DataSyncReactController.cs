@@ -1167,7 +1167,7 @@ namespace BlazorApp.Api.Controllers.React
             try
             {
                 _logger.LogInformation("[ReactSync] 开始全量同步商品分类");
-                var result = await _dataSyncService.SyncProductCategoriesFromHqAsync();
+                var result = await _fullSyncService.SyncProductCategoriesFromHqAsync();
                 if (result.IsSuccess)
                 {
                     _logger.LogInformation(

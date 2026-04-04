@@ -56,29 +56,41 @@ namespace BlazorApp.Api.Services.React
             switch (filterType)
             {
                 case TextFilterType.equals:
-                    query = query.Where($"LOWER({fieldName}) = @{paramName}",
-                        new Dictionary<string, object> { { paramName, keyword } });
+                    query = query.Where(
+                        $"LOWER({fieldName}) = @{paramName}",
+                        new Dictionary<string, object> { { paramName, keyword } }
+                    );
                     break;
                 case TextFilterType.notEquals:
-                    query = query.Where($"LOWER({fieldName}) != @{paramName}",
-                        new Dictionary<string, object> { { paramName, keyword } });
+                    query = query.Where(
+                        $"LOWER({fieldName}) != @{paramName}",
+                        new Dictionary<string, object> { { paramName, keyword } }
+                    );
                     break;
                 case TextFilterType.startsWith:
-                    query = query.Where($"LOWER({fieldName}) LIKE @{paramName}",
-                        new Dictionary<string, object> { { paramName, keyword + "%" } });
+                    query = query.Where(
+                        $"LOWER({fieldName}) LIKE @{paramName}",
+                        new Dictionary<string, object> { { paramName, keyword + "%" } }
+                    );
                     break;
                 case TextFilterType.endsWith:
-                    query = query.Where($"LOWER({fieldName}) LIKE @{paramName}",
-                        new Dictionary<string, object> { { paramName, "%" + keyword } });
+                    query = query.Where(
+                        $"LOWER({fieldName}) LIKE @{paramName}",
+                        new Dictionary<string, object> { { paramName, "%" + keyword } }
+                    );
                     break;
                 case TextFilterType.notContains:
-                    query = query.Where($"LOWER({fieldName}) NOT LIKE @{paramName}",
-                        new Dictionary<string, object> { { paramName, "%" + keyword + "%" } });
+                    query = query.Where(
+                        $"LOWER({fieldName}) NOT LIKE @{paramName}",
+                        new Dictionary<string, object> { { paramName, "%" + keyword + "%" } }
+                    );
                     break;
                 case TextFilterType.contains:
                 default:
-                    query = query.Where($"LOWER({fieldName}) LIKE @{paramName}",
-                        new Dictionary<string, object> { { paramName, "%" + keyword + "%" } });
+                    query = query.Where(
+                        $"LOWER({fieldName}) LIKE @{paramName}",
+                        new Dictionary<string, object> { { paramName, "%" + keyword + "%" } }
+                    );
                     break;
             }
         }
@@ -212,6 +224,11 @@ namespace BlazorApp.Api.Services.React
                 if (!string.IsNullOrWhiteSpace(query.WarehouseCategoryGUID))
                 {
                     q = q.Where(p => p.WarehouseCategoryGUID == query.WarehouseCategoryGUID);
+                }
+
+                if (query.ProductCategoryGUIDs != null && query.ProductCategoryGUIDs.Count > 0)
+                {
+                    q = q.Where(p => query.ProductCategoryGUIDs.Contains(p.ProductCategoryGUID));
                 }
 
                 if (query.ProductType.HasValue)
@@ -744,6 +761,10 @@ namespace BlazorApp.Api.Services.React
                                 product.MiddlePackageQuantity = item.MiddlePackageQuantity;
                             if (item.IsAutoPricing.HasValue)
                                 product.IsAutoPricing = item.IsAutoPricing.Value;
+                            if (item.ProductCategoryGUID != null)
+                                product.ProductCategoryGUID = item.ProductCategoryGUID;
+                            if (item.LocalSupplierCode != null)
+                                product.LocalSupplierCode = item.LocalSupplierCode;
 
                             product.UpdatedAt = DateTime.Now;
                             var currentUser =
