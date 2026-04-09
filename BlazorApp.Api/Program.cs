@@ -528,7 +528,7 @@ try
         // 🔄 智能模式：增量更新数据库结构
         // 只创建不存在的表，更新表结构，保留现有数据
         Console.WriteLine("🧠 使用智能初始化模式（保留现有数据）");
-        dbContext.CreateTable();
+      //  dbContext.CreateTable();
         //await posmDbContext.InitializeTablesAsync();
         Console.WriteLine("✅ 主数据库表检查完成");
 
