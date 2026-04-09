@@ -74,10 +74,15 @@ namespace BlazorApp.Api.Services.React
                 Console.WriteLine("✅ [商品同步] HQ连接检查通过");
 
                 // 步骤2：清空本地 Product 表（全量同步先清后写）
+                // 使用 TRUNCATE TABLE 替代 DELETE，大幅提升清空速度
+                var deleteStart = DateTime.Now;
                 using var syncLocalDb = SqlSugarContext.CreateConcurrentConnection(_configuration);
                 _logger.LogInformation("[ReactSync] 清空本地 Product 表");
-                await syncLocalDb.Deleteable<Product>().AS("Product").ExecuteCommandAsync();
-                Console.WriteLine("🗑️ [商品同步] 本地 Product 表已清空");
+                await syncLocalDb.Ado.ExecuteCommandAsync("TRUNCATE TABLE Product");
+                var deleteDuration = DateTime.Now - deleteStart;
+                Console.WriteLine(
+                    $"🗑️ [商品同步] 本地 Product 表已清空，耗时 {deleteDuration.TotalSeconds:F1}s"
+                );
 
                 // 并发参数配置
                 const int batchSize = 40000; // 生产者每批查询 HQ 数据量
@@ -344,7 +349,7 @@ namespace BlazorApp.Api.Services.React
                                 && !string.IsNullOrEmpty(price.H分店代码)
                                 && price.H使用状态 == true
                                 && product.H使用状态 == true
-                        ) 
+                        )
                         .GroupBy((price, product) => price.H分店代码)
                         .Select((price, product) => price.H分店代码)
                         .ToListAsync();
