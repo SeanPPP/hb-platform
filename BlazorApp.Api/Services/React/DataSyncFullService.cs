@@ -368,28 +368,45 @@ namespace BlazorApp.Api.Services.React
 
                 // 步骤2：清理目标分店历史价格数据（避免重复累计）
                 var deleteStart = DateTime.Now;
-                var prevTimeout = syncLocalDb.Ado.CommandTimeOut;
                 int deleted = 0;
-                try
+
+                // 优化策略：分店超过20个时使用 TRUNCATE TABLE 全表清空，否则按分店条件删除
+                if (storeCodesToProcess.Count > 20)
                 {
-                    syncLocalDb.Ado.CommandTimeOut = _configuration.GetValue<int>(
-                        "Database:BulkCopyCommandTimeoutSeconds",
-                        600
+                    _logger.LogInformation(
+                        "[ReactSync] 零售价同步：分店数量{Count} > 20，使用 TRUNCATE TABLE 全表清空",
+                        storeCodesToProcess.Count
                     );
-                    deleted = await syncLocalDb
-                        .Deleteable<StoreRetailPrice>()
-                        .Where(x =>
-                            x.StoreCode != null && storeCodesToProcess.Contains(x.StoreCode)
-                        )
-                        .ExecuteCommandAsync();
+                    await syncLocalDb.Ado.ExecuteCommandAsync("TRUNCATE TABLE StoreRetailPrice");
+                    deleted = -1;
+                    Console.WriteLine(
+                        $"🗑️ [零售价同步] 全表清空 StoreRetailPrice（分店数：{storeCodesToProcess.Count}），耗时 {(DateTime.Now - deleteStart).TotalSeconds:F1}s"
+                    );
                 }
-                finally
+                else
                 {
-                    syncLocalDb.Ado.CommandTimeOut = prevTimeout;
+                    var prevTimeout = syncLocalDb.Ado.CommandTimeOut;
+                    try
+                    {
+                        syncLocalDb.Ado.CommandTimeOut = _configuration.GetValue<int>(
+                            "Database:BulkCopyCommandTimeoutSeconds",
+                            600
+                        );
+                        deleted = await syncLocalDb
+                            .Deleteable<StoreRetailPrice>()
+                            .Where(x =>
+                                x.StoreCode != null && storeCodesToProcess.Contains(x.StoreCode)
+                            )
+                            .ExecuteCommandAsync();
+                    }
+                    finally
+                    {
+                        syncLocalDb.Ado.CommandTimeOut = prevTimeout;
+                    }
+                    Console.WriteLine(
+                        $"🗑️ [零售价同步] 清理目标分店历史数据：删除 {deleted:N0} 条，耗时 {(DateTime.Now - deleteStart).TotalSeconds:F1}s"
+                    );
                 }
-                Console.WriteLine(
-                    $"🗑️ [零售价同步] 清理目标分店历史数据：删除 {deleted:N0} 条，耗时 {(DateTime.Now - deleteStart).TotalSeconds:F1}s"
-                );
 
                 // 步骤3：按分店分组并发处理（每组 storeConcurrency 个分店）
                 var totalBatches = (int)
@@ -2397,12 +2414,10 @@ namespace BlazorApp.Api.Services.React
                 _hqContext.CheckConnection();
                 Console.WriteLine("✅ [货柜详情同步] HQ连接检查通过");
 
+                var deleteStart = DateTime.Now;
                 using var syncLocalDb = SqlSugarContext.CreateConcurrentConnection(_configuration);
-                await syncLocalDb
-                    .Deleteable<ContainerDetail>()
-                    .AS("ContainerDetail")
-                    .ExecuteCommandAsync();
-                Console.WriteLine("🗑️ [货柜详情同步] 本地 ContainerDetail 表已清空");
+                await syncLocalDb.Ado.ExecuteCommandAsync("TRUNCATE TABLE ContainerDetail");
+                Console.WriteLine($"🗑️ [货柜详情同步] 本地 ContainerDetail 表已清空，耗时 {(DateTime.Now - deleteStart).TotalSeconds:F1}s");
 
                 const int batchSize = 50000;
                 const int producerConcurrency = 4;
@@ -2918,13 +2933,11 @@ namespace BlazorApp.Api.Services.React
                 _hqContext.CheckConnection();
                 Console.WriteLine("✅ [进货详情同步] HQ连接检查通过");
 
+                var deleteStart = DateTime.Now;
                 using var syncLocalDb = SqlSugarContext.CreateConcurrentConnection(_configuration);
-                await syncLocalDb
-                    .Deleteable<StoreLocalSupplierInvoiceDetails>()
-                    .AS("StoreLocalSupplierInvoiceDetails")
-                    .ExecuteCommandAsync();
+                await syncLocalDb.Ado.ExecuteCommandAsync("TRUNCATE TABLE StoreLocalSupplierInvoiceDetails");
                 Console.WriteLine(
-                    "🗑️ [进货详情同步] 本地 StoreLocalSupplierInvoiceDetails 表已清空"
+                    $"🗑️ [进货详情同步] 本地 StoreLocalSupplierInvoiceDetails 表已清空，耗时 {(DateTime.Now - deleteStart).TotalSeconds:F1}s"
                 );
 
                 const int batchSize = 50000;
@@ -3274,12 +3287,10 @@ namespace BlazorApp.Api.Services.React
                 _hqContext.CheckConnection();
                 Console.WriteLine("✅ [订货详情同步] HQ连接检查通过");
 
+                var deleteStart = DateTime.Now;
                 using var syncLocalDb = SqlSugarContext.CreateConcurrentConnection(_configuration);
-                await syncLocalDb
-                    .Deleteable<WareHouseOrderDetails>()
-                    .AS("WareHouseOrderDetails")
-                    .ExecuteCommandAsync();
-                Console.WriteLine("🗑️ [订货详情同步] 本地 WareHouseOrderDetails 表已清空");
+                await syncLocalDb.Ado.ExecuteCommandAsync("TRUNCATE TABLE WareHouseOrderDetails");
+                Console.WriteLine($"🗑️ [订货详情同步] 本地 WareHouseOrderDetails 表已清空，耗时 {(DateTime.Now - deleteStart).TotalSeconds:F1}s");
 
                 const int batchSize = 50000;
                 const int producerConcurrency = 4;
