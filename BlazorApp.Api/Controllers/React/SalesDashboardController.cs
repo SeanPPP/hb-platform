@@ -57,7 +57,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         /// <summary>
-        /// 检查当前用户是否为管理员
+        /// 检查当前用户是否为管理员（Admin或WarehouseManager可访问所有分店数据）
         /// </summary>
         /// <returns>是否为管理员</returns>
         private bool IsAdmin()
@@ -65,7 +65,8 @@ namespace BlazorApp.Api.Controllers.React
             var user = HttpContext.User;
             if (user == null)
                 return false;
-            return HasRole("Admin");
+            // Admin 和 WarehouseManager 都可以访问所有分店数据
+            return HasRole("Admin") || HasRole("WarehouseManager");
         }
 
         /// <summary>
@@ -1266,7 +1267,7 @@ namespace BlazorApp.Api.Controllers.React
         /// <param name="pageSize">每页记录数（默认50）</param>
         /// <returns>Best Sellers 分页响应</returns>
         [HttpGet("best-sellers")]
-        [Authorize(Roles = "Admin,WarehouseManager,User")]
+       // [Authorize(Roles = "Admin,WarehouseManager,User")]
         public async Task<IActionResult> GetBestSellers(
             [FromQuery] DateTime startDate,
             [FromQuery] DateTime endDate,

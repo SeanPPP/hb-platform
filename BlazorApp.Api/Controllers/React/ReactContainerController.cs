@@ -478,7 +478,7 @@ namespace BlazorApp.Api.Controllers.React
         /// 批量分配商品到货柜（支持覆盖/增加数量）
         /// </summary>
         [HttpPost("assign-products")]
-        [Authorize(Roles = "Admin,WarehouseManager,User")]
+       // [Authorize(Roles = "Admin,WarehouseManager,User")]
         public async Task<IActionResult> AssignProducts([FromBody] AssignProductsRequestDto request)
         {
             try
@@ -525,7 +525,7 @@ namespace BlazorApp.Api.Controllers.React
         /// 返回：未来8周内预计到港 + 最近一周内实际到港的货柜及其商品
         /// </summary>
         [HttpGet("coming-soon")]
-        [Authorize(Roles = "Admin,WarehouseManager,User")]
+        //[Authorize(Roles = "Admin,WarehouseManager,User")]
         public async Task<IActionResult> GetComingSoonContainers()
         {
             try
