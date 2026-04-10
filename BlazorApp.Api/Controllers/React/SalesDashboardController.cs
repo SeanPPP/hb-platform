@@ -1254,5 +1254,74 @@ namespace BlazorApp.Api.Controllers.React
                 return StatusCode(500, new { success = false, message = "服务器内部错误" });
             }
         }
+
+        /// <summary>
+        /// 获取 Best Sellers 商品列表（销量排名）
+        /// GET api/react/v1/dashboard/best-sellers
+        /// </summary>
+        /// <param name="startDate">开始日期</param>
+        /// <param name="endDate">结束日期</param>
+        /// <param name="branchCodes">分店代码列表（可选）</param>
+        /// <param name="pageIndex">页码（默认1）</param>
+        /// <param name="pageSize">每页记录数（默认50）</param>
+        /// <returns>Best Sellers 分页响应</returns>
+        [HttpGet("best-sellers")]
+        [Authorize(Roles = "Admin,WarehouseManager,User")]
+        public async Task<IActionResult> GetBestSellers(
+            [FromQuery] DateTime startDate,
+            [FromQuery] DateTime endDate,
+            [FromQuery] List<string>? branchCodes = null,
+            [FromQuery] int pageIndex = 1,
+            [FromQuery] int pageSize = 50
+        )
+        {
+            try
+            {
+                // 验证分店权限
+                var userBranchCodes = await GetUserBranchCodesAsync();
+                List<string>? targetBranchCodes = userBranchCodes;
+
+                if (branchCodes != null && branchCodes.Any())
+                {
+                    if (userBranchCodes != null)
+                    {
+                        targetBranchCodes = branchCodes.Intersect(userBranchCodes).ToList();
+                        if (!targetBranchCodes.Any())
+                        {
+                            return Ok(new { success = true, data = new { Products = new List<object>(), Total = 0, PageIndex = pageIndex, PageSize = pageSize, TotalPages = 0 } });
+                        }
+                    }
+                    else
+                    {
+                        targetBranchCodes = branchCodes;
+                    }
+                }
+
+                // 限制页大小
+                if (pageSize <= 0) pageSize = 50;
+                if (pageSize > 500) pageSize = 500;
+                if (pageIndex <= 0) pageIndex = 1;
+
+                var dateRange = new DateRangeDto
+                {
+                    StartDate = startDate,
+                    EndDate = endDate
+                };
+
+                var result = await _service.GetBestSellersAsync(
+                    dateRange,
+                    targetBranchCodes,
+                    pageIndex,
+                    pageSize
+                );
+
+                return Ok(new { success = true, data = result });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "GetBestSellers failed");
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
     }
 }

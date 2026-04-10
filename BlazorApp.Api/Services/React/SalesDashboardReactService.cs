@@ -3348,5 +3348,140 @@ namespace BlazorApp.Api.Services.React
                 s => s.StoreName ?? string.Empty
             );
         }
+
+        /// <summary>
+        /// 获取 Best Sellers 商品列表（销量排名）
+        /// 用于前端 StoreFront 的 Best Sellers 页面
+        /// </summary>
+        public async Task<BestSellerResponseDto> GetBestSellersAsync(
+            DateRangeDto dateRange,
+            List<string>? branchCodes = null,
+            int pageIndex = 1,
+            int pageSize = 50
+        )
+        {
+            try
+            {
+                _logger.LogInformation(
+                    "[BestSellers] Getting best sellers: DateRange={StartDate}~{EndDate}, BranchCodes={BranchCodes}, Page={Page}, PageSize={PageSize}",
+                    dateRange.StartDate, dateRange.EndDate,
+                    branchCodes != null ? string.Join(",", branchCodes) : "All",
+                    pageIndex, pageSize
+                );
+
+                // 第一步：从 HBPOSM 数据库查询销量数据（按商品编码分组）
+                var salesQuery = _posmContext.Db.Queryable<SalesOrderDetail>()
+                    .LeftJoin<SalesOrder>((d, o) => d.OrderGuid == o.OrderGuid)
+                    .Where((d, o) => o.Status == 1) // 只查询已支付订单
+                    .Where((d, o) => d.SupplierCode == "200") // 只查询供应商200 (Hot Bargain)
+                    .Where((d, o) => o.OrderTime >= dateRange.StartDate && o.OrderTime <= dateRange.EndDate);
+
+                // 按分店过滤
+                if (branchCodes != null && branchCodes.Any())
+                {
+                    salesQuery = salesQuery.Where((d, o) => branchCodes.Contains(o.BranchCode ?? ""));
+                }
+
+                // 按商品编码分组，统计销量和销售额
+                var salesData = await salesQuery
+                    .GroupBy((d, o) => d.ProductCode)
+                    .Select((d, o) => new
+                    {
+                        ProductCode = d.ProductCode,
+                        TotalQuantity = SqlFunc.AggregateSum(d.Quantity),
+                        TotalSalesAmount = SqlFunc.AggregateSum(d.ActualAmount),
+                    })
+                    .OrderBy("TotalQuantity desc") // 按销量降序
+                    .ToListAsync();
+
+                var total = salesData.Count;
+                _logger.LogInformation("[BestSellers] Found {Total} products with sales data", total);
+
+                // 第二步：分页获取商品编码列表
+                var pagedData = salesData
+                    .Skip((pageIndex - 1) * pageSize)
+                    .Take(pageSize)
+                    .ToList();
+
+                if (!pagedData.Any())
+                {
+                    return new BestSellerResponseDto
+                    {
+                        Products = new List<BestSellerProductDto>(),
+                        Total = 0,
+                        PageIndex = pageIndex,
+                        PageSize = pageSize,
+                    };
+                }
+
+                // 第三步：从 HBweb 数据库查询商品信息（供应商=200，带缓存）
+                var productCodes = pagedData.Select(x => x.ProductCode).ToList();
+                var cacheKey = $"BestSellers_Products_{string.Join("_", productCodes.OrderBy(c => c))}";
+                
+                Dictionary<string, dynamic> productDict;
+                if (!_cache.TryGetValue(cacheKey, out productDict))
+                {
+                    var productsInfo = await _context.Db.Queryable<Product>()
+                        .Where(p => productCodes.Contains(p.ProductCode))
+                        .Where(p => p.LocalSupplierCode == "200") // 过滤供应商200
+                        .Select(p => new
+                        {
+                            p.ProductCode,
+                            p.ItemNumber,
+                            p.ProductImage,
+                            p.ProductName,
+                        })
+                        .ToListAsync();
+
+                    productDict = productsInfo.ToDictionary(x => x.ProductCode ?? "", x => (dynamic)x);
+
+                    var cacheOptions = new MemoryCacheEntryOptions()
+                        .SetAbsoluteExpiration(TimeSpan.FromMinutes(30));
+
+                    _cache.Set(cacheKey, productDict, cacheOptions);
+                    _logger.LogInformation("[BestSellers] Product info cached with key: {CacheKey}", cacheKey);
+                }
+                else
+                {
+                    _logger.LogInformation("[BestSellers] Product info cache hit: {CacheKey}", cacheKey);
+                }
+
+                // 第四步：合并数据
+                var products = pagedData.Select((item, index) =>
+                {
+                    var productInfo = productDict.TryGetValue(item.ProductCode ?? "", out var info) ? info : null;
+                    return new BestSellerProductDto
+                    {
+                        ProductCode = item.ProductCode,
+                        ItemNumber = productInfo?.ItemNumber,
+                        ProductImage = productInfo?.ProductImage,
+                        ProductName = productInfo?.ProductName,
+                        Quantity = item.TotalQuantity ?? 0,
+                        SalesAmount = item.TotalSalesAmount ?? 0,
+                        Rank = (pageIndex - 1) * pageSize + index + 1,
+                    };
+                }).ToList();
+
+                var result = new BestSellerResponseDto
+                {
+                    Products = products,
+                    Total = total,
+                    PageIndex = pageIndex,
+                    PageSize = pageSize,
+                };
+
+                _logger.LogInformation(
+                    "[BestSellers] Found {Total} products, returning {Count} for page {Page}",
+                    total, products.Count, pageIndex
+                );
+
+                return result;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "[BestSellers] GetBestSellersAsync failed");
+                throw;
+            }
+        }
     }
 }

@@ -519,5 +519,35 @@ namespace BlazorApp.Api.Controllers.React
                 return StatusCode(500, new { success = false, message = "服务器内部错误" });
             }
         }
+
+        /// <summary>
+        /// 获取即将到港的货柜及商品列表（Coming Soon 页面专用）
+        /// 返回：未来8周内预计到港 + 最近一周内实际到港的货柜及其商品
+        /// </summary>
+        [HttpGet("coming-soon")]
+        [Authorize(Roles = "Admin,WarehouseManager,User")]
+        public async Task<IActionResult> GetComingSoonContainers()
+        {
+            try
+            {
+                _logger.LogInformation("获取即将到港货柜列表 (Coming Soon)");
+
+                var result = await _containerReactService.GetComingSoonContainersAsync();
+
+                return Ok(
+                    new
+                    {
+                        success = true,
+                        data = result,
+                        message = $"获取成功，共 {result.Count} 个货柜",
+                    }
+                );
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "获取即将到港货柜列表失败");
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
     }
 }

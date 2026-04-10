@@ -2417,7 +2417,9 @@ namespace BlazorApp.Api.Services.React
                 var deleteStart = DateTime.Now;
                 using var syncLocalDb = SqlSugarContext.CreateConcurrentConnection(_configuration);
                 await syncLocalDb.Ado.ExecuteCommandAsync("TRUNCATE TABLE ContainerDetail");
-                Console.WriteLine($"🗑️ [货柜详情同步] 本地 ContainerDetail 表已清空，耗时 {(DateTime.Now - deleteStart).TotalSeconds:F1}s");
+                Console.WriteLine(
+                    $"🗑️ [货柜详情同步] 本地 ContainerDetail 表已清空，耗时 {(DateTime.Now - deleteStart).TotalSeconds:F1}s"
+                );
 
                 const int batchSize = 50000;
                 const int producerConcurrency = 4;
@@ -2935,7 +2937,9 @@ namespace BlazorApp.Api.Services.React
 
                 var deleteStart = DateTime.Now;
                 using var syncLocalDb = SqlSugarContext.CreateConcurrentConnection(_configuration);
-                await syncLocalDb.Ado.ExecuteCommandAsync("TRUNCATE TABLE StoreLocalSupplierInvoiceDetails");
+                await syncLocalDb.Ado.ExecuteCommandAsync(
+                    "TRUNCATE TABLE StoreLocalSupplierInvoiceDetails"
+                );
                 Console.WriteLine(
                     $"🗑️ [进货详情同步] 本地 StoreLocalSupplierInvoiceDetails 表已清空，耗时 {(DateTime.Now - deleteStart).TotalSeconds:F1}s"
                 );
@@ -3290,7 +3294,9 @@ namespace BlazorApp.Api.Services.React
                 var deleteStart = DateTime.Now;
                 using var syncLocalDb = SqlSugarContext.CreateConcurrentConnection(_configuration);
                 await syncLocalDb.Ado.ExecuteCommandAsync("TRUNCATE TABLE WareHouseOrderDetails");
-                Console.WriteLine($"🗑️ [订货详情同步] 本地 WareHouseOrderDetails 表已清空，耗时 {(DateTime.Now - deleteStart).TotalSeconds:F1}s");
+                Console.WriteLine(
+                    $"🗑️ [订货详情同步] 本地 WareHouseOrderDetails 表已清空，耗时 {(DateTime.Now - deleteStart).TotalSeconds:F1}s"
+                );
 
                 const int batchSize = 50000;
                 const int producerConcurrency = 4;

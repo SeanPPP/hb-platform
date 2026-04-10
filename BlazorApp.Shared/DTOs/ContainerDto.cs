@@ -438,4 +438,81 @@ namespace BlazorApp.Shared.DTOs
         /// </summary>
         public int TotalPages => (int)Math.Ceiling((double)TotalCount / PageSize);
     }
+
+    /// <summary>
+    /// 即将到货货柜商品响应DTO（用于前端 Coming Soon 页面）
+    /// </summary>
+    public class ComingSoonContainerDto
+    {
+        /// <summary>
+        /// 货柜编号
+        /// </summary>
+        public string? 货柜编号 { get; set; }
+
+        /// <summary>
+        /// 货柜编码
+        /// </summary>
+        public string? 货柜编码 { get; set; }
+
+        /// <summary>
+        /// 装柜日期
+        /// </summary>
+        public DateTime? 装柜日期 { get; set; }
+
+        /// <summary>
+        /// 预计到岸日期
+        /// </summary>
+        public DateTime? 预计到岸日期 { get; set; }
+
+        /// <summary>
+        /// 实际到货日期
+        /// </summary>
+        public DateTime? 实际到货日期 { get; set; }
+
+        /// <summary>
+        /// 货柜状态
+        /// </summary>
+        public int? 状态 { get; set; }
+
+        /// <summary>
+        /// 商品列表
+        /// </summary>
+        public List<ComingSoonProductDto> 商品列表 { get; set; } = new List<ComingSoonProductDto>();
+    }
+
+    /// <summary>
+    /// 即将到货商品DTO（用于前端 Coming Soon 页面）
+    /// </summary>
+    public class ComingSoonProductDto
+    {
+        /// <summary>
+        /// 商品编码
+        /// </summary>
+        public string? 商品编码 { get; set; }
+
+        /// <summary>
+        /// 货号
+        /// </summary>
+        public string? 货号 { get; set; }
+
+        /// <summary>
+        /// 商品名称
+        /// </summary>
+        public string? 商品名称 { get; set; }
+
+        /// <summary>
+        /// 英文名称
+        /// </summary>
+        public string? 英文名称 { get; set; }
+
+        /// <summary>
+        /// 商品图片
+        /// </summary>
+        public string? 商品图片 { get; set; }
+
+        /// <summary>
+        /// 装柜数量
+        /// </summary>
+        public decimal? 装柜数量 { get; set; }
+    }
 }

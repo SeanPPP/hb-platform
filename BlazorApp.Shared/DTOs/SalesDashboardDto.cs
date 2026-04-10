@@ -1094,4 +1094,76 @@ namespace BlazorApp.Shared.DTOs
         /// </summary>
         public decimal HbRevenueLY { get; set; }
     }
+
+    /// <summary>
+    /// Best Seller 商品 DTO
+    /// </summary>
+    public class BestSellerProductDto
+    {
+        /// <summary>
+        /// 商品代码
+        /// </summary>
+        public string ProductCode { get; set; } = string.Empty;
+
+        /// <summary>
+        /// 商品货号
+        /// </summary>
+        public string? ItemNumber { get; set; }
+
+        /// <summary>
+        /// 商品图片URL
+        /// </summary>
+        public string? ProductImage { get; set; }
+
+        /// <summary>
+        /// 商品名称
+        /// </summary>
+        public string? ProductName { get; set; }
+
+        /// <summary>
+        /// 销售数量
+        /// </summary>
+        public int Quantity { get; set; }
+
+        /// <summary>
+        /// 销售金额
+        /// </summary>
+        public decimal SalesAmount { get; set; }
+
+        /// <summary>
+        /// 排名
+        /// </summary>
+        public int Rank { get; set; }
+    }
+
+    /// <summary>
+    /// Best Sellers 响应 DTO
+    /// </summary>
+    public class BestSellerResponseDto
+    {
+        /// <summary>
+        /// 商品列表
+        /// </summary>
+        public List<BestSellerProductDto> Products { get; set; } = new();
+
+        /// <summary>
+        /// 总记录数
+        /// </summary>
+        public int Total { get; set; }
+
+        /// <summary>
+        /// 当前页码
+        /// </summary>
+        public int PageIndex { get; set; }
+
+        /// <summary>
+        /// 每页记录数
+        /// </summary>
+        public int PageSize { get; set; }
+
+        /// <summary>
+        /// 总页数
+        /// </summary>
+        public int TotalPages => PageSize > 0 ? (int)Math.Ceiling((double)Total / PageSize) : 0;
+    }
 }

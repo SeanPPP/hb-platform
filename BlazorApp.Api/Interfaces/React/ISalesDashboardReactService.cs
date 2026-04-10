@@ -140,5 +140,21 @@ namespace BlazorApp.Api.Interfaces.React
             List<string>? branchCodes = null,
             List<string>? supplierCodes = null
         );
+
+        /// <summary>
+        /// 获取 Best Sellers 商品列表（销量排名）
+        /// 用于前端 StoreFront 的 Best Sellers 页面
+        /// </summary>
+        /// <param name="dateRange">日期范围</param>
+        /// <param name="branchCodes">分店代码列表（可选，为空则查所有可访问分店）</param>
+        /// <param name="pageIndex">页码</param>
+        /// <param name="pageSize">每页记录数</param>
+        /// <returns>Best Sellers 分页响应</returns>
+        Task<BestSellerResponseDto> GetBestSellersAsync(
+            DateRangeDto dateRange,
+            List<string>? branchCodes = null,
+            int pageIndex = 1,
+            int pageSize = 50
+        );
     }
 }
