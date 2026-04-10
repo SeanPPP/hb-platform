@@ -1308,10 +1308,10 @@ namespace BlazorApp.Api.Controllers.React
                     StartDate = startDate,
                     EndDate = endDate
                 };
-
+                //所有分店数据
                 var result = await _service.GetBestSellersAsync(
                     dateRange,
-                    targetBranchCodes,
+                    null,
                     pageIndex,
                     pageSize
                 );
