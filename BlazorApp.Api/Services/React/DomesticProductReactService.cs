@@ -1005,6 +1005,21 @@ namespace BlazorApp.Api.Services.React
                 // 收集需要更新图片的商品
                 var productsToUpdateImage = new Dictionary<string, string>();
 
+                // 检测数据库重复货号（同一货号对应多个商品）
+                var hbProductNoGroups = existingProducts
+                    .GroupBy(p => p.HBProductNo)
+                    .Where(g => g.Count() > 1)
+                    .ToDictionary(g => g.Key!, g => g.Select(p => p.ProductCode).ToList());
+
+                // 记录哪些货号有重复（用于日志）
+                if (hbProductNoGroups.Any())
+                {
+                    _logger.LogWarning(
+                        "检测到数据库中存在重复货号: {DuplicateHBNos}",
+                        string.Join(", ", hbProductNoGroups.Select(g => $"{g.Key}({g.Value.Count}个)"))
+                    );
+                }
+
                 foreach (var inputProduct in dto.Products)
                 {
                     var result = new BatchProductDetectionResultDto
@@ -1027,6 +1042,14 @@ namespace BlazorApp.Api.Services.React
                         result.IsNewProduct = false;
                         result.ExistingData = _mapper.Map<DomesticProductDto>(existingProduct);
                         result.ExistingData.SupplierName = supplier.SupplierName;
+
+                        // 检测该货号是否在数据库中有重复（2个以上商品使用同一货号）
+                        if (!string.IsNullOrWhiteSpace(inputProduct.HBProductNo) &&
+                            hbProductNoGroups.TryGetValue(inputProduct.HBProductNo, out var duplicateCodes))
+                        {
+                            result.HasDuplicateInDatabase = true;
+                            result.DuplicateProductCodes = duplicateCodes;
+                        }
 
                         // 自动生成图片 URL（如果 ProductImage 为空且有 HBProductNo）
                         if (
@@ -1760,6 +1783,16 @@ namespace BlazorApp.Api.Services.React
                                 changedFields.Add("MiddlePackQuantity");
                             }
                         }
+                        // 更新商品图片
+                        if (
+                            !string.IsNullOrWhiteSpace(updateDto.ProductImage)
+                            && existingProduct.ProductImage != updateDto.ProductImage
+                        )
+                        {
+                            existingProduct.ProductImage = updateDto.ProductImage;
+                            hasChanges = true;
+                            changedFields.Add("ProductImage");
+                        }
 
                         // 如果有变更，添加到批量更新列表
                         if (hasChanges)
@@ -2388,7 +2421,8 @@ namespace BlazorApp.Api.Services.React
         }
 
         public async Task<ApiResponse<SyncResult>> SyncSelectedToHBSalesAsync(
-            List<string> productCodes
+            List<string> productCodes,
+            bool includeImage = false
         )
         {
             try
@@ -2463,7 +2497,7 @@ namespace BlazorApp.Api.Services.React
                                     单件装箱数 = p.PackingQuantity,
                                     单件体积 = p.UnitVolume,
                                     中包数量 = p.MiddlePackQuantity,
-                                    商品图片 = p.ProductImage,
+                                    商品图片 = includeImage ? p.ProductImage : null,
                                     FGC_Creator = "HBweb",
                                     FGC_CreateDate = DateTime.Now,
                                     FGC_LastModifier = "HBweb",
@@ -2709,11 +2743,13 @@ namespace BlazorApp.Api.Services.React
                             );
                         }
 
-                        // 商品图片
-                        var productImages = productsToUpdate
-                            .Where(p => !string.IsNullOrWhiteSpace(p.ProductImage))
-                            .ToList();
-                        if (productImages.Any())
+                        // 商品图片（仅当 includeImage=true 时更新）
+                        if (includeImage)
+                        {
+                            var productImages = productsToUpdate
+                                .Where(p => !string.IsNullOrWhiteSpace(p.ProductImage))
+                                .ToList();
+                            if (productImages.Any())
                         {
                             var cases = string.Join(
                                 "",
@@ -2724,6 +2760,7 @@ namespace BlazorApp.Api.Services.React
                             updateSqlParts.Add(
                                 $"[商品图片] = CASE [商品编码] {cases}ELSE [商品图片] END"
                             );
+                        }
                         }
 
                         // 审计字段更新

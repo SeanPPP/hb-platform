@@ -511,14 +511,15 @@ namespace BlazorApp.Api.Controllers.React
         /// <returns>同步结果</returns>
         [HttpPost("sync-to-hbsales")]
         [Authorize(Roles = "Admin,WarehouseManager")]
-        public async Task<IActionResult> SyncToHBSales([FromBody] BatchDeleteRequestDto request)
+        public async Task<IActionResult> SyncToHBSales([FromBody] SyncToHBSalesRequestDto request)
         {
             try
             {
-                _logger.LogInformation("同步商品到HBSales: {Count} 件", request.ProductCodes.Count);
+                _logger.LogInformation("同步商品到HBSales: {Count} 件, IncludeImage: {IncludeImage}", request.ProductCodes.Count, request.IncludeImage);
 
                 var result = await _domesticProductReactService.SyncSelectedToHBSalesAsync(
-                    request.ProductCodes
+                    request.ProductCodes,
+                    request.IncludeImage
                 );
 
                 if (result.Success)

@@ -661,6 +661,16 @@ namespace BlazorApp.Shared.DTOs
         /// 变更字段列表
         /// </summary>
         public List<string> ChangeList { get; set; } = new();
+
+        /// <summary>
+        /// 该货号在数据库中是否存在重复（2个以上商品使用同一货号）
+        /// </summary>
+        public bool HasDuplicateInDatabase { get; set; }
+
+        /// <summary>
+        /// 重复的商品编码列表（当 HasDuplicateInDatabase=true 时返回）
+        /// </summary>
+        public List<string> DuplicateProductCodes { get; set; } = new();
     }
 
     /// <summary>
@@ -735,6 +745,11 @@ namespace BlazorApp.Shared.DTOs
         /// 中包数量
         /// </summary>
         public int? MiddlePackQuantity { get; set; }
+
+        /// <summary>
+        /// 商品图片URL
+        /// </summary>
+        public string? ProductImage { get; set; }
     }
 
     /// <summary>
@@ -939,5 +954,22 @@ namespace BlazorApp.Shared.DTOs
         [Required(ErrorMessage = "商品列表不能为空")]
         [MinLength(1, ErrorMessage = "至少需要一个商品")]
         public List<BatchProductUpdateDto> Products { get; set; } = new();
+    }
+
+    /// <summary>
+    /// 同步商品到HBSales请求DTO
+    /// </summary>
+    public class SyncToHBSalesRequestDto
+    {
+        /// <summary>
+        /// 商品编码列表
+        /// </summary>
+        [Required(ErrorMessage = "商品编码列表不能为空")]
+        public List<string> ProductCodes { get; set; } = new();
+
+        /// <summary>
+        /// 是否同时更新商品图片（默认false）
+        /// </summary>
+        public bool IncludeImage { get; set; } = false;
     }
 }

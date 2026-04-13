@@ -81,6 +81,66 @@ namespace BlazorApp.Api.Services
             };
         }
 
+        public List<PresignedUrlItem> GenerateBatchPresignedPutUrls(
+            List<PresignedFileInfo> files,
+            string directory = "YW200",
+            int maxUrls = 1000,
+            string? bucketName = null,
+            string? region = null
+        )
+        {
+            var bucket = bucketName ?? _settings.BucketName;
+            var reg = region ?? _settings.Region;
+            var results = new List<PresignedUrlItem>();
+            var count = 0;
+
+            foreach (var file in files)
+            {
+                if (count >= maxUrls)
+                {
+                    results.Add(new PresignedUrlItem
+                    {
+                        FileName = file.FileName,
+                        FileSize = file.FileSize,
+                        Error = $"超出最大文件数量限制（{maxUrls}个）"
+                    });
+                    continue;
+                }
+
+                try
+                {
+                    // 统一转为 jpg 后缀
+                    var baseName = Path.GetFileNameWithoutExtension(file.FileName);
+                    var objectKey = $"{directory}/{baseName}.jpg";
+                    var host = $"{bucket}.cos.{reg}.myqcloud.com";
+                    var url = GeneratePresignedPutUrl(objectKey, "image/jpeg", 7200, bucket, reg);
+                    var downloadUrl = $"https://{host}/{objectKey}";
+
+                    results.Add(new PresignedUrlItem
+                    {
+                        ObjectKey = objectKey,
+                        PresignedUrl = url,
+                        DownloadUrl = downloadUrl,
+                        FileName = file.FileName,
+                        FileSize = file.FileSize,
+                    });
+                }
+                catch (Exception ex)
+                {
+                    results.Add(new PresignedUrlItem
+                    {
+                        FileName = file.FileName,
+                        FileSize = file.FileSize,
+                        Error = ex.Message
+                    });
+                }
+
+                count++;
+            }
+
+            return results;
+        }
+
         public async Task<ApiResponse<MultipartUploadInit>> InitiateMultipartUploadForClientAsync(
             string objectKey,
             string contentType,
@@ -189,11 +249,13 @@ namespace BlazorApp.Api.Services
         private string GeneratePresignedPutUrl(
             string objectKey,
             string contentType,
-            long expiresInSeconds
+            long expiresInSeconds,
+            string? bucketName = null,
+            string? region = null
         )
         {
-            var bucket = _settings.BucketName;
-            var region = _settings.Region;
+            var bucket = bucketName ?? _settings.BucketName;
+            var regionValue = region ?? _settings.Region;
             var secretId = _settings.SecretId;
             var secretKey = _settings.SecretKey;
 

@@ -1,7 +1,9 @@
+using BlazorApp.Api.Models;
 using BlazorApp.Api.Services;
 using BlazorApp.Shared.DTOs;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Options;
 
 namespace BlazorApp.Api.Controllers
 {
@@ -11,14 +13,17 @@ namespace BlazorApp.Api.Controllers
     public class FileUploadController : ControllerBase
     {
         private readonly TencentCloudUploadService _uploadService;
+        private readonly TencentCloudSettings _cosSettings;
         private readonly ILogger<FileUploadController> _logger;
 
         public FileUploadController(
             TencentCloudUploadService uploadService,
+            IOptions<TencentCloudSettings> cosSettings,
             ILogger<FileUploadController> logger
         )
         {
             _uploadService = uploadService;
+            _cosSettings = cosSettings.Value;
             _logger = logger;
         }
 
@@ -79,6 +84,93 @@ namespace BlazorApp.Api.Controllers
                 return StatusCode(
                     500,
                     ApiResponse<DirectUploadSignature>.Error(
+                        "服务器内部错误",
+                        "INTERNAL_SERVER_ERROR"
+                    )
+                );
+            }
+        }
+
+        /// <summary>
+        /// 批量生成COS直传签名URL（前端直传模式）
+        /// </summary>
+        [HttpPost("batch-presigned-urls")]
+        public ActionResult<ApiResponse<BatchPresignedUrlResult>> GetBatchPresignedUrls(
+            [FromBody] BatchPresignedUrlRequest request
+        )
+        {
+            try
+            {
+                if (request.Files == null || request.Files.Count == 0)
+                {
+                    return BadRequest(
+                        ApiResponse<BatchPresignedUrlResult>.Error("文件列表不能为空", "INVALID_REQUEST")
+                    );
+                }
+
+                // 限制单次最大1000个文件
+                const int MaxFilesPerBatch = 1000;
+                if (request.Files.Count > MaxFilesPerBatch)
+                {
+                    return BadRequest(
+                        ApiResponse<BatchPresignedUrlResult>.Error(
+                            $"单次最多上传 {MaxFilesPerBatch} 个文件，当前提交了 {request.Files.Count} 个",
+                            "TOO_MANY_FILES"
+                        )
+                    );
+                }
+
+                // 限制单文件大小 10MB
+                const long MaxFileSizeBytes = 10 * 1024 * 1024; // const long is fine for compile-time constants
+                var oversizedFiles = request.Files
+                    .Where(f => f.FileSize > MaxFileSizeBytes)
+                    .Select(f => f.FileName)
+                    .ToList();
+                if (oversizedFiles.Any())
+                {
+                    return BadRequest(
+                        ApiResponse<BatchPresignedUrlResult>.Error(
+                            $"以下文件超过10MB限制: {string.Join(", ", oversizedFiles)}",
+                            "FILE_TOO_LARGE"
+                        )
+                    );
+                }
+
+                var results = _uploadService.GenerateBatchPresignedPutUrls(
+                    request.Files,
+                    directory: "YW200",
+                    maxUrls: 1000,
+                    bucketName: _cosSettings.ImageBucketName,
+                    region: _cosSettings.ImageRegion
+                );
+
+                var successCount = results.Count(r => string.IsNullOrEmpty(r.Error));
+                var failCount = results.Count - successCount;
+
+                _logger.LogInformation(
+                    "批量生成Presigned URL: 总数 {Total}, 成功 {Success}, 失败 {Fail}",
+                    results.Count, successCount, failCount
+                );
+
+                return Ok(ApiResponse<BatchPresignedUrlResult>.OK(
+                    new BatchPresignedUrlResult
+                    {
+                        Results = results,
+                        SuccessCount = successCount,
+                        FailCount = failCount,
+                        Message = failCount == 0
+                            ? $"全部成功，共 {successCount} 个"
+                            : $"成功 {successCount} 个，失败 {failCount} 个"
+                    },
+                    "批量签名生成完成"
+                ));
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "批量生成Presigned URL失败");
+                return StatusCode(
+                    500,
+                    ApiResponse<BatchPresignedUrlResult>.Error(
                         "服务器内部错误",
                         "INTERNAL_SERVER_ERROR"
                     )

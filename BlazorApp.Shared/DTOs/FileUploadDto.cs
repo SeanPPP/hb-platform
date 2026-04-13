@@ -63,4 +63,36 @@ namespace BlazorApp.Shared.DTOs
         public List<PartETag> Parts { get; set; } = new();
         public long FileSize { get; set; }
     }
+
+    // ========== 批量图片上传 ==========
+
+    public class BatchPresignedUrlRequest
+    {
+        public List<PresignedFileInfo> Files { get; set; } = new();
+    }
+
+    public class PresignedFileInfo
+    {
+        public string FileName { get; set; } = string.Empty;
+        public long FileSize { get; set; }
+        public string ContentType { get; set; } = "image/jpeg";
+    }
+
+    public class BatchPresignedUrlResult
+    {
+        public List<PresignedUrlItem> Results { get; set; } = new();
+        public int SuccessCount { get; set; }
+        public int FailCount { get; set; }
+        public string Message { get; set; } = string.Empty;
+    }
+
+    public class PresignedUrlItem
+    {
+        public string ObjectKey { get; set; } = string.Empty;
+        public string PresignedUrl { get; set; } = string.Empty;
+        public string DownloadUrl { get; set; } = string.Empty;
+        public string FileName { get; set; } = string.Empty;
+        public long FileSize { get; set; }
+        public string? Error { get; set; }
+    }
 }

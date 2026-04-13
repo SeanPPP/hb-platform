@@ -33,6 +33,8 @@ services:
       - TencentCloud__SecretKey=${TENCENT_SECRET_KEY}
       - TencentCloud__BucketName=${TENCENT_BUCKET_NAME}
       - TencentCloud__Region=${TENCENT_REGION}
+      - TencentCloud__ImageBucketName=${TENCENT_IMAGE_BUCKET_NAME}
+      - TencentCloud__ImageRegion=${TENCENT_IMAGE_REGION}
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5001/api/health"]
