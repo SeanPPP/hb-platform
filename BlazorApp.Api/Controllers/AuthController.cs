@@ -90,7 +90,6 @@ namespace BlazorApp.Api.Controllers
                 Request.HttpContext.Connection.RemoteIpAddress?.ToString() ?? "127.0.0.1";
             var userAgent = Request.Headers["User-Agent"].ToString();
 
-
             // 根据用户名获取完整用户对象（包含角色信息，用户名大小写不敏感）
             var usernameLower = (request.Username ?? string.Empty).Trim().ToLower();
             var userList = await _dbContext
@@ -160,7 +159,10 @@ namespace BlazorApp.Api.Controllers
             var cookieRefreshToken = CookieHelper.GetRefreshToken(Request.HttpContext);
 
             // 📦 如果 Cookie 中存在令牌，使用 Cookie 中的令牌
-            if (!string.IsNullOrEmpty(cookieAccessToken) || !string.IsNullOrEmpty(cookieRefreshToken))
+            if (
+                !string.IsNullOrEmpty(cookieAccessToken)
+                || !string.IsNullOrEmpty(cookieRefreshToken)
+            )
             {
                 var tokenResponse = await _authService.RefreshTokensAsync(
                     Request.HttpContext,
@@ -174,7 +176,11 @@ namespace BlazorApp.Api.Controllers
                 }
 
                 // 🍪 更新 Cookie 中的令牌
-                CookieHelper.SetTokens(Response, tokenResponse.AccessToken, tokenResponse.RefreshToken);
+                CookieHelper.SetTokens(
+                    Response,
+                    tokenResponse.AccessToken,
+                    tokenResponse.RefreshToken
+                );
 
                 return ApiResponse<TokenResponse>.OK(tokenResponse, "令牌刷新成功");
             }
@@ -265,15 +271,15 @@ namespace BlazorApp.Api.Controllers
                     UpdatedAt = user.UpdatedAt ?? user.CreatedAt,
                     Roles =
                         user.Roles?.Select(r => new RoleDto
-                        {
-                            RoleGUID = r.RoleGUID,
-                            RoleName = r.RoleName,
-                            Description = r.Description,
-                            IsActive = r.IsActive,
-                            CreatedAt = r.CreatedAt,
-                            UpdatedAt = r.UpdatedAt ?? r.CreatedAt,
-                            UserCount = 0, // 这里不需要计算用户数
-                        })
+                            {
+                                RoleGUID = r.RoleGUID,
+                                RoleName = r.RoleName,
+                                Description = r.Description,
+                                IsActive = r.IsActive,
+                                CreatedAt = r.CreatedAt,
+                                UpdatedAt = r.UpdatedAt ?? r.CreatedAt,
+                                UserCount = 0, // 这里不需要计算用户数
+                            })
                             .ToList() ?? new List<RoleDto>(),
                     RoleNames = user.Roles?.Select(r => r.RoleName).ToList() ?? new List<string>(),
                     Permissions = allPermissions.Distinct().ToList(), // 🔐 添加权限列表（去重）

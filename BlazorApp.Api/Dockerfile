@@ -8,21 +8,26 @@
 FROM mcr.microsoft.com/dotnet/sdk:9.0 AS build
 WORKDIR /src
 
+# 配置 NuGet 缓存目录（跨构建重用）
+RUN dotnet nuget locals all --clear
+
 # 复制解决方案文件和项目文件（优化Docker层缓存）
 COPY *.sln ./
 COPY BlazorApp.Api/*.csproj ./BlazorApp.Api/
 COPY BlazorApp.Shared/*.csproj ./BlazorApp.Shared/
 
 # 恢复NuGet包（利用Docker层缓存，只有项目文件变化时才重新下载）
-RUN dotnet restore "BlazorApp.Api/BlazorApp.Api.csproj"
+# 使用 --verbosity minimal 减少输出，降低网络中断风险
+RUN dotnet restore "BlazorApp.Api/BlazorApp.Api.csproj" --verbosity minimal
 
 # 复制所有源代码文件
 COPY BlazorApp.Api/ ./BlazorApp.Api/
 COPY BlazorApp.Shared/ ./BlazorApp.Shared/
 
 # 构建应用程序（Release模式，优化性能）
+# 使用 --no-restore 利用之前的缓存，避免重复网络请求
 WORKDIR /src/BlazorApp.Api
-RUN dotnet build "BlazorApp.Api.csproj" -c Release -o /app/build
+RUN dotnet build "BlazorApp.Api.csproj" -c Release -o /app/build --no-restore
 
 # 发布应用程序（生成运行时所需的所有文件）
 FROM build AS publish

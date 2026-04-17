@@ -1,19 +1,16 @@
-version: '3.8'
-
 services:
   hb-api:
     build:
       context: .
       dockerfile: BlazorApp.Api/Dockerfile
-    image: hb-platform-api:local
-    container_name: hb-api
+    image: blazorapphbweb_hb-api:local
+    container_name: hb-platform-api
     ports:
       - "5001:5001"
-    env_file:
-      - .env
     environment:
-      - ASPNETCORE_ENVIRONMENT=${ASPNETCORE_ENVIRONMENT:-Production}
+      - ASPNETCORE_ENVIRONMENT=Production
       - ASPNETCORE_URLS=http://+:5001
+      - ASPNETCORE_HTTP_PORTS=5001
       - ConnectionString=REDACTED
       - ConnectionString=REDACTED
       - ConnectionString=REDACTED
@@ -24,10 +21,8 @@ services:
       - Jwt__Issuer=${JWT_ISSUER:-BlazorApp}
       - Jwt__Audience=${JWT_AUDIENCE:-BlazorAppUsers}
       - Jwt__ExpireMinutes=${JWT_EXPIRE_MINUTES:-480}
-      - Cookie__Secure=true
-      - Cookie__SameSite=Lax
-      - Cookie__AccessTokenExpiryMinutes=15
-      - Cookie__RefreshTokenExpiryDays=7
+      - Cookie__Secure=${COOKIE_SECURE:-true}
+      - Cookie__SameSite=${COOKIE_SAMESITE:-Lax}
       - Translation__Kimi__ApiKey=REDACTED
       - TencentCloud__SecretId=${TENCENT_SECRET_ID}
       - TencentCloud__SecretKey=${TENCENT_SECRET_KEY}
@@ -35,10 +30,22 @@ services:
       - TencentCloud__Region=${TENCENT_REGION}
       - TencentCloud__ImageBucketName=${TENCENT_IMAGE_BUCKET_NAME}
       - TencentCloud__ImageRegion=${TENCENT_IMAGE_REGION}
+    volumes:
+      - hb-api-logs:/app/logs
     restart: unless-stopped
+    networks:
+      - hb-network
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:5001/api/health"]
+      test: ["CMD-SHELL", "wget  -f http://localhost:5001/api/health || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 5s
+
+networks:
+  hb-network:
+    driver: bridge
+    name: hb-network
+
+volumes:
+  hb-api-logs:
+    driver: local
