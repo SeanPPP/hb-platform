@@ -412,6 +412,20 @@ namespace BlazorApp.Api.Services.React
                     );
 
                 var db = _context.Db;
+
+                var existingInvoice = await db.Queryable<StoreLocalSupplierInvoice>()
+                    .Where(x => x.IsDeleted == false)
+                    .Where(x => x.StoreCode == dto.StoreCode)
+                    .Where(x => x.SupplierCode == dto.SupplierCode)
+                    .Where(x => x.InvoiceNo == dto.InvoiceNo)
+                    .FirstAsync();
+
+                if (existingInvoice != null)
+                    return ApiResponse<string>.Error(
+                        $"分店【{dto.StoreCode}】、供应商【{dto.SupplierCode}】、单号【{dto.InvoiceNo}】已存在，不能重复创建",
+                        "DUPLICATE_INVOICE"
+                    );
+
                 var invoiceGuid = UuidHelper.GenerateUuid7();
                 var now = DateTime.UtcNow;
 
@@ -634,69 +648,94 @@ namespace BlazorApp.Api.Services.React
                         var existingDict = existingRecords.ToDictionary(x => x.DetailGUID);
 
                         // 分离：已存在的需要更新，不存在的需要插入
-                        var needUpdate = toUpdate.Where(x => existingDict.ContainsKey(x.DetailGUID)).ToList();
-                        var needInsert = toUpdate.Where(x => !existingDict.ContainsKey(x.DetailGUID)).ToList();
+                        var needUpdate = toUpdate
+                            .Where(x => existingDict.ContainsKey(x.DetailGUID))
+                            .ToList();
+                        var needInsert = toUpdate
+                            .Where(x => !existingDict.ContainsKey(x.DetailGUID))
+                            .ToList();
 
                         // 批量处理需要插入的记录（回落插入逻辑）
                         if (needInsert.Count > 0)
                         {
-                            var insertList = needInsert.Select(u => new StoreLocalSupplierInvoiceDetails
-                            {
-                                DetailGUID = BlazorApp.Shared.Helper.UuidHelper.GenerateUuid7(),
-                                InvoiceGUID = invoiceGuid,
-                                StoreCode = storeCode,
-                                SupplierCode = supplierCode,
-                                StoreProductCode = u.StoreProductCode,
-                                ProductCode = u.ProductCode,
-                                ItemNumber = u.ItemNumber,
-                                Barcode = u.Barcode,
-                                ProductName = u.ProductName,
-                                ProductCategoryGUID = u.ProductCategoryGUID,
-                                Quantity = u.Quantity,
-                                LastPurchasePrice = u.LastPurchasePrice,
-                                PurchasePrice = u.PurchasePrice,
-                                RetailPrice = u.RetailPrice,
-                                Amount = u.Amount,
-                                ActivityType = u.ActivityType,
-                                DiscountRate = u.DiscountRate,
-                                AutoPricing = u.AutoPricing,
-                                PricingFloatRate = u.PricingFloatRate,
-                                NewAutoRetailPrice = u.NewAutoRetailPrice,
-                                IsSpecialProduct = u.IsSpecialProduct,
-                                CreatedAt = now,
-                                UpdatedAt = now,
-                                CreatedBy = updatedBy,
-                                UpdatedBy = updatedBy,
-                                IsDeleted = false,
-                            }).ToList();
+                            var insertList = needInsert
+                                .Select(u => new StoreLocalSupplierInvoiceDetails
+                                {
+                                    DetailGUID = BlazorApp.Shared.Helper.UuidHelper.GenerateUuid7(),
+                                    InvoiceGUID = invoiceGuid,
+                                    StoreCode = storeCode,
+                                    SupplierCode = supplierCode,
+                                    StoreProductCode = u.StoreProductCode,
+                                    ProductCode = u.ProductCode,
+                                    ItemNumber = u.ItemNumber,
+                                    Barcode = u.Barcode,
+                                    ProductName = u.ProductName,
+                                    ProductCategoryGUID = u.ProductCategoryGUID,
+                                    Quantity = u.Quantity,
+                                    LastPurchasePrice = u.LastPurchasePrice,
+                                    PurchasePrice = u.PurchasePrice,
+                                    RetailPrice = u.RetailPrice,
+                                    Amount = u.Amount,
+                                    ActivityType = u.ActivityType,
+                                    DiscountRate = u.DiscountRate,
+                                    AutoPricing = u.AutoPricing,
+                                    PricingFloatRate = u.PricingFloatRate,
+                                    NewAutoRetailPrice = u.NewAutoRetailPrice,
+                                    IsSpecialProduct = u.IsSpecialProduct,
+                                    CreatedAt = now,
+                                    UpdatedAt = now,
+                                    CreatedBy = updatedBy,
+                                    UpdatedBy = updatedBy,
+                                    IsDeleted = false,
+                                })
+                                .ToList();
                             inserted += await db.Insertable(insertList).ExecuteCommandAsync();
                         }
 
                         // 批量处理需要更新的记录：在内存中合并更新值，然后批量更新
                         if (needUpdate.Count > 0)
                         {
-                            var mergedList = new List<StoreLocalSupplierInvoiceDetails>(needUpdate.Count);
+                            var mergedList = new List<StoreLocalSupplierInvoiceDetails>(
+                                needUpdate.Count
+                            );
                             foreach (var u in needUpdate)
                             {
                                 var existing = existingDict[u.DetailGUID];
                                 // 合并更新：只更新非 null 字段，保持条件更新语义
-                                if (u.StoreProductCode != null) existing.StoreProductCode = u.StoreProductCode;
-                                if (u.ProductCode != null) existing.ProductCode = u.ProductCode;
-                                if (u.ItemNumber != null) existing.ItemNumber = u.ItemNumber;
-                                if (u.Barcode != null) existing.Barcode = u.Barcode;
-                                if (u.ProductName != null) existing.ProductName = u.ProductName;
-                                if (u.ProductCategoryGUID != null) existing.ProductCategoryGUID = u.ProductCategoryGUID;
-                                if (u.Quantity != null) existing.Quantity = u.Quantity;
-                                if (u.LastPurchasePrice != null) existing.LastPurchasePrice = u.LastPurchasePrice;
-                                if (u.PurchasePrice != null) existing.PurchasePrice = u.PurchasePrice;
-                                if (u.RetailPrice != null) existing.RetailPrice = u.RetailPrice;
-                                if (u.Amount != null) existing.Amount = u.Amount;
-                                if (u.ActivityType != null) existing.ActivityType = u.ActivityType;
-                                if (u.DiscountRate != null) existing.DiscountRate = u.DiscountRate;
-                                if (u.AutoPricing != null) existing.AutoPricing = u.AutoPricing;
-                                if (u.PricingFloatRate != null) existing.PricingFloatRate = u.PricingFloatRate;
-                                if (u.NewAutoRetailPrice != null) existing.NewAutoRetailPrice = u.NewAutoRetailPrice;
-                                if (u.IsSpecialProduct != null) existing.IsSpecialProduct = u.IsSpecialProduct;
+                                if (u.StoreProductCode != null)
+                                    existing.StoreProductCode = u.StoreProductCode;
+                                if (u.ProductCode != null)
+                                    existing.ProductCode = u.ProductCode;
+                                if (u.ItemNumber != null)
+                                    existing.ItemNumber = u.ItemNumber;
+                                if (u.Barcode != null)
+                                    existing.Barcode = u.Barcode;
+                                if (u.ProductName != null)
+                                    existing.ProductName = u.ProductName;
+                                if (u.ProductCategoryGUID != null)
+                                    existing.ProductCategoryGUID = u.ProductCategoryGUID;
+                                if (u.Quantity != null)
+                                    existing.Quantity = u.Quantity;
+                                if (u.LastPurchasePrice != null)
+                                    existing.LastPurchasePrice = u.LastPurchasePrice;
+                                if (u.PurchasePrice != null)
+                                    existing.PurchasePrice = u.PurchasePrice;
+                                if (u.RetailPrice != null)
+                                    existing.RetailPrice = u.RetailPrice;
+                                if (u.Amount != null)
+                                    existing.Amount = u.Amount;
+                                if (u.ActivityType != null)
+                                    existing.ActivityType = u.ActivityType;
+                                if (u.DiscountRate != null)
+                                    existing.DiscountRate = u.DiscountRate;
+                                if (u.AutoPricing != null)
+                                    existing.AutoPricing = u.AutoPricing;
+                                if (u.PricingFloatRate != null)
+                                    existing.PricingFloatRate = u.PricingFloatRate;
+                                if (u.NewAutoRetailPrice != null)
+                                    existing.NewAutoRetailPrice = u.NewAutoRetailPrice;
+                                if (u.IsSpecialProduct != null)
+                                    existing.IsSpecialProduct = u.IsSpecialProduct;
                                 existing.UpdatedAt = now;
                                 existing.UpdatedBy = updatedBy;
                                 mergedList.Add(existing);
@@ -3211,9 +3250,11 @@ namespace BlazorApp.Api.Services.React
                     .SetColumns(srp => srp.PurchasePrice == detail.PurchasePrice)
                     .SetColumns(srp => srp.UpdatedAt == now)
                     .SetColumns(srp => srp.UpdatedBy == userName)
-                    .Where(srp => srp.ProductCode == detail.ProductCode
+                    .Where(srp =>
+                        srp.ProductCode == detail.ProductCode
                         && srp.StoreCode == detail.StoreCode
-                        && srp.IsDeleted == false)
+                        && srp.IsDeleted == false
+                    )
                     .ExecuteCommandAsync();
 
                 result.SuccessCount++;
