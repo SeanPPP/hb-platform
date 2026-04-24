@@ -515,7 +515,11 @@ namespace BlazorApp.Api.Controllers.React
         {
             try
             {
-                _logger.LogInformation("同步商品到HBSales: {Count} 件, IncludeImage: {IncludeImage}", request.ProductCodes.Count, request.IncludeImage);
+                _logger.LogInformation(
+                    "同步商品到HBSales: {Count} 件, IncludeImage: {IncludeImage}",
+                    request.ProductCodes.Count,
+                    request.IncludeImage
+                );
 
                 var result = await _domesticProductReactService.SyncSelectedToHBSalesAsync(
                     request.ProductCodes,
