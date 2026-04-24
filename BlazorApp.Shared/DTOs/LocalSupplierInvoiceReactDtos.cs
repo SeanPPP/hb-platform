@@ -19,7 +19,9 @@ namespace BlazorApp.Shared.DTOs
         public int? InboundStatus { get; set; }
         public string? Remarks { get; set; }
         public DateTime CreatedAt { get; set; }
+        public string? CreatedBy { get; set; }
         public DateTime? UpdatedAt { get; set; }
+        public string? UpdatedBy { get; set; }
     }
 
     public class LocalSupplierInvoiceDetailDto

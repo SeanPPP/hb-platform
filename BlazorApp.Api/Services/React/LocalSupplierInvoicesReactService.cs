@@ -84,6 +84,9 @@ namespace BlazorApp.Api.Services.React
                                 case "remarks":
                                     query = ApplyText(query, op, v, x => x.Remarks);
                                     break;
+                                case "createdBy":
+                                    query = ApplyText(query, op, v, x => x.CreatedBy);
+                                    break;
                             }
                         }
                         else if (type == "number" && f.Filter != null)
@@ -187,6 +190,10 @@ namespace BlazorApp.Api.Services.React
                             (h, st, sup) => h.CreatedAt,
                             asc ? OrderByType.Asc : OrderByType.Desc
                         ),
+                        "UpdatedAt" => query.OrderBy(
+                            (h, st, sup) => h.UpdatedAt,
+                            asc ? OrderByType.Asc : OrderByType.Desc
+                        ),
                         _ => query.OrderBy((h, st, sup) => h.CreatedAt, OrderByType.Desc),
                     };
                 }
@@ -218,7 +225,9 @@ namespace BlazorApp.Api.Services.React
                                 InboundStatus = h.InboundStatus,
                                 Remarks = h.Remarks,
                                 CreatedAt = h.CreatedAt,
+                                CreatedBy = h.CreatedBy,
                                 UpdatedAt = h.UpdatedAt,
+                                UpdatedBy = h.UpdatedBy,
                             }
                     )
                     .Skip(startRow)
