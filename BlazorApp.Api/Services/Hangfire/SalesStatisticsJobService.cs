@@ -2880,15 +2880,18 @@ namespace BlazorApp.Api.Services
                 // 查询并聚合销售数据
                 var storeData = await query
                     .GroupBy((pd, so) => new { Date = so.OrderTime.Value.Date, so.BranchCode })
-                    .Select((pd, so) => new
-                    {
-                        Date = so.OrderTime.Value.Date,
-                        BranchCode = so.BranchCode,
-                        TotalAmount = SqlFunc.AggregateSum(pd.Amount) ?? 0m,
-                        TotalQuantity = SqlFunc.AggregateSum(so.ItemCount) ?? 0,
-                        OrderCount = SqlFunc.AggregateCount(so.OrderGuid),
-                        CustomerCount = SqlFunc.AggregateCount(so.OrderGuid),
-                    })
+                    .Select(
+                        (pd, so) =>
+                            new
+                            {
+                                Date = so.OrderTime.Value.Date,
+                                BranchCode = so.BranchCode,
+                                TotalAmount = SqlFunc.AggregateSum(pd.Amount) ?? 0m,
+                                TotalQuantity = SqlFunc.AggregateSum(so.ItemCount) ?? 0,
+                                OrderCount = SqlFunc.AggregateCount(so.OrderGuid),
+                                CustomerCount = SqlFunc.AggregateCount(so.OrderGuid),
+                            }
+                    )
                     .ToListAsync();
 
                 // 获取所有分店代码
