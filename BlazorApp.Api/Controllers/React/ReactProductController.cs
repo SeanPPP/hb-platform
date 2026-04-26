@@ -157,20 +157,22 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         /// <summary>
-        /// 删除商品
+        /// 删除商品（支持软删除和物理删除）
         /// </summary>
         /// <param name="productCode">商品编码</param>
+        /// <param name="mode">删除模式：soft=软删除（默认），hard=物理删除</param>
         /// <returns>删除结果</returns>
         [HttpDelete("{productCode}")]
         [Authorize(Roles = "Admin")]
-        public async Task<IActionResult> Delete(string productCode)
+        public async Task<IActionResult> Delete(string productCode, [FromQuery] string mode = "soft")
         {
             try
             {
-                var result = await _service.DeleteAsync(productCode);
+                var isSoftDelete = mode.ToLower() != "hard";
+                var result = await _service.DeleteAsync(productCode, isSoftDelete);
                 if (result.Success)
                 {
-                    return Ok(new { success = true, message = "删除成功" });
+                    return Ok(new { success = true, message = result.Message });
                 }
                 return BadRequest(new { success = false, message = result.Message });
             }
@@ -222,7 +224,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         /// <summary>
-        /// 批量删除商品（使用事务）
+        /// 批量删除商品（使用事务，支持软删除和物理删除）
         /// </summary>
         /// <param name="request">批量删除请求</param>
         /// <returns>批量操作结果</returns>
@@ -237,7 +239,8 @@ namespace BlazorApp.Api.Controllers.React
                     return BadRequest(new { success = false, message = "请求数据不能为空" });
                 }
 
-                var result = await _service.BatchDeleteAsync(request.ProductCodes);
+                var isSoftDelete = request.Mode?.ToLower() != "hard";
+                var result = await _service.BatchDeleteAsync(request.ProductCodes, isSoftDelete);
                 if (result.Success)
                 {
                     return Ok(
@@ -411,6 +414,10 @@ namespace BlazorApp.Api.Controllers.React
         public class BatchDeleteRequest
         {
             public List<string> ProductCodes { get; set; } = new();
+            /// <summary>
+            /// 删除模式：soft=软删除（默认），hard=物理删除
+            /// </summary>
+            public string? Mode { get; set; } = "soft";
         }
 
         #endregion

@@ -56,6 +56,16 @@ namespace BlazorApp.Api.Services.Background
         /// 每月任务执行分钟（默认 0 分）
         /// </summary>
         public int MonthlyTaskMinute { get; set; } = 0;
+
+        /// <summary>
+        /// 是否启用随机冗余（默认 true）
+        /// </summary>
+        public bool EnableJitter { get; set; } = true;
+
+        /// <summary>
+        /// 随机冗余最大偏移分钟数（默认 5 分钟，即 -5 到 +5 分钟）
+        /// </summary>
+        public int JitterMaxMinutes { get; set; } = 5;
     }
 
     /// <summary>
@@ -96,15 +106,28 @@ namespace BlazorApp.Api.Services.Background
 
             var now = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, _sydneyTimeZone);
 
-            // 计算到下一个整点的时间间隔
-            var nextHourly = TimeSpan.FromMinutes(
+            var baseInterval =
                 _options.HourlyTaskIntervalMinutes
-                    - (now.Minute % _options.HourlyTaskIntervalMinutes)
-            );
+                - (now.Minute % _options.HourlyTaskIntervalMinutes);
+
+            double nextHourlyMinutes;
+            if (_options.EnableJitter)
+            {
+                var jitter = Random.Shared.Next(
+                    -_options.JitterMaxMinutes,
+                    _options.JitterMaxMinutes + 1
+                );
+                nextHourlyMinutes = Math.Max(1, baseInterval + jitter);
+            }
+            else
+            {
+                nextHourlyMinutes = baseInterval;
+            }
+
             _hourlyTimer = new Timer(
                 async _ => await ExecuteHourlyTask(),
                 null,
-                nextHourly,
+                TimeSpan.FromMinutes(nextHourlyMinutes),
                 TimeSpan.FromMinutes(_options.HourlyTaskIntervalMinutes)
             );
 
@@ -136,8 +159,10 @@ namespace BlazorApp.Api.Services.Background
             );
 
             _logger.LogInformation(
-                "定时任务已注册 - 每小时任务将在 {Minutes} 分钟后开始，每日任务将在 {Time} 开始，每周任务将在 {WeeklyTime} 开始，每月任务将在 {MonthlyTime} 开始",
-                (int)nextHourly.TotalMinutes,
+                "定时任务已注册 - 每小时任务将在 {Minutes} 分钟后开始{EnableJitter}，"
+                    + "每日任务将在 {Time} 开始，每周任务将在 {WeeklyTime} 开始，每月任务将在 {MonthlyTime} 开始",
+                (int)nextHourlyMinutes,
+                _options.EnableJitter ? $"（冗余偏移: ±{_options.JitterMaxMinutes}分钟）" : "",
                 now.Add(nextDaily).ToString("HH:mm:ss"),
                 now.Add(nextWeekly).ToString("yyyy-MM-dd HH:mm:ss"),
                 now.Add(nextMonthly).ToString("yyyy-MM-dd HH:mm:ss")
@@ -165,10 +190,23 @@ namespace BlazorApp.Api.Services.Background
                 0
             );
 
-            // 如果今天的执行时间已过，则推迟到明天
             if (now >= nextRun)
             {
                 nextRun = nextRun.AddDays(1);
+            }
+
+            if (_options.EnableJitter)
+            {
+                var jitter = Random.Shared.Next(
+                    -_options.JitterMaxMinutes,
+                    _options.JitterMaxMinutes + 1
+                );
+                nextRun = nextRun.AddMinutes(jitter);
+
+                if (nextRun <= now)
+                {
+                    nextRun = now.AddMinutes(1);
+                }
             }
 
             return nextRun - now;
@@ -188,10 +226,23 @@ namespace BlazorApp.Api.Services.Background
                 .AddHours(_options.WeeklyTaskHour)
                 .AddMinutes(_options.WeeklyTaskMinute);
 
-            // 如果计算出的时间已过，则推迟到下周
             if (next <= now)
             {
                 next = next.AddDays(7);
+            }
+
+            if (_options.EnableJitter)
+            {
+                var jitter = Random.Shared.Next(
+                    -_options.JitterMaxMinutes,
+                    _options.JitterMaxMinutes + 1
+                );
+                next = next.AddMinutes(jitter);
+
+                if (next <= now)
+                {
+                    next = now.AddMinutes(1);
+                }
             }
 
             return next - now;
@@ -215,10 +266,23 @@ namespace BlazorApp.Api.Services.Background
                 0
             );
 
-            // 如果本月的执行时间已过，则推迟到下月
             if (next <= now)
             {
                 next = next.AddMonths(1);
+            }
+
+            if (_options.EnableJitter)
+            {
+                var jitter = Random.Shared.Next(
+                    -_options.JitterMaxMinutes,
+                    _options.JitterMaxMinutes + 1
+                );
+                next = next.AddMinutes(jitter);
+
+                if (next <= now)
+                {
+                    next = now.AddMinutes(1);
+                }
             }
 
             return next - now;

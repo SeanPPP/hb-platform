@@ -641,23 +641,26 @@ namespace BlazorApp.Api.Services.React
         }
 
         /// <summary>
-        /// 删除商品（级联物理删除：ProductSetCode → StoreMultiCodeProduct → StoreRetailPrice → Product）
+        /// 删除商品（支持软删除和物理删除）
         /// </summary>
-        public async Task<ApiResponse<bool>> DeleteAsync(string productCode)
+        /// <param name="productCode">商品编码</param>
+        /// <param name="isSoftDelete">true=软删除，false=物理删除</param>
+        public async Task<ApiResponse<bool>> DeleteAsync(string productCode, bool isSoftDelete = true)
         {
             try
             {
                 var productDeleted = 0;
                 await _db.Ado.UseTranAsync(async () =>
                 {
-                    productDeleted = await CascadeDeleteProductAsync(productCode);
+                    productDeleted = await CascadeDeleteProductAsync(productCode, isSoftDelete);
                 });
 
+                var deleteType = isSoftDelete ? "软删除" : "物理删除";
                 return new ApiResponse<bool>
                 {
                     Success = productDeleted > 0,
                     Data = productDeleted > 0,
-                    Message = productDeleted > 0 ? "删除成功" : "商品不存在",
+                    Message = productDeleted > 0 ? $"{deleteType}成功" : "商品不存在",
                 };
             }
             catch (Exception ex)
@@ -672,49 +675,105 @@ namespace BlazorApp.Api.Services.React
         }
 
         /// <summary>
-        /// 级联物理删除商品及其关联表（ProductSetCode、StoreMultiCodeProduct、StoreRetailPrice、Product），供单删与批量删共用。
+        /// 级联删除商品及其关联表（ProductSetCode、StoreMultiCodeProduct、StoreRetailPrice、Product）
+        /// 支持软删除（标记IsDeleted）和物理删除
         /// </summary>
+        /// <param name="productCode">商品编码</param>
+        /// <param name="isSoftDelete">true=软删除，false=物理删除</param>
         /// <returns>删除的 Product 行数（0 或 1）</returns>
-        private async Task<int> CascadeDeleteProductAsync(string productCode)
+        private async Task<int> CascadeDeleteProductAsync(string productCode, bool isSoftDelete)
         {
             if (string.IsNullOrWhiteSpace(productCode))
                 return 0;
 
-            // 1. ProductSetCode：主商品编码为此商品 或 SetProductCode 属于该商品的多码
-            await _db.Deleteable<ProductSetCode>()
-                .Where(psc => psc.ProductCode == productCode)
-                .ExecuteCommandAsync();
+            var now = DateTime.Now;
+            var currentUser = _httpContextAccessor.HttpContext?.User?.Identity?.Name ?? "System";
 
-            var multiCodeProductCodes = await _db.Queryable<StoreMultiCodeProduct>()
-                .Where(m => m.ProductCode == productCode)
-                .Select(m => m.MultiCodeProductCode)
-                .ToListAsync();
-            if (multiCodeProductCodes != null && multiCodeProductCodes.Any())
+            if (isSoftDelete)
             {
-                await _db.Deleteable<ProductSetCode>()
-                    .Where(psc =>
-                        psc.SetProductCode != null
-                        && multiCodeProductCodes.Contains(psc.SetProductCode)
-                    )
+                // 软删除：标记 IsDeleted = true
+                
+                // 1. 获取关联的多码商品编码
+                var multiCodeProductCodes = await _db.Queryable<StoreMultiCodeProduct>()
+                    .Where(m => m.ProductCode == productCode)
+                    .Select(m => m.MultiCodeProductCode)
+                    .ToListAsync();
+
+                // 2. 软删除 ProductSetCode（主商品编码）
+                await _db.Updateable<ProductSetCode>()
+                    .SetColumns(psc => psc.IsDeleted == true)
+                    .Where(psc => psc.ProductCode == productCode)
                     .ExecuteCommandAsync();
+
+                // 3. 软删除 ProductSetCode（多码商品编码）
+                if (multiCodeProductCodes != null && multiCodeProductCodes.Any())
+                {
+                    await _db.Updateable<ProductSetCode>()
+                        .SetColumns(psc => psc.IsDeleted == true)
+                        .Where(psc => psc.SetProductCode != null && multiCodeProductCodes.Contains(psc.SetProductCode))
+                        .ExecuteCommandAsync();
+                }
+
+                // 4. 软删除 StoreMultiCodeProduct
+                await _db.Updateable<StoreMultiCodeProduct>()
+                    .SetColumns(m => m.IsDeleted == true)
+                    .Where(m => m.ProductCode == productCode)
+                    .ExecuteCommandAsync();
+
+                // 5. 软删除 StoreRetailPrice
+                await _db.Updateable<StoreRetailPrice>()
+                    .SetColumns(s => s.IsDeleted == true)
+                    .Where(s => s.ProductCode == productCode)
+                    .ExecuteCommandAsync();
+
+                // 6. 软删除 Product
+                var productRows = await _db.Updateable<Product>()
+                    .SetColumns(p => p.IsDeleted == true)
+                    .Where(p => p.ProductCode == productCode)
+                    .ExecuteCommandAsync();
+
+                return productRows;
             }
+            else
+            {
+                // 物理删除：彻底从数据库删除
 
-            // 2. StoreMultiCodeProduct
-            await _db.Deleteable<StoreMultiCodeProduct>()
-                .Where(m => m.ProductCode == productCode)
-                .ExecuteCommandAsync();
+                // 1. ProductSetCode：主商品编码为此商品 或 SetProductCode 属于该商品的多码
+                await _db.Deleteable<ProductSetCode>()
+                    .Where(psc => psc.ProductCode == productCode)
+                    .ExecuteCommandAsync();
 
-            // 3. StoreRetailPrice
-            await _db.Deleteable<StoreRetailPrice>()
-                .Where(s => s.ProductCode == productCode)
-                .ExecuteCommandAsync();
+                var multiCodeProductCodes = await _db.Queryable<StoreMultiCodeProduct>()
+                    .Where(m => m.ProductCode == productCode)
+                    .Select(m => m.MultiCodeProductCode)
+                    .ToListAsync();
+                if (multiCodeProductCodes != null && multiCodeProductCodes.Any())
+                {
+                    await _db.Deleteable<ProductSetCode>()
+                        .Where(psc =>
+                            psc.SetProductCode != null
+                            && multiCodeProductCodes.Contains(psc.SetProductCode)
+                        )
+                        .ExecuteCommandAsync();
+                }
 
-            // 4. Product
-            var productRows = await _db.Deleteable<Product>()
-                .Where(p => p.ProductCode == productCode)
-                .ExecuteCommandAsync();
+                // 2. StoreMultiCodeProduct
+                await _db.Deleteable<StoreMultiCodeProduct>()
+                    .Where(m => m.ProductCode == productCode)
+                    .ExecuteCommandAsync();
 
-            return productRows;
+                // 3. StoreRetailPrice
+                await _db.Deleteable<StoreRetailPrice>()
+                    .Where(s => s.ProductCode == productCode)
+                    .ExecuteCommandAsync();
+
+                // 4. Product
+                var productRows = await _db.Deleteable<Product>()
+                    .Where(p => p.ProductCode == productCode)
+                    .ExecuteCommandAsync();
+
+                return productRows;
+            }
         }
 
         /// <summary>
@@ -819,24 +878,28 @@ namespace BlazorApp.Api.Services.React
         }
 
         /// <summary>
-        /// 批量删除商品（使用事务）
+        /// 批量删除商品（使用事务，支持软删除和物理删除）
         /// </summary>
+        /// <param name="productCodes">商品编码列表</param>
+        /// <param name="isSoftDelete">true=软删除，false=物理删除</param>
         public async Task<ApiResponse<BatchOperationReactResult>> BatchDeleteAsync(
-            List<string> productCodes
+            List<string> productCodes,
+            bool isSoftDelete = true
         )
         {
             var result = new BatchOperationReactResult();
+            var deleteType = isSoftDelete ? "软删除" : "物理删除";
 
             try
             {
-                // 使用事务，级联物理删除
+                // 使用事务
                 await _db.Ado.UseTranAsync(async () =>
                 {
                     foreach (var code in productCodes)
                     {
                         try
                         {
-                            var productDeleted = await CascadeDeleteProductAsync(code);
+                            var productDeleted = await CascadeDeleteProductAsync(code, isSoftDelete);
                             if (productDeleted > 0)
                                 result.SuccessCount++;
                             else
@@ -849,7 +912,7 @@ namespace BlazorApp.Api.Services.React
                         {
                             result.Errors.Add($"{code}: {ex.Message}");
                             result.FailedCount++;
-                            _logger.LogError(ex, "批量删除单个商品失败: {ProductCode}", code);
+                            _logger.LogError(ex, "批量{deleteType}单个商品失败: {ProductCode}", deleteType, code);
                         }
                     }
                 });
@@ -859,16 +922,16 @@ namespace BlazorApp.Api.Services.React
                     Success = true,
                     Data = result,
                     Message =
-                        $"批量删除完成: 成功{result.SuccessCount}条，失败{result.FailedCount}条",
+                        $"批量{deleteType}完成: 成功{result.SuccessCount}条，失败{result.FailedCount}条",
                 };
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "批量删除商品事务失败");
+                _logger.LogError(ex, "批量{deleteType}商品事务失败");
                 return new ApiResponse<BatchOperationReactResult>
                 {
                     Success = false,
-                    Message = $"批量删除失败: {ex.Message}",
+                    Message = $"批量{deleteType}失败: {ex.Message}",
                     Data = result,
                 };
             }

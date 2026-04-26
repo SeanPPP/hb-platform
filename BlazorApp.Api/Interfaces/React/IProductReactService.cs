@@ -40,11 +40,12 @@ namespace BlazorApp.Api.Interfaces.React
         Task<ApiResponse<ProductDto>> UpdateAsync(string productCode, UpdateProductDto dto);
 
         /// <summary>
-        /// 删除商品
+        /// 删除商品（支持软删除和物理删除）
         /// </summary>
         /// <param name="productCode">商品编码</param>
+        /// <param name="isSoftDelete">true=软删除，false=物理删除，默认true</param>
         /// <returns>删除结果</returns>
-        Task<ApiResponse<bool>> DeleteAsync(string productCode);
+        Task<ApiResponse<bool>> DeleteAsync(string productCode, bool isSoftDelete = true);
 
         /// <summary>
         /// 批量更新商品（使用事务）
@@ -54,11 +55,12 @@ namespace BlazorApp.Api.Interfaces.React
         Task<ApiResponse<BatchOperationReactResult>> BatchUpdateAsync(List<BatchUpdateProductReactDto> items);
 
         /// <summary>
-        /// 批量删除商品（使用事务）
+        /// 批量删除商品（使用事务，支持软删除和物理删除）
         /// </summary>
         /// <param name="productCodes">商品编码列表</param>
+        /// <param name="isSoftDelete">true=软删除，false=物理删除，默认true</param>
         /// <returns>批量操作结果</returns>
-        Task<ApiResponse<BatchOperationReactResult>> BatchDeleteAsync(List<string> productCodes);
+        Task<ApiResponse<BatchOperationReactResult>> BatchDeleteAsync(List<string> productCodes, bool isSoftDelete = true);
 
         /// <summary>
         /// 高级过滤查询商品列表（支持商品信息表与分店价格表的组合过滤）
