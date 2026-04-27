@@ -259,7 +259,7 @@ namespace BlazorApp.Api.Services
             var secretId = _settings.SecretId;
             var secretKey = _settings.SecretKey;
 
-            var host = $"{bucket}.cos.{region}.myqcloud.com";
+            var host = $"{bucket}.cos.{regionValue}.myqcloud.com";
             var now = DateTime.UtcNow;
             var startTimestamp = new DateTimeOffset(now).ToUnixTimeSeconds();
             var expiredTimestamp = new DateTimeOffset(
