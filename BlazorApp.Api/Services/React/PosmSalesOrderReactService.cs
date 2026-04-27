@@ -63,6 +63,16 @@ namespace BlazorApp.Api.Services.React
                 baseQuery = baseQuery.Where(o => o.Status == (int)queryParams.OrderType.Value);
             }
 
+            if (!string.IsNullOrWhiteSpace(queryParams.Keyword))
+            {
+                var keyword = queryParams.Keyword.Trim();
+                baseQuery = baseQuery.Where((o, d) =>
+                    o.OrderGuid.Contains(keyword)
+                    || d.ProductName.Contains(keyword)
+                    || d.Barcode.Contains(keyword)
+                );
+            }
+
             var q = baseQuery
                 .GroupBy(
                     (o, d) =>
