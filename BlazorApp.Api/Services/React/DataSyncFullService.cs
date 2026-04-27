@@ -623,29 +623,53 @@ namespace BlazorApp.Api.Services.React
                             for (int offset = 0; offset < batch.Count; offset += chunkSize)
                             {
                                 var chunk = batch.Skip(offset).Take(chunkSize).ToList();
-                                try
+                                var consumerRetries = 0;
+                                while (true)
                                 {
-                                    await consumerDb
-                                        .Fastest<StoreRetailPrice>()
-                                        .AS("StoreRetailPrice")
-                                        .PageSize(writePageSize)
-                                        .BulkCopyAsync(chunk);
-                                    System.Threading.Interlocked.Add(ref added, chunk.Count);
-                                }
-                                catch (Exception ex)
-                                {
-                                    _logger.LogError(
-                                        ex,
-                                        "[ReactSync] 分店{Store}消费者{Idx}写入失败（批大小:{Size}）",
-                                        storeCode,
-                                        consumerIdx,
-                                        chunk.Count
-                                    );
-                                    System.Threading.Interlocked.Add(ref errors, chunk.Count);
-                                    Console.WriteLine(
-                                        $"  ❌ [分店{storeCode}] 消费者{consumerIdx}写入失败: {chunk.Count}条, {ex.Message}"
-                                    );
-                                    await Task.Delay(500);
+                                    try
+                                    {
+                                        await consumerDb
+                                            .Fastest<StoreRetailPrice>()
+                                            .AS("StoreRetailPrice")
+                                            .PageSize(writePageSize)
+                                            .BulkCopyAsync(chunk);
+                                        System.Threading.Interlocked.Add(ref added, chunk.Count);
+                                        break;
+                                    }
+                                    catch (Exception ex) when (consumerRetries < 3)
+                                    {
+                                        consumerRetries++;
+                                        var delay = TimeSpan.FromSeconds(Math.Pow(2, consumerRetries));
+                                        _logger.LogWarning(
+                                            ex,
+                                            "[ReactSync] 分店{Store}消费者{Idx}写入失败，重试{Retry}/3",
+                                            storeCode,
+                                            consumerIdx,
+                                            consumerRetries
+                                        );
+                                        await Task.Delay(delay);
+                                        try
+                                        {
+                                            if (consumerDb.Ado.Connection.State == System.Data.ConnectionState.Closed)
+                                                consumerDb.Ado.Connection.Open();
+                                        }
+                                        catch { }
+                                    }
+                                    catch (Exception ex)
+                                    {
+                                        _logger.LogError(
+                                            ex,
+                                            "[ReactSync] 分店{Store}消费者{Idx}写入最终失败（批大小:{Size}）",
+                                            storeCode,
+                                            consumerIdx,
+                                            chunk.Count
+                                        );
+                                        System.Threading.Interlocked.Add(ref errors, chunk.Count);
+                                        Console.WriteLine(
+                                            $"  ❌ [分店{storeCode}] 消费者{consumerIdx}写入失败: {chunk.Count}条, {ex.Message}"
+                                        );
+                                        break;
+                                    }
                                 }
                             }
                         }
@@ -2734,73 +2758,60 @@ namespace BlazorApp.Api.Services.React
             try
             {
                 _hqContext.CheckConnection();
-                await _localContext.Db.Ado.BeginTranAsync();
-                try
+                await _localContext.Db.Ado.ExecuteCommandAsync("TRUNCATE TABLE WarehouseProduct");
+                var total = await _hqContext
+                    .Db.Queryable<CBP_DIC_商品库存表>()
+                    .Where(x => SqlFunc.HasValue(x.H商品编码))
+                    .CountAsync();
+                var pages = (int)Math.Ceiling(total / (double)hqBatchSize);
+                var added = 0;
+                var errors = 0;
+                for (var page = 1; page <= pages; page++)
                 {
-                    await _localContext
-                        .Db.Deleteable<WarehouseProduct>()
-                        .AS("WarehouseProduct")
-                        .ExecuteCommandAsync();
-                    var total = await _hqContext
+                    var skip = (page - 1) * hqBatchSize;
+                    var batch = await _hqContext
                         .Db.Queryable<CBP_DIC_商品库存表>()
                         .Where(x => SqlFunc.HasValue(x.H商品编码))
-                        .CountAsync();
-                    var pages = (int)Math.Ceiling(total / (double)hqBatchSize);
-                    var added = 0;
-                    var errors = 0;
-                    for (var page = 1; page <= pages; page++)
+                        .OrderBy(x => x.ID)
+                        .Skip(skip)
+                        .Take(hqBatchSize)
+                        .ToListAsync();
+                    if (!batch.Any())
+                        continue;
+                    var localBatch = _mapper
+                        .Map<List<WarehouseProduct>>(batch)
+                        .Where(x => !string.IsNullOrWhiteSpace(x.ProductCode))
+                        .ToList();
+                    try
                     {
-                        var skip = (page - 1) * hqBatchSize;
-                        var batch = await _hqContext
-                            .Db.Queryable<CBP_DIC_商品库存表>()
-                            .Where(x => SqlFunc.HasValue(x.H商品编码))
-                            .OrderBy(x => x.ID)
-                            .Skip(skip)
-                            .Take(hqBatchSize)
-                            .ToListAsync();
-                        if (!batch.Any())
-                            continue;
-                        var localBatch = _mapper
-                            .Map<List<WarehouseProduct>>(batch)
-                            .Where(x => !string.IsNullOrWhiteSpace(x.ProductCode))
-                            .ToList();
-                        try
-                        {
-                            await _localContext
-                                .Db.Fastest<WarehouseProduct>()
-                                .AS("WarehouseProduct")
-                                .PageSize(writePageSize)
-                                .BulkCopyAsync(localBatch);
-                            added += localBatch.Count;
-                        }
-                        catch (Exception ex)
-                        {
-                            _logger.LogError(
-                                ex,
-                                "[ReactSync] WarehouseProduct 批{Page} 插入失败 批大小{Size}",
-                                page,
-                                localBatch.Count
-                            );
-                            errors += localBatch.Count;
-                            await Task.Delay(1500);
-                        }
-                        batch.Clear();
-                        localBatch.Clear();
+                        await _localContext
+                            .Db.Fastest<WarehouseProduct>()
+                            .AS("WarehouseProduct")
+                            .PageSize(writePageSize)
+                            .BulkCopyAsync(localBatch);
+                        added += localBatch.Count;
                     }
-                    await _localContext.Db.Ado.CommitTranAsync();
-                    result.AddedCount = added;
-                    result.ErrorCount = errors;
-                    result.IsSuccess = errors == 0;
-                    result.Message =
-                        errors == 0
-                            ? "WarehouseProduct 同步成功"
-                            : "WarehouseProduct 同步完成，但存在错误";
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(
+                            ex,
+                            "[ReactSync] WarehouseProduct 批{Page} 插入失败 批大小{Size}",
+                            page,
+                            localBatch.Count
+                        );
+                        errors += localBatch.Count;
+                        await Task.Delay(1500);
+                    }
+                    batch.Clear();
+                    localBatch.Clear();
                 }
-                catch (Exception exTran)
-                {
-                    await _localContext.Db.Ado.RollbackTranAsync();
-                    throw new Exception("WarehouseProduct 同步事务失败", exTran);
-                }
+                result.AddedCount = added;
+                result.ErrorCount = errors;
+                result.IsSuccess = errors == 0;
+                result.Message =
+                    errors == 0
+                        ? "WarehouseProduct 同步成功"
+                        : "WarehouseProduct 同步完成，但存在错误";
             }
             catch (Exception ex)
             {
