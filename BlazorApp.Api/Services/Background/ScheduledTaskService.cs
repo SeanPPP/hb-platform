@@ -321,11 +321,18 @@ namespace BlazorApp.Api.Services.Background
                 var taskLogService =
                     scope.ServiceProvider.GetRequiredService<ScheduledTaskLogService>();
 
-                // 任务 2：商品-供应商映射增量同步
-                var syncTaskLog = await taskLogService.LogTaskStartAsync(
-                    TaskType.SyncPosmProductSupplierMappingsIncremental,
-                    new TaskParameters()
-                );
+                ScheduledTaskLog? syncTaskLog = null;
+                try
+                {
+                    syncTaskLog = await taskLogService.LogTaskStartAsync(
+                        TaskType.SyncPosmProductSupplierMappingsIncremental,
+                        new TaskParameters()
+                    );
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "记录任务开始日志失败（任务 2），继续执行业务任务");
+                }
 
                 try
                 {
@@ -335,23 +342,32 @@ namespace BlazorApp.Api.Services.Background
                         scope.ServiceProvider.GetRequiredService<IDataSyncReactService>();
                     await dataSyncService.SyncPosmProductSupplierMappingsIncrementalAsync();
 
-                    await taskLogService.LogTaskSuccessAsync(syncTaskLog.Id);
+                    if (syncTaskLog != null)
+                        await taskLogService.LogTaskSuccessAsync(syncTaskLog.Id);
                     _logger.LogInformation("商品-供应商映射增量同步执行完成");
                 }
                 catch (Exception ex)
                 {
-                    await taskLogService.LogTaskFailureAsync(
-                        syncTaskLog.Id,
-                        ex.Message + "\n" + ex.StackTrace
-                    );
+                    if (syncTaskLog != null)
+                        await taskLogService.LogTaskFailureAsync(
+                            syncTaskLog.Id,
+                            ex.Message + "\n" + ex.StackTrace
+                        );
                     _logger.LogError(ex, "商品-供应商映射增量同步执行失败");
                 }
 
-                // 任务 1：销售统计
-                var statisticsTaskLog = await taskLogService.LogTaskStartAsync(
-                    TaskType.UpdateCurrentHourStatistics,
-                    new TaskParameters()
-                );
+                ScheduledTaskLog? statisticsTaskLog = null;
+                try
+                {
+                    statisticsTaskLog = await taskLogService.LogTaskStartAsync(
+                        TaskType.UpdateCurrentHourStatistics,
+                        new TaskParameters()
+                    );
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "记录任务开始日志失败（任务 1），继续执行业务任务");
+                }
 
                 try
                 {
@@ -361,23 +377,32 @@ namespace BlazorApp.Api.Services.Background
                         scope.ServiceProvider.GetRequiredService<SalesStatisticsJobService>();
                     await statisticsJobService.FullRefreshCurrentDay();
 
-                    await taskLogService.LogTaskSuccessAsync(statisticsTaskLog.Id);
+                    if (statisticsTaskLog != null)
+                        await taskLogService.LogTaskSuccessAsync(statisticsTaskLog.Id);
                     _logger.LogInformation("每小时统计任务执行完成");
                 }
                 catch (Exception ex)
                 {
-                    await taskLogService.LogTaskFailureAsync(
-                        statisticsTaskLog.Id,
-                        ex.Message + "\n" + ex.StackTrace
-                    );
+                    if (statisticsTaskLog != null)
+                        await taskLogService.LogTaskFailureAsync(
+                            statisticsTaskLog.Id,
+                            ex.Message + "\n" + ex.StackTrace
+                        );
                     _logger.LogError(ex, "每小时统计任务执行失败");
                 }
 
-                // 任务 3：商品列表缓存预热
-                var cacheWarmupTaskLog = await taskLogService.LogTaskStartAsync(
-                    TaskType.WarmUpStoreOrderCache,
-                    new TaskParameters()
-                );
+                ScheduledTaskLog? cacheWarmupTaskLog = null;
+                try
+                {
+                    cacheWarmupTaskLog = await taskLogService.LogTaskStartAsync(
+                        TaskType.WarmUpStoreOrderCache,
+                        new TaskParameters()
+                    );
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "记录任务开始日志失败（任务 3），继续执行业务任务");
+                }
 
                 try
                 {
@@ -387,17 +412,18 @@ namespace BlazorApp.Api.Services.Background
                         scope.ServiceProvider.GetRequiredService<BlazorApp.Api.Interfaces.IStoreOrderCacheWarmer>();
                     await cacheWarmer.WarmUpHomePageAsync();
 
-                    await taskLogService.LogTaskSuccessAsync(cacheWarmupTaskLog.Id);
+                    if (cacheWarmupTaskLog != null)
+                        await taskLogService.LogTaskSuccessAsync(cacheWarmupTaskLog.Id);
                     _logger.LogInformation("商品列表缓存预热任务执行完成");
                 }
                 catch (Exception ex)
                 {
-                    await taskLogService.LogTaskFailureAsync(
-                        cacheWarmupTaskLog.Id,
-                        ex.Message + "\n" + ex.StackTrace
-                    );
+                    if (cacheWarmupTaskLog != null)
+                        await taskLogService.LogTaskFailureAsync(
+                            cacheWarmupTaskLog.Id,
+                            ex.Message + "\n" + ex.StackTrace
+                        );
                     _logger.LogError(ex, "商品列表缓存预热任务执行失败");
-                    // 注意：缓存预热失败不影响其他每小时任务，所以不重新抛出异常
                 }
             }
         }
@@ -413,10 +439,18 @@ namespace BlazorApp.Api.Services.Background
                 var taskLogService =
                     scope.ServiceProvider.GetRequiredService<ScheduledTaskLogService>();
 
-                var taskLog = await taskLogService.LogTaskStartAsync(
-                    TaskType.FullRefreshPreviousDay,
-                    new TaskParameters()
-                );
+                ScheduledTaskLog? taskLog = null;
+                try
+                {
+                    taskLog = await taskLogService.LogTaskStartAsync(
+                        TaskType.FullRefreshPreviousDay,
+                        new TaskParameters()
+                    );
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "记录任务开始日志失败，继续执行业务任务");
+                }
 
                 try
                 {
@@ -426,15 +460,17 @@ namespace BlazorApp.Api.Services.Background
                         scope.ServiceProvider.GetRequiredService<SalesStatisticsJobService>();
                     await statisticsJobService.FullRefreshCurrentDay();
 
-                    await taskLogService.LogTaskSuccessAsync(taskLog.Id);
+                    if (taskLog != null)
+                        await taskLogService.LogTaskSuccessAsync(taskLog.Id);
                     _logger.LogInformation("每日全量刷新任务执行完成");
                 }
                 catch (Exception ex)
                 {
-                    await taskLogService.LogTaskFailureAsync(
-                        taskLog.Id,
-                        ex.Message + "\n" + ex.StackTrace
-                    );
+                    if (taskLog != null)
+                        await taskLogService.LogTaskFailureAsync(
+                            taskLog.Id,
+                            ex.Message + "\n" + ex.StackTrace
+                        );
                     _logger.LogError(ex, "每日全量刷新任务执行失败");
                 }
             }
@@ -451,10 +487,18 @@ namespace BlazorApp.Api.Services.Background
                 var taskLogService =
                     scope.ServiceProvider.GetRequiredService<ScheduledTaskLogService>();
 
-                var taskLog = await taskLogService.LogTaskStartAsync(
-                    TaskType.FullRefreshCurrentWeek,
-                    new TaskParameters()
-                );
+                ScheduledTaskLog? taskLog = null;
+                try
+                {
+                    taskLog = await taskLogService.LogTaskStartAsync(
+                        TaskType.FullRefreshCurrentWeek,
+                        new TaskParameters()
+                    );
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "记录任务开始日志失败，继续执行业务任务");
+                }
 
                 try
                 {
@@ -464,7 +508,6 @@ namespace BlazorApp.Api.Services.Background
                         scope.ServiceProvider.GetRequiredService<SalesStatisticsJobService>();
 
                     var now = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, _sydneyTimeZone);
-                    // 计算本周的起始日期（周一）和结束日期（周日）
                     var monday = now.Date.AddDays(-(int)now.DayOfWeek + (int)DayOfWeek.Monday);
                     var sunday = monday.AddDays(6);
 
@@ -476,15 +519,17 @@ namespace BlazorApp.Api.Services.Background
 
                     await statisticsJobService.BatchFullRefreshConcurrent(monday, sunday);
 
-                    await taskLogService.LogTaskSuccessAsync(taskLog.Id);
+                    if (taskLog != null)
+                        await taskLogService.LogTaskSuccessAsync(taskLog.Id);
                     _logger.LogInformation("每周全量刷新任务执行完成");
                 }
                 catch (Exception ex)
                 {
-                    await taskLogService.LogTaskFailureAsync(
-                        taskLog.Id,
-                        ex.Message + "\n" + ex.StackTrace
-                    );
+                    if (taskLog != null)
+                        await taskLogService.LogTaskFailureAsync(
+                            taskLog.Id,
+                            ex.Message + "\n" + ex.StackTrace
+                        );
                     _logger.LogError(ex, "每周全量刷新任务执行失败");
                 }
             }
@@ -501,10 +546,18 @@ namespace BlazorApp.Api.Services.Background
                 var taskLogService =
                     scope.ServiceProvider.GetRequiredService<ScheduledTaskLogService>();
 
-                var taskLog = await taskLogService.LogTaskStartAsync(
-                    TaskType.FullRefreshPreviousMonth,
-                    new TaskParameters()
-                );
+                ScheduledTaskLog? taskLog = null;
+                try
+                {
+                    taskLog = await taskLogService.LogTaskStartAsync(
+                        TaskType.FullRefreshPreviousMonth,
+                        new TaskParameters()
+                    );
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "记录任务开始日志失败，继续执行业务任务");
+                }
 
                 try
                 {
@@ -514,7 +567,6 @@ namespace BlazorApp.Api.Services.Background
                         scope.ServiceProvider.GetRequiredService<SalesStatisticsJobService>();
 
                     var now = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, _sydneyTimeZone);
-                    // 计算前一个月的年月（例如：当前是2024年1月，则统计2023年12月）
                     var previousMonth = now.AddMonths(-1);
                     var startYearMonth = previousMonth.ToString("yyyy-MM");
 
@@ -533,15 +585,17 @@ namespace BlazorApp.Api.Services.Background
                         throw new Exception($"每月统计任务失败: {result.Message}");
                     }
 
-                    await taskLogService.LogTaskSuccessAsync(taskLog.Id);
+                    if (taskLog != null)
+                        await taskLogService.LogTaskSuccessAsync(taskLog.Id);
                     _logger.LogInformation("每月全量刷新任务执行完成");
                 }
                 catch (Exception ex)
                 {
-                    await taskLogService.LogTaskFailureAsync(
-                        taskLog.Id,
-                        ex.Message + "\n" + ex.StackTrace
-                    );
+                    if (taskLog != null)
+                        await taskLogService.LogTaskFailureAsync(
+                            taskLog.Id,
+                            ex.Message + "\n" + ex.StackTrace
+                        );
                     _logger.LogError(ex, "每月全量刷新任务执行失败");
                 }
             }

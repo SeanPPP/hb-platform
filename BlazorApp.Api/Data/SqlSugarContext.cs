@@ -40,6 +40,26 @@ namespace BlazorApp.Api.Data
                 connectionString += ";MultipleActiveResultSets=True";
             }
 
+            // SQL Server 连接池和超时优化
+            if (dbType == DbType.SqlServer)
+            {
+                if (
+                    !connectionString.Contains(
+                        "Connect Timeout",
+                        StringComparison.OrdinalIgnoreCase
+                    )
+                )
+                {
+                    connectionString += ";Connect Timeout=30";
+                }
+                if (
+                    !connectionString.Contains("Max Pool Size", StringComparison.OrdinalIgnoreCase)
+                )
+                {
+                    connectionString += ";Max Pool Size=200";
+                }
+            }
+
             // 使用 Scoped 生命周期管理连接
             // IsAutoCloseConnection = false 由 ASP.NET Core 的 Scoped 生命周期管理
             // ASP.NET Core 会在请求结束时自动释放 Scoped 服务的资源

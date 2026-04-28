@@ -69,9 +69,19 @@ namespace BlazorApp.Api.Services.Background
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "记录任务开始时发生异常: {TaskType}", taskType);
-                // 记录开始日志失败，抛出异常以便上层知晓（因为后续依赖 TaskId）
-                throw;
+                _logger.LogError(ex, "记录任务开始时发生异常（数据库不可用），创建临时日志: {TaskType}", taskType);
+                return new ScheduledTaskLog
+                {
+                    Id = Guid.NewGuid(),
+                    TaskType = taskType,
+                    TaskParameters = JsonSerializer.Serialize(parameters),
+                    Status = TaskStatus.Running,
+                    StartedAt = DateTime.UtcNow,
+                    ScheduledTime = DateTime.UtcNow,
+                    TriggeredBy = triggeredBy,
+                    CanRetry = true,
+                    ErrorMessage = string.Empty,
+                };
             }
         }
 
