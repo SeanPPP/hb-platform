@@ -507,7 +507,7 @@ namespace BlazorApp.Api.Services.React
                     {
                         Success = true,
                         Data = null,
-                        Message = "Cart is already empty"
+                        Message = "Cart is already empty",
                     };
                 }
 
@@ -525,7 +525,7 @@ namespace BlazorApp.Api.Services.React
                 {
                     Success = true,
                     Data = null,
-                    Message = "Cart cleared successfully"
+                    Message = "Cart cleared successfully",
                 };
             }
             catch (Exception ex)
@@ -534,7 +534,7 @@ namespace BlazorApp.Api.Services.React
                 return new ApiResponse<StoreOrderCartDto?>
                 {
                     Success = false,
-                    Message = "Failed to clear cart"
+                    Message = "Failed to clear cart",
                 };
             }
         }
@@ -835,7 +835,7 @@ namespace BlazorApp.Api.Services.React
                 var total = await q.Clone().CountAsync();
 
                 // 动态排序处理
-                var sortBy = (filter.SortBy ?? "OrderDate").Trim().ToLower();
+                var sortBy = (filter.SortBy ?? "default").Trim().ToLower();
                 var orderType =
                     (filter.SortDescending ?? true) ? OrderByType.Desc : OrderByType.Asc;
 
@@ -858,6 +858,7 @@ namespace BlazorApp.Api.Services.React
                         break;
                     case "flowstatus":
                         orderedQuery = q.OrderBy(o => o.FlowStatus, orderType)
+                            .OrderByDescending(o => o.OrderDate)
                             .OrderBy(o => o.OrderGUID, orderType);
                         break;
                     case "totalamount":
@@ -872,8 +873,27 @@ namespace BlazorApp.Api.Services.React
                         orderedQuery = q.OrderBy(o => o.ImportTotalAmount ?? 0, orderType)
                             .OrderBy(o => o.OrderGUID, orderType);
                         break;
+                    case "totalorderamount":
+                        orderedQuery = q.OrderBy(
+                            $"(SELECT ISNULL(SUM(d.Quantity * d.ImportPrice), 0) FROM WareHouseOrderDetails d WHERE d.OrderGUID = WareHouseOrder.OrderGUID) {(orderType == OrderByType.Desc ? "DESC" : "ASC")}, OrderGUID {(orderType == OrderByType.Desc ? "DESC" : "ASC")}"
+                        );
+                        break;
+                    case "totalquantity":
+                        orderedQuery = q.OrderBy(
+                            $"(SELECT ISNULL(SUM(d.Quantity), 0) FROM WareHouseOrderDetails d WHERE d.OrderGUID = WareHouseOrder.OrderGUID) {(orderType == OrderByType.Desc ? "DESC" : "ASC")}, OrderGUID {(orderType == OrderByType.Desc ? "DESC" : "ASC")}"
+                        );
+                        break;
+                    case "totalallocquantity":
+                        orderedQuery = q.OrderBy(
+                            $"(SELECT ISNULL(SUM(d.AllocQuantity), 0) FROM WareHouseOrderDetails d WHERE d.OrderGUID = WareHouseOrder.OrderGUID) {(orderType == OrderByType.Desc ? "DESC" : "ASC")}, OrderGUID {(orderType == OrderByType.Desc ? "DESC" : "ASC")}"
+                        );
+                        break;
+                    case "remarks":
+                        orderedQuery = q.OrderBy(o => o.Remarks, orderType)
+                            .OrderBy(o => o.OrderGUID, orderType);
+                        break;
                     default:
-                        orderedQuery = q.OrderBy("OrderDate DESC, OrderNo DESC, OrderGUID DESC");
+                        orderedQuery = q.OrderBy("FlowStatus ASC, OrderDate DESC, OrderNo DESC");
                         break;
                 }
 
@@ -885,6 +905,10 @@ namespace BlazorApp.Api.Services.React
                         OrderGUID = o.OrderGUID,
                         OrderNo = o.OrderNo,
                         StoreCode = o.StoreCode,
+                        StoreName = SqlFunc
+                            .Subqueryable<Store>()
+                            .Where(s => s.StoreCode == o.StoreCode)
+                            .Select(s => s.StoreName),
                         OrderDate = o.OrderDate,
                         FlowStatus = o.FlowStatus ?? 0,
 
@@ -1382,8 +1406,8 @@ namespace BlazorApp.Api.Services.React
                         order,
                         item.ProductCode,
                         item.Quantity ?? 0, // 如果未传Quantity，在AddOrUpdateDetailAsync内部需要处理（或者不允许单独更新价格而不传数量？）
-                                            // 注意：AddOrUpdateDetailAsync 目前设计是接收 Quantity。如果是只更新价格，需要重构。
-                                            // 重构 AddOrUpdateDetailAsync 以支持可选参数。
+                        // 注意：AddOrUpdateDetailAsync 目前设计是接收 Quantity。如果是只更新价格，需要重构。
+                        // 重构 AddOrUpdateDetailAsync 以支持可选参数。
                         item.ImportPrice,
                         isUpdate: true,
                         isBatch: true, // 标记为批量操作
@@ -1846,21 +1870,20 @@ namespace BlazorApp.Api.Services.React
             string? storeCode
         )
         {
-            var result = new SyncMissingOrdersResultDto
-            {
-                Success = true,
-                Message = string.Empty,
-                OrdersSynced = 0,
-                DetailsSynced = 0,
-            };
+            var result = new SyncMissingOrdersResultDto { Success = true, Message = string.Empty };
 
             try
             {
-                // 1. 查询本地现有的订单 GUID
-                var existingOrderGuids = await _db.Queryable<WareHouseOrder>()
+                var existingOrders = await _db.Queryable<WareHouseOrder>()
                     .WhereIF(!string.IsNullOrEmpty(storeCode), x => x.StoreCode == storeCode)
-                    .Select(x => x.OrderGUID)
+                    .Where(x => !x.IsDeleted)
+                    .Select(x => new { x.OrderGUID, x.UpdatedAt })
                     .ToListAsync();
+
+                var existingOrderGuids = existingOrders.Select(x => x.OrderGUID).ToList();
+                var localUpdatedAtMap = existingOrders
+                    .Where(x => x.UpdatedAt.HasValue)
+                    .ToDictionary(x => x.OrderGUID, x => x.UpdatedAt!.Value);
 
                 _logger.LogInformation(
                     "本地已存在订单数量: {Count}, 分店代码: {StoreCode}",
@@ -1870,77 +1893,206 @@ namespace BlazorApp.Api.Services.React
 
                 using var hqDb = HqSqlSugarContext.CreateConcurrentConnection(_configuration);
 
-                // 2. 从 HQ 查询本地不存在的订单主表
-                var hqOrders = await hqDb.Queryable<CBP_RED_分店订货单主表Store>()
+                var allHqOrders = await hqDb.Queryable<CBP_RED_分店订货单主表Store>()
                     .Where(x => SqlFunc.HasValue(x.HGUID) && x.流程状态 == 0)
                     .WhereIF(!string.IsNullOrEmpty(storeCode), x => x.分店代码 == storeCode)
-                    .WhereIF(existingOrderGuids.Any(), x => !existingOrderGuids.Contains(x.HGUID!))
                     .ToListAsync();
 
-                if (!hqOrders.Any())
+                if (!allHqOrders.Any())
                 {
                     result.Message = "没有需要同步的订单";
                     return result;
                 }
 
-                _logger.LogInformation("从 HQ 查询到缺失订单数量: {Count}", hqOrders.Count);
+                var missingHqOrders = allHqOrders
+                    .Where(x => !existingOrderGuids.Contains(x.HGUID!))
+                    .ToList();
 
-                var newOrders = new List<WareHouseOrder>();
-                var newOrderGuids = new List<string>();
-
-                // 3. 转换 HQ 订单数据为本地格式
-                foreach (var hqOrder in hqOrders)
-                {
-                    var localOrder = _mapper.Map<WareHouseOrder>(hqOrder);
-
-                    localOrder.IsDeleted = false;
-                    localOrder.CreatedAt = hqOrder.FGC_CreateDate ?? DateTime.Now;
-                    localOrder.UpdatedAt = hqOrder.FGC_LastModifyDate ?? DateTime.Now;
-                    localOrder.CreatedBy = hqOrder.FGC_Creator ?? "HQ同步";
-                    localOrder.UpdatedBy = hqOrder.FGC_LastModifier ?? "HQ同步";
-
-                    newOrders.Add(localOrder);
-                    newOrderGuids.Add(localOrder.OrderGUID);
-                }
-
-                // 4. 批量插入订单主表
-                await _db.Insertable(newOrders).ExecuteCommandAsync();
-                result.OrdersSynced = newOrders.Count;
-
-                _logger.LogInformation("成功同步订单主表数量: {Count}", result.OrdersSynced);
-
-                // 5. 从 HQ 查询对应的订单详情
-                var hqDetails = await hqDb.Queryable<CBP_RED_分店订单详情表Store>()
-                    .Where(x => SqlFunc.HasValue(x.HGUID) && SqlFunc.HasValue(x.主表GUID))
-                    .WhereIF(newOrderGuids.Any(), x => newOrderGuids.Contains(x.主表GUID!))
-                    .ToListAsync();
-
-                if (hqDetails.Any())
-                {
-                    var newDetails = new List<WareHouseOrderDetails>();
-
-                    foreach (var hqDetail in hqDetails)
+                var updatedHqOrders = allHqOrders
+                    .Where(x => existingOrderGuids.Contains(x.HGUID!))
+                    .Where(x =>
                     {
-                        var localDetail = _mapper.Map<WareHouseOrderDetails>(hqDetail);
+                        if (!localUpdatedAtMap.TryGetValue(x.HGUID!, out var localUpdated))
+                            return true;
+                        var hqUpdated = x.FGC_LastModifyDate;
+                        if (!hqUpdated.HasValue)
+                            return false;
+                        return hqUpdated.Value > localUpdated;
+                    })
+                    .ToList();
 
-                        localDetail.IsDeleted = false;
-                        localDetail.CreatedAt = hqDetail.FGC_CreateDate ?? DateTime.Now;
-                        localDetail.UpdatedAt = hqDetail.FGC_LastModifyDate ?? DateTime.Now;
-                        localDetail.CreatedBy = hqDetail.FGC_Creator ?? "HQ同步";
-                        localDetail.UpdatedBy = hqDetail.FGC_LastModifier ?? "HQ同步";
+                _logger.LogInformation(
+                    "HQ 订单总数: {Total}, 新增: {New}, 更新: {Updated}",
+                    allHqOrders.Count,
+                    missingHqOrders.Count,
+                    updatedHqOrders.Count
+                );
 
-                        newDetails.Add(localDetail);
+                if (missingHqOrders.Any())
+                {
+                    var newOrders = new List<WareHouseOrder>();
+                    var newOrderGuids = new List<string>();
+
+                    foreach (var hqOrder in missingHqOrders)
+                    {
+                        var localOrder = _mapper.Map<WareHouseOrder>(hqOrder);
+                        localOrder.IsDeleted = false;
+                        localOrder.CreatedAt = hqOrder.FGC_CreateDate ?? DateTime.Now;
+                        localOrder.UpdatedAt = hqOrder.FGC_LastModifyDate ?? DateTime.Now;
+                        localOrder.CreatedBy = hqOrder.FGC_Creator ?? "HQ同步";
+                        localOrder.UpdatedBy = hqOrder.FGC_LastModifier ?? "HQ同步";
+                        newOrders.Add(localOrder);
+                        newOrderGuids.Add(localOrder.OrderGUID);
                     }
 
-                    // 6. 批量插入订单详情表
-                    await _db.Insertable(newDetails).ExecuteCommandAsync();
-                    result.DetailsSynced = newDetails.Count;
+                    await _db.Insertable(newOrders).ExecuteCommandAsync();
+                    result.OrdersSynced = newOrders.Count;
 
-                    _logger.LogInformation("成功同步订单详情数量: {Count}", result.DetailsSynced);
+                    _logger.LogInformation("新增订单主表数量: {Count}", result.OrdersSynced);
+
+                    var hqDetails = await hqDb.Queryable<CBP_RED_分店订单详情表Store>()
+                        .Where(x => SqlFunc.HasValue(x.HGUID) && SqlFunc.HasValue(x.主表GUID))
+                        .WhereIF(newOrderGuids.Any(), x => newOrderGuids.Contains(x.主表GUID!))
+                        .ToListAsync();
+
+                    if (hqDetails.Any())
+                    {
+                        var newDetails = new List<WareHouseOrderDetails>();
+                        foreach (var hqDetail in hqDetails)
+                        {
+                            var localDetail = _mapper.Map<WareHouseOrderDetails>(hqDetail);
+                            localDetail.IsDeleted = false;
+                            localDetail.CreatedAt = hqDetail.FGC_CreateDate ?? DateTime.Now;
+                            localDetail.UpdatedAt = hqDetail.FGC_LastModifyDate ?? DateTime.Now;
+                            localDetail.CreatedBy = hqDetail.FGC_Creator ?? "HQ同步";
+                            localDetail.UpdatedBy = hqDetail.FGC_LastModifier ?? "HQ同步";
+                            newDetails.Add(localDetail);
+                        }
+                        await _db.Insertable(newDetails).ExecuteCommandAsync();
+                        result.DetailsSynced = newDetails.Count;
+                    }
                 }
 
-                result.Message =
-                    $"同步成功：订单 {result.OrdersSynced} 条，详情 {result.DetailsSynced} 条";
+                if (updatedHqOrders.Any())
+                {
+                    var updatedOrderGuids = updatedHqOrders.Select(x => x.HGUID!).ToList();
+
+                    foreach (var hqOrder in updatedHqOrders)
+                    {
+                        var mapped = _mapper.Map<WareHouseOrder>(hqOrder);
+                        mapped.UpdatedAt = hqOrder.FGC_LastModifyDate ?? DateTime.Now;
+                        mapped.UpdatedBy = hqOrder.FGC_LastModifier ?? "HQ同步";
+
+                        await _db.Updateable<WareHouseOrder>()
+                            .SetColumns(o => new WareHouseOrder
+                            {
+                                StoreCode = mapped.StoreCode,
+                                OrderNo = mapped.OrderNo,
+                                OrderDate = mapped.OrderDate,
+                                OutboundDate = mapped.OutboundDate,
+                                ShippingFee = mapped.ShippingFee,
+                                ImportTotalAmount = mapped.ImportTotalAmount,
+                                OEMTotalAmount = mapped.OEMTotalAmount,
+                                Remarks = mapped.Remarks,
+                                FlowStatus = mapped.FlowStatus,
+                                InboundStatus = mapped.InboundStatus,
+                                UpdatedAt = mapped.UpdatedAt,
+                                UpdatedBy = mapped.UpdatedBy,
+                            })
+                            .Where(o => o.OrderGUID == hqOrder.HGUID)
+                            .ExecuteCommandAsync();
+                    }
+                    result.OrdersUpdated = updatedHqOrders.Count;
+
+                    _logger.LogInformation("更新订单主表数量: {Count}", result.OrdersUpdated);
+
+                    var hqUpdatedDetails = await hqDb.Queryable<CBP_RED_分店订单详情表Store>()
+                        .Where(x => SqlFunc.HasValue(x.HGUID) && SqlFunc.HasValue(x.主表GUID))
+                        .WhereIF(
+                            updatedOrderGuids.Any(),
+                            x => updatedOrderGuids.Contains(x.主表GUID!)
+                        )
+                        .ToListAsync();
+
+                    if (hqUpdatedDetails.Any())
+                    {
+                        var existingDetailGuids = await _db.Queryable<WareHouseOrderDetails>()
+                            .Where(d => updatedOrderGuids.Contains(d.OrderGUID))
+                            .Select(d => d.DetailGUID)
+                            .ToListAsync();
+
+                        var existingDetailSet = new HashSet<string>(existingDetailGuids);
+
+                        var detailsToInsert = new List<WareHouseOrderDetails>();
+                        var detailsToUpdate = new List<WareHouseOrderDetails>();
+
+                        foreach (var hqDetail in hqUpdatedDetails)
+                        {
+                            var localDetail = _mapper.Map<WareHouseOrderDetails>(hqDetail);
+                            localDetail.IsDeleted = false;
+                            localDetail.UpdatedAt = hqDetail.FGC_LastModifyDate ?? DateTime.Now;
+                            localDetail.UpdatedBy = hqDetail.FGC_LastModifier ?? "HQ同步";
+
+                            if (existingDetailSet.Contains(localDetail.DetailGUID))
+                            {
+                                localDetail.CreatedAt = hqDetail.FGC_CreateDate ?? DateTime.Now;
+                                localDetail.CreatedBy = hqDetail.FGC_Creator ?? "HQ同步";
+                                detailsToUpdate.Add(localDetail);
+                            }
+                            else
+                            {
+                                localDetail.CreatedAt = hqDetail.FGC_CreateDate ?? DateTime.Now;
+                                localDetail.CreatedBy = hqDetail.FGC_Creator ?? "HQ同步";
+                                detailsToInsert.Add(localDetail);
+                            }
+                        }
+
+                        if (detailsToInsert.Any())
+                        {
+                            await _db.Insertable(detailsToInsert).ExecuteCommandAsync();
+                        }
+
+                        foreach (var detail in detailsToUpdate)
+                        {
+                            await _db.Updateable<WareHouseOrderDetails>()
+                                .SetColumns(d => new WareHouseOrderDetails
+                                {
+                                    StoreCode = detail.StoreCode,
+                                    ProductCode = detail.ProductCode,
+                                    Quantity = detail.Quantity,
+                                    OEMPrice = detail.OEMPrice,
+                                    OEMAmount = detail.OEMAmount,
+                                    AllocQuantity = detail.AllocQuantity,
+                                    ImportPrice = detail.ImportPrice,
+                                    ImportAmount = detail.ImportAmount,
+                                    UpdatedAt = detail.UpdatedAt,
+                                    UpdatedBy = detail.UpdatedBy,
+                                })
+                                .Where(d => d.DetailGUID == detail.DetailGUID)
+                                .ExecuteCommandAsync();
+                        }
+
+                        result.DetailsUpdated = detailsToInsert.Count + detailsToUpdate.Count;
+                    }
+                }
+
+                var hasChanges =
+                    result.OrdersSynced > 0
+                    || result.DetailsSynced > 0
+                    || result.OrdersUpdated > 0
+                    || result.DetailsUpdated > 0;
+
+                if (hasChanges)
+                {
+                    result.Message =
+                        $"同步成功：新增订单 {result.OrdersSynced} 条、详情 {result.DetailsSynced} 条；"
+                        + $"更新订单 {result.OrdersUpdated} 条、详情 {result.DetailsUpdated} 条";
+                }
+                else
+                {
+                    result.Message = "所有订单已是最新，无需同步";
+                }
+
                 return result;
             }
             catch (Exception ex)
@@ -1980,7 +2132,12 @@ namespace BlazorApp.Api.Services.React
                     _httpContextAccessor.HttpContext?.User?.Identity?.Name ?? "System";
 
                 await _db.Updateable(order)
-                    .UpdateColumns(o => new { o.FlowStatus, o.UpdatedAt, o.UpdatedBy })
+                    .UpdateColumns(o => new
+                    {
+                        o.FlowStatus,
+                        o.UpdatedAt,
+                        o.UpdatedBy,
+                    })
                     .ExecuteCommandAsync();
 
                 return new ApiResponse<bool> { Success = true, Data = true };
@@ -2025,7 +2182,12 @@ namespace BlazorApp.Api.Services.React
                     _httpContextAccessor.HttpContext?.User?.Identity?.Name ?? "System";
 
                 await _db.Updateable(order)
-                    .UpdateColumns(o => new { o.FlowStatus, o.UpdatedAt, o.UpdatedBy })
+                    .UpdateColumns(o => new
+                    {
+                        o.FlowStatus,
+                        o.UpdatedAt,
+                        o.UpdatedBy,
+                    })
                     .ExecuteCommandAsync();
 
                 return new ApiResponse<bool> { Success = true, Data = true };

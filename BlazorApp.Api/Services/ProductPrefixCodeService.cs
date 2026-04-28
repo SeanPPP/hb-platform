@@ -173,7 +173,7 @@ namespace BlazorApp.Api.Services
 
                 // 获取使用该前缀的商品数量
                 var productCount = await db.Queryable<DomesticProduct>()
-                    .Where(p => p.HBProductNo != null && p.HBProductNo.Contains($"-{prefix.PrefixName}-") && !p.IsDeleted)
+                    .Where(p => p.SupplierCode == prefix.SupplierCode && p.HBProductNo != null && p.HBProductNo.Contains($"-{prefix.PrefixName}-") && !p.IsDeleted)
                     .CountAsync();
 
                 var prefixDetailDto = _mapper.Map<ProductPrefixCodeDetailDto>(prefix);
@@ -373,7 +373,7 @@ namespace BlazorApp.Api.Services
 
                 // 检查是否有商品使用该前缀
                 var productCount = await db.Queryable<DomesticProduct>()
-                    .Where(p => p.HBProductNo != null && p.HBProductNo.Contains($"-{prefix.PrefixName}-") && !p.IsDeleted)
+                    .Where(p => p.SupplierCode == prefix.SupplierCode && p.HBProductNo != null && p.HBProductNo.Contains($"-{prefix.PrefixName}-") && !p.IsDeleted)
                     .CountAsync();
 
                 if (productCount > 0)
@@ -564,18 +564,17 @@ namespace BlazorApp.Api.Services
                 }
 
                 // 检查是否有商品使用这些前缀
-                var prefixNames = prefixes.Select(p => p.PrefixName).ToList();
                 var usedPrefixes = new List<string>();
 
-                foreach (var prefixName in prefixNames)
+                foreach (var prefixItem in prefixes)
                 {
                     var productCount = await db.Queryable<DomesticProduct>()
-                        .Where(p => p.HBProductNo != null && p.HBProductNo.Contains($"-{prefixName}-") && !p.IsDeleted)
+                        .Where(p => p.SupplierCode == prefixItem.SupplierCode && p.HBProductNo != null && p.HBProductNo.Contains($"-{prefixItem.PrefixName}-") && !p.IsDeleted)
                         .CountAsync();
 
                     if (productCount > 0)
                     {
-                        usedPrefixes.Add(prefixName);
+                        usedPrefixes.Add(prefixItem.PrefixName);
                     }
                 }
 

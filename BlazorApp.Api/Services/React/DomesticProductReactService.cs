@@ -1016,7 +1016,10 @@ namespace BlazorApp.Api.Services.React
                 {
                     _logger.LogWarning(
                         "检测到数据库中存在重复货号: {DuplicateHBNos}",
-                        string.Join(", ", hbProductNoGroups.Select(g => $"{g.Key}({g.Value.Count}个)"))
+                        string.Join(
+                            ", ",
+                            hbProductNoGroups.Select(g => $"{g.Key}({g.Value.Count}个)")
+                        )
                     );
                 }
 
@@ -1044,8 +1047,13 @@ namespace BlazorApp.Api.Services.React
                         result.ExistingData.SupplierName = supplier.SupplierName;
 
                         // 检测该货号是否在数据库中有重复（2个以上商品使用同一货号）
-                        if (!string.IsNullOrWhiteSpace(inputProduct.HBProductNo) &&
-                            hbProductNoGroups.TryGetValue(inputProduct.HBProductNo, out var duplicateCodes))
+                        if (
+                            !string.IsNullOrWhiteSpace(inputProduct.HBProductNo)
+                            && hbProductNoGroups.TryGetValue(
+                                inputProduct.HBProductNo,
+                                out var duplicateCodes
+                            )
+                        )
                         {
                             result.HasDuplicateInDatabase = true;
                             result.DuplicateProductCodes = duplicateCodes;
@@ -2750,17 +2758,17 @@ namespace BlazorApp.Api.Services.React
                                 .Where(p => !string.IsNullOrWhiteSpace(p.ProductImage))
                                 .ToList();
                             if (productImages.Any())
-                        {
-                            var cases = string.Join(
-                                "",
-                                productImages.Select(p =>
-                                    $"WHEN '{p.ProductCode}' THEN '{p.ProductImage.Replace("'", "''")}' "
-                                )
-                            );
-                            updateSqlParts.Add(
-                                $"[商品图片] = CASE [商品编码] {cases}ELSE [商品图片] END"
-                            );
-                        }
+                            {
+                                var cases = string.Join(
+                                    "",
+                                    productImages.Select(p =>
+                                        $"WHEN '{p.ProductCode}' THEN '{p.ProductImage.Replace("'", "''")}' "
+                                    )
+                                );
+                                updateSqlParts.Add(
+                                    $"[商品图片] = CASE [商品编码] {cases}ELSE [商品图片] END"
+                                );
+                            }
                         }
 
                         // 审计字段更新

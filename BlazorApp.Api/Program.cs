@@ -360,6 +360,7 @@ builder.Services.AddScoped<IProductPrefixCodeService, ProductPrefixCodeService>(
 builder.Services.AddScoped<IDomesticProductService, DomesticProductService>(); // 国内商品管理服务
 builder.Services.AddScoped<IDomesticSetProductService, DomesticSetProductService>(); // 套装商品管理服务
 builder.Services.AddScoped<ItemBarcodeService>(); // 货号条码生成服务
+builder.Services.AddScoped<IDomesticProductCreationService, DomesticProductCreationService>(); // 国内商品货号条码批量创建服务
 builder.Services.AddScoped<IAutoPricingService, AutoPricingService>(); // 自动定价计算服务
 builder.Services.AddScoped<IVersionInfoService, VersionInfoService>(); // 版本管理服务
 

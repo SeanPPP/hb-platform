@@ -1224,6 +1224,42 @@ namespace BlazorApp.Api.Controllers.React
                 );
             }
         }
+
+        [HttpPost("special-product-from-hq")]
+         [AllowAnonymous] // 🔓 允许匿名访问，登录不需要认证
+        public async Task<IActionResult> SyncSpecialProductFromHq(
+            [FromBody] ReactStoreSyncRequest? request = null
+        )
+        {
+            try
+            {
+                var storeInfo =
+                    request?.SelectedStoreCodes?.Any() == true
+                        ? string.Join(", ", request!.SelectedStoreCodes!)
+                        : "全部分店";
+                _logger.LogInformation("[ReactSync] 开始同步特殊商品标记：{StoreInfo}", storeInfo);
+                var result = await _fullSyncService.SyncSpecialProductFromHqAsync(
+                    request?.SelectedStoreCodes
+                );
+                if (result.IsSuccess)
+                {
+                    _logger.LogInformation(
+                        "[ReactSync] 特殊商品标记同步成功: 更新{Updated}",
+                        result.UpdatedCount
+                    );
+                    return Ok(ApiResponse<SyncResult>.OK(result, "特殊商品标记同步成功"));
+                }
+                return Ok(ApiResponse<SyncResult>.OK(result, "特殊商品标记同步完成，但存在错误"));
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "[ReactSync] 特殊商品标记同步异常");
+                return StatusCode(
+                    500,
+                    ApiResponse<SyncResult>.Error("特殊商品标记同步异常", "INTERNAL_ERROR")
+                );
+            }
+        }
     }
 }
 

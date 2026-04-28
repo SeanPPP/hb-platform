@@ -639,7 +639,9 @@ namespace BlazorApp.Api.Services.React
                                     catch (Exception ex) when (consumerRetries < 3)
                                     {
                                         consumerRetries++;
-                                        var delay = TimeSpan.FromSeconds(Math.Pow(2, consumerRetries));
+                                        var delay = TimeSpan.FromSeconds(
+                                            Math.Pow(2, consumerRetries)
+                                        );
                                         _logger.LogWarning(
                                             ex,
                                             "[ReactSync] 分店{Store}消费者{Idx}写入失败，重试{Retry}/3",
@@ -650,7 +652,10 @@ namespace BlazorApp.Api.Services.React
                                         await Task.Delay(delay);
                                         try
                                         {
-                                            if (consumerDb.Ado.Connection.State == System.Data.ConnectionState.Closed)
+                                            if (
+                                                consumerDb.Ado.Connection.State
+                                                == System.Data.ConnectionState.Closed
+                                            )
                                                 consumerDb.Ado.Connection.Open();
                                         }
                                         catch { }
@@ -4247,6 +4252,115 @@ namespace BlazorApp.Api.Services.React
                 result.EndTime = DateTime.Now;
                 result.Duration = result.EndTime - result.StartTime;
             }
+            return result;
+        }
+
+        public async Task<SyncResult> SyncSpecialProductFromHqAsync(
+            List<string>? selectedStoreCodes = null
+        )
+        {
+            var result = new SyncResult { StartTime = DateTime.Now };
+            var totalUpdated = 0;
+            var totalErrors = 0;
+
+            try
+            {
+                _logger.LogInformation("[ReactSync] 开始同步特殊商品标记 HQ → 本地");
+
+                using var hqDb = HqSqlSugarContext.CreateConcurrentConnection(_configuration);
+                using var localDb = SqlSugarContext.CreateConcurrentConnection(_configuration);
+
+                var query = hqDb
+                    .Queryable<DIC_商品零售价表>()
+                    .Where(x => x.H是否特殊商品 == true && x.H使用状态 == true);
+
+                if (selectedStoreCodes?.Any() == true)
+                {
+                    query = query.Where(x => selectedStoreCodes.Contains(x.H分店代码));
+                }
+
+                var hqSpecialProducts = await query
+                    .Select(x => new { x.H分店代码, x.H商品编码 })
+                    .ToListAsync();
+
+                if (!hqSpecialProducts.Any())
+                {
+                    result.IsSuccess = true;
+                    result.Message = "HQ 未发现特殊商品记录";
+                    return result;
+                }
+
+                _logger.LogInformation(
+                    "[ReactSync] HQ 特殊商品记录数: {Count}",
+                    hqSpecialProducts.Count
+                );
+
+                var groupedByStore = hqSpecialProducts
+                    .GroupBy(x => x.H分店代码)
+                    .ToList();
+
+                foreach (var storeGroup in groupedByStore)
+                {
+                    var storeCode = storeGroup.Key;
+                    var productCodes = storeGroup.Select(x => x.H商品编码).Distinct().ToList();
+
+                    try
+                    {
+                        const int batchSize = 500;
+                        var batchCount = (int)Math.Ceiling(productCodes.Count / (double)batchSize);
+
+                        for (int i = 0; i < batchCount; i++)
+                        {
+                            var batchCodes = productCodes
+                                .Skip(i * batchSize)
+                                .Take(batchSize)
+                                .ToList();
+
+                            var updated = await localDb
+                                .Updateable<StoreRetailPrice>()
+                                .SetColumns(x => x.IsSpecialProduct == true)
+                                .Where(x =>
+                                    x.StoreCode == storeCode
+                                    && x.ProductCode != null
+                                    && batchCodes.Contains(x.ProductCode)
+                                )
+                                .ExecuteCommandAsync();
+
+                            totalUpdated += updated;
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        totalErrors++;
+                        _logger.LogError(
+                            ex,
+                            "[ReactSync] 分店 {StoreCode} 特殊商品标记同步失败",
+                            storeCode
+                        );
+                    }
+                }
+
+                result.UpdatedCount = totalUpdated;
+                result.ErrorCount = totalErrors;
+                result.IsSuccess = totalErrors == 0;
+                result.TotalCount = totalUpdated + totalErrors;
+                result.Message =
+                    totalErrors == 0
+                        ? $"特殊商品标记同步成功：更新{totalUpdated:N0}条记录"
+                        : $"特殊商品标记同步完成：更新{totalUpdated:N0}条，失败{totalErrors}个分店";
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "[ReactSync] 特殊商品标记同步异常");
+                result.IsSuccess = false;
+                result.Message = "特殊商品标记同步异常: " + ex.Message;
+            }
+            finally
+            {
+                result.EndTime = DateTime.Now;
+                result.Duration = result.EndTime - result.StartTime;
+            }
+
             return result;
         }
     }

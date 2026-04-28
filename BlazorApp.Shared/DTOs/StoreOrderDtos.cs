@@ -291,6 +291,7 @@ namespace BlazorApp.Shared.DTOs
     public string OrderGUID { get; set; } = string.Empty;
     public string OrderNo { get; set; } = string.Empty;
     public string? StoreCode { get; set; }
+    public string? StoreName { get; set; }
     public DateTime? OrderDate { get; set; }
     public int FlowStatus { get; set; }
 
@@ -469,25 +470,17 @@ public class CopyOrderResultDto
 /// </summary>
 public class SyncMissingOrdersResultDto
 {
-    /// <summary>
-    /// 是否成功
-    /// </summary>
     public bool Success { get; set; }
 
-    /// <summary>
-    /// 消息
-    /// </summary>
     public string Message { get; set; } = string.Empty;
 
-    /// <summary>
-    /// 同步的订单数量
-    /// </summary>
     public int OrdersSynced { get; set; }
 
-    /// <summary>
-    /// 同步的明细数量
-    /// </summary>
     public int DetailsSynced { get; set; }
+
+    public int OrdersUpdated { get; set; }
+
+    public int DetailsUpdated { get; set; }
 }
 
 /// <summary>

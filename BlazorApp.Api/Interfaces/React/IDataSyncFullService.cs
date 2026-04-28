@@ -112,5 +112,9 @@ namespace BlazorApp.Api.Interfaces.React
             int hqBatchSize = 50000,
             int writePageSize = 10000
         );
+
+        Task<SyncResult> SyncSpecialProductFromHqAsync(
+            List<string>? selectedStoreCodes = null
+        );
     }
 }

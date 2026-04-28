@@ -199,7 +199,8 @@ namespace BlazorApp.Api.Services.React
 
                 var productCount = await db.Queryable<DomesticProduct>()
                     .Where(p =>
-                        p.HBProductNo != null
+                        p.SupplierCode == prefix.SupplierCode
+                        && p.HBProductNo != null
                         && p.HBProductNo.Contains($"-{prefix.PrefixName}-")
                         && !p.IsDeleted
                     )
