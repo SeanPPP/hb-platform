@@ -10,6 +10,8 @@ namespace BlazorApp.Api.Interfaces.React
     public interface IProductPrefixCodeReactService
     {
         Task<ApiResponse<List<SimpleProductPrefixCodeDto>>> GetPrefixesBySupplierCodeAsync(string supplierCode);
+        Task<ApiResponse<PagedResult<ProductPrefixCodeDto>>> GetAllPrefixesAsync(ProductPrefixCodeQueryDto query);
+        Task<ApiResponse<PagedResult<DomesticProductDto>>> GetProductsByPrefixCodeAsync(string prefixCode, int page, int pageSize);
         Task<ApiResponse<ProductPrefixCodeDto>> CreateProductPrefixCodeAsync(CreateProductPrefixCodeDto dto);
         Task<ApiResponse<ProductPrefixCodeDto>> UpdateProductPrefixCodeAsync(string prefixCode, UpdateProductPrefixCodeDto dto);
         Task<ApiResponse<bool>> DeleteProductPrefixCodeAsync(string prefixCode);

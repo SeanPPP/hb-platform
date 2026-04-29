@@ -59,6 +59,168 @@ namespace BlazorApp.Api.Services.React
             }
         }
 
+        public async Task<ApiResponse<PagedResult<ProductPrefixCodeDto>>> GetAllPrefixesAsync(
+            ProductPrefixCodeQueryDto query)
+        {
+            try
+            {
+                var db = _context.Db;
+
+                var prefixQuery = db.Queryable<ProductPrefixCode>()
+                    .LeftJoin<ChinaSupplier>((p, s) => p.SupplierCode == s.SupplierCode)
+                    .Where((p, s) => !p.IsDeleted);
+
+                if (!string.IsNullOrWhiteSpace(query.Search))
+                {
+                    prefixQuery = prefixQuery.Where((p, s) =>
+                        p.PrefixName.Contains(query.Search) ||
+                        (p.PrefixDescription != null && p.PrefixDescription.Contains(query.Search)) ||
+                        (s.SupplierName != null && s.SupplierName.Contains(query.Search)));
+                }
+
+                if (!string.IsNullOrWhiteSpace(query.SupplierCode))
+                {
+                    prefixQuery = prefixQuery.Where((p, s) => p.SupplierCode == query.SupplierCode);
+                }
+
+                if (query.IsActive.HasValue)
+                {
+                    prefixQuery = prefixQuery.Where((p, s) => p.IsActive == query.IsActive.Value);
+                }
+
+                if (!string.IsNullOrEmpty(query.SortField))
+                {
+                    var isDescending = !string.IsNullOrEmpty(query.SortDirection) &&
+                                     query.SortDirection.ToLower() == "desc";
+
+                    prefixQuery = query.SortField.ToLower() switch
+                    {
+                        "prefixname" => isDescending
+                            ? prefixQuery.OrderByDescending((p, s) => p.PrefixName)
+                            : prefixQuery.OrderBy((p, s) => p.PrefixName),
+                        "suppliercode" => isDescending
+                            ? prefixQuery.OrderByDescending((p, s) => p.SupplierCode)
+                            : prefixQuery.OrderBy((p, s) => p.SupplierCode),
+                        "isactive" => isDescending
+                            ? prefixQuery.OrderByDescending((p, s) => p.IsActive)
+                            : prefixQuery.OrderBy((p, s) => p.IsActive),
+                        "sortorder" => isDescending
+                            ? prefixQuery.OrderByDescending((p, s) => p.SortOrder)
+                            : prefixQuery.OrderBy((p, s) => p.SortOrder),
+                        "createdat" => isDescending
+                            ? prefixQuery.OrderByDescending((p, s) => p.CreatedAt)
+                            : prefixQuery.OrderBy((p, s) => p.CreatedAt),
+                        _ => prefixQuery.OrderBy((p, s) => p.SortOrder).OrderBy((p, s) => p.CreatedAt)
+                    };
+                }
+                else
+                {
+                    prefixQuery = prefixQuery.OrderBy((p, s) => p.SortOrder).OrderBy((p, s) => p.CreatedAt);
+                }
+
+                var totalCount = await prefixQuery.CountAsync();
+
+                var prefixes = await prefixQuery
+                    .Select((p, s) => new
+                    {
+                        Prefix = p,
+                        SupplierName = s.SupplierName
+                    })
+                    .Skip(query.Skip)
+                    .Take(query.Take)
+                    .ToListAsync();
+
+                var prefixDtos = prefixes.Select(x =>
+                {
+                    var dto = _mapper.Map<ProductPrefixCodeDto>(x.Prefix);
+                    dto.SupplierName = x.SupplierName;
+                    return dto;
+                }).ToList();
+
+                var result = new PagedResult<ProductPrefixCodeDto>
+                {
+                    Items = prefixDtos,
+                    Total = totalCount,
+                    Page = query.Page,
+                    PageSize = query.PageSize
+                };
+
+                return ApiResponse<PagedResult<ProductPrefixCodeDto>>.OK(result);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "获取所有前缀列表失败");
+                return ApiResponse<PagedResult<ProductPrefixCodeDto>>.Error(
+                    "获取前缀列表失败",
+                    "GET_ALL_PREFIXES_ERROR"
+                );
+            }
+        }
+
+        public async Task<ApiResponse<PagedResult<DomesticProductDto>>> GetProductsByPrefixCodeAsync(
+            string prefixCode, int page, int pageSize)
+        {
+            try
+            {
+                var db = _context.Db;
+
+                var prefix = await db.Queryable<ProductPrefixCode>()
+                    .Where(p => p.PrefixCode == prefixCode && !p.IsDeleted)
+                    .FirstAsync();
+
+                if (prefix == null)
+                {
+                    return ApiResponse<PagedResult<DomesticProductDto>>.Error(
+                        "前缀不存在",
+                        "PREFIX_NOT_FOUND"
+                    );
+                }
+
+                var productQuery = db.Queryable<DomesticProduct>()
+                    .LeftJoin<ChinaSupplier>((p, s) => p.SupplierCode == s.SupplierCode)
+                    .Where((p, s) => !p.IsDeleted && p.SupplierCode == prefix.SupplierCode)
+                    .Where(p => p.HBProductNo != null && p.HBProductNo.Contains($"-{prefix.PrefixName}-"))
+                    .OrderByDescending(p => p.CreatedAt);
+
+                var totalCount = await productQuery.CountAsync();
+
+                var products = await productQuery
+                    .Select((p, s) => new
+                    {
+                        Product = p,
+                        SupplierName = s.SupplierName
+                    })
+                    .Skip((page - 1) * pageSize)
+                    .Take(pageSize)
+                    .ToListAsync();
+
+                var productDtos = products.Select(x =>
+                {
+                    var dto = _mapper.Map<DomesticProductDto>(x.Product);
+                    dto.SupplierName = x.SupplierName;
+                    return dto;
+                }).ToList();
+
+                var result = new PagedResult<DomesticProductDto>
+                {
+                    Items = productDtos,
+                    Total = totalCount,
+                    Page = page,
+                    PageSize = pageSize
+                };
+
+                return ApiResponse<PagedResult<DomesticProductDto>>.OK(result);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "获取前缀关联商品失败，PrefixCode: {PrefixCode}", prefixCode);
+                return ApiResponse<PagedResult<DomesticProductDto>>.Error(
+                    "获取关联商品失败",
+                    "GET_PREFIX_PRODUCTS_ERROR"
+                );
+            }
+        }
+
         public async Task<ApiResponse<ProductPrefixCodeDto>> CreateProductPrefixCodeAsync(
             CreateProductPrefixCodeDto dto
         )

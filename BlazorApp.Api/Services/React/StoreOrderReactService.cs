@@ -953,6 +953,11 @@ namespace BlazorApp.Api.Services.React
                         ),
 
                         Remarks = o.Remarks,
+
+                        CreatedAt = o.CreatedAt,
+                        CreatedBy = o.CreatedBy,
+                        UpdatedAt = o.UpdatedAt,
+                        UpdatedBy = o.UpdatedBy,
                     })
                     .ToListAsync();
 
@@ -2196,6 +2201,116 @@ namespace BlazorApp.Api.Services.React
             {
                 _logger.LogError(ex, "StartPickingAsync failed");
                 return new ApiResponse<bool> { Success = false, Message = ex.Message };
+            }
+        }
+
+        public async Task<ApiResponse<bool>> UpdateOrderStatusAsync(string orderGuid, int newStatus)
+        {
+            try
+            {
+                if (newStatus != 1 && newStatus != 2)
+                {
+                    return new ApiResponse<bool>
+                    {
+                        Success = false,
+                        Message = "Invalid status. Only 1 (Submitted) or 2 (Completed) are allowed."
+                    };
+                }
+
+                var order = await _db.Queryable<WareHouseOrder>()
+                    .Where(o => o.OrderGUID == orderGuid && !o.IsDeleted)
+                    .FirstAsync();
+
+                if (order == null)
+                {
+                    return new ApiResponse<bool> { Success = false, Message = "Order not found" };
+                }
+
+                if (order.FlowStatus == newStatus)
+                {
+                    return new ApiResponse<bool>
+                    {
+                        Success = false,
+                        Message = "Status is already the target status"
+                    };
+                }
+
+                var userId = _httpContextAccessor.HttpContext?.User?.Identity?.Name ?? "System";
+
+                _logger.LogInformation(
+                    "Updating order {OrderGUID} status from {OldStatus} to {NewStatus}",
+                    orderGuid, order.FlowStatus, newStatus
+                );
+
+                order.FlowStatus = newStatus;
+                order.UpdatedAt = DateTime.Now;
+                order.UpdatedBy = userId;
+
+                await _db.Updateable(order)
+                    .UpdateColumns(o => new
+                    {
+                        o.FlowStatus,
+                        o.UpdatedAt,
+                        o.UpdatedBy,
+                    })
+                    .ExecuteCommandAsync();
+
+                var statusText = newStatus == 1 ? "Submitted" : "Completed";
+                return new ApiResponse<bool> { Success = true, Data = true, Message = $"Status changed to {statusText}" };
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "UpdateOrderStatusAsync failed for order {OrderGUID}", orderGuid);
+                return new ApiResponse<bool> { Success = false, Message = ex.Message };
+            }
+        }
+
+        public async Task<ApiResponse<int>> BatchUpdateOrderStatusAsync(List<string> orderGuids, int newStatus)
+        {
+            try
+            {
+                if (newStatus != 1 && newStatus != 2)
+                {
+                    return new ApiResponse<int>
+                    {
+                        Success = false,
+                        Message = "Invalid status. Only 1 (Submitted) or 2 (Completed) are allowed."
+                    };
+                }
+
+                if (orderGuids == null || orderGuids.Count == 0)
+                {
+                    return new ApiResponse<int> { Success = false, Message = "No orders specified" };
+                }
+
+                var userId = _httpContextAccessor.HttpContext?.User?.Identity?.Name ?? "System";
+
+                _logger.LogInformation(
+                    "Batch updating {Count} orders to status {NewStatus}",
+                    orderGuids.Count, newStatus
+                );
+
+                var updatedCount = await _db.Updateable<WareHouseOrder>()
+                    .SetColumns(o => new WareHouseOrder
+                    {
+                        FlowStatus = newStatus,
+                        UpdatedAt = DateTime.Now,
+                        UpdatedBy = userId
+                    })
+                    .Where(o => orderGuids.Contains(o.OrderGUID) && !o.IsDeleted)
+                    .ExecuteCommandAsync();
+
+                return new ApiResponse<int>
+                {
+                    Success = true,
+                    Data = updatedCount,
+                    Message = $"Updated {updatedCount} orders"
+                };
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "BatchUpdateOrderStatusAsync failed");
+                return new ApiResponse<int> { Success = false, Message = ex.Message };
             }
         }
     }

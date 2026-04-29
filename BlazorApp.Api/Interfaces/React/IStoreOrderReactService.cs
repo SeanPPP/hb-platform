@@ -127,5 +127,15 @@ namespace BlazorApp.Api.Interfaces.React
         /// 开始配货 (FlowStatus -> 3)
         /// </summary>
         Task<ApiResponse<bool>> StartPickingAsync(string orderGuid);
+
+        /// <summary>
+        /// 更新订单状态 (支持双向切换 Submitted/Completed)
+        /// </summary>
+        Task<ApiResponse<bool>> UpdateOrderStatusAsync(string orderGuid, int newStatus);
+
+        /// <summary>
+        /// 批量更新订单状态
+        /// </summary>
+        Task<ApiResponse<int>> BatchUpdateOrderStatusAsync(List<string> orderGuids, int newStatus);
     }
 }

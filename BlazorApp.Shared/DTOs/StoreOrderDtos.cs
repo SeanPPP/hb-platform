@@ -320,6 +320,26 @@ namespace BlazorApp.Shared.DTOs
     public int TotalAllocQuantity { get; set; }
 
     public string? Remarks { get; set; }
+
+    /// <summary>
+    /// 创建时间
+    /// </summary>
+    public DateTime CreatedAt { get; set; }
+
+    /// <summary>
+    /// 创建者
+    /// </summary>
+    public string? CreatedBy { get; set; }
+
+    /// <summary>
+    /// 更新时间
+    /// </summary>
+    public DateTime? UpdatedAt { get; set; }
+
+    /// <summary>
+    /// 更新者
+    /// </summary>
+    public string? UpdatedBy { get; set; }
   }
 
   /// <summary>
@@ -492,4 +512,40 @@ public class SyncMissingOrdersRequestDto
     /// 分店代码（可选，不传则同步所有分店）
     /// </summary>
     public string? StoreCode { get; set; }
+}
+
+/// <summary>
+/// 更新订单状态请求
+/// </summary>
+public class UpdateOrderStatusDto
+{
+    /// <summary>
+    /// 订单GUID
+    /// </summary>
+    [Required]
+    public string OrderGUID { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 新状态 (1=Submitted, 2=Completed)
+    /// </summary>
+    [Required]
+    public int NewStatus { get; set; }
+}
+
+/// <summary>
+/// 批量更新订单状态请求
+/// </summary>
+public class BatchUpdateOrderStatusDto
+{
+    /// <summary>
+    /// 订单GUID列表
+    /// </summary>
+    [Required]
+    public List<string> OrderGUIDs { get; set; } = new();
+
+    /// <summary>
+    /// 新状态 (1=Submitted, 2=Completed)
+    /// </summary>
+    [Required]
+    public int NewStatus { get; set; }
 }

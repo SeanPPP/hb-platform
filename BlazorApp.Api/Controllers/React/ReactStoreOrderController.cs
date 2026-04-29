@@ -686,5 +686,49 @@ namespace BlazorApp.Api.Controllers.React
                 return StatusCode(500, new { success = false, message = "服务器内部错误" });
             }
         }
+
+        /// <summary>
+        /// 更新订单状态 (Submitted ↔ Completed)
+        /// </summary>
+        [HttpPost("status")]
+        public async Task<IActionResult> UpdateOrderStatus([FromBody] UpdateOrderStatusDto request)
+        {
+            try
+            {
+                var result = await _service.UpdateOrderStatusAsync(request.OrderGUID, request.NewStatus);
+                if (result.Success)
+                {
+                    return Ok(new { success = true, data = result.Data, message = result.Message });
+                }
+                return BadRequest(new { success = false, message = result.Message });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "UpdateOrderStatus failed");
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
+        /// <summary>
+        /// 批量更新订单状态
+        /// </summary>
+        [HttpPost("batch-status")]
+        public async Task<IActionResult> BatchUpdateOrderStatus([FromBody] BatchUpdateOrderStatusDto request)
+        {
+            try
+            {
+                var result = await _service.BatchUpdateOrderStatusAsync(request.OrderGUIDs, request.NewStatus);
+                if (result.Success)
+                {
+                    return Ok(new { success = true, data = result.Data, message = result.Message });
+                }
+                return BadRequest(new { success = false, message = result.Message });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "BatchUpdateOrderStatus failed");
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
     }
 }

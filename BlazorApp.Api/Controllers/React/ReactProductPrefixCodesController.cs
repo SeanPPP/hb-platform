@@ -67,6 +67,118 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         /// <summary>
+        /// 获取所有前缀列表（分页，支持筛选）
+        /// </summary>
+        /// <param name="page">页码</param>
+        /// <param name="pageSize">每页数量</param>
+        /// <param name="search">搜索关键词</param>
+        /// <param name="supplierCode">供应商编码</param>
+        /// <param name="isActive">是否启用</param>
+        /// <returns>前缀分页列表</returns>
+        [HttpGet]
+        [Authorize(Roles = "Admin,WarehouseManager")]
+        public async Task<IActionResult> GetAllPrefixes(
+            [FromQuery] int page = 1,
+            [FromQuery] int pageSize = 20,
+            [FromQuery] string? search = null,
+            [FromQuery] string? supplierCode = null,
+            [FromQuery] bool? isActive = null)
+        {
+            try
+            {
+                var query = new BlazorApp.Shared.DTOs.ProductPrefixCodeQueryDto
+                {
+                    Page = page,
+                    PageSize = pageSize,
+                    Search = search,
+                    SupplierCode = supplierCode,
+                    IsActive = isActive
+                };
+
+                var result = await _productPrefixCodeReactService.GetAllPrefixesAsync(query);
+
+                if (result.Success)
+                {
+                    return Ok(new
+                    {
+                        success = true,
+                        data = result.Data,
+                        message = "获取前缀列表成功"
+                    });
+                }
+
+                return BadRequest(new
+                {
+                    success = false,
+                    message = result.Message
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "获取所有前缀列表失败");
+                return StatusCode(500, new
+                {
+                    success = false,
+                    message = "获取前缀列表失败"
+                });
+            }
+        }
+
+        /// <summary>
+        /// 获取前缀关联的商品列表
+        /// </summary>
+        /// <param name="prefixCode">前缀编码</param>
+        /// <param name="page">页码</param>
+        /// <param name="pageSize">每页数量</param>
+        /// <returns>商品分页列表</returns>
+        [HttpGet("{prefixCode}/products")]
+        [Authorize(Roles = "Admin,WarehouseManager")]
+        public async Task<IActionResult> GetProductsByPrefixCode(
+            string prefixCode,
+            [FromQuery] int page = 1,
+            [FromQuery] int pageSize = 20)
+        {
+            try
+            {
+                var result = await _productPrefixCodeReactService.GetProductsByPrefixCodeAsync(prefixCode, page, pageSize);
+
+                if (result.Success)
+                {
+                    return Ok(new
+                    {
+                        success = true,
+                        data = result.Data,
+                        message = "获取关联商品成功"
+                    });
+                }
+
+                if (result.ErrorCode == "PREFIX_NOT_FOUND")
+                {
+                    return NotFound(new
+                    {
+                        success = false,
+                        message = result.Message
+                    });
+                }
+
+                return BadRequest(new
+                {
+                    success = false,
+                    message = result.Message
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "获取前缀关联商品失败，PrefixCode: {PrefixCode}", prefixCode);
+                return StatusCode(500, new
+                {
+                    success = false,
+                    message = "获取关联商品失败"
+                });
+            }
+        }
+
+        /// <summary>
         /// 创建商品前缀
         /// </summary>
         /// <param name="dto">创建商品前缀DTO</param>
