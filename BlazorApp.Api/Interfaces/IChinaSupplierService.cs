@@ -57,5 +57,10 @@ namespace BlazorApp.Api.Interfaces
         /// 自动生成下一个供应商编码
         /// </summary>
         Task<ApiResponse<string>> GenerateNextSupplierCodeAsync();
+
+        /// <summary>
+        /// 同步选中的供应商到HBSales数据库
+        /// </summary>
+        Task<ApiResponse<SyncToHbSalesResultDto>> SyncToHbSalesAsync(List<string> guids);
     }
 }

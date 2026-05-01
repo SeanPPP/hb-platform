@@ -1,7 +1,7 @@
 using BlazorApp.Api.Data;
 using BlazorApp.Shared.DTOs;
-using BlazorApp.Shared.Models;
 using BlazorApp.Shared.DTOs;
+using BlazorApp.Shared.Models;
 using Microsoft.Extensions.Logging;
 using SqlSugar;
 
@@ -19,7 +19,8 @@ namespace BlazorApp.Api.Services
         public DomesticProductCreationService(
             SqlSugarContext context,
             ItemBarcodeService itemBarcodeService,
-            ILogger<DomesticProductCreationService> logger)
+            ILogger<DomesticProductCreationService> logger
+        )
         {
             _context = context;
             _itemBarcodeService = itemBarcodeService;
@@ -30,73 +31,292 @@ namespace BlazorApp.Api.Services
         /// 批量创建国内商品
         /// </summary>
         public async Task<ApiResponse<CreateDomesticProductBatchResponse>> CreateBatchAsync(
-            CreateDomesticProductBatchRequest request)
+            CreateDomesticProductBatchRequest request
+        )
         {
             try
             {
-                // 生成批次号
                 var batchNumber = await GenerateBatchNumberAsync();
-                
-                // 获取供应商名称
-                var supplier = await _context.ChinaSupplierDb.GetFirstAsync(x => x.SupplierCode == request.SupplierCode);
+
+                var supplier = await _context.ChinaSupplierDb.GetFirstAsync(x =>
+                    x.SupplierCode == request.SupplierCode
+                );
                 var supplierName = supplier?.SupplierName;
+
+                var mainItems = request
+                    .Items.Where(i => string.IsNullOrEmpty(i.ParentItemNumber))
+                    .ToList();
+                var subItems = request
+                    .Items.Where(i => !string.IsNullOrEmpty(i.ParentItemNumber))
+                    .ToList();
+
+                var normalItems = mainItems.Where(i => i.ProductType != 1).ToList();
+                var setItems = mainItems.Where(i => i.ProductType == 1).ToList();
+
+                var allProducts = new List<DomesticProduct>();
+                var allSetProducts = new List<DomesticSetProduct>();
+                var allLogs = new List<DomesticProductCreationLog>();
+                var responseItems = new List<BatchCreatedItemDto>();
+
+                if (normalItems.Any())
+                {
+                    var codes = await _itemBarcodeService.GenerateBatchItemNumbersAndBarcodesAsync(
+                        request.SupplierCode,
+                        ProductTypeEnum.Normal,
+                        normalItems.Count,
+                        request.PrefixName
+                    );
+
+                    for (var i = 0; i < normalItems.Count && i < codes.Count; i++)
+                    {
+                        var item = normalItems[i];
+                        var (itemNumber, barcode) = codes[i];
+                        var productCode = Guid.NewGuid().ToString();
+
+                        allProducts.Add(
+                            new DomesticProduct
+                            {
+                                ProductCode = productCode,
+                                SupplierCode = request.SupplierCode,
+                                ProductName = item.ProductName,
+                                HBProductNo = itemNumber,
+                                Barcode = barcode,
+                                ProductType = 0,
+                                OEMPrice = item.PrivateLabelPrice,
+                                IsActive = true,
+                            }
+                        );
+
+                        allLogs.Add(
+                            new DomesticProductCreationLog
+                            {
+                                LogId = Guid.NewGuid().ToString(),
+                                ProductCode = productCode,
+                                SupplierCode = request.SupplierCode,
+                                SupplierName = supplierName,
+                                HBProductNo = itemNumber,
+                                Barcode = barcode,
+                                ProductName = item.ProductName,
+                                PrefixCode = request.PrefixCode,
+                                PrefixName = request.PrefixName,
+                                CreationType = "Batch",
+                                BatchNumber = batchNumber,
+                            }
+                        );
+
+                        responseItems.Add(
+                            new BatchCreatedItemDto
+                            {
+                                ProductCode = productCode,
+                                HBProductNo = itemNumber,
+                                Barcode = barcode,
+                                ProductName = item.ProductName,
+                                ProductType = 0,
+                                PrivateLabelPrice = item.PrivateLabelPrice,
+                                SubItems = new List<SubItemDto>(),
+                            }
+                        );
+                    }
+                }
+
+                var setProductCodeMap = new Dictionary<string, string>();
+                var setProductNoMap = new Dictionary<string, string>();
+
+                if (setItems.Any())
+                {
+                    var codes = await _itemBarcodeService.GenerateBatchItemNumbersAndBarcodesAsync(
+                        request.SupplierCode,
+                        ProductTypeEnum.Set,
+                        setItems.Count,
+                        null
+                    );
+
+                    for (var i = 0; i < setItems.Count && i < codes.Count; i++)
+                    {
+                        var item = setItems[i];
+                        var (itemNumber, barcode) = codes[i];
+                        var productCode = Guid.NewGuid().ToString();
+
+                        allProducts.Add(
+                            new DomesticProduct
+                            {
+                                ProductCode = productCode,
+                                SupplierCode = request.SupplierCode,
+                                ProductName = item.ProductName,
+                                HBProductNo = itemNumber,
+                                Barcode = barcode,
+                                ProductType = 1,
+                                OEMPrice = item.PrivateLabelPrice,
+                                IsActive = true,
+                            }
+                        );
+
+                        allSetProducts.Add(
+                            new DomesticSetProduct
+                            {
+                                SetProductCode = Guid.NewGuid().ToString(),
+                                ProductCode = productCode,
+                                ProductNo = itemNumber,
+                                SetProductNo = itemNumber,
+                                SetBarcode = barcode,
+                                OEMPrice = item.PrivateLabelPrice,
+                                DomesticPrice = item.SetPrice,
+                            }
+                        );
+
+                        allLogs.Add(
+                            new DomesticProductCreationLog
+                            {
+                                LogId = Guid.NewGuid().ToString(),
+                                ProductCode = productCode,
+                                SupplierCode = request.SupplierCode,
+                                SupplierName = supplierName,
+                                HBProductNo = itemNumber,
+                                Barcode = barcode,
+                                ProductName = item.ProductName,
+                                PrefixCode = request.PrefixCode,
+                                PrefixName = request.PrefixName,
+                                CreationType = "Batch",
+                                BatchNumber = batchNumber,
+                            }
+                        );
+
+                        var createdItem = new BatchCreatedItemDto
+                        {
+                            ProductCode = productCode,
+                            HBProductNo = itemNumber,
+                            Barcode = barcode,
+                            ProductName = item.ProductName,
+                            ProductType = 1,
+                            PrivateLabelPrice = item.PrivateLabelPrice,
+                            SetQuantity = item.SetQuantity,
+                            SetPrice = item.SetPrice,
+                            SubItems = new List<SubItemDto>(),
+                        };
+                        responseItems.Add(createdItem);
+
+                        setProductCodeMap[itemNumber] = productCode;
+                        setProductNoMap[itemNumber] = itemNumber;
+                    }
+                }
+
+                foreach (var createdItem in responseItems.Where(x => x.ProductType == 1))
+                {
+                    var relatedSubItems = subItems
+                        .Where(s => s.ParentItemNumber == createdItem.HBProductNo)
+                        .ToList();
+
+                    if (!relatedSubItems.Any())
+                        continue;
+
+                    var subCodes =
+                        await _itemBarcodeService.GenerateBatchSetItemNumbersAndBarcodesAsync(
+                            createdItem.HBProductNo,
+                            ProductTypeEnum.Set,
+                            relatedSubItems.Count
+                        );
+
+                    for (var i = 0; i < relatedSubItems.Count && i < subCodes.Count; i++)
+                    {
+                        var subItem = relatedSubItems[i];
+                        var (subItemNumber, subBarcode) = subCodes[i];
+                        var subProductCode = Guid.NewGuid().ToString();
+                        var subProductName = subItem.SubItemProductName ?? subItem.ProductName;
+
+                        allProducts.Add(
+                            new DomesticProduct
+                            {
+                                ProductCode = subProductCode,
+                                SupplierCode = request.SupplierCode,
+                                ProductName = subProductName,
+                                HBProductNo = subItemNumber,
+                                Barcode = subBarcode,
+                                ProductType = 0,
+                                OEMPrice = subItem.PrivateLabelPrice,
+                                IsActive = true,
+                            }
+                        );
+
+                        allSetProducts.Add(
+                            new DomesticSetProduct
+                            {
+                                SetProductCode = Guid.NewGuid().ToString(),
+                                ProductCode = subProductCode,
+                                ProductNo = createdItem.HBProductNo,
+                                SetProductNo = subItemNumber,
+                                SetBarcode = subBarcode,
+                                OEMPrice = subItem.PrivateLabelPrice,
+                            }
+                        );
+
+                        allLogs.Add(
+                            new DomesticProductCreationLog
+                            {
+                                LogId = Guid.NewGuid().ToString(),
+                                ProductCode = subProductCode,
+                                SupplierCode = request.SupplierCode,
+                                SupplierName = supplierName,
+                                HBProductNo = subItemNumber,
+                                Barcode = subBarcode,
+                                ProductName = subProductName,
+                                PrefixCode = request.PrefixCode,
+                                PrefixName = request.PrefixName,
+                                CreationType = "Batch",
+                                BatchNumber = batchNumber,
+                                Remark = $"Parent: {createdItem.HBProductNo}",
+                            }
+                        );
+
+                        createdItem.SubItems.Add(
+                            new SubItemDto
+                            {
+                                ProductCode = subProductCode,
+                                HBProductNo = subItemNumber,
+                                Barcode = subBarcode,
+                                ProductName = subProductName,
+                                PrivateLabelPrice = subItem.PrivateLabelPrice,
+                            }
+                        );
+                    }
+                }
+
+                if (allProducts.Any())
+                    await _context
+                        .Db.Fastest<DomesticProduct>()
+                        .AS("DomesticProduct")
+                        .PageSize(500)
+                        .BulkCopyAsync(allProducts);
+                if (allSetProducts.Any())
+                    await _context
+                        .Db.Fastest<DomesticSetProduct>()
+                        .AS("DomesticSetProduct")
+                        .PageSize(500)
+                        .BulkCopyAsync(allSetProducts);
+                if (allLogs.Any())
+                    await _context
+                        .Db.Fastest<DomesticProductCreationLog>()
+                        .AS("DomesticProductCreationLog")
+                        .PageSize(500)
+                        .BulkCopyAsync(allLogs);
 
                 var response = new CreateDomesticProductBatchResponse
                 {
                     BatchNumber = batchNumber,
-                    Items = new List<BatchCreatedItemDto>()
+                    Items = responseItems,
+                    TotalCreated = responseItems.Count,
+                    NormalProductCount = normalItems.Count,
+                    SetProductCount = setItems.Count,
                 };
-
-                // 按 ParentItemNumber 分组处理，先处理主商品，再处理子商品
-                var mainItems = request.Items.Where(i => string.IsNullOrEmpty(i.ParentItemNumber)).ToList();
-                var subItems = request.Items.Where(i => !string.IsNullOrEmpty(i.ParentItemNumber)).ToList();
-
-                int normalCount = 0;
-                int setCount = 0;
-
-                // 处理主商品
-                foreach (var item in mainItems)
-                {
-                    var createdItem = await CreateSingleProductAsync(item, request, batchNumber, supplierName);
-                    if (createdItem != null)
-                    {
-                        response.Items.Add(createdItem);
-                        if (item.ProductType == 0)
-                            normalCount++;
-                        else if (item.ProductType == 1)
-                            setCount++;
-
-                        // 如果是套装商品，处理子商品
-                        if (item.ProductType == 1)
-                        {
-                            var relatedSubItems = subItems
-                                .Where(s => s.ParentItemNumber == createdItem.HBProductNo)
-                                .ToList();
-
-                            foreach (var subItem in relatedSubItems)
-                            {
-                                var createdSubItem = await CreateSubItemAsync(
-                                    subItem, request, batchNumber, supplierName, 
-                                    createdItem.HBProductNo, createdItem.ProductCode);
-                                if (createdSubItem != null)
-                                {
-                                    createdItem.SubItems.Add(createdSubItem);
-                                }
-                            }
-                        }
-                    }
-                }
-
-                response.TotalCreated = response.Items.Count;
-                response.NormalProductCount = normalCount;
-                response.SetProductCount = setCount;
 
                 return ApiResponse<CreateDomesticProductBatchResponse>.OK(response, "批量创建成功");
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "批量创建国内商品失败");
-                return ApiResponse<CreateDomesticProductBatchResponse>.Error("批量创建失败: " + ex.Message, "CREATE_BATCH_ERROR");
+                return ApiResponse<CreateDomesticProductBatchResponse>.Error(
+                    "批量创建失败: " + ex.Message,
+                    "CREATE_BATCH_ERROR"
+                );
             }
         }
 
@@ -107,19 +327,23 @@ namespace BlazorApp.Api.Services
             CreateBatchItemDto item,
             CreateDomesticProductBatchRequest request,
             string batchNumber,
-            string? supplierName)
+            string? supplierName
+        )
         {
             try
             {
-                var productType = item.ProductType == 1 
-                    ? BlazorApp.Shared.DTOs.ProductTypeEnum.Set 
-                    : BlazorApp.Shared.DTOs.ProductTypeEnum.Normal;
+                var productType =
+                    item.ProductType == 1
+                        ? BlazorApp.Shared.DTOs.ProductTypeEnum.Set
+                        : BlazorApp.Shared.DTOs.ProductTypeEnum.Normal;
 
                 // 生成货号和条码
-                var (itemNumber, barcode) = await _itemBarcodeService.GenerateItemNumberAndBarcodeAsync(
-                    request.SupplierCode,
-                    productType,
-                    item.ProductType == 1 ? null : request.PrefixName);
+                var (itemNumber, barcode) =
+                    await _itemBarcodeService.GenerateItemNumberAndBarcodeAsync(
+                        request.SupplierCode,
+                        productType,
+                        item.ProductType == 1 ? null : request.PrefixName
+                    );
 
                 // 创建 DomesticProduct
                 var domesticProduct = new DomesticProduct
@@ -131,7 +355,7 @@ namespace BlazorApp.Api.Services
                     Barcode = barcode,
                     ProductType = item.ProductType,
                     OEMPrice = item.PrivateLabelPrice,
-                    IsActive = true
+                    IsActive = true,
                 };
 
                 await _context.DomesticProductDb.InsertAsync(domesticProduct);
@@ -147,7 +371,7 @@ namespace BlazorApp.Api.Services
                         SetProductNo = itemNumber,
                         SetBarcode = barcode,
                         OEMPrice = item.PrivateLabelPrice,
-                        DomesticPrice = item.SetPrice
+                        DomesticPrice = item.SetPrice,
                     };
                     await _context.DomesticSetProductDb.InsertAsync(setProduct);
                 }
@@ -165,7 +389,7 @@ namespace BlazorApp.Api.Services
                     PrefixCode = request.PrefixCode,
                     PrefixName = request.PrefixName,
                     CreationType = "Batch",
-                    BatchNumber = batchNumber
+                    BatchNumber = batchNumber,
                 };
                 await _context.DomesticProductCreationLogDb.InsertAsync(creationLog);
 
@@ -179,7 +403,7 @@ namespace BlazorApp.Api.Services
                     PrivateLabelPrice = item.PrivateLabelPrice,
                     SetQuantity = item.SetQuantity,
                     SetPrice = item.SetPrice,
-                    SubItems = new List<SubItemDto>()
+                    SubItems = new List<SubItemDto>(),
                 };
             }
             catch (Exception ex)
@@ -198,14 +422,17 @@ namespace BlazorApp.Api.Services
             string batchNumber,
             string? supplierName,
             string parentItemNumber,
-            string parentProductCode)
+            string parentProductCode
+        )
         {
             try
             {
                 // 生成套装子商品货号和条码
-                var (itemNumber, barcode) = await _itemBarcodeService.GenerateSetItemNumberAndBarcodeAsync(
-                    parentItemNumber,
-                    BlazorApp.Shared.DTOs.ProductTypeEnum.Set);
+                var (itemNumber, barcode) =
+                    await _itemBarcodeService.GenerateSetItemNumberAndBarcodeAsync(
+                        parentItemNumber,
+                        BlazorApp.Shared.DTOs.ProductTypeEnum.Set
+                    );
 
                 // 创建 DomesticProduct (子商品作为普通商品类型)
                 var domesticProduct = new DomesticProduct
@@ -217,7 +444,7 @@ namespace BlazorApp.Api.Services
                     Barcode = barcode,
                     ProductType = 0, // 子商品作为普通商品
                     OEMPrice = item.PrivateLabelPrice,
-                    IsActive = true
+                    IsActive = true,
                 };
 
                 await _context.DomesticProductDb.InsertAsync(domesticProduct);
@@ -230,7 +457,7 @@ namespace BlazorApp.Api.Services
                     ProductNo = parentItemNumber, // 关联到父商品货号
                     SetProductNo = itemNumber,
                     SetBarcode = barcode,
-                    OEMPrice = item.PrivateLabelPrice
+                    OEMPrice = item.PrivateLabelPrice,
                 };
                 await _context.DomesticSetProductDb.InsertAsync(setProduct);
 
@@ -248,7 +475,7 @@ namespace BlazorApp.Api.Services
                     PrefixName = request.PrefixName,
                     CreationType = "Batch",
                     BatchNumber = batchNumber,
-                    Remark = $"Parent: {parentItemNumber}"
+                    Remark = $"Parent: {parentItemNumber}",
                 };
                 await _context.DomesticProductCreationLogDb.InsertAsync(creationLog);
 
@@ -258,7 +485,7 @@ namespace BlazorApp.Api.Services
                     HBProductNo = itemNumber,
                     Barcode = barcode,
                     ProductName = item.SubItemProductName ?? item.ProductName,
-                    PrivateLabelPrice = item.PrivateLabelPrice
+                    PrivateLabelPrice = item.PrivateLabelPrice,
                 };
             }
             catch (Exception ex)
@@ -277,8 +504,10 @@ namespace BlazorApp.Api.Services
             var prefix = $"B{dateStr}";
 
             // 获取当天最大的批次号
-            var existingBatches = await _context.DomesticProductCreationLogDb
-                .GetListAsync(x => x.BatchNumber != null && x.BatchNumber.StartsWith(prefix))
+            var existingBatches = await _context
+                .DomesticProductCreationLogDb.GetListAsync(x =>
+                    x.BatchNumber != null && x.BatchNumber.StartsWith(prefix)
+                )
                 .ContinueWith(t => t.Result.Select(x => x.BatchNumber).ToList());
 
             int maxSeq = 0;
@@ -289,7 +518,8 @@ namespace BlazorApp.Api.Services
                     var seqStr = batch.Substring(prefix.Length);
                     if (int.TryParse(seqStr, out int seq))
                     {
-                        if (seq > maxSeq) maxSeq = seq;
+                        if (seq > maxSeq)
+                            maxSeq = seq;
                     }
                 }
             }
@@ -305,13 +535,12 @@ namespace BlazorApp.Api.Services
             int pageSize = 20,
             string? supplierCode = null,
             DateTime? startDate = null,
-            DateTime? endDate = null)
+            DateTime? endDate = null
+        )
         {
             try
             {
-                var query = _context.DomesticProductCreationLogDb
-                    .GetList()
-                    .AsQueryable();
+                var query = _context.DomesticProductCreationLogDb.GetList().AsQueryable();
 
                 // 按批次号分组
                 var batchGroups = query
@@ -326,10 +555,14 @@ namespace BlazorApp.Api.Services
                         SupplierCode = g.First().SupplierCode,
                         SupplierName = g.First().SupplierName,
                         CreatedTime = g.Min(x => x.CreatedAt),
-                        NormalProductCount = g.Count(x => x.Product != null && x.Product.ProductType == 0),
-                        SetProductCount = g.Count(x => x.Product != null && x.Product.ProductType == 1),
+                        NormalProductCount = g.Count(x =>
+                            x.Product != null && x.Product.ProductType == 0
+                        ),
+                        SetProductCount = g.Count(x =>
+                            x.Product != null && x.Product.ProductType == 1
+                        ),
                         TotalCount = g.Count(),
-                        Remark = g.First().Remark
+                        Remark = g.First().Remark,
                     })
                     .OrderByDescending(x => x.CreatedTime)
                     .ToList();
@@ -348,7 +581,7 @@ namespace BlazorApp.Api.Services
                         NormalProductCount = x.NormalProductCount,
                         SetProductCount = x.SetProductCount,
                         TotalCount = x.TotalCount,
-                        Remark = x.Remark
+                        Remark = x.Remark,
                     })
                     .ToList();
 
@@ -357,31 +590,43 @@ namespace BlazorApp.Api.Services
                     Items = pagedData,
                     Total = total,
                     Page = page,
-                    PageSize = pageSize
+                    PageSize = pageSize,
                 };
 
-                return ApiResponse<PagedResult<DomesticProductBatchDto>>.OK(result, "获取批次列表成功");
+                return ApiResponse<PagedResult<DomesticProductBatchDto>>.OK(
+                    result,
+                    "获取批次列表成功"
+                );
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "获取批次列表失败");
-                return ApiResponse<PagedResult<DomesticProductBatchDto>>.Error("获取批次列表失败: " + ex.Message, "GET_BATCH_LIST_ERROR");
+                return ApiResponse<PagedResult<DomesticProductBatchDto>>.Error(
+                    "获取批次列表失败: " + ex.Message,
+                    "GET_BATCH_LIST_ERROR"
+                );
             }
         }
 
         /// <summary>
         /// 获取批次详情
         /// </summary>
-        public async Task<ApiResponse<DomesticProductBatchDetailDto>> GetBatchDetailAsync(string batchNumber)
+        public async Task<ApiResponse<DomesticProductBatchDetailDto>> GetBatchDetailAsync(
+            string batchNumber
+        )
         {
             try
             {
-                var logs = await _context.DomesticProductCreationLogDb
-                    .GetListAsync(x => x.BatchNumber == batchNumber);
+                var logs = await _context.DomesticProductCreationLogDb.GetListAsync(x =>
+                    x.BatchNumber == batchNumber
+                );
 
                 if (logs == null || !logs.Any())
                 {
-                    return ApiResponse<DomesticProductBatchDetailDto>.Error("批次不存在", "BATCH_NOT_FOUND");
+                    return ApiResponse<DomesticProductBatchDetailDto>.Error(
+                        "批次不存在",
+                        "BATCH_NOT_FOUND"
+                    );
                 }
 
                 var firstLog = logs.First();
@@ -418,19 +663,25 @@ namespace BlazorApp.Api.Services
                         }
                     }
 
-                    items.Add(new BatchDetailItemDto
-                    {
-                        ProductCode = log.ProductCode,
-                        HBProductNo = log.HBProductNo,
-                        Barcode = log.Barcode,
-                        ProductName = log.ProductName ?? "",
-                        ProductType = isSubItem ? 2 : productType, // 2 = SetSubItem
-                        PrivateLabelPrice = product?.OEMPrice,
-                        SetQuantity = productType == 1 ? await GetSetQuantityAsync(log.ProductCode) : null,
-                        SetPrice = productType == 1 ? await GetSetPriceAsync(log.ProductCode) : null,
-                        ParentProductCode = parentProductCode,
-                        ParentHBProductNo = parentHBProductNo
-                    });
+                    items.Add(
+                        new BatchDetailItemDto
+                        {
+                            ProductCode = log.ProductCode,
+                            HBProductNo = log.HBProductNo,
+                            Barcode = log.Barcode,
+                            ProductName = log.ProductName ?? "",
+                            ProductType = isSubItem ? 2 : productType, // 2 = SetSubItem
+                            PrivateLabelPrice = product?.OEMPrice,
+                            SetQuantity =
+                                productType == 1
+                                    ? await GetSetQuantityAsync(log.ProductCode)
+                                    : null,
+                            SetPrice =
+                                productType == 1 ? await GetSetPriceAsync(log.ProductCode) : null,
+                            ParentProductCode = parentProductCode,
+                            ParentHBProductNo = parentHBProductNo,
+                        }
+                    );
                 }
 
                 var result = new DomesticProductBatchDetailDto
@@ -442,7 +693,7 @@ namespace BlazorApp.Api.Services
                     Remark = firstLog.Remark,
                     NormalProductCount = normalCount,
                     SetProductCount = setCount,
-                    Items = items
+                    Items = items,
                 };
 
                 return ApiResponse<DomesticProductBatchDetailDto>.OK(result, "获取批次详情成功");
@@ -450,7 +701,10 @@ namespace BlazorApp.Api.Services
             catch (Exception ex)
             {
                 _logger.LogError(ex, "获取批次详情失败: {BatchNumber}", batchNumber);
-                return ApiResponse<DomesticProductBatchDetailDto>.Error("获取批次详情失败: " + ex.Message, "GET_BATCH_DETAIL_ERROR");
+                return ApiResponse<DomesticProductBatchDetailDto>.Error(
+                    "获取批次详情失败: " + ex.Message,
+                    "GET_BATCH_DETAIL_ERROR"
+                );
             }
         }
 
@@ -461,8 +715,9 @@ namespace BlazorApp.Api.Services
         {
             try
             {
-                var setProducts = await _context.DomesticSetProductDb
-                    .GetListAsync(x => x.ProductCode == productCode);
+                var setProducts = await _context.DomesticSetProductDb.GetListAsync(x =>
+                    x.ProductCode == productCode
+                );
                 return setProducts?.Count;
             }
             catch
@@ -478,8 +733,9 @@ namespace BlazorApp.Api.Services
         {
             try
             {
-                var setProduct = await _context.DomesticSetProductDb
-                    .GetFirstAsync(x => x.ProductCode == productCode);
+                var setProduct = await _context.DomesticSetProductDb.GetFirstAsync(x =>
+                    x.ProductCode == productCode
+                );
                 return setProduct?.DomesticPrice;
             }
             catch
@@ -493,13 +749,15 @@ namespace BlazorApp.Api.Services
         /// </summary>
         public async Task<ApiResponse<object>> UpdatePrivateLabelPriceAsync(
             string batchNumber,
-            UpdatePrivateLabelPriceRequest request)
+            UpdatePrivateLabelPriceRequest request
+        )
         {
             try
             {
                 // 验证批次是否存在
-                var logs = await _context.DomesticProductCreationLogDb
-                    .GetListAsync(x => x.BatchNumber == batchNumber);
+                var logs = await _context.DomesticProductCreationLogDb.GetListAsync(x =>
+                    x.BatchNumber == batchNumber
+                );
 
                 if (logs == null || !logs.Any())
                 {
@@ -518,8 +776,9 @@ namespace BlazorApp.Api.Services
                         await _context.DomesticProductDb.UpdateAsync(product);
 
                         // 更新 DomesticSetProduct
-                        var setProducts = await _context.DomesticSetProductDb
-                            .GetListAsync(x => x.ProductCode == item.ProductCode);
+                        var setProducts = await _context.DomesticSetProductDb.GetListAsync(x =>
+                            x.ProductCode == item.ProductCode
+                        );
                         foreach (var setProduct in setProducts)
                         {
                             setProduct.OEMPrice = item.PrivateLabelPrice;
@@ -535,7 +794,10 @@ namespace BlazorApp.Api.Services
             catch (Exception ex)
             {
                 _logger.LogError(ex, "批量更新私牌价格失败: {BatchNumber}", batchNumber);
-                return ApiResponse<object>.Error("批量更新私牌价格失败: " + ex.Message, "UPDATE_PRICE_ERROR");
+                return ApiResponse<object>.Error(
+                    "批量更新私牌价格失败: " + ex.Message,
+                    "UPDATE_PRICE_ERROR"
+                );
             }
         }
     }

@@ -13,7 +13,10 @@ namespace BlazorApp.Api.Controllers.React
         private readonly IHqContainerReactService _service;
         private readonly ILogger<ReactHqContainerController> _logger;
 
-        public ReactHqContainerController(IHqContainerReactService service, ILogger<ReactHqContainerController> logger)
+        public ReactHqContainerController(
+            IHqContainerReactService service,
+            ILogger<ReactHqContainerController> logger
+        )
         {
             _service = service;
             _logger = logger;

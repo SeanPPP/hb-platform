@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using System.Threading.Tasks;
+using AutoMapper;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Shared.DTOs;
@@ -21,16 +22,22 @@ namespace BlazorApp.Api.Services.React
     public class ProductReactService : IProductReactService
     {
         private readonly ISqlSugarClient _db;
+        private readonly HqSqlSugarContext _hqContext;
+        private readonly IMapper _mapper;
         private readonly ILogger<ProductReactService> _logger;
         private readonly Microsoft.AspNetCore.Http.IHttpContextAccessor _httpContextAccessor;
 
         public ProductReactService(
             SqlSugarContext context,
+            HqSqlSugarContext hqContext,
+            IMapper mapper,
             ILogger<ProductReactService> logger,
             Microsoft.AspNetCore.Http.IHttpContextAccessor httpContextAccessor
         )
         {
             _db = context.Db;
+            _hqContext = hqContext;
+            _mapper = mapper;
             _logger = logger;
             _httpContextAccessor = httpContextAccessor;
         }
@@ -645,7 +652,10 @@ namespace BlazorApp.Api.Services.React
         /// </summary>
         /// <param name="productCode">商品编码</param>
         /// <param name="isSoftDelete">true=软删除，false=物理删除</param>
-        public async Task<ApiResponse<bool>> DeleteAsync(string productCode, bool isSoftDelete = true)
+        public async Task<ApiResponse<bool>> DeleteAsync(
+            string productCode,
+            bool isSoftDelete = true
+        )
         {
             try
             {
@@ -692,7 +702,7 @@ namespace BlazorApp.Api.Services.React
             if (isSoftDelete)
             {
                 // 软删除：标记 IsDeleted = true
-                
+
                 // 1. 获取关联的多码商品编码
                 var multiCodeProductCodes = await _db.Queryable<StoreMultiCodeProduct>()
                     .Where(m => m.ProductCode == productCode)
@@ -710,7 +720,10 @@ namespace BlazorApp.Api.Services.React
                 {
                     await _db.Updateable<ProductSetCode>()
                         .SetColumns(psc => psc.IsDeleted == true)
-                        .Where(psc => psc.SetProductCode != null && multiCodeProductCodes.Contains(psc.SetProductCode))
+                        .Where(psc =>
+                            psc.SetProductCode != null
+                            && multiCodeProductCodes.Contains(psc.SetProductCode)
+                        )
                         .ExecuteCommandAsync();
                 }
 
@@ -899,7 +912,10 @@ namespace BlazorApp.Api.Services.React
                     {
                         try
                         {
-                            var productDeleted = await CascadeDeleteProductAsync(code, isSoftDelete);
+                            var productDeleted = await CascadeDeleteProductAsync(
+                                code,
+                                isSoftDelete
+                            );
                             if (productDeleted > 0)
                                 result.SuccessCount++;
                             else
@@ -912,7 +928,12 @@ namespace BlazorApp.Api.Services.React
                         {
                             result.Errors.Add($"{code}: {ex.Message}");
                             result.FailedCount++;
-                            _logger.LogError(ex, "批量{deleteType}单个商品失败: {ProductCode}", deleteType, code);
+                            _logger.LogError(
+                                ex,
+                                "批量{deleteType}单个商品失败: {ProductCode}",
+                                deleteType,
+                                code
+                            );
                         }
                     }
                 });
@@ -1247,5 +1268,449 @@ namespace BlazorApp.Api.Services.React
                 throw;
             }
         }
+
+        #region 从HQ同步商品
+
+        /// <summary>
+        /// 从HQ同步商品到本地（含增删改 + 关联表同步）
+        /// 按更新日期比对，只更新HQ侧更新的商品
+        /// </summary>
+        /// <returns>同步结果</returns>
+        public async Task<ApiResponse<HqProductSyncResult>> SyncProductsFromHqAsync()
+        {
+            var result = new HqProductSyncResult();
+            var startTime = DateTime.Now;
+            var errors = new List<string>();
+
+            try
+            {
+                _logger.LogInformation("开始从HQ同步商品数据...");
+
+                _hqContext.CheckConnection();
+
+                _logger.LogInformation("阶段一：构建本地索引...");
+                var activeStores = await _db.Queryable<Store>()
+                    .Where(s => s.IsActive && !s.IsDeleted)
+                    .ToListAsync();
+
+                var localProductCodes = await _db.Queryable<Product>()
+                    .Where(p => !p.IsDeleted && p.ProductCode != null)
+                    .Select(p => p.ProductCode!)
+                    .ToListAsync();
+                var localProductCodeSet = localProductCodes.ToHashSet();
+
+                var localProductsList = await _db.Queryable<Product>()
+                    .Where(p => !p.IsDeleted && p.ProductCode != null)
+                    .ToListAsync();
+                var localProducts = localProductsList.ToDictionary(p => p.ProductCode!);
+
+                _logger.LogInformation(
+                    "本地商品数: {Count}, 激活分店数: {StoreCount}",
+                    localProductCodes.Count,
+                    activeStores.Count
+                );
+
+                _logger.LogInformation("阶段二：从HQ获取商品数据...");
+                var hqProducts = await _hqContext
+                    .DIC_商品信息字典表Db.AsQueryable()
+                    .Where(p => p.H使用状态 == true && !string.IsNullOrEmpty(p.H商品编码))
+                    .ToListAsync();
+
+                result.TotalHqProducts = hqProducts.Count;
+                _logger.LogInformation("HQ商品数: {Count}", hqProducts.Count);
+
+                var hqCodes = hqProducts.Select(p => p.H商品编码!).ToHashSet();
+                var hqProductsDict = hqProducts.ToDictionary(p => p.H商品编码!);
+
+                _logger.LogInformation("阶段三：分类并处理商品...");
+                var toAdd = new List<BlazorApp.Shared.Models.HqEntities.DIC_商品信息字典表>();
+                var toUpdate =
+                    new List<
+                        ValueTuple<
+                            BlazorApp.Shared.Models.HqEntities.DIC_商品信息字典表,
+                            BlazorApp.Shared.Models.Product
+                        >
+                    >();
+
+                foreach (var hqProduct in hqProducts)
+                {
+                    var code = hqProduct.H商品编码!;
+                    if (!localProductCodeSet.Contains(code))
+                    {
+                        toAdd.Add(hqProduct);
+                    }
+                    else if (localProducts.TryGetValue(code, out var localProduct))
+                    {
+                        if (hqProduct.FGC_LastModifyDate > localProduct.UpdatedAt)
+                        {
+                            toUpdate.Add((hqProduct, localProduct));
+                        }
+                    }
+                }
+
+                _logger.LogInformation(
+                    "待新增: {AddCount}, 待更新: {UpdateCount}",
+                    toAdd.Count,
+                    toUpdate.Count
+                );
+
+                const int batchSize = 5000;
+                int processedPage = 0;
+
+                foreach (var batch in toAdd.Chunk(batchSize))
+                {
+                    _db.Ado.BeginTran();
+                    try
+                    {
+                        var now = DateTime.UtcNow;
+                        var newProducts = batch.Select(hq => _mapper.Map<Product>(hq)).ToList();
+                        foreach (var p in newProducts)
+                        {
+                            p.CreatedAt = now;
+                            p.UpdatedAt = now;
+                            p.IsDeleted = false;
+                        }
+                        await _db.Insertable(newProducts).ExecuteCommandAsync();
+                        result.ProductsAdded += newProducts.Count;
+
+                        var storeRetailPrices = new List<StoreRetailPrice>();
+                        var storeMultiCodes = new List<StoreMultiCodeProduct>();
+                        var productSetCodes = new List<ProductSetCode>();
+
+                        var batchProductCodes = batch
+                            .Where(hq => !string.IsNullOrEmpty(hq.H商品编码))
+                            .Select(hq => hq.H商品编码!)
+                            .ToList();
+
+                        var hqRetailPrices = await _hqContext
+                            .DIC_商品零售价表Db.AsQueryable()
+                            .Where(r =>
+                                batchProductCodes.Contains(r.H商品编码!)
+                                && r.H使用状态 == true
+                                && !string.IsNullOrEmpty(r.H分店代码)
+                            )
+                            .ToListAsync();
+                        var hqRetailPricesDict = hqRetailPrices.ToDictionary(
+                            r => (r.H分店代码!, r.H商品编码!),
+                            r => r
+                        );
+
+                        var hqMultiCodes = await _hqContext
+                            .DIC_分店一品多码表Db.AsQueryable()
+                            .Where(m =>
+                                batchProductCodes.Contains(m.H商品编码!)
+                                && m.H使用状态 == true
+                                && !string.IsNullOrEmpty(m.H分店代码)
+                            )
+                            .ToListAsync();
+                        var hqMultiCodesByProduct = hqMultiCodes
+                            .GroupBy(m => m.H商品编码!)
+                            .ToDictionary(g => g.Key, g => g.ToList());
+
+                        for (int i = 0; i < newProducts.Count; i++)
+                        {
+                            var product = newProducts[i];
+                            var hqProduct = batch[i];
+                            if (product.ProductCode == null)
+                                continue;
+
+                            foreach (var store in activeStores)
+                            {
+                                var retailPriceKey = (store.StoreCode!, product.ProductCode);
+                                if (
+                                    hqRetailPricesDict.TryGetValue(
+                                        retailPriceKey,
+                                        out var hqRetailPrice
+                                    )
+                                )
+                                {
+                                    // 如果 HQ 有对应零售价，使用 HQ 数据
+                                    //
+                                    storeRetailPrices.Add(
+                                        new StoreRetailPrice
+                                        {
+                                            UUID =
+                                                hqRetailPrice.HGUID ?? UuidHelper.GenerateUuid7(),
+                                            StoreCode = store.StoreCode,
+                                            ProductCode = product.ProductCode,
+                                            SupplierCode = hqRetailPrice.H供应商编码,
+                                            PurchasePrice = hqRetailPrice.H进货价,
+                                            StoreRetailPriceValue = hqRetailPrice.H分店零售价,
+                                            DiscountRate = hqRetailPrice.H折扣率,
+                                            IsActive = hqRetailPrice.H使用状态,
+                                            IsAutoPricing = hqRetailPrice.H是否自动定价,
+                                            IsSpecialProduct = hqRetailPrice.H是否特殊商品,
+                                            IsDeleted = false,
+                                            CreatedAt = now,
+                                            UpdatedAt = now,
+                                        }
+                                    );
+                                }
+                                else
+                                {
+                                    // 如果 HQ 没有对应零售价，使用默认值
+                                    //
+                                    storeRetailPrices.Add(
+                                        new StoreRetailPrice
+                                        {
+                                            UUID = UuidHelper.GenerateUuid7(),
+                                            StoreCode = store.StoreCode,
+                                            ProductCode = product.ProductCode,
+                                            PurchasePrice = product.PurchasePrice,
+                                            StoreRetailPriceValue = product.RetailPrice,
+                                            IsActive = true,
+                                            IsAutoPricing = product.IsAutoPricing,
+                                            IsSpecialProduct = product.IsSpecialProduct,
+                                            IsDeleted = false,
+                                            CreatedAt = now,
+                                            UpdatedAt = now,
+                                        }
+                                    );
+                                }
+                            }
+
+                            if (
+                                hqMultiCodesByProduct.TryGetValue(
+                                    product.ProductCode,
+                                    out var hqMultiList
+                                )
+                            )
+                            {
+                                foreach (var hqMulti in hqMultiList)
+                                {
+                                    productSetCodes.Add(
+                                        new ProductSetCode
+                                        {
+                                            SetCodeId = hqMulti.HGUID ?? UuidHelper.GenerateUuid7(),
+                                            ProductCode = product.ProductCode,
+                                            SetProductCode =
+                                                hqMulti.H多码商品编码
+                                                ?? hqMulti.H商品编码
+                                                ?? product.ProductCode,
+                                            SetItemNumber = hqMulti.H多码商品编码 ?? "",
+                                            SetBarcode = hqMulti.H多条形码,
+                                            SetPurchasePrice = hqMulti.H进货价,
+                                            SetRetailPrice = hqMulti.H一品多码零售价,
+                                            SetType = 2,
+                                            IsActive = hqMulti.H使用状态 ?? true,
+                                            IsDeleted = false,
+                                            CreatedAt = now,
+                                            UpdatedAt = now,
+                                        }
+                                    );
+
+                                    storeMultiCodes.Add(
+                                        new StoreMultiCodeProduct
+                                        {
+                                            UUID = hqMulti.HGUID ?? UuidHelper.GenerateUuid7(),
+                                            StoreCode = hqMulti.H分店代码,
+                                            ProductCode = product.ProductCode,
+                                            MultiCodeProductCode =
+                                                hqMulti.H多码商品编码
+                                                ?? hqMulti.H商品编码
+                                                ?? product.ProductCode,
+                                            StoreMultiCodeProductCode = hqMulti.H分店多码商品编码,
+                                            MultiBarcode = hqMulti.H多条形码,
+                                            PurchasePrice = hqMulti.H进货价,
+                                            MultiCodeRetailPrice = hqMulti.H一品多码零售价,
+                                            DiscountRate = hqMulti.H折扣率,
+                                            IsActive = hqMulti.H使用状态 ?? true,
+                                            IsAutoPricing = hqMulti.H是否自动定价 ?? false,
+                                            IsSpecialProduct = hqMulti.H是否特殊商品 ?? false,
+                                            IsDeleted = false,
+                                            CreatedAt = now,
+                                            UpdatedAt = now,
+                                        }
+                                    );
+                                }
+                            }
+                        }
+
+                        if (storeRetailPrices.Any())
+                        {
+                            await _db.Insertable(storeRetailPrices).ExecuteCommandAsync();
+                            result.StoreRetailPricesCreated += storeRetailPrices.Count;
+                        }
+                        if (productSetCodes.Any())
+                        {
+                            await _db.Insertable(productSetCodes).ExecuteCommandAsync();
+                            result.ProductSetCodesCreated += productSetCodes.Count;
+                        }
+                        if (storeMultiCodes.Any())
+                        {
+                            await _db.Insertable(storeMultiCodes).ExecuteCommandAsync();
+                            result.StoreMultiCodesCreated += storeMultiCodes.Count;
+                        }
+
+                        _db.Ado.CommitTran();
+                    }
+                    catch (Exception ex)
+                    {
+                        _db.Ado.RollbackTran();
+                        _logger.LogError(ex, "新增商品批次处理失败");
+                        errors.Add($"新增批次失败: {ex.Message}");
+                    }
+
+                    processedPage++;
+                    if (processedPage % 5 == 0)
+                    {
+                        await Task.Delay(500);
+                        _logger.LogInformation(
+                            "新增进度: {Processed}/{Total}",
+                            processedPage * batchSize,
+                            toAdd.Count
+                        );
+                    }
+                }
+
+                processedPage = 0;
+                foreach (var batch in toUpdate.Chunk(batchSize))
+                {
+                    _db.Ado.BeginTran();
+                    try
+                    {
+                        var now = DateTime.UtcNow;
+                        foreach (var (hqProduct, localProduct) in batch)
+                        {
+                            _mapper.Map(hqProduct, localProduct);
+                            localProduct.UpdatedAt = now;
+                        }
+                        var productsToUpdate = batch.Select(b => b.Item2).ToList();
+                        await _db.Updateable(productsToUpdate)
+                            .UpdateColumns(p => new
+                            {
+                                p.ProductName,
+                                p.Barcode,
+                                p.PurchasePrice,
+                                p.RetailPrice,
+                                p.IsActive,
+                                p.IsAutoPricing,
+                                p.IsSpecialProduct,
+                                p.UpdatedAt,
+                            })
+                            .ExecuteCommandAsync();
+                        result.ProductsUpdated += productsToUpdate.Count;
+                        _db.Ado.CommitTran();
+                    }
+                    catch (Exception ex)
+                    {
+                        _db.Ado.RollbackTran();
+                        _logger.LogError(ex, "更新商品批次处理失败");
+                        errors.Add($"更新批次失败: {ex.Message}");
+                    }
+
+                    processedPage++;
+                    if (processedPage % 5 == 0)
+                    {
+                        await Task.Delay(500);
+                        _logger.LogInformation(
+                            "更新进度: {Processed}/{Total}",
+                            processedPage * batchSize,
+                            toUpdate.Count
+                        );
+                    }
+                }
+
+                _logger.LogInformation("阶段五：处理多余商品（HQ没有的软删除）...");
+                var toDelete = localProducts
+                    .Values.Where(p =>
+                        !string.IsNullOrEmpty(p.ProductCode) && !hqCodes.Contains(p.ProductCode)
+                    )
+                    .ToList();
+
+                _logger.LogInformation("待删除商品数: {Count}", toDelete.Count);
+                result.TotalLocalProducts = localProducts.Count;
+
+                processedPage = 0;
+                foreach (var batch in toDelete.Chunk(batchSize))
+                {
+                    _db.Ado.BeginTran();
+                    try
+                    {
+                        var productCodes = batch
+                            .Where(p => p.ProductCode != null)
+                            .Select(p => p.ProductCode!)
+                            .ToList();
+
+                        await _db.Updateable<Product>()
+                            .SetColumns(p => p.IsDeleted == true)
+                            .Where(p => productCodes.Contains(p.ProductCode!))
+                            .ExecuteCommandAsync();
+
+                        await _db.Updateable<StoreRetailPrice>()
+                            .SetColumns(p => p.IsDeleted == true)
+                            .Where(p => productCodes.Contains(p.ProductCode!))
+                            .ExecuteCommandAsync();
+
+                        await _db.Updateable<ProductSetCode>()
+                            .SetColumns(p => p.IsDeleted == true)
+                            .Where(p => productCodes.Contains(p.ProductCode!))
+                            .ExecuteCommandAsync();
+
+                        await _db.Updateable<StoreMultiCodeProduct>()
+                            .SetColumns(p => p.IsDeleted == true)
+                            .Where(p => productCodes.Contains(p.ProductCode!))
+                            .ExecuteCommandAsync();
+
+                        result.ProductsDeleted += productCodes.Count;
+                        result.StoreRetailPricesDeleted += await _db.Queryable<StoreRetailPrice>()
+                            .Where(p => productCodes.Contains(p.ProductCode!))
+                            .CountAsync();
+                        result.ProductSetCodesDeleted += await _db.Queryable<ProductSetCode>()
+                            .Where(p => productCodes.Contains(p.ProductCode!))
+                            .CountAsync();
+                        result.StoreMultiCodesDeleted +=
+                            await _db.Queryable<StoreMultiCodeProduct>()
+                                .Where(p => productCodes.Contains(p.ProductCode!))
+                                .CountAsync();
+
+                        _db.Ado.CommitTran();
+                    }
+                    catch (Exception ex)
+                    {
+                        _db.Ado.RollbackTran();
+                        _logger.LogError(ex, "删除商品批次处理失败");
+                        errors.Add($"删除批次失败: {ex.Message}");
+                    }
+
+                    processedPage++;
+                    if (processedPage % 5 == 0)
+                    {
+                        await Task.Delay(500);
+                        _logger.LogInformation(
+                            "删除进度: {Processed}/{Total}",
+                            processedPage * batchSize,
+                            toDelete.Count
+                        );
+                    }
+                }
+
+                result.Errors = errors;
+                result.DurationMs = (long)(DateTime.Now - startTime).TotalMilliseconds;
+
+                _logger.LogInformation(
+                    "同步完成！新增: {Added}, 更新: {Updated}, 删除: {Deleted}, 耗时: {Duration}ms",
+                    result.ProductsAdded,
+                    result.ProductsUpdated,
+                    result.ProductsDeleted,
+                    result.StoreRetailPricesDeleted,
+                    result.ProductSetCodesDeleted,
+                    result.StoreMultiCodesDeleted,
+                    result.DurationMs
+                );
+
+                return ApiResponse<HqProductSyncResult>.OK(
+                    result,
+                    $"同步完成！新增: {result.ProductsAdded}, 更新: {result.ProductsUpdated}, 删除: {result.ProductsDeleted}"
+                );
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "从HQ同步商品失败");
+                return ApiResponse<HqProductSyncResult>.Error("从HQ同步商品失败: " + ex.Message);
+            }
+        }
+
+        #endregion
     }
 }

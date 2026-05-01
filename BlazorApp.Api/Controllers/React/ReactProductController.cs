@@ -423,6 +423,35 @@ namespace BlazorApp.Api.Controllers.React
         #endregion
 
         /// <summary>
+        /// 从HQ同步商品到本地（含增删改 + 关联表同步）
+        /// </summary>
+        [HttpPost("sync-from-hq")]
+        [Authorize(Roles = "Admin")]
+        public async Task<IActionResult> SyncFromHq()
+        {
+            try
+            {
+                _logger.LogInformation("收到从HQ同步商品的请求");
+                var result = await _service.SyncProductsFromHqAsync();
+                if (result.Success)
+                {
+                    return Ok(new
+                    {
+                        success = true,
+                        data = result.Data,
+                        message = result.Message
+                    });
+                }
+                return BadRequest(new { success = false, message = result.Message });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "从HQ同步商品失败");
+                return StatusCode(500, new { success = false, message = "从HQ同步商品失败：" + ex.Message });
+            }
+        }
+
+        /// <summary>
         /// 同步商品到分店
         /// </summary>
         [HttpPost("sync-to-stores")]

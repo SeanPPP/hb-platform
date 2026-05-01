@@ -1,5 +1,6 @@
 using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Shared.DTOs;
+using BlazorApp.Shared.Models;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
@@ -378,6 +379,43 @@ namespace BlazorApp.Api.Controllers.React
             if (result.Success)
                 return Ok(new { success = true, data = result.Data, message = result.Message });
             return BadRequest(new { success = false, message = result.Message });
+        }
+
+        [HttpPost("push-to-hq")]
+        [Authorize(Roles = "Admin")]
+        public async Task<IActionResult> PushInvoicesToHq([FromBody] PushToHqRequest request)
+        {
+            try
+            {
+                if (request.InvoiceGuids == null || !request.InvoiceGuids.Any())
+                    return BadRequest(new { success = false, message = "请选择要推送的进货单" });
+
+                var result = await _service.PushInvoicesToHqAsync(request.InvoiceGuids);
+                if (result.IsSuccess)
+                    return Ok(ApiResponse<SyncResult>.OK(result, result.Message));
+                return Ok(ApiResponse<SyncResult>.OK(result, result.Message));
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, ApiResponse<SyncResult>.Error($"推送异常: {ex.Message}", "INTERNAL_ERROR"));
+            }
+        }
+
+        [HttpPost("sync-from-hq")]
+        [Authorize(Roles = "Admin")]
+        public async Task<IActionResult> SyncInvoicesFromHq()
+        {
+            try
+            {
+                var result = await _service.SyncInvoicesFromHqAsync();
+                if (result.IsSuccess)
+                    return Ok(ApiResponse<SyncResult>.OK(result, result.Message));
+                return Ok(ApiResponse<SyncResult>.OK(result, result.Message));
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, ApiResponse<SyncResult>.Error($"同步异常: {ex.Message}", "INTERNAL_ERROR"));
+            }
         }
     }
 }

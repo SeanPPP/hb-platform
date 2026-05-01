@@ -1,6 +1,6 @@
-using Microsoft.AspNetCore.Mvc;
-using Microsoft.AspNetCore.Authorization;
 using BlazorApp.Api.Interfaces;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
 
 namespace BlazorApp.Api.Controllers
@@ -18,7 +18,8 @@ namespace BlazorApp.Api.Controllers
 
         public TranslationController(
             ITranslationService translationService,
-            ILogger<TranslationController> logger)
+            ILogger<TranslationController> logger
+        )
         {
             _translationService = translationService;
             _logger = logger;
@@ -61,16 +62,18 @@ namespace BlazorApp.Api.Controllers
 
                 var translation = await _translationService.TranslateToEnglishAsync(request.Text);
 
-                return Ok(new
-                {
-                    success = true,
-                    data = new
+                return Ok(
+                    new
                     {
-                        originalText = request.Text,
-                        translatedText = translation,
-                        containsChinese = _translationService.ContainsChinese(request.Text)
+                        success = true,
+                        data = new
+                        {
+                            originalText = request.Text,
+                            translatedText = translation,
+                            containsChinese = _translationService.ContainsChinese(request.Text),
+                        },
                     }
-                });
+                );
             }
             catch (Exception ex)
             {
@@ -96,25 +99,30 @@ namespace BlazorApp.Api.Controllers
 
                 if (request.Texts.Count > 100)
                 {
-                    return BadRequest(new { success = false, message = "批量翻译最多支持100个文本" });
+                    return BadRequest(
+                        new { success = false, message = "批量翻译最多支持100个文本" }
+                    );
                 }
 
-                var translations = await _translationService.BatchTranslateToEnglishAsync(request.Texts);
+                var translations = await _translationService.BatchTranslateToEnglishAsync(
+                    request.Texts
+                );
 
-                return Ok(new
-                {
-                    success = true,
-                    data = new
+                return Ok(
+                    new
                     {
-                        count = translations.Count,
-                        translations = translations
+                        success = true,
+                        data = new { count = translations.Count, translations = translations },
                     }
-                });
+                );
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "批量翻译失败");
-                return StatusCode(500, new { success = false, message = "批量翻译失败，请稍后重试" });
+                return StatusCode(
+                    500,
+                    new { success = false, message = "批量翻译失败，请稍后重试" }
+                );
             }
         }
 
@@ -130,16 +138,18 @@ namespace BlazorApp.Api.Controllers
             {
                 var cached = await _translationService.GetCachedTranslationAsync(text);
 
-                return Ok(new
-                {
-                    success = true,
-                    data = new
+                return Ok(
+                    new
                     {
-                        text,
-                        cachedTranslation = cached,
-                        hasCached = !string.IsNullOrEmpty(cached)
+                        success = true,
+                        data = new
+                        {
+                            text,
+                            cachedTranslation = cached,
+                            hasCached = !string.IsNullOrEmpty(cached),
+                        },
                     }
-                });
+                );
             }
             catch (Exception ex)
             {

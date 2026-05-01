@@ -214,4 +214,17 @@ namespace BlazorApp.Shared.DTOs
         /// </summary>
         public decimal TotalOrderAmount { get; set; }
     }
+
+    /// <summary>
+    /// 同步供应商到HBSales数据库结果DTO
+    /// </summary>
+    public class SyncToHbSalesResultDto
+    {
+        public int TotalProcessed { get; set; }
+        public int SuccessCount { get; set; }
+        public int FailCount { get; set; }
+        public int InsertedCount { get; set; }
+        public int UpdatedCount { get; set; }
+        public List<string> Errors { get; set; } = new();
+    }
 }

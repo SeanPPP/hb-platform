@@ -1,10 +1,12 @@
 using System.Linq;
+using AutoMapper;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Helper;
 using BlazorApp.Shared.Models;
+using BlazorApp.Shared.Models.HqEntities;
 using Microsoft.Extensions.Logging;
 using SqlSugar;
 
@@ -13,16 +15,22 @@ namespace BlazorApp.Api.Services.React
     public class LocalSupplierInvoicesReactService : ILocalSupplierInvoicesReactService
     {
         private readonly SqlSugarContext _context;
+        private readonly HqSqlSugarContext _hqContext;
+        private readonly IMapper _mapper;
         private readonly ILogger<LocalSupplierInvoicesReactService> _logger;
         private readonly IAutoPricingService _autoPricingService;
 
         public LocalSupplierInvoicesReactService(
             SqlSugarContext context,
+            HqSqlSugarContext hqContext,
+            IMapper mapper,
             ILogger<LocalSupplierInvoicesReactService> logger,
             IAutoPricingService autoPricingService
         )
         {
             _context = context;
+            _hqContext = hqContext;
+            _mapper = mapper;
             _logger = logger;
             _autoPricingService = autoPricingService;
         }
@@ -3469,6 +3477,386 @@ namespace BlazorApp.Api.Services.React
             public int FailedCount { get; set; }
             public int SkippedCount { get; set; }
             public List<string> Errors { get; set; } = new();
+        }
+
+        public async Task<SyncResult> PushInvoicesToHqAsync(List<string> invoiceGuids)
+        {
+            var result = new SyncResult { StartTime = DateTime.UtcNow, IsSuccess = true };
+
+            try
+            {
+                var localDb = _context.Db;
+                var hqDb = _hqContext.Db;
+
+                var invoices = await localDb
+                    .Queryable<StoreLocalSupplierInvoice>()
+                    .Where(i => invoiceGuids.Contains(i.InvoiceGUID) && i.IsDeleted == false)
+                    .ToListAsync();
+
+                if (!invoices.Any())
+                {
+                    result.IsSuccess = false;
+                    result.Message = "未找到有效的进货单数据";
+                    result.EndTime = DateTime.UtcNow;
+                    result.Duration = result.EndTime - result.StartTime;
+                    return result;
+                }
+
+                var invoiceGuidList = invoices.Select(i => i.InvoiceGUID).ToList();
+                var details = await localDb
+                    .Queryable<StoreLocalSupplierInvoiceDetails>()
+                    .Where(d => invoiceGuidList.Contains(d.InvoiceGUID) && d.IsDeleted == false)
+                    .ToListAsync();
+
+                var hqInvoiceGuids = invoices.Select(i => i.InvoiceGUID).ToList();
+                var existingHqInvoices = await hqDb.Queryable<RED_进货单主表Store>()
+                    .Where(h => hqInvoiceGuids.Contains(h.HGUID))
+                    .ToListAsync();
+                var existingHqInvoiceSet = existingHqInvoices.Select(h => h.HGUID).ToHashSet();
+
+                var hqDetailGuids = details.Select(d => d.DetailGUID).ToList();
+                var existingHqDetails = new HashSet<string>();
+                if (hqDetailGuids.Any())
+                {
+                    var chunkSize = 500;
+                    for (int i = 0; i < hqDetailGuids.Count; i += chunkSize)
+                    {
+                        var chunk = hqDetailGuids.Skip(i).Take(chunkSize).ToList();
+                        var chunkExisting = await hqDb.Queryable<RED_进货单详情表Store>()
+                            .Where(h => chunk.Contains(h.HGUID))
+                            .Select(h => h.HGUID)
+                            .ToListAsync();
+                        foreach (var g in chunkExisting)
+                            existingHqDetails.Add(g);
+                    }
+                }
+
+                var addedInvoiceCount = 0;
+                var updatedInvoiceCount = 0;
+                var addedDetailCount = 0;
+                var updatedDetailCount = 0;
+
+                foreach (var invoice in invoices)
+                {
+                    try
+                    {
+                        var hqEntity = _mapper.Map<RED_进货单主表Store>(invoice);
+                        if (existingHqInvoiceSet.Contains(invoice.InvoiceGUID))
+                        {
+                            var existing = existingHqInvoices.First(h =>
+                                h.HGUID == invoice.InvoiceGUID
+                            );
+                            hqEntity.ID = existing.ID;
+                            await hqDb.Updateable(hqEntity).ExecuteCommandAsync();
+                            updatedInvoiceCount++;
+                        }
+                        else
+                        {
+                            await hqDb.Insertable(hqEntity).ExecuteCommandAsync();
+                            addedInvoiceCount++;
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "推送进货单主表失败: {GUID}", invoice.InvoiceGUID);
+                        result.ErrorCount++;
+                    }
+                }
+
+                foreach (var detail in details)
+                {
+                    try
+                    {
+                        var hqEntity = _mapper.Map<RED_进货单详情表Store>(detail);
+                        if (existingHqDetails.Contains(detail.DetailGUID))
+                        {
+                            var existingDetail = await hqDb.Queryable<RED_进货单详情表Store>()
+                                .FirstAsync(h => h.HGUID == detail.DetailGUID);
+                            if (existingDetail != null)
+                            {
+                                hqEntity.ID = existingDetail.ID;
+                                await hqDb.Updateable(hqEntity).ExecuteCommandAsync();
+                            }
+                            updatedDetailCount++;
+                        }
+                        else
+                        {
+                            await hqDb.Insertable(hqEntity).ExecuteCommandAsync();
+                            addedDetailCount++;
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "推送进货单详情失败: {GUID}", detail.DetailGUID);
+                        result.ErrorCount++;
+                    }
+                }
+
+                result.AddedCount = addedInvoiceCount + addedDetailCount;
+                result.UpdatedCount = updatedInvoiceCount + updatedDetailCount;
+                result.TotalCount = invoices.Count;
+                result.Message =
+                    $"成功推送 {invoices.Count} 个进货单（主表 新增{addedInvoiceCount}/更新{updatedInvoiceCount}，详情 新增{addedDetailCount}/更新{updatedDetailCount}）";
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "推送进货单到HQ异常");
+                result.IsSuccess = false;
+                result.Message = $"推送异常: {ex.Message}";
+            }
+
+            result.EndTime = DateTime.UtcNow;
+            result.Duration = result.EndTime - result.StartTime;
+            return result;
+        }
+
+        public async Task<SyncResult> SyncInvoicesFromHqAsync()
+        {
+            var result = new SyncResult { StartTime = DateTime.UtcNow, IsSuccess = true };
+
+            try
+            {
+                var localDb = _context.Db;
+                var hqDb = _hqContext.Db;
+
+                var daysRange = 30;
+                var effectiveStart = DateTime.UtcNow.AddDays(-daysRange);
+
+                _logger.LogInformation(
+                    "[SyncInvoices] 开始增量同步进货单（主表+详情），起始日期: {StartDate}",
+                    effectiveStart
+                );
+
+                int addedInvoices = 0,
+                    updatedInvoices = 0,
+                    invoiceErrors = 0;
+                int addedDetails = 0,
+                    updatedDetails = 0,
+                    detailErrors = 0;
+                var syncedInvoiceGuids = new List<string>();
+
+                var hqInvoiceGuids = await hqDb.Queryable<RED_进货单主表Store>()
+                    .Where(x => SqlFunc.HasValue(x.HGUID))
+                    .Where(x =>
+                        x.FGC_LastModifyDate >= effectiveStart || x.FGC_CreateDate >= effectiveStart
+                    )
+                    .Select(x => x.HGUID!)
+                    .ToListAsync();
+
+                _logger.LogInformation(
+                    "[SyncInvoices] HQ待同步主表HGUID数量: {Count}",
+                    hqInvoiceGuids.Count
+                );
+
+                var chunkSizeForGuids = 1000;
+
+                if (hqInvoiceGuids.Any())
+                {
+                    var existingInvoiceGuids = new HashSet<string>();
+                    for (var ci = 0; ci < hqInvoiceGuids.Count; ci += chunkSizeForGuids)
+                    {
+                        var guidChunk = hqInvoiceGuids.Skip(ci).Take(chunkSizeForGuids).ToList();
+                        var found = await localDb
+                            .Queryable<StoreLocalSupplierInvoice>()
+                            .Where(x => guidChunk.Contains(x.InvoiceGUID))
+                            .Select(x => x.InvoiceGUID)
+                            .ToListAsync();
+                        foreach (var g in found)
+                            existingInvoiceGuids.Add(g);
+                    }
+
+                    _logger.LogInformation(
+                        "[SyncInvoices] 本地已存在主表: {Exist}, 需同步: {Total}",
+                        existingInvoiceGuids.Count,
+                        hqInvoiceGuids.Count
+                    );
+
+                    const int batchSize = 1000;
+
+                    for (var page = 0; page < hqInvoiceGuids.Count; page += batchSize)
+                    {
+                        var guidChunk = hqInvoiceGuids.Skip(page).Take(batchSize).ToList();
+                        List<RED_进货单主表Store> batch;
+                        try
+                        {
+                            batch = await hqDb.Queryable<RED_进货单主表Store>()
+                                .Where(x => guidChunk.Contains(x.HGUID))
+                                .ToListAsync();
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogError(ex, "[SyncInvoices] 查询HQ主表批次{Index}失败", page);
+                            invoiceErrors++;
+                            continue;
+                        }
+
+                        if (!batch.Any())
+                            continue;
+
+                        var localBatch = _mapper
+                            .Map<List<StoreLocalSupplierInvoice>>(batch)
+                            .Where(x => !string.IsNullOrWhiteSpace(x.InvoiceGUID))
+                            .ToList();
+
+                        var toInsert = localBatch
+                            .Where(x => !existingInvoiceGuids.Contains(x.InvoiceGUID))
+                            .ToList();
+                        var toUpdate = localBatch
+                            .Where(x => existingInvoiceGuids.Contains(x.InvoiceGUID))
+                            .ToList();
+
+                        try
+                        {
+                            if (toInsert.Any())
+                            {
+                                await localDb
+                                    .Fastest<StoreLocalSupplierInvoice>()
+                                    .AS("StoreLocalSupplierInvoice")
+                                    .PageSize(500)
+                                    .BulkCopyAsync(toInsert);
+                                addedInvoices += toInsert.Count;
+                                foreach (var inv in toInsert)
+                                    existingInvoiceGuids.Add(inv.InvoiceGUID);
+                            }
+
+                            if (toUpdate.Any())
+                            {
+                                await localDb
+                                    .Fastest<StoreLocalSupplierInvoice>()
+                                    .AS("StoreLocalSupplierInvoice")
+                                    .PageSize(500)
+                                    .BulkUpdateAsync(toUpdate);
+                                updatedInvoices += toUpdate.Count;
+                            }
+
+                            syncedInvoiceGuids.AddRange(batch.Select(x => x.HGUID!));
+
+                            _logger.LogInformation(
+                                "[SyncInvoices] 主表批次{Index}: 新增{Added}, 更新{Updated}",
+                                page,
+                                toInsert.Count,
+                                toUpdate.Count
+                            );
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogError(ex, "[SyncInvoices] 写入主表批次{Index}失败", page);
+                            invoiceErrors++;
+                        }
+                    }
+                }
+
+                if (syncedInvoiceGuids.Any())
+                {
+                    _logger.LogInformation(
+                        "[SyncInvoices] 开始同步详情，关联主表数: {Count}",
+                        syncedInvoiceGuids.Count
+                    );
+
+                    var existingDetailGuids = new HashSet<string>();
+                    for (var di = 0; di < syncedInvoiceGuids.Count; di += chunkSizeForGuids)
+                    {
+                        var dChunk = syncedInvoiceGuids.Skip(di).Take(chunkSizeForGuids).ToList();
+                        var dFound = await localDb
+                            .Queryable<StoreLocalSupplierInvoiceDetails>()
+                            .Where(x => dChunk.Contains(x.InvoiceGUID))
+                            .Select(x => x.DetailGUID)
+                            .ToListAsync();
+                        foreach (var g in dFound)
+                            existingDetailGuids.Add(g);
+                    }
+
+                    var detailBatchSize = 500;
+                    for (var i = 0; i < syncedInvoiceGuids.Count; i += detailBatchSize)
+                    {
+                        var chunk = syncedInvoiceGuids.Skip(i).Take(detailBatchSize).ToList();
+                        List<RED_进货单详情表Store> detailBatch;
+                        try
+                        {
+                            detailBatch = await hqDb.Queryable<RED_进货单详情表Store>()
+                                .Where(x => chunk.Contains(x.H主表GUID))
+                                .ToListAsync();
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogError(ex, "[SyncInvoices] 查询HQ详情批次{Index}失败", i);
+                            detailErrors++;
+                            continue;
+                        }
+
+                        if (!detailBatch.Any())
+                            continue;
+
+                        var localDetails = _mapper
+                            .Map<List<StoreLocalSupplierInvoiceDetails>>(detailBatch)
+                            .Where(x => !string.IsNullOrWhiteSpace(x.DetailGUID))
+                            .ToList();
+
+                        var detailsToInsert = localDetails
+                            .Where(x => !existingDetailGuids.Contains(x.DetailGUID))
+                            .ToList();
+                        var detailsToUpdate = localDetails
+                            .Where(x => existingDetailGuids.Contains(x.DetailGUID))
+                            .ToList();
+
+                        try
+                        {
+                            if (detailsToInsert.Any())
+                            {
+                                await localDb
+                                    .Fastest<StoreLocalSupplierInvoiceDetails>()
+                                    .AS("StoreLocalSupplierInvoiceDetails")
+                                    .PageSize(1000)
+                                    .BulkCopyAsync(detailsToInsert);
+                                addedDetails += detailsToInsert.Count;
+                                foreach (var d in detailsToInsert)
+                                    existingDetailGuids.Add(d.DetailGUID);
+                            }
+
+                            if (detailsToUpdate.Any())
+                            {
+                                await localDb
+                                    .Fastest<StoreLocalSupplierInvoiceDetails>()
+                                    .AS("StoreLocalSupplierInvoiceDetails")
+                                    .PageSize(1000)
+                                    .BulkUpdateAsync(detailsToUpdate);
+                                updatedDetails += detailsToUpdate.Count;
+                            }
+
+                            _logger.LogInformation(
+                                "[SyncInvoices] 详情批次{Index}: 新增{Added}, 更新{Updated}",
+                                i,
+                                detailsToInsert.Count,
+                                detailsToUpdate.Count
+                            );
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogError(ex, "[SyncInvoices] 写入详情批次{Index}失败", i);
+                            detailErrors++;
+                        }
+                    }
+                }
+
+                result.AddedCount = addedInvoices + addedDetails;
+                result.UpdatedCount = updatedInvoices + updatedDetails;
+                result.ErrorCount = invoiceErrors + detailErrors;
+                result.TotalCount = hqInvoiceGuids.Count;
+                result.IsSuccess = (invoiceErrors + detailErrors) == 0;
+                result.Message = result.IsSuccess
+                    ? $"同步完成：主表 新增{addedInvoices}/更新{updatedInvoices}，详情 新增{addedDetails}/更新{updatedDetails}"
+                    : $"同步部分完成：主表 新增{addedInvoices}/更新{updatedInvoices}({invoiceErrors}批错误)，详情 新增{addedDetails}/更新{updatedDetails}({detailErrors}批错误)";
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "[SyncInvoices] 同步进货单异常");
+                result.IsSuccess = false;
+                result.Message = $"同步异常: {ex.Message}";
+            }
+
+            result.EndTime = DateTime.UtcNow;
+            result.Duration = result.EndTime - result.StartTime;
+            return result;
         }
     }
 }

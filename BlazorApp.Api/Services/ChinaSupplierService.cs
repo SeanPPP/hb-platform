@@ -1,9 +1,10 @@
 using BlazorApp.Api.Data;
-using BlazorApp.Shared.Models;
+using BlazorApp.Api.Interfaces;
 using BlazorApp.Shared.DTOs;
+using BlazorApp.Shared.Models;
+using BlazorApp.Shared.Models.HqEntities;
 using Microsoft.Extensions.Logging;
 using SqlSugar;
-using BlazorApp.Api.Interfaces;
 
 namespace BlazorApp.Api.Services
 {
@@ -13,18 +14,26 @@ namespace BlazorApp.Api.Services
     public class ChinaSupplierService : IChinaSupplierService
     {
         private readonly SqlSugarContext _context;
+        private readonly HBSalesSqlSugarContext _hbSalesContext;
         private readonly ILogger<ChinaSupplierService> _logger;
 
-        public ChinaSupplierService(SqlSugarContext context, ILogger<ChinaSupplierService> logger)
+        public ChinaSupplierService(
+            SqlSugarContext context,
+            HBSalesSqlSugarContext hbSalesContext,
+            ILogger<ChinaSupplierService> logger
+        )
         {
             _context = context;
+            _hbSalesContext = hbSalesContext;
             _logger = logger;
         }
 
         /// <summary>
         /// 获取国内供应商列表
         /// </summary>
-        public async Task<ApiResponse<PagedResult<ChinaSupplierDto>>> GetChinaSuppliersAsync(ChinaSupplierQueryDto query)
+        public async Task<ApiResponse<PagedResult<ChinaSupplierDto>>> GetChinaSuppliersAsync(
+            ChinaSupplierQueryDto query
+        )
         {
             try
             {
@@ -37,10 +46,11 @@ namespace BlazorApp.Api.Services
                 if (!string.IsNullOrEmpty(query.Search))
                 {
                     supplierQuery = supplierQuery.Where(s =>
-                        (s.SupplierName != null && s.SupplierName.Contains(query.Search)) ||
-                        (s.SupplierCode != null && s.SupplierCode.Contains(query.Search)) ||
-                        (s.ShopNumber != null && s.ShopNumber.Contains(query.Search)) ||
-                        (s.ContactPerson != null && s.ContactPerson.Contains(query.Search)));
+                        (s.SupplierName != null && s.SupplierName.Contains(query.Search))
+                        || (s.SupplierCode != null && s.SupplierCode.Contains(query.Search))
+                        || (s.ShopNumber != null && s.ShopNumber.Contains(query.Search))
+                        || (s.ContactPerson != null && s.ContactPerson.Contains(query.Search))
+                    );
                 }
 
                 // 状态筛选
@@ -61,8 +71,9 @@ namespace BlazorApp.Api.Services
                 // 排序处理
                 if (!string.IsNullOrEmpty(query.SortField))
                 {
-                    var isDescending = !string.IsNullOrEmpty(query.SortDirection) &&
-                                     query.SortDirection.ToLower() == "desc";
+                    var isDescending =
+                        !string.IsNullOrEmpty(query.SortDirection)
+                        && query.SortDirection.ToLower() == "desc";
 
                     supplierQuery = query.SortField.ToLower() switch
                     {
@@ -87,7 +98,7 @@ namespace BlazorApp.Api.Services
                         "fgc_createdate" or "createdate" => isDescending
                             ? supplierQuery.OrderByDescending(s => s.FGC_CreateDate)
                             : supplierQuery.OrderBy(s => s.FGC_CreateDate),
-                        _ => supplierQuery.OrderByDescending(s => s.FGC_CreateDate) // 默认按创建时间降序
+                        _ => supplierQuery.OrderByDescending(s => s.FGC_CreateDate), // 默认按创建时间降序
                     };
                 }
                 else
@@ -115,7 +126,7 @@ namespace BlazorApp.Api.Services
                         FGC_Creator = s.FGC_Creator,
                         FGC_CreateDate = s.FGC_CreateDate,
                         FGC_LastModifier = s.FGC_LastModifier,
-                        FGC_LastModifyDate = s.FGC_LastModifyDate
+                        FGC_LastModifyDate = s.FGC_LastModifyDate,
                     })
                     .ToListAsync();
 
@@ -124,7 +135,7 @@ namespace BlazorApp.Api.Services
                     Items = suppliers,
                     Total = total,
                     Page = query.Page,
-                    PageSize = query.PageSize
+                    PageSize = query.PageSize,
                 };
 
                 return ApiResponse<PagedResult<ChinaSupplierDto>>.OK(result);
@@ -132,14 +143,19 @@ namespace BlazorApp.Api.Services
             catch (Exception ex)
             {
                 _logger.LogError(ex, "获取国内供应商列表失败");
-                return ApiResponse<PagedResult<ChinaSupplierDto>>.Error("获取国内供应商列表失败", "GET_CHINA_SUPPLIERS_ERROR");
+                return ApiResponse<PagedResult<ChinaSupplierDto>>.Error(
+                    "获取国内供应商列表失败",
+                    "GET_CHINA_SUPPLIERS_ERROR"
+                );
             }
         }
 
         /// <summary>
         /// 根据GUID获取国内供应商详情
         /// </summary>
-        public async Task<ApiResponse<ChinaSupplierDetailDto>> GetChinaSupplierByGuidAsync(string guid)
+        public async Task<ApiResponse<ChinaSupplierDetailDto>> GetChinaSupplierByGuidAsync(
+            string guid
+        )
         {
             try
             {
@@ -162,30 +178,36 @@ namespace BlazorApp.Api.Services
                         FGC_Creator = s.FGC_Creator,
                         FGC_CreateDate = s.FGC_CreateDate,
                         FGC_LastModifier = s.FGC_LastModifier,
-                        FGC_LastModifyDate = s.FGC_LastModifyDate
+                        FGC_LastModifyDate = s.FGC_LastModifyDate,
                     })
                     .FirstAsync();
 
                 if (supplier == null)
                 {
-                    return ApiResponse<ChinaSupplierDetailDto>.Error("国内供应商不存在", "CHINA_SUPPLIER_NOT_FOUND");
+                    return ApiResponse<ChinaSupplierDetailDto>.Error(
+                        "国内供应商不存在",
+                        "CHINA_SUPPLIER_NOT_FOUND"
+                    );
                 }
-
-
 
                 return ApiResponse<ChinaSupplierDetailDto>.OK(supplier);
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "获取国内供应商详情失败，GUID: {SupplierGUID}", guid);
-                return ApiResponse<ChinaSupplierDetailDto>.Error("获取国内供应商详情失败", "GET_CHINA_SUPPLIER_ERROR");
+                return ApiResponse<ChinaSupplierDetailDto>.Error(
+                    "获取国内供应商详情失败",
+                    "GET_CHINA_SUPPLIER_ERROR"
+                );
             }
         }
 
         /// <summary>
         /// 创建国内供应商
         /// </summary>
-        public async Task<ApiResponse<ChinaSupplierDto>> CreateChinaSupplierAsync(CreateChinaSupplierDto dto)
+        public async Task<ApiResponse<ChinaSupplierDto>> CreateChinaSupplierAsync(
+            CreateChinaSupplierDto dto
+        )
         {
             try
             {
@@ -198,7 +220,10 @@ namespace BlazorApp.Api.Services
 
                 if (existingSupplier != null)
                 {
-                    return ApiResponse<ChinaSupplierDto>.Error("供应商代码已存在", "SUPPLIER_CODE_EXISTS");
+                    return ApiResponse<ChinaSupplierDto>.Error(
+                        "供应商代码已存在",
+                        "SUPPLIER_CODE_EXISTS"
+                    );
                 }
 
                 var supplier = new ChinaSupplier
@@ -219,7 +244,7 @@ namespace BlazorApp.Api.Services
                     FGC_LastModifyDate = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"),
                     UpdatedAt = DateTime.Now,
                     FGC_Rowversion = Guid.NewGuid().ToString(),
-                    FGC_UpdateHelp = ""
+                    FGC_UpdateHelp = "",
                 };
 
                 await db.Insertable(supplier).ExecuteCommandAsync();
@@ -239,7 +264,7 @@ namespace BlazorApp.Api.Services
                     FGC_Creator = supplier.FGC_Creator,
                     FGC_CreateDate = supplier.FGC_CreateDate,
                     FGC_LastModifier = supplier.FGC_LastModifier,
-                    FGC_LastModifyDate = supplier.FGC_LastModifyDate
+                    FGC_LastModifyDate = supplier.FGC_LastModifyDate,
                 };
 
                 return ApiResponse<ChinaSupplierDto>.OK(result);
@@ -247,23 +272,34 @@ namespace BlazorApp.Api.Services
             catch (Exception ex)
             {
                 _logger.LogError(ex, "创建国内供应商失败");
-                return ApiResponse<ChinaSupplierDto>.Error("创建国内供应商失败", "CREATE_CHINA_SUPPLIER_ERROR");
+                return ApiResponse<ChinaSupplierDto>.Error(
+                    "创建国内供应商失败",
+                    "CREATE_CHINA_SUPPLIER_ERROR"
+                );
             }
         }
 
         /// <summary>
         /// 更新国内供应商
         /// </summary>
-        public async Task<ApiResponse<ChinaSupplierDto>> UpdateChinaSupplierAsync(string guid, UpdateChinaSupplierDto dto)
+        public async Task<ApiResponse<ChinaSupplierDto>> UpdateChinaSupplierAsync(
+            string guid,
+            UpdateChinaSupplierDto dto
+        )
         {
             try
             {
                 var db = _context.Db;
 
-                var supplier = await db.Queryable<ChinaSupplier>().Where(s => s.Guid == guid).FirstAsync();
+                var supplier = await db.Queryable<ChinaSupplier>()
+                    .Where(s => s.Guid == guid)
+                    .FirstAsync();
                 if (supplier == null)
                 {
-                    return ApiResponse<ChinaSupplierDto>.Error("国内供应商不存在", "CHINA_SUPPLIER_NOT_FOUND");
+                    return ApiResponse<ChinaSupplierDto>.Error(
+                        "国内供应商不存在",
+                        "CHINA_SUPPLIER_NOT_FOUND"
+                    );
                 }
 
                 // 检查供应商代码是否已存在（排除当前供应商）
@@ -273,7 +309,10 @@ namespace BlazorApp.Api.Services
 
                 if (existingSupplier != null)
                 {
-                    return ApiResponse<ChinaSupplierDto>.Error("供应商代码已存在", "SUPPLIER_CODE_EXISTS");
+                    return ApiResponse<ChinaSupplierDto>.Error(
+                        "供应商代码已存在",
+                        "SUPPLIER_CODE_EXISTS"
+                    );
                 }
 
                 await db.Updateable<ChinaSupplier>()
@@ -287,7 +326,9 @@ namespace BlazorApp.Api.Services
                     .SetColumns(s => s.Remarks == dto.Remarks)
                     .SetColumns(s => s.Status == dto.Status)
                     .SetColumns(s => s.FGC_LastModifier == "System") // 应该从当前用户上下文获取
-                    .SetColumns(s => s.FGC_LastModifyDate == DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"))
+                    .SetColumns(s =>
+                        s.FGC_LastModifyDate == DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")
+                    )
                     .SetColumns(s => s.UpdatedAt == DateTime.Now)
                     .SetColumns(s => s.FGC_Rowversion == Guid.NewGuid().ToString())
                     .Where(s => s.Guid == guid)
@@ -313,7 +354,7 @@ namespace BlazorApp.Api.Services
                     FGC_Creator = updatedSupplier.FGC_Creator,
                     FGC_CreateDate = updatedSupplier.FGC_CreateDate,
                     FGC_LastModifier = updatedSupplier.FGC_LastModifier,
-                    FGC_LastModifyDate = updatedSupplier.FGC_LastModifyDate
+                    FGC_LastModifyDate = updatedSupplier.FGC_LastModifyDate,
                 };
 
                 return ApiResponse<ChinaSupplierDto>.OK(result);
@@ -321,7 +362,10 @@ namespace BlazorApp.Api.Services
             catch (Exception ex)
             {
                 _logger.LogError(ex, "更新国内供应商失败，GUID: {SupplierGUID}", guid);
-                return ApiResponse<ChinaSupplierDto>.Error("更新国内供应商失败", "UPDATE_CHINA_SUPPLIER_ERROR");
+                return ApiResponse<ChinaSupplierDto>.Error(
+                    "更新国内供应商失败",
+                    "UPDATE_CHINA_SUPPLIER_ERROR"
+                );
             }
         }
 
@@ -334,7 +378,9 @@ namespace BlazorApp.Api.Services
             {
                 var db = _context.Db;
 
-                var supplier = await db.Queryable<ChinaSupplier>().Where(s => s.Guid == guid).FirstAsync();
+                var supplier = await db.Queryable<ChinaSupplier>()
+                    .Where(s => s.Guid == guid)
+                    .FirstAsync();
                 if (supplier == null)
                 {
                     return ApiResponse<bool>.Error("国内供应商不存在", "CHINA_SUPPLIER_NOT_FOUND");
@@ -348,11 +394,17 @@ namespace BlazorApp.Api.Services
                 // }
 
                 // 执行删除
-                var deleteResult = await db.Deleteable<ChinaSupplier>().Where(s => s.Guid == guid).ExecuteCommandAsync();
+                var deleteResult = await db.Deleteable<ChinaSupplier>()
+                    .Where(s => s.Guid == guid)
+                    .ExecuteCommandAsync();
 
                 if (deleteResult > 0)
                 {
-                    _logger.LogInformation("成功删除国内供应商，GUID: {SupplierGUID}, Name: {SupplierName}", guid, supplier.SupplierName);
+                    _logger.LogInformation(
+                        "成功删除国内供应商，GUID: {SupplierGUID}, Name: {SupplierName}",
+                        guid,
+                        supplier.SupplierName
+                    );
                     return ApiResponse<bool>.OK(true, "删除成功");
                 }
                 else
@@ -370,22 +422,32 @@ namespace BlazorApp.Api.Services
         /// <summary>
         /// 启用/禁用国内供应商
         /// </summary>
-        public async Task<ApiResponse<ChinaSupplierDto>> ToggleSupplierStatusAsync(string guid, int status)
+        public async Task<ApiResponse<ChinaSupplierDto>> ToggleSupplierStatusAsync(
+            string guid,
+            int status
+        )
         {
             try
             {
                 var db = _context.Db;
 
-                var supplier = await db.Queryable<ChinaSupplier>().Where(s => s.Guid == guid).FirstAsync();
+                var supplier = await db.Queryable<ChinaSupplier>()
+                    .Where(s => s.Guid == guid)
+                    .FirstAsync();
                 if (supplier == null)
                 {
-                    return ApiResponse<ChinaSupplierDto>.Error("国内供应商不存在", "CHINA_SUPPLIER_NOT_FOUND");
+                    return ApiResponse<ChinaSupplierDto>.Error(
+                        "国内供应商不存在",
+                        "CHINA_SUPPLIER_NOT_FOUND"
+                    );
                 }
 
                 await db.Updateable<ChinaSupplier>()
                     .SetColumns(s => s.Status == status)
                     .SetColumns(s => s.FGC_LastModifier == "System") // 应该从当前用户上下文获取
-                    .SetColumns(s => s.FGC_LastModifyDate == DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"))
+                    .SetColumns(s =>
+                        s.FGC_LastModifyDate == DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")
+                    )
                     .SetColumns(s => s.UpdatedAt == DateTime.Now)
                     .SetColumns(s => s.FGC_Rowversion == Guid.NewGuid().ToString())
                     .Where(s => s.Guid == guid)
@@ -411,7 +473,7 @@ namespace BlazorApp.Api.Services
                     FGC_Creator = updatedSupplier.FGC_Creator,
                     FGC_CreateDate = updatedSupplier.FGC_CreateDate,
                     FGC_LastModifier = updatedSupplier.FGC_LastModifier,
-                    FGC_LastModifyDate = updatedSupplier.FGC_LastModifyDate
+                    FGC_LastModifyDate = updatedSupplier.FGC_LastModifyDate,
                 };
 
                 return ApiResponse<ChinaSupplierDto>.OK(result);
@@ -419,20 +481,27 @@ namespace BlazorApp.Api.Services
             catch (Exception ex)
             {
                 _logger.LogError(ex, "切换国内供应商状态失败，GUID: {SupplierGUID}", guid);
-                return ApiResponse<ChinaSupplierDto>.Error("切换国内供应商状态失败", "TOGGLE_SUPPLIER_STATUS_ERROR");
+                return ApiResponse<ChinaSupplierDto>.Error(
+                    "切换国内供应商状态失败",
+                    "TOGGLE_SUPPLIER_STATUS_ERROR"
+                );
             }
         }
 
         /// <summary>
         /// 根据供应商代码检查是否存在
         /// </summary>
-        public async Task<ApiResponse<bool>> CheckSupplierCodeExistsAsync(string supplierCode, string? excludeGuid = null)
+        public async Task<ApiResponse<bool>> CheckSupplierCodeExistsAsync(
+            string supplierCode,
+            string? excludeGuid = null
+        )
         {
             try
             {
                 var db = _context.Db;
 
-                var query = db.Queryable<ChinaSupplier>().Where(s => s.SupplierCode == supplierCode);
+                var query = db.Queryable<ChinaSupplier>()
+                    .Where(s => s.SupplierCode == supplierCode);
 
                 if (!string.IsNullOrEmpty(excludeGuid))
                 {
@@ -445,7 +514,11 @@ namespace BlazorApp.Api.Services
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "检查供应商代码是否存在失败，SupplierCode: {SupplierCode}", supplierCode);
+                _logger.LogError(
+                    ex,
+                    "检查供应商代码是否存在失败，SupplierCode: {SupplierCode}",
+                    supplierCode
+                );
                 return ApiResponse<bool>.Error("检查供应商代码失败", "CHECK_SUPPLIER_CODE_ERROR");
             }
         }
@@ -471,7 +544,7 @@ namespace BlazorApp.Api.Services
                         ContactPerson = s.ContactPerson,
                         Phone = s.Phone,
                         Email = s.Email,
-                        Status = s.Status
+                        Status = s.Status,
                     })
                     .ToListAsync();
 
@@ -480,7 +553,10 @@ namespace BlazorApp.Api.Services
             catch (Exception ex)
             {
                 _logger.LogError(ex, "获取启用的国内供应商列表失败");
-                return ApiResponse<List<ChinaSupplierDto>>.Error("获取启用的国内供应商列表失败", "GET_ACTIVE_CHINA_SUPPLIERS_ERROR");
+                return ApiResponse<List<ChinaSupplierDto>>.Error(
+                    "获取启用的国内供应商列表失败",
+                    "GET_ACTIVE_CHINA_SUPPLIERS_ERROR"
+                );
             }
         }
 
@@ -505,7 +581,7 @@ namespace BlazorApp.Api.Services
                         ContactPerson = s.ContactPerson,
                         Phone = s.Phone,
                         Email = s.Email,
-                        Status = s.Status
+                        Status = s.Status,
                     })
                     .ToListAsync();
 
@@ -526,8 +602,8 @@ namespace BlazorApp.Api.Services
             try
             {
                 // 获取所有HB开头的供应商编码
-                var hbSuppliers = await _context.ChinaSupplierDb
-                    .AsQueryable()
+                var hbSuppliers = await _context
+                    .ChinaSupplierDb.AsQueryable()
                     .Where(s => s.SupplierCode != null && s.SupplierCode.StartsWith("HB"))
                     .Select(s => s.SupplierCode)
                     .ToListAsync();
@@ -553,7 +629,123 @@ namespace BlazorApp.Api.Services
             catch (Exception ex)
             {
                 _logger.LogError(ex, "生成供应商编码失败");
-                return ApiResponse<string>.Error("生成供应商编码失败", "GENERATE_SUPPLIER_CODE_FAILED");
+                return ApiResponse<string>.Error(
+                    "生成供应商编码失败",
+                    "GENERATE_SUPPLIER_CODE_FAILED"
+                );
+            }
+        }
+
+        public async Task<ApiResponse<SyncToHbSalesResultDto>> SyncToHbSalesAsync(
+            List<string> guids
+        )
+        {
+            try
+            {
+                if (guids == null || guids.Count == 0)
+                {
+                    return ApiResponse<SyncToHbSalesResultDto>.Error(
+                        "请选择要同步的供应商",
+                        "NO_SUPPLIERS_SELECTED"
+                    );
+                }
+
+                var result = new SyncToHbSalesResultDto { TotalProcessed = guids.Count };
+
+                var suppliers = await _context
+                    .Db.Queryable<ChinaSupplier>()
+                    .Where(s => guids.Contains(s.Guid))
+                    .ToListAsync();
+
+                if (suppliers.Count == 0)
+                {
+                    return ApiResponse<SyncToHbSalesResultDto>.Error(
+                        "未找到选中的供应商",
+                        "SUPPLIERS_NOT_FOUND"
+                    );
+                }
+
+                foreach (var supplier in suppliers)
+                {
+                    try
+                    {
+                        var existing = await _hbSalesContext
+                            .Db.Queryable<CBP_DIC_国内供应商信息表>()
+                            .Where(x => x.H供应商编码 == supplier.SupplierCode)
+                            .FirstAsync();
+
+                        var now = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+
+                        if (existing != null)
+                        {
+                            await _hbSalesContext
+                                .Db.Updateable<CBP_DIC_国内供应商信息表>()
+                                .SetColumns(x => x.HGUID == supplier.Guid)
+                                .SetColumns(x => x.H供应商名称 == supplier.SupplierName)
+                                .SetColumns(x => x.H商铺编号 == supplier.ShopNumber)
+                                .SetColumns(x => x.H联系人 == supplier.ContactPerson)
+                                .SetColumns(x => x.H电话 == supplier.Phone)
+                                .SetColumns(x => x.HEMAIL地址 == supplier.Email)
+                                .SetColumns(x => x.H商户门头照片 == supplier.StorefrontPhoto)
+                                .SetColumns(x => x.备注 == supplier.Remarks)
+                                .SetColumns(x => x.状态 == supplier.Status)
+                                .SetColumns(x => x.FGC_LastModifier == supplier.FGC_LastModifier)
+                                .SetColumns(x => x.FGC_LastModifyDate == now)
+                               // .SetColumns(x => x.FGC_Rowversion == Guid.NewGuid().ToString())
+                                .Where(x => x.ID == existing.ID)
+                                .ExecuteCommandAsync();
+
+                            result.UpdatedCount++;
+                        }
+                        else
+                        {
+                            var newRecord = new CBP_DIC_国内供应商信息表
+                            {
+                                HGUID = supplier.Guid,
+                                H供应商编码 = supplier.SupplierCode,
+                                H供应商名称 = supplier.SupplierName,
+                                H商铺编号 = supplier.ShopNumber,
+                                H联系人 = supplier.ContactPerson,
+                                H电话 = supplier.Phone,
+                                HEMAIL地址 = supplier.Email,
+                                H商户门头照片 = supplier.StorefrontPhoto,
+                                备注 = supplier.Remarks,
+                                状态 = supplier.Status,
+                                FGC_Creator = supplier.FGC_Creator ?? "System",
+                                FGC_CreateDate = now,
+                                FGC_LastModifier = supplier.FGC_LastModifier ?? "System",
+                                FGC_LastModifyDate = now,
+                                FGC_UpdateHelp = ""
+                            };
+
+                            await _hbSalesContext.Db.Insertable(newRecord).ExecuteCommandAsync();
+                            result.InsertedCount++;
+                        }
+
+                        result.SuccessCount++;
+                    }
+                    catch (Exception ex)
+                    {
+                        result.FailCount++;
+                        result.Errors.Add(
+                            $"{supplier.SupplierCode}({supplier.SupplierName}): {ex.Message}"
+                        );
+                        _logger.LogError(ex, "同步供应商 {Code} 失败", supplier.SupplierCode);
+                    }
+                }
+
+                return ApiResponse<SyncToHbSalesResultDto>.OK(
+                    result,
+                    $"同步完成：成功 {result.SuccessCount} 条，失败 {result.FailCount} 条"
+                );
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "同步供应商到HBSales失败");
+                return ApiResponse<SyncToHbSalesResultDto>.Error(
+                    "同步供应商到HBSales失败",
+                    "SYNC_TO_HBSALES_ERROR"
+                );
             }
         }
     }

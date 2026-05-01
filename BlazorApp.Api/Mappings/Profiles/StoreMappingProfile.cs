@@ -30,6 +30,7 @@ namespace BlazorApp.Api.Mappings.Profiles
                 .ForMember(dest => dest.DiscountRate, opt => opt.MapFrom(src => src.H折扣率))
                 .ForMember(dest => dest.IsActive, opt => opt.MapFrom(src => src.H使用状态))
                 .ForMember(dest => dest.IsAutoPricing, opt => opt.MapFrom(src => src.H是否自动定价))
+                .ForMember(dest => dest.IsSpecialProduct, opt => opt.MapFrom(src => src.H是否特殊商品))
                 .ForMember(dest => dest.CreatedAt, opt => opt.MapFrom(src => src.FGC_CreateDate))
                 .ForMember(
                     dest => dest.UpdatedAt,

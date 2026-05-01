@@ -2,12 +2,14 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
+using AutoMapper;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Api.Services;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Helper;
 using BlazorApp.Shared.Models;
+using BlazorApp.Shared.Models.HqEntities;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using SqlSugar;
@@ -21,21 +23,27 @@ namespace BlazorApp.Api.Services.React
     public class ProductWarehouseReactService : IProductWarehouseReactService
     {
         private readonly SqlSugarContext _context;
+        private readonly HqSqlSugarContext _hqContext;
         private readonly ILogger<ProductWarehouseReactService> _logger;
         private readonly IConfiguration _configuration;
         private readonly ItemBarcodeService _itemBarcodeService;
+        private readonly IMapper _mapper;
 
         public ProductWarehouseReactService(
             SqlSugarContext context,
+            HqSqlSugarContext hqContext,
             ILogger<ProductWarehouseReactService> logger,
             IConfiguration configuration,
-            ItemBarcodeService itemBarcodeService
+            ItemBarcodeService itemBarcodeService,
+            IMapper mapper
         )
         {
             _context = context;
+            _hqContext = hqContext;
             _logger = logger;
             _configuration = configuration;
             _itemBarcodeService = itemBarcodeService;
+            _mapper = mapper;
         }
 
         /// <summary>
@@ -3009,6 +3017,199 @@ namespace BlazorApp.Api.Services.React
             }
 
             return response;
+        }
+
+        /// <summary>
+        /// 从HQ商品库存表同步到本地仓库商品表
+        /// 同步规则：没有的添加，多的删除，有变化的更新
+        /// </summary>
+        /// <returns>同步结果</returns>
+        public async Task<WarehouseProductSyncResultDto> SyncFromHqAsync()
+        {
+            var result = new WarehouseProductSyncResultDto();
+            var startTime = DateTime.Now;
+            _logger.LogInformation("[WarehouseProductSync] 开始从HQ同步仓库商品库存");
+
+            try
+            {
+                // 步骤1：查询 HQ 全部商品库存数据
+                _hqContext.CheckConnection();
+                var hqProducts = await _hqContext.CBP_DIC_商品库存表Db.GetListAsync();
+
+                result.TotalHqProducts = hqProducts.Count;
+                Console.WriteLine($"📦 [仓库商品库存同步] HQ数据量: {hqProducts.Count:N0} 条");
+
+                // 步骤2：查询本地全部 WarehouseProduct
+                var localProducts = await _context.Db.Queryable<WarehouseProduct>().ToListAsync();
+
+                result.TotalLocalProductsBefore = localProducts.Count;
+                Console.WriteLine($"📦 [仓库商品库存同步] 本地数据量: {localProducts.Count:N0} 条");
+
+                // 构建本地商品的字典，便于快速查找
+                var localDict = localProducts.ToDictionary(p => p.ProductCode);
+
+                // HQ 商品编码集合
+                var hqCodes = hqProducts
+                    .Where(p => !string.IsNullOrEmpty(p.H商品编码))
+                    .Select(p => p.H商品编码!)
+                    .ToHashSet();
+
+                // 分类处理
+                var toAdd = new List<WarehouseProduct>();
+                var toUpdate = new List<WarehouseProduct>();
+                var toDelete = new List<WarehouseProduct>();
+
+                // 遍历 HQ 数据，找出新增和更新
+                foreach (var hqItem in hqProducts)
+                {
+                    if (string.IsNullOrEmpty(hqItem.H商品编码))
+                        continue;
+
+                    var code = hqItem.H商品编码;
+                    if (localDict.TryGetValue(code, out var localItem))
+                    {
+                        // 本地存在，检查是否需要更新
+                        if (HasChanges(hqItem, localItem))
+                        {
+                            UpdateFromHq(hqItem, localItem);
+                            toUpdate.Add(localItem);
+                        }
+                    }
+                    else
+                    {
+                        // 本地不存在，需要新增
+                        var newItem = MapFromHq(hqItem);
+                        toAdd.Add(newItem);
+                    }
+                }
+
+                // 找出需要删除的（本地有，HQ没有）
+                foreach (var localItem in localProducts)
+                {
+                    if (!hqCodes.Contains(localItem.ProductCode))
+                    {
+                        toDelete.Add(localItem);
+                    }
+                }
+
+                Console.WriteLine(
+                    $"📊 [仓库商品库存同步] 待新增: {toAdd.Count:N0}, 待更新: {toUpdate.Count:N0}, 待删除: {toDelete.Count:N0}"
+                );
+
+                // 步骤3：批量执行操作
+                _context.Db.Ado.BeginTran();
+
+                // 新增
+                if (toAdd.Any())
+                {
+                    var addCount = await _context.Db.Insertable(toAdd).ExecuteCommandAsync();
+                    result.AddedCount = addCount;
+                    Console.WriteLine($"✅ [仓库商品库存同步] 新增: {addCount:N0} 条");
+                }
+
+                // 更新
+                if (toUpdate.Any())
+                {
+                    var updateCount = await _context.Db.Updateable(toUpdate).ExecuteCommandAsync();
+                    result.UpdatedCount = updateCount;
+                    Console.WriteLine($"✅ [仓库商品库存同步] 更新: {updateCount:N0} 条");
+                }
+
+                // 删除
+                if (toDelete.Any())
+                {
+                    var deleteCount = await _context.Db.Deleteable(toDelete).ExecuteCommandAsync();
+                    result.DeletedCount = deleteCount;
+                    Console.WriteLine($"🗑️ [仓库商品库存同步] 删除: {deleteCount:N0} 条");
+                }
+
+                _context.Db.Ado.CommitTran();
+
+                result.Success = true;
+                result.Message =
+                    $"同步完成：新增 {result.AddedCount}, 更新 {result.UpdatedCount}, 删除 {result.DeletedCount}";
+            }
+            catch (Exception ex)
+            {
+                _context.Db.Ado.RollbackTran();
+                _logger.LogError(ex, "[WarehouseProductSync] 同步失败");
+                result.Success = false;
+                result.Message = "同步失败: " + ex.Message;
+                result.Errors.Add(ex.Message);
+            }
+
+            result.DurationMs = (long)(DateTime.Now - startTime).TotalMilliseconds;
+            Console.WriteLine($"⏱️ [仓库商品库存同步] 耗时: {result.DurationMs:N0}ms");
+
+            return result;
+        }
+
+        /// <summary>
+        /// 检查 HQ 数据与本地数据是否有变化
+        /// </summary>
+        private bool HasChanges(CBP_DIC_商品库存表 hq, WarehouseProduct local)
+        {
+            return hq.H国内价格 != local.DomesticPrice
+                || hq.H贴牌价格 != local.OEMPrice
+                || hq.H进口价格 != local.ImportPrice
+                || SafeConvertToInt(hq.H库存) != local.StockQuantity
+                || SafeConvertToInt(hq.H最小订货量) != local.MinOrderQuantity
+                || hq.H库存金额 != local.StockValue
+                || hq.H库存预警数 != local.StockAlertQuantity
+                || ConvertToBool(hq.H使用状态) != local.IsActive;
+        }
+
+        /// <summary>
+        /// 从 HQ 数据更新到本地实体
+        /// </summary>
+        private void UpdateFromHq(CBP_DIC_商品库存表 hq, WarehouseProduct local)
+        {
+            local.DomesticPrice = hq.H国内价格;
+            local.OEMPrice = hq.H贴牌价格;
+            local.ImportPrice = hq.H进口价格;
+            local.StockQuantity = SafeConvertToInt(hq.H库存);
+            local.MinOrderQuantity = SafeConvertToInt(hq.H最小订货量);
+            local.StockValue = hq.H库存金额;
+            local.StockAlertQuantity = hq.H库存预警数;
+            local.IsActive = ConvertToBool(hq.H使用状态);
+        }
+
+        /// <summary>
+        /// 将 HQ 数据映射为本地实体
+        /// </summary>
+        private WarehouseProduct MapFromHq(CBP_DIC_商品库存表 hq)
+        {
+            return new WarehouseProduct
+            {
+                ProductCode = hq.H商品编码!,
+                DomesticPrice = hq.H国内价格,
+                OEMPrice = hq.H贴牌价格,
+                ImportPrice = hq.H进口价格,
+                StockQuantity = SafeConvertToInt(hq.H库存),
+                MinOrderQuantity = SafeConvertToInt(hq.H最小订货量),
+                StockValue = hq.H库存金额,
+                StockAlertQuantity = hq.H库存预警数,
+                IsActive = ConvertToBool(hq.H使用状态),
+            };
+        }
+
+        /// <summary>
+        /// 安全转换 decimal? 为 int?
+        /// </summary>
+        private int? SafeConvertToInt(decimal? value)
+        {
+            if (value == null)
+                return null;
+            return (int)value.Value;
+        }
+
+        /// <summary>
+        /// 转换 int? 为 bool
+        /// 约定：1 = true, 其他 = false
+        /// </summary>
+        private bool ConvertToBool(int? value)
+        {
+            return value == 1;
         }
     }
 }

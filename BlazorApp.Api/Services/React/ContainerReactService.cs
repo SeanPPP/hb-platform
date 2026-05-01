@@ -4,6 +4,7 @@ using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
+using BlazorApp.Shared.Models.HqEntities;
 using SqlSugar;
 
 namespace BlazorApp.Api.Services.React
@@ -15,19 +16,25 @@ namespace BlazorApp.Api.Services.React
     public class ContainerReactService : IContainerReactService
     {
         private readonly SqlSugarContext _context;
+        private readonly HqSqlSugarContext _hqContext;
+        private readonly HBSalesSqlSugarContext _hbSalesContext;
+        private readonly IConfiguration _configuration;
         private readonly IMapper _mapper;
         private readonly ILogger<ContainerReactService> _logger;
 
-        /// <summary>
-        /// 构造函数
-        /// </summary>
         public ContainerReactService(
             SqlSugarContext context,
+            HqSqlSugarContext hqContext,
+            HBSalesSqlSugarContext hbSalesContext,
+            IConfiguration configuration,
             IMapper mapper,
             ILogger<ContainerReactService> logger
         )
         {
             _context = context;
+            _hqContext = hqContext;
+            _hbSalesContext = hbSalesContext;
+            _configuration = configuration;
             _mapper = mapper;
             _logger = logger;
         }
@@ -1470,6 +1477,444 @@ namespace BlazorApp.Api.Services.React
                 _logger.LogError(ex, "[React] 获取即将到港货柜失败");
                 throw;
             }
+        }
+
+        public async Task<SyncResult> SyncContainersWithDetailsFromHqAsync(
+            DateTime? startDate = null
+        )
+        {
+            var result = new SyncResult { StartTime = DateTime.UtcNow };
+            var syncGuids = new List<string>();
+
+            try
+            {
+                var effectiveStart = startDate ?? DateTime.UtcNow.AddDays(-30);
+
+                _logger.LogInformation(
+                    "[ContainerSync] 开始增量同步货柜主表+明细，起始日期: {StartDate}",
+                    effectiveStart
+                );
+
+                var hqDb = HqSqlSugarContext.CreateConcurrentConnection(_configuration);
+
+                var total = await hqDb.Queryable<CPT_RED_货柜单主表Store>()
+                    .Where(x => SqlFunc.HasValue(x.HGUID))
+                    .Where(x => x.装柜日期 >= effectiveStart)
+                    .CountAsync();
+                hqDb.Dispose();
+
+                if (total == 0)
+                {
+                    result.IsSuccess = true;
+                    result.Message = "没有新数据需要同步";
+                    result.EndTime = DateTime.UtcNow;
+                    result.Duration = result.EndTime - result.StartTime;
+                    return result;
+                }
+
+                const int batchSize = 50000;
+                const int writePageSize = 10000;
+                var pages = (int)Math.Ceiling(total / (double)batchSize);
+                var added = 0;
+                var updated = 0;
+
+                var existingCodes = new HashSet<string>(
+                    await _context
+                        .Db.Queryable<Container>()
+                        .Select(x => x.ContainerCode)
+                        .ToListAsync()
+                );
+
+                for (var page = 1; page <= pages; page++)
+                {
+                    var skip = (page - 1) * batchSize;
+                    var db = HqSqlSugarContext.CreateConcurrentConnection(_configuration);
+                    var batch = await db.Queryable<CPT_RED_货柜单主表Store>()
+                        .Where(x => SqlFunc.HasValue(x.HGUID))
+                        .Where(x => x.装柜日期 >= effectiveStart)
+                        .OrderBy(x => x.ID)
+                        .Skip(skip)
+                        .Take(batchSize)
+                        .ToListAsync();
+                    db.Dispose();
+
+                    if (!batch.Any())
+                        continue;
+
+                    var localBatch = _mapper
+                        .Map<List<Container>>(batch)
+                        .Where(x => !string.IsNullOrWhiteSpace(x.ContainerCode))
+                        .ToList();
+
+                    var toInsert = localBatch
+                        .Where(x => !existingCodes.Contains(x.ContainerCode!))
+                        .ToList();
+                    var toUpdate = localBatch
+                        .Where(x => existingCodes.Contains(x.ContainerCode!))
+                        .ToList();
+
+                    if (toUpdate.Any())
+                    {
+                        await _context
+                            .Db.Fastest<Container>()
+                            .AS("Container")
+                            .PageSize(writePageSize)
+                            .BulkUpdateAsync(toUpdate);
+                        updated += toUpdate.Count;
+                    }
+
+                    if (toInsert.Any())
+                    {
+                        await _context
+                            .Db.Fastest<Container>()
+                            .AS("Container")
+                            .PageSize(writePageSize)
+                            .BulkCopyAsync(toInsert);
+                        added += toInsert.Count;
+                    }
+
+                    foreach (
+                        var c in localBatch.Where(x => !string.IsNullOrWhiteSpace(x.ContainerCode))
+                    )
+                    {
+                        existingCodes.Add(c.ContainerCode!);
+                        syncGuids.Add(c.ContainerCode!);
+                    }
+                }
+
+                result.AddedCount = added;
+                result.UpdatedCount = updated;
+
+                _logger.LogInformation(
+                    "[ContainerSync] 货柜主表同步完成，新增: {Added}, 更新: {Updated}，开始同步明细（按主表GUID过滤）",
+                    added,
+                    updated
+                );
+
+                if (syncGuids.Any())
+                {
+                    var detailAdded = 0;
+                    var detailUpdated = 0;
+
+                    var existingDetailCodes = new HashSet<string>(
+                        await _context
+                            .Db.Queryable<ContainerDetail>()
+                            .Select(x => x.DetailCode)
+                            .ToListAsync()
+                    );
+
+                    var detailDb = HqSqlSugarContext.CreateConcurrentConnection(_configuration);
+                    var detailTotal = await detailDb
+                        .Queryable<CPT_RED_货柜单详情表Store>()
+                        .Where(x => !string.IsNullOrEmpty(x.主表GUID))
+                        .Where(x => SqlFunc.ContainsArray(syncGuids, x.主表GUID))
+                        .CountAsync();
+                    detailDb.Dispose();
+
+                    var detailPages = (int)Math.Ceiling(detailTotal / (double)batchSize);
+
+                    for (var dp = 1; dp <= detailPages; dp++)
+                    {
+                        var dSkip = (dp - 1) * batchSize;
+                        var ddb = HqSqlSugarContext.CreateConcurrentConnection(_configuration);
+                        var detailBatch = await ddb.Queryable<CPT_RED_货柜单详情表Store>()
+                            .Where(x => !string.IsNullOrEmpty(x.主表GUID))
+                            .Where(x => SqlFunc.ContainsArray(syncGuids, x.主表GUID))
+                            .OrderBy(x => x.ID)
+                            .Skip(dSkip)
+                            .Take(batchSize)
+                            .ToListAsync();
+                        ddb.Dispose();
+
+                        if (!detailBatch.Any())
+                            continue;
+
+                        var localDetails = _mapper
+                            .Map<List<ContainerDetail>>(detailBatch)
+                            .Where(x => !string.IsNullOrWhiteSpace(x.ContainerCode))
+                            .ToList();
+
+                        var dInsert = localDetails
+                            .Where(x => !existingDetailCodes.Contains(x.DetailCode!))
+                            .ToList();
+                        var dUpdate = localDetails
+                            .Where(x => existingDetailCodes.Contains(x.DetailCode!))
+                            .ToList();
+
+                        if (dUpdate.Any())
+                        {
+                            await _context
+                                .Db.Fastest<ContainerDetail>()
+                                .AS("ContainerDetail")
+                                .PageSize(writePageSize)
+                                .BulkUpdateAsync(dUpdate);
+                            detailUpdated += dUpdate.Count;
+                        }
+
+                        if (dInsert.Any())
+                        {
+                            await _context
+                                .Db.Fastest<ContainerDetail>()
+                                .AS("ContainerDetail")
+                                .PageSize(writePageSize)
+                                .BulkCopyAsync(dInsert);
+                            detailAdded += dInsert.Count;
+                        }
+
+                        foreach (
+                            var d in localDetails.Where(x =>
+                                !string.IsNullOrWhiteSpace(x.DetailCode)
+                            )
+                        )
+                            existingDetailCodes.Add(d.DetailCode!);
+                    }
+
+                    _logger.LogInformation(
+                        "[ContainerSync] 货柜明细同步完成，新增: {Added}, 更新: {Updated}",
+                        detailAdded,
+                        detailUpdated
+                    );
+
+                    result.Details =
+                        $"主表: 新增{added}, 更新{updated}; 明细: 新增{detailAdded}, 更新{detailUpdated}";
+                }
+
+                result.IsSuccess = true;
+                result.Message = $"同步完成：主表新增 {added} 条，更新 {updated} 条";
+                result.TotalCount = syncGuids.Count;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "[ContainerSync] 从HQ同步货柜失败");
+                result.IsSuccess = false;
+                result.Message = $"同步失败: {ex.Message}";
+            }
+
+            result.EndTime = DateTime.UtcNow;
+            result.Duration = result.EndTime - result.StartTime;
+            return result;
+        }
+
+        public async Task<SyncResult> PushContainersToHbSalesAsync(List<string> containerGuids)
+        {
+            var result = new SyncResult { StartTime = DateTime.UtcNow };
+
+            try
+            {
+                if (containerGuids == null || !containerGuids.Any())
+                {
+                    result.IsSuccess = false;
+                    result.Message = "未选择要推送的货柜";
+                    result.EndTime = DateTime.UtcNow;
+                    result.Duration = result.EndTime - result.StartTime;
+                    return result;
+                }
+
+                _logger.LogInformation(
+                    "[ContainerPush] 开始推送 {Count} 个货柜到HBSales",
+                    containerGuids.Count
+                );
+
+                var containers = await _context
+                    .Db.Queryable<Container>()
+                    .Where(x => containerGuids.Contains(x.ContainerCode))
+                    .ToListAsync();
+
+                if (!containers.Any())
+                {
+                    result.IsSuccess = false;
+                    result.Message = "未找到对应的货柜记录";
+                    result.EndTime = DateTime.UtcNow;
+                    result.Duration = result.EndTime - result.StartTime;
+                    return result;
+                }
+
+                var containerCodes = containers
+                    .Select(c => c.ContainerCode)
+                    .Where(c => !string.IsNullOrWhiteSpace(c))
+                    .ToList();
+
+                var details = await _context
+                    .Db.Queryable<ContainerDetail>()
+                    .Where(x => containerCodes.Contains(x.ContainerCode))
+                    .ToListAsync();
+
+                var existingHqMaster = await _hbSalesContext
+                    .Db.Queryable<CPT_RED_货柜单主表HBSales>()
+                    .Where(x =>
+                        SqlFunc.ContainsArray(
+                            containers.Select(c => c.ContainerCode).ToList(),
+                            x.HGUID
+                        )
+                    )
+                    .ToListAsync();
+                var existingMasterGuids = new HashSet<string>(
+                    existingHqMaster
+                        .Where(x => !string.IsNullOrWhiteSpace(x.HGUID))
+                        .Select(x => x.HGUID!)
+                );
+
+                var existingHqDetail = await _hbSalesContext
+                    .Db.Queryable<CPT_RED_货柜单详情表Store>()
+                    .Where(x => SqlFunc.ContainsArray(containerCodes, x.主表GUID))
+                    .ToListAsync();
+                var existingDetailGuids = new HashSet<string>(
+                    existingHqDetail
+                        .Where(x => !string.IsNullOrWhiteSpace(x.HGUID))
+                        .Select(x => x.HGUID!)
+                );
+
+                var masterToAdd = new List<CPT_RED_货柜单主表HBSales>();
+                var masterToUpdate = new List<CPT_RED_货柜单主表HBSales>();
+                var detailToAdd = new List<CPT_RED_货柜单详情表Store>();
+                var detailToUpdate = new List<CPT_RED_货柜单详情表Store>();
+
+                foreach (var container in containers)
+                {
+                    var hqEntity = MapToHqMasterForHbSales(container);
+                    if (existingMasterGuids.Contains(container.ContainerCode!))
+                        masterToUpdate.Add(hqEntity);
+                    else
+                        masterToAdd.Add(hqEntity);
+                }
+
+                foreach (var detail in details)
+                {
+                    var hqDetail = MapToHqDetail(detail);
+                    if (existingDetailGuids.Contains(detail.DetailCode!))
+                        detailToUpdate.Add(hqDetail);
+                    else
+                        detailToAdd.Add(hqDetail);
+                }
+
+                if (masterToAdd.Any())
+                {
+                    await _hbSalesContext
+                        .Db.Fastest<CPT_RED_货柜单主表HBSales>()
+                        .AS("CPT_RED_货柜单主表")
+                        .PageSize(5000)
+                        .BulkCopyAsync(masterToAdd);
+                }
+
+                if (masterToUpdate.Any())
+                {
+                    await _hbSalesContext
+                        .Db.Fastest<CPT_RED_货柜单主表HBSales>()
+                        .AS("CPT_RED_货柜单主表")
+                        .PageSize(5000)
+                        .BulkUpdateAsync(masterToUpdate);
+                }
+
+                if (detailToAdd.Any())
+                {
+                    await _hbSalesContext
+                        .Db.Fastest<CPT_RED_货柜单详情表Store>()
+                        .AS("CPT_RED_货柜单详情表")
+                        .PageSize(5000)
+                        .BulkCopyAsync(detailToAdd);
+                }
+
+                if (detailToUpdate.Any())
+                {
+                    await _hbSalesContext
+                        .Db.Fastest<CPT_RED_货柜单详情表Store>()
+                        .AS("CPT_RED_货柜单详情表")
+                        .PageSize(5000)
+                        .BulkUpdateAsync(detailToUpdate);
+                }
+
+                result.IsSuccess = true;
+                result.AddedCount = masterToAdd.Count + detailToAdd.Count;
+                result.UpdatedCount = masterToUpdate.Count + detailToUpdate.Count;
+                result.TotalCount = containers.Count;
+                result.Message =
+                    $"推送完成：主表新增{masterToAdd.Count}/更新{masterToUpdate.Count}，明细新增{detailToAdd.Count}/更新{detailToUpdate.Count}";
+
+                _logger.LogInformation(
+                    "[ContainerPush] 推送到HBSales完成: {Message}",
+                    result.Message
+                );
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "[ContainerPush] 推送货柜到HBSales失败");
+                result.IsSuccess = false;
+                result.Message = $"推送失败: {ex.Message}";
+            }
+
+            result.EndTime = DateTime.UtcNow;
+            result.Duration = result.EndTime - result.StartTime;
+            return result;
+        }
+
+        private static CPT_RED_货柜单主表Store MapToHqMaster(Container c)
+        {
+            return new CPT_RED_货柜单主表Store
+            {
+                HGUID = c.ContainerCode,
+                货柜编号 = c.ContainerNumber,
+                装柜日期 = c.LoadingDate,
+                预计到岸日期 = c.EstimatedArrivalDate,
+                实际到货日期 = c.ActualArrivalDate,
+                合计件数 = c.TotalPieces,
+                合计数量 = c.TotalQuantity,
+                合计金额 = c.TotalAmount,
+                总体积 = c.TotalVolume,
+                成本浮率 = c.CostFloatRate,
+                汇率 = c.ExchangeRate,
+                运费 = c.ShippingFee,
+                备注 = c.Remarks,
+                备注2 = c.Remarks2,
+                状态 = c.Status,
+                FGC_LastModifyDate = DateTime.UtcNow,
+            };
+        }
+
+        private static CPT_RED_货柜单主表HBSales MapToHqMasterForHbSales(Container c)
+        {
+            return new CPT_RED_货柜单主表HBSales
+            {
+                HGUID = c.ContainerCode,
+                货柜编号 = c.ContainerNumber,
+                装柜日期 = c.LoadingDate,
+                预计到岸日期 = c.EstimatedArrivalDate,
+                合计件数 = c.TotalPieces,
+                合计数量 = c.TotalQuantity,
+                合计金额 = c.TotalAmount,
+                总体积 = c.TotalVolume,
+                运费 = c.ShippingFee,
+                备注 = c.Remarks,
+                状态 = c.Status,
+                FGC_LastModifyDate = DateTime.UtcNow,
+            };
+        }
+
+        private static CPT_RED_货柜单详情表Store MapToHqDetail(ContainerDetail d)
+        {
+            return new CPT_RED_货柜单详情表Store
+            {
+                HGUID = d.DetailCode,
+                主表GUID = d.ContainerCode,
+                商品编码 = d.ProductCode,
+                装柜类型 = d.LoadingType,
+                混装GUID = d.MixedGroupCode,
+                商品类型 = d.ProductType,
+                套装数量 = d.SetQuantity,
+                装柜件数 = d.LoadingPieces,
+                装柜数量 = d.LoadingQuantity,
+                国内价格 = d.DomesticPrice,
+                调整浮率 = d.AdjustmentRate,
+                进口价格 = d.ImportPrice,
+                贴牌价格 = d.OEMPrice,
+                单件装箱数 = d.PackingQuantity,
+                单件体积 = d.UnitVolume,
+                合计装柜金额 = d.TotalAmount,
+                合计装柜体积 = d.TotalVolume,
+                运输成本 = d.TransportCost,
+                备注 = d.Remarks,
+                状态 = d.Status,
+                FGC_LastModifyDate = DateTime.UtcNow,
+            };
         }
     }
 }

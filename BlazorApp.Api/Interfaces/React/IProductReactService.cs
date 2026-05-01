@@ -68,5 +68,12 @@ namespace BlazorApp.Api.Interfaces.React
         /// <param name="filter">过滤条件</param>
         /// <returns>商品价格列表和总数</returns>
         Task<PagedProductPriceListDto> GetPriceFilteredPagedListAsync(ProductPriceFilterDto filter);
+
+        /// <summary>
+        /// 从HQ同步商品到本地（含增删改 + 关联表同步）
+        /// 按更新日期比对，只更新HQ侧更新的商品
+        /// </summary>
+        /// <returns>同步结果</returns>
+        Task<ApiResponse<HqProductSyncResult>> SyncProductsFromHqAsync();
     }
 }

@@ -399,5 +399,44 @@ namespace BlazorApp.Api.Controllers
                 );
             }
         }
+
+        /// <summary>
+        /// 同步选中的供应商到HBSales数据库
+        /// </summary>
+        [HttpPost("sync-to-hbsales")]
+        [Authorize(Roles = "Admin")]
+        public async Task<IActionResult> SyncToHbSales([FromBody] List<string> guids)
+        {
+            try
+            {
+                if (guids == null || guids.Count == 0)
+                {
+                    return BadRequest(
+                        ApiResponse<SyncToHbSalesResultDto>.Error(
+                            "请选择要同步的供应商",
+                            "NO_SUPPLIERS_SELECTED"
+                        )
+                    );
+                }
+
+                var result = await _chinaSupplierService.SyncToHbSalesAsync(guids);
+                if (result.Success)
+                {
+                    return Ok(result);
+                }
+                return BadRequest(result);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "同步供应商到HBSales失败");
+                return StatusCode(
+                    500,
+                    ApiResponse<SyncToHbSalesResultDto>.Error(
+                        "服务器内部错误",
+                        "INTERNAL_SERVER_ERROR"
+                    )
+                );
+            }
+        }
     }
 }

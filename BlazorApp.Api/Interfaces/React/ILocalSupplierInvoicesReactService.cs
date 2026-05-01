@@ -1,4 +1,5 @@
 using BlazorApp.Shared.DTOs;
+using BlazorApp.Shared.Models;
 
 namespace BlazorApp.Api.Interfaces.React
 {
@@ -62,5 +63,7 @@ namespace BlazorApp.Api.Interfaces.React
             List<string> detailGuids,
             string userName
         );
+        Task<SyncResult> PushInvoicesToHqAsync(List<string> invoiceGuids);
+        Task<SyncResult> SyncInvoicesFromHqAsync();
     }
 }

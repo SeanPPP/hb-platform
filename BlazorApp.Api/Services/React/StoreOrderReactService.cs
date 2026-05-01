@@ -726,31 +726,29 @@ namespace BlazorApp.Api.Services.React
                 {
                     var keyword = filter.Keyword.Trim();
 
-                    // Query 1: 匹配订单号或分店代码
-                    var q1 = _db.Queryable<WareHouseOrder>()
+                    var matchedGuids = await _db.Queryable<WareHouseOrder>()
                         .Where(o =>
                             !o.IsDeleted
                             && (
                                 (o.OrderNo != null && o.OrderNo.Contains(keyword))
                                 || (o.StoreCode != null && o.StoreCode.Contains(keyword))
                             )
-                        );
-
-                    // Query 2: 匹配商品货号
-                    var q2 = _db.Queryable<WareHouseOrder>()
-                        .InnerJoin<WareHouseOrderDetails>((o, d) => o.OrderGUID == d.OrderGUID)
-                        .InnerJoin<Product>((o, d, p) => d.ProductCode == p.ProductCode)
-                        .Where(
-                            (o, d, p) =>
-                                !o.IsDeleted
-                                && p.ItemNumber != null
-                                && p.ItemNumber.Contains(keyword)
                         )
-                        .Select(o => o); // 只选择主表字段以匹配 q1
+                        .Select(o => o.OrderGUID)
+                        .ToListAsync();
 
-                    // 合并查询 (Union 会自动去重)
-                    // 使用 MergeTable() 将 Union 结果作为派生表处理，避免 "无法绑定由多个部分组成的标识符" 错误
-                    q = _db.Union(q1, q2).MergeTable();
+                    var detailMatchedGuids = await _db.Queryable<WareHouseOrderDetails>()
+                        .InnerJoin<Product>((d, p) => d.ProductCode == p.ProductCode)
+                        .Where((d, p) => p.ItemNumber != null && p.ItemNumber.Contains(keyword))
+                        .Select(d => d.OrderGUID)
+                        .Distinct()
+                        .ToListAsync();
+
+                    matchedGuids.AddRange(detailMatchedGuids);
+                    matchedGuids = matchedGuids.Distinct().ToList();
+
+                    q = _db.Queryable<WareHouseOrder>()
+                        .Where(o => !o.IsDeleted && matchedGuids.Contains(o.OrderGUID));
                 }
                 else
                 {
@@ -907,7 +905,7 @@ namespace BlazorApp.Api.Services.React
                         StoreCode = o.StoreCode,
                         StoreName = SqlFunc
                             .Subqueryable<Store>()
-                            .Where(s => s.StoreCode == o.StoreCode)
+                            .Where(s => s.StoreCode == o.StoreCode || s.StoreGUID == o.StoreCode)
                             .Select(s => s.StoreName),
                         OrderDate = o.OrderDate,
                         FlowStatus = o.FlowStatus ?? 0,
@@ -1080,7 +1078,9 @@ namespace BlazorApp.Api.Services.React
         public async Task<ApiResponse<StoreOrderCartDto?>> GetOrderDetailAsync(string orderGuid)
         {
             var order = await _db.Queryable<WareHouseOrder>()
-                .InnerJoin<Store>((o, s) => o.StoreCode == s.StoreCode)
+                .InnerJoin<Store>(
+                    (o, s) => o.StoreCode == s.StoreCode || o.StoreCode == s.StoreGUID
+                )
                 .Where(o => o.OrderGUID == orderGuid && !o.IsDeleted)
                 .Select((o, s) => new { Order = o, StoreAddress = s.Address })
                 .FirstAsync();
@@ -1207,9 +1207,15 @@ namespace BlazorApp.Api.Services.React
                     };
                 }
 
+                // 区分 GUID 格式和非 GUID 格式的分店代码
+                var guidCodes = usedStoreCodes.Where(c => Guid.TryParse(c, out _)).ToList();
+                var normalCodes = usedStoreCodes.Where(c => !Guid.TryParse(c, out _)).ToList();
+
                 // 2. 根据分店代码批量查询分店表获取详细信息
                 var branches = await _db.Queryable<Store>()
-                    .Where(s => usedStoreCodes.Contains(s.StoreCode))
+                    .Where(s =>
+                        normalCodes.Contains(s.StoreCode) || guidCodes.Contains(s.StoreGUID)
+                    )
                     .Select(s => new
                     {
                         s.StoreGUID,
@@ -1223,11 +1229,12 @@ namespace BlazorApp.Api.Services.React
 
                 foreach (var code in usedStoreCodes)
                 {
-                    var branch = branches.FirstOrDefault(b => b.StoreCode == code);
+                    var branch = branches.FirstOrDefault(b =>
+                        b.StoreCode == code || b.StoreGUID == code
+                    );
 
                     if (branch != null)
                     {
-                        // 分店表中找到的记录
                         result.Add(
                             new BranchDto
                             {
@@ -1237,7 +1244,6 @@ namespace BlazorApp.Api.Services.React
                             }
                         );
                     }
-                    // 不返回找不到的记录，只记录警告日志
                     else
                     {
                         _logger.LogWarning("分店代码 '{Code}' 在订单中存在但分店表中未找到", code);
@@ -2213,7 +2219,8 @@ namespace BlazorApp.Api.Services.React
                     return new ApiResponse<bool>
                     {
                         Success = false,
-                        Message = "Invalid status. Only 1 (Submitted) or 2 (Completed) are allowed."
+                        Message =
+                            "Invalid status. Only 1 (Submitted) or 2 (Completed) are allowed.",
                     };
                 }
 
@@ -2231,7 +2238,7 @@ namespace BlazorApp.Api.Services.React
                     return new ApiResponse<bool>
                     {
                         Success = false,
-                        Message = "Status is already the target status"
+                        Message = "Status is already the target status",
                     };
                 }
 
@@ -2239,7 +2246,9 @@ namespace BlazorApp.Api.Services.React
 
                 _logger.LogInformation(
                     "Updating order {OrderGUID} status from {OldStatus} to {NewStatus}",
-                    orderGuid, order.FlowStatus, newStatus
+                    orderGuid,
+                    order.FlowStatus,
+                    newStatus
                 );
 
                 order.FlowStatus = newStatus;
@@ -2256,16 +2265,28 @@ namespace BlazorApp.Api.Services.React
                     .ExecuteCommandAsync();
 
                 var statusText = newStatus == 1 ? "Submitted" : "Completed";
-                return new ApiResponse<bool> { Success = true, Data = true, Message = $"Status changed to {statusText}" };
+                return new ApiResponse<bool>
+                {
+                    Success = true,
+                    Data = true,
+                    Message = $"Status changed to {statusText}",
+                };
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "UpdateOrderStatusAsync failed for order {OrderGUID}", orderGuid);
+                _logger.LogError(
+                    ex,
+                    "UpdateOrderStatusAsync failed for order {OrderGUID}",
+                    orderGuid
+                );
                 return new ApiResponse<bool> { Success = false, Message = ex.Message };
             }
         }
 
-        public async Task<ApiResponse<int>> BatchUpdateOrderStatusAsync(List<string> orderGuids, int newStatus)
+        public async Task<ApiResponse<int>> BatchUpdateOrderStatusAsync(
+            List<string> orderGuids,
+            int newStatus
+        )
         {
             try
             {
@@ -2274,20 +2295,26 @@ namespace BlazorApp.Api.Services.React
                     return new ApiResponse<int>
                     {
                         Success = false,
-                        Message = "Invalid status. Only 1 (Submitted) or 2 (Completed) are allowed."
+                        Message =
+                            "Invalid status. Only 1 (Submitted) or 2 (Completed) are allowed.",
                     };
                 }
 
                 if (orderGuids == null || orderGuids.Count == 0)
                 {
-                    return new ApiResponse<int> { Success = false, Message = "No orders specified" };
+                    return new ApiResponse<int>
+                    {
+                        Success = false,
+                        Message = "No orders specified",
+                    };
                 }
 
                 var userId = _httpContextAccessor.HttpContext?.User?.Identity?.Name ?? "System";
 
                 _logger.LogInformation(
                     "Batch updating {Count} orders to status {NewStatus}",
-                    orderGuids.Count, newStatus
+                    orderGuids.Count,
+                    newStatus
                 );
 
                 var updatedCount = await _db.Updateable<WareHouseOrder>()
@@ -2295,7 +2322,7 @@ namespace BlazorApp.Api.Services.React
                     {
                         FlowStatus = newStatus,
                         UpdatedAt = DateTime.Now,
-                        UpdatedBy = userId
+                        UpdatedBy = userId,
                     })
                     .Where(o => orderGuids.Contains(o.OrderGUID) && !o.IsDeleted)
                     .ExecuteCommandAsync();
@@ -2304,7 +2331,7 @@ namespace BlazorApp.Api.Services.React
                 {
                     Success = true,
                     Data = updatedCount,
-                    Message = $"Updated {updatedCount} orders"
+                    Message = $"Updated {updatedCount} orders",
                 };
             }
             catch (Exception ex)

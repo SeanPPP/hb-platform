@@ -549,5 +549,83 @@ namespace BlazorApp.Api.Controllers.React
                 return StatusCode(500, new { success = false, message = "服务器内部错误" });
             }
         }
+
+        [HttpPost("sync-from-hq")]
+        [Authorize(Roles = "Admin,WarehouseManager")]
+        public async Task<IActionResult> SyncContainersFromHq(
+            [FromBody] SyncFromHqRequestDto? request
+        )
+        {
+            try
+            {
+                _logger.LogInformation("从HQ同步货柜（增量+明细）");
+
+                var result = await _containerReactService.SyncContainersWithDetailsFromHqAsync(
+                    request?.StartDate
+                );
+
+                return Ok(
+                    new
+                    {
+                        success = result.IsSuccess,
+                        data = result,
+                        message = result.Message,
+                    }
+                );
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "从HQ同步货柜失败");
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
+        [HttpPost("push-to-hbsales")]
+        [Authorize(Roles = "Admin,WarehouseManager")]
+        public async Task<IActionResult> PushContainersToHbSales(
+            [FromBody] PushToHbSalesRequestDto request
+        )
+        {
+            try
+            {
+                if (request?.ContainerGuids == null || !request.ContainerGuids.Any())
+                {
+                    return BadRequest(new { success = false, message = "请选择要推送的货柜" });
+                }
+
+                _logger.LogInformation(
+                    "推送 {Count} 个货柜到HBSales",
+                    request.ContainerGuids.Count
+                );
+
+                var result = await _containerReactService.PushContainersToHbSalesAsync(
+                    request.ContainerGuids
+                );
+
+                return Ok(
+                    new
+                    {
+                        success = result.IsSuccess,
+                        data = result,
+                        message = result.Message,
+                    }
+                );
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "推送货柜到HBSales失败");
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+    }
+
+    public class SyncFromHqRequestDto
+    {
+        public DateTime? StartDate { get; set; }
+    }
+
+    public class PushToHbSalesRequestDto
+    {
+        public List<string> ContainerGuids { get; set; } = new();
     }
 }

@@ -632,4 +632,9 @@ namespace BlazorApp.Shared.DTOs
         /// </summary>
         public List<string> Errors { get; set; } = new();
     }
+
+    public class PushToHqRequest
+    {
+        public List<string> InvoiceGuids { get; set; } = new();
+    }
 }

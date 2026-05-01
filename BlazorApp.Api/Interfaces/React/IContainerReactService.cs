@@ -1,4 +1,5 @@
 using BlazorApp.Shared.DTOs;
+using BlazorApp.Shared.Models;
 
 namespace BlazorApp.Api.Interfaces.React
 {
@@ -75,10 +76,10 @@ namespace BlazorApp.Api.Interfaces.React
         /// <returns>成功删除的行数</returns>
         Task<int> BatchDeleteDetailsAsync(List<string> hguids);
 
-        /// <summary>
-        /// 获取即将到港的货柜及其商品列表（Coming Soon 页面专用）
-        /// 条件：未来8周内预计到港 + 最近一周内实际到港
-        /// </summary>
         Task<List<ComingSoonContainerDto>> GetComingSoonContainersAsync();
+
+        Task<SyncResult> SyncContainersWithDetailsFromHqAsync(DateTime? startDate = null);
+
+        Task<SyncResult> PushContainersToHbSalesAsync(List<string> containerGuids);
     }
 }

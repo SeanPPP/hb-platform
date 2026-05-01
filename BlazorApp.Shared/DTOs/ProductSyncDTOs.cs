@@ -297,5 +297,141 @@ namespace BlazorApp.Shared.DTOs
     }
 
     #endregion
+
+    #region 仓库商品库存同步DTO
+
+    /// <summary>
+    /// 仓库商品库存同步结果DTO
+    /// 用于从HQ商品库存表同步到本地仓库商品表的结果返回
+    /// </summary>
+    public class WarehouseProductSyncResultDto
+    {
+        /// <summary>
+        /// 操作是否成功
+        /// </summary>
+        public bool Success { get; set; }
+
+        /// <summary>
+        /// 结果消息
+        /// </summary>
+        public string Message { get; set; } = string.Empty;
+
+        /// <summary>
+        /// HQ商品总数
+        /// </summary>
+        public int TotalHqProducts { get; set; }
+
+        /// <summary>
+        /// 本地商品总数（同步前）
+        /// </summary>
+        public int TotalLocalProductsBefore { get; set; }
+
+        /// <summary>
+        /// 新增商品数
+        /// </summary>
+        public int AddedCount { get; set; }
+
+        /// <summary>
+        /// 更新商品数
+        /// </summary>
+        public int UpdatedCount { get; set; }
+
+        /// <summary>
+        /// 删除商品数
+        /// </summary>
+        public int DeletedCount { get; set; }
+
+        /// <summary>
+        /// 错误数量
+        /// </summary>
+        public int ErrorCount { get; set; }
+
+        /// <summary>
+        /// 错误信息列表
+        /// </summary>
+        public List<string> Errors { get; set; } = new();
+
+        /// <summary>
+        /// 执行耗时（毫秒）
+        /// </summary>
+        public long DurationMs { get; set; }
+    }
+
+    #endregion
+
+    #region 从HQ同步商品DTO
+
+    /// <summary>
+    /// 从HQ同步商品的结果DTO
+    /// </summary>
+    public class HqProductSyncResult
+    {
+        /// <summary>
+        /// HQ商品总数
+        /// </summary>
+        public int TotalHqProducts { get; set; }
+
+        /// <summary>
+        /// 本地商品总数
+        /// </summary>
+        public int TotalLocalProducts { get; set; }
+
+        /// <summary>
+        /// 新增商品数
+        /// </summary>
+        public int ProductsAdded { get; set; }
+
+        /// <summary>
+        /// 更新商品数
+        /// </summary>
+        public int ProductsUpdated { get; set; }
+
+        /// <summary>
+        /// 删除商品数
+        /// </summary>
+        public int ProductsDeleted { get; set; }
+
+        /// <summary>
+        /// 新增分店零售价数
+        /// </summary>
+        public int StoreRetailPricesCreated { get; set; }
+
+        /// <summary>
+        /// 删除分店零售价数
+        /// </summary>
+        public int StoreRetailPricesDeleted { get; set; }
+
+        /// <summary>
+        /// 新增套装编码数
+        /// </summary>
+        public int ProductSetCodesCreated { get; set; }
+
+        /// <summary>
+        /// 删除套装编码数
+        /// </summary>
+        public int ProductSetCodesDeleted { get; set; }
+
+        /// <summary>
+        /// 新增分店多码商品数
+        /// </summary>
+        public int StoreMultiCodesCreated { get; set; }
+
+        /// <summary>
+        /// 删除分店多码商品数
+        /// </summary>
+        public int StoreMultiCodesDeleted { get; set; }
+
+        /// <summary>
+        /// 错误信息列表
+        /// </summary>
+        public List<string> Errors { get; set; } = new();
+
+        /// <summary>
+        /// 执行耗时（毫秒）
+        /// </summary>
+        public long DurationMs { get; set; }
+    }
+
+    #endregion
 }
 
