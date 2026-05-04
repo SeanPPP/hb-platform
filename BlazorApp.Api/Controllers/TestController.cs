@@ -1,5 +1,6 @@
 using BlazorApp.Api.Services;
 using BlazorApp.Api.Data;
+using BlazorApp.Api.Filters;
 using BlazorApp.Shared.Models;
 using BlazorApp.Shared.Models.HBweb;
 using Microsoft.AspNetCore.Authorization;
@@ -14,6 +15,9 @@ namespace BlazorApp.Api.Controllers
     /// </summary>
     [ApiController]
     [Route("api/[controller]")]
+    [DevelopmentOnly]
+    [Authorize(Roles = "Admin")]
+    [Obsolete("Diagnostic controller. Keep disabled outside Development and remove after confirming no runtime usage.")]
     public class TestController : ControllerBase
     {
         private readonly SqlSugarContext _dbContext;

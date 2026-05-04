@@ -15,14 +15,17 @@ namespace BlazorApp.Api.Controllers.React
     public class ReactStoreProductPricesController : ControllerBase
     {
         private readonly IStoreProductPriceReactService _service;
+        private readonly IStoreRetailPriceReactService _retailPriceService;
         private readonly ILogger<ReactStoreProductPricesController> _logger;
 
         public ReactStoreProductPricesController(
             IStoreProductPriceReactService service,
+            IStoreRetailPriceReactService retailPriceService,
             ILogger<ReactStoreProductPricesController> logger
         )
         {
             _service = service;
+            _retailPriceService = retailPriceService;
             _logger = logger;
         }
 
@@ -158,6 +161,17 @@ namespace BlazorApp.Api.Controllers.React
                 await Response.WriteAsync($"data: {errorJson}\n\n", cancellationToken);
                 await Response.Body.FlushAsync(cancellationToken);
             }
+        }
+
+        [HttpPost("sync-from-hq")]
+        [Authorize(Roles = "Admin")]
+        public async Task<IActionResult> SyncFromHq([FromBody] SyncRetailPriceFromHqRequest request)
+        {
+            var result = await _retailPriceService.SyncFromHqAsync(
+                request.SelectedStoreCodes,
+                request.StartDate
+            );
+            return Ok(result);
         }
     }
 }

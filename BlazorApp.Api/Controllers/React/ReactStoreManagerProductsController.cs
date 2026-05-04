@@ -16,6 +16,7 @@ namespace BlazorApp.Api.Controllers.React
     [ApiController]
     [Route("api/react/v1/store-manager/products")]
     [Authorize(Roles = "StoreManager")]
+    [Obsolete("Candidate for removal after confirming no StoreManager frontend or external usage.")]
     public class ReactStoreManagerProductsController : ControllerBase
     {
         private readonly IStoreManagerProductReactService _service;

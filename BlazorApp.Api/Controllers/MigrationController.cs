@@ -1,4 +1,5 @@
 using BlazorApp.Api.Data;
+using BlazorApp.Api.Filters;
 using BlazorApp.Api.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -9,6 +10,8 @@ namespace BlazorApp.Api.Controllers
     [ApiController]
     [Route("api/v1/[controller]")]
     [Authorize(Roles = "Admin")]
+    [DevelopmentOnly]
+    [Obsolete("Migration controller is restricted to Development until usage is confirmed.")]
     public class MigrationController : ControllerBase
     {
         private readonly SqlSugarContext _context;

@@ -147,4 +147,19 @@ namespace BlazorApp.Shared.DTOs
         public bool SyncDiscountRate { get; set; }
         public string Mode { get; set; } = SyncModeConstants.Overwrite;
     }
+
+    public class SyncRetailPriceFromHqRequest
+    {
+        public List<string>? SelectedStoreCodes { get; set; }
+        public DateTime? StartDate { get; set; }
+    }
+
+    public class SyncRetailPriceFromHqResult
+    {
+        public int AddedCount { get; set; }
+        public int UpdatedCount { get; set; }
+        public int TotalProcessed { get; set; }
+        public long DurationMs { get; set; }
+        public List<string> Errors { get; set; } = new List<string>();
+    }
 }

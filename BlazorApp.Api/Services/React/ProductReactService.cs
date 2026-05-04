@@ -9,6 +9,7 @@ using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Helper;
 using BlazorApp.Shared.Models;
+using BlazorApp.Shared.Models.HqEntities;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging;
 using SqlSugar;
@@ -1281,6 +1282,8 @@ namespace BlazorApp.Api.Services.React
             var result = new HqProductSyncResult();
             var startTime = DateTime.Now;
             var errors = new List<string>();
+            var originalTimeout = _db.Ado.CommandTimeOut;
+            _db.Ado.CommandTimeOut = 300;
 
             try
             {
@@ -1288,77 +1291,155 @@ namespace BlazorApp.Api.Services.React
 
                 _hqContext.CheckConnection();
 
-                _logger.LogInformation("阶段一：构建本地索引...");
-                var activeStores = await _db.Queryable<Store>()
-                    .Where(s => s.IsActive && !s.IsDeleted)
-                    .ToListAsync();
+                _logger.LogInformation("阶段一+二：并发构建轻量索引...");
+                var localDataTask = Task.Run(async () =>
+                {
+                    var stores = await _db.Queryable<Store>()
+                        .Where(s => s.IsActive && !s.IsDeleted)
+                        .ToListAsync();
+                    var indexList = await _db.Queryable<Product>()
+                        .Where(p => !p.IsDeleted && p.ProductCode != null)
+                        .Select(p => new { p.ProductCode, p.UpdatedAt })
+                        .ToListAsync();
+                    return (stores, indexList);
+                });
 
-                var localProductCodes = await _db.Queryable<Product>()
-                    .Where(p => !p.IsDeleted && p.ProductCode != null)
-                    .Select(p => p.ProductCode!)
-                    .ToListAsync();
-                var localProductCodeSet = localProductCodes.ToHashSet();
-
-                var localProductsList = await _db.Queryable<Product>()
-                    .Where(p => !p.IsDeleted && p.ProductCode != null)
-                    .ToListAsync();
-                var localProducts = localProductsList.ToDictionary(p => p.ProductCode!);
-
-                _logger.LogInformation(
-                    "本地商品数: {Count}, 激活分店数: {StoreCount}",
-                    localProductCodes.Count,
-                    activeStores.Count
-                );
-
-                _logger.LogInformation("阶段二：从HQ获取商品数据...");
-                var hqProducts = await _hqContext
+                var hqIndexTask = _hqContext
                     .DIC_商品信息字典表Db.AsQueryable()
                     .Where(p => p.H使用状态 == true && !string.IsNullOrEmpty(p.H商品编码))
+                    .Select(p => new { p.H商品编码, p.FGC_LastModifyDate })
                     .ToListAsync();
 
-                result.TotalHqProducts = hqProducts.Count;
-                _logger.LogInformation("HQ商品数: {Count}", hqProducts.Count);
+                await Task.WhenAll(localDataTask, hqIndexTask);
 
-                var hqCodes = hqProducts.Select(p => p.H商品编码!).ToHashSet();
-                var hqProductsDict = hqProducts.ToDictionary(p => p.H商品编码!);
+                var (activeStores, localIndexList) = await localDataTask;
+                var hqIndexList = await hqIndexTask;
 
-                _logger.LogInformation("阶段三：分类并处理商品...");
-                var toAdd = new List<BlazorApp.Shared.Models.HqEntities.DIC_商品信息字典表>();
-                var toUpdate =
-                    new List<
-                        ValueTuple<
-                            BlazorApp.Shared.Models.HqEntities.DIC_商品信息字典表,
-                            BlazorApp.Shared.Models.Product
-                        >
-                    >();
+                var localIndex = localIndexList.ToDictionary(x => x.ProductCode!, x => x.UpdatedAt);
+                var localProductCodeSet = localIndex.Keys.ToHashSet();
+                var hqIndexDict = hqIndexList.ToDictionary(p => p.H商品编码!, p => p.FGC_LastModifyDate);
 
-                foreach (var hqProduct in hqProducts)
+                _logger.LogInformation(
+                    "本地商品数: {Count}, 激活分店数: {StoreCount}, HQ商品数: {HqCount}",
+                    localIndex.Count,
+                    activeStores.Count,
+                    hqIndexDict.Count
+                );
+
+                result.TotalHqProducts = hqIndexDict.Count;
+
+                _logger.LogInformation("阶段三：轻量比对分类...");
+                var toAddCodes = new List<string>();
+                var toUpdateCodes = new List<string>();
+
+                foreach (var (code, hqModifyDate) in hqIndexDict)
                 {
-                    var code = hqProduct.H商品编码!;
                     if (!localProductCodeSet.Contains(code))
                     {
-                        toAdd.Add(hqProduct);
+                        toAddCodes.Add(code);
                     }
-                    else if (localProducts.TryGetValue(code, out var localProduct))
+                    else if (hqModifyDate > localIndex[code])
                     {
-                        if (hqProduct.FGC_LastModifyDate > localProduct.UpdatedAt)
-                        {
-                            toUpdate.Add((hqProduct, localProduct));
-                        }
+                        toUpdateCodes.Add(code);
                     }
                 }
 
+                var toDeleteCodes = localIndex.Keys
+                    .Where(code => !hqIndexDict.ContainsKey(code))
+                    .ToList();
+
                 _logger.LogInformation(
-                    "待新增: {AddCount}, 待更新: {UpdateCount}",
-                    toAdd.Count,
-                    toUpdate.Count
+                    "待新增: {AddCount}, 待更新: {UpdateCount}, 待删除: {DeleteCount}",
+                    toAddCodes.Count,
+                    toUpdateCodes.Count,
+                    toDeleteCodes.Count
                 );
 
                 const int batchSize = 5000;
+
+                _logger.LogInformation("阶段四：按需加载完整数据...");
+                var neededCodes = toAddCodes.Concat(toUpdateCodes).ToList();
+                var hqFullDict = new Dictionary<string, DIC_商品信息字典表>();
+                foreach (var codeBatch in neededCodes.Chunk(batchSize))
+                {
+                    var batch = await _hqContext
+                        .DIC_商品信息字典表Db.AsQueryable()
+                        .Where(p => codeBatch.Contains(p.H商品编码!))
+                        .ToListAsync();
+                    foreach (var item in batch)
+                    {
+                        if (item.H商品编码 != null)
+                            hqFullDict[item.H商品编码] = item;
+                    }
+                }
+
+                var toUpdateProductsDict = new Dictionary<string, Product>();
+                foreach (var codeBatch in toUpdateCodes.Chunk(batchSize))
+                {
+                    var batch = await _db.Queryable<Product>()
+                        .Where(p => codeBatch.Contains(p.ProductCode!))
+                        .ToListAsync();
+                    foreach (var item in batch)
+                    {
+                        if (item.ProductCode != null)
+                            toUpdateProductsDict[item.ProductCode] = item;
+                    }
+                }
+
+                var toAdd = toAddCodes.Where(c => hqFullDict.ContainsKey(c))
+                    .Select(c => hqFullDict[c]).ToList();
+                var toUpdate = toUpdateCodes
+                    .Where(c => hqFullDict.ContainsKey(c) && toUpdateProductsDict.ContainsKey(c))
+                    .Select(c => (hqFullDict[c], toUpdateProductsDict[c]))
+                    .ToList();
                 int processedPage = 0;
 
                 foreach (var batch in toAdd.Chunk(batchSize))
                 {
+                    var batchProductCodes = batch
+                        .Where(hq => !string.IsNullOrEmpty(hq.H商品编码))
+                        .Select(hq => hq.H商品编码!)
+                        .ToList();
+
+                    using var hqConn1 = HqSqlSugarContext.CreateConcurrentConnection(
+                        _hqContext.Configuration
+                    );
+                    using var hqConn2 = HqSqlSugarContext.CreateConcurrentConnection(
+                        _hqContext.Configuration
+                    );
+
+                    var hqRetailPricesTask = hqConn1
+                        .Queryable<DIC_商品零售价表>()
+                        .Where(r =>
+                            batchProductCodes.Contains(r.H商品编码!)
+                            && r.H使用状态 == true
+                            && !string.IsNullOrEmpty(r.H分店代码)
+                        )
+                        .ToListAsync();
+
+                    var hqMultiCodesTask = hqConn2
+                        .Queryable<DIC_分店一品多码表>()
+                        .Where(m =>
+                            batchProductCodes.Contains(m.H商品编码!)
+                            && m.H使用状态 == true
+                            && !string.IsNullOrEmpty(m.H分店代码)
+                        )
+                        .ToListAsync();
+
+                    await Task.WhenAll(hqRetailPricesTask, hqMultiCodesTask);
+
+                    var hqRetailPrices = await hqRetailPricesTask;
+                    var hqMultiCodes = await hqMultiCodesTask;
+
+                    var hqRetailPricesDict = hqRetailPrices.ToDictionary(
+                        r => (r.H分店代码!, r.H商品编码!),
+                        r => r
+                    );
+
+                    var hqMultiCodesByProduct = hqMultiCodes
+                        .GroupBy(m => m.H商品编码!)
+                        .ToDictionary(g => g.Key, g => g.ToList());
+
                     _db.Ado.BeginTran();
                     try
                     {
@@ -1376,36 +1457,6 @@ namespace BlazorApp.Api.Services.React
                         var storeRetailPrices = new List<StoreRetailPrice>();
                         var storeMultiCodes = new List<StoreMultiCodeProduct>();
                         var productSetCodes = new List<ProductSetCode>();
-
-                        var batchProductCodes = batch
-                            .Where(hq => !string.IsNullOrEmpty(hq.H商品编码))
-                            .Select(hq => hq.H商品编码!)
-                            .ToList();
-
-                        var hqRetailPrices = await _hqContext
-                            .DIC_商品零售价表Db.AsQueryable()
-                            .Where(r =>
-                                batchProductCodes.Contains(r.H商品编码!)
-                                && r.H使用状态 == true
-                                && !string.IsNullOrEmpty(r.H分店代码)
-                            )
-                            .ToListAsync();
-                        var hqRetailPricesDict = hqRetailPrices.ToDictionary(
-                            r => (r.H分店代码!, r.H商品编码!),
-                            r => r
-                        );
-
-                        var hqMultiCodes = await _hqContext
-                            .DIC_分店一品多码表Db.AsQueryable()
-                            .Where(m =>
-                                batchProductCodes.Contains(m.H商品编码!)
-                                && m.H使用状态 == true
-                                && !string.IsNullOrEmpty(m.H分店代码)
-                            )
-                            .ToListAsync();
-                        var hqMultiCodesByProduct = hqMultiCodes
-                            .GroupBy(m => m.H商品编码!)
-                            .ToDictionary(g => g.Key, g => g.ToList());
 
                         for (int i = 0; i < newProducts.Count; i++)
                         {
@@ -1612,25 +1663,27 @@ namespace BlazorApp.Api.Services.React
                 }
 
                 _logger.LogInformation("阶段五：处理多余商品（HQ没有的软删除）...");
-                var toDelete = localProducts
-                    .Values.Where(p =>
-                        !string.IsNullOrEmpty(p.ProductCode) && !hqCodes.Contains(p.ProductCode)
-                    )
-                    .ToList();
 
-                _logger.LogInformation("待删除商品数: {Count}", toDelete.Count);
-                result.TotalLocalProducts = localProducts.Count;
+                _logger.LogInformation("待删除商品数: {Count}", toDeleteCodes.Count);
+                result.TotalLocalProducts = localIndex.Count;
 
                 processedPage = 0;
-                foreach (var batch in toDelete.Chunk(batchSize))
+                foreach (var codeBatch in toDeleteCodes.Chunk(batchSize))
                 {
+                    var productCodes = codeBatch.ToList();
                     _db.Ado.BeginTran();
                     try
                     {
-                        var productCodes = batch
-                            .Where(p => p.ProductCode != null)
-                            .Select(p => p.ProductCode!)
-                            .ToList();
+
+                        var retailPricesDeleted = await _db.Queryable<StoreRetailPrice>()
+                            .Where(p => productCodes.Contains(p.ProductCode!))
+                            .CountAsync();
+                        var setCodesDeleted = await _db.Queryable<ProductSetCode>()
+                            .Where(p => productCodes.Contains(p.ProductCode!))
+                            .CountAsync();
+                        var multiCodesDeleted = await _db.Queryable<StoreMultiCodeProduct>()
+                            .Where(p => productCodes.Contains(p.ProductCode!))
+                            .CountAsync();
 
                         await _db.Updateable<Product>()
                             .SetColumns(p => p.IsDeleted == true)
@@ -1653,16 +1706,9 @@ namespace BlazorApp.Api.Services.React
                             .ExecuteCommandAsync();
 
                         result.ProductsDeleted += productCodes.Count;
-                        result.StoreRetailPricesDeleted += await _db.Queryable<StoreRetailPrice>()
-                            .Where(p => productCodes.Contains(p.ProductCode!))
-                            .CountAsync();
-                        result.ProductSetCodesDeleted += await _db.Queryable<ProductSetCode>()
-                            .Where(p => productCodes.Contains(p.ProductCode!))
-                            .CountAsync();
-                        result.StoreMultiCodesDeleted +=
-                            await _db.Queryable<StoreMultiCodeProduct>()
-                                .Where(p => productCodes.Contains(p.ProductCode!))
-                                .CountAsync();
+                        result.StoreRetailPricesDeleted += retailPricesDeleted;
+                        result.ProductSetCodesDeleted += setCodesDeleted;
+                        result.StoreMultiCodesDeleted += multiCodesDeleted;
 
                         _db.Ado.CommitTran();
                     }
@@ -1680,7 +1726,7 @@ namespace BlazorApp.Api.Services.React
                         _logger.LogInformation(
                             "删除进度: {Processed}/{Total}",
                             processedPage * batchSize,
-                            toDelete.Count
+                            toDeleteCodes.Count
                         );
                     }
                 }
@@ -1708,6 +1754,10 @@ namespace BlazorApp.Api.Services.React
             {
                 _logger.LogError(ex, "从HQ同步商品失败");
                 return ApiResponse<HqProductSyncResult>.Error("从HQ同步商品失败: " + ex.Message);
+            }
+            finally
+            {
+                _db.Ado.CommandTimeOut = originalTimeout;
             }
         }
 

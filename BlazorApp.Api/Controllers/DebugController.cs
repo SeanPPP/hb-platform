@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Authorization;
 using SqlSugar;
 using BlazorApp.Shared.Models;
 using BlazorApp.Api.Data;
+using BlazorApp.Api.Filters;
 using BlazorApp.Api.Services;
 using BlazorApp.Api.Interfaces;
 using BlazorApp.Shared.DTOs;
@@ -12,6 +13,9 @@ namespace BlazorApp.Api.Controllers
     [ApiController]
     [Route("api/[controller]")]
     [Authorize] // 🔐 启用授权，需要认证才能访问调试接口
+    [DevelopmentOnly]
+    [Authorize(Roles = "Admin")]
+    [Obsolete("Diagnostic controller. Keep disabled outside Development and remove after confirming no runtime usage.")]
     public class DebugController : ControllerBase
     {
         private readonly SqlSugarContext _dbContext;

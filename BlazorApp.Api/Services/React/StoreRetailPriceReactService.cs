@@ -5,9 +5,11 @@ using System.Linq;
 using System.Threading.Tasks;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces.React;
+using BlazorApp.Api.Repositories.Interfaces;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Helper;
 using BlazorApp.Shared.Models;
+using BlazorApp.Shared.Models.HqEntities;
 using Microsoft.Extensions.Logging;
 using SqlSugar;
 
@@ -16,14 +18,20 @@ namespace BlazorApp.Api.Services.React
     public class StoreRetailPriceReactService : IStoreRetailPriceReactService
     {
         private readonly SqlSugarContext _context;
+        private readonly HqSqlSugarContext _hqContext;
+        private readonly IStoreRetailPriceRepository _storeRetailPriceRepository;
         private readonly ILogger<StoreRetailPriceReactService> _logger;
 
         public StoreRetailPriceReactService(
             SqlSugarContext context,
+            HqSqlSugarContext hqContext,
+            IStoreRetailPriceRepository storeRetailPriceRepository,
             ILogger<StoreRetailPriceReactService> logger
         )
         {
             _context = context;
+            _hqContext = hqContext;
+            _storeRetailPriceRepository = storeRetailPriceRepository;
             _logger = logger;
         }
 
@@ -618,36 +626,7 @@ namespace BlazorApp.Api.Services.React
                 db.Aop.OnLogExecuting = logExec;
                 db.Aop.OnLogExecuted = logExecuted;
                 var sw = Stopwatch.StartNew();
-                var item = await db.Queryable<StoreRetailPrice>()
-                    .LeftJoin<Product>((p, prod) => p.ProductCode == prod.ProductCode)
-                    .LeftJoin<HBLocalSupplier>(
-                        (p, prod, sup) => p.SupplierCode == sup.LocalSupplierCode
-                    )
-                    .LeftJoin<Store>((p, prod, sup, st) => p.StoreCode == st.StoreCode)
-                    .Where((p, prod, sup, st) => p.UUID == uuid && p.IsDeleted == false)
-                    .Select(
-                        (p, prod, sup, st) =>
-                            new StoreRetailPriceDetailDto
-                            {
-                                UUID = p.UUID,
-                                StoreCode = p.StoreCode,
-                                StoreName = st.StoreName,
-                                SupplierCode = p.SupplierCode,
-                                SupplierName = sup.Name,
-                                ProductCode = p.ProductCode,
-                                ProductName = prod.ProductName,
-                                PurchasePrice = p.PurchasePrice,
-                                StoreRetailPriceValue = p.StoreRetailPriceValue,
-                                DiscountRate = p.DiscountRate,
-                                IsActive = p.IsActive,
-                                IsAutoPricing = p.IsAutoPricing,
-                                CreatedAt = p.CreatedAt,
-                                UpdatedAt = p.UpdatedAt,
-                                CreatedBy = p.CreatedBy,
-                                UpdatedBy = p.UpdatedBy,
-                            }
-                    )
-                    .FirstAsync();
+                var item = await _storeRetailPriceRepository.GetDetailByUuidAsync(uuid);
                 _logger.LogInformation($"[{reqId}] 详情查询耗时(ms): {sw.ElapsedMilliseconds}");
                 db.Aop.OnLogExecuting = null;
                 db.Aop.OnLogExecuted = null;
@@ -769,13 +748,10 @@ namespace BlazorApp.Api.Services.React
         {
             try
             {
-                var db = _context.Db;
-                var result = await db.Updateable<StoreRetailPrice>()
-                    .SetColumns(x => x.IsDeleted == true)
-                    .SetColumns(x => x.UpdatedAt == DateTime.UtcNow)
-                    .SetColumns(x => x.UpdatedBy == updatedBy)
-                    .Where(x => x.UUID == uuid)
-                    .ExecuteCommandAsync();
+                var result = await _storeRetailPriceRepository.SoftDeleteByUuidAsync(
+                    uuid,
+                    updatedBy
+                );
                 return ApiResponse<bool>.OK(result > 0, result > 0 ? "删除成功" : "未找到数据");
             }
             catch (Exception ex)
@@ -828,7 +804,7 @@ namespace BlazorApp.Api.Services.React
                         $"查询条件 - UUIDs: {uuids.Count}, StoreCodes: {string.Join(",", storeCodes)}, ProductCodes: {string.Join(",", productCodes)}"
                     );
 
-                    var q = db.Queryable<StoreRetailPrice>().Where(x => x.IsDeleted == false);
+                    var q = _storeRetailPriceRepository.QueryActive();
                     if (uuids.Any())
                         q = q.Where(x => x.UUID != null && uuids.Contains(x.UUID));
                     if (storeCodes.Any() && productCodes.Any())
@@ -874,14 +850,9 @@ namespace BlazorApp.Api.Services.React
                             {
                                 var sc = it.StoreCode?.Trim();
                                 var pc = it.ProductCode?.Trim();
-                                if (
-                                    string.IsNullOrWhiteSpace(sc)
-                                    || string.IsNullOrWhiteSpace(pc)
-                                )
+                                if (string.IsNullOrWhiteSpace(sc) || string.IsNullOrWhiteSpace(pc))
                                 {
-                                    throw new Exception(
-                                        "缺少关键键值(storeCode/productCode)"
-                                    );
+                                    throw new Exception("缺少关键键值(storeCode/productCode)");
                                 }
                                 var key = $"{sc}|{pc}";
                                 if (byKey.TryGetValue(key, out var foundByKey))
@@ -994,12 +965,10 @@ namespace BlazorApp.Api.Services.React
                 await db.Ado.BeginTranAsync();
                 try
                 {
-                    var count = await db.Updateable<StoreRetailPrice>()
-                        .SetColumns(x => x.IsDeleted == true)
-                        .SetColumns(x => x.UpdatedAt == DateTime.UtcNow)
-                        .SetColumns(x => x.UpdatedBy == updatedBy)
-                        .Where(x => uuids.Contains(x.UUID))
-                        .ExecuteCommandAsync();
+                    var count = await _storeRetailPriceRepository.SoftDeleteByUuidsAsync(
+                        uuids,
+                        updatedBy
+                    );
                     await db.Ado.CommitTranAsync();
                     return ApiResponse<bool>.OK(true, "成功删除 " + count + " 条");
                 }
@@ -1058,42 +1027,7 @@ namespace BlazorApp.Api.Services.React
         {
             try
             {
-                var db = _context.Db;
-                var items = await db.Queryable<StoreRetailPrice>()
-                    .InnerJoin<Product>((p, prod) => p.ProductCode == prod.ProductCode)
-                    .LeftJoin<HBLocalSupplier>(
-                        (p, prod, sup) => p.SupplierCode == sup.LocalSupplierCode
-                    )
-                    .LeftJoin<Store>((p, prod, sup, st) => p.StoreCode == st.StoreCode)
-                    .Where(
-                        (p, prod, sup, st) =>
-                            p.UUID != null && uuids.Contains(p.UUID) && p.IsDeleted == false
-                    )
-                    .Select(
-                        (p, prod, sup, st) =>
-                            new StoreRetailPriceListDto
-                            {
-                                UUID = p.UUID,
-                                StoreCode = p.StoreCode,
-                                StoreName = st.StoreName,
-                                SupplierCode = p.SupplierCode,
-                                SupplierName = sup.Name,
-                                ProductCode = p.ProductCode,
-                                ProductName = prod.ProductName,
-                                ProductImage = prod.ProductImage,
-                                ItemNumber = prod.ItemNumber,
-                                Barcode = prod.Barcode,
-                                PurchasePrice = p.PurchasePrice,
-                                StoreRetailPriceValue = p.StoreRetailPriceValue,
-                                DiscountRate = p.DiscountRate,
-                                IsActive = p.IsActive,
-                                IsAutoPricing = p.IsAutoPricing,
-                                UpdatedBy = p.UpdatedBy,
-                                UpdatedAt = p.UpdatedAt,
-                                IsSpecialProduct = prod.IsSpecialProduct,
-                            }
-                    )
-                    .ToListAsync();
+                var items = await _storeRetailPriceRepository.GetListByUuidsAsync(uuids);
 
                 return ApiResponse<List<StoreRetailPriceListDto>>.OK(items);
             }
@@ -1127,7 +1061,7 @@ namespace BlazorApp.Api.Services.React
                 await db.Ado.BeginTranAsync();
                 try
                 {
-                    var q = db.Queryable<StoreRetailPrice>().Where(x => x.IsDeleted == false);
+                    var q = _storeRetailPriceRepository.QueryActive();
 
                     if (productCodes.Any())
                     {
@@ -1497,11 +1431,7 @@ namespace BlazorApp.Api.Services.React
         {
             try
             {
-                var db = _context.Db;
-                var stores = await db.Queryable<Store>()
-                    .Where(s => s.IsActive == true && s.IsDeleted == false)
-                    .Select(s => s.StoreCode)
-                    .ToListAsync();
+                var stores = await _storeRetailPriceRepository.GetActiveStoreCodesAsync();
                 if (stores == null)
                     stores = new List<string>();
                 var upserts = new List<StoreRetailPriceUpsertItemDto>();
@@ -1666,6 +1596,167 @@ namespace BlazorApp.Api.Services.React
                     )
                 ),
                 _ => query,
+            };
+        }
+
+        public async Task<ApiResponse<SyncRetailPriceFromHqResult>> SyncFromHqAsync(
+            List<string>? storeCodes,
+            DateTime? startDate
+        )
+        {
+            var sw = Stopwatch.StartNew();
+            var result = new SyncRetailPriceFromHqResult();
+            var db = _context.Db;
+            var originalTimeout = db.Ado.CommandTimeOut;
+            db.Ado.CommandTimeOut = 300;
+
+            try
+            {
+                var effectiveStartDate = startDate ?? DateTime.Now.AddDays(-30);
+                _logger.LogInformation(
+                    "开始从HQ增量同步零售价，起始日期: {StartDate}，指定分店: {StoreCount}",
+                    effectiveStartDate,
+                    storeCodes?.Count ?? 0
+                );
+
+                _hqContext.CheckConnection();
+
+                var activeStoreCodes = await db.Queryable<Store>()
+                    .Where(s => s.IsActive && !s.IsDeleted)
+                    .Select(s => s.StoreCode!)
+                    .ToListAsync();
+
+                var targetStoreCodes = (storeCodes != null && storeCodes.Any())
+                    ? storeCodes.Intersect(activeStoreCodes).ToList()
+                    : activeStoreCodes;
+
+                var hqQuery = _hqContext
+                    .DIC_商品零售价表Db.AsQueryable()
+                    .Where(r =>
+                        r.H使用状态 == true
+                        && r.FGC_LastModifyDate >= effectiveStartDate
+                        && targetStoreCodes.Contains(r.H分店代码)
+                    );
+
+                var hqPrices = await hqQuery.ToListAsync();
+                _logger.LogInformation("HQ查询到 {Count} 条零售价记录", hqPrices.Count);
+
+                if (!hqPrices.Any())
+                {
+                    return ApiResponse<SyncRetailPriceFromHqResult>.OK(result);
+                }
+
+                var hqStoreCodes = hqPrices.Select(r => r.H分店代码).Distinct().ToList();
+                var hqProductCodes = hqPrices.Select(r => r.H商品编码).Distinct().ToList();
+
+                var existingDict = new Dictionary<(string, string), StoreRetailPrice>();
+                foreach (var storeBatch in hqStoreCodes.Chunk(100))
+                {
+                    var batch = await db.Queryable<StoreRetailPrice>()
+                        .Where(p =>
+                            storeBatch.Contains(p.StoreCode!)
+                            && !p.IsDeleted
+                            && hqProductCodes.Contains(p.ProductCode!)
+                        )
+                        .ToListAsync();
+                    foreach (var item in batch)
+                    {
+                        if (item.StoreCode != null && item.ProductCode != null)
+                            existingDict[(item.StoreCode, item.ProductCode)] = item;
+                    }
+                }
+
+                var toAdd = new List<StoreRetailPrice>();
+                var toUpdate = new List<StoreRetailPrice>();
+                var now = DateTime.UtcNow;
+
+                foreach (var hq in hqPrices)
+                {
+                    var key = (hq.H分店代码, hq.H商品编码);
+                    var entity = MapHqToLocal(hq, now);
+
+                    if (existingDict.TryGetValue(key, out var existing))
+                    {
+                        if (hq.FGC_LastModifyDate > (existing.UpdatedAt ?? DateTime.MinValue))
+                        {
+                            existing.StoreProductCode = entity.StoreProductCode;
+                            existing.SupplierCode = entity.SupplierCode;
+                            existing.PurchasePrice = entity.PurchasePrice;
+                            existing.StoreRetailPriceValue = entity.StoreRetailPriceValue;
+                            existing.DiscountRate = entity.DiscountRate;
+                            existing.IsAutoPricing = entity.IsAutoPricing;
+                            existing.IsSpecialProduct = entity.IsSpecialProduct;
+                            existing.IsActive = true;
+                            existing.UpdatedAt = now;
+                            toUpdate.Add(existing);
+                        }
+                    }
+                    else
+                    {
+                        toAdd.Add(entity);
+                    }
+                }
+
+                const int batchSize = 1000;
+                foreach (var batch in toAdd.Chunk(batchSize))
+                {
+                    await db.Insertable(batch.ToList()).ExecuteCommandAsync();
+                }
+                result.AddedCount = toAdd.Count;
+
+                foreach (var batch in toUpdate.Chunk(batchSize))
+                {
+                    await db.Updateable(batch.ToList()).ExecuteCommandAsync();
+                }
+                result.UpdatedCount = toUpdate.Count;
+
+                result.TotalProcessed = toAdd.Count + toUpdate.Count;
+                sw.Stop();
+                result.DurationMs = sw.ElapsedMilliseconds;
+
+                _logger.LogInformation(
+                    "HQ零售价同步完成：新增 {Added}，更新 {Updated}，耗时 {Ms}ms",
+                    result.AddedCount,
+                    result.UpdatedCount,
+                    result.DurationMs
+                );
+
+                return ApiResponse<SyncRetailPriceFromHqResult>.OK(result);
+            }
+            catch (Exception ex)
+            {
+                sw.Stop();
+                result.DurationMs = sw.ElapsedMilliseconds;
+                result.Errors.Add(ex.Message);
+                _logger.LogError(ex, "从HQ同步零售价失败");
+                return ApiResponse<SyncRetailPriceFromHqResult>.Error(
+                    "从HQ同步零售价失败: " + ex.Message
+                );
+            }
+            finally
+            {
+                db.Ado.CommandTimeOut = originalTimeout;
+            }
+        }
+
+        private static StoreRetailPrice MapHqToLocal(DIC_商品零售价表 hq, DateTime now)
+        {
+            return new StoreRetailPrice
+            {
+                UUID = hq.HGUID ?? UuidHelper.GenerateUuid7(),
+                StoreCode = hq.H分店代码,
+                ProductCode = hq.H商品编码,
+                StoreProductCode = hq.H分店商品编码,
+                SupplierCode = hq.H分店供应商编码,
+                PurchasePrice = hq.H进货价,
+                StoreRetailPriceValue = hq.H分店零售价,
+                DiscountRate = hq.H动态销售数量 > 0 ? (decimal?)hq.H动态销售数量 : null,
+                IsActive = hq.H使用状态,
+                IsAutoPricing = hq.H是否自动定价,
+                IsSpecialProduct = hq.H是否特殊商品,
+                CreatedAt = now,
+                UpdatedAt = now,
+                IsDeleted = false,
             };
         }
     }

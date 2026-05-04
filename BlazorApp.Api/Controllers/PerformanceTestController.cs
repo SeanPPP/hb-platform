@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Authorization;
+using BlazorApp.Api.Filters;
 using BlazorApp.Api.Utils;
 using BlazorApp.Api.Interfaces;
 using BlazorApp.Shared.DTOs;
@@ -13,6 +14,8 @@ namespace BlazorApp.Api.Controllers
     [ApiController]
     [Route("api/v1/[controller]")]
     [Authorize(Roles = "Admin")] // 仅管理员可以执行性能测试
+    [DevelopmentOnly]
+    [Obsolete("Performance test controller. Keep disabled outside Development and remove after confirming no runtime usage.")]
     public class PerformanceTestController : ControllerBase
     {
         private readonly IWarehouseProductService _warehouseProductService;

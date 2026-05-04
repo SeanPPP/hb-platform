@@ -64,6 +64,5 @@ namespace BlazorApp.Api.Interfaces.React
             string userName
         );
         Task<SyncResult> PushInvoicesToHqAsync(List<string> invoiceGuids);
-        Task<SyncResult> SyncInvoicesFromHqAsync();
     }
 }

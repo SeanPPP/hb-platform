@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Authorization;
+using BlazorApp.Api.Filters;
 using BlazorApp.Api.Services;
 using Microsoft.Extensions.Logging;
 
@@ -11,6 +12,9 @@ namespace BlazorApp.Api.Controllers
     [ApiController]
     [Route("api/v1/[controller]")]
     [Authorize]
+    [DevelopmentOnly]
+    [Authorize(Roles = "Admin")]
+    [Obsolete("Database diagnostic controller. Keep disabled outside Development and remove after confirming no runtime usage.")]
     public class PostgreSqlTestController : ControllerBase
     {
         private readonly ILogger<PostgreSqlTestController> _logger;

@@ -99,5 +99,10 @@ namespace BlazorApp.Api.Interfaces.React
             List<string> storeCodes,
             string updatedBy
         );
+
+        Task<ApiResponse<SyncRetailPriceFromHqResult>> SyncFromHqAsync(
+            List<string>? storeCodes,
+            DateTime? startDate
+        );
     }
 }

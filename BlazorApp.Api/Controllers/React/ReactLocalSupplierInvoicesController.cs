@@ -400,22 +400,5 @@ namespace BlazorApp.Api.Controllers.React
                 return StatusCode(500, ApiResponse<SyncResult>.Error($"推送异常: {ex.Message}", "INTERNAL_ERROR"));
             }
         }
-
-        [HttpPost("sync-from-hq")]
-        [Authorize(Roles = "Admin")]
-        public async Task<IActionResult> SyncInvoicesFromHq()
-        {
-            try
-            {
-                var result = await _service.SyncInvoicesFromHqAsync();
-                if (result.IsSuccess)
-                    return Ok(ApiResponse<SyncResult>.OK(result, result.Message));
-                return Ok(ApiResponse<SyncResult>.OK(result, result.Message));
-            }
-            catch (Exception ex)
-            {
-                return StatusCode(500, ApiResponse<SyncResult>.Error($"同步异常: {ex.Message}", "INTERNAL_ERROR"));
-            }
-        }
     }
 }

@@ -13,6 +13,7 @@ namespace BlazorApp.Api.Controllers.React
     [ApiController]
     [Route("api/react/v1/suppliers")]
     [Authorize]
+    [Obsolete("Candidate for removal after confirming LocalSuppliersController fully replaces this endpoint.")]
     public class ReactSuppliersController : ControllerBase
     {
         private readonly IDomesticSupplierReactService _supplierReactService;
