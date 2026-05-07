@@ -36,6 +36,7 @@ export default function AdminLayout() {
   const {
     tabs,
     activeKey,
+    pinTabsBar,
     setActiveKey,
     ensureTab,
     removeTab,
@@ -124,12 +125,13 @@ export default function AdminLayout() {
 
   return (
     <Layout className="admin-layout">
-      <Sider trigger={null} collapsible collapsed={collapsed} width={248} theme="light">
+      <Sider className="admin-sider" trigger={null} collapsible collapsed={collapsed} width={248} theme="light">
         <div className="brand">
           <div className="brand-mark">HB</div>
           {!collapsed ? <span className="brand-text">HB Admin Platform</span> : null}
         </div>
         <Menu
+          className="admin-side-menu"
           mode="inline"
           items={menus}
           selectedKeys={selectedKeys}
@@ -166,7 +168,7 @@ export default function AdminLayout() {
           </Space>
         </Header>
 
-        <div className="tabs-shell">
+        <div className={`tabs-shell${pinTabsBar ? ' tabs-shell-pinned' : ''}`}>
           <AppTabs
             onRefreshCurrent={handleRefreshCurrent}
             onRemoveTab={handleRemoveTab}

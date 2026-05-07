@@ -2,6 +2,7 @@ import {
   AppstoreOutlined,
   DashboardOutlined,
   ShopOutlined,
+  TagsOutlined,
   TeamOutlined,
   UserOutlined,
 } from '@ant-design/icons'
@@ -11,11 +12,12 @@ import ForbiddenPage from '../pages/Forbidden'
 import DashboardPage from '../pages/Dashboard'
 import NotFoundPage from '../pages/NotFound'
 import SystemRolesPage from '../pages/System/Roles'
-import RoleDetailPage from '../pages/System/Roles/Detail'
 import SystemStoresPage from '../pages/System/Stores'
-import StoreDetailPage from '../pages/System/Stores/Detail'
 import SystemUsersPage from '../pages/System/Users'
-import UserDetailPage from '../pages/System/Users/Detail'
+import WarehouseLocationsPage from '../pages/Warehouse/Locations'
+import WarehouseProductsPage from '../pages/Warehouse/Products'
+import StoreOrderDetailPage from '../pages/Warehouse/StoreOrders/Detail'
+import StoreOrdersPage from '../pages/Warehouse/StoreOrders'
 import type { AccessControl } from '../types/auth'
 import type { AppRouteItem, AppRouteMeta, TabItem } from '../types/router'
 
@@ -35,6 +37,7 @@ const iconMap = {
   UserOutlined: <UserOutlined />,
   TeamOutlined: <TeamOutlined />,
   ShopOutlined: <ShopOutlined />,
+  TagsOutlined: <TagsOutlined />,
 }
 
 export const appRoutes: AppRouteItem[] = [
@@ -67,18 +70,6 @@ export const appRoutes: AppRouteItem[] = [
         element: <SystemStoresPage />,
       },
       {
-        path: '/system/stores/:id',
-        meta: {
-          title: '分店详情',
-          hidden: true,
-          keepAlive: true,
-          accessKey: 'canReadStore',
-          activeMenu: '/system/stores',
-          dynamicTitle: (params) => `分店详情 - ${params.id || ''}`,
-        },
-        element: <StoreDetailPage />,
-      },
-      {
         path: '/system/users',
         meta: {
           title: '用户管理',
@@ -87,18 +78,6 @@ export const appRoutes: AppRouteItem[] = [
           accessKey: 'canReadUser',
         },
         element: <SystemUsersPage />,
-      },
-      {
-        path: '/system/users/:id',
-        meta: {
-          title: '用户详情',
-          hidden: true,
-          keepAlive: true,
-          accessKey: 'canReadUser',
-          activeMenu: '/system/users',
-          dynamicTitle: (params) => `用户详情 - ${params.id || ''}`,
-        },
-        element: <UserDetailPage />,
       },
       {
         path: '/system/roles',
@@ -110,17 +89,56 @@ export const appRoutes: AppRouteItem[] = [
         },
         element: <SystemRolesPage />,
       },
+    ],
+  },
+  {
+    path: '/warehouse',
+    meta: {
+      title: '仓库管理',
+      icon: 'TagsOutlined',
+    },
+    children: [
       {
-        path: '/system/roles/:id',
+        path: '/warehouse/store-orders',
         meta: {
-          title: '角色详情',
+          title: '分店订货列表',
+          icon: 'ShopOutlined',
+          keepAlive: true,
+          accessKey: 'canManageWarehouse',
+        },
+        element: <StoreOrdersPage />,
+      },
+      {
+        path: '/warehouse/store-order/detail/:id',
+        meta: {
+          title: '订货明细',
           hidden: true,
           keepAlive: true,
-          accessKey: 'canReadRole',
-          activeMenu: '/system/roles',
-          dynamicTitle: (params) => `角色详情 - ${params.id || ''}`,
+          accessKey: 'canManageWarehouse',
+          activeMenu: '/warehouse/store-orders',
+          dynamicTitle: (params) => `订货明细 - ${params.id || ''}`,
         },
-        element: <RoleDetailPage />,
+        element: <StoreOrderDetailPage />,
+      },
+      {
+        path: '/warehouse/products',
+        meta: {
+          title: '仓库商品管理',
+          icon: 'AppstoreOutlined',
+          keepAlive: true,
+          accessKey: 'canManageWarehouse',
+        },
+        element: <WarehouseProductsPage />,
+      },
+      {
+        path: '/warehouse/locations',
+        meta: {
+          title: '仓库标签管理',
+          icon: 'TagsOutlined',
+          keepAlive: true,
+          accessKey: 'canManageWarehouse',
+        },
+        element: <WarehouseLocationsPage />,
       },
     ],
   },

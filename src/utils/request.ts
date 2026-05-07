@@ -6,6 +6,7 @@ export interface RequestOptions {
   data?: unknown
   headers?: Record<string, string>
   signal?: AbortSignal
+  skipAuthRedirect?: boolean
 }
 
 export class RequestError extends Error {
@@ -48,6 +49,36 @@ function buildQueryString(params?: Record<string, unknown>) {
   return query ? `?${query}` : ''
 }
 
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').trim()
+const LOGIN_PATH = '/login'
+const AUTH_WHITELIST = new Set(['/api/Auth/login', '/api/Auth/logout'])
+
+let authRedirecting = false
+
+function buildRequestUrl(url: string, params?: Record<string, unknown>) {
+  const requestPath = url.startsWith('http://') || url.startsWith('https://')
+    ? url
+    : `${API_BASE_URL}${url}`.replace(/([^:]\/)\/+/g, '$1')
+
+  return `${requestPath}${buildQueryString(params)}`
+}
+
+function handleUnauthorized(requestUrl: string) {
+  if (typeof window === 'undefined' || authRedirecting) {
+    return
+  }
+
+  const currentPath = `${window.location.pathname}${window.location.search}`
+  const normalizedUrl = requestUrl.replace(API_BASE_URL, '')
+
+  if (window.location.pathname === LOGIN_PATH || AUTH_WHITELIST.has(normalizedUrl)) {
+    return
+  }
+
+  authRedirecting = true
+  window.location.replace(`${LOGIN_PATH}?redirect=${encodeURIComponent(currentPath)}`)
+}
+
 async function parseResponse<T>(response: Response): Promise<T> {
   const contentType = response.headers.get('content-type') || ''
   if (contentType.includes('application/json')) {
@@ -58,8 +89,9 @@ async function parseResponse<T>(response: Response): Promise<T> {
 }
 
 async function request<T>(url: string, options: RequestOptions = {}): Promise<T> {
-  const { method = 'GET', params, data, headers, signal } = options
-  const response = await fetch(`${url}${buildQueryString(params)}`, {
+  const { method = 'GET', params, data, headers, signal, skipAuthRedirect = false } = options
+  const requestUrl = buildRequestUrl(url, params)
+  const response = await fetch(requestUrl, {
     method,
     credentials: 'include',
     headers: {
@@ -73,6 +105,10 @@ async function request<T>(url: string, options: RequestOptions = {}): Promise<T>
   const payload = await parseResponse<unknown>(response)
 
   if (!response.ok) {
+    if (response.status === 401 && !skipAuthRedirect) {
+      handleUnauthorized(url)
+    }
+
     const message =
       typeof payload === 'object' &&
       payload !== null &&

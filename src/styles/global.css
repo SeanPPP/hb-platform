@@ -39,6 +39,21 @@ body {
   min-height: 100vh;
 }
 
+.admin-sider {
+  position: sticky !important;
+  top: 0;
+  align-self: flex-start;
+  height: 100vh;
+  overflow: hidden;
+  border-right: 1px solid #f0f0f0;
+}
+
+.admin-sider .ant-layout-sider-children {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
 .brand {
   display: flex;
   align-items: center;
@@ -69,6 +84,36 @@ body {
   font-weight: 600;
   color: #1f1f1f;
   white-space: nowrap;
+}
+
+.admin-side-menu {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+  transition: scrollbar-color 0.2s ease;
+}
+
+.admin-side-menu::-webkit-scrollbar {
+  width: 6px;
+}
+
+.admin-side-menu::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 999px;
+  transition: background-color 0.2s ease;
+}
+
+.admin-sider:hover .admin-side-menu,
+.admin-side-menu:hover {
+  scrollbar-color: rgba(148, 163, 184, 0.45) transparent;
+}
+
+.admin-sider:hover .admin-side-menu::-webkit-scrollbar-thumb,
+.admin-side-menu:hover::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.45);
 }
 
 .admin-header {
@@ -104,12 +149,38 @@ body {
 .tabs-shell {
   padding: 12px 16px 0;
   background: #f5f7fb;
+  transition: top 0.2s ease, box-shadow 0.2s ease;
+}
+
+.tabs-shell-pinned {
+  position: sticky;
+  top: 64px;
+  z-index: 9;
 }
 
 .app-tabs {
   display: flex;
   align-items: center;
   gap: 12px;
+  padding: 10px 12px;
+  background: #fff;
+  border: 1px solid #e8edf5;
+  border-radius: 14px;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.04);
+}
+
+.tabs-shell-pinned .app-tabs {
+  box-shadow:
+    0 10px 22px rgba(15, 23, 42, 0.05),
+    0 1px 0 rgba(230, 236, 244, 0.9);
+}
+
+.tabs-shell::after {
+  content: '';
+  display: block;
+  height: 14px;
+  background: linear-gradient(180deg, rgba(245, 247, 251, 0.98) 0%, rgba(245, 247, 251, 0) 100%);
+  pointer-events: none;
 }
 
 .app-tabs .ant-tabs {
@@ -120,6 +191,128 @@ body {
 
 .app-tabs .ant-tabs-nav {
   margin-bottom: 0;
+}
+
+.app-tabs .ant-tabs-nav::before {
+  border-bottom: none;
+}
+
+.app-tabs .ant-tabs-nav-list {
+  gap: 8px;
+}
+
+.app-tabs .ant-tabs-tab {
+  position: relative;
+  margin: 0 !important;
+  padding: 9px 14px;
+  background: #f3f6fb;
+  border: 1px solid #e3e9f2 !important;
+  border-radius: 10px 10px 0 0 !important;
+  color: #4b5565;
+  transition:
+    background-color 0.2s ease,
+    border-color 0.2s ease,
+    color 0.2s ease,
+    box-shadow 0.2s ease,
+    transform 0.2s ease;
+}
+
+.app-tabs .ant-tabs-tab:hover {
+  background: #edf3ff;
+  border-color: #cfe0ff !important;
+  color: #1677ff;
+}
+
+.app-tabs .ant-tabs-tab-active {
+  background: linear-gradient(180deg, #f7fbff 0%, #e8f1ff 100%) !important;
+  border-color: #b9d0ff !important;
+  box-shadow: 0 6px 16px rgba(22, 119, 255, 0.12);
+}
+
+.app-tabs .ant-tabs-tab-active::before {
+  content: '';
+  position: absolute;
+  top: -1px;
+  left: 12px;
+  right: 12px;
+  height: 3px;
+  border-radius: 999px;
+  background: #1677ff;
+}
+
+.app-tabs .ant-tabs-tab-active .ant-tabs-tab-btn {
+  color: #0958d9;
+  font-weight: 600;
+}
+
+.app-tabs .ant-tabs-tab-active .ant-tabs-tab-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  margin-inline-start: 6px;
+  border-radius: 50%;
+  background: rgba(22, 119, 255, 0.1);
+  color: #0958d9;
+}
+
+.app-tabs .ant-tabs-tab .ant-tabs-tab-remove {
+  color: #7b8798;
+  transition:
+    color 0.2s ease,
+    background-color 0.2s ease,
+    box-shadow 0.2s ease;
+}
+
+.app-tabs .ant-tabs-tab:hover .ant-tabs-tab-remove,
+.app-tabs .ant-tabs-tab-active .ant-tabs-tab-remove {
+  color: #1677ff;
+}
+
+.app-tabs .ant-tabs-tab .ant-tabs-tab-remove:hover {
+  background: rgba(22, 119, 255, 0.12);
+  box-shadow: inset 0 0 0 1px rgba(22, 119, 255, 0.08);
+}
+
+.app-tab-sortable-node {
+  display: flex;
+}
+
+.app-tab-sortable-node[data-dnd-kit-dragging='true'] {
+  opacity: 0.85;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.12);
+}
+
+.app-tabs .ant-tabs-tab-btn {
+  user-select: none;
+}
+
+.app-tabs-actions {
+  position: relative;
+  flex-shrink: 0;
+  padding-left: 14px;
+}
+
+.app-tabs-actions::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 6px;
+  bottom: 6px;
+  width: 1px;
+  background: linear-gradient(180deg, rgba(225, 232, 242, 0) 0%, #dfe6f0 20%, #dfe6f0 80%, rgba(225, 232, 242, 0) 100%);
+}
+
+.app-tabs-actions .ant-checkbox-wrapper {
+  color: #4b5565;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.app-tabs-actions .ant-checkbox-checked .ant-checkbox-inner {
+  background-color: #1677ff;
+  border-color: #1677ff;
 }
 
 .admin-content {
@@ -174,6 +367,11 @@ body {
 }
 
 @media (max-width: 992px) {
+  .admin-sider,
+  .admin-sider .ant-layout-sider-children {
+    height: auto;
+  }
+
   .admin-header {
     padding: 0 12px;
   }

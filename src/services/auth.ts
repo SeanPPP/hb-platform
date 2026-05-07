@@ -7,7 +7,7 @@ export async function login(payload: LoginRequest) {
 }
 
 export async function logout() {
-  return request.post<ApiResponse<object>>('/api/Auth/logout', {})
+  return request.post<ApiResponse<object>>('/api/Auth/logout', {}, { skipAuthRedirect: true })
 }
 
 export async function getCurrentUser(): Promise<CurrentUser> {

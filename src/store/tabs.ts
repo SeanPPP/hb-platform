@@ -6,9 +6,12 @@ import { getAffixTabs } from '../router/routes'
 interface TabsState {
   activeKey: string
   tabs: TabItem[]
+  pinTabsBar: boolean
   setActiveKey: (key: string) => void
+  setPinTabsBar: (value: boolean) => void
   ensureTab: (tab: TabItem) => void
   updateTabTitle: (key: string, title: string) => void
+  moveTab: (activeKey: string, overKey: string) => void
   removeTab: (key: string) => string
   removeOtherTabs: (key: string) => string[]
   removeLeftTabs: (key: string) => string[]
@@ -19,12 +22,21 @@ interface TabsState {
 const defaultTabs = getAffixTabs()
 const defaultActiveKey = defaultTabs[0]?.key ?? '/dashboard'
 
+function arrayMove<T>(items: T[], from: number, to: number) {
+  const nextItems = [...items]
+  const [target] = nextItems.splice(from, 1)
+  nextItems.splice(to, 0, target)
+  return nextItems
+}
+
 export const useTabsStore = create<TabsState>()(
   persist(
     (set, get) => ({
       activeKey: defaultActiveKey,
       tabs: defaultTabs,
+      pinTabsBar: true,
       setActiveKey: (key) => set({ activeKey: key }),
+      setPinTabsBar: (value) => set({ pinTabsBar: value }),
       ensureTab: (tab) => {
         const exists = get().tabs.some((item) => item.key === tab.key)
         if (exists) {
@@ -40,6 +52,25 @@ export const useTabsStore = create<TabsState>()(
       updateTabTitle: (key, title) => {
         set({
           tabs: get().tabs.map((item) => (item.key === key ? { ...item, title } : item)),
+        })
+      },
+      moveTab: (activeKey, overKey) => {
+        if (activeKey === overKey) {
+          return
+        }
+
+        const currentTabs = get().tabs
+        const fixedTabs = currentTabs.filter((item) => item.affix)
+        const movableTabs = currentTabs.filter((item) => !item.affix)
+        const activeIndex = movableTabs.findIndex((item) => item.key === activeKey)
+        const overIndex = movableTabs.findIndex((item) => item.key === overKey)
+
+        if (activeIndex < 0 || overIndex < 0) {
+          return
+        }
+
+        set({
+          tabs: [...fixedTabs, ...arrayMove(movableTabs, activeIndex, overIndex)],
         })
       },
       removeTab: (key) => {
@@ -126,6 +157,7 @@ export const useTabsStore = create<TabsState>()(
       partialize: (state) => ({
         tabs: state.tabs,
         activeKey: state.activeKey,
+        pinTabsBar: state.pinTabsBar,
       }),
     },
   ),

@@ -37,3 +37,20 @@ export interface UserDto {
 }
 
 export interface UserDetailDto extends UserDto {}
+
+export interface UpdateUserDto {
+  username: string
+  email: string
+  fullName?: string
+  isActive?: boolean
+}
+
+export interface UserRoleAssignmentDto {
+  roleGuids: string[]
+}
+
+export interface UserStoreAssignmentDto {
+  storeGUID: string
+  accessLevel?: string
+  isPrimary?: boolean
+}

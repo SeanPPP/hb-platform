@@ -1,7 +1,7 @@
 import { LockOutlined, LoginOutlined, UserOutlined } from '@ant-design/icons'
 import { Alert, Button, Card, Form, Input, Space, Typography, message } from 'antd'
 import { useState } from 'react'
-import { useLocation, useNavigate } from 'react-router-dom'
+import { useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import { useAuthStore } from '../../store/auth'
 import type { LoginRequest } from '../../types/auth'
 import { hashPassword } from '../../utils/password'
@@ -12,6 +12,7 @@ export default function LoginPage() {
   const [errorMessage, setErrorMessage] = useState('')
   const navigate = useNavigate()
   const location = useLocation()
+  const [searchParams] = useSearchParams()
   const { login, loginLoading } = useAuthStore()
 
   const handleSubmit = async (values: LoginRequest) => {
@@ -22,8 +23,9 @@ export default function LoginPage() {
         password: hashPassword(values.password),
       })
       message.success('登录成功')
+      const redirect = searchParams.get('redirect')
       const target = (location.state as { from?: { pathname?: string } } | undefined)?.from?.pathname
-      navigate(target || '/dashboard', { replace: true })
+      navigate(redirect || target || '/dashboard', { replace: true })
     } catch (error) {
       const requestError = error as RequestError
       setErrorMessage(requestError.message || '登录失败')

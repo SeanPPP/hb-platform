@@ -31,3 +31,16 @@ export interface RoleDetailDto extends RoleDto {
   users: RoleUserDto[]
   permissions: string[]
 }
+
+export interface UpdateRoleDto {
+  roleName: string
+  description?: string
+  isActive?: boolean
+}
+
+export interface RoleOptionDto {
+  roleGUID: string
+  roleName: string
+  description?: string
+  isActive?: boolean
+}
