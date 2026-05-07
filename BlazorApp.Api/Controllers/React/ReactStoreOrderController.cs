@@ -441,6 +441,28 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         /// <summary>
+        /// 软删除指定订单行
+        /// </summary>
+        [HttpPost("line/remove")]
+        public async Task<IActionResult> RemoveOrderLine([FromBody] RemoveOrderLineDto request)
+        {
+            try
+            {
+                var result = await _service.RemoveOrderLineAsync(request);
+                if (result.Success)
+                {
+                    return Ok(new { success = true, data = result.Data });
+                }
+                return BadRequest(new { success = false, message = result.Message });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "RemoveOrderLine failed");
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
+        /// <summary>
         /// 批量更新订单行数量或价格
         /// </summary>
         [HttpPost("line/batch-update")]

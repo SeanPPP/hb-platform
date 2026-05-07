@@ -424,6 +424,18 @@ namespace BlazorApp.Shared.DTOs
   }
 
   /// <summary>
+  /// 软删除订单行请求
+  /// </summary>
+  public class RemoveOrderLineDto
+  {
+    [Required]
+    public string OrderGUID { get; set; } = string.Empty;
+
+    [Required]
+    public string DetailGUID { get; set; } = string.Empty;
+  }
+
+  /// <summary>
   /// 更新订单头请求
   /// </summary>
   public class UpdateOrderHeaderDto

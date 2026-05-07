@@ -197,7 +197,7 @@ namespace BlazorApp.Api.Services.React
                 .LeftJoin<Product>((d, p) => d.ProductCode == p.ProductCode)
                 .LeftJoin<WarehouseProduct>((d, p, wp) => d.ProductCode == wp.ProductCode)
                 .LeftJoin<DomesticProduct>((d, p, wp, dp) => wp.ProductCode == dp.ProductCode)
-                .Where(d => d.OrderGUID == order.OrderGUID)
+                .Where(d => d.OrderGUID == order.OrderGUID && !d.IsDeleted)
                 .Select(
                     (d, p, wp, dp) =>
                         new StoreOrderCartItemDto
@@ -306,7 +306,9 @@ namespace BlazorApp.Api.Services.React
                 // 3. 检查明细是否已存在
                 var detail = await _db.Queryable<WareHouseOrderDetails>()
                     .Where(d =>
-                        d.OrderGUID == order.OrderGUID && d.ProductCode == request.ProductCode
+                        d.OrderGUID == order.OrderGUID
+                        && d.ProductCode == request.ProductCode
+                        && !d.IsDeleted
                     )
                     .FirstAsync();
 
@@ -339,7 +341,7 @@ namespace BlazorApp.Api.Services.React
                     // 如果数量 <= 0，则删除
                     if (detail.Quantity <= 0)
                     {
-                        await _db.Deleteable(detail).ExecuteCommandAsync();
+                        await SoftDeleteOrderDetailAsync(detail, currentUser, now);
                     }
                     else
                     {
@@ -401,7 +403,9 @@ namespace BlazorApp.Api.Services.React
                 // 3. 检查明细
                 var detail = await _db.Queryable<WareHouseOrderDetails>()
                     .Where(d =>
-                        d.OrderGUID == order.OrderGUID && d.ProductCode == request.ProductCode
+                        d.OrderGUID == order.OrderGUID
+                        && d.ProductCode == request.ProductCode
+                        && !d.IsDeleted
                     )
                     .FirstAsync();
 
@@ -434,7 +438,7 @@ namespace BlazorApp.Api.Services.React
                     // 如果数量 <= 0，则删除
                     if (detail.Quantity <= 0)
                     {
-                        await _db.Deleteable(detail).ExecuteCommandAsync();
+                        await SoftDeleteOrderDetailAsync(detail, currentUser, now);
                     }
                     else
                     {
@@ -463,7 +467,7 @@ namespace BlazorApp.Api.Services.React
             try
             {
                 var detail = await _db.Queryable<WareHouseOrderDetails>()
-                    .Where(d => d.DetailGUID == request.DetailGUID)
+                    .Where(d => d.DetailGUID == request.DetailGUID && !d.IsDeleted)
                     .FirstAsync();
 
                 if (detail == null)
@@ -476,7 +480,11 @@ namespace BlazorApp.Api.Services.React
                 }
 
                 var orderGuid = detail.OrderGUID;
-                await _db.Deleteable(detail).ExecuteCommandAsync();
+                await SoftDeleteOrderDetailAsync(
+                    detail,
+                    _httpContextAccessor.HttpContext?.User?.Identity?.Name ?? "System",
+                    DateTime.Now
+                );
 
                 // 更新主表
                 if (!string.IsNullOrEmpty(orderGuid))
@@ -560,7 +568,7 @@ namespace BlazorApp.Api.Services.React
 
                 // 检查是否有明细
                 var count = await _db.Queryable<WareHouseOrderDetails>()
-                    .Where(d => d.OrderGUID == order.OrderGUID)
+                    .Where(d => d.OrderGUID == order.OrderGUID && !d.IsDeleted)
                     .CountAsync();
 
                 if (count == 0)
@@ -593,7 +601,7 @@ namespace BlazorApp.Api.Services.React
         private async Task UpdateOrderTotalAsync(string orderGuid)
         {
             var details = await _db.Queryable<WareHouseOrderDetails>()
-                .Where(d => d.OrderGUID == orderGuid)
+                .Where(d => d.OrderGUID == orderGuid && !d.IsDeleted)
                 .ToListAsync();
 
             var totalOEM = details.Sum(d => d.OEMAmount) ?? 0;
@@ -1099,7 +1107,7 @@ namespace BlazorApp.Api.Services.React
                 .LeftJoin<Product>((d, p) => d.ProductCode == p.ProductCode)
                 .LeftJoin<WarehouseProduct>((d, p, wp) => d.ProductCode == wp.ProductCode)
                 .LeftJoin<DomesticProduct>((d, p, wp, dp) => wp.ProductCode == dp.ProductCode)
-                .Where(d => d.OrderGUID == order.Order.OrderGUID)
+                .Where(d => d.OrderGUID == order.Order.OrderGUID && !d.IsDeleted)
                 .Select(
                     (d, p, wp, dp) =>
                         new StoreOrderCartItemDto
@@ -1391,6 +1399,54 @@ namespace BlazorApp.Api.Services.React
             catch (Exception ex)
             {
                 _logger.LogError(ex, "UpdateOrderLineAsync failed");
+                return new ApiResponse<bool> { Success = false, Message = ex.Message };
+            }
+        }
+
+        public async Task<ApiResponse<bool>> RemoveOrderLineAsync(RemoveOrderLineDto request)
+        {
+            try
+            {
+                var order = await GetEditableOrderAsync(request.OrderGUID);
+                if (order == null)
+                {
+                    return new ApiResponse<bool>
+                    {
+                        Success = false,
+                        Message = "Order not found or not editable",
+                    };
+                }
+
+                var detail = await _db.Queryable<WareHouseOrderDetails>()
+                    .Where(d =>
+                        d.OrderGUID == request.OrderGUID
+                        && d.DetailGUID == request.DetailGUID
+                        && !d.IsDeleted
+                    )
+                    .FirstAsync();
+
+                if (detail == null)
+                {
+                    return new ApiResponse<bool>
+                    {
+                        Success = false,
+                        Message = "Order line not found",
+                    };
+                }
+
+                detail.IsDeleted = true;
+                detail.UpdatedAt = DateTime.Now;
+                detail.UpdatedBy =
+                    _httpContextAccessor.HttpContext?.User?.Identity?.Name ?? "System";
+
+                await _db.Updateable(detail).ExecuteCommandAsync();
+                await UpdateOrderTotalAsync(order.OrderGUID);
+
+                return new ApiResponse<bool> { Success = true, Data = true };
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "RemoveOrderLineAsync failed");
                 return new ApiResponse<bool> { Success = false, Message = ex.Message };
             }
         }
@@ -1813,7 +1869,11 @@ namespace BlazorApp.Api.Services.React
             decimal finalImportPrice = importPrice ?? warehouseProduct.ImportPrice ?? 0;
 
             var detail = await _db.Queryable<WareHouseOrderDetails>()
-                .Where(d => d.OrderGUID == order.OrderGUID && d.ProductCode == productCode)
+                .Where(d =>
+                    d.OrderGUID == order.OrderGUID
+                    && d.ProductCode == productCode
+                    && !d.IsDeleted
+                )
                 .FirstAsync();
 
             if (detail == null)
@@ -1863,7 +1923,7 @@ namespace BlazorApp.Api.Services.React
 
                 if (detail.AllocQuantity <= 0 && detail.Quantity <= 0)
                 { //订货数量和发货数量都为空 可以删除
-                    await _db.Deleteable(detail).ExecuteCommandAsync();
+                    await SoftDeleteOrderDetailAsync(detail, currentUser, now);
                 }
                 else
                 {
@@ -1875,6 +1935,18 @@ namespace BlazorApp.Api.Services.React
                     await _db.Updateable(detail).ExecuteCommandAsync();
                 }
             }
+        }
+
+        private async Task SoftDeleteOrderDetailAsync(
+            WareHouseOrderDetails detail,
+            string currentUser,
+            DateTime? now = null
+        )
+        {
+            detail.IsDeleted = true;
+            detail.UpdatedAt = now ?? DateTime.Now;
+            detail.UpdatedBy = currentUser;
+            await _db.Updateable(detail).ExecuteCommandAsync();
         }
 
         public async Task<SyncMissingOrdersResultDto> SyncMissingOrdersFromHqAsync(

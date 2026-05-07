@@ -82,6 +82,11 @@ namespace BlazorApp.Api.Interfaces.React
         Task<ApiResponse<bool>> UpdateOrderLineAsync(UpdateOrderLineDto request);
 
         /// <summary>
+        /// 软删除指定订单行
+        /// </summary>
+        Task<ApiResponse<bool>> RemoveOrderLineAsync(RemoveOrderLineDto request);
+
+        /// <summary>
         /// 批量更新订单行 (数量或价格)
         /// </summary>
         Task<ApiResponse<bool>> BatchUpdateOrderLineAsync(BatchUpdateOrderLineDto request);
