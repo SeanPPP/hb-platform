@@ -689,6 +689,7 @@ namespace BlazorApp.Api.Data
 
                     // 创建普通索引（如果不存在）
                     CreateNormalIndexesIfNotExists();
+                    CreateWareHouseOrderOrderNoUniqueIndex();
                 }
                 else if (_db.CurrentConnectionConfig.DbType == DbType.PostgreSQL)
                 {
@@ -731,6 +732,8 @@ namespace BlazorApp.Api.Data
                     "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_CartItem_CartGUID_ProductCode_Unique\" ON \"CartItem\" (\"CartGUID\", \"ProductCode\")",
                 ["IX_LocalSupplier_Code_Unique"] =
                     "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_LocalSupplier_Code_Unique\" ON \"LocalSupplier\" (\"LocalSupplierCode\")",
+                ["IX_WareHouseOrder_OrderNo_Unique"] =
+                    "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_WareHouseOrder_OrderNo_Unique\" ON \"WareHouseOrder\" (\"OrderNo\") WHERE \"OrderNo\" IS NOT NULL",
 
                 // 普通索引
                 ["IX_User_IsActive"] =
@@ -841,6 +844,8 @@ namespace BlazorApp.Api.Data
                     "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_CartItem_CartGUID_ProductCode_Unique' AND object_id = OBJECT_ID('CartItem')) CREATE UNIQUE INDEX IX_CartItem_CartGUID_ProductCode_Unique ON [CartItem](CartGUID, ProductCode)",
                 ["IX_LocalSupplier_Code_Unique"] =
                     "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_LocalSupplier_Code_Unique' AND object_id = OBJECT_ID('LocalSupplier')) CREATE UNIQUE INDEX IX_LocalSupplier_Code_Unique ON [LocalSupplier](LocalSupplierCode)",
+                ["IX_WareHouseOrder_OrderNo_Unique"] =
+                    "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_WareHouseOrder_OrderNo_Unique' AND object_id = OBJECT_ID('WareHouseOrder')) CREATE UNIQUE INDEX IX_WareHouseOrder_OrderNo_Unique ON [WareHouseOrder]([OrderNo]) WHERE [OrderNo] IS NOT NULL",
             };
 
             foreach (var indexCheck in uniqueIndexChecks)
@@ -930,11 +935,9 @@ namespace BlazorApp.Api.Data
 
                 if (_db.CurrentConnectionConfig.DbType == DbType.SqlServer)
                 {
-                    // 创建唯一索引
-                    // CreateUniqueIndexes();
-
                     // 创建普通索引
                     CreateNormalIndexes();
+                    CreateWareHouseOrderOrderNoUniqueIndex();
                 }
                 else if (_db.CurrentConnectionConfig.DbType == DbType.PostgreSQL)
                 {
@@ -989,6 +992,23 @@ namespace BlazorApp.Api.Data
             }
 
             Console.WriteLine("✓ 唯一索引创建完成");
+        }
+
+        private void CreateWareHouseOrderOrderNoUniqueIndex()
+        {
+            const string sql =
+                "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_WareHouseOrder_OrderNo_Unique' AND object_id = OBJECT_ID('WareHouseOrder')) "
+                + "CREATE UNIQUE INDEX IX_WareHouseOrder_OrderNo_Unique ON [WareHouseOrder]([OrderNo]) WHERE [OrderNo] IS NOT NULL";
+
+            try
+            {
+                _db.Ado.ExecuteCommand(sql);
+                Console.WriteLine("✓ WareHouseOrder.OrderNo 唯一索引检查完成");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"⚠️ 创建 WareHouseOrder.OrderNo 唯一索引失败: {ex.Message}");
+            }
         }
 
         private void CreateNormalIndexes()

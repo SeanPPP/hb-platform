@@ -52,7 +52,7 @@ namespace BlazorApp.Api.Services.Common
                         // 查询当前年份的订单号，获取最大的四位序号
                         var sql =
                             "SELECT ISNULL(MAX(TRY_CAST(RIGHT(OrderNo, 4) AS INT)), 0) FROM WareHouseOrder WHERE OrderNo LIKE @p";
-                        var like = $"ORD-{yearNow}-%";
+                        var like = $"{yearNow}-%";
                         var maxObj = db.Ado.GetScalar(sql, new SugarParameter("@p", like));
                         var maxSeq = Convert.ToInt32(maxObj);
 
