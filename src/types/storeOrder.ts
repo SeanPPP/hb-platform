@@ -179,6 +179,13 @@ export interface StoreOrderProductListResult {
   pageSize: number
 }
 
+export type StoreOrderPasteTargetField = 'quantity' | 'allocQuantity'
+
+export interface StoreOrderBatchLookupItem {
+  lookupCode: string
+  product?: StoreOrderProductItem
+}
+
 export interface AddStoreOrderLinePayload {
   orderGUID: string
   productCode: string
@@ -231,4 +238,18 @@ export interface UpdateStoreOrderHeaderPayload {
   shippingFee?: number
   storeCode?: string
   orderDate?: string
+}
+
+export interface StoreOrderBatchLookupPayload {
+  codes: string[]
+}
+
+export interface PasteReplaceStoreOrderLinesPayload {
+  orderGUID: string
+  targetField: StoreOrderPasteTargetField
+  items: Array<{
+    productCode: string
+    quantity: number
+    importPrice?: number
+  }>
 }

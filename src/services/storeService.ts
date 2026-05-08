@@ -10,11 +10,30 @@ import type {
 } from '../types/store'
 import request, { unwrapApiData, unwrapPagedResult } from '../utils/request'
 
+export interface StoreOption {
+  label: string
+  value: string
+}
+
 export async function getStores(params: StoreQueryDto): Promise<PagedResult<StoreDto>> {
   const response = await request.get<ApiResponse<PagedResult<StoreDto>>>('/api/stores', {
     params: params as Record<string, unknown>,
   })
   return unwrapPagedResult(response)
+}
+
+export async function getActiveStores(): Promise<StoreOption[]> {
+  const response = await request.get<ApiResponse<StoreDto[]> | StoreDto[]>('/api/stores/active')
+  const stores = Array.isArray(response)
+    ? response
+    : Array.isArray(response.data)
+      ? response.data
+      : []
+
+  return stores.map((store) => ({
+    label: store.storeName || store.storeCode,
+    value: store.storeCode,
+  }))
 }
 
 export async function getStoreByGuid(guid: string): Promise<StoreDetailDto> {

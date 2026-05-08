@@ -1,0 +1,355 @@
+.store-order-print-page {
+  min-height: 100vh;
+  padding: 24px;
+  background: #f5f5f5;
+}
+
+.store-order-print-toolbar {
+  position: sticky;
+  top: 16px;
+  z-index: 10;
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-bottom: 24px;
+}
+
+.store-order-print-paper {
+  width: 210mm;
+  min-height: 297mm;
+  margin: 0 auto;
+  background: #fff;
+  box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+  box-sizing: border-box;
+}
+
+.store-order-picking-paper {
+  padding: 15mm;
+}
+
+.store-order-picking-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.store-order-picking-table thead {
+  display: table-header-group;
+}
+
+.store-order-picking-table tfoot {
+  display: table-footer-group;
+}
+
+.store-order-picking-table tr {
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+
+.store-order-picking-table th {
+  padding: 5px;
+  text-align: left;
+  font-weight: 700;
+  background: #f0f0f0;
+  border-bottom: 1px solid #000;
+}
+
+.store-order-picking-table td {
+  padding: 5px;
+  vertical-align: top;
+  border-bottom: 1px solid #ddd;
+}
+
+.store-order-picking-table .col-index {
+  width: 40px;
+  text-align: center;
+}
+
+.store-order-picking-table .col-item {
+  width: 100px;
+  white-space: nowrap;
+}
+
+.store-order-picking-table .col-location {
+  width: 80px;
+  white-space: nowrap;
+  font-weight: 800;
+  font-size: 16px;
+}
+
+.store-order-picking-table .col-inner-pack,
+.store-order-picking-table .col-qty,
+.store-order-picking-table .col-send-qty {
+  width: 80px;
+  text-align: center;
+}
+
+.store-order-picking-table .col-send-qty {
+  border-left: 1px solid #eee;
+  background: #fafafa;
+}
+
+.store-order-picking-table .col-price {
+  width: 80px;
+  text-align: right;
+}
+
+.store-order-picking-name {
+  max-width: 200px;
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.store-order-picking-footer {
+  margin-top: 20px;
+  border-top: 1px solid #000;
+  padding-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  font-size: 12px;
+}
+
+.store-order-invoice-paper {
+  padding: 20mm;
+  padding-bottom: 24mm;
+  position: relative;
+}
+
+.store-order-invoice-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 24px;
+  margin-bottom: 20px;
+  padding-bottom: 20px;
+  border-bottom: 2px solid #333;
+}
+
+.store-order-invoice-logo {
+  width: 40%;
+}
+
+.store-order-invoice-company {
+  width: 55%;
+  text-align: right;
+  font-size: 12px;
+  color: #555;
+}
+
+.store-order-invoice-company h4 {
+  margin: 0 0 5px;
+  color: #333;
+  font-weight: 700;
+}
+
+.store-order-invoice-company p {
+  margin: 0 0 3px;
+}
+
+.store-order-invoice-bar {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 20px;
+  padding: 10px 0;
+  border-bottom: 1px solid #333;
+  font-weight: 700;
+  font-size: 14px;
+}
+
+.store-order-invoice-customer {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 30px;
+  font-size: 13px;
+}
+
+.store-order-invoice-customer-row {
+  display: flex;
+  gap: 10px;
+}
+
+.store-order-invoice-label {
+  min-width: 130px;
+  color: #666;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.store-order-invoice-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-bottom: 30px;
+  font-size: 12px;
+}
+
+.store-order-invoice-table th {
+  padding: 8px;
+  text-align: left;
+  font-weight: 700;
+  background: #f5f5f5;
+  border-bottom: 1px solid #ddd;
+}
+
+.store-order-invoice-table td {
+  padding: 8px;
+  vertical-align: middle;
+  border-bottom: 1px solid #eee;
+}
+
+.store-order-invoice-table .col-index {
+  width: 40px;
+  text-align: center;
+}
+
+.store-order-invoice-table .col-image {
+  width: 60px;
+  text-align: center;
+}
+
+.store-order-invoice-table .col-item {
+  width: 100px;
+}
+
+.store-order-invoice-table .col-barcode {
+  width: 140px;
+  text-align: center;
+}
+
+.store-order-invoice-table .col-cost,
+.store-order-invoice-table .col-subtotal {
+  width: 90px;
+  text-align: right;
+}
+
+.store-order-invoice-table .col-qty {
+  width: 60px;
+  text-align: center;
+}
+
+.store-order-invoice-footer {
+  display: flex;
+  justify-content: space-between;
+  gap: 24px;
+  margin-top: 30px;
+  page-break-inside: avoid;
+}
+
+.store-order-invoice-payment {
+  width: 60%;
+  font-size: 12px;
+}
+
+.store-order-invoice-payment h4 {
+  margin: 0 0 10px;
+  font-weight: 700;
+  color: #333;
+}
+
+.store-order-invoice-payment-row {
+  display: flex;
+  margin-bottom: 5px;
+}
+
+.store-order-invoice-payment-row .store-order-invoice-label {
+  min-width: 80px;
+}
+
+.store-order-invoice-disclaimer {
+  margin-top: 20px;
+  color: #888;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.store-order-invoice-totals {
+  width: 35%;
+  text-align: right;
+  font-size: 13px;
+}
+
+.store-order-invoice-total-row {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.store-order-invoice-total-row.is-grand {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid #333;
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.store-order-print-footer {
+  display: none;
+}
+
+@media print {
+  @page {
+    size: A4;
+    margin: 10mm 6mm;
+  }
+
+  body {
+    background: #fff;
+  }
+
+  body * {
+    visibility: hidden;
+  }
+
+  .store-order-print-root,
+  .store-order-print-root * {
+    visibility: visible;
+  }
+
+  .store-order-print-page {
+    padding: 0;
+    background: #fff;
+  }
+
+  .store-order-print-toolbar {
+    display: none !important;
+  }
+
+  .store-order-print-root {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    margin: 0;
+    padding: 0;
+    box-shadow: none;
+    background: #fff;
+  }
+
+  .store-order-print-paper {
+    width: 100%;
+    min-height: auto;
+    margin: 0;
+    box-shadow: none;
+  }
+
+  .store-order-picking-paper,
+  .store-order-invoice-paper {
+    padding: 0;
+  }
+
+  .store-order-print-footer {
+    display: flex;
+    position: fixed;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    justify-content: space-between;
+    padding: 10px 0;
+    border-top: 1px solid #eee;
+    font-size: 10px;
+    color: #666;
+    background: #fff;
+  }
+}

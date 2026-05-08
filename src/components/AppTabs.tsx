@@ -1,4 +1,10 @@
-import { CloseOutlined, MoreOutlined, ReloadOutlined } from '@ant-design/icons'
+import {
+  CloseOutlined,
+  MoreOutlined,
+  PushpinFilled,
+  PushpinOutlined,
+  ReloadOutlined,
+} from '@ant-design/icons'
 import {
   DndContext,
   PointerSensor,
@@ -13,7 +19,7 @@ import {
   useSortable,
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
-import { Button, Checkbox, Dropdown, Space, Tabs } from 'antd'
+import { Button, Dropdown, Space, Tabs } from 'antd'
 import type { MenuProps } from 'antd'
 import type { CSSProperties, ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
@@ -94,6 +100,15 @@ export default function AppTabs({
       onClick: onRefreshCurrent,
     },
     {
+      key: 'togglePinTabsBar',
+      label: pinTabsBar ? '页签栏：已固定' : '页签栏：未固定',
+      icon: pinTabsBar ? <PushpinFilled /> : <PushpinOutlined />,
+      onClick: () => setPinTabsBar(!pinTabsBar),
+    },
+    {
+      type: 'divider',
+    },
+    {
       key: 'closeOthers',
       label: '关闭其他页签',
       icon: <CloseOutlined />,
@@ -112,6 +127,14 @@ export default function AppTabs({
       disabled: tabs.length <= 1 || !currentTab,
       onClick: () => currentTab && onRemoveRightTabs(currentTab.key),
     },
+  ]
+
+  const orderedMenuItems: MenuProps['items'] = [
+    menuItems[1],
+    menuItems[2],
+    menuItems[0],
+    menuItems[3],
+    menuItems[4],
   ]
 
   return (
@@ -158,13 +181,10 @@ export default function AppTabs({
         }}
       />
       <Space size={8} className="app-tabs-actions">
-        <Checkbox checked={pinTabsBar} onChange={(event) => setPinTabsBar(event.target.checked)}>
-          固定页签栏
-        </Checkbox>
         <Button icon={<ReloadOutlined />} onClick={onRefreshCurrent}>
           刷新
         </Button>
-        <Dropdown menu={{ items: menuItems }} placement="bottomRight" trigger={['click']}>
+        <Dropdown menu={{ items: orderedMenuItems }} placement="bottomRight" trigger={['click']}>
           <Button icon={<MoreOutlined />} />
         </Dropdown>
       </Space>

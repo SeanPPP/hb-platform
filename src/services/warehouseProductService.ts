@@ -40,6 +40,71 @@ export interface LocalSupplierOption {
   name: string
 }
 
+export interface CreateSingleSetDetailInput {
+  productCode: string
+  quantity: number
+  itemNumber?: string
+  barcode?: string
+  purchasePrice?: number
+  retailPrice?: number
+}
+
+export interface CreateSingleMultiCodeDetailInput {
+  barcode?: string
+  retailPrice?: number
+  purchasePrice?: number
+  discountRate?: number
+  autoPricing?: boolean
+  isSpecialProduct?: boolean
+  isActive?: boolean
+}
+
+export interface CreateSingleStorePriceInput {
+  storeCode: string
+  purchasePrice?: number
+  retailPrice?: number
+  discountRate?: number
+  autoPricing?: boolean
+  isSpecialProduct?: boolean
+  isActive?: boolean
+}
+
+export interface CreateSingleWarehouseProductPayload {
+  productType: 0 | 1 | 2
+  itemNumber?: string
+  barcode?: string
+  chineseName: string
+  englishName?: string
+  productSpecification?: string
+  domesticPrice?: number
+  oemPrice: number
+  importPrice: number
+  volume?: number
+  packingQuantity?: number
+  middlePackQuantity?: number
+  packingSize?: string
+  material?: string
+  remarks?: string
+  categoryGuid?: string
+  supplierCode: string
+  isActive: boolean
+  imageUrl?: string
+  setType?: 1 | 2 | 3
+  setItems?: CreateSingleSetDetailInput[]
+  multiCodeItems?: CreateSingleMultiCodeDetailInput[]
+  storePrices?: CreateSingleStorePriceInput[]
+}
+
+export interface CreateSingleWarehouseProductResponse {
+  success: boolean
+  message?: string
+  productCode?: string
+  itemNumber?: string
+  barcode?: string
+  barcodeExists?: boolean
+  warnings?: string[]
+}
+
 export interface WarehouseImportListResult<T> {
   success: boolean
   data: T[]
@@ -216,4 +281,15 @@ export async function getActiveLocalSuppliers(): Promise<LocalSupplierOption[]> 
   )
 
   return unwrapResponse(response, [])
+}
+
+export async function createSingleWarehouseProduct(
+  payload: CreateSingleWarehouseProductPayload,
+): Promise<CreateSingleWarehouseProductResponse> {
+  const response = await request<CreateSingleWarehouseProductResponse>(`${API_BASE}/create-single`, {
+    method: 'POST',
+    data: payload,
+  })
+
+  return response
 }

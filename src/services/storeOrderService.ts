@@ -2,6 +2,7 @@ import type { ApiResponse } from '../types/api'
 import type {
   AddStoreOrderLinePayload,
   BatchAddStoreOrderLinePayload,
+  PasteReplaceStoreOrderLinesPayload,
   BatchUpdateStoreOrderLinePayload,
   BatchUpdateStoreOrderProductStatusPayload,
   CopyStoreOrderPayload,
@@ -12,9 +13,12 @@ import type {
   StoreOrderBatchStatusUpdatePayload,
   StoreOrderBranchOption,
   StoreOrderDetail,
+  StoreOrderBatchLookupItem,
+  StoreOrderBatchLookupPayload,
   StoreOrderListItem,
   StoreOrderListQuery,
   StoreOrderListResult,
+  StoreOrderPasteTargetField,
   StoreOrderProductItem,
   StoreOrderProductListResult,
   StoreOrderProductQuery,
@@ -130,6 +134,15 @@ export async function getStoreOrderProducts(query: StoreOrderProductQuery) {
   return normalizeProductPagedList(response)
 }
 
+export async function batchLookupStoreOrderProducts(payload: StoreOrderBatchLookupPayload) {
+  const response = await request<ApiResponse<unknown> | unknown>(`${API_BASE}/products/batch-lookup`, {
+    method: 'POST',
+    data: payload,
+  })
+
+  return normalizeResult<StoreOrderBatchLookupItem[]>(response)
+}
+
 export async function createStoreOrder(payload: CreateStoreOrderPayload) {
   const response = await request<ApiResponse<unknown> | unknown>(`${API_BASE}/create`, {
     method: 'POST',
@@ -179,6 +192,13 @@ export async function addStoreOrderLine(payload: AddStoreOrderLinePayload) {
 
 export async function batchAddStoreOrderLines(payload: BatchAddStoreOrderLinePayload) {
   await request<ApiResponse<unknown> | unknown>(`${API_BASE}/line/batch-add`, {
+    method: 'POST',
+    data: payload,
+  })
+}
+
+export async function pasteReplaceStoreOrderLines(payload: PasteReplaceStoreOrderLinesPayload) {
+  await request<ApiResponse<unknown> | unknown>(`${API_BASE}/line/paste-replace`, {
     method: 'POST',
     data: payload,
   })
@@ -257,3 +277,5 @@ export async function syncMissingStoreOrders(storeCode?: string) {
     clearTimeout(timeoutId)
   }
 }
+
+export type { StoreOrderPasteTargetField }

@@ -25,7 +25,6 @@ import BarcodePreview from '../../../components/BarcodePreview'
 import PageContainer from '../../../components/PageContainer'
 import {
   batchDeleteDomesticProducts,
-  createDomesticProduct,
   getDomesticProductsGrid,
   getDomesticProductSetItems,
   getSupplierOptions,
@@ -35,7 +34,6 @@ import {
 import { exportDomesticProductsToExcel } from '../../../services/exportService'
 import { useAuthStore } from '../../../store/auth'
 import type {
-  CreateDomesticProductPayload,
   DomesticProductGridQuery,
   DomesticProductItem,
   DomesticProductSetItem,
@@ -45,6 +43,7 @@ import type {
 } from '../../../types/domesticProduct'
 import { ProductTypeLabels } from '../../../types/domesticProduct'
 import { copyTextToClipboard } from '../../../utils/clipboard'
+import CreateProductModal from './CreateProductModal'
 import ImportFromDomesticModal from './ImportFromDomesticModal'
 import ImportNonHbModal from './ImportNonHbModal'
 
@@ -119,7 +118,7 @@ function ProductFormModal({
 }) {
   return (
     <Modal
-      title={editingItem ? `编辑商品 - ${editingItem.itemNumber || editingItem.name}` : '新建商品'}
+      title={editingItem ? `编辑商品 - ${editingItem.itemNumber || editingItem.name}` : '编辑商品'}
       open={open}
       width={920}
       destroyOnClose
@@ -390,6 +389,7 @@ export default function WarehouseProductsPage() {
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
   const [modalOpen, setModalOpen] = useState(false)
+  const [createModalOpen, setCreateModalOpen] = useState(false)
   const [editingItem, setEditingItem] = useState<DomesticProductItem | null>(null)
   const [suppliers, setSuppliers] = useState<SupplierOption[]>([])
   const [data, setData] = useState<DomesticProductItem[]>([])
@@ -461,13 +461,7 @@ export default function WarehouseProductsPage() {
   }, [])
 
   const handleOpenCreate = () => {
-    setEditingItem(null)
-    form.resetFields()
-    form.setFieldsValue({
-      productType: 0,
-      isActive: true,
-    })
-    setModalOpen(true)
+    setCreateModalOpen(true)
   }
 
   const handleOpenEdit = (record: DomesticProductItem) => {
@@ -502,20 +496,18 @@ export default function WarehouseProductsPage() {
   }
 
   const handleSave = async () => {
+    if (!editingItem) {
+      return
+    }
+
     try {
       const values = await form.validateFields()
       setSaving(true)
-
-      if (editingItem) {
-        await updateDomesticProduct(editingItem.id, values as UpdateDomesticProductPayload)
-        message.success('更新商品成功')
-      } else {
-        await createDomesticProduct(values as CreateDomesticProductPayload)
-        message.success('创建商品成功')
-      }
+      await updateDomesticProduct(editingItem.id, values as UpdateDomesticProductPayload)
+      message.success('更新商品成功')
 
       handleCloseModal()
-      void loadData({ page: editingItem ? page : 1 })
+      void loadData({ page })
     } catch (error) {
       if (typeof error === 'object' && error !== null && 'errorFields' in error) {
         return
@@ -970,6 +962,16 @@ export default function WarehouseProductsPage() {
         form={form}
         onCancel={handleCloseModal}
         onSubmit={() => void handleSave()}
+      />
+
+      <CreateProductModal
+        open={createModalOpen}
+        suppliers={suppliers}
+        onCancel={() => setCreateModalOpen(false)}
+        onSuccess={() => {
+          setCreateModalOpen(false)
+          void loadData({ page: 1 })
+        }}
       />
 
       <SetItemsModal

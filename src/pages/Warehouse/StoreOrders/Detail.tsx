@@ -1,8 +1,12 @@
 import {
   CheckOutlined,
+  ContainerOutlined,
+  CopyOutlined,
   DeleteOutlined,
   EditOutlined,
+  FileTextOutlined,
   PlusOutlined,
+  PrinterOutlined,
   SaveOutlined,
   SearchOutlined,
 } from '@ant-design/icons'
@@ -17,6 +21,7 @@ import {
   InputNumber,
   Modal,
   Popconfirm,
+  Radio,
   Select,
   Space,
   Spin,
@@ -28,19 +33,23 @@ import {
 import type { ColumnsType } from 'antd/es/table'
 import type { SortOrder, SorterResult } from 'antd/es/table/interface'
 import { useEffect, useMemo, useState } from 'react'
-import { useLocation } from 'react-router-dom'
+import { useLocation, useNavigate } from 'react-router-dom'
 import BarcodePreview from '../../../components/BarcodePreview'
 import PageContainer from '../../../components/PageContainer'
 import { useStableRouteContext } from '../../../hooks/useStableRouteContext'
+import { useAuthStore } from '../../../store/auth'
 import { getStores } from '../../../services/storeService'
+import ContainerProductPicker from './components/ContainerProductPicker'
 import {
   addStoreOrderLine,
+  batchLookupStoreOrderProducts,
   batchAddStoreOrderLines,
   batchUpdateStoreOrderLines,
   batchUpdateStoreOrderProductStatus,
   completeStoreOrder,
   getStoreOrderDetail,
   getStoreOrderProducts,
+  pasteReplaceStoreOrderLines,
   removeStoreOrderLine,
   startPickingStoreOrder,
   updateStoreOrderHeader,
@@ -49,9 +58,11 @@ import {
 } from '../../../services/storeOrderService'
 import type { StoreDto } from '../../../types/store'
 import type {
+  StoreOrderBatchLookupItem,
   StoreOrderDetail,
   StoreOrderDetailLine,
   StoreOrderFlowStatus,
+  StoreOrderPasteTargetField,
   StoreOrderProductItem,
 } from '../../../types/storeOrder'
 import { StoreOrderStatusColorMap, StoreOrderStatusLabelMap } from '../../../types/storeOrder'
@@ -150,6 +161,17 @@ interface BatchEditModalProps {
     importPrice?: number
     isActive?: boolean
   }) => Promise<void>
+}
+
+interface ParsedPasteItem {
+  itemNumber: string
+  quantity: number
+  price?: number
+}
+
+interface PastePreviewItem extends ParsedPasteItem {
+  product?: StoreOrderProductItem
+  valid: boolean
 }
 
 function ProductPickerModal({ open, orderGUID, loading, onCancel, onConfirm }: ProductPickerModalProps) {
@@ -490,7 +512,9 @@ function BatchEditModal({ open, loading, selectedCount, onCancel, onConfirm }: B
 export default function StoreOrderDetailPage() {
   const route = useStableRouteContext()
   const location = useLocation()
+  const navigate = useNavigate()
   const screens = Grid.useBreakpoint()
+  const { access, currentUser } = useAuthStore()
   const id = route?.params.id || ''
   const isDesktop = Boolean(screens.xl)
   const [loading, setLoading] = useState(false)
@@ -501,11 +525,25 @@ export default function StoreOrderDetailPage() {
   const [lineActionLoading, setLineActionLoading] = useState(false)
   const [batchLoading, setBatchLoading] = useState(false)
   const [pickerOpen, setPickerOpen] = useState(false)
+  const [containerPickerOpen, setContainerPickerOpen] = useState(false)
   const [batchModalOpen, setBatchModalOpen] = useState(false)
+  const [pasteModalOpen, setPasteModalOpen] = useState(false)
   const [quickAddItemNumber, setQuickAddItemNumber] = useState('')
   const [quickAddQuantity, setQuickAddQuantity] = useState<number>(1)
+  const [pasteData, setPasteData] = useState('')
+  const [pasteTargetField, setPasteTargetField] = useState<StoreOrderPasteTargetField>('allocQuantity')
+  const [detailItemFilter, setDetailItemFilter] = useState('')
+  const [columnMapping, setColumnMapping] = useState({
+    itemNumber: 0,
+    quantity: 1,
+    price: -1,
+  })
+  const [parsedPasteItems, setParsedPasteItems] = useState<ParsedPasteItem[]>([])
+  const [pastePreviewItems, setPastePreviewItems] = useState<PastePreviewItem[]>([])
+  const [parsingPaste, setParsingPaste] = useState(false)
+  const [submittingPaste, setSubmittingPaste] = useState(false)
   const [detailPage, setDetailPage] = useState(1)
-  const [detailPageSize, setDetailPageSize] = useState(20)
+  const [detailPageSize, setDetailPageSize] = useState(50)
   const [detailStatFilter, setDetailStatFilter] = useState<DetailStatFilter>('all')
   const [detailSortField, setDetailSortField] = useState<DetailSortField>(null)
   const [detailSortOrder, setDetailSortOrder] = useState<SortOrder>(null)
@@ -529,7 +567,7 @@ export default function StoreOrderDetailPage() {
     typeof location.state.orderNo === 'string'
       ? location.state.orderNo
       : ''
-  const tabTitle = detail?.orderNo || initialOrderNo || id
+  const tabTitle = detail?.orderNo || initialOrderNo || '订货明细'
 
   useDynamicTabTitle(tabTitle)
 
@@ -552,7 +590,9 @@ export default function StoreOrderDetailPage() {
         remarks: result?.remarks || '',
       })
       setDetailPage(1)
+      setDetailPageSize(50)
       setDetailStatFilter('all')
+      setDetailItemFilter('')
       setEditingRows({})
     } catch (error) {
       console.error(error)
@@ -567,10 +607,12 @@ export default function StoreOrderDetailPage() {
   const loadStores = async () => {
     setStoresLoading(true)
     try {
+      const canViewAllStores = access.isAdmin || access.isWarehouseManager
       const result = await getStores({
         page: 1,
         pageSize: 300,
         isActive: true,
+        userGUID: canViewAllStores ? undefined : currentUser?.userGUID,
         sortField: 'storeName',
         sortOrder: 'ascend',
       })
@@ -588,15 +630,25 @@ export default function StoreOrderDetailPage() {
       return
     }
     void Promise.all([loadDetail(), loadStores()])
-  }, [id])
+  }, [id, access.isAdmin, access.isWarehouseManager, currentUser?.userGUID])
 
   const storeOptions = useMemo(
-    () =>
-      stores.map((item) => ({
+    () => {
+      const options = stores.map((item) => ({
         value: item.storeCode,
         label: `${item.storeName} (${item.storeCode})`,
-      })),
-    [stores],
+      }))
+
+      if (headerForm.storeCode && !options.some((item) => item.value === headerForm.storeCode)) {
+        options.push({
+          value: headerForm.storeCode,
+          label: `${headerForm.storeCode} (当前订单分店)`,
+        })
+      }
+
+      return options
+    },
+    [headerForm.storeCode, stores],
   )
 
   const currentStore = useMemo(
@@ -606,6 +658,11 @@ export default function StoreOrderDetailPage() {
 
   const totalAllocQuantity =
     detail?.totalAllocQuantity ?? detail?.items?.reduce((sum, item) => sum + (item.allocQuantity || 0), 0) ?? 0
+
+  const validPastePreviewCount = useMemo(
+    () => pastePreviewItems.filter((item) => item.valid).length,
+    [pastePreviewItems],
+  )
 
   const selectedLines = useMemo(
     () => detail?.items.filter((item) => selectedLineKeys.includes(item.detailGUID)) ?? [],
@@ -623,15 +680,20 @@ export default function StoreOrderDetailPage() {
 
   const filteredItems = useMemo(() => {
     const items = detail?.items ?? []
+    const normalizedKeyword = detailItemFilter.trim().toLowerCase()
+    const keywordFiltered = normalizedKeyword
+      ? items.filter((item) => item.itemNumber?.toLowerCase().includes(normalizedKeyword))
+      : items
+
     switch (detailStatFilter) {
       case 'orderedNotShipped':
-        return items.filter(isOrderedNotShipped)
+        return keywordFiltered.filter(isOrderedNotShipped)
       case 'shippedWithoutOrder':
-        return items.filter(isShippedWithoutOrder)
+        return keywordFiltered.filter(isShippedWithoutOrder)
       default:
-        return items
+        return keywordFiltered
     }
-  }, [detail?.items, detailStatFilter])
+  }, [detail?.items, detailItemFilter, detailStatFilter])
 
   const sortedItems = useMemo(() => {
     if (!detailSortField || !detailSortOrder) {
@@ -663,7 +725,7 @@ export default function StoreOrderDetailPage() {
 
   useEffect(() => {
     setDetailPage(1)
-  }, [detailStatFilter, detailSortField, detailSortOrder])
+  }, [detailItemFilter, detailStatFilter, detailSortField, detailSortOrder])
 
   const handleSaveHeader = async () => {
     if (!detail) {
@@ -692,7 +754,8 @@ export default function StoreOrderDetailPage() {
     if (!detail) {
       return
     }
-    if (!quickAddItemNumber.trim()) {
+    const normalizedItemNumber = quickAddItemNumber.trim()
+    if (!normalizedItemNumber) {
       message.warning('请输入货号')
       return
     }
@@ -704,16 +767,27 @@ export default function StoreOrderDetailPage() {
     setLineActionLoading(true)
     try {
       const result = await getStoreOrderProducts({
-        itemNumber: quickAddItemNumber.trim(),
+        itemNumber: normalizedItemNumber,
         pageNumber: 1,
-        pageSize: 1,
+        pageSize: 50,
         sortBy: 'Default',
       })
-      const target = result.items[0]
-      if (!target) {
-        message.warning('未找到对应商品')
+      const exactMatches = result.items.filter(
+        (item) => item.itemNumber?.trim().toLowerCase() === normalizedItemNumber.toLowerCase(),
+      )
+
+      if (exactMatches.length === 0) {
+        message.warning('未找到精确匹配的货号')
         return
       }
+
+      if (exactMatches.length > 1) {
+        message.warning('存在多个完全相同的货号，请使用“选择商品”确认后再添加')
+        return
+      }
+
+      const target = exactMatches[0]
+
       await addStoreOrderLine({
         orderGUID: detail.orderGUID,
         productCode: target.productCode,
@@ -751,6 +825,7 @@ export default function StoreOrderDetailPage() {
       }
       message.success(`成功添加 ${items.length} 个商品`)
       setPickerOpen(false)
+      setContainerPickerOpen(false)
       await loadDetail(false)
     } catch (error) {
       console.error(error)
@@ -870,6 +945,137 @@ export default function StoreOrderDetailPage() {
     }
   }
 
+  const resetPasteState = (targetField: StoreOrderPasteTargetField = 'allocQuantity') => {
+    setPasteData('')
+    setPasteTargetField(targetField)
+    setColumnMapping({
+      itemNumber: 0,
+      quantity: 1,
+      price: -1,
+    })
+    setParsedPasteItems([])
+    setPastePreviewItems([])
+  }
+
+  const handleParsePasteData = async () => {
+    if (!pasteData.trim()) {
+      message.warning('请先粘贴 Excel 数据')
+      return
+    }
+
+    setParsingPaste(true)
+    try {
+      const rows = pasteData
+        .split(/\r?\n/)
+        .map((row) => row.trim())
+        .filter(Boolean)
+
+      const items: ParsedPasteItem[] = []
+
+      rows.forEach((row) => {
+        const cols = row.split('\t').map((col) => col.trim())
+        const itemNumber = cols[columnMapping.itemNumber] || cols[0]
+        if (!itemNumber) {
+          return
+        }
+
+        const rawQuantity = columnMapping.quantity >= 0 ? cols[columnMapping.quantity] : undefined
+        const parsedQuantity = rawQuantity === undefined ? Number.NaN : Number.parseInt(rawQuantity, 10)
+        const quantity = Number.isFinite(parsedQuantity) && parsedQuantity >= 0 ? parsedQuantity : 1
+
+        const rawPrice = columnMapping.price >= 0 ? cols[columnMapping.price] : undefined
+        const parsedPrice = rawPrice === undefined ? Number.NaN : Number.parseFloat(rawPrice)
+
+        items.push({
+          itemNumber,
+          quantity,
+          price: Number.isFinite(parsedPrice) ? parsedPrice : undefined,
+        })
+      })
+
+      if (!items.length) {
+        message.warning('未解析出有效的货号数据')
+        setParsedPasteItems([])
+        setPastePreviewItems([])
+        return
+      }
+
+      setParsedPasteItems(items)
+
+      const lookupResult = await batchLookupStoreOrderProducts({
+        codes: Array.from(new Set(items.map((item) => item.itemNumber.trim()).filter(Boolean))),
+      })
+      const productMap = new Map<string, StoreOrderProductItem>()
+
+      lookupResult.forEach((entry: StoreOrderBatchLookupItem) => {
+        if (entry.lookupCode && entry.product) {
+          productMap.set(entry.lookupCode.trim().toLowerCase(), entry.product)
+        }
+      })
+
+      const preview = items.map((item) => {
+        const product = productMap.get(item.itemNumber.trim().toLowerCase())
+        return {
+          ...item,
+          product,
+          valid: Boolean(product),
+        }
+      })
+
+      setPastePreviewItems(preview)
+      message.success(`已解析 ${items.length} 行，其中 ${preview.filter((item) => item.valid).length} 行可导入`)
+    } catch (error) {
+      console.error(error)
+      message.error(error instanceof Error ? error.message : '解析粘贴数据失败')
+    } finally {
+      setParsingPaste(false)
+    }
+  }
+
+  const handleConfirmPaste = async () => {
+    if (!detail) {
+      return
+    }
+
+    const validItems: Array<{ productCode: string; quantity: number; importPrice?: number }> = []
+
+    parsedPasteItems.forEach((item) => {
+      const matched = pastePreviewItems.find((preview) => preview.itemNumber === item.itemNumber && preview.valid)
+      if (!matched?.product) {
+        return
+      }
+
+      validItems.push({
+        productCode: matched.product.productCode,
+        quantity: item.quantity,
+        importPrice: item.price,
+      })
+    })
+
+    if (!validItems.length) {
+      message.warning('没有可导入的有效商品')
+      return
+    }
+
+    setSubmittingPaste(true)
+    try {
+      await pasteReplaceStoreOrderLines({
+        orderGUID: detail.orderGUID,
+        targetField: pasteTargetField,
+        items: validItems,
+      })
+      message.success(`已通过粘贴更新 ${validItems.length} 行`)
+      setPasteModalOpen(false)
+      resetPasteState(pasteTargetField)
+      await loadDetail(false)
+    } catch (error) {
+      console.error(error)
+      message.error(error instanceof Error ? error.message : '粘贴导入失败')
+    } finally {
+      setSubmittingPaste(false)
+    }
+  }
+
   const handleCompleteOrder = async () => {
     if (!detail) {
       return
@@ -952,14 +1158,14 @@ export default function StoreOrderDetailPage() {
     {
       title: '#',
       dataIndex: 'index',
-      width: 70,
+      width: 30,
       fixed: isDesktop ? 'left' : undefined,
       render: (_, __, index) => (detailPage - 1) * detailPageSize + index + 1,
     },
     {
       title: '图片',
       dataIndex: 'productImage',
-      width: 72,
+      width: 50,
       fixed: isDesktop ? 'left' : undefined,
       render: (value: string | undefined, record) => (
         <Image
@@ -975,7 +1181,7 @@ export default function StoreOrderDetailPage() {
     {
       title: '货号',
       dataIndex: 'itemNumber',
-      width: 150,
+      width: 100,
       fixed: isDesktop ? 'left' : undefined,
       sorter: true,
       sortOrder: detailSortField === 'itemNumber' ? detailSortOrder : null,
@@ -994,20 +1200,43 @@ export default function StoreOrderDetailPage() {
     {
       title: '商品名称',
       dataIndex: 'productName',
-      width: 220,
-      ellipsis: true,
-      render: (value: string | undefined) => value || '--',
+      width: 100,
+      render: (value: string | undefined) =>
+        value ? (
+          <div
+            style={{
+              display: '-webkit-box',
+              overflow: 'hidden',
+              lineHeight: 1.5,
+              whiteSpace: 'normal',
+              wordBreak: 'break-word',
+              WebkitBoxOrient: 'vertical',
+              WebkitLineClamp: 2,
+            }}
+            title={value}
+          >
+            {value}
+          </div>
+        ) : (
+          '--'
+        ),
     },
     {
       title: '条码',
       dataIndex: 'barcode',
-      width: 220,
+      width: 110,
       render: (value: string | undefined) => <BarcodePreview value={value} textMaxWidth={150} />,
+    },
+    {
+      title: '贴牌价',
+      dataIndex: 'price',
+      width: 80,
+      render: (value: number | undefined) => formatAmount(value),
     },
     {
       title: '货位',
       dataIndex: 'locationCode',
-      width: 110,
+      width: 100,
       sorter: true,
       sortOrder: detailSortField === 'locationCode' ? detailSortOrder : null,
       render: (value: string | undefined) => renderZeroOrEmptyCell(value),
@@ -1015,13 +1244,13 @@ export default function StoreOrderDetailPage() {
     {
       title: '订货数',
       dataIndex: 'quantity',
-      width: 96,
+      width: 50,
       render: (_, record) => renderQuantityText(record),
     },
     {
       title: '发货数',
       dataIndex: 'allocQuantity',
-      width: 110,
+      width: 80,
       render: (value: number | undefined, record) => (
         <InputNumber
           min={0}
@@ -1041,23 +1270,11 @@ export default function StoreOrderDetailPage() {
         />
       ),
     },
-    {
-      title: '订货价',
-      dataIndex: 'price',
-      width: 100,
-      render: (value: number | undefined) => formatAmount(value),
-    },
-    {
-      title: '金额',
-      dataIndex: 'amount',
-      width: 120,
-      render: (value: number | undefined) =>
-        value === undefined || value === null ? renderDangerValue('--') : value === 0 ? renderDangerValue('0.00') : formatAmount(value),
-    },
+    
     {
       title: '进口价',
       dataIndex: 'importPrice',
-      width: 120,
+      width: 80,
       render: (value: number | undefined, record) => (
         <InputNumber
           min={0}
@@ -1080,27 +1297,31 @@ export default function StoreOrderDetailPage() {
     {
       title: '进口金额',
       dataIndex: 'importAmount',
-      width: 120,
+      width: 80,
       render: (value: number | undefined) =>
         value === undefined || value === null ? renderDangerValue('--') : value === 0 ? renderDangerValue('0.00') : formatAmount(value),
     },
     {
       title: '体积',
       dataIndex: 'totalVolume',
-      width: 100,
+      width: 50,
       render: (value: number | undefined) =>
-        value === undefined || value === null ? renderDangerValue('--') : value === 0 ? renderDangerValue('0.00') : formatAmount(value),
+        value === undefined || value === null
+          ? renderDangerValue('--')
+          : value === 0
+            ? renderDangerValue('0.0000')
+            : value.toFixed(4),
     },
     {
       title: '状态',
       dataIndex: 'isActive',
-      width: 90,
+      width: 50,
       render: (value: boolean) => <Tag color={value ? 'success' : 'default'}>{value ? '启用' : '停用'}</Tag>,
     },
     {
       title: '操作',
       key: 'actions',
-      width: 190,
+      width: 100,
       fixed: isDesktop ? 'right' : undefined,
       render: (_, record) => (
         <Space size={4} wrap>
@@ -1148,7 +1369,7 @@ export default function StoreOrderDetailPage() {
   return (
     <PageContainer
       title={`订货明细 - ${tabTitle}`}
-      subtitle="阶段 2 已升级为核心可编辑版，先补订单头编辑、明细维护、批量修改和商品选择；Excel 粘贴与打印入口后续再接。"
+      subtitle="阶段 2 已升级为核心可编辑版，已支持订单头编辑、明细维护、批量修改、商品选择、货柜选品和 Excel 粘贴。"
     >
       <Spin spinning={loading}>
         {detail ? (
@@ -1280,6 +1501,30 @@ export default function StoreOrderDetailPage() {
                   <Button icon={<SearchOutlined />} onClick={() => setPickerOpen(true)}>
                     选择商品
                   </Button>
+                  <Button icon={<ContainerOutlined />} onClick={() => setContainerPickerOpen(true)}>
+                    货柜选择器
+                  </Button>
+                  <Button
+                    icon={<PrinterOutlined />}
+                    onClick={() => detail && navigate(`/warehouse/store-order/picking/${detail.orderGUID}`)}
+                  >
+                    配货单
+                  </Button>
+                  <Button
+                    icon={<FileTextOutlined />}
+                    onClick={() => detail && navigate(`/warehouse/store-order/invoice/${detail.orderGUID}`)}
+                  >
+                    发票
+                  </Button>
+                  <Button
+                    icon={<CopyOutlined />}
+                    onClick={() => {
+                      resetPasteState('allocQuantity')
+                      setPasteModalOpen(true)
+                    }}
+                  >
+                    Excel 粘贴
+                  </Button>
                   <Button disabled={!selectedLineKeys.length} onClick={() => setBatchModalOpen(true)}>
                     批量修改
                   </Button>
@@ -1297,6 +1542,13 @@ export default function StoreOrderDetailPage() {
               >
                 <Space wrap size={[8, 8]}>
                   <Typography.Text strong>统计过滤</Typography.Text>
+                  <Input
+                    allowClear
+                    placeholder="按货号过滤"
+                    style={{ width: 220 }}
+                    value={detailItemFilter}
+                    onChange={(event) => setDetailItemFilter(event.target.value)}
+                  />
                   <Tag
                     color={detailStatFilter === 'all' ? 'processing' : 'default'}
                     style={{ cursor: 'pointer' }}
@@ -1342,7 +1594,7 @@ export default function StoreOrderDetailPage() {
                   pageSize: detailPageSize,
                   total: sortedItems.length,
                   showSizeChanger: true,
-                  pageSizeOptions: ['20', '50', '100', '200', '500'],
+                  pageSizeOptions: ['20', '50', '100', '500'],
                   onChange: (page, pageSize) => {
                     setDetailPage(page)
                     setDetailPageSize(pageSize)
@@ -1365,13 +1617,8 @@ export default function StoreOrderDetailPage() {
 
             <Card>
               <Typography.Text type="secondary">
-                当前阶段 2 已支持订单头编辑、商品选择加入、明细单行保存、批量改发货数/进口价/状态，以及完成订单。
+                当前阶段 2 已支持订单头编辑、商品选择加入、货柜选品、Excel 粘贴、明细单行保存、批量改发货数/进口价/状态、配货单、发票，以及完成订单。
               </Typography.Text>
-              <div style={{ marginTop: 8 }}>
-                <Typography.Text type="secondary">
-                  当前仍后置：Excel 粘贴、发货数粘贴、拣货单、Invoice。
-                </Typography.Text>
-              </div>
               <div style={{ marginTop: 8 }}>
                 <Typography.Text type="secondary">
                   最近更新时间：{formatDateTime(new Date().toISOString())}
@@ -1387,6 +1634,14 @@ export default function StoreOrderDetailPage() {
               onConfirm={handlePickerConfirm}
             />
 
+            <ContainerProductPicker
+              open={containerPickerOpen}
+              loading={lineActionLoading}
+              alreadySelectedCodes={detail.items.map((item) => item.productCode)}
+              onClose={() => setContainerPickerOpen(false)}
+              onConfirm={handlePickerConfirm}
+            />
+
             <BatchEditModal
               open={batchModalOpen}
               loading={batchLoading}
@@ -1394,6 +1649,165 @@ export default function StoreOrderDetailPage() {
               onCancel={() => setBatchModalOpen(false)}
               onConfirm={handleBatchConfirm}
             />
+
+            <Modal
+              title="Excel 粘贴到订单明细"
+              open={pasteModalOpen}
+              width={880}
+              destroyOnClose
+              onCancel={() => setPasteModalOpen(false)}
+              footer={[
+                <Button key="cancel" onClick={() => setPasteModalOpen(false)}>
+                  关闭
+                </Button>,
+                <Button key="parse" type="primary" loading={parsingPaste} onClick={() => void handleParsePasteData()}>
+                  解析数据
+                </Button>,
+                <Button
+                  key="confirm"
+                  type="primary"
+                  loading={submittingPaste}
+                  disabled={validPastePreviewCount === 0}
+                  onClick={() => void handleConfirmPaste()}
+                >
+                  导入有效行 ({validPastePreviewCount})
+                </Button>,
+              ]}
+            >
+              <Space direction="vertical" size={16} style={{ width: '100%' }}>
+                <div>
+                  <Typography.Text strong>写入目标</Typography.Text>
+                  <div style={{ marginTop: 8 }}>
+                    <Radio.Group
+                      value={pasteTargetField}
+                      onChange={(event) => setPasteTargetField(event.target.value as StoreOrderPasteTargetField)}
+                    >
+                      <Radio value="allocQuantity">发货数量（默认）</Radio>
+                      <Radio value="quantity">订货数量</Radio>
+                    </Radio.Group>
+                  </div>
+                </div>
+
+                <div>
+                  <Typography.Text strong>Excel 文本</Typography.Text>
+                  <Input.TextArea
+                    rows={7}
+                    value={pasteData}
+                    onChange={(event) => setPasteData(event.target.value)}
+                    placeholder={'按行粘贴 Excel 数据，默认第 1 列为货号，第 2 列为数量。'}
+                    style={{ marginTop: 8 }}
+                  />
+                </div>
+
+                <div>
+                  <Typography.Text strong>列映射</Typography.Text>
+                  <Space wrap size={[12, 12]} style={{ display: 'flex', marginTop: 8 }}>
+                    <Space>
+                      <Typography.Text>货号列</Typography.Text>
+                      <Select
+                        style={{ width: 100 }}
+                        value={columnMapping.itemNumber}
+                        options={[0, 1, 2, 3, 4].map((index) => ({
+                          value: index,
+                          label: `第 ${index + 1} 列`,
+                        }))}
+                        onChange={(value) =>
+                          setColumnMapping((current) => ({
+                            ...current,
+                            itemNumber: Number(value),
+                          }))
+                        }
+                      />
+                    </Space>
+                    <Space>
+                      <Typography.Text>数量列</Typography.Text>
+                      <Select
+                        style={{ width: 120 }}
+                        value={columnMapping.quantity}
+                        options={[
+                          { value: -1, label: '无，默认 1' },
+                          ...[0, 1, 2, 3, 4].map((index) => ({
+                            value: index,
+                            label: `第 ${index + 1} 列`,
+                          })),
+                        ]}
+                        onChange={(value) =>
+                          setColumnMapping((current) => ({
+                            ...current,
+                            quantity: Number(value),
+                          }))
+                        }
+                      />
+                    </Space>
+                    <Space>
+                      <Typography.Text>价格列</Typography.Text>
+                      <Select
+                        style={{ width: 120 }}
+                        value={columnMapping.price}
+                        options={[
+                          { value: -1, label: '无' },
+                          ...[0, 1, 2, 3, 4].map((index) => ({
+                            value: index,
+                            label: `第 ${index + 1} 列`,
+                          })),
+                        ]}
+                        onChange={(value) =>
+                          setColumnMapping((current) => ({
+                            ...current,
+                            price: Number(value),
+                          }))
+                        }
+                      />
+                    </Space>
+                  </Space>
+                </div>
+
+                {pastePreviewItems.length ? (
+                  <div>
+                    <Typography.Text strong>{`预览结果：${validPastePreviewCount} / ${pastePreviewItems.length} 行可导入`}</Typography.Text>
+                    <Table<PastePreviewItem>
+                      size="small"
+                      rowKey={(record, index) => `${record.itemNumber}-${index ?? 0}`}
+                      style={{ marginTop: 8 }}
+                      dataSource={pastePreviewItems}
+                      pagination={{ pageSize: 8, hideOnSinglePage: true }}
+                      scroll={{ y: 280 }}
+                      columns={[
+                        {
+                          title: '状态',
+                          dataIndex: 'valid',
+                          width: 90,
+                          render: (value: boolean) =>
+                            value ? <Tag color="success">有效</Tag> : <Tag color="error">未匹配</Tag>,
+                        },
+                        {
+                          title: '货号',
+                          dataIndex: 'itemNumber',
+                          width: 140,
+                        },
+                        {
+                          title: '商品名称',
+                          key: 'productName',
+                          ellipsis: true,
+                          render: (_, record) => record.product?.productName || '--',
+                        },
+                        {
+                          title: pasteTargetField === 'allocQuantity' ? '发货数量' : '订货数量',
+                          dataIndex: 'quantity',
+                          width: 110,
+                        },
+                        {
+                          title: '导入价',
+                          dataIndex: 'price',
+                          width: 110,
+                          render: (value: number | undefined) => (value === undefined ? '--' : formatAmount(value)),
+                        },
+                      ]}
+                    />
+                  </div>
+                ) : null}
+              </Space>
+            </Modal>
           </Space>
         ) : (
           <Card>

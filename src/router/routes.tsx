@@ -17,6 +17,8 @@ import SystemUsersPage from '../pages/System/Users'
 import WarehouseLocationsPage from '../pages/Warehouse/Locations'
 import WarehouseProductsPage from '../pages/Warehouse/Products'
 import StoreOrderDetailPage from '../pages/Warehouse/StoreOrders/Detail'
+import StoreOrderInvoicePage from '../pages/Warehouse/StoreOrders/Invoice'
+import StoreOrderPickingListPage from '../pages/Warehouse/StoreOrders/PickingList'
 import StoreOrdersPage from '../pages/Warehouse/StoreOrders'
 import type { AccessControl } from '../types/auth'
 import type { AppRouteItem, AppRouteMeta, TabItem } from '../types/router'
@@ -116,9 +118,33 @@ export const appRoutes: AppRouteItem[] = [
           keepAlive: true,
           accessKey: 'canManageWarehouse',
           activeMenu: '/warehouse/store-orders',
-          dynamicTitle: (params) => `订货明细 - ${params.id || ''}`,
+          dynamicTitle: () => '订货明细',
         },
         element: <StoreOrderDetailPage />,
+      },
+      {
+        path: '/warehouse/store-order/picking/:id',
+        meta: {
+          title: '配货单',
+          hidden: true,
+          keepAlive: true,
+          accessKey: 'canManageWarehouse',
+          activeMenu: '/warehouse/store-orders',
+          dynamicTitle: () => '配货单',
+        },
+        element: <StoreOrderPickingListPage />,
+      },
+      {
+        path: '/warehouse/store-order/invoice/:id',
+        meta: {
+          title: '发票',
+          hidden: true,
+          keepAlive: true,
+          accessKey: 'canManageWarehouse',
+          activeMenu: '/warehouse/store-orders',
+          dynamicTitle: () => '发票',
+        },
+        element: <StoreOrderInvoicePage />,
       },
       {
         path: '/warehouse/products',
