@@ -141,6 +141,100 @@ namespace BlazorApp.Api.Services.React
             };
         }
 
+        public async Task<ApiResponse<List<StoreOrderBatchLookupItemDto>>> BatchLookupProductsAsync(
+            StoreOrderBatchLookupRequestDto request
+        )
+        {
+            try
+            {
+                var codes = request
+                    .Codes.Where(code => !string.IsNullOrWhiteSpace(code))
+                    .Select(code => code.Trim())
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+
+                if (codes.Count == 0)
+                {
+                    return new ApiResponse<List<StoreOrderBatchLookupItemDto>>
+                    {
+                        Success = true,
+                        Data = new List<StoreOrderBatchLookupItemDto>(),
+                    };
+                }
+
+                var products = await _db.Queryable<Product>()
+                    .InnerJoin<WarehouseProduct>((p, wp) => p.ProductCode == wp.ProductCode)
+                    .LeftJoin<WarehouseCategory>(
+                        (p, wp, wc) => p.WarehouseCategoryGUID == wc.CategoryGUID
+                    )
+                    .Where(
+                        (p, wp, wc) => p.IsActive && !p.IsDeleted && !wp.IsDeleted && wp.IsActive
+                    )
+                    .Where(
+                        (p, wp, wc) =>
+                            (p.ItemNumber != null && codes.Contains(p.ItemNumber))
+                            || (p.Barcode != null && codes.Contains(p.Barcode))
+                            || (p.ProductCode != null && codes.Contains(p.ProductCode))
+                    )
+                    .Select(
+                        (p, wp, wc) =>
+                            new StoreOrderProductDto
+                            {
+                                ProductCode = p.ProductCode ?? string.Empty,
+                                ItemNumber = p.ItemNumber,
+                                Barcode = p.Barcode,
+                                ProductName = p.ProductName,
+                                ProductImage = p.ProductImage,
+                                CategoryName = wc.CategoryName,
+                                WarehouseCategoryGUID = p.WarehouseCategoryGUID,
+                                OEMPrice = wp.OEMPrice,
+                                MinOrderQuantity = wp.MinOrderQuantity ?? 1,
+                                StockQuantity = wp.StockQuantity ?? 0,
+                                PackQty = p.MiddlePackageQuantity,
+                                ImportPrice = wp.ImportPrice,
+                            }
+                    )
+                    .ToListAsync();
+
+                var results = codes
+                    .Select(code =>
+                    {
+                        var match =
+                            products.FirstOrDefault(p =>
+                                string.Equals(p.ItemNumber, code, StringComparison.OrdinalIgnoreCase)
+                            )
+                            ?? products.FirstOrDefault(p =>
+                                string.Equals(p.Barcode, code, StringComparison.OrdinalIgnoreCase)
+                            )
+                            ?? products.FirstOrDefault(p =>
+                                string.Equals(p.ProductCode, code, StringComparison.OrdinalIgnoreCase)
+                            );
+
+                        return new StoreOrderBatchLookupItemDto
+                        {
+                            LookupCode = code,
+                            Product = match,
+                        };
+                    })
+                    .ToList();
+
+                return new ApiResponse<List<StoreOrderBatchLookupItemDto>>
+                {
+                    Success = true,
+                    Data = results,
+                };
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "BatchLookupProductsAsync failed");
+                return new ApiResponse<List<StoreOrderBatchLookupItemDto>>
+                {
+                    Success = false,
+                    Message = ex.Message,
+                };
+            }
+        }
+
         private List<string> GetAllSubCategoryIds(string categoryGuid)
         {
             try
@@ -1373,6 +1467,46 @@ namespace BlazorApp.Api.Services.React
             }
         }
 
+        public async Task<ApiResponse<bool>> PasteReplaceOrderLinesAsync(
+            PasteReplaceOrderLinesDto request
+        )
+        {
+            try
+            {
+                var order = await GetEditableOrderAsync(request.OrderGUID);
+                if (order == null)
+                {
+                    return new ApiResponse<bool>
+                    {
+                        Success = false,
+                        Message = "Order not found or not editable",
+                    };
+                }
+
+                if (!IsSupportedPasteTargetField(request.TargetField))
+                {
+                    return new ApiResponse<bool>
+                    {
+                        Success = false,
+                        Message = "Unsupported paste target field",
+                    };
+                }
+
+                foreach (var item in request.Items.Where(x => !string.IsNullOrWhiteSpace(x.ProductCode)))
+                {
+                    await PasteReplaceDetailAsync(order, item, request.TargetField);
+                }
+
+                await UpdateOrderTotalAsync(order.OrderGUID);
+                return new ApiResponse<bool> { Success = true, Data = true };
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "PasteReplaceOrderLinesAsync failed");
+                return new ApiResponse<bool> { Success = false, Message = ex.Message };
+            }
+        }
+
         public async Task<ApiResponse<bool>> UpdateOrderLineAsync(UpdateOrderLineDto request)
         {
             try
@@ -1805,6 +1939,131 @@ namespace BlazorApp.Api.Services.React
                 return order;
             }
             return null;
+        }
+
+        private bool IsSupportedPasteTargetField(string targetField)
+        {
+            return string.Equals(
+                    targetField,
+                    StoreOrderPasteTargetFields.Quantity,
+                    StringComparison.OrdinalIgnoreCase
+                )
+                || string.Equals(
+                    targetField,
+                    StoreOrderPasteTargetFields.AllocQuantity,
+                    StringComparison.OrdinalIgnoreCase
+                );
+        }
+
+        private async Task PasteReplaceDetailAsync(
+            WareHouseOrder order,
+            ProductQuantityDto item,
+            string targetField
+        )
+        {
+            var targetQuantity = item.Quantity;
+            var now = DateTime.Now;
+            var currentUser = _httpContextAccessor.HttpContext?.User?.Identity?.Name ?? "System";
+
+            var warehouseProduct = await _db.Queryable<WarehouseProduct>()
+                .Where(wp => wp.ProductCode == item.ProductCode)
+                .FirstAsync();
+
+            if (warehouseProduct == null)
+            {
+                var product = await _db.Queryable<Product>()
+                    .Where(p => p.ProductCode == item.ProductCode)
+                    .FirstAsync();
+                if (product == null)
+                {
+                    throw new Exception($"Product {item.ProductCode} not found");
+                }
+
+                warehouseProduct = new WarehouseProduct
+                {
+                    OEMPrice = 0,
+                    ImportPrice = 0,
+                    MinOrderQuantity = 1,
+                };
+            }
+
+            var detail = await _db.Queryable<WareHouseOrderDetails>()
+                .Where(d => d.OrderGUID == order.OrderGUID && d.ProductCode == item.ProductCode)
+                .FirstAsync();
+
+            if (detail == null && targetQuantity <= 0)
+            {
+                return;
+            }
+
+            if (detail == null)
+            {
+                detail = new WareHouseOrderDetails
+                {
+                    DetailGUID = UuidHelper.GenerateUuid7(),
+                    OrderGUID = order.OrderGUID,
+                    StoreCode = order.StoreCode,
+                    ProductCode = item.ProductCode,
+                    Quantity = 0,
+                    AllocQuantity = 0,
+                    OEMPrice = warehouseProduct.OEMPrice ?? 0,
+                    OEMAmount = 0,
+                    ImportPrice = item.ImportPrice ?? warehouseProduct.ImportPrice ?? 0,
+                    ImportAmount = 0,
+                    IsDeleted = false,
+                    CreatedAt = now,
+                    UpdatedAt = now,
+                    CreatedBy = currentUser,
+                    UpdatedBy = currentUser,
+                };
+            }
+            else if (item.ImportPrice.HasValue)
+            {
+                detail.ImportPrice = item.ImportPrice.Value;
+            }
+
+            if (
+                string.Equals(
+                    targetField,
+                    StoreOrderPasteTargetFields.Quantity,
+                    StringComparison.OrdinalIgnoreCase
+                )
+            )
+            {
+                detail.Quantity = targetQuantity;
+            }
+            else
+            {
+                detail.AllocQuantity = targetQuantity;
+            }
+
+            var allocQuantity = detail.AllocQuantity ?? 0;
+            detail.OEMAmount = allocQuantity * (detail.OEMPrice ?? 0);
+            detail.ImportAmount = allocQuantity * (detail.ImportPrice ?? 0);
+            detail.UpdatedAt = now;
+            detail.UpdatedBy = currentUser;
+
+            if (detail.Quantity <= 0 && allocQuantity <= 0)
+            {
+                if (!string.IsNullOrWhiteSpace(detail.DetailGUID))
+                {
+                    await _db.Deleteable(detail).ExecuteCommandAsync();
+                }
+                return;
+            }
+
+            if (
+                await _db.Queryable<WareHouseOrderDetails>()
+                    .Where(d => d.DetailGUID == detail.DetailGUID)
+                    .AnyAsync()
+            )
+            {
+                await _db.Updateable(detail).ExecuteCommandAsync();
+            }
+            else
+            {
+                await _db.Insertable(detail).ExecuteCommandAsync();
+            }
         }
 
         private async Task AddOrUpdateDetailAsync(

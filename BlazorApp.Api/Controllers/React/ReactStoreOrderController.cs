@@ -149,6 +149,27 @@ namespace BlazorApp.Api.Controllers.React
             }
         }
 
+        [HttpPost("products/batch-lookup")]
+        public async Task<IActionResult> BatchLookupProducts(
+            [FromBody] StoreOrderBatchLookupRequestDto request
+        )
+        {
+            try
+            {
+                var result = await _service.BatchLookupProductsAsync(request);
+                if (result.Success)
+                {
+                    return Ok(new { success = true, data = result.Data });
+                }
+                return BadRequest(new { success = false, message = result.Message });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "BatchLookupProducts failed");
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
         /// <summary>
         /// 获取分店当前的购物车
         /// </summary>
@@ -414,6 +435,30 @@ namespace BlazorApp.Api.Controllers.React
             catch (Exception ex)
             {
                 _logger.LogError(ex, "BatchAddOrderLine failed");
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
+        /// <summary>
+        /// Excel 粘贴覆盖订单行
+        /// </summary>
+        [HttpPost("line/paste-replace")]
+        public async Task<IActionResult> PasteReplaceOrderLines(
+            [FromBody] PasteReplaceOrderLinesDto request
+        )
+        {
+            try
+            {
+                var result = await _service.PasteReplaceOrderLinesAsync(request);
+                if (result.Success)
+                {
+                    return Ok(new { success = true, data = result.Data });
+                }
+                return BadRequest(new { success = false, message = result.Message });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "PasteReplaceOrderLines failed");
                 return StatusCode(500, new { success = false, message = "服务器内部错误" });
             }
         }

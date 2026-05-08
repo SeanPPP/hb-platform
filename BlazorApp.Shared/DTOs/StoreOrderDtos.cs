@@ -76,6 +76,23 @@ namespace BlazorApp.Shared.DTOs
   }
 
   /// <summary>
+  /// 批量查询订货商品请求
+  /// </summary>
+  public class StoreOrderBatchLookupRequestDto
+  {
+    public List<string> Codes { get; set; } = new();
+  }
+
+  /// <summary>
+  /// 批量查询订货商品结果
+  /// </summary>
+  public class StoreOrderBatchLookupItemDto
+  {
+    public string LookupCode { get; set; } = string.Empty;
+    public StoreOrderProductDto? Product { get; set; }
+  }
+
+  /// <summary>
   /// 购物车DTO (FlowStatus=0 的 WareHouseOrder)
   /// </summary>
   public class StoreOrderCartDto
@@ -395,6 +412,12 @@ namespace BlazorApp.Shared.DTOs
     public decimal? ImportPrice { get; set; }
   }
 
+  public static class StoreOrderPasteTargetFields
+  {
+    public const string Quantity = "quantity";
+    public const string AllocQuantity = "allocQuantity";
+  }
+
   /// <summary>
   /// 批量添加商品请求
   /// </summary>
@@ -402,6 +425,20 @@ namespace BlazorApp.Shared.DTOs
   {
     [Required]
     public string OrderGUID { get; set; } = string.Empty;
+
+    public List<ProductQuantityDto> Items { get; set; } = new();
+  }
+
+  /// <summary>
+  /// Excel 粘贴覆盖订单行请求
+  /// </summary>
+  public class PasteReplaceOrderLinesDto
+  {
+    [Required]
+    public string OrderGUID { get; set; } = string.Empty;
+
+    [Required]
+    public string TargetField { get; set; } = StoreOrderPasteTargetFields.Quantity;
 
     public List<ProductQuantityDto> Items { get; set; } = new();
   }

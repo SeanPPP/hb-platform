@@ -10,6 +10,13 @@ namespace BlazorApp.Api.Interfaces.React
         Task<PagedListReactDto<StoreOrderProductDto>> GetPagedListAsync(StoreOrderFilterDto filter);
 
         /// <summary>
+        /// 批量精确查询订货商品
+        /// </summary>
+        Task<ApiResponse<List<StoreOrderBatchLookupItemDto>>> BatchLookupProductsAsync(
+            StoreOrderBatchLookupRequestDto request
+        );
+
+        /// <summary>
         /// 获取分店当前的购物车 (FlowStatus=0)
         /// </summary>
         Task<ApiResponse<StoreOrderCartDto?>> GetActiveCartAsync(string storeCode);
@@ -75,6 +82,11 @@ namespace BlazorApp.Api.Interfaces.React
         /// 批量添加商品到指定订单
         /// </summary>
         Task<ApiResponse<bool>> BatchAddOrderLineAsync(BatchAddOrderLineDto request);
+
+        /// <summary>
+        /// Excel 粘贴覆盖订单行
+        /// </summary>
+        Task<ApiResponse<bool>> PasteReplaceOrderLinesAsync(PasteReplaceOrderLinesDto request);
 
         /// <summary>
         /// 更新指定订单行数量
