@@ -103,6 +103,13 @@ function formatAmount(value?: number) {
   return value.toFixed(2)
 }
 
+function formatVolume(value?: number) {
+  if (value === undefined || value === null) {
+    return '--'
+  }
+  return value.toFixed(4)
+}
+
 function renderDateTag(value?: string) {
   const displayValue = formatDate(value)
   if (displayValue === '--') {
@@ -540,15 +547,16 @@ export default function StoreOrdersPage() {
       {
         title: '#',
         dataIndex: 'index',
-        width: 70,
+        width: 50,
         fixed: 'left',
         render: (_, __, index) => (page - 1) * pageSize + index + 1,
       },
       {
         title: '订单号',
         dataIndex: 'orderNo',
-        width: 220,
+        width: 120,
         sorter: true,
+        fixed: 'left',
         render: (value: string, record) => (
           <Space size={4}>
             <Button type="link" style={{ padding: 0 }} onClick={() => openDetail(record)}>
@@ -631,6 +639,18 @@ export default function StoreOrdersPage() {
         render: (value: number) => formatAmount(value),
       },
       {
+        title: '订货体积',
+        dataIndex: 'totalOrderVolume',
+        width: 120,
+        render: (value: number | undefined) => formatVolume(value),
+      },
+      {
+        title: '发货体积',
+        dataIndex: 'totalAllocVolume',
+        width: 120,
+        render: (value: number | undefined) => formatVolume(value),
+      },
+      {
         title: '发货数量',
         dataIndex: 'totalAllocQuantity',
         width: 110,
@@ -643,6 +663,7 @@ export default function StoreOrdersPage() {
         sorter: true,
         render: (value: number) => formatAmount(value),
       },
+      
       {
         title: '备注',
         dataIndex: 'remarks',

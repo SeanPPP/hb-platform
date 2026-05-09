@@ -146,6 +146,8 @@ request.post = <T>(url: string, data?: unknown, options?: Omit<RequestOptions, '
   request<T>(url, { ...options, method: 'POST', data })
 request.put = <T>(url: string, data?: unknown, options?: Omit<RequestOptions, 'method' | 'data'>) =>
   request<T>(url, { ...options, method: 'PUT', data })
+request.patch = <T>(url: string, data?: unknown, options?: Omit<RequestOptions, 'method' | 'data'>) =>
+  request<T>(url, { ...options, method: 'PATCH', data })
 request.delete = <T>(url: string, options?: Omit<RequestOptions, 'method'>) =>
   request<T>(url, { ...options, method: 'DELETE' })
 
@@ -153,5 +155,6 @@ export default request as typeof request & {
   get: typeof request.get
   post: typeof request.post
   put: typeof request.put
+  patch: typeof request.patch
   delete: typeof request.delete
 }

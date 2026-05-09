@@ -1,6 +1,5 @@
 import {
   CloseOutlined,
-  MoreOutlined,
   PushpinFilled,
   PushpinOutlined,
   ReloadOutlined,
@@ -185,7 +184,12 @@ export default function AppTabs({
           刷新
         </Button>
         <Dropdown menu={{ items: orderedMenuItems }} placement="bottomRight" trigger={['click']}>
-          <Button icon={<MoreOutlined />} />
+          <Button
+            type={pinTabsBar ? 'primary' : 'default'}
+            icon={pinTabsBar ? <PushpinFilled /> : <PushpinOutlined />}
+          >
+            更多
+          </Button>
         </Dropdown>
       </Space>
     </div>

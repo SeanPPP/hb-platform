@@ -105,6 +105,82 @@ export interface CreateSingleWarehouseProductResponse {
   warnings?: string[]
 }
 
+export interface WarehouseProductListItem {
+  id: string
+  rowNumber?: number
+  productCode: string
+  name: string
+  nameEn?: string
+  itemNumber: string
+  barcode?: string
+  categoryName?: string
+  domesticSupplierName?: string
+  domesticSupplierCode?: string
+  localSupplierName?: string
+  localSupplierCode?: string
+  domesticPrice?: number
+  labelPrice?: number
+  importPrice?: number
+  volume?: number
+  isVolumeFallback?: boolean
+  packingQty?: number
+  isPackingQtyFallback?: boolean
+  minOrderQuantity?: number
+  productType: 0 | 1 | 2
+  productImage?: string
+  isActive: boolean
+  createdAt?: string
+  updatedAt?: string
+  updatedBy?: string
+  middlePackQty?: number
+}
+
+export interface WarehouseProductsTableQuery {
+  page: number
+  pageSize: number
+  searchText?: string
+  supplierCode?: string
+  productType?: 0 | 1 | 2
+  isActive?: boolean
+  sortField?: string
+  sortOrder?: 'ascend' | 'descend'
+}
+
+export interface WarehouseProductsTableResult {
+  items: WarehouseProductListItem[]
+  total: number
+  page: number
+  pageSize: number
+}
+
+export interface UpdateWarehouseProductFullPayload {
+  productName?: string
+  englishName?: string
+  productSpecification?: string
+  material?: string
+  remark?: string
+  packingQuantity?: number
+  unitVolume?: number
+  grossWeight?: number
+  packingSize?: string
+  domesticPrice?: number
+  oemPrice?: number
+  importPrice?: number
+  isActive: boolean
+  productImage?: string
+  productType?: 0 | 1 | 2
+  middlePackQuantity?: number
+  isAutoPricing?: boolean
+  warehouseCategoryGUID?: string
+  supplierCode?: string
+  localSupplierCode?: string
+}
+
+export interface BatchToggleWarehouseProductsActivePayload {
+  productCodes: string[]
+  isActive: boolean
+}
+
 export interface WarehouseImportListResult<T> {
   success: boolean
   data: T[]
@@ -125,6 +201,12 @@ interface WarehouseImportListQuery {
   pageSize?: number
   globalSearch?: string
   filters?: Record<string, string[]>
+}
+
+interface WarehouseTableResponseRaw {
+  success?: boolean
+  data?: unknown
+  total?: number
 }
 
 export interface ImportFromDomesticItem {
@@ -233,6 +315,89 @@ function buildImportFromDomesticBody(payload: ImportFromDomesticPayload): Import
   }
 }
 
+function toNumber(value: unknown) {
+  if (typeof value === 'number') {
+    return value
+  }
+
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = Number(value)
+    return Number.isNaN(parsed) ? undefined : parsed
+  }
+
+  return undefined
+}
+
+function toBoolean(value: unknown, fallback = false) {
+  if (typeof value === 'boolean') {
+    return value
+  }
+
+  if (typeof value === 'string') {
+    if (value.toLowerCase() === 'true') {
+      return true
+    }
+    if (value.toLowerCase() === 'false') {
+      return false
+    }
+  }
+
+  return fallback
+}
+
+function transformWarehouseProduct(raw: Record<string, unknown>): WarehouseProductListItem {
+  return {
+    id: String(raw.productCode ?? raw.ProductCode ?? raw.id ?? ''),
+    productCode: String(raw.productCode ?? raw.ProductCode ?? ''),
+    name: String(raw.productName ?? raw.ProductName ?? ''),
+    nameEn: String(raw.englishName ?? raw.EnglishName ?? '') || undefined,
+    itemNumber: String(raw.itemNumber ?? raw.ItemNumber ?? ''),
+    barcode: String(raw.barcode ?? raw.Barcode ?? '') || undefined,
+    categoryName: String(raw.categoryName ?? raw.CategoryName ?? '') || undefined,
+    domesticSupplierName: String(raw.domesticSupplierName ?? raw.DomesticSupplierName ?? raw.supplierName ?? raw.SupplierName ?? '') || undefined,
+    domesticSupplierCode: String(raw.domesticSupplierCode ?? raw.DomesticSupplierCode ?? raw.supplierCode ?? raw.SupplierCode ?? '') || undefined,
+    localSupplierName: String(raw.localSupplierName ?? raw.LocalSupplierName ?? '') || undefined,
+    localSupplierCode: String(raw.localSupplierCode ?? raw.LocalSupplierCode ?? '') || undefined,
+    domesticPrice: toNumber(raw.domesticPrice ?? raw.DomesticPrice),
+    labelPrice: toNumber(raw.oemPrice ?? raw.OEMPrice),
+    importPrice: toNumber(raw.importPrice ?? raw.ImportPrice),
+    volume: toNumber(raw.volume ?? raw.Volume),
+    isVolumeFallback: toBoolean(raw.isVolumeFallback ?? raw.IsVolumeFallback),
+    packingQty: toNumber(raw.packingQuantity ?? raw.PackingQuantity),
+    isPackingQtyFallback: toBoolean(raw.isPackingQuantityFallback ?? raw.IsPackingQuantityFallback),
+    minOrderQuantity: toNumber(raw.minOrderQuantity ?? raw.MinOrderQuantity),
+    productType: (toNumber(raw.productType ?? raw.ProductType) ?? 0) as 0 | 1 | 2,
+    productImage: String(raw.productImage ?? raw.ProductImage ?? '') || undefined,
+    isActive: toBoolean(raw.isActive ?? raw.IsActive, true),
+    createdAt: String(raw.createdAt ?? raw.CreatedAt ?? '') || undefined,
+    updatedAt: String(raw.updatedAt ?? raw.UpdatedAt ?? '') || undefined,
+    updatedBy: String(raw.updatedBy ?? raw.UpdatedBy ?? '') || undefined,
+    middlePackQty: toNumber(raw.middlePackQuantity ?? raw.MiddlePackQuantity),
+  }
+}
+
+function normalizeWarehouseProductsTableResponse(
+  payload: unknown,
+  page: number,
+  pageSize: number,
+): WarehouseProductsTableResult {
+  const result = payload as WarehouseTableResponseRaw | undefined
+  const rawItems = Array.isArray(result?.data) ? result.data : []
+
+  return {
+    items: rawItems
+      .filter((item): item is Record<string, unknown> => !!item && typeof item === 'object')
+      .map(transformWarehouseProduct)
+      .map((item, index) => ({
+        ...item,
+        rowNumber: (page - 1) * pageSize + index + 1,
+      })),
+    total: typeof result?.total === 'number' ? result.total : 0,
+    page,
+    pageSize,
+  }
+}
+
 export async function getDomesticProductsNotInWarehouse(
   query: WarehouseImportListQuery,
 ): Promise<WarehouseImportListResult<DomesticProductNotInWarehouseItem>> {
@@ -292,4 +457,68 @@ export async function createSingleWarehouseProduct(
   })
 
   return response
+}
+
+export async function getWarehouseProductsTable(
+  query: WarehouseProductsTableQuery,
+): Promise<WarehouseProductsTableResult> {
+  const response = await request<unknown>(`${API_BASE}/table`, {
+    method: 'POST',
+    data: {
+      Page: query.page,
+      PageSize: query.pageSize,
+      SortBy: query.sortField,
+      SortOrder: query.sortOrder,
+      GlobalSearch: query.searchText || undefined,
+      Filters: {
+        ...(query.supplierCode ? { domesticSupplierCode: [query.supplierCode] } : {}),
+        ...(query.productType !== undefined ? { productType: [String(query.productType)] } : {}),
+        ...(query.isActive !== undefined ? { isActive: [String(query.isActive)] } : {}),
+      },
+    },
+  })
+
+  return normalizeWarehouseProductsTableResponse(response, query.page, query.pageSize)
+}
+
+export async function updateWarehouseProductFull(
+  productCode: string,
+  payload: UpdateWarehouseProductFullPayload,
+): Promise<{ success: boolean; message?: string }> {
+  return request(`${API_BASE}/${productCode}/full-update`, {
+    method: 'PUT',
+    data: {
+      ProductName: payload.productName,
+      EnglishName: payload.englishName,
+      ProductSpecification: payload.productSpecification,
+      Material: payload.material,
+      Remark: payload.remark,
+      PackingQuantity: payload.packingQuantity,
+      UnitVolume: payload.unitVolume,
+      GrossWeight: payload.grossWeight,
+      PackingSize: payload.packingSize,
+      DomesticPrice: payload.domesticPrice,
+      OEMPrice: payload.oemPrice,
+      ImportPrice: payload.importPrice,
+      IsActive: payload.isActive,
+      ProductImage: payload.productImage,
+      ProductType: payload.productType,
+      MiddlePackQuantity: payload.middlePackQuantity,
+      IsAutoPricing: payload.isAutoPricing,
+      WarehouseCategoryGUID: payload.warehouseCategoryGUID,
+      SupplierCode: payload.supplierCode,
+      LocalSupplierCode: payload.localSupplierCode,
+    },
+  })
+}
+
+export async function batchToggleWarehouseProductsActive(
+  payload: BatchToggleWarehouseProductsActivePayload,
+): Promise<WarehouseImportActionResult> {
+  const response = await request<unknown>(`${API_BASE}/batch-toggle-active`, {
+    method: 'POST',
+    data: payload,
+  })
+
+  return unwrapResponse(response, { success: false })
 }

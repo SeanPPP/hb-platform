@@ -58,6 +58,8 @@ export interface StoreOrderListItem {
   totalOrderAmount: number
   totalQuantity: number
   totalAllocQuantity: number
+  totalOrderVolume?: number
+  totalAllocVolume?: number
   remarks?: string
   createdAt?: string
   createdBy?: string
@@ -123,6 +125,8 @@ export interface StoreOrderDetailLine {
   importAmount: number
   volume?: number
   totalVolume?: number
+  orderVolume?: number
+  allocVolume?: number
   minOrderQuantity: number
   isActive: boolean
   locationCode?: string
@@ -137,6 +141,8 @@ export interface StoreOrderDetail {
   totalQuantity: number
   totalImportAmount: number
   totalVolume: number
+  totalOrderVolume?: number
+  totalAllocVolume?: number
   remarks?: string
   shippingFee?: number
   orderDate?: string
@@ -172,6 +178,52 @@ export interface StoreOrderProductItem {
   importPrice?: number
 }
 
+export interface StoreOrderDynamicData {
+  productCode: string
+  lastOrderDate?: string
+  lastQuantity?: number
+  lastAllocQuantity?: number
+  cartQuantity: number
+}
+
+export interface StoreOrderCartItem {
+  detailGUID: string
+  productCode: string
+  itemNumber?: string
+  barcode?: string
+  productName?: string
+  productImage?: string
+  price: number
+  quantity: number
+  allocQuantity?: number
+  amount: number
+  importPrice: number
+  importAmount: number
+  volume?: number
+  totalVolume?: number
+  minOrderQuantity: number
+  isActive: boolean
+  locationCode?: string
+  rrp?: number
+}
+
+export interface StoreOrderCart {
+  orderGUID: string
+  orderNo?: string
+  storeCode?: string
+  storeName?: string
+  totalAmount: number
+  totalQuantity: number
+  totalImportAmount: number
+  totalVolume: number
+  remarks?: string
+  shippingFee?: number
+  orderDate?: string
+  storeAddress?: string
+  flowStatus?: StoreOrderFlowStatus
+  items: StoreOrderCartItem[]
+}
+
 export interface StoreOrderProductListResult {
   items: StoreOrderProductItem[]
   total: number
@@ -185,6 +237,20 @@ export interface StoreOrderBatchLookupItem {
   lookupCode: string
   product?: StoreOrderProductItem
 }
+
+export interface StoreOrderScanLookupResult {
+  barcode: string
+  items: StoreOrderProductItem[]
+}
+
+export type StoreOrderScanStatus =
+  | 'ready'
+  | 'scanning'
+  | 'added'
+  | 'multiple'
+  | 'not_found'
+  | 'blocked'
+  | 'error'
 
 export interface AddStoreOrderLinePayload {
   orderGUID: string

@@ -15,9 +15,12 @@ import type {
   StoreOrderDetail,
   StoreOrderBatchLookupItem,
   StoreOrderBatchLookupPayload,
+  StoreOrderCart,
   StoreOrderListItem,
   StoreOrderListQuery,
   StoreOrderListResult,
+  StoreOrderScanLookupResult,
+  StoreOrderDynamicData,
   StoreOrderPasteTargetField,
   StoreOrderProductItem,
   StoreOrderProductListResult,
@@ -96,6 +99,30 @@ function normalizeProductPagedList(payload: unknown): StoreOrderProductListResul
   }
 }
 
+function normalizeCart(payload: unknown): StoreOrderCart | null {
+  const result = normalizeResult<Partial<StoreOrderCart> | null>(payload)
+  if (!result) {
+    return null
+  }
+
+  return {
+    orderGUID: result.orderGUID ?? '',
+    orderNo: result.orderNo,
+    storeCode: result.storeCode,
+    storeName: result.storeName,
+    totalAmount: result.totalAmount ?? 0,
+    totalQuantity: result.totalQuantity ?? 0,
+    totalImportAmount: result.totalImportAmount ?? 0,
+    totalVolume: result.totalVolume ?? 0,
+    remarks: result.remarks,
+    shippingFee: result.shippingFee,
+    orderDate: result.orderDate,
+    storeAddress: result.storeAddress,
+    flowStatus: result.flowStatus,
+    items: Array.isArray(result.items) ? result.items : [],
+  }
+}
+
 function normalizeResult<T>(payload: unknown): T {
   return unwrapEnvelope<T>(payload)
 }
@@ -141,6 +168,100 @@ export async function batchLookupStoreOrderProducts(payload: StoreOrderBatchLook
   })
 
   return normalizeResult<StoreOrderBatchLookupItem[]>(response)
+}
+
+export async function lookupStoreOrderProductsByBarcode(barcode: string) {
+  const response = await request<ApiResponse<unknown> | unknown>(`${API_BASE}/products/scan-lookup`, {
+    method: 'POST',
+    data: { barcode },
+  })
+
+  const result = normalizeResult<Partial<StoreOrderScanLookupResult> | null>(response)
+
+  return {
+    barcode: result?.barcode ?? barcode,
+    items: Array.isArray(result?.items) ? (result?.items as StoreOrderProductItem[]) : [],
+  } satisfies StoreOrderScanLookupResult
+}
+
+export async function getStoreOrderProductsDynamicData(payload: {
+  storeCode: string
+  productCodes: string[]
+}) {
+  const response = await request<ApiResponse<unknown> | unknown>(`${API_BASE}/dynamic-data`, {
+    method: 'POST',
+    data: payload,
+  })
+
+  const result = normalizeResult<StoreOrderDynamicData[] | null>(response)
+  return Array.isArray(result) ? result : []
+}
+
+export async function getActiveStoreOrderCart(storeCode: string) {
+  const response = await request<ApiResponse<unknown> | unknown>(`${API_BASE}/cart/${storeCode}`, {
+    method: 'GET',
+  })
+
+  return normalizeCart(response)
+}
+
+export async function addStoreOrderCartItem(payload: {
+  storeCode: string
+  productCode: string
+  quantity: number
+}) {
+  const response = await request<ApiResponse<unknown> | unknown>(`${API_BASE}/cart/add`, {
+    method: 'POST',
+    data: payload,
+  })
+
+  return normalizeCart(response)
+}
+
+export async function updateStoreOrderCartItem(payload: {
+  storeCode: string
+  productCode: string
+  quantity: number
+}) {
+  const response = await request<ApiResponse<unknown> | unknown>(`${API_BASE}/cart/update`, {
+    method: 'POST',
+    data: payload,
+  })
+
+  return normalizeCart(response)
+}
+
+export async function removeStoreOrderCartItem(payload: {
+  storeCode: string
+  detailGUID: string
+}) {
+  const response = await request<ApiResponse<unknown> | unknown>(`${API_BASE}/cart/remove`, {
+    method: 'POST',
+    data: payload,
+  })
+
+  return normalizeCart(response)
+}
+
+export async function clearActiveStoreOrderCart(storeCode: string) {
+  const response = await request<ApiResponse<unknown> | unknown>(`${API_BASE}/cart/clear`, {
+    method: 'POST',
+    data: { storeCode },
+  })
+
+  return normalizeCart(response)
+}
+
+export async function submitActiveStoreOrder(payload: {
+  storeCode: string
+  remarks?: string
+}) {
+  const response = await request<ApiResponse<unknown> | unknown>(`${API_BASE}/submit`, {
+    method: 'POST',
+    data: payload,
+  })
+
+  return normalizeResult<CopyStoreOrderResult | string | null>(response)
 }
 
 export async function createStoreOrder(payload: CreateStoreOrderPayload) {

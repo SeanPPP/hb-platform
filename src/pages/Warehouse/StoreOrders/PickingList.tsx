@@ -26,6 +26,14 @@ function getInnerPack(orderQty: number, sendQty: number, minQty: number) {
   return Number.isInteger(packs) ? `${packs} pk` : `${packs.toFixed(1)} pk`
 }
 
+function formatVolume(value?: number) {
+  if (value === undefined || value === null) {
+    return '--'
+  }
+
+  return value.toFixed(4)
+}
+
 export default function PickingListPage() {
   const route = useStableRouteContext()
   const id = route?.params.id || ''
@@ -102,6 +110,24 @@ export default function PickingListPage() {
       })
     })
   }, [order?.items])
+
+  const totalOrderVolume = useMemo(() => {
+    if (!order) {
+      return 0
+    }
+
+    if (typeof order.totalOrderVolume === 'number') {
+      return order.totalOrderVolume
+    }
+
+    if (typeof order.totalVolume === 'number') {
+      return order.totalVolume
+    }
+
+    return (order.items ?? []).reduce((sum, item) => {
+      return sum + (item.orderVolume ?? item.totalVolume ?? ((item.volume ?? 0) * Number(item.quantity ?? 0)))
+    }, 0)
+  }, [order])
 
   const handleBeforePrint = async () => {
     if (!order) {
@@ -304,6 +330,7 @@ export default function PickingListPage() {
             <div>总 SKU：{order.totalSKU ?? order.items.length}</div>
             <div>订货总数：{order.totalQuantity}</div>
             <div>发货总数：{order.totalAllocQuantity ?? 0}</div>
+            <div>订货体积：{formatVolume(totalOrderVolume)}</div>
           </div>
         </div>
       </div>

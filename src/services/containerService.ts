@@ -1,5 +1,12 @@
 import type { ApiResponse } from '../types/api'
-import type { ContainerDetail, ContainerListResponse, ContainerMain, ContainerQueryRequest } from '../types/container'
+import type {
+  ComingSoonHomeContainer,
+  ComingSoonHomeProduct,
+  ContainerDetail,
+  ContainerListResponse,
+  ContainerMain,
+  ContainerQueryRequest,
+} from '../types/container'
 import request from '../utils/request'
 
 const API_BASE = '/api/react/v1/containers'
@@ -18,6 +25,40 @@ interface ContainerListApiResponse {
 function ensureSuccess(success?: boolean, message?: string, fallback?: string) {
   if (success === false) {
     throw new Error(message || fallback || '请求失败')
+  }
+}
+
+function formatDateValue(date: Date) {
+  return date.toISOString().slice(0, 10)
+}
+
+function addDays(date: Date, days: number) {
+  const next = new Date(date)
+  next.setDate(next.getDate() + days)
+  return next
+}
+
+function toTimestamp(value?: string) {
+  if (!value) {
+    return Number.MAX_SAFE_INTEGER
+  }
+
+  const timestamp = new Date(value).getTime()
+  return Number.isNaN(timestamp) ? Number.MAX_SAFE_INTEGER : timestamp
+}
+
+function toComingSoonProduct(item: ContainerDetail): ComingSoonHomeProduct {
+  return {
+    id: item.id,
+    hguid: item.hguid,
+    productCode: item.商品编码 ?? item.商品信息?.商品编码,
+    itemNumber: item.商品信息?.货号,
+    productName: item.商品信息?.商品名称,
+    englishName: item.商品信息?.英文名称,
+    productImage: item.商品信息?.商品图片,
+    quantity: item.装柜数量,
+    isNewProduct: item.是否新商品 ?? item.warehouseIsActive === false,
+    warehouseIsActive: item.warehouseIsActive,
   }
 }
 
@@ -64,4 +105,56 @@ export async function getContainerProducts(containerGuid: string): Promise<Conta
   ensureSuccess(response.success ?? response.isSuccess, response.message, '获取货柜商品列表失败')
 
   return response.data ?? []
+}
+
+export async function getComingSoonContainers(): Promise<ComingSoonHomeContainer[]> {
+  const today = new Date()
+  const upcomingStart = formatDateValue(today)
+  const upcomingEnd = formatDateValue(addDays(today, 56))
+  const arrivedStart = formatDateValue(addDays(today, -7))
+  const arrivedEnd = upcomingStart
+
+  const [upcomingResult, arrivedResult] = await Promise.all([
+    getContainerList({
+      dateType: '预计到岸日期',
+      startDate: upcomingStart,
+      endDate: upcomingEnd,
+      page: 1,
+      pageSize: 100,
+      sortBy: '预计到岸日期',
+      sortDirection: 'asc',
+    }),
+    getContainerList({
+      dateType: '实际到货日期',
+      startDate: arrivedStart,
+      endDate: arrivedEnd,
+      page: 1,
+      pageSize: 100,
+      sortBy: '实际到货日期',
+      sortDirection: 'desc',
+    }),
+  ])
+
+  const containerMap = new Map<string, ContainerMain>()
+  ;[...arrivedResult.containers, ...upcomingResult.containers].forEach((container) => {
+    containerMap.set(container.hguid, container)
+  })
+
+  const containers = [...containerMap.values()].sort((left, right) => {
+    const leftDate = left.实际到货日期 || left.预计到岸日期
+    const rightDate = right.实际到货日期 || right.预计到岸日期
+    return toTimestamp(leftDate) - toTimestamp(rightDate)
+  })
+
+  const productsList = await Promise.all(
+    containers.map(async (container) => {
+      const products = await getContainerProducts(container.hguid)
+      return {
+        ...container,
+        商品列表: products.map(toComingSoonProduct),
+      } satisfies ComingSoonHomeContainer
+    }),
+  )
+
+  return productsList
 }

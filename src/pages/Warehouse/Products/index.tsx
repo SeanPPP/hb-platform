@@ -1,4 +1,4 @@
-import { CopyOutlined, DeleteOutlined, DownloadOutlined, EditOutlined, GiftOutlined, PlusOutlined, ReloadOutlined, SearchOutlined, UploadOutlined } from '@ant-design/icons'
+import { CopyOutlined, DownloadOutlined, EditOutlined, GiftOutlined, PlusOutlined, ReloadOutlined, SearchOutlined, UploadOutlined } from '@ant-design/icons'
 import {
   Button,
   Card,
@@ -18,28 +18,30 @@ import {
   Typography,
   message,
 } from 'antd'
+import type { DefaultOptionType } from 'antd/es/select'
 import type { ColumnsType, TablePaginationConfig } from 'antd/es/table'
 import type { SorterResult } from 'antd/es/table/interface'
 import { useEffect, useMemo, useState } from 'react'
 import BarcodePreview from '../../../components/BarcodePreview'
 import PageContainer from '../../../components/PageContainer'
 import {
-  batchDeleteDomesticProducts,
-  getDomesticProductsGrid,
   getDomesticProductSetItems,
   getSupplierOptions,
-  updateDomesticProduct,
   updateDomesticProductSetItems,
 } from '../../../services/domesticProductService'
 import { exportDomesticProductsToExcel } from '../../../services/exportService'
+import {
+  batchToggleWarehouseProductsActive,
+  getWarehouseProductsTable,
+  updateWarehouseProductFull,
+  type WarehouseProductListItem,
+  type WarehouseProductsTableQuery,
+} from '../../../services/warehouseProductService'
 import { useAuthStore } from '../../../store/auth'
 import type {
-  DomesticProductGridQuery,
-  DomesticProductItem,
   DomesticProductSetItem,
   ProductType,
   SupplierOption,
-  UpdateDomesticProductPayload,
 } from '../../../types/domesticProduct'
 import { ProductTypeLabels } from '../../../types/domesticProduct'
 import { copyTextToClipboard } from '../../../utils/clipboard'
@@ -69,14 +71,77 @@ interface ProductFormValues {
 }
 
 const statusOptions = [
-  { value: true, label: '启用' },
-  { value: false, label: '停用' },
+  { value: true, label: '上架' },
+  { value: false, label: '下架' },
 ]
 
 const productTypeOptions = Object.entries(ProductTypeLabels).map(([value, label]) => ({
   value: Number(value),
   label,
 }))
+
+const WAREHOUSE_TABLE_ROW_MAX_HEIGHT = 80
+
+const warehouseProductsTableStyle = `
+  .warehouse-products-table .ant-table-tbody > tr > td {
+    height: ${WAREHOUSE_TABLE_ROW_MAX_HEIGHT}px;
+    max-height: ${WAREHOUSE_TABLE_ROW_MAX_HEIGHT}px;
+    vertical-align: middle;
+  }
+
+  .warehouse-products-table .ant-table-cell {
+    white-space: nowrap;
+  }
+
+  .warehouse-products-table .warehouse-products-image-cell,
+  .warehouse-products-table .warehouse-products-barcode-cell {
+    min-height: 64px;
+    max-height: 64px;
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+  }
+
+  .warehouse-products-table .warehouse-products-image-cell .ant-image,
+  .warehouse-products-table .warehouse-products-image-cell img {
+    width: 44px;
+    height: 44px;
+    display: block;
+  }
+
+  .warehouse-products-table .warehouse-products-barcode-cell svg,
+  .warehouse-products-table .warehouse-products-barcode-cell canvas,
+  .warehouse-products-table .warehouse-products-barcode-cell img {
+    max-height: 56px !important;
+  }
+
+  .warehouse-products-table .warehouse-products-supplier-cell {
+    white-space: normal;
+    overflow: hidden;
+  }
+
+  .warehouse-products-table .warehouse-products-supplier-cell .ant-tag {
+    max-width: 100%;
+    margin-inline-end: 0;
+    white-space: normal;
+    overflow: hidden;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    line-height: 20px;
+    padding-block: 2px;
+  }
+
+  .warehouse-products-table .warehouse-products-text-2line {
+    white-space: normal;
+    overflow: hidden;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    line-height: 20px;
+    word-break: break-word;
+  }
+`
 
 function formatDateTime(value?: string) {
   if (!value) {
@@ -99,6 +164,23 @@ function formatPrice(value?: number) {
   return value.toFixed(2)
 }
 
+type SupplierSelectOption = DefaultOptionType & {
+  searchText?: string
+}
+
+function buildSupplierOptions(suppliers: SupplierOption[]): SupplierSelectOption[] {
+  return suppliers.map((item) => ({
+    value: item.code,
+    label: `${item.code} - ${item.name}`,
+    searchText: `${item.code} ${item.name} ${item.shopNumber ?? ''}`.toLowerCase(),
+  }))
+}
+
+function filterSupplierOption(input: string, option?: DefaultOptionType) {
+  return String((option as SupplierSelectOption | undefined)?.searchText ?? '')
+    .includes(input.trim().toLowerCase())
+}
+
 function ProductFormModal({
   open,
   saving,
@@ -110,7 +192,7 @@ function ProductFormModal({
 }: {
   open: boolean
   saving: boolean
-  editingItem: DomesticProductItem | null
+  editingItem: WarehouseProductListItem | null
   suppliers: SupplierOption[]
   form: ReturnType<typeof Form.useForm<ProductFormValues>>[0]
   onCancel: () => void
@@ -140,11 +222,8 @@ function ProductFormModal({
               disabled={Boolean(editingItem)}
               placeholder="请选择供应商"
               showSearch
-              optionFilterProp="label"
-              options={suppliers.map((item) => ({
-                value: item.code,
-                label: `${item.code} - ${item.name}`,
-              }))}
+              filterOption={filterSupplierOption}
+              options={buildSupplierOptions(suppliers)}
             />
           </Form.Item>
           <Form.Item
@@ -156,7 +235,7 @@ function ProductFormModal({
             <Select placeholder="请选择商品类型" options={productTypeOptions} />
           </Form.Item>
           <Form.Item name="isActive" label="状态" valuePropName="checked" style={{ width: 120 }}>
-            <Switch checkedChildren="启用" unCheckedChildren="停用" />
+            <Switch checkedChildren="上架" unCheckedChildren="下架" />
           </Form.Item>
         </Space>
 
@@ -246,7 +325,7 @@ function SetItemsModal({
   open: boolean
   loading: boolean
   saving: boolean
-  product: DomesticProductItem | null
+  product: WarehouseProductListItem | null
   items: DomesticProductSetItem[]
   canEdit: boolean
   onCancel: () => void
@@ -390,9 +469,9 @@ export default function WarehouseProductsPage() {
   const [saving, setSaving] = useState(false)
   const [modalOpen, setModalOpen] = useState(false)
   const [createModalOpen, setCreateModalOpen] = useState(false)
-  const [editingItem, setEditingItem] = useState<DomesticProductItem | null>(null)
+  const [editingItem, setEditingItem] = useState<WarehouseProductListItem | null>(null)
   const [suppliers, setSuppliers] = useState<SupplierOption[]>([])
-  const [data, setData] = useState<DomesticProductItem[]>([])
+  const [data, setData] = useState<WarehouseProductListItem[]>([])
   const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([])
   const [searchText, setSearchText] = useState('')
   const [supplierCode, setSupplierCode] = useState<string>()
@@ -413,11 +492,13 @@ export default function WarehouseProductsPage() {
   const [setItemsOpen, setSetItemsOpen] = useState(false)
   const [setItemsLoading, setSetItemsLoading] = useState(false)
   const [setItemsSaving, setSetItemsSaving] = useState(false)
-  const [currentSetProduct, setCurrentSetProduct] = useState<DomesticProductItem | null>(null)
+  const [currentSetProduct, setCurrentSetProduct] = useState<WarehouseProductListItem | null>(null)
   const [setItemsDraft, setSetItemsDraft] = useState<DomesticProductSetItem[]>([])
+  const [batchActionLoading, setBatchActionLoading] = useState(false)
+  const [togglingProductCodes, setTogglingProductCodes] = useState<string[]>([])
   const { access } = useAuthStore()
 
-  const buildGridQuery = (overrides: Partial<DomesticProductGridQuery> = {}): DomesticProductGridQuery => ({
+  const buildGridQuery = (overrides: Partial<WarehouseProductsTableQuery> = {}): WarehouseProductsTableQuery => ({
     page,
     pageSize,
     searchText,
@@ -429,12 +510,12 @@ export default function WarehouseProductsPage() {
     ...overrides,
   })
 
-  const loadData = async (overrides: Partial<DomesticProductGridQuery> = {}) => {
+  const loadData = async (overrides: Partial<WarehouseProductsTableQuery> = {}) => {
     const query = buildGridQuery(overrides)
 
     setLoading(true)
     try {
-      const result = await getDomesticProductsGrid(query)
+      const result = await getWarehouseProductsTable(query)
       setData(result.items)
       setTotal(result.total)
       setPage(result.page)
@@ -464,15 +545,14 @@ export default function WarehouseProductsPage() {
     setCreateModalOpen(true)
   }
 
-  const handleOpenEdit = (record: DomesticProductItem) => {
+  const handleOpenEdit = (record: WarehouseProductListItem) => {
     setEditingItem(record)
     form.setFieldsValue({
-      supplierCode: record.supplierCode,
+      supplierCode: record.domesticSupplierCode,
       productName: record.name,
       englishProductName: record.nameEn,
       hbProductNo: record.itemNumber,
       barcode: record.barcode,
-      productSpecification: record.specs,
       productType: record.productType,
       domesticPrice: record.domesticPrice,
       oemPrice: record.labelPrice,
@@ -480,9 +560,6 @@ export default function WarehouseProductsPage() {
       packingQuantity: record.packingQty,
       unitVolume: record.volume,
       middlePackQuantity: record.middlePackQty,
-      packingSize: record.packingSize,
-      material: record.material,
-      remarks: record.remark,
       productImage: record.productImage,
       isActive: record.isActive,
     })
@@ -503,7 +580,24 @@ export default function WarehouseProductsPage() {
     try {
       const values = await form.validateFields()
       setSaving(true)
-      await updateDomesticProduct(editingItem.id, values as UpdateDomesticProductPayload)
+      await updateWarehouseProductFull(editingItem.productCode, {
+        productName: values.productName,
+        englishName: values.englishProductName,
+        productSpecification: values.productSpecification,
+        productType: values.productType,
+        domesticPrice: values.domesticPrice,
+        oemPrice: values.oemPrice,
+        importPrice: values.importPrice,
+        packingQuantity: values.packingQuantity,
+        unitVolume: values.unitVolume,
+        middlePackQuantity: values.middlePackQuantity,
+        packingSize: values.packingSize,
+        material: values.material,
+        remark: values.remarks,
+        productImage: values.productImage,
+        isActive: values.isActive,
+        supplierCode: values.supplierCode,
+      })
       message.success('更新商品成功')
 
       handleCloseModal()
@@ -519,24 +613,65 @@ export default function WarehouseProductsPage() {
     }
   }
 
-  const handleBatchDelete = async () => {
+  const handleBatchToggleActive = async (nextIsActive: boolean) => {
+    if (!selectedRowKeys.length) {
+      return
+    }
+
     try {
-      await batchDeleteDomesticProducts(selectedRowKeys.map(String))
-      message.success(`已删除 ${selectedRowKeys.length} 个商品`)
-      void loadData({ page: 1 })
+      setBatchActionLoading(true)
+      const result = await batchToggleWarehouseProductsActive({
+        productCodes: selectedRowKeys.map(String),
+        isActive: nextIsActive,
+      })
+
+      if (!result.success) {
+        message.error(result.message || '批量更新状态失败')
+        return
+      }
+
+      message.success(result.message || `已批量${nextIsActive ? '上架' : '下架'} ${selectedRowKeys.length} 个商品`)
+      void loadData({ page })
     } catch (error) {
       console.error(error)
-      message.error(error instanceof Error ? error.message : '批量删除商品失败')
+      message.error(error instanceof Error ? error.message : '批量更新状态失败')
+    } finally {
+      setBatchActionLoading(false)
     }
   }
 
-  const handleOpenSetItems = async (record: DomesticProductItem) => {
+  const handleToggleSingleActive = async (record: WarehouseProductListItem, nextIsActive: boolean) => {
+    try {
+      setTogglingProductCodes((current) => [...current, record.productCode])
+      const result = await batchToggleWarehouseProductsActive({
+        productCodes: [record.productCode],
+        isActive: nextIsActive,
+      })
+
+      if (!result.success) {
+        message.error(result.message || '切换状态失败')
+        return
+      }
+
+      setData((current) =>
+        current.map((item) => (item.productCode === record.productCode ? { ...item, isActive: nextIsActive } : item)),
+      )
+      message.success(result.message || `商品已${nextIsActive ? '上架' : '下架'}`)
+    } catch (error) {
+      console.error(error)
+      message.error(error instanceof Error ? error.message : '切换状态失败')
+    } finally {
+      setTogglingProductCodes((current) => current.filter((code) => code !== record.productCode))
+    }
+  }
+
+  const handleOpenSetItems = async (record: WarehouseProductListItem) => {
     setCurrentSetProduct(record)
     setSetItemsOpen(true)
     setSetItemsLoading(true)
     setSetItemsDraft([])
     try {
-      const items = await getDomesticProductSetItems(record.id)
+      const items = await getDomesticProductSetItems(record.productCode)
       setSetItemsDraft(items)
     } catch (error) {
       console.error(error)
@@ -555,7 +690,7 @@ export default function WarehouseProductsPage() {
 
     try {
       setSetItemsSaving(true)
-      await updateDomesticProductSetItems(currentSetProduct.id, setItemsDraft)
+      await updateDomesticProductSetItems(currentSetProduct.productCode, setItemsDraft)
       message.success('套装子项已更新')
       setSetItemsOpen(false)
       setCurrentSetProduct(null)
@@ -590,7 +725,7 @@ export default function WarehouseProductsPage() {
           page: 1,
           pageSize: Math.max(total, 1),
         })
-        const result = await getDomesticProductsGrid(exportQuery)
+        const result = await getWarehouseProductsTable(exportQuery)
         productsToExport = result.items
       }
 
@@ -599,14 +734,24 @@ export default function WarehouseProductsPage() {
         return
       }
 
-      await exportDomesticProductsToExcel(productsToExport, {
-        includeLabelPrice,
-        fileName: '仓库商品',
-        onProgress: (progress, nextMessage) => {
-          setExportProgress(progress)
-          setExportMessage(nextMessage)
+      await exportDomesticProductsToExcel(
+        productsToExport.map(
+          (item) => ({
+            itemNumber: item.itemNumber,
+            barcode: item.barcode,
+            name: item.name,
+            labelPrice: item.labelPrice,
+          }),
+        ),
+        {
+          includeLabelPrice,
+          fileName: '仓库商品',
+          onProgress: (progress, nextMessage) => {
+            setExportProgress(progress)
+            setExportMessage(nextMessage)
+          },
         },
-      })
+      )
 
       message.success('导出成功')
       setExportConfigOpen(false)
@@ -620,13 +765,14 @@ export default function WarehouseProductsPage() {
     }
   }
 
-  const columns = useMemo<ColumnsType<DomesticProductItem>>(
+  const columns = useMemo<ColumnsType<WarehouseProductListItem>>(
     () => [
-      { title: '#', dataIndex: 'rowNumber', width: 70, fixed: 'left' },
+      { title: '#', dataIndex: 'rowNumber', width: 30, fixed: 'left' },
       {
         title: 'HB货号',
         dataIndex: 'itemNumber',
-        width: 150,
+        width: 120,
+        fixed: 'left',
         sorter: true,
         render: (value: string) =>
           value ? (
@@ -648,54 +794,79 @@ export default function WarehouseProductsPage() {
       {
         title: '商品图片',
         dataIndex: 'productImage',
-        width: 90,
-        render: (value: string | undefined, record) => (
-          <Image
-            src={value}
-            alt={record.name}
-            width={44}
-            height={44}
-            style={{ borderRadius: 4, objectFit: 'cover' }}
-            fallback="data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs="
-          />
+        width: 80,
+        render: (value: string | undefined) => (
+          <div className="warehouse-products-image-cell">
+            <Image
+              src={value}
+              alt=""
+              width={44}
+              height={44}
+              style={{ borderRadius: 4, objectFit: 'cover' }}
+              fallback="data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs="
+            />
+          </div>
         ),
       },
       {
-        title: '供应商编码',
-        dataIndex: 'supplierCode',
-        width: 140,
+        title: '国内供应商',
+        dataIndex: 'domesticSupplierCode',
+        width: 150,
         sorter: true,
+        render: (_value, record) =>
+          record.domesticSupplierCode || record.domesticSupplierName ? (
+            <div className="warehouse-products-supplier-cell">
+              <Tag color="blue">
+                {[record.domesticSupplierCode, record.domesticSupplierName].filter(Boolean).join(' - ')}
+              </Tag>
+            </div>
+          ) : (
+            '--'
+          ),
       },
-      {
-        title: '供应商名称',
-        dataIndex: 'supplierName',
-        width: 180,
-        sorter: true,
-      },
+      
       {
         title: '商品名称',
         dataIndex: 'name',
-        width: 220,
+        width: 200,
         sorter: true,
-        ellipsis: true,
+        render: (value: string | undefined) =>
+          value ? <div className="warehouse-products-text-2line">{value}</div> : '--',
       },
       {
         title: '英文名称',
         dataIndex: 'nameEn',
-        width: 220,
-        ellipsis: true,
-        render: (value: string | undefined) => value || '--',
+        width: 200,
+        render: (value: string | undefined) =>
+          value ? <div className="warehouse-products-text-2line">{value}</div> : '--',
       },
       {
         title: '条码',
         dataIndex: 'barcode',
-        width: 240,
+        width: 180,
         render: (value: string | undefined) =>
           value ? (
-            <BarcodePreview value={value} textMaxWidth={180} compactCopy />
+            <div className="warehouse-products-barcode-cell">
+              <BarcodePreview value={value} textMaxWidth={180} compactCopy />
+            </div>
           ) : (
             '--'
           ),
+      },
+      {
+        title: '状态',
+        dataIndex: 'isActive',
+        width: 110,
+        render: (value: boolean, record) => (
+          <Switch
+            checked={value}
+            checkedChildren="上架"
+            unCheckedChildren="下架"
+            disabled={!access.canWriteProduct || togglingProductCodes.includes(record.productCode)}
+            loading={togglingProductCodes.includes(record.productCode)}
+            onChange={(nextChecked) => void handleToggleSingleActive(record, nextChecked)}
+          />
+        ),
       },
       {
         title: '商品类型',
@@ -724,27 +895,46 @@ export default function WarehouseProductsPage() {
       {
         title: '装箱数',
         dataIndex: 'packingQty',
-        width: 100,
-        render: (value: number | undefined) => value ?? '--',
+        width: 140,
+        render: (value: number | undefined, record) =>
+          value !== undefined && value !== null ? (
+            <Space size={4}>
+              <span>{value}</span>
+              {record.isPackingQtyFallback ? <Tag color="gold">国内</Tag> : <Tag color="green">仓库</Tag>}
+            </Space>
+          ) : (
+            '--'
+          ),
       },
       {
         title: '体积',
         dataIndex: 'volume',
-        width: 100,
-        render: (value: number | undefined) => value ?? '--',
+        width: 140,
+        render: (value: number | undefined, record) =>
+          value !== undefined && value !== null ? (
+            <Space size={4}>
+              <span>{value}</span>
+              {record.isVolumeFallback ? <Tag color="gold">国内</Tag> : <Tag color="green">仓库</Tag>}
+            </Space>
+          ) : (
+            '--'
+          ),
       },
       {
-        title: '中包',
-        dataIndex: 'middlePackQty',
-        width: 100,
-        render: (value: number | undefined) => value ?? '--',
+        title: '澳洲供应商',
+        dataIndex: 'localSupplierCode',
+        width: 180,
+        sorter: true,
+        render: (_value, record) =>
+          record.localSupplierName ? (
+            <div className="warehouse-products-supplier-cell">
+              <Tag color="purple">{record.localSupplierName}</Tag>
+            </div>
+          ) : (
+            '--'
+          ),
       },
-      {
-        title: '状态',
-        dataIndex: 'isActive',
-        width: 90,
-        render: (value: boolean) => <Tag color={value ? 'success' : 'default'}>{value ? '启用' : '停用'}</Tag>,
-      },
+      
       {
         title: '更新时间',
         dataIndex: 'updatedAt',
@@ -785,15 +975,17 @@ export default function WarehouseProductsPage() {
         ),
       },
     ],
-    [access.canWriteProduct],
+    [access.canWriteProduct, togglingProductCodes],
   )
 
   return (
-    <PageContainer
-      title="仓库商品管理"
-      subtitle="已接主列表、新建编辑、国内导入、非国内商品导入、导出 Excel 与套装子项维护。"
-      extra={
-        <Space wrap>
+    <>
+      <style>{warehouseProductsTableStyle}</style>
+      <PageContainer
+        title="仓库商品管理"
+        subtitle="已接仓库主列表、新建编辑、国内/本地双供应商显示、批量上下架与单条状态切换。"
+        extra={
+          <Space wrap>
           <Button
             icon={<DownloadOutlined />}
             loading={exporting}
@@ -821,6 +1013,32 @@ export default function WarehouseProductsPage() {
             批量图片上传
           </Button>
           {access.canWriteProduct ? (
+            <Popconfirm
+              title="确认批量上架选中的商品吗？"
+              okText="上架"
+              cancelText="取消"
+              disabled={!selectedRowKeys.length}
+              onConfirm={() => void handleBatchToggleActive(true)}
+            >
+              <Button loading={batchActionLoading} disabled={!selectedRowKeys.length || batchActionLoading}>
+                批量上架
+              </Button>
+            </Popconfirm>
+          ) : null}
+          {access.canWriteProduct ? (
+            <Popconfirm
+              title="确认批量下架选中的商品吗？"
+              okText="下架"
+              cancelText="取消"
+              disabled={!selectedRowKeys.length}
+              onConfirm={() => void handleBatchToggleActive(false)}
+            >
+              <Button loading={batchActionLoading} disabled={!selectedRowKeys.length || batchActionLoading}>
+                批量下架
+              </Button>
+            </Popconfirm>
+          ) : null}
+          {access.canWriteProduct ? (
             <Button type="primary" icon={<PlusOutlined />} onClick={handleOpenCreate}>
               新建商品
             </Button>
@@ -830,27 +1048,27 @@ export default function WarehouseProductsPage() {
               {exportMessage} ({exportProgress}%)
             </Typography.Text>
           ) : null}
-        </Space>
-      }
-    >
-      <Card>
-        <Space wrap style={{ marginBottom: 16 }}>
+          </Space>
+        }
+      >
+        <Card>
+          <Space wrap style={{ marginBottom: 16 }}>
           <Input
             value={searchText}
             onChange={(event) => setSearchText(event.target.value)}
             prefix={<SearchOutlined />}
-            placeholder="搜索商品名称 / 货号 / 条码 / 英文名 / 供应商"
+            placeholder="搜索商品名称 / 货号 / 条码 / 英文名 / 国内供应商 / 本地供应商"
             style={{ width: 300 }}
             allowClear
           />
           <Select
             value={supplierCode}
             onChange={setSupplierCode}
-            options={suppliers.map((item) => ({ value: item.code, label: `${item.code} - ${item.name}` }))}
-            placeholder="全部供应商"
+            options={buildSupplierOptions(suppliers)}
+            placeholder="全部国内供应商"
             style={{ width: 240 }}
             showSearch
-            optionFilterProp="label"
+            filterOption={filterSupplierOption}
             allowClear
           />
           <Select
@@ -894,65 +1112,48 @@ export default function WarehouseProductsPage() {
           >
             重置
           </Button>
-          {access.canDeleteProduct ? (
-            <Popconfirm
-              title="确认批量删除选中的商品吗？"
-              description={`已选择 ${selectedRowKeys.length} 条记录，删除后不可恢复。`}
-              okText="删除"
-              cancelText="取消"
-              disabled={!selectedRowKeys.length}
-              onConfirm={() => void handleBatchDelete()}
-            >
-              <Button
-                danger
-                icon={<DeleteOutlined />}
-                disabled={!selectedRowKeys.length}
-              >
-                批量删除
-              </Button>
-            </Popconfirm>
-          ) : null}
         </Space>
 
-        <Table
-          rowKey="id"
-          virtual
-          loading={loading}
-          columns={columns}
-          dataSource={data}
-          rowSelection={{
-            fixed: true,
-            columnWidth: 56,
-            selectedRowKeys,
-            onChange: setSelectedRowKeys,
-          }}
-          scroll={{ x: 2200, y: 620 }}
-          pagination={{
-            current: page,
-            pageSize,
-            total,
-            showSizeChanger: true,
-          }}
-          onChange={(pagination: TablePaginationConfig, _, sorter: SorterResult<DomesticProductItem> | SorterResult<DomesticProductItem>[]) => {
-            const nextSorter = Array.isArray(sorter) ? sorter[0] : sorter
-            const nextSortField =
-              typeof nextSorter?.field === 'string' ? nextSorter.field : sortField
-            const nextSortOrder =
-              nextSorter?.order === 'ascend' || nextSorter?.order === 'descend'
-                ? nextSorter.order
-                : sortOrder
+          <Table
+            className="warehouse-products-table"
+            rowKey="productCode"
+            virtual
+            loading={loading}
+            columns={columns}
+            dataSource={data}
+            rowSelection={{
+              fixed: true,
+              columnWidth: 56,
+              selectedRowKeys,
+              onChange: setSelectedRowKeys,
+            }}
+            scroll={{ x: 2200, y: 620 }}
+            pagination={{
+              current: page,
+              pageSize,
+              total,
+              showSizeChanger: true,
+            }}
+            onChange={(pagination: TablePaginationConfig, _, sorter: SorterResult<WarehouseProductListItem> | SorterResult<WarehouseProductListItem>[]) => {
+              const nextSorter = Array.isArray(sorter) ? sorter[0] : sorter
+              const nextSortField =
+                typeof nextSorter?.field === 'string' ? nextSorter.field : sortField
+              const nextSortOrder =
+                nextSorter?.order === 'ascend' || nextSorter?.order === 'descend'
+                  ? nextSorter.order
+                  : sortOrder
 
-            setSortField(nextSortField)
-            setSortOrder(nextSortOrder)
-            void loadData({
-              page: pagination.current || 1,
-              pageSize: pagination.pageSize || pageSize,
-              sortField: nextSortField,
-              sortOrder: nextSortOrder,
-            })
-          }}
-        />
-      </Card>
+              setSortField(nextSortField)
+              setSortOrder(nextSortOrder)
+              void loadData({
+                page: pagination.current || 1,
+                pageSize: pagination.pageSize || pageSize,
+                sortField: nextSortField,
+                sortOrder: nextSortOrder,
+              })
+            }}
+          />
+        </Card>
 
       <ProductFormModal
         open={modalOpen}
@@ -1046,6 +1247,7 @@ export default function WarehouseProductsPage() {
           ) : null}
         </Space>
       </Modal>
-    </PageContainer>
+      </PageContainer>
+    </>
   )
 }

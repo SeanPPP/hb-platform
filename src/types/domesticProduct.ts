@@ -13,6 +13,7 @@ export const ProductTypeLabels: Record<ProductType, string> = {
 export interface SupplierOption {
   code: string
   name: string
+  shopNumber?: string
   contactPerson?: string
   phone?: string
 }

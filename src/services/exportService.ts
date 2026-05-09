@@ -1,5 +1,4 @@
 import ExcelJS from 'exceljs'
-import type { DomesticProductItem } from '../types/domesticProduct'
 import { generateBarcodeImages } from '../utils/barcode'
 
 export interface ExportOptions {
@@ -8,13 +7,20 @@ export interface ExportOptions {
   onProgress?: (progress: number, message: string) => void
 }
 
+export interface ExportProductItem {
+  itemNumber: string
+  barcode?: string
+  name: string
+  labelPrice?: number
+}
+
 const defaultExportOptions: ExportOptions = {
   includeLabelPrice: false,
   fileName: '仓库商品',
 }
 
 export async function exportDomesticProductsToExcel(
-  products: DomesticProductItem[],
+  products: ExportProductItem[],
   options: ExportOptions = defaultExportOptions,
 ): Promise<void> {
   const mergedOptions = { ...defaultExportOptions, ...options }
@@ -64,6 +70,7 @@ export async function exportDomesticProductsToExcel(
     row.values = {
       itemNumber: product.itemNumber || '',
       barcode: product.barcode || '',
+      barcodeImage: '',
       name: product.name || '',
       ...(mergedOptions.includeLabelPrice ? { labelPrice: product.labelPrice || 0 } : {}),
     }

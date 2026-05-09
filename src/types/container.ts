@@ -77,3 +77,20 @@ export interface ContainerListResponse {
   pageSize: number
   totalPages: number
 }
+
+export interface ComingSoonHomeProduct {
+  id: number
+  hguid: string
+  productCode?: string
+  itemNumber?: string
+  productName?: string
+  englishName?: string
+  productImage?: string
+  quantity?: number
+  isNewProduct: boolean
+  warehouseIsActive?: boolean
+}
+
+export interface ComingSoonHomeContainer extends ContainerMain {
+  商品列表: ComingSoonHomeProduct[]
+}

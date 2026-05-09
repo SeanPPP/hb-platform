@@ -1,9 +1,14 @@
-import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 import { App as AntdApp, ConfigProvider, Result, Spin, theme } from 'antd'
 import { useEffect } from 'react'
-import { useLocation } from 'react-router-dom'
+import { BrowserRouter, Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import AdminLayout from './layout/AdminLayout'
+import ShopLayout from './layout/ShopLayout'
 import LoginPage from './pages/Login'
+import ShopBestSellersPage from './pages/ShopBestSellers'
+import ShopComingSoonPage from './pages/ShopComingSoon'
+import ShopHomePage from './pages/ShopHome'
+import ShopOrderDetailPage from './pages/ShopOrderDetail'
+import ShopOrdersPage from './pages/ShopOrders'
 import { useAuthStore } from './store/auth'
 
 function AppBootstrap() {
@@ -31,6 +36,16 @@ function AppBootstrap() {
         path="/login"
         element={currentUser ? <Navigate to="/dashboard" replace /> : <LoginPage />}
       />
+      <Route
+        path="/shop"
+        element={currentUser ? <ShopLayout /> : <Navigate to="/login" replace />}
+      >
+        <Route index element={<ShopHomePage />} />
+        <Route path="best-sellers" element={<ShopBestSellersPage />} />
+        <Route path="coming-soon" element={<ShopComingSoonPage />} />
+        <Route path="orders" element={<ShopOrdersPage />} />
+        <Route path="orders/:id" element={<ShopOrderDetailPage />} />
+      </Route>
       <Route
         path="/*"
         element={currentUser ? <AdminLayout /> : <Navigate to="/login" replace />}

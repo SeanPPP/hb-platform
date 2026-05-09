@@ -89,6 +89,13 @@ function formatAmount(value?: number) {
   return value.toFixed(2)
 }
 
+function formatVolume(value?: number) {
+  if (value === undefined || value === null) {
+    return '--'
+  }
+  return value.toFixed(4)
+}
+
 type DetailStatFilter = 'all' | 'orderedNotShipped' | 'shippedWithoutOrder'
 type DetailSortField = 'itemNumber' | 'locationCode' | null
 
@@ -658,6 +665,30 @@ export default function StoreOrderDetailPage() {
 
   const totalAllocQuantity =
     detail?.totalAllocQuantity ?? detail?.items?.reduce((sum, item) => sum + (item.allocQuantity || 0), 0) ?? 0
+
+  const totalOrderVolume =
+    detail?.totalOrderVolume ??
+    detail?.totalVolume ??
+    detail?.items?.reduce(
+      (sum, item) =>
+        sum +
+        (item.orderVolume ??
+          item.totalVolume ??
+          ((item.volume ?? 0) * Number(item.quantity ?? 0))),
+      0,
+    ) ??
+    0
+
+  const totalAllocVolume =
+    detail?.totalAllocVolume ??
+    detail?.items?.reduce(
+      (sum, item) =>
+        sum +
+        (item.allocVolume ??
+          ((item.volume ?? 0) * Number(item.allocQuantity ?? 0))),
+      0,
+    ) ??
+    0
 
   const validPastePreviewCount = useMemo(
     () => pastePreviewItems.filter((item) => item.valid).length,
@@ -1302,15 +1333,40 @@ export default function StoreOrderDetailPage() {
         value === undefined || value === null ? renderDangerValue('--') : value === 0 ? renderDangerValue('0.00') : formatAmount(value),
     },
     {
-      title: '体积',
-      dataIndex: 'totalVolume',
-      width: 50,
-      render: (value: number | undefined) =>
-        value === undefined || value === null
+      title: '订货体积',
+      dataIndex: 'orderVolume',
+      width: 90,
+      render: (value: number | undefined, record) => {
+        const nextValue =
+          value ??
+          record.totalVolume ??
+          (record.volume === undefined || record.volume === null
+            ? undefined
+            : Number(record.volume) * Number(record.quantity ?? 0))
+        return nextValue === undefined || nextValue === null
           ? renderDangerValue('--')
-          : value === 0
+          : nextValue === 0
             ? renderDangerValue('0.0000')
-            : value.toFixed(4),
+            : formatVolume(nextValue)
+      },
+    },
+    {
+      title: '发货体积',
+      dataIndex: 'allocVolume',
+      width: 90,
+      render: (value: number | undefined, record) => {
+        const allocQuantity = editingRows[record.detailGUID]?.allocQuantity ?? record.allocQuantity ?? 0
+        const nextValue =
+          value ??
+          (record.volume === undefined || record.volume === null
+            ? undefined
+            : Number(record.volume) * Number(allocQuantity))
+        return nextValue === undefined || nextValue === null
+          ? renderDangerValue('--')
+          : nextValue === 0
+            ? renderDangerValue('0.0000')
+            : formatVolume(nextValue)
+      },
     },
     {
       title: '状态',
@@ -1436,6 +1492,8 @@ export default function StoreOrderDetailPage() {
                 </Descriptions.Item>
                 <Descriptions.Item label="订货数量">{detail.totalQuantity}</Descriptions.Item>
                 <Descriptions.Item label="发货数量">{totalAllocQuantity}</Descriptions.Item>
+                <Descriptions.Item label="订货体积">{formatVolume(totalOrderVolume)}</Descriptions.Item>
+                <Descriptions.Item label="发货体积">{formatVolume(totalAllocVolume)}</Descriptions.Item>
                 <Descriptions.Item label="订单金额">{formatAmount(detail.totalAmount)}</Descriptions.Item>
                 <Descriptions.Item label="进口金额">{formatAmount(detail.totalImportAmount)}</Descriptions.Item>
                 <Descriptions.Item label="运费">

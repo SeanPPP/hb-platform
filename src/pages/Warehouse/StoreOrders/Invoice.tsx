@@ -243,7 +243,7 @@ export default function StoreOrderInvoicePage() {
       <div ref={printRootRef} className="store-order-print-root store-order-print-paper store-order-invoice-paper">
         <div className="store-order-invoice-header">
           <div className="store-order-invoice-logo">
-            <Image src="/logo.svg" alt="HOT BARGAIN" preview={false} style={{ maxHeight: 120, objectFit: 'contain' }} />
+            <Image src="/invoice-logo.png" alt="HOT BARGAIN" preview={false} style={{ maxHeight: 120, objectFit: 'contain' }} />
           </div>
           <div className="store-order-invoice-company">
             <h4>WAREHOUSE ADDRESS:</h4>

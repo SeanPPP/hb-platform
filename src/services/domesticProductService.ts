@@ -271,6 +271,7 @@ export async function getSupplierOptions(): Promise<SupplierOption[]> {
         .map((item) => ({
           code: String(item.code ?? item.SupplierCode ?? ''),
           name: String(item.name ?? item.SupplierName ?? ''),
+          shopNumber: String(item.shopNumber ?? item.ShopNumber ?? '') || undefined,
           contactPerson: String(item.contactPerson ?? item.ContactPerson ?? '') || undefined,
           phone: String(item.phone ?? item.Phone ?? '') || undefined,
         }))

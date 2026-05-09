@@ -10,10 +10,14 @@ import type { MenuProps } from 'antd'
 import { matchPath } from 'react-router-dom'
 import ForbiddenPage from '../pages/Forbidden'
 import DashboardPage from '../pages/Dashboard'
+import DomesticChinaSuppliersPage from '../pages/DomesticPurchase/ChinaSuppliers'
+import DomesticProductsPage from '../pages/DomesticPurchase/DomesticProducts'
+import ProductPrefixCodeManagementPage from '../pages/DomesticPurchase/ProductPrefixCodeManagement'
 import NotFoundPage from '../pages/NotFound'
 import SystemRolesPage from '../pages/System/Roles'
 import SystemStoresPage from '../pages/System/Stores'
 import SystemUsersPage from '../pages/System/Users'
+import WarehouseCategoriesPage from '../pages/Warehouse/Categories'
 import WarehouseLocationsPage from '../pages/Warehouse/Locations'
 import WarehouseProductsPage from '../pages/Warehouse/Products'
 import StoreOrderDetailPage from '../pages/Warehouse/StoreOrders/Detail'
@@ -94,6 +98,45 @@ export const appRoutes: AppRouteItem[] = [
     ],
   },
   {
+    path: '/domestic-purchase',
+    meta: {
+      title: '国内采购',
+      icon: 'ShopOutlined',
+    },
+    children: [
+      {
+        path: '/domestic-purchase/china-suppliers',
+        meta: {
+          title: '国内供应商',
+          icon: 'ShopOutlined',
+          keepAlive: true,
+          accessKey: 'canManageWarehouse',
+        },
+        element: <DomesticChinaSuppliersPage />,
+      },
+      {
+        path: '/domestic-purchase/domestic-products',
+        meta: {
+          title: '国内商品',
+          icon: 'AppstoreOutlined',
+          keepAlive: true,
+          accessKey: 'canReadProduct',
+        },
+        element: <DomesticProductsPage />,
+      },
+      {
+        path: '/domestic-purchase/prefix-code-management',
+        meta: {
+          title: '前缀管理',
+          icon: 'TagsOutlined',
+          keepAlive: true,
+          accessKey: 'canManageWarehouse',
+        },
+        element: <ProductPrefixCodeManagementPage />,
+      },
+    ],
+  },
+  {
     path: '/warehouse',
     meta: {
       title: '仓库管理',
@@ -155,6 +198,16 @@ export const appRoutes: AppRouteItem[] = [
           accessKey: 'canManageWarehouse',
         },
         element: <WarehouseProductsPage />,
+      },
+      {
+        path: '/warehouse/categories',
+        meta: {
+          title: '分类管理',
+          icon: 'TagsOutlined',
+          keepAlive: true,
+          accessKey: 'canManageWarehouse',
+        },
+        element: <WarehouseCategoriesPage />,
       },
       {
         path: '/warehouse/locations',
