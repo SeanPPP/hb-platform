@@ -225,45 +225,102 @@ namespace BlazorApp.Api.Services.React
         )
         {
             var sw = Stopwatch.StartNew();
-            var query = _context.WarehouseProductDb.AsQueryable().Includes(p => p.Product);
+            var categoryIds = !string.IsNullOrWhiteSpace(categoryGuid)
+                ? GetAllSubCategoryIds(categoryGuid)
+                : new List<string>();
+
+            var query = _context
+                .Db.Queryable<WarehouseProduct>()
+                .LeftJoin<DomesticProduct>(
+                    (w, dp) => dp.ProductCode == w.ProductCode && !dp.IsDeleted
+                )
+                .LeftJoin<ChinaSupplier>(
+                    (w, dp, s) => dp.SupplierCode == s.SupplierCode && !s.IsDeleted
+                )
+                .InnerJoin<Product>((w, dp, s, p) => p.ProductCode == w.ProductCode && !p.IsDeleted)
+                .LeftJoin<WarehouseCategory>(
+                    (w, dp, s, p, c) => p.WarehouseCategoryGUID == c.CategoryGUID && !c.IsDeleted
+                )
+                .Where((w, dp, s, p, c) => !w.IsDeleted);
 
             if (!string.IsNullOrWhiteSpace(categoryGuid))
             {
-                // 获取当前分类及其所有子分类的GUID
-                var categoryIds = GetAllSubCategoryIds(categoryGuid);
-
-                query = query.Where(w =>
-                    SqlSugar.SqlFunc.Subqueryable<Product>()
-                        .Where(p => p.ProductCode == w.ProductCode && categoryIds.Contains(p.WarehouseCategoryGUID))
-                        .Any()
+                query = query.Where(
+                    (w, dp, s, p, c) =>
+                        p.WarehouseCategoryGUID != null && categoryIds.Contains(p.WarehouseCategoryGUID)
                 );
             }
 
             if (!string.IsNullOrWhiteSpace(filter.ProductName))
             {
                 var keyword = filter.ProductName.Trim();
-                query = query.Where(w =>
-                    SqlSugar.SqlFunc.Subqueryable<Product>()
-                        .Where(p => p.ProductCode == w.ProductCode && p.ProductName != null && p.ProductName.Contains(keyword))
-                        .Any()
+                query = query.Where(
+                    (w, dp, s, p, c) => p.ProductName != null && p.ProductName.Contains(keyword)
+                );
+            }
+            if (!string.IsNullOrWhiteSpace(filter.ItemNumber))
+            {
+                var itemNumber = filter.ItemNumber.Trim();
+                query = query.Where(
+                    (w, dp, s, p, c) => p.ItemNumber != null && p.ItemNumber.Contains(itemNumber)
+                );
+            }
+            if (!string.IsNullOrWhiteSpace(filter.SupplierCode))
+            {
+                var supplierCode = filter.SupplierCode.Trim();
+                query = query.Where(
+                    (w, dp, s, p, c) =>
+                        (dp.SupplierCode != null && dp.SupplierCode.Contains(supplierCode))
+                        || (s.SupplierCode != null && s.SupplierCode.Contains(supplierCode))
                 );
             }
             if (filter.IsActive.HasValue)
             {
-                query = query.Where(w => w.IsActive == filter.IsActive.Value);
+                query = query.Where((w, dp, s, p, c) => w.IsActive == filter.IsActive.Value);
             }
 
             var total = await query.CountAsync();
             var items = await query
+                .Select(
+                    (w, dp, s, p, c) =>
+                        new WarehouseProductListDto
+                        {
+                            ProductCode = w.ProductCode,
+                            LocalSupplierCode = p.LocalSupplierCode,
+                            DomesticSupplierCode = dp.SupplierCode,
+                            DomesticSupplierName = s.SupplierName,
+                            ItemNumber = p.ItemNumber,
+                            ProductBarcode = p.Barcode,
+                            ProductBaseName = p.ProductName,
+                            Volume = w.Volume,
+                            ProductType = p.ProductType,
+                            PurchasePrice = p.PurchasePrice,
+                            RetailPrice = p.RetailPrice,
+                            IsAutoPricing = p.IsAutoPricing,
+                            ProductImage = p.ProductImage,
+                            IsSpecialProduct = p.IsSpecialProduct,
+                            ProductCategoryGUID = p.WarehouseCategoryGUID,
+                            ProductCategoryName = c.CategoryName,
+                            DomesticPrice = w.DomesticPrice,
+                            OEMPrice = w.OEMPrice,
+                            ImportPrice = w.ImportPrice,
+                            StockQuantity = w.StockQuantity,
+                            MinOrderQuantity = w.MinOrderQuantity,
+                            StockValue = w.StockValue,
+                            StockAlertQuantity = w.StockAlertQuantity,
+                            IsActive = w.IsActive,
+                            CreatedAt = w.CreatedAt,
+                            UpdatedAt = w.UpdatedAt ?? w.CreatedAt,
+                        }
+                )
                 .Skip((filter.PageNumber - 1) * filter.PageSize)
                 .Take(filter.PageSize)
                 .ToListAsync();
-            var dtos = _mapper.Map<List<WarehouseProductListDto>>(items);
             sw.Stop();
             _logger.LogInformation(
                 "Warehouse products fetched: categoryGuid={CategoryGuid}, subCategoriesCount={SubCount}, total={Total}, page={Page}, pageSize={PageSize}, elapsedMs={Elapsed}",
                 categoryGuid,
-                !string.IsNullOrWhiteSpace(categoryGuid) ? GetAllSubCategoryIds(categoryGuid).Count - 1 : 0,
+                categoryIds.Count > 0 ? categoryIds.Count - 1 : 0,
                 total,
                 filter.PageNumber,
                 filter.PageSize,
@@ -271,7 +328,7 @@ namespace BlazorApp.Api.Services.React
             );
             return new WarehouseProductPagedResultDto
             {
-                Items = dtos,
+                Items = items,
                 Total = total,
                 PageNumber = filter.PageNumber,
                 PageSize = filter.PageSize,

@@ -75,7 +75,9 @@ namespace BlazorApp.Api.Services.React
                     prefixQuery = prefixQuery.Where((p, s) =>
                         p.PrefixName.Contains(query.Search) ||
                         (p.PrefixDescription != null && p.PrefixDescription.Contains(query.Search)) ||
-                        (s.SupplierName != null && s.SupplierName.Contains(query.Search)));
+                        (s.SupplierName != null && s.SupplierName.Contains(query.Search)) ||
+                        p.SupplierCode.Contains(query.Search) ||
+                        (s.ShopNumber != null && s.ShopNumber.Contains(query.Search)));
                 }
 
                 if (!string.IsNullOrWhiteSpace(query.SupplierCode))
@@ -98,6 +100,9 @@ namespace BlazorApp.Api.Services.React
                         "prefixname" => isDescending
                             ? prefixQuery.OrderByDescending((p, s) => p.PrefixName)
                             : prefixQuery.OrderBy((p, s) => p.PrefixName),
+                        "suppliername" => isDescending
+                            ? prefixQuery.OrderByDescending((p, s) => s.SupplierName)
+                            : prefixQuery.OrderBy((p, s) => s.SupplierName),
                         "suppliercode" => isDescending
                             ? prefixQuery.OrderByDescending((p, s) => p.SupplierCode)
                             : prefixQuery.OrderBy((p, s) => p.SupplierCode),

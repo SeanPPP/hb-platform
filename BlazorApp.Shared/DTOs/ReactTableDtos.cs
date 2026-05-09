@@ -31,10 +31,15 @@ namespace BlazorApp.Shared.DTOs
         public string? CategoryName { get; set; }
         public string? SupplierName { get; set; }
         public string? SupplierCode { get; set; }
+        public string? DomesticSupplierName { get; set; }
+        public string? DomesticSupplierCode { get; set; }
         public decimal? DomesticPrice { get; set; }
         public decimal? OEMPrice { get; set; }
         public decimal? ImportPrice { get; set; }
         public decimal? Volume { get; set; }
+        public bool IsVolumeFallback { get; set; }
+        public int? PackingQuantity { get; set; }
+        public bool IsPackingQuantityFallback { get; set; }
         public int? MinOrderQuantity { get; set; }
         public bool IsActive { get; set; }
         public DateTime? CreatedAt { get; set; }
@@ -43,5 +48,6 @@ namespace BlazorApp.Shared.DTOs
         /// <summary>商品类型：0-普通，1-套装，2-多码</summary>
         public int ProductType { get; set; }
         public string? LocalSupplierCode { get; set; }
+        public string? LocalSupplierName { get; set; }
     }
 }

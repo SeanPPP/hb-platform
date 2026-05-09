@@ -93,6 +93,25 @@ namespace BlazorApp.Shared.DTOs
   }
 
   /// <summary>
+  /// 扫码查询订货商品请求
+  /// </summary>
+  public class StoreOrderScanLookupRequestDto
+  {
+    [Required]
+    public string Barcode { get; set; } = string.Empty;
+  }
+
+  /// <summary>
+  /// 扫码查询订货商品结果
+  /// </summary>
+  public class StoreOrderScanLookupResultDto
+  {
+    public string Barcode { get; set; } = string.Empty;
+    public string? MatchType { get; set; }
+    public List<StoreOrderProductDto> Items { get; set; } = new();
+  }
+
+  /// <summary>
   /// 购物车DTO (FlowStatus=0 的 WareHouseOrder)
   /// </summary>
   public class StoreOrderCartDto
@@ -112,6 +131,16 @@ namespace BlazorApp.Shared.DTOs
     /// 总体积 (m³)
     /// </summary>
     public decimal TotalVolume { get; set; }
+
+  /// <summary>
+  /// 总订货体积 (m³)
+  /// </summary>
+  public decimal TotalOrderVolume { get; set; }
+
+  /// <summary>
+  /// 总发货体积 (m³)
+  /// </summary>
+  public decimal TotalAllocVolume { get; set; }
 
     /// <summary>
     /// 运费
@@ -174,6 +203,16 @@ namespace BlazorApp.Shared.DTOs
     /// 小计体积 (m³)
     /// </summary>
     public decimal? TotalVolume { get; set; }
+
+  /// <summary>
+  /// 订货体积 (m³)
+  /// </summary>
+  public decimal? OrderVolume { get; set; }
+
+  /// <summary>
+  /// 发货体积 (m³)
+  /// </summary>
+  public decimal? AllocVolume { get; set; }
 
     /// <summary>
     /// 最小订货量
@@ -335,6 +374,16 @@ namespace BlazorApp.Shared.DTOs
     /// 发货数量 (Alloc Qty)
     /// </summary>
     public int TotalAllocQuantity { get; set; }
+
+  /// <summary>
+  /// 订货体积 (m³)
+  /// </summary>
+  public decimal TotalOrderVolume { get; set; }
+
+  /// <summary>
+  /// 发货体积 (m³)
+  /// </summary>
+  public decimal TotalAllocVolume { get; set; }
 
     public string? Remarks { get; set; }
 

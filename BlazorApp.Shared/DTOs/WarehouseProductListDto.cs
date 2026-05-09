@@ -24,6 +24,16 @@ namespace BlazorApp.Shared.DTOs
         /// </summary>
         public string? LocalSupplierCode { get; set; }
 
+        /// <summary>
+        /// 国内供应商代码（来自 ChinaSupplier / DomesticProduct）
+        /// </summary>
+        public string? DomesticSupplierCode { get; set; }
+
+        /// <summary>
+        /// 国内供应商名称（来自 ChinaSupplier）
+        /// </summary>
+        public string? DomesticSupplierName { get; set; }
+
        
         /// <summary>
         /// 项目编号（来自Product表）
@@ -61,7 +71,7 @@ namespace BlazorApp.Shared.DTOs
             {
                 if (ProductType == 0) return "单品";
                 if (ProductType == 1) return "多码";
-                if (ProductType == 0) return "套装";
+                if (ProductType == 2) return "套装";
                 return "未知";
             }
         }

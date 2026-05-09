@@ -1177,7 +1177,7 @@ namespace BlazorApp.Api.Services.React
         /// <summary>
         /// 并行分块查询，用于提升大数据量查询性能
         /// 使用事务控制连接生命周期，确保并发查询时连接不会被提前关闭
-        /// 参考：https://www.donet5.com/home/doc?masterId=1&typeId=2349
+        /// 参考：https://www.donet5.com/home/doc?masterId=1&amp;typeId=2349
         /// </summary>
         private async Task<List<T>> QueryInChunksParallelAsync<T, TKey>(
             IReadOnlyList<TKey> keys,

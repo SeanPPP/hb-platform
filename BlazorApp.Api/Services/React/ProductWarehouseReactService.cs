@@ -927,12 +927,17 @@ namespace BlazorApp.Api.Services.React
             // 多表关联查询（使用 LeftJoin 避免 N+1 问题）
             var query = _context
                 .Db.Queryable<WarehouseProduct>()
-                .LeftJoin<DomesticProduct>((w, dp) => dp.ProductCode == w.ProductCode)
-                .LeftJoin<ChinaSupplier>((w, dp, s) => dp.SupplierCode == s.SupplierCode)
-                .InnerJoin<Product>((w, dp, s, p) => p.ProductCode == w.ProductCode)
+                .LeftJoin<DomesticProduct>(
+                    (w, dp) => dp.ProductCode == w.ProductCode && !dp.IsDeleted
+                )
+                .LeftJoin<ChinaSupplier>(
+                    (w, dp, s) => dp.SupplierCode == s.SupplierCode && !s.IsDeleted
+                )
+                .InnerJoin<Product>((w, dp, s, p) => p.ProductCode == w.ProductCode && !p.IsDeleted)
                 .LeftJoin<WarehouseCategory>(
-                    (w, dp, s, p, c) => p.WarehouseCategoryGUID == c.CategoryGUID
-                );
+                    (w, dp, s, p, c) => p.WarehouseCategoryGUID == c.CategoryGUID && !c.IsDeleted
+                )
+                .Where(w => !w.IsDeleted);
 
             // 分类筛选（支持包含子分类）
             if (request.CategoryGuids != null && request.CategoryGuids.Any())
@@ -952,16 +957,10 @@ namespace BlazorApp.Api.Services.React
                 var keywordLower = keyword.ToLower();
                 query = query.Where(
                     (w, dp, s, p, c) =>
-                        (dp.ProductName != null && dp.ProductName.ToLower().Contains(keywordLower))
-                        || (
-                            dp.EnglishProductName != null
-                            && dp.EnglishProductName.ToLower().Contains(keywordLower)
-                        )
-                        || (
-                            dp.HBProductNo != null
-                            && dp.HBProductNo.ToLower().Contains(keywordLower)
-                        )
-                        || (dp.Barcode != null && dp.Barcode.ToLower().Contains(keywordLower))
+                        (p.ProductName != null && p.ProductName.ToLower().Contains(keywordLower))
+                        || (p.EnglishName != null && p.EnglishName.ToLower().Contains(keywordLower))
+                        || (p.ItemNumber != null && p.ItemNumber.ToLower().Contains(keywordLower))
+                        || (p.Barcode != null && p.Barcode.ToLower().Contains(keywordLower))
                         || (
                             c.CategoryName != null
                             && c.CategoryName.ToLower().Contains(keywordLower)
@@ -969,6 +968,10 @@ namespace BlazorApp.Api.Services.React
                         || (
                             s.SupplierName != null
                             && s.SupplierName.ToLower().Contains(keywordLower)
+                        )
+                        || (
+                            p.LocalSupplierCode != null
+                            && p.LocalSupplierCode.ToLower().Contains(keywordLower)
                         )
                 );
             }
@@ -1056,6 +1059,38 @@ namespace BlazorApp.Api.Services.React
                                 );
                             }
                             break;
+                        case "domesticsuppliername":
+                            {
+                                var lowers = values.Select(v => v.ToLower()).ToList();
+                                query = query.Where(
+                                    (w, dp, s, p, c) =>
+                                        s.SupplierName != null
+                                        && lowers.Any(v => s.SupplierName.ToLower().Contains(v))
+                                );
+                            }
+                            break;
+                        case "domesticsuppliercode":
+                            {
+                                var lowers = values.Select(v => v.ToLower()).ToList();
+                                query = query.Where(
+                                    (w, dp, s, p, c) =>
+                                        s.SupplierCode != null
+                                        && lowers.Any(v => s.SupplierCode.ToLower().Contains(v))
+                                );
+                            }
+                            break;
+                        case "localsuppliercode":
+                            {
+                                var lowers = values.Select(v => v.ToLower()).ToList();
+                                query = query.Where(
+                                    (w, dp, s, p, c) =>
+                                        p.LocalSupplierCode != null
+                                        && lowers.Any(v =>
+                                            p.LocalSupplierCode.ToLower().Contains(v)
+                                        )
+                                );
+                            }
+                            break;
                         case "domesticprice":
                             query = query.Where(w =>
                                 w.DomesticPrice.HasValue
@@ -1093,7 +1128,9 @@ namespace BlazorApp.Api.Services.React
                             break;
                         case "producttype":
                             query = query.Where(
-                                (w, dp, s, p, c) => values.Contains(dp.ProductType.ToString())
+                                (w, dp, s, p, c) =>
+                                    p.ProductType.HasValue
+                                    && values.Contains(p.ProductType.Value.ToString())
                             );
                             break;
                     }
@@ -1136,6 +1173,18 @@ namespace BlazorApp.Api.Services.React
                     query = orderDesc
                         ? query.OrderBy((w, dp, s, p, c) => s.SupplierCode, OrderByType.Desc)
                         : query.OrderBy((w, dp, s, p, c) => s.SupplierCode, OrderByType.Asc);
+                else if (sort == "domesticsuppliername")
+                    query = orderDesc
+                        ? query.OrderBy((w, dp, s, p, c) => s.SupplierName, OrderByType.Desc)
+                        : query.OrderBy((w, dp, s, p, c) => s.SupplierName, OrderByType.Asc);
+                else if (sort == "domesticsuppliercode")
+                    query = orderDesc
+                        ? query.OrderBy((w, dp, s, p, c) => s.SupplierCode, OrderByType.Desc)
+                        : query.OrderBy((w, dp, s, p, c) => s.SupplierCode, OrderByType.Asc);
+                else if (sort == "localsuppliercode")
+                    query = orderDesc
+                        ? query.OrderBy((w, dp, s, p, c) => p.LocalSupplierCode, OrderByType.Desc)
+                        : query.OrderBy((w, dp, s, p, c) => p.LocalSupplierCode, OrderByType.Asc);
                 else if (sort == "domesticprice")
                     query = orderDesc
                         ? query.OrderBy(w => w.DomesticPrice, OrderByType.Desc)
@@ -1174,10 +1223,40 @@ namespace BlazorApp.Api.Services.React
 
             var total = await query.Clone().CountAsync();
 
-            var items = await query
+            var pageProductCodes = await query
+                .Clone()
+                .Select((w, dp, s, p, c) => w.ProductCode)
+                .Skip((request.Page - 1) * request.PageSize)
+                .Take(request.PageSize)
+                .ToListAsync();
+
+            if (!pageProductCodes.Any())
+            {
+                resp.Items = new List<WarehouseProductReactListDto>();
+                resp.Total = total;
+                return resp;
+            }
+
+            var pageOrderMap = pageProductCodes
+                .Select((code, index) => new { code, index })
+                .ToDictionary(x => x.code, x => x.index);
+
+            var rows = await _context
+                .Db.Queryable<WarehouseProduct>()
+                .LeftJoin<DomesticProduct>(
+                    (w, dp) => dp.ProductCode == w.ProductCode && !dp.IsDeleted
+                )
+                .LeftJoin<ChinaSupplier>(
+                    (w, dp, s) => dp.SupplierCode == s.SupplierCode && !s.IsDeleted
+                )
+                .InnerJoin<Product>((w, dp, s, p) => p.ProductCode == w.ProductCode && !p.IsDeleted)
+                .LeftJoin<WarehouseCategory>(
+                    (w, dp, s, p, c) => p.WarehouseCategoryGUID == c.CategoryGUID && !c.IsDeleted
+                )
+                .Where(w => !w.IsDeleted && pageProductCodes.Contains(w.ProductCode))
                 .Select(
                     (w, dp, s, p, c) =>
-                        new WarehouseProductReactListDto
+                        new
                         {
                             ProductCode = w.ProductCode,
                             ProductName = p.ProductName,
@@ -1187,22 +1266,59 @@ namespace BlazorApp.Api.Services.React
                             CategoryName = c.CategoryName,
                             SupplierName = s.SupplierName,
                             SupplierCode = s.SupplierCode,
+                            DomesticSupplierName = s.SupplierName,
+                            DomesticSupplierCode = s.SupplierCode,
                             LocalSupplierCode = p.LocalSupplierCode,
+                            LocalSupplierName = p.LocalSupplierCode,
                             DomesticPrice = w.DomesticPrice,
                             OEMPrice = w.OEMPrice,
                             ImportPrice = w.ImportPrice,
-                            Volume = w.Volume,
+                            WarehouseVolume = w.Volume,
+                            DomesticUnitVolume = dp.UnitVolume,
+                            PackingQuantity = dp.PackingQuantity,
                             MinOrderQuantity = w.MinOrderQuantity,
                             IsActive = w.IsActive,
                             CreatedAt = w.CreatedAt,
                             UpdatedAt = w.UpdatedAt,
                             ProductImage = p.ProductImage,
-                            ProductType = dp.ProductType,
+                            ProductType = p.ProductType ?? dp.ProductType,
                         }
                 )
-                .Skip((request.Page - 1) * request.PageSize)
-                .Take(request.PageSize)
                 .ToListAsync();
+
+            var items = rows.OrderBy(row =>
+                    pageOrderMap.TryGetValue(row.ProductCode, out var order) ? order : int.MaxValue
+                )
+                .Select(row => new WarehouseProductReactListDto
+                {
+                    ProductCode = row.ProductCode,
+                    ProductName = row.ProductName,
+                    EnglishName = row.EnglishName,
+                    ItemNumber = row.ItemNumber,
+                    Barcode = row.Barcode,
+                    CategoryName = row.CategoryName,
+                    SupplierName = row.SupplierName,
+                    SupplierCode = row.SupplierCode,
+                    DomesticSupplierName = row.DomesticSupplierName,
+                    DomesticSupplierCode = row.DomesticSupplierCode,
+                    LocalSupplierCode = row.LocalSupplierCode,
+                    LocalSupplierName = row.LocalSupplierName,
+                    DomesticPrice = row.DomesticPrice,
+                    OEMPrice = row.OEMPrice,
+                    ImportPrice = row.ImportPrice,
+                    Volume = row.WarehouseVolume ?? row.DomesticUnitVolume,
+                    IsVolumeFallback =
+                        !row.WarehouseVolume.HasValue && row.DomesticUnitVolume.HasValue,
+                    PackingQuantity = row.PackingQuantity,
+                    IsPackingQuantityFallback = false,
+                    MinOrderQuantity = row.MinOrderQuantity,
+                    IsActive = row.IsActive,
+                    CreatedAt = row.CreatedAt,
+                    UpdatedAt = row.UpdatedAt,
+                    ProductImage = row.ProductImage,
+                    ProductType = row.ProductType,
+                })
+                .ToList();
 
             // 查询结束后再在内存中补全图片 URL（避免 SqlSugar 翻译自定义方法）
             foreach (var dto in items)
@@ -3019,8 +3135,168 @@ namespace BlazorApp.Api.Services.React
             return response;
         }
 
+        public async Task<BatchToggleWarehouseProductsActiveResultDto> BatchToggleActiveAsync(
+            BatchToggleWarehouseProductsActiveRequestDto request
+        )
+        {
+            var result = new BatchToggleWarehouseProductsActiveResultDto
+            {
+                Success = false,
+                Message = "上下架失败",
+            };
+
+            if (request == null || request.ProductCodes == null || !request.ProductCodes.Any())
+            {
+                result.Message = "商品编码不能为空";
+                return result;
+            }
+
+            var productCodes = request
+                .ProductCodes.Where(code => !string.IsNullOrWhiteSpace(code))
+                .Distinct()
+                .ToList();
+
+            if (!productCodes.Any())
+            {
+                result.Message = "商品编码不能为空";
+                return result;
+            }
+
+            try
+            {
+                _context.Db.Ado.BeginTran();
+
+                var warehouseProducts = await _context
+                    .Db.Queryable<WarehouseProduct>()
+                    .Where(w => productCodes.Contains(w.ProductCode))
+                    .ToListAsync();
+                var products = await _context
+                    .Db.Queryable<Product>()
+                    .Where(p => productCodes.Contains(p.ProductCode))
+                    .ToListAsync();
+                var domesticProducts = await _context
+                    .Db.Queryable<DomesticProduct>()
+                    .Where(dp => productCodes.Contains(dp.ProductCode) && !dp.IsDeleted)
+                    .ToListAsync();
+                var storeRetailPrices = await _context
+                    .Db.Queryable<StoreRetailPrice>()
+                    .Where(srp => productCodes.Contains(srp.ProductCode) && !srp.IsDeleted)
+                    .ToListAsync();
+                var storeMultiCodeProducts = await _context
+                    .Db.Queryable<StoreMultiCodeProduct>()
+                    .Where(mcp => productCodes.Contains(mcp.ProductCode) && !mcp.IsDeleted)
+                    .ToListAsync();
+
+                var now = DateTime.Now;
+                var existingCodes = warehouseProducts.Select(w => w.ProductCode).ToHashSet();
+                var missingCodes = productCodes
+                    .Where(code => !existingCodes.Contains(code))
+                    .ToList();
+
+                foreach (var item in warehouseProducts)
+                {
+                    item.IsActive = request.IsActive;
+                    item.UpdatedAt = now;
+                }
+
+                foreach (var item in products)
+                {
+                    item.IsActive = request.IsActive;
+                    item.UpdatedAt = now;
+                }
+
+                foreach (var item in domesticProducts)
+                {
+                    item.IsActive = request.IsActive;
+                    item.UpdatedAt = now;
+                    item.UpdatedBy = "System";
+                }
+
+                foreach (var item in storeRetailPrices)
+                {
+                    item.IsActive = request.IsActive;
+                    item.UpdatedAt = now;
+                }
+
+                foreach (var item in storeMultiCodeProducts)
+                {
+                    item.IsActive = request.IsActive;
+                    item.UpdatedAt = now;
+                }
+
+                if (warehouseProducts.Any())
+                {
+                    await _context
+                        .Db.Updateable(warehouseProducts)
+                        .UpdateColumns(w => new { w.IsActive, w.UpdatedAt })
+                        .ExecuteCommandAsync();
+                }
+
+                if (products.Any())
+                {
+                    await _context
+                        .Db.Updateable(products)
+                        .UpdateColumns(p => new { p.IsActive, p.UpdatedAt })
+                        .ExecuteCommandAsync();
+                }
+
+                if (domesticProducts.Any())
+                {
+                    await _context
+                        .Db.Updateable(domesticProducts)
+                        .UpdateColumns(dp => new
+                        {
+                            dp.IsActive,
+                            dp.UpdatedAt,
+                            dp.UpdatedBy,
+                        })
+                        .ExecuteCommandAsync();
+                }
+
+                if (storeRetailPrices.Any())
+                {
+                    await _context
+                        .Db.Updateable(storeRetailPrices)
+                        .UpdateColumns(srp => new { srp.IsActive, srp.UpdatedAt })
+                        .ExecuteCommandAsync();
+                }
+
+                if (storeMultiCodeProducts.Any())
+                {
+                    await _context
+                        .Db.Updateable(storeMultiCodeProducts)
+                        .UpdateColumns(mcp => new { mcp.IsActive, mcp.UpdatedAt })
+                        .ExecuteCommandAsync();
+                }
+
+                _context.Db.Ado.CommitTran();
+
+                result.Success = missingCodes.Count == 0;
+                result.SuccessCount = warehouseProducts.Count;
+                result.FailedCount = missingCodes.Count;
+                if (missingCodes.Any())
+                {
+                    result.Errors.AddRange(missingCodes.Select(code => $"仓库商品不存在: {code}"));
+                }
+                result.Message = request.IsActive
+                    ? (missingCodes.Any() ? "部分商品上架成功" : "批量上架成功")
+                    : (missingCodes.Any() ? "部分商品下架成功" : "批量下架成功");
+            }
+            catch (Exception ex)
+            {
+                _context.Db.Ado.RollbackTran();
+                _logger.LogError(ex, "仓库商品批量上下架失败");
+                result.Success = false;
+                result.Message = "批量上下架失败: " + ex.Message;
+                result.Errors.Add(ex.Message);
+            }
+
+            return result;
+        }
+
         /// <summary>
         /// 从HQ商品库存表同步到本地仓库商品表
+        /// 同步规则：没有的添加，多的删除，有变化的更新
         /// 同步规则：没有的添加，多的删除，有变化的更新
         /// </summary>
         /// <returns>同步结果</returns>

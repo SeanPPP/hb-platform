@@ -20,7 +20,8 @@ namespace BlazorApp.Api.Controllers.React
 
         public ReactProductPrefixCodesController(
             IProductPrefixCodeReactService productPrefixCodeReactService,
-            ILogger<ReactProductPrefixCodesController> logger)
+            ILogger<ReactProductPrefixCodesController> logger
+        )
         {
             _productPrefixCodeReactService = productPrefixCodeReactService;
             _logger = logger;
@@ -37,32 +38,32 @@ namespace BlazorApp.Api.Controllers.React
         {
             try
             {
-                var result = await _productPrefixCodeReactService.GetPrefixesBySupplierCodeAsync(supplierCode);
+                var result = await _productPrefixCodeReactService.GetPrefixesBySupplierCodeAsync(
+                    supplierCode
+                );
 
                 if (result.Success)
                 {
-                    return Ok(new
-                    {
-                        success = true,
-                        data = result.Data,
-                        message = "获取前缀列表成功"
-                    });
+                    return Ok(
+                        new
+                        {
+                            success = true,
+                            data = result.Data,
+                            message = "获取前缀列表成功",
+                        }
+                    );
                 }
 
-                return BadRequest(new
-                {
-                    success = false,
-                    message = result.Message
-                });
+                return BadRequest(new { success = false, message = result.Message });
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "获取供应商前缀列表失败，SupplierCode: {SupplierCode}", supplierCode);
-                return StatusCode(500, new
-                {
-                    success = false,
-                    message = "获取前缀列表失败"
-                });
+                _logger.LogError(
+                    ex,
+                    "获取供应商前缀列表失败，SupplierCode: {SupplierCode}",
+                    supplierCode
+                );
+                return StatusCode(500, new { success = false, message = "获取前缀列表失败" });
             }
         }
 
@@ -82,7 +83,10 @@ namespace BlazorApp.Api.Controllers.React
             [FromQuery] int pageSize = 20,
             [FromQuery] string? search = null,
             [FromQuery] string? supplierCode = null,
-            [FromQuery] bool? isActive = null)
+            [FromQuery] bool? isActive = null,
+            [FromQuery] string? sortField = null,
+            [FromQuery] string? sortDirection = null
+        )
         {
             try
             {
@@ -92,35 +96,31 @@ namespace BlazorApp.Api.Controllers.React
                     PageSize = pageSize,
                     Search = search,
                     SupplierCode = supplierCode,
-                    IsActive = isActive
+                    IsActive = isActive,
+                    SortField = sortField,
+                    SortDirection = sortDirection,
                 };
 
                 var result = await _productPrefixCodeReactService.GetAllPrefixesAsync(query);
 
                 if (result.Success)
                 {
-                    return Ok(new
-                    {
-                        success = true,
-                        data = result.Data,
-                        message = "获取前缀列表成功"
-                    });
+                    return Ok(
+                        new
+                        {
+                            success = true,
+                            data = result.Data,
+                            message = "获取前缀列表成功",
+                        }
+                    );
                 }
 
-                return BadRequest(new
-                {
-                    success = false,
-                    message = result.Message
-                });
+                return BadRequest(new { success = false, message = result.Message });
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "获取所有前缀列表失败");
-                return StatusCode(500, new
-                {
-                    success = false,
-                    message = "获取前缀列表失败"
-                });
+                return StatusCode(500, new { success = false, message = "获取前缀列表失败" });
             }
         }
 
@@ -136,45 +136,40 @@ namespace BlazorApp.Api.Controllers.React
         public async Task<IActionResult> GetProductsByPrefixCode(
             string prefixCode,
             [FromQuery] int page = 1,
-            [FromQuery] int pageSize = 20)
+            [FromQuery] int pageSize = 20
+        )
         {
             try
             {
-                var result = await _productPrefixCodeReactService.GetProductsByPrefixCodeAsync(prefixCode, page, pageSize);
+                var result = await _productPrefixCodeReactService.GetProductsByPrefixCodeAsync(
+                    prefixCode,
+                    page,
+                    pageSize
+                );
 
                 if (result.Success)
                 {
-                    return Ok(new
-                    {
-                        success = true,
-                        data = result.Data,
-                        message = "获取关联商品成功"
-                    });
+                    return Ok(
+                        new
+                        {
+                            success = true,
+                            data = result.Data,
+                            message = "获取关联商品成功",
+                        }
+                    );
                 }
 
                 if (result.ErrorCode == "PREFIX_NOT_FOUND")
                 {
-                    return NotFound(new
-                    {
-                        success = false,
-                        message = result.Message
-                    });
+                    return NotFound(new { success = false, message = result.Message });
                 }
 
-                return BadRequest(new
-                {
-                    success = false,
-                    message = result.Message
-                });
+                return BadRequest(new { success = false, message = result.Message });
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "获取前缀关联商品失败，PrefixCode: {PrefixCode}", prefixCode);
-                return StatusCode(500, new
-                {
-                    success = false,
-                    message = "获取关联商品失败"
-                });
+                return StatusCode(500, new { success = false, message = "获取关联商品失败" });
             }
         }
 
@@ -185,57 +180,65 @@ namespace BlazorApp.Api.Controllers.React
         /// <returns>创建的商品前缀</returns>
         [HttpPost]
         [Authorize(Roles = "Admin")]
-        public async Task<IActionResult> CreateProductPrefixCode([FromBody] CreateProductPrefixCodeDto dto)
+        public async Task<IActionResult> CreateProductPrefixCode(
+            [FromBody] CreateProductPrefixCodeDto dto
+        )
         {
             try
             {
                 if (!ModelState.IsValid)
                 {
-                    var errors = ModelState.Values.SelectMany(v => v.Errors.Select(e => e.ErrorMessage));
-                    return BadRequest(new
-                    {
-                        success = false,
-                        message = $"输入验证失败: {string.Join(", ", errors)}"
-                    });
+                    var errors = ModelState.Values.SelectMany(v =>
+                        v.Errors.Select(e => e.ErrorMessage)
+                    );
+                    return BadRequest(
+                        new
+                        {
+                            success = false,
+                            message = $"输入验证失败: {string.Join(", ", errors)}",
+                        }
+                    );
                 }
 
                 var result = await _productPrefixCodeReactService.CreateProductPrefixCodeAsync(dto);
 
                 if (result.Success)
                 {
-                    return Ok(new
-                    {
-                        success = true,
-                        data = result.Data,
-                        message = "前缀创建成功"
-                    });
+                    return Ok(
+                        new
+                        {
+                            success = true,
+                            data = result.Data,
+                            message = "前缀创建成功",
+                        }
+                    );
                 }
 
                 if (result.ErrorCode == "PREFIX_NAME_EXISTS")
                 {
-                    return Conflict(new
+                    return Conflict(
+                        new
+                        {
+                            success = false,
+                            message = result.Message,
+                            errorCode = result.ErrorCode,
+                        }
+                    );
+                }
+
+                return BadRequest(
+                    new
                     {
                         success = false,
                         message = result.Message,
-                        errorCode = result.ErrorCode
-                    });
-                }
-
-                return BadRequest(new
-                {
-                    success = false,
-                    message = result.Message,
-                    errorCode = result.ErrorCode
-                });
+                        errorCode = result.ErrorCode,
+                    }
+                );
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "创建商品前缀失败");
-                return StatusCode(500, new
-                {
-                    success = false,
-                    message = "前缀创建失败"
-                });
+                return StatusCode(500, new { success = false, message = "前缀创建失败" });
             }
         }
 
@@ -247,54 +250,46 @@ namespace BlazorApp.Api.Controllers.React
         /// <returns>更新的商品前缀</returns>
         [HttpPut("{prefixCode}")]
         [Authorize(Roles = "Admin")]
-        public async Task<IActionResult> UpdateProductPrefixCode(string prefixCode, [FromBody] UpdateProductPrefixCodeDto dto)
+        public async Task<IActionResult> UpdateProductPrefixCode(
+            string prefixCode,
+            [FromBody] UpdateProductPrefixCodeDto dto
+        )
         {
             try
             {
                 if (!ModelState.IsValid)
                 {
-                    return BadRequest(new
-                    {
-                        success = false,
-                        message = "请求参数验证失败"
-                    });
+                    return BadRequest(new { success = false, message = "请求参数验证失败" });
                 }
 
-                var result = await _productPrefixCodeReactService.UpdateProductPrefixCodeAsync(prefixCode, dto);
+                var result = await _productPrefixCodeReactService.UpdateProductPrefixCodeAsync(
+                    prefixCode,
+                    dto
+                );
 
                 if (result.Success)
                 {
-                    return Ok(new
-                    {
-                        success = true,
-                        data = result.Data,
-                        message = "前缀更新成功"
-                    });
+                    return Ok(
+                        new
+                        {
+                            success = true,
+                            data = result.Data,
+                            message = "前缀更新成功",
+                        }
+                    );
                 }
 
                 if (result.ErrorCode == "PREFIX_NOT_FOUND")
                 {
-                    return NotFound(new
-                    {
-                        success = false,
-                        message = result.Message
-                    });
+                    return NotFound(new { success = false, message = result.Message });
                 }
 
-                return BadRequest(new
-                {
-                    success = false,
-                    message = result.Message
-                });
+                return BadRequest(new { success = false, message = result.Message });
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "更新商品前缀失败，PrefixCode: {PrefixCode}", prefixCode);
-                return StatusCode(500, new
-                {
-                    success = false,
-                    message = "前缀更新失败"
-                });
+                return StatusCode(500, new { success = false, message = "前缀更新失败" });
             }
         }
 
@@ -309,52 +304,39 @@ namespace BlazorApp.Api.Controllers.React
         {
             try
             {
-                var result = await _productPrefixCodeReactService.DeleteProductPrefixCodeAsync(prefixCode);
+                var result = await _productPrefixCodeReactService.DeleteProductPrefixCodeAsync(
+                    prefixCode
+                );
 
                 if (result.Success)
                 {
-                    return Ok(new
-                    {
-                        success = true,
-                        message = "前缀删除成功"
-                    });
+                    return Ok(new { success = true, message = "前缀删除成功" });
                 }
 
                 if (result.ErrorCode == "PREFIX_NOT_FOUND")
                 {
-                    return NotFound(new
-                    {
-                        success = false,
-                        message = result.Message
-                    });
+                    return NotFound(new { success = false, message = result.Message });
                 }
 
                 if (result.ErrorCode == "PREFIX_IN_USE")
                 {
-                    return Conflict(new
-                    {
-                        success = false,
-                        message = result.Message,
-                        errorCode = result.ErrorCode
-                    });
+                    return Conflict(
+                        new
+                        {
+                            success = false,
+                            message = result.Message,
+                            errorCode = result.ErrorCode,
+                        }
+                    );
                 }
 
-                return BadRequest(new
-                {
-                    success = false,
-                    message = result.Message
-                });
+                return BadRequest(new { success = false, message = result.Message });
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "删除商品前缀失败，PrefixCode: {PrefixCode}", prefixCode);
-                return StatusCode(500, new
-                {
-                    success = false,
-                    message = "前缀删除失败"
-                });
+                return StatusCode(500, new { success = false, message = "前缀删除失败" });
             }
         }
     }
 }
-

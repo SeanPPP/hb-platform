@@ -254,6 +254,16 @@ namespace BlazorApp.Shared.DTOs
         /// 商品名称过滤条件
         /// </summary>
         public string? ProductName { get; set; }
+
+        /// <summary>
+        /// 货号过滤条件
+        /// </summary>
+        public string? ItemNumber { get; set; }
+
+        /// <summary>
+        /// 国内供应商代码过滤条件
+        /// </summary>
+        public string? SupplierCode { get; set; }
         
         /// <summary>
         /// 条码过滤条件

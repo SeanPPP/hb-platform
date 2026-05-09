@@ -356,6 +356,27 @@ namespace BlazorApp.Shared.DTOs
     }
 
     /// <summary>
+    /// 仓库商品批量上下架请求
+    /// </summary>
+    public class BatchToggleWarehouseProductsActiveRequestDto
+    {
+        public List<string> ProductCodes { get; set; } = new List<string>();
+        public bool IsActive { get; set; }
+    }
+
+    /// <summary>
+    /// 仓库商品批量上下架结果
+    /// </summary>
+    public class BatchToggleWarehouseProductsActiveResultDto
+    {
+        public bool Success { get; set; }
+        public string Message { get; set; } = string.Empty;
+        public int SuccessCount { get; set; }
+        public int FailedCount { get; set; }
+        public List<string> Errors { get; set; } = new List<string>();
+    }
+
+    /// <summary>
     /// 获取非 Hotbargain 商品不在仓库的请求 DTO
     /// </summary>
     public class GetNonHotbargainProductsNotInWarehouseRequestDto : ReactTableRequestDto

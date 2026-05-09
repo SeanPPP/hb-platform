@@ -17,8 +17,5 @@ namespace BlazorApp.Shared.Models.POSM
 
         [SugarColumn(IsNullable = false)]
         public DateTime LastUpdateTime { get; set; } = DateTime.Now;
-
-        [SugarColumn(IsNullable = false)]
-        public bool IsDeleted { get; set; } = false;
     }
 }

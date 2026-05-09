@@ -112,7 +112,7 @@ namespace BlazorApp.Api.Controllers.React
                 // 生成缓存键
                 var cacheKey = StoreOrderCacheKeys.Products(filter);
 
-                // 尝试从缓存获取
+                //// 尝试从缓存获取
                 if (
                     _cache.TryGetValue<PagedListReactDto<StoreOrderProductDto>>(
                         cacheKey,
@@ -166,6 +166,27 @@ namespace BlazorApp.Api.Controllers.React
             catch (Exception ex)
             {
                 _logger.LogError(ex, "BatchLookupProducts failed");
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
+        [HttpPost("products/scan-lookup")]
+        public async Task<IActionResult> ScanLookupProducts(
+            [FromBody] StoreOrderScanLookupRequestDto request
+        )
+        {
+            try
+            {
+                var result = await _service.ScanLookupProductsAsync(request);
+                if (result.Success)
+                {
+                    return Ok(new { success = true, data = result.Data });
+                }
+                return BadRequest(new { success = false, message = result.Message });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "ScanLookupProducts failed");
                 return StatusCode(500, new { success = false, message = "服务器内部错误" });
             }
         }

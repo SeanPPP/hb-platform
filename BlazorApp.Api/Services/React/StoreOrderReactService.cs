@@ -36,6 +36,11 @@ namespace BlazorApp.Api.Services.React
             _mapper = mapper;
         }
 
+        private static decimal? CalculateVolume(decimal? unitVolume, decimal quantity)
+        {
+            return unitVolume.HasValue ? unitVolume.Value * quantity : null;
+        }
+
         public async Task<PagedListReactDto<StoreOrderProductDto>> GetPagedListAsync(
             StoreOrderFilterDto filter
         )
@@ -70,7 +75,7 @@ namespace BlazorApp.Api.Services.React
                 q = q.Where(
                     (p, wp, wc) =>
                         (p.ItemNumber != null && p.ItemNumber.ToLower().Contains(keyword))
-                        || (p.ProductName != null && p.ProductName.ToLower().Contains(keyword))
+                        || (p.Barcode != null && p.Barcode.ToLower().Contains(keyword))
                 );
             }
 
@@ -201,13 +206,21 @@ namespace BlazorApp.Api.Services.React
                     {
                         var match =
                             products.FirstOrDefault(p =>
-                                string.Equals(p.ItemNumber, code, StringComparison.OrdinalIgnoreCase)
+                                string.Equals(
+                                    p.ItemNumber,
+                                    code,
+                                    StringComparison.OrdinalIgnoreCase
+                                )
                             )
                             ?? products.FirstOrDefault(p =>
                                 string.Equals(p.Barcode, code, StringComparison.OrdinalIgnoreCase)
                             )
                             ?? products.FirstOrDefault(p =>
-                                string.Equals(p.ProductCode, code, StringComparison.OrdinalIgnoreCase)
+                                string.Equals(
+                                    p.ProductCode,
+                                    code,
+                                    StringComparison.OrdinalIgnoreCase
+                                )
                             );
 
                         return new StoreOrderBatchLookupItemDto
@@ -228,6 +241,91 @@ namespace BlazorApp.Api.Services.React
             {
                 _logger.LogError(ex, "BatchLookupProductsAsync failed");
                 return new ApiResponse<List<StoreOrderBatchLookupItemDto>>
+                {
+                    Success = false,
+                    Message = ex.Message,
+                };
+            }
+        }
+
+        public async Task<ApiResponse<StoreOrderScanLookupResultDto>> ScanLookupProductsAsync(
+            StoreOrderScanLookupRequestDto request
+        )
+        {
+            try
+            {
+                var barcode = request.Barcode?.Trim();
+                if (string.IsNullOrWhiteSpace(barcode))
+                {
+                    return new ApiResponse<StoreOrderScanLookupResultDto>
+                    {
+                        Success = false,
+                        Message = "Barcode is required.",
+                    };
+                }
+
+                var barcodeLower = barcode.ToLower();
+
+                var allMatches = await _db.Queryable<Product>()
+                    .InnerJoin<WarehouseProduct>((p, wp) => p.ProductCode == wp.ProductCode)
+                    .LeftJoin<WarehouseCategory>(
+                        (p, wp, wc) => p.WarehouseCategoryGUID == wc.CategoryGUID
+                    )
+                    .Where(
+                        (p, wp, wc) => p.IsActive && !p.IsDeleted && !wp.IsDeleted && wp.IsActive
+                    )
+                    .Where(
+                        (p, wp, wc) =>
+                            (p.Barcode != null && p.Barcode.ToLower() == barcodeLower)
+                            || (p.ItemNumber != null && p.ItemNumber.ToLower() == barcodeLower)
+                            || (p.ProductCode != null && p.ProductCode.ToLower() == barcodeLower)
+                    )
+                    .Select(
+                        (p, wp, wc) =>
+                            new StoreOrderProductDto
+                            {
+                                ProductCode = p.ProductCode ?? string.Empty,
+                                ItemNumber = p.ItemNumber,
+                                Barcode = p.Barcode,
+                                ProductName = p.ProductName,
+                                ProductImage = p.ProductImage,
+                                CategoryName = wc.CategoryName,
+                                WarehouseCategoryGUID = p.WarehouseCategoryGUID,
+                                OEMPrice = wp.OEMPrice,
+                                MinOrderQuantity = wp.MinOrderQuantity ?? 1,
+                                StockQuantity = wp.StockQuantity ?? 0,
+                                PackQty = p.MiddlePackageQuantity,
+                                ImportPrice = wp.ImportPrice,
+                            }
+                    )
+                    .ToListAsync();
+
+                var barcodeItems = allMatches
+                    .Where(p =>
+                        p.Barcode?.Equals(barcode, StringComparison.OrdinalIgnoreCase) == true
+                    )
+                    .ToList();
+
+                var matchType =
+                    barcodeItems.Count > 0 ? "barcode"
+                    : allMatches.Count > 0 ? "fallback"
+                    : null;
+
+                return new ApiResponse<StoreOrderScanLookupResultDto>
+                {
+                    Success = true,
+                    Data = new StoreOrderScanLookupResultDto
+                    {
+                        Barcode = barcode,
+                        MatchType = matchType,
+                        Items = barcodeItems.Count > 0 ? barcodeItems : allMatches,
+                    },
+                };
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "ScanLookupProductsAsync failed");
+                return new ApiResponse<StoreOrderScanLookupResultDto>
                 {
                     Success = false,
                     Message = ex.Message,
@@ -325,7 +423,9 @@ namespace BlazorApp.Api.Services.React
             {
                 if (item.Volume.HasValue)
                 {
-                    item.TotalVolume = item.Volume * item.Quantity;
+                    item.OrderVolume = CalculateVolume(item.Volume, item.Quantity);
+                    item.AllocVolume = CalculateVolume(item.Volume, item.AllocQuantity ?? 0);
+                    item.TotalVolume = item.OrderVolume;
                 }
             }
 
@@ -338,6 +438,8 @@ namespace BlazorApp.Api.Services.React
                 TotalQuantity = (int)details.Sum(x => x.Quantity),
                 TotalImportAmount = details.Sum(x => x.ImportAmount),
                 TotalVolume = details.Sum(x => x.TotalVolume ?? 0),
+                TotalOrderVolume = details.Sum(x => x.OrderVolume ?? 0),
+                TotalAllocVolume = details.Sum(x => x.AllocVolume ?? 0),
                 Remarks = order.Remarks,
                 ShippingFee = order.ShippingFee,
                 Items = details,
@@ -782,7 +884,7 @@ namespace BlazorApp.Api.Services.React
                     var cartItem = cartItems.FirstOrDefault(x => x.ProductCode == code);
                     if (cartItem != null)
                     {
-                        dto.CartQuantity = cartItem.Quantity ?? 0;
+                        dto.CartQuantity = cartItem.Quantity ?? 0m;
                     }
 
                     // 填充历史信息
@@ -1160,6 +1262,52 @@ namespace BlazorApp.Api.Services.React
                                 .ToList();
                             break;
                     }
+
+                    var orderGuids = items.Select(x => x.OrderGUID).Distinct().ToList();
+                    var volumeRows = await _db.Queryable<WareHouseOrderDetails>()
+                        .LeftJoin<WarehouseProduct>((d, wp) => d.ProductCode == wp.ProductCode)
+                        .LeftJoin<DomesticProduct>((d, wp, dp) => wp.ProductCode == dp.ProductCode)
+                        .Where(
+                            (d, wp, dp) => d.OrderGUID != null && orderGuids.Contains(d.OrderGUID)
+                        )
+                        .Select(
+                            (d, wp, dp) =>
+                                new
+                                {
+                                    d.OrderGUID,
+                                    UnitVolume = (dp.PackingQuantity > 0)
+                                        ? (dp.UnitVolume / dp.PackingQuantity)
+                                        : dp.UnitVolume,
+                                    d.Quantity,
+                                    d.AllocQuantity,
+                                }
+                        )
+                        .ToListAsync();
+
+                    var volumeMap = volumeRows
+                        .Where(x => !string.IsNullOrWhiteSpace(x.OrderGUID))
+                        .GroupBy(x => x.OrderGUID)
+                        .ToDictionary(
+                            group => group.Key!,
+                            group => new
+                            {
+                                TotalOrderVolume = group.Sum(x =>
+                                    (x.UnitVolume ?? 0) * (x.Quantity ?? 0)
+                                ),
+                                TotalAllocVolume = group.Sum(x =>
+                                    (x.UnitVolume ?? 0) * (x.AllocQuantity ?? 0)
+                                ),
+                            }
+                        );
+
+                    foreach (var item in items)
+                    {
+                        if (volumeMap.TryGetValue(item.OrderGUID, out var totals))
+                        {
+                            item.TotalOrderVolume = totals.TotalOrderVolume;
+                            item.TotalAllocVolume = totals.TotalAllocVolume;
+                        }
+                    }
                 }
 
                 return new PagedListReactDto<StoreOrderListItemDto>
@@ -1263,7 +1411,9 @@ namespace BlazorApp.Api.Services.React
             {
                 if (item.Volume.HasValue)
                 {
-                    item.TotalVolume = item.Volume * item.Quantity;
+                    item.OrderVolume = CalculateVolume(item.Volume, item.Quantity);
+                    item.AllocVolume = CalculateVolume(item.Volume, item.AllocQuantity ?? 0);
+                    item.TotalVolume = item.OrderVolume;
                 }
             }
 
@@ -1279,6 +1429,8 @@ namespace BlazorApp.Api.Services.React
                 TotalSKU = baseDetails.Select(x => x.ProductCode).Distinct().Count(),
                 TotalImportAmount = baseDetails.Sum(x => x.ImportAmount),
                 TotalVolume = baseDetails.Sum(x => x.TotalVolume ?? 0),
+                TotalOrderVolume = baseDetails.Sum(x => x.OrderVolume ?? 0),
+                TotalAllocVolume = baseDetails.Sum(x => x.AllocVolume ?? 0),
                 Remarks = order.Order.Remarks,
                 StoreAddress = order.StoreAddress,
                 ShippingFee = order.Order.ShippingFee,
@@ -1492,7 +1644,9 @@ namespace BlazorApp.Api.Services.React
                     };
                 }
 
-                foreach (var item in request.Items.Where(x => !string.IsNullOrWhiteSpace(x.ProductCode)))
+                foreach (
+                    var item in request.Items.Where(x => !string.IsNullOrWhiteSpace(x.ProductCode))
+                )
                 {
                     await PasteReplaceDetailAsync(order, item, request.TargetField);
                 }
@@ -2129,9 +2283,7 @@ namespace BlazorApp.Api.Services.React
 
             var detail = await _db.Queryable<WareHouseOrderDetails>()
                 .Where(d =>
-                    d.OrderGUID == order.OrderGUID
-                    && d.ProductCode == productCode
-                    && !d.IsDeleted
+                    d.OrderGUID == order.OrderGUID && d.ProductCode == productCode && !d.IsDeleted
                 )
                 .FirstAsync();
 

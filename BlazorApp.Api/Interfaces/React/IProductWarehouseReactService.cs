@@ -40,6 +40,10 @@ namespace BlazorApp.Api.Interfaces.React
         /// </summary>
         Task<List<BarcodePriceItemDto>> GetBarcodePricesAsync(string productCode);
 
+        Task<BatchToggleWarehouseProductsActiveResultDto> BatchToggleActiveAsync(
+            BatchToggleWarehouseProductsActiveRequestDto request
+        );
+
         Task<
             ReactTableResponseDto<NonHotbargainProductNotInWarehouseDto>
         > GetNonHotbargainProductsNotInWarehouseAsync(

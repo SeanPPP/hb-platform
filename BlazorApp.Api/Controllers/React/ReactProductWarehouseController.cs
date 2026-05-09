@@ -323,6 +323,50 @@ namespace BlazorApp.Api.Controllers.React
             }
         }
 
+        [HttpPost("batch-toggle-active")]
+        [Authorize(Roles = "Admin,WarehouseManager")]
+        public async Task<IActionResult> BatchToggleActive(
+            [FromBody] BatchToggleWarehouseProductsActiveRequestDto request
+        )
+        {
+            try
+            {
+                if (request == null || request.ProductCodes == null || !request.ProductCodes.Any())
+                    return BadRequest(new { success = false, message = "商品编码不能为空" });
+
+                var resp = await _service.BatchToggleActiveAsync(request);
+                if (resp.Success)
+                {
+                    return Ok(
+                        new
+                        {
+                            success = true,
+                            message = resp.Message,
+                            successCount = resp.SuccessCount,
+                            failedCount = resp.FailedCount,
+                            errors = resp.Errors,
+                        }
+                    );
+                }
+
+                return BadRequest(
+                    new
+                    {
+                        success = false,
+                        message = resp.Message,
+                        successCount = resp.SuccessCount,
+                        failedCount = resp.FailedCount,
+                        errors = resp.Errors,
+                    }
+                );
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "仓库商品批量上下架失败");
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
         /// <summary>
         /// 获取商品条码对应套装价/进货价列表（商品类型≠0 时编辑弹窗用）
         /// </summary>

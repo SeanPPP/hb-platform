@@ -108,7 +108,7 @@ namespace BlazorApp.Shared.DTOs
         /// <summary>
         /// 更新人筛选值
         /// </summary>
-        public new string? UpdatedBy { get; set; }
+        public string? UpdatedBy { get; set; }
 
         /// <summary>
         /// 更新人筛选类型

@@ -824,7 +824,7 @@ namespace BlazorApp.Api.Services.React
                         )
                     );
                 }
-                catch (Exception ex)
+                catch (Exception)
                 {
                     await db.Ado.RollbackTranAsync();
                     throw;

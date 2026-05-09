@@ -17,6 +17,13 @@ namespace BlazorApp.Api.Interfaces.React
         );
 
         /// <summary>
+        /// 按条码查询订货商品候选列表
+        /// </summary>
+        Task<ApiResponse<StoreOrderScanLookupResultDto>> ScanLookupProductsAsync(
+            StoreOrderScanLookupRequestDto request
+        );
+
+        /// <summary>
         /// 获取分店当前的购物车 (FlowStatus=0)
         /// </summary>
         Task<ApiResponse<StoreOrderCartDto?>> GetActiveCartAsync(string storeCode);

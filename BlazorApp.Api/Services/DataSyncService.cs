@@ -4287,12 +4287,12 @@ namespace BlazorApp.Api.Services
                                     originalProduct.FGC_Creator = domesticProduct.CreatedBy;
                                     isUpdated = true;
                                 }
-                                if (originalProduct.FGC_CreateDate == null)
+                                if (originalProduct.FGC_CreateDate == default)
                                 {
                                     originalProduct.FGC_CreateDate = domesticProduct.CreatedAt;
                                     isUpdated = true;
                                 }
-                                if (originalProduct.FGC_LastModifyDate == null)
+                                if (originalProduct.FGC_LastModifyDate == default)
                                 {
                                     originalProduct.FGC_LastModifyDate = DateTime.Now;
                                     isUpdated = true;

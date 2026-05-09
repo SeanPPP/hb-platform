@@ -78,7 +78,13 @@ namespace BlazorApp.Shared.Models
         [Display(Name = "单件体积")]
         public decimal? Volume { get; set; }
 
- 
+        /// <summary>
+        /// 单件装箱数
+        /// </summary>
+        [SugarColumn(IsNullable = true)]
+        [Display(Name = "单件装箱数")]
+        public int? PackingQuantity { get; set; }
+
 
         [Navigate(NavigateType.OneToOne, nameof(ProductCode))]
         public Product? Product { get; set; }

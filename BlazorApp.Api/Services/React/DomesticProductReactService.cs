@@ -145,6 +145,14 @@ namespace BlazorApp.Api.Services.React
                     .Take(request.PageSize)
                     .ToListAsync();
 
+                foreach (var item in items)
+                {
+                    item.ProductImage = ProductImageUrlHelper.EnsureImageUrl(
+                        item.ProductImage,
+                        item.HBProductNo ?? item.ProductCode
+                    );
+                }
+
                 // 批量加载套装数量信息
                 if (items.Any())
                 {
