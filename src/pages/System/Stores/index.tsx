@@ -16,7 +16,9 @@ import {
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { useEffect, useState } from 'react'
+import { HasPermission } from '../../../components/Access'
 import PageContainer from '../../../components/PageContainer'
+import { P } from '../../../types/permissions'
 import { getStoreByGuid, getStores, updateStore } from '../../../services/storeService'
 import type { StoreDetailDto, StoreDto, UpdateStoreDto } from '../../../types/store'
 import StoreUserManagement from './StoreUserManagement'
@@ -177,9 +179,11 @@ export default function SystemStoresPage() {
           <Button type="link" icon={<EyeOutlined />} onClick={() => void handleViewDetail(record)}>
             详情
           </Button>
-          <Button type="link" icon={<EditOutlined />} onClick={() => void handleEdit(record)}>
-            编辑
-          </Button>
+          <HasPermission code={P.Stores.Edit}>
+            <Button type="link" icon={<EditOutlined />} onClick={() => void handleEdit(record)}>
+              编辑
+            </Button>
+          </HasPermission>
         </Space>
       ),
     },
@@ -236,9 +240,11 @@ export default function SystemStoresPage() {
         destroyOnHidden
         extra={
           detailStore ? (
-            <Button type="primary" onClick={() => handleOpenStoreUsers(detailStore)}>
-              管理用户
-            </Button>
+            <HasPermission code={P.Stores.Edit}>
+              <Button type="primary" onClick={() => handleOpenStoreUsers(detailStore)}>
+                管理用户
+              </Button>
+            </HasPermission>
           ) : null
         }
       >

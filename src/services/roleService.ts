@@ -1,5 +1,14 @@
 import type { ApiResponse, PagedResult } from '../types/api'
-import type { RoleDetailDto, RoleDto, RoleOptionDto, RoleQueryDto, RoleUserDto, UpdateRoleDto } from '../types/role'
+import type {
+  PermissionCategoryDto,
+  RoleDetailDto,
+  RoleDto,
+  RoleOptionDto,
+  RolePermissionAssignmentDto,
+  RoleQueryDto,
+  RoleUserDto,
+  UpdateRoleDto,
+} from '../types/role'
 import request, { unwrapApiData, unwrapPagedResult } from '../utils/request'
 
 export async function getRoles(params: RoleQueryDto): Promise<PagedResult<RoleDto>> {
@@ -38,5 +47,26 @@ export async function addUsersToRole(guid: string, userGuids: string[]): Promise
 
 export async function removeUserFromRole(guid: string, userGuid: string): Promise<boolean> {
   const response = await request.delete<ApiResponse<boolean>>(`/api/Roles/guid/${guid}/users/${userGuid}`)
+  return unwrapApiData(response)
+}
+
+/** Get all permissions grouped by category */
+export async function getPermissions(): Promise<PermissionCategoryDto[]> {
+  const response = await request.get<ApiResponse<PermissionCategoryDto[]>>('/api/Roles/permissions')
+  return unwrapApiData(response) ?? []
+}
+
+/** Get a role's current permission codes */
+export async function getRolePermissions(guid: string): Promise<string[]> {
+  const response = await request.get<ApiResponse<string[]>>(`/api/Roles/guid/${guid}/permissions`)
+  return unwrapApiData(response) ?? []
+}
+
+/** Assign permissions to a role (replaces all existing) */
+export async function assignPermissionsToRole(
+  guid: string,
+  dto: RolePermissionAssignmentDto,
+): Promise<boolean> {
+  const response = await request.post<ApiResponse<boolean>>(`/api/Roles/guid/${guid}/permissions`, dto)
   return unwrapApiData(response)
 }

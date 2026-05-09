@@ -17,7 +17,9 @@ import {
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { useEffect, useState } from 'react'
+import { HasPermission } from '../../../components/Access'
 import PageContainer from '../../../components/PageContainer'
+import { P } from '../../../types/permissions'
 import { getUserByGuid, getUserStores, getUsers, updateUser } from '../../../services/userService'
 import type { UpdateUserDto, UserDetailDto, UserDto, UserStoreDto } from '../../../types/user'
 import { getRoleColor, getStoreColor } from '../../../utils/userTableColors'
@@ -202,9 +204,11 @@ export default function SystemUsersPage() {
           <Button type="link" icon={<EyeOutlined />} onClick={() => void handleViewDetail(record)}>
             详情
           </Button>
-          <Button type="link" icon={<EditOutlined />} onClick={() => void handleEdit(record)}>
-            编辑
-          </Button>
+          <HasPermission code={P.Users.Edit}>
+            <Button type="link" icon={<EditOutlined />} onClick={() => void handleEdit(record)}>
+              编辑
+            </Button>
+          </HasPermission>
         </Space>
       ),
     },
@@ -320,12 +324,16 @@ export default function SystemUsersPage() {
         footer={(_, { OkBtn, CancelBtn }) => (
           <Space style={{ width: '100%', justifyContent: 'space-between' }}>
             <Space>
-              <Button disabled={!editingUser} onClick={() => setRoleAssignOpen(true)}>
-                分配角色
-              </Button>
-              <Button disabled={!editingUser} onClick={() => setStoreAssignOpen(true)}>
-                分配分店
-              </Button>
+              <HasPermission code={P.Users.ManageRoles}>
+                <Button disabled={!editingUser} onClick={() => setRoleAssignOpen(true)}>
+                  分配角色
+                </Button>
+              </HasPermission>
+              <HasPermission code={P.Users.ManageStores}>
+                <Button disabled={!editingUser} onClick={() => setStoreAssignOpen(true)}>
+                  分配分店
+                </Button>
+              </HasPermission>
             </Space>
             <Space>
               <CancelBtn />

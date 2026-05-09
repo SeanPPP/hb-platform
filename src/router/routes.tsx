@@ -1,6 +1,7 @@
 import {
   AppstoreOutlined,
   DashboardOutlined,
+  MoneyCollectOutlined,
   ShopOutlined,
   TagsOutlined,
   TeamOutlined,
@@ -14,6 +15,11 @@ import DomesticChinaSuppliersPage from '../pages/DomesticPurchase/ChinaSuppliers
 import DomesticProductsPage from '../pages/DomesticPurchase/DomesticProducts'
 import ProductPrefixCodeManagementPage from '../pages/DomesticPurchase/ProductPrefixCodeManagement'
 import NotFoundPage from '../pages/NotFound'
+import PosmSalesOrdersPage from '../pages/PosmSalesOrders'
+import PosAdminCashRegisterUsersPage from '../pages/PosAdmin/CashRegisterUsers'
+import PosAdminPricingStrategiesPage from '../pages/PosAdmin/PricingStrategies'
+import PosAdminPromotionsPage from '../pages/PosAdmin/Promotions'
+import PosAdminSupplierManagementPage from '../pages/PosAdmin/SupplierManagement'
 import SystemRolesPage from '../pages/System/Roles'
 import SystemStoresPage from '../pages/System/Stores'
 import SystemUsersPage from '../pages/System/Users'
@@ -44,6 +50,7 @@ const iconMap = {
   TeamOutlined: <TeamOutlined />,
   ShopOutlined: <ShopOutlined />,
   TagsOutlined: <TagsOutlined />,
+  MoneyCollectOutlined: <MoneyCollectOutlined />,
 }
 
 export const appRoutes: AppRouteItem[] = [
@@ -218,6 +225,65 @@ export const appRoutes: AppRouteItem[] = [
           accessKey: 'canManageWarehouse',
         },
         element: <WarehouseLocationsPage />,
+      },
+    ],
+  },
+  {
+    path: '/pos-admin',
+    meta: {
+      title: '收银管理',
+      icon: 'MoneyCollectOutlined',
+    },
+    children: [
+      {
+        path: '/pos-admin/suppliers',
+        meta: {
+          title: '供应商管理',
+          icon: 'ShopOutlined',
+          keepAlive: true,
+          accessKey: 'canManageStore',
+        },
+        element: <PosAdminSupplierManagementPage />,
+      },
+      {
+        path: '/pos-admin/pricing-strategies',
+        meta: {
+          title: '自动价格策略',
+          icon: 'TagsOutlined',
+          keepAlive: true,
+          accessKey: 'isAdmin',
+        },
+        element: <PosAdminPricingStrategiesPage />,
+      },
+      {
+        path: '/pos-admin/promotions',
+        meta: {
+          title: '促销管理',
+          icon: 'TagsOutlined',
+          keepAlive: true,
+          accessKey: 'isAdmin',
+        },
+        element: <PosAdminPromotionsPage />,
+      },
+      {
+        path: '/pos-admin/cash-register-users',
+        meta: {
+          title: '收银用户条码',
+          icon: 'UserOutlined',
+          keepAlive: true,
+          accessKey: 'canManageStore',
+        },
+        element: <PosAdminCashRegisterUsersPage />,
+      },
+      {
+        path: '/pos-admin/sales-orders',
+        meta: {
+          title: '收银记录',
+          icon: 'MoneyCollectOutlined',
+          keepAlive: true,
+          accessKey: 'canReadOrder',
+        },
+        element: <PosmSalesOrdersPage />,
       },
     ],
   },

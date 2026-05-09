@@ -1,10 +1,13 @@
 import { Card, Descriptions, List, Space, Spin, Tag, Typography, message } from 'antd'
 import { useEffect, useState } from 'react'
 import { useParams } from 'react-router-dom'
+import { HasPermission } from '../../../components/Access'
 import PageContainer from '../../../components/PageContainer'
+import { P } from '../../../types/permissions'
 import { useDynamicTabTitle } from '../../../hooks/useDynamicTabTitle'
 import { getRoleByGuid } from '../../../services/roleService'
 import type { RoleDetailDto } from '../../../types/role'
+import RolePermissionManager from './RolePermissionManager'
 
 export default function RoleDetailPage() {
   const { id = '' } = useParams()
@@ -57,10 +60,25 @@ export default function RoleDetailPage() {
         </Descriptions>
       </Card>
 
-      <Card title="权限列表">
-        <Space wrap>
-          {role.permissions?.length ? role.permissions.map((item) => <Tag key={item}>{item}</Tag>) : '暂无权限'}
-        </Space>
+      <Card title="权限管理">
+        <HasPermission
+          code={P.Roles.ManagePermissions}
+          fallback={
+            <Space wrap>
+              {role.permissions?.length
+                ? role.permissions.map((item) => <Tag key={item}>{item}</Tag>)
+                : '暂无权限'}
+            </Space>
+          }
+        >
+          <RolePermissionManager
+            roleGuid={role.roleGUID}
+            roleName={role.roleName}
+            onChanged={() => {
+              void run()
+            }}
+          />
+        </HasPermission>
       </Card>
 
       <Card title="关联用户">

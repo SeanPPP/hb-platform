@@ -39,10 +39,7 @@ export default function LoginPage() {
           <Typography.Title level={1} style={{ margin: 0, color: '#fff' }}>
             HB 管理后台
           </Typography.Title>
-          <Typography.Paragraph style={{ color: 'rgba(255,255,255,0.88)', margin: 0 }}>
-            旧版 Umi 前端正在迁移到新的 React + Vite 框架。
-            这一阶段先完成登录、权限、系统管理和新的 Tabs 机制接入。
-          </Typography.Paragraph>
+
         </Space>
       </div>
 

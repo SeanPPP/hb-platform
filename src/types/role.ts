@@ -44,3 +44,29 @@ export interface RoleOptionDto {
   description?: string
   isActive?: boolean
 }
+
+/** Single permission returned by GET /api/roles/permissions */
+export interface PermissionDto {
+  name: string
+  displayName: string
+  description?: string
+  category: string
+  isSystemPermission: boolean
+  createdAt: string
+  createdBy?: string
+  updatedAt?: string
+  updatedBy?: string
+}
+
+/** Permission category with its child permissions */
+export interface PermissionCategoryDto {
+  category: string
+  displayName: string
+  description?: string
+  permissions: PermissionDto[]
+}
+
+/** Request body for POST /api/roles/guid/{guid}/permissions */
+export interface RolePermissionAssignmentDto {
+  permissions: string[]
+}

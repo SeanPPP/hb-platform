@@ -43,6 +43,13 @@ function createEmptyAccess(): AccessControl {
   }
 }
 
+/**
+ * Build an AccessControl object from the current user.
+ *
+ * Permission-driven: all `canXxx` flags derive from `currentUser.permissions[]`.
+ * Admin role acts as superuser (bypasses all permission checks).
+ * Role-based flags (isAdmin, isManager, etc.) remain for backward compatibility.
+ */
 export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
   if (!currentUser) {
     return createEmptyAccess()
@@ -64,6 +71,7 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
   const hasAnyRole = (roles: string[]) => roles.some((role) => hasRole(role))
   const hasAllRoles = (roles: string[]) => roles.every((role) => hasRole(role))
 
+  // --- Role identity flags (backward compat) ---
   const isAdmin = hasRole('Admin') || hasRole('管理员')
   const isWarehouseManager = hasRole('WarehouseManager') || hasRole('仓库经理')
   const isStoreManager = hasRole('StoreManager') || hasRole('经理')
@@ -88,6 +96,10 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
     return null
   }
 
+  // --- Permission-driven access flags ---
+  // Admin is superuser — bypasses all permission checks.
+  // All other users must have the explicit permission code assigned via their roles.
+
   const canReadUser = isAdmin || hasPermission('Users.View')
   const canWriteUser = isAdmin || hasPermission('Users.Create') || hasPermission('Users.Edit')
   const canDeleteUser = isAdmin || hasPermission('Users.Delete')
@@ -97,8 +109,20 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
   const canReadStore = isAdmin || hasPermission('Stores.View')
   const canWriteStore = isAdmin || hasPermission('Stores.Create') || hasPermission('Stores.Edit')
   const canDeleteStore = isAdmin || hasPermission('Stores.Delete')
-  const canManageWarehouse = isAdmin || isWarehouseManager
-  const canManageStore = isAdmin || isManager || canManageWarehouse
+  const canManageWarehouse = isAdmin || hasPermission('Warehouse.Manage')
+  const canManageStore = isAdmin || hasPermission('Stores.Edit') || hasPermission('Warehouse.Manage')
+
+  const canReadOrder = isAdmin || hasPermission('Orders.View')
+  const canWriteOrder = isAdmin || hasPermission('Orders.Create') || hasPermission('Orders.Edit')
+  const canDeleteOrder = isAdmin || hasPermission('Orders.Delete')
+  const canReadProduct = isAdmin || hasPermission('Products.View')
+  const canWriteProduct = isAdmin || hasPermission('Products.Create') || hasPermission('Products.Edit')
+  const canDeleteProduct = isAdmin || hasPermission('Products.Delete')
+
+  const canViewReports = isAdmin || hasPermission('Reports.View')
+  const canExportData = isAdmin || hasPermission('Reports.Export')
+  const canModifyPrice = isAdmin || hasPermission('Prices.Modify')
+  const canDeletePrice = isAdmin || hasPermission('Prices.Delete')
 
   return {
     isAdmin,
@@ -110,12 +134,12 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
     isStoreManager,
     isStoreLevelManager,
     onlyOrder,
-    canReadOrder: isAdmin || isManager,
-    canWriteOrder: isAdmin || isManager,
-    canDeleteOrder: isAdmin,
-    canReadProduct: isAdmin || isManager,
-    canWriteProduct: isAdmin || isManager,
-    canDeleteProduct: isAdmin,
+    canReadOrder,
+    canWriteOrder,
+    canDeleteOrder,
+    canReadProduct,
+    canWriteProduct,
+    canDeleteProduct,
     canReadUser,
     canWriteUser,
     canDeleteUser,
@@ -127,10 +151,10 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
     canDeleteStore,
     canManageWarehouse,
     canManageStore,
-    canViewReports: isAdmin || isManager,
-    canExportData: isAdmin || isManager,
-    canModifyPrice: isAdmin || hasPermission('Prices.Modify'),
-    canDeletePrice: isAdmin || hasPermission('Prices.Delete'),
+    canViewReports,
+    canExportData,
+    canModifyPrice,
+    canDeletePrice,
     hasPermission,
     hasRole,
     onlyRole,

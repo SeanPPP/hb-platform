@@ -17,9 +17,12 @@ import {
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { useEffect, useState } from 'react'
+import { HasPermission } from '../../../components/Access'
 import PageContainer from '../../../components/PageContainer'
+import { P } from '../../../types/permissions'
 import { getRoleByGuid, getRoles, updateRole } from '../../../services/roleService'
 import type { RoleDetailDto, RoleDto, UpdateRoleDto } from '../../../types/role'
+import RolePermissionManager from './RolePermissionManager'
 import RoleUserManagement from './RoleUserManagement'
 
 export default function SystemRolesPage() {
@@ -155,9 +158,11 @@ export default function SystemRolesPage() {
           <Button type="link" icon={<EyeOutlined />} onClick={() => void handleViewDetail(record)}>
             详情
           </Button>
-          <Button type="link" icon={<EditOutlined />} onClick={() => void handleEdit(record)}>
-            编辑
-          </Button>
+          <HasPermission code={P.Roles.Edit}>
+            <Button type="link" icon={<EditOutlined />} onClick={() => void handleEdit(record)}>
+              编辑
+            </Button>
+          </HasPermission>
         </Space>
       ),
     },
@@ -213,9 +218,11 @@ export default function SystemRolesPage() {
         destroyOnHidden
         extra={
           detailRole ? (
-            <Button type="primary" onClick={() => setRoleUserOpen(true)}>
-              管理用户
-            </Button>
+            <HasPermission code={P.Roles.ManageUsers}>
+              <Button type="primary" onClick={() => setRoleUserOpen(true)}>
+                管理用户
+              </Button>
+            </HasPermission>
           ) : null
         }
       >
@@ -239,10 +246,24 @@ export default function SystemRolesPage() {
               <Descriptions.Item label="更新时间">{detailRole.updatedAt}</Descriptions.Item>
             </Descriptions>
 
-            <Card title="权限列表" size="small">
-              <Space wrap>
-                {detailRole.permissions?.length ? detailRole.permissions.map((item) => <Tag key={item}>{item}</Tag>) : '暂无权限'}
-              </Space>
+            <Card title="权限管理" size="small">
+              {detailRole ? (
+                <HasPermission code={P.Roles.ManagePermissions} fallback={
+                  <Space wrap>
+                    {detailRole.permissions?.length
+                      ? detailRole.permissions.map((item) => <Tag key={item}>{item}</Tag>)
+                      : '暂无权限'}
+                  </Space>
+                }>
+                  <RolePermissionManager
+                    roleGuid={detailRole.roleGUID}
+                    roleName={detailRole.roleName}
+                    onChanged={() => {
+                      void reloadRoleDetail(detailRole.roleGUID)
+                    }}
+                  />
+                </HasPermission>
+              ) : null}
             </Card>
 
             <Card title="关联用户" size="small">
