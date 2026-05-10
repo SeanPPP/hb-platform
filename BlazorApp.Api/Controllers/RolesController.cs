@@ -1,5 +1,6 @@
 using System.ComponentModel.DataAnnotations;
 using BlazorApp.Api.Interfaces;
+using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
 using Microsoft.AspNetCore.Authorization;
@@ -14,7 +15,6 @@ namespace BlazorApp.Api.Controllers
     /// </summary>
     [ApiController]
     [Route("api/[controller]")]
-    // [Authorize] // 🔐 启用全局授权，所有端点都需要认证
     [Authorize]
     public class RolesController : ControllerBase
     {
@@ -29,15 +29,9 @@ namespace BlazorApp.Api.Controllers
 
         /// <summary>
         /// 获取角色列表
-        /// 📋 支持分页、搜索、筛选的角色数据查询
         /// </summary>
-        /// <param name="query">查询参数（分页、搜索条件等）</param>
-        /// <returns>分页的角色数据</returns>
         [HttpGet]
-        //  [Authorize(Roles = "Admin,Manager")] // 🚧 暂时注释掉授权（调试期间）
-        // 👥 授权说明：Admin和Manager角色都可以查看角色列表
-        // - Admin：可以查看所有角色数据
-        // - Manager：只能查看系统角色信息
+        [Authorize(Policy = Permissions.Roles.View)]
         public async Task<IActionResult> GetRoles([FromQuery] RoleQueryDto query)
         {
             try
@@ -66,7 +60,7 @@ namespace BlazorApp.Api.Controllers
         /// <param name="query">查询参数（分页、搜索条件等）</param>
         /// <returns>分页的角色数据</returns>
         [HttpGet("optimized")]
-        // [Authorize(Roles = "Admin,Manager")] // 🚧 暂时注释掉授权（调试期间）
+        [Authorize(Policy = Permissions.Roles.View)]
         public async Task<IActionResult> GetRolesOptimized([FromQuery] RoleQueryDto query)
         {
             try
@@ -94,7 +88,7 @@ namespace BlazorApp.Api.Controllers
         /// <param name="query">查询参数</param>
         /// <returns>性能测试报告</returns>
         [HttpGet("performance-test")]
-        // [Authorize(Roles = "Admin")] // 🚧 暂时注释掉授权（调试期间）
+        [Authorize(Policy = Permissions.System.ManageSettings)]
         public async Task<IActionResult> RolePerformanceTest([FromQuery] RoleQueryDto query)
         {
             try
@@ -116,7 +110,7 @@ namespace BlazorApp.Api.Controllers
         /// 获取所有活跃角色（不分页）
         /// </summary>
         [HttpGet("active")]
-        // [Authorize(Roles = "Admin,Manager")] // 暂时注释掉授权
+        [Authorize(Policy = Permissions.Roles.View)]
         public async Task<IActionResult> GetActiveRoles()
         {
             try
@@ -138,7 +132,7 @@ namespace BlazorApp.Api.Controllers
         /// 根据GUID获取角色详情
         /// </summary>
         [HttpGet("guid/{guid}")]
-        // [Authorize(Roles = "Admin,Manager")] // 暂时注释掉授权
+        [Authorize(Policy = Permissions.Roles.View)]
         public async Task<IActionResult> GetRoleByGuid(string guid)
         {
             try
@@ -160,7 +154,7 @@ namespace BlazorApp.Api.Controllers
         /// 根据角色名获取角色
         /// </summary>
         [HttpGet("name/{name}")]
-        // [Authorize(Roles = "Admin,Manager")] // 暂时注释掉授权
+        [Authorize(Policy = Permissions.Roles.View)]
         public async Task<IActionResult> GetRoleByName(string name)
         {
             try
@@ -185,10 +179,7 @@ namespace BlazorApp.Api.Controllers
         /// <param name="dto">创建角色的数据传输对象</param>
         /// <returns>创建结果</returns>
         [HttpPost]
-        // [Authorize(Roles = "Admin")] // 🚧 暂时注释掉授权（调试期间）
-        // 👑 授权说明：只有Admin角色才能创建角色
-        // - Admin：可以创建、修改、删除角色
-        // - Manager：只能查看角色，不能修改系统数据
+        [Authorize(Policy = Permissions.Roles.Create)]
         public async Task<IActionResult> CreateRole([FromBody] CreateRoleDto dto)
         {
             try
@@ -221,7 +212,7 @@ namespace BlazorApp.Api.Controllers
         /// 根据GUID更新角色
         /// </summary>
         [HttpPut("guid/{guid}")]
-        // [Authorize(Roles = "Admin")] // 暂时注释掉授权
+        [Authorize(Policy = Permissions.Roles.Edit)]
         public async Task<IActionResult> UpdateRoleByGuid(string guid, [FromBody] UpdateRoleDto dto)
         {
             try
@@ -254,7 +245,7 @@ namespace BlazorApp.Api.Controllers
         /// 根据GUID删除角色
         /// </summary>
         [HttpDelete("guid/{guid}")]
-        // [Authorize(Roles = "Admin")] // 暂时注释掉授权
+        [Authorize(Policy = Permissions.Roles.Delete)]
         public async Task<IActionResult> DeleteRoleByGuid(string guid)
         {
             try
@@ -276,7 +267,7 @@ namespace BlazorApp.Api.Controllers
         /// 根据GUID更新角色状态
         /// </summary>
         [HttpPut("guid/{guid}/status")]
-        // [Authorize(Roles = "Admin")] // 暂时注释掉授权
+        [Authorize(Policy = Permissions.Roles.Edit)]
         public async Task<IActionResult> UpdateRoleStatusByGuid(
             string guid,
             [FromBody] UpdateRoleStatusDto dto
@@ -301,7 +292,7 @@ namespace BlazorApp.Api.Controllers
         /// 获取角色的用户列表
         /// </summary>
         [HttpGet("guid/{guid}/users")]
-        // [Authorize(Roles = "Admin,Manager")] // 暂时注释掉授权
+        [Authorize(Policy = Permissions.Roles.View)]
         public async Task<IActionResult> GetRoleUsers(string guid, [FromQuery] RoleQueryDto query)
         {
             try
@@ -326,7 +317,7 @@ namespace BlazorApp.Api.Controllers
         /// 为角色添加用户
         /// </summary>
         [HttpPost("guid/{guid}/users")]
-        // [Authorize(Roles = "Admin")] // 暂时注释掉授权
+        [Authorize(Policy = Permissions.Roles.ManageUsers)]
         public async Task<IActionResult> AddUsersToRole(
             string guid,
             [FromBody] List<string> userGuids
@@ -358,7 +349,7 @@ namespace BlazorApp.Api.Controllers
         /// 从角色移除用户
         /// </summary>
         [HttpDelete("guid/{guid}/users/{userGuid}")]
-        // [Authorize(Roles = "Admin")] // 暂时注释掉授权
+        [Authorize(Policy = Permissions.Roles.ManageUsers)]
         public async Task<IActionResult> RemoveUserFromRole(string guid, string userGuid)
         {
             try
@@ -385,7 +376,7 @@ namespace BlazorApp.Api.Controllers
         /// 批量管理角色
         /// </summary>
         [HttpPost("batch")]
-        // [Authorize(Roles = "Admin")] // 暂时注释掉授权
+        [Authorize(Policy = Permissions.Roles.Edit)]
         public async Task<IActionResult> BatchManageRoles([FromBody] BatchRoleOperationDto dto)
         {
             try
@@ -414,7 +405,7 @@ namespace BlazorApp.Api.Controllers
         /// 获取角色统计信息
         /// </summary>
         [HttpGet("statistics")]
-        // [Authorize(Roles = "Admin,Manager")] // 暂时注释掉授权
+        [Authorize(Policy = Permissions.Roles.View)]
         public async Task<IActionResult> GetRoleStatistics()
         {
             try
@@ -436,7 +427,7 @@ namespace BlazorApp.Api.Controllers
         /// 检查角色名是否可用
         /// </summary>
         [HttpGet("check-name/{name}")]
-        // [Authorize(Roles = "Admin")] // 暂时注释掉授权
+        [Authorize(Policy = Permissions.Roles.View)]
         public async Task<IActionResult> CheckRoleNameAvailability(
             string name,
             [FromQuery] string? excludeRoleGuid = null
@@ -461,7 +452,7 @@ namespace BlazorApp.Api.Controllers
         /// 获取所有权限列表
         /// </summary>
         [HttpGet("permissions")]
-        // [Authorize(Roles = "Admin,Manager")] // 暂时注释掉授权
+        [Authorize(Policy = Permissions.Roles.View)]
         public async Task<IActionResult> GetPermissions()
         {
             try
@@ -487,7 +478,7 @@ namespace BlazorApp.Api.Controllers
         /// 📋 用于权限管理页面展示
         /// </summary>
         [HttpGet("sys-permissions")]
-        // [Authorize(Roles = "Admin,Manager")]
+        [Authorize(Policy = Permissions.Roles.View)]
         public async Task<IActionResult> GetSysPermissions()
         {
             try
@@ -512,7 +503,7 @@ namespace BlazorApp.Api.Controllers
         /// 获取拥有指定权限的角色列表
         /// </summary>
         [HttpGet("permissions/{code}/roles")]
-        // [Authorize(Roles = "Admin,Manager")]
+        [Authorize(Policy = Permissions.Roles.View)]
         public async Task<IActionResult> GetPermissionRoles(string code)
         {
             try
@@ -538,7 +529,7 @@ namespace BlazorApp.Api.Controllers
         /// 为权限分配角色
         /// </summary>
         [HttpPost("permissions/{code}/roles")]
-        // [Authorize(Roles = "Admin")]
+        [Authorize(Policy = Permissions.Roles.ManagePermissions)]
         public async Task<IActionResult> AssignRolesToPermission(
             string code,
             [FromBody] List<string> roleGuids
@@ -563,7 +554,7 @@ namespace BlazorApp.Api.Controllers
         /// 创建新权限
         /// </summary>
         [HttpPost("permissions")]
-        // [Authorize(Roles = "Admin")]
+        [Authorize(Policy = Permissions.Roles.ManagePermissions)]
         public async Task<IActionResult> CreatePermission([FromBody] CreateSysPermissionDto dto)
         {
             try
@@ -596,7 +587,7 @@ namespace BlazorApp.Api.Controllers
         /// 获取角色的权限列表
         /// </summary>
         [HttpGet("guid/{guid}/permissions")]
-        // [Authorize(Roles = "Admin,Manager")] // 暂时注释掉授权
+        [Authorize(Policy = Permissions.Roles.View)]
         public async Task<IActionResult> GetRolePermissions(string guid)
         {
             try
@@ -618,7 +609,7 @@ namespace BlazorApp.Api.Controllers
         /// 为角色分配权限
         /// </summary>
         [HttpPost("guid/{guid}/permissions")]
-        // [Authorize(Roles = "Admin")] // 暂时注释掉授权
+        [Authorize(Policy = Permissions.Roles.ManagePermissions)]
         public async Task<IActionResult> AssignPermissionsToRole(
             string guid,
             [FromBody] RolePermissionAssignmentDto dto
@@ -650,7 +641,7 @@ namespace BlazorApp.Api.Controllers
         /// 检查用户是否有指定角色
         /// </summary>
         [HttpGet("check-user-role")]
-        // [Authorize(Roles = "Admin,Manager")] // 暂时注释掉授权
+        [Authorize(Policy = Permissions.Users.View)]
         public async Task<IActionResult> CheckUserHasRole(
             [FromQuery] string userGuid,
             [FromQuery] string roleName
@@ -687,7 +678,7 @@ namespace BlazorApp.Api.Controllers
         /// 检查用户是否有指定权限
         /// </summary>
         [HttpGet("check-user-permission")]
-        // [Authorize(Roles = "Admin,Manager")] // 暂时注释掉授权
+        [Authorize(Policy = Permissions.Users.View)]
         public async Task<IActionResult> CheckUserHasPermission(
             [FromQuery] string userGuid,
             [FromQuery] string permission
@@ -724,7 +715,7 @@ namespace BlazorApp.Api.Controllers
         /// 复制角色
         /// </summary>
         [HttpPost("guid/{guid}/duplicate")]
-        // [Authorize(Roles = "Admin")] // 暂时注释掉授权
+        [Authorize(Policy = Permissions.Roles.Create)]
         public async Task<IActionResult> DuplicateRole(string guid, [FromBody] DuplicateRoleDto dto)
         {
             try

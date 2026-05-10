@@ -11,6 +11,7 @@ namespace BlazorApp.Api.Controllers
     /// </summary>
     [ApiController]
     [Route("api/v1/pda/[controller]")]
+    [Authorize]
     public class PDACartController : ControllerBase
     {
         private readonly ICartService _cartService;

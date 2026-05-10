@@ -1,5 +1,6 @@
 using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Services;
+using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
 using Microsoft.AspNetCore.Authorization;
@@ -62,7 +63,7 @@ namespace BlazorApp.Api.Controllers
         /// </summary>
         /// <returns>激活的分店列表</returns>
         [HttpGet("active")]
-        // [Authorize(Roles = "Admin,Manager")] // 🚧 暂时注释掉授权（调试期间）
+        [Authorize(Policy = Permissions.Stores.View)]
         public async Task<IActionResult> GetActiveStores()
         {
             try
@@ -87,10 +88,7 @@ namespace BlazorApp.Api.Controllers
         /// <param name="query">查询参数（分页、搜索条件等）</param>
         /// <returns>分页的分店数据</returns>
         [HttpGet]
-        // [Authorize(Roles = "Admin,Manager")] // 🚧 暂时注释掉授权（调试期间）
-        // 👥 授权说明：Admin和Manager角色都可以查看分店列表
-        // - Admin：可以查看所有分店数据
-        // - Manager：只能查看分配给自己的分店数据
+        [Authorize(Policy = Permissions.Stores.View)]
         public async Task<IActionResult> GetStores([FromQuery] StoreQueryDto query)
         {
             try
@@ -115,7 +113,7 @@ namespace BlazorApp.Api.Controllers
         /// 根据GUID获取分店详情
         /// </summary>
         [HttpGet("guid/{guid}")]
-        // [Authorize(Roles = "Admin,Manager")] // 暂时注释掉授权
+        [Authorize(Policy = Permissions.Stores.View)]
         public async Task<IActionResult> GetStoreByGuid(string guid)
         {
             try
@@ -140,10 +138,7 @@ namespace BlazorApp.Api.Controllers
         /// <param name="dto">创建分店的数据传输对象</param>
         /// <returns>创建结果</returns>
         [HttpPost]
-        // [Authorize(Roles = "Admin")] // 🚧 暂时注释掉授权（调试期间）
-        // 👑 授权说明：只有Admin角色才能创建分店
-        // - Admin：可以创建、修改、删除分店
-        // - Manager：只能查看分店，不能修改系统数据
+        [Authorize(Policy = Permissions.Stores.Create)]
         public async Task<IActionResult> CreateStore([FromBody] CreateStoreDto dto)
         {
             try
@@ -176,7 +171,7 @@ namespace BlazorApp.Api.Controllers
         /// 根据GUID更新分店
         /// </summary>
         [HttpPut("guid/{guid}")]
-        // [Authorize(Roles = "Admin")] // 暂时注释掉授权
+        [Authorize(Policy = Permissions.Stores.Edit)]
         public async Task<IActionResult> UpdateStoreByGuid(
             string guid,
             [FromBody] UpdateStoreDto dto
@@ -212,7 +207,7 @@ namespace BlazorApp.Api.Controllers
         /// 根据GUID删除分店
         /// </summary>
         [HttpDelete("guid/{guid}")]
-        // [Authorize(Roles = "Admin")] // 暂时注释掉授权
+        [Authorize(Policy = Permissions.Stores.Delete)]
         public async Task<IActionResult> DeleteStoreByGuid(string guid)
         {
             try
@@ -234,7 +229,7 @@ namespace BlazorApp.Api.Controllers
         /// 根据GUID更新分店状态
         /// </summary>
         [HttpPut("guid/{guid}/status")]
-        // [Authorize(Roles = "Admin")] // 暂时注释掉授权
+        [Authorize(Policy = Permissions.Stores.Edit)]
         public async Task<IActionResult> UpdateStoreStatusByGuid(
             string guid,
             [FromBody] UpdateStoreStatusDto dto
@@ -259,7 +254,7 @@ namespace BlazorApp.Api.Controllers
         /// 获取分店用户列表
         /// </summary>
         [HttpGet("guid/{guid}/users")]
-        // [Authorize(Roles = "Admin,Manager")] // 暂时注释掉授权
+        [Authorize(Policy = Permissions.Stores.View)]
         public async Task<IActionResult> GetStoreUsers(string guid, [FromQuery] UserQueryDto query)
         {
             try
@@ -284,7 +279,7 @@ namespace BlazorApp.Api.Controllers
         /// 为分店添加用户
         /// </summary>
         [HttpPost("guid/{guid}/users")]
-        // [Authorize(Roles = "Admin")] // 暂时注释掉授权
+        [Authorize(Policy = Permissions.Stores.Edit)]
         public async Task<IActionResult> AddUserToStore(
             string guid,
             [FromBody] AddUserToStoreDto dto
@@ -316,7 +311,7 @@ namespace BlazorApp.Api.Controllers
         /// 从分店移除用户
         /// </summary>
         [HttpDelete("guid/{guid}/users/{userGuid}")]
-        // [Authorize(Roles = "Admin")] // 暂时注释掉授权
+        [Authorize(Policy = Permissions.Stores.Edit)]
         public async Task<IActionResult> RemoveUserFromStore(string guid, string userGuid)
         {
             try
@@ -343,7 +338,7 @@ namespace BlazorApp.Api.Controllers
         /// 设置主要用户
         /// </summary>
         [HttpPut("guid/{guid}/users/{userGuid}/primary")]
-        // [Authorize(Roles = "Admin")] // 暂时注释掉授权
+        [Authorize(Policy = Permissions.Stores.Edit)]
         public async Task<IActionResult> SetPrimaryUser(
             string guid,
             string userGuid,
@@ -374,7 +369,7 @@ namespace BlazorApp.Api.Controllers
         /// 批量管理用户
         /// </summary>
         [HttpPost("guid/{guid}/users/batch")]
-        // [Authorize(Roles = "Admin")] // 暂时注释掉授权
+        [Authorize(Policy = Permissions.Stores.Edit)]
         public async Task<IActionResult> BatchManageUsers(
             string guid,
             [FromBody] BatchUserOperationDto dto
@@ -409,11 +404,7 @@ namespace BlazorApp.Api.Controllers
         /// </summary>
         /// <returns>同步结果</returns>
         [HttpPost("sync")]
-        [Authorize(Roles = "Admin,warehouseManager")]
-        // [Authorize(Roles = "Admin")] // 🚧 暂时注释掉授权（调试期间）
-        // 🔐 授权说明：只有Admin角色才能执行数据同步
-        // - Admin：可以执行系统级操作，如数据同步、系统配置等
-        // - Manager：只能查看数据，不能执行系统级操作
+        [Authorize(Policy = Permissions.Stores.Sync)]
         public async Task<IActionResult> SyncStoresFromHq()
         {
             try
@@ -449,7 +440,7 @@ namespace BlazorApp.Api.Controllers
         /// 获取同步历史记录
         /// </summary>
         [HttpGet("sync/history")]
-        // [Authorize(Roles = "Admin,Manager")] // 暂时注释掉授权
+        [Authorize(Policy = Permissions.Stores.View)]
         public async Task<IActionResult> GetSyncHistory([FromQuery] int pageSize = 10)
         {
             try

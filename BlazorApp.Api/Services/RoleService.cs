@@ -702,8 +702,12 @@ namespace BlazorApp.Api.Services
                 // 获取用户数量
                 roleDetail.UserCount = users.Count;
 
-                // 这里可以添加权限信息，暂时返回空列表
-                roleDetail.Permissions = new List<string>();
+                // 从 SysRolePermission 表读取角色的权限代码列表
+                var rolePermissions = await db.Queryable<SysRolePermission>()
+                    .Where(rp => rp.RoleGuid == roleGuid && rp.IsDeleted == false)
+                    .Select(rp => rp.PermissionCode)
+                    .ToListAsync();
+                roleDetail.Permissions = rolePermissions;
 
                 return ApiResponse<RoleDetailDto>.OK(roleDetail, "获取角色详情成功");
             }

@@ -33,8 +33,7 @@ namespace BlazorApp.Api.Controllers
         /// <param name="query">查询参数（分页、搜索条件等）</param>
         /// <returns>分页的用户数据</returns>
         [HttpGet]
-        // [Authorize(Policy = Permissions.Users.View)]
-        // 👥 授权说明：拥有查看用户权限的角色可以访问
+        [Authorize(Policy = Permissions.Users.View)]
         public async Task<IActionResult> GetUsers([FromQuery] UserQueryDto query)
         {
             try
@@ -63,7 +62,7 @@ namespace BlazorApp.Api.Controllers
         /// <param name="query">查询参数（分页、搜索条件等）</param>
         /// <returns>分页的用户数据</returns>
         [HttpGet("optimized")]
-        [Authorize(Roles = "Admin,WarehouseManager")] // 🚧 暂时注释掉授权（调试期间）
+        [Authorize(Policy = Permissions.Users.View)]
         public async Task<IActionResult> GetUsersOptimized([FromQuery] UserQueryDto query)
         {
             try
@@ -91,7 +90,7 @@ namespace BlazorApp.Api.Controllers
         /// <param name="query">查询参数</param>
         /// <returns>性能测试报告</returns>
         [HttpGet("performance-test")]
-        // [Authorize(Roles = "Admin")] // 🚧 暂时注释掉授权（调试期间）
+        [Authorize(Policy = Permissions.Users.View)]
         public async Task<IActionResult> PerformanceTest([FromQuery] UserQueryDto query)
         {
             try
@@ -113,7 +112,7 @@ namespace BlazorApp.Api.Controllers
         /// 根据GUID获取用户详情
         /// </summary>
         [HttpGet("guid/{guid}")]
-        // [Authorize(Roles = "Admin,Manager")] // 暂时注释掉授权
+        [Authorize(Policy = Permissions.Users.View)]
         public async Task<IActionResult> GetUserByGuid(string guid)
         {
             try
@@ -135,7 +134,7 @@ namespace BlazorApp.Api.Controllers
         /// 根据用户名获取用户
         /// </summary>
         [HttpGet("username/{username}")]
-        // [Authorize(Roles = "Admin,Manager")] // 暂时注释掉授权
+        [Authorize(Policy = Permissions.Users.View)]
         public async Task<IActionResult> GetUserByUsername(string username)
         {
             try
@@ -157,7 +156,7 @@ namespace BlazorApp.Api.Controllers
         /// 根据邮箱获取用户
         /// </summary>
         [HttpGet("email/{email}")]
-        // [Authorize(Roles = "Admin,Manager")] // 暂时注释掉授权
+        [Authorize(Policy = Permissions.Users.View)]
         public async Task<IActionResult> GetUserByEmail(string email)
         {
             try
@@ -182,9 +181,7 @@ namespace BlazorApp.Api.Controllers
         /// <param name="dto">创建用户的数据传输对象</param>
         /// <returns>创建结果</returns>
         [HttpPost]
-        [Authorize(Roles = "Admin,WarehouseManager")]
-        // [Authorize(Policy = Permissions.Users.Create)]
-        // 👑 授权说明：拥有创建用户权限的角色可以访问
+        [Authorize(Policy = Permissions.Users.Create)]
         public async Task<IActionResult> CreateUser([FromBody] CreateUserDto dto)
         {
             try
@@ -217,7 +214,7 @@ namespace BlazorApp.Api.Controllers
         /// 批量创建用户（分店代码、用户名、密码；分配默认角色与对应分店）
         /// </summary>
         [HttpPost("batch-create")]
-        [Authorize(Roles = "Admin")]
+        [Authorize(Policy = Permissions.Users.Create)]
         public async Task<IActionResult> BatchCreateUsers([FromBody] BatchCreateUserRequestDto dto)
         {
             try
@@ -253,7 +250,7 @@ namespace BlazorApp.Api.Controllers
         /// 根据GUID更新用户
         /// </summary>
         [HttpPut("guid/{guid}")]
-        // [Authorize(Roles = "Admin")] // 暂时注释掉授权
+        [Authorize(Policy = Permissions.Users.Edit)]
         public async Task<IActionResult> UpdateUserByGuid(string guid, [FromBody] UpdateUserDto dto)
         {
             try
@@ -286,7 +283,7 @@ namespace BlazorApp.Api.Controllers
         /// 根据GUID删除用户
         /// </summary>
         [HttpDelete("guid/{guid}")]
-        [Authorize(Roles = "Admin")] // 暂时注释掉授权
+        [Authorize(Policy = Permissions.Users.Delete)]
         public async Task<IActionResult> DeleteUserByGuid(string guid)
         {
             try
@@ -308,8 +305,7 @@ namespace BlazorApp.Api.Controllers
         /// 根据GUID更新用户状态
         /// </summary>
         [HttpPut("guid/{guid}/status")]
-        [Authorize(Roles = "Admin,WarehouseManager")]
-        //[Authorize(Roles = "Admin")] // 暂时注释掉授权
+        [Authorize(Policy = Permissions.Users.Edit)]
         public async Task<IActionResult> UpdateUserStatusByGuid(
             string guid,
             [FromBody] UpdateUserStatusDto dto
@@ -334,7 +330,7 @@ namespace BlazorApp.Api.Controllers
         /// 更新用户密码
         /// </summary>
         [HttpPut("guid/{guid}/password")]
-        // [Authorize(Roles = "Admin")] // 暂时注释掉授权
+        [Authorize(Policy = Permissions.Users.ResetPassword)]
         public async Task<IActionResult> UpdateUserPassword(
             string guid,
             [FromBody] UpdateUserPasswordDto dto
@@ -366,7 +362,7 @@ namespace BlazorApp.Api.Controllers
         /// 为用户分配角色
         /// </summary>
         [HttpPost("guid/{guid}/roles")]
-        [Authorize(Roles = "Admin,WarehouseManager")]
+        [Authorize(Policy = Permissions.Users.ManageRoles)]
         public async Task<IActionResult> AssignRolesToUser(
             string guid,
             [FromBody] UserRoleAssignmentDto dto
@@ -398,7 +394,7 @@ namespace BlazorApp.Api.Controllers
         /// 为用户分配分店
         /// </summary>
         [HttpPost("guid/{guid}/stores")]
-        [Authorize(Roles = "Admin,WarehouseManager")]
+        [Authorize(Policy = Permissions.Users.ManageStores)]
         public async Task<IActionResult> AssignStoresToUser(
             string guid,
             [FromBody] List<UserStoreAssignmentDto> storeAssignments
@@ -430,7 +426,7 @@ namespace BlazorApp.Api.Controllers
         /// 获取用户的角色列表
         /// </summary>
         [HttpGet("guid/{guid}/roles")]
-        // [Authorize(Roles = "Admin,Manager")] // 暂时注释掉授权
+        [Authorize(Policy = Permissions.Users.ManageRoles)]
         public async Task<IActionResult> GetUserRoles(string guid)
         {
             try
@@ -452,7 +448,7 @@ namespace BlazorApp.Api.Controllers
         /// 获取用户的分店列表
         /// </summary>
         [HttpGet("guid/{guid}/stores")]
-        // [Authorize(Roles = "Admin,Manager")] // 暂时注释掉授权
+        [Authorize(Policy = Permissions.Users.ManageStores)]
         public async Task<IActionResult> GetUserStores(string guid)
         {
             try
@@ -474,7 +470,7 @@ namespace BlazorApp.Api.Controllers
         /// 从用户移除角色
         /// </summary>
         [HttpDelete("guid/{guid}/roles/{roleGuid}")]
-        [Authorize(Roles = "Admin,WarehouseManager")] // 暂时注释掉授权
+        [Authorize(Policy = Permissions.Users.ManageRoles)]
         public async Task<IActionResult> RemoveRoleFromUser(string guid, string roleGuid)
         {
             try
@@ -501,7 +497,7 @@ namespace BlazorApp.Api.Controllers
         /// 从用户移除分店
         /// </summary>
         [HttpDelete("guid/{guid}/stores/{storeGuid}")]
-        [Authorize(Roles = "Admin,WarehouseManager")] // 暂时注释掉授权
+        [Authorize(Policy = Permissions.Users.ManageStores)]
         public async Task<IActionResult> RemoveStoreFromUser(string guid, string storeGuid)
         {
             try
@@ -528,7 +524,7 @@ namespace BlazorApp.Api.Controllers
         /// 批量管理用户
         /// </summary>
         [HttpPost("batch")]
-        [Authorize(Roles = "Admin")] // 暂时注释掉授权
+        [Authorize(Policy = Permissions.Users.Edit)]
         public async Task<IActionResult> BatchManageUsers([FromBody] BatchUserOperationDto dto)
         {
             try
@@ -557,7 +553,7 @@ namespace BlazorApp.Api.Controllers
         /// 导入用户
         /// </summary>
         [HttpPost("import")]
-        [Authorize(Roles = "Admin")] // 暂时注释掉授权
+        [Authorize(Policy = Permissions.Users.Create)]
         public async Task<IActionResult> ImportUsers([FromBody] List<ImportUserDto> users)
         {
             try
@@ -582,7 +578,7 @@ namespace BlazorApp.Api.Controllers
         /// 导出用户
         /// </summary>
         [HttpGet("export")]
-        [Authorize(Roles = "Admin")] // 暂时注释掉授权
+        [Authorize(Policy = Permissions.Users.View)]
         public async Task<IActionResult> ExportUsers([FromQuery] UserQueryDto query)
         {
             try
@@ -604,7 +600,7 @@ namespace BlazorApp.Api.Controllers
         /// 获取用户统计信息
         /// </summary>
         [HttpGet("statistics")]
-        [Authorize(Roles = "Admin,WarehouseManager")] // 暂时注释掉授权
+        [Authorize(Policy = Permissions.Users.View)]
         public async Task<IActionResult> GetUserStatistics()
         {
             try
@@ -676,7 +672,7 @@ namespace BlazorApp.Api.Controllers
         /// 重置用户密码
         /// </summary>
         [HttpPost("guid/{guid}/reset-password")]
-        // [Authorize(Roles = "Admin")] // 暂时注释掉授权
+        [Authorize(Policy = Permissions.Users.ResetPassword)]
         public async Task<IActionResult> ResetUserPassword(string guid)
         {
             try
@@ -698,7 +694,7 @@ namespace BlazorApp.Api.Controllers
         /// 锁定/解锁用户
         /// </summary>
         [HttpPut("guid/{guid}/lock")]
-        [Authorize(Roles = "Admin,WarehouseManager")] // 暂时注释掉授权
+        [Authorize(Policy = Permissions.Users.Edit)]
         public async Task<IActionResult> LockUser(string guid, [FromBody] bool isLocked)
         {
             try
