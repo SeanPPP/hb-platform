@@ -3,14 +3,17 @@ import {
   MenuFoldOutlined,
   MenuUnfoldOutlined,
   ReloadOutlined,
+  ShoppingOutlined,
   UserOutlined,
 } from '@ant-design/icons'
-import { Avatar, Breadcrumb, Button, Dropdown, Layout, Menu, Space, Tag, Typography } from 'antd'
+import { Avatar, Breadcrumb, Button, Dropdown, Layout, Menu, Space, Typography } from 'antd'
 import type { MenuProps } from 'antd'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import AppTabs from '../components/AppTabs'
 import RouteKeepAlive, { type RouteKeepAliveRef } from '../components/RouteKeepAlive'
+import { useIsMobile } from '../hooks/useIsMobile'
+import MobileLayout from './MobileLayout'
 import {
   buildMenus,
   getBreadcrumbItems,
@@ -25,7 +28,7 @@ import { useTabsStore } from '../store/tabs'
 
 const { Header, Sider, Content } = Layout
 
-export default function AdminLayout() {
+function DesktopAdminLayout() {
   const [collapsed, setCollapsed] = useState(false)
   const [openKeys, setOpenKeys] = useState<string[]>([])
   const navigate = useNavigate()
@@ -155,7 +158,13 @@ export default function AdminLayout() {
           </Space>
 
           <Space size={12}>
-            <Tag color="processing">React + Vite</Tag>
+            <Button
+              type="primary"
+              icon={<ShoppingOutlined />}
+              onClick={() => window.open('/shop', '_blank')}
+            >
+              订货前台
+            </Button>
             <Dropdown menu={{ items: userMenuItems }} placement="bottomRight" trigger={['click']}>
               <Space className="header-user">
                 <Avatar icon={<UserOutlined />} />
@@ -189,4 +198,14 @@ export default function AdminLayout() {
       </Layout>
     </Layout>
   )
+}
+
+export default function AdminLayout() {
+  const isMobile = useIsMobile()
+
+  if (isMobile) {
+    return <MobileLayout />
+  }
+
+  return <DesktopAdminLayout />
 }
