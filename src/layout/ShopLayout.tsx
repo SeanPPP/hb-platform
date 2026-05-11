@@ -190,7 +190,7 @@ export default function ShopLayout() {
           ) : (
             <Link to="/login">Login</Link>
           )}
-          <span onClick={() => navigate('/dashboard')}>Dashboard</span>
+          <span onClick={() => window.open('/dashboard', '_blank')}>Dashboard</span>
           <span onClick={() => navigate('/shop/best-sellers')}>Best Sellers</span>
           <span onClick={() => navigate('/shop/coming-soon')}>Coming Soon</span>
           <span onClick={() => navigate('/shop/orders')}>Order History</span>
@@ -315,7 +315,7 @@ export default function ShopLayout() {
             <UserOutlined className="icon" />
             <span>Logout</span>
           </div>
-          <div className="shop-mobile-grid-item" onClick={() => navigate('/dashboard')}>
+          <div className="shop-mobile-grid-item" onClick={() => window.open('/dashboard', '_blank')}>
             <AppstoreOutlined className="icon" />
             <span>Dashboard</span>
           </div>

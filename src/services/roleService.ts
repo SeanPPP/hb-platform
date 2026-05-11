@@ -7,6 +7,8 @@ import type {
   RolePermissionAssignmentDto,
   RoleQueryDto,
   RoleUserDto,
+  SysPermissionDto,
+  CreateSysPermissionDto,
   UpdateRoleDto,
 } from '../types/role'
 import request, { unwrapApiData, unwrapPagedResult } from '../utils/request'
@@ -68,5 +70,25 @@ export async function assignPermissionsToRole(
   dto: RolePermissionAssignmentDto,
 ): Promise<boolean> {
   const response = await request.post<ApiResponse<boolean>>(`/api/Roles/guid/${guid}/permissions`, dto)
+  return unwrapApiData(response)
+}
+
+export async function getSysPermissions(): Promise<SysPermissionDto[]> {
+  const response = await request.get<ApiResponse<SysPermissionDto[]>>('/api/Roles/sys-permissions')
+  return unwrapApiData(response) ?? []
+}
+
+export async function createPermission(dto: CreateSysPermissionDto): Promise<SysPermissionDto[]> {
+  const response = await request.post<ApiResponse<SysPermissionDto[]>>('/api/Roles/permissions', dto)
+  return unwrapApiData(response) ?? []
+}
+
+export async function getPermissionRoles(code: string): Promise<RoleOptionDto[]> {
+  const response = await request.get<ApiResponse<RoleOptionDto[]>>(`/api/Roles/permissions/${encodeURIComponent(code)}/roles`)
+  return unwrapApiData(response) ?? []
+}
+
+export async function assignRolesToPermission(code: string, roleGuids: string[]): Promise<boolean> {
+  const response = await request.post<ApiResponse<boolean>>(`/api/Roles/permissions/${encodeURIComponent(code)}/roles`, roleGuids)
   return unwrapApiData(response)
 }

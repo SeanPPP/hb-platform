@@ -70,3 +70,19 @@ export interface PermissionCategoryDto {
 export interface RolePermissionAssignmentDto {
   permissions: string[]
 }
+
+export interface SysPermissionDto {
+  id: string
+  code: string
+  name: string
+  category: string
+  description?: string
+}
+
+export interface CreateSysPermissionDto {
+  code: string
+  name: string
+  category: string
+  description?: string
+  actions?: string[]
+}

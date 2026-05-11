@@ -115,7 +115,7 @@ type SupplierSelectOption = DefaultOptionType & {
 function buildSupplierOptions(suppliers: SupplierOption[]): SupplierSelectOption[] {
   return suppliers.map((item) => ({
     value: item.code,
-    label: `${item.code} - ${item.name}`,
+    label: `${item.code} - ${item.name}${item.shopNumber ? ` - ${item.shopNumber}` : ''}`,
     searchText: `${item.code} ${item.name} ${item.shopNumber ?? ''}`.toLowerCase(),
   }))
 }

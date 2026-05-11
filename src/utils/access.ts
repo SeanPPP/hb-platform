@@ -55,11 +55,15 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
     return createEmptyAccess()
   }
 
-  const hasPermission = (permission: string) =>
-    currentUser.permissions?.some((item) => item.toLowerCase() === permission.toLowerCase()) ?? false
-
   const hasRole = (role: string) =>
     currentUser.roleNames?.some((item) => item.toLowerCase() === role.toLowerCase()) ?? false
+
+  const isAdmin = hasRole('Admin') || hasRole('管理员')
+
+  const hasPermission = (permission: string) => {
+    if (isAdmin) return true
+    return currentUser.permissions?.some((item) => item.toLowerCase() === permission.toLowerCase()) ?? false
+  }
 
   const onlyRole = (role: string) => {
     if (!currentUser.roleNames?.length) {
@@ -72,7 +76,6 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
   const hasAllRoles = (roles: string[]) => roles.every((role) => hasRole(role))
 
   // --- Role identity flags (backward compat) ---
-  const isAdmin = hasRole('Admin') || hasRole('管理员')
   const isWarehouseManager = hasRole('WarehouseManager') || hasRole('仓库经理')
   const isStoreManager = hasRole('StoreManager') || hasRole('经理')
   const isManager = isStoreManager || isWarehouseManager

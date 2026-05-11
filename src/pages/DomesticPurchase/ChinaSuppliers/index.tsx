@@ -1,6 +1,7 @@
 import {
   CheckCircleOutlined,
   CloudUploadOutlined,
+  CopyOutlined,
   DeleteOutlined,
   EditOutlined,
   PlusOutlined,
@@ -40,6 +41,7 @@ import type {
   ChinaSupplierItem,
   SaveChinaSupplierPayload,
 } from '../../../types/chinaSupplier'
+import { copyTextToClipboard } from '../../../utils/clipboard'
 
 type SupplierFormValues = SaveChinaSupplierPayload
 
@@ -258,6 +260,14 @@ export default function DomesticChinaSuppliersPage() {
       dataIndex: 'supplierCode',
       width: 140,
       sorter: true,
+      render: (value: string) => (
+        <Space size={4}>
+          <span>{value}</span>
+          <Tooltip title="复制">
+            <Button size="small" type="text" icon={<CopyOutlined />} onClick={() => void copyTextToClipboard(value)} />
+          </Tooltip>
+        </Space>
+      ),
     },
     {
       title: '供应商名称',

@@ -1,0 +1,18 @@
+.row-duplicate { background-color: #fff7ed !important; }
+.row-duplicate td { background-color: #fff7ed !important; }
+.row-new { background-color: #f0fdf4 !important; }
+.row-new td { background-color: #f0fdf4 !important; }
+.row-updated { background-color: #fefce8 !important; }
+.row-updated td { background-color: #fefce8 !important; }
+.row-error { background-color: #fef2f2 !important; }
+.row-error td { background-color: #fef2f2 !important; }
+.row-sent { background-color: #eff6ff !important; }
+.row-sent td { background-color: #eff6ff !important; }
+
+.col-selected {
+  background-color: #e6f7ff !important;
+}
+.col-selected td,
+td.col-selected {
+  background-color: #e6f7ff !important;
+}

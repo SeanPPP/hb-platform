@@ -149,7 +149,7 @@ export default function RolePermissionManager({
             loading={saving}
             onClick={() => void handleSave()}
           >
-            Save Permissions
+            保存权限
           </Button>
         </div>
       )}
@@ -157,7 +157,7 @@ export default function RolePermissionManager({
       {!readOnly && !hasChanges() && categories.length > 0 && (
         <div style={{ textAlign: 'center', paddingTop: 4, color: '#999' }}>
           <CheckOutlined style={{ marginRight: 6 }} />
-          Permissions up to date
+          权限已是最新
         </div>
       )}
     </Space>

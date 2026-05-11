@@ -60,8 +60,8 @@ function DesktopAdminLayout() {
     const tab = toTabItem(location.pathname, access)
     if (tab) {
       ensureTab(tab)
-      setActiveKey(tab.key)
     }
+    setActiveKey(tab?.key || location.pathname)
     setOpenKeys(getOpenMenuKeys(location.pathname, access))
   }, [access, ensureTab, location.pathname, setActiveKey])
 

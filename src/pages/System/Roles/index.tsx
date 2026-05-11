@@ -22,7 +22,6 @@ import PageContainer from '../../../components/PageContainer'
 import { P } from '../../../types/permissions'
 import { getRoleByGuid, getRoles, updateRole } from '../../../services/roleService'
 import type { RoleDetailDto, RoleDto, UpdateRoleDto } from '../../../types/role'
-import RolePermissionManager from './RolePermissionManager'
 import RoleUserManagement from './RoleUserManagement'
 
 export default function SystemRolesPage() {
@@ -32,14 +31,17 @@ export default function SystemRolesPage() {
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(10)
   const [total, setTotal] = useState(0)
+
   const [detailOpen, setDetailOpen] = useState(false)
   const [detailLoading, setDetailLoading] = useState(false)
   const [detailRole, setDetailRole] = useState<RoleDetailDto | null>(null)
+
   const [editOpen, setEditOpen] = useState(false)
   const [editLoading, setEditLoading] = useState(false)
   const [editingRole, setEditingRole] = useState<RoleDetailDto | null>(null)
-  const [roleUserOpen, setRoleUserOpen] = useState(false)
   const [form] = Form.useForm<UpdateRoleDto>()
+
+  const [roleUserOpen, setRoleUserOpen] = useState(false)
 
   const loadData = async (nextPage = page, nextPageSize = pageSize) => {
     setLoading(true)
@@ -110,26 +112,21 @@ export default function SystemRolesPage() {
   }
 
   const handleEditSubmit = async () => {
-    if (!editingRole) {
-      return
-    }
-
+    if (!editingRole) return
     try {
       const values = await form.validateFields()
       setEditLoading(true)
       const updated = await updateRole(editingRole.roleGUID, values)
       message.success('角色信息已更新')
       setEditOpen(false)
-      setEditingRole(updated)
+      setEditingRole(null)
       form.resetFields()
       if (detailRole?.roleGUID === updated.roleGUID) {
         setDetailRole((current) => (current ? { ...current, ...updated } : updated))
       }
       void loadData(page, pageSize)
     } catch (error) {
-      if (typeof error === 'object' && error !== null && 'errorFields' in error) {
-        return
-      }
+      if (typeof error === 'object' && error !== null && 'errorFields' in error) return
       console.error(error)
       message.error('更新角色失败')
     } finally {
@@ -169,10 +166,7 @@ export default function SystemRolesPage() {
   ]
 
   return (
-    <PageContainer
-      title="角色管理"
-      subtitle="角色详情和编辑改为列表页内弹窗打开，保持与老版本相同的操作习惯。"
-    >
+    <PageContainer title="角色管理" subtitle="管理角色基本信息和关联用户。">
       <Card>
         <Space wrap style={{ marginBottom: 16 }}>
           <Input
@@ -200,6 +194,7 @@ export default function SystemRolesPage() {
             current: page,
             pageSize,
             total,
+            showSizeChanger: true,
             onChange: (nextPage, nextPageSize) => {
               void loadData(nextPage, nextPageSize)
             },
@@ -246,24 +241,12 @@ export default function SystemRolesPage() {
               <Descriptions.Item label="更新时间">{detailRole.updatedAt}</Descriptions.Item>
             </Descriptions>
 
-            <Card title="权限管理" size="small">
-              {detailRole ? (
-                <HasPermission code={P.Roles.ManagePermissions} fallback={
-                  <Space wrap>
-                    {detailRole.permissions?.length
-                      ? detailRole.permissions.map((item) => <Tag key={item}>{item}</Tag>)
-                      : '暂无权限'}
-                  </Space>
-                }>
-                  <RolePermissionManager
-                    roleGuid={detailRole.roleGUID}
-                    roleName={detailRole.roleName}
-                    onChanged={() => {
-                      void reloadRoleDetail(detailRole.roleGUID)
-                    }}
-                  />
-                </HasPermission>
-              ) : null}
+            <Card title="权限" size="small">
+              <Space wrap>
+                {detailRole.permissions?.length
+                  ? detailRole.permissions.map((item) => <Tag key={item}>{item}</Tag>)
+                  : '暂无权限'}
+              </Space>
             </Card>
 
             <Card title="关联用户" size="small">
@@ -315,9 +298,7 @@ export default function SystemRolesPage() {
         role={detailRole}
         onClose={() => setRoleUserOpen(false)}
         onChanged={() => {
-          if (!detailRole) {
-            return
-          }
+          if (!detailRole) return
           void reloadRoleDetail(detailRole.roleGUID)
           void loadData(page, pageSize)
         }}

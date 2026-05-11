@@ -107,6 +107,48 @@ export async function getContainerProducts(containerGuid: string): Promise<Conta
   return response.data ?? []
 }
 
+interface CheckConflictItem {
+  hbProductNo?: string
+  productCode?: string
+}
+
+interface CheckConflictsResponse {
+  success: boolean
+  data: Array<{ productCode: string; existingQuantity?: number; existingPieces?: number }>
+  message?: string
+}
+
+interface AssignContainerItem {
+  hbProductNo?: string
+  productCode?: string
+  quantity: number
+  packingQuantity?: number
+  unitVolume?: number
+  notes?: string
+}
+
+interface AssignProductsResponse {
+  success: boolean
+  data: { created: number; updated: number; failed: Array<{ productCode: string; error: string }> }
+  message?: string
+}
+
+export async function checkContainerConflicts(containerId: string, items: CheckConflictItem[]): Promise<CheckConflictsResponse> {
+  const response = await request<CheckConflictsResponse>(`${API_BASE}/check-conflicts`, {
+    method: 'POST',
+    data: { ContainerId: containerId, Items: items },
+  })
+  return response
+}
+
+export async function assignProductsToContainer(containerId: string, items: AssignContainerItem[], resolution: 'override' | 'increase', notes?: string): Promise<AssignProductsResponse> {
+  const response = await request<AssignProductsResponse>(`${API_BASE}/assign-products`, {
+    method: 'POST',
+    data: { ContainerId: containerId, Resolution: resolution, Notes: notes, Items: items },
+  })
+  return response
+}
+
 export async function getComingSoonContainers(): Promise<ComingSoonHomeContainer[]> {
   const today = new Date()
   const upcomingStart = formatDateValue(today)

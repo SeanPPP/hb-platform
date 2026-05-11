@@ -1,6 +1,7 @@
 import {
   AppstoreOutlined,
   DashboardOutlined,
+  KeyOutlined,
   MoneyCollectOutlined,
   ShopOutlined,
   TagsOutlined,
@@ -14,15 +15,21 @@ import DashboardPage from '../pages/Dashboard'
 import DomesticChinaSuppliersPage from '../pages/DomesticPurchase/ChinaSuppliers'
 import DomesticProductsPage from '../pages/DomesticPurchase/DomesticProducts'
 import ProductPrefixCodeManagementPage from '../pages/DomesticPurchase/ProductPrefixCodeManagement'
+import ProductCreationPage from '../pages/DomesticPurchase/ProductCreation'
+import ProductImportPage from '../pages/DomesticPurchase/ProductImport'
 import NotFoundPage from '../pages/NotFound'
 import PosmSalesOrdersPage from '../pages/PosmSalesOrders'
 import PosAdminCashRegisterUsersPage from '../pages/PosAdmin/CashRegisterUsers'
 import PosAdminPricingStrategiesPage from '../pages/PosAdmin/PricingStrategies'
 import PosAdminPromotionsPage from '../pages/PosAdmin/Promotions'
 import PosAdminSupplierManagementPage from '../pages/PosAdmin/SupplierManagement'
+import LocalSupplierInvoicesPage from '../pages/PosAdmin/LocalSupplierInvoices'
+import LocalSupplierInvoiceDetailPage from '../pages/PosAdmin/LocalSupplierInvoiceDetailPage'
+import InvoiceEditPage from '../pages/PosAdmin/LocalSupplierInvoices/InvoiceEdit'
 import SystemRolesPage from '../pages/System/Roles'
 import SystemStoresPage from '../pages/System/Stores'
 import SystemUsersPage from '../pages/System/Users'
+import SystemPermissionsPage from '../pages/System/Permissions'
 import WarehouseCategoriesPage from '../pages/Warehouse/Categories'
 import WarehouseLocationsPage from '../pages/Warehouse/Locations'
 import WarehouseProductsPage from '../pages/Warehouse/Products'
@@ -51,6 +58,7 @@ const iconMap = {
   ShopOutlined: <ShopOutlined />,
   TagsOutlined: <TagsOutlined />,
   MoneyCollectOutlined: <MoneyCollectOutlined />,
+  KeyOutlined: <KeyOutlined />,
 }
 
 export const appRoutes: AppRouteItem[] = [
@@ -102,6 +110,16 @@ export const appRoutes: AppRouteItem[] = [
         },
         element: <SystemRolesPage />,
       },
+      {
+        path: '/system/permissions',
+        meta: {
+          title: '权限管理',
+          icon: 'KeyOutlined',
+          keepAlive: true,
+          accessKey: 'canReadRole',
+        },
+        element: <SystemPermissionsPage />,
+      },
     ],
   },
   {
@@ -140,6 +158,26 @@ export const appRoutes: AppRouteItem[] = [
           accessKey: 'canManageWarehouse',
         },
         element: <ProductPrefixCodeManagementPage />,
+      },
+      {
+        path: '/domestic-purchase/product-creation',
+        meta: {
+          title: '货号条码创建',
+          icon: 'TagsOutlined',
+          keepAlive: true,
+          accessKey: 'canManageWarehouse',
+        },
+        element: <ProductCreationPage />,
+      },
+      {
+        path: '/domestic-purchase/product-import',
+        meta: {
+          title: '商品导入',
+          icon: 'AppstoreOutlined',
+          keepAlive: true,
+          accessKey: 'canManageWarehouse',
+        },
+        element: <ProductImportPage />,
       },
     ],
   },
@@ -284,6 +322,40 @@ export const appRoutes: AppRouteItem[] = [
           accessKey: 'canReadOrder',
         },
         element: <PosmSalesOrdersPage />,
+      },
+      {
+        path: '/pos-admin/local-supplier-invoices',
+        meta: {
+          title: '分店进货单',
+          icon: 'ShopOutlined',
+          keepAlive: true,
+          accessKey: 'canManageStore',
+        },
+        element: <LocalSupplierInvoicesPage />,
+      },
+      {
+        path: '/pos-admin/invoice-detail/:id',
+        meta: {
+          title: '进货单详情',
+          hidden: true,
+          keepAlive: true,
+          accessKey: 'canManageStore',
+          activeMenu: '/pos-admin/local-supplier-invoices',
+          dynamicTitle: () => '进货单详情',
+        },
+        element: <LocalSupplierInvoiceDetailPage />,
+      },
+      {
+        path: '/pos-admin/local-supplier-invoices/:id',
+        meta: {
+          title: '编辑进货单',
+          hidden: true,
+          keepAlive: true,
+          accessKey: 'isAdmin',
+          activeMenu: '/pos-admin/local-supplier-invoices',
+          dynamicTitle: () => '编辑进货单',
+        },
+        element: <InvoiceEditPage />,
       },
     ],
   },

@@ -485,6 +485,8 @@ export default function WarehouseProductsPage() {
   const [exportConfigOpen, setExportConfigOpen] = useState(false)
   const [exporting, setExporting] = useState(false)
   const [includeLabelPrice, setIncludeLabelPrice] = useState(false)
+  const [includeBarcodeImage, setIncludeBarcodeImage] = useState(true)
+  const [includeProductImage, setIncludeProductImage] = useState(false)
   const [exportProgress, setExportProgress] = useState(0)
   const [exportMessage, setExportMessage] = useState('')
   const [importFromDomesticOpen, setImportFromDomesticOpen] = useState(false)
@@ -734,17 +736,20 @@ export default function WarehouseProductsPage() {
         return
       }
 
-      await exportDomesticProductsToExcel(
+      const exportResult = await exportDomesticProductsToExcel(
         productsToExport.map(
           (item) => ({
             itemNumber: item.itemNumber,
             barcode: item.barcode,
             name: item.name,
             labelPrice: item.labelPrice,
+            productImage: item.productImage,
           }),
         ),
         {
           includeLabelPrice,
+          includeBarcodeImage,
+          includeProductImage,
           fileName: '仓库商品',
           onProgress: (progress, nextMessage) => {
             setExportProgress(progress)
@@ -753,7 +758,14 @@ export default function WarehouseProductsPage() {
         },
       )
 
-      message.success('导出成功')
+      if (exportResult.failedProductImages.length > 0) {
+        message.warning({
+          content: `导出完成，但有 ${exportResult.failedProductImages.length} 张商品图片下载失败（如 404、网络超时），对应行图片列为空`,
+          duration: 6,
+        })
+      } else {
+        message.success('导出成功')
+      }
       setExportConfigOpen(false)
       setExportProgress(0)
       setExportMessage('')
@@ -1239,6 +1251,12 @@ export default function WarehouseProductsPage() {
           </Typography.Text>
           <Checkbox checked={includeLabelPrice} onChange={(event) => setIncludeLabelPrice(event.target.checked)}>
             包含零售列（贴牌价）
+          </Checkbox>
+          <Checkbox checked={includeBarcodeImage} onChange={(event) => setIncludeBarcodeImage(event.target.checked)}>
+            包含条码图片
+          </Checkbox>
+          <Checkbox checked={includeProductImage} onChange={(event) => setIncludeProductImage(event.target.checked)}>
+            包含商品图片（从图片地址下载）
           </Checkbox>
           {exporting ? (
             <Typography.Text type="secondary">

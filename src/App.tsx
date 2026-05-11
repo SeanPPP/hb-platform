@@ -32,6 +32,7 @@ function AppBootstrap() {
 
   return (
     <Routes>
+      <Route path="/" element={<Navigate to="/dashboard" replace />} />
       <Route
         path="/login"
         element={currentUser ? <Navigate to="/dashboard" replace /> : <LoginPage />}
