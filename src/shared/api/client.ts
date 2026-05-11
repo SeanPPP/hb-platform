@@ -1,0 +1,88 @@
+import axios, { AxiosError, InternalAxiosRequestConfig } from "axios";
+import { router } from "expo-router";
+import { SecureStorage } from "@/shared/storage/secure";
+
+const BASE_URL = process.env.EXPO_PUBLIC_API_BASE_URL || "http://192.168.31.137:5001/api";
+
+function unwrapEnvelope<T>(payload: unknown): T {
+  let current = payload;
+  for (let depth = 0; depth < 3; depth++) {
+    if (typeof current !== "object" || current === null || !("data" in current)) break;
+    const keys = Object.keys(current);
+    const isEnvelope =
+      keys.includes("data") &&
+      (keys.includes("success") || keys.includes("isSuccess") || keys.includes("message"));
+    if (!isEnvelope) break;
+    current = (current as Record<string, unknown>).data;
+  }
+  return current as T;
+}
+
+export const apiClient = axios.create({
+  baseURL: BASE_URL,
+  timeout: 15000,
+  headers: { "Content-Type": "application/json" },
+});
+
+let isRefreshing = false;
+let refreshQueue: Array<{
+  resolve: (t: string) => void;
+  reject: (e: Error) => void;
+}> = [];
+
+apiClient.interceptors.request.use(
+  async (config: InternalAxiosRequestConfig) => {
+    const token = await SecureStorage.getToken();
+    if (token && config.headers) config.headers.Authorization = `Bearer ${token}`;
+    return config;
+  },
+  (error) => Promise.reject(error)
+);
+
+apiClient.interceptors.response.use(
+  (response) => {
+    response.data = unwrapEnvelope(response.data);
+    return response;
+  },
+  async (error: AxiosError) => {
+    const original = error.config as InternalAxiosRequestConfig & { _retry?: boolean };
+    if (error.response?.status === 401 && !original?._retry) {
+      if (isRefreshing) {
+        return new Promise((resolve, reject) => {
+          refreshQueue.push({
+            resolve: (t) => {
+              original.headers.Authorization = `Bearer ${t}`;
+              resolve(apiClient(original));
+            },
+            reject,
+          });
+        });
+      }
+      original._retry = true;
+      isRefreshing = true;
+      try {
+        const rt = await SecureStorage.getRefreshToken();
+        if (!rt) throw new Error("No refresh token");
+        const res = await axios.post(`${BASE_URL}/auth/refresh`, {
+          refreshToken: rt,
+        });
+        const { accessToken, refreshToken: newRt } = res.data.data ?? res.data;
+        await SecureStorage.setToken(accessToken);
+        await SecureStorage.setRefreshToken(newRt);
+        refreshQueue.forEach((cb) => cb.resolve(accessToken));
+        refreshQueue = [];
+        original.headers.Authorization = `Bearer ${accessToken}`;
+        return apiClient(original);
+      } catch (refreshErr) {
+        refreshQueue.forEach((cb) => cb.reject(refreshErr as Error));
+        refreshQueue = [];
+        await SecureStorage.clearAll();
+        router.replace("/(auth)/login");
+        return Promise.reject(refreshErr);
+      } finally {
+        isRefreshing = false;
+      }
+    }
+    return Promise.reject(error);
+  }
+);
