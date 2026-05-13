@@ -691,7 +691,6 @@ namespace BlazorApp.Api.Services
                                 .SetColumns(x => x.状态 == supplier.Status)
                                 .SetColumns(x => x.FGC_LastModifier == supplier.FGC_LastModifier)
                                 .SetColumns(x => x.FGC_LastModifyDate == now)
-                               // .SetColumns(x => x.FGC_Rowversion == Guid.NewGuid().ToString())
                                 .Where(x => x.ID == existing.ID)
                                 .ExecuteCommandAsync();
 

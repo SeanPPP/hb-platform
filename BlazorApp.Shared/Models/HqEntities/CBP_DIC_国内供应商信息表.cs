@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
@@ -55,7 +55,7 @@ namespace BlazorApp.Shared.Models.HqEntities
         [SugarColumn(IsNullable = true)]
         public string? FGC_LastModifyDate { get; set; }
 
-        [SugarColumn(IsNullable = true)]
+        [SugarColumn(IsNullable = true, IsOnlyIgnoreInsert = true)]
         public string? FGC_Rowversion { get; set; }
 
         [SugarColumn(IsNullable = true)]

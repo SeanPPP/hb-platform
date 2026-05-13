@@ -1,6 +1,7 @@
 using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Shared.DTOs;
+using BlazorApp.Shared.Models;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
@@ -689,6 +690,24 @@ namespace BlazorApp.Api.Controllers.React
             {
                 _logger.LogError(ex, "批量创建套装商品失败");
                 return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
+        [HttpPost("send-to-hq")]
+        public async Task<IActionResult> SendToHq([FromBody] SyncToHBSalesRequestDto request)
+        {
+            try
+            {
+                _logger.LogInformation("发送商品到HQ: {Count} 件", request.ProductCodes.Count);
+                var result = await _domesticProductReactService.SendProductsToHqAsync(request.ProductCodes);
+                if (result.Success)
+                    return Ok(result);
+                return BadRequest(result);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "发送商品到HQ异常");
+                return StatusCode(500, ApiResponse<SyncResult>.Error(ex.Message, "SEND_TO_HQ_ERROR"));
             }
         }
     }

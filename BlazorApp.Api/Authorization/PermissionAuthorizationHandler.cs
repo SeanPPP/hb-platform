@@ -34,6 +34,12 @@ namespace BlazorApp.Api.Authorization
                 return;
             }
 
+            if (context.User.IsInRole("Admin"))
+            {
+                context.Succeed(requirement);
+                return;
+            }
+
             // 缓存键: user_permission_{userId}_{permission}
             var cacheKey = $"user_permission_{userId}_{requirement.Permission}";
 

@@ -391,6 +391,7 @@ builder.Services.AddScoped<TencentCloudUploadService>();
 builder.Services.AddScoped<IContainerReactService, ContainerReactService>();
 builder.Services.AddScoped<IDomesticProductReactService, DomesticProductReactService>();
 builder.Services.AddScoped<IProductPrefixCodeReactService, ProductPrefixCodeReactService>();
+builder.Services.AddScoped<IProductGradeReactService, ProductGradeReactService>();
 builder.Services.AddScoped<IDomesticSupplierReactService, DomesticSupplierReactService>();
 builder.Services.AddScoped<ILocalSuppliersReactService, LocalSupplierReactService>();
 builder.Services.AddScoped<IWarehouseCategoryReactService, WarehouseCategoryReactService>();
@@ -489,30 +490,6 @@ app.UseAuthorization();
 // 映射控制器路由（启用API端点）
 app.MapControllers();
 
-// ===================== 缓存预热 =====================
-// 🔥 应用启动后预热首页商品列表缓存
-_ = Task.Run(async () =>
-{
-    try
-    {
-        await Task.Delay(TimeSpan.FromSeconds(5)); // 等待应用完全启动
-        using (var scope = app.Services.CreateScope())
-        {
-            var cacheWarmer =
-                scope.ServiceProvider.GetRequiredService<BlazorApp.Api.Interfaces.IStoreOrderCacheWarmer>();
-            var logger = scope.ServiceProvider.GetRequiredService<ILogger<Program>>();
-            logger.LogInformation("开始预热首页商品列表缓存");
-            await cacheWarmer.WarmUpHomePageAsync();
-            logger.LogInformation("首页商品列表缓存预热完成");
-        }
-    }
-    catch (Exception ex)
-    {
-        var logger = app.Services.GetRequiredService<ILogger<Program>>();
-        logger.LogError(ex, "预热首页商品列表缓存失败，但不影响应用启动");
-    }
-});
-
 // ===================== 数据库初始化与种子数据 =====================
 // 🗄️ 应用启动时自动初始化数据库结构和基础数据
 // 这个过程在Web服务器启动之前完成，确保数据库就绪
@@ -533,7 +510,7 @@ try
         // 🔄 智能模式：增量更新数据库结构
         // 只创建不存在的表，更新表结构，保留现有数据
         Console.WriteLine("🧠 使用智能初始化模式（保留现有数据）");
-      //  dbContext.CreateTable();
+        //dbContext.CreateTable();
         //await posmDbContext.InitializeTablesAsync();
         Console.WriteLine("✅ 主数据库表检查完成");
 
@@ -583,13 +560,34 @@ try
 }
 catch (Exception ex)
 {
-    // 💥 数据库初始化失败处理
-    // 任何数据库初始化错误都会终止应用启动，确保不在不完整状态下运行
     Console.WriteLine($"❌ 数据库初始化失败: {ex.Message}");
     Console.WriteLine($"🔍 详细错误信息: {ex}");
     Console.WriteLine("💡 请检查数据库连接字符串和权限设置");
-    throw; // 重新抛出异常，终止应用启动
+    throw;
 }
+
+// ===================== 缓存预热 =====================
+_ = Task.Run(async () =>
+{
+    try
+    {
+        await Task.Delay(TimeSpan.FromSeconds(3));
+        using (var scope = app.Services.CreateScope())
+        {
+            var cacheWarmer =
+                scope.ServiceProvider.GetRequiredService<BlazorApp.Api.Interfaces.IStoreOrderCacheWarmer>();
+            var logger = scope.ServiceProvider.GetRequiredService<ILogger<Program>>();
+            logger.LogInformation("开始预热首页商品列表缓存");
+            await cacheWarmer.WarmUpHomePageAsync();
+            logger.LogInformation("首页商品列表缓存预热完成");
+        }
+    }
+    catch (Exception ex)
+    {
+        var logger = app.Services.GetRequiredService<ILogger<Program>>();
+        logger.LogError(ex, "预热首页商品列表缓存失败，但不影响应用启动");
+    }
+});
 
 /*
 

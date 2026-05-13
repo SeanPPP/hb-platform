@@ -44,6 +44,8 @@ namespace BlazorApp.Shared.DTOs
     /// 进口价格 (参考)
     /// </summary>
     public decimal? ImportPrice { get; set; }
+
+    public string? Grade { get; set; }
   }
 
   /// <summary>
@@ -51,6 +53,11 @@ namespace BlazorApp.Shared.DTOs
   /// </summary>
   public class StoreOrderFilterDto
   {
+    /// <summary>
+    /// 分店代码（用于缓存分区；商品列表仍为仓库维度时可选不传）
+    /// </summary>
+    public string? StoreCode { get; set; }
+
     /// <summary>
     /// 货号 (精确或模糊匹配)
     /// </summary>
@@ -73,6 +80,8 @@ namespace BlazorApp.Shared.DTOs
     /// 排序字段: Default, PriceAsc, PriceDesc, Name
     /// </summary>
     public string SortBy { get; set; } = "Default";
+
+    public string? Grade { get; set; }
   }
 
   /// <summary>
@@ -177,6 +186,7 @@ namespace BlazorApp.Shared.DTOs
     public string ProductCode { get; set; } = string.Empty;
     public string? ItemNumber { get; set; }
     public string? Barcode { get; set; }
+    public string? Grade { get; set; }
     public string? ProductName { get; set; }
     public string? ProductImage { get; set; }
     public decimal Price { get; set; }

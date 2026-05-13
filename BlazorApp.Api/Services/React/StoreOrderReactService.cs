@@ -5,6 +5,7 @@ using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Helper;
 using BlazorApp.Shared.Models;
 using BlazorApp.Shared.Models.HqEntities;
+using System.Security.Claims;
 using Microsoft.Extensions.Configuration;
 using SqlSugar;
 
@@ -41,18 +42,87 @@ namespace BlazorApp.Api.Services.React
             return unitVolume.HasValue ? unitVolume.Value * quantity : null;
         }
 
+        private bool HasRole(string role)
+        {
+            var user = _httpContextAccessor.HttpContext?.User;
+            if (user == null)
+            {
+                return false;
+            }
+
+            return user.Claims.Any(claim =>
+                claim.Type == ClaimTypes.Role
+                && claim.Value.Equals(role, StringComparison.OrdinalIgnoreCase)
+            );
+        }
+
+        private bool HasElevatedOrderAccess()
+        {
+            return HasRole("Admin")
+                || HasRole("Manager")
+                || HasRole("WarehouseManager")
+                || HasRole("WarehouseStaff");
+        }
+
+        private async Task<List<string>?> GetAccessibleStoreCodesAsync()
+        {
+            if (HasElevatedOrderAccess())
+            {
+                return null;
+            }
+
+            var user = _httpContextAccessor.HttpContext?.User;
+            if (user?.Identity?.IsAuthenticated != true)
+            {
+                return null;
+            }
+
+            var userGuid = user.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            if (string.IsNullOrWhiteSpace(userGuid))
+            {
+                var username = user.Identity?.Name;
+                if (string.IsNullOrWhiteSpace(username))
+                {
+                    return new List<string>();
+                }
+
+                userGuid = await _db.Queryable<User>()
+                    .Where(u => u.Username == username)
+                    .Select(u => u.UserGUID)
+                    .FirstAsync();
+            }
+
+            if (string.IsNullOrWhiteSpace(userGuid))
+            {
+                return new List<string>();
+            }
+
+            return await _db.Queryable<UserStore>()
+                .InnerJoin<Store>((us, s) => us.StoreGUID == s.StoreGUID)
+                .Where((us, s) => us.UserGUID == userGuid)
+                .Select((us, s) => s.StoreCode)
+                .ToListAsync();
+        }
+
         public async Task<PagedListReactDto<StoreOrderProductDto>> GetPagedListAsync(
             StoreOrderFilterDto filter
         )
         {
+            var normalizedGrades = (filter.Grade ?? string.Empty)
+                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
             var q = _db.Queryable<Product>()
                 .InnerJoin<WarehouseProduct>((p, wp) => p.ProductCode == wp.ProductCode)
                 .LeftJoin<WarehouseCategory>(
                     (p, wp, wc) => p.WarehouseCategoryGUID == wc.CategoryGUID
                 )
-                .Where((p, wp, wc) => p.IsActive && !p.IsDeleted && !wp.IsDeleted && wp.IsActive);
+                .LeftJoin<ProductGrade>(
+                    (p, wp, wc, pg) => p.ProductCode == pg.ProductCode && !pg.IsDeleted
+                )
+                .Where((p, wp, wc, pg) => p.IsActive && !p.IsDeleted && !wp.IsDeleted && wp.IsActive);
 
-            // 1. 分类筛选
             if (!string.IsNullOrWhiteSpace(filter.CategoryGUID))
             {
                 var categoryIds = GetAllSubCategoryIds(filter.CategoryGUID);
@@ -62,62 +132,65 @@ namespace BlazorApp.Api.Services.React
                     filter.CategoryGUID
                 );
                 q = q.Where(
-                    (p, wp, wc) =>
+                    (p, wp, wc, pg) =>
                         p.WarehouseCategoryGUID != null
                         && categoryIds.Contains(p.WarehouseCategoryGUID)
                 );
             }
 
-            // 2. 货号搜索 (兼容商品名称搜索)
             if (!string.IsNullOrWhiteSpace(filter.ItemNumber))
             {
                 var keyword = filter.ItemNumber.Trim().ToLower();
                 q = q.Where(
-                    (p, wp, wc) =>
+                    (p, wp, wc, pg) =>
                         (p.ItemNumber != null && p.ItemNumber.ToLower().Contains(keyword))
                         || (p.Barcode != null && p.Barcode.ToLower().Contains(keyword))
                 );
             }
 
-            // 2.1 商品名称搜索
             if (!string.IsNullOrWhiteSpace(filter.ProductName))
             {
                 var keyword = filter.ProductName.Trim().ToLower();
                 q = q.Where(
-                    (p, wp, wc) =>
+                    (p, wp, wc, pg) =>
                         p.ProductName != null && p.ProductName.ToLower().Contains(keyword)
                 );
             }
 
-            // 3. 排序
+            if (normalizedGrades.Count > 0)
+            {
+                q = q.Where(
+                    (p, wp, wc, pg) => normalizedGrades.Contains(pg.Grade)
+                );
+            }
+
             if (!string.IsNullOrWhiteSpace(filter.SortBy))
             {
                 switch (filter.SortBy.ToLower())
                 {
                     case "priceasc":
-                        q = q.OrderBy((p, wp, wc) => wp.OEMPrice, OrderByType.Asc);
+                        q = q.OrderBy((p, wp, wc, pg) => wp.OEMPrice, OrderByType.Asc);
                         break;
                     case "pricedesc":
-                        q = q.OrderBy((p, wp, wc) => wp.OEMPrice, OrderByType.Desc);
+                        q = q.OrderBy((p, wp, wc, pg) => wp.OEMPrice, OrderByType.Desc);
                         break;
                     case "name":
-                        q = q.OrderBy((p, wp, wc) => p.ProductName, OrderByType.Asc);
+                        q = q.OrderBy((p, wp, wc, pg) => p.ProductName, OrderByType.Asc);
                         break;
                     default:
-                        // 默认按货号排序
-                        q = q.OrderBy((p, wp, wc) => p.ItemNumber, OrderByType.Asc);
+                        q = q.OrderBy((p, wp, wc, pg) => p.ItemNumber, OrderByType.Asc);
                         break;
                 }
             }
             else
             {
-                q = q.OrderBy((p, wp, wc) => p.ItemNumber, OrderByType.Asc);
+                q = q.OrderBy((p, wp, wc, pg) => p.ItemNumber, OrderByType.Asc);
             }
 
             var total = await q.CountAsync();
 
             var items = await q.Select(
-                    (p, wp, wc) =>
+                    (p, wp, wc, pg) =>
                         new StoreOrderProductDto
                         {
                             ProductCode = p.ProductCode ?? string.Empty,
@@ -131,6 +204,7 @@ namespace BlazorApp.Api.Services.React
                             StockQuantity = wp.StockQuantity ?? 0,
                             PackQty = p.MiddlePackageQuantity,
                             ImportPrice = wp.ImportPrice,
+                            Grade = pg.Grade,
                         }
                 )
                 .Skip((filter.PageNumber - 1) * filter.PageSize)
@@ -172,17 +246,20 @@ namespace BlazorApp.Api.Services.React
                     .LeftJoin<WarehouseCategory>(
                         (p, wp, wc) => p.WarehouseCategoryGUID == wc.CategoryGUID
                     )
-                    .Where(
-                        (p, wp, wc) => p.IsActive && !p.IsDeleted && !wp.IsDeleted && wp.IsActive
+                    .LeftJoin<ProductGrade>(
+                        (p, wp, wc, pg) => p.ProductCode == pg.ProductCode && !pg.IsDeleted
                     )
                     .Where(
-                        (p, wp, wc) =>
+                        (p, wp, wc, pg) => p.IsActive && !p.IsDeleted && !wp.IsDeleted && wp.IsActive
+                    )
+                    .Where(
+                        (p, wp, wc, pg) =>
                             (p.ItemNumber != null && codes.Contains(p.ItemNumber))
                             || (p.Barcode != null && codes.Contains(p.Barcode))
                             || (p.ProductCode != null && codes.Contains(p.ProductCode))
                     )
                     .Select(
-                        (p, wp, wc) =>
+                        (p, wp, wc, pg) =>
                             new StoreOrderProductDto
                             {
                                 ProductCode = p.ProductCode ?? string.Empty,
@@ -197,6 +274,7 @@ namespace BlazorApp.Api.Services.React
                                 StockQuantity = wp.StockQuantity ?? 0,
                                 PackQty = p.MiddlePackageQuantity,
                                 ImportPrice = wp.ImportPrice,
+                                Grade = pg.Grade,
                             }
                     )
                     .ToListAsync();
@@ -271,17 +349,20 @@ namespace BlazorApp.Api.Services.React
                     .LeftJoin<WarehouseCategory>(
                         (p, wp, wc) => p.WarehouseCategoryGUID == wc.CategoryGUID
                     )
-                    .Where(
-                        (p, wp, wc) => p.IsActive && !p.IsDeleted && !wp.IsDeleted && wp.IsActive
+                    .LeftJoin<ProductGrade>(
+                        (p, wp, wc, pg) => p.ProductCode == pg.ProductCode && !pg.IsDeleted
                     )
                     .Where(
-                        (p, wp, wc) =>
+                        (p, wp, wc, pg) => p.IsActive && !p.IsDeleted && !wp.IsDeleted && wp.IsActive
+                    )
+                    .Where(
+                        (p, wp, wc, pg) =>
                             (p.Barcode != null && p.Barcode.ToLower() == barcodeLower)
                             || (p.ItemNumber != null && p.ItemNumber.ToLower() == barcodeLower)
                             || (p.ProductCode != null && p.ProductCode.ToLower() == barcodeLower)
                     )
                     .Select(
-                        (p, wp, wc) =>
+                        (p, wp, wc, pg) =>
                             new StoreOrderProductDto
                             {
                                 ProductCode = p.ProductCode ?? string.Empty,
@@ -296,6 +377,7 @@ namespace BlazorApp.Api.Services.React
                                 StockQuantity = wp.StockQuantity ?? 0,
                                 PackQty = p.MiddlePackageQuantity,
                                 ImportPrice = wp.ImportPrice,
+                                Grade = pg.Grade,
                             }
                     )
                     .ToListAsync();
@@ -389,15 +471,17 @@ namespace BlazorApp.Api.Services.React
                 .LeftJoin<Product>((d, p) => d.ProductCode == p.ProductCode)
                 .LeftJoin<WarehouseProduct>((d, p, wp) => d.ProductCode == wp.ProductCode)
                 .LeftJoin<DomesticProduct>((d, p, wp, dp) => wp.ProductCode == dp.ProductCode)
+                .LeftJoin<ProductGrade>((d, p, wp, dp, pg) => d.ProductCode == pg.ProductCode && !pg.IsDeleted)
                 .Where(d => d.OrderGUID == order.OrderGUID && !d.IsDeleted)
                 .Select(
-                    (d, p, wp, dp) =>
+                    (d, p, wp, dp, pg) =>
                         new StoreOrderCartItemDto
                         {
                             DetailGUID = d.DetailGUID,
                             ProductCode = d.ProductCode ?? string.Empty,
                             ItemNumber = p.ItemNumber,
                             Barcode = p.Barcode,
+                            Grade = pg.Grade,
                             ProductName = p.ProductName,
                             ProductImage = p.ProductImage,
                             Price = d.OEMPrice ?? 0,
@@ -922,6 +1006,7 @@ namespace BlazorApp.Api.Services.React
         {
             try
             {
+                var accessibleStoreCodes = await GetAccessibleStoreCodesAsync();
                 ISugarQueryable<WareHouseOrder> q;
 
                 // 0. 关键字筛选 (订单号 或 分店代码 或 商品货号)
@@ -962,13 +1047,55 @@ namespace BlazorApp.Api.Services.React
                 // 1. 分店筛选
                 if (filter.StoreCodes != null && filter.StoreCodes.Any())
                 {
+                    var requestedStoreCodes = filter.StoreCodes
+                        .Where(code => !string.IsNullOrWhiteSpace(code))
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .ToList();
+
+                    if (accessibleStoreCodes != null)
+                    {
+                        requestedStoreCodes = requestedStoreCodes
+                            .Intersect(accessibleStoreCodes, StringComparer.OrdinalIgnoreCase)
+                            .ToList();
+                    }
+
+                    if (!requestedStoreCodes.Any())
+                    {
+                        return new PagedListReactDto<StoreOrderListItemDto>
+                        {
+                            Items = new List<StoreOrderListItemDto>(),
+                            Total = 0,
+                            PageNumber = filter.PageNumber,
+                            PageSize = filter.PageSize,
+                        };
+                    }
+
                     q = q.Where(o =>
-                        o.StoreCode != null && filter.StoreCodes!.Contains(o.StoreCode)
+                        o.StoreCode != null && requestedStoreCodes.Contains(o.StoreCode)
                     );
                 }
                 else if (!string.IsNullOrWhiteSpace(filter.StoreCode))
                 {
-                    q = q.Where(o => o.StoreCode == filter.StoreCode);
+                    var requestedStoreCode = filter.StoreCode.Trim();
+
+                    if (
+                        accessibleStoreCodes != null
+                        && !accessibleStoreCodes.Contains(
+                            requestedStoreCode,
+                            StringComparer.OrdinalIgnoreCase
+                        )
+                    )
+                    {
+                        return new PagedListReactDto<StoreOrderListItemDto>
+                        {
+                            Items = new List<StoreOrderListItemDto>(),
+                            Total = 0,
+                            PageNumber = filter.PageNumber,
+                            PageSize = filter.PageSize,
+                        };
+                    }
+
+                    q = q.Where(o => o.StoreCode == requestedStoreCode);
                 }
                 else
                 {
@@ -1327,6 +1454,7 @@ namespace BlazorApp.Api.Services.React
 
         public async Task<ApiResponse<StoreOrderCartDto?>> GetOrderDetailAsync(string orderGuid)
         {
+            var accessibleStoreCodes = await GetAccessibleStoreCodesAsync();
             var order = await _db.Queryable<WareHouseOrder>()
                 .InnerJoin<Store>(
                     (o, s) => o.StoreCode == s.StoreCode || o.StoreCode == s.StoreGUID
@@ -1345,19 +1473,37 @@ namespace BlazorApp.Api.Services.React
             }
 
             // 1. 获取基本明细
+            if (
+                accessibleStoreCodes != null
+                && !string.IsNullOrWhiteSpace(order.Order.StoreCode)
+                && !accessibleStoreCodes.Contains(
+                    order.Order.StoreCode,
+                    StringComparer.OrdinalIgnoreCase
+                )
+            )
+            {
+                return new ApiResponse<StoreOrderCartDto?>
+                {
+                    Success = false,
+                    Message = "You do not have access to this order",
+                };
+            }
+
             var baseDetails = await _db.Queryable<WareHouseOrderDetails>()
                 .LeftJoin<Product>((d, p) => d.ProductCode == p.ProductCode)
                 .LeftJoin<WarehouseProduct>((d, p, wp) => d.ProductCode == wp.ProductCode)
                 .LeftJoin<DomesticProduct>((d, p, wp, dp) => wp.ProductCode == dp.ProductCode)
+                .LeftJoin<ProductGrade>((d, p, wp, dp, pg) => d.ProductCode == pg.ProductCode && !pg.IsDeleted)
                 .Where(d => d.OrderGUID == order.Order.OrderGUID && !d.IsDeleted)
                 .Select(
-                    (d, p, wp, dp) =>
+                    (d, p, wp, dp, pg) =>
                         new StoreOrderCartItemDto
                         {
                             DetailGUID = d.DetailGUID,
                             ProductCode = d.ProductCode ?? string.Empty,
                             ItemNumber = p.ItemNumber,
                             Barcode = p.Barcode,
+                            Grade = pg.Grade,
                             ProductName = p.ProductName,
                             ProductImage = p.ProductImage,
                             Price = d.OEMPrice ?? 0,

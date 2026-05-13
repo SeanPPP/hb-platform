@@ -13,7 +13,9 @@ namespace BlazorApp.Api.Controllers.React
     [ApiController]
     [Route("api/react/v1/suppliers")]
     [Authorize]
-    [Obsolete("Candidate for removal after confirming LocalSuppliersController fully replaces this endpoint.")]
+    [Obsolete(
+        "Candidate for removal after confirming LocalSuppliersController fully replaces this endpoint."
+    )]
     public class ReactSuppliersController : ControllerBase
     {
         private readonly IDomesticSupplierReactService _supplierReactService;
@@ -21,7 +23,8 @@ namespace BlazorApp.Api.Controllers.React
 
         public ReactSuppliersController(
             IDomesticSupplierReactService supplierReactService,
-            ILogger<ReactSuppliersController> logger)
+            ILogger<ReactSuppliersController> logger
+        )
         {
             _supplierReactService = supplierReactService;
             _logger = logger;
@@ -39,27 +42,26 @@ namespace BlazorApp.Api.Controllers.React
             {
                 var suppliers = await _supplierReactService.GetActiveSupplierListAsync();
 
-                return Ok(new
-                {
-                    success = true,
-                    data = suppliers.Select(s => new
+                return Ok(
+                    new
                     {
-                        code = s.SupplierCode,
-                        name = s.SupplierName,
-                        contactPerson = s.ContactPerson,
-                        phone = s.Phone
-                    }),
-                    message = "获取供应商列表成功"
-                });
+                        success = true,
+                        data = suppliers.Select(s => new
+                        {
+                            code = s.SupplierCode,
+                            name = s.SupplierName,
+                            shopNumber = s.ShopNumber,
+                            contactPerson = s.ContactPerson,
+                            phone = s.Phone,
+                        }),
+                        message = "获取供应商列表成功",
+                    }
+                );
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "获取启用供应商列表失败");
-                return StatusCode(500, new
-                {
-                    success = false,
-                    message = "获取供应商列表失败"
-                });
+                return StatusCode(500, new { success = false, message = "获取供应商列表失败" });
             }
         }
 
@@ -76,41 +78,30 @@ namespace BlazorApp.Api.Controllers.React
             {
                 if (string.IsNullOrWhiteSpace(supplierCode))
                 {
-                    return BadRequest(new
-                    {
-                        success = false,
-                        message = "供应商编码不能为空"
-                    });
+                    return BadRequest(new { success = false, message = "供应商编码不能为空" });
                 }
 
                 var supplier = await _supplierReactService.GetSupplierByCodeAsync(supplierCode);
 
                 if (supplier == null)
                 {
-                    return NotFound(new
-                    {
-                        success = false,
-                        message = "供应商不存在"
-                    });
+                    return NotFound(new { success = false, message = "供应商不存在" });
                 }
 
-                return Ok(new
-                {
-                    success = true,
-                    data = supplier,
-                    message = "获取供应商详情成功"
-                });
+                return Ok(
+                    new
+                    {
+                        success = true,
+                        data = supplier,
+                        message = "获取供应商详情成功",
+                    }
+                );
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "根据编码获取供应商详情失败: {SupplierCode}", supplierCode);
-                return StatusCode(500, new
-                {
-                    success = false,
-                    message = "获取供应商详情失败"
-                });
+                return StatusCode(500, new { success = false, message = "获取供应商详情失败" });
             }
         }
     }
 }
-

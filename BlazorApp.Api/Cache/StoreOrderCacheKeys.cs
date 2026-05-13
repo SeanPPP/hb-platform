@@ -59,12 +59,14 @@ namespace BlazorApp.Api.Cache
         {
             var filter = new StoreOrderFilterDto
             {
+                StoreCode = null,
                 PageNumber = 1,
                 PageSize = 50,
                 ItemNumber = null,
                 ProductName = null,
                 CategoryGUID = null,
-                SortBy = "Default"
+                SortBy = "Default",
+                Grade = null,
             };
             return Products(filter);
         }
@@ -93,9 +95,11 @@ namespace BlazorApp.Api.Cache
         {
             var parts = new[]
             {
+                filter.StoreCode ?? "null",
                 filter.ItemNumber ?? "null",
                 filter.ProductName ?? "null",
                 filter.CategoryGUID ?? "null",
+                filter.Grade ?? "null",
                 filter.PageNumber.ToString(),
                 filter.PageSize.ToString(),
                 filter.SortBy ?? "Default"

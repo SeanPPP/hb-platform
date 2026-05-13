@@ -414,6 +414,7 @@ namespace BlazorApp.Api.Data
                 typeof(ScheduledTaskLog),
                 typeof(HolidayProduct),
                 typeof(ProductCategory),
+                typeof(ProductGrade),
             };
 
             // 检查并创建不存在的表

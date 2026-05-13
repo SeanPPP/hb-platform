@@ -23,13 +23,15 @@ namespace BlazorApp.Api.Services.React
         private readonly IMapper _mapper;
         private readonly ILogger<DomesticProductReactService> _logger;
         private readonly ItemBarcodeService _itemBarcodeService;
+        private readonly HqSqlSugarContext _hqContext;
 
         public DomesticProductReactService(
             SqlSugarContext context,
             HBSalesSqlSugarContext hbSalesContext,
             IMapper mapper,
             ILogger<DomesticProductReactService> logger,
-            ItemBarcodeService itemBarcodeService
+            ItemBarcodeService itemBarcodeService,
+            HqSqlSugarContext hqContext
         )
         {
             _context = context;
@@ -37,6 +39,7 @@ namespace BlazorApp.Api.Services.React
             _mapper = mapper;
             _logger = logger;
             _itemBarcodeService = itemBarcodeService;
+            _hqContext = hqContext;
         }
 
         // ==================== React React-Data-Grid 专用方法 ====================
@@ -2837,6 +2840,347 @@ namespace BlazorApp.Api.Services.React
             {
                 _logger.LogError(ex, "[HBSalesSync] 同步商品到HBSales异常");
                 return ApiResponse<SyncResult>.Error("同步失败", "SYNC_ERROR");
+            }
+        }
+
+        public async Task<ApiResponse<SyncResult>> SendProductsToHqAsync(List<string> productCodes)
+        {
+            try
+            {
+                var result = new SyncResult { StartTime = DateTime.Now };
+
+                if (productCodes == null || !productCodes.Any())
+                    return ApiResponse<SyncResult>.Error("请选择要发送的商品", "NO_PRODUCTS");
+
+                _logger.LogInformation(
+                    "[SendToHq] 开始发送商品到HQ，数量: {Count}",
+                    productCodes.Count
+                );
+
+                var products = await _context
+                    .Db.Queryable<DomesticProduct>()
+                    .Where(p => productCodes.Contains(p.ProductCode) && !p.IsDeleted)
+                    .ToListAsync();
+
+                var validProducts = products
+                    .Where(p => p.ImportPrice.HasValue && p.OEMPrice.HasValue)
+                    .ToList();
+
+                if (!validProducts.Any())
+                    return ApiResponse<SyncResult>.Error(
+                        "选中的商品中没有同时具备进口价格和贴牌价格的商品",
+                        "NO_VALID_PRODUCTS"
+                    );
+
+                var hqDb = _hqContext.Db;
+                var successCount = 0;
+                var failCount = 0;
+                var errors = new List<string>();
+                var productCount = 0;
+                var retailPriceCount = 0;
+
+                // === 1. 写入 DIC_商品信息字典表 ===
+                var syncProductCodes = validProducts.Select(p => p.ProductCode).ToList();
+                var existingProducts =
+                    await hqDb.Queryable<BlazorApp.Shared.Models.HqEntities.DIC_商品信息字典表>()
+                        .Where(x => syncProductCodes.Contains(x.H商品编码))
+                        .Select(x => x.H商品编码)
+                        .ToListAsync();
+                var existingCodes = existingProducts.ToHashSet();
+                var notExistingProducts = validProducts
+                    .Where(p => !existingCodes.Contains(p.ProductCode))
+                    .ToList();
+                var toUpdateProducts = validProducts
+                    .Where(p => existingCodes.Contains(p.ProductCode))
+                    .ToList();
+
+                // 插入新商品
+                if (notExistingProducts.Any())
+                {
+                    var insertList = notExistingProducts
+                        .Select(p => new BlazorApp.Shared.Models.HqEntities.DIC_商品信息字典表
+                        {
+                            HGUID = Guid.NewGuid().ToString(),
+                            H商品编码 = p.ProductCode,
+                            H货号 = p.HBProductNo,
+                            H主条形码 = p.Barcode,
+                            H商品名称 = !string.IsNullOrWhiteSpace(p.EnglishProductName)
+                                ? p.EnglishProductName
+                                : p.ProductName,
+                            H大写名称 = p.ProductName,
+                            H商品类型 = 0,
+                            H规格 = p.ProductSpecification,
+                            H单位 = "个",
+                            H进货价 = p.ImportPrice ?? 0,
+                            H零售价 = p.OEMPrice ?? 0,
+                            H是否自动定价 = false,
+                            H商品图片 = p.ProductImage,
+                            中包数量 = p.MiddlePackQuantity ?? 0,
+                            H使用状态 = p.IsActive,
+                            H是否特殊商品 = false,
+                            H供货商编码 = "200",
+                            FGC_Creator = "HBweb",
+                            FGC_CreateDate = DateTime.Now,
+                            FGC_LastModifier = "HBweb",
+                            FGC_LastModifyDate = DateTime.Now,
+                        })
+                        .ToList();
+
+                    await hqDb.Insertable(insertList)
+                        .IgnoreColumns(x => x.ID)
+                        .ExecuteCommandAsync();
+                    productCount += insertList.Count;
+                    _logger.LogInformation("[SendToHq] 新增商品字典 {Count} 条", insertList.Count);
+                }
+
+                // 更新已有商品
+                if (toUpdateProducts.Any())
+                {
+                    foreach (var p in toUpdateProducts)
+                    {
+                        try
+                        {
+                            var updateSql = new List<string>();
+                            if (!string.IsNullOrWhiteSpace(p.HBProductNo))
+                                updateSql.Add($"[H货号] = N'{p.HBProductNo.Replace("'", "''")}'");
+                            if (!string.IsNullOrWhiteSpace(p.Barcode))
+                                updateSql.Add($"[H主条形码] = N'{p.Barcode.Replace("'", "''")}'");
+
+                            var displayName = !string.IsNullOrWhiteSpace(p.EnglishProductName)
+                                ? p.EnglishProductName
+                                : p.ProductName;
+                            if (!string.IsNullOrWhiteSpace(displayName))
+                                updateSql.Add($"[H商品名称] = N'{displayName.Replace("'", "''")}'");
+                            if (!string.IsNullOrWhiteSpace(p.ProductName))
+                                updateSql.Add(
+                                    $"[H大写名称] = N'{p.ProductName.Replace("'", "''")}'"
+                                );
+
+                            if (p.ImportPrice.HasValue)
+                                updateSql.Add($"[H进货价] = {p.ImportPrice.Value}");
+                            if (p.OEMPrice.HasValue)
+                                updateSql.Add($"[H零售价] = {p.OEMPrice.Value}");
+                            if (!string.IsNullOrWhiteSpace(p.ProductImage))
+                                updateSql.Add(
+                                    $"[H商品图片] = N'{p.ProductImage.Replace("'", "''")}'"
+                                );
+                            if (p.MiddlePackQuantity.HasValue)
+                                updateSql.Add($"[中包数量] = {p.MiddlePackQuantity.Value}");
+
+                            updateSql.Add("[H供货商编码] = '200'");
+                            updateSql.Add($"[FGC_LastModifier] = 'HBweb'");
+                            updateSql.Add(
+                                $"[FGC_LastModifyDate] = '{DateTime.Now:yyyy-MM-dd HH:mm:ss}'"
+                            );
+
+                            if (updateSql.Any())
+                            {
+                                var sql =
+                                    $"UPDATE [DIC_商品信息字典表] SET {string.Join(", ", updateSql)} WHERE [H商品编码] = N'{p.ProductCode.Replace("'", "''")}'";
+                                await hqDb.Ado.ExecuteCommandAsync(sql);
+                                productCount++;
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            failCount++;
+                            errors.Add($"更新商品 {p.ProductCode} 失败: {ex.Message}");
+                        }
+                    }
+                    _logger.LogInformation(
+                        "[SendToHq] 更新商品字典 {Count} 条",
+                        toUpdateProducts.Count
+                    );
+                }
+
+                // === 2. 查询所有启用分店 ===
+                var activeStores =
+                    await hqDb.Queryable<BlazorApp.Shared.Models.HqEntities.HqBranch>()
+                        .Select(b => b.BranchCode)
+                        .ToListAsync();
+
+                var now = DateTime.Now;
+                var nowStr = now.ToString("yyyy-MM-dd HH:mm:ss");
+
+                if (!activeStores.Any())
+                {
+                    _logger.LogWarning("[SendToHq] 未找到启用的分店，跳过零售价写入");
+                }
+                else
+                {
+                    // === 3. 批量写入 DIC_商品零售价表（按分店） ===
+                    var syncProductCodesForRetail = validProducts
+                        .Select(p => p.ProductCode)
+                        .ToList();
+                    var existingRetails =
+                        await hqDb.Queryable<BlazorApp.Shared.Models.HqEntities.DIC_商品零售价表>()
+                            .Where(r =>
+                                syncProductCodesForRetail.Contains(r.H商品编码)
+                                && activeStores.Contains(r.H分店代码)
+                            )
+                            .Select(r => new { r.H分店代码, r.H商品编码 })
+                            .ToListAsync();
+                    var existingRetailSet = new HashSet<string>(
+                        existingRetails.Select(e => $"{e.H分店代码}|{e.H商品编码}")
+                    );
+
+                    var toInsertList =
+                        new List<BlazorApp.Shared.Models.HqEntities.DIC_商品零售价表>();
+                    var updateSqlParts = new List<string>();
+
+                    foreach (var p in validProducts)
+                    {
+                        foreach (var storeCode in activeStores)
+                        {
+                            var key = $"{storeCode}|{p.ProductCode}";
+                            if (existingRetailSet.Contains(key))
+                            {
+                                var safeStore = storeCode.Replace("'", "''");
+                                var safeCode = p.ProductCode.Replace("'", "''");
+                                var safeStoreProduct = (storeCode + p.ProductCode).Replace(
+                                    "'",
+                                    "''"
+                                );
+                                var safeStoreSupplier = (storeCode + "200").Replace("'", "''");
+                                updateSqlParts.Add(
+                                    $"UPDATE [DIC_商品零售价表] SET [H进货价] = {p.ImportPrice ?? 0}, [H分店零售价] = {p.OEMPrice ?? 0}, [H分店商品编码] = N'{safeStoreProduct}', [H供应商编码] = '200', [H分店供应商编码] = '{safeStoreSupplier}', [FGC_LastModifier] = 'HBweb', [FGC_LastModifyDate] = '{nowStr}' WHERE [H分店代码] = N'{safeStore}' AND [H商品编码] = N'{safeCode}'"
+                                );
+                            }
+                            else
+                            {
+                                toInsertList.Add(
+                                    new BlazorApp.Shared.Models.HqEntities.DIC_商品零售价表
+                                    {
+                                        HGUID = Guid.NewGuid().ToString(),
+                                        H分店代码 = storeCode,
+                                        H商品编码 = p.ProductCode,
+                                        H分店商品编码 = storeCode + p.ProductCode,
+                                        H供应商编码 = "200",
+                                        H分店供应商编码 = storeCode + "200",
+                                        H进货价 = p.ImportPrice ?? 0,
+                                        H分店零售价 = p.OEMPrice ?? 0,
+                                        H库存 = 0,
+                                        H库存金额 = 0,
+                                        H使用状态 = true,
+                                        H是否自动定价 = false,
+                                        FGC_Creator = "HBweb",
+                                        FGC_CreateDate = now,
+                                        FGC_LastModifier = "HBweb",
+                                        FGC_LastModifyDate = now,
+                                    }
+                                );
+                            }
+                        }
+                        successCount++;
+                    }
+
+                    if (toInsertList.Any())
+                    {
+                        await hqDb.Insertable(toInsertList)
+                            .IgnoreColumns(x => x.ID)
+                            .ExecuteCommandAsync();
+                        _logger.LogInformation(
+                            "[SendToHq] 批量新增零售价 {Count} 条",
+                            toInsertList.Count
+                        );
+                    }
+
+                    if (updateSqlParts.Any())
+                    {
+                        var batchUpdateSql = string.Join(";", updateSqlParts);
+                        await hqDb.Ado.ExecuteCommandAsync(batchUpdateSql);
+                        _logger.LogInformation(
+                            "[SendToHq] 批量更新零售价 {Count} 条",
+                            updateSqlParts.Count
+                        );
+                    }
+
+                    retailPriceCount = toInsertList.Count + updateSqlParts.Count;
+                }
+
+                // === 4. 批量写入 CBP_DIC_商品库存表 ===
+                var inventoryProductCodes = validProducts.Select(p => p.ProductCode).ToList();
+                var existingInventories =
+                    await hqDb.Queryable<BlazorApp.Shared.Models.HqEntities.CBP_DIC_商品库存表>()
+                        .Where(x => inventoryProductCodes.Contains(x.H商品编码))
+                        .Select(x => x.H商品编码)
+                        .ToListAsync();
+                var existingInventorySet = new HashSet<string>(existingInventories);
+
+                var toInsertInventories =
+                    new List<BlazorApp.Shared.Models.HqEntities.CBP_DIC_商品库存表>();
+                var inventoryUpdateSqlParts = new List<string>();
+
+                foreach (var p in validProducts)
+                {
+                    if (existingInventorySet.Contains(p.ProductCode))
+                    {
+                        var safeCode = p.ProductCode.Replace("'", "''");
+                        var invUpdateSql =
+                            $"UPDATE [CBP_DIC_商品库存表] SET [H国内价格] = {(p.DomesticPrice.HasValue ? p.DomesticPrice.Value.ToString() : "NULL")}, [H贴牌价格] = {(p.OEMPrice.HasValue ? p.OEMPrice.Value.ToString() : "NULL")}, [H进口价格] = {(p.ImportPrice.HasValue ? p.ImportPrice.Value.ToString() : "NULL")}, [FGC_LastModifier] = 'HBweb', [FGC_LastModifyDate] = '{nowStr}' WHERE [H商品编码] = N'{safeCode}'";
+                        inventoryUpdateSqlParts.Add(invUpdateSql);
+                    }
+                    else
+                    {
+                        toInsertInventories.Add(
+                            new BlazorApp.Shared.Models.HqEntities.CBP_DIC_商品库存表
+                            {
+                                HGUID = Guid.NewGuid().ToString(),
+                                H商品编码 = p.ProductCode,
+                                H国内价格 = p.DomesticPrice,
+                                H贴牌价格 = p.OEMPrice,
+                                H进口价格 = p.ImportPrice,
+                                H库存 = 0,
+                                H最小订货量 = 0,
+                                H库存金额 = 0,
+                                H库存预警数 = 0,
+                                H使用状态 = 1,
+                                FGC_Creator = "HBweb",
+                                FGC_CreateDate = now,
+                                FGC_LastModifier = "HBweb",
+                                FGC_LastModifyDate = now,
+                            }
+                        );
+                    }
+                }
+
+                var inventoryCount = 0;
+                if (toInsertInventories.Any())
+                {
+                    inventoryCount += await hqDb.Insertable(toInsertInventories)
+                        .IgnoreColumns(x => x.ID).ExecuteCommandAsync();
+                    _logger.LogInformation(
+                        "[SendToHq] 批量新增库存 {Count} 条",
+                        toInsertInventories.Count
+                    );
+                }
+                if (inventoryUpdateSqlParts.Any())
+                {
+                    var batchInvUpdateSql = string.Join(";", inventoryUpdateSqlParts);
+                    inventoryCount += await hqDb.Ado.ExecuteCommandAsync(batchInvUpdateSql);
+                    _logger.LogInformation(
+                        "[SendToHq] 批量更新库存 {Count} 条",
+                        inventoryUpdateSqlParts.Count
+                    );
+                }
+
+                result.EndTime = DateTime.Now;
+                result.Message =
+                    $"发送完成：商品字典 {productCount} 条，零售价 {retailPriceCount} 条（{activeStores.Count} 个分店 × {validProducts.Count} 个商品），库存 {inventoryCount} 条，失败 {failCount} 条";
+                result.AddedCount = productCount;
+                result.UpdatedCount = retailPriceCount;
+
+                _logger.LogInformation("[SendToHq] {Message}", result.Message);
+
+                return failCount > 0 && successCount > 0
+                        ? ApiResponse<SyncResult>.OK(result, result.Message)
+                    : failCount == 0 ? ApiResponse<SyncResult>.OK(result, result.Message)
+                    : ApiResponse<SyncResult>.Error(string.Join("; ", errors), "PARTIAL_FAILURE");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "[SendToHq] 发送商品到HQ失败");
+                return ApiResponse<SyncResult>.Error($"发送失败: {ex.Message}", "SEND_TO_HQ_ERROR");
             }
         }
     }
