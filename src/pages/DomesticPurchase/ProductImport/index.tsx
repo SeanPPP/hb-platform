@@ -5,7 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import PageContainer from '../../../components/PageContainer'
 import { getActiveChinaSuppliers } from '../../../services/chinaSupplierService'
 import { assignProductsToContainer, checkContainerConflicts, getContainerList } from '../../../services/containerService'
-import { batchDetectProducts, batchImportConfirm, batchUpdateDomesticProducts, fixProductImage, syncToHBSales } from '../../../services/domesticProductImportService'
+import { batchDetectProducts, batchImportConfirm, batchUpdateDomesticProducts, fixProductImage, sendToHq, syncToHBSales } from '../../../services/domesticProductImportService'
 import type { ProductImportItem, DuplicateGroup, PageState } from './types'
 import { calculateStatistics, createEmptyProduct, detectDuplicates, generateImageUrl, mergeDuplicateProducts, updateCalculatedFields, validateProduct } from './utils'
 import { ConflictResolutionDialog } from './ConflictResolutionDialog'
@@ -45,7 +45,6 @@ export default function ProductImportPage() {
   const [conflictDialogOpen, setConflictDialogOpen] = useState(false)
   const [conflictItems, setConflictItems] = useState<Array<{ productCode: string; existingPieces?: number }>>([])
   const [pendingSend, setPendingSend] = useState<{ containerId: string; notes: string; products: ProductImportItem[] } | null>(null)
-  const [syncIncludeImage] = useState(false)
   const syncIncludeImageRef = useRef(false)
   const [duplicateGroups, setDuplicateGroups] = useState<DuplicateGroup[]>([])
   const [selectedColumnKey, setSelectedColumnKey] = useState<string | null>(null)
@@ -275,14 +274,13 @@ export default function ProductImportPage() {
 
   const handleSyncToHBSales = async () => {
     if (state.selectedIds.length === 0) { message.warning('请先选择要同步的商品'); return }
-    let includeImage = syncIncludeImage
     Modal.confirm({
       title: '同步到HBSales',
       content: (
         <div>
           <p>确定要将选中的 {state.selectedIds.length} 件商品同步到HBSales数据库吗？</p>
           <div style={{ marginTop: 12 }}>
-            <Checkbox checked={includeImage} onChange={(e) => { includeImage = e.target.checked; syncIncludeImageRef.current = e.target.checked }}>同时更新商品图片</Checkbox>
+            <Checkbox defaultChecked={syncIncludeImageRef.current} onChange={(e) => { syncIncludeImageRef.current = e.target.checked }}>同时更新商品图片</Checkbox>
           </div>
         </div>
       ),
@@ -300,6 +298,34 @@ export default function ProductImportPage() {
       },
     })
   }
+
+  const handleSendToHq = useCallback(async () => {
+    if (state.selectedIds.length === 0) { message.warning('请先选择要发送的商品'); return }
+    const selectedProducts = state.products.filter((p) => state.selectedIds.includes(p.id))
+    const productCodes = selectedProducts.map((p) => p.matchedProduct?.productCode).filter((code): code is string => !!code)
+    if (productCodes.length === 0) { message.warning('选中的商品中没有已匹配的本地商品编码，请先检测匹配'); return }
+    const missingPrice = selectedProducts.filter((p) => !p.matchedProduct?.productCode)
+    if (missingPrice.length > 0) { message.warning(`${missingPrice.length} 个商品未匹配，请先检测`); return }
+    Modal.confirm({
+      title: '发送商品到HQ',
+      content: (
+        <div>
+          <p>确定要将选中的 {productCodes.length} 个商品发送到HQ数据库吗？</p>
+          <p style={{ fontSize: 12, color: '#888' }}>将写入 DIC_商品信息字典表 和 DIC_商品零售价表（按所有启用分店）</p>
+          <p style={{ fontSize: 12, color: '#f97316' }}>⚠️ 要求商品必须有进口价格和贴牌价格</p>
+        </div>
+      ),
+      okText: '确定发送',
+      cancelText: '取消',
+      onOk: async () => {
+        try {
+          const response = await sendToHq(productCodes)
+          if (response.success) { message.success(response.data?.message || '发送完成') }
+          else { message.error('发送失败: ' + response.message) }
+        } catch { message.error('发送失败，请稍后重试') }
+      },
+    })
+  }, [state.selectedIds, state.products])
 
   const handleResolveConflicts = async (result: { global?: 'override' | 'increase'; perItem?: Record<string, 'override' | 'increase'> }) => {
     if (!pendingSend) return
@@ -697,6 +723,7 @@ export default function ProductImportPage() {
           <Select style={{ width: 300 }} placeholder={loadingContainers ? '加载中...' : '请选择货柜'} value={selectedContainerId || undefined} onChange={(v) => setSelectedContainerId(v)} loading={loadingContainers} showSearch optionFilterProp="label" options={containers.map((c: any) => ({ label: `${c.货柜编号} | 装柜日期: ${formatDate(c.装柜日期)}`, value: c.货柜编号 }))} />
           <Button type="primary" onClick={() => { if (state.selectedIds.length === 0) { message.error('请先选择商品'); return } if (!selectedContainerId) { message.error('请先选择货柜'); return } if (invalidSelectedCount > 0) { message.error('请先修正已选商品的件数'); return } handleSendToContainer(selectedContainerId, '') }} disabled={state.selectedIds.length === 0}>发送货柜({state.selectedIds.length})</Button>
           <Button onClick={handleSyncToHBSales} disabled={state.selectedIds.length === 0}>同步到HBSales</Button>
+          <Button style={{ background: '#7c3aed', color: '#fff', borderColor: '#7c3aed' }} onClick={handleSendToHq} disabled={state.selectedIds.length === 0}>发送到HQ</Button>
           {selectedColumnKey && selectedColumnEditableKey && (
             <Tooltip title={`清空「${selectedColumnEditableKey}」列所有数据`}>
               <Button icon={<ClearOutlined />} danger onClick={handleClearColumn}>

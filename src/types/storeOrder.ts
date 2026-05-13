@@ -160,6 +160,7 @@ export interface StoreOrderProductQuery {
   pageNumber: number
   pageSize: number
   sortBy?: string
+  grade?: string
 }
 
 export interface StoreOrderProductItem {
@@ -176,6 +177,7 @@ export interface StoreOrderProductItem {
   isInStock: boolean
   packQty?: number
   importPrice?: number
+  grade?: string
 }
 
 export interface StoreOrderDynamicData {

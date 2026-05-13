@@ -193,7 +193,7 @@ export default function ShopLayout() {
           <span onClick={() => window.open('/dashboard', '_blank')}>Dashboard</span>
           <span onClick={() => navigate('/shop/best-sellers')}>Best Sellers</span>
           <span onClick={() => navigate('/shop/coming-soon')}>Coming Soon</span>
-          <span onClick={() => navigate('/shop/orders')}>Order History</span>
+          <span onClick={() => navigate('/shop/orders')}>历史订单</span>
           <span onClick={() => void handleLogout()}>Log Out</span>
         </div>
       </div>
@@ -309,7 +309,7 @@ export default function ShopLayout() {
           </div>
           <div className="shop-mobile-grid-item" onClick={() => navigate('/shop/orders')}>
             <AppstoreOutlined className="icon" />
-            <span>Orders</span>
+            <span>订单</span>
           </div>
           <div className="shop-mobile-grid-item" onClick={() => void handleLogout()}>
             <UserOutlined className="icon" />
@@ -346,7 +346,7 @@ export default function ShopLayout() {
             className={`shop-menu-item${isOrdersPage ? ' active' : ''}`}
             onClick={() => navigate('/shop/orders')}
           >
-            Order History
+            历史订单
           </div>
         </div>
 
@@ -396,9 +396,9 @@ export default function ShopLayout() {
         ) : (
           <div className="shop-orders-banner">
             <div className="shop-shell">
-              <div className="shop-orders-banner-title">Recent Orders</div>
+              <div className="shop-orders-banner-title">历史订单</div>
               <div className="shop-orders-banner-subtitle">
-                Review submitted orders, completion status, quantities, and totals.
+                查看分店提交过的订单、状态、数量和金额汇总。
               </div>
             </div>
           </div>

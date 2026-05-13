@@ -1,5 +1,5 @@
 import { getActiveLocalSuppliers } from '../../../services/localSupplierService'
-import { getPosProductById, type PosProductDto } from '../../../services/posProductService'
+import { getProductById as getPosProductById, type PosProductDto } from '../../../services/posProductService'
 import {
   createPromotion,
   deletePromotion,

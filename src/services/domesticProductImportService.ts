@@ -46,3 +46,12 @@ export async function syncToHBSales(productCodes: string[], includeImage: boolea
   if (response && typeof response === 'object' && 'success' in response) return response
   return response?.data ?? response
 }
+
+export async function sendToHq(productCodes: string[]): Promise<{ success: boolean; data?: any; message?: string }> {
+  const response: any = await request(`${API_BASE}/send-to-hq`, {
+    method: 'POST',
+    data: { productCodes },
+  })
+  if (response && typeof response === 'object' && 'success' in response) return response
+  return response?.data ?? response
+}

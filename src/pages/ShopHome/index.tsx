@@ -1,8 +1,9 @@
-import { Breadcrumb, Empty, Pagination, Select, Spin, message } from 'antd'
+import { Breadcrumb, Button, Empty, Pagination, Select, Space, Spin, Tag, Tooltip, message } from 'antd'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import ShopScanBar from '../../components/ShopScanBar'
 import ShopScanResultPicker from '../../components/ShopScanResultPicker'
+import { PRODUCT_GRADE_CONFIG } from '../../types/productGrade'
 import { useBarcodeScanner } from '../../hooks/useBarcodeScanner'
 import ProductCard from './components/ProductCard'
 import {
@@ -54,7 +55,7 @@ export default function ShopHomePage() {
   const [pickerOpen, setPickerOpen] = useState(false)
   const [pickerLoading, setPickerLoading] = useState(false)
   const [pickerDynamicDataMap, setPickerDynamicDataMap] = useState<Record<string, StoreOrderDynamicData>>({})
-
+  const [gradeFilter, setGradeFilter] = useState<string[]>([])
   const selectedStore = useShopStore((state) => state.selectedStore)
   const setCart = useShopStore((state) => state.setCart)
 
@@ -105,6 +106,7 @@ export default function ShopHomePage() {
           categoryGUID: categoryId || undefined,
           itemNumber: keyword || undefined,
           sortBy: 'productName',
+          grade: gradeFilter.length ? [...gradeFilter].sort().join(',') : undefined,
         })
 
         if (cancelled) {
@@ -137,7 +139,7 @@ export default function ShopHomePage() {
     return () => {
       cancelled = true
     }
-  }, [categoryId, currentPage, keyword, pageSize])
+  }, [categoryId, currentPage, keyword, pageSize, gradeFilter])
 
   useEffect(() => {
     let cancelled = false
@@ -500,6 +502,45 @@ export default function ShopHomePage() {
         <div className="shop-home-controls">
           <div className="shop-home-pagination-info">
             {total} items | Page: {currentPage}
+          </div>
+          <div className="shop-home-filters">
+            <Space size={4} wrap>
+              <span className="shop-home-filter-label">Grade:</span>
+              <Tag.CheckableTag
+                checked={gradeFilter.length === 0}
+                onChange={() => {
+                  setGradeFilter([])
+                  setCurrentPage(1)
+                }}
+                style={{ padding: '2px 8px', borderRadius: 4 }}
+              >
+                All
+              </Tag.CheckableTag>
+              {(Object.entries(PRODUCT_GRADE_CONFIG) as [string, typeof PRODUCT_GRADE_CONFIG[keyof typeof PRODUCT_GRADE_CONFIG]][]).map(([key, cfg]) => (
+                <Tooltip key={key} title={cfg.shopTooltip}>
+                  <Tag.CheckableTag
+                    checked={gradeFilter.includes(key)}
+                    onChange={(checked) => {
+                      setGradeFilter((prev) =>
+                        checked
+                          ? [...prev, key]
+                          : prev.filter((g) => g !== key),
+                      )
+                      setCurrentPage(1)
+                    }}
+                    style={{
+                      padding: '2px 8px',
+                      borderRadius: 4,
+                      border: `1px solid ${cfg.color}`,
+                      color: gradeFilter.includes(key) ? '#fff' : cfg.color,
+                      background: gradeFilter.includes(key) ? cfg.color : 'transparent',
+                    }}
+                  >
+                    {key} - {cfg.shopLabel}
+                  </Tag.CheckableTag>
+                </Tooltip>
+              ))}
+            </Space>
           </div>
           <div className="shop-home-filters">
             <span className="shop-home-filter-label">Items per page:</span>

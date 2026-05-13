@@ -1,12 +1,27 @@
 import {
   AppstoreOutlined,
+  BankOutlined,
+  BuildOutlined,
   DashboardOutlined,
+  DatabaseOutlined,
+  DollarOutlined,
+  EnvironmentOutlined,
+  FileDoneOutlined,
+  FileTextOutlined,
+  GiftOutlined,
+  InboxOutlined,
   KeyOutlined,
   MoneyCollectOutlined,
+  NumberOutlined,
+  ReconciliationOutlined,
+  SettingOutlined,
   ShopOutlined,
+  ShoppingCartOutlined,
   TagsOutlined,
   TeamOutlined,
+  TrophyOutlined,
   UserOutlined,
+  WalletOutlined,
 } from '@ant-design/icons'
 import type { MenuProps } from 'antd'
 import { matchPath } from 'react-router-dom'
@@ -17,12 +32,15 @@ import DomesticProductsPage from '../pages/DomesticPurchase/DomesticProducts'
 import ProductPrefixCodeManagementPage from '../pages/DomesticPurchase/ProductPrefixCodeManagement'
 import ProductCreationPage from '../pages/DomesticPurchase/ProductCreation'
 import ProductImportPage from '../pages/DomesticPurchase/ProductImport'
+import ProductGradeManagementPage from '../pages/Warehouse/ProductGradeManagement'
 import NotFoundPage from '../pages/NotFound'
 import PosmSalesOrdersPage from '../pages/PosmSalesOrders'
 import PosAdminCashRegisterUsersPage from '../pages/PosAdmin/CashRegisterUsers'
 import PosAdminPricingStrategiesPage from '../pages/PosAdmin/PricingStrategies'
 import PosAdminPromotionsPage from '../pages/PosAdmin/Promotions'
 import PosAdminSupplierManagementPage from '../pages/PosAdmin/SupplierManagement'
+import PosAdminProductManagementPage from '../pages/PosAdmin/ProductManagement'
+import PosAdminStoreProductPricePage from '../pages/PosAdmin/StoreProductPrice'
 import LocalSupplierInvoicesPage from '../pages/PosAdmin/LocalSupplierInvoices'
 import LocalSupplierInvoiceDetailPage from '../pages/PosAdmin/LocalSupplierInvoiceDetailPage'
 import InvoiceEditPage from '../pages/PosAdmin/LocalSupplierInvoices/InvoiceEdit'
@@ -53,12 +71,27 @@ interface LeafEntry {
 const iconMap = {
   DashboardOutlined: <DashboardOutlined />,
   AppstoreOutlined: <AppstoreOutlined />,
+  BankOutlined: <BankOutlined />,
+  BuildOutlined: <BuildOutlined />,
+  DatabaseOutlined: <DatabaseOutlined />,
+  DollarOutlined: <DollarOutlined />,
+  EnvironmentOutlined: <EnvironmentOutlined />,
+  FileDoneOutlined: <FileDoneOutlined />,
+  FileTextOutlined: <FileTextOutlined />,
+  GiftOutlined: <GiftOutlined />,
+  InboxOutlined: <InboxOutlined />,
   UserOutlined: <UserOutlined />,
   TeamOutlined: <TeamOutlined />,
+  NumberOutlined: <NumberOutlined />,
+  ReconciliationOutlined: <ReconciliationOutlined />,
+  SettingOutlined: <SettingOutlined />,
   ShopOutlined: <ShopOutlined />,
+  ShoppingCartOutlined: <ShoppingCartOutlined />,
   TagsOutlined: <TagsOutlined />,
   MoneyCollectOutlined: <MoneyCollectOutlined />,
   KeyOutlined: <KeyOutlined />,
+  TrophyOutlined: <TrophyOutlined />,
+  WalletOutlined: <WalletOutlined />,
 }
 
 export const appRoutes: AppRouteItem[] = [
@@ -77,7 +110,7 @@ export const appRoutes: AppRouteItem[] = [
     path: '/system',
     meta: {
       title: '系统管理',
-      icon: 'AppstoreOutlined',
+      icon: 'SettingOutlined',
     },
     children: [
       {
@@ -126,14 +159,14 @@ export const appRoutes: AppRouteItem[] = [
     path: '/domestic-purchase',
     meta: {
       title: '国内采购',
-      icon: 'ShopOutlined',
+      icon: 'ShoppingCartOutlined',
     },
     children: [
       {
         path: '/domestic-purchase/china-suppliers',
         meta: {
           title: '国内供应商',
-          icon: 'ShopOutlined',
+          icon: 'BankOutlined',
           keepAlive: true,
           accessKey: 'canManageWarehouse',
         },
@@ -153,7 +186,7 @@ export const appRoutes: AppRouteItem[] = [
         path: '/domestic-purchase/prefix-code-management',
         meta: {
           title: '前缀管理',
-          icon: 'TagsOutlined',
+          icon: 'NumberOutlined',
           keepAlive: true,
           accessKey: 'canManageWarehouse',
         },
@@ -163,7 +196,7 @@ export const appRoutes: AppRouteItem[] = [
         path: '/domestic-purchase/product-creation',
         meta: {
           title: '货号条码创建',
-          icon: 'TagsOutlined',
+          icon: 'BuildOutlined',
           keepAlive: true,
           accessKey: 'canManageWarehouse',
         },
@@ -173,7 +206,7 @@ export const appRoutes: AppRouteItem[] = [
         path: '/domestic-purchase/product-import',
         meta: {
           title: '商品导入',
-          icon: 'AppstoreOutlined',
+          icon: 'InboxOutlined',
           keepAlive: true,
           accessKey: 'canManageWarehouse',
         },
@@ -185,14 +218,14 @@ export const appRoutes: AppRouteItem[] = [
     path: '/warehouse',
     meta: {
       title: '仓库管理',
-      icon: 'TagsOutlined',
+      icon: 'DatabaseOutlined',
     },
     children: [
       {
         path: '/warehouse/store-orders',
         meta: {
           title: '分店订货列表',
-          icon: 'ShopOutlined',
+          icon: 'ReconciliationOutlined',
           keepAlive: true,
           accessKey: 'canManageWarehouse',
         },
@@ -258,11 +291,21 @@ export const appRoutes: AppRouteItem[] = [
         path: '/warehouse/locations',
         meta: {
           title: '仓库标签管理',
-          icon: 'TagsOutlined',
+          icon: 'EnvironmentOutlined',
           keepAlive: true,
           accessKey: 'canManageWarehouse',
         },
         element: <WarehouseLocationsPage />,
+      },
+      {
+        path: '/warehouse/product-grade-management',
+        meta: {
+          title: '商品等级管理',
+          icon: 'TrophyOutlined',
+          keepAlive: true,
+          accessKey: 'canManageWarehouse',
+        },
+        element: <ProductGradeManagementPage />,
       },
     ],
   },
@@ -270,7 +313,7 @@ export const appRoutes: AppRouteItem[] = [
     path: '/pos-admin',
     meta: {
       title: '收银管理',
-      icon: 'MoneyCollectOutlined',
+      icon: 'WalletOutlined',
     },
     children: [
       {
@@ -284,10 +327,30 @@ export const appRoutes: AppRouteItem[] = [
         element: <PosAdminSupplierManagementPage />,
       },
       {
+        path: '/pos-admin/products',
+        meta: {
+          title: '商品管理',
+          icon: 'AppstoreOutlined',
+          keepAlive: true,
+          accessKey: 'canManageStore',
+        },
+        element: <PosAdminProductManagementPage />,
+      },
+      {
+        path: '/pos-admin/store-product-price',
+        meta: {
+          title: '分店商品价格',
+          icon: 'DollarOutlined',
+          keepAlive: true,
+          accessKey: 'canManageStore',
+        },
+        element: <PosAdminStoreProductPricePage />,
+      },
+      {
         path: '/pos-admin/pricing-strategies',
         meta: {
           title: '自动价格策略',
-          icon: 'TagsOutlined',
+          icon: 'FileTextOutlined',
           keepAlive: true,
           accessKey: 'isAdmin',
         },
@@ -297,7 +360,7 @@ export const appRoutes: AppRouteItem[] = [
         path: '/pos-admin/promotions',
         meta: {
           title: '促销管理',
-          icon: 'TagsOutlined',
+          icon: 'GiftOutlined',
           keepAlive: true,
           accessKey: 'isAdmin',
         },
@@ -317,7 +380,7 @@ export const appRoutes: AppRouteItem[] = [
         path: '/pos-admin/sales-orders',
         meta: {
           title: '收银记录',
-          icon: 'MoneyCollectOutlined',
+          icon: 'FileDoneOutlined',
           keepAlive: true,
           accessKey: 'canReadOrder',
         },
@@ -327,7 +390,7 @@ export const appRoutes: AppRouteItem[] = [
         path: '/pos-admin/local-supplier-invoices',
         meta: {
           title: '分店进货单',
-          icon: 'ShopOutlined',
+          icon: 'ReconciliationOutlined',
           keepAlive: true,
           accessKey: 'canManageStore',
         },

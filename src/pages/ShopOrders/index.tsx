@@ -13,7 +13,12 @@ import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { getStoreOrderList } from '../../services/storeOrderService'
 import { useShopStore } from '../../store/shop'
-import { StoreOrderFlowStatus, type StoreOrderListItem } from '../../types/storeOrder'
+import {
+  StoreOrderFlowStatus,
+  StoreOrderStatusColorMap,
+  StoreOrderStatusLabelMap,
+  type StoreOrderListItem,
+} from '../../types/storeOrder'
 
 const { Text, Title } = Typography
 const { Search } = Input
@@ -22,18 +27,6 @@ const { RangePicker } = DatePicker
 type StatusFilter = 'all' | 'active' | 'completed'
 type DateRangeValue = [Dayjs, Dayjs]
 type QuickRangeFilter = 'today' | 'week' | 'month' | 'custom'
-
-const statusLabelMap: Record<number, string> = {
-  [StoreOrderFlowStatus.Submitted]: 'Submitted',
-  [StoreOrderFlowStatus.Completed]: 'Completed',
-  [StoreOrderFlowStatus.Picking]: 'Picking',
-}
-
-const statusColorMap: Record<number, string> = {
-  [StoreOrderFlowStatus.Submitted]: 'processing',
-  [StoreOrderFlowStatus.Completed]: 'success',
-  [StoreOrderFlowStatus.Picking]: 'warning',
-}
 
 const statusQueryMap: Record<StatusFilter, StoreOrderFlowStatus[]> = {
   all: [
@@ -55,7 +48,7 @@ function formatDateTime(value?: string) {
     return value
   }
 
-  return date.toLocaleString('en-AU', {
+  return date.toLocaleString('zh-CN', {
     hour12: false,
     year: 'numeric',
     month: 'short',
@@ -73,8 +66,8 @@ function formatAmount(order: StoreOrderListItem) {
 
 function getOrderStatusMeta(status: number) {
   return {
-    label: statusLabelMap[status] ?? 'Unknown',
-    color: statusColorMap[status] ?? 'default',
+    label: StoreOrderStatusLabelMap[status as StoreOrderFlowStatus] ?? `状态 ${status}`,
+    color: StoreOrderStatusColorMap[status as StoreOrderFlowStatus] ?? 'default',
   }
 }
 
@@ -178,34 +171,34 @@ export default function ShopOrdersPage() {
       <div className="shop-orders-hero">
         <div>
           <div className="shop-orders-eyebrow">
-            <HistoryOutlined /> Order Timeline
+            <HistoryOutlined /> 分店历史订单
           </div>
-          <Title level={2}>Order History</Title>
+          <Title level={2}>订单列表</Title>
           <Text type="secondary">
-            Browse recent submissions and monitor fulfilment progress from the new storefront.
+            查看分店历史订单、当前状态，以及进入订单明细页查看商品明细。
           </Text>
         </div>
         <div className="shop-orders-store-badge">
           <ShopOutlined />
-          <span>{selectedStore?.storeName || 'All accessible stores'}</span>
+          <span>{selectedStore?.storeName || '当前可访问分店'}</span>
         </div>
       </div>
 
       <div className="shop-orders-stats">
         <div className="shop-orders-stat-card">
-          <span className="shop-orders-stat-label">Orders</span>
+          <span className="shop-orders-stat-label">订单数</span>
           <strong>{stats.totalOrders}</strong>
         </div>
         <div className="shop-orders-stat-card">
-          <span className="shop-orders-stat-label">In Progress</span>
+          <span className="shop-orders-stat-label">进行中</span>
           <strong>{stats.activeCount}</strong>
         </div>
         <div className="shop-orders-stat-card">
-          <span className="shop-orders-stat-label">Completed</span>
+          <span className="shop-orders-stat-label">已完成</span>
           <strong>{stats.completedCount}</strong>
         </div>
         <div className="shop-orders-stat-card accent">
-          <span className="shop-orders-stat-label">Visible Total</span>
+          <span className="shop-orders-stat-label">当前页金额</span>
           <strong>${stats.visibleAmount.toFixed(2)}</strong>
         </div>
       </div>
@@ -219,9 +212,9 @@ export default function ShopOrdersPage() {
               setStatusFilter(value)
             }}
             options={[
-              { label: 'All', value: 'all' },
-              { label: 'In Progress', value: 'active' },
-              { label: 'Completed', value: 'completed' },
+              { label: '全部', value: 'all' },
+              { label: '进行中', value: 'active' },
+              { label: '已完成', value: 'completed' },
             ]}
           />
           <RangePicker
@@ -229,9 +222,9 @@ export default function ShopOrdersPage() {
             allowClear={false}
             className="shop-orders-date-range"
             presets={[
-              { label: 'Last 7 Days', value: [dayjs().subtract(6, 'day').startOf('day'), dayjs().endOf('day')] },
-              { label: 'Last 30 Days', value: [dayjs().subtract(29, 'day').startOf('day'), dayjs().endOf('day')] },
-              { label: 'Last 60 Days', value: createDefaultDateRange() },
+              { label: '最近 7 天', value: [dayjs().subtract(6, 'day').startOf('day'), dayjs().endOf('day')] },
+              { label: '最近 30 天', value: [dayjs().subtract(29, 'day').startOf('day'), dayjs().endOf('day')] },
+              { label: '最近 60 天', value: createDefaultDateRange() },
             ]}
             onChange={(value) => {
               if (!value || !value[0] || !value[1]) {
@@ -260,10 +253,10 @@ export default function ShopOrdersPage() {
               setDateRange(createQuickDateRange(value))
             }}
             options={[
-              { label: 'Today', value: 'today' },
-              { label: 'This Week', value: 'week' },
-              { label: 'This Month', value: 'month' },
-              { label: 'Last 60 Days', value: 'custom' },
+              { label: '今天', value: 'today' },
+              { label: '本周', value: 'week' },
+              { label: '本月', value: 'month' },
+              { label: '最近 60 天', value: 'custom' },
             ]}
           />
         </div>
@@ -272,7 +265,7 @@ export default function ShopOrdersPage() {
           <Search
             value={keywordInput}
             allowClear
-            placeholder="Search by order number"
+            placeholder="按订单号搜索"
             enterButton={<SearchOutlined />}
             onChange={(event) => setKeywordInput(event.target.value)}
             onSearch={(value) => {
@@ -291,15 +284,15 @@ export default function ShopOrdersPage() {
               setQuickRange('custom')
             }}
           >
-            Reset
+            重置
           </Button>
         </div>
       </div>
 
       <div className="shop-orders-filter-note">
-        Showing {selectedStore?.storeName || 'all accessible stores'}.
-        Change the store selector in the header to switch history scope. Current range:
-        {' '}
+        当前查看：
+        {selectedStore?.storeName || '全部可访问分店'}。
+        可通过顶部的分店选择器切换范围，当前时间区间：
         {dateRange[0].format('DD MMM YYYY')}
         {' - '}
         {dateRange[1].format('DD MMM YYYY')}
@@ -319,7 +312,7 @@ export default function ShopOrdersPage() {
                 <article key={order.orderGUID} className="shop-order-card">
                   <div className="shop-order-card-top">
                     <div className="shop-order-card-headline">
-                      <div className="shop-order-card-label">Order No.</div>
+                      <div className="shop-order-card-label">订单号</div>
                       <Title level={4} className="shop-order-card-title">
                         {order.orderNo || order.orderGUID.slice(0, 8)}
                       </Title>
@@ -330,7 +323,7 @@ export default function ShopOrdersPage() {
                   <div className="shop-order-card-meta">
                     <div>
                       <ShopOutlined />
-                      <span>{order.storeName || order.storeCode || 'Unknown Store'}</span>
+                      <span>{order.storeName || order.storeCode || '未知分店'}</span>
                     </div>
                     <div>
                       <ClockCircleOutlined />
@@ -340,22 +333,22 @@ export default function ShopOrdersPage() {
 
                   <div className="shop-order-card-metrics">
                     <div className="shop-order-metric">
-                      <span>Ordered</span>
+                      <span>订货数量</span>
                       <strong>{order.totalQuantity ?? 0}</strong>
                     </div>
                     <div className="shop-order-metric">
-                      <span>Allocated</span>
+                      <span>发货数量</span>
                       <strong>{order.totalAllocQuantity ?? 0}</strong>
                     </div>
                     <div className="shop-order-metric amount">
-                      <span>Total</span>
+                      <span>金额</span>
                       <strong>{formatAmount(order)}</strong>
                     </div>
                   </div>
 
                   {order.remarks ? (
                     <div className="shop-order-card-remarks">
-                      <span className="shop-order-card-label">Remarks</span>
+                      <span className="shop-order-card-label">备注</span>
                       <p>{order.remarks}</p>
                     </div>
                   ) : null}
@@ -367,7 +360,7 @@ export default function ShopOrdersPage() {
                   >
                     <Space size={6}>
                       <CheckCircleOutlined />
-                      <Text>View Order Detail</Text>
+                      <Text>查看订单明细</Text>
                     </Space>
                   </button>
                 </article>
@@ -396,8 +389,8 @@ export default function ShopOrdersPage() {
           <Empty
             description={
               keyword
-                ? 'No orders matched your search.'
-                : 'No order history is available for the current filter.'
+                ? '没有匹配到订单，请调整搜索条件。'
+                : '当前筛选条件下暂无历史订单。'
             }
           />
         </div>

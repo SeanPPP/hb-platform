@@ -51,9 +51,11 @@ function buildQueryString(params?: Record<string, unknown>) {
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').trim()
 const LOGIN_PATH = '/login'
-const AUTH_WHITELIST = new Set(['/api/Auth/login', '/api/Auth/logout'])
+const AUTH_WHITELIST = new Set(['/api/Auth/login', '/api/Auth/logout', '/api/Auth/refresh'])
 
 let authRedirecting = false
+
+let refreshPromise: Promise<boolean> | null = null
 
 function buildRequestUrl(url: string, params?: Record<string, unknown>) {
   const requestPath = url.startsWith('http://') || url.startsWith('https://')
@@ -61,6 +63,37 @@ function buildRequestUrl(url: string, params?: Record<string, unknown>) {
     : `${API_BASE_URL}${url}`.replace(/([^:]\/)\/+/g, '$1')
 
   return `${requestPath}${buildQueryString(params)}`
+}
+
+async function tryRefreshToken(): Promise<boolean> {
+  if (refreshPromise) {
+    return refreshPromise
+  }
+
+  refreshPromise = (async () => {
+    try {
+      const refreshUrl = buildRequestUrl('/api/Auth/refresh')
+      const response = await fetch(refreshUrl, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      })
+
+      if (!response.ok) {
+        return false
+      }
+
+      const payload = await response.json()
+      return !!(payload?.success ?? payload?.data)
+    } catch {
+      return false
+    } finally {
+      refreshPromise = null
+    }
+  })()
+
+  return refreshPromise
 }
 
 function handleUnauthorized(requestUrl: string) {
@@ -88,8 +121,8 @@ async function parseResponse<T>(response: Response): Promise<T> {
   return (await response.text()) as T
 }
 
-async function request<T>(url: string, options: RequestOptions = {}): Promise<T> {
-  const { method = 'GET', params, data, headers, signal, skipAuthRedirect = false } = options
+async function rawFetch<T>(url: string, options: RequestOptions = {}): Promise<{ response: Response; payload: T }> {
+  const { method = 'GET', params, data, headers, signal } = options
   const requestUrl = buildRequestUrl(url, params)
   const response = await fetch(requestUrl, {
     method,
@@ -102,10 +135,25 @@ async function request<T>(url: string, options: RequestOptions = {}): Promise<T>
     signal,
   })
 
-  const payload = await parseResponse<unknown>(response)
+  const payload = await parseResponse<T>(response)
+  return { response, payload }
+}
+
+async function request<T>(url: string, options: RequestOptions = {}): Promise<T> {
+  const { skipAuthRedirect = false } = options
+  const normalizedUrl = url.replace(API_BASE_URL, '')
+
+  const { response, payload } = await rawFetch<unknown>(url, options)
 
   if (!response.ok) {
-    if (response.status === 401 && !skipAuthRedirect) {
+    if (response.status === 401 && !skipAuthRedirect && !AUTH_WHITELIST.has(normalizedUrl)) {
+      const refreshed = await tryRefreshToken()
+      if (refreshed) {
+        const retryResult = await rawFetch<T>(url, options)
+        if (retryResult.response.ok) {
+          return retryResult.payload
+        }
+      }
       handleUnauthorized(url)
     }
 

@@ -29,7 +29,7 @@ import {
   getSupplierOptions,
   updateDomesticProductSetItems,
 } from '../../../services/domesticProductService'
-import { exportDomesticProductsToExcel } from '../../../services/exportService'
+import { exportDomesticProductsToExcel, type ExportResult } from '../../../services/exportService'
 import {
   batchToggleWarehouseProductsActive,
   getWarehouseProductsTable,
@@ -498,6 +498,8 @@ export default function WarehouseProductsPage() {
   const [setItemsDraft, setSetItemsDraft] = useState<DomesticProductSetItem[]>([])
   const [batchActionLoading, setBatchActionLoading] = useState(false)
   const [togglingProductCodes, setTogglingProductCodes] = useState<string[]>([])
+  const [exportFailDetailOpen, setExportFailDetailOpen] = useState(false)
+  const [exportFailDetail, setExportFailDetail] = useState<ExportResult['failedProductImages']>([])
   const { access } = useAuthStore()
 
   const buildGridQuery = (overrides: Partial<WarehouseProductsTableQuery> = {}): WarehouseProductsTableQuery => ({
@@ -759,10 +761,8 @@ export default function WarehouseProductsPage() {
       )
 
       if (exportResult.failedProductImages.length > 0) {
-        message.warning({
-          content: `导出完成，但有 ${exportResult.failedProductImages.length} 张商品图片下载失败（如 404、网络超时），对应行图片列为空`,
-          duration: 6,
-        })
+        setExportFailDetail(exportResult.failedProductImages)
+        setExportFailDetailOpen(true)
       } else {
         message.success('导出成功')
       }
@@ -1264,6 +1264,39 @@ export default function WarehouseProductsPage() {
             </Typography.Text>
           ) : null}
         </Space>
+      </Modal>
+
+      <Modal
+        title={`导出完成 — ${exportFailDetail.length} 张图片下载失败`}
+        open={exportFailDetailOpen}
+        width={700}
+        footer={null}
+        onCancel={() => setExportFailDetailOpen(false)}
+      >
+        <Typography.Paragraph type="secondary" style={{ marginBottom: 12 }}>
+          以下商品图片未能成功下载，Excel 对应行的图片列已标记为「图片下载失败」。
+        </Typography.Paragraph>
+        <Table
+          size="small"
+          pagination={false}
+          scroll={{ y: 360 }}
+          dataSource={exportFailDetail}
+          rowKey="itemNumber"
+          columns={[
+            { title: '货号', dataIndex: 'itemNumber', width: 120 },
+            { title: '失败原因', dataIndex: 'reason', width: 200 },
+            {
+              title: '图片地址',
+              dataIndex: 'url',
+              ellipsis: true,
+              render: (val: string) => (
+                <Tooltip title={val}>
+                  <span style={{ fontSize: 12, wordBreak: 'break-all' }}>{val}</span>
+                </Tooltip>
+              ),
+            },
+          ]}
+        />
       </Modal>
       </PageContainer>
     </>

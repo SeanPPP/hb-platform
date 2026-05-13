@@ -377,9 +377,14 @@ export default function ProductPrefixCodeManagementPage() {
   const columns = useMemo<ColumnsType<ProductPrefixCodeItem>>(
     () => [
       {
+        title: '#',
+        width: 30,
+        render: (_v, _r, index) => (page - 1) * pageSize + index + 1,
+      },
+      {
         title: '前缀名',
         dataIndex: 'prefixName',
-        width: 140,
+        width: 100,
         sorter: true,
         sortOrder:
           sortField === 'prefixName'
@@ -409,7 +414,7 @@ export default function ProductPrefixCodeManagementPage() {
       {
         title: '前缀说明',
         dataIndex: 'prefixDescription',
-        width: 180,
+        width: 120,
         ellipsis: true,
         render: (value: string | undefined, record) => {
           if (editingKey === record.prefixCode) {
@@ -426,7 +431,7 @@ export default function ProductPrefixCodeManagementPage() {
       {
         title: '供应商',
         dataIndex: 'supplierName',
-        width: 180,
+        width: 120,
         sorter: true,
         sortOrder:
           sortField === 'supplierName'
@@ -439,7 +444,7 @@ export default function ProductPrefixCodeManagementPage() {
       {
         title: '供应商代码',
         dataIndex: 'supplierCode',
-        width: 140,
+        width: 100,
         sorter: true,
         sortOrder:
           sortField === 'supplierCode'
@@ -467,13 +472,13 @@ export default function ProductPrefixCodeManagementPage() {
       {
         title: '创建时间',
         dataIndex: 'createdAt',
-        width: 180,
+        width: 120,
         render: (value?: string) => formatDateTime(value),
       },
       {
         title: '操作',
         key: 'action',
-        width: 170,
+        width: 150,
         fixed: 'right',
         render: (_, record) => {
           if (editingKey === record.prefixCode) {
@@ -518,7 +523,7 @@ export default function ProductPrefixCodeManagementPage() {
         },
       },
     ],
-    [editingKey, expandedProducts, sortDirection, sortField, submitting],
+    [editingKey, expandedProducts, page, pageSize, sortDirection, sortField, submitting],
   )
 
   return (

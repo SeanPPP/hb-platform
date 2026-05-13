@@ -3,9 +3,10 @@ import {
   DeleteOutlined,
   ShoppingCartOutlined,
 } from '@ant-design/icons'
-import { Badge, Button, Card, Image, InputNumber, Space, Typography } from 'antd'
+import { Badge, Button, Card, Image, InputNumber, Space, Tag, Typography } from 'antd'
 import { useMemo, useState } from 'react'
 import type { StoreOrderDynamicData, StoreOrderProductItem } from '../../../types/storeOrder'
+import { PRODUCT_GRADE_CONFIG } from '../../../types/productGrade'
 
 const { Paragraph, Text, Title } = Typography
 
@@ -31,28 +32,53 @@ export default function ProductCard({
     return product.productImage || 'https://via.placeholder.com/200x200?text=No+Image'
   }, [product.productImage])
 
+  const gradeColor = product.grade
+    ? (PRODUCT_GRADE_CONFIG[product.grade as keyof typeof PRODUCT_GRADE_CONFIG]?.color || '#999')
+    : undefined
+
   return (
-    <Badge.Ribbon
-      text={`In Cart: ${dynamicData?.cartQuantity || 0}`}
-      color="green"
-      style={{ display: dynamicData?.cartQuantity ? 'block' : 'none' }}
-    >
-      <Card
-        hoverable
-        className="shop-product-card"
-        cover={
-          <div className="shop-product-card-cover">
-            <Image
-              alt={product.productName}
-              src={imageSrc}
-              height="100%"
-              width="100%"
-              style={{ objectFit: 'contain' }}
-              preview={{ mask: 'Preview' }}
-              fallback="https://via.placeholder.com/200x200?text=No+Image"
-            />
-          </div>
-        }
+    <div style={{ position: 'relative' }}>
+      {product.grade && (
+        <div
+          style={{
+            position: 'absolute',
+            top: 0,
+            right: 0,
+            zIndex: 10,
+            background: gradeColor,
+            color: '#fff',
+            fontSize: 12,
+            fontWeight: 700,
+            lineHeight: '20px',
+            padding: '0 8px',
+            borderRadius: '0 0 0 8px',
+            boxShadow: '0 2px 4px rgba(0,0,0,0.15)',
+          }}
+        >
+          Grade {product.grade}
+        </div>
+      )}
+      <Badge.Ribbon
+        text={`In Cart: ${dynamicData?.cartQuantity || 0}`}
+        color="green"
+        style={{ display: dynamicData?.cartQuantity ? 'block' : 'none', top: 24 }}
+      >
+        <Card
+          hoverable
+          className="shop-product-card"
+          cover={
+            <div className="shop-product-card-cover" style={{ position: 'relative' }}>
+              <Image
+                alt={product.productName}
+                src={imageSrc}
+                height="100%"
+                width="100%"
+                style={{ objectFit: 'contain' }}
+                preview={{ mask: 'Preview' }}
+                fallback="https://via.placeholder.com/200x200?text=No+Image"
+              />
+            </div>
+          }
         actions={[
           <div className="shop-product-card-actions" key="actions">
             {onRemoveFromCart && dynamicData?.cartQuantity ? (
@@ -145,5 +171,6 @@ export default function ProductCard({
         />
       </Card>
     </Badge.Ribbon>
+    </div>
   )
 }

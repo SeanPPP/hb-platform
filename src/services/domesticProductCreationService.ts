@@ -129,7 +129,7 @@ export async function getPrefixCodeList(params: PrefixCodeListParams): Promise<P
     method: 'GET',
     params: params as Record<string, unknown>,
   })
-  return response?.data ?? response
+  return response
 }
 
 export async function createPrefixCode(data: { supplierCode: string; prefixName: string; prefixDescription?: string; isActive?: boolean; sortOrder?: number }): Promise<{ success: boolean; message?: string }> {
@@ -137,7 +137,7 @@ export async function createPrefixCode(data: { supplierCode: string; prefixName:
     method: 'POST',
     data,
   })
-  return response?.data ?? response
+  return response
 }
 
 export async function updatePrefixCode(prefixCode: string, data: { prefixName: string; prefixDescription?: string; isActive?: boolean; sortOrder?: number }): Promise<{ success: boolean; message?: string }> {
@@ -145,17 +145,17 @@ export async function updatePrefixCode(prefixCode: string, data: { prefixName: s
     method: 'PUT',
     data,
   })
-  return response?.data ?? response
+  return response
 }
 
 export async function deletePrefixCode(prefixCode: string): Promise<{ success: boolean; message?: string }> {
   const response: any = await request(`/api/v1/productprefixcodes/${prefixCode}`, {
     method: 'DELETE',
   })
-  return response?.data ?? response
+  return response
 }
 
 export async function togglePrefixCodeStatus(prefixCode: string, isActive: boolean): Promise<{ success: boolean; message?: string }> {
   const response: any = await request(`/api/v1/productprefixcodes/${prefixCode}/status/${isActive}`, { method: 'PATCH' })
-  return response?.data ?? response
+  return response
 }

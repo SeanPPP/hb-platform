@@ -452,10 +452,11 @@ export default function WarehouseLocationsPage() {
 
         <Table
           rowKey="locationGuid"
+          virtual
           loading={loading}
           columns={columns}
           dataSource={data}
-          scroll={{ x: 1280 }}
+          scroll={{ x: 1280, y: 600 }}
           pagination={{
             current: page,
             pageSize,

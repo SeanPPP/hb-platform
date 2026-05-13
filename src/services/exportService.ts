@@ -29,6 +29,8 @@ const defaultExportOptions: ExportOptions = {
 }
 
 const MAX_RETRIES = 2
+const IMAGE_TIMEOUT_MS = 10_000
+const RETRY_BASE_DELAY_MS = 1_500
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -37,11 +39,23 @@ function delay(ms: number): Promise<void> {
 function loadImageViaElement(src: string, crossOrigin?: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
     const img = new Image()
+    const timer = setTimeout(() => {
+      img.onload = null
+      img.onerror = null
+      img.src = ''
+      reject(new Error('Image load timeout'))
+    }, IMAGE_TIMEOUT_MS)
     if (crossOrigin) {
       img.crossOrigin = crossOrigin
     }
-    img.onload = () => resolve(img)
-    img.onerror = () => reject(new Error(`Image load failed`))
+    img.onload = () => {
+      clearTimeout(timer)
+      resolve(img)
+    }
+    img.onerror = () => {
+      clearTimeout(timer)
+      reject(new Error('Image load failed'))
+    }
     img.src = src
   })
 }
@@ -59,12 +73,13 @@ async function fetchImageAsBase64SingleAttempt(url: string): Promise<string | nu
   try {
     const img = await loadImageViaElement(url, 'anonymous')
     return drawImageToCanvas(img)
-  } catch {
-    // crossOrigin 模式失败
-  }
+  } catch {}
 
   try {
-    const response = await fetch(url)
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), IMAGE_TIMEOUT_MS)
+    const response = await fetch(url, { signal: controller.signal })
+    clearTimeout(timer)
     if (!response.ok) {
       return null
     }
@@ -75,9 +90,7 @@ async function fetchImageAsBase64SingleAttempt(url: string): Promise<string | nu
       reader.onerror = () => resolve('')
       reader.readAsDataURL(blob)
     })
-  } catch {
-    // fetch 也失败
-  }
+  } catch {}
 
   try {
     const img = await loadImageViaElement(url)
@@ -95,17 +108,18 @@ async function fetchImageAsBase64WithRetry(
 
   for (let attempt = 0; attempt <= retries; attempt++) {
     if (attempt > 0) {
-      await delay(500 * attempt)
+      await delay(RETRY_BASE_DELAY_MS * attempt)
     }
 
     try {
-      const response = await fetch(url, { method: 'HEAD', mode: 'cors' })
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), IMAGE_TIMEOUT_MS)
+      const response = await fetch(url, { method: 'HEAD', mode: 'cors', signal: controller.signal })
+      clearTimeout(timer)
       if (response.status === 404) {
         return { data: null, reason: '404 Not Found' }
       }
-    } catch {
-      // HEAD 检测失败不阻断，继续尝试下载
-    }
+    } catch {}
 
     const data = await fetchImageAsBase64SingleAttempt(url)
     if (data) {
@@ -175,6 +189,7 @@ export async function exportDomesticProductsToExcel(
   }
 
   let productImageMap = new Map<number, string>()
+  const failedProductImageRows = new Set<number>()
   if (mergedOptions.includeProductImage) {
     mergedOptions.onProgress?.(20, '正在下载商品图片...')
     const imageEntries = products
@@ -191,6 +206,7 @@ export async function exportDomesticProductsToExcel(
           const { data, reason } = await fetchImageAsBase64WithRetry(entry.url!)
           if (!data && reason) {
             failedProductImages.push({ itemNumber: entry.itemNumber, url: entry.url!, reason })
+            failedProductImageRows.add(entry.index)
           }
           return { index: entry.index, data }
         }),
@@ -277,6 +293,10 @@ export async function exportDomesticProductsToExcel(
           br: { col: productImageColIndex + 1, row: rowIndex },
           editAs: 'oneCell',
         } as any)
+      } else if (failedProductImageRows.has(index)) {
+        const cell = row.getCell(productImageColIndex + 1)
+        cell.value = '图片下载失败'
+        cell.font = { color: { argb: 'FFFF0000' }, size: 9 }
       }
     }
 
