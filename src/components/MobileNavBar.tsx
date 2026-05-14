@@ -3,6 +3,7 @@ import { Dropdown } from 'antd'
 import type { MenuProps } from 'antd'
 import { LogoutOutlined, MenuOutlined, ReloadOutlined, UserOutlined } from '@ant-design/icons'
 import { Avatar, Button } from 'antd'
+import { useTranslation } from 'react-i18next'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { useAuthStore } from '../store/auth'
 import { getCurrentRoute } from '../router/routes'
@@ -20,6 +21,7 @@ interface MobileNavBarProps {
 }
 
 export default function MobileNavBar({ onRefresh, onMenuClick }: MobileNavBarProps) {
+  const { t } = useTranslation()
   const navigate = useNavigate()
   const location = useLocation()
   const { logout } = useAuthStore()
@@ -34,13 +36,13 @@ export default function MobileNavBar({ onRefresh, onMenuClick }: MobileNavBarPro
   const userMenuItems: MenuProps['items'] = [
     {
       key: 'refresh',
-      label: '刷新当前页',
+      label: t('layout.refreshPage'),
       icon: <ReloadOutlined />,
       onClick: onRefresh,
     },
     {
       key: 'logout',
-      label: '退出登录',
+      label: t('layout.logout'),
       icon: <LogoutOutlined />,
       onClick: () => void handleLogout(),
     },

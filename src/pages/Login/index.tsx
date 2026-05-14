@@ -1,12 +1,15 @@
 import {
+  GlobalOutlined,
   LockOutlined,
   LoginOutlined,
   SafetyOutlined,
   ThunderboltOutlined,
   UserOutlined,
 } from '@ant-design/icons'
-import { Alert, Button, Card, Checkbox, Form, Input, Space, Typography, message } from 'antd'
+import { Alert, Button, Checkbox, Dropdown, Form, Input, Space, Typography, message } from 'antd'
+import type { MenuProps } from 'antd'
 import { useState, useEffect } from 'react'
+import { useTranslation } from 'react-i18next'
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import { useAuthStore } from '../../store/auth'
 import type { LoginRequest } from '../../types/auth'
@@ -14,8 +17,10 @@ import { hashPassword } from '../../utils/password'
 import type { RequestError } from '../../utils/request'
 
 const REMEMBERED_USERNAME_KEY = 'remembered_username'
+const LANG_STORAGE_KEY = 'lang'
 
 export default function LoginPage() {
+  const { t, i18n } = useTranslation()
   const [form] = Form.useForm<LoginRequest>()
   const [errorMessage, setErrorMessage] = useState('')
   const [rememberUsername, setRememberUsername] = useState(false)
@@ -33,6 +38,16 @@ export default function LoginPage() {
     }
   }, [form])
 
+  const changeLang = (lng: string) => {
+    i18n.changeLanguage(lng)
+    localStorage.setItem(LANG_STORAGE_KEY, lng)
+  }
+
+  const langMenuItems: MenuProps['items'] = [
+    { key: 'zh', label: '中文', onClick: () => changeLang('zh') },
+    { key: 'en', label: 'English', onClick: () => changeLang('en') },
+  ]
+
   const handleSubmit = async (values: LoginRequest) => {
     setErrorMessage('')
     try {
@@ -45,13 +60,13 @@ export default function LoginPage() {
       } else {
         localStorage.removeItem(REMEMBERED_USERNAME_KEY)
       }
-      message.success('登录成功')
+      message.success(t('login.success'))
       const redirect = searchParams.get('redirect')
       const target = (location.state as { from?: { pathname?: string } } | undefined)?.from?.pathname
       navigate(redirect || target || '/dashboard', { replace: true })
     } catch (error) {
       const requestError = error as RequestError
-      setErrorMessage(requestError.message || '登录失败')
+      setErrorMessage(requestError.message || t('login.failed'))
     }
   }
 
@@ -85,13 +100,26 @@ export default function LoginPage() {
           </div>
 
           <Space direction="vertical" size={20} style={{ width: '100%' }}>
-            <div className="login-form-header">
+            <div className="login-form-header" style={{ position: 'relative' }}>
               <Typography.Title level={3} style={{ marginBottom: 4 }}>
-                欢迎登录
+                {t('login.welcome')}
               </Typography.Title>
               <Typography.Text type="secondary" style={{ fontSize: 14 }}>
-                请输入您的账号信息
+                {t('login.subtitle')}
               </Typography.Text>
+              <Dropdown
+                menu={{ items: langMenuItems, selectedKeys: [i18n.language] }}
+                placement="bottomRight"
+              >
+                <Button
+                  type="text"
+                  icon={<GlobalOutlined />}
+                  size="small"
+                  style={{ position: 'absolute', top: 0, right: 0 }}
+                >
+                  {i18n.language === 'zh' ? '中文' : 'EN'}
+                </Button>
+              </Dropdown>
             </div>
 
             {errorMessage ? <Alert type="error" showIcon message={errorMessage} /> : null}
@@ -103,15 +131,15 @@ export default function LoginPage() {
               onFinish={(values) => void handleSubmit(values)}
               size="large"
             >
-              <Form.Item label="用户名" name="username" rules={[{ required: true, message: '请输入用户名' }]}>
-                <Input prefix={<UserOutlined />} placeholder="请输入用户名" autoComplete="username" />
+              <Form.Item label={t('login.username')} name="username" rules={[{ required: true, message: t('login.usernameRequired') }]}>
+                <Input prefix={<UserOutlined />} placeholder={t('login.usernamePlaceholder')} autoComplete="username" />
               </Form.Item>
-              <Form.Item label="密码" name="password" rules={[{ required: true, message: '请输入密码' }]}>
-                <Input.Password prefix={<LockOutlined />} placeholder="请输入密码" autoComplete="current-password" />
+              <Form.Item label={t('login.password')} name="password" rules={[{ required: true, message: t('login.passwordRequired') }]}>
+                <Input.Password prefix={<LockOutlined />} placeholder={t('login.passwordPlaceholder')} autoComplete="current-password" />
               </Form.Item>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
                 <Checkbox checked={rememberUsername} onChange={(e) => setRememberUsername(e.target.checked)}>
-                  记住用户名
+                  {t('login.rememberUsername')}
                 </Checkbox>
               </div>
               <Button
@@ -122,7 +150,7 @@ export default function LoginPage() {
                 block
                 className="login-submit-btn"
               >
-                登录
+                {t('login.submit')}
               </Button>
             </Form>
           </Space>

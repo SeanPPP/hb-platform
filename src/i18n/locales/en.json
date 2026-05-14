@@ -1,0 +1,63 @@
+{
+  "login": {
+    "welcome": "Welcome",
+    "subtitle": "Please enter your credentials",
+    "username": "Username",
+    "password": "Password",
+    "usernamePlaceholder": "Enter username",
+    "passwordPlaceholder": "Enter password",
+    "usernameRequired": "Please enter username",
+    "passwordRequired": "Please enter password",
+    "rememberUsername": "Remember username",
+    "submit": "Login",
+    "success": "Login successful",
+    "failed": "Login failed",
+    "noRole": "No role assigned"
+  },
+  "layout": {
+    "brand": "HB Admin Platform",
+    "shopFront": "Shop Front",
+    "refreshPage": "Refresh Page",
+    "logout": "Logout",
+    "switchLang": "Switch Language"
+  },
+  "menu": {
+    "dashboard": "Dashboard",
+    "system": "System",
+    "systemStores": "Stores",
+    "systemUsers": "Users",
+    "systemRoles": "Roles",
+    "systemPermissions": "Permissions",
+    "domesticPurchase": "Domestic Purchase",
+    "chinaSuppliers": "China Suppliers",
+    "domesticProducts": "Domestic Products",
+    "prefixCodeManagement": "Prefix Codes",
+    "productCreation": "Product Code Creation",
+    "productImport": "Product Import",
+    "warehouse": "Warehouse",
+    "storeOrders": "Store Orders",
+    "storeOrderDetail": "Order Detail",
+    "pickingList": "Picking List",
+    "invoice": "Invoice",
+    "warehouseProducts": "Warehouse Products",
+    "categories": "Categories",
+    "warehouseLocations": "Locations",
+    "productGradeManagement": "Product Grades",
+    "posAdmin": "POS Admin",
+    "suppliers": "Suppliers",
+    "productManagement": "Products",
+    "storeProductPrice": "Store Product Prices",
+    "pricingStrategies": "Pricing Strategies",
+    "promotions": "Promotions",
+    "cashRegisterUsers": "Cashier Barcodes",
+    "salesOrders": "Sales Records",
+    "localSupplierInvoices": "Local Invoices",
+    "invoiceDetail": "Invoice Detail",
+    "editInvoice": "Edit Invoice",
+    "pageNotFound": "Page Not Found"
+  },
+  "lang": {
+    "zh": "中文",
+    "en": "English"
+  }
+}

@@ -1,4 +1,5 @@
 import {
+  GlobalOutlined,
   LogoutOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
@@ -9,6 +10,7 @@ import {
 import { Avatar, Breadcrumb, Button, Dropdown, Layout, Menu, Space, Typography } from 'antd'
 import type { MenuProps } from 'antd'
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { useLocation, useNavigate } from 'react-router-dom'
 import AppTabs from '../components/AppTabs'
 import RouteKeepAlive, { type RouteKeepAliveRef } from '../components/RouteKeepAlive'
@@ -29,6 +31,7 @@ import { useTabsStore } from '../store/tabs'
 const { Header, Sider, Content } = Layout
 
 function DesktopAdminLayout() {
+  const { t, i18n } = useTranslation()
   const [collapsed, setCollapsed] = useState(false)
   const [openKeys, setOpenKeys] = useState<string[]>([])
   const navigate = useNavigate()
@@ -47,12 +50,13 @@ function DesktopAdminLayout() {
     removeLeftTabs,
     removeRightTabs,
     resetTabs,
+    updateTabTitle,
   } = useTabsStore()
 
   const currentRoute = getCurrentRoute(location.pathname, access)
   const currentTab = tabs.find((item) => item.key === location.pathname || item.key === currentRoute?.path)
   const currentElement = getCurrentElement(location.pathname, access)
-  const menus = useMemo(() => buildMenus(access), [access])
+  const menus = useMemo(() => buildMenus(access), [access, i18n.language])
   const selectedKeys = getSelectedMenuKeys(location.pathname, access)
   const cacheKeys = tabs.filter((item) => item.keepAlive).map((item) => item.key)
 
@@ -64,6 +68,17 @@ function DesktopAdminLayout() {
     setActiveKey(tab?.key || location.pathname)
     setOpenKeys(getOpenMenuKeys(location.pathname, access))
   }, [access, ensureTab, location.pathname, setActiveKey])
+
+  useEffect(() => {
+    const currentTabs = useTabsStore.getState().tabs
+    for (const tab of currentTabs) {
+      const updated = toTabItem(tab.path, access)
+      if (updated) {
+        updateTabTitle(tab.key, updated.title)
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [i18n.language])
 
   const handleMenuClick = ({ key }: { key: string }) => {
     navigate(key)
@@ -111,14 +126,24 @@ function DesktopAdminLayout() {
 
   const userMenuItems: MenuProps['items'] = [
     {
+      key: 'lang-group',
+      icon: <GlobalOutlined />,
+      label: t('layout.switchLang'),
+      children: [
+        { key: 'lang-zh', label: '中文', onClick: () => { i18n.changeLanguage('zh'); localStorage.setItem('lang', 'zh') } },
+        { key: 'lang-en', label: 'English', onClick: () => { i18n.changeLanguage('en'); localStorage.setItem('lang', 'en') } },
+      ],
+    },
+    { type: 'divider' },
+    {
       key: 'refresh-profile',
-      label: '刷新当前页',
+      label: t('layout.refreshPage'),
       icon: <ReloadOutlined />,
       onClick: handleRefreshCurrent,
     },
     {
       key: 'logout',
-      label: '退出登录',
+      label: t('layout.logout'),
       icon: <LogoutOutlined />,
       onClick: () => {
         void handleLogout()
@@ -163,14 +188,14 @@ function DesktopAdminLayout() {
               icon={<ShoppingOutlined />}
               onClick={() => window.open('/shop', '_blank')}
             >
-              订货前台
+              {t('layout.shopFront')}
             </Button>
             <Dropdown menu={{ items: userMenuItems }} placement="bottomRight" trigger={['click']}>
               <Space className="header-user">
                 <Avatar icon={<UserOutlined />} />
                 <div className="header-user-meta">
                   <Typography.Text strong>{currentUser?.username || '--'}</Typography.Text>
-                  <Typography.Text type="secondary">{currentUser?.roleNames?.[0] || '未分配角色'}</Typography.Text>
+                  <Typography.Text type="secondary">{currentUser?.roleNames?.[0] || t('login.noRole')}</Typography.Text>
                 </div>
               </Space>
             </Dropdown>

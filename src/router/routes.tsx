@@ -25,6 +25,7 @@ import {
 } from '@ant-design/icons'
 import type { MenuProps } from 'antd'
 import { matchPath } from 'react-router-dom'
+import i18n from '../i18n'
 import ForbiddenPage from '../pages/Forbidden'
 import DashboardPage from '../pages/Dashboard'
 import DomesticChinaSuppliersPage from '../pages/DomesticPurchase/ChinaSuppliers'
@@ -38,6 +39,7 @@ import PosmSalesOrdersPage from '../pages/PosmSalesOrders'
 import PosAdminCashRegisterUsersPage from '../pages/PosAdmin/CashRegisterUsers'
 import PosAdminPricingStrategiesPage from '../pages/PosAdmin/PricingStrategies'
 import PosAdminPromotionsPage from '../pages/PosAdmin/Promotions'
+import PosAdminDeviceRegistrationPage from '../pages/PosAdmin/DeviceRegistration'
 import PosAdminSupplierManagementPage from '../pages/PosAdmin/SupplierManagement'
 import PosAdminProductManagementPage from '../pages/PosAdmin/ProductManagement'
 import PosAdminStoreProductPricePage from '../pages/PosAdmin/StoreProductPrice'
@@ -98,7 +100,7 @@ export const appRoutes: AppRouteItem[] = [
   {
     path: '/dashboard',
     meta: {
-      title: '工作台',
+      title: 'menu.dashboard',
       icon: 'DashboardOutlined',
       affix: true,
       closable: false,
@@ -109,14 +111,14 @@ export const appRoutes: AppRouteItem[] = [
   {
     path: '/system',
     meta: {
-      title: '系统管理',
+      title: 'menu.system',
       icon: 'SettingOutlined',
     },
     children: [
       {
         path: '/system/stores',
         meta: {
-          title: '分店管理',
+          title: 'menu.systemStores',
           icon: 'ShopOutlined',
           keepAlive: true,
           accessKey: 'canReadStore',
@@ -126,7 +128,7 @@ export const appRoutes: AppRouteItem[] = [
       {
         path: '/system/users',
         meta: {
-          title: '用户管理',
+          title: 'menu.systemUsers',
           icon: 'UserOutlined',
           keepAlive: true,
           accessKey: 'canReadUser',
@@ -136,7 +138,7 @@ export const appRoutes: AppRouteItem[] = [
       {
         path: '/system/roles',
         meta: {
-          title: '角色管理',
+          title: 'menu.systemRoles',
           icon: 'TeamOutlined',
           keepAlive: true,
           accessKey: 'canReadRole',
@@ -146,7 +148,7 @@ export const appRoutes: AppRouteItem[] = [
       {
         path: '/system/permissions',
         meta: {
-          title: '权限管理',
+          title: 'menu.systemPermissions',
           icon: 'KeyOutlined',
           keepAlive: true,
           accessKey: 'canReadRole',
@@ -158,14 +160,14 @@ export const appRoutes: AppRouteItem[] = [
   {
     path: '/domestic-purchase',
     meta: {
-      title: '国内采购',
+      title: 'menu.domesticPurchase',
       icon: 'ShoppingCartOutlined',
     },
     children: [
       {
         path: '/domestic-purchase/china-suppliers',
         meta: {
-          title: '国内供应商',
+          title: 'menu.chinaSuppliers',
           icon: 'BankOutlined',
           keepAlive: true,
           accessKey: 'canManageWarehouse',
@@ -175,7 +177,7 @@ export const appRoutes: AppRouteItem[] = [
       {
         path: '/domestic-purchase/domestic-products',
         meta: {
-          title: '国内商品',
+          title: 'menu.domesticProducts',
           icon: 'AppstoreOutlined',
           keepAlive: true,
           accessKey: 'canReadProduct',
@@ -185,7 +187,7 @@ export const appRoutes: AppRouteItem[] = [
       {
         path: '/domestic-purchase/prefix-code-management',
         meta: {
-          title: '前缀管理',
+          title: 'menu.prefixCodeManagement',
           icon: 'NumberOutlined',
           keepAlive: true,
           accessKey: 'canManageWarehouse',
@@ -195,7 +197,7 @@ export const appRoutes: AppRouteItem[] = [
       {
         path: '/domestic-purchase/product-creation',
         meta: {
-          title: '货号条码创建',
+          title: 'menu.productCreation',
           icon: 'BuildOutlined',
           keepAlive: true,
           accessKey: 'canManageWarehouse',
@@ -205,7 +207,7 @@ export const appRoutes: AppRouteItem[] = [
       {
         path: '/domestic-purchase/product-import',
         meta: {
-          title: '商品导入',
+          title: 'menu.productImport',
           icon: 'InboxOutlined',
           keepAlive: true,
           accessKey: 'canManageWarehouse',
@@ -217,14 +219,14 @@ export const appRoutes: AppRouteItem[] = [
   {
     path: '/warehouse',
     meta: {
-      title: '仓库管理',
+      title: 'menu.warehouse',
       icon: 'DatabaseOutlined',
     },
     children: [
       {
         path: '/warehouse/store-orders',
         meta: {
-          title: '分店订货列表',
+          title: 'menu.storeOrders',
           icon: 'ReconciliationOutlined',
           keepAlive: true,
           accessKey: 'canManageWarehouse',
@@ -234,43 +236,43 @@ export const appRoutes: AppRouteItem[] = [
       {
         path: '/warehouse/store-order/detail/:id',
         meta: {
-          title: '订货明细',
+          title: 'menu.storeOrderDetail',
           hidden: true,
           keepAlive: true,
           accessKey: 'canManageWarehouse',
           activeMenu: '/warehouse/store-orders',
-          dynamicTitle: () => '订货明细',
+          dynamicTitle: () => i18n.t('menu.storeOrderDetail'),
         },
         element: <StoreOrderDetailPage />,
       },
       {
         path: '/warehouse/store-order/picking/:id',
         meta: {
-          title: '配货单',
+          title: 'menu.pickingList',
           hidden: true,
           keepAlive: true,
           accessKey: 'canManageWarehouse',
           activeMenu: '/warehouse/store-orders',
-          dynamicTitle: () => '配货单',
+          dynamicTitle: () => i18n.t('menu.pickingList'),
         },
         element: <StoreOrderPickingListPage />,
       },
       {
         path: '/warehouse/store-order/invoice/:id',
         meta: {
-          title: '发票',
+          title: 'menu.invoice',
           hidden: true,
           keepAlive: true,
           accessKey: 'canManageWarehouse',
           activeMenu: '/warehouse/store-orders',
-          dynamicTitle: () => '发票',
+          dynamicTitle: () => i18n.t('menu.invoice'),
         },
         element: <StoreOrderInvoicePage />,
       },
       {
         path: '/warehouse/products',
         meta: {
-          title: '仓库商品管理',
+          title: 'menu.warehouseProducts',
           icon: 'AppstoreOutlined',
           keepAlive: true,
           accessKey: 'canManageWarehouse',
@@ -280,7 +282,7 @@ export const appRoutes: AppRouteItem[] = [
       {
         path: '/warehouse/categories',
         meta: {
-          title: '分类管理',
+          title: 'menu.categories',
           icon: 'TagsOutlined',
           keepAlive: true,
           accessKey: 'canManageWarehouse',
@@ -290,7 +292,7 @@ export const appRoutes: AppRouteItem[] = [
       {
         path: '/warehouse/locations',
         meta: {
-          title: '仓库标签管理',
+          title: 'menu.warehouseLocations',
           icon: 'EnvironmentOutlined',
           keepAlive: true,
           accessKey: 'canManageWarehouse',
@@ -300,7 +302,7 @@ export const appRoutes: AppRouteItem[] = [
       {
         path: '/warehouse/product-grade-management',
         meta: {
-          title: '商品等级管理',
+          title: 'menu.productGradeManagement',
           icon: 'TrophyOutlined',
           keepAlive: true,
           accessKey: 'canManageWarehouse',
@@ -312,14 +314,14 @@ export const appRoutes: AppRouteItem[] = [
   {
     path: '/pos-admin',
     meta: {
-      title: '收银管理',
+      title: 'menu.posAdmin',
       icon: 'WalletOutlined',
     },
     children: [
       {
         path: '/pos-admin/suppliers',
         meta: {
-          title: '供应商管理',
+          title: 'menu.suppliers',
           icon: 'ShopOutlined',
           keepAlive: true,
           accessKey: 'canManageStore',
@@ -329,7 +331,7 @@ export const appRoutes: AppRouteItem[] = [
       {
         path: '/pos-admin/products',
         meta: {
-          title: '商品管理',
+          title: 'menu.productManagement',
           icon: 'AppstoreOutlined',
           keepAlive: true,
           accessKey: 'canManageStore',
@@ -339,7 +341,7 @@ export const appRoutes: AppRouteItem[] = [
       {
         path: '/pos-admin/store-product-price',
         meta: {
-          title: '分店商品价格',
+          title: 'menu.storeProductPrice',
           icon: 'DollarOutlined',
           keepAlive: true,
           accessKey: 'canManageStore',
@@ -349,7 +351,7 @@ export const appRoutes: AppRouteItem[] = [
       {
         path: '/pos-admin/pricing-strategies',
         meta: {
-          title: '自动价格策略',
+          title: 'menu.pricingStrategies',
           icon: 'FileTextOutlined',
           keepAlive: true,
           accessKey: 'isAdmin',
@@ -359,7 +361,7 @@ export const appRoutes: AppRouteItem[] = [
       {
         path: '/pos-admin/promotions',
         meta: {
-          title: '促销管理',
+          title: 'menu.promotions',
           icon: 'GiftOutlined',
           keepAlive: true,
           accessKey: 'isAdmin',
@@ -369,7 +371,7 @@ export const appRoutes: AppRouteItem[] = [
       {
         path: '/pos-admin/cash-register-users',
         meta: {
-          title: '收银用户条码',
+          title: 'menu.cashRegisterUsers',
           icon: 'UserOutlined',
           keepAlive: true,
           accessKey: 'canManageStore',
@@ -377,9 +379,19 @@ export const appRoutes: AppRouteItem[] = [
         element: <PosAdminCashRegisterUsersPage />,
       },
       {
+        path: '/pos-admin/device-registration',
+        meta: {
+          title: '设备注册',
+          icon: 'BuildOutlined',
+          keepAlive: true,
+          accessKey: 'canManageStore',
+        },
+        element: <PosAdminDeviceRegistrationPage />,
+      },
+      {
         path: '/pos-admin/sales-orders',
         meta: {
-          title: '收银记录',
+          title: 'menu.salesOrders',
           icon: 'FileDoneOutlined',
           keepAlive: true,
           accessKey: 'canReadOrder',
@@ -389,7 +401,7 @@ export const appRoutes: AppRouteItem[] = [
       {
         path: '/pos-admin/local-supplier-invoices',
         meta: {
-          title: '分店进货单',
+          title: 'menu.localSupplierInvoices',
           icon: 'ReconciliationOutlined',
           keepAlive: true,
           accessKey: 'canManageStore',
@@ -399,24 +411,24 @@ export const appRoutes: AppRouteItem[] = [
       {
         path: '/pos-admin/invoice-detail/:id',
         meta: {
-          title: '进货单详情',
+          title: 'menu.invoiceDetail',
           hidden: true,
           keepAlive: true,
           accessKey: 'canManageStore',
           activeMenu: '/pos-admin/local-supplier-invoices',
-          dynamicTitle: () => '进货单详情',
+          dynamicTitle: () => i18n.t('menu.invoiceDetail'),
         },
         element: <LocalSupplierInvoiceDetailPage />,
       },
       {
         path: '/pos-admin/local-supplier-invoices/:id',
         meta: {
-          title: '编辑进货单',
+          title: 'menu.editInvoice',
           hidden: true,
           keepAlive: true,
           accessKey: 'isAdmin',
           activeMenu: '/pos-admin/local-supplier-invoices',
-          dynamicTitle: () => '编辑进货单',
+          dynamicTitle: () => i18n.t('menu.editInvoice'),
         },
         element: <InvoiceEditPage />,
       },
@@ -518,7 +530,7 @@ function buildMenusInternal(routes: AppRouteItem[], access: AccessControl): Menu
       return {
         key: route.path,
         icon: route.meta.icon ? iconMap[route.meta.icon as keyof typeof iconMap] : undefined,
-        label: route.meta.title,
+        label: i18n.t(route.meta.title),
         children,
       }
     })
@@ -532,14 +544,15 @@ export function buildMenus(access: AccessControl) {
 export function getBreadcrumbItems(pathname: string, access: AccessControl, currentTabTitle?: string) {
   const route = getCurrentRoute(pathname, access)
   if (!route) {
-    return [{ title: '页面不存在' }]
+    return [{ title: i18n.t('menu.pageNotFound') }]
   }
 
   const titles = [...route.parentPaths]
     .map((path) => titleMap.get(path))
     .filter((item): item is string => Boolean(item))
+    .map((key) => i18n.t(key))
 
-  const currentTitle = currentTabTitle || route.meta.dynamicTitle?.(route.params) || route.meta.title
+  const currentTitle = currentTabTitle || route.meta.dynamicTitle?.(route.params) || i18n.t(route.meta.title)
   return [...titles, currentTitle].map((title) => ({ title }))
 }
 
@@ -553,7 +566,7 @@ export function toTabItem(pathname: string, access: AccessControl): TabItem | nu
     key: route.meta.affix ? route.path : pathname,
     path: pathname,
     routePath: route.path,
-    title: route.meta.dynamicTitle?.(route.params) || route.meta.title,
+    title: route.meta.dynamicTitle?.(route.params) || i18n.t(route.meta.title),
     affix: route.meta.affix,
     closable: route.meta.closable !== false,
     keepAlive: route.meta.keepAlive,
@@ -567,7 +580,7 @@ export function getAffixTabs(): TabItem[] {
       key: entry.route.path,
       path: entry.route.path,
       routePath: entry.route.path,
-      title: entry.route.meta.title,
+      title: i18n.t(entry.route.meta.title),
       affix: true,
       closable: false,
       keepAlive: entry.route.meta.keepAlive,
