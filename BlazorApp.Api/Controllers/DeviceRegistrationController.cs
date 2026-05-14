@@ -33,7 +33,7 @@ namespace BlazorApp.Api.Controllers
         /// 获取所有设备列表
         /// </summary>
         [HttpGet]
-        [Authorize(Roles = "Admin,Manager")]
+        [Authorize(Roles = "Admin,Manager,StoreManager")]
         public async Task<IActionResult> GetAllDevices()
         {
             try
@@ -54,7 +54,7 @@ namespace BlazorApp.Api.Controllers
         /// 分页获取设备列表
         /// </summary>
         [HttpGet("paged")]
-        [Authorize(Roles = "Admin,Manager")]
+        [Authorize(Roles = "Admin,Manager,StoreManager")]
         public async Task<IActionResult> GetDevicesPaged(
             [FromQuery] int page = 1,
             [FromQuery] int pageSize = 20,
@@ -155,7 +155,7 @@ namespace BlazorApp.Api.Controllers
         /// 根据分店代码获取设备列表
         /// </summary>
         [HttpGet("by-store/{storeCode}")]
-        [Authorize(Roles = "Admin,Manager")]
+        [Authorize(Roles = "Admin,Manager,StoreManager")]
         public async Task<IActionResult> GetDevicesByStoreCode(string storeCode)
         {
             try
@@ -319,7 +319,7 @@ namespace BlazorApp.Api.Controllers
         /// 激活设备
         /// </summary>
         [HttpPost("{id}/activate")]
-        [Authorize(Roles = "Admin,Manager")]
+        [Authorize(Roles = "Admin,Manager,StoreManager")]
         public async Task<IActionResult> ActivateDevice(int id)
         {
             try
@@ -351,7 +351,7 @@ namespace BlazorApp.Api.Controllers
         /// 禁用设备
         /// </summary>
         [HttpPost("{id}/disable")]
-        [Authorize(Roles = "Admin,Manager")]
+        [Authorize(Roles = "Admin,Manager,StoreManager")]
         public async Task<IActionResult> DisableDevice(int id)
         {
             try
@@ -383,7 +383,7 @@ namespace BlazorApp.Api.Controllers
         /// 锁定设备
         /// </summary>
         [HttpPost("{id}/lock")]
-        [Authorize(Roles = "Admin,Manager")]
+        [Authorize(Roles = "Admin,Manager,StoreManager")]
         public async Task<IActionResult> LockDevice(int id)
         {
             try
@@ -589,7 +589,7 @@ namespace BlazorApp.Api.Controllers
         /// 获取设备统计信息
         /// </summary>
         [HttpGet("statistics")]
-        [Authorize(Roles = "Admin,Manager")]
+        [Authorize(Roles = "Admin,Manager,StoreManager")]
         public async Task<IActionResult> GetStatistics()
         {
             try
