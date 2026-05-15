@@ -417,6 +417,7 @@ builder.Services.AddScoped<ILocalSupplierInvoicesReactService, LocalSupplierInvo
 builder.Services.AddScoped<IPricingStrategyReactService, PricingStrategyReactService>();
 builder.Services.AddScoped<IPromotionReactService, PromotionReactService>();
 builder.Services.AddScoped<IStoreOrderReactService, StoreOrderReactService>();
+builder.Services.AddScoped<IStoreProductMaintenanceReactService, StoreProductMaintenanceReactService>();
 builder.Services.AddScoped<IPDACartToOrderService, PDACartToOrderService>();
 builder.Services.AddScoped<IPDAWarehouseOrderService, PDAWarehouseOrderService>();
 builder.Services.AddScoped<IPosmSalesOrderReactService, PosmSalesOrderReactService>();

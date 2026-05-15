@@ -104,7 +104,7 @@ namespace BlazorApp.Api.Controllers
         /// <summary>
         /// 根据ID获取设备信息
         /// </summary>
-        [HttpGet("{id}")]
+        [HttpGet("{id:int}")]
         [Authorize(Roles = "Admin,Manager")]
         public async Task<IActionResult> GetDeviceById(int id)
         {
@@ -208,7 +208,7 @@ namespace BlazorApp.Api.Controllers
         /// <summary>
         /// 更新设备信息
         /// </summary>
-        [HttpPut("{id}")]
+        [HttpPut("{id:int}")]
         [Authorize(Roles = "Admin")]
         public async Task<IActionResult> UpdateDevice(int id, [FromBody] POSM_设备注册信息表 device)
         {
@@ -241,7 +241,7 @@ namespace BlazorApp.Api.Controllers
         /// <summary>
         /// 删除设备
         /// </summary>
-        [HttpDelete("{id}")]
+        [HttpDelete("{id:int}")]
         [Authorize(Roles = "Admin")]
         public async Task<IActionResult> DeleteDevice(int id)
         {
@@ -529,7 +529,7 @@ namespace BlazorApp.Api.Controllers
         /// <summary>
         /// 健康检查端点 - 用于测试API连通性
         /// </summary>
-        [HttpGet("health")]
+        [HttpGet("device-health")]
         [AllowAnonymous]
         public IActionResult HealthCheck()
         {
@@ -547,7 +547,7 @@ namespace BlazorApp.Api.Controllers
         /// <summary>
         /// 数据库健康检查端点 - 用于测试数据库连接
         /// </summary>
-        [HttpGet("health/database")]
+        [HttpGet("device-health/database")]
         [AllowAnonymous]
         public async Task<IActionResult> DatabaseHealthCheck()
         {
