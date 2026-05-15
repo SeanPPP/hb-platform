@@ -19,6 +19,7 @@ import {
   message,
 } from 'antd'
 import { useEffect, useMemo, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import {
   clearActiveStoreOrderCart,
   removeStoreOrderCartItem,
@@ -42,6 +43,7 @@ export default function ShopCartDrawer({
   cart,
   onCartChanged,
 }: ShopCartDrawerProps) {
+  const { t } = useTranslation()
   const cartItems = cart?.items ?? []
   const totalQuantity = cart?.totalQuantity ?? 0
   const totalImportAmount = cart?.totalImportAmount ?? 0
@@ -81,10 +83,10 @@ export default function ShopCartDrawer({
         storeCode: cart.storeCode,
         detailGUID,
       })
-      message.success('Item removed')
+      message.success(t('shop.cartItemRemoved', 'Item removed'))
       await onCartChanged()
     } catch (error) {
-      message.error('Failed to remove item')
+      message.error(t('shop.cartRemoveFailed', 'Failed to remove item'))
     } finally {
       setLoadingMap((prev) => ({ ...prev, [detailGUID]: false }))
     }
@@ -109,7 +111,7 @@ export default function ShopCartDrawer({
       })
       await onCartChanged()
     } catch (error) {
-      message.error('Failed to update quantity')
+      message.error(t('shop.cartUpdateFailed', 'Failed to update quantity'))
     } finally {
       setLoadingMap((prev) => ({ ...prev, [detailGUID]: false }))
     }
@@ -126,12 +128,12 @@ export default function ShopCartDrawer({
         storeCode: cart.storeCode,
         remarks: remarks.trim() || undefined,
       })
-      message.success('Order submitted successfully')
+      message.success(t('shop.orderSubmitted', 'Order submitted successfully'))
       setRemarks('')
       await onCartChanged()
       onClose()
     } catch (error) {
-      message.error('Failed to submit order')
+      message.error(t('shop.orderSubmitFailed', 'Failed to submit order'))
     } finally {
       setSubmitting(false)
     }
@@ -143,27 +145,27 @@ export default function ShopCartDrawer({
     }
 
     Modal.confirm({
-      title: 'Confirm Order Submission',
+      title: t('shop.confirmOrderSubmission', 'Confirm Order Submission'),
       content: (
         <div>
           <p>
-            Store: <strong>{cart.storeName || cart.storeCode}</strong>
+            {t('common.store', 'Store')}: <strong>{cart.storeName || cart.storeCode}</strong>
           </p>
           <p>
-            Total Quantity: <strong>{cart.totalQuantity}</strong>
+            {t('shop.totalQuantity', 'Total Quantity')}: <strong>{cart.totalQuantity}</strong>
           </p>
           <p>
-            Estimated Total: <strong>${cart.totalImportAmount.toFixed(2)}</strong>
+            {t('shop.estimatedTotal', 'Estimated Total')}: <strong>${cart.totalImportAmount.toFixed(2)}</strong>
           </p>
           {remarks.trim() ? (
             <p>
-              Remarks: <em>{remarks.trim()}</em>
+              {t('common.remarks', 'Remarks')}: <em>{remarks.trim()}</em>
             </p>
           ) : null}
         </div>
       ),
-      okText: 'Submit Order',
-      cancelText: 'Cancel',
+      okText: t('shop.submitOrder', 'Submit Order'),
+      cancelText: t('common.cancel', 'Cancel'),
       onOk: () => {
         void handleSubmitOrder()
       },
@@ -176,11 +178,11 @@ export default function ShopCartDrawer({
     }
 
     Modal.confirm({
-      title: 'Clear Cart',
-      content: `Remove all ${cartItems.length} items from the cart?`,
-      okText: 'Clear Cart',
+      title: t('shop.clearCart', 'Clear Cart'),
+      content: t('shop.clearCartConfirm', 'Remove all {{count}} items from the cart?', { count: cartItems.length }),
+      okText: t('shop.clearCart', 'Clear Cart'),
       okButtonProps: { danger: true },
-      cancelText: 'Cancel',
+      cancelText: t('common.cancel', 'Cancel'),
       onOk: async () => {
         try {
           const storeCode = cart.storeCode
@@ -189,10 +191,10 @@ export default function ShopCartDrawer({
           }
 
           await clearActiveStoreOrderCart(storeCode)
-          message.success('Cart cleared')
+          message.success(t('shop.cartCleared', 'Cart cleared'))
           await onCartChanged()
         } catch (error) {
-          message.error('Failed to clear cart')
+          message.error(t('shop.cartClearFailed', 'Failed to clear cart'))
         }
       },
     })
@@ -203,9 +205,9 @@ export default function ShopCartDrawer({
       title={
         <Space>
           <ShoppingCartOutlined />
-          <span>Shopping Cart</span>
+          <span>{t('shop.shoppingCart', 'Shopping Cart')}</span>
           {cart?.totalQuantity ? (
-            <span className="shop-cart-drawer-title-note">({cart.totalQuantity} items)</span>
+            <span className="shop-cart-drawer-title-note">({t('shop.itemsCount', '{{count}} items', { count: cart.totalQuantity })})</span>
           ) : null}
           {cartItems.length ? (
             <Button
@@ -215,7 +217,7 @@ export default function ShopCartDrawer({
               icon={<DeleteTwoTone twoToneColor="#cf1322" />}
               onClick={handleClearCart}
             >
-              Clear
+              {t('common.clear', 'Clear')}
             </Button>
           ) : null}
         </Space>
@@ -224,22 +226,22 @@ export default function ShopCartDrawer({
       onClose={onClose}
       open={open}
       width={460}
-      extra={<Button onClick={onClose}>Close</Button>}
+      extra={<Button onClick={onClose}>{t('common.close', 'Close')}</Button>}
       footer={
         cartItems.length ? (
           <div className="shop-cart-drawer-footer">
             <div className="shop-cart-drawer-total-row">
-              <Text>Total Quantity</Text>
+              <Text>{t('shop.totalQuantity', 'Total Quantity')}</Text>
               <Text strong>{totalQuantity}</Text>
             </div>
             <div className="shop-cart-drawer-total-row">
-              <Text>Estimated Total</Text>
+              <Text>{t('shop.estimatedTotal', 'Estimated Total')}</Text>
               <Title level={4} className="shop-cart-drawer-amount">
                 ${totalImportAmount.toFixed(2)}
               </Title>
             </div>
             <Input.TextArea
-              placeholder="Remarks (optional)"
+              placeholder={t('shop.remarksPlaceholder', 'Remarks (optional)')}
               value={remarks}
               onChange={(event) => setRemarks(event.target.value)}
               rows={2}
@@ -247,7 +249,7 @@ export default function ShopCartDrawer({
               showCount
             />
             <Button type="primary" size="large" block onClick={handleSubmitWithConfirm} loading={submitting}>
-              Submit Order
+              {t('shop.submitOrder', 'Submit Order')}
             </Button>
           </div>
         ) : null
@@ -267,13 +269,13 @@ export default function ShopCartDrawer({
                   actions={[
                     <Popconfirm
                       key={item.detailGUID}
-                      title="Remove Item"
-                      description="Remove this item from the cart?"
+                      title={t('shop.removeItem', 'Remove Item')}
+                      description={t('shop.removeItemConfirm', 'Remove this item from the cart?')}
                       onConfirm={() => {
                         void handleRemove(item.detailGUID)
                       }}
-                      okText="Remove"
-                      cancelText="Cancel"
+                      okText={t('common.remove', 'Remove')}
+                      cancelText={t('common.cancel', 'Cancel')}
                     >
                       <Button
                         type="text"
@@ -305,11 +307,11 @@ export default function ShopCartDrawer({
                           {item.itemNumber}
                         </Text>
                         <Text type="secondary" style={{ fontSize: 12 }}>
-                          Import: ${item.importPrice?.toFixed(2)}
+                          {t('shop.importPrice', 'Import')}: ${item.importPrice?.toFixed(2)}
                         </Text>
                         <div className="shop-cart-drawer-item-row">
                           <Space>
-                            <Text style={{ fontSize: 12 }}>Qty:</Text>
+                            <Text style={{ fontSize: 12 }}>{t('shop.qty', 'Qty')}:</Text>
                             <InputNumber
                               size="small"
                               min={item.minOrderQuantity || 1}
@@ -355,7 +357,7 @@ export default function ShopCartDrawer({
           </div>
         </>
       ) : (
-        <Empty description="Your cart is empty" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+        <Empty description={t('shop.emptyCart', 'Your cart is empty')} image={Empty.PRESENTED_IMAGE_SIMPLE} />
       )}
     </Drawer>
   )

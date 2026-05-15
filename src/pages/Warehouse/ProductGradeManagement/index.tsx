@@ -212,7 +212,7 @@ export default function ProductGradeManagementPage() {
             style={{ width: 80 }}
             onChange={(value) => void handleInlineGradeChange(record.productCode, value)}
           >
-            {Object.entries(PRODUCT_GRADE_CONFIG).map(([key, cfg]) => (
+            {Object.keys(PRODUCT_GRADE_CONFIG).map((key) => (
               <Select.Option key={key} value={key}>
                 <Tag color={GRADE_TAG_COLOR[key]} style={{ marginRight: 0 }}>
                   {key}

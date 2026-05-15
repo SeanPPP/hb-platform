@@ -269,7 +269,7 @@ export default function ImportFromDomesticModal({
     )
 
     if (invalidItems.length) {
-      message.warning(`有 ${invalidItems.length} 个商品的国内价/零售价/进口价未正确填写`)
+      message.warning(t('warehouse.importDomestic.invalidItems', '有 {{count}} 个商品的国内价/零售价/进口价未正确填写', { count: invalidItems.length }))
       return
     }
 
@@ -330,7 +330,7 @@ export default function ImportFromDomesticModal({
       open={open}
       width={1400}
       destroyOnClose
-      okText={`导入选中 (${selectedRowKeys.length})`}
+      okText={t('warehouse.importDomestic.importSelected', '导入选中 ({{count}})', { count: selectedRowKeys.length })}
       cancelText={t('common.close', '关闭')}
       confirmLoading={importing}
       onCancel={onCancel}
@@ -347,20 +347,20 @@ export default function ImportFromDomesticModal({
             onSearch={(value) => void loadItems({ page: 1, searchText: value })}
           />
           <Checkbox checked={syncStorePrices} onChange={(event) => setSyncStorePrices(event.target.checked)}>
-            同步分店价格
+            {t('warehouse.importDomestic.syncStorePrice', '同步分店价格')}
           </Checkbox>
           <Checkbox checked={syncMultiCodes} onChange={(event) => setSyncMultiCodes(event.target.checked)}>
-            同步多码价格
+            {t('warehouse.importDomestic.syncMultiCode', '同步多码价格')}
           </Checkbox>
-          <Button onClick={() => void loadItems({ page: 1 })}>刷新</Button>
+          <Button onClick={() => void loadItems({ page: 1 })}>{t('common.refresh', '刷新')}</Button>
         </Space>
 
         <Space size={24}>
-          <span>待导入: {total}</span>
-          <span>已选中: {selectedRowKeys.length}</span>
+          <span>{t('warehouse.importDomestic.pendingImport', '待导入')}: {total}</span>
+          <span>{t('warehouse.importDomestic.selected', '已选中')}: {selectedRowKeys.length}</span>
           {selectedRowKeys.length ? (
             <span>
-              当前零售列取值: {
+              {t('warehouse.importDomestic.currentRetailValue', '当前零售列取值')}: {
                 formatPrice(
                   editablePrices[String(selectedRowKeys[0])]?.oemPrice ??
                     items.find((item) => item.productCode === String(selectedRowKeys[0]))?.oemPrice,

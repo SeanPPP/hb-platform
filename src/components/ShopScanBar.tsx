@@ -7,6 +7,8 @@ import {
 } from '@ant-design/icons'
 import { Button, Card, Image, Input, Space, Tag, Typography } from 'antd'
 import { useState } from 'react'
+import type { TFunction } from 'i18next'
+import { useTranslation } from 'react-i18next'
 import type { StoreOrderScanStatus } from '../types/storeOrder'
 
 const { Text } = Typography
@@ -28,24 +30,24 @@ interface ShopScanBarProps {
   onManualSubmit: (barcode: string) => void
 }
 
-function getStatusTag(status: StoreOrderScanStatus, enabled: boolean) {
+function getStatusTag(status: StoreOrderScanStatus, enabled: boolean, t: TFunction) {
   switch (status) {
     case 'added':
-      return <Tag color="success">Added</Tag>
+      return <Tag color="success">{t('shop.scan.added', 'Added')}</Tag>
     case 'multiple':
-      return <Tag color="processing">Choose Item</Tag>
+      return <Tag color="processing">{t('shop.scan.chooseItem', 'Choose Item')}</Tag>
     case 'not_found':
-      return <Tag color="warning">Not Found</Tag>
+      return <Tag color="warning">{t('shop.scan.notFound', 'Not Found')}</Tag>
     case 'blocked':
-      return <Tag color="gold">Store Required</Tag>
+      return <Tag color="gold">{t('shop.scan.storeRequired', 'Store Required')}</Tag>
     case 'error':
-      return <Tag color="error">Error</Tag>
+      return <Tag color="error">{t('shop.scan.error', 'Error')}</Tag>
     case 'scanning':
-      return <Tag color="blue">Scanning</Tag>
+      return <Tag color="blue">{t('shop.scan.scanning', 'Scanning')}</Tag>
     default:
       return enabled
-        ? <Tag color="cyan">Ready</Tag>
-        : <Tag color="default">Paused</Tag>
+        ? <Tag color="cyan">{t('shop.scan.ready', 'Ready')}</Tag>
+        : <Tag color="default">{t('shop.scan.paused', 'Paused')}</Tag>
   }
 }
 
@@ -65,12 +67,13 @@ export default function ShopScanBar({
   onUnlockSound,
   onManualSubmit,
 }: ShopScanBarProps) {
+  const { t } = useTranslation()
   const [manualValue, setManualValue] = useState('')
   const [desktopVisible, setDesktopVisible] = useState(false)
 
   const helperText = enabled
-    ? 'Scanner is listening when no text input is focused.'
-    : 'Scanner is paused.'
+    ? t('shop.scan.listeningHint', 'Scanner is listening when no text input is focused.')
+    : t('shop.scan.pausedHint', 'Scanner is paused.')
 
   const hasProduct = status === 'added' || status === 'multiple'
 
@@ -81,7 +84,7 @@ export default function ShopScanBar({
         icon={<ScanOutlined />}
         onClick={() => setDesktopVisible((v) => !v)}
       >
-        {desktopVisible ? 'Hide Scanner' : 'Scanner'}
+        {desktopVisible ? t('shop.scan.hideScanner', 'Hide Scanner') : t('shop.scan.scanner', 'Scanner')}
       </Button>
       <Card
         className={`shop-scan-bar${desktopVisible ? ' shop-scan-bar-desktop-visible' : ''}`}
@@ -91,20 +94,20 @@ export default function ShopScanBar({
           <div>
             <div className="shop-scan-bar-title">
               <ScanOutlined />
-              <span>Barcode Scan</span>
+              <span>{t('shop.scan.barcodeScan', 'Barcode Scan')}</span>
             </div>
             <Text type="secondary">{helperText}</Text>
           </div>
           <Space wrap>
-            {getStatusTag(status, enabled)}
+            {getStatusTag(status, enabled, t)}
             <Button
               icon={enabled ? <PauseCircleOutlined /> : <PlayCircleOutlined />}
               onClick={onToggleEnabled}
             >
-              {enabled ? 'Pause' : 'Resume'}
+              {enabled ? t('shop.scan.pause', 'Pause') : t('shop.scan.resume', 'Resume')}
             </Button>
             <Button icon={<SoundOutlined />} type={soundEnabled ? 'default' : 'primary'} onClick={onUnlockSound}>
-              {soundEnabled ? 'Sound Ready' : 'Enable Sound'}
+              {soundEnabled ? t('shop.scan.soundReady', 'Sound Ready') : t('shop.scan.enableSound', 'Enable Sound')}
             </Button>
           </Space>
         </div>
@@ -112,11 +115,11 @@ export default function ShopScanBar({
         <div className="shop-scan-bar-body">
           <div className="shop-scan-bar-feedback">
             <div className="shop-scan-bar-row">
-              <Text type="secondary">Last barcode:</Text>
+              <Text type="secondary">{t('shop.scan.lastBarcode', 'Last barcode')}:</Text>
               <Text strong>{lastScannedCode || '-'}</Text>
             </div>
             <div className="shop-scan-bar-row">
-              <Text type="secondary">Result:</Text>
+              <Text type="secondary">{t('shop.scan.result', 'Result')}:</Text>
               <Text strong>{lastMessage}</Text>
             </div>
             {hasProduct && (
@@ -139,7 +142,7 @@ export default function ShopScanBar({
                   <Text strong ellipsis>{lastProductName || '-'}</Text>
                   {typeof lastQuantity === 'number' ? <Tag color="green">+{lastQuantity}</Tag> : null}
                   {typeof lastCartTotalQuantity === 'number' ? (
-                    <Tag color="blue">Cart: {lastCartTotalQuantity}</Tag>
+                    <Tag color="blue">{t('shop.cart', 'Cart')}: {lastCartTotalQuantity}</Tag>
                   ) : null}
                 </div>
               </div>
@@ -150,7 +153,7 @@ export default function ShopScanBar({
             <Input
               value={manualValue}
               onChange={(event) => setManualValue(event.target.value)}
-              placeholder="Manual barcode input"
+              placeholder={t('shop.scan.manualInput', 'Manual barcode input')}
               prefix={<AudioOutlined />}
               onPressEnter={() => {
                 const nextValue = manualValue.trim()
@@ -175,7 +178,7 @@ export default function ShopScanBar({
                 setManualValue('')
               }}
             >
-              Search
+              {t('common.search', 'Search')}
             </Button>
           </div>
         </div>

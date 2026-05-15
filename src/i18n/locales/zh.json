@@ -12,14 +12,20 @@
     "submit": "登录",
     "success": "登录成功",
     "failed": "登录失败",
-    "noRole": "未分配角色"
+    "noRole": "未分配角色",
+    "brandSubtitle": "企业级业务管理平台",
+    "secureReliable": "安全可靠",
+    "efficientFast": "高效快捷"
   },
   "layout": {
     "brand": "HB Admin Platform",
     "shopFront": "订货前台",
     "refreshPage": "刷新当前页",
     "logout": "退出登录",
-    "switchLang": "切换语言"
+    "switchLang": "切换语言",
+    "language": "语言",
+    "zh": "中文",
+    "en": "英文"
   },
   "menu": {
     "dashboard": "工作台",
@@ -140,7 +146,10 @@
     "enable": "启用",
     "disable": "停用",
     "action": "操作",
-    "detail": "详情"
+    "detail": "详情",
+    "clear": "清空",
+    "remove": "移除",
+    "remarks": "备注"
   },
   "column": {
     "index": "序号",
@@ -963,6 +972,45 @@
       "totalOrderVolume": "订货体积：{{volume}}",
       "fileName": "配货单",
       "unknownStore": "未知分店"
+    },
+    "importDomestic": {
+      "currentRetailValue": "当前零售列取值",
+      "invalidItems": "有 {{count}} 个商品的国内价/零售价/进口价未正确填写",
+      "importSelected": "导入选中 ({{count}})",
+      "syncStorePrice": "同步分店价格",
+      "syncMultiCode": "同步多码价格",
+      "pendingImport": "待导入",
+      "selected": "已选中"
+    },
+    "addSubItem": "新增子项",
+    "exportSuccess": "导出成功",
+    "exportFailed": "导出失败",
+    "setSubItems": "套装子项",
+    "exportExcel": "导出 Excel",
+    "importFromDomestic": "从国内导入",
+    "batchCreateSet": "批量建套装",
+    "batchImageUpload": "批量图片上传",
+    "batchActivate": "批量上架",
+    "batchDeactivate": "批量下架",
+    "createProduct": "新建商品",
+    "includeLabelPrice": "包含零售列（贴牌价）",
+    "includeBarcodeImage": "包含条码图片",
+    "includeProductImage": "包含商品图片（从图片地址下载）",
+    "importNonHb": {
+      "title": "导入非国内商品",
+      "loadFailed": "加载非国内商品失败",
+      "loadSupplierFailed": "加载本地供应商失败",
+      "image": "图片",
+      "itemNumber": "货号",
+      "productName": "商品名称",
+      "type": "类型",
+      "purchasePrice": "进货价",
+      "retail": "零售",
+      "selectFirst": "请先选择要导入的商品",
+      "importSuccess": "成功导入 {{count}} 个商品",
+      "importSelected": "导入选中 ({{count}})",
+      "searchPlaceholder": "搜索货号 / 条码 / 商品名称",
+      "filterSupplier": "筛选供应商"
     }
   },
   "posAdmin": {
@@ -1427,7 +1475,8 @@
       "copyItemNumber": "复制货号",
       "selectDetailsFirst": "请先选择明细行",
       "delete": "删除",
-      "action": "操作"
+      "action": "操作",
+      "updatePurchasePriceAction": "更新进货价"
     },
     "salesOrders": {
       "title": "收银记录",
@@ -1658,7 +1707,8 @@
       "codePlaceholder": "如 Users.Create",
       "namePlaceholder": "如 创建用户",
       "categoryPlaceholder": "如 Users",
-      "loading": "加载中..."
+      "loading": "加载中...",
+      "permissionCodeCol": "权限代码"
     }
   },
   "mobileTab": {
@@ -1669,7 +1719,71 @@
     "system": "系统"
   },
   "shop": {
-    "orderHistory": "历史订单"
+    "orderHistory": "历史订单",
+    "account": "账号",
+    "bestSellers": "热销商品",
+    "comingSoon": "即将上新",
+    "shopHome": "商城首页",
+    "products": "商品",
+    "shoppingCart": "购物车",
+    "cart": "购物车",
+    "checkout": "结算",
+    "selectStore": "选择分店",
+    "productSearch": "搜索商品",
+    "loadingCategories": "分类加载中...",
+    "ordersBannerSubtitle": "查看分店提交过的订单、状态、数量和金额汇总。",
+    "footer": "© 2026 Hotbargain International. All rights reserved.",
+    "sku": "SKU",
+    "total": "合计",
+    "cbm": "体积",
+    "itemNo": "货号",
+    "barcode": "条码",
+    "moq": "最小订量",
+    "inCart": "购物车内",
+    "rrp": "零售价",
+    "importPrice": "进口价",
+    "cartItemRemoved": "商品已移除",
+    "cartRemoveFailed": "移除商品失败",
+    "cartUpdateFailed": "更新数量失败",
+    "orderSubmitted": "订单提交成功",
+    "orderSubmitFailed": "提交订单失败",
+    "confirmOrderSubmission": "确认提交订单",
+    "totalQuantity": "总数量",
+    "estimatedTotal": "预估合计",
+    "submitOrder": "提交订单",
+    "clearCart": "清空购物车",
+    "clearCartConfirm": "确认从购物车移除全部 {{count}} 个商品？",
+    "cartCleared": "购物车已清空",
+    "cartClearFailed": "清空购物车失败",
+    "itemsCount": "{{count}} 个商品",
+    "remarksPlaceholder": "备注（可选）",
+    "removeItem": "移除商品",
+    "removeItemConfirm": "确认从购物车移除该商品？",
+    "emptyCart": "购物车为空",
+    "scan": {
+      "added": "已加入",
+      "chooseItem": "选择商品",
+      "notFound": "未找到",
+      "storeRequired": "需要选择分店",
+      "error": "错误",
+      "scanning": "扫描中",
+      "ready": "就绪",
+      "paused": "已暂停",
+      "listeningHint": "未聚焦输入框时，扫码器会自动监听。",
+      "pausedHint": "扫码器已暂停。",
+      "hideScanner": "隐藏扫码器",
+      "scanner": "扫码器",
+      "barcodeScan": "条码扫描",
+      "pause": "暂停",
+      "resume": "继续",
+      "soundReady": "声音已就绪",
+      "enableSound": "启用声音",
+      "lastBarcode": "上次条码",
+      "result": "结果",
+      "manualInput": "手动输入条码",
+      "multipleMatches": "多个匹配商品"
+    },
+    "loadStoresFailed": "加载分店失败"
   },
   "domesticProducts": {
     "editTitle": "编辑国内商品 - {{name}}",

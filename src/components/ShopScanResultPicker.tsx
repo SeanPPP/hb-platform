@@ -1,5 +1,6 @@
 import { CheckOutlined } from '@ant-design/icons'
 import { Button, Image, Modal, Space, Tag, Typography } from 'antd'
+import { useTranslation } from 'react-i18next'
 import type { StoreOrderDynamicData, StoreOrderProductItem } from '../types/storeOrder'
 
 const { Text } = Typography
@@ -23,9 +24,11 @@ export default function ShopScanResultPicker({
   onCancel,
   onSelect,
 }: ShopScanResultPickerProps) {
+  const { t } = useTranslation()
+
   return (
     <Modal
-      title={`Multiple Matches${barcode ? `: ${barcode}` : ''}`}
+      title={`${t('shop.scan.multipleMatches', 'Multiple Matches')}${barcode ? `: ${barcode}` : ''}`}
       open={open}
       onCancel={onCancel}
       footer={null}
@@ -52,14 +55,14 @@ export default function ShopScanResultPicker({
                 <div className="shop-scan-picker-meta">
                   <div className="shop-scan-picker-name">{item.productName || item.productCode}</div>
                   <Space size={[8, 8]} wrap>
-                    <Tag>Item: {item.itemNumber || '-'}</Tag>
-                    <Tag color="blue">Barcode: {item.barcode || '-'}</Tag>
-                    <Tag color="gold">MOQ: {effectiveMinOrderQuantity}</Tag>
-                    <Tag color="green">In Cart: {dynamicData?.cartQuantity ?? 0}</Tag>
+                    <Tag>{t('shop.itemNo', 'Item')}: {item.itemNumber || '-'}</Tag>
+                    <Tag color="blue">{t('shop.barcode', 'Barcode')}: {item.barcode || '-'}</Tag>
+                    <Tag color="gold">{t('shop.moq', 'MOQ')}: {effectiveMinOrderQuantity}</Tag>
+                    <Tag color="green">{t('shop.inCart', 'In Cart')}: {dynamicData?.cartQuantity ?? 0}</Tag>
                   </Space>
                   <div className="shop-scan-picker-prices">
-                    <Text type="secondary">RRP:</Text> <Text strong>${item.oemPrice?.toFixed(2) ?? '0.00'}</Text>
-                    <Text type="secondary"> Import:</Text>{' '}
+                    <Text type="secondary">{t('shop.rrp', 'RRP')}:</Text> <Text strong>${item.oemPrice?.toFixed(2) ?? '0.00'}</Text>
+                    <Text type="secondary"> {t('shop.importPrice', 'Import')}:</Text>{' '}
                     <Text strong>${item.importPrice?.toFixed(2) ?? '0.00'}</Text>
                   </div>
                 </div>
@@ -70,7 +73,7 @@ export default function ShopScanResultPicker({
                 loading={loading}
                 onClick={() => onSelect(item)}
               >
-                Add
+                {t('common.add', 'Add')}
               </Button>
             </div>
           )

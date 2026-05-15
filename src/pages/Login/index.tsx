@@ -1,26 +1,24 @@
 import {
-  GlobalOutlined,
   LockOutlined,
   LoginOutlined,
   SafetyOutlined,
   ThunderboltOutlined,
   UserOutlined,
 } from '@ant-design/icons'
-import { Alert, Button, Checkbox, Dropdown, Form, Input, Space, Typography, message } from 'antd'
-import type { MenuProps } from 'antd'
+import { Alert, Button, Checkbox, Form, Input, Space, Typography, message } from 'antd'
 import { useState, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom'
+import LanguageSwitch from '../../components/LanguageSwitch'
 import { useAuthStore } from '../../store/auth'
 import type { LoginRequest } from '../../types/auth'
 import { hashPassword } from '../../utils/password'
 import type { RequestError } from '../../utils/request'
 
 const REMEMBERED_USERNAME_KEY = 'remembered_username'
-const LANG_STORAGE_KEY = 'lang'
 
 export default function LoginPage() {
-  const { t, i18n } = useTranslation()
+  const { t } = useTranslation()
   const [form] = Form.useForm<LoginRequest>()
   const [errorMessage, setErrorMessage] = useState('')
   const [rememberUsername, setRememberUsername] = useState(false)
@@ -37,16 +35,6 @@ export default function LoginPage() {
       form.setFieldsValue({ username: rememberedUsername })
     }
   }, [form])
-
-  const changeLang = (lng: string) => {
-    i18n.changeLanguage(lng)
-    localStorage.setItem(LANG_STORAGE_KEY, lng)
-  }
-
-  const langMenuItems: MenuProps['items'] = [
-    { key: 'zh', label: '中文', onClick: () => changeLang('zh') },
-    { key: 'en', label: 'English', onClick: () => changeLang('en') },
-  ]
 
   const handleSubmit = async (values: LoginRequest) => {
     setErrorMessage('')
@@ -77,16 +65,16 @@ export default function LoginPage() {
           <div className="login-brand-logo">HB</div>
           <h1 className="login-brand-title">HB Platform</h1>
           <p className="login-brand-subtitle">
-            Enterprise-grade business management platform
+            {t('login.brandSubtitle', 'Enterprise-grade business management platform')}
           </p>
           <div className="login-brand-features">
             <div className="login-brand-feature">
               <div className="login-brand-feature-icon"><SafetyOutlined /></div>
-              <div className="login-brand-feature-text">Secure & Reliable</div>
+              <div className="login-brand-feature-text">{t('login.secureReliable', 'Secure & Reliable')}</div>
             </div>
             <div className="login-brand-feature">
               <div className="login-brand-feature-icon"><ThunderboltOutlined /></div>
-              <div className="login-brand-feature-text">Efficient & Fast</div>
+              <div className="login-brand-feature-text">{t('login.efficientFast', 'Efficient & Fast')}</div>
             </div>
           </div>
         </div>
@@ -107,19 +95,7 @@ export default function LoginPage() {
               <Typography.Text type="secondary" style={{ fontSize: 14 }}>
                 {t('login.subtitle')}
               </Typography.Text>
-              <Dropdown
-                menu={{ items: langMenuItems, selectedKeys: [i18n.language] }}
-                placement="bottomRight"
-              >
-                <Button
-                  type="text"
-                  icon={<GlobalOutlined />}
-                  size="small"
-                  style={{ position: 'absolute', top: 0, right: 0 }}
-                >
-                  {i18n.language === 'zh' ? '中文' : 'EN'}
-                </Button>
-              </Dropdown>
+              <LanguageSwitch className="login-language-switch" size="small" />
             </div>
 
             {errorMessage ? <Alert type="error" showIcon message={errorMessage} /> : null}

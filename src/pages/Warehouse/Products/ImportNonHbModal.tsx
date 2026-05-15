@@ -70,7 +70,7 @@ export default function ImportNonHbModal({ open, onCancel, onSuccess }: ImportNo
       setPageSize(nextPageSize)
     } catch (error) {
       console.error(error)
-      message.error(error instanceof Error ? error.message : '加载非国内商品失败')
+      message.error(error instanceof Error ? error.message : t('warehouse.importNonHb.loadFailed', '加载非国内商品失败'))
     } finally {
       setLoading(false)
     }
@@ -93,7 +93,7 @@ export default function ImportNonHbModal({ open, onCancel, onSuccess }: ImportNo
         })
         .catch((error) => {
           console.error(error)
-          message.error('加载本地供应商失败')
+          message.error(t('warehouse.importNonHb.loadSupplierFailed', '加载本地供应商失败'))
         }),
     ])
   }, [open])
@@ -114,7 +114,7 @@ export default function ImportNonHbModal({ open, onCancel, onSuccess }: ImportNo
   const columns = useMemo<ColumnsType<NonHotbargainProductNotInWarehouseItem>>(
     () => [
       {
-        title: '图片',
+        title: t('warehouse.importNonHb.image', '图片'),
         dataIndex: 'productImage',
         width: 90,
         render: (value: string | undefined, record) => (
@@ -129,7 +129,7 @@ export default function ImportNonHbModal({ open, onCancel, onSuccess }: ImportNo
         ),
       },
       {
-        title: '货号',
+        title: t('warehouse.importNonHb.itemNumber', '货号'),
         dataIndex: 'itemNumber',
         width: 160,
       },
@@ -140,7 +140,7 @@ export default function ImportNonHbModal({ open, onCancel, onSuccess }: ImportNo
         render: (value?: string) => value || '--',
       },
       {
-        title: '商品名称',
+        title: t('warehouse.importNonHb.productName', '商品名称'),
         dataIndex: 'productName',
         width: 240,
         ellipsis: true,
@@ -153,30 +153,30 @@ export default function ImportNonHbModal({ open, onCancel, onSuccess }: ImportNo
         render: (value?: string) => value || '--',
       },
       {
-        title: '类型',
+        title: t('warehouse.importNonHb.type', '类型'),
         dataIndex: 'productType',
         width: 100,
         render: (value: number) => ProductTypeLabels[value as keyof typeof ProductTypeLabels] || '--',
       },
       {
-        title: '进货价',
+        title: t('warehouse.importNonHb.purchasePrice', '进货价'),
         dataIndex: 'purchasePrice',
         width: 100,
         render: (value?: number) => formatPrice(value),
       },
       {
-        title: '零售',
+        title: t('warehouse.importNonHb.retail', '零售'),
         dataIndex: 'retailPrice',
         width: 100,
         render: (value?: number) => formatPrice(value),
       },
     ],
-    [],
+    [t],
   )
 
   const handleImport = async () => {
     if (!selectedRowKeys.length) {
-      message.warning('请先选择要导入的商品')
+      message.warning(t('warehouse.importNonHb.selectFirst', '请先选择要导入的商品'))
       return
     }
 
@@ -189,7 +189,7 @@ export default function ImportNonHbModal({ open, onCancel, onSuccess }: ImportNo
         return
       }
 
-      message.success(`成功导入 ${result.successCount ?? selectedRowKeys.length} 个商品`)
+      message.success(t('warehouse.importNonHb.importSuccess', '成功导入 {{count}} 个商品', { count: result.successCount ?? selectedRowKeys.length }))
       onSuccess()
       onCancel()
     } catch (error) {
@@ -202,11 +202,11 @@ export default function ImportNonHbModal({ open, onCancel, onSuccess }: ImportNo
 
   return (
     <Modal
-      title="导入非国内商品"
+      title={t('warehouse.importNonHb.title', '导入非国内商品')}
       open={open}
       width={1280}
       destroyOnClose
-      okText={`导入选中 (${selectedRowKeys.length})`}
+      okText={t('warehouse.importNonHb.importSelected', '导入选中 ({{count}})', { count: selectedRowKeys.length })}
       cancelText={t('common.close', '关闭')}
       confirmLoading={importing}
       onCancel={onCancel}
@@ -216,7 +216,7 @@ export default function ImportNonHbModal({ open, onCancel, onSuccess }: ImportNo
         <Space wrap>
           <Input.Search
             allowClear
-            placeholder="搜索货号 / 条码 / 商品名称"
+            placeholder={t('warehouse.importNonHb.searchPlaceholder', '搜索货号 / 条码 / 商品名称')}
             style={{ width: 320 }}
             value={searchText}
             onChange={(event) => setSearchText(event.target.value)}
@@ -226,7 +226,7 @@ export default function ImportNonHbModal({ open, onCancel, onSuccess }: ImportNo
             allowClear
             showSearch
             optionFilterProp="label"
-            placeholder="筛选供应商"
+            placeholder={t('warehouse.importNonHb.filterSupplier', '筛选供应商')}
             style={{ width: 260 }}
             value={supplierCode}
             options={supplierOptions.map((item) => ({

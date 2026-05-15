@@ -1,5 +1,6 @@
 import { App as AntdApp, ConfigProvider, Result, Spin, theme } from 'antd'
 import { useEffect } from 'react'
+import { useTranslation } from 'react-i18next'
 import { BrowserRouter, Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import AdminLayout from './layout/AdminLayout'
 import ShopLayout from './layout/ShopLayout'
@@ -12,6 +13,7 @@ import ShopOrdersPage from './pages/ShopOrders'
 import { useAuthStore } from './store/auth'
 
 function AppBootstrap() {
+  const { t } = useTranslation()
   const { initialized, loading, currentUser, fetchCurrentUser } = useAuthStore()
   const location = useLocation()
   const isLoginPath = location.pathname === '/login'
@@ -53,7 +55,7 @@ function AppBootstrap() {
       />
       <Route
         path="*"
-        element={<Result status="404" title="404" subTitle="页面不存在" />}
+        element={<Result status="404" title="404" subTitle={t('menu.pageNotFound', '页面不存在')} />}
       />
     </Routes>
   )

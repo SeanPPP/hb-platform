@@ -450,7 +450,7 @@ function SetItemsModal({
         </Typography.Text>
         {canEdit ? (
           <Button type="dashed" onClick={onAddRow}>
-            新增子项
+            {t('warehouse.addSubItem', '新增子项')}
           </Button>
         ) : null}
       </Space>
@@ -768,14 +768,14 @@ export default function WarehouseProductsPage() {
         setExportFailDetail(exportResult.failedProductImages)
         setExportFailDetailOpen(true)
       } else {
-        message.success('导出成功')
+        message.success(t('warehouse.exportSuccess', '导出成功'))
       }
       setExportConfigOpen(false)
       setExportProgress(0)
       setExportMessage('')
     } catch (error) {
       console.error(error)
-      message.error(error instanceof Error ? error.message : '导出失败')
+      message.error(error instanceof Error ? error.message : t('warehouse.exportFailed', '导出失败'))
     } finally {
       setExporting(false)
     }
@@ -973,17 +973,17 @@ export default function WarehouseProductsPage() {
           <Space size={0}>
             {access.canWriteProduct ? (
               <Button type="link" icon={<EditOutlined />} onClick={() => handleOpenEdit(record)}>
-                编辑
+                {t('common.edit', '编辑')}
               </Button>
             ) : null}
             {record.productType === 1 ? (
               <Button type="link" icon={<GiftOutlined />} onClick={() => void handleOpenSetItems(record)}>
-                套装子项
+                {t('warehouse.setSubItems', '套装子项')}
               </Button>
             ) : (
               <Tooltip title={t('warehouse.setEditOnlyHint', '仅套装商品可编辑套装子项')}>
                 <Button type="link" icon={<GiftOutlined />} disabled>
-                  套装子项
+                  {t('warehouse.setSubItems', '套装子项')}
                 </Button>
               </Tooltip>
             )}
@@ -1008,25 +1008,25 @@ export default function WarehouseProductsPage() {
             disabled={exporting}
             onClick={() => setExportConfigOpen(true)}
           >
-            导出 Excel
+            {t('warehouse.exportExcel', '导出 Excel')}
           </Button>
           <Button icon={<UploadOutlined />} onClick={() => setImportFromDomesticOpen(true)}>
-            从国内导入
+            {t('warehouse.importFromDomestic', '从国内导入')}
           </Button>
           <Button icon={<UploadOutlined />} onClick={() => setImportNonHbOpen(true)}>
-            导入非国内商品
+            {t('warehouse.importNonHb.title', '导入非国内商品')}
           </Button>
           <Button
             icon={<GiftOutlined />}
             onClick={() => message.info(t('warehouse.batchSetMigrated', '批量建套装商品迁移到第二轮补齐'))}
           >
-            批量建套装
+            {t('warehouse.batchCreateSet', '批量建套装')}
           </Button>
           <Button
             icon={<UploadOutlined />}
             onClick={() => message.info(t('warehouse.batchImageUploadMigrated', '批量图片上传迁移到第二轮补齐'))}
           >
-            批量图片上传
+            {t('warehouse.batchImageUpload', '批量图片上传')}
           </Button>
           {access.canWriteProduct ? (
             <Popconfirm
@@ -1037,7 +1037,7 @@ export default function WarehouseProductsPage() {
               onConfirm={() => void handleBatchToggleActive(true)}
             >
               <Button loading={batchActionLoading} disabled={!selectedRowKeys.length || batchActionLoading}>
-                批量上架
+                {t('warehouse.batchActivate', '批量上架')}
               </Button>
             </Popconfirm>
           ) : null}
@@ -1050,13 +1050,13 @@ export default function WarehouseProductsPage() {
               onConfirm={() => void handleBatchToggleActive(false)}
             >
               <Button loading={batchActionLoading} disabled={!selectedRowKeys.length || batchActionLoading}>
-                批量下架
+                {t('warehouse.batchDeactivate', '批量下架')}
               </Button>
             </Popconfirm>
           ) : null}
           {access.canWriteProduct ? (
             <Button type="primary" icon={<PlusOutlined />} onClick={handleOpenCreate}>
-              新建商品
+              {t('warehouse.createProduct', '新建商品')}
             </Button>
           ) : null}
           {exporting ? (
@@ -1104,7 +1104,7 @@ export default function WarehouseProductsPage() {
             allowClear
           />
           <Button type="primary" onClick={() => void loadData({ page: 1 })}>
-            查询
+            {t('common.query', '查询')}
           </Button>
           <Button
             icon={<ReloadOutlined />}
@@ -1126,7 +1126,7 @@ export default function WarehouseProductsPage() {
               })
             }}
           >
-            重置
+            {t('common.reset', '重置')}
           </Button>
         </Space>
 
@@ -1254,13 +1254,13 @@ export default function WarehouseProductsPage() {
               : t('warehouse.exportFiltered', '将导出当前筛选结果共 {{count}} 件商品', { count: total })}
           </Typography.Text>
           <Checkbox checked={includeLabelPrice} onChange={(event) => setIncludeLabelPrice(event.target.checked)}>
-            包含零售列（贴牌价）
+            {t('warehouse.includeLabelPrice', '包含零售列（贴牌价）')}
           </Checkbox>
           <Checkbox checked={includeBarcodeImage} onChange={(event) => setIncludeBarcodeImage(event.target.checked)}>
-            包含条码图片
+            {t('warehouse.includeBarcodeImage', '包含条码图片')}
           </Checkbox>
           <Checkbox checked={includeProductImage} onChange={(event) => setIncludeProductImage(event.target.checked)}>
-            包含商品图片（从图片地址下载）
+            {t('warehouse.includeProductImage', '包含商品图片（从图片地址下载）')}
           </Checkbox>
           {exporting ? (
             <Typography.Text type="secondary">

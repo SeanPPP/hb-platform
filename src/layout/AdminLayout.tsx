@@ -1,5 +1,4 @@
 import {
-  GlobalOutlined,
   LogoutOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
@@ -13,6 +12,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useLocation, useNavigate } from 'react-router-dom'
 import AppTabs from '../components/AppTabs'
+import LanguageSwitch from '../components/LanguageSwitch'
 import RouteKeepAlive, { type RouteKeepAliveRef } from '../components/RouteKeepAlive'
 import { useIsMobile } from '../hooks/useIsMobile'
 import MobileLayout from './MobileLayout'
@@ -126,16 +126,6 @@ function DesktopAdminLayout() {
 
   const userMenuItems: MenuProps['items'] = [
     {
-      key: 'lang-group',
-      icon: <GlobalOutlined />,
-      label: t('layout.switchLang'),
-      children: [
-        { key: 'lang-zh', label: '中文', onClick: () => { i18n.changeLanguage('zh'); localStorage.setItem('lang', 'zh') } },
-        { key: 'lang-en', label: 'English', onClick: () => { i18n.changeLanguage('en'); localStorage.setItem('lang', 'en') } },
-      ],
-    },
-    { type: 'divider' },
-    {
       key: 'refresh-profile',
       label: t('layout.refreshPage'),
       icon: <ReloadOutlined />,
@@ -183,6 +173,7 @@ function DesktopAdminLayout() {
           </Space>
 
           <Space size={12}>
+            <LanguageSwitch className="admin-language-switch" />
             <Button
               type="primary"
               icon={<ShoppingOutlined />}

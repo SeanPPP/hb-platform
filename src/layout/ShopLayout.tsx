@@ -10,6 +10,7 @@ import type { MenuProps } from 'antd'
 import { useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom'
+import LanguageSwitch from '../components/LanguageSwitch'
 import ShopCartDrawer from '../components/ShopCartDrawer'
 import ShopCartSummary from '../components/ShopCartSummary'
 import { getUserStores } from '../services/userService'
@@ -85,7 +86,7 @@ export default function ShopLayout() {
         }
       } catch (error) {
         if (!cancelled) {
-          message.error('Failed to load stores')
+          message.error(t('shop.loadStoresFailed', 'Failed to load stores'))
         }
       }
     }
@@ -95,7 +96,7 @@ export default function ShopLayout() {
     return () => {
       cancelled = true
     }
-  }, [currentUser?.userGUID, resetShop, selectedStore, setSelectedStore, setUserStores])
+  }, [currentUser?.userGUID, resetShop, selectedStore, setSelectedStore, setUserStores, t])
 
   useEffect(() => {
     let cancelled = false
@@ -188,15 +189,16 @@ export default function ShopLayout() {
       <div className="shop-top-bar">
         <div className="shop-shell">
           {currentUser ? (
-            <span className="shop-account-info">ACCOUNT: {currentUser.username}</span>
+            <span className="shop-account-info">{t('shop.account', 'ACCOUNT')}: {currentUser.username}</span>
           ) : (
-            <Link to="/login">Login</Link>
+            <Link to="/login">{t('login.submit', 'Login')}</Link>
           )}
-          <span onClick={() => window.open('/dashboard', '_blank')}>Dashboard</span>
-          <span onClick={() => navigate('/shop/best-sellers')}>Best Sellers</span>
-          <span onClick={() => navigate('/shop/coming-soon')}>Coming Soon</span>
+          <span onClick={() => window.open('/dashboard', '_blank')}>{t('menu.dashboard', 'Dashboard')}</span>
+          <span onClick={() => navigate('/shop/best-sellers')}>{t('shop.bestSellers', 'Best Sellers')}</span>
+          <span onClick={() => navigate('/shop/coming-soon')}>{t('shop.comingSoon', 'Coming Soon')}</span>
           <span onClick={() => navigate('/shop/orders')}>{t('shop.orderHistory')}</span>
-          <span onClick={() => void handleLogout()}>Log Out</span>
+          <span onClick={() => void handleLogout()}>{t('layout.logout', 'Log Out')}</span>
+          <LanguageSwitch className="shop-top-language-switch" size="small" />
         </div>
       </div>
 
@@ -224,7 +226,7 @@ export default function ShopLayout() {
                 <Badge count={cart?.totalQuantity ?? 0} size="small" offset={[8, -8]}>
                   <ShoppingCartOutlined style={{ fontSize: 20 }} />
                 </Badge>
-                <span>Shopping Cart</span>
+                <span>{t('shop.shoppingCart', 'Shopping Cart')}</span>
               </div>
               <div className="shop-cart-entry-value">
                 <ShopCartSummary cart={cart} />
@@ -233,7 +235,7 @@ export default function ShopLayout() {
 
             <div className="shop-selector-wrap">
               <Select
-                placeholder="Select Store"
+                placeholder={t('shop.selectStore', 'Select Store')}
                 className="shop-selector"
                 value={selectedStore?.storeCode}
                 onChange={(value) => {
@@ -249,11 +251,11 @@ export default function ShopLayout() {
             </div>
 
             <Button className="shop-checkout-btn" onClick={() => setCartDrawerOpen(true)}>
-              Checkout »
+              {t('shop.checkout', 'Checkout')} »
             </Button>
 
             <Search
-              placeholder="Product Search"
+              placeholder={t('shop.productSearch', 'Product Search')}
               onSearch={handleSearch}
               className="shop-search-bar"
               enterButton
@@ -271,25 +273,26 @@ export default function ShopLayout() {
             </div>
           </div>
           <div className="shop-mobile-search">
-            <Search placeholder="Product Search" onSearch={handleSearch} enterButton />
+            <Search placeholder={t('shop.productSearch', 'Product Search')} onSearch={handleSearch} enterButton />
           </div>
+          <LanguageSwitch className="shop-mobile-language-switch" size="small" compact />
         </div>
         <div className="shop-mobile-grid">
           <div className="shop-mobile-grid-item" onClick={() => setMobileCategoryVisible(true)}>
             <MenuOutlined className="icon" />
-            <span>Products</span>
+            <span>{t('shop.products', 'Products')}</span>
           </div>
           <div className="shop-mobile-grid-item" onClick={() => navigate('/shop/best-sellers')}>
             <AppstoreOutlined className="icon" />
-            <span>Best Sellers</span>
+            <span>{t('shop.bestSellers', 'Best Sellers')}</span>
           </div>
           <div className="shop-mobile-grid-item" onClick={() => navigate('/shop/coming-soon')}>
             <AppstoreOutlined className="icon" />
-            <span>Coming Soon</span>
+            <span>{t('shop.comingSoon', 'Coming Soon')}</span>
           </div>
           <div className="shop-mobile-grid-item shop-mobile-store-item">
             <Select
-              placeholder="Store"
+              placeholder={t('common.store', 'Store')}
               className="shop-mobile-store-select"
               value={selectedStore?.storeCode}
               onChange={(value) => {
@@ -307,19 +310,19 @@ export default function ShopLayout() {
             <Badge count={cart?.totalQuantity ?? 0} size="small" offset={[5, -5]}>
               <ShoppingCartOutlined className="icon" />
             </Badge>
-            <span>Cart</span>
+            <span>{t('shop.cart', 'Cart')}</span>
           </div>
           <div className="shop-mobile-grid-item" onClick={() => navigate('/shop/orders')}>
             <AppstoreOutlined className="icon" />
-            <span>订单</span>
+            <span>{t('shop.orderHistory', '订单')}</span>
           </div>
           <div className="shop-mobile-grid-item" onClick={() => void handleLogout()}>
             <UserOutlined className="icon" />
-            <span>Logout</span>
+            <span>{t('layout.logout', 'Logout')}</span>
           </div>
           <div className="shop-mobile-grid-item" onClick={() => window.open('/dashboard', '_blank')}>
             <AppstoreOutlined className="icon" />
-            <span>Dashboard</span>
+            <span>{t('menu.dashboard', 'Dashboard')}</span>
           </div>
         </div>
       </div>
@@ -330,25 +333,25 @@ export default function ShopLayout() {
             className={`shop-menu-item${isShopHomePage ? ' active' : ''}`}
             onClick={() => navigate('/shop')}
           >
-            Shop Home
+            {t('shop.shopHome', 'Shop Home')}
           </div>
           <div
             className={`shop-menu-item${isBestSellersPage ? ' active' : ''}`}
             onClick={() => navigate('/shop/best-sellers')}
           >
-            Best Sellers
+            {t('shop.bestSellers', 'Best Sellers')}
           </div>
           <div
             className={`shop-menu-item${isComingSoonPage ? ' active' : ''}`}
             onClick={() => navigate('/shop/coming-soon')}
           >
-            Coming Soon
+            {t('shop.comingSoon', 'Coming Soon')}
           </div>
           <div
             className={`shop-menu-item${isOrdersPage ? ' active' : ''}`}
             onClick={() => navigate('/shop/orders')}
           >
-            历史订单
+            {t('shop.orderHistory', '历史订单')}
           </div>
         </div>
 
@@ -357,7 +360,7 @@ export default function ShopLayout() {
             <div className="shop-shell">
               {loadingCategories ? (
                 <div className="shop-category-loading">
-                  <Spin size="small" /> Loading categories...
+                  <Spin size="small" /> {t('shop.loadingCategories', 'Loading categories...')}
                 </div>
               ) : (
                 categories.map((category) => {
@@ -398,9 +401,9 @@ export default function ShopLayout() {
         ) : (
           <div className="shop-orders-banner">
             <div className="shop-shell">
-              <div className="shop-orders-banner-title">历史订单</div>
+              <div className="shop-orders-banner-title">{t('shop.orderHistory', '历史订单')}</div>
               <div className="shop-orders-banner-subtitle">
-                查看分店提交过的订单、状态、数量和金额汇总。
+                {t('shop.ordersBannerSubtitle', '查看分店提交过的订单、状态、数量和金额汇总。')}
               </div>
             </div>
           </div>
@@ -411,7 +414,7 @@ export default function ShopLayout() {
         <Outlet />
       </div>
 
-      <div className="shop-footer">© 2026 Hotbargain International. All rights reserved.</div>
+      <div className="shop-footer">{t('shop.footer', '© 2026 Hotbargain International. All rights reserved.')}</div>
 
       <ShopCartDrawer
         open={cartDrawerOpen}
@@ -421,7 +424,7 @@ export default function ShopLayout() {
       />
 
       <Drawer
-        title="Products"
+        title={t('shop.products', 'Products')}
         placement="left"
         onClose={() => setMobileCategoryVisible(false)}
         open={mobileCategoryVisible}
