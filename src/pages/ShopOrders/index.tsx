@@ -10,6 +10,7 @@ import { Button, DatePicker, Empty, Input, Pagination, Segmented, Space, Spin, T
 import dayjs from 'dayjs'
 import type { Dayjs } from 'dayjs'
 import { useEffect, useMemo, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { useNavigate } from 'react-router-dom'
 import { getStoreOrderList } from '../../services/storeOrderService'
 import { useShopStore } from '../../store/shop'
@@ -64,9 +65,9 @@ function formatAmount(order: StoreOrderListItem) {
   return `$${value.toFixed(2)}`
 }
 
-function getOrderStatusMeta(status: number) {
+function getOrderStatusMeta(status: number, t: (key: string, fb: string, opts?: Record<string, unknown>) => string) {
   return {
-    label: StoreOrderStatusLabelMap[status as StoreOrderFlowStatus] ?? `状态 ${status}`,
+    label: StoreOrderStatusLabelMap[status as StoreOrderFlowStatus] ?? t('common.statusN', `状态 ${status}`, { n: status }),
     color: StoreOrderStatusColorMap[status as StoreOrderFlowStatus] ?? 'default',
   }
 }
@@ -88,6 +89,7 @@ function createQuickDateRange(filter: Exclude<QuickRangeFilter, 'custom'>): Date
 }
 
 export default function ShopOrdersPage() {
+  const { t } = useTranslation()
   const navigate = useNavigate()
   const selectedStore = useShopStore((state) => state.selectedStore)
 
@@ -171,34 +173,34 @@ export default function ShopOrdersPage() {
       <div className="shop-orders-hero">
         <div>
           <div className="shop-orders-eyebrow">
-            <HistoryOutlined /> 分店历史订单
+            <HistoryOutlined /> {t('shopOrders.storeHistory', '分店历史订单')}
           </div>
-          <Title level={2}>订单列表</Title>
+          <Title level={2}>{t('shopOrders.orderList', '订单列表')}</Title>
           <Text type="secondary">
-            查看分店历史订单、当前状态，以及进入订单明细页查看商品明细。
+            {t('shopOrders.description', '查看分店历史订单、当前状态，以及进入订单明细页查看商品明细。')}
           </Text>
         </div>
         <div className="shop-orders-store-badge">
           <ShopOutlined />
-          <span>{selectedStore?.storeName || '当前可访问分店'}</span>
+          <span>{selectedStore?.storeName || t('shopOrders.currentAccessibleStores', '当前可访问分店')}</span>
         </div>
       </div>
 
       <div className="shop-orders-stats">
         <div className="shop-orders-stat-card">
-          <span className="shop-orders-stat-label">订单数</span>
+          <span className="shop-orders-stat-label">{t('shopOrders.orderCount', '订单数')}</span>
           <strong>{stats.totalOrders}</strong>
         </div>
         <div className="shop-orders-stat-card">
-          <span className="shop-orders-stat-label">进行中</span>
+          <span className="shop-orders-stat-label">{t('shopOrders.inProgress', '进行中')}</span>
           <strong>{stats.activeCount}</strong>
         </div>
         <div className="shop-orders-stat-card">
-          <span className="shop-orders-stat-label">已完成</span>
+          <span className="shop-orders-stat-label">{t('shopOrders.completed', '已完成')}</span>
           <strong>{stats.completedCount}</strong>
         </div>
         <div className="shop-orders-stat-card accent">
-          <span className="shop-orders-stat-label">当前页金额</span>
+          <span className="shop-orders-stat-label">{t('shopOrders.currentPageAmount', '当前页金额')}</span>
           <strong>${stats.visibleAmount.toFixed(2)}</strong>
         </div>
       </div>
@@ -212,9 +214,9 @@ export default function ShopOrdersPage() {
               setStatusFilter(value)
             }}
             options={[
-              { label: '全部', value: 'all' },
-              { label: '进行中', value: 'active' },
-              { label: '已完成', value: 'completed' },
+              { label: t('common.all', '全部'), value: 'all' },
+              { label: t('shopOrders.inProgress', '进行中'), value: 'active' },
+              { label: t('shopOrders.completed', '已完成'), value: 'completed' },
             ]}
           />
           <RangePicker
@@ -222,9 +224,9 @@ export default function ShopOrdersPage() {
             allowClear={false}
             className="shop-orders-date-range"
             presets={[
-              { label: '最近 7 天', value: [dayjs().subtract(6, 'day').startOf('day'), dayjs().endOf('day')] },
-              { label: '最近 30 天', value: [dayjs().subtract(29, 'day').startOf('day'), dayjs().endOf('day')] },
-              { label: '最近 60 天', value: createDefaultDateRange() },
+              { label: t('shopOrders.last7Days', '最近 7 天'), value: [dayjs().subtract(6, 'day').startOf('day'), dayjs().endOf('day')] },
+              { label: t('shopOrders.last30Days', '最近 30 天'), value: [dayjs().subtract(29, 'day').startOf('day'), dayjs().endOf('day')] },
+              { label: t('shopOrders.last60Days', '最近 60 天'), value: createDefaultDateRange() },
             ]}
             onChange={(value) => {
               if (!value || !value[0] || !value[1]) {
@@ -253,10 +255,10 @@ export default function ShopOrdersPage() {
               setDateRange(createQuickDateRange(value))
             }}
             options={[
-              { label: '今天', value: 'today' },
-              { label: '本周', value: 'week' },
-              { label: '本月', value: 'month' },
-              { label: '最近 60 天', value: 'custom' },
+              { label: t('shopOrders.today', '今天'), value: 'today' },
+              { label: t('shopOrders.thisWeek', '本周'), value: 'week' },
+              { label: t('shopOrders.thisMonth', '本月'), value: 'month' },
+              { label: t('shopOrders.last60Days', '最近 60 天'), value: 'custom' },
             ]}
           />
         </div>
@@ -265,7 +267,7 @@ export default function ShopOrdersPage() {
           <Search
             value={keywordInput}
             allowClear
-            placeholder="按订单号搜索"
+            placeholder={t('shopOrders.searchByOrderNo', '按订单号搜索')}
             enterButton={<SearchOutlined />}
             onChange={(event) => setKeywordInput(event.target.value)}
             onSearch={(value) => {
@@ -284,15 +286,15 @@ export default function ShopOrdersPage() {
               setQuickRange('custom')
             }}
           >
-            重置
+            {t('common.reset', '重置')}
           </Button>
         </div>
       </div>
 
       <div className="shop-orders-filter-note">
-        当前查看：
-        {selectedStore?.storeName || '全部可访问分店'}。
-        可通过顶部的分店选择器切换范围，当前时间区间：
+        {t('shopOrders.currentlyViewing', '当前查看：')}
+        {selectedStore?.storeName || t('shopOrders.allAccessibleStores', '全部可访问分店')}。
+        {t('shopOrders.switchRangeTip', '可通过顶部的分店选择器切换范围，当前时间区间：')}
         {dateRange[0].format('DD MMM YYYY')}
         {' - '}
         {dateRange[1].format('DD MMM YYYY')}
@@ -306,13 +308,13 @@ export default function ShopOrdersPage() {
         <>
           <div className="shop-orders-grid">
             {orders.map((order) => {
-              const statusMeta = getOrderStatusMeta(order.flowStatus)
+              const statusMeta = getOrderStatusMeta(order.flowStatus, t)
 
               return (
                 <article key={order.orderGUID} className="shop-order-card">
                   <div className="shop-order-card-top">
                     <div className="shop-order-card-headline">
-                      <div className="shop-order-card-label">订单号</div>
+                      <div className="shop-order-card-label">{t('shopOrders.orderNo', '订单号')}</div>
                       <Title level={4} className="shop-order-card-title">
                         {order.orderNo || order.orderGUID.slice(0, 8)}
                       </Title>
@@ -323,7 +325,7 @@ export default function ShopOrdersPage() {
                   <div className="shop-order-card-meta">
                     <div>
                       <ShopOutlined />
-                      <span>{order.storeName || order.storeCode || '未知分店'}</span>
+                      <span>{order.storeName || order.storeCode || t('common.unknownStore', '未知分店')}</span>
                     </div>
                     <div>
                       <ClockCircleOutlined />
@@ -333,22 +335,22 @@ export default function ShopOrdersPage() {
 
                   <div className="shop-order-card-metrics">
                     <div className="shop-order-metric">
-                      <span>订货数量</span>
+                      <span>{t('shopOrders.orderQuantity', '订货数量')}</span>
                       <strong>{order.totalQuantity ?? 0}</strong>
                     </div>
                     <div className="shop-order-metric">
-                      <span>发货数量</span>
+                      <span>{t('shopOrders.shipQuantity', '发货数量')}</span>
                       <strong>{order.totalAllocQuantity ?? 0}</strong>
                     </div>
                     <div className="shop-order-metric amount">
-                      <span>金额</span>
+                      <span>{t('shopOrders.amount', '金额')}</span>
                       <strong>{formatAmount(order)}</strong>
                     </div>
                   </div>
 
                   {order.remarks ? (
                     <div className="shop-order-card-remarks">
-                      <span className="shop-order-card-label">备注</span>
+                      <span className="shop-order-card-label">{t('common.remark', '备注')}</span>
                       <p>{order.remarks}</p>
                     </div>
                   ) : null}
@@ -360,7 +362,7 @@ export default function ShopOrdersPage() {
                   >
                     <Space size={6}>
                       <CheckCircleOutlined />
-                      <Text>查看订单明细</Text>
+                      <Text>{t('shopOrders.viewDetail', '查看订单明细')}</Text>
                     </Space>
                   </button>
                 </article>
@@ -389,8 +391,8 @@ export default function ShopOrdersPage() {
           <Empty
             description={
               keyword
-                ? '没有匹配到订单，请调整搜索条件。'
-                : '当前筛选条件下暂无历史订单。'
+                ? t('shopOrders.noMatchOrders', '没有匹配到订单，请调整搜索条件。')
+                : t('shopOrders.noHistoryOrders', '当前筛选条件下暂无历史订单。')
             }
           />
         </div>

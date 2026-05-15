@@ -1262,7 +1262,7 @@ export default function InvoiceEditPage() {
         />
         {pasteText.trim() && (
           <div style={{ marginTop: 8, color: '#999', fontSize: 12 }}>
-            已识别 {parsePasteText(pasteText).length} 行数据
+            {t('posAdmin.invoiceDetail.parsedRows', '已识别 {{count}} 行数据', { count: parsePasteText(pasteText).length })}
           </div>
         )}
       </Modal>

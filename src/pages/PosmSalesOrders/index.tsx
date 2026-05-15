@@ -22,6 +22,7 @@ import {
 import type { ColumnsType } from 'antd/es/table'
 import dayjs from 'dayjs'
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { getActiveStores } from '../../services/storeService'
 import { getSalesOrderDetail, getSalesOrderList, getTaxInvoicePdfUrl, fetchTaxInvoicePdf } from '../../services/posmSalesOrderService'
 import type { PosmSalesOrder, PosmSalesOrderDetailResponse } from '../../types/posmSalesOrder'
@@ -45,16 +46,19 @@ function getBranchColor(branchCode?: string): string {
   return BRANCH_COLORS[Math.abs(hash) % BRANCH_COLORS.length]
 }
 
-const ORDER_TYPE_OPTIONS = [
-  { label: '全部', value: OrderType.All },
-  { label: '待付款', value: OrderType.Pending },
-  { label: '已付款', value: OrderType.Paid },
-  { label: '已取消', value: OrderType.Cancelled },
-  { label: '已退款', value: OrderType.Refunded },
-  { label: '分期', value: OrderType.Installment },
-]
+function getOrderTypeOptions(t: (key: string, fb: string) => string) {
+  return [
+    { label: t('posmOrders.all', '全部'), value: OrderType.All },
+    { label: t('posmOrders.pending', '待付款'), value: OrderType.Pending },
+    { label: t('posmOrders.paid', '已付款'), value: OrderType.Paid },
+    { label: t('posmOrders.cancelled', '已取消'), value: OrderType.Cancelled },
+    { label: t('posmOrders.refunded', '已退款'), value: OrderType.Refunded },
+    { label: t('posmOrders.installment', '分期'), value: OrderType.Installment },
+  ]
+}
 
 export default function PosmSalesOrdersPage() {
+  const { t } = useTranslation()
   const [loading, setLoading] = useState(false)
   const [data, setData] = useState<PosmSalesOrder[]>([])
   const [total, setTotal] = useState(0)
@@ -94,7 +98,7 @@ export default function PosmSalesOrdersPage() {
       setData(result?.items ?? [])
       setTotal(result?.total ?? 0)
     } catch {
-      message.error('加载订单列表失败')
+      message.error(t('posmOrders.loadFailed', '加载订单列表失败'))
     } finally {
       setLoading(false)
     }
@@ -163,7 +167,7 @@ export default function PosmSalesOrdersPage() {
       if (pdfBlobUrl) URL.revokeObjectURL(pdfBlobUrl)
       setPdfBlobUrl(blobUrl)
     } catch {
-      message.error('获取发票失败')
+      message.error(t('posmOrders.getInvoiceFailed', '获取发票失败'))
     } finally {
       setPdfLoading(false)
     }
@@ -182,19 +186,19 @@ export default function PosmSalesOrdersPage() {
 
   const columns: ColumnsType<PosmSalesOrder> = [
     {
-      title: '序号',
+      title: t('posmOrders.serialNo', '序号'),
       width: 60,
       align: 'right',
       render: (_, __, index) => (page - 1) * pageSize + index + 1,
     },
     {
-      title: '订单号',
+      title: t('posmOrders.orderNo', '订单号'),
       dataIndex: 'orderGuid',
       width: 120,
       render: (_, record) => <Text ellipsis={{ tooltip: record.orderGuid }}>{record.orderGuid?.slice(-6) || '-'}</Text>,
     },
     {
-      title: '分店',
+      title: t('posmOrders.branch', '分店'),
       dataIndex: 'branchName',
       width: 120,
       render: (_, record) => (
@@ -204,50 +208,50 @@ export default function PosmSalesOrdersPage() {
       ),
     },
     {
-      title: '设备',
+      title: t('posmOrders.device', '设备'),
       dataIndex: 'deviceCode',
       width: 100,
     },
     {
-      title: '日期',
+      title: t('posmOrders.date', '日期'),
       dataIndex: 'orderTime',
       width: 110,
       render: (_, record) => (record.orderTime ? dayjs(record.orderTime).format('YYYY-MM-DD') : '-'),
     },
     {
-      title: '时间',
+      title: t('posmOrders.time', '时间'),
       dataIndex: 'orderTime',
       width: 90,
       render: (_, record) => (record.orderTime ? dayjs(record.orderTime).format('HH:mm:ss') : '-'),
     },
     {
-      title: 'SKU数',
+      title: t('posmOrders.skuCount', 'SKU数'),
       dataIndex: 'skuCount',
       width: 80,
       align: 'right',
     },
     {
-      title: '件数',
+      title: t('posmOrders.itemCount', '件数'),
       dataIndex: 'itemCount',
       width: 80,
       align: 'right',
     },
     {
-      title: '总金额',
+      title: t('posmOrders.totalAmount', '总金额'),
       dataIndex: 'totalAmount',
       width: 110,
       align: 'right',
       render: (_, record) => <Text>${(record.totalAmount || 0).toFixed(2)}</Text>,
     },
     {
-      title: '折扣',
+      title: t('posmOrders.discount', '折扣'),
       dataIndex: 'discountAmount',
       width: 100,
       align: 'right',
       render: (_, record) => <Text type="secondary">${(record.discountAmount || 0).toFixed(2)}</Text>,
     },
     {
-      title: '实付',
+      title: t('posmOrders.actualPay', '实付'),
       dataIndex: 'actualAmount',
       width: 110,
       align: 'right',
@@ -258,13 +262,13 @@ export default function PosmSalesOrdersPage() {
       ),
     },
     {
-      title: '操作',
+      title: t('common.action', '操作'),
       key: 'action',
       width: 100,
       render: (_, record) => (
         <Space size="small">
-          <Button type="text" icon={<FilePdfOutlined />} size="small" onClick={() => handlePreviewPdf(record.orderGuid || '')} title="预览发票" />
-          <Button type="text" icon={<DownloadOutlined />} size="small" onClick={() => handleDownloadPdf(record.orderGuid || '')} title="下载发票" />
+          <Button type="text" icon={<FilePdfOutlined />} size="small" onClick={() => handlePreviewPdf(record.orderGuid || '')} title={t('posmOrders.previewInvoice', '预览发票')} />
+          <Button type="text" icon={<DownloadOutlined />} size="small" onClick={() => handleDownloadPdf(record.orderGuid || '')} title={t('posmOrders.downloadInvoice', '下载发票')} />
         </Space>
       ),
     },
@@ -272,11 +276,11 @@ export default function PosmSalesOrdersPage() {
 
   return (
     <Card
-      title="收银记录"
+      title={t('posmOrders.cashierRecords', '收银记录')}
       extra={
         <Space>
           <Button icon={<ReloadOutlined />} onClick={handleSearch}>
-            刷新
+            {t('common.refresh', '刷新')}
           </Button>
         </Space>
       }
@@ -290,7 +294,7 @@ export default function PosmSalesOrdersPage() {
           style={{ width: 260 }}
         />
         <Select
-          placeholder="分店"
+          placeholder={t('posmOrders.branch', '分店')}
           value={filterBranchCode || undefined}
           onChange={setFilterBranchCode}
           style={{ width: 180 }}
@@ -300,14 +304,14 @@ export default function PosmSalesOrdersPage() {
           options={stores}
         />
         <Select
-          placeholder="订单类型"
+          placeholder={t('posmOrders.orderType', '订单类型')}
           value={filterOrderType}
           onChange={(v: OrderType) => setFilterOrderType(v)}
           style={{ width: 130 }}
-          options={ORDER_TYPE_OPTIONS}
+          options={getOrderTypeOptions(t)}
         />
         <Input
-          placeholder="关键词"
+          placeholder={t('posmOrders.keyword', '关键词')}
           value={filterKeyword}
           onChange={(e) => setFilterKeyword(e.target.value)}
           onPressEnter={handleSearch}
@@ -315,10 +319,10 @@ export default function PosmSalesOrdersPage() {
           style={{ width: 180 }}
         />
         <Button type="primary" onClick={handleSearch}>
-          查询
+          {t('common.query', '查询')}
         </Button>
         <Button onClick={handleReset}>
-          重置
+          {t('common.reset', '重置')}
         </Button>
       </div>
 
@@ -345,11 +349,11 @@ export default function PosmSalesOrdersPage() {
               onExpandedRowsChange: (keys) => setExpandedRowKeys([...keys]),
               expandedRowRender: (record) => {
                 const detail = detailData[record.orderGuid!]
-                if (!detail) return <div>加载中...</div>
+                if (!detail) return <div>{t('common.loading', '加载中...')}</div>
 
                 return (
                   <div style={{ padding: 16 }}>
-                    <Card title="订单明细" size="small" style={{ marginBottom: 16 }}>
+                    <Card title={t('posmOrders.orderDetail', '订单明细')} size="small" style={{ marginBottom: 16 }}>
                       {detail.orderDetails?.map((item, index) => (
                         <div
                           key={index}
@@ -368,10 +372,10 @@ export default function PosmSalesOrdersPage() {
                             <div style={{ marginBottom: 4 }}><Text strong>{item.productName}</Text></div>
                             <div style={{ fontSize: 12 }}>
                               <Space size="large">
-                                <span>数量: {item.quantity}</span>
-                                <span>单价: ${(item.unitPrice || 0).toFixed(2)}</span>
-                                <span>折扣: ${(item.discountAmount || 0).toFixed(2)}</span>
-                                <Text type="danger" strong>小计: ${(item.actualAmount || 0).toFixed(2)}</Text>
+                                <span>{t('posmOrders.quantity', '数量')}: {item.quantity}</span>
+                                <span>{t('posmOrders.unitPrice', '单价')}: ${(item.unitPrice || 0).toFixed(2)}</span>
+                                <span>{t('posmOrders.discount', '折扣')}: ${(item.discountAmount || 0).toFixed(2)}</span>
+                                <Text type="danger" strong>{t('posmOrders.subtotal', '小计')}: ${(item.actualAmount || 0).toFixed(2)}</Text>
                               </Space>
                             </div>
                           </div>
@@ -380,7 +384,7 @@ export default function PosmSalesOrdersPage() {
                     </Card>
 
                     {detail.paymentDetails && detail.paymentDetails.length > 0 && (
-                      <Card title="支付信息" size="small">
+                      <Card title={t('posmOrders.paymentInfo', '支付信息')} size="small">
                         {detail.paymentDetails.map((payment, index) => (
                           <div
                             key={index}
@@ -392,7 +396,7 @@ export default function PosmSalesOrdersPage() {
                             }}
                           >
                             <Text>{payment.paymentTime ? dayjs(payment.paymentTime).format('HH:mm:ss') : '-'}</Text>
-                            <Tag color="green">{payment.paymentMethodName || '支付'}</Tag>
+                            <Tag color="green">{payment.paymentMethodName || t('posmOrders.payment', '支付')}</Tag>
                             <Text type="success" strong>${(payment.amount || 0).toFixed(2)}</Text>
                           </div>
                         ))}
@@ -436,7 +440,7 @@ export default function PosmSalesOrdersPage() {
       </div>
 
       <Modal
-        title="发票预览"
+        title={t('posmOrders.invoicePreview', '发票预览')}
         open={pdfModalVisible}
         onCancel={() => {
           setPdfModalVisible(false)
@@ -446,7 +450,7 @@ export default function PosmSalesOrdersPage() {
         }}
         footer={[
           <Button key="download" type="primary" icon={<DownloadOutlined />} onClick={() => { if (pdfOrderGuid) handleDownloadPdf(pdfOrderGuid) }}>
-            下载
+            {t('common.download', '下载')}
           </Button>,
           <Button key="close" onClick={() => {
             setPdfModalVisible(false)
@@ -454,7 +458,7 @@ export default function PosmSalesOrdersPage() {
             setPdfBlobUrl('')
             setPdfOrderGuid('')
           }}>
-            关闭
+            {t('common.close', '关闭')}
           </Button>,
         ]}
         width={900}
@@ -464,7 +468,7 @@ export default function PosmSalesOrdersPage() {
         <div style={{ height: 600, overflow: 'auto' }}>
           {pdfLoading ? (
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%' }}>
-              <span>加载中...</span>
+              <span>{t('common.loading', '加载中...')}</span>
             </div>
           ) : pdfBlobUrl ? (
             <iframe src={pdfBlobUrl} style={{ width: '100%', height: '100%', border: 'none' }} title="Tax Invoice PDF Preview" />
