@@ -11,6 +11,7 @@ import {
 } from '@ant-design/icons'
 import { Button, Empty, Image, Segmented, Space, Spin, Tag, Typography } from 'antd'
 import { useEffect, useMemo, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { useNavigate, useParams } from 'react-router-dom'
 import BarcodePreview from '../../components/BarcodePreview'
 import { getStoreOrderDetail } from '../../services/storeOrderService'
@@ -54,17 +55,17 @@ function formatVolume(value?: number) {
   return `${(value ?? 0).toFixed(4)} cbm`
 }
 
-function getLineStatus(line: StoreOrderDetailLine) {
+function getLineStatus(line: StoreOrderDetailLine, t: (key: string, fb: string) => string) {
   const allocQuantity = line.allocQuantity ?? 0
   if (allocQuantity === 0) {
-    return { label: '待发货', color: 'default' as const }
+    return { label: t('shopOrderDetail.pendingShip', '待发货'), color: 'default' as const }
   }
 
   if (allocQuantity < line.quantity) {
-    return { label: '部分发货', color: 'warning' as const }
+    return { label: t('shopOrderDetail.partialShipped', '部分发货'), color: 'warning' as const }
   }
 
-  return { label: '已发货', color: 'success' as const }
+  return { label: t('shopOrderDetail.shipped', '已发货'), color: 'success' as const }
 }
 
 function getShortageQuantity(line: StoreOrderDetailLine) {
@@ -72,6 +73,7 @@ function getShortageQuantity(line: StoreOrderDetailLine) {
 }
 
 export default function ShopOrderDetailPage() {
+  const { t } = useTranslation()
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
 
@@ -118,7 +120,7 @@ export default function ShopOrderDetailPage() {
 
   const storeName = useMemo(() => {
     if (!detail?.storeCode) {
-      return selectedStore?.storeName || '未知分店'
+      return selectedStore?.storeName || t('common.unknownStore', '未知分店')
     }
 
     return (
@@ -135,33 +137,33 @@ export default function ShopOrderDetailPage() {
 
     return [
       {
-        label: '订货数量',
+        label: t('shopOrderDetail.orderQuantity', '订货数量'),
         value: detail?.totalQuantity ?? 0,
       },
       {
-        label: '发货数量',
+        label: t('shopOrderDetail.shipQuantity', '发货数量'),
         value: autoAllocatedQuantity,
       },
       {
-        label: '缺货数量',
+        label: t('shopOrderDetail.shortageQuantity', '缺货数量'),
         value: shortageQuantity,
         danger: shortageQuantity > 0,
       },
       {
-        label: '订货体积',
+        label: t('shopOrderDetail.orderVolume', '订货体积'),
         value: formatVolume(detail?.totalOrderVolume),
       },
       {
-        label: '发货体积',
+        label: t('shopOrderDetail.shipVolume', '发货体积'),
         value: formatVolume(detail?.totalAllocVolume),
       },
       {
-        label: '进货金额',
+        label: t('shopOrderDetail.purchaseAmount', '进货金额'),
         value: formatMoney(detail?.totalImportAmount),
         accent: true,
       },
       {
-        label: '零售金额',
+        label: t('shopOrderDetail.retailAmount', '零售金额'),
         value: formatMoney(detail?.totalAmount),
       },
     ]
@@ -225,9 +227,9 @@ export default function ShopOrderDetailPage() {
   if (!detail) {
     return (
       <div className="shop-order-detail-empty">
-        <Empty description="未找到对应订单明细。">
+        <Empty description={t('shopOrderDetail.notFound', '未找到对应订单明细。')}>
           <Button type="primary" onClick={() => navigate('/shop/orders')}>
-            返回订单列表
+            {t('shopOrderDetail.backToOrderList', '返回订单列表')}
           </Button>
         </Empty>
       </div>
@@ -236,7 +238,7 @@ export default function ShopOrderDetailPage() {
 
   const currentStatus = (detail.flowStatus ?? StoreOrderFlowStatus.Submitted) as StoreOrderFlowStatus
   const statusMeta = {
-    label: StoreOrderStatusLabelMap[currentStatus] ?? `状态 ${detail.flowStatus ?? '--'}`,
+    label: StoreOrderStatusLabelMap[currentStatus] ?? t('common.statusN', `状态 ${detail.flowStatus ?? '--'}`),
     color: StoreOrderStatusColorMap[currentStatus] ?? 'default',
   }
 
@@ -249,18 +251,18 @@ export default function ShopOrderDetailPage() {
             onClick={() => navigate('/shop/orders')}
             className="shop-order-detail-back"
           >
-            返回
+            {t('common.back', '返回')}
           </Button>
 
           <div className="shop-order-detail-eyebrow">
-            <ShoppingOutlined /> 分店订单明细
+            <ShoppingOutlined /> {t('shopOrderDetail.title', '分店订单明细')}
           </div>
 
           <div className="shop-order-detail-title-row">
             <div>
               <Title level={2}>{detail.orderNo || detail.orderGUID}</Title>
               <Text type="secondary">
-                只读查看订单头信息、状态、数量和商品明细，不提供编辑操作。
+                {t('shopOrderDetail.description', '只读查看订单头信息、状态、数量和商品明细，不提供编辑操作。')}
               </Text>
             </div>
             <Tag color={statusMeta.color}>{statusMeta.label}</Tag>
@@ -277,7 +279,7 @@ export default function ShopOrderDetailPage() {
             </div>
             <div>
               <FileTextOutlined />
-              <span>{detail.items?.length ?? 0} 条明细</span>
+              <span>{detail.items?.length ?? 0} {t('shopOrderDetail.detailLines', '条明细')}</span>
             </div>
           </div>
         </div>
@@ -297,30 +299,30 @@ export default function ShopOrderDetailPage() {
 
       <div className="shop-order-detail-info-grid">
         <section className="shop-order-detail-panel">
-          <div className="shop-order-detail-panel-title">订单备注</div>
+          <div className="shop-order-detail-panel-title">{t('shopOrderDetail.orderRemark', '订单备注')}</div>
           {detail.remarks ? (
             <div className="shop-order-detail-note">
               <FileTextOutlined />
               <p>{detail.remarks}</p>
             </div>
           ) : (
-            <Text type="secondary">该订单没有备注。</Text>
+            <Text type="secondary">{t('shopOrderDetail.noRemark', '该订单没有备注。')}</Text>
           )}
         </section>
 
         <section className="shop-order-detail-panel">
-          <div className="shop-order-detail-panel-title">配送信息</div>
+          <div className="shop-order-detail-panel-title">{t('shopOrderDetail.deliveryInfo', '配送信息')}</div>
           <div className="shop-order-detail-info-list">
             <div>
-              <span>运费</span>
+              <span>{t('shopOrderDetail.freight', '运费')}</span>
               <strong>{formatMoney(detail.shippingFee)}</strong>
             </div>
             <div>
-              <span>分店编码</span>
+              <span>{t('shopOrderDetail.storeCode', '分店编码')}</span>
               <strong>{detail.storeCode || '--'}</strong>
             </div>
             <div>
-              <span>地址</span>
+              <span>{t('common.address', '地址')}</span>
               <strong>{detail.storeAddress || '--'}</strong>
             </div>
           </div>
@@ -330,15 +332,15 @@ export default function ShopOrderDetailPage() {
       <section className="shop-order-lines-panel">
         <div className="shop-order-lines-header">
           <div>
-            <div className="shop-order-detail-panel-title">商品明细</div>
-            <Text type="secondary">每一行显示订货、发货、缺货和金额信息。</Text>
+            <div className="shop-order-detail-panel-title">{t('shopOrderDetail.productDetail', '商品明细')}</div>
+            <Text type="secondary">{t('shopOrderDetail.productDetailTip', '每一行显示订货、发货、缺货和金额信息。')}</Text>
           </div>
           <div className="shop-order-lines-header-actions">
             <Segmented<LineSortMode>
               value={sortMode}
               options={[
-                { label: '缺货优先', value: 'shortage' },
-                { label: '按货号', value: 'itemNumber' },
+                { label: t('shopOrderDetail.shortageFirst', '缺货优先'), value: 'shortage' },
+                { label: t('shopOrderDetail.byItemNo', '按货号'), value: 'itemNumber' },
               ]}
               onChange={(value) => setSortMode(value)}
             />
@@ -346,26 +348,26 @@ export default function ShopOrderDetailPage() {
               type={showShortageOnly ? 'primary' : 'default'}
               onClick={() => setShowShortageOnly((current) => !current)}
             >
-              {showShortageOnly ? '显示全部' : '只看缺货'}
+              {showShortageOnly ? t('shopOrderDetail.showAll', '显示全部') : t('shopOrderDetail.onlyShortage', '只看缺货')}
             </Button>
-            <div className="shop-order-lines-counter">{visibleItems.length} 条</div>
+            <div className="shop-order-lines-counter">{visibleItems.length} {t('shopOrderDetail.lines', '条')}</div>
           </div>
         </div>
 
         <div className="shop-order-shortage-banner">
           <div className="shop-order-shortage-banner-main">
-            <span className="shop-order-shortage-banner-label">缺货汇总</span>
+            <span className="shop-order-shortage-banner-label">{t('shopOrderDetail.shortageSummary', '缺货汇总')}</span>
             <strong>{shortageSummary.shortageQuantity}</strong>
           </div>
           <div className="shop-order-shortage-banner-meta">
-            <span>{shortageSummary.shortageLineCount} 条明细需要关注</span>
-            <span>已发货数量：{shortageSummary.autoAllocatedQuantity}</span>
+            <span>{shortageSummary.shortageLineCount} {t('shopOrderDetail.linesNeedAttention', '条明细需要关注')}</span>
+            <span>{t('shopOrderDetail.shippedQuantity', '已发货数量')}：{shortageSummary.autoAllocatedQuantity}</span>
           </div>
         </div>
 
         <div className="shop-order-lines-list">
           {visibleItems.map((item) => {
-            const lineStatus = getLineStatus(item)
+            const lineStatus = getLineStatus(item, t)
             const shortageQuantity = getShortageQuantity(item)
 
             return (
@@ -397,7 +399,7 @@ export default function ShopOrderDetailPage() {
                   <div className="shop-order-line-head">
                     <div>
                       <Title level={5} className="shop-order-line-title">
-                        {item.productName || '未命名商品'}
+                        {item.productName || t('shopOrderDetail.unnamedProduct', '未命名商品')}
                       </Title>
                       <Space size={8} wrap>
                         <Tag icon={<TagOutlined />}>{item.itemNumber || item.productCode}</Tag>
@@ -407,32 +409,32 @@ export default function ShopOrderDetailPage() {
                       </Space>
                     </div>
                     <Space wrap size={8}>
-                      {shortageQuantity > 0 ? <Tag color="error">缺货</Tag> : null}
+                      {shortageQuantity > 0 ? <Tag color="error">{t('shopOrderDetail.shortage', '缺货')}</Tag> : null}
                       <Tag color={lineStatus.color}>{lineStatus.label}</Tag>
                     </Space>
                   </div>
 
                   <div className="shop-order-line-metrics">
                     <div>
-                      <span>订货 / 发货</span>
+                      <span>{t('shopOrderDetail.orderSlashShip', '订货 / 发货')}</span>
                       <strong>
                         {item.quantity} / {item.allocQuantity ?? 0}
                       </strong>
                     </div>
                     <div className={shortageQuantity > 0 ? 'shop-order-line-metric-danger' : undefined}>
-                      <span>缺货</span>
+                      <span>{t('shopOrderDetail.shortage', '缺货')}</span>
                       <strong>{shortageQuantity}</strong>
                     </div>
                     <div>
-                      <span>进货价</span>
+                      <span>{t('shopOrderDetail.purchasePrice', '进货价')}</span>
                       <strong>{formatMoney(item.importPrice)}</strong>
                     </div>
                     <div>
-                      <span>进货金额</span>
+                      <span>{t('shopOrderDetail.purchaseAmount', '进货金额')}</span>
                       <strong>{formatMoney(item.importAmount)}</strong>
                     </div>
                     <div>
-                      <span>零售金额</span>
+                      <span>{t('shopOrderDetail.retailAmount', '零售金额')}</span>
                       <strong>{formatMoney(item.amount)}</strong>
                     </div>
                   </div>
@@ -440,15 +442,15 @@ export default function ShopOrderDetailPage() {
                   <div className="shop-order-line-footer">
                     <div className="shop-order-line-volume">
                       <CheckCircleOutlined />
-                      <span>订货体积：{formatVolume(item.orderVolume ?? item.totalVolume)}</span>
+                      <span>{t('shopOrderDetail.orderVolume', '订货体积')}：{formatVolume(item.orderVolume ?? item.totalVolume)}</span>
                     </div>
                     <div className="shop-order-line-volume">
                       <CheckCircleOutlined />
-                      <span>发货体积：{formatVolume(item.allocVolume)}</span>
+                      <span>{t('shopOrderDetail.shipVolume', '发货体积')}：{formatVolume(item.allocVolume)}</span>
                     </div>
                     <div className="shop-order-line-volume">
                       <InboxOutlined />
-                      <span>已发货数量：{item.allocQuantity ?? 0}</span>
+                      <span>{t('shopOrderDetail.shippedQuantity', '已发货数量')}：{item.allocQuantity ?? 0}</span>
                     </div>
                   </div>
                 </div>
@@ -458,7 +460,7 @@ export default function ShopOrderDetailPage() {
 
           {!visibleItems.length ? (
             <div className="shop-order-lines-empty">
-              <Empty description={showShortageOnly ? '当前订单没有缺货明细。' : '当前订单没有商品明细。'} />
+              <Empty description={showShortageOnly ? t('shopOrderDetail.noShortageDetail', '当前订单没有缺货明细。') : t('shopOrderDetail.noProductDetail', '当前订单没有商品明细。')} />
             </div>
           ) : null}
         </div>
