@@ -1,0 +1,50 @@
+{
+  "title": "设置",
+  "account": {
+    "title": "当前账号",
+    "guestEmail": "当前未使用账号模式",
+    "roles": "角色：{{roles}}",
+    "deviceMode": "角色：设备模式"
+  },
+  "language": {
+    "description": "切换 App 显示语言，立即生效。"
+  },
+  "device": {
+    "title": "设备注册",
+    "description": "只有订货账号可以发起设备注册。注册提交后，需要后台确认启用；启用后这台设备再次打开 App 时可直接进入系统。",
+    "status": "设备状态：{{status}}",
+    "store": "绑定分店：{{store}}",
+    "deviceNumber": "设备编号：{{value}}",
+    "storeLabel": "对应分店",
+    "selectStore": "请选择分店",
+    "helper": "请先选择一个分店，再注册当前设备。",
+    "register": "注册当前设备",
+    "registerAgain": "重新提交设备注册",
+    "refreshStatus": "刷新设备状态",
+    "ready": "当前设备已启用，后续重新打开 App 时无需再次登录。"
+  },
+  "deviceStatus": {
+    "pending": "待确认",
+    "disabled": "禁用",
+    "enabled": "启用",
+    "locked": "锁定",
+    "unregistered": "未注册"
+  },
+  "dialogs": {
+    "logoutTitle": "退出登录",
+    "logoutMessage": "确定要退出当前账号吗？",
+    "logoutAction": "退出",
+    "selectStoreTitle": "请选择分店",
+    "selectStoreMessage": "设备注册前需要先选择一个分店。",
+    "registerSuccessTitle": "设备注册已提交",
+    "registerSuccessMessage": "设备已绑定到 {{store}}，当前状态：{{status}}。管理员在后台启用后，这台设备后续即可直接进入 App。",
+    "registerFailedTitle": "注册失败",
+    "registerFailedMessage": "设备注册失败，请稍后重试。",
+    "refreshReadyTitle": "设备已启用",
+    "refreshPendingTitle": "设备状态已刷新",
+    "refreshReadyMessage": "当前设备已经启用，后续重新打开 App 时无需再次登录。",
+    "refreshPendingMessage": "当前设备还不能直接进入 App，请等待后台确认或检查设备状态。",
+    "refreshFailedTitle": "刷新失败",
+    "refreshFailedMessage": "设备状态刷新失败，请稍后重试。"
+  }
+}

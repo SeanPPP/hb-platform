@@ -1,0 +1,65 @@
+{
+  "title": "Product lookup",
+  "currentStore": "Store: {{store}}",
+  "search": {
+    "placeholder": "Barcode / item / code",
+    "lastHit": "Last hit: {{value}}"
+  },
+  "messages": {
+    "selectStoreFirst": "Please select a store first.",
+    "keywordRequired": "Enter a barcode, item number, or product code.",
+    "storeUnavailable": "No store is currently available.",
+    "notFound": "No matching product was found.",
+    "lookupFailed": "Product lookup failed.",
+    "refreshFailed": "Refresh failed.",
+    "multiCodeSaved": "Multi-code saved.",
+    "multiCodeSaveFailed": "Failed to save the multi-code record.",
+    "saved": "Product information saved.",
+    "saveFailed": "Save failed.",
+    "emptyStorePrice": "There is no store price record for this product.",
+    "emptyPrompt": "Enter a barcode, item number, or product code to start.",
+    "cameraTip": "Align the barcode with the center of the frame."
+  },
+  "lookup": {
+    "title": "Choose a matching product",
+    "query": "Query: {{value}}",
+    "viewDetail": "View details",
+    "source": {
+      "productBarcode": "Primary barcode match",
+      "multiBarcode": "Multi-code match",
+      "setBarcode": "Set barcode match",
+      "itemNumber": "Item number match",
+      "productCode": "Product code match",
+      "fallback": "Match"
+    }
+  },
+  "hero": {
+    "product": "Product"
+  },
+  "storePrice": {
+    "fallbackTitle": "Store product info",
+    "purchase": "Cost",
+    "retail": "Retail",
+    "rate": "Rate {{value}}",
+    "calculating": "Calculating...",
+    "auto": "Auto",
+    "special": "Special",
+    "active": "Active"
+  },
+  "setCode": {
+    "title": "Set barcodes",
+    "meta": "{{itemNumber}} · Qty {{quantity}} · {{price}}"
+  },
+  "multiCode": {
+    "purchase": "Cost",
+    "retail": "Retail",
+    "auto": "Auto",
+    "special": "Special",
+    "active": "Active",
+    "save": "Save",
+    "dirtyCount": "{{count}} changes"
+  },
+  "camera": {
+    "title": "Scan a product"
+  }
+}

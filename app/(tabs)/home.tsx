@@ -1,14 +1,14 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { FlatList, ScrollView, StyleSheet, useWindowDimensions, View } from "react-native";
+﻿import { useCallback, useEffect, useMemo, useState } from "react";
+import { FlatList, ScrollView, StyleSheet, TextInput, useWindowDimensions, View } from "react-native";
 import { useQuery } from "@tanstack/react-query";
 import { CameraView } from "expo-camera";
 import { useRouter } from "expo-router";
+import { useFocusEffect } from "@react-navigation/native";
 import {
   Badge,
   Button,
   Card,
   Chip,
-  Dialog,
   IconButton,
   Modal,
   Portal,
@@ -20,7 +20,6 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { LoadingOverlay } from "@/components/ui/LoadingOverlay";
 import { ProductCard } from "@/components/ui/ProductCard";
-import { StoreChip } from "@/components/ui/StoreChip";
 import { getCategoryTree } from "@/modules/shop/api";
 import { resolveMinimumOrderQuantity, useAddToCart } from "@/modules/shop/use-add-to-cart";
 import { useCartSummary } from "@/modules/shop/use-cart-summary";
@@ -33,6 +32,7 @@ import { useScanResult } from "@/modules/scanner/use-scan-result";
 import { ScanResultPicker } from "@/components/ui/ScanResultPicker";
 import type { StoreOrderCategoryNode, StoreOrderProductItem } from "@/modules/shop/types";
 import { useCartStore } from "@/store/cart-store";
+import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 
 function resolveDisplayCategories(tree: StoreOrderCategoryNode[]) {
   const allNode = tree.find((item) => item.categoryName.toLowerCase().includes("all"));
@@ -62,6 +62,7 @@ function findCategoryName(
 }
 
 export default function Home() {
+  const { t } = useAppTranslation(["home", "common"]);
   const { height: windowHeight } = useWindowDimensions();
   const router = useRouter();
   const {
@@ -75,14 +76,13 @@ export default function Home() {
     refetch: refetchStores,
   } = useStores();
   const cartSummary = useCartStore((state) => state.cartSummary);
-  const [storeDialogVisible, setStoreDialogVisible] = useState(false);
   const [cameraVisible, setCameraVisible] = useState(false);
+  const [filtersVisible, setFiltersVisible] = useState(false);
   const [searchInput, setSearchInput] = useState("");
   const [autoAddWhenSingle, setAutoAddWhenSingle] = useState(true);
   const [isSearchExpanded, setIsSearchExpanded] = useState(false);
   const [keyword, setKeyword] = useState("");
-  const [scannedProductCodes, setScannedProductCodes] = useState<string[] | null>(null);
-  const [isCategoryPanelExpanded, setIsCategoryPanelExpanded] = useState(false);
+  const [scannedProducts, setScannedProducts] = useState<StoreOrderProductItem[] | null>(null);
   const [selectedCategoryGUID, setSelectedCategoryGUID] = useState<string | undefined>();
   const [expandedCategoryGUIDs, setExpandedCategoryGUIDs] = useState<string[]>([]);
   const [pageNumber, setPageNumber] = useState(1);
@@ -92,14 +92,35 @@ export default function Home() {
   const updateCartQuantity = useUpdateCartQuantity(selectedStoreCode);
 
   useCartSummary(selectedStoreCode);
-  const handleScanLookupProduct = useCallback((product: StoreOrderProductItem, barcode: string) => {
-    const nextKeyword = barcode;
-    setIsSearchExpanded(true);
-    setSearchInput(nextKeyword);
-    setKeyword(nextKeyword);
-    setScannedProductCodes([product.productCode]);
-    setSelectedCategoryGUID(undefined);
-  }, []);
+  const handleScanLookupProduct = useCallback(
+    async (product: StoreOrderProductItem) => {
+      setIsSearchExpanded(false);
+      setSearchInput("");
+      setKeyword("");
+      setScannedProducts([product]);
+      setSelectedCategoryGUID(undefined);
+
+      if (!autoAddWhenSingle) {
+        return;
+      }
+
+      setActiveCartMutationProductCode(product.productCode);
+      try {
+        await addToCart.mutateAsync({
+          product,
+          quantity: resolveMinimumOrderQuantity(product),
+        });
+        setSnackbarMessage(
+          t("messages.addedToCart", { name: product.productName || product.productCode })
+        );
+      } catch (error) {
+        setSnackbarMessage(error instanceof Error ? error.message : t("messages.scanAddFailed"));
+      } finally {
+        setActiveCartMutationProductCode(null);
+      }
+    },
+    [addToCart, autoAddWhenSingle, t]
+  );
   const scanResult = useScanResult({
     autoAddWhenSingle,
     mode: "lookup",
@@ -111,11 +132,19 @@ export default function Home() {
       await scanResult.handleBarcode(barcode, "camera");
     },
   });
-  useHidBarcodeScanner({
+  const hidScanner = useHidBarcodeScanner({
     onScan: async (barcode) => {
       await scanResult.handleBarcode(barcode, "hid");
     },
   });
+
+  useFocusEffect(
+    useCallback(() => {
+      if (hidScanner.focusHiddenInput) {
+        hidScanner.focusHiddenInput();
+      }
+    }, [hidScanner.focusHiddenInput]),
+  );
 
   const categoriesQuery = useQuery({
     queryKey: ["shopCategories"],
@@ -127,8 +156,8 @@ export default function Home() {
     [categoriesQuery.data]
   );
   const selectedCategoryName = useMemo(
-    () => findCategoryName(categoryOptions, selectedCategoryGUID) ?? "全部",
-    [categoryOptions, selectedCategoryGUID]
+    () => findCategoryName(categoryOptions, selectedCategoryGUID) ?? t("filters.all"),
+    [categoryOptions, selectedCategoryGUID, t]
   );
 
   const productsQuery = useProducts({
@@ -163,9 +192,9 @@ export default function Home() {
     }
 
     setSnackbarMessage(
-      storesError instanceof Error ? storesError.message : "门店加载失败，请稍后重试"
+      storesError instanceof Error ? storesError.message : t("messages.storesLoadFailed")
     );
-  }, [storesError, storesLoadFailed]);
+  }, [storesError, storesLoadFailed, t]);
 
   const canGoNextPage = useMemo(() => {
     const total = productsQuery.data?.total ?? 0;
@@ -177,13 +206,34 @@ export default function Home() {
     [isCompactLayout]
   );
   const displayProducts = useMemo(() => {
-    const items = productsQuery.data?.items ?? [];
-    if (!scannedProductCodes?.length) {
-      return items;
+    if (scannedProducts?.length) {
+      return scannedProducts;
     }
 
-    return items.filter((item) => scannedProductCodes.includes(item.productCode));
-  }, [productsQuery.data?.items, scannedProductCodes]);
+    return productsQuery.data?.items ?? [];
+  }, [productsQuery.data?.items, scannedProducts]);
+  const displayDynamicDataMap = useMemo(() => {
+    const mergedMap = { ...productsQuery.dynamicDataMap };
+
+    if (!scannedProducts?.length || !cartSummary?.items?.length) {
+      return mergedMap;
+    }
+
+    scannedProducts.forEach((product) => {
+      const cartItem = cartSummary.items.find((item) => item.productCode === product.productCode);
+      if (!cartItem) {
+        return;
+      }
+
+      mergedMap[product.productCode] = {
+        ...mergedMap[product.productCode],
+        productCode: product.productCode,
+        cartQuantity: cartItem.quantity ?? 0,
+      };
+    });
+
+    return mergedMap;
+  }, [cartSummary?.items, productsQuery.dynamicDataMap, scannedProducts]);
 
   const toggleCategoryExpanded = useCallback((categoryGUID: string) => {
     setExpandedCategoryGUIDs((currentValue) =>
@@ -240,9 +290,11 @@ export default function Home() {
     setActiveCartMutationProductCode(product.productCode);
     try {
       await addToCart.mutateAsync({ product });
-      setSnackbarMessage(`${product.productName || product.productCode} 已加入购物车`);
+      setSnackbarMessage(
+        t("messages.addedToCart", { name: product.productName || product.productCode })
+      );
     } catch (error) {
-      setSnackbarMessage(error instanceof Error ? error.message : "加入购物车失败");
+      setSnackbarMessage(error instanceof Error ? error.message : t("messages.addFailed"));
     } finally {
       setActiveCartMutationProductCode(null);
     }
@@ -263,7 +315,7 @@ export default function Home() {
         product,
       });
     } catch (error) {
-      setSnackbarMessage(error instanceof Error ? error.message : "更新购物车数量失败");
+      setSnackbarMessage(error instanceof Error ? error.message : t("messages.updateQtyFailed"));
     } finally {
       setActiveCartMutationProductCode(null);
     }
@@ -280,7 +332,7 @@ export default function Home() {
         product,
       });
     } catch (error) {
-      setSnackbarMessage(error instanceof Error ? error.message : "更新购物车数量失败");
+      setSnackbarMessage(error instanceof Error ? error.message : t("messages.updateQtyFailed"));
     } finally {
       setActiveCartMutationProductCode(null);
     }
@@ -290,68 +342,57 @@ export default function Home() {
     <View style={[styles.header, isCompactLayout ? styles.headerCompact : null]}>
       <View style={[styles.headerTopRow, isCompactLayout ? styles.headerTopRowCompact : null]}>
         <View style={styles.headerSelectorsRow}>
-          <View style={styles.headerSelectorItem}>
-            <StoreChip compact store={selectedStore} onPress={() => setStoreDialogVisible(true)} />
-          </View>
-          <Button
-            compact
-            mode="outlined"
-            icon={isCategoryPanelExpanded ? "menu-open" : "menu"}
-            onPress={() => setIsCategoryPanelExpanded((currentValue) => !currentValue)}
-            style={styles.categoryTriggerButton}
-            contentStyle={styles.categoryTriggerButtonContent}
-            labelStyle={styles.categoryTriggerButtonLabel}
-          >
-            分类: {selectedCategoryName}
-          </Button>
+          <Text variant="titleLarge" style={styles.headerTitle}>{t("title")}</Text>
+          <IconButton
+            icon="filter-variant"
+            mode="contained-tonal"
+            accessibilityLabel={t("common:actions.openFilters")}
+            onPress={() => setFiltersVisible(true)}
+            style={styles.filterToggleButton}
+          />
         </View>
-
         <View style={styles.cartBox}>
           <IconButton icon="cart-outline" onPress={() => router.push("/(tabs)/cart")} />
           {cartSummary?.totalQuantity ? <Badge style={styles.badge}>{cartSummary.totalQuantity}</Badge> : null}
-          <Text variant="bodySmall">总数 {cartSummary?.totalQuantity ?? 0}</Text>
+          <Text variant="bodySmall">{t("cartSummary.total")} {cartSummary?.totalQuantity ?? 0}</Text>
         </View>
       </View>
-
-      {isCategoryPanelExpanded ? (
-        <Card mode="outlined">
-          <Card.Content style={[styles.categoryCardContent, isCompactLayout ? styles.categoryCardContentCompact : null]}>
-            <View style={styles.categoryCardHeader}>
-              <View style={styles.categoryCardTitleWrap}>
-                <Text variant="titleSmall">商品分类</Text>
-                <Text variant="bodySmall" style={styles.secondaryText}>
-                  当前选择: {selectedCategoryName}
-                </Text>
-              </View>
-              <Button compact mode={!selectedCategoryGUID ? "contained-tonal" : "text"} onPress={() => setSelectedCategoryGUID(undefined)}>
-                全部
-              </Button>
-            </View>
-
-            <View style={styles.categoryTreeWrap}>{renderCategoryTree(categoryOptions)}</View>
-          </Card.Content>
-        </Card>
-      ) : null}
-
       <View style={[styles.searchRow, isCompactLayout ? styles.searchRowCompact : null]}>
         <IconButton
           icon="camera-outline"
           mode="contained-tonal"
-          accessibilityLabel="相机查询"
+          accessibilityLabel={t("cameraQuery")}
           onPress={() => setCameraVisible(true)}
           style={styles.cameraQueryButton}
         />
         <IconButton
           icon={autoAddWhenSingle ? "cart-check" : "cart-off"}
           mode={autoAddWhenSingle ? "contained-tonal" : "outlined"}
-          accessibilityLabel={autoAddWhenSingle ? "自动加入购物车已开启" : "自动加入购物车已关闭"}
+          accessibilityLabel={
+            autoAddWhenSingle
+              ? t("autoAddOn")
+              : t("autoAddOff")
+          }
           onPress={() => setAutoAddWhenSingle((currentValue) => !currentValue)}
           style={styles.autoAddToggleButton}
         />
+        {hidScanner.mode === "textInput" ? (
+          <IconButton
+            icon="barcode-scan"
+            mode="contained-tonal"
+            accessibilityLabel={t("resetScanFocus")}
+            onPress={() => hidScanner.focusHiddenInput?.()}
+            style={styles.scanFocusButton}
+          />
+        ) : null}
         <IconButton
           icon={isSearchExpanded ? "close" : "magnify"}
           mode="outlined"
-          accessibilityLabel={isSearchExpanded ? "收起搜索框" : "展开搜索框"}
+          accessibilityLabel={
+            isSearchExpanded
+              ? t("searchToggleClose")
+              : t("searchToggleOpen")
+          }
           onPress={() => {
             if (isSearchExpanded) {
               setIsSearchExpanded(false);
@@ -364,9 +405,9 @@ export default function Home() {
         <IconButton
           icon="filter-remove-outline"
           mode="outlined"
-          accessibilityLabel="清除扫码过滤"
+          accessibilityLabel={t("clearScanFilter")}
           onPress={() => {
-            setScannedProductCodes(null);
+            setScannedProducts(null);
             setSearchInput("");
             setKeyword("");
           }}
@@ -375,18 +416,18 @@ export default function Home() {
         {isSearchExpanded ? (
           <View style={styles.searchInputWrap}>
             <Searchbar
-              placeholder="按货号搜索"
+              placeholder={t("searchPlaceholder")}
               value={searchInput}
               onChangeText={(value) => {
                 setSearchInput(value);
-                setScannedProductCodes(null);
+                setScannedProducts(null);
               }}
               onSubmitEditing={() => {
-                setScannedProductCodes(null);
+                setScannedProducts(null);
                 setKeyword(searchInput.trim());
               }}
               onIconPress={() => {
-                setScannedProductCodes(null);
+                setScannedProducts(null);
                 setKeyword(searchInput.trim());
               }}
               style={styles.searchInput}
@@ -394,11 +435,17 @@ export default function Home() {
           </View>
         ) : null}
       </View>
+      {scannedProducts?.length ? (
+        <View style={styles.scanHintBanner}>
+          <Text variant="bodySmall" style={styles.scanHintText}>
+            {t("scanResultHint")}
+          </Text>
+        </View>
+      ) : null}
     </View>
   );
-
   return (
-    <SafeAreaView edges={["left", "right", "bottom"]} style={styles.container}>
+    <SafeAreaView edges={["left", "right"]} style={styles.container}>
       {fixedHeaderContent}
       <FlatList
         style={styles.content}
@@ -410,27 +457,29 @@ export default function Home() {
         keyboardShouldPersistTaps="handled"
         ListEmptyComponent={
           <EmptyState
-            title={selectedStoreCode ? "暂无商品" : "先选择门店"}
-            description={selectedStoreCode ? "可以换个关键词、重新扫码或切换分类试试" : "选中门店后可查看商品动态"}
+            title={selectedStoreCode ? t("empty.noProductsTitle") : t("empty.selectStoreTitle")}
+            description={
+              selectedStoreCode
+                ? t("empty.noProductsDescription")
+                : t("empty.selectStoreDescription")
+            }
           />
         }
         ListFooterComponent={
           displayProducts.length ? (
             <View style={styles.paginationRow}>
               <Button mode="outlined" disabled={pageNumber <= 1} onPress={() => setPageNumber((value) => value - 1)}>
-                上一页
-              </Button>
-              <Text variant="bodyMedium">第 {pageNumber} 页</Text>
+                {t("pagination.previous")}</Button>
+              <Text variant="bodyMedium">{t("pagination.page", { page: pageNumber })}</Text>
               <Button mode="outlined" disabled={!canGoNextPage} onPress={() => setPageNumber((value) => value + 1)}>
-                下一页
-              </Button>
+                {t("pagination.next")}</Button>
             </View>
           ) : null
         }
         renderItem={({ item }) => (
           <ProductCard
             product={item}
-            dynamicDataMap={productsQuery.dynamicDataMap}
+            dynamicDataMap={displayDynamicDataMap}
             disabled={!selectedStoreCode}
             isUpdatingCart={activeCartMutationProductCode === item.productCode}
             onAddToCart={handleAddToCart}
@@ -443,52 +492,78 @@ export default function Home() {
       {productsQuery.isLoading || storesLoading ? <LoadingOverlay /> : null}
 
       <Portal>
-        <Dialog visible={storeDialogVisible} onDismiss={() => setStoreDialogVisible(false)}>
-          <Dialog.Title>选择门店</Dialog.Title>
-          <Dialog.Content>
-            {storesLoading ? (
-              <Text variant="bodyMedium">门店加载中...</Text>
-            ) : storesLoadFailed ? (
-              <View style={styles.storeErrorWrap}>
-                <Text variant="bodyMedium">
-                  {storesError instanceof Error ? storesError.message : "门店加载失败"}
+        <Modal
+          visible={filtersVisible}
+          onDismiss={() => setFiltersVisible(false)}
+          contentContainerStyle={styles.filtersModal}
+        >
+          <ScrollView contentContainerStyle={styles.filtersModalContent}>
+            <View style={styles.filtersModalHeader}>
+              <View style={styles.filtersModalTitleWrap}>
+                <Text variant="titleMedium">{t("filterTitle")}</Text>
+                <Text variant="bodySmall" style={styles.secondaryText}>
+                  {t("filters.currentStore", { store: selectedStore?.storeName || t("common:na") })}
                 </Text>
-                <Button mode="outlined" onPress={() => void refetchStores()}>
-                  重试加载
+                <Text variant="bodySmall" style={styles.secondaryText}>
+                  {t("filters.currentCategory", { category: selectedCategoryName })}
+                </Text>
+              </View>
+              <Button mode="text" onPress={() => setFiltersVisible(false)}>
+                {t("common:actions.close")}
+              </Button>
+            </View>
+            <View style={styles.filtersSection}>
+              <View style={styles.filtersSectionHeader}>
+                <Text variant="labelLarge">{t("filters.store")}</Text>
+                <Button compact onPress={() => void refetchStores()}>
+                  {t("common:actions.refresh")}
                 </Button>
               </View>
-            ) : stores.length ? (
-              <ScrollView style={styles.storeListScroll} contentContainerStyle={styles.storeListContent}>
-                {stores.map((item) => (
-                  <Button
-                    key={item.storeCode}
-                    mode={selectedStoreCode === item.storeCode ? "contained" : "outlined"}
-                    style={styles.storeButton}
-                    onPress={() => {
-                      void selectStore(item);
-                      setStoreDialogVisible(false);
-                    }}
-                  >
-                    {item.storeName}
+              {storesLoading ? (
+                <Text variant="bodyMedium">{t("common:loading")}</Text>
+              ) : storesLoadFailed ? (
+                <View style={styles.storeErrorWrap}>
+                  <Text variant="bodyMedium">
+                    {storesError instanceof Error ? storesError.message : t("messages.storesLoadFailed")}
+                  </Text>
+                  <Button mode="outlined" onPress={() => void refetchStores()}>
+                    {t("common:actions.retry")}
                   </Button>
-                ))}
-              </ScrollView>
-            ) : (
-              <Text variant="bodyMedium">当前账号没有可用门店。</Text>
-            )}
-          </Dialog.Content>
-          <Dialog.Actions>
-            <Button
-              onPress={() => {
-                void selectStore(null);
-                setStoreDialogVisible(false);
-              }}
-            >
-              清空
-            </Button>
-            <Button onPress={() => setStoreDialogVisible(false)}>关闭</Button>
-          </Dialog.Actions>
-        </Dialog>
+                </View>
+              ) : stores.length ? (
+                <ScrollView style={styles.storeListScroll} contentContainerStyle={styles.storeListContent}>
+                  {stores.map((item) => (
+                    <Button
+                      key={item.storeCode}
+                      mode={selectedStoreCode === item.storeCode ? "contained" : "outlined"}
+                      style={styles.storeButton}
+                      onPress={() => {
+                        void selectStore(item);
+                      }}
+                    >
+                      {item.storeName}
+                    </Button>
+                  ))}
+                </ScrollView>
+              ) : (
+                <Text variant="bodyMedium">{t("filters.noStores")}</Text>
+              )}
+            </View>
+            <View style={styles.filtersSection}>
+              <View style={styles.filtersSectionHeader}>
+                <Text variant="labelLarge">{t("filters.category")}</Text>
+                <Button
+                  compact
+                  mode={!selectedCategoryGUID ? "contained-tonal" : "text"}
+                  onPress={() => setSelectedCategoryGUID(undefined)}
+                >
+                  {t("filters.all")}
+                </Button>
+              </View>
+              <View style={styles.categoryTreeWrap}>{renderCategoryTree(categoryOptions)}</View>
+            </View>
+          </ScrollView>
+        </Modal>
       </Portal>
 
       <Portal>
@@ -501,9 +576,9 @@ export default function Home() {
         >
           <View style={styles.cameraModalHeader}>
             <View style={styles.cameraModalTitleWrap}>
-              <Text variant="titleMedium">相机扫码查询</Text>
+              <Text variant="titleMedium">{t("camera.title")}</Text>
               <Text variant="bodySmall" style={styles.secondaryText}>
-                当前门店: {selectedStore?.storeName || "未选择门店"}
+                {t("camera.currentStore", { store: selectedStore?.storeName || t("common:na") })}
               </Text>
             </View>
             <Button
@@ -512,7 +587,7 @@ export default function Home() {
                 setCameraVisible(false);
               }}
             >
-              关闭
+              {t("common:actions.close")}
             </Button>
           </View>
 
@@ -521,12 +596,12 @@ export default function Home() {
           ) : (
             <Card style={styles.permissionCard}>
               <Card.Content style={styles.permissionCardContent}>
-                <Text variant="titleMedium">需要相机权限</Text>
+                <Text variant="titleMedium">{t("camera.needPermissionTitle")}</Text>
                 <Text variant="bodySmall" style={styles.secondaryText}>
-                  开启权限后，就能在商品页里直接用摄像头扫码查询商品。
+                  {t("camera.needPermissionDescription")}
                 </Text>
                 <Button mode="contained" onPress={() => void cameraScan.requestPermission()}>
-                  开启相机权限
+                  {t("camera.grantPermission")}
                 </Button>
               </Card.Content>
             </Card>
@@ -538,9 +613,10 @@ export default function Home() {
         visible={Boolean(scanResult.selectionState)}
         barcode={scanResult.selectionState?.barcode}
         items={scanResult.selectionState?.items ?? []}
-        selectLabel="选择"
-        title="选择商品"
-        tip={`条码 ${scanResult.selectionState?.barcode || "--"} 匹配到了多个商品，请选择一个继续。`}
+        selectLabel={t("common:actions.select")}
+        cancelLabel={t("common:actions.cancel")}
+        title={t("productQuery:lookup.title")}
+        tip={t("productQuery:lookup.query", { value: scanResult.selectionState?.barcode || t("common:na") })}
         onDismiss={() => {
           scanResult.clearSelection();
         }}
@@ -548,6 +624,10 @@ export default function Home() {
           await scanResult.confirmSelection(product);
         }}
       />
+
+      {hidScanner.mode === "textInput" && hidScanner.textInputProps ? (
+        <TextInput style={styles.hiddenInput} {...hidScanner.textInputProps} />
+      ) : null}
 
       <Snackbar visible={Boolean(snackbarMessage)} onDismiss={() => setSnackbarMessage("")} duration={2500}>
         {snackbarMessage}
@@ -583,10 +663,15 @@ const styles = StyleSheet.create({
     flex: 1,
     flexDirection: "row",
     alignItems: "center",
+    justifyContent: "space-between",
     gap: 8,
   },
-  headerSelectorItem: {
-    flex: 1,
+  headerTitle: {
+    color: "#0F172A",
+    fontWeight: "700",
+  },
+  filterToggleButton: {
+    margin: 0,
   },
   cartBox: {
     alignItems: "center",
@@ -683,6 +768,9 @@ const styles = StyleSheet.create({
   autoAddToggleButton: {
     margin: 0,
   },
+  scanFocusButton: {
+    margin: 0,
+  },
   searchToggleButton: {
     margin: 0,
   },
@@ -696,12 +784,22 @@ const styles = StyleSheet.create({
   searchInput: {
     width: "100%",
   },
+  scanHintBanner: {
+    borderRadius: 10,
+    backgroundColor: "#EEF4FF",
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  scanHintText: {
+    color: "#1677FF",
+    fontWeight: "600",
+  },
   content: {
     flex: 1,
   },
   listContent: {
     paddingHorizontal: 10,
-    paddingBottom: 16,
+    paddingBottom: 6,
     paddingTop: 8,
     flexGrow: 1,
   },
@@ -717,6 +815,34 @@ const styles = StyleSheet.create({
     alignItems: "center",
     paddingHorizontal: 8,
     paddingTop: 12,
+  },
+  filtersModal: {
+    margin: 16,
+    borderRadius: 16,
+    backgroundColor: "#fff",
+    padding: 16,
+  },
+  filtersModalContent: {
+    gap: 16,
+  },
+  filtersModalHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 12,
+  },
+  filtersModalTitleWrap: {
+    flex: 1,
+    gap: 4,
+  },
+  filtersSection: {
+    gap: 10,
+  },
+  filtersSectionHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 12,
   },
   cameraModal: {
     margin: 16,
@@ -759,7 +885,14 @@ const styles = StyleSheet.create({
   storeErrorWrap: {
     gap: 12,
   },
+  hiddenInput: {
+    position: "absolute",
+    width: 1,
+    height: 1,
+    opacity: 0,
+  },
   secondaryText: {
     color: "#666",
   },
 });
+

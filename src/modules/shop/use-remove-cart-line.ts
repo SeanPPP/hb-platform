@@ -1,4 +1,5 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { i18n } from "@/shared/i18n/i18n";
 import { removeCartLine } from "@/modules/orders/store-order-api";
 
 interface RemoveCartLineVariables {
@@ -11,7 +12,7 @@ export function useRemoveCartLine(storeCode?: string | null) {
   return useMutation({
     mutationFn: async ({ detailGUID }: RemoveCartLineVariables) => {
       if (!storeCode) {
-        throw new Error("请先选择门店");
+        throw new Error(i18n.t("common:errors.selectStoreFirst"));
       }
 
       await removeCartLine(storeCode, detailGUID);

@@ -1,0 +1,61 @@
+{
+  "title": "订单列表",
+  "filterTitle": "过滤",
+  "selectStore": "请选择分店",
+  "listTitle": "订单记录",
+  "viewDetail": "查看明细",
+  "detailTitle": "订单明细",
+  "detailCount": "共 {{count}} 条",
+  "statuses": {
+    "unknown": "未知",
+    "shoppingCart": "购物车",
+    "submitted": "已提交",
+    "completed": "已完成",
+    "picking": "配货中"
+  },
+  "empty": {
+    "selectStoreTitle": "请先选择分店",
+    "selectStoreDescription": "选择一个分店后即可查看该分店的历史订单",
+    "noHistoryTitle": "暂无历史订单",
+    "noHistoryDescription": "换个筛选条件试试",
+    "noAccessTitle": "暂无可查看订单",
+    "detailFailedTitle": "订单明细加载失败",
+    "detailNotFoundTitle": "未找到订单明细",
+    "detailNotFoundDescription": "请稍后重试",
+    "noLinesTitle": "暂无明细",
+    "noLinesDescription": "这个订单还没有商品明细"
+  },
+  "fields": {
+    "store": "分店 {{store}}",
+    "orderedAt": "下单时间 {{value}}",
+    "storeAddress": "分店地址 {{value}}",
+    "remarks": "备注 {{value}}",
+    "itemNumber": "货号 {{value}}",
+    "location": "货位 {{value}}",
+    "orderedQty": "订货 {{value}}",
+    "allocQty": "发货 {{value}}",
+    "salesPrice": "销售价",
+    "importPrice": "进口价",
+    "orderAmount": "订单金额",
+    "allocAmount": "发货金额"
+  },
+  "summary": {
+    "total": "共 {{count}} 条",
+    "sku": "SKU",
+    "orderedQty": "订货件数",
+    "allocQty": "发货件数",
+    "orderAmount": "订单金额",
+    "allocAmount": "发货金额",
+    "orderVolume": "订货体积"
+  },
+  "filters": {
+    "store": "分店",
+    "status": "状态",
+    "allHistory": "全部历史"
+  },
+  "pagination": {
+    "previous": "上一页",
+    "next": "下一页",
+    "page": "第 {{page}} 页"
+  }
+}

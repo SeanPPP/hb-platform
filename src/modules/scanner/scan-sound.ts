@@ -1,4 +1,4 @@
-import { Audio, InterruptionModeAndroid, InterruptionModeIOS } from "expo-av";
+import { createAudioPlayer } from "expo-audio";
 import type { ScanFeedbackState } from "@/modules/scanner/types";
 
 type PlayableScanStatus = Exclude<ScanFeedbackState["status"], "ready" | "scanning">;
@@ -46,10 +46,7 @@ const SOUND_PATTERNS: Record<PlayableScanStatus, ToneStep[]> = {
 
 const base64Alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
-let audioModeReady = false;
 const soundUriCache = new Map<PlayableScanStatus, string>();
-const loadedSoundCache = new Map<PlayableScanStatus, Audio.Sound>();
-let preloadPromise: Promise<void> | null = null;
 
 function writeAscii(view: DataView, offset: number, value: string) {
   for (let index = 0; index < value.length; index += 1) {
@@ -131,66 +128,20 @@ function getSoundUri(status: PlayableScanStatus) {
   return uri;
 }
 
-async function ensureAudioMode() {
-  if (audioModeReady) {
-    return;
-  }
-
-  await Audio.setAudioModeAsync({
-    allowsRecordingIOS: false,
-    interruptionModeAndroid: InterruptionModeAndroid.DuckOthers,
-    interruptionModeIOS: InterruptionModeIOS.MixWithOthers,
-    playThroughEarpieceAndroid: false,
-    playsInSilentModeIOS: true,
-    shouldDuckAndroid: true,
-    staysActiveInBackground: false,
-  });
-
-  audioModeReady = true;
-}
-
-async function loadSound(status: PlayableScanStatus) {
-  const cached = loadedSoundCache.get(status);
-  if (cached) {
-    return cached;
-  }
-
-  const { sound } = await Audio.Sound.createAsync(
-    { uri: getSoundUri(status) },
-    { shouldPlay: false, volume: 1 }
-  );
-  loadedSoundCache.set(status, sound);
-  return sound;
-}
-
 export function preloadScanFeedbackSounds() {
-  if (!preloadPromise) {
-    preloadPromise = (async () => {
-      try {
-        await ensureAudioMode();
-        await Promise.all(
-          (Object.keys(SOUND_PATTERNS) as PlayableScanStatus[]).map((status) => loadSound(status))
-        );
-      } catch (error) {
-        preloadPromise = null;
-        console.warn("[scan-sound] failed to preload sounds", error);
-      }
-    })();
+  for (const status of Object.keys(SOUND_PATTERNS) as PlayableScanStatus[]) {
+    getSoundUri(status);
   }
-
-  return preloadPromise;
 }
 
-export async function playScanFeedbackSound(status: ScanFeedbackState["status"]) {
+export function playScanFeedbackSound(status: ScanFeedbackState["status"]) {
   if (status === "ready" || status === "scanning") {
     return;
   }
 
   try {
-    await ensureAudioMode();
-    const sound = await loadSound(status);
-    await sound.setPositionAsync(0);
-    await sound.playAsync();
+    const player = createAudioPlayer({ uri: getSoundUri(status) });
+    player.play();
   } catch (error) {
     console.warn("[scan-sound] failed to play sound", error);
   }

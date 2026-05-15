@@ -103,6 +103,7 @@ export interface StoreOrderProductItem {
   productCode: string;
   itemNumber?: string;
   barcode?: string;
+  grade?: string;
   productName?: string;
   productImage?: string;
   categoryName?: string;
@@ -127,6 +128,7 @@ export interface StoreOrderCartItem {
   productCode: string;
   itemNumber?: string;
   barcode?: string;
+  grade?: string;
   productName?: string;
   productImage?: string;
   price: number;

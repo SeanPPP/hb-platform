@@ -1,0 +1,61 @@
+{
+  "title": "Orders",
+  "filterTitle": "Filters",
+  "selectStore": "Select a store",
+  "listTitle": "Order history",
+  "viewDetail": "View details",
+  "detailTitle": "Order details",
+  "detailCount": "{{count}} lines",
+  "statuses": {
+    "unknown": "Unknown",
+    "shoppingCart": "Cart",
+    "submitted": "Submitted",
+    "completed": "Completed",
+    "picking": "Picking"
+  },
+  "empty": {
+    "selectStoreTitle": "Select a store first",
+    "selectStoreDescription": "Choose a store to view its order history.",
+    "noHistoryTitle": "No order history yet",
+    "noHistoryDescription": "Try a different filter.",
+    "noAccessTitle": "No orders available",
+    "detailFailedTitle": "Failed to load order details",
+    "detailNotFoundTitle": "Order details not found",
+    "detailNotFoundDescription": "Please try again later.",
+    "noLinesTitle": "No lines yet",
+    "noLinesDescription": "This order does not contain any product lines."
+  },
+  "fields": {
+    "store": "Store {{store}}",
+    "orderedAt": "Ordered at {{value}}",
+    "storeAddress": "Address {{value}}",
+    "remarks": "Remarks {{value}}",
+    "itemNumber": "Item {{value}}",
+    "location": "Location {{value}}",
+    "orderedQty": "Ordered {{value}}",
+    "allocQty": "Allocated {{value}}",
+    "salesPrice": "Sales price",
+    "importPrice": "Import price",
+    "orderAmount": "Order amount",
+    "allocAmount": "Allocated amount"
+  },
+  "summary": {
+    "total": "{{count}} total",
+    "sku": "SKU",
+    "orderedQty": "Ordered qty",
+    "allocQty": "Allocated qty",
+    "orderAmount": "Order amount",
+    "allocAmount": "Allocated amount",
+    "orderVolume": "Order volume"
+  },
+  "filters": {
+    "store": "Store",
+    "status": "Status",
+    "allHistory": "All history"
+  },
+  "pagination": {
+    "previous": "Previous",
+    "next": "Next",
+    "page": "Page {{page}}"
+  }
+}

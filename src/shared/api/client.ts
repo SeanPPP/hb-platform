@@ -2,7 +2,7 @@ import axios, { AxiosError, InternalAxiosRequestConfig } from "axios";
 import { router } from "expo-router";
 import { SecureStorage } from "@/shared/storage/secure";
 
-const BASE_URL = process.env.EXPO_PUBLIC_API_BASE_URL || "http://192.168.31.137:5001/api";
+const BASE_URL = process.env.EXPO_PUBLIC_API_BASE_URL || "http://192.168.31.206:5001/api";
 
 function unwrapEnvelope<T>(payload: unknown): T {
   let current = payload;

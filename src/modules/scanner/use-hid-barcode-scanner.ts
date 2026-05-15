@@ -1,7 +1,7 @@
-import { useCallback, useRef } from "react";
-import type { KeyPressEvent, KeyReleaseEvent } from "expo-key-event";
-
-type KeyEvent = KeyPressEvent | KeyReleaseEvent;
+import { useCallback, useEffect, useRef, useState } from "react";
+import { AppState } from "react-native";
+import type { NativeSyntheticEvent, TextInputSubmitEditingEventData, TextInput } from "react-native";
+import { getItemAsync, setItemAsync } from "expo-secure-store";
 
 interface UseHidBarcodeScannerOptions {
   enabled?: boolean;
@@ -10,126 +10,248 @@ interface UseHidBarcodeScannerOptions {
   onScan: (barcode: string) => void | Promise<void>;
 }
 
-let nativeModuleAvailable: boolean | null = null;
+const STORAGE_KEY = "hid_scanner_force_text_input";
 
-function checkNativeModule(): boolean {
-  if (nativeModuleAvailable !== null) {
-    return nativeModuleAvailable;
+let nativeModuleRef: any = null;
+let cachedForceTextInput: boolean | null = null;
+
+function getNativeModule() {
+  if (nativeModuleRef !== null) {
+    return nativeModuleRef;
   }
-
   try {
-    const { NativeModules } = require("react-native");
-    nativeModuleAvailable = Boolean(
-      NativeModules.ExpoKeyEventModule ?? NativeModules.ExpoKeyEvent
-    );
+    const { requireNativeModule } = require("expo-modules-core") as typeof import("expo-modules-core");
+    nativeModuleRef = requireNativeModule("ExpoKeyEvent");
   } catch {
-    nativeModuleAvailable = false;
+    nativeModuleRef = undefined;
   }
+  return nativeModuleRef;
+}
 
-  return nativeModuleAvailable;
+async function loadPersistedMode(): Promise<boolean | null> {
+  if (cachedForceTextInput !== null) {
+    return cachedForceTextInput;
+  }
+  try {
+    const value = await getItemAsync(STORAGE_KEY);
+    if (value === "true") {
+      cachedForceTextInput = true;
+      return true;
+    }
+    if (value === "false") {
+      cachedForceTextInput = false;
+      return false;
+    }
+  } catch {
+    // ignore
+  }
+  return null;
+}
+
+async function persistForceTextInput(value: boolean) {
+  cachedForceTextInput = value;
+  try {
+    await setItemAsync(STORAGE_KEY, value ? "true" : "false");
+  } catch {
+    // ignore
+  }
 }
 
 export function getHidScannerAvailability() {
-  return checkNativeModule();
+  return getNativeModule() != null;
 }
 
-function resolveCharacter(event: KeyEvent): string | null {
-  if (event.eventType !== "press") {
-    return null;
-  }
-
-  if (event.ctrlKey || event.metaKey || event.altKey) {
-    return null;
-  }
-
-  const ch = event.character ?? event.key;
-  if (!ch) {
-    return null;
-  }
-
-  if (ch === "Enter") {
-    return "ENTER";
-  }
-
-  if (ch === "Escape") {
-    return "ESCAPE";
-  }
-
-  if (ch.length === 1) {
-    return ch;
-  }
-
-  return null;
+function normalizeBarcode(rawValue: string) {
+  return rawValue.replace(/[\r\n\t]/g, "").trim();
 }
 
 export function useHidBarcodeScanner({
   enabled = true,
-  idleMs = 150,
+  idleMs = 50,
   minLength = 3,
   onScan,
 }: UseHidBarcodeScannerOptions) {
-  const bufferRef = useRef("");
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const onScanRef = useRef(onScan);
   onScanRef.current = onScan;
 
-  const flush = useCallback(() => {
-    if (timerRef.current) {
-      clearTimeout(timerRef.current);
-      timerRef.current = null;
+  const [textInputValue, setTextInputValue] = useState("");
+  const textInputTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const textInputRef = useRef<TextInput>(null);
+
+  const [forceTextInput, setForceTextInput] = useState<boolean>(cachedForceTextInput === true);
+  const lastSubmittedRef = useRef("");
+  const lastSubmittedTimeRef = useRef(0);
+
+  const submitBarcode = useCallback(
+    (rawValue: string) => {
+      const barcode = normalizeBarcode(rawValue);
+      if (!barcode || barcode.length < minLength) {
+        return;
+      }
+
+      const now = Date.now();
+      if (barcode === lastSubmittedRef.current && now - lastSubmittedTimeRef.current < 2000) {
+        return;
+      }
+      lastSubmittedRef.current = barcode;
+      lastSubmittedTimeRef.current = now;
+
+      onScanRef.current?.(barcode);
+    },
+    [minLength],
+  );
+
+  const handleTextInputChange = useCallback(
+    (nextValue: string) => {
+      setTextInputValue(nextValue);
+      if (textInputTimerRef.current) {
+        clearTimeout(textInputTimerRef.current);
+      }
+      textInputTimerRef.current = setTimeout(() => {
+        submitBarcode(nextValue);
+        setTextInputValue("");
+      }, idleMs);
+    },
+    [idleMs, submitBarcode],
+  );
+
+  const handleTextInputSubmit = useCallback(
+    (event: NativeSyntheticEvent<TextInputSubmitEditingEventData>) => {
+      if (textInputTimerRef.current) {
+        clearTimeout(textInputTimerRef.current);
+        textInputTimerRef.current = null;
+      }
+      const value = event.nativeEvent.text || textInputValue;
+      submitBarcode(value);
+      setTextInputValue("");
+    },
+    [submitBarcode, textInputValue],
+  );
+
+  const focusHiddenInput = useCallback(() => {
+    if (enabled) {
+      textInputRef.current?.focus();
+    }
+  }, [enabled]);
+
+  useEffect(() => {
+    if (cachedForceTextInput === null) {
+      loadPersistedMode().then((persisted) => {
+        if (persisted === true) {
+          setForceTextInput(true);
+        }
+      });
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!enabled) {
+      return;
     }
 
-    const value = bufferRef.current.trim();
-    bufferRef.current = "";
+    const interval = setInterval(() => {
+      textInputRef.current?.focus();
+    }, 3000);
 
-    if (value.length >= minLength) {
-      setTimeout(() => onScanRef.current?.(value), 0);
+    const subscription = AppState.addEventListener("change", (state) => {
+      if (state === "active") {
+        setTimeout(() => textInputRef.current?.focus(), 100);
+      }
+    });
+
+    return () => {
+      clearInterval(interval);
+      subscription.remove();
+    };
+  }, [enabled]);
+
+  useEffect(() => {
+    if (forceTextInput && enabled) {
+      setTimeout(() => textInputRef.current?.focus(), 50);
     }
-  }, [minLength]);
+  }, [forceTextInput, enabled]);
 
-  const scheduleFlush = useCallback(() => {
-    if (timerRef.current) {
-      clearTimeout(timerRef.current);
+  useEffect(() => {
+    return () => {
+      if (textInputTimerRef.current) {
+        clearTimeout(textInputTimerRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    const mod = getNativeModule();
+    if (!mod) {
+      return;
     }
-    timerRef.current = setTimeout(flush, idleMs);
-  }, [flush, idleMs]);
 
-  const handleKeyEvent = useCallback(
-    (event: KeyEvent) => {
+    const onKeyPress = (event: { key: string; character?: string }) => {
       if (!enabled) {
         return;
       }
 
-      const ch = resolveCharacter(event);
-      if (ch === null) {
-        return;
-      }
+      const character = event.character || "";
+      const key = event.key || "";
 
-      if (ch === "ESCAPE") {
-        bufferRef.current = "";
-        if (timerRef.current) {
-          clearTimeout(timerRef.current);
-          timerRef.current = null;
+      if (/^\d+$/.test(key) && !character) {
+        if (cachedForceTextInput !== true) {
+          console.log("[HID-Scanner] scanner uses unmapped keyCodes, switching to TextInput mode");
+          void persistForceTextInput(true);
+          setForceTextInput(true);
         }
         return;
       }
+    };
 
-      if (ch === "ENTER") {
-        flush();
-        return;
+    mod.addListener("onKeyPress", onKeyPress);
+
+    return () => {
+      mod.removeListener("onKeyPress", onKeyPress);
+    };
+  }, [enabled]);
+
+  useEffect(() => {
+    const mod = getNativeModule();
+    if (!mod) {
+      return;
+    }
+
+    const useNativeMode = !forceTextInput;
+    if (useNativeMode && enabled) {
+      mod.startListening();
+    }
+
+    return () => {
+      try {
+        mod.stopListening();
+      } catch {
+        // ignore
       }
+    };
+  }, [forceTextInput, enabled]);
 
-      bufferRef.current += ch;
-      scheduleFlush();
-    },
-    [enabled, flush, scheduleFlush],
-  );
-
-  if (checkNativeModule()) {
-    const { useKeyEventListener } = require("expo-key-event") as typeof import("expo-key-event");
-    useKeyEventListener(handleKeyEvent, {
-      listenOnMount: enabled,
-      preventReload: true,
-    });
+  if (getNativeModule() && !forceTextInput) {
+    return {
+      mode: "native" as const,
+      textInputProps: null,
+      focusHiddenInput: null,
+    };
   }
+
+  return {
+    mode: "textInput" as const,
+    textInputProps: {
+      ref: textInputRef,
+      value: textInputValue,
+      onChangeText: handleTextInputChange,
+      onSubmitEditing: handleTextInputSubmit,
+      autoCapitalize: "none" as const,
+      autoCorrect: false,
+      blurOnSubmit: false,
+      showSoftInputOnFocus: false,
+      caretHidden: true,
+      contextMenuHidden: true,
+    },
+    focusHiddenInput,
+  };
 }

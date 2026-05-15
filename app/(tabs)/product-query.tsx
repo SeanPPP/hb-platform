@@ -1,0 +1,474 @@
+import { useCallback, useMemo, useState } from "react";
+import { ScrollView, StyleSheet, View } from "react-native";
+import { CameraView } from "expo-camera";
+import { useIsFocused } from "@react-navigation/native";
+import { Button, Modal, Portal, Snackbar, Text } from "react-native-paper";
+import { SafeAreaView } from "react-native-safe-area-context";
+import { LookupResultSheet } from "@/components/product-maintenance/LookupResultSheet";
+import { MultiCodeCompactList } from "@/components/product-maintenance/MultiCodeCompactList";
+import { ProductHeroCard } from "@/components/product-maintenance/ProductHeroCard";
+import { QueryHeader } from "@/components/product-maintenance/QueryHeader";
+import { SearchPanel } from "@/components/product-maintenance/SearchPanel";
+import { SetCodeCompactSection } from "@/components/product-maintenance/SetCodeCompactSection";
+import { StickyActionBar } from "@/components/product-maintenance/StickyActionBar";
+import { StorePriceStrategyCard } from "@/components/product-maintenance/StorePriceStrategyCard";
+import { useAppTranslation } from "@/shared/i18n/use-app-translation";
+import {
+  getProductDetail,
+  lookupProducts,
+  updateMultiCode,
+  updateStorePrice,
+} from "@/modules/product-maintenance/api";
+import type {
+  MultiCodeEditableItem,
+  ProductDetail,
+  ProductLookupItem,
+} from "@/modules/product-maintenance/types";
+import { useCameraScan } from "@/modules/scanner/use-camera-scan";
+import { useStores } from "@/modules/shop/use-stores";
+
+function cloneDetail(detail: ProductDetail | null): ProductDetail | null {
+  return detail ? JSON.parse(JSON.stringify(detail)) : null;
+}
+
+function formatDecimal(value?: number | null) {
+  return value == null ? "" : String(value);
+}
+
+function isStorePriceDirty(current: ProductDetail | null, initial: ProductDetail | null) {
+  const left = current?.storePrice;
+  const right = initial?.storePrice;
+  return JSON.stringify(left ?? null) !== JSON.stringify(right ?? null);
+}
+
+function getDirtyMultiCodeIds(current: ProductDetail | null, initial: ProductDetail | null) {
+  const baseline = new Map((initial?.multiCodes ?? []).map((item) => [item.uuid, JSON.stringify(item)]));
+  return (current?.multiCodes ?? [])
+    .filter((item) => baseline.get(item.uuid) !== JSON.stringify(item))
+    .map((item) => item.uuid);
+}
+
+function ProductQueryContent() {
+  const { t } = useAppTranslation(["productQuery", "common"]);
+  const { selectedStore, selectedStoreCode, isLoading: storesLoading } = useStores();
+  const [keyword, setKeyword] = useState("");
+  const [lookupItems, setLookupItems] = useState<ProductLookupItem[]>([]);
+  const [selectedLookupProductCode, setSelectedLookupProductCode] = useState<string>();
+  const [detail, setDetail] = useState<ProductDetail | null>(null);
+  const [initialDetail, setInitialDetail] = useState<ProductDetail | null>(null);
+  const [lastHitLabel, setLastHitLabel] = useState<string>();
+  const [lookupVisible, setLookupVisible] = useState(false);
+  const [cameraVisible, setCameraVisible] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [savingItemId, setSavingItemId] = useState<string | null>(null);
+  const [snackbarMessage, setSnackbarMessage] = useState("");
+
+  const loadDetail = useCallback(
+    async (productCode: string) => {
+      if (!selectedStoreCode) {
+        setSnackbarMessage(t("messages.selectStoreFirst"));
+        return;
+      }
+
+      const payload = await getProductDetail(productCode, selectedStoreCode);
+      setDetail(payload);
+      setInitialDetail(cloneDetail(payload));
+      setSelectedLookupProductCode(productCode);
+      setLastHitLabel(`${payload.itemNumber || payload.productCode} / ${payload.barcode || "--"}`);
+    },
+    [selectedStoreCode, t]
+  );
+
+  const handleLookup = useCallback(
+    async (sourceKeyword?: string) => {
+      const nextKeyword = (sourceKeyword ?? keyword).trim();
+      if (!nextKeyword) {
+        setSnackbarMessage(t("messages.keywordRequired"));
+        return;
+      }
+
+      if (!selectedStoreCode) {
+        setSnackbarMessage(t("messages.storeUnavailable"));
+        return;
+      }
+
+      setLoading(true);
+      try {
+        const items = await lookupProducts({
+          keyword: nextKeyword,
+          storeCode: selectedStoreCode,
+        });
+        setLookupItems(items);
+        if (!items.length) {
+          setDetail(null);
+          setInitialDetail(null);
+          setSelectedLookupProductCode(undefined);
+          setLookupVisible(false);
+          setSnackbarMessage(t("messages.notFound"));
+          return;
+        }
+
+        if (items.length === 1) {
+          setLookupVisible(false);
+          await loadDetail(items[0].productCode);
+          return;
+        }
+
+        setSelectedLookupProductCode(items[0].productCode);
+        setLookupVisible(true);
+      } catch (error) {
+        setSnackbarMessage(error instanceof Error ? error.message : t("messages.lookupFailed"));
+      } finally {
+        setLoading(false);
+      }
+    },
+    [keyword, loadDetail, selectedStoreCode, t]
+  );
+
+  const cameraScan = useCameraScan({
+    onBarcode: async (barcode) => {
+      setKeyword(barcode);
+      await handleLookup(barcode);
+      setCameraVisible(false);
+    },
+  });
+
+  const dirtyMultiCodeIds = useMemo(() => getDirtyMultiCodeIds(detail, initialDetail), [detail, initialDetail]);
+  const dirtyCount = useMemo(
+    () => (isStorePriceDirty(detail, initialDetail) ? 1 : 0) + dirtyMultiCodeIds.length,
+    [detail, dirtyMultiCodeIds, initialDetail]
+  );
+
+  const handleRefresh = useCallback(async () => {
+    if (!detail?.productCode) {
+      if (keyword.trim()) {
+        setRefreshing(true);
+        try {
+          await handleLookup(keyword);
+        } finally {
+          setRefreshing(false);
+        }
+      }
+      return;
+    }
+
+    setRefreshing(true);
+    try {
+      await loadDetail(detail.productCode);
+    } catch (error) {
+      setSnackbarMessage(error instanceof Error ? error.message : t("messages.refreshFailed"));
+    } finally {
+      setRefreshing(false);
+    }
+  }, [detail?.productCode, handleLookup, keyword, loadDetail, t]);
+
+  const handleClear = useCallback(() => {
+    setKeyword("");
+    setLookupItems([]);
+    setSelectedLookupProductCode(undefined);
+    setDetail(null);
+    setInitialDetail(null);
+    setLookupVisible(false);
+  }, []);
+
+  const handleChangeStorePrice = useCallback((patch: Partial<NonNullable<ProductDetail["storePrice"]>>) => {
+    setDetail((current) =>
+      current?.storePrice
+        ? {
+            ...current,
+            storePrice: {
+              ...current.storePrice,
+              ...patch,
+            },
+          }
+        : current
+    );
+  }, []);
+
+  const handleChangeMultiCode = useCallback((uuid: string, patch: Partial<MultiCodeEditableItem>) => {
+    setDetail((current) =>
+      current
+        ? {
+            ...current,
+            multiCodes: current.multiCodes.map((item) => (item.uuid === uuid ? { ...item, ...patch } : item)),
+          }
+        : current
+    );
+  }, []);
+
+  const handleSaveMultiCode = useCallback(
+    async (uuid: string) => {
+      const target = detail?.multiCodes.find((item) => item.uuid === uuid);
+      if (!target) {
+        return;
+      }
+
+      setSavingItemId(uuid);
+      try {
+        const saved = await updateMultiCode(uuid, {
+          purchasePrice: target.purchasePrice ?? null,
+          retailPrice: target.retailPrice ?? null,
+          isAutoPricing: target.isAutoPricing,
+          isSpecialProduct: target.isSpecialProduct,
+          isActive: target.isActive,
+        });
+
+        setDetail((current) =>
+          current
+            ? {
+                ...current,
+                multiCodes: current.multiCodes.map((item) => (item.uuid === uuid ? saved : item)),
+              }
+            : current
+        );
+        setInitialDetail((current) =>
+          current
+            ? {
+                ...current,
+                multiCodes: current.multiCodes.map((item) => (item.uuid === uuid ? saved : item)),
+              }
+            : current
+        );
+        setSnackbarMessage(t("messages.multiCodeSaved"));
+      } catch (error) {
+        setSnackbarMessage(error instanceof Error ? error.message : t("messages.multiCodeSaveFailed"));
+      } finally {
+        setSavingItemId(null);
+      }
+    },
+    [detail?.multiCodes, t]
+  );
+
+  const handleSaveAll = useCallback(async () => {
+    if (!detail) {
+      return;
+    }
+
+    setSaving(true);
+    try {
+      const nextDetail = cloneDetail(detail)!;
+      const nextInitial = cloneDetail(initialDetail)!;
+
+      if (detail.storePrice && isStorePriceDirty(detail, initialDetail)) {
+        const savedStorePrice = await updateStorePrice(detail.storePrice.uuid, {
+          purchasePrice: detail.storePrice.purchasePrice ?? null,
+          retailPrice: detail.storePrice.retailPrice ?? null,
+          isAutoPricing: detail.storePrice.isAutoPricing,
+          isSpecialProduct: detail.storePrice.isSpecialProduct,
+          isActive: detail.storePrice.isActive,
+        });
+        nextDetail.storePrice = savedStorePrice;
+        nextInitial.storePrice = savedStorePrice;
+      }
+
+      for (const uuid of dirtyMultiCodeIds) {
+        const target = nextDetail.multiCodes.find((item) => item.uuid === uuid);
+        if (!target) {
+          continue;
+        }
+
+        const saved = await updateMultiCode(uuid, {
+          purchasePrice: target.purchasePrice ?? null,
+          retailPrice: target.retailPrice ?? null,
+          isAutoPricing: target.isAutoPricing,
+          isSpecialProduct: target.isSpecialProduct,
+          isActive: target.isActive,
+        });
+        nextDetail.multiCodes = nextDetail.multiCodes.map((item) => (item.uuid === uuid ? saved : item));
+        nextInitial.multiCodes = nextInitial.multiCodes.map((item) => (item.uuid === uuid ? saved : item));
+      }
+
+      setDetail(nextDetail);
+      setInitialDetail(nextInitial);
+      setSnackbarMessage(t("messages.saved"));
+    } catch (error) {
+      setSnackbarMessage(error instanceof Error ? error.message : t("messages.saveFailed"));
+    } finally {
+      setSaving(false);
+    }
+  }, [detail, dirtyMultiCodeIds, initialDetail, t]);
+
+  const handleReset = useCallback(() => {
+    setDetail(cloneDetail(initialDetail));
+  }, [initialDetail]);
+
+  const storePrice = detail?.storePrice;
+
+  return (
+    <SafeAreaView style={styles.safeArea} edges={["top"]}>
+      <QueryHeader
+        storeName={selectedStore?.storeName}
+        onScanPress={() => setCameraVisible(true)}
+        onRefreshPress={() => void handleRefresh()}
+        refreshing={refreshing}
+      />
+
+      <SearchPanel
+        value={keyword}
+        loading={loading || storesLoading}
+        lastHitLabel={lastHitLabel}
+        onChangeText={setKeyword}
+        onSubmit={() => void handleLookup()}
+        onClear={handleClear}
+      />
+
+      <ScrollView contentContainerStyle={styles.content}>
+        {detail ? (
+          <>
+            <ProductHeroCard
+              imageUrl={detail.productImage}
+              productName={detail.productName}
+              productCode={detail.productCode}
+              itemNumber={detail.itemNumber}
+              barcode={detail.barcode}
+              productTypeLabel={detail.productTypeLabel}
+              grade={detail.grade}
+            />
+
+            {storePrice ? (
+              <StorePriceStrategyCard
+                storeName={storePrice.storeName}
+                purchasePrice={formatDecimal(storePrice.purchasePrice)}
+                retailPrice={formatDecimal(storePrice.retailPrice)}
+                autoPricing={storePrice.isAutoPricing}
+                isSpecialProduct={storePrice.isSpecialProduct}
+                isActive={storePrice.isActive}
+                rate={storePrice.rate == null ? "" : String(storePrice.rate)}
+                strategySourceLabel={storePrice.strategySourceLabel}
+                strategyRuleLabel={storePrice.strategyRuleLabel}
+                onChangePurchasePrice={(value) =>
+                  handleChangeStorePrice({
+                    purchasePrice: value.trim() === "" ? null : Number(value),
+                  })
+                }
+                onChangeRetailPrice={(value) =>
+                  handleChangeStorePrice({
+                    retailPrice: value.trim() === "" ? null : Number(value),
+                  })
+                }
+                onToggleAutoPricing={(value) => handleChangeStorePrice({ isAutoPricing: value })}
+                onToggleSpecial={(value) => handleChangeStorePrice({ isSpecialProduct: value })}
+                onToggleActive={(value) => handleChangeStorePrice({ isActive: value })}
+              />
+            ) : (
+              <View style={styles.emptyBlock}>
+                <Text variant="bodyMedium">{t("messages.emptyStorePrice")}</Text>
+              </View>
+            )}
+
+            <SetCodeCompactSection items={detail.setCodes} />
+            <MultiCodeCompactList
+              items={detail.multiCodes}
+              onChangeItem={handleChangeMultiCode}
+              onSaveItem={(uuid) => void handleSaveMultiCode(uuid)}
+              savingItemId={savingItemId}
+            />
+          </>
+        ) : (
+          <View style={styles.emptyBlock}>
+            <Text variant="bodyMedium">{t("messages.emptyPrompt")}</Text>
+          </View>
+        )}
+      </ScrollView>
+
+      <StickyActionBar
+        visible={dirtyCount > 0}
+        dirtyCount={dirtyCount}
+        saving={saving}
+        onReset={handleReset}
+        onSaveAll={() => void handleSaveAll()}
+      />
+
+      <LookupResultSheet
+        visible={lookupVisible}
+        queryText={keyword}
+        items={lookupItems}
+        selectedValue={selectedLookupProductCode}
+        onSelect={setSelectedLookupProductCode}
+        onClose={() => setLookupVisible(false)}
+        onConfirm={() => {
+          if (selectedLookupProductCode) {
+            setLookupVisible(false);
+            void loadDetail(selectedLookupProductCode);
+          }
+        }}
+      />
+
+      <Portal>
+        <Modal
+          visible={cameraVisible}
+          onDismiss={() => setCameraVisible(false)}
+          contentContainerStyle={styles.cameraModal}
+        >
+          <View style={styles.cameraHeader}>
+            <Text variant="titleMedium">{t("camera.title")}</Text>
+            <Button onPress={() => setCameraVisible(false)}>{t("common:actions.close")}</Button>
+          </View>
+          <View style={styles.cameraFrame}>
+            <CameraView style={styles.cameraView} {...cameraScan.cameraProps} />
+          </View>
+          <Text variant="bodySmall" style={styles.cameraTip}>
+            {t("messages.cameraTip")}
+          </Text>
+        </Modal>
+      </Portal>
+
+      <Snackbar visible={Boolean(snackbarMessage)} onDismiss={() => setSnackbarMessage("")} duration={2500}>
+        {snackbarMessage}
+      </Snackbar>
+    </SafeAreaView>
+  );
+}
+
+export default function ProductQueryScreen() {
+  const isFocused = useIsFocused();
+
+  if (!isFocused) {
+    return <SafeAreaView style={styles.safeArea} edges={["top"]} />;
+  }
+
+  return <ProductQueryContent />;
+}
+
+const styles = StyleSheet.create({
+  safeArea: {
+    flex: 1,
+    backgroundColor: "#F7F8FA",
+  },
+  content: {
+    paddingHorizontal: 16,
+    paddingBottom: 20,
+    gap: 10,
+  },
+  emptyBlock: {
+    borderRadius: 8,
+    backgroundColor: "#fff",
+    padding: 16,
+  },
+  cameraModal: {
+    marginHorizontal: 16,
+    padding: 16,
+    borderRadius: 16,
+    backgroundColor: "#fff",
+    gap: 12,
+  },
+  cameraHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  cameraFrame: {
+    overflow: "hidden",
+    borderRadius: 12,
+    height: 320,
+    backgroundColor: "#000",
+  },
+  cameraView: {
+    flex: 1,
+  },
+  cameraTip: {
+    color: "#666",
+  },
+});

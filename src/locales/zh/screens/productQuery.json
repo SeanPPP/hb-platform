@@ -1,0 +1,65 @@
+{
+  "title": "商品查询",
+  "currentStore": "当前分店：{{store}}",
+  "search": {
+    "placeholder": "条码 / 货号 / 编码",
+    "lastHit": "最近命中：{{value}}"
+  },
+  "messages": {
+    "selectStoreFirst": "请先选择分店",
+    "keywordRequired": "请输入条码、货号或商品编码",
+    "storeUnavailable": "当前没有可用分店",
+    "notFound": "未找到匹配商品",
+    "lookupFailed": "商品查询失败",
+    "refreshFailed": "刷新失败",
+    "multiCodeSaved": "多码已保存",
+    "multiCodeSaveFailed": "多码保存失败",
+    "saved": "商品信息已保存",
+    "saveFailed": "保存失败",
+    "emptyStorePrice": "当前分店没有商品价格记录",
+    "emptyPrompt": "输入条码、货号或商品编码开始查询",
+    "cameraTip": "将条码对准取景框中心"
+  },
+  "lookup": {
+    "title": "选择匹配商品",
+    "query": "查询值：{{value}}",
+    "viewDetail": "查看详情",
+    "source": {
+      "productBarcode": "主条码命中",
+      "multiBarcode": "多码表命中",
+      "setBarcode": "套装条码命中",
+      "itemNumber": "货号命中",
+      "productCode": "编码命中",
+      "fallback": "命中"
+    }
+  },
+  "hero": {
+    "product": "商品"
+  },
+  "storePrice": {
+    "fallbackTitle": "分店商品信息",
+    "purchase": "进货",
+    "retail": "零售",
+    "rate": "Rate {{value}}",
+    "calculating": "计算中...",
+    "auto": "自动",
+    "special": "特殊",
+    "active": "启用"
+  },
+  "setCode": {
+    "title": "套装条码",
+    "meta": "{{itemNumber}} · 数量{{quantity}} · {{price}}"
+  },
+  "multiCode": {
+    "purchase": "进货",
+    "retail": "零售",
+    "auto": "自动",
+    "special": "特殊",
+    "active": "启用",
+    "save": "存",
+    "dirtyCount": "改动 {{count}} 项"
+  },
+  "camera": {
+    "title": "扫码查询商品"
+  }
+}

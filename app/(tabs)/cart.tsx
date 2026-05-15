@@ -1,19 +1,35 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Alert, Animated, FlatList, Image, PanResponder, Pressable, StyleSheet, View } from "react-native";
+import {
+  Alert,
+  Animated,
+  FlatList,
+  Image,
+  PanResponder,
+  Pressable,
+  StyleSheet,
+  TextInput,
+  View,
+} from "react-native";
 import {
   Button,
   Card,
   Chip,
   IconButton,
+  Modal,
+  Portal,
   Searchbar,
   Snackbar,
   Text,
 } from "react-native-paper";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { useFocusEffect } from "@react-navigation/native";
+import { useRouter } from "expo-router";
+import { useQueryClient } from "@tanstack/react-query";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { LoadingOverlay } from "@/components/ui/LoadingOverlay";
 import { ScanResultPicker } from "@/components/ui/ScanResultPicker";
-import { StoreChip } from "@/components/ui/StoreChip";
+import { useAppTranslation } from "@/shared/i18n/use-app-translation";
+import { submitStoreOrder } from "@/modules/orders/store-order-api";
 import { useClearCart } from "@/modules/shop/use-clear-cart";
 import { useCartPage } from "@/modules/shop/use-cart-page";
 import { useRemoveCartLine } from "@/modules/shop/use-remove-cart-line";
@@ -25,6 +41,12 @@ import type { StoreOrderCartItem } from "@/modules/shop/types";
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50, 100];
 const SWIPE_ACTION_WIDTH = 92;
+const PRODUCT_GRADE_CONFIG: Record<string, { color: string }> = {
+  A: { color: "#722ED1" },
+  B: { color: "#1890FF" },
+  C: { color: "#FA8C16" },
+  D: { color: "#F5222D" },
+};
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), max);
@@ -37,6 +59,7 @@ interface CartListItemCardProps {
   isUpdating: boolean;
   item: StoreOrderCartItem;
   openSwipeDetailGUID: string | null;
+  t: (key: string, options?: Record<string, unknown>) => string;
   onDelete: (item: StoreOrderCartItem) => Promise<void>;
   onOpenSwipe: (detailGUID: string | null) => void;
   onUpdateQuantity: (item: StoreOrderCartItem, nextQuantity: number) => Promise<void>;
@@ -49,6 +72,7 @@ function CartListItemCard({
   isUpdating,
   item,
   openSwipeDetailGUID,
+  t,
   onDelete,
   onOpenSwipe,
   onUpdateQuantity,
@@ -57,6 +81,8 @@ function CartListItemCard({
   const offsetRef = useRef(0);
   const step = item.minOrderQuantity > 0 ? item.minOrderQuantity : 1;
   const isBusy = isUpdating || isDeleting || clearCartPending;
+  const grade = item.grade?.trim().toUpperCase();
+  const gradeColor = grade ? PRODUCT_GRADE_CONFIG[grade]?.color ?? "#999" : undefined;
 
   const animateTo = useCallback(
     (toValue: number) => {
@@ -143,7 +169,7 @@ function CartListItemCard({
           ]}
         >
           <Text variant="labelLarge" style={styles.deleteActionText}>
-            {isDeleting ? "删除中" : "删除"}
+            {isDeleting ? t("item.deleting") : t("item.delete")}
           </Text>
         </Pressable>
       </View>
@@ -169,6 +195,11 @@ function CartListItemCard({
               <View style={styles.itemBody}>
                 <View style={styles.itemHeader}>
                   <View style={styles.itemTitleWrap}>
+                    {grade ? (
+                      <View style={[styles.gradeBadge, { backgroundColor: gradeColor }]}>
+                        <Text style={styles.gradeBadgeText}>Grade {grade}</Text>
+                      </View>
+                    ) : null}
                     <View style={styles.itemTopRow}>
                       <View style={styles.rowNumberBadge}>
                         <Text variant="labelSmall" style={styles.rowNumberText}>
@@ -215,10 +246,10 @@ function CartListItemCard({
                     ${Number(item.price ?? 0).toFixed(2)}
                   </Text>
                   <Text variant="bodySmall" style={styles.amountText}>
-                    小计 ${Number(item.amount ?? 0).toFixed(2)}
+                    {t("item.subtotal", { amount: Number(item.amount ?? 0).toFixed(2) })}
                   </Text>
                   <Text variant="bodySmall" style={styles.secondaryText}>
-                    进口 ${Number(item.importAmount ?? 0).toFixed(2)}
+                    {t("item.import", { amount: Number(item.importAmount ?? 0).toFixed(2) })}
                   </Text>
                 </View>
               </View>
@@ -231,16 +262,21 @@ function CartListItemCard({
 }
 
 export default function Cart() {
+  const router = useRouter();
+  const { t } = useAppTranslation(["cart", "common"]);
+  const queryClient = useQueryClient();
   const { selectedStore, selectedStoreCode } = useStores();
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
   const [keyword, setKeyword] = useState("");
   const [searchInput, setSearchInput] = useState("");
+  const [filtersVisible, setFiltersVisible] = useState(false);
   const [snackbarMessage, setSnackbarMessage] = useState("");
   const [activeCartItemCode, setActiveCartItemCode] = useState<string | null>(null);
   const [activeDeleteDetailGUID, setActiveDeleteDetailGUID] = useState<string | null>(null);
   const [openSwipeDetailGUID, setOpenSwipeDetailGUID] = useState<string | null>(null);
   const [priorityProductCode, setPriorityProductCode] = useState<string | null>(null);
+  const [submitPending, setSubmitPending] = useState(false);
   const updateCartQuantity = useUpdateCartQuantity(selectedStoreCode);
   const removeCartLine = useRemoveCartLine(selectedStoreCode);
   const clearCart = useClearCart(selectedStoreCode);
@@ -274,11 +310,19 @@ export default function Cart() {
     storeCode: selectedStoreCode,
   });
 
-  useHidBarcodeScanner({
+  const hidScanner = useHidBarcodeScanner({
     onScan: async (barcode) => {
       await scanResult.handleBarcode(barcode, "hid");
     },
   });
+
+  useFocusEffect(
+    useCallback(() => {
+      if (hidScanner.focusHiddenInput) {
+        hidScanner.focusHiddenInput();
+      }
+    }, [hidScanner.focusHiddenInput])
+  );
 
   useEffect(() => {
     setPage(1);
@@ -313,7 +357,7 @@ export default function Cart() {
         product: item,
       });
     } catch (error) {
-      setSnackbarMessage(error instanceof Error ? error.message : "更新购物车数量失败");
+      setSnackbarMessage(error instanceof Error ? error.message : t("messages.updateQtyFailed"));
     } finally {
       setActiveCartItemCode(null);
     }
@@ -333,7 +377,7 @@ export default function Cart() {
         setPriorityProductCode(null);
       }
     } catch (error) {
-      setSnackbarMessage(error instanceof Error ? error.message : "删除购物车商品失败");
+      setSnackbarMessage(error instanceof Error ? error.message : t("messages.deleteFailed"));
     } finally {
       setActiveDeleteDetailGUID(null);
     }
@@ -345,20 +389,59 @@ export default function Cart() {
       setOpenSwipeDetailGUID(null);
       setPriorityProductCode(null);
       setPage(1);
-      setSnackbarMessage("购物车已清空");
+      setSnackbarMessage(t("messages.clearSuccess"));
     } catch (error) {
-      setSnackbarMessage(error instanceof Error ? error.message : "清空购物车失败");
+      setSnackbarMessage(error instanceof Error ? error.message : t("messages.clearFailed"));
     }
   }
 
   function confirmClearCart() {
-    Alert.alert("清空购物车", "确定要清空当前门店购物车吗？", [
-      { text: "取消", style: "cancel" },
+    Alert.alert(t("confirm.clearTitle"), t("confirm.clearMessage"), [
+      { text: t("common:actions.cancel"), style: "cancel" },
       {
-        text: "清空",
+        text: t("confirm.clearAction"),
         style: "destructive",
         onPress: () => {
           void handleClearCart();
+        },
+      },
+    ]);
+  }
+
+  async function handleSubmitCart() {
+    if (!selectedStoreCode) {
+      setSnackbarMessage(t("messages.needStore"));
+      return;
+    }
+
+    if (!cartQuery.total) {
+      setSnackbarMessage(t("messages.emptyCart"));
+      return;
+    }
+
+    setSubmitPending(true);
+    try {
+      await submitStoreOrder(selectedStoreCode);
+      await queryClient.invalidateQueries({ queryKey: ["cartSummary", selectedStoreCode] });
+      setPriorityProductCode(null);
+      setOpenSwipeDetailGUID(null);
+      setPage(1);
+      setSnackbarMessage(t("messages.submitSuccess"));
+      router.push("/(tabs)/orders");
+    } catch (error) {
+      setSnackbarMessage(error instanceof Error ? error.message : t("messages.submitFailed"));
+    } finally {
+      setSubmitPending(false);
+    }
+  }
+
+  function confirmSubmitCart() {
+    Alert.alert(t("confirm.submitTitle"), t("confirm.submitMessage"), [
+      { text: t("common:actions.cancel"), style: "cancel" },
+      {
+        text: t("common:actions.submit"),
+        onPress: () => {
+          void handleSubmitCart();
         },
       },
     ]);
@@ -372,6 +455,7 @@ export default function Cart() {
         isDeleting={activeDeleteDetailGUID === item.detailGUID}
         isUpdating={activeCartItemCode === item.productCode}
         item={item}
+        t={t}
         onDelete={handleDeleteCartItem}
         onOpenSwipe={setOpenSwipeDetailGUID}
         onUpdateQuantity={handleUpdateQuantity}
@@ -381,51 +465,40 @@ export default function Cart() {
   }
 
   return (
-    <SafeAreaView edges={["left", "right", "bottom"]} style={styles.container}>
+    <SafeAreaView edges={["left", "right"]} style={styles.container}>
       <View style={styles.header}>
         <View style={styles.headerRow}>
-          <View style={styles.storeWrap}>
-            <StoreChip compact store={selectedStore} onPress={() => setSnackbarMessage("请在商品页切换门店")} />
-          </View>
-          <Button
-            compact
-            mode="outlined"
-            icon="delete-sweep-outline"
-            disabled={!selectedStoreCode || !cartQuery.total || clearCart.isPending}
-            loading={clearCart.isPending}
-            onPress={confirmClearCart}
-          >
-            清空购物车
-          </Button>
-        </View>
-
-        <Searchbar
-          placeholder="搜索购物车商品"
-          value={searchInput}
-          onChangeText={setSearchInput}
-          onSubmitEditing={() => setKeyword(searchInput)}
-          onIconPress={() => setKeyword(searchInput)}
-        />
-
-        <View style={styles.summaryGrid}>
-          <Text variant="bodySmall" style={styles.summaryText}>商品项: {cartQuery.total}</Text>
-          <Text variant="bodySmall" style={styles.summaryText}>总数: {cartQuery.cart?.totalQuantity ?? 0}</Text>
-          <Text variant="bodySmall" style={styles.summaryText}>销售合计: ${Number(cartQuery.cart?.totalAmount ?? 0).toFixed(2)}</Text>
-          <Text variant="bodySmall" style={styles.summaryText}>进口合计: ${Number(cartQuery.cart?.totalImportAmount ?? 0).toFixed(2)}</Text>
-          <Text variant="bodySmall" style={styles.summaryText}>体积合计: {Number(cartQuery.cart?.totalVolume ?? 0).toFixed(2)}</Text>
-        </View>
-
-        <View style={styles.pageSizeRow}>
-          {PAGE_SIZE_OPTIONS.map((option) => (
-            <Chip
+          <Text variant="titleLarge" style={styles.headerTitle}>
+            {t("title")}
+          </Text>
+          <View style={styles.headerActions}>
+            <IconButton
+              icon="filter-variant"
+              mode="contained-tonal"
+              onPress={() => setFiltersVisible(true)}
+              style={styles.headerIconButton}
+            />
+            <Button
               compact
-              key={option}
-              selected={pageSize === option}
-              onPress={() => setPageSize(option)}
+              mode="contained"
+              icon="check-circle-outline"
+              disabled={!selectedStoreCode || !cartQuery.total || clearCart.isPending || submitPending}
+              loading={submitPending}
+              onPress={confirmSubmitCart}
             >
-              {option}
-            </Chip>
-          ))}
+              {t("actions.submit")}
+            </Button>
+            <Button
+              compact
+              mode="outlined"
+              icon="delete-sweep-outline"
+              disabled={!selectedStoreCode || !cartQuery.total || clearCart.isPending || submitPending}
+              loading={clearCart.isPending}
+              onPress={confirmClearCart}
+            >
+              {t("actions.clear")}
+            </Button>
+          </View>
         </View>
       </View>
 
@@ -437,19 +510,21 @@ export default function Cart() {
         keyboardShouldPersistTaps="handled"
         ListEmptyComponent={
           <EmptyState
-            title={selectedStoreCode ? "购物车为空" : "先选择门店"}
-            description={selectedStoreCode ? "可以在此页扫码加购商品" : "请先在商品页选择门店"}
+            title={selectedStoreCode ? t("empty.cartEmptyTitle") : t("empty.selectStoreTitle")}
+            description={
+              selectedStoreCode ? t("empty.cartEmptyDescription") : t("empty.selectStoreDescription")
+            }
           />
         }
         ListFooterComponent={
           cartQuery.total ? (
             <View style={styles.paginationRow}>
               <Button mode="outlined" disabled={page <= 1} onPress={() => setPage((value) => value - 1)}>
-                上一页
+                {t("pagination.previous")}
               </Button>
-              <Text variant="bodyMedium">第 {page} 页</Text>
+              <Text variant="bodyMedium">{t("pagination.page", { page })}</Text>
               <Button mode="outlined" disabled={!canGoNextPage} onPress={() => setPage((value) => value + 1)}>
-                下一页
+                {t("pagination.next")}
               </Button>
             </View>
           ) : null
@@ -458,10 +533,102 @@ export default function Cart() {
 
       {cartQuery.isLoading ? <LoadingOverlay /> : null}
 
+      <Portal>
+        <Modal
+          visible={filtersVisible}
+          onDismiss={() => setFiltersVisible(false)}
+          contentContainerStyle={styles.filtersModal}
+        >
+          <View style={styles.filtersHeader}>
+            <View style={styles.filtersTitleWrap}>
+              <Text variant="titleMedium">{t("filters.title")}</Text>
+              <Text variant="bodySmall" style={styles.secondaryText}>
+                {t("filters.currentStore", { store: selectedStore?.storeName || t("common:na") })}
+              </Text>
+            </View>
+            <Button mode="text" onPress={() => setFiltersVisible(false)}>
+              {t("common:actions.close")}
+            </Button>
+          </View>
+
+          <Searchbar
+            placeholder={t("filters.searchPlaceholder")}
+            value={searchInput}
+            onChangeText={setSearchInput}
+            onSubmitEditing={() => setKeyword(searchInput.trim())}
+            onIconPress={() => setKeyword(searchInput.trim())}
+            style={styles.searchbar}
+          />
+
+          <View style={styles.filterActions}>
+            <Button
+              mode="outlined"
+              onPress={() => {
+                setSearchInput("");
+                setKeyword("");
+              }}
+            >
+              {t("filters.clearSearch")}
+            </Button>
+            <Button
+              mode="contained-tonal"
+              onPress={() => {
+                setKeyword(searchInput.trim());
+                setFiltersVisible(false);
+              }}
+            >
+              {t("filters.applySearch")}
+            </Button>
+          </View>
+
+          <View style={styles.summaryGrid}>
+            <Text variant="bodySmall" style={styles.summaryText}>
+              {t("filters.items", { count: cartQuery.total })}
+            </Text>
+            <Text variant="bodySmall" style={styles.summaryText}>
+              {t("filters.totalQuantity", { count: cartQuery.cart?.totalQuantity ?? 0 })}
+            </Text>
+            <Text variant="bodySmall" style={styles.summaryText}>
+              {t("filters.salesAmount", {
+                amount: Number(cartQuery.cart?.totalAmount ?? 0).toFixed(2),
+              })}
+            </Text>
+            <Text variant="bodySmall" style={styles.summaryText}>
+              {t("filters.importAmount", {
+                amount: Number(cartQuery.cart?.totalImportAmount ?? 0).toFixed(2),
+              })}
+            </Text>
+            <Text variant="bodySmall" style={styles.summaryText}>
+              {t("filters.volume", { value: Number(cartQuery.cart?.totalVolume ?? 0).toFixed(2) })}
+            </Text>
+          </View>
+
+          <View style={styles.pageSizeSection}>
+            <Text variant="labelLarge">{t("filters.pageSize")}</Text>
+            <View style={styles.pageSizeRow}>
+              {PAGE_SIZE_OPTIONS.map((option) => (
+                <Chip compact key={option} selected={pageSize === option} onPress={() => setPageSize(option)}>
+                  {option}
+                </Chip>
+              ))}
+            </View>
+          </View>
+
+          <View style={styles.storeHintCard}>
+            <Text variant="bodyMedium">{t("filters.storeHint")}</Text>
+            <Button mode="outlined" onPress={() => router.push("/(tabs)/home")}>
+              {t("filters.goHome")}
+            </Button>
+          </View>
+        </Modal>
+      </Portal>
+
       <ScanResultPicker
         visible={Boolean(scanResult.selectionState)}
         barcode={scanResult.selectionState?.barcode}
         items={scanResult.selectionState?.items ?? []}
+        selectLabel={t("common:actions.select")}
+        cancelLabel={t("common:actions.cancel")}
         onDismiss={() => {
           scanResult.clearSelection();
         }}
@@ -469,6 +636,10 @@ export default function Cart() {
           await scanResult.confirmSelection(product);
         }}
       />
+
+      {hidScanner.mode === "textInput" && hidScanner.textInputProps ? (
+        <TextInput style={styles.hiddenInput} {...hidScanner.textInputProps} />
+      ) : null}
 
       <Snackbar visible={Boolean(snackbarMessage)} onDismiss={() => setSnackbarMessage("")} duration={2500}>
         {snackbarMessage}
@@ -483,17 +654,58 @@ const styles = StyleSheet.create({
     backgroundColor: "#fff",
   },
   header: {
-    gap: 10,
     paddingHorizontal: 16,
-    paddingTop: 8,
+    paddingTop: 4,
+    paddingBottom: 2,
   },
   headerRow: {
     flexDirection: "row",
     alignItems: "center",
+    justifyContent: "space-between",
     gap: 10,
   },
-  storeWrap: {
+  headerTitle: {
+    color: "#0F172A",
+    fontWeight: "700",
+  },
+  headerActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  headerIconButton: {
+    margin: 0,
+  },
+  listContent: {
+    flexGrow: 1,
+    paddingHorizontal: 10,
+    paddingTop: 4,
+    paddingBottom: 0,
+  },
+  filtersModal: {
+    margin: 16,
+    borderRadius: 16,
+    backgroundColor: "#fff",
+    padding: 16,
+    gap: 14,
+  },
+  filtersHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+  filtersTitleWrap: {
     flex: 1,
+    gap: 4,
+  },
+  searchbar: {
+    backgroundColor: "#F6F8FB",
+  },
+  filterActions: {
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    gap: 10,
   },
   summaryGrid: {
     flexDirection: "row",
@@ -503,14 +715,19 @@ const styles = StyleSheet.create({
   summaryText: {
     color: "#333",
   },
-  pageSizeRow: {
-    flexDirection: "row",
+  pageSizeSection: {
     gap: 8,
   },
-  listContent: {
-    flexGrow: 1,
-    padding: 10,
-    paddingBottom: 16,
+  pageSizeRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  storeHintCard: {
+    gap: 10,
+    padding: 12,
+    borderRadius: 12,
+    backgroundColor: "#F6F8FB",
   },
   swipeRow: {
     marginBottom: 10,
@@ -559,6 +776,17 @@ const styles = StyleSheet.create({
   itemTitleWrap: {
     flex: 1,
     gap: 4,
+  },
+  gradeBadge: {
+    alignSelf: "flex-start",
+    borderRadius: 999,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+  },
+  gradeBadgeText: {
+    color: "#fff",
+    fontSize: 12,
+    fontWeight: "700",
   },
   itemTopRow: {
     flexDirection: "row",
@@ -633,7 +861,13 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    paddingTop: 12,
+    paddingTop: 6,
+  },
+  hiddenInput: {
+    position: "absolute",
+    width: 1,
+    height: 1,
+    opacity: 0,
   },
   secondaryText: {
     color: "#666",

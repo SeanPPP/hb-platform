@@ -1,4 +1,5 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { i18n } from "@/shared/i18n/i18n";
 import { updateCartQuantity } from "@/modules/shop/api";
 
 interface CartQuantityProduct {
@@ -17,7 +18,7 @@ export function useUpdateCartQuantity(storeCode?: string | null) {
   return useMutation({
     mutationFn: async ({ nextQuantity, product }: UpdateCartQuantityVariables) => {
       if (!storeCode) {
-        throw new Error("请先选择门店");
+        throw new Error(i18n.t("common:errors.selectStoreFirst"));
       }
 
       await updateCartQuantity({

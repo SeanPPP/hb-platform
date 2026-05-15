@@ -1,6 +1,14 @@
 import { Image, StyleSheet, View } from "react-native";
-import { Badge, Button, Card, Chip, IconButton, Text } from "react-native-paper";
+import { Badge, Button, Card, IconButton, Text } from "react-native-paper";
+import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 import type { ProductDynamicDataMap, StoreOrderProductItem } from "@/modules/shop/types";
+
+const PRODUCT_GRADE_CONFIG: Record<string, { color: string }> = {
+  A: { color: "#722ED1" },
+  B: { color: "#1890FF" },
+  C: { color: "#FA8C16" },
+  D: { color: "#F5222D" },
+};
 
 interface ProductCardProps {
   product: StoreOrderProductItem;
@@ -21,37 +29,42 @@ export function ProductCard({
   onDecreaseCartQuantity,
   onIncreaseCartQuantity,
 }: ProductCardProps) {
+  const { t } = useAppTranslation("common");
   const dynamicData = dynamicDataMap[product.productCode];
   const cartQuantity = dynamicData?.cartQuantity ?? 0;
   const hasCartQuantity = cartQuantity > 0;
+  const grade = product.grade?.trim().toUpperCase();
+  const gradeColor = grade ? PRODUCT_GRADE_CONFIG[grade]?.color ?? "#999" : undefined;
 
   return (
     <Card style={styles.card} mode="elevated">
+      {grade ? (
+        <View style={[styles.gradeBadge, { backgroundColor: gradeColor }]}>
+          <Text style={styles.gradeBadgeText}>Grade {grade}</Text>
+        </View>
+      ) : null}
       {hasCartQuantity ? <Badge style={styles.cartBadge}>{cartQuantity}</Badge> : null}
-      {product.productImage ? <Image source={{ uri: product.productImage }} style={styles.image} /> : <View style={styles.imagePlaceholder} />}
+      {product.productImage ? (
+        <Image source={{ uri: product.productImage }} style={styles.image} resizeMode="contain" />
+      ) : (
+        <View style={styles.imagePlaceholder} />
+      )}
       <Card.Content style={styles.content}>
         <Text variant="titleSmall" numberOfLines={2}>
-          {product.productName || "未命名商品"}
+          {product.productName || product.productCode}
         </Text>
         <Text variant="bodySmall" style={styles.secondaryText}>
-          货号: {product.itemNumber || "--"}
+          {t("labels.itemNumber")}: {product.itemNumber || t("na")}
         </Text>
-        <Text variant="bodySmall" style={styles.secondaryText}>
-          条码: {product.barcode || "--"}
-        </Text>
-        <View style={styles.metaRow}>
-          <Chip compact>{product.isInStock ? `库存 ${product.stockQuantity}` : "无库存"}</Chip>
-          <Chip compact>起订 {product.minOrderQuantity || 1}</Chip>
-        </View>
         <Text variant="titleMedium" style={styles.priceText}>
           ${Number(product.oemPrice ?? 0).toFixed(2)}
         </Text>
         <Text variant="bodySmall" style={hasCartQuantity ? styles.cartQuantityHighlight : styles.secondaryText}>
-          车内数量: {cartQuantity}
+          {t("cart:item.inCart")}: {cartQuantity}
         </Text>
         {dynamicData?.lastOrderDate ? (
           <Text variant="bodySmall" style={styles.secondaryText}>
-            最近订货: {dynamicData.lastOrderDate}
+            {t("labels.recentOrder")}: {dynamicData.lastOrderDate}
           </Text>
         ) : null}
       </Card.Content>
@@ -68,7 +81,7 @@ export function ProductCard({
             />
             <View style={styles.stepperQuantityWrap}>
               <Text variant="labelSmall" style={styles.secondaryText}>
-                购物车
+                {t("cart:item.inCart")}
               </Text>
               <Text variant="titleMedium" style={styles.stepperQuantityText}>
                 {cartQuantity}
@@ -85,7 +98,7 @@ export function ProductCard({
           </View>
         ) : (
           <Button mode="contained" disabled={disabled} loading={isUpdatingCart} onPress={() => onAddToCart(product)}>
-            加入购物车
+            {t("labels.addToCart")}
           </Button>
         )}
       </Card.Actions>
@@ -102,8 +115,27 @@ const styles = StyleSheet.create({
   cartBadge: {
     position: "absolute",
     top: 10,
-    right: 10,
+    left: 10,
     zIndex: 2,
+  },
+  gradeBadge: {
+    position: "absolute",
+    top: 0,
+    right: 0,
+    zIndex: 3,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderBottomLeftRadius: 8,
+    shadowColor: "#000",
+    shadowOpacity: 0.15,
+    shadowRadius: 4,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 2,
+  },
+  gradeBadgeText: {
+    color: "#fff",
+    fontSize: 12,
+    fontWeight: "700",
   },
   image: {
     width: "100%",
@@ -117,11 +149,6 @@ const styles = StyleSheet.create({
   },
   content: {
     gap: 6,
-  },
-  metaRow: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 8,
   },
   priceText: {
     color: "#1677FF",

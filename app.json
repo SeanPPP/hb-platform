@@ -1,34 +1,44 @@
 {
   "expo": {
-    "name": "HbwebExpo",
+    "name": "HB",
     "slug": "hbweb-expo",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "scheme": "hbwebexpo",
     "userInterfaceStyle": "automatic",
-    "newArchEnabled": false,
+    "newArchEnabled": true,
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",
       "backgroundColor": "#ffffff"
     },
-    "assetBundlePatterns": ["**/*"],
+    "assetBundlePatterns": [
+      "**/*"
+    ],
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "com.hbweb.expo",
       "infoPlist": {
         "NSCameraUsageDescription": "Used for scanning product barcodes",
-        "NSMicrophoneUsageDescription": "Used for audio feedback"
+        "NSMicrophoneUsageDescription": "Used for audio feedback",
+        "ITSAppUsesNonExemptEncryption": false
       }
     },
     "android": {
       "package": "com.hbweb.expo",
+      "usesCleartextTraffic": true,
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#ffffff"
       },
-      "permissions": ["CAMERA", "RECORD_AUDIO", "VIBRATE"]
+      "permissions": [
+        "CAMERA",
+        "RECORD_AUDIO",
+        "VIBRATE",
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO"
+      ]
     },
     "plugins": [
       "expo-router",
@@ -37,10 +47,18 @@
         {
           "cameraPermission": "Used for scanning product barcodes"
         }
-      ]
+      ],
+      "expo-audio",
+      "expo-localization"
     ],
     "experiments": {
       "typedRoutes": true
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "3b37541e-6191-460d-9a57-fe6691e206cf"
+      }
     }
   }
 }

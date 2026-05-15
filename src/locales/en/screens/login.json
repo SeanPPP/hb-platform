@@ -1,0 +1,14 @@
+{
+  "subtitle": "Store Order System",
+  "username": "Username",
+  "password": "Password",
+  "rememberUsername": "Remember username",
+  "errors": {
+    "invalidCredentials": "The username or password is incorrect.",
+    "timeout": "Login timed out before the backend responded.\nEndpoint: {{origin}}",
+    "network": "Cannot reach the backend. Check the phone/computer network, backend port, and API address.\nEndpoint: {{origin}}",
+    "server": "The server is temporarily unavailable. Please try again later.",
+    "http": "Login failed. Please try again later. HTTP {{status}}",
+    "default": "Login failed. Please try again later."
+  }
+}

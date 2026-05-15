@@ -4,6 +4,7 @@ import type {
   StoreOrderCategoryNode,
   StoreOrderDynamicData,
   StoreOrderDynamicDataRequest,
+  StoreOrderProductItem,
   StoreOrderProductQuery,
   StoreOrderProductListResult,
   StoreOrderScanLookupResult,
@@ -13,14 +14,122 @@ import type {
 } from "@/modules/shop/types";
 import { apiClient } from "@/shared/api/client";
 
-function normalizeProductPagedList(payload: Partial<StoreOrderProductListResult> | null | undefined): StoreOrderProductListResult {
-  const normalizedPayload = payload as (Partial<StoreOrderProductListResult> & { pageNumber?: number }) | null | undefined;
+type ApiItem = Record<string, unknown>;
+
+function transformProductItem(raw: ApiItem): StoreOrderProductItem {
+  const stockQuantity =
+    raw.stockQuantity != null
+      ? Number(raw.stockQuantity)
+      : raw.StockQuantity != null
+        ? Number(raw.StockQuantity)
+        : 0;
 
   return {
-    items: Array.isArray(normalizedPayload?.items) ? normalizedPayload.items : [],
-    total: normalizedPayload?.total ?? 0,
-    page: normalizedPayload?.page ?? normalizedPayload?.pageNumber ?? 1,
-    pageSize: normalizedPayload?.pageSize ?? 24,
+    productCode: String(raw.productCode ?? raw.ProductCode ?? ""),
+    itemNumber: raw.itemNumber != null ? String(raw.itemNumber) : raw.ItemNumber != null ? String(raw.ItemNumber) : undefined,
+    barcode: raw.barcode != null ? String(raw.barcode) : raw.Barcode != null ? String(raw.Barcode) : undefined,
+    grade:
+      raw.grade != null
+        ? String(raw.grade)
+        : raw.Grade != null
+          ? String(raw.Grade)
+          : raw.productGrade != null
+            ? String(raw.productGrade)
+            : raw.ProductGrade != null
+              ? String(raw.ProductGrade)
+              : undefined,
+    productName: raw.productName != null ? String(raw.productName) : raw.ProductName != null ? String(raw.ProductName) : undefined,
+    productImage: raw.productImage != null ? String(raw.productImage) : raw.ProductImage != null ? String(raw.ProductImage) : undefined,
+    categoryName: raw.categoryName != null ? String(raw.categoryName) : raw.CategoryName != null ? String(raw.CategoryName) : undefined,
+    warehouseCategoryGUID:
+      raw.warehouseCategoryGUID != null
+        ? String(raw.warehouseCategoryGUID)
+        : raw.WarehouseCategoryGUID != null
+          ? String(raw.WarehouseCategoryGUID)
+          : undefined,
+    oemPrice: raw.oemPrice != null ? Number(raw.oemPrice) : raw.OEMPrice != null ? Number(raw.OEMPrice) : undefined,
+    minOrderQuantity:
+      raw.minOrderQuantity != null
+        ? Number(raw.minOrderQuantity)
+        : raw.MinOrderQuantity != null
+          ? Number(raw.MinOrderQuantity)
+          : 1,
+    stockQuantity,
+    isInStock:
+      raw.isInStock != null
+        ? Boolean(raw.isInStock)
+        : raw.IsInStock != null
+          ? Boolean(raw.IsInStock)
+          : stockQuantity > 0,
+    packQty: raw.packQty != null ? Number(raw.packQty) : raw.PackQty != null ? Number(raw.PackQty) : undefined,
+    importPrice:
+      raw.importPrice != null ? Number(raw.importPrice) : raw.ImportPrice != null ? Number(raw.ImportPrice) : undefined,
+  };
+}
+
+function normalizeProductPagedList(payload: Partial<StoreOrderProductListResult> | null | undefined): StoreOrderProductListResult {
+  const normalizedPayload = payload as
+    | ((Partial<StoreOrderProductListResult> & {
+        pageNumber?: number;
+        PageNumber?: number;
+        Total?: number;
+        PageSize?: number;
+      }) & {
+        items?: ApiItem[];
+        Items?: ApiItem[];
+      })
+    | null
+    | undefined;
+
+  const items = normalizedPayload?.items ?? normalizedPayload?.Items;
+
+  return {
+    items: Array.isArray(items) ? items.map(transformProductItem) : [],
+    total: normalizedPayload?.total ?? normalizedPayload?.Total ?? 0,
+    page: normalizedPayload?.page ?? normalizedPayload?.pageNumber ?? normalizedPayload?.PageNumber ?? 1,
+    pageSize: normalizedPayload?.pageSize ?? normalizedPayload?.PageSize ?? 24,
+  };
+}
+
+function transformCartItem(raw: ApiItem) {
+  return {
+    detailGUID: String(raw.detailGUID ?? raw.DetailGUID ?? ""),
+    productCode: String(raw.productCode ?? raw.ProductCode ?? ""),
+    itemNumber: raw.itemNumber != null ? String(raw.itemNumber) : raw.ItemNumber != null ? String(raw.ItemNumber) : undefined,
+    barcode: raw.barcode != null ? String(raw.barcode) : raw.Barcode != null ? String(raw.Barcode) : undefined,
+    grade:
+      raw.grade != null
+        ? String(raw.grade)
+        : raw.Grade != null
+          ? String(raw.Grade)
+          : raw.productGrade != null
+            ? String(raw.productGrade)
+            : raw.ProductGrade != null
+              ? String(raw.ProductGrade)
+              : undefined,
+    productName: raw.productName != null ? String(raw.productName) : raw.ProductName != null ? String(raw.ProductName) : undefined,
+    productImage: raw.productImage != null ? String(raw.productImage) : raw.ProductImage != null ? String(raw.ProductImage) : undefined,
+    price: Number(raw.price ?? raw.Price ?? 0),
+    quantity: Number(raw.quantity ?? raw.Quantity ?? 0),
+    allocQuantity:
+      raw.allocQuantity != null ? Number(raw.allocQuantity) : raw.AllocQuantity != null ? Number(raw.AllocQuantity) : undefined,
+    amount: Number(raw.amount ?? raw.Amount ?? 0),
+    importPrice: Number(raw.importPrice ?? raw.ImportPrice ?? 0),
+    importAmount: Number(raw.importAmount ?? raw.ImportAmount ?? 0),
+    volume: raw.volume != null ? Number(raw.volume) : raw.Volume != null ? Number(raw.Volume) : undefined,
+    totalVolume:
+      raw.totalVolume != null ? Number(raw.totalVolume) : raw.TotalVolume != null ? Number(raw.TotalVolume) : undefined,
+    minOrderQuantity:
+      raw.minOrderQuantity != null
+        ? Number(raw.minOrderQuantity)
+        : raw.MinOrderQuantity != null
+          ? Number(raw.MinOrderQuantity)
+          : 1,
+    isActive: raw.isActive != null ? Boolean(raw.isActive) : raw.IsActive != null ? Boolean(raw.IsActive) : true,
+    locationCode:
+      raw.locationCode != null ? String(raw.locationCode) : raw.LocationCode != null ? String(raw.LocationCode) : undefined,
+    rrp: raw.rrp != null ? Number(raw.rrp) : raw.RRP != null ? Number(raw.RRP) : undefined,
+    updatedAt: raw.updatedAt != null ? String(raw.updatedAt) : raw.UpdatedAt != null ? String(raw.UpdatedAt) : undefined,
   };
 }
 
@@ -28,6 +137,9 @@ function normalizeCart(payload: Partial<StoreOrderCart> | null | undefined): Sto
   if (!payload) {
     return null;
   }
+
+  const normalizedPayload = payload as (Partial<StoreOrderCart> & { items?: ApiItem[]; Items?: ApiItem[] }) | null | undefined;
+  const items = normalizedPayload?.items ?? normalizedPayload?.Items;
 
   return {
     orderGUID: payload.orderGUID ?? "",
@@ -43,7 +155,7 @@ function normalizeCart(payload: Partial<StoreOrderCart> | null | undefined): Sto
     orderDate: payload.orderDate,
     storeAddress: payload.storeAddress,
     flowStatus: payload.flowStatus,
-    items: Array.isArray(payload.items) ? payload.items : [],
+    items: Array.isArray(items) ? items.map(transformCartItem) : [],
   };
 }
 
@@ -111,6 +223,10 @@ export async function lookupProductsByBarcode(barcode: string): Promise<StoreOrd
 
   return {
     barcode: data?.barcode ?? barcode,
-    items: Array.isArray(data?.items) ? data.items : [],
+    items: Array.isArray(data?.items)
+      ? data.items.map((item) => transformProductItem(item as unknown as ApiItem))
+      : Array.isArray((data as { Items?: ApiItem[] } | null | undefined)?.Items)
+        ? ((data as { Items?: ApiItem[] }).Items ?? []).map(transformProductItem)
+        : [],
   };
 }

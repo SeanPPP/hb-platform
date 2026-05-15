@@ -1,0 +1,14 @@
+{
+  "subtitle": "订货系统",
+  "username": "用户名",
+  "password": "密码",
+  "rememberUsername": "记住用户名",
+  "errors": {
+    "invalidCredentials": "用户名或密码不正确，请重新输入。",
+    "timeout": "登录超时，后端未及时响应。\n当前接口: {{origin}}",
+    "network": "无法连接后端地址，请检查手机与电脑网络、后端端口和接口地址。\n当前接口: {{origin}}",
+    "server": "服务器暂时不可用，请稍后再试。",
+    "http": "登录失败，请稍后重试。HTTP {{status}}",
+    "default": "登录失败，请稍后重试。"
+  }
+}

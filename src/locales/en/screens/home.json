@@ -1,0 +1,49 @@
+{
+  "title": "Products",
+  "filterTitle": "Filters",
+  "scanResultHint": "Showing scan results. Clear the filter to return to the full product list.",
+  "searchPlaceholder": "Search by item number",
+  "searchToggleOpen": "Expand search",
+  "searchToggleClose": "Collapse search",
+  "cameraQuery": "Camera lookup",
+  "autoAddOn": "Auto add to cart is on",
+  "autoAddOff": "Auto add to cart is off",
+  "resetScanFocus": "Reset scanner focus",
+  "clearScanFilter": "Clear scan filter",
+  "filters": {
+    "currentStore": "Store: {{store}}",
+    "currentCategory": "Category: {{category}}",
+    "store": "Store",
+    "category": "Category",
+    "all": "All",
+    "noStores": "No stores are available for this account."
+  },
+  "empty": {
+    "noProductsTitle": "No products yet",
+    "noProductsDescription": "Try another keyword, rescan, or switch the category.",
+    "selectStoreTitle": "Select a store first",
+    "selectStoreDescription": "Choose a store to view its products."
+  },
+  "pagination": {
+    "previous": "Previous",
+    "next": "Next",
+    "page": "Page {{page}}"
+  },
+  "camera": {
+    "title": "Camera product lookup",
+    "currentStore": "Store: {{store}}",
+    "needPermissionTitle": "Camera permission required",
+    "needPermissionDescription": "Enable camera access to scan products directly from the product page.",
+    "grantPermission": "Enable camera permission"
+  },
+  "messages": {
+    "storesLoadFailed": "Failed to load stores. Please try again later.",
+    "scanAddFailed": "Failed to add the scanned product to the cart.",
+    "addFailed": "Failed to add the product to the cart.",
+    "updateQtyFailed": "Failed to update the cart quantity.",
+    "addedToCart": "{{name}} was added to the cart."
+  },
+  "cartSummary": {
+    "total": "Total"
+  }
+}

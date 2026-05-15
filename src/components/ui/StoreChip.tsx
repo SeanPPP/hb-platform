@@ -1,5 +1,6 @@
 import { StyleSheet, View } from "react-native";
 import { Button, Text } from "react-native-paper";
+import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 import type { Store } from "@/modules/shop/types";
 
 interface StoreChipProps {
@@ -9,6 +10,8 @@ interface StoreChipProps {
 }
 
 export function StoreChip({ compact = false, store, onPress }: StoreChipProps) {
+  const { t } = useAppTranslation("common");
+
   if (compact) {
     return (
       <Button
@@ -19,7 +22,7 @@ export function StoreChip({ compact = false, store, onPress }: StoreChipProps) {
         contentStyle={styles.compactButtonContent}
         labelStyle={styles.compactButtonLabel}
       >
-        {store?.storeName ?? "选择门店"}
+        {store?.storeName ?? t("labels.selectStore")}
       </Button>
     );
   }
@@ -27,10 +30,10 @@ export function StoreChip({ compact = false, store, onPress }: StoreChipProps) {
   return (
     <View style={styles.container}>
       <Text variant="labelMedium" style={styles.label}>
-        当前门店
+        {t("labels.currentStore")}
       </Text>
       <Button mode="outlined" onPress={onPress} icon="storefront-outline" contentStyle={styles.buttonContent}>
-        {store?.storeName ?? "选择门店"}
+        {store?.storeName ?? t("labels.selectStore")}
       </Button>
     </View>
   );

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { i18n } from "@/shared/i18n/i18n";
 import { useAuthStore } from "@/store/auth-store";
 
 export function useLogin() {
@@ -13,7 +14,7 @@ export function useLogin() {
       await login({ username, password });
     } catch (e: any) {
       const msg =
-        e?.response?.data?.message || e?.message || "Login failed";
+        e?.response?.data?.message || e?.message || i18n.t("common:errors.loginFailed");
       setError(msg);
       throw e;
     } finally {

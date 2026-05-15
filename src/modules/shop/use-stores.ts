@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { getAllStores, getStoresByUserGuid } from "@/modules/shop/api";
 import { useAuthStore } from "@/store/auth-store";
 import { useCartStore } from "@/store/cart-store";
+import { useDeviceStore } from "@/store/device-store";
 import { AppAsyncStorage } from "@/shared/storage/async-storage";
 import { STORE_SELECTION_STORAGE_KEY, type Store } from "@/modules/shop/types";
 
@@ -46,19 +47,36 @@ function isPrivilegedStoreViewer(roleNames: string[] | undefined) {
 export function useStores() {
   const user = useAuthStore((state) => state.user);
   const access = useAuthStore((state) => state.access);
+  const deviceSession = useDeviceStore((state) => state.session);
   const userStores = useCartStore((state) => state.userStores);
   const selectedStore = useCartStore((state) => state.selectedStore);
   const setUserStores = useCartStore((state) => state.setUserStores);
   const setSelectedStore = useCartStore((state) => state.setSelectedStore);
   const setCartSummary = useCartStore((state) => state.setCartSummary);
   const [isHydratingSelection, setIsHydratingSelection] = useState(false);
+  const userGuid = user?.userGUID ?? null;
+  const isDeviceMode = Boolean(deviceSession?.hardwareId && deviceSession.authCode && deviceSession.storeCode);
+  const deviceBoundStore = useMemo<Store | null>(
+    () =>
+      deviceSession?.storeCode
+        ? {
+            storeCode: deviceSession.storeCode,
+            storeName: deviceSession.storeName || deviceSession.storeCode,
+          }
+        : null,
+    [deviceSession?.storeCode, deviceSession?.storeName]
+  );
   const shouldLoadAllStores =
     access.isAdmin || access.isWarehouseManager || isPrivilegedStoreViewer(user?.roleNames);
 
   const storesQuery = useQuery({
-    queryKey: ["userStores", user?.userGUID, shouldLoadAllStores],
-    enabled: Boolean(user?.userGUID),
+    queryKey: ["userStores", userGuid, shouldLoadAllStores, deviceSession?.storeCode],
+    enabled: !isDeviceMode && Boolean(userGuid),
     queryFn: async () => {
+      if (!userGuid) {
+        return [];
+      }
+
       const embeddedStores = sortStores(normalizeStores(user?.stores));
 
       if (shouldLoadAllStores) {
@@ -73,15 +91,15 @@ export function useStores() {
       }
 
       try {
-        const apiStores = sortStores(await getStoresByUserGuid(user!.userGUID));
+        const apiStores = sortStores(await getStoresByUserGuid(userGuid));
 
         if (apiStores.length) {
           console.info("[useStores] loaded stores from user endpoint", {
             canReadStore: access.canReadStore,
             count: apiStores.length,
-            endpoint: `/Users/guid/${user!.userGUID}/stores`,
+            endpoint: `/Users/guid/${userGuid}/stores`,
             embeddedCount: embeddedStores.length,
-            userGuid: user?.userGUID,
+            userGuid,
           });
           return apiStores;
         }
@@ -90,19 +108,19 @@ export function useStores() {
           console.warn("[useStores] user endpoint returned empty; fallback to embedded stores", {
             canReadStore: access.canReadStore,
             embeddedCount: embeddedStores.length,
-            endpoint: `/Users/guid/${user!.userGUID}/stores`,
+            endpoint: `/Users/guid/${userGuid}/stores`,
             permissions: user?.permissions,
-            userGuid: user?.userGUID,
+            userGuid,
           });
           return embeddedStores;
         }
 
         console.warn("[useStores] no stores available from endpoint or embedded user data", {
           canReadStore: access.canReadStore,
-          endpoint: `/Users/guid/${user!.userGUID}/stores`,
+          endpoint: `/Users/guid/${userGuid}/stores`,
           permissions: user?.permissions,
           roleNames: user?.roleNames,
-          userGuid: user?.userGUID,
+          userGuid,
         });
         return [];
       } catch (error) {
@@ -110,20 +128,20 @@ export function useStores() {
           console.warn("[useStores] user endpoint failed; fallback to embedded stores", {
             canReadStore: access.canReadStore,
             embeddedCount: embeddedStores.length,
-            endpoint: `/Users/guid/${user!.userGUID}/stores`,
+            endpoint: `/Users/guid/${userGuid}/stores`,
             error,
-            userGuid: user?.userGUID,
+            userGuid,
           });
           return embeddedStores;
         }
 
         console.error("[useStores] failed to load stores", {
           canReadStore: access.canReadStore,
-          endpoint: `/Users/guid/${user!.userGUID}/stores`,
+          endpoint: `/Users/guid/${userGuid}/stores`,
           error,
           permissions: user?.permissions,
           roleNames: user?.roleNames,
-          userGuid: user?.userGUID,
+          userGuid,
         });
         throw error;
       }
@@ -131,7 +149,18 @@ export function useStores() {
   });
 
   useEffect(() => {
-    if (!user?.userGUID) {
+    if (isDeviceMode) {
+      if (!deviceBoundStore) {
+        return;
+      }
+
+      setUserStores([deviceBoundStore]);
+      setSelectedStore(deviceBoundStore);
+      void AppAsyncStorage.setString(STORE_SELECTION_STORAGE_KEY, deviceBoundStore.storeCode);
+      return;
+    }
+
+    if (!userGuid) {
       setUserStores([]);
       setSelectedStore(null);
       setCartSummary(null);
@@ -182,38 +211,49 @@ export function useStores() {
     return () => {
       cancelled = true;
     };
-  }, [setCartSummary, setSelectedStore, setUserStores, storesQuery.data, storesQuery.isSuccess, user?.userGUID]);
+  }, [deviceBoundStore, isDeviceMode, setCartSummary, setSelectedStore, setUserStores, storesQuery.data, storesQuery.isSuccess, userGuid]);
 
-  const selectedStoreCode = selectedStore?.storeCode ?? null;
+  const effectiveStores = isDeviceMode && deviceBoundStore ? [deviceBoundStore] : userStores;
+  const effectiveSelectedStore =
+    isDeviceMode && deviceBoundStore ? deviceBoundStore : selectedStore;
+  const selectedStoreCode = effectiveSelectedStore?.storeCode ?? null;
   const embeddedStores = useMemo(() => sortStores(normalizeStores(user?.stores)), [user?.stores]);
   const debugInfo = useMemo(
     () => ({
       canReadStore: access.canReadStore,
+      deviceStoreCode: deviceSession?.storeCode ?? null,
       embeddedStoreCount: embeddedStores.length,
-      enabled: Boolean(user?.userGUID),
+      enabled: Boolean(userGuid),
       errorMessage: storesQuery.error instanceof Error ? storesQuery.error.message : null,
       fetchStatus: storesQuery.fetchStatus,
-      hasUserGuid: Boolean(user?.userGUID),
+      hasUserGuid: Boolean(userGuid),
       queryStatus: storesQuery.status,
       roleNames: user?.roleNames ?? [],
-      storeCount: userStores.length,
-      userGuid: user?.userGUID ?? "",
+      storeCount: effectiveStores.length,
+      userGuid: userGuid ?? "",
     }),
     [
       access.canReadStore,
+      deviceSession?.storeCode,
       embeddedStores.length,
+      effectiveStores.length,
       storesQuery.error,
       storesQuery.fetchStatus,
       storesQuery.status,
       user?.roleNames,
-      user?.userGUID,
-      userStores.length,
+      userGuid,
     ]
   );
 
   const actions = useMemo(
     () => ({
       async selectStore(store: Store | null) {
+        if (isDeviceMode && deviceBoundStore) {
+          setSelectedStore(deviceBoundStore);
+          await AppAsyncStorage.setString(STORE_SELECTION_STORAGE_KEY, deviceBoundStore.storeCode);
+          return;
+        }
+
         setSelectedStore(store);
         setCartSummary(null);
 
@@ -224,12 +264,12 @@ export function useStores() {
         }
       },
     }),
-    [setCartSummary, setSelectedStore]
+    [deviceBoundStore, isDeviceMode, setCartSummary, setSelectedStore]
   );
 
   return {
-    stores: userStores,
-    selectedStore,
+    stores: effectiveStores,
+    selectedStore: effectiveSelectedStore,
     selectedStoreCode,
     isHydratingSelection,
     debugInfo,

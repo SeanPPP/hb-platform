@@ -1,4 +1,5 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { i18n } from "@/shared/i18n/i18n";
 import { addToCart } from "@/modules/shop/api";
 import type { StoreOrderProductItem } from "@/modules/shop/types";
 
@@ -17,7 +18,7 @@ export function useAddToCart(storeCode?: string | null) {
   return useMutation({
     mutationFn: async ({ product, quantity }: AddToCartVariables) => {
       if (!storeCode) {
-        throw new Error("请先选择门店");
+        throw new Error(i18n.t("common:errors.selectStoreFirst"));
       }
 
       return addToCart({

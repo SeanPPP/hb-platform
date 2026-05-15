@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { i18n } from "@/shared/i18n/i18n";
 import { useAddToCart, resolveMinimumOrderQuantity } from "@/modules/shop/use-add-to-cart";
 import { lookupProductsByBarcode } from "@/modules/scanner/api";
 import { playScanFeedbackSound, preloadScanFeedbackSounds } from "@/modules/scanner/scan-sound";
@@ -7,7 +8,7 @@ import type { ScanFeedbackState, ScanSelectionState, ScanSource } from "@/module
 
 const initialFeedback: ScanFeedbackState = {
   status: "ready",
-  message: "等待扫码",
+  message: i18n.t("common:scanner.waiting"),
 };
 
 interface UseScanResultOptions {
@@ -30,7 +31,7 @@ export function useScanResult({
   const addToCart = useAddToCart(storeCode);
 
   useEffect(() => {
-    void preloadScanFeedbackSounds();
+    preloadScanFeedbackSounds();
   }, []);
 
   const updateFeedback = useCallback((nextFeedback: ScanFeedbackState) => {
@@ -40,6 +41,13 @@ export function useScanResult({
 
   const addMatchedProduct = useCallback(
     async (product: StoreOrderProductItem, barcode: string, source: ScanSource) => {
+      updateFeedback({
+        status: "found",
+        message: i18n.t("common:scanner.addingToCart"),
+        barcode,
+        productName: product.productName,
+      });
+
       const quantity = resolveMinimumOrderQuantity(product);
       await addToCart.mutateAsync({
         product,
@@ -49,7 +57,7 @@ export function useScanResult({
 
       updateFeedback({
         status: "added",
-        message: `${source === "camera" ? "摄像头" : "扫码枪"}扫码已加入购物车`,
+        message: i18n.t(source === "camera" ? "common:scanner.addedByCamera" : "common:scanner.addedByScanner"),
         barcode,
         productName: product.productName,
         addedQuantity: quantity,
@@ -63,7 +71,7 @@ export function useScanResult({
       if (!storeCode) {
         updateFeedback({
           status: "blocked",
-          message: "请先选择门店后再扫码",
+          message: i18n.t("common:scanner.selectStoreFirst"),
           barcode,
         });
         return;
@@ -71,7 +79,7 @@ export function useScanResult({
 
       setFeedback({
         status: "scanning",
-        message: "正在查询条码对应商品",
+        message: i18n.t("common:scanner.lookupInProgress"),
         barcode,
       });
 
@@ -82,21 +90,21 @@ export function useScanResult({
         if (items.length === 0) {
           updateFeedback({
             status: "not_found",
-            message: "未找到对应商品",
+            message: i18n.t("common:scanner.notFound"),
             barcode: result.barcode,
           });
           return;
         }
 
         if (items.length === 1) {
-          if (mode === "lookup" && !autoAddWhenSingle) {
-            await onProductFound?.(items[0], result.barcode, source);
+          if (mode === "lookup") {
             updateFeedback({
               status: "found",
-              message: "已找到对应商品",
+              message: i18n.t("common:scanner.found"),
               barcode: result.barcode,
               productName: items[0].productName,
             });
+            void onProductFound?.(items[0], result.barcode, source);
             return;
           }
 
@@ -111,13 +119,13 @@ export function useScanResult({
         });
         updateFeedback({
           status: "multiple",
-          message: mode === "lookup" ? "条码匹配到多个商品，请选择查看" : "条码匹配到多个商品，请选择后加入购物车",
+          message: i18n.t(mode === "lookup" ? "common:scanner.multipleLookup" : "common:scanner.multipleCart"),
           barcode: result.barcode,
         });
       } catch (error) {
         updateFeedback({
           status: "error",
-          message: error instanceof Error ? error.message : "扫码处理失败",
+          message: error instanceof Error ? error.message : i18n.t("common:scanner.failed"),
           barcode,
         });
       }
@@ -136,7 +144,7 @@ export function useScanResult({
         await onProductFound?.(product, selectionState.barcode, selectionState.source);
         updateFeedback({
           status: "found",
-          message: "已选择匹配商品",
+          message: i18n.t("common:scanner.selected"),
           barcode: selectionState.barcode,
           productName: product.productName,
         });
@@ -154,7 +162,10 @@ export function useScanResult({
         setSelectionState(null);
       },
       resetFeedback() {
-        setFeedback(initialFeedback);
+        setFeedback({
+          status: "ready",
+          message: i18n.t("common:scanner.waiting"),
+        });
       },
     }),
     []

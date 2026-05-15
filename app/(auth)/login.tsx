@@ -11,9 +11,21 @@ import {
 } from "react-native-paper";
 import { useState, useEffect } from "react";
 import { useAuthStore } from "@/store/auth-store";
+import { i18n } from "@/shared/i18n/i18n";
+import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 import { AppAsyncStorage } from "@/shared/storage/async-storage";
+import { API_BASE_URL } from "@/shared/constants/api";
 
 const REMEMBERED_USERNAME_KEY = "remembered_username";
+
+function getApiOriginLabel() {
+  try {
+    const url = new URL(API_BASE_URL);
+    return `${url.origin}${url.pathname}`;
+  } catch {
+    return API_BASE_URL;
+  }
+}
 
 function getFriendlyLoginErrorMessage(error: unknown): string {
   const axiosError = error as AxiosError<{
@@ -33,26 +45,31 @@ function getFriendlyLoginErrorMessage(error: unknown): string {
     normalizedMessage.includes("password") ||
     normalizedMessage.includes("credential")
   ) {
-    return "用户名或密码不正确，请重新输入。";
+    return i18n.t("login:errors.invalidCredentials");
   }
 
   if (axiosError.code === "ECONNABORTED") {
-    return "登录超时，请稍后重试。";
+    return i18n.t("login:errors.timeout", { origin: getApiOriginLabel() });
   }
 
   if (axiosError.message === "Network Error") {
-    return "网络连接失败，请检查网络后重试。";
+    return i18n.t("login:errors.network", { origin: getApiOriginLabel() });
   }
 
   if (status && status >= 500) {
-    return "服务器暂时不可用，请稍后再试。";
+    return i18n.t("login:errors.server");
   }
 
-  return "登录失败，请稍后重试。";
+  if (status) {
+    return i18n.t("login:errors.http", { status });
+  }
+
+  return i18n.t("login:errors.default");
 }
 
 export default function Login() {
   const router = useRouter();
+  const { t } = useAppTranslation(["login", "common"]);
   const login = useAuthStore((s) => s.login);
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -61,10 +78,26 @@ export default function Login() {
   const [error, setError] = useState("");
   const [rememberUsername, setRememberUsername] = useState(false);
   const [snackbarVisible, setSnackbarVisible] = useState(false);
+  const [rememberReady, setRememberReady] = useState(false);
 
   useEffect(() => {
-    loadRememberedUsername();
+    void loadRememberedUsername();
   }, []);
+
+  useEffect(() => {
+    if (!rememberReady) {
+      return;
+    }
+
+    if (!rememberUsername) {
+      void AppAsyncStorage.removeItem(REMEMBERED_USERNAME_KEY);
+      return;
+    }
+
+    if (username) {
+      void AppAsyncStorage.setString(REMEMBERED_USERNAME_KEY, username);
+    }
+  }, [rememberReady, rememberUsername, username]);
 
   async function loadRememberedUsername() {
     const saved = await AppAsyncStorage.getString(REMEMBERED_USERNAME_KEY);
@@ -72,6 +105,7 @@ export default function Login() {
       setUsername(saved);
       setRememberUsername(true);
     }
+    setRememberReady(true);
   }
 
   async function handleLogin() {
@@ -79,12 +113,6 @@ export default function Login() {
     setLoading(true);
     try {
       await login({ username, password });
-
-      if (rememberUsername && username) {
-        await AppAsyncStorage.setString(REMEMBERED_USERNAME_KEY, username);
-      } else {
-        await AppAsyncStorage.removeItem(REMEMBERED_USERNAME_KEY);
-      }
       router.replace("/(tabs)/home");
     } catch (error) {
       setError(getFriendlyLoginErrorMessage(error));
@@ -98,13 +126,13 @@ export default function Login() {
     <View style={styles.container}>
       <Surface style={styles.card} elevation={2}>
         <Text variant="headlineMedium" style={styles.title}>
-          HbwebExpo
+          {t("common:appName")}
         </Text>
         <Text variant="bodyMedium" style={styles.subtitle}>
-          Store Order System
+          {t("subtitle")}
         </Text>
         <TextInput
-          label="Username"
+          label={t("username")}
           value={username}
           onChangeText={setUsername}
           style={styles.input}
@@ -112,7 +140,7 @@ export default function Login() {
           autoCapitalize="none"
         />
         <TextInput
-          label="Password"
+          label={t("password")}
           value={password}
           onChangeText={setPassword}
           style={styles.input}
@@ -127,7 +155,7 @@ export default function Login() {
           }
         />
         <Checkbox.Item
-          label="Remember username"
+          label={t("rememberUsername")}
           status={rememberUsername ? "checked" : "unchecked"}
           onPress={() => setRememberUsername(!rememberUsername)}
         />
@@ -138,7 +166,7 @@ export default function Login() {
           disabled={loading || !username || !password}
           style={styles.button}
         >
-          Login
+          {t("common:actions.login")}
         </Button>
       </Surface>
       <Snackbar

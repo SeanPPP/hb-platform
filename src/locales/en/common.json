@@ -1,0 +1,66 @@
+{
+  "appName": "HB",
+  "loading": "Loading...",
+  "notLoggedIn": "Not signed in",
+  "none": "None",
+  "na": "--",
+  "grade": "Grade {{grade}}",
+  "currency": "${{value}}",
+  "actions": {
+    "login": "Login",
+    "logout": "Logout",
+    "cancel": "Cancel",
+    "close": "Close",
+    "clear": "Clear",
+    "refresh": "Refresh",
+    "retry": "Retry",
+    "save": "Save",
+    "saveAll": "Save all",
+    "saving": "Saving",
+    "discard": "Discard",
+    "submit": "Submit",
+    "search": "Search",
+    "select": "Select",
+    "apply": "Apply",
+    "viewDetail": "View details",
+    "openFilters": "Open filters"
+  },
+  "tabs": {
+    "home": "Home",
+    "orders": "Orders",
+    "cart": "Cart",
+    "productQuery": "Products",
+    "settings": "Settings"
+  },
+  "language": {
+    "title": "Language",
+    "zh": "中文",
+    "en": "English"
+  },
+  "labels": {
+    "itemNumber": "Item",
+    "recentOrder": "Last order",
+    "minOrder": "Min",
+    "addToCart": "Add to cart",
+    "currentStore": "Current store",
+    "selectStore": "Select store"
+  },
+  "errors": {
+    "selectStoreFirst": "Please select a store first.",
+    "loginFailed": "Login failed"
+  },
+  "scanner": {
+    "waiting": "Waiting for a scan",
+    "addingToCart": "Adding to cart",
+    "addedByCamera": "Camera scan added to cart",
+    "addedByScanner": "Scanner input added to cart",
+    "selectStoreFirst": "Please select a store before scanning.",
+    "lookupInProgress": "Looking up the barcode",
+    "notFound": "No matching product found",
+    "found": "Matched product found",
+    "multipleLookup": "Multiple products matched the barcode. Choose one to view.",
+    "multipleCart": "Multiple products matched the barcode. Choose one to add.",
+    "failed": "Failed to process the scan",
+    "selected": "Matched product selected"
+  }
+}
