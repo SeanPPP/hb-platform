@@ -24,6 +24,7 @@ import {
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { useEffect, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import PageContainer from '../../../components/PageContainer'
 import {
   createLocation,
@@ -48,27 +49,36 @@ interface LocationFormValues {
   status?: number
 }
 
-const locationTypeOptions = [
-  { value: 0, label: '存储货位' },
-  { value: 1, label: '拣货货位' },
-]
-
-const statusOptions = [
-  { value: 1, label: '启用' },
-  { value: 0, label: '停用' },
-]
-
-const usageOptions = [
-  { value: true, label: '已使用' },
-  { value: false, label: '未使用' },
-]
-
-function formatLocationType(value?: number | null) {
-  return locationTypeOptions.find((item) => item.value === value)?.label || '--'
+function getLocationTypeOptions(t: (key: string, options?: Record<string, unknown>) => string) {
+  return [
+    { value: 0, label: t('warehouseLocations.storageLocation') },
+    { value: 1, label: t('warehouseLocations.pickingLocation') },
+  ]
 }
 
-function formatStatus(value?: number | null) {
-  return value === 1 ? <Tag color="success">启用</Tag> : <Tag>停用</Tag>
+function getStatusOptions(t: (key: string, options?: Record<string, unknown>) => string) {
+  return [
+    { value: 1, label: t('common.enable') },
+    { value: 0, label: t('common.disable') },
+  ]
+}
+
+function getUsageOptions(t: (key: string, options?: Record<string, unknown>) => string) {
+  return [
+    { value: true, label: t('common.used') },
+    { value: false, label: t('common.unused') },
+  ]
+}
+
+function formatLocationType(
+  value: number | null | undefined,
+  options: Array<{ value: number; label: string }>,
+) {
+  return options.find((item) => item.value === value)?.label || '--'
+}
+
+function formatStatus(value: number | null | undefined, t: (key: string) => string) {
+  return value === 1 ? <Tag color="success">{t('common.enable')}</Tag> : <Tag>{t('common.disable')}</Tag>
 }
 
 function formatDateTime(value?: string) {
@@ -108,7 +118,11 @@ function getProductFieldValues(products: LocationProduct[], field: 'itemNumber' 
   return products.map((item) => item[field]).filter((value): value is string => Boolean(value))
 }
 
-function renderCopyableProducts(products: LocationProduct[], field: 'itemNumber' | 'productName') {
+function renderCopyableProducts(
+  products: LocationProduct[],
+  field: 'itemNumber' | 'productName',
+  t: (key: string) => string,
+) {
   const values = getProductFieldValues(products, field)
   if (!values.length) {
     return '--'
@@ -123,7 +137,7 @@ function renderCopyableProducts(products: LocationProduct[], field: 'itemNumber'
       <Tooltip title={fullText}>
         <Typography.Text>{`${display}${suffix}`}</Typography.Text>
       </Tooltip>
-      <Tooltip title="复制货号">
+      <Tooltip title={t('common.copy')}>
         <Button
           size="small"
           type="text"
@@ -161,6 +175,7 @@ function renderProductImages(products: LocationProduct[]) {
 }
 
 export default function WarehouseLocationsPage() {
+  const { t } = useTranslation()
   const [form] = Form.useForm<LocationFormValues>()
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -176,6 +191,9 @@ export default function WarehouseLocationsPage() {
   const [pageSize, setPageSize] = useState(20)
   const [total, setTotal] = useState(0)
   const { access } = useAuthStore()
+  const locationTypeOptions = getLocationTypeOptions(t)
+  const statusOptions = getStatusOptions(t)
+  const usageOptions = getUsageOptions(t)
 
   const loadData = async (
     nextPage = page,
@@ -205,7 +223,7 @@ export default function WarehouseLocationsPage() {
       setPageSize(result.pageSize)
     } catch (error) {
       console.error(error)
-      message.error(error instanceof Error ? error.message : '加载仓库标签列表失败')
+      message.error(error instanceof Error ? error.message : t('warehouseLocations.loadFailed'))
     } finally {
       setLoading(false)
     }
@@ -249,17 +267,17 @@ export default function WarehouseLocationsPage() {
 
       if (editingItem) {
         await updateLocation(editingItem.locationGuid, values as UpdateLocationParams)
-        message.success('更新仓库标签成功')
+        message.success(t('warehouseLocations.updateSuccess'))
       } else {
         await createLocation(values as CreateLocationParams)
-        message.success('创建仓库标签成功')
+        message.success(t('warehouseLocations.createSuccess'))
       }
 
       handleCloseModal()
       void loadData(editingItem ? page : 1, pageSize)
     } catch (error) {
       if (error instanceof Error) {
-        message.error(error.message || '保存仓库标签失败')
+        message.error(error.message || t('warehouseLocations.saveFailed'))
       }
     } finally {
       setSaving(false)
@@ -269,23 +287,23 @@ export default function WarehouseLocationsPage() {
   const handleDelete = async (record: LocationItem) => {
     try {
       await deleteLocation(record.locationGuid)
-      message.success('删除仓库标签成功')
+      message.success(t('warehouseLocations.deleteSuccess'))
       void loadData(page, pageSize)
     } catch (error) {
       console.error(error)
-      message.error(error instanceof Error ? error.message : '删除仓库标签失败')
+      message.error(error instanceof Error ? error.message : t('warehouseLocations.deleteFailed'))
     }
   }
 
   const columns: ColumnsType<LocationItem> = [
     {
-      title: '序号',
+      title: t('column.index'),
       key: 'index',
       width: 80,
       render: (_, __, index) => (page - 1) * pageSize + index + 1,
     },
     {
-      title: '货位代码',
+      title: t('column.locationCode'),
       dataIndex: 'locationCode',
       width: 220,
       render: (value: string | undefined) => (
@@ -293,7 +311,7 @@ export default function WarehouseLocationsPage() {
       ),
     },
     {
-      title: '货位条码',
+      title: t('column.locationBarcode'),
       dataIndex: 'locationBarcode',
       width: 220,
       render: (value: string | undefined) => (
@@ -301,73 +319,73 @@ export default function WarehouseLocationsPage() {
       ),
     },
     {
-      title: '标签状态',
+      title: t('column.locationStatus'),
       dataIndex: 'status',
       width: 100,
-      render: (value: number | null | undefined) => formatStatus(value),
+      render: (value: number | null | undefined) => formatStatus(value, t),
     },
     {
-      title: '货位类型',
+      title: t('column.locationType'),
       dataIndex: 'locationType',
       width: 120,
-      render: (value: number | null | undefined) => formatLocationType(value),
+      render: (value: number | null | undefined) => formatLocationType(value, locationTypeOptions),
     },
     {
-      title: '使用状态',
+      title: t('column.usageStatus'),
       key: 'usage',
       width: 100,
       render: (_, record) =>
-        record.products?.length ? <Tag color="processing">已使用</Tag> : <Tag>未使用</Tag>,
+        record.products?.length ? <Tag color="processing">{t('common.used')}</Tag> : <Tag>{t('common.unused')}</Tag>,
     },
     {
-      title: '商品货号',
+      title: t('column.itemNumber'),
       key: 'itemNumbers',
       width: 220,
-      render: (_, record) => renderCopyableProducts(record.products, 'itemNumber'),
+      render: (_, record) => renderCopyableProducts(record.products, 'itemNumber', t),
     },
     {
-      title: '商品名称',
+      title: t('column.productName'),
       key: 'productNames',
       width: 220,
       render: (_, record) => renderProductsText(record.products, 'productName'),
     },
     {
-      title: '商品图片',
+      title: t('column.image'),
       key: 'productImages',
       width: 140,
       render: (_, record) => renderProductImages(record.products),
     },
     {
-      title: '更新时间',
+      title: t('column.updateTime'),
       dataIndex: 'updatedAt',
       width: 180,
       render: (value: string | undefined) => formatDateTime(value),
     },
     {
-      title: '更新人',
+      title: t('column.updater'),
       dataIndex: 'updatedBy',
       width: 140,
       render: (value: string | undefined) => value || '--',
     },
     {
-      title: '操作',
+      title: t('column.action'),
       key: 'action',
       width: 180,
       fixed: 'right',
       render: (_, record) => (
         <Space size={4}>
           <Button type="link" icon={<EditOutlined />} onClick={() => handleEdit(record)}>
-            编辑
+            {t('common.edit')}
           </Button>
           <Popconfirm
-            title="确认删除该仓库标签吗？"
-            description="删除后不可恢复。"
-            okText="删除"
-            cancelText="取消"
+            title={t('warehouseLocations.confirmDelete')}
+            description={t('warehouseLocations.deleteIrreversible')}
+            okText={t('common.delete')}
+            cancelText={t('common.cancel')}
             onConfirm={() => void handleDelete(record)}
           >
             <Button danger type="link" icon={<DeleteOutlined />}>
-              删除
+              {t('common.delete')}
             </Button>
           </Popconfirm>
         </Space>
@@ -377,12 +395,12 @@ export default function WarehouseLocationsPage() {
 
   return (
     <PageContainer
-      title="仓库标签管理"
-      subtitle="首个仓库业务页面已接入新框架，当前提供列表、筛选、新增、编辑和删除能力。"
+      title={t('warehouseLocations.title')}
+      subtitle={t('warehouseLocations.subtitle')}
       extra={
         access.canManageWarehouse ? (
           <Button type="primary" icon={<PlusOutlined />} onClick={handleCreate}>
-            新建标签
+            {t('warehouseLocations.newLocation')}
           </Button>
         ) : null
       }
@@ -390,50 +408,50 @@ export default function WarehouseLocationsPage() {
       <Card>
         <Space wrap style={{ marginBottom: 16 }}>
           <Input
-            placeholder="搜索货位代码"
+            placeholder={t('warehouseLocations.searchLocationCode')}
             value={locationCodeKeyword}
             onChange={(event) => setLocationCodeKeyword(event.target.value)}
             style={{ width: 180 }}
             allowClear
           />
           <Input
-            placeholder="搜索货位条码"
+            placeholder={t('warehouseLocations.searchLocationBarcode')}
             value={locationBarcodeKeyword}
             onChange={(event) => setLocationBarcodeKeyword(event.target.value)}
             style={{ width: 180 }}
             allowClear
           />
           <Input
-            placeholder="搜索更新人"
+            placeholder={t('warehouseLocations.searchUpdatedBy')}
             value={updatedByKeyword}
             onChange={(event) => setUpdatedByKeyword(event.target.value)}
             style={{ width: 160 }}
             allowClear
           />
           <Space>
-            <Typography.Text>标签类型</Typography.Text>
+            <Typography.Text>{t('warehouseLocations.locationTypeFilter')}</Typography.Text>
             <Select
               value={locationTypeFilter}
               onChange={setLocationTypeFilter}
               options={locationTypeOptions}
-              placeholder="全部类型"
+              placeholder={t('warehouseLocations.allTypes')}
               allowClear
               style={{ width: 160 }}
             />
           </Space>
           <Space>
-            <Typography.Text>使用状态</Typography.Text>
+            <Typography.Text>{t('warehouseLocations.usageFilter')}</Typography.Text>
             <Select
               value={usageFilter}
               onChange={setUsageFilter}
               options={usageOptions}
-              placeholder="全部状态"
+              placeholder={t('warehouseLocations.allUsageStatus')}
               allowClear
               style={{ width: 160 }}
             />
           </Space>
           <Button type="primary" icon={<SearchOutlined />} onClick={() => void loadData(1, pageSize)}>
-            查询
+            {t('common.query')}
           </Button>
           <Button
             icon={<ReloadOutlined />}
@@ -446,7 +464,7 @@ export default function WarehouseLocationsPage() {
               void loadData(1, pageSize, undefined, undefined, '', '', '')
             }}
           >
-            重置
+            {t('common.reset')}
           </Button>
         </Space>
 
@@ -470,31 +488,31 @@ export default function WarehouseLocationsPage() {
       </Card>
 
       <Modal
-        title={editingItem ? '编辑仓库标签' : '新建仓库标签'}
+        title={editingItem ? t('warehouseLocations.editTitle') : t('warehouseLocations.createTitle')}
         open={modalOpen}
         onOk={() => void handleSave()}
         onCancel={handleCloseModal}
         confirmLoading={saving}
         destroyOnClose
-        okText="保存"
-        cancelText="取消"
+        okText={t('common.save')}
+        cancelText={t('common.cancel')}
       >
         <Form form={form} layout="vertical" preserve={false}>
           <Form.Item
             name="locationCode"
-            label="货位代码"
-            rules={[{ required: true, message: '请输入货位代码' }]}
+            label={t('column.locationCode')}
+            rules={[{ required: true, message: t('warehouseLocations.enterLocationCode') }]}
           >
-            <Input placeholder="请输入货位代码" />
+            <Input placeholder={t('warehouseLocations.enterLocationCode')} />
           </Form.Item>
-          <Form.Item name="locationBarcode" label="货位条码">
-            <Input placeholder="请输入货位条码" />
+          <Form.Item name="locationBarcode" label={t('column.locationBarcode')}>
+            <Input placeholder={t('warehouseLocations.enterLocationBarcode')} />
           </Form.Item>
-          <Form.Item name="locationType" label="货位类型">
-            <Select placeholder="请选择货位类型" options={locationTypeOptions} />
+          <Form.Item name="locationType" label={t('column.locationType')}>
+            <Select placeholder={t('warehouseLocations.selectLocationType')} options={locationTypeOptions} />
           </Form.Item>
-          <Form.Item name="status" label="标签状态">
-            <Select placeholder="请选择标签状态" options={statusOptions} />
+          <Form.Item name="status" label={t('column.locationStatus')}>
+            <Select placeholder={t('warehouseLocations.selectLocationStatus')} options={statusOptions} />
           </Form.Item>
         </Form>
       </Modal>

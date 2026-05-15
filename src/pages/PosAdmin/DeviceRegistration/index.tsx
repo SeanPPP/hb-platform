@@ -48,8 +48,8 @@ export default function DeviceRegistrationPage() {
       const nextStores = await getStoreOptions()
       setStores(nextStores)
     } catch (error) {
-      console.error(t('posAdmin.devices.loadStoresFailed', '加载分店失败'), error)
-      message.error(t('posAdmin.devices.loadStoresFailed', '加载分店失败'))
+      console.error(t('posAdmin.devices.loadStoresFailed'), error)
+      message.error(t('posAdmin.devices.loadStoresFailed'))
     }
   }
 
@@ -63,8 +63,8 @@ export default function DeviceRegistrationPage() {
       })
       setItems(result.devices)
     } catch (error) {
-      console.error(t('posAdmin.devices.loadFailed', '加载设备失败'), error)
-      message.error(t('posAdmin.devices.loadFailed', '加载设备失败'))
+      console.error(t('posAdmin.devices.loadFailed'), error)
+      message.error(t('posAdmin.devices.loadFailed'))
     } finally {
       setLoading(false)
     }
@@ -97,8 +97,8 @@ export default function DeviceRegistrationPage() {
 
       await loadDevices(selectedStoreCode)
     } catch (error) {
-      console.error(t('message.deviceStatusFailed', '设备状态更新失败'), error)
-      message.error(t('message.deviceStatusFailed', '设备状态更新失败'))
+      console.error(t('message.deviceStatusFailed'), error)
+      message.error(t('message.deviceStatusFailed'))
     } finally {
       setActionDeviceId(null)
     }
@@ -116,12 +116,12 @@ export default function DeviceRegistrationPage() {
   const columns = useMemo<ColumnsType<DeviceRegistrationItem>>(
     () => [
       {
-        title: t('posAdmin.devices.deviceNo', '设备编号'),
+        title: t('posAdmin.devices.deviceNo'),
         dataIndex: 'systemDeviceNumber',
         width: 180,
       },
       {
-        title: t('posAdmin.devices.hardwareId', '硬件标识'),
+        title: t('posAdmin.devices.hardwareId'),
         dataIndex: 'hardwareId',
         ellipsis: true,
       },
@@ -133,12 +133,12 @@ export default function DeviceRegistrationPage() {
           value ? `${value}${storeNameMap[value] ? ` / ${storeNameMap[value]}` : ''}` : '--',
       },
       {
-        title: t('posAdmin.devices.deviceType', '设备类型'),
+        title: t('posAdmin.devices.deviceType'),
         dataIndex: 'deviceType',
         width: 120,
       },
       {
-        title: t('posAdmin.devices.deviceSystem', '系统'),
+        title: t('posAdmin.devices.deviceSystem'),
         dataIndex: 'deviceSystem',
         width: 120,
       },
@@ -159,7 +159,7 @@ export default function DeviceRegistrationPage() {
         render: (value: string | undefined) => formatDateTime(value),
       },
       {
-        title: t('posAdmin.devices.lastModified', '最后更新'),
+        title: t('posAdmin.devices.lastModified'),
         dataIndex: 'lastModified',
         width: 180,
         render: (value: string | null | undefined) => formatDateTime(value),
@@ -208,7 +208,7 @@ export default function DeviceRegistrationPage() {
         <Space wrap>
           <Select
             allowClear
-            placeholder={t('posAdmin.devices.filterByStore', '按分店筛选')}
+            placeholder={t('posAdmin.devices.filterByStore')}
             style={{ width: 240 }}
             value={selectedStoreCode}
             onChange={(value) => setSelectedStoreCode(value)}

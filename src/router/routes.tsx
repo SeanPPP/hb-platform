@@ -381,7 +381,7 @@ export const appRoutes: AppRouteItem[] = [
       {
         path: '/pos-admin/device-registration',
         meta: {
-          title: '设备注册',
+          title: 'menu.deviceRegistration',
           icon: 'BuildOutlined',
           keepAlive: true,
           accessKey: 'canManageStore',

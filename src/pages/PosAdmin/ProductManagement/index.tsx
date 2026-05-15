@@ -760,7 +760,7 @@ export default function ProductManagementPage() {
       render: (v: string, record) => (
         <Space size={4}>
           <a onClick={() => copyTextToClipboard(v || record.productCode)}>{v || record.productCode}</a>
-          <Tooltip title={t('common.copy', '复制')}>
+          <Tooltip title={t('common.copy')}>
             <Button size="small" type="text" icon={<CopyOutlined />} onClick={() => copyTextToClipboard(v || record.productCode)} />
           </Tooltip>
         </Space>
@@ -882,7 +882,7 @@ export default function ProductManagementPage() {
       render: (v: string) => (v ? dayjs(v).format('YYYY-MM-DD HH:mm') : '-'),
     },
     {
-      title: t('column.actions', '操作'),
+      title: t('column.action'),
       key: 'actions',
       width: 200,
       fixed: 'right',
@@ -903,8 +903,8 @@ export default function ProductManagementPage() {
 
   return (
     <PageContainer
-      title={t('posAdmin.products.title', '商品管理')}
-      subtitle={t('posAdmin.products.subtitle', '共 {{count}} 条记录', { count: total })}
+      title={t('posAdmin.products.title')}
+      subtitle={t('posAdmin.products.subtitle', { count: total })}
       extra={
         <Space>
           <Button icon={<SafetyCertificateOutlined />} onClick={() => { setIntegrityVisible(true); setIntegrityResult(null) }}>
@@ -929,7 +929,7 @@ export default function ProductManagementPage() {
           <Space wrap>
             <Input.Search
               allowClear
-              placeholder={t('posAdmin.products.searchPlaceholder', '搜索代码/名称/条码')}
+              placeholder={t('posAdmin.products.searchPlaceholder')}
               style={{ width: 260 }}
               onSearch={handleSearch}
               onClear={() => handleSearch('')}
@@ -1223,7 +1223,7 @@ export default function ProductManagementPage() {
                 { title: t('posAdmin.productPrice.purchasePrice', '采购价'), dataIndex: 'setPurchasePrice', width: 120, render: (_: any, row: any) => { const rowId = row.id || row._rowId; const edit = editSetPriceEdits[rowId] || {}; return <InputNumber style={{ width: '100%' }} min={0} step={0.01} value={edit.setPurchasePrice !== undefined ? edit.setPurchasePrice : row.setPurchasePrice} placeholder="根据零售价自动计算" onChange={(v) => v !== undefined && editHandlePurchasePriceChange(row, v)} /> } },
                 { title: t('posAdmin.invoiceDetail.retailPrice', '零售价'), dataIndex: 'setRetailPrice', width: 120, render: (_: any, row: any) => { const rowId = row.id || row._rowId; const edit = editSetPriceEdits[rowId] || {}; return <InputNumber style={{ width: '100%' }} min={0} step={0.01} value={edit.setRetailPrice !== undefined ? edit.setRetailPrice : row.setRetailPrice} onChange={(v) => v !== undefined && editHandleRetailPriceChange(row, v!)} /> } },
                 { title: t('posAdmin.cashierUsers.status', '状态'), dataIndex: 'isActive', width: 80, render: (v: boolean) => <Tag color={v ? 'green' : 'red'}>{v ? t('posAdmin.products.enable', '启用') : t('posAdmin.products.disable', '禁用')}</Tag> },
-                { title: t('column.actions', '操作'), width: 80, render: (_: any, row: any) => <Button type="link" danger size="small" onClick={() => editDeleteSetCodeRow(row)}>{t('posAdmin.products.delete', '删除')}</Button> },
+                { title: t('column.action'), width: 80, render: (_: any, row: any) => <Button type="link" danger size="small" onClick={() => editDeleteSetCodeRow(row)}>{t('common.delete')}</Button> },
               ]}
             />
           </div>
@@ -1246,7 +1246,7 @@ export default function ProductManagementPage() {
                 { title: t('posAdmin.productPrice.purchasePrice', '采购价'), dataIndex: 'setPurchasePrice', width: 120, render: (_: any, row: any) => { const rowId = row.id || row._rowId; const edit = editSetPriceEdits[rowId] || {}; return <InputNumber style={{ width: '100%' }} min={0} step={0.01} value={edit.setPurchasePrice !== undefined ? edit.setPurchasePrice : row.setPurchasePrice} onChange={(v) => v !== undefined && editHandlePurchasePriceChange(row, v)} /> } },
                 { title: t('posAdmin.invoiceDetail.retailPrice', '零售价'), dataIndex: 'setRetailPrice', width: 120, render: (_: any, row: any) => { const rowId = row.id || row._rowId; const edit = editSetPriceEdits[rowId] || {}; return <InputNumber style={{ width: '100%' }} min={0} step={0.01} value={edit.setRetailPrice !== undefined ? edit.setRetailPrice : row.setRetailPrice} onChange={(v) => v !== undefined && editHandleRetailPriceChange(row, v!)} /> } },
                 { title: t('posAdmin.cashierUsers.status', '状态'), dataIndex: 'isActive', width: 80, render: (v: boolean) => <Tag color={v ? 'green' : 'red'}>{v ? t('posAdmin.products.enable', '启用') : t('posAdmin.products.disable', '禁用')}</Tag> },
-                { title: t('column.actions', '操作'), width: 80, render: (_: any, row: any) => <Button type="link" danger size="small" onClick={() => editDeleteSetCodeRow(row)}>{t('posAdmin.products.delete', '删除')}</Button> },
+                { title: t('column.action'), width: 80, render: (_: any, row: any) => <Button type="link" danger size="small" onClick={() => editDeleteSetCodeRow(row)}>{t('common.delete')}</Button> },
               ]}
             />
           </div>
@@ -1473,7 +1473,7 @@ export default function ProductManagementPage() {
                   ),
               },
               {
-                title: t('column.actions', '操作'),
+                title: t('column.action'),
                 width: 120,
                 render: (_, record) => (
                   <Space>
@@ -1488,7 +1488,7 @@ export default function ProductManagementPage() {
                     )}
                     <Popconfirm title={t('posAdmin.products.confirmDelete', '确认删除？')} onConfirm={() => handleDeleteSetCode(record)}>
                       <Button size="small" type="link" danger>
-                        {t('posAdmin.products.delete', '删除')}
+                        {t('common.delete')}
                       </Button>
                     </Popconfirm>
                   </Space>

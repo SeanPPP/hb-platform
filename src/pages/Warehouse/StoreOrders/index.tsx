@@ -23,6 +23,7 @@ import {
 } from 'antd'
 import type { Dayjs } from 'dayjs'
 import { useEffect, useMemo, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { useNavigate } from 'react-router-dom'
 import PageContainer from '../../../components/PageContainer'
 import {
@@ -46,8 +47,8 @@ import type {
   StoreOrderListQuery,
 } from '../../../types/storeOrder'
 import {
+  StoreOrderFlowStatus as FlowStatus,
   StoreOrderStatusColorMap,
-  StoreOrderStatusLabelMap,
   StoreOrderStatusOptions,
 } from '../../../types/storeOrder'
 import { getDateTagColor } from '../../../utils/tagColors'
@@ -70,20 +71,11 @@ interface CopyOrderModalProps {
   onConfirm: (payload: Omit<CopyStoreOrderPayload, 'sourceOrderGUID'>) => void
 }
 
-function formatDateTime(value?: string) {
-  if (!value) {
-    return '--'
-  }
-
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) {
-    return value
-  }
-
-  return date.toLocaleString('zh-CN', { hour12: false })
+function getLocale(language?: string) {
+  return language?.startsWith('zh') ? 'zh-CN' : 'en-US'
 }
 
-function formatDate(value?: string) {
+function formatDateTime(value?: string, language?: string) {
   if (!value) {
     return '--'
   }
@@ -93,7 +85,20 @@ function formatDate(value?: string) {
     return value
   }
 
-  return date.toLocaleDateString('zh-CN')
+  return date.toLocaleString(getLocale(language), { hour12: false })
+}
+
+function formatDate(value?: string, language?: string) {
+  if (!value) {
+    return '--'
+  }
+
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) {
+    return value
+  }
+
+  return date.toLocaleDateString(getLocale(language))
 }
 
 function formatAmount(value?: number) {
@@ -110,8 +115,8 @@ function formatVolume(value?: number) {
   return value.toFixed(4)
 }
 
-function renderDateTag(value?: string) {
-  const displayValue = formatDate(value)
+function renderDateTag(value?: string, language?: string) {
+  const displayValue = formatDate(value, language)
   if (displayValue === '--') {
     return '--'
   }
@@ -120,6 +125,7 @@ function renderDateTag(value?: string) {
 }
 
 function StorePickerModal({ open, title, loading, onCancel, onSelect }: StorePickerModalProps) {
+  const { t } = useTranslation()
   const [stores, setStores] = useState<StoreDto[]>([])
   const [fetching, setFetching] = useState(false)
   const [keyword, setKeyword] = useState('')
@@ -149,7 +155,7 @@ function StorePickerModal({ open, title, loading, onCancel, onSelect }: StorePic
       } catch (error) {
         console.error(error)
         if (!cancelled) {
-          message.error('加载分店失败')
+          message.error(t('storeOrders.loadStoresFailed'))
         }
       } finally {
         if (!cancelled) {
@@ -163,7 +169,7 @@ function StorePickerModal({ open, title, loading, onCancel, onSelect }: StorePic
     return () => {
       cancelled = true
     }
-  }, [keyword, open])
+  }, [keyword, open, t])
 
   return (
     <Modal
@@ -181,7 +187,7 @@ function StorePickerModal({ open, title, loading, onCancel, onSelect }: StorePic
         <Input
           value={keyword}
           allowClear
-          placeholder="搜索分店名称 / 编码"
+          placeholder={t('storeOrders.searchStorePlaceholder')}
           prefix={<SearchOutlined />}
           onChange={(event) => setKeyword(event.target.value)}
         />
@@ -193,18 +199,20 @@ function StorePickerModal({ open, title, loading, onCancel, onSelect }: StorePic
           dataSource={stores}
           scroll={{ y: 360 }}
           columns={[
-            { title: '分店名称', dataIndex: 'storeName' },
-            { title: '分店编码', dataIndex: 'storeCode', width: 140 },
+            { title: t('column.storeName'), dataIndex: 'storeName' },
+            { title: t('column.storeCode'), dataIndex: 'storeCode', width: 140 },
             {
-              title: '状态',
+              title: t('column.status'),
               dataIndex: 'isActive',
               width: 90,
               render: (value: boolean) => (
-                <Tag color={value ? 'success' : 'default'}>{value ? '启用' : '停用'}</Tag>
+                <Tag color={value ? 'success' : 'default'}>
+                  {value ? t('common.enable') : t('common.disable')}
+                </Tag>
               ),
             },
             {
-              title: '地址',
+              title: t('common.address'),
               dataIndex: 'address',
               render: (value: string | undefined) => value || '--',
             },
@@ -220,6 +228,7 @@ function StorePickerModal({ open, title, loading, onCancel, onSelect }: StorePic
 }
 
 function CopyOrderModal({ open, loading, onCancel, onConfirm }: CopyOrderModalProps) {
+  const { t } = useTranslation()
   const [stores, setStores] = useState<StoreDto[]>([])
   const [fetching, setFetching] = useState(false)
   const [keyword, setKeyword] = useState('')
@@ -252,7 +261,7 @@ function CopyOrderModal({ open, loading, onCancel, onConfirm }: CopyOrderModalPr
       } catch (error) {
         console.error(error)
         if (!cancelled) {
-          message.error('加载分店失败')
+          message.error(t('storeOrders.loadStoresFailed'))
         }
       } finally {
         if (!cancelled) {
@@ -266,7 +275,7 @@ function CopyOrderModal({ open, loading, onCancel, onConfirm }: CopyOrderModalPr
     return () => {
       cancelled = true
     }
-  }, [keyword, open])
+  }, [keyword, open, t])
 
   const handleClose = () => {
     setKeyword('')
@@ -278,18 +287,18 @@ function CopyOrderModal({ open, loading, onCancel, onConfirm }: CopyOrderModalPr
 
   return (
     <Modal
-      title="复制订单"
+      title={t('storeOrders.copyOrderTitle')}
       open={open}
       width={860}
       destroyOnClose
       confirmLoading={loading}
-      okText="确认复制"
-      cancelText="取消"
+      okText={t('storeOrders.confirmCopy')}
+      cancelText={t('common.cancel')}
       okButtonProps={{ disabled: !selectedStore }}
       onCancel={handleClose}
       onOk={() => {
         if (!selectedStore) {
-          message.warning('请选择目标分店')
+          message.warning(t('storeOrders.selectTargetStore'))
           return
         }
 
@@ -306,25 +315,27 @@ function CopyOrderModal({ open, loading, onCancel, onConfirm }: CopyOrderModalPr
             type={copyOrderQuantity ? 'primary' : 'default'}
             onClick={() => setCopyOrderQuantity((current) => !current)}
           >
-            复制订货数量
+            {t('storeOrders.copyOrderQty')}
           </Button>
           <Button
             type={copyAllocQuantity ? 'primary' : 'default'}
             onClick={() => setCopyAllocQuantity((current) => !current)}
           >
-            复制发货数量
+            {t('storeOrders.copyShipQty')}
           </Button>
         </Space>
         <Input
           value={keyword}
           allowClear
-          placeholder="搜索分店名称 / 编码"
+          placeholder={t('storeOrders.searchStorePlaceholder')}
           prefix={<SearchOutlined />}
           onChange={(event) => setKeyword(event.target.value)}
         />
         <Typography.Text type="secondary">
-          当前选择：
-          {selectedStore ? `${selectedStore.storeName} (${selectedStore.storeCode})` : '未选择'}
+          {t('storeOrders.currentSelection')}
+          {selectedStore
+            ? `${selectedStore.storeName} (${selectedStore.storeCode})`
+            : t('storeOrders.noneSelected')}
         </Typography.Text>
         <Table
           rowKey="storeGUID"
@@ -333,12 +344,14 @@ function CopyOrderModal({ open, loading, onCancel, onConfirm }: CopyOrderModalPr
           pagination={false}
           dataSource={stores}
           scroll={{ y: 320 }}
-          rowClassName={(record) => (record.storeGUID === selectedStore?.storeGUID ? 'ant-table-row-selected' : '')}
+          rowClassName={(record) =>
+            record.storeGUID === selectedStore?.storeGUID ? 'ant-table-row-selected' : ''
+          }
           columns={[
-            { title: '分店名称', dataIndex: 'storeName' },
-            { title: '分店编码', dataIndex: 'storeCode', width: 140 },
+            { title: t('column.storeName'), dataIndex: 'storeName' },
+            { title: t('column.storeCode'), dataIndex: 'storeCode', width: 140 },
             {
-              title: '地址',
+              title: t('common.address'),
               dataIndex: 'address',
               render: (value: string | undefined) => value || '--',
             },
@@ -354,6 +367,7 @@ function CopyOrderModal({ open, loading, onCancel, onConfirm }: CopyOrderModalPr
 }
 
 export default function StoreOrdersPage() {
+  const { t, i18n } = useTranslation()
   const navigate = useNavigate()
   const { access } = useAuthStore()
 
@@ -367,8 +381,8 @@ export default function StoreOrdersPage() {
   const [dateRange, setDateRange] = useState<RangeValue>(null)
   const [selectedStoreCodes, setSelectedStoreCodes] = useState<string[]>([])
   const [statusList, setStatusList] = useState<StoreOrderFlowStatus[]>([
-    1 as StoreOrderFlowStatus,
-    2 as StoreOrderFlowStatus,
+    FlowStatus.Submitted,
+    FlowStatus.Completed,
   ])
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
@@ -380,31 +394,47 @@ export default function StoreOrdersPage() {
   const [copyModalOpen, setCopyModalOpen] = useState(false)
 
   const branchMap = useMemo(
-    () =>
-      Object.fromEntries(
-        branches.map((item) => [item.code, item.name]),
-      ) as Record<string, string>,
+    () => Object.fromEntries(branches.map((item) => [item.code, item.name])) as Record<string, string>,
     [branches],
   )
 
-  const buildQuery = (overrides: Partial<StoreOrderListQuery> = {}): StoreOrderListQuery => ({
+  const statusLabelMap = useMemo(
+    () =>
+      ({
+        [FlowStatus.ShoppingCart]: t('storeOrders.statusShoppingCart'),
+        [FlowStatus.Submitted]: t('storeOrders.statusSubmitted'),
+        [FlowStatus.Completed]: t('storeOrders.statusCompleted'),
+        [FlowStatus.Picking]: t('storeOrders.statusPicking'),
+      }) as Record<StoreOrderFlowStatus, string>,
+    [t],
+  )
+
+  const statusOptions = useMemo(
+    () =>
+      StoreOrderStatusOptions.map((item) => ({
+        value: item.value,
+        label: statusLabelMap[item.value],
+      })),
+    [statusLabelMap],
+  )
+
+  const buildQuery = (
+    overrides: Partial<StoreOrderListQuery & { pageNumber: number; pageSize: number }> = {},
+  ): StoreOrderListQuery => ({
     keyword: keyword || undefined,
     storeCodes: selectedStoreCodes.length ? selectedStoreCodes : undefined,
     startDate: dateRange?.[0]?.startOf('day').toISOString(),
     endDate: dateRange?.[1]?.endOf('day').toISOString(),
     statusList: statusList.length ? statusList : undefined,
-    pageNumber: page,
-    pageSize,
-    sortBy: sortField,
-    sortDescending: sortOrder === 'descend',
-    ...overrides,
+    pageNumber: overrides.pageNumber ?? page,
+    pageSize: overrides.pageSize ?? pageSize,
+    sortBy: overrides.sortBy ?? sortField,
+    sortDescending: overrides.sortDescending ?? sortOrder === 'descend',
   })
 
   const openDetail = (record: Pick<StoreOrderListItem, 'orderGUID' | 'orderNo'>) => {
     navigate(`/warehouse/store-order/detail/${record.orderGUID}`, {
-      state: {
-        orderNo: record.orderNo,
-      },
+      state: { orderNo: record.orderNo },
     })
   }
 
@@ -414,11 +444,13 @@ export default function StoreOrdersPage() {
       setBranches(result)
     } catch (error) {
       console.error(error)
-      message.error('加载分店筛选失败')
+      message.error(t('storeOrders.loadBranchFiltersFailed'))
     }
   }
 
-  const loadData = async (overrides: Partial<StoreOrderListQuery> = {}) => {
+  const loadData = async (
+    overrides: Partial<StoreOrderListQuery & { pageNumber: number; pageSize: number }> = {},
+  ) => {
     setLoading(true)
     try {
       const result = await getStoreOrderList(buildQuery(overrides))
@@ -429,7 +461,7 @@ export default function StoreOrdersPage() {
       setSelectedRowKeys([])
     } catch (error) {
       console.error(error)
-      message.error(error instanceof Error ? error.message : '加载分店订货列表失败')
+      message.error(error instanceof Error ? error.message : t('storeOrders.loadListFailed'))
     } finally {
       setLoading(false)
     }
@@ -447,61 +479,74 @@ export default function StoreOrdersPage() {
       )
 
       if (!result?.success) {
-        message.error(result?.message || '同步订单失败')
+        message.error(result?.message || t('storeOrders.syncFailed'))
         return
       }
 
-      const ordersSynced = result.ordersSynced ?? 0
-      const detailsSynced = result.detailsSynced ?? 0
-      const ordersUpdated = result.ordersUpdated ?? 0
-      const detailsUpdated = result.detailsUpdated ?? 0
-      const hasChanges =
-        ordersSynced > 0 || detailsSynced > 0 || ordersUpdated > 0 || detailsUpdated > 0
+      const parts: string[] = []
+      if ((result.ordersSynced ?? 0) > 0 || (result.detailsSynced ?? 0) > 0) {
+        parts.push(
+          t('storeOrders.syncCreatedSummary', {
+            orders: result.ordersSynced ?? 0,
+            details: result.detailsSynced ?? 0,
+          }),
+        )
+      }
+      if ((result.ordersUpdated ?? 0) > 0 || (result.detailsUpdated ?? 0) > 0) {
+        parts.push(
+          t('storeOrders.syncUpdatedSummary', {
+            orders: result.ordersUpdated ?? 0,
+            details: result.detailsUpdated ?? 0,
+          }),
+        )
+      }
 
-      if (hasChanges) {
-        const parts: string[] = []
-        if (ordersSynced > 0 || detailsSynced > 0) {
-          parts.push(`新增同步 ${ordersSynced} 个订单、${detailsSynced} 条明细`)
-        }
-        if (ordersUpdated > 0 || detailsUpdated > 0) {
-          parts.push(`更新 ${ordersUpdated} 个订单、${detailsUpdated} 条明细`)
-        }
-        message.success(parts.join('；'))
+      if (parts.length) {
+        message.success(parts.join(', '))
       } else {
-        message.info(result.message || '未发现缺失订单，当前已是最新')
+        message.info(result.message || t('storeOrders.alreadyLatest'))
       }
 
       void loadData()
     } catch (error) {
       console.error(error)
-      message.error(error instanceof Error ? error.message : '同步订单失败')
+      message.error(error instanceof Error ? error.message : t('storeOrders.syncFailed'))
     } finally {
       setSyncLoading(false)
     }
   }
 
   const handleStatusToggle = (record: StoreOrderListItem) => {
-    if (record.flowStatus !== 1 && record.flowStatus !== 2) {
+    if (record.flowStatus !== FlowStatus.Submitted && record.flowStatus !== FlowStatus.Completed) {
       return
     }
 
-    const nextStatus = record.flowStatus === 1 ? 2 : 1
-    const actionLabel = nextStatus === 2 ? '完成' : '恢复为已提交'
+    const nextStatus =
+      record.flowStatus === FlowStatus.Submitted ? FlowStatus.Completed : FlowStatus.Submitted
+    const actionLabel =
+      nextStatus === FlowStatus.Completed
+        ? t('storeOrders.markCompleted')
+        : t('storeOrders.markSubmitted')
 
     Modal.confirm({
-      title: '更新订单状态',
-      content: `确认将订单 ${record.orderNo} ${actionLabel}吗？`,
+      title: t('storeOrders.updateStatusTitle'),
+      content: t('storeOrders.updateStatusConfirm', {
+        orderNo: record.orderNo,
+        action: actionLabel,
+      }),
+      okText: t('common.confirm'),
+      cancelText: t('common.cancel'),
       onOk: async () => {
         try {
           await updateStoreOrderStatus({
             orderGUID: record.orderGUID,
             newStatus: nextStatus,
           })
-          message.success('状态更新成功')
+          message.success(t('storeOrders.updateStatusSuccess'))
           void loadData()
         } catch (error) {
           console.error(error)
-          message.error(error instanceof Error ? error.message : '状态更新失败')
+          message.error(error instanceof Error ? error.message : t('storeOrders.updateStatusFailed'))
         }
       },
     })
@@ -509,24 +554,31 @@ export default function StoreOrdersPage() {
 
   const handleBatchStatusChange = (newStatus: StoreOrderFlowStatus) => {
     if (!selectedRowKeys.length) {
-      message.warning('请先选择订单')
+      message.warning(t('storeOrders.selectOrdersFirst'))
       return
     }
 
     Modal.confirm({
-      title: '批量更新状态',
-      content: `确认将已选择的 ${selectedRowKeys.length} 个订单改为 ${StoreOrderStatusLabelMap[newStatus]} 吗？`,
+      title: t('storeOrders.batchUpdateStatusTitle'),
+      content: t('storeOrders.batchUpdateStatusConfirm', {
+        count: selectedRowKeys.length,
+        status: statusLabelMap[newStatus],
+      }),
+      okText: t('common.confirm'),
+      cancelText: t('common.cancel'),
       onOk: async () => {
         try {
           await batchUpdateStoreOrderStatus({
             orderGUIDs: selectedRowKeys.map(String),
             newStatus,
           })
-          message.success('批量更新成功')
+          message.success(t('storeOrders.batchUpdateStatusSuccess'))
           void loadData()
         } catch (error) {
           console.error(error)
-          message.error(error instanceof Error ? error.message : '批量更新失败')
+          message.error(
+            error instanceof Error ? error.message : t('storeOrders.batchUpdateStatusFailed'),
+          )
         }
       },
     })
@@ -535,26 +587,26 @@ export default function StoreOrdersPage() {
   const handleCopyOrderNo = async (orderNo: string) => {
     try {
       await navigator.clipboard.writeText(orderNo)
-      message.success(`已复制订单号：${orderNo}`)
+      message.success(t('storeOrders.copyOrderNoSuccess', { orderNo }))
     } catch (error) {
       console.error(error)
-      message.error('复制订单号失败')
+      message.error(t('storeOrders.copyOrderNoFailed'))
     }
   }
 
   const columns = useMemo<ColumnsType<StoreOrderListItem>>(
     () => [
       {
-        title: '#',
+        title: t('column.index'),
         dataIndex: 'index',
-        width: 50,
+        width: 60,
         fixed: 'left',
         render: (_, __, index) => (page - 1) * pageSize + index + 1,
       },
       {
-        title: '订单号',
+        title: t('column.orderNo'),
         dataIndex: 'orderNo',
-        width: 120,
+        width: 140,
         sorter: true,
         fixed: 'left',
         render: (value: string, record) => (
@@ -572,9 +624,9 @@ export default function StoreOrdersPage() {
         ),
       },
       {
-        title: '分店',
+        title: t('column.store'),
         dataIndex: 'storeCode',
-        width: 170,
+        width: 180,
         sorter: true,
         render: (value: string | undefined, record) => {
           const code = value || '--'
@@ -597,126 +649,132 @@ export default function StoreOrdersPage() {
         },
       },
       {
-        title: '订货日期',
+        title: t('column.orderDate'),
         dataIndex: 'orderDate',
         width: 130,
         sorter: true,
-        render: (value: string | undefined) => renderDateTag(value),
+        render: (value: string | undefined) => renderDateTag(value, i18n.language),
       },
       {
-        title: '发货日期',
+        title: t('storeOrders.outboundDate'),
         dataIndex: 'outboundDate',
         width: 130,
         sorter: true,
-        render: (value: string | undefined) => renderDateTag(value),
+        render: (value: string | undefined) => renderDateTag(value, i18n.language),
       },
       {
-        title: '状态',
+        title: t('column.status'),
         dataIndex: 'flowStatus',
         width: 110,
         sorter: true,
         render: (value: StoreOrderFlowStatus, record) => (
           <Tag
             color={StoreOrderStatusColorMap[value] || 'default'}
-            style={{ cursor: value === 1 || value === 2 ? 'pointer' : 'default' }}
+            style={{
+              cursor:
+                value === FlowStatus.Submitted || value === FlowStatus.Completed
+                  ? 'pointer'
+                  : 'default',
+            }}
             onClick={() => handleStatusToggle(record)}
           >
-            {StoreOrderStatusLabelMap[value] || `状态 ${value}`}
+            {statusLabelMap[value] || `${t('column.status')} ${value}`}
           </Tag>
         ),
       },
       {
-        title: '订货数量',
+        title: t('storeOrders.orderQuantity'),
         dataIndex: 'totalQuantity',
         width: 110,
         sorter: true,
       },
       {
-        title: '订货金额',
+        title: t('storeOrders.orderAmount'),
         dataIndex: 'totalOrderAmount',
         width: 120,
         sorter: true,
         render: (value: number) => formatAmount(value),
       },
       {
-        title: '订货体积',
+        title: t('storeOrders.orderVolume'),
         dataIndex: 'totalOrderVolume',
         width: 120,
         render: (value: number | undefined) => formatVolume(value),
       },
       {
-        title: '发货体积',
+        title: t('storeOrders.shipVolume'),
         dataIndex: 'totalAllocVolume',
         width: 120,
         render: (value: number | undefined) => formatVolume(value),
       },
       {
-        title: '发货数量',
+        title: t('storeOrders.shipQuantity'),
         dataIndex: 'totalAllocQuantity',
         width: 110,
         sorter: true,
       },
       {
-        title: '发货金额',
+        title: t('storeOrders.shipAmount'),
         dataIndex: 'importTotalAmount',
         width: 120,
         sorter: true,
         render: (value: number) => formatAmount(value),
       },
-      
       {
-        title: '备注',
+        title: t('common.remarks'),
         dataIndex: 'remarks',
         width: 220,
         ellipsis: true,
         render: (value: string | undefined) => value || '--',
       },
       {
-        title: '创建时间',
+        title: t('column.createTime'),
         dataIndex: 'createdAt',
         width: 180,
-        render: (value: string | undefined) => formatDateTime(value),
+        render: (value: string | undefined) => formatDateTime(value, i18n.language),
       },
       {
-        title: '更新人',
+        title: t('column.updater'),
         dataIndex: 'updatedBy',
         width: 140,
         render: (value: string | undefined) => value || '--',
       },
       {
-        title: '更新时间',
+        title: t('column.updateTime'),
         dataIndex: 'updatedAt',
         width: 180,
-        render: (value: string | undefined) => formatDateTime(value),
+        render: (value: string | undefined) => formatDateTime(value, i18n.language),
       },
       {
-        title: '操作',
+        title: t('column.action'),
         key: 'action',
         fixed: 'right',
         width: 170,
         render: (_, record) => (
           <Space size={0}>
             <Button type="link" onClick={() => openDetail(record)}>
-              查看
+              {t('common.view')}
             </Button>
             {access.canDeleteOrder ? (
               <Popconfirm
-                title={`确认删除订单 ${record.orderNo} 吗？`}
-                okText="删除"
-                cancelText="取消"
+                title={t('storeOrders.confirmDeleteOrder', { orderNo: record.orderNo })}
+                okText={t('common.delete')}
+                cancelText={t('common.cancel')}
                 onConfirm={async () => {
                   try {
                     await deleteStoreOrder(record.orderGUID)
-                    message.success('删除成功')
+                    message.success(t('common.deleteSuccess'))
                     void loadData({ pageNumber: 1 })
                   } catch (error) {
                     console.error(error)
-                    message.error(error instanceof Error ? error.message : '删除失败')
+                    message.error(
+                      error instanceof Error ? error.message : t('storeOrders.deleteFailed'),
+                    )
                   }
                 }}
               >
                 <Button danger type="link">
-                  删除
+                  {t('common.delete')}
                 </Button>
               </Popconfirm>
             ) : null}
@@ -724,13 +782,13 @@ export default function StoreOrdersPage() {
         ),
       },
     ],
-    [access.canDeleteOrder, branchMap, page, pageSize],
+    [access.canDeleteOrder, branchMap, i18n.language, page, pageSize, statusLabelMap, t],
   )
 
   return (
     <PageContainer
-      title="分店订货列表"
-      subtitle="首版先迁列表主链：筛选、状态、门店多选、新建、复制、批量状态和跳转明细 Tab。"
+      title={t('storeOrders.title')}
+      subtitle={t('storeOrders.subtitle')}
       extra={
         <Space wrap>
           {access.canManageWarehouse ? (
@@ -740,7 +798,7 @@ export default function StoreOrdersPage() {
               disabled={syncLoading}
               onClick={() => void handleSyncMissingOrders()}
             >
-              同步订单
+              {t('storeOrders.syncOrders')}
             </Button>
           ) : null}
           <Button
@@ -749,14 +807,14 @@ export default function StoreOrdersPage() {
             disabled={!access.canWriteOrder}
             onClick={() => setStorePickerOpen(true)}
           >
-            新建订单
+            {t('storeOrders.newOrder')}
           </Button>
           <Button
             icon={<CopyOutlined />}
             disabled={!selectedRowKeys.length}
             onClick={() => setCopyModalOpen(true)}
           >
-            复制订单 ({selectedRowKeys.length})
+            {t('storeOrders.copyOrder', { count: selectedRowKeys.length })}
           </Button>
           <Button
             icon={<ReloadOutlined />}
@@ -764,7 +822,7 @@ export default function StoreOrdersPage() {
               setKeyword('')
               setDateRange(null)
               setSelectedStoreCodes([])
-              setStatusList([1 as StoreOrderFlowStatus, 2 as StoreOrderFlowStatus])
+              setStatusList([FlowStatus.Submitted, FlowStatus.Completed])
               setSortField('orderDate')
               setSortOrder('descend')
               void loadData({
@@ -772,7 +830,7 @@ export default function StoreOrdersPage() {
                 startDate: undefined,
                 endDate: undefined,
                 storeCodes: undefined,
-                statusList: [1 as StoreOrderFlowStatus, 2 as StoreOrderFlowStatus],
+                statusList: [FlowStatus.Submitted, FlowStatus.Completed],
                 pageNumber: 1,
                 pageSize,
                 sortBy: 'orderDate',
@@ -780,19 +838,19 @@ export default function StoreOrdersPage() {
               })
             }}
           >
-            重置
+            {t('common.reset')}
           </Button>
           <Button
             disabled={!selectedRowKeys.length}
-            onClick={() => handleBatchStatusChange(1 as StoreOrderFlowStatus)}
+            onClick={() => handleBatchStatusChange(FlowStatus.Submitted)}
           >
-            批量改已提交
+            {t('storeOrders.batchSubmitted')}
           </Button>
           <Button
             disabled={!selectedRowKeys.length}
-            onClick={() => handleBatchStatusChange(2 as StoreOrderFlowStatus)}
+            onClick={() => handleBatchStatusChange(FlowStatus.Completed)}
           >
-            批量改已完成
+            {t('storeOrders.batchCompleted')}
           </Button>
         </Space>
       }
@@ -804,7 +862,7 @@ export default function StoreOrdersPage() {
             style={{ width: 260 }}
             allowClear
             prefix={<SearchOutlined />}
-            placeholder="搜索订单号 / 分店编码"
+            placeholder={t('storeOrders.searchPlaceholder')}
             onChange={(event) => setKeyword(event.target.value)}
           />
           <DatePicker.RangePicker value={dateRange} onChange={(value) => setDateRange(value)} />
@@ -813,7 +871,7 @@ export default function StoreOrdersPage() {
             value={selectedStoreCodes}
             allowClear
             style={{ width: 280 }}
-            placeholder="全部分店"
+            placeholder={t('storeOrders.allStores')}
             options={branches.map((item) => ({
               value: item.code,
               label: `${item.code} - ${item.name}`,
@@ -825,15 +883,12 @@ export default function StoreOrdersPage() {
             value={statusList}
             allowClear
             style={{ width: 220 }}
-            placeholder="全部状态"
-            options={StoreOrderStatusOptions.map((item) => ({
-              value: item.value,
-              label: item.label,
-            }))}
+            placeholder={t('storeOrders.allStatuses')}
+            options={statusOptions}
             onChange={(value) => setStatusList(value)}
           />
           <Button type="primary" onClick={() => void loadData({ pageNumber: 1 })}>
-            查询
+            {t('common.query')}
           </Button>
         </Space>
 
@@ -852,6 +907,7 @@ export default function StoreOrdersPage() {
             pageSize,
             total,
             showSizeChanger: true,
+            showTotal: (value) => t('common.total', { count: value }),
           }}
           onChange={(
             pagination: TablePaginationConfig,
@@ -880,20 +936,22 @@ export default function StoreOrdersPage() {
 
       <StorePickerModal
         open={storePickerOpen}
-        title="选择分店创建订单"
+        title={t('storeOrders.selectStoreCreate')}
         loading={creating}
         onCancel={() => setStorePickerOpen(false)}
         onSelect={async (store) => {
           setCreating(true)
           try {
             const orderGuid = await createStoreOrder({ storeCode: store.storeCode })
-            message.success(`已为 ${store.storeName} 创建新订单`)
+            message.success(
+              t('storeOrders.createOrderSuccess', { storeName: store.storeName || store.storeCode }),
+            )
             setStorePickerOpen(false)
             navigate(`/warehouse/store-order/detail/${orderGuid}`)
             void loadData({ pageNumber: 1 })
           } catch (error) {
             console.error(error)
-            message.error(error instanceof Error ? error.message : '创建订单失败')
+            message.error(error instanceof Error ? error.message : t('storeOrders.createOrderFailed'))
           } finally {
             setCreating(false)
           }
@@ -906,7 +964,7 @@ export default function StoreOrdersPage() {
         onCancel={() => setCopyModalOpen(false)}
         onConfirm={async (payload) => {
           if (!selectedRowKeys.length) {
-            message.warning('请先选择要复制的订单')
+            message.warning(t('storeOrders.selectOrdersFirst'))
             return
           }
 
@@ -921,7 +979,11 @@ export default function StoreOrdersPage() {
             const orderGuid = typeof result === 'string' ? result : result.orderGUID
             const orderNo = typeof result === 'string' ? '' : result.orderNo
 
-            message.success(orderNo ? `订单复制成功：${orderNo}` : '订单复制成功')
+            message.success(
+              orderNo
+                ? t('storeOrders.copyOrderSuccessWithNo', { orderNo })
+                : t('storeOrders.copyOrderSuccess'),
+            )
             setCopyModalOpen(false)
             setSelectedRowKeys([])
             navigate(`/warehouse/store-order/detail/${orderGuid}`, {
@@ -932,7 +994,7 @@ export default function StoreOrdersPage() {
             void loadData({ pageNumber: 1 })
           } catch (error) {
             console.error(error)
-            message.error(error instanceof Error ? error.message : '复制订单失败')
+            message.error(error instanceof Error ? error.message : t('storeOrders.copyOrderFailed'))
           } finally {
             setCopying(false)
           }

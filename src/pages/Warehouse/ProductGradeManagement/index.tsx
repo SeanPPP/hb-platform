@@ -1,4 +1,4 @@
-import {
+﻿import {
   DeleteOutlined,
   DollarOutlined,
   FileExcelOutlined,
@@ -20,6 +20,7 @@ import {
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { useEffect, useMemo, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import PageContainer from '../../../components/PageContainer'
 import { getActiveChinaSuppliers } from '../../../services/chinaSupplierService'
 import {
@@ -39,14 +40,6 @@ const GRADE_TAG_COLOR: Record<string, string> = {
   D: 'red',
 }
 
-const gradeFilterOptions = [
-  { label: '全部等级', value: '' },
-  ...Object.entries(PRODUCT_GRADE_CONFIG).map(([key, cfg]) => ({
-    label: cfg.label,
-    value: key,
-  })),
-]
-
 interface SupplierOption {
   label: string
   value: string
@@ -58,6 +51,7 @@ function formatPrice(value?: number, prefix = '¥') {
 }
 
 export default function ProductGradeManagementPage() {
+  const { t } = useTranslation()
   const [loading, setLoading] = useState(false)
   const [data, setData] = useState<ProductGradeListItem[]>([])
   const [page, setPage] = useState(1)
@@ -72,6 +66,13 @@ export default function ProductGradeManagementPage() {
   const [batchGrade, setBatchGrade] = useState<string | undefined>(undefined)
   const [pasteImportOpen, setPasteImportOpen] = useState(false)
   const [batchPriceOpen, setBatchPriceOpen] = useState(false)
+  const gradeFilterOptions = [
+    { label: t('productGrade.allGrades'), value: '' },
+    ...Object.entries(PRODUCT_GRADE_CONFIG).map(([key, cfg]) => ({
+      label: cfg.label,
+      value: key,
+    })),
+  ]
 
   const loadSuppliers = async () => {
     setSupplierLoading(true)
@@ -85,7 +86,7 @@ export default function ProductGradeManagementPage() {
       )
     } catch (error) {
       console.error(error)
-      message.error('加载供应商列表失败')
+      message.error(t('productGrade.loadSuppliersFailed'))
     } finally {
       setSupplierLoading(false)
     }
@@ -107,7 +108,7 @@ export default function ProductGradeManagementPage() {
       setPageSize(result.pageSize)
     } catch (error) {
       console.error(error)
-      message.error('加载等级列表失败')
+      message.error(t('productGrade.loadListFailed'))
     } finally {
       setLoading(false)
     }
@@ -121,21 +122,21 @@ export default function ProductGradeManagementPage() {
   const handleDelete = async (id: string) => {
     try {
       await deleteProductGrade(id)
-      message.success('删除成功')
+      message.success(t('common.deleteSuccess'))
       void loadList(page, pageSize)
     } catch (error) {
       console.error(error)
-      message.error('删除失败')
+      message.error(t('common.deleteFailed'))
     }
   }
 
   const handleBatchUpdate = async () => {
     if (selectedRowKeys.length === 0) {
-      message.warning('请先选择商品')
+      message.warning(t('productGrade.selectProductsFirst'))
       return
     }
     if (!batchGrade) {
-      message.warning('请选择目标等级')
+      message.warning(t('productGrade.selectTargetGrade'))
       return
     }
     try {
@@ -145,53 +146,53 @@ export default function ProductGradeManagementPage() {
           grade: batchGrade,
         })),
       })
-      message.success(`批量更新 ${selectedRowKeys.length} 条成功`)
+      message.success(t('productGrade.batchUpdateSuccess', { count: selectedRowKeys.length }))
       setSelectedRowKeys([])
       setBatchGrade(undefined)
       void loadList(page, pageSize)
     } catch (error) {
       console.error(error)
-      message.error('批量更新失败')
+      message.error(t('productGrade.batchUpdateFailed'))
     }
   }
 
   const handleInlineGradeChange = async (productCode: string, newGrade: string) => {
     try {
       await createOrUpdateProductGrade({ productCode, grade: newGrade })
-      message.success('等级更新成功')
+      message.success(t('productGrade.updateSuccess'))
       void loadList(page, pageSize)
     } catch (error) {
       console.error(error)
-      message.error('等级更新失败')
+      message.error(t('productGrade.updateFailed'))
     }
   }
 
   const columns = useMemo<ColumnsType<ProductGradeListItem>>(
     () => [
       {
-        title: '#',
+        title: t('column.index'),
         width: 50,
         render: (_v, _r, index) => (page - 1) * pageSize + index + 1,
       },
       {
-        title: '供应商',
+        title: t('column.supplier'),
         width: 150,
         render: (_, record) => record.supplierName || record.supplierCode || '--',
       },
       {
-        title: '供应商代码',
+        title: t('column.supplierCode'),
         dataIndex: 'supplierCode',
         width: 110,
         render: (value?: string) => value || '--',
       },
       {
-        title: '货号',
+        title: t('column.itemNumber'),
         dataIndex: 'hbProductNo',
         width: 140,
         render: (value?: string) => value || '--',
       },
       {
-        title: '图片',
+        title: t('column.image'),
         dataIndex: 'productImage',
         width: 80,
         render: (value?: string) =>
@@ -202,7 +203,7 @@ export default function ProductGradeManagementPage() {
           ),
       },
       {
-        title: '等级',
+        title: t('column.levelLabel'),
         dataIndex: 'grade',
         width: 100,
         render: (grade: string, record) => (
@@ -223,52 +224,52 @@ export default function ProductGradeManagementPage() {
         ),
       },
       {
-        title: '国内价(RMB)',
+        title: t('productGrade.domesticPriceRmb'),
         dataIndex: 'domesticPrice',
         width: 110,
         render: (value?: number) => formatPrice(value),
       },
       {
-        title: '进货价(AUD)',
+        title: t('productGrade.importPriceAud'),
         dataIndex: 'importPrice',
         width: 110,
         render: (value?: number) => formatPrice(value, 'A$'),
       },
       {
-        title: '零售价(AUD)',
+        title: t('productGrade.retailPriceAud'),
         dataIndex: 'oemPrice',
         width: 110,
         render: (value?: number) => formatPrice(value, 'A$'),
       },
       {
-        title: '操作',
+        title: t('column.action'),
         key: 'action',
         width: 80,
         fixed: 'right',
         render: (_, record) => (
           <Popconfirm
-            title="确认删除该等级记录？"
-            description="删除后该商品将无等级标记。"
+            title={t('productGrade.confirmDelete')}
+            description={t('productGrade.deleteGradeHint')}
             onConfirm={() => void handleDelete(record.id)}
           >
-            <Tooltip title="删除等级">
+            <Tooltip title={t('productGrade.deleteGrade')}>
               <Button type="link" danger icon={<DeleteOutlined />} size="small" />
             </Tooltip>
           </Popconfirm>
         ),
       },
     ],
-    [page, pageSize],
+    [page, pageSize, t],
   )
 
   return (
-    <PageContainer title="商品等级管理" subtitle="管理商品的等级分类（A/B/C/D），支持批量修改和粘贴导入。">
+    <PageContainer title={t('productGrade.title')} subtitle={t('productGrade.subtitle')}>
       <Card>
         <Space wrap style={{ marginBottom: 16 }}>
           <Select
             showSearch
             allowClear
-            placeholder="筛选供应商"
+            placeholder={t('productGrade.filterSupplier')}
             value={supplierCode}
             onChange={(value) => setSupplierCode(value)}
             options={suppliers}
@@ -283,7 +284,7 @@ export default function ProductGradeManagementPage() {
             style={{ width: 180 }}
           />
           <Input
-            placeholder="搜索货号 / 商品名称 / 供应商"
+            placeholder={t('productGrade.searchPlaceholder')}
             prefix={<SearchOutlined />}
             value={search}
             onChange={(event) => setSearch(event.target.value)}
@@ -291,33 +292,33 @@ export default function ProductGradeManagementPage() {
             style={{ width: 260 }}
           />
           <Button type="primary" onClick={() => void loadList(1, pageSize)}>
-            查询
+            {t('common.query')}
           </Button>
           <Button icon={<ReloadOutlined />} onClick={() => void loadList(page, pageSize)}>
-            刷新
+            {t('common.refresh')}
           </Button>
           <Button
             type="dashed"
             icon={<FileExcelOutlined />}
             onClick={() => setPasteImportOpen(true)}
           >
-            粘贴导入
+            {t('productGrade.pasteImport')}
           </Button>
           <Button
             icon={<DollarOutlined />}
             disabled={selectedRowKeys.length === 0}
             onClick={() => setBatchPriceOpen(true)}
           >
-            批量改价
+            {t('productGrade.batchPrice')}
           </Button>
         </Space>
 
         {selectedRowKeys.length > 0 && (
           <Card size="small" style={{ marginBottom: 12, background: '#fafafa' }}>
             <Space>
-              <span>已选 {selectedRowKeys.length} 项</span>
+              <span>{t('productGrade.selectedProducts', { count: selectedRowKeys.length })}</span>
               <Select
-                placeholder="选择目标等级"
+                placeholder={t('productGrade.selectTargetGrade')}
                 value={batchGrade}
                 onChange={setBatchGrade}
                 style={{ width: 160 }}
@@ -333,10 +334,10 @@ export default function ProductGradeManagementPage() {
                 ))}
               </Select>
               <Button type="primary" size="small" onClick={() => void handleBatchUpdate()}>
-                批量修改
+                {t('productGrade.batchModify')}
               </Button>
               <Button size="small" onClick={() => setSelectedRowKeys([])}>
-                取消选择
+                {t('productGrade.cancelSelection')}
               </Button>
             </Space>
           </Card>
@@ -361,7 +362,7 @@ export default function ProductGradeManagementPage() {
             showSizeChanger: true,
             pageSizeOptions: [20, 50, 100, 200, 500, 1000],
             showQuickJumper: true,
-            showTotal: (t) => `共 ${t} 条`,
+            showTotal: (total) => t('common.total', { count: total }),
             onChange: (nextPage, nextPageSize) => {
               void loadList(nextPage, nextPageSize)
             },
@@ -389,3 +390,4 @@ export default function ProductGradeManagementPage() {
     </PageContainer>
   )
 }
+

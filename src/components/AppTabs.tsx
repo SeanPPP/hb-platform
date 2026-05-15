@@ -96,13 +96,13 @@ export default function AppTabs({
   const menuItems: MenuProps['items'] = [
     {
       key: 'refresh',
-      label: t('common.refreshCurrentTab', '刷新当前页签'),
+      label: t('common.refreshCurrentTab'),
       icon: <ReloadOutlined />,
       onClick: onRefreshCurrent,
     },
     {
       key: 'togglePinTabsBar',
-      label: pinTabsBar ? t('common.pinTabsBar', '页签栏：已固定') : t('common.unpinTabsBar', '页签栏：未固定'),
+      label: pinTabsBar ? t('common.pinTabsBar') : t('common.unpinTabsBar'),
       icon: pinTabsBar ? <PushpinFilled /> : <PushpinOutlined />,
       onClick: () => setPinTabsBar(!pinTabsBar),
     },
@@ -111,20 +111,20 @@ export default function AppTabs({
     },
     {
       key: 'closeOthers',
-      label: t('common.closeOtherTabs', '关闭其他页签'),
+      label: t('common.closeOtherTabs'),
       icon: <CloseOutlined />,
       disabled: tabs.length <= 1 || !currentTab,
       onClick: () => currentTab && onRemoveOtherTabs(currentTab.key),
     },
     {
       key: 'closeLeft',
-      label: t('common.closeLeftTabs', '关闭左侧页签'),
+      label: t('common.closeLeftTabs'),
       disabled: tabs.length <= 1 || !currentTab,
       onClick: () => currentTab && onRemoveLeftTabs(currentTab.key),
     },
     {
       key: 'closeRight',
-      label: t('common.closeRightTabs', '关闭右侧页签'),
+      label: t('common.closeRightTabs'),
       disabled: tabs.length <= 1 || !currentTab,
       onClick: () => currentTab && onRemoveRightTabs(currentTab.key),
     },
@@ -183,14 +183,14 @@ export default function AppTabs({
       />
       <Space size={8} className="app-tabs-actions">
         <Button icon={<ReloadOutlined />} onClick={onRefreshCurrent}>
-              {t('common.refresh', '刷新')}
+              {t('common.refresh')}
         </Button>
         <Dropdown menu={{ items: orderedMenuItems }} placement="bottomRight" trigger={['click']}>
           <Button
             type={pinTabsBar ? 'primary' : 'default'}
             icon={pinTabsBar ? <PushpinFilled /> : <PushpinOutlined />}
           >
-              {t('common.more', '更多')}
+              {t('common.more')}
           </Button>
         </Dropdown>
       </Space>

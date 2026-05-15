@@ -1,9 +1,14 @@
 import { Button, Form, Input, Modal, Select, Table, Tag, message } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { getActiveChinaSuppliers } from '../../../services/chinaSupplierService'
 import { pasteImportGrades } from '../../../services/productGradeService'
-import { PRODUCT_GRADE_CONFIG, type PasteImportPreviewItem, type PasteImportResult } from '../../../types/productGrade'
+import {
+  PRODUCT_GRADE_CONFIG,
+  type PasteImportPreviewItem,
+  type PasteImportResult,
+} from '../../../types/productGrade'
 
 interface Props {
   open: boolean
@@ -24,6 +29,7 @@ const GRADE_TAG_COLOR: Record<string, string> = {
 }
 
 export default function PasteImportModal({ open, onClose, onSuccess }: Props) {
+  const { t } = useTranslation()
   const [form] = Form.useForm()
   const [loading, setLoading] = useState(false)
   const [previewData, setPreviewData] = useState<PasteImportResult | null>(null)
@@ -41,7 +47,7 @@ export default function PasteImportModal({ open, onClose, onSuccess }: Props) {
         })),
       )
     } catch {
-      message.error('加载供应商列表失败')
+      message.error(t('productGrade.loadSuppliersFailed'))
     } finally {
       setSupplierLoading(false)
     }
@@ -64,11 +70,11 @@ export default function PasteImportModal({ open, onClose, onSuccess }: Props) {
       })
       setPreviewData(result)
       if (result.matchedCount === 0) {
-        message.warning('未匹配到任何商品，请检查供应商和货号')
+        message.warning(t('productGrade.noMatchedProducts'))
       }
     } catch (error) {
       if (typeof error === 'object' && error !== null && 'errorFields' in error) return
-      message.error(error instanceof Error ? error.message : '匹配失败')
+      message.error(error instanceof Error ? error.message : t('productGrade.matchFailed'))
     } finally {
       setLoading(false)
     }
@@ -77,25 +83,30 @@ export default function PasteImportModal({ open, onClose, onSuccess }: Props) {
   const handleImport = () => {
     if (!previewData || previewData.matchedCount === 0) return
     message.success(
-      `导入完成：新建 ${previewData.createdCount} 条，更新 ${previewData.updatedCount} 条`,
+      t('productGrade.importResult', {
+        created: previewData.createdCount,
+        updated: previewData.updatedCount,
+      }),
     )
     onSuccess()
     onClose()
   }
 
   const previewColumns: ColumnsType<PasteImportPreviewItem> = [
-    { title: '货号', dataIndex: 'productNumber', width: 140 },
+    { title: t('column.itemNumber'), dataIndex: 'productNumber', width: 140 },
     {
-      title: '状态',
+      title: t('column.status'),
       dataIndex: 'matched',
       width: 80,
       render: (matched: boolean) => (
-        <Tag color={matched ? 'success' : 'error'}>{matched ? '已匹配' : '未匹配'}</Tag>
+        <Tag color={matched ? 'success' : 'error'}>
+          {matched ? t('productGrade.matched') : t('productGrade.unmatched')}
+        </Tag>
       ),
     },
-    { title: '商品名称', dataIndex: 'productName', width: 200, ellipsis: true },
+    { title: t('column.productName'), dataIndex: 'productName', width: 200, ellipsis: true },
     {
-      title: '当前等级',
+      title: t('productGrade.currentGrade'),
       dataIndex: 'existingGrade',
       width: 100,
       render: (grade?: string) =>
@@ -105,7 +116,7 @@ export default function PasteImportModal({ open, onClose, onSuccess }: Props) {
 
   return (
     <Modal
-      title="粘贴导入商品等级"
+      title={t('productGrade.pasteImportTitle')}
       open={open}
       onCancel={onClose}
       afterOpenChange={(visible) => {
@@ -114,10 +125,10 @@ export default function PasteImportModal({ open, onClose, onSuccess }: Props) {
       width={800}
       footer={[
         <Button key="cancel" onClick={onClose}>
-          关闭
+          {t('common.close')}
         </Button>,
         <Button key="match" loading={loading} onClick={() => void handleMatch()}>
-          匹配
+          {t('productGrade.match')}
         </Button>,
         <Button
           key="import"
@@ -125,19 +136,19 @@ export default function PasteImportModal({ open, onClose, onSuccess }: Props) {
           disabled={!previewData || previewData.matchedCount === 0}
           onClick={handleImport}
         >
-          确认导入
+          {t('productGrade.confirmImport')}
         </Button>,
       ]}
     >
       <Form form={form} layout="vertical">
         <Form.Item
           name="supplierCode"
-          label="供应商"
-          rules={[{ required: true, message: '请选择供应商' }]}
+          label={t('column.supplier')}
+          rules={[{ required: true, message: t('productGrade.selectSupplier') }]}
         >
           <Select
             showSearch
-            placeholder="选择供应商"
+            placeholder={t('productGrade.selectSupplier')}
             options={suppliers}
             loading={supplierLoading}
             optionFilterProp="label"
@@ -145,32 +156,42 @@ export default function PasteImportModal({ open, onClose, onSuccess }: Props) {
         </Form.Item>
         <Form.Item
           name="grade"
-          label="目标等级"
-          rules={[{ required: true, message: '请选择等级' }]}
+          label={t('productGrade.selectTargetGrade')}
+          rules={[{ required: true, message: t('productGrade.selectTargetGrade') }]}
         >
-          <Select placeholder="选择等级" options={gradeOptions} />
+          <Select placeholder={t('productGrade.selectTargetGrade')} options={gradeOptions} />
         </Form.Item>
         <Form.Item
           name="productNumbers"
-          label="货号列表"
-          rules={[{ required: true, message: '请粘贴货号' }]}
+          label={t('productGrade.gradeList')}
+          rules={[{ required: true, message: t('productGrade.pasteItemNumbers') }]}
         >
-          <Input.TextArea
-            rows={6}
-            placeholder="粘贴货号，每行一个或用逗号/Tab分隔"
-          />
+          <Input.TextArea rows={6} placeholder={t('productGrade.pasteItemNumbers')} />
         </Form.Item>
       </Form>
 
       {previewData && (
         <>
-          <div style={{ marginBottom: 8, color: '#666', display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-            <span>共 <b>{previewData.totalCount}</b> 个货号</span>
-            <Tag color="success">匹配 {previewData.matchedCount}</Tag>
-            <Tag color="processing">新建 {previewData.createdCount}</Tag>
-            <Tag color="warning">更新 {previewData.updatedCount}</Tag>
+          <div
+            style={{
+              marginBottom: 8,
+              color: '#666',
+              display: 'flex',
+              gap: 12,
+              alignItems: 'center',
+              flexWrap: 'wrap',
+            }}
+          >
+            <span>{t('productGrade.totalItemNumbers', { count: previewData.totalCount })}</span>
+            <Tag color="success">{t('productGrade.matchCount', { count: previewData.matchedCount })}</Tag>
+            <Tag color="processing">{t('productGrade.createCount', { count: previewData.createdCount })}</Tag>
+            <Tag color="warning">{t('productGrade.updateCount', { count: previewData.updatedCount })}</Tag>
             {previewData.totalCount - previewData.matchedCount > 0 && (
-              <Tag color="error">未匹配 {previewData.totalCount - previewData.matchedCount}</Tag>
+              <Tag color="error">
+                {t('productGrade.unmatchedCount', {
+                  count: previewData.totalCount - previewData.matchedCount,
+                })}
+              </Tag>
             )}
           </div>
           <Table<PasteImportPreviewItem>

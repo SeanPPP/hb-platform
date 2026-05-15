@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { SafeArea } from 'antd-mobile'
 import { Drawer, Menu } from 'antd'
+import { useTranslation } from 'react-i18next'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { buildMenus, getCurrentElement, getCurrentRoute } from '../router/routes'
 import { useAuthStore } from '../store/auth'
@@ -8,6 +9,7 @@ import MobileNavBar from '../components/MobileNavBar'
 import MobileTabBar from '../components/MobileTabBar'
 
 export default function MobileLayout() {
+  const { t } = useTranslation()
   const [menuOpen, setMenuOpen] = useState(false)
   const navigate = useNavigate()
   const location = useLocation()
@@ -40,7 +42,7 @@ export default function MobileLayout() {
       </div>
 
       <Drawer
-        title="HB Admin"
+        title={t('layout.brand', 'HB Admin Platform')}
         placement="left"
         onClose={() => setMenuOpen(false)}
         open={menuOpen}

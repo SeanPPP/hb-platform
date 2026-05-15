@@ -1,6 +1,7 @@
-import { DollarOutlined } from '@ant-design/icons'
+﻿import { DollarOutlined } from '@ant-design/icons'
 import { Alert, Form, InputNumber, Modal, Radio, message } from 'antd'
 import { useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { batchUpdateGradePrices } from '../../../services/productGradeService'
 
 interface Props {
@@ -12,6 +13,7 @@ interface Props {
 }
 
 export default function BatchPriceModal({ open, selectedCount, productCodes, onClose, onSuccess }: Props) {
+  const { t } = useTranslation()
   const [form] = Form.useForm()
   const [loading, setLoading] = useState(false)
 
@@ -19,7 +21,7 @@ export default function BatchPriceModal({ open, selectedCount, productCodes, onC
     try {
       const values = await form.validateFields()
       if (values.importPrice == null && values.oemPrice == null) {
-        message.warning('至少需要填写一个价格')
+        message.warning(t('productGrade.fillAtLeastOnePrice'))
         return
       }
       setLoading(true)
@@ -30,15 +32,15 @@ export default function BatchPriceModal({ open, selectedCount, productCodes, onC
         oemPrice: values.oemPrice ?? undefined,
       })
       if (result.success) {
-        message.success(result.message || `成功更新 ${result.affectedCount} 条记录`)
+        message.success(result.message || t('productGrade.batchPriceSuccess', { count: result.affectedCount }))
         onSuccess()
         onClose()
       } else {
-        message.error(result.message || '批量修改价格失败')
+        message.error(result.message || t('productGrade.batchPriceFailed'))
       }
     } catch (error) {
       if (typeof error === 'object' && error !== null && 'errorFields' in error) return
-      message.error('批量修改价格失败')
+      message.error(t('productGrade.batchPriceFailed'))
     } finally {
       setLoading(false)
     }
@@ -51,19 +53,19 @@ export default function BatchPriceModal({ open, selectedCount, productCodes, onC
 
   return (
     <Modal
-      title="批量修改价格"
+      title={t('productGrade.batchChangePrice')}
       open={open}
       onCancel={handleCancel}
       confirmLoading={loading}
       onOk={() => void handleOk()}
-      okText="确认修改"
-      cancelText="取消"
+      okText={t('productGrade.confirmModify')}
+      cancelText={t('common.cancel')}
       width={520}
     >
       <Alert
         type="info"
         showIcon
-        message={`已选 ${selectedCount} 个商品`}
+        message={t('productGrade.selectedProducts', { count: selectedCount })}
         style={{ marginBottom: 16 }}
       />
 
@@ -74,28 +76,28 @@ export default function BatchPriceModal({ open, selectedCount, productCodes, onC
       >
         <Form.Item
           name="targetDatabase"
-          label="目标数据库"
-          rules={[{ required: true, message: '请选择目标数据库' }]}
+          label={t('productGrade.targetDatabase')}
+          rules={[{ required: true, message: t('productGrade.selectTargetDatabase') }]}
         >
           <Radio.Group>
             <Radio value="HBweb">
-              HBweb（DomesticProduct / WarehouseProduct / Product / StoreRetailPrice）
+              HBweb锛圖omesticProduct / WarehouseProduct / Product / StoreRetailPrice锛?
             </Radio>
             <Radio value="HQ">
-              HQ（DIC_商品信息字典表 / DIC_商品零售价表 / CBP_DIC_商品库存表）
+              HQ锛圖IC_鍟嗗搧淇℃伅瀛楀吀琛?/ DIC_鍟嗗搧闆跺敭浠疯〃 / CBP_DIC_鍟嗗搧搴撳瓨琛級
             </Radio>
           </Radio.Group>
         </Form.Item>
 
         <Form.Item
           name="importPrice"
-          label="进货价格（Import Price）"
-          extra="留空表示不修改"
+          label={t('productGrade.importPrice')}
+          extra={t('productGrade.leaveEmptyUnchanged')}
         >
           <InputNumber
             min={0}
             precision={2}
-            placeholder="输入进货价格"
+            placeholder={t('productGrade.enterImportPrice')}
             prefix={<DollarOutlined />}
             style={{ width: '100%' }}
           />
@@ -103,13 +105,13 @@ export default function BatchPriceModal({ open, selectedCount, productCodes, onC
 
         <Form.Item
           name="oemPrice"
-          label="零售价格（Retail Price）"
-          extra="留空表示不修改"
+          label={t('productGrade.retailPrice')}
+          extra={t('productGrade.leaveEmptyUnchanged')}
         >
           <InputNumber
             min={0}
             precision={2}
-            placeholder="输入零售价格"
+            placeholder={t('productGrade.enterRetailPrice')}
             prefix={<DollarOutlined />}
             style={{ width: '100%' }}
           />
@@ -119,8 +121,9 @@ export default function BatchPriceModal({ open, selectedCount, productCodes, onC
       <Alert
         type="warning"
         showIcon
-        message="请确认目标数据库和价格无误后再提交，修改将直接影响数据库中的价格记录。"
+        message={t('productGrade.confirmWarning')}
       />
     </Modal>
   )
 }
+
