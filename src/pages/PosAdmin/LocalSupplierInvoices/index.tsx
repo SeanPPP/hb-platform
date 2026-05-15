@@ -16,6 +16,7 @@ import {
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { useNavigate } from 'react-router-dom'
 import { useAuthStore } from '../../../store/auth'
 import { getStableTagColor } from '../../../utils/tagColors'
@@ -47,17 +48,17 @@ const SORT_FIELD_MAP: Record<string, string> = {
   updatedBy: 'updatedBy',
 }
 
-const FLOW_STATUS_MAP: Record<number, { label: string; color: string }> = {
-  0: { label: '草稿', color: 'default' },
-  1: { label: '已提交', color: 'blue' },
-  2: { label: '已审核', color: 'green' },
-  3: { label: '已推送', color: 'purple' },
+const FLOW_STATUS_MAP: Record<number, { labelKey: string; color: string }> = {
+  0: { labelKey: 'posAdmin.invoices.draft', color: 'default' },
+  1: { labelKey: 'posAdmin.invoices.submitted', color: 'blue' },
+  2: { labelKey: 'posAdmin.invoices.approved', color: 'green' },
+  3: { labelKey: 'posAdmin.invoices.pushed', color: 'purple' },
 }
 
-const INBOUND_STATUS_MAP: Record<number, { label: string; color: string }> = {
-  0: { label: '未入库', color: 'default' },
-  1: { label: '部分入库', color: 'orange' },
-  2: { label: '已入库', color: 'green' },
+const INBOUND_STATUS_MAP: Record<number, { labelKey: string; color: string }> = {
+  0: { labelKey: 'posAdmin.invoices.notInbound', color: 'default' },
+  1: { labelKey: 'posAdmin.invoices.partialInbound', color: 'orange' },
+  2: { labelKey: 'posAdmin.invoices.inbounded', color: 'green' },
 }
 
 function formatDateTime(value?: string) {
@@ -80,6 +81,7 @@ function formatAmount(value?: number) {
 }
 
 export default function LocalSupplierInvoicesPage() {
+  const { t } = useTranslation()
   const navigate = useNavigate()
   const { access } = useAuthStore()
   const isAdmin = access.isAdmin
@@ -109,7 +111,7 @@ export default function LocalSupplierInvoicesPage() {
   const [createVisible, setCreateVisible] = useState(false)
   const [createForm] = Form.useForm()
   const [creating, setCreating] = useState(false)
-  const [invoiceNoChecking, setInvoiceNoChecking] = useState(false)
+  const [_invoiceNoChecking, setInvoiceNoChecking] = useState(false)
 
   // 推送到 HQ
   const [pushing, setPushing] = useState(false)
@@ -149,7 +151,7 @@ export default function LocalSupplierInvoicesPage() {
       setData(result?.items ?? [])
       setTotal(result?.total ?? 0)
     } catch {
-      message.error('加载进货单列表失败')
+      message.error(t('posAdmin.invoices.loadFailed', '加载进货单列表失败'))
     } finally {
       setLoading(false)
     }
@@ -212,10 +214,10 @@ export default function LocalSupplierInvoicesPage() {
   const handleDelete = async (invoiceGuid: string) => {
     try {
       await deleteInvoice(invoiceGuid)
-      message.success('删除成功')
+      message.success(t('message.deleteSuccess'))
       loadData()
     } catch {
-      message.error('删除失败')
+      message.error(t('message.deleteFailed'))
     }
   }
 
@@ -228,7 +230,7 @@ export default function LocalSupplierInvoicesPage() {
       try {
         const checkResult = await checkInvoiceNoExists({ invoiceNo: invoiceNoValue })
         if (checkResult.exists) {
-          message.error('该随货单号已存在，请使用其他单号')
+          message.error(t('posAdmin.invoices.invoiceNoDuplicate'))
           setInvoiceNoChecking(false)
           return
         }
@@ -248,12 +250,12 @@ export default function LocalSupplierInvoicesPage() {
         inboundDate: values.inboundDate?.format('YYYY-MM-DD'),
         remarks: values.remarks?.trim() || undefined,
       })
-      message.success('创建成功')
+      message.success(t('message.createSuccess'))
       setCreateVisible(false)
       createForm.resetFields()
       navigate(`/pos-admin/local-supplier-invoices/${newGuid}`)
     } catch {
-      message.error('创建失败')
+      message.error(t('message.createFailed'))
     } finally {
       setCreating(false)
     }
@@ -261,19 +263,19 @@ export default function LocalSupplierInvoicesPage() {
 
   const handlePushToHq = async () => {
     if (!selectedRowKeys.length) {
-      message.warning('请先选择要推送的进货单')
+      message.warning(t('message.selectInvoicesFirst'))
       return
     }
     setPushing(true)
     try {
       const result = await pushInvoicesToHq(selectedRowKeys.map(String))
       message.success(
-        `推送完成：成功${(result?.updated ?? 0)} 条，失败${(result?.failed ?? 0)} 条`,
+        t('message.pushComplete', { success: result?.updated ?? 0, failed: result?.failed ?? 0 }),
       )
       setSelectedRowKeys([])
       loadData()
     } catch {
-      message.error('推送失败')
+      message.error(t('message.pushFailed'))
     } finally {
       setPushing(false)
     }
@@ -281,13 +283,13 @@ export default function LocalSupplierInvoicesPage() {
 
   const columns: ColumnsType<LocalSupplierInvoiceListDto> = [
     {
-      title: '序号',
+      title: t('column.index'),
       width: 60,
       align: 'right',
       render: (_, __, index) => (page - 1) * pageSize + index + 1,
     },
     {
-      title: '分店',
+      title: t('column.store'),
       dataIndex: 'storeCode',
       width: 160,
       sorter: true,
@@ -299,7 +301,7 @@ export default function LocalSupplierInvoicesPage() {
       ),
     },
     {
-      title: '供应商',
+      title: t('column.supplier'),
       dataIndex: 'supplierCode',
       width: 160,
       sorter: true,
@@ -311,7 +313,7 @@ export default function LocalSupplierInvoicesPage() {
       ),
     },
     {
-      title: '随货单号',
+      title: t('posAdmin.invoices.invoiceNo'),
       dataIndex: 'invoiceNo',
       width: 160,
       sorter: true,
@@ -331,7 +333,7 @@ export default function LocalSupplierInvoicesPage() {
       ),
     },
     {
-      title: '订单日期',
+      title: t('posAdmin.invoices.orderDate'),
       dataIndex: 'orderDate',
       width: 120,
       sorter: true,
@@ -339,7 +341,7 @@ export default function LocalSupplierInvoicesPage() {
       render: (v: string) => formatDate(v),
     },
     {
-      title: '入库日期',
+      title: t('posAdmin.invoices.inboundDate'),
       dataIndex: 'inboundDate',
       width: 120,
       sorter: true,
@@ -347,7 +349,7 @@ export default function LocalSupplierInvoicesPage() {
       render: (v: string) => formatDate(v),
     },
     {
-      title: '总金额',
+      title: t('column.totalAmount'),
       dataIndex: 'totalAmount',
       width: 120,
       align: 'right',
@@ -356,7 +358,7 @@ export default function LocalSupplierInvoicesPage() {
       render: (v: number) => formatAmount(v),
     },
     {
-      title: '已收总金额',
+      title: t('posAdmin.invoices.receivedTotal', '已收总金额'),
       dataIndex: 'receivedTotalAmount',
       width: 120,
       align: 'right',
@@ -365,36 +367,36 @@ export default function LocalSupplierInvoicesPage() {
       render: (v: number) => formatAmount(v),
     },
     {
-      title: '流程状态',
+      title: t('posAdmin.invoices.flowStatus', '流程状态'),
       dataIndex: 'flowStatus',
       width: 100,
       sorter: true,
       sortOrder: sortBy === 'flowStatus' ? sortOrder : undefined,
       render: (v: number) => {
-        const info = FLOW_STATUS_MAP[v] || { label: `状态${v}`, color: 'default' }
-        return <Tag color={info.color}>{info.label}</Tag>
+        const info = FLOW_STATUS_MAP[v] || { labelKey: String(v), color: 'default' }
+        return <Tag color={info.color}>{t(info.labelKey)}</Tag>
       },
     },
     {
-      title: '入库状态',
+      title: t('posAdmin.invoices.inboundStatus', '入库状态'),
       dataIndex: 'inboundStatus',
       width: 100,
       sorter: true,
       sortOrder: sortBy === 'inboundStatus' ? sortOrder : undefined,
       render: (v: number) => {
-        const info = INBOUND_STATUS_MAP[v] || { label: `状态${v}`, color: 'default' }
-        return <Tag color={info.color}>{info.label}</Tag>
+        const info = INBOUND_STATUS_MAP[v] || { labelKey: String(v), color: 'default' }
+        return <Tag color={info.color}>{t(info.labelKey)}</Tag>
       },
     },
     {
-      title: '备注',
+      title: t('column.remarks'),
       dataIndex: 'remarks',
       width: 180,
       ellipsis: true,
       render: (v: string) => v || '--',
     },
     {
-      title: '创建时间',
+      title: t('column.createTime'),
       dataIndex: 'createdAt',
       width: 170,
       sorter: true,
@@ -402,13 +404,13 @@ export default function LocalSupplierInvoicesPage() {
       render: (v: string) => formatDateTime(v),
     },
     {
-      title: '创建人',
+      title: t('column.creator'),
       dataIndex: 'createdBy',
       width: 120,
       render: (v: string) => v || '--',
     },
     {
-      title: '更新时间',
+      title: t('column.updateTime'),
       dataIndex: 'updatedAt',
       width: 170,
       sorter: true,
@@ -416,13 +418,13 @@ export default function LocalSupplierInvoicesPage() {
       render: (v: string) => formatDateTime(v),
     },
     {
-      title: '更新人',
+      title: t('column.updater'),
       dataIndex: 'updatedBy',
       width: 120,
       render: (v: string) => v || '--',
     },
     {
-      title: '操作',
+      title: t('column.action'),
       key: 'action',
       fixed: 'right',
       width: 180,
@@ -432,27 +434,27 @@ export default function LocalSupplierInvoicesPage() {
             type="link"
             onClick={() => navigate(`/pos-admin/invoice-detail/${record.invoiceGUID}`)}
           >
-            查看
+            {t('common.view')}
           </Button>
           {isAdmin && (
             <Button
               type="link"
               onClick={() => navigate(`/pos-admin/local-supplier-invoices/${record.invoiceGUID}`)}
             >
-              编辑
+              {t('common.edit')}
             </Button>
           )}
           {isAdmin && (
             <Popconfirm
-              title="确认删除该进货单吗？"
-              description="删除后无法恢复"
-              okText="删除"
-              cancelText="取消"
+              title={t('posAdmin.invoices.confirmDeleteInvoice')}
+              description={t('posAdmin.invoices.deleteIrreversible')}
+              okText={t('common.delete')}
+              cancelText={t('common.cancel')}
               okButtonProps={{ danger: true }}
               onConfirm={() => void handleDelete(record.invoiceGUID)}
             >
               <Button type="link" danger>
-                删除
+                {t('common.delete')}
               </Button>
             </Popconfirm>
           )}
@@ -463,7 +465,7 @@ export default function LocalSupplierInvoicesPage() {
 
   return (
     <Card
-      title="分店进货单"
+      title={t('posAdmin.invoices.title')}
       styles={{ body: { padding: 0 } }}
       extra={
         <Space>
@@ -474,7 +476,7 @@ export default function LocalSupplierInvoicesPage() {
               loading={pushing}
               onClick={handlePushToHq}
             >
-              推送到HQ ({selectedRowKeys.length})
+              {t('posAdmin.invoices.pushToHQ', { count: selectedRowKeys.length })}
             </Button>
           )}
           {isAdmin && (
@@ -483,7 +485,7 @@ export default function LocalSupplierInvoicesPage() {
               icon={<PlusOutlined />}
               onClick={() => setCreateVisible(true)}
             >
-              新建进货单
+              {t('posAdmin.invoices.createInvoice')}
             </Button>
           )}
         </Space>
@@ -504,7 +506,7 @@ export default function LocalSupplierInvoicesPage() {
               allowClear
               showSearch
               optionFilterProp="label"
-              placeholder="选择分店"
+              placeholder={t('form.pleaseSelectStore')}
               style={{ width: 200 }}
               value={storeCode}
               onChange={(v) => {
@@ -516,7 +518,7 @@ export default function LocalSupplierInvoicesPage() {
               allowClear
               showSearch
               optionFilterProp="label"
-              placeholder="选择供应商"
+              placeholder={t('form.pleaseSelectSupplier')}
               style={{ width: 200 }}
               value={supplierCode}
               onChange={(v) => {
@@ -526,22 +528,22 @@ export default function LocalSupplierInvoicesPage() {
             />
             <Input
               allowClear
-              placeholder="随货单号"
+              placeholder={t('posAdmin.invoices.invoiceNo')}
               style={{ width: 180 }}
               value={invoiceNo}
               onChange={(e) => setInvoiceNo(e.target.value)}
             />
             <Input
               allowClear
-              placeholder="商品关键词"
+              placeholder={t('posAdmin.invoices.productKeyword', '商品关键词')}
               style={{ width: 180 }}
               value={keyword}
               onChange={(e) => setKeyword(e.target.value)}
             />
             <Button type="primary" onClick={handleSearch}>
-              查询
+              {t('common.query')}
             </Button>
-            <Button onClick={handleReset}>重置</Button>
+            <Button onClick={handleReset}>{t('common.reset')}</Button>
           </Space>
         </div>
 
@@ -607,7 +609,7 @@ export default function LocalSupplierInvoicesPage() {
 
       <Modal
         open={createVisible}
-        title="新建进货单"
+        title={t('posAdmin.invoices.createTitle')}
         confirmLoading={creating}
         onCancel={() => {
           setCreateVisible(false)
@@ -618,44 +620,44 @@ export default function LocalSupplierInvoicesPage() {
         <Form form={createForm} layout="vertical">
           <Form.Item
             name="storeCode"
-            label="分店"
-            rules={[{ required: true, message: '请选择分店' }]}
+            label={t('column.store')}
+            rules={[{ required: true, message: t('form.pleaseSelectStore') }]}
           >
             <Select
               showSearch
               optionFilterProp="label"
-              placeholder="请选择分店"
+              placeholder={t('form.pleaseSelectStore')}
               options={storeOptions}
             />
           </Form.Item>
           <Form.Item
             name="supplierCode"
-            label="供应商"
-            rules={[{ required: true, message: '请选择供应商' }]}
+            label={t('column.supplier')}
+            rules={[{ required: true, message: t('form.pleaseSelectSupplier') }]}
           >
             <Select
               showSearch
               optionFilterProp="label"
-              placeholder="请选择供应商"
+              placeholder={t('form.pleaseSelectSupplier')}
               options={supplierOptions}
             />
           </Form.Item>
           <Form.Item
             name="invoiceNo"
-            label="随货单号"
+            label={t('posAdmin.invoices.invoiceNo')}
             validateTrigger={['onBlur']}
             rules={[
-              { required: true, message: '请输入随货单号' },
+              { required: true, message: t('posAdmin.invoices.invoiceNoRequired') },
               {
                 validator: async (_, value) => {
                   if (!value?.trim()) return
                   try {
                     const result = await checkInvoiceNoExists({ invoiceNo: value.trim() })
                     if (result.exists) {
-                      throw new Error('该随货单号已存在')
+                      throw new Error(t('posAdmin.invoices.invoiceNoDuplicate'))
                     }
                   } catch (err) {
-                    if (err instanceof Error && err.message === '该随货单号已存在') {
+                    if (err instanceof Error && err.message === t('posAdmin.invoices.invoiceNoDuplicate')) {
                       throw err
                     }
                   }
@@ -663,16 +665,16 @@ export default function LocalSupplierInvoicesPage() {
               },
             ]}
           >
-            <Input placeholder="请输入随货单号" />
+            <Input placeholder={t('posAdmin.invoices.invoiceNoRequired')} />
           </Form.Item>
-          <Form.Item name="orderDate" label="订单日期">
+          <Form.Item name="orderDate" label={t('posAdmin.invoices.orderDate')}>
             <DatePicker style={{ width: '100%' }} />
           </Form.Item>
-          <Form.Item name="inboundDate" label="入库日期">
+          <Form.Item name="inboundDate" label={t('posAdmin.invoices.inboundDate')}>
             <DatePicker style={{ width: '100%' }} />
           </Form.Item>
-          <Form.Item name="remarks" label="备注">
-            <Input.TextArea rows={3} placeholder="请输入备注" />
+          <Form.Item name="remarks" label={t('column.remarks')}>
+            <Input.TextArea rows={3} placeholder={t('form.pleaseInput')} />
           </Form.Item>
         </Form>
       </Modal>

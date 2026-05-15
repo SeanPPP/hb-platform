@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { Button, Card, Select, Space, Table, Tag, Typography, message } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import {
@@ -35,6 +36,7 @@ function formatDateTime(value?: string | null) {
 }
 
 export default function DeviceRegistrationPage() {
+  const { t } = useTranslation()
   const [items, setItems] = useState<DeviceRegistrationItem[]>([])
   const [stores, setStores] = useState<StoreOption[]>([])
   const [loading, setLoading] = useState(false)
@@ -46,8 +48,8 @@ export default function DeviceRegistrationPage() {
       const nextStores = await getStoreOptions()
       setStores(nextStores)
     } catch (error) {
-      console.error('加载分店失败', error)
-      message.error('加载分店失败')
+      console.error(t('posAdmin.devices.loadStoresFailed', '加载分店失败'), error)
+      message.error(t('posAdmin.devices.loadStoresFailed', '加载分店失败'))
     }
   }
 
@@ -61,8 +63,8 @@ export default function DeviceRegistrationPage() {
       })
       setItems(result.devices)
     } catch (error) {
-      console.error('加载设备失败', error)
-      message.error('加载设备失败')
+      console.error(t('posAdmin.devices.loadFailed', '加载设备失败'), error)
+      message.error(t('posAdmin.devices.loadFailed', '加载设备失败'))
     } finally {
       setLoading(false)
     }
@@ -84,19 +86,19 @@ export default function DeviceRegistrationPage() {
     try {
       if (action === 'activate') {
         await activateDevice(item.id)
-        message.success(`设备 ${item.systemDeviceNumber} 已启用`)
+        message.success(t('message.deviceEnabled', { deviceNo: item.systemDeviceNumber }))
       } else if (action === 'disable') {
         await disableDevice(item.id)
-        message.success(`设备 ${item.systemDeviceNumber} 已禁用`)
+        message.success(t('message.deviceDisabled', { deviceNo: item.systemDeviceNumber }))
       } else {
         await lockDevice(item.id)
-        message.success(`设备 ${item.systemDeviceNumber} 已锁定`)
+        message.success(t('message.deviceLocked', { deviceNo: item.systemDeviceNumber }))
       }
 
       await loadDevices(selectedStoreCode)
     } catch (error) {
-      console.error('设备状态更新失败', error)
-      message.error('设备状态更新失败')
+      console.error(t('message.deviceStatusFailed', '设备状态更新失败'), error)
+      message.error(t('message.deviceStatusFailed', '设备状态更新失败'))
     } finally {
       setActionDeviceId(null)
     }
@@ -114,34 +116,34 @@ export default function DeviceRegistrationPage() {
   const columns = useMemo<ColumnsType<DeviceRegistrationItem>>(
     () => [
       {
-        title: '设备编号',
+        title: t('posAdmin.devices.deviceNo', '设备编号'),
         dataIndex: 'systemDeviceNumber',
         width: 180,
       },
       {
-        title: '硬件标识',
+        title: t('posAdmin.devices.hardwareId', '硬件标识'),
         dataIndex: 'hardwareId',
         ellipsis: true,
       },
       {
-        title: '分店',
+        title: t('column.store'),
         dataIndex: 'storeCode',
         width: 180,
         render: (value: string | null | undefined) =>
           value ? `${value}${storeNameMap[value] ? ` / ${storeNameMap[value]}` : ''}` : '--',
       },
       {
-        title: '设备类型',
+        title: t('posAdmin.devices.deviceType', '设备类型'),
         dataIndex: 'deviceType',
         width: 120,
       },
       {
-        title: '系统',
+        title: t('posAdmin.devices.deviceSystem', '系统'),
         dataIndex: 'deviceSystem',
         width: 120,
       },
       {
-        title: '状态',
+        title: t('column.status'),
         dataIndex: 'statusDescription',
         width: 120,
         render: (_value: string, record) => (
@@ -151,19 +153,19 @@ export default function DeviceRegistrationPage() {
         ),
       },
       {
-        title: '创建时间',
+        title: t('column.createTime'),
         dataIndex: 'createdAt',
         width: 180,
         render: (value: string | undefined) => formatDateTime(value),
       },
       {
-        title: '最后更新',
+        title: t('posAdmin.devices.lastModified', '最后更新'),
         dataIndex: 'lastModified',
         width: 180,
         render: (value: string | null | undefined) => formatDateTime(value),
       },
       {
-        title: '操作',
+        title: t('column.action'),
         key: 'actions',
         width: 240,
         fixed: 'right',
@@ -175,14 +177,14 @@ export default function DeviceRegistrationPage() {
               loading={actionDeviceId === record.id}
               onClick={() => void runAction(record, 'activate')}
             >
-              启用
+              {t('posAdmin.devices.enable')}
             </Button>
             <Button
               size="small"
               loading={actionDeviceId === record.id}
               onClick={() => void runAction(record, 'disable')}
             >
-              禁用
+              {t('posAdmin.devices.disable')}
             </Button>
             <Button
               danger
@@ -190,23 +192,23 @@ export default function DeviceRegistrationPage() {
               loading={actionDeviceId === record.id}
               onClick={() => void runAction(record, 'lock')}
             >
-              锁定
+              {t('posAdmin.devices.lock')}
             </Button>
           </Space>
         ),
       },
     ],
-    [actionDeviceId, storeNameMap]
+    [actionDeviceId, storeNameMap, t]
   )
 
   return (
     <Card
-      title="设备注册管理"
+      title={t('posAdmin.devices.title')}
       extra={
         <Space wrap>
           <Select
             allowClear
-            placeholder="按分店筛选"
+            placeholder={t('posAdmin.devices.filterByStore', '按分店筛选')}
             style={{ width: 240 }}
             value={selectedStoreCode}
             onChange={(value) => setSelectedStoreCode(value)}
@@ -215,13 +217,13 @@ export default function DeviceRegistrationPage() {
               value: store.storeCode,
             }))}
           />
-          <Button onClick={() => void loadDevices(selectedStoreCode)}>刷新</Button>
+          <Button onClick={() => void loadDevices(selectedStoreCode)}>{t('common.refresh')}</Button>
         </Space>
       }
     >
       <Space direction="vertical" size={12} style={{ width: '100%' }}>
         <Typography.Text type="secondary">
-          新设备先在 App 里由店长发起注册，后台确认启用后，该设备后续可直接进入 App，不再需要账号登录。
+          {t('posAdmin.devices.deviceNote')}
         </Typography.Text>
         <Table<DeviceRegistrationItem>
           rowKey="id"

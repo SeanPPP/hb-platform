@@ -1,4 +1,5 @@
 import { Card, Col, List, Row, Statistic, Tag, Typography } from 'antd'
+import { useTranslation } from 'react-i18next'
 import PageContainer from '../../components/PageContainer'
 import { useAuthStore } from '../../store/auth'
 
@@ -9,25 +10,26 @@ interface AccessEntry {
 
 export default function DashboardPage() {
   const { currentUser, access } = useAuthStore()
+  const { t } = useTranslation()
 
   const cards = [
-    { title: '当前用户', value: currentUser?.username || '--', simple: true },
-    { title: '角色数量', value: currentUser?.roleNames.length ?? 0 },
-    { title: '权限数量', value: currentUser?.permissions.length ?? 0 },
-    { title: '关联分店数', value: currentUser?.stores?.length ?? 0 },
+    { title: t('dashboard.currentUser'), value: currentUser?.username || '--', simple: true },
+    { title: t('dashboard.roleCount'), value: currentUser?.roleNames.length ?? 0 },
+    { title: t('dashboard.permCount'), value: currentUser?.permissions.length ?? 0 },
+    { title: t('dashboard.storeCount'), value: currentUser?.stores?.length ?? 0 },
   ]
 
   const accessEntries: AccessEntry[] = [
-    { label: '用户管理', enabled: access.canReadUser },
-    { label: '角色管理', enabled: access.canReadRole },
-    { label: '分店管理', enabled: access.canReadStore },
-    { label: '仓库管理', enabled: access.canManageWarehouse },
+    { label: t('dashboard.accessUsers'), enabled: access.canReadUser },
+    { label: t('dashboard.accessRoles'), enabled: access.canReadRole },
+    { label: t('dashboard.accessStores'), enabled: access.canReadStore },
+    { label: t('dashboard.accessWarehouse'), enabled: access.canManageWarehouse },
   ]
 
   return (
     <PageContainer
-      title="工作台"
-      subtitle="这里已经接入了当前用户、权限状态和新的路由驱动 Tabs 体系。"
+      title={t('dashboard.title')}
+      subtitle={t('dashboard.subtitle')}
       extra={<Tag color="processing">Phase 1</Tag>}
     >
       <Row gutter={[16, 16]}>
@@ -51,24 +53,24 @@ export default function DashboardPage() {
 
       <Row gutter={[16, 16]}>
         <Col xs={24} lg={12}>
-          <Card title="当前角色">
+          <Card title={t('dashboard.currentRoles')}>
             <List
               dataSource={currentUser?.roleNames ?? []}
               renderItem={(item) => <List.Item>{item}</List.Item>}
-              locale={{ emptyText: '暂无角色信息' }}
+              locale={{ emptyText: t('dashboard.noRoleInfo') }}
             />
           </Card>
         </Col>
         <Col xs={24} lg={12}>
-          <Card title="系统管理访问能力">
+          <Card title={t('dashboard.systemAccess')}>
             <List
               dataSource={accessEntries}
-                  renderItem={(item) => (
+              renderItem={(item) => (
                 <List.Item>
-                      <Typography.Text>{item.label}</Typography.Text>
-                      <Tag color={item.enabled ? 'success' : 'default'}>
-                        {item.enabled ? '可访问' : '无权限'}
-                      </Tag>
+                  <Typography.Text>{item.label}</Typography.Text>
+                  <Tag color={item.enabled ? 'success' : 'default'}>
+                    {item.enabled ? t('dashboard.canAccess') : t('dashboard.noPermission')}
+                  </Tag>
                 </List.Item>
               )}
             />

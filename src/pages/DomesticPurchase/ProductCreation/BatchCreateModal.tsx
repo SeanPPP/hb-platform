@@ -4,6 +4,7 @@ import {
   PlusOutlined,
   SettingOutlined,
 } from '@ant-design/icons'
+import { useTranslation } from 'react-i18next'
 import {
   Button,
   Col,
@@ -43,6 +44,7 @@ interface BatchCreateModalProps {
 }
 
 export default function BatchCreateModal({ visible, onClose, onSuccess }: BatchCreateModalProps) {
+  const { t } = useTranslation()
   const [form] = Form.useForm()
   const [currentStep, setCurrentStep] = useState(0)
   const [loading, setLoading] = useState(false)
@@ -71,7 +73,7 @@ export default function BatchCreateModal({ visible, onClose, onSuccess }: BatchC
       setSuppliers(response || [])
     } catch {
       setLoading(false)
-      message.error('加载供应商失败')
+      message.error(t('productCreation.loadSupplierFailed', '加载供应商失败'))
     }
   }
 
@@ -168,7 +170,7 @@ export default function BatchCreateModal({ visible, onClose, onSuccess }: BatchC
   const handleDeleteProduct = useCallback(
     (key: string) => {
       if (products.length <= 1) {
-        message.warning('至少保留一行')
+        message.warning(t('productCreation.keepAtLeastOneRow', '至少保留一行'))
         return
       }
       setProducts(products.filter((item) => item.key !== key))
@@ -185,7 +187,7 @@ export default function BatchCreateModal({ visible, onClose, onSuccess }: BatchC
 
   const handleBatchEditName = useCallback(() => {
     if (!batchEditNameValue.trim()) {
-      message.warning('请输入名称')
+      message.warning(t('productCreation.enterName', '请输入名称'))
       return
     }
     const targetKeys = selectedRowKeys.length > 0 ? selectedRowKeys.map(String) : products.map((p) => p.key)
@@ -222,7 +224,7 @@ export default function BatchCreateModal({ visible, onClose, onSuccess }: BatchC
       } catch { return }
     } else if (currentStep === 1) {
       if (products.length === 0) {
-        message.error('请至少添加一行商品')
+        message.error(t('productCreation.addAtLeastOneProduct', '请至少添加一行商品'))
         return
       }
       setCurrentStep(2)
@@ -233,7 +235,7 @@ export default function BatchCreateModal({ visible, onClose, onSuccess }: BatchC
 
   const handleSubmit = async () => {
     const supplierCode = form.getFieldValue('supplierCode')
-    if (!supplierCode) { message.error('请选择供应商'); return }
+    if (!supplierCode) { message.error(t('domesticProducts.selectSupplier', '请选择供应商')); return }
     setSubmitting(true)
     try {
       const requestData: CreateBatchRequest = {
@@ -252,14 +254,14 @@ export default function BatchCreateModal({ visible, onClose, onSuccess }: BatchC
       const response = await createBatch(requestData)
       setSubmitting(false)
       if (response.success) {
-        message.success('创建成功')
+        message.success(t('productCreation.createSuccess', '创建成功'))
         onSuccess()
       } else {
-        message.error(response.message || '创建失败')
+        message.error(response.message || t('productCreation.createFailed', '创建失败'))
       }
     } catch {
       setSubmitting(false)
-      message.error('创建失败')
+      message.error(t('productCreation.createFailed', '创建失败'))
     }
   }
 
@@ -285,35 +287,35 @@ export default function BatchCreateModal({ visible, onClose, onSuccess }: BatchC
       render: (_, __, index) => index + 1,
     },
     {
-      title: '类型',
+      title: t('productCreation.type', '类型'),
       dataIndex: 'productType',
       key: 'productType',
       width: 120,
       render: (type: ProductCreationType) => {
         const typeMap: Record<ProductCreationType, { text: string; color: string }> = {
-          [ProductCreationType.NORMAL]: { text: '普通', color: 'blue' },
-          [ProductCreationType.SET]: { text: '套装', color: 'green' },
-          [ProductCreationType.SET_SUB_ITEM]: { text: '套装子项', color: 'orange' },
+          [ProductCreationType.NORMAL]: { text: t('productCreation.normal', '普通'), color: 'blue' },
+          [ProductCreationType.SET]: { text: t('productCreation.set', '套装'), color: 'green' },
+          [ProductCreationType.SET_SUB_ITEM]: { text: t('productCreation.setSubItem', '套装子项'), color: 'orange' },
         }
         const config = typeMap[type] || typeMap[ProductCreationType.NORMAL]
         return <span style={{ color: config.color }}>{config.text}</span>
       },
     },
     {
-      title: '商品名称',
+      title: t('domesticProducts.productName', '商品名称'),
       dataIndex: 'productName',
       key: 'productName',
-      render: (text, record) => <Input value={text} onChange={(e) => handleUpdateProduct(record.key, 'productName', e.target.value)} placeholder="商品名称" />,
+      render: (text, record) => <Input value={text} onChange={(e) => handleUpdateProduct(record.key, 'productName', e.target.value)} placeholder={t('domesticProducts.productName', '商品名称')} />,
     },
     {
-      title: '贴牌价格',
+      title: t('productCreation.privateLabelPrice', '贴牌价格'),
       dataIndex: 'privateLabelPrice',
       key: 'privateLabelPrice',
       width: 120,
-      render: (text, record) => <InputNumber value={text} onChange={(value) => handleUpdateProduct(record.key, 'privateLabelPrice', value)} placeholder="贴牌价格" style={{ width: '100%' }} min={0} precision={2} />,
+      render: (text, record) => <InputNumber value={text} onChange={(value) => handleUpdateProduct(record.key, 'privateLabelPrice', value)} placeholder={t('productCreation.privateLabelPrice', '贴牌价格')} style={{ width: '100%' }} min={0} precision={2} />,
     },
     {
-      title: '套装数量',
+      title: t('productCreation.setQuantity', '套装数量'),
       dataIndex: 'setQuantity',
       key: 'setQuantity',
       width: 100,
@@ -321,7 +323,7 @@ export default function BatchCreateModal({ visible, onClose, onSuccess }: BatchC
         record.productType === ProductCreationType.SET || record.productType === ProductCreationType.SET_SUB_ITEM ? <InputNumber value={text} onChange={(value) => handleUpdateProduct(record.key, 'setQuantity', value)} style={{ width: '100%' }} min={1} /> : '-',
     },
     {
-      title: '套装价格',
+      title: t('productCreation.setPrice', '套装价格'),
       dataIndex: 'setPrice',
       key: 'setPrice',
       width: 120,
@@ -329,7 +331,7 @@ export default function BatchCreateModal({ visible, onClose, onSuccess }: BatchC
         record.productType === ProductCreationType.SET || record.productType === ProductCreationType.SET_SUB_ITEM ? <InputNumber value={text} onChange={(value) => handleUpdateProduct(record.key, 'setPrice', value)} style={{ width: '100%' }} min={0} precision={2} /> : '-',
     },
     {
-      title: '操作',
+      title: t('common.action', '操作'),
       key: 'actions',
       width: 80,
       render: (_, record) => <Button type="text" danger icon={<DeleteOutlined />} onClick={() => handleDeleteProduct(record.key)} disabled={products.length <= 1} />,
@@ -344,38 +346,38 @@ export default function BatchCreateModal({ visible, onClose, onSuccess }: BatchC
       align: 'center',
       render: (_, __, index) => index + 1,
     },
-    { title: '货号', dataIndex: 'itemNumber', key: 'itemNumber', width: 150, render: (text) => <span style={{ fontFamily: 'monospace' }}>{text}</span> },
-    { title: '商品名称', dataIndex: 'productName', key: 'productName' },
+    { title: t('productImport.hbProductNoCol', '货号'), dataIndex: 'itemNumber', key: 'itemNumber', width: 150, render: (text) => <span style={{ fontFamily: 'monospace' }}>{text}</span> },
+    { title: t('domesticProducts.productName', '商品名称'), dataIndex: 'productName', key: 'productName' },
     {
-      title: '类型',
+      title: t('productCreation.type', '类型'),
       dataIndex: 'productType',
       key: 'productType',
       width: 100,
       render: (type: ProductCreationType) => {
-        const typeMap: Record<ProductCreationType, string> = { [ProductCreationType.NORMAL]: '普通', [ProductCreationType.SET]: '套装', [ProductCreationType.SET_SUB_ITEM]: '套装子项' }
+        const typeMap: Record<ProductCreationType, string> = { [ProductCreationType.NORMAL]: t('productCreation.normal', '普通'), [ProductCreationType.SET]: t('productCreation.set', '套装'), [ProductCreationType.SET_SUB_ITEM]: t('productCreation.setSubItem', '套装子项') }
         return typeMap[type] || type
       },
     },
-    { title: '贴牌价格', dataIndex: 'privateLabelPrice', key: 'privateLabelPrice', width: 120, render: (text) => (text ? `$${text}` : '-') },
+    { title: t('productCreation.privateLabelPrice', '贴牌价格'), dataIndex: 'privateLabelPrice', key: 'privateLabelPrice', width: 120, render: (text) => (text ? `$${text}` : '-') },
   ]
 
-  const steps = [{ title: '基本信息' }, { title: '商品明细' }, { title: '预览确认' }]
+  const steps = [{ title: t('productCreation.basicInfo', '基本信息') }, { title: t('productCreation.productDetail', '商品明细') }, { title: t('productCreation.previewConfirm', '预览确认') }]
 
   return (
-    <Modal title="创建批次" open={visible} onCancel={handleClose} width={900} footer={null} destroyOnClose>
+    <Modal title={t('productCreation.createBatch', '创建批次')} open={visible} onCancel={handleClose} width={900} footer={null} destroyOnClose>
       <Form form={form} layout="vertical">
         <Steps current={currentStep} items={steps} style={{ marginBottom: 24 }} />
 
         {currentStep === 0 && (
           <Row gutter={16}>
             <Col span={12}>
-              <Form.Item name="supplierCode" label="供应商" rules={[{ required: true, message: '请选择供应商' }]}>
-                <Select showSearch placeholder="请选择供应商" optionFilterProp="label" loading={loading} onChange={handleSupplierChange} options={suppliers.map((s) => ({ label: `${s.supplierCode} - ${s.supplierName}`, value: s.supplierCode }))} />
+              <Form.Item name="supplierCode" label={t('domesticProducts.supplier', '供应商')} rules={[{ required: true, message: t('domesticProducts.selectSupplier', '请选择供应商') }]}>
+                <Select showSearch placeholder={t('domesticProducts.selectSupplier', '请选择供应商')} optionFilterProp="label" loading={loading} onChange={handleSupplierChange} options={suppliers.map((s) => ({ label: `${s.supplierCode} - ${s.supplierName}`, value: s.supplierCode }))} />
               </Form.Item>
             </Col>
             <Col span={12} style={{ position: 'relative' }}>
-              <Form.Item name="prefixCode" label="前缀码">
-                <Select placeholder="请选择前缀码" allowClear showSearch optionFilterProp="label" style={{ width: 'calc(100% - 80px)' }} options={prefixCodes.map((p) => ({ label: p.prefixDescription ? `${p.prefixName} - ${p.prefixDescription}` : p.prefixName, value: p.prefixName }))} />
+              <Form.Item name="prefixCode" label={t('productCreation.prefixCode', '前缀码')}>
+                <Select placeholder={t('productCreation.selectPrefixCode', '请选择前缀码')} allowClear showSearch optionFilterProp="label" style={{ width: 'calc(100% - 80px)' }} options={prefixCodes.map((p) => ({ label: p.prefixDescription ? `${p.prefixName} - ${p.prefixDescription}` : p.prefixName, value: p.prefixName }))} />
               </Form.Item>
               <Button type="link" size="small" icon={<SettingOutlined />} disabled={!selectedSupplier} onClick={() => setManageModalVisible(true)} style={{ position: 'absolute', right: 0, top: 6 }} />
             </Col>
@@ -385,38 +387,38 @@ export default function BatchCreateModal({ visible, onClose, onSuccess }: BatchC
         {currentStep === 1 && (
           <div>
             <Space style={{ marginBottom: 16 }}>
-              <Button icon={<PlusOutlined />} onClick={() => handleAddProduct(ProductCreationType.NORMAL)}>普通</Button>
-              <Button icon={<PlusOutlined />} onClick={() => handleAddProduct(ProductCreationType.SET)}>套装</Button>
-              <Button icon={<PlusOutlined />} onClick={() => handleAddProduct(ProductCreationType.SET_SUB_ITEM)}>套装子项</Button>
-              <Button type="dashed" onClick={() => setBatchAddVisible(true)}>批量添加</Button>
-              <Button type="dashed" icon={<EditOutlined />} onClick={() => setBatchEditNameVisible(true)}>批量命名</Button>
+              <Button icon={<PlusOutlined />} onClick={() => handleAddProduct(ProductCreationType.NORMAL)}>{t('productCreation.normal', '普通')}</Button>
+              <Button icon={<PlusOutlined />} onClick={() => handleAddProduct(ProductCreationType.SET)}>{t('productCreation.set', '套装')}</Button>
+              <Button icon={<PlusOutlined />} onClick={() => handleAddProduct(ProductCreationType.SET_SUB_ITEM)}>{t('productCreation.setSubItem', '套装子项')}</Button>
+              <Button type="dashed" onClick={() => setBatchAddVisible(true)}>{t('productCreation.batchAdd', '批量添加')}</Button>
+              <Button type="dashed" icon={<EditOutlined />} onClick={() => setBatchEditNameVisible(true)}>{t('productCreation.batchName', '批量命名')}</Button>
             </Space>
-            <Modal title="批量添加" open={batchAddVisible} onOk={() => { handleBatchAdd(ProductCreationType.NORMAL, batchAddCount, batchAddPrice, batchAddMode); setBatchAddVisible(false) }} onCancel={() => setBatchAddVisible(false)} okText="确定" cancelText="取消">
+            <Modal title={t('productCreation.batchAdd', '批量添加')} open={batchAddVisible} onOk={() => { handleBatchAdd(ProductCreationType.NORMAL, batchAddCount, batchAddPrice, batchAddMode); setBatchAddVisible(false) }} onCancel={() => setBatchAddVisible(false)} okText={t('common.confirm', '确定')} cancelText={t('common.cancel', '取消')}>
               <Space direction="vertical" style={{ width: '100%' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                  <span>数量:</span>
+                  <span>{t('productCreation.quantity', '数量')}:</span>
                   <InputNumber min={1} max={100} value={batchAddCount} onChange={(v) => setBatchAddCount(v || 5)} />
-                  <span>模式:</span>
-                  <Select value={batchAddMode} onChange={(v) => setBatchAddMode(v)} style={{ width: 140 }} options={[{ label: '调整到指定数量', value: 'overwrite' }, { label: '追加指定数量', value: 'append' }]} />
+                  <span>{t('productCreation.mode', '模式')}:</span>
+                  <Select value={batchAddMode} onChange={(v) => setBatchAddMode(v)} style={{ width: 140 }} options={[{ label: t('productCreation.adjustToCount', '调整到指定数量'), value: 'overwrite' }, { label: t('productCreation.appendCount', '追加指定数量'), value: 'append' }]} />
                 </div>
                 <div>
-                  统一贴牌价格:
-                  <InputNumber min={0} precision={2} placeholder="可选" style={{ marginLeft: 8, width: 160 }} onChange={(v) => setBatchAddPrice(v)} />
+                  {t('productCreation.uniformPrice', '统一贴牌价格')}:
+                  <InputNumber min={0} precision={2} placeholder={t('productCreation.optional', '可选')} style={{ marginLeft: 8, width: 160 }} onChange={(v) => setBatchAddPrice(v)} />
                 </div>
               </Space>
             </Modal>
-            <Modal title="批量命名" open={batchEditNameVisible} onOk={handleBatchEditName} onCancel={() => { setBatchEditNameVisible(false); setBatchEditNameValue(''); setBatchEditNameMode('replace') }} okText="确定" cancelText="取消">
+            <Modal title={t('productCreation.batchName', '批量命名')} open={batchEditNameVisible} onOk={handleBatchEditName} onCancel={() => { setBatchEditNameVisible(false); setBatchEditNameValue(''); setBatchEditNameMode('replace') }} okText={t('common.confirm', '确定')} cancelText={t('common.cancel', '取消')}>
               <Space direction="vertical" style={{ width: '100%' }} size="middle">
                 <div>
-                  模式:
-                  <Select value={batchEditNameMode} onChange={(v) => setBatchEditNameMode(v)} style={{ marginLeft: 8, width: 160 }} options={[{ label: '替换', value: 'replace' }, { label: '加前缀', value: 'prefix' }, { label: '加后缀', value: 'suffix' }]} />
+                  {t('productCreation.mode', '模式')}:
+                  <Select value={batchEditNameMode} onChange={(v) => setBatchEditNameMode(v)} style={{ marginLeft: 8, width: 160 }} options={[{ label: t('productCreation.replace', '替换'), value: 'replace' }, { label: t('productCreation.addPrefix', '加前缀'), value: 'prefix' }, { label: t('productCreation.addSuffix', '加后缀'), value: 'suffix' }]} />
                 </div>
                 <div>
-                  值:
-                  <Input value={batchEditNameValue} onChange={(e) => setBatchEditNameValue(e.target.value)} style={{ marginLeft: 8, width: 280 }} placeholder="请输入名称" />
+                  t('productCreation.value', '值') + ':'
+                  <Input value={batchEditNameValue} onChange={(e) => setBatchEditNameValue(e.target.value)} style={{ marginLeft: 8, width: 280 }} placeholder={t('productCreation.enterName', '请输入名称')} />
                 </div>
                 <div style={{ color: '#999', fontSize: 12 }}>
-                  {selectedRowKeys.length > 0 ? `将应用到已选中的 ${selectedRowKeys.length} 行` : '将应用到所有行'}
+                  {selectedRowKeys.length > 0 ? t('productCreation.applyToSelectedRows', '将应用到已选中的 {{count}} 行', { count: selectedRowKeys.length }) : t('productCreation.applyToAll', '将应用到所有行')}
                 </div>
               </Space>
             </Modal>
@@ -428,9 +430,9 @@ export default function BatchCreateModal({ visible, onClose, onSuccess }: BatchC
           <div>
             <div style={{ marginBottom: 16, padding: '12px 16px', background: '#f5f5f5', borderRadius: 4 }}>
               <Space size="large">
-                <span><strong>供应商:</strong> {selectedSupplier?.name || form.getFieldValue('supplierCode')}</span>
-                <span><strong>前缀码:</strong> {form.getFieldValue('prefixCode') || '-'}</span>
-                <span><strong>商品数量:</strong> {previewData.length}</span>
+                <span><strong>{t('domesticProducts.supplier', '供应商')}:</strong> {selectedSupplier?.name || form.getFieldValue('supplierCode')}</span>
+                <span><strong>{t('productCreation.prefixCode', '前缀码')}:</strong> {form.getFieldValue('prefixCode') || '-'}</span>
+                <span><strong>{t('productCreation.productCount', '商品数量')}:</strong> {previewData.length}</span>
               </Space>
             </div>
             <Table columns={previewColumns} dataSource={previewData} rowKey="key" pagination={false} size="small" scroll={{ y: 300 }} />
@@ -439,10 +441,10 @@ export default function BatchCreateModal({ visible, onClose, onSuccess }: BatchC
 
         <div style={{ marginTop: 24, textAlign: 'right' }}>
           <Space>
-            {currentStep > 0 && <Button onClick={handlePrev}>上一步</Button>}
-            {currentStep < 2 && <Button type="primary" onClick={handleNext}>下一步</Button>}
-            {currentStep === 2 && <Button type="primary" loading={submitting} onClick={handleSubmit}>确认创建</Button>}
-            <Button onClick={handleClose}>取消</Button>
+            {currentStep > 0 && <Button onClick={handlePrev}>{t('productCreation.prevStep', '上一步')}</Button>}
+            {currentStep < 2 && <Button type="primary" onClick={handleNext}>{t('productCreation.nextStep', '下一步')}</Button>}
+            {currentStep === 2 && <Button type="primary" loading={submitting} onClick={handleSubmit}>{t('productCreation.confirmCreate', '确认创建')}</Button>}
+            <Button onClick={handleClose}>{t('common.cancel', '取消')}</Button>
           </Space>
         </div>
 

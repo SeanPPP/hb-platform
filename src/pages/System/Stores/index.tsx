@@ -16,6 +16,7 @@ import {
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { useEffect, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { HasPermission } from '../../../components/Access'
 import PageContainer from '../../../components/PageContainer'
 import { P } from '../../../types/permissions'
@@ -24,6 +25,7 @@ import type { StoreDetailDto, StoreDto, UpdateStoreDto } from '../../../types/st
 import StoreUserManagement from './StoreUserManagement'
 
 export default function SystemStoresPage() {
+  const { t } = useTranslation()
   const [loading, setLoading] = useState(false)
   const [keyword, setKeyword] = useState('')
   const [data, setData] = useState<StoreDto[]>([])
@@ -54,7 +56,7 @@ export default function SystemStoresPage() {
       setPageSize(result.pageSize)
     } catch (error) {
       console.error(error)
-      message.error('加载分店列表失败')
+      message.error(t('system.stores.loadListFailed'))
     } finally {
       setLoading(false)
     }
@@ -79,7 +81,7 @@ export default function SystemStoresPage() {
       setDetailStore(detail)
     } catch (error) {
       console.error(error)
-      message.error('加载分店详情失败')
+      message.error(t('system.stores.loadDetailFailed'))
       setDetailOpen(false)
     } finally {
       setDetailLoading(false)
@@ -107,7 +109,7 @@ export default function SystemStoresPage() {
       })
     } catch (error) {
       console.error(error)
-      message.error('加载分店编辑数据失败')
+      message.error(t('system.stores.loadEditFailed'))
       setEditOpen(false)
     } finally {
       setEditLoading(false)
@@ -123,7 +125,7 @@ export default function SystemStoresPage() {
       const values = await form.validateFields()
       setEditLoading(true)
       const updated = await updateStore(editingStore.storeGUID, values)
-      message.success('分店信息已更新')
+      message.success(t('system.stores.updateSuccess'))
       setEditOpen(false)
       setEditingStore(updated)
       form.resetFields()
@@ -136,7 +138,7 @@ export default function SystemStoresPage() {
         return
       }
       console.error(error)
-      message.error('更新分店失败')
+      message.error(t('system.stores.updateFailed'))
     } finally {
       setEditLoading(false)
     }
@@ -148,12 +150,12 @@ export default function SystemStoresPage() {
   }
 
   const columns: ColumnsType<StoreDto> = [
-    { title: '分店名称', dataIndex: 'storeName', width: 240 },
-    { title: '分店编码', dataIndex: 'storeCode', width: 140 },
-    { title: '品牌', dataIndex: 'brandName', width: 180, render: (value) => value || '--' },
-    { title: '电话', dataIndex: 'contactPhone', width: 160, render: (value) => value || '--' },
+    { title: t('system.stores.storeName'), dataIndex: 'storeName', width: 240 },
+    { title: t('system.stores.storeCode'), dataIndex: 'storeCode', width: 140 },
+    { title: t('system.stores.brandName'), dataIndex: 'brandName', width: 180, render: (value) => value || '--' },
+    { title: t('system.stores.contactPhone'), dataIndex: 'contactPhone', width: 160, render: (value) => value || '--' },
     {
-      title: '相关用户数',
+      title: t('system.stores.linkedUserCount'),
       dataIndex: 'totalUsers',
       width: 120,
       render: (value: number | undefined, record) => (
@@ -163,25 +165,25 @@ export default function SystemStoresPage() {
       ),
     },
     {
-      title: '状态',
+      title: t('column.status'),
       dataIndex: 'isActive',
       width: 100,
       render: (value: boolean) => (
-        <Tag color={value ? 'success' : 'default'}>{value ? '启用' : '停用'}</Tag>
+        <Tag color={value ? 'success' : 'default'}>{value ? t('common.active') : t('common.inactive')}</Tag>
       ),
     },
     {
-      title: '操作',
+      title: t('column.action'),
       key: 'action',
       width: 160,
       render: (_, record) => (
         <Space size={0}>
           <Button type="link" icon={<EyeOutlined />} onClick={() => void handleViewDetail(record)}>
-            详情
+            {t('common.view')}
           </Button>
           <HasPermission code={P.Stores.Edit}>
             <Button type="link" icon={<EditOutlined />} onClick={() => void handleEdit(record)}>
-              编辑
+              {t('common.edit')}
             </Button>
           </HasPermission>
         </Space>
@@ -191,13 +193,13 @@ export default function SystemStoresPage() {
 
   return (
     <PageContainer
-      title="分店管理"
-      subtitle="分店详情和编辑改为列表页内弹窗打开，交互方式与老版本保持一致。"
+      title={t('system.stores.pageTitle')}
+      subtitle={t('system.stores.pageSubtitle')}
     >
       <Card>
         <Space wrap style={{ marginBottom: 16 }}>
           <Input
-            placeholder="搜索分店名称 / 编码"
+            placeholder={t('system.stores.searchPlaceholder')}
             value={keyword}
             onChange={(event) => setKeyword(event.target.value)}
             prefix={<SearchOutlined />}
@@ -205,10 +207,10 @@ export default function SystemStoresPage() {
             allowClear
           />
           <Button type="primary" onClick={() => void loadData(1, pageSize)}>
-            查询
+            {t('common.query')}
           </Button>
           <Button icon={<ReloadOutlined />} onClick={() => void loadData(page, pageSize)}>
-            刷新
+            {t('common.refresh')}
           </Button>
         </Space>
 
@@ -230,7 +232,7 @@ export default function SystemStoresPage() {
       </Card>
 
       <Drawer
-        title={detailStore ? `分店详情 - ${detailStore.storeCode}` : '分店详情'}
+        title={detailStore ? t('system.stores.detailTitle', { name: detailStore.storeCode }) : t('system.stores.detailTitleShort')}
         width={860}
         open={detailOpen}
         onClose={() => {
@@ -242,50 +244,49 @@ export default function SystemStoresPage() {
           detailStore ? (
             <HasPermission code={P.Stores.Edit}>
               <Button type="primary" onClick={() => handleOpenStoreUsers(detailStore)}>
-                管理用户
+                {t('system.stores.manageUsers')}
               </Button>
             </HasPermission>
           ) : null
         }
       >
         {detailLoading ? (
-          <Typography.Text type="secondary">正在加载分店详情...</Typography.Text>
+          <Typography.Text type="secondary">{t('system.stores.loadingDetail')}</Typography.Text>
         ) : !detailStore ? (
-          <Typography.Text type="danger">未找到分店信息</Typography.Text>
+          <Typography.Text type="danger">{t('system.stores.notFound')}</Typography.Text>
         ) : (
           <Space direction="vertical" size={16} style={{ width: '100%' }}>
             <Descriptions bordered column={2}>
-              <Descriptions.Item label="分店名称">{detailStore.storeName}</Descriptions.Item>
-              <Descriptions.Item label="分店编码">{detailStore.storeCode}</Descriptions.Item>
-              <Descriptions.Item label="品牌名称">{detailStore.brandName || '--'}</Descriptions.Item>
-              <Descriptions.Item label="ABN">{detailStore.abn || '--'}</Descriptions.Item>
-              <Descriptions.Item label="联系电话">{detailStore.contactPhone || '--'}</Descriptions.Item>
-              <Descriptions.Item label="联系邮箱">{detailStore.contactEmail || '--'}</Descriptions.Item>
-              <Descriptions.Item label="状态">
+              <Descriptions.Item label={t('system.stores.storeName')}>{detailStore.storeName}</Descriptions.Item>
+              <Descriptions.Item label={t('system.stores.storeCode')}>{detailStore.storeCode}</Descriptions.Item>
+              <Descriptions.Item label={t('system.stores.brandName')}>{detailStore.brandName || '--'}</Descriptions.Item>
+              <Descriptions.Item label={t('system.stores.contactPhone')}>{detailStore.contactPhone || '--'}</Descriptions.Item>
+              <Descriptions.Item label={t('system.stores.contactEmail')}>{detailStore.contactEmail || '--'}</Descriptions.Item>
+              <Descriptions.Item label={t('column.status')}>
                 <Tag color={detailStore.isActive ? 'success' : 'default'}>
-                  {detailStore.isActive ? '启用' : '停用'}
+                  {detailStore.isActive ? t('common.active') : t('common.inactive')}
                 </Tag>
               </Descriptions.Item>
-              <Descriptions.Item label="用户数">
+              <Descriptions.Item label={t('system.stores.userCount')}>
                 <Button type="link" style={{ paddingInline: 0 }} onClick={() => handleOpenStoreUsers(detailStore)}>
                   {detailStore.activeUsers ?? 0} / {detailStore.totalUsers ?? 0}
                 </Button>
               </Descriptions.Item>
-              <Descriptions.Item label="地址" span={2}>
+              <Descriptions.Item label={t('system.stores.address')} span={2}>
                 {detailStore.address || '--'}
               </Descriptions.Item>
-              <Descriptions.Item label="描述" span={2}>
+              <Descriptions.Item label={t('column.description')} span={2}>
                 {detailStore.description || '--'}
               </Descriptions.Item>
-              <Descriptions.Item label="创建时间">{detailStore.createdAt}</Descriptions.Item>
-              <Descriptions.Item label="更新时间">{detailStore.updatedAt}</Descriptions.Item>
+              <Descriptions.Item label={t('column.createTime')}>{detailStore.createdAt}</Descriptions.Item>
+              <Descriptions.Item label={t('system.users.updatedAt')}>{detailStore.updatedAt}</Descriptions.Item>
             </Descriptions>
           </Space>
         )}
       </Drawer>
 
       <Modal
-        title={editingStore ? `编辑分店 - ${editingStore.storeCode}` : '编辑分店'}
+        title={editingStore ? t('system.stores.editTitle', { name: editingStore.storeCode }) : t('system.stores.editTitleShort')}
         open={editOpen}
         onCancel={() => {
           setEditOpen(false)
@@ -298,32 +299,29 @@ export default function SystemStoresPage() {
         destroyOnHidden
       >
         <Form form={form} layout="vertical">
-          <Form.Item label="分店名称" name="storeName" rules={[{ required: true, message: '请输入分店名称' }]}>
+          <Form.Item label={t('system.stores.storeName')} name="storeName" rules={[{ required: true, message: t('system.stores.storeNameRequired') }]}>
             <Input />
           </Form.Item>
-          <Form.Item label="分店编码" name="storeCode" rules={[{ required: true, message: '请输入分店编码' }]}>
+          <Form.Item label={t('system.stores.storeCode')} name="storeCode" rules={[{ required: true, message: t('system.stores.storeCodeRequired') }]}>
             <Input />
           </Form.Item>
-          <Form.Item label="品牌名称" name="brandName">
+          <Form.Item label={t('system.stores.brandName')} name="brandName">
             <Input />
           </Form.Item>
-          <Form.Item label="联系电话" name="contactPhone">
+          <Form.Item label={t('system.stores.contactPhone')} name="contactPhone">
             <Input />
           </Form.Item>
-          <Form.Item label="联系邮箱" name="contactEmail" rules={[{ type: 'email', message: '邮箱格式不正确' }]}>
+          <Form.Item label={t('system.stores.contactEmail')} name="contactEmail" rules={[{ type: 'email', message: t('system.users.emailInvalid') }]}>
             <Input />
           </Form.Item>
-          <Form.Item label="ABN" name="abn">
+          <Form.Item label={t('system.stores.address')} name="address">
             <Input />
           </Form.Item>
-          <Form.Item label="地址" name="address">
-            <Input.TextArea rows={3} />
+          <Form.Item label={t('column.description')} name="description">
+            <Input.TextArea rows={4} />
           </Form.Item>
-          <Form.Item label="描述" name="description">
-            <Input.TextArea rows={3} />
-          </Form.Item>
-          <Form.Item label="状态" name="isActive" valuePropName="checked">
-            <Switch checkedChildren="启用" unCheckedChildren="停用" />
+          <Form.Item label={t('column.status')} name="isActive" valuePropName="checked">
+            <Switch checkedChildren={t('common.active')} unCheckedChildren={t('common.inactive')} />
           </Form.Item>
         </Form>
       </Modal>

@@ -24,6 +24,7 @@ import type { CSSProperties, ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
 import type { TabItem } from '../types/router'
 import { useTabsStore } from '../store/tabs'
+import { useTranslation } from 'react-i18next'
 
 interface AppTabsProps {
   onRefreshCurrent: () => void
@@ -70,6 +71,7 @@ export default function AppTabs({
   onRemoveLeftTabs,
   onRemoveRightTabs,
 }: AppTabsProps) {
+  const { t } = useTranslation()
   const navigate = useNavigate()
   const { tabs, activeKey, pinTabsBar, setActiveKey, setPinTabsBar, moveTab } = useTabsStore()
   const sensors = useSensors(
@@ -94,13 +96,13 @@ export default function AppTabs({
   const menuItems: MenuProps['items'] = [
     {
       key: 'refresh',
-      label: '刷新当前页签',
+      label: t('common.refreshCurrentTab', '刷新当前页签'),
       icon: <ReloadOutlined />,
       onClick: onRefreshCurrent,
     },
     {
       key: 'togglePinTabsBar',
-      label: pinTabsBar ? '页签栏：已固定' : '页签栏：未固定',
+      label: pinTabsBar ? t('common.pinTabsBar', '页签栏：已固定') : t('common.unpinTabsBar', '页签栏：未固定'),
       icon: pinTabsBar ? <PushpinFilled /> : <PushpinOutlined />,
       onClick: () => setPinTabsBar(!pinTabsBar),
     },
@@ -109,20 +111,20 @@ export default function AppTabs({
     },
     {
       key: 'closeOthers',
-      label: '关闭其他页签',
+      label: t('common.closeOtherTabs', '关闭其他页签'),
       icon: <CloseOutlined />,
       disabled: tabs.length <= 1 || !currentTab,
       onClick: () => currentTab && onRemoveOtherTabs(currentTab.key),
     },
     {
       key: 'closeLeft',
-      label: '关闭左侧页签',
+      label: t('common.closeLeftTabs', '关闭左侧页签'),
       disabled: tabs.length <= 1 || !currentTab,
       onClick: () => currentTab && onRemoveLeftTabs(currentTab.key),
     },
     {
       key: 'closeRight',
-      label: '关闭右侧页签',
+      label: t('common.closeRightTabs', '关闭右侧页签'),
       disabled: tabs.length <= 1 || !currentTab,
       onClick: () => currentTab && onRemoveRightTabs(currentTab.key),
     },
@@ -181,14 +183,14 @@ export default function AppTabs({
       />
       <Space size={8} className="app-tabs-actions">
         <Button icon={<ReloadOutlined />} onClick={onRefreshCurrent}>
-          刷新
+              {t('common.refresh', '刷新')}
         </Button>
         <Dropdown menu={{ items: orderedMenuItems }} placement="bottomRight" trigger={['click']}>
           <Button
             type={pinTabsBar ? 'primary' : 'default'}
             icon={pinTabsBar ? <PushpinFilled /> : <PushpinOutlined />}
           >
-            更多
+              {t('common.more', '更多')}
           </Button>
         </Dropdown>
       </Space>

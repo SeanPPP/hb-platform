@@ -2,6 +2,7 @@ import { DeleteOutlined, StarFilled, StarOutlined, UserAddOutlined } from '@ant-
 import { Button, Drawer, Modal, Popconfirm, Select, Space, Switch, Table, Tag, message } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { useEffect, useMemo, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { getUsers } from '../../../services/userService'
 import {
   addUserToStore,
@@ -20,6 +21,7 @@ interface StoreUserManagementProps {
 }
 
 export default function StoreUserManagement({ open, store, onClose, onChanged }: StoreUserManagementProps) {
+  const { t } = useTranslation()
   const [loading, setLoading] = useState(false)
   const [users, setUsers] = useState<StoreUserDto[]>([])
   const [addOpen, setAddOpen] = useState(false)
@@ -42,7 +44,7 @@ export default function StoreUserManagement({ open, store, onClose, onChanged }:
       setUsers(result.items)
     } catch (error) {
       console.error(error)
-      message.error('加载分店用户失败')
+      message.error(t('system.stores.loadUsersFailed'))
     } finally {
       setLoading(false)
     }
@@ -57,7 +59,7 @@ export default function StoreUserManagement({ open, store, onClose, onChanged }:
       setAllUsers(result.items)
     } catch (error) {
       console.error(error)
-      message.error('加载用户选项失败')
+      message.error(t('system.stores.loadUserOptionsFailed'))
     }
   }
 
@@ -85,7 +87,7 @@ export default function StoreUserManagement({ open, store, onClose, onChanged }:
 
   const handleAddUser = async () => {
     if (!store || !selectedUserGuid) {
-      message.warning('请选择用户')
+      message.warning(t('system.stores.selectUser'))
       return
     }
 
@@ -95,13 +97,13 @@ export default function StoreUserManagement({ open, store, onClose, onChanged }:
         userGUID: selectedUserGuid,
         isPrimary,
       })
-      message.success('添加用户成功')
+      message.success(t('system.stores.addUserSuccess'))
       setAddOpen(false)
       await loadUsers()
       onChanged?.()
     } catch (error) {
       console.error(error)
-      message.error('添加用户失败')
+      message.error(t('system.stores.addUserFailed'))
     } finally {
       setSubmitting(false)
     }
@@ -114,12 +116,12 @@ export default function StoreUserManagement({ open, store, onClose, onChanged }:
 
     try {
       await removeUserFromStore(store.storeGUID, userGuid)
-      message.success('移除用户成功')
+      message.success(t('system.stores.removeUserSuccess'))
       await loadUsers()
       onChanged?.()
     } catch (error) {
       console.error(error)
-      message.error('移除用户失败')
+      message.error(t('system.stores.removeUserFailed'))
     }
   }
 
@@ -130,67 +132,67 @@ export default function StoreUserManagement({ open, store, onClose, onChanged }:
 
     try {
       await setPrimaryUser(store.storeGUID, record.userGUID, !record.isPrimary)
-      message.success(record.isPrimary ? '已取消主要用户' : '已设为主要用户')
+      message.success(record.isPrimary ? t('system.stores.cancelPrimarySuccess') : t('system.stores.setPrimarySuccess'))
       await loadUsers()
       onChanged?.()
     } catch (error) {
       console.error(error)
-      message.error('更新主要用户失败')
+      message.error(t('system.stores.updatePrimaryFailed'))
     }
   }
 
   const columns: ColumnsType<StoreUserDto> = [
-    { title: '用户名', dataIndex: 'username', width: 160 },
+    { title: t('system.users.username'), dataIndex: 'username', width: 160 },
     {
-      title: '姓名',
+      title: t('system.users.fullName'),
       key: 'fullName',
       width: 160,
       render: (_, record) => record.fullName || record.realName || '--',
     },
-    { title: '邮箱', dataIndex: 'email', width: 220 },
+    { title: t('system.users.email'), dataIndex: 'email', width: 220 },
     {
-      title: '角色',
+      title: t('system.users.roles'),
       dataIndex: 'roles',
       render: (roles: string[]) => (roles?.length ? roles.map((item) => <Tag key={item}>{item}</Tag>) : '--'),
     },
     {
-      title: '主用户',
+      title: t('system.stores.primaryUser'),
       dataIndex: 'isPrimary',
       width: 100,
       render: (value: boolean) =>
         value ? (
           <Tag icon={<StarFilled />} color="gold">
-            主要
+            {t('system.stores.primary')}
           </Tag>
         ) : (
-          <Tag>普通</Tag>
+          <Tag>{t('system.stores.normal')}</Tag>
         ),
     },
     {
-      title: '状态',
+      title: t('column.status'),
       dataIndex: 'isActive',
       width: 90,
       render: (value: boolean) => (
-        <Tag color={value ? 'success' : 'default'}>{value ? '启用' : '停用'}</Tag>
+        <Tag color={value ? 'success' : 'default'}>{value ? t('common.active') : t('common.inactive')}</Tag>
       ),
     },
     {
-      title: '操作',
+      title: t('column.action'),
       key: 'action',
       width: 200,
       render: (_, record) => (
         <Space size={0}>
           <Button type="link" icon={record.isPrimary ? <StarFilled /> : <StarOutlined />} onClick={() => void handleTogglePrimary(record)}>
-            {record.isPrimary ? '取消主要' : '设为主要'}
+            {record.isPrimary ? t('system.stores.cancelPrimary') : t('system.stores.setPrimary')}
           </Button>
           <Popconfirm
-            title="确定移除此用户吗？"
-            okText="确定"
-            cancelText="取消"
+            title={t('system.stores.confirmRemoveUser')}
+            okText={t('common.confirm')}
+            cancelText={t('common.cancel')}
             onConfirm={() => void handleRemoveUser(record.userGUID)}
           >
             <Button type="link" danger icon={<DeleteOutlined />}>
-              移除
+              {t('system.stores.remove')}
             </Button>
           </Popconfirm>
         </Space>
@@ -201,14 +203,14 @@ export default function StoreUserManagement({ open, store, onClose, onChanged }:
   return (
     <>
       <Drawer
-        title={store ? `分店用户管理 - ${store.storeName}` : '分店用户管理'}
+        title={store ? t('system.stores.userMgmtTitle', { name: store.storeName }) : t('system.stores.userMgmtTitleShort')}
         width={960}
         open={open}
         onClose={onClose}
         destroyOnHidden
         extra={
           <Button type="primary" icon={<UserAddOutlined />} onClick={() => void handleOpenAdd()}>
-            添加用户
+            {t('system.stores.addUser')}
           </Button>
         }
       >
@@ -223,7 +225,7 @@ export default function StoreUserManagement({ open, store, onClose, onChanged }:
       </Drawer>
 
       <Modal
-        title="添加用户到分店"
+        title={t('system.stores.addUserToStore')}
         open={addOpen}
         onCancel={() => setAddOpen(false)}
         onOk={() => void handleAddUser()}
@@ -232,7 +234,7 @@ export default function StoreUserManagement({ open, store, onClose, onChanged }:
       >
         <Space direction="vertical" size={16} style={{ width: '100%' }}>
           <Select
-            placeholder="请选择用户"
+            placeholder={t('system.stores.selectUser')}
             value={selectedUserGuid}
             onChange={setSelectedUserGuid}
             showSearch
@@ -243,7 +245,7 @@ export default function StoreUserManagement({ open, store, onClose, onChanged }:
             }))}
           />
           <Space>
-            <span>设为主用户</span>
+            <span>{t('system.stores.setAsPrimary')}</span>
             <Switch checked={isPrimary} onChange={setIsPrimary} />
           </Space>
         </Space>

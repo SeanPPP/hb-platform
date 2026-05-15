@@ -1,5 +1,6 @@
 import { Card, Descriptions, List, Space, Spin, Tag, Typography, message } from 'antd'
 import { useEffect, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { useParams } from 'react-router-dom'
 import PageContainer from '../../../components/PageContainer'
 import { useDynamicTabTitle } from '../../../hooks/useDynamicTabTitle'
@@ -7,12 +8,13 @@ import { getUserByGuid, getUserStores } from '../../../services/userService'
 import type { UserDetailDto, UserStoreDto } from '../../../types/user'
 
 export default function UserDetailPage() {
+  const { t } = useTranslation()
   const { id = '' } = useParams()
   const [loading, setLoading] = useState(true)
   const [user, setUser] = useState<UserDetailDto | null>(null)
   const [stores, setStores] = useState<UserStoreDto[]>([])
 
-  useDynamicTabTitle(user ? `用户详情 - ${user.username}` : `用户详情 - ${id}`)
+  useDynamicTabTitle(user ? t('system.users.userDetailTitle', { name: user.username }) : t('system.users.userDetailTitle', { name: id }))
 
   useEffect(() => {
     const run = async () => {
@@ -26,7 +28,7 @@ export default function UserDetailPage() {
         setStores(storeList)
       } catch (error) {
         console.error(error)
-        message.error('加载用户详情失败')
+        message.error(t('system.users.loadDetailFailed'))
       } finally {
         setLoading(false)
       }
@@ -40,42 +42,42 @@ export default function UserDetailPage() {
   }
 
   if (!user) {
-    return <Typography.Text type="danger">未找到用户信息</Typography.Text>
+    return <Typography.Text type="danger">{t('system.users.userNotFound')}</Typography.Text>
   }
 
   return (
     <PageContainer
-      title={`用户详情 - ${user.username}`}
-      subtitle="这个详情页会使用完整路径作为 Tab key，不同用户会打开不同页签。"
+      title={t('system.users.userDetailTitle', { name: user.username })}
+      subtitle={t('system.users.detailTabSubtitle')}
     >
       <Card>
         <Descriptions bordered column={2}>
-          <Descriptions.Item label="用户名">{user.username}</Descriptions.Item>
-          <Descriptions.Item label="姓名">{user.fullName || '--'}</Descriptions.Item>
-          <Descriptions.Item label="邮箱">{user.email}</Descriptions.Item>
-          <Descriptions.Item label="状态">
-            <Tag color={user.isActive ? 'success' : 'default'}>{user.isActive ? '启用' : '停用'}</Tag>
+          <Descriptions.Item label={t('system.users.username')}>{user.username}</Descriptions.Item>
+          <Descriptions.Item label={t('system.users.fullName')}>{user.fullName || '--'}</Descriptions.Item>
+          <Descriptions.Item label={t('system.users.email')}>{user.email}</Descriptions.Item>
+          <Descriptions.Item label={t('system.users.status')}>
+            <Tag color={user.isActive ? 'success' : 'default'}>{user.isActive ? t('system.users.active') : t('system.users.inactive')}</Tag>
           </Descriptions.Item>
-          <Descriptions.Item label="角色" span={2}>
+          <Descriptions.Item label={t('system.users.roles')} span={2}>
             <Space wrap>
               {user.roleNames?.length ? user.roleNames.map((item) => <Tag key={item}>{item}</Tag>) : '--'}
             </Space>
           </Descriptions.Item>
-          <Descriptions.Item label="创建时间">{user.createdAt}</Descriptions.Item>
-          <Descriptions.Item label="更新时间">{user.updatedAt}</Descriptions.Item>
+          <Descriptions.Item label={t('system.users.createdAt')}>{user.createdAt}</Descriptions.Item>
+          <Descriptions.Item label={t('system.users.updatedAt')}>{user.updatedAt}</Descriptions.Item>
         </Descriptions>
       </Card>
 
-      <Card title="关联分店">
+      <Card title={t('system.users.linkedStores')}>
         <List
           dataSource={stores}
-          locale={{ emptyText: '暂无关联分店' }}
+          locale={{ emptyText: t('system.users.noLinkedStores') }}
           renderItem={(item) => (
             <List.Item>
               <Space>
                 <Typography.Text strong>{item.storeName}</Typography.Text>
                 <Tag>{item.storeCode}</Tag>
-                {item.isPrimary ? <Tag color="processing">主分店</Tag> : null}
+                {item.isPrimary ? <Tag color="processing">{t('system.users.primaryStore')}</Tag> : null}
               </Space>
             </List.Item>
           )}

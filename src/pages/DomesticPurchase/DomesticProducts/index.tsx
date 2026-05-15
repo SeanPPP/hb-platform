@@ -55,6 +55,7 @@ import type {
 } from '../../../types/domesticProduct'
 import { ProductTypeLabels } from '../../../types/domesticProduct'
 import { copyTextToClipboard } from '../../../utils/clipboard'
+import { useTranslation } from 'react-i18next'
 
 interface ProductFormValues {
   supplierCode?: string
@@ -77,9 +78,9 @@ interface ProductFormValues {
   isActive: boolean
 }
 
-const statusOptions = [
-  { value: true, label: '启用' },
-  { value: false, label: '停用' },
+const getStatusOptions = (t: ReturnType<typeof useTranslation>['t']) => [
+  { value: true, label: t('common.enable', '启用') },
+  { value: false, label: t('common.disable', '停用') },
 ]
 
 const productTypeOptions = Object.entries(ProductTypeLabels).map(([value, label]) => ({
@@ -142,14 +143,15 @@ function ProductFormModal({
   onCancel: () => void
   onSubmit: () => void
 }) {
+  const { t } = useTranslation()
   return (
     <Modal
-      title={editingItem ? `编辑国内商品 - ${editingItem.itemNumber || editingItem.name}` : '新建国内商品'}
+      title={editingItem ? t('domesticProducts.editTitle', '编辑国内商品 - {{name}}', { name: editingItem.itemNumber || editingItem.name }) : t('domesticProducts.createTitle', '新建国内商品')}
       open={open}
       width={920}
       destroyOnClose
-      okText="保存"
-      cancelText="取消"
+      okText={t('common.save', '保存')}
+      cancelText={t('common.cancel', '取消')}
       confirmLoading={saving}
       onCancel={onCancel}
       onOk={onSubmit}
@@ -158,13 +160,13 @@ function ProductFormModal({
         <Space size={16} style={{ display: 'flex' }} align="start">
           <Form.Item
             name="supplierCode"
-            label="供应商"
+            label={t('domesticProducts.supplier', '供应商')}
             style={{ flex: 1 }}
-            rules={editingItem ? [] : [{ required: true, message: '请选择供应商' }]}
+            rules={editingItem ? [] : [{ required: true, message: t('domesticProducts.selectSupplier', '请选择供应商') }]}
           >
             <Select
               disabled={Boolean(editingItem)}
-              placeholder="请选择供应商"
+              placeholder={t('domesticProducts.selectSupplier', '请选择供应商')}
               showSearch
               filterOption={filterSupplierOption}
               options={buildSupplierOptions(suppliers)}
@@ -172,81 +174,81 @@ function ProductFormModal({
           </Form.Item>
           <Form.Item
             name="productType"
-            label="商品类型"
+            label={t('domesticProducts.productType', '商品类型')}
             style={{ width: 180 }}
-            rules={[{ required: true, message: '请选择商品类型' }]}
+            rules={[{ required: true, message: t('domesticProducts.selectProductType', '请选择商品类型') }]}
           >
-            <Select placeholder="请选择商品类型" options={productTypeOptions} />
+            <Select placeholder={t('domesticProducts.selectProductType', '请选择商品类型')} options={productTypeOptions} />
           </Form.Item>
-          <Form.Item name="isActive" label="状态" valuePropName="checked" style={{ width: 120 }}>
-            <Switch checkedChildren="启用" unCheckedChildren="停用" />
+          <Form.Item name="isActive" label={t('domesticProducts.status', '状态')} valuePropName="checked" style={{ width: 120 }}>
+            <Switch checkedChildren={t('common.enable', '启用')} unCheckedChildren={t('common.disable', '停用')} />
           </Form.Item>
         </Space>
 
         <Space size={16} style={{ display: 'flex' }} align="start">
           <Form.Item
             name="productName"
-            label="商品名称"
+            label={t('domesticProducts.productName', '商品名称')}
             style={{ flex: 1 }}
-            rules={[{ required: true, message: '请输入商品名称' }]}
+            rules={[{ required: true, message: t('domesticProducts.enterProductName', '请输入商品名称') }]}
           >
-            <Input placeholder="请输入商品名称" />
+            <Input placeholder={t('domesticProducts.enterProductName', '请输入商品名称')} />
           </Form.Item>
-          <Form.Item name="englishProductName" label="英文名称" style={{ flex: 1 }}>
-            <Input placeholder="请输入英文名称" />
-          </Form.Item>
-        </Space>
-
-        <Space size={16} style={{ display: 'flex' }} align="start">
-          <Form.Item name="hbProductNo" label="HB货号" style={{ flex: 1 }}>
-            <Input disabled={Boolean(editingItem)} placeholder="不填则后端自动生成" />
-          </Form.Item>
-          <Form.Item name="barcode" label="条码" style={{ flex: 1 }}>
-            <Input placeholder="不填则后端自动生成" />
-          </Form.Item>
-          <Form.Item name="productSpecification" label="规格" style={{ flex: 1 }}>
-            <Input placeholder="请输入商品规格" />
+          <Form.Item name="englishProductName" label={t('domesticProducts.englishName', '英文名称')} style={{ flex: 1 }}>
+            <Input placeholder={t('domesticProducts.enterEnglishName', '请输入英文名称')} />
           </Form.Item>
         </Space>
 
         <Space size={16} style={{ display: 'flex' }} align="start">
-          <Form.Item name="domesticPrice" label="国内价" style={{ flex: 1 }}>
+          <Form.Item name="hbProductNo" label={t('domesticProducts.hbProductNo', 'HB货号')} style={{ flex: 1 }}>
+            <Input disabled={Boolean(editingItem)} placeholder={t('domesticProducts.autoGenerate', '不填则后端自动生成')} />
+          </Form.Item>
+          <Form.Item name="barcode" label={t('domesticProducts.barcode', '条码')} style={{ flex: 1 }}>
+            <Input placeholder={t('domesticProducts.autoGenerate', '不填则后端自动生成')} />
+          </Form.Item>
+          <Form.Item name="productSpecification" label={t('domesticProducts.specification', '规格')} style={{ flex: 1 }}>
+            <Input placeholder={t('domesticProducts.enterSpec', '请输入商品规格')} />
+          </Form.Item>
+        </Space>
+
+        <Space size={16} style={{ display: 'flex' }} align="start">
+          <Form.Item name="domesticPrice" label={t('domesticProducts.domesticPrice', '国内价')} style={{ flex: 1 }}>
             <InputNumber min={0} precision={2} style={{ width: '100%' }} />
           </Form.Item>
-          <Form.Item name="oemPrice" label="贴牌价" style={{ flex: 1 }}>
+          <Form.Item name="oemPrice" label={t('domesticProducts.oemPrice', '贴牌价')} style={{ flex: 1 }}>
             <InputNumber min={0} precision={2} style={{ width: '100%' }} />
           </Form.Item>
-          <Form.Item name="importPrice" label="进口价" style={{ flex: 1 }}>
+          <Form.Item name="importPrice" label={t('domesticProducts.importPrice', '进口价')} style={{ flex: 1 }}>
             <InputNumber min={0} precision={2} style={{ width: '100%' }} />
           </Form.Item>
         </Space>
 
         <Space size={16} style={{ display: 'flex' }} align="start">
-          <Form.Item name="packingQuantity" label="装箱数" style={{ flex: 1 }}>
+          <Form.Item name="packingQuantity" label={t('domesticProducts.packingQuantity', '装箱数')} style={{ flex: 1 }}>
             <InputNumber min={0} precision={0} style={{ width: '100%' }} />
           </Form.Item>
-          <Form.Item name="middlePackQuantity" label="中包数量" style={{ flex: 1 }}>
+          <Form.Item name="middlePackQuantity" label={t('domesticProducts.middlePackQuantity', '中包数量')} style={{ flex: 1 }}>
             <InputNumber min={0} precision={0} style={{ width: '100%' }} />
           </Form.Item>
-          <Form.Item name="unitVolume" label="体积" style={{ flex: 1 }}>
+          <Form.Item name="unitVolume" label={t('domesticProducts.unitVolume', '体积')} style={{ flex: 1 }}>
             <InputNumber min={0} precision={4} style={{ width: '100%' }} />
           </Form.Item>
         </Space>
 
         <Space size={16} style={{ display: 'flex' }} align="start">
-          <Form.Item name="packingSize" label="包装尺寸" style={{ flex: 1 }}>
-            <Input placeholder="请输入包装尺寸" />
+          <Form.Item name="packingSize" label={t('domesticProducts.packingSize', '包装尺寸')} style={{ flex: 1 }}>
+            <Input placeholder={t('domesticProducts.enterPackingSize', '请输入包装尺寸')} />
           </Form.Item>
-          <Form.Item name="material" label="材质" style={{ flex: 1 }}>
-            <Input placeholder="请输入材质" />
+          <Form.Item name="material" label={t('domesticProducts.material', '材质')} style={{ flex: 1 }}>
+            <Input placeholder={t('domesticProducts.enterMaterial', '请输入材质')} />
           </Form.Item>
-          <Form.Item name="productImage" label="图片地址" style={{ flex: 1 }}>
-            <Input placeholder="请输入图片 URL" />
+          <Form.Item name="productImage" label={t('domesticProducts.imageUrl', '图片地址')} style={{ flex: 1 }}>
+            <Input placeholder={t('domesticProducts.enterImageUrl', '请输入图片 URL')} />
           </Form.Item>
         </Space>
 
-        <Form.Item name="remarks" label="备注">
-          <Input.TextArea rows={3} placeholder="请输入备注" />
+        <Form.Item name="remarks" label={t('domesticProducts.remarks', '备注')}>
+          <Input.TextArea rows={3} placeholder={t('domesticProducts.enterRemarks', '请输入备注')} />
         </Form.Item>
       </Form>
     </Modal>
@@ -278,9 +280,10 @@ function SetItemsModal({
   onChangeField: (rowId: string, field: keyof DomesticProductSetItem, value: string | number | undefined) => void
   onSubmit: () => void
 }) {
+  const { t } = useTranslation()
   const columns: ColumnsType<DomesticProductSetItem> = [
     {
-      title: '商品名称',
+      title: t('domesticProducts.productName', '商品名称'),
       dataIndex: 'productName',
       render: (_, record) => (
         <Input
@@ -291,7 +294,7 @@ function SetItemsModal({
       ),
     },
     {
-      title: '套装货号',
+      title: t('domesticProducts.setProductNo', '套装货号'),
       dataIndex: 'setProductNo',
       width: 180,
       render: (_, record) => (
@@ -303,9 +306,8 @@ function SetItemsModal({
       ),
     },
     {
-      title: '条码',
+      title: t('domesticProducts.barcode', '条码'),
       dataIndex: 'setBarcode',
-      width: 180,
       render: (_, record) => (
         <Input
           value={record.setBarcode}
@@ -315,7 +317,7 @@ function SetItemsModal({
       ),
     },
     {
-      title: '国内价',
+      title: t('domesticProducts.domesticPrice', '国内价'),
       dataIndex: 'domesticPrice',
       width: 120,
       render: (_, record) => (
@@ -330,7 +332,7 @@ function SetItemsModal({
       ),
     },
     {
-      title: '进口价',
+      title: t('domesticProducts.importPrice', '进口价'),
       dataIndex: 'importPrice',
       width: 120,
       render: (_, record) => (
@@ -345,7 +347,7 @@ function SetItemsModal({
       ),
     },
     {
-      title: '贴牌价',
+      title: t('domesticProducts.oemPrice', '贴牌价'),
       dataIndex: 'oemPrice',
       width: 120,
       render: (_, record) => (
@@ -360,13 +362,13 @@ function SetItemsModal({
       ),
     },
     {
-      title: '操作',
+      title: t('common.action', '操作'),
       key: 'action',
       width: 90,
       render: (_, record) =>
         canEdit ? (
           <Button danger type="link" onClick={() => onRemoveRow(record.id)}>
-            删除
+            {t('common.delete', '删除')}
           </Button>
         ) : null,
     },
@@ -374,24 +376,24 @@ function SetItemsModal({
 
   return (
     <Modal
-      title={product ? `套装子项 - ${product.itemNumber || product.name}` : '套装子项'}
+      title={product ? t('domesticProducts.setItemsTitle', '套装子项 - {{name}}', { name: product.itemNumber || product.name }) : t('domesticProducts.setItemsTitleShort', '套装子项')}
       open={open}
       width={1100}
       destroyOnClose
       onCancel={onCancel}
       onOk={onSubmit}
-      okText="保存"
-      cancelText="关闭"
+      okText={t('common.save', '保存')}
+      cancelText={t('common.close', '关闭')}
       confirmLoading={saving}
       okButtonProps={{ disabled: !canEdit }}
     >
       <Space style={{ marginBottom: 16 }}>
-        <Typography.Text type="secondary">
-          仅对套装商品开放编辑，普通商品和多码商品不展示此入口。
+          <Typography.Text type="secondary">
+            {t('domesticProducts.setItemsHint', '仅对套装商品开放编辑，普通商品和多码商品不展示此入口。')}
         </Typography.Text>
         {canEdit ? (
           <Button type="dashed" onClick={onAddRow}>
-            新增子项
+            {t('domesticProducts.addSubItem', '新增子项')}
           </Button>
         ) : null}
       </Space>
@@ -408,6 +410,8 @@ function SetItemsModal({
 }
 
 export default function DomesticProductsPage() {
+  const { t } = useTranslation()
+  const statusOptions = getStatusOptions(t)
   const [form] = Form.useForm<ProductFormValues>()
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -462,7 +466,7 @@ export default function DomesticProductsPage() {
       setSelectedRowKeys([])
     } catch (error) {
       console.error(error)
-      message.error(error instanceof Error ? error.message : '加载国内商品失败')
+      message.error(error instanceof Error ? error.message : t('domesticProducts.loadFailed', '加载国内商品失败'))
     } finally {
       setLoading(false)
     }
@@ -475,7 +479,7 @@ export default function DomesticProductsPage() {
         .then(setSuppliers)
         .catch((error) => {
           console.error(error)
-          message.error('加载供应商列表失败')
+          message.error(t('domesticProducts.loadSuppliersFailed', '加载供应商列表失败'))
         }),
     ])
   }, [])
@@ -528,10 +532,10 @@ export default function DomesticProductsPage() {
 
       if (editingItem) {
         await updateDomesticProduct(editingItem.id, values as UpdateDomesticProductPayload)
-        message.success('更新国内商品成功')
+        message.success(t('domesticProducts.updateSuccess', '更新国内商品成功'))
       } else {
         await createDomesticProduct(values as CreateDomesticProductPayload)
-        message.success('新建国内商品成功')
+        message.success(t('domesticProducts.createSuccess', '新建国内商品成功'))
       }
 
       handleCloseModal()
@@ -541,7 +545,7 @@ export default function DomesticProductsPage() {
         return
       }
       console.error(error)
-      message.error(error instanceof Error ? error.message : '保存国内商品失败')
+      message.error(error instanceof Error ? error.message : t('domesticProducts.saveFailed', '保存国内商品失败'))
     } finally {
       setSaving(false)
     }
@@ -550,11 +554,11 @@ export default function DomesticProductsPage() {
   const handleBatchDelete = async () => {
     try {
       await batchDeleteDomesticProducts(selectedRowKeys.map(String))
-      message.success(`已删除 ${selectedRowKeys.length} 个国内商品`)
+      message.success(t('domesticProducts.batchDeleteSuccess', '已删除 {{count}} 个国内商品', { count: selectedRowKeys.length }))
       void loadData({ page: 1 })
     } catch (error) {
       console.error(error)
-      message.error(error instanceof Error ? error.message : '批量删除国内商品失败')
+      message.error(error instanceof Error ? error.message : t('domesticProducts.batchDeleteFailed', '批量删除国内商品失败'))
     }
   }
 
@@ -568,7 +572,7 @@ export default function DomesticProductsPage() {
       setSetItemsDraft(items)
     } catch (error) {
       console.error(error)
-      message.error(error instanceof Error ? error.message : '加载套装子项失败')
+      message.error(error instanceof Error ? error.message : t('domesticProducts.loadSetItemsFailed', '加载套装子项失败'))
       setSetItemsOpen(false)
       setCurrentSetProduct(null)
     } finally {
@@ -584,14 +588,14 @@ export default function DomesticProductsPage() {
     try {
       setSetItemsSaving(true)
       await updateDomesticProductSetItems(currentSetProduct.id, setItemsDraft)
-      message.success('套装子项已更新')
+      message.success(t('domesticProducts.setItemsUpdated', '套装子项已更新'))
       setSetItemsOpen(false)
       setCurrentSetProduct(null)
       setSetItemsDraft([])
       void loadData({ page })
     } catch (error) {
       console.error(error)
-      message.error(error instanceof Error ? error.message : '保存套装子项失败')
+      message.error(error instanceof Error ? error.message : t('domesticProducts.saveSetItemsFailed', '保存套装子项失败'))
     } finally {
       setSetItemsSaving(false)
     }
@@ -601,7 +605,7 @@ export default function DomesticProductsPage() {
     try {
       setExporting(true)
       setExportProgress(0)
-      setExportMessage('准备导出...')
+      setExportMessage(t('domesticProducts.preparingExport', '准备导出...'))
 
       const selectedProducts = selectedRowKeys.length
         ? data.filter((item) => selectedRowKeys.includes(item.id))
@@ -610,7 +614,7 @@ export default function DomesticProductsPage() {
       let productsToExport = selectedProducts
       if (!productsToExport.length) {
         if (!total) {
-          message.warning('没有可导出的商品数据')
+          message.warning(t('domesticProducts.noDataToExport', '没有可导出的商品数据'))
           return
         }
 
@@ -623,26 +627,26 @@ export default function DomesticProductsPage() {
       }
 
       if (!productsToExport.length) {
-        message.warning('没有可导出的商品数据')
+        message.warning(t('domesticProducts.noDataToExport', '没有可导出的商品数据'))
         return
       }
 
       await exportDomesticProductsToExcel(productsToExport, {
         includeLabelPrice,
-        fileName: '国内商品',
+        fileName: t('domesticProducts.exportFileName', '国内商品'),
         onProgress: (progress, nextMessage) => {
           setExportProgress(progress)
           setExportMessage(nextMessage)
         },
       })
 
-      message.success('导出成功')
+      message.success(t('domesticProducts.exportSuccess', '导出成功'))
       setExportConfigOpen(false)
       setExportProgress(0)
       setExportMessage('')
     } catch (error) {
       console.error(error)
-      message.error(error instanceof Error ? error.message : '导出失败')
+      message.error(error instanceof Error ? error.message : t('domesticProducts.exportFailed', '导出失败'))
     } finally {
       setExporting(false)
     }
@@ -652,7 +656,7 @@ export default function DomesticProductsPage() {
     () => [
       { title: '#', dataIndex: 'rowNumber', width: 70, fixed: 'left' },
       {
-        title: 'HB货号',
+        title: t('domesticProducts.hbProductNo', 'HB货号'),
         dataIndex: 'itemNumber',
         width: 150,
         fixed: 'left',
@@ -661,7 +665,7 @@ export default function DomesticProductsPage() {
           value ? (
             <Space size={4}>
               <span>{value}</span>
-              <Tooltip title="复制">
+              <Tooltip title={t('common.copy', '复制')}>
                 <Button
                   size="small"
                   type="text"
@@ -675,7 +679,7 @@ export default function DomesticProductsPage() {
           ),
       },
       {
-        title: '商品图片',
+        title: t('domesticProducts.productImage', '商品图片'),
         dataIndex: 'productImage',
         width: 90,
         render: (value: string | undefined, record) => (
@@ -690,101 +694,101 @@ export default function DomesticProductsPage() {
         ),
       },
       {
-        title: '供应商编码',
+        title: t('domesticProducts.supplierCode', '供应商编码'),
         dataIndex: 'supplierCode',
         width: 100,
         sorter: true,
       },
       {
-        title: '供应商名称',
+        title: t('domesticProducts.supplierName', '供应商名称'),
         dataIndex: 'supplierName',
         width: 150,
         sorter: true,
       },
       {
-        title: '条码',
-        dataIndex: 'barcode',
-        width: 180,
+      title: t('domesticProducts.barcode', '条码'),
+      dataIndex: 'barcode',
+      width: 180,
         render: (value: string | undefined) =>
           value ? <BarcodePreview value={value} textMaxWidth={180} compactCopy /> : '--',
       },
       {
-        title: '商品名称',
+        title: t('domesticProducts.productName', '商品名称'),
         dataIndex: 'name',
         width: 180,
         sorter: true,
         ellipsis: true,
       },
       {
-        title: '英文名称',
+        title: t('domesticProducts.englishName', '英文名称'),
         dataIndex: 'nameEn',
         width: 180,
         ellipsis: true,
         render: (value: string | undefined) => value || '--',
       },
       {
-        title: '商品类型',
+        title: t('domesticProducts.productType', '商品类型'),
         dataIndex: 'productType',
         width: 120,
         render: (value: ProductType) => ProductTypeLabels[value] || '--',
       },
       {
-        title: '国内价',
+        title: t('domesticProducts.domesticPrice', '国内价'),
         dataIndex: 'domesticPrice',
         width: 100,
         render: (value: number | undefined) => formatPrice(value),
       },
       {
-        title: '贴牌价',
+        title: t('domesticProducts.oemPrice', '贴牌价'),
         dataIndex: 'labelPrice',
         width: 100,
         render: (value: number | undefined) => formatPrice(value),
       },
       {
-        title: '进口价',
+        title: t('domesticProducts.importPrice', '进口价'),
         dataIndex: 'importPrice',
         width: 100,
         render: (value: number | undefined) => formatPrice(value),
       },
       {
-        title: '装箱数',
+        title: t('domesticProducts.packingQuantity', '装箱数'),
         dataIndex: 'packingQty',
         width: 100,
         render: (value: number | undefined) => value ?? '--',
       },
       {
-        title: '体积',
+        title: t('domesticProducts.unitVolume', '体积'),
         dataIndex: 'volume',
         width: 100,
         render: (value: number | undefined) => value ?? '--',
       },
       {
-        title: '中包',
+        title: t('domesticProducts.middlePack', '中包'),
         dataIndex: 'middlePackQty',
         width: 100,
         render: (value: number | undefined) => value ?? '--',
       },
       {
-        title: '状态',
+        title: t('domesticProducts.status', '状态'),
         dataIndex: 'isActive',
         width: 90,
-        render: (value: boolean) => <Tag color={value ? 'success' : 'default'}>{value ? '启用' : '停用'}</Tag>,
+        render: (value: boolean) => <Tag color={value ? 'success' : 'default'}>{value ? t('common.enable', '启用') : t('common.disable', '停用')}</Tag>,
       },
       {
-        title: '更新时间',
+        title: t('domesticProducts.updatedAt', '更新时间'),
         dataIndex: 'updatedAt',
         width: 180,
         sorter: true,
         render: (value: string | undefined) => formatDateTime(value),
       },
       {
-        title: '更新人',
+        title: t('domesticProducts.updatedBy', '更新人'),
         dataIndex: 'updatedBy',
         width: 140,
         render: (value: string | undefined) => value || '--',
       },
       {
-        title: '操作',
+      title: t('common.action', '操作'),
         key: 'action',
         width: 220,
         fixed: 'right',
@@ -792,17 +796,17 @@ export default function DomesticProductsPage() {
           <Space size={0}>
             {access.canWriteProduct ? (
               <Button type="link" icon={<EditOutlined />} onClick={() => handleOpenEdit(record)}>
-                编辑
+                {t('common.edit', '编辑')}
               </Button>
             ) : null}
             {record.productType === 1 ? (
               <Button type="link" icon={<GiftOutlined />} onClick={() => void handleOpenSetItems(record)}>
-                套装子项
+                {t('domesticProducts.setItems', '套装子项')}
               </Button>
             ) : (
-              <Tooltip title="仅套装商品可编辑套装子项">
+              <Tooltip title={t('domesticProducts.setItemsOnlyHint', '仅套装商品可编辑套装子项')}>
                 <Button type="link" icon={<GiftOutlined />} disabled>
-                  套装子项
+                  {t('domesticProducts.setItems', '套装子项')}
                 </Button>
               </Tooltip>
             )}
@@ -815,8 +819,8 @@ export default function DomesticProductsPage() {
 
   return (
     <PageContainer
-      title="国内商品"
-      subtitle="独立于仓库商品的国内商品主数据页，首轮保留列表、筛选、编辑、套装子项、批量删除和导出能力。"
+      title={t('domesticProducts.pageTitle', '国内商品')}
+      subtitle={t('domesticProducts.pageSubtitle', '独立于仓库商品的国内商品主数据页，首轮保留列表、筛选、编辑、套装子项、批量删除和导出能力。')}
       extra={
         <Space wrap>
           <Button
@@ -825,11 +829,11 @@ export default function DomesticProductsPage() {
             disabled={exporting}
             onClick={() => setExportConfigOpen(true)}
           >
-            导出 Excel
+            {t('domesticProducts.exportExcel', '导出 Excel')}
           </Button>
           {access.canWriteProduct ? (
             <Button type="primary" icon={<PlusOutlined />} onClick={handleOpenCreate}>
-              新建商品
+              {t('domesticProducts.createProduct', '新建商品')}
             </Button>
           ) : null}
           {exporting ? (
@@ -846,7 +850,7 @@ export default function DomesticProductsPage() {
             value={searchText}
             onChange={(event) => setSearchText(event.target.value)}
             prefix={<SearchOutlined />}
-            placeholder="搜索商品名称 / 货号 / 条码 / 英文名 / 供应商"
+            placeholder={t('domesticProducts.searchPlaceholder', '搜索商品名称 / 货号 / 条码 / 英文名 / 供应商')}
             style={{ width: 300 }}
             allowClear
           />
@@ -854,7 +858,7 @@ export default function DomesticProductsPage() {
             value={supplierCode}
             onChange={setSupplierCode}
             options={buildSupplierOptions(suppliers)}
-            placeholder="全部供应商"
+            placeholder={t('domesticProducts.allSuppliers', '全部供应商')}
             style={{ width: 240 }}
             showSearch
             filterOption={filterSupplierOption}
@@ -864,7 +868,7 @@ export default function DomesticProductsPage() {
             value={productType}
             onChange={setProductType}
             options={productTypeOptions}
-            placeholder="全部商品类型"
+            placeholder={t('domesticProducts.allProductTypes', '全部商品类型')}
             style={{ width: 160 }}
             allowClear
           />
@@ -872,12 +876,12 @@ export default function DomesticProductsPage() {
             value={isActive}
             onChange={setIsActive}
             options={statusOptions}
-            placeholder="全部状态"
+            placeholder={t('domesticProducts.allStatus', '全部状态')}
             style={{ width: 140 }}
             allowClear
           />
           <Button type="primary" onClick={() => void loadData({ page: 1 })}>
-            查询
+            {t('common.query', '查询')}
           </Button>
           <Button
             icon={<ReloadOutlined />}
@@ -899,19 +903,19 @@ export default function DomesticProductsPage() {
               })
             }}
           >
-            重置
+            {t('common.reset', '重置')}
           </Button>
           {access.canDeleteProduct ? (
             <Popconfirm
-              title="确认批量删除选中的商品吗？"
-              description={`已选择 ${selectedRowKeys.length} 条记录，删除后不可恢复。`}
-              okText="删除"
-              cancelText="取消"
+          title={t('domesticProducts.confirmBatchDelete', '确认批量删除选中的商品吗？')}
+          description={t('domesticProducts.selectedRecordsWarning', '已选择 {{count}} 条记录，删除后不可恢复。', { count: selectedRowKeys.length })}
+          okText={t('common.delete', '删除')}
+          cancelText={t('common.cancel', '取消')}
               disabled={!selectedRowKeys.length}
               onConfirm={() => void handleBatchDelete()}
             >
               <Button danger icon={<DeleteOutlined />} disabled={!selectedRowKeys.length}>
-                批量删除
+                {t('domesticProducts.batchDelete', '批量删除')}
               </Button>
             </Popconfirm>
           ) : null}
@@ -1000,10 +1004,10 @@ export default function DomesticProductsPage() {
       />
 
       <Modal
-        title="导出 Excel"
+        title={t('domesticProducts.exportExcel', '导出 Excel')}
         open={exportConfigOpen}
-        okText="开始导出"
-        cancelText="取消"
+        okText={t('domesticProducts.startExport', '开始导出')}
+        cancelText={t('common.cancel', '取消')}
         confirmLoading={exporting}
         onCancel={() => {
           if (!exporting) {
@@ -1015,11 +1019,11 @@ export default function DomesticProductsPage() {
         <Space direction="vertical" size={12} style={{ width: '100%' }}>
           <Typography.Text>
             {selectedRowKeys.length
-              ? `将导出已选择的 ${selectedRowKeys.length} 件商品`
-              : `将导出当前筛选结果共 ${total} 件商品`}
+              ? t('domesticProducts.exportSelectedCount', '将导出已选择的 {{count}} 件商品', { count: selectedRowKeys.length })
+              : t('domesticProducts.exportFilteredCount', '将导出当前筛选结果共 {{count}} 件商品', { count: total })}
           </Typography.Text>
           <Checkbox checked={includeLabelPrice} onChange={(event) => setIncludeLabelPrice(event.target.checked)}>
-            包含零售列（贴牌价）
+            {t('domesticProducts.includeLabelPrice', '包含零售列（贴牌价）')}
           </Checkbox>
           {exporting ? (
             <Typography.Text type="secondary">

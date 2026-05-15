@@ -2,6 +2,7 @@ import { DeleteOutlined, UserAddOutlined } from '@ant-design/icons'
 import { Button, Drawer, Modal, Popconfirm, Select, Space, Table, Tag, message } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { useEffect, useMemo, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { addUsersToRole, getRoleUsers, removeUserFromRole } from '../../../services/roleService'
 import { getUsers } from '../../../services/userService'
 import type { RoleDto, RoleUserDto } from '../../../types/role'
@@ -15,6 +16,7 @@ interface RoleUserManagementProps {
 }
 
 export default function RoleUserManagement({ open, role, onClose, onChanged }: RoleUserManagementProps) {
+  const { t } = useTranslation()
   const [loading, setLoading] = useState(false)
   const [users, setUsers] = useState<RoleUserDto[]>([])
   const [addOpen, setAddOpen] = useState(false)
@@ -33,7 +35,7 @@ export default function RoleUserManagement({ open, role, onClose, onChanged }: R
       setUsers(result.items)
     } catch (error) {
       console.error(error)
-      message.error('加载角色用户失败')
+      message.error(t('system.roles.loadUsersFailed'))
     } finally {
       setLoading(false)
     }
@@ -45,7 +47,7 @@ export default function RoleUserManagement({ open, role, onClose, onChanged }: R
       setAllUsers(result.items)
     } catch (error) {
       console.error(error)
-      message.error('加载用户选项失败')
+      message.error(t('system.roles.loadUserOptionsFailed'))
     }
   }
 
@@ -72,20 +74,20 @@ export default function RoleUserManagement({ open, role, onClose, onChanged }: R
 
   const handleAddUsers = async () => {
     if (!role || !selectedUserGuids.length) {
-      message.warning('请选择用户')
+      message.warning(t('system.roles.selectUser'))
       return
     }
 
     setSubmitting(true)
     try {
       await addUsersToRole(role.roleGUID, selectedUserGuids)
-      message.success('添加用户成功')
+      message.success(t('system.roles.addUserSuccess'))
       setAddOpen(false)
       await loadUsers()
       onChanged?.()
     } catch (error) {
       console.error(error)
-      message.error('添加用户失败')
+      message.error(t('system.roles.addUserFailed'))
     } finally {
       setSubmitting(false)
     }
@@ -98,40 +100,40 @@ export default function RoleUserManagement({ open, role, onClose, onChanged }: R
 
     try {
       await removeUserFromRole(role.roleGUID, userGuid)
-      message.success('移除用户成功')
+      message.success(t('system.roles.removeUserSuccess'))
       await loadUsers()
       onChanged?.()
     } catch (error) {
       console.error(error)
-      message.error('移除用户失败')
+      message.error(t('system.roles.removeUserFailed'))
     }
   }
 
   const columns: ColumnsType<RoleUserDto> = [
-    { title: '用户名', dataIndex: 'username', width: 180 },
-    { title: '姓名', dataIndex: 'fullName', width: 160, render: (value) => value || '--' },
-    { title: '邮箱', dataIndex: 'email', width: 240 },
+    { title: t('system.users.username'), dataIndex: 'username', width: 180 },
+    { title: t('system.users.fullName'), dataIndex: 'fullName', width: 160, render: (value) => value || '--' },
+    { title: t('system.users.email'), dataIndex: 'email', width: 240 },
     {
-      title: '状态',
+      title: t('column.status'),
       dataIndex: 'isActive',
       width: 100,
       render: (value: boolean) => (
-        <Tag color={value ? 'success' : 'default'}>{value ? '启用' : '停用'}</Tag>
+        <Tag color={value ? 'success' : 'default'}>{value ? t('common.active') : t('common.inactive')}</Tag>
       ),
     },
     {
-      title: '操作',
+      title: t('column.action'),
       key: 'action',
       width: 120,
       render: (_, record) => (
         <Popconfirm
-          title="确定移除此用户吗？"
-          okText="确定"
-          cancelText="取消"
+          title={t('system.roles.confirmRemoveUser')}
+          okText={t('common.confirm')}
+          cancelText={t('common.cancel')}
           onConfirm={() => void handleRemoveUser(record.userGUID)}
         >
           <Button type="link" danger icon={<DeleteOutlined />}>
-            移除
+            {t('system.roles.remove')}
           </Button>
         </Popconfirm>
       ),
@@ -141,14 +143,14 @@ export default function RoleUserManagement({ open, role, onClose, onChanged }: R
   return (
     <>
       <Drawer
-        title={role ? `角色用户管理 - ${role.roleName}` : '角色用户管理'}
+        title={role ? t('system.roles.userMgmtTitle', { name: role.roleName }) : t('system.roles.userMgmtTitleShort')}
         width={900}
         open={open}
         onClose={onClose}
         destroyOnHidden
         extra={
           <Button type="primary" icon={<UserAddOutlined />} onClick={() => void handleOpenAdd()}>
-            添加用户
+            {t('system.roles.addUser')}
           </Button>
         }
       >
@@ -163,7 +165,7 @@ export default function RoleUserManagement({ open, role, onClose, onChanged }: R
       </Drawer>
 
       <Modal
-        title="添加用户到角色"
+        title={t('system.roles.addUserToRole')}
         open={addOpen}
         onCancel={() => setAddOpen(false)}
         onOk={() => void handleAddUsers()}
@@ -173,7 +175,7 @@ export default function RoleUserManagement({ open, role, onClose, onChanged }: R
         <Space direction="vertical" size={16} style={{ width: '100%' }}>
           <Select
             mode="multiple"
-            placeholder="请选择用户"
+            placeholder={t('system.roles.selectUser')}
             value={selectedUserGuids}
             onChange={setSelectedUserGuids}
             showSearch

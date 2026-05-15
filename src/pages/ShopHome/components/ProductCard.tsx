@@ -3,7 +3,7 @@ import {
   DeleteOutlined,
   ShoppingCartOutlined,
 } from '@ant-design/icons'
-import { Badge, Button, Card, Image, InputNumber, Space, Tag, Typography } from 'antd'
+import { Badge, Button, Card, Image, InputNumber, Space, Typography } from 'antd'
 import { useMemo, useState } from 'react'
 import type { StoreOrderDynamicData, StoreOrderProductItem } from '../../../types/storeOrder'
 import { PRODUCT_GRADE_CONFIG } from '../../../types/productGrade'

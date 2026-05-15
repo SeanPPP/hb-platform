@@ -21,21 +21,19 @@ import {
 import type { ColumnsType } from 'antd/es/table'
 import dayjs from 'dayjs'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import BarcodePreview from '../../../components/BarcodePreview'
 import PageContainer from '../../../components/PageContainer'
 import { getActiveLocalSuppliers } from '../../../services/localSupplierService'
 import {
   batchUpdateStoreRetailPrices,
-  copyStoreData,
   getStoreProductPriceGrid,
-  subscribeCopyProgress,
   syncFromHq,
   syncToOtherStores,
 } from '../../../services/storeProductPriceService'
 import { getActiveStores } from '../../../services/storeService'
 import type {
   BatchUpdateStoreRetailPriceDto,
-  CopyStoreDataDto,
   CopyProgressDto,
   StoreProductPriceListDto,
   StoreProductPriceQueryDto,
@@ -46,13 +44,14 @@ import { copyTextToClipboard } from '../../../utils/clipboard'
 
 type DataType = StoreProductPriceListDto & { key: string }
 
-const productTypeMap: Record<number, { label: string; color: string }> = {
-  0: { label: '普通', color: 'default' },
-  1: { label: '称重', color: 'blue' },
-  2: { label: '多码', color: 'purple' },
+const productTypeMap: Record<number, { labelKey: string; color: string }> = {
+  0: { labelKey: 'posAdmin.productPrice.normalProduct', color: 'default' },
+  1: { labelKey: 'posAdmin.productPrice.weighProduct', color: 'blue' },
+  2: { labelKey: 'posAdmin.productPrice.multiCodeProductType', color: 'purple' },
 }
 
 export default function StoreProductPricePage() {
+  const { t } = useTranslation()
   const [searchForm] = Form.useForm()
   const [loading, setLoading] = useState(false)
   const [data, setData] = useState<DataType[]>([])
@@ -111,7 +110,7 @@ export default function StoreProductPricePage() {
       setData(items.map((item, idx) => ({ ...item, key: item.productCode ?? String(idx) })))
       setSelectedRowKeys([])
     } catch {
-      message.error('加载商品价格列表失败')
+      message.error(t('posAdmin.productPrice.loadFailed', '加载商品价格列表失败'))
     } finally {
       setLoading(false)
       inFlightRef.current = false
@@ -168,7 +167,7 @@ export default function StoreProductPricePage() {
 
   const openBatchModal = () => {
     if (selectedRowKeys.length === 0) {
-      message.warning('请先选择商品')
+      message.warning(t('posAdmin.productPrice.selectProducts', '请先选择商品'))
       return
     }
     batchForm.resetFields()
@@ -186,7 +185,7 @@ export default function StoreProductPricePage() {
     try {
       const values = await batchForm.validateFields()
       if (!values.updatePurchasePrice && !values.updateRetailPrice && !values.updateAutoPricing && !values.updateSpecialProduct && !values.updateDiscountRate) {
-        message.warning('请至少选择一项要更新的字段')
+        message.warning(t('posAdmin.productPrice.selectUpdateField', '请至少选择一项要更新的字段'))
         return
       }
       const dto: BatchUpdateStoreRetailPriceDto = {
@@ -209,18 +208,18 @@ export default function StoreProductPricePage() {
         dto.discountRate = Number(values.discountRate)
       }
       await batchUpdateStoreRetailPrices(dto)
-      message.success('批量更新成功')
+      message.success(t('posAdmin.productPrice.batchUpdateSuccess', '批量更新成功'))
       setBatchModalOpen(false)
       setSelectedRowKeys([])
       await loadData()
     } catch {
-      message.error('批量更新失败')
+      message.error(t('posAdmin.productPrice.batchUpdateFailed', '批量更新失败'))
     }
   }
 
   const openSyncModal = () => {
     if (selectedRowKeys.length === 0) {
-      message.warning('请先选择商品')
+      message.warning(t('posAdmin.productPrice.selectProducts', '请先选择商品'))
       return
     }
     syncForm.resetFields()
@@ -239,7 +238,7 @@ export default function StoreProductPricePage() {
     try {
       const values = await syncForm.validateFields()
       if (!values.targetStoreCodes || values.targetStoreCodes.length === 0) {
-        message.warning('请选择目标分店')
+        message.warning(t('posAdmin.productPrice.selectTargetStore', '请选择目标分店'))
         return
       }
       const dto: SyncToOtherStoresDto = {
@@ -254,12 +253,12 @@ export default function StoreProductPricePage() {
         syncMode: values.syncMode || 'Overwrite',
       }
       const count = await syncToOtherStores(dto)
-      message.success(`同步完成，影响 ${count} 条记录`)
+      message.success(t('posAdmin.productPrice.syncComplete', '同步完成，影响 {{count}} 条记录', { count }))
       setSyncModalOpen(false)
       setSelectedRowKeys([])
       await loadData()
     } catch {
-      message.error('同步失败')
+      message.error(t('posAdmin.productPrice.syncFailed', '同步失败'))
     }
   }
 
@@ -277,64 +276,6 @@ export default function StoreProductPricePage() {
     })
     setCopyProgress(null)
     setCopyModalOpen(true)
-  }
-
-  const handleCopyStoreData = async () => {
-    try {
-      const values = await copyForm.validateFields()
-      if (!values.sourceStoreCode) {
-        message.warning('请选择源分店')
-        return
-      }
-      if (!values.targetStoreCodes || values.targetStoreCodes.length === 0) {
-        message.warning('请选择目标分店')
-        return
-      }
-      setCopying(true)
-      setCopyProgress(null)
-      const dto: CopyStoreDataDto = {
-        sourceStoreCode: values.sourceStoreCode,
-        targetStoreCodes: values.targetStoreCodes,
-        mode: values.mode || 'Overwrite',
-        syncPurchasePrice: !!values.syncPurchasePrice,
-        syncRetailPrice: !!values.syncRetailPrice,
-        syncIsAutoPricing: !!values.syncIsAutoPricing,
-        syncIsSpecialProduct: !!values.syncIsSpecialProduct,
-        syncDiscountRate: !!values.syncDiscountRate,
-        syncMultiCode: !!values.syncMultiCode,
-        syncMultiCodeRetailPrice: !!values.syncMultiCodeRetailPrice,
-      }
-      await copyStoreData(dto)
-      message.success('复制任务已提交，正在推送进度...')
-      if (eventSourceRef.current) {
-        eventSourceRef.current.close()
-      }
-      const es = subscribeCopyProgress(
-        {
-          sourceStoreCode: dto.sourceStoreCode,
-          targetStoreCodes: dto.targetStoreCodes,
-          mode: dto.mode,
-          syncMultiCode: dto.syncMultiCode,
-        },
-        (progress) => {
-          setCopyProgress(progress)
-        },
-        (error) => {
-          console.error('SSE error', error)
-          setCopying(false)
-          message.error('复制进度推送异常')
-        },
-        () => {
-          setCopying(false)
-          message.success('复制完成')
-          loadData()
-        },
-      )
-      eventSourceRef.current = es
-    } catch {
-      message.error('复制失败')
-      setCopying(false)
-    }
   }
 
   const openHqSyncModal = () => {
@@ -356,17 +297,17 @@ export default function StoreProductPricePage() {
       const result = await syncFromHq(dto)
       setHqSyncModalOpen(false)
       Modal.info({
-        title: 'HQ同步结果',
+        title: t('posAdmin.productPrice.hqSyncResult', 'HQ同步结果'),
         width: 600,
         content: (
           <div>
-            <p>新增：{result.addedCount} 条</p>
-            <p>更新：{result.updatedCount} 条</p>
-            <p>总处理：{result.totalProcessed} 条</p>
-            <p>耗时：{(result.durationMs / 1000).toFixed(2)} 秒</p>
+            <p>{t('posAdmin.productPrice.added', '新增')}：{result.addedCount} {t('posAdmin.productPrice.recordsUnit', '条')}</p>
+            <p>{t('posAdmin.productPrice.updated', '更新')}：{result.updatedCount} {t('posAdmin.productPrice.recordsUnit', '条')}</p>
+            <p>{t('posAdmin.productPrice.totalProcessed', '总处理')}：{result.totalProcessed} {t('posAdmin.productPrice.recordsUnit', '条')}</p>
+            <p>{t('posAdmin.productPrice.duration', '耗时')}：{(result.durationMs / 1000).toFixed(2)} {t('posAdmin.productPrice.seconds', '秒')}</p>
             {result.errors && result.errors.length > 0 && (
               <div>
-                <p style={{ color: 'red' }}>错误信息：</p>
+                <p style={{ color: 'red' }}>{t('posAdmin.productPrice.errorInfo', '错误信息')}：</p>
                 <ul>
                   {result.errors.map((err, idx) => (
                     <li key={idx} style={{ color: 'red' }}>{err}</li>
@@ -379,7 +320,7 @@ export default function StoreProductPricePage() {
       })
       await loadData()
     } catch {
-      message.error('从HQ同步失败')
+      message.error(t('posAdmin.productPrice.hqSyncFailed', '从HQ同步失败'))
     } finally {
       setHqSyncing(false)
     }
@@ -387,7 +328,7 @@ export default function StoreProductPricePage() {
 
   const columns: ColumnsType<DataType> = useMemo(() => [
     {
-      title: '商品图片',
+      title: t('posAdmin.productPrice.productImage', '商品图片'),
       dataIndex: 'productImage',
       key: 'productImage',
       width: 80,
@@ -396,18 +337,18 @@ export default function StoreProductPricePage() {
           <Image src={url} width={48} height={48} style={{ objectFit: 'cover', borderRadius: 4 }} />
         ) : (
           <div style={{ width: 48, height: 48, background: '#f5f5f5', borderRadius: 4, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#ccc', fontSize: 12 }}>
-            无图
+            {t('posAdmin.productPrice.noImage', '无图')}
           </div>
         ),
     },
     {
-      title: '商品代码',
+      title: t('posAdmin.productPrice.productCode', '商品代码'),
       dataIndex: 'productCode',
       key: 'productCode',
       width: 130,
       sorter: true,
       render: (v: string) => (
-        <Tooltip title="点击复制">
+        <Tooltip title={t('posAdmin.productPrice.clickToCopy', '点击复制')}>
           <span style={{ cursor: 'pointer' }} onClick={() => void copyTextToClipboard(v)}>
             {v}
           </span>
@@ -415,7 +356,7 @@ export default function StoreProductPricePage() {
       ),
     },
     {
-      title: '商品名称',
+      title: t('posAdmin.productPrice.productName', '商品名称'),
       dataIndex: 'productName',
       key: 'productName',
       width: 180,
@@ -423,45 +364,45 @@ export default function StoreProductPricePage() {
       sorter: true,
     },
     {
-      title: '货号',
+      title: t('posAdmin.productPrice.itemNumber', '货号'),
       dataIndex: 'itemNumber',
       key: 'itemNumber',
       width: 100,
       sorter: true,
     },
     {
-      title: '条码',
+      title: t('posAdmin.productPrice.barcode', '条码'),
       dataIndex: 'barcode',
       key: 'barcode',
       width: 160,
       render: (v: string) => <BarcodePreview value={v} compactCopy textMaxWidth={100} />,
     },
     {
-      title: '供应商',
+      title: t('posAdmin.productPrice.supplier', '供应商'),
       dataIndex: 'localSupplierName',
       key: 'localSupplierName',
       width: 120,
       ellipsis: { showTitle: false },
     },
     {
-      title: '商品类型',
+      title: t('posAdmin.productPrice.productType', '商品类型'),
       dataIndex: 'productType',
       key: 'productType',
       width: 90,
       render: (v: number) => {
-        const info = productTypeMap[v] || { label: String(v), color: 'default' }
-        return <Tag color={info.color}>{info.label}</Tag>
+        const info = productTypeMap[v] || { labelKey: String(v), color: 'default' }
+        return <Tag color={info.color}>{t(info.labelKey)}</Tag>
       },
     },
     {
-      title: '中包数量',
+      title: t('posAdmin.productPrice.middlePackQty', '中包数量'),
       dataIndex: 'middlePackageQuantity',
       key: 'middlePackageQuantity',
       width: 100,
       sorter: true,
     },
     {
-      title: '采购价',
+      title: t('posAdmin.productPrice.purchasePrice', '采购价'),
       dataIndex: 'storePurchasePrice',
       key: 'storePurchasePrice',
       width: 100,
@@ -469,7 +410,7 @@ export default function StoreProductPricePage() {
       render: (v: number) => (v != null ? v.toFixed(2) : '-'),
     },
     {
-      title: '零售价',
+      title: t('posAdmin.productPrice.retailPrice', '零售价'),
       dataIndex: 'storeRetailPrice',
       key: 'storeRetailPrice',
       width: 100,
@@ -477,21 +418,21 @@ export default function StoreProductPricePage() {
       render: (v: number) => (v != null ? v.toFixed(2) : '-'),
     },
     {
-      title: '自动定价',
+      title: t('posAdmin.productPrice.autoPricing', '自动定价'),
       dataIndex: 'isStoreAutoPricing',
       key: 'isStoreAutoPricing',
       width: 90,
-      render: (v: boolean) => <Tag color={v ? 'green' : 'default'}>{v ? '是' : '否'}</Tag>,
+      render: (v: boolean) => <Tag color={v ? 'green' : 'default'}>{v ? t('posAdmin.invoiceDetail.yes', '是') : t('posAdmin.invoiceDetail.no', '否')}</Tag>,
     },
     {
-      title: '特殊商品',
+      title: t('posAdmin.productPrice.specialProduct', '特殊商品'),
       dataIndex: 'isStoreSpecialProduct',
       key: 'isStoreSpecialProduct',
       width: 90,
-      render: (v: boolean) => <Tag color={v ? 'orange' : 'default'}>{v ? '是' : '否'}</Tag>,
+      render: (v: boolean) => <Tag color={v ? 'orange' : 'default'}>{v ? t('posAdmin.invoiceDetail.yes', '是') : t('posAdmin.invoiceDetail.no', '否')}</Tag>,
     },
     {
-      title: '折扣率',
+      title: t('posAdmin.productPrice.discountRate', '折扣率'),
       dataIndex: 'discountRate',
       key: 'discountRate',
       width: 90,
@@ -499,14 +440,14 @@ export default function StoreProductPricePage() {
       render: (v: number) => (v != null ? (v * 100).toFixed(1) + '%' : '-'),
     },
     {
-      title: '启用',
+      title: t('posAdmin.productPrice.enabled', '启用'),
       dataIndex: 'isActive',
       key: 'isActive',
       width: 70,
-      render: (v: boolean) => <Tag color={v ? 'success' : 'error'}>{v ? '是' : '否'}</Tag>,
+      render: (v: boolean) => <Tag color={v ? 'success' : 'error'}>{v ? t('posAdmin.invoiceDetail.yes', '是') : t('posAdmin.invoiceDetail.no', '否')}</Tag>,
     },
     {
-      title: '更新时间',
+      title: t('posAdmin.productPrice.updatedAt', '更新时间'),
       dataIndex: 'updatedAt',
       key: 'updatedAt',
       width: 160,
@@ -514,7 +455,7 @@ export default function StoreProductPricePage() {
       render: (v: string) => (v ? dayjs(v).format('YYYY-MM-DD HH:mm') : '-'),
     },
     {
-      title: '更新人',
+      title: t('posAdmin.productPrice.updatedBy', '更新人'),
       dataIndex: 'updatedBy',
       key: 'updatedBy',
       width: 100,
@@ -525,41 +466,41 @@ export default function StoreProductPricePage() {
 
   return (
     <PageContainer
-      title="分店商品价格管理"
-      subtitle="管理各分店的商品采购价、零售价、自动定价及折扣率"
+      title={t('posAdmin.productPrice.title', '分店商品价格管理')}
+      subtitle={t('posAdmin.productPrice.subtitle', '管理各分店的商品采购价、零售价、自动定价及折扣率')}
     >
       <Card>
         <Form form={searchForm} layout="inline" style={{ marginBottom: 16 }} onFinish={handleSearch}>
-          <Form.Item name="storeCode" label="分店">
+          <Form.Item name="storeCode" label={t('posAdmin.productPrice.store', '分店')}>
             <Select
               showSearch
               optionFilterProp="label"
               options={storeOptions}
-              placeholder="请选择分店"
+              placeholder={t('posAdmin.productPrice.selectStoreFirst', '请选择分店')}
               style={{ width: 260 }}
               allowClear
               onChange={handleStoreChange}
             />
           </Form.Item>
-          <Form.Item name="localSupplierCode" label="供应商">
+          <Form.Item name="localSupplierCode" label={t('posAdmin.productPrice.supplier', '供应商')}>
             <Select
               showSearch
               optionFilterProp="label"
               options={supplierOptions}
-              placeholder="全部供应商"
+              placeholder={t('posAdmin.productPrice.allSuppliers', '全部供应商')}
               style={{ width: 220 }}
               allowClear
             />
           </Form.Item>
-          <Form.Item name="search" label="搜索">
-            <Input allowClear placeholder="商品代码/名称/货号/条码" style={{ width: 240 }} />
+          <Form.Item name="search" label={t('common.query', '查询')}>
+            <Input allowClear placeholder={t('posAdmin.productPrice.searchPlaceholder', '商品代码/名称/货号/条码')} style={{ width: 240 }} />
           </Form.Item>
           <Form.Item>
             <Space>
               <Button type="primary" htmlType="submit" disabled={!selectedStoreCode}>
-                查询
+                {t('common.query', '查询')}
               </Button>
-              <Button onClick={handleReset}>重置</Button>
+              <Button onClick={handleReset}>{t('common.reset', '重置')}</Button>
             </Space>
           </Form.Item>
         </Form>
@@ -567,13 +508,13 @@ export default function StoreProductPricePage() {
         <div style={{ marginBottom: 12 }}>
           <Space wrap>
             <Button type="primary" disabled={selectedCount === 0} onClick={openBatchModal}>
-              批量更新 {selectedCount > 0 ? `(${selectedCount})` : ''}
+              {t('posAdmin.productPrice.batchUpdate', '批量更新')} {selectedCount > 0 ? `(${selectedCount})` : ''}
             </Button>
             <Button disabled={selectedCount === 0} onClick={openSyncModal}>
-              同步到其他分店 {selectedCount > 0 ? `(${selectedCount})` : ''}
+              {t('posAdmin.productPrice.syncToStores', '同步到其他分店')} {selectedCount > 0 ? `(${selectedCount})` : ''}
             </Button>
-            <Button onClick={openCopyModal}>复制分店数据</Button>
-            <Button onClick={openHqSyncModal}>从HQ更新零售价</Button>
+            <Button onClick={openCopyModal}>{t('posAdmin.productPrice.copyStoreData', '复制分店数据')}</Button>
+            <Button onClick={openHqSyncModal}>{t('posAdmin.productPrice.updateFromHQ', '从HQ更新零售价')}</Button>
           </Space>
         </div>
 
@@ -594,7 +535,7 @@ export default function StoreProductPricePage() {
             pageSize,
             showSizeChanger: true,
             pageSizeOptions: ['10', '20', '50', '100', '200'],
-            showTotal: (t) => `共 ${t} 条`,
+            showTotal: (total) => t('posAdmin.productPrice.total', '共 {{count}} 条', { count: total }),
           }}
           onChange={onTableChange}
           size="small"
@@ -603,75 +544,75 @@ export default function StoreProductPricePage() {
 
       <Modal
         open={batchModalOpen}
-        title="批量更新价格"
+        title={t('posAdmin.productPrice.batchUpdateTitle', '批量更新价格')}
         onCancel={() => setBatchModalOpen(false)}
         onOk={handleBatchUpdate}
         width={600}
         forceRender
       >
         <p style={{ marginBottom: 16, color: '#666' }}>
-          已选择 <strong>{selectedCount}</strong> 个商品，分店：<strong>{selectedStoreCode}</strong>
+          {t('posAdmin.productPrice.selectedProductsStore', '已选择 {{count}} 个商品，分店：{{storeCode}}', { count: selectedCount, storeCode: selectedStoreCode })}
         </p>
         <Form form={batchForm} layout="vertical">
-          <Form.Item name="updatePurchasePrice" valuePropName="checked" label="更新采购价">
-            <Checkbox>启用</Checkbox>
+          <Form.Item name="updatePurchasePrice" valuePropName="checked" label={t('posAdmin.productPrice.updatePurchasePriceLabel', '更新采购价')}>
+            <Checkbox>{t('posAdmin.productPrice.enableUpdate', '启用')}</Checkbox>
           </Form.Item>
           <Form.Item noStyle shouldUpdate={(prev, cur) => prev.updatePurchasePrice !== cur.updatePurchasePrice}>
             {({ getFieldValue }) =>
               getFieldValue('updatePurchasePrice') ? (
-                <Form.Item name="purchasePrice" label="采购价" rules={[{ required: true, type: 'number', min: 0 }]}>
+                <Form.Item name="purchasePrice" label={t('posAdmin.productPrice.purchasePrice', '采购价')} rules={[{ required: true, type: 'number', min: 0 }]}>
                   <InputNumber min={0} precision={2} style={{ width: '100%' }} />
                 </Form.Item>
               ) : null
             }
           </Form.Item>
 
-          <Form.Item name="updateRetailPrice" valuePropName="checked" label="更新零售价">
-            <Checkbox>启用</Checkbox>
+          <Form.Item name="updateRetailPrice" valuePropName="checked" label={t('posAdmin.productPrice.updateRetailPriceLabel', '更新零售价')}>
+            <Checkbox>{t('posAdmin.productPrice.enableUpdate', '启用')}</Checkbox>
           </Form.Item>
           <Form.Item noStyle shouldUpdate={(prev, cur) => prev.updateRetailPrice !== cur.updateRetailPrice}>
             {({ getFieldValue }) =>
               getFieldValue('updateRetailPrice') ? (
-                <Form.Item name="storeRetailPriceValue" label="零售价" rules={[{ required: true, type: 'number', min: 0 }]}>
+                <Form.Item name="storeRetailPriceValue" label={t('posAdmin.productPrice.retailPrice', '零售价')} rules={[{ required: true, type: 'number', min: 0 }]}>
                   <InputNumber min={0} precision={2} style={{ width: '100%' }} />
                 </Form.Item>
               ) : null
             }
           </Form.Item>
 
-          <Form.Item name="updateAutoPricing" valuePropName="checked" label="更新自动定价">
-            <Checkbox>启用</Checkbox>
+          <Form.Item name="updateAutoPricing" valuePropName="checked" label={t('posAdmin.productPrice.updateAutoPricingLabel', '更新自动定价')}>
+            <Checkbox>{t('posAdmin.productPrice.enableUpdate', '启用')}</Checkbox>
           </Form.Item>
           <Form.Item noStyle shouldUpdate={(prev, cur) => prev.updateAutoPricing !== cur.updateAutoPricing}>
             {({ getFieldValue }) =>
               getFieldValue('updateAutoPricing') ? (
-                <Form.Item name="isAutoPricing" label="自动定价" valuePropName="checked">
-                  <Switch checkedChildren="是" unCheckedChildren="否" />
+                <Form.Item name="isAutoPricing" label={t('posAdmin.productPrice.autoPricing', '自动定价')} valuePropName="checked">
+                  <Switch checkedChildren={t('posAdmin.invoiceDetail.yes', '是')} unCheckedChildren={t('posAdmin.invoiceDetail.no', '否')} />
                 </Form.Item>
               ) : null
             }
           </Form.Item>
 
-          <Form.Item name="updateSpecialProduct" valuePropName="checked" label="更新特殊商品">
-            <Checkbox>启用</Checkbox>
+          <Form.Item name="updateSpecialProduct" valuePropName="checked" label={t('posAdmin.productPrice.updateSpecialLabel', '更新特殊商品')}>
+            <Checkbox>{t('posAdmin.productPrice.enableUpdate', '启用')}</Checkbox>
           </Form.Item>
           <Form.Item noStyle shouldUpdate={(prev, cur) => prev.updateSpecialProduct !== cur.updateSpecialProduct}>
             {({ getFieldValue }) =>
               getFieldValue('updateSpecialProduct') ? (
-                <Form.Item name="isSpecialProduct" label="特殊商品" valuePropName="checked">
-                  <Switch checkedChildren="是" unCheckedChildren="否" />
+                <Form.Item name="isSpecialProduct" label={t('posAdmin.productPrice.specialProduct', '特殊商品')} valuePropName="checked">
+                  <Switch checkedChildren={t('posAdmin.invoiceDetail.yes', '是')} unCheckedChildren={t('posAdmin.invoiceDetail.no', '否')} />
                 </Form.Item>
               ) : null
             }
           </Form.Item>
 
-          <Form.Item name="updateDiscountRate" valuePropName="checked" label="更新折扣率">
-            <Checkbox>启用</Checkbox>
+          <Form.Item name="updateDiscountRate" valuePropName="checked" label={t('posAdmin.productPrice.updateDiscountLabel', '更新折扣率')}>
+            <Checkbox>{t('posAdmin.productPrice.enableUpdate', '启用')}</Checkbox>
           </Form.Item>
           <Form.Item noStyle shouldUpdate={(prev, cur) => prev.updateDiscountRate !== cur.updateDiscountRate}>
             {({ getFieldValue }) =>
               getFieldValue('updateDiscountRate') ? (
-                <Form.Item name="discountRate" label="折扣率" rules={[{ required: true, type: 'number', min: 0, max: 1 }]}>
+                <Form.Item name="discountRate" label={t('posAdmin.productPrice.discountRate', '折扣率')} rules={[{ required: true, type: 'number', min: 0, max: 1 }]}>
                   <InputNumber min={0} max={1} step={0.01} precision={4} style={{ width: '100%' }} />
                 </Form.Item>
               ) : null
@@ -682,49 +623,49 @@ export default function StoreProductPricePage() {
 
       <Modal
         open={syncModalOpen}
-        title="同步到其他分店"
+        title={t('posAdmin.productPrice.syncToStoresTitle', '同步到其他分店')}
         onCancel={() => setSyncModalOpen(false)}
         onOk={handleSyncToOtherStores}
         width={650}
         forceRender
       >
         <p style={{ marginBottom: 16, color: '#666' }}>
-          已选择 <strong>{selectedCount}</strong> 个商品，源分店：<strong>{selectedStoreCode}</strong>
+          {t('posAdmin.productPrice.selectedSourceStore', '已选择 {{count}} 个商品，源分店：{{storeCode}}', { count: selectedCount, storeCode: selectedStoreCode })}
         </p>
         <Form form={syncForm} layout="vertical">
-          <Form.Item name="targetStoreCodes" label="目标分店" rules={[{ required: true }]}>
+          <Form.Item name="targetStoreCodes" label={t('posAdmin.productPrice.targetStore', '目标分店')} rules={[{ required: true }]}>
             <Select
               mode="multiple"
               showSearch
               optionFilterProp="label"
               options={storeOptions.filter((s) => s.value !== selectedStoreCode)}
-              placeholder="请选择目标分店"
+              placeholder={t('posAdmin.productPrice.selectTargetStore', '请选择目标分店')}
             />
           </Form.Item>
-          <Form.Item name="syncMode" label="同步模式" rules={[{ required: true }]}>
+          <Form.Item name="syncMode" label={t('posAdmin.productPrice.syncMode', '同步模式')} rules={[{ required: true }]}>
             <Select
               options={[
-                { value: 'Overwrite', label: '覆盖' },
-                { value: 'OnlyUpdateNull', label: '仅更新空值' },
+                { value: 'Overwrite', label: t('posAdmin.productPrice.overwrite', '覆盖') },
+                { value: 'OnlyUpdateNull', label: t('posAdmin.productPrice.onlyUpdateNull', '仅更新空值') },
               ]}
             />
           </Form.Item>
-          <Form.Item label="同步字段">
+          <Form.Item label={t('posAdmin.productPrice.syncFields', '同步字段')}>
             <Space wrap>
               <Form.Item name="syncPurchasePrice" valuePropName="checked" noStyle>
-                <Checkbox>采购价</Checkbox>
+                <Checkbox>{t('posAdmin.productPrice.purchasePrice', '采购价')}</Checkbox>
               </Form.Item>
               <Form.Item name="syncRetailPrice" valuePropName="checked" noStyle>
-                <Checkbox>零售价</Checkbox>
+                <Checkbox>{t('posAdmin.productPrice.retailPrice', '零售价')}</Checkbox>
               </Form.Item>
               <Form.Item name="syncIsAutoPricing" valuePropName="checked" noStyle>
-                <Checkbox>自动定价</Checkbox>
+                <Checkbox>{t('posAdmin.productPrice.autoPricing', '自动定价')}</Checkbox>
               </Form.Item>
               <Form.Item name="syncIsSpecialProduct" valuePropName="checked" noStyle>
-                <Checkbox>特殊商品</Checkbox>
+                <Checkbox>{t('posAdmin.productPrice.specialProduct', '特殊商品')}</Checkbox>
               </Form.Item>
               <Form.Item name="syncDiscountRate" valuePropName="checked" noStyle>
-                <Checkbox>折扣率</Checkbox>
+                <Checkbox>{t('posAdmin.productPrice.discountRate', '折扣率')}</Checkbox>
               </Form.Item>
             </Space>
           </Form.Item>
@@ -733,7 +674,7 @@ export default function StoreProductPricePage() {
 
       <Modal
         open={copyModalOpen}
-        title="复制分店数据"
+        title={t('posAdmin.productPrice.copyTitle', '复制分店数据')}
         onCancel={() => {
           if (eventSourceRef.current) {
             eventSourceRef.current.close()
@@ -747,48 +688,48 @@ export default function StoreProductPricePage() {
         forceRender
       >
         <Form form={copyForm} layout="vertical">
-          <Form.Item name="sourceStoreCode" label="源分店" rules={[{ required: true }]}>
-            <Select showSearch optionFilterProp="label" options={storeOptions} placeholder="请选择源分店" />
+          <Form.Item name="sourceStoreCode" label={t('posAdmin.productPrice.sourceStore', '源分店')} rules={[{ required: true }]}>
+            <Select showSearch optionFilterProp="label" options={storeOptions} placeholder={t('posAdmin.productPrice.selectSourceStore', '请选择源分店')} />
           </Form.Item>
-          <Form.Item name="targetStoreCodes" label="目标分店" rules={[{ required: true }]}>
+          <Form.Item name="targetStoreCodes" label={t('posAdmin.productPrice.targetStore', '目标分店')} rules={[{ required: true }]}>
             <Select
               mode="multiple"
               showSearch
               optionFilterProp="label"
               options={storeOptions}
-              placeholder="请选择目标分店"
+              placeholder={t('posAdmin.productPrice.selectTargetStore', '请选择目标分店')}
             />
           </Form.Item>
-          <Form.Item name="mode" label="复制模式" rules={[{ required: true }]}>
+          <Form.Item name="mode" label={t('posAdmin.productPrice.copyMode', '复制模式')} rules={[{ required: true }]}>
             <Select
               options={[
-                { value: 'Overwrite', label: '覆盖' },
-                { value: 'OnlyUpdateNull', label: '仅更新空值' },
+                { value: 'Overwrite', label: t('posAdmin.productPrice.overwrite', '覆盖') },
+                { value: 'OnlyUpdateNull', label: t('posAdmin.productPrice.onlyUpdateNull', '仅更新空值') },
               ]}
             />
           </Form.Item>
-          <Form.Item label="同步字段">
+          <Form.Item label={t('posAdmin.productPrice.syncFields', '同步字段')}>
             <Space wrap>
               <Form.Item name="syncPurchasePrice" valuePropName="checked" noStyle>
-                <Checkbox>采购价</Checkbox>
+                <Checkbox>{t('posAdmin.productPrice.purchasePrice', '采购价')}</Checkbox>
               </Form.Item>
               <Form.Item name="syncRetailPrice" valuePropName="checked" noStyle>
-                <Checkbox>零售价</Checkbox>
+                <Checkbox>{t('posAdmin.productPrice.retailPrice', '零售价')}</Checkbox>
               </Form.Item>
               <Form.Item name="syncIsAutoPricing" valuePropName="checked" noStyle>
-                <Checkbox>自动定价</Checkbox>
+                <Checkbox>{t('posAdmin.productPrice.autoPricing', '自动定价')}</Checkbox>
               </Form.Item>
               <Form.Item name="syncIsSpecialProduct" valuePropName="checked" noStyle>
-                <Checkbox>特殊商品</Checkbox>
+                <Checkbox>{t('posAdmin.productPrice.specialProduct', '特殊商品')}</Checkbox>
               </Form.Item>
               <Form.Item name="syncDiscountRate" valuePropName="checked" noStyle>
-                <Checkbox>折扣率</Checkbox>
+                <Checkbox>{t('posAdmin.productPrice.discountRate', '折扣率')}</Checkbox>
               </Form.Item>
               <Form.Item name="syncMultiCode" valuePropName="checked" noStyle>
-                <Checkbox>多码商品</Checkbox>
+                <Checkbox>{t('posAdmin.productPrice.multiCodeProduct', '多码商品')}</Checkbox>
               </Form.Item>
               <Form.Item name="syncMultiCodeRetailPrice" valuePropName="checked" noStyle>
-                <Checkbox>多码零售价</Checkbox>
+                <Checkbox>{t('posAdmin.productPrice.multiCodeRetailPrice', '多码零售价')}</Checkbox>
               </Form.Item>
             </Space>
           </Form.Item>
@@ -807,7 +748,7 @@ export default function StoreProductPricePage() {
                 />
               )}
               <div style={{ color: '#666', fontSize: 12 }}>
-                零售价已复制：{copyProgress.retailPriceCopied} | 多码已复制：{copyProgress.multiCodeCopied}
+                {t('posAdmin.productPrice.copyProgress', '零售价已复制：{{retailCount}} | 多码已复制：{{multiCodeCount}}', { retailCount: copyProgress.retailPriceCopied, multiCodeCount: copyProgress.multiCodeCopied })}
               </div>
             </Space>
           </Card>
@@ -816,7 +757,7 @@ export default function StoreProductPricePage() {
 
       <Modal
         open={hqSyncModalOpen}
-        title="从HQ更新零售价"
+        title={t('posAdmin.productPrice.hqSyncTitle', '从HQ更新零售价')}
         onCancel={() => setHqSyncModalOpen(false)}
         onOk={handleSyncFromHq}
         width={550}
@@ -824,17 +765,17 @@ export default function StoreProductPricePage() {
         forceRender
       >
         <Form form={hqSyncForm} layout="vertical">
-          <Form.Item name="selectedStoreCodes" label="分店（不选则全部）">
+          <Form.Item name="selectedStoreCodes" label={t('posAdmin.productPrice.storeOptional', '分店（不选则全部）')}>
             <Select
               mode="multiple"
               showSearch
               optionFilterProp="label"
               options={storeOptions}
-              placeholder="不选则同步所有分店"
+              placeholder={t('posAdmin.productPrice.syncAllStores', '不选则同步所有分店')}
               allowClear
             />
           </Form.Item>
-          <Form.Item name="dateRange" label="起始日期">
+          <Form.Item name="dateRange" label={t('posAdmin.productPrice.startDate', '起始日期')}>
             <DatePicker.RangePicker style={{ width: '100%' }} />
           </Form.Item>
         </Form>

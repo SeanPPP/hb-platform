@@ -1,5 +1,6 @@
 import { Card, Descriptions, List, Space, Spin, Tag, Typography, message } from 'antd'
 import { useEffect, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { useParams } from 'react-router-dom'
 import { HasPermission } from '../../../components/Access'
 import PageContainer from '../../../components/PageContainer'
@@ -10,27 +11,28 @@ import type { RoleDetailDto } from '../../../types/role'
 import RolePermissionManager from './RolePermissionManager'
 
 export default function RoleDetailPage() {
+  const { t } = useTranslation()
   const { id = '' } = useParams()
   const [loading, setLoading] = useState(true)
   const [role, setRole] = useState<RoleDetailDto | null>(null)
 
-  useDynamicTabTitle(role ? `角色详情 - ${role.roleName}` : `角色详情 - ${id}`)
+  const loadData = async () => {
+    setLoading(true)
+    try {
+      const detail = await getRoleByGuid(id)
+      setRole(detail)
+    } catch (error) {
+      console.error(error)
+      message.error(t('system.roles.loadDetailFailed'))
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useDynamicTabTitle(role ? t('system.roles.detailTitle', { name: role.roleName }) : t('system.roles.detailTitle', { name: id }))
 
   useEffect(() => {
-    const run = async () => {
-      setLoading(true)
-      try {
-        const detail = await getRoleByGuid(id)
-        setRole(detail)
-      } catch (error) {
-        console.error(error)
-        message.error('加载角色详情失败')
-      } finally {
-        setLoading(false)
-      }
-    }
-
-    void run()
+    void loadData()
   }, [id])
 
   if (loading) {
@@ -38,36 +40,36 @@ export default function RoleDetailPage() {
   }
 
   if (!role) {
-    return <Typography.Text type="danger">未找到角色信息</Typography.Text>
+    return <Typography.Text type="danger">{t('system.roles.notFound')}</Typography.Text>
   }
 
   return (
     <PageContainer
-      title={`角色详情 - ${role.roleName}`}
-      subtitle="详情页标题支持动态更新，Tab key 则始终保持为完整路径。"
+      title={t('system.roles.detailTitle', { name: role.roleName })}
+      subtitle={t('system.roles.detailTabSubtitle')}
     >
       <Card>
         <Descriptions bordered column={2}>
-          <Descriptions.Item label="角色名称">{role.roleName}</Descriptions.Item>
-          <Descriptions.Item label="状态">
-            <Tag color={role.isActive ? 'success' : 'default'}>{role.isActive ? '启用' : '停用'}</Tag>
+          <Descriptions.Item label={t('system.roles.roleName')}>{role.roleName}</Descriptions.Item>
+          <Descriptions.Item label={t('column.status')}>
+            <Tag color={role.isActive ? 'success' : 'default'}>{role.isActive ? t('common.active') : t('common.inactive')}</Tag>
           </Descriptions.Item>
-          <Descriptions.Item label="描述" span={2}>
+          <Descriptions.Item label={t('column.description')} span={2}>
             {role.description || '--'}
           </Descriptions.Item>
-          <Descriptions.Item label="关联用户数">{role.userCount}</Descriptions.Item>
-          <Descriptions.Item label="更新时间">{role.updatedAt}</Descriptions.Item>
+          <Descriptions.Item label={t('system.roles.linkedUserCount')}>{role.userCount}</Descriptions.Item>
+          <Descriptions.Item label={t('system.users.updatedAt')}>{role.updatedAt}</Descriptions.Item>
         </Descriptions>
       </Card>
 
-      <Card title="权限管理">
+      <Card title={t('system.roles.permManagement')}>
         <HasPermission
           code={P.Roles.ManagePermissions}
           fallback={
             <Space wrap>
               {role.permissions?.length
                 ? role.permissions.map((item) => <Tag key={item}>{item}</Tag>)
-                : '暂无权限'}
+                : t('system.roles.noPermissions')}
             </Space>
           }
         >
@@ -75,16 +77,16 @@ export default function RoleDetailPage() {
             roleGuid={role.roleGUID}
             roleName={role.roleName}
             onChanged={() => {
-              void run()
+              void loadData()
             }}
           />
         </HasPermission>
       </Card>
 
-      <Card title="关联用户">
+      <Card title={t('system.roles.linkedUsers')}>
         <List
           dataSource={role.users ?? []}
-          locale={{ emptyText: '暂无关联用户' }}
+                locale={{ emptyText: t('system.roles.noLinkedUsers') }}
           renderItem={(item) => (
             <List.Item>
               <Space>

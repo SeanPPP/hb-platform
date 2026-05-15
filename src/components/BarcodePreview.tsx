@@ -4,6 +4,7 @@ import { useEffect, useRef } from 'react'
 import type { BarcodeOptions } from '../utils/barcode'
 import { renderBarcodeToCanvas } from '../utils/barcode'
 import { copyTextToClipboard } from '../utils/clipboard'
+import { useTranslation } from 'react-i18next'
 
 interface BarcodePreviewProps {
   value?: string
@@ -24,6 +25,7 @@ export default function BarcodePreview({
   showCopy = true,
   compactCopy = false,
 }: BarcodePreviewProps) {
+  const { t } = useTranslation()
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
 
   useEffect(() => {
@@ -70,7 +72,7 @@ export default function BarcodePreview({
           </Typography.Text>
           {showCopy ? (
             compactCopy ? (
-              <Tooltip title="复制">
+              <Tooltip title={t('common.copy', '复制')}>
                 <Button
                   size="small"
                   type="text"
@@ -80,7 +82,7 @@ export default function BarcodePreview({
               </Tooltip>
             ) : (
               <Button size="small" type="link" onClick={() => void copyTextToClipboard(value)}>
-                复制
+                {t('common.copy', '复制')}
               </Button>
             )
           ) : null}

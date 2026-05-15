@@ -2,6 +2,7 @@ import { Modal, Spin, Transfer, message } from 'antd'
 import type { TransferDirection } from 'antd/es/transfer'
 import type { Key } from 'react'
 import { useEffect, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { getActiveRoles } from '../../../services/roleService'
 import { assignRolesToUser, getUserRoles } from '../../../services/userService'
 import type { RoleOptionDto } from '../../../types/role'
@@ -15,6 +16,7 @@ interface UserRoleAssignmentProps {
 }
 
 export default function UserRoleAssignment({ open, user, onClose, onSuccess }: UserRoleAssignmentProps) {
+  const { t } = useTranslation()
   const [loading, setLoading] = useState(false)
   const [allRoles, setAllRoles] = useState<RoleOptionDto[]>([])
   const [targetKeys, setTargetKeys] = useState<string[]>([])
@@ -31,7 +33,7 @@ export default function UserRoleAssignment({ open, user, onClose, onSuccess }: U
       setTargetKeys(userRoles.map((item) => item.roleGUID))
     } catch (error) {
       console.error(error)
-      message.error('加载角色分配数据失败')
+      message.error(t('system.users.loadRoleDataFailed'))
     } finally {
       setLoading(false)
     }
@@ -53,12 +55,12 @@ export default function UserRoleAssignment({ open, user, onClose, onSuccess }: U
     setLoading(true)
     try {
       await assignRolesToUser(user.userGUID, { roleGuids: targetKeys })
-      message.success('角色分配成功')
+      message.success(t('system.users.roleAssignSuccess'))
       onSuccess?.()
       onClose()
     } catch (error) {
       console.error(error)
-      message.error('角色分配失败')
+      message.error(t('system.users.roleAssignFailed'))
     } finally {
       setLoading(false)
     }
@@ -70,7 +72,7 @@ export default function UserRoleAssignment({ open, user, onClose, onSuccess }: U
 
   return (
     <Modal
-      title={user ? `为用户 "${user.username}" 分配角色` : '分配角色'}
+      title={user ? t('system.users.assignRoleTitle', { name: user.username }) : t('system.users.assignRoleTitleShort')}
       open={open}
       onOk={() => void handleSave()}
       onCancel={onClose}
@@ -88,7 +90,7 @@ export default function UserRoleAssignment({ open, user, onClose, onSuccess }: U
           targetKeys={targetKeys}
           onChange={handleChange}
           render={(item) => item.title}
-          titles={['可选角色', '已分配角色']}
+          titles={[t('system.users.availableRoles'), t('system.users.assignedRolesLabel')]}
           listStyle={{ width: 320, height: 420 }}
           showSearch
         />

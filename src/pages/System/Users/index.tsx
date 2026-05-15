@@ -22,6 +22,7 @@ import type { TransferDirection } from 'antd/es/transfer'
 import type { ColumnsType } from 'antd/es/table'
 import type { Key } from 'react'
 import { useEffect, useMemo, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { HasPermission } from '../../../components/Access'
 import PageContainer from '../../../components/PageContainer'
 import { P } from '../../../types/permissions'
@@ -43,6 +44,7 @@ import type { StoreDto } from '../../../types/store'
 import { getRoleColor, getStoreColor } from '../../../utils/userTableColors'
 
 export default function SystemUsersPage() {
+  const { t } = useTranslation()
   const [loading, setLoading] = useState(false)
   const [keyword, setKeyword] = useState('')
   const [data, setData] = useState<UserDto[]>([])
@@ -94,7 +96,7 @@ export default function SystemUsersPage() {
       setPageSize(result.pageSize)
     } catch (error) {
       console.error(error)
-      message.error('加载用户列表失败')
+      message.error(t('system.users.loadListFailed', '加载用户列表失败'))
     } finally {
       setLoading(false)
     }
@@ -125,7 +127,7 @@ export default function SystemUsersPage() {
       setDetailStores(stores)
     } catch (error) {
       console.error(error)
-      message.error('加载用户详情失败')
+      message.error(t('system.users.loadDetailFailed', '加载用户详情失败'))
       setDetailOpen(false)
     } finally {
       setDetailLoading(false)
@@ -140,7 +142,7 @@ export default function SystemUsersPage() {
       setRoleTargetKeys(userRoles.map((item) => item.roleGUID))
     } catch (error) {
       console.error(error)
-      message.error('加载角色数据失败')
+      message.error(t('system.users.loadRolesFailed', '加载角色数据失败'))
     } finally {
       setRoleLoading(false)
     }
@@ -157,7 +159,7 @@ export default function SystemUsersPage() {
       setStoreTargetKeys(userStores.map((item) => item.storeGUID))
     } catch (error) {
       console.error(error)
-      message.error('加载分店数据失败')
+      message.error(t('system.users.loadStoresFailed', '加载分店数据失败'))
     } finally {
       setStoreLoading(false)
     }
@@ -182,7 +184,7 @@ export default function SystemUsersPage() {
       setRolePermMap(map)
     } catch (error) {
       console.error(error)
-      message.error('加载权限数据失败')
+      message.error(t('system.users.loadPermsFailed', '加载权限数据失败'))
     } finally {
       setPermLoading(false)
     }
@@ -208,7 +210,7 @@ export default function SystemUsersPage() {
       void loadPermData(record.userGUID)
     } catch (error) {
       console.error(error)
-      message.error('加载用户编辑数据失败')
+      message.error(t('system.users.loadEditFailed', '加载用户编辑数据失败'))
       setEditOpen(false)
     } finally {
       setEditLoading(false)
@@ -221,7 +223,7 @@ export default function SystemUsersPage() {
       const values = await form.validateFields()
       setEditLoading(true)
       const updated = await updateUser(editingUser.userGUID, values)
-      message.success('用户信息已更新')
+      message.success(t('system.users.updateSuccess', '用户信息已更新'))
       setEditingUser(updated)
       if (detailUser?.userGUID === updated.userGUID) {
         setDetailUser(updated)
@@ -230,7 +232,7 @@ export default function SystemUsersPage() {
     } catch (error) {
       if (typeof error === 'object' && error !== null && 'errorFields' in error) return
       console.error(error)
-      message.error('更新用户失败')
+      message.error(t('system.users.updateFailed', '更新用户失败'))
     } finally {
       setEditLoading(false)
     }
@@ -241,7 +243,7 @@ export default function SystemUsersPage() {
     setRoleSaving(true)
     try {
       await assignRolesToUser(editingUser.userGUID, { roleGuids: roleTargetKeys })
-      message.success('角色分配成功')
+      message.success(t('system.users.roleAssignSuccess', '角色分配成功'))
       void loadData(page, pageSize)
       void loadPermData(editingUser.userGUID)
       const updated = await getUserByGuid(editingUser.userGUID)
@@ -249,7 +251,7 @@ export default function SystemUsersPage() {
       if (detailUser?.userGUID === updated.userGUID) setDetailUser(updated)
     } catch (error) {
       console.error(error)
-      message.error('角色分配失败')
+      message.error(t('system.users.roleAssignFailed', '角色分配失败'))
     } finally {
       setRoleSaving(false)
     }
@@ -267,7 +269,7 @@ export default function SystemUsersPage() {
           isPrimary: false,
         })),
       )
-      message.success('分店分配成功')
+      message.success(t('system.users.storeAssignSuccess', '分店分配成功'))
       void loadData(page, pageSize)
       const updated = await getUserByGuid(editingUser.userGUID)
       setEditingUser(updated)
@@ -276,7 +278,7 @@ export default function SystemUsersPage() {
       }
     } catch (error) {
       console.error(error)
-      message.error('分店分配失败')
+      message.error(t('system.users.storeAssignFailed', '分店分配失败'))
     } finally {
       setStoreSaving(false)
     }
@@ -317,18 +319,18 @@ export default function SystemUsersPage() {
   }, [permCategories, allPermSet])
 
   const columns: ColumnsType<UserDto> = [
-    { title: '用户名', dataIndex: 'username', width: 180 },
-    { title: '姓名', dataIndex: 'fullName', width: 160, render: (value) => value || '--' },
-    { title: '邮箱', dataIndex: 'email', width: 220 },
+    { title: t('system.users.username', '用户名'), dataIndex: 'username', width: 180 },
+    { title: t('system.users.fullName', '姓名'), dataIndex: 'fullName', width: 160, render: (value) => value || '--' },
+    { title: t('system.users.email', '邮箱'), dataIndex: 'email', width: 220 },
     {
-      title: '角色',
+      title: t('system.users.roles', '角色'),
       dataIndex: 'roleNames',
       width: 220,
       render: (value: string[]) =>
         value?.length ? value.map((item) => <Tag key={item} color={getRoleColor(item)}>{item}</Tag>) : '--',
     },
     {
-      title: '关联分店',
+      title: t('system.users.linkedStores', '关联分店'),
       dataIndex: 'storeNames',
       width: 240,
       render: (value: string[]) => {
@@ -345,26 +347,26 @@ export default function SystemUsersPage() {
       },
     },
     {
-      title: '状态',
+      title: t('common.status', '状态'),
       dataIndex: 'isActive',
       width: 100,
       render: (value: boolean) => (
-        <Tag color={value ? 'success' : 'default'}>{value ? '启用' : '停用'}</Tag>
+        <Tag color={value ? 'success' : 'default'}>{value ? t('common.active', '启用') : t('common.inactive', '停用')}</Tag>
       ),
     },
     {
-      title: '操作',
+      title: t('common.action', '操作'),
       key: 'action',
       width: 160,
       fixed: 'right',
       render: (_, record) => (
         <Space size={0}>
           <Button type="link" icon={<EyeOutlined />} onClick={() => void handleViewDetail(record)}>
-            详情
+            {t('common.view', '详情')}
           </Button>
           <HasPermission code={P.Users.Edit}>
             <Button type="link" icon={<EditOutlined />} onClick={() => void handleEdit(record)}>
-              编辑
+              {t('common.edit', '编辑')}
             </Button>
           </HasPermission>
         </Space>
@@ -375,32 +377,32 @@ export default function SystemUsersPage() {
   const editTabItems = [
     {
       key: 'info',
-      label: '基本信息',
+      label: t('system.users.basicInfo', '基本信息'),
       children: (
         <Spin spinning={editLoading}>
           <Form form={form} layout="vertical" style={{ maxWidth: 480 }}>
-            <Form.Item label="用户名" name="username" rules={[{ required: true, message: '请输入用户名' }]}>
+            <Form.Item label={t('system.users.username', '用户名')} name="username" rules={[{ required: true, message: t('system.users.usernameRequired', '请输入用户名') }]}>
               <Input />
             </Form.Item>
             <Form.Item
-              label="邮箱"
+              label={t('system.users.email', '邮箱')}
               name="email"
               rules={[
-                { required: true, message: '请输入邮箱' },
-                { type: 'email', message: '邮箱格式不正确' },
+                { required: true, message: t('system.users.emailRequired', '请输入邮箱') },
+                { type: 'email', message: t('system.users.emailInvalid', '邮箱格式不正确') },
               ]}
             >
               <Input />
             </Form.Item>
-            <Form.Item label="姓名" name="fullName">
+            <Form.Item label={t('system.users.fullName', '姓名')} name="fullName">
               <Input />
             </Form.Item>
-            <Form.Item label="状态" name="isActive" valuePropName="checked">
-              <Switch checkedChildren="启用" unCheckedChildren="停用" />
+            <Form.Item label={t('common.status', '状态')} name="isActive" valuePropName="checked">
+              <Switch checkedChildren={t('common.active', '启用')} unCheckedChildren={t('common.inactive', '停用')} />
             </Form.Item>
             <Form.Item>
               <Button type="primary" loading={editLoading} onClick={() => void handleEditSubmit()}>
-                保存基本信息
+                {t('system.users.saveBasicInfo', '保存基本信息')}
               </Button>
             </Form.Item>
           </Form>
@@ -410,16 +412,16 @@ export default function SystemUsersPage() {
     {
       key: 'roles',
       label: (
-        <HasPermission code={P.Users.ManageRoles} fallback={<span>角色</span>}>
-          <span>角色</span>
+        <HasPermission code={P.Users.ManageRoles} fallback={<span>{t('system.users.roles', '角色')}</span>}>
+          <span>{t('system.users.roles', '角色')}</span>
         </HasPermission>
       ),
       children: (
-        <HasPermission code={P.Users.ManageRoles} fallback={<Typography.Text type="secondary">无权限管理角色</Typography.Text>}>
+        <HasPermission code={P.Users.ManageRoles} fallback={<Typography.Text type="secondary">{t('system.users.noRolePermission', '无权限管理角色')}</Typography.Text>}>
           <Spin spinning={roleLoading}>
             <div style={{ marginBottom: 12 }}>
               <Typography.Text type="secondary">
-                当前用户已分配 <strong>{roleTargetKeys.length}</strong> 个角色
+                {t('system.users.assignedRoles', '当前用户已分配 {{count}} 个角色', { count: roleTargetKeys.length })}
               </Typography.Text>
             </div>
             <Transfer
@@ -433,13 +435,13 @@ export default function SystemUsersPage() {
                 setRoleTargetKeys(nextTargetKeys.map(String))
               }}
               render={(item) => item.title}
-              titles={['可选角色', '已分配角色']}
+              titles={[t('system.users.availableRoles', '可选角色'), t('system.users.assignedRolesLabel', '已分配角色')]}
               listStyle={{ width: 320, height: 400 }}
               showSearch
             />
             <div style={{ marginTop: 16, textAlign: 'right' }}>
               <Button type="primary" loading={roleSaving} onClick={() => void handleSaveRoles()}>
-                保存角色分配
+                {t('system.users.saveRoleAssign', '保存角色分配')}
               </Button>
             </div>
           </Spin>
@@ -449,16 +451,16 @@ export default function SystemUsersPage() {
     {
       key: 'stores',
       label: (
-        <HasPermission code={P.Users.ManageStores} fallback={<span>分店</span>}>
-          <span>分店</span>
+        <HasPermission code={P.Users.ManageStores} fallback={<span>{t('system.users.stores', '分店')}</span>}>
+          <span>{t('system.users.stores', '分店')}</span>
         </HasPermission>
       ),
       children: (
-        <HasPermission code={P.Users.ManageStores} fallback={<Typography.Text type="secondary">无权限管理分店</Typography.Text>}>
+        <HasPermission code={P.Users.ManageStores} fallback={<Typography.Text type="secondary">{t('system.users.noStorePermission', '无权限管理分店')}</Typography.Text>}>
           <Spin spinning={storeLoading}>
             <div style={{ marginBottom: 12 }}>
               <Typography.Text type="secondary">
-                当前用户已关联 <strong>{storeTargetKeys.length}</strong> 个分店
+                {t('system.users.assignedStores', '当前用户已关联 {{count}} 个分店', { count: storeTargetKeys.length })}
               </Typography.Text>
             </div>
             <Transfer
@@ -472,13 +474,13 @@ export default function SystemUsersPage() {
                 setStoreTargetKeys(nextTargetKeys.map(String))
               }}
               render={(item) => item.title}
-              titles={['可选分店', '已分配分店']}
+              titles={[t('system.users.availableStores', '可选分店'), t('system.users.assignedStoresLabel', '已分配分店')]}
               listStyle={{ width: 320, height: 400 }}
               showSearch
             />
             <div style={{ marginTop: 16, textAlign: 'right' }}>
               <Button type="primary" loading={storeSaving} onClick={() => void handleSaveStores()}>
-                保存分店分配
+                {t('system.users.saveStoreAssign', '保存分店分配')}
               </Button>
             </div>
           </Spin>
@@ -487,17 +489,16 @@ export default function SystemUsersPage() {
     },
     {
       key: 'permissions',
-      label: '权限',
+      label: t('system.users.permissions', '权限'),
       children: (
         <Spin spinning={permLoading}>
           <div style={{ marginBottom: 12 }}>
             <Typography.Text type="secondary">
-              以下权限通过角色继承获得，共 <strong>{allPermSet.size}</strong> 项。
-              权限标签表示来源角色。
+              {t('system.users.permInheritDesc', '以下权限通过角色继承获得，共 {{count}} 项。权限标签表示来源角色。', { count: allPermSet.size })}
             </Typography.Text>
           </div>
           {permCategories.length === 0 ? (
-            <Typography.Text type="secondary">暂无权限数据</Typography.Text>
+            <Typography.Text type="secondary">{t('system.users.noPermData', '暂无权限数据')}</Typography.Text>
           ) : (
             <Tree
               treeData={permTreeData}
@@ -514,11 +515,11 @@ export default function SystemUsersPage() {
   ]
 
   return (
-    <PageContainer title="用户管理" subtitle="管理用户的基本信息、角色、分店和权限。">
+    <PageContainer title={t('menu.systemUsers', '用户管理')} subtitle={t('system.users.pageSubtitle', '管理用户的基本信息、角色、分店和权限。')}>
       <Card>
         <Space wrap style={{ marginBottom: 16 }}>
           <Input
-            placeholder="搜索用户名 / 姓名 / 邮箱"
+            placeholder={t('system.users.searchPlaceholder', '搜索用户名 / 姓名 / 邮箱')}
             value={keyword}
             onChange={(event) => setKeyword(event.target.value)}
             prefix={<SearchOutlined />}
@@ -526,10 +527,10 @@ export default function SystemUsersPage() {
             allowClear
           />
           <Button type="primary" onClick={() => void loadData(1, pageSize)}>
-            查询
+            {t('common.query', '查询')}
           </Button>
           <Button icon={<ReloadOutlined />} onClick={() => void loadData(page, pageSize)}>
-            刷新
+            {t('common.refresh', '刷新')}
           </Button>
         </Space>
 
@@ -552,7 +553,7 @@ export default function SystemUsersPage() {
       </Card>
 
       <Drawer
-        title={detailUser ? `用户详情 - ${detailUser.username}` : '用户详情'}
+        title={detailUser ? t('system.users.userDetailTitle', '用户详情 - {{name}}', { name: detailUser.username }) : t('system.users.userDetail', '用户详情')}
         width={820}
         open={detailOpen}
         onClose={() => {
@@ -563,39 +564,39 @@ export default function SystemUsersPage() {
         destroyOnHidden
       >
         {detailLoading ? (
-          <Typography.Text type="secondary">正在加载用户详情...</Typography.Text>
+          <Typography.Text type="secondary">{t('system.users.loadingDetail', '正在加载用户详情...')}</Typography.Text>
         ) : !detailUser ? (
-          <Typography.Text type="danger">未找到用户信息</Typography.Text>
+          <Typography.Text type="danger">{t('system.users.userNotFound', '未找到用户信息')}</Typography.Text>
         ) : (
           <Space direction="vertical" size={16} style={{ width: '100%' }}>
             <Descriptions bordered column={2}>
-              <Descriptions.Item label="用户名">{detailUser.username}</Descriptions.Item>
-              <Descriptions.Item label="姓名">{detailUser.fullName || '--'}</Descriptions.Item>
-              <Descriptions.Item label="邮箱">{detailUser.email}</Descriptions.Item>
-              <Descriptions.Item label="状态">
+              <Descriptions.Item label={t('system.users.username', '用户名')}>{detailUser.username}</Descriptions.Item>
+              <Descriptions.Item label={t('system.users.fullName', '姓名')}>{detailUser.fullName || '--'}</Descriptions.Item>
+              <Descriptions.Item label={t('system.users.email', '邮箱')}>{detailUser.email}</Descriptions.Item>
+              <Descriptions.Item label={t('common.status', '状态')}>
                 <Tag color={detailUser.isActive ? 'success' : 'default'}>
-                  {detailUser.isActive ? '启用' : '停用'}
+                  {detailUser.isActive ? t('common.active', '启用') : t('common.inactive', '停用')}
                 </Tag>
               </Descriptions.Item>
-              <Descriptions.Item label="角色" span={2}>
+              <Descriptions.Item label={t('system.users.roles', '角色')} span={2}>
                 <Space wrap>
                   {detailUser.roleNames?.length ? detailUser.roleNames.map((item) => <Tag key={item}>{item}</Tag>) : '--'}
                 </Space>
               </Descriptions.Item>
-              <Descriptions.Item label="创建时间">{detailUser.createdAt}</Descriptions.Item>
-              <Descriptions.Item label="更新时间">{detailUser.updatedAt}</Descriptions.Item>
+              <Descriptions.Item label={t('system.users.createdAt', '创建时间')}>{detailUser.createdAt}</Descriptions.Item>
+              <Descriptions.Item label={t('system.users.updatedAt', '更新时间')}>{detailUser.updatedAt}</Descriptions.Item>
             </Descriptions>
 
-            <Card title="关联分店" size="small">
+            <Card title={t('system.users.linkedStores', '关联分店')} size="small">
               <List
                 dataSource={detailStores}
-                locale={{ emptyText: '暂无关联分店' }}
+                locale={{ emptyText: t('system.users.noLinkedStores', '暂无关联分店') }}
                 renderItem={(item) => (
                   <List.Item>
                     <Space>
                       <Typography.Text strong>{item.storeName}</Typography.Text>
                       <Tag>{item.storeCode}</Tag>
-                      {item.isPrimary ? <Tag color="processing">主分店</Tag> : null}
+                      {item.isPrimary ? <Tag color="processing">{t('system.users.primaryStore', '主分店')}</Tag> : null}
                     </Space>
                   </List.Item>
                 )}
@@ -606,7 +607,7 @@ export default function SystemUsersPage() {
       </Drawer>
 
       <Drawer
-        title={editingUser ? `编辑用户 - ${editingUser.username}` : '编辑用户'}
+        title={editingUser ? t('system.users.editUserTitle', '编辑用户 - {{name}}', { name: editingUser.username }) : t('system.users.editUser', '编辑用户')}
         width={860}
         open={editOpen}
         onClose={() => {

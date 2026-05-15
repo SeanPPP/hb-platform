@@ -2,6 +2,7 @@ import { CheckCircleOutlined } from '@ant-design/icons'
 import { Button, Checkbox, Input, InputNumber, Modal, Result, Space, Table, Tag, message } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { useEffect, useMemo, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import {
   getDomesticProductsNotInWarehouse,
   importFromDomestic,
@@ -42,6 +43,7 @@ export default function ImportFromDomesticModal({
   onCancel,
   onSuccess,
 }: ImportFromDomesticModalProps) {
+  const { t } = useTranslation()
   const [loading, setLoading] = useState(false)
   const [importing, setImporting] = useState(false)
   const [items, setItems] = useState<DomesticProductNotInWarehouseItem[]>([])
@@ -73,7 +75,7 @@ export default function ImportFromDomesticModal({
       setPageSize(nextPageSize)
     } catch (error) {
       console.error(error)
-      message.error(error instanceof Error ? error.message : '加载国内商品失败')
+      message.error(error instanceof Error ? error.message : t('warehouse.loadDomesticFailed', '加载国内商品失败'))
     } finally {
       setLoading(false)
     }
@@ -103,37 +105,37 @@ export default function ImportFromDomesticModal({
   const columns = useMemo<ColumnsType<DomesticProductNotInWarehouseItem>>(
     () => [
       {
-        title: '货号',
+        title: t('productImport.hbProductNoCol', '货号'),
         dataIndex: 'itemNumber',
         width: 160,
       },
       {
-        title: '条码',
+        title: t('domesticProducts.barcode', '条码'),
         dataIndex: 'barcode',
         width: 160,
         render: (value?: string) => value || '--',
       },
       {
-        title: '商品名称',
+        title: t('domesticProducts.productName', '商品名称'),
         dataIndex: 'productName',
         width: 220,
         ellipsis: true,
       },
       {
-        title: '类型',
+        title: t('productCreation.type', '类型'),
         dataIndex: 'productType',
         width: 100,
         render: (value: number) => ProductTypeLabels[value as keyof typeof ProductTypeLabels] || '--',
       },
       {
-        title: '供应商',
+        title: t('domesticProducts.supplier', '供应商'),
         dataIndex: 'supplierName',
         width: 180,
         ellipsis: true,
         render: (value?: string) => value || '--',
       },
       {
-        title: '国内价',
+        title: t('domesticProducts.domesticPrice', '国内价'),
         dataIndex: 'domesticPrice',
         width: 120,
         render: (_value, record) => (
@@ -155,7 +157,7 @@ export default function ImportFromDomesticModal({
         ),
       },
       {
-        title: '零售',
+        title: t('warehouse.retail', '零售'),
         dataIndex: 'oemPrice',
         width: 120,
         render: (_value, record) => (
@@ -177,7 +179,7 @@ export default function ImportFromDomesticModal({
         ),
       },
       {
-        title: '进口价',
+        title: t('warehouse.importPrice', '进口价'),
         dataIndex: 'importPrice',
         width: 120,
         render: (_value, record) => (
@@ -199,7 +201,7 @@ export default function ImportFromDomesticModal({
         ),
       },
       {
-        title: '体积',
+        title: t('warehouse.volume', '体积'),
         dataIndex: 'volume',
         width: 120,
         render: (_value, record) => (
@@ -221,14 +223,14 @@ export default function ImportFromDomesticModal({
         ),
       },
       {
-        title: '结构',
+        title: t('warehouse.structure', '结构'),
         key: 'flags',
         width: 140,
         render: (_, record) => (
           <Space size={[4, 4]} wrap>
-            {record.hasSetProducts ? <Tag color="gold">套装</Tag> : null}
-            {record.hasMultiCodes ? <Tag color="blue">多码</Tag> : null}
-            {!record.hasSetProducts && !record.hasMultiCodes ? <Tag>普通</Tag> : null}
+            {record.hasSetProducts ? <Tag color="gold">{t('productCreation.set', '套装')}</Tag> : null}
+            {record.hasMultiCodes ? <Tag color="blue">{t('warehouse.multiCode', '多码')}</Tag> : null}
+            {!record.hasSetProducts && !record.hasMultiCodes ? <Tag>{t('productCreation.normal', '普通')}</Tag> : null}
           </Space>
         ),
       },
@@ -238,7 +240,7 @@ export default function ImportFromDomesticModal({
 
   const handleImport = async () => {
     if (!selectedRowKeys.length) {
-      message.warning('请至少选择一个商品')
+      message.warning(t('warehouse.selectAtLeastOne', '请至少选择一个商品'))
       return
     }
 
@@ -280,7 +282,7 @@ export default function ImportFromDomesticModal({
       })
 
       if (!result.success) {
-        message.error(result.message || '导入失败')
+        message.error(result.message || t('warehouse.importFailed', '导入失败'))
         return
       }
 
@@ -291,13 +293,13 @@ export default function ImportFromDomesticModal({
         : (result.results ?? []).filter((item) => !item.success).map((item) => item.message || item.productCode)
 
       Modal.success({
-        title: failedCount ? '部分导入成功' : '导入成功',
+        title: failedCount ? t('warehouse.partialImportSuccess', '部分导入成功') : t('warehouse.importSuccess', '导入成功'),
         icon: <CheckCircleOutlined style={{ color: failedCount ? '#faad14' : '#52c41a' }} />,
         content: (
           <Result
             status={failedCount ? 'warning' : 'success'}
-            title={failedCount ? '部分商品导入成功' : '已成功导入商品'}
-            subTitle={`成功 ${successCount} 个，失败 ${failedCount} 个`}
+            title={failedCount ? t('warehouse.partialImportSuccessTitle', '部分商品导入成功') : t('warehouse.allImported', '已成功导入商品')}
+            subTitle={t('warehouse.importResult', '成功 {{success}} 个，失败 {{failed}} 个', { success: successCount, failed: failedCount })}
             extra={
               failedMessages.length ? (
                 <div style={{ textAlign: 'left', maxHeight: 180, overflow: 'auto' }}>
@@ -316,7 +318,7 @@ export default function ImportFromDomesticModal({
       })
     } catch (error) {
       console.error(error)
-      message.error(error instanceof Error ? error.message : '导入失败')
+      message.error(error instanceof Error ? error.message : t('warehouse.importFailed', '导入失败'))
     } finally {
       setImporting(false)
     }
@@ -324,12 +326,12 @@ export default function ImportFromDomesticModal({
 
   return (
     <Modal
-      title="从国内导入"
+      title={t('warehouse.importFromDomestic', '从国内导入')}
       open={open}
       width={1400}
       destroyOnClose
       okText={`导入选中 (${selectedRowKeys.length})`}
-      cancelText="关闭"
+      cancelText={t('common.close', '关闭')}
       confirmLoading={importing}
       onCancel={onCancel}
       onOk={() => void handleImport()}
@@ -338,7 +340,7 @@ export default function ImportFromDomesticModal({
         <Space wrap>
           <Input.Search
             allowClear
-            placeholder="搜索货号 / 条码 / 商品名称"
+            placeholder={t('warehouse.searchProduct', '搜索货号 / 条码 / 商品名称')}
             style={{ width: 320 }}
             value={searchText}
             onChange={(event) => setSearchText(event.target.value)}

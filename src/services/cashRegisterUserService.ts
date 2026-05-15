@@ -1,7 +1,6 @@
 import type { ApiResponse } from '../types/api'
 import type {
   CashRegisterUserDetailDto,
-  CashRegisterUserFilterDto,
   CashRegisterUserListDto,
   CreateCashRegisterUserDto,
   UpdateCashRegisterUserDto,

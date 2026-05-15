@@ -23,6 +23,7 @@ import {
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { useEffect, useMemo, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { useStableRouteContext } from '../../../hooks/useStableRouteContext'
 import BarcodePreview from '../../../components/BarcodePreview'
 import {
@@ -42,18 +43,10 @@ import type {
   UpdateToStorePricesRequest,
 } from '../../../types/localSupplierInvoice'
 import { copyTextToClipboard } from '../../../utils/clipboard'
-import { getStableTagColor } from '../../../utils/tagColors'
 
 function formatAmount(value?: number) {
   if (value === undefined || value === null) return '--'
   return value.toFixed(2)
-}
-
-function formatDate(value?: string) {
-  if (!value) return '--'
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return value
-  return date.toLocaleDateString('zh-CN')
 }
 
 /** 价格变动高亮背景色 */
@@ -69,13 +62,14 @@ function getPriceChangeBg(lastPrice?: number, currentPrice?: number): string {
 }
 
 export default function LocalSupplierInvoiceDetailPage() {
+  const { t } = useTranslation()
   const route = useStableRouteContext()
   const invoiceGuid = route?.params.id
   const { access } = useAuthStore()
   const isAdmin = access.isAdmin
 
   // 主表数据
-  const [invoice, setInvoice] = useState<LocalSupplierInvoiceDetailDto | null>(null)
+  const [_invoice, setInvoice] = useState<LocalSupplierInvoiceDetailDto | null>(null)
   const [details, setDetails] = useState<LocalSupplierInvoiceItemDto[]>([])
   const [loading, setLoading] = useState(false)
   const [detailLoading, setDetailLoading] = useState(false)
@@ -125,7 +119,7 @@ export default function LocalSupplierInvoiceDetailPage() {
         remarks: data.remarks,
       })
     } catch {
-      message.error('加载进货单失败')
+      message.error(t('posAdmin.invoiceDetail.loadInvoiceFailed', '加载进货单失败'))
     } finally {
       setLoading(false)
     }
@@ -138,7 +132,7 @@ export default function LocalSupplierInvoiceDetailPage() {
       const data = await getInvoiceDetails(invoiceGuid)
       setDetails(data)
     } catch {
-      message.error('加载明细失败')
+      message.error(t('posAdmin.invoiceDetail.loadDetailsFailed', '加载明细失败'))
     } finally {
       setDetailLoading(false)
     }
@@ -223,20 +217,20 @@ export default function LocalSupplierInvoiceDetailPage() {
         inboundDate: values.inboundDate?.format?.('YYYY-MM-DD') || values.inboundDate,
         remarks: values.remarks?.trim() || undefined,
       })
-      message.success('保存成功')
+      message.success(t('posAdmin.invoiceDetail.saveSuccess', '保存成功'))
       loadInvoice()
     } catch {
-      message.error('保存失败')
+      message.error(t('posAdmin.invoiceDetail.saveFailed', '保存失败'))
     } finally {
       setSaving(false)
     }
   }
 
-  // 批量编辑
+  // Batch edit
   const handleBatchEdit = async () => {
     if (!invoiceGuid) return
     if (!selectedRowKeys.length) {
-      message.warning('请先选择明细行')
+      message.warning(t('posAdmin.invoiceDetail.selectDetailRows', '请先选择明细行'))
       return
     }
     const values = await batchEditForm.validateFields()
@@ -262,7 +256,7 @@ export default function LocalSupplierInvoiceDetailPage() {
       editFields.updateIsSpecialProduct ||
       editFields.updateDiscountRate
     if (!hasAnyField) {
-      message.warning('请至少选择一个要更新的字段')
+      message.warning(t('posAdmin.invoiceDetail.selectUpdateField', '请至少选择一个要更新的字段'))
       return
     }
 
@@ -272,13 +266,13 @@ export default function LocalSupplierInvoiceDetailPage() {
         detailGUID: String(key),
       }))
       await batchUpdateDetails(invoiceGuid, items, editFields)
-      message.success('批量更新成功')
+      message.success(t('posAdmin.invoiceDetail.batchUpdateSuccess', '批量更新成功'))
       setBatchEditVisible(false)
       batchEditForm.resetFields()
       setSelectedRowKeys([])
       loadDetails()
     } catch {
-      message.error('批量更新失败')
+      message.error(t('posAdmin.invoiceDetail.batchUpdateFailed', '批量更新失败'))
     } finally {
       setBatchEditLoading(false)
     }
@@ -288,12 +282,12 @@ export default function LocalSupplierInvoiceDetailPage() {
   const handleUpdateToStorePrices = async () => {
     if (!invoiceGuid) return
     if (!selectedRowKeys.length) {
-      message.warning('请先选择明细行')
+      message.warning(t('posAdmin.invoiceDetail.selectDetailRows', '请先选择明细行'))
       return
     }
     const values = await storePriceForm.validateFields()
     if (!values.targetStoreCodes?.length) {
-      message.warning('请选择目标分店')
+      message.warning(t('posAdmin.invoiceDetail.selectTargetStore', '请选择目标分店'))
       return
     }
 
@@ -312,7 +306,7 @@ export default function LocalSupplierInvoiceDetailPage() {
       updateFields.updateIsSpecialProduct ||
       updateFields.updateDiscountRate
     if (!hasAnyField) {
-      message.warning('请至少选择一个要更新的字段')
+      message.warning(t('posAdmin.invoiceDetail.selectUpdateField', '请至少选择一个要更新的字段'))
       return
     }
 
@@ -326,13 +320,13 @@ export default function LocalSupplierInvoiceDetailPage() {
       }
       const result = await updateToStorePrices(request)
       message.success(
-        `更新完成：成功${(result?.updated ?? 0)} 条，失败${(result?.failed ?? 0)} 条`,
+        t('posAdmin.invoiceDetail.storePriceUpdateResult', '更新完成：成功{{success}} 条，失败{{failed}} 条', { success: result?.updated ?? 0, failed: result?.failed ?? 0 }),
       )
       setStorePriceVisible(false)
       storePriceForm.resetFields()
       setSelectedRowKeys([])
     } catch {
-      message.error('更新到分店价格失败')
+      message.error(t('posAdmin.invoiceDetail.storePriceUpdateFailed', '更新到分店价格失败'))
     } finally {
       setStorePriceLoading(false)
     }
@@ -340,13 +334,13 @@ export default function LocalSupplierInvoiceDetailPage() {
 
   const columns: ColumnsType<LocalSupplierInvoiceItemDto> = [
     {
-      title: '序号',
+      title: t('posAdmin.invoiceDetail.seqNo', '序号'),
       width: 60,
       align: 'right',
       render: (_, __, index) => index + 1,
     },
     {
-      title: '图片',
+      title: t('posAdmin.invoiceDetail.image', '图片'),
       dataIndex: 'productImage',
       width: 80,
       render: (v: string) =>
@@ -357,7 +351,7 @@ export default function LocalSupplierInvoiceDetailPage() {
         ),
     },
     {
-      title: '货号',
+      title: t('posAdmin.invoiceDetail.itemNumber', '货号'),
       dataIndex: 'itemNumber',
       width: 140,
       render: (v: string) => (
@@ -375,34 +369,34 @@ export default function LocalSupplierInvoiceDetailPage() {
       ),
     },
     {
-      title: '条码',
+      title: t('posAdmin.invoiceDetail.barcode', '条码'),
       dataIndex: 'barcode',
       width: 180,
       render: (v: string) => <BarcodePreview value={v} compactCopy />,
     },
     {
-      title: '商品名称',
+      title: t('posAdmin.invoiceDetail.productName', '商品名称'),
       dataIndex: 'productName',
       width: 200,
       ellipsis: true,
       render: (v: string) => v || '--',
     },
     {
-      title: '数量',
+      title: t('posAdmin.invoiceDetail.quantity', '数量'),
       dataIndex: 'quantity',
       width: 80,
       align: 'right',
       render: (v: number) => v ?? '--',
     },
     {
-      title: '上次进货价',
+      title: t('posAdmin.invoiceDetail.lastPurchasePrice', '上次进货价'),
       dataIndex: 'lastPurchasePrice',
       width: 110,
       align: 'right',
       render: (v: number) => formatAmount(v),
     },
     {
-      title: '本次进货价',
+      title: t('posAdmin.invoiceDetail.currentPurchasePrice', '本次进货价'),
       dataIndex: 'purchasePrice',
       width: 110,
       align: 'right',
@@ -416,39 +410,39 @@ export default function LocalSupplierInvoiceDetailPage() {
       },
     },
     {
-      title: '零售价',
+      title: t('posAdmin.invoiceDetail.retailPrice', '零售价'),
       dataIndex: 'retailPrice',
       width: 100,
       align: 'right',
       render: (v: number) => formatAmount(v),
     },
     {
-      title: '自动定价',
+      title: t('posAdmin.invoiceDetail.autoPricing', '自动定价'),
       dataIndex: 'autoPricing',
       width: 90,
       align: 'center',
       render: (v: boolean) => (
-        <Tag color={v ? 'green' : 'default'}>{v ? '是' : '否'}</Tag>
+        <Tag color={v ? 'green' : 'default'}>{v ? t('posAdmin.invoiceDetail.yes', '是') : t('posAdmin.invoiceDetail.no', '否')}</Tag>
       ),
     },
     {
-      title: '特殊商品',
+      title: t('posAdmin.invoiceDetail.specialProduct', '特殊商品'),
       dataIndex: 'isSpecialProduct',
       width: 90,
       align: 'center',
       render: (v: boolean) => (
-        <Tag color={v ? 'orange' : 'default'}>{v ? '是' : '否'}</Tag>
+        <Tag color={v ? 'orange' : 'default'}>{v ? t('posAdmin.invoiceDetail.yes', '是') : t('posAdmin.invoiceDetail.no', '否')}</Tag>
       ),
     },
     {
-      title: '折扣率',
+      title: t('posAdmin.invoiceDetail.discountRate', '折扣率'),
       dataIndex: 'discountRate',
       width: 90,
       align: 'right',
       render: (v: number) => (v !== undefined && v !== null ? `${(v * 100).toFixed(1)}%` : '--'),
     },
     {
-      title: '金额',
+      title: t('posAdmin.invoiceDetail.amount', '金额'),
       dataIndex: 'amount',
       width: 110,
       align: 'right',
@@ -459,50 +453,50 @@ export default function LocalSupplierInvoiceDetailPage() {
   return (
     <Space direction="vertical" size={16} style={{ width: '100%' }}>
       {/* 顶部：订单基本信息 */}
-      <Card title="订单基本信息" loading={loading}>
+      <Card title={t('posAdmin.invoiceDetail.orderBasicInfo', '订单基本信息')} loading={loading}>
         <Form form={form} layout="vertical">
           <Row gutter={16}>
             <Col span={6}>
-              <Form.Item name="invoiceNo" label="订单号">
+              <Form.Item name="invoiceNo" label={t('posAdmin.invoiceDetail.invoiceNo', '订单号')}>
                 <Input disabled />
               </Form.Item>
             </Col>
             <Col span={6}>
-              <Form.Item name="storeName" label="分店">
+              <Form.Item name="storeName" label={t('posAdmin.invoiceDetail.store', '分店')}>
                 <Input disabled />
               </Form.Item>
             </Col>
             <Col span={6}>
-              <Form.Item name="supplierName" label="供应商">
+              <Form.Item name="supplierName" label={t('posAdmin.invoiceDetail.supplier', '供应商')}>
                 <Input disabled />
               </Form.Item>
             </Col>
             <Col span={6}>
-              <Form.Item name="totalAmount" label="总金额">
+              <Form.Item name="totalAmount" label={t('posAdmin.invoiceDetail.totalAmount', '总金额')}>
                 <Input disabled />
               </Form.Item>
             </Col>
           </Row>
           <Row gutter={16}>
             <Col span={6}>
-              <Form.Item name="orderDate" label="订单日期">
+              <Form.Item name="orderDate" label={t('posAdmin.invoiceDetail.orderDate', '订单日期')}>
                 <DatePicker style={{ width: '100%' }} />
               </Form.Item>
             </Col>
             <Col span={6}>
-              <Form.Item name="inboundDate" label="入库日期">
+              <Form.Item name="inboundDate" label={t('posAdmin.invoiceDetail.inboundDate', '入库日期')}>
                 <DatePicker style={{ width: '100%' }} />
               </Form.Item>
             </Col>
             <Col span={6}>
-              <Form.Item name="remarks" label="备注">
+              <Form.Item name="remarks" label={t('posAdmin.invoiceDetail.remarks', '备注')}>
                 <Input />
               </Form.Item>
             </Col>
             <Col span={6} style={{ display: 'flex', alignItems: 'flex-end' }}>
               <Form.Item>
                 <Button type="primary" loading={saving} onClick={() => void handleSave()}>
-                  保存
+                  {t('posAdmin.invoiceDetail.save', '保存')}
                 </Button>
               </Form.Item>
             </Col>
@@ -512,12 +506,12 @@ export default function LocalSupplierInvoiceDetailPage() {
 
       {/* 底部：明细表格 */}
       <Card
-        title={`明细 (${details.length} 条)`}
+        title={t('posAdmin.invoiceDetail.details', '明细 ({{count}} 条)', { count: details.length })}
         extra={
           <Space>
             <Input
               allowClear
-              placeholder="搜索货号/条码/名称"
+              placeholder={t('posAdmin.invoiceDetail.searchPlaceholder', '搜索货号/条码/名称')}
               style={{ width: 200 }}
               value={searchText}
               onChange={(e) => setSearchText(e.target.value)}
@@ -529,7 +523,7 @@ export default function LocalSupplierInvoiceDetailPage() {
               size="small"
               onClick={() => setPriceFilter(priceFilter === 'up' ? 'all' : 'up')}
             >
-              涨价 ({priceStats.upCount})
+              {t('posAdmin.invoiceDetail.priceUp', '涨价 ({{count}})', { count: priceStats.upCount })}
             </Button>
             <Button
               type={priceFilter === 'down' ? 'primary' : 'default'}
@@ -537,7 +531,7 @@ export default function LocalSupplierInvoiceDetailPage() {
               style={priceFilter === 'down' ? { background: '#52c41a', borderColor: '#52c41a' } : {}}
               onClick={() => setPriceFilter(priceFilter === 'down' ? 'all' : 'down')}
             >
-              降价 ({priceStats.downCount})
+              {t('posAdmin.invoiceDetail.priceDown', '降价 ({{count}})', { count: priceStats.downCount })}
             </Button>
             {isAdmin && (
               <Button
@@ -545,7 +539,7 @@ export default function LocalSupplierInvoiceDetailPage() {
                 disabled={!selectedRowKeys.length}
                 onClick={() => setBatchEditVisible(true)}
               >
-                批量编辑 ({selectedRowKeys.length})
+                {t('posAdmin.invoiceDetail.batchEdit', '批量编辑 ({{count}})', { count: selectedRowKeys.length })}
               </Button>
             )}
             {isAdmin && (
@@ -554,7 +548,7 @@ export default function LocalSupplierInvoiceDetailPage() {
                 disabled={!selectedRowKeys.length}
                 onClick={() => setStorePriceVisible(true)}
               >
-                更新到分店价格
+                {t('posAdmin.invoiceDetail.updateToStorePrice', '更新到分店价格')}
               </Button>
             )}
           </Space>
@@ -579,7 +573,7 @@ export default function LocalSupplierInvoiceDetailPage() {
       {/* 批量编辑 Modal */}
       <Modal
         open={batchEditVisible}
-        title="批量编辑"
+        title={t('posAdmin.invoiceDetail.batchEditTitle', '批量编辑')}
         confirmLoading={batchEditLoading}
         onCancel={() => {
           setBatchEditVisible(false)
@@ -590,12 +584,12 @@ export default function LocalSupplierInvoiceDetailPage() {
       >
         <Form form={batchEditForm} layout="vertical">
           <Form.Item name="updatePurchasePrice" valuePropName="checked">
-            <Checkbox>进货价</Checkbox>
+            <Checkbox>{t('posAdmin.invoiceDetail.purchasePrice', '进货价')}</Checkbox>
           </Form.Item>
           <Form.Item noStyle shouldUpdate={(prev, cur) => prev.updatePurchasePrice !== cur.updatePurchasePrice}>
             {({ getFieldValue }) =>
               getFieldValue('updatePurchasePrice') ? (
-                <Form.Item name="purchasePrice" label="进货价" style={{ marginLeft: 24 }}>
+                <Form.Item name="purchasePrice" label={t('posAdmin.invoiceDetail.purchasePrice', '进货价')} style={{ marginLeft: 24 }}>
                   <InputNumber min={0} precision={2} style={{ width: '100%' }} />
                 </Form.Item>
               ) : null
@@ -603,12 +597,12 @@ export default function LocalSupplierInvoiceDetailPage() {
           </Form.Item>
 
           <Form.Item name="updateRetailPrice" valuePropName="checked">
-            <Checkbox>零售价</Checkbox>
+            <Checkbox>{t('posAdmin.invoiceDetail.retailPrice', '零售价')}</Checkbox>
           </Form.Item>
           <Form.Item noStyle shouldUpdate={(prev, cur) => prev.updateRetailPrice !== cur.updateRetailPrice}>
             {({ getFieldValue }) =>
               getFieldValue('updateRetailPrice') ? (
-                <Form.Item name="retailPrice" label="零售价" style={{ marginLeft: 24 }}>
+                <Form.Item name="retailPrice" label={t('posAdmin.invoiceDetail.retailPrice', '零售价')} style={{ marginLeft: 24 }}>
                   <InputNumber min={0} precision={2} style={{ width: '100%' }} />
                 </Form.Item>
               ) : null
@@ -616,16 +610,16 @@ export default function LocalSupplierInvoiceDetailPage() {
           </Form.Item>
 
           <Form.Item name="updateIsAutoPricing" valuePropName="checked">
-            <Checkbox>自动定价</Checkbox>
+            <Checkbox>{t('posAdmin.invoiceDetail.autoPricing', '自动定价')}</Checkbox>
           </Form.Item>
           <Form.Item noStyle shouldUpdate={(prev, cur) => prev.updateIsAutoPricing !== cur.updateIsAutoPricing}>
             {({ getFieldValue }) =>
               getFieldValue('updateIsAutoPricing') ? (
-                <Form.Item name="isAutoPricing" label="自动定价" style={{ marginLeft: 24 }}>
+                <Form.Item name="isAutoPricing" label={t('posAdmin.invoiceDetail.autoPricing', '自动定价')} style={{ marginLeft: 24 }}>
                   <Select
                     options={[
-                      { label: '是', value: true },
-                      { label: '否', value: false },
+                      { label: t('posAdmin.invoiceDetail.yes', '是'), value: true },
+                      { label: t('posAdmin.invoiceDetail.no', '否'), value: false },
                     ]}
                   />
                 </Form.Item>
@@ -634,16 +628,16 @@ export default function LocalSupplierInvoiceDetailPage() {
           </Form.Item>
 
           <Form.Item name="updateIsSpecialProduct" valuePropName="checked">
-            <Checkbox>特殊商品</Checkbox>
+            <Checkbox>{t('posAdmin.invoiceDetail.specialProduct', '特殊商品')}</Checkbox>
           </Form.Item>
           <Form.Item noStyle shouldUpdate={(prev, cur) => prev.updateIsSpecialProduct !== cur.updateIsSpecialProduct}>
             {({ getFieldValue }) =>
               getFieldValue('updateIsSpecialProduct') ? (
-                <Form.Item name="isSpecialProduct" label="特殊商品" style={{ marginLeft: 24 }}>
+                <Form.Item name="isSpecialProduct" label={t('posAdmin.invoiceDetail.specialProduct', '特殊商品')} style={{ marginLeft: 24 }}>
                   <Select
                     options={[
-                      { label: '是', value: true },
-                      { label: '否', value: false },
+                      { label: t('posAdmin.invoiceDetail.yes', '是'), value: true },
+                      { label: t('posAdmin.invoiceDetail.no', '否'), value: false },
                     ]}
                   />
                 </Form.Item>
@@ -652,12 +646,12 @@ export default function LocalSupplierInvoiceDetailPage() {
           </Form.Item>
 
           <Form.Item name="updateDiscountRate" valuePropName="checked">
-            <Checkbox>折扣率</Checkbox>
+            <Checkbox>{t('posAdmin.invoiceDetail.discountRate', '折扣率')}</Checkbox>
           </Form.Item>
           <Form.Item noStyle shouldUpdate={(prev, cur) => prev.updateDiscountRate !== cur.updateDiscountRate}>
             {({ getFieldValue }) =>
               getFieldValue('updateDiscountRate') ? (
-                <Form.Item name="discountRate" label="折扣率" style={{ marginLeft: 24 }}>
+                <Form.Item name="discountRate" label={t('posAdmin.invoiceDetail.discountRate', '折扣率')} style={{ marginLeft: 24 }}>
                   <InputNumber min={0} max={1} step={0.01} precision={2} style={{ width: '100%' }} />
                 </Form.Item>
               ) : null
@@ -669,7 +663,7 @@ export default function LocalSupplierInvoiceDetailPage() {
       {/* 更新到分店价格 Modal */}
       <Modal
         open={storePriceVisible}
-        title="更新到分店价格"
+        title={t('posAdmin.invoiceDetail.updateToStorePriceTitle', '更新到分店价格')}
         confirmLoading={storePriceLoading}
         onCancel={() => {
           setStorePriceVisible(false)
@@ -681,32 +675,32 @@ export default function LocalSupplierInvoiceDetailPage() {
         <Form form={storePriceForm} layout="vertical">
           <Form.Item
             name="targetStoreCodes"
-            label="目标分店"
-            rules={[{ required: true, message: '请选择目标分店' }]}
+            label={t('posAdmin.invoiceDetail.targetStore', '目标分店')}
+            rules={[{ required: true, message: t('posAdmin.invoiceDetail.selectTargetStore', '请选择目标分店') }]}
           >
             <Select
               mode="multiple"
               showSearch
               optionFilterProp="label"
-              placeholder="请选择目标分店"
+              placeholder={t('posAdmin.invoiceDetail.selectTargetStore', '请选择目标分店')}
               options={storeOptions}
             />
           </Form.Item>
 
           <Form.Item name="updatePurchasePrice" valuePropName="checked">
-            <Checkbox>更新进货价</Checkbox>
+            <Checkbox>{t('posAdmin.invoiceDetail.updatePurchasePrice', '更新进货价')}</Checkbox>
           </Form.Item>
           <Form.Item name="updateRetailPrice" valuePropName="checked">
-            <Checkbox>更新零售价</Checkbox>
+            <Checkbox>{t('posAdmin.invoiceDetail.updateRetailPrice', '更新零售价')}</Checkbox>
           </Form.Item>
           <Form.Item name="updateIsAutoPricing" valuePropName="checked">
-            <Checkbox>更新自动定价</Checkbox>
+            <Checkbox>{t('posAdmin.invoiceDetail.updateAutoPricing', '更新自动定价')}</Checkbox>
           </Form.Item>
           <Form.Item name="updateIsSpecialProduct" valuePropName="checked">
-            <Checkbox>更新特殊商品</Checkbox>
+            <Checkbox>{t('posAdmin.invoiceDetail.updateSpecialProduct', '更新特殊商品')}</Checkbox>
           </Form.Item>
           <Form.Item name="updateDiscountRate" valuePropName="checked">
-            <Checkbox>更新折扣率</Checkbox>
+            <Checkbox>{t('posAdmin.invoiceDetail.updateDiscountRate', '更新折扣率')}</Checkbox>
           </Form.Item>
         </Form>
       </Modal>

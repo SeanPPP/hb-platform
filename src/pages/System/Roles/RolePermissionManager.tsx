@@ -1,6 +1,7 @@
 import { CheckOutlined, SaveOutlined } from '@ant-design/icons'
 import { Button, Card, Checkbox, Space, Spin, message } from 'antd'
 import { useCallback, useEffect, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import type { PermissionCategoryDto } from '../../../types/role'
 import { assignPermissionsToRole, getPermissions, getRolePermissions } from '../../../services/roleService'
 
@@ -18,6 +19,7 @@ export default function RolePermissionManager({
   onChanged,
   readOnly = false,
 }: RolePermissionManagerProps) {
+  const { t } = useTranslation()
   const [categories, setCategories] = useState<PermissionCategoryDto[]>([])
   const [checkedKeys, setCheckedKeys] = useState<Set<string>>(new Set())
   const [originalKeys, setOriginalKeys] = useState<Set<string>>(new Set())
@@ -37,7 +39,7 @@ export default function RolePermissionManager({
       setOriginalKeys(keySet)
     } catch (error) {
       console.error(error)
-      message.error('加载权限数据失败')
+      message.error(t('system.roles.loadPermsFailed'))
     } finally {
       setLoading(false)
     }
@@ -87,11 +89,11 @@ export default function RolePermissionManager({
         permissions: Array.from(checkedKeys),
       })
       setOriginalKeys(new Set(checkedKeys))
-      message.success(`已更新「${roleName}」的权限`)
+      message.success(t('system.roles.permUpdateSuccess', { name: roleName }))
       onChanged?.()
     } catch (error) {
       console.error(error)
-      message.error('保存权限失败')
+      message.error(t('system.roles.permSaveFailed'))
     } finally {
       setSaving(false)
     }
@@ -149,7 +151,7 @@ export default function RolePermissionManager({
             loading={saving}
             onClick={() => void handleSave()}
           >
-            保存权限
+            {t('system.roles.savePermissions')}
           </Button>
         </div>
       )}
@@ -157,7 +159,7 @@ export default function RolePermissionManager({
       {!readOnly && !hasChanges() && categories.length > 0 && (
         <div style={{ textAlign: 'center', paddingTop: 4, color: '#999' }}>
           <CheckOutlined style={{ marginRight: 6 }} />
-          权限已是最新
+          {t('system.roles.permUpToDate')}
         </div>
       )}
     </Space>

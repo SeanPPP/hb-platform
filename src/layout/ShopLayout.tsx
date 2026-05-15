@@ -8,6 +8,7 @@ import {
 import { Badge, Button, Drawer, Dropdown, Input, Menu, Select, Spin, message } from 'antd'
 import type { MenuProps } from 'antd'
 import { useEffect, useMemo, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import ShopCartDrawer from '../components/ShopCartDrawer'
 import ShopCartSummary from '../components/ShopCartSummary'
@@ -31,6 +32,7 @@ export default function ShopLayout() {
   const navigate = useNavigate()
   const location = useLocation()
   const { currentUser, logout } = useAuthStore()
+  const { t } = useTranslation()
   const isShopHomePage = location.pathname === '/shop'
   const isBestSellersPage = location.pathname.startsWith('/shop/best-sellers')
   const isComingSoonPage = location.pathname.startsWith('/shop/coming-soon')
@@ -193,7 +195,7 @@ export default function ShopLayout() {
           <span onClick={() => window.open('/dashboard', '_blank')}>Dashboard</span>
           <span onClick={() => navigate('/shop/best-sellers')}>Best Sellers</span>
           <span onClick={() => navigate('/shop/coming-soon')}>Coming Soon</span>
-          <span onClick={() => navigate('/shop/orders')}>历史订单</span>
+          <span onClick={() => navigate('/shop/orders')}>{t('shop.orderHistory')}</span>
           <span onClick={() => void handleLogout()}>Log Out</span>
         </div>
       </div>

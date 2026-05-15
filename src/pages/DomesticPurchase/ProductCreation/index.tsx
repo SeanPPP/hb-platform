@@ -2,6 +2,7 @@ import { PlusOutlined, EyeOutlined } from '@ant-design/icons'
 import { Button, DatePicker, message, Select, Space, Table } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { useCallback, useEffect, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import PageContainer from '../../../components/PageContainer'
 import { getActiveChinaSuppliers } from '../../../services/chinaSupplierService'
 import { getBatchList } from '../../../services/domesticProductCreationService'
@@ -12,6 +13,7 @@ import BatchDetailModal from './BatchDetailModal'
 const { RangePicker } = DatePicker
 
 export default function ProductCreationPage() {
+  const { t } = useTranslation()
   const [loading, setLoading] = useState(false)
   const [data, setData] = useState<BatchInfo[]>([])
   const [total, setTotal] = useState(0)
@@ -44,7 +46,7 @@ export default function ProductCreationPage() {
       }
     } catch {
       setLoading(false)
-      message.error('加载批次列表失败')
+      message.error(t('productCreation.loadBatchListFailed', '加载批次列表失败'))
     }
   }, [page, pageSize, supplierFilter, dateRange])
 
@@ -84,69 +86,69 @@ export default function ProductCreationPage() {
       render: (_, __, index) => (page - 1) * pageSize + index + 1,
     },
     {
-      title: '批次号',
+      title: t('productCreation.batchNumber', '批次号'),
       dataIndex: 'batchNumber',
       key: 'batchNumber',
       width: 180,
       render: (text) => <span style={{ fontFamily: 'monospace' }}>{text}</span>,
     },
     {
-      title: '供应商',
+      title: t('domesticProducts.supplier', '供应商'),
       dataIndex: 'supplierName',
       key: 'supplierName',
       width: 150,
       render: (text, record) => `${record.supplierCode} - ${text}`,
     },
     {
-      title: '前缀码',
+      title: t('productCreation.prefixCode', '前缀码'),
       dataIndex: 'prefixCode',
       key: 'prefixCode',
       width: 100,
       render: (text) => text || '-',
     },
     {
-      title: '普通商品',
+      title: t('productCreation.normalProduct', '普通商品'),
       dataIndex: 'normalCount',
       key: 'normalCount',
       width: 100,
       align: 'center',
     },
     {
-      title: '套装商品',
+      title: t('productCreation.setProduct', '套装商品'),
       dataIndex: 'setCount',
       key: 'setCount',
       width: 100,
       align: 'center',
     },
     {
-      title: '总数量',
+      title: t('productCreation.totalCount', '总数量'),
       dataIndex: 'totalCount',
       key: 'totalCount',
       width: 100,
       align: 'center',
     },
     {
-      title: '创建时间',
+      title: t('chinaSuppliers.createdAt', '创建时间'),
       dataIndex: 'createdAt',
       key: 'createdAt',
       width: 180,
       render: (text) => (text ? new Date(text).toLocaleString('zh-CN') : '-'),
     },
     {
-      title: '创建人',
+      title: t('productCreation.createdBy', '创建人'),
       dataIndex: 'createdBy',
       key: 'createdBy',
       width: 120,
       render: (text) => text || '-',
     },
     {
-      title: '操作',
+      title: t('common.action', '操作'),
       key: 'actions',
       width: 100,
       fixed: 'right',
       render: (_, record) => (
         <Button type="link" size="small" icon={<EyeOutlined />} onClick={() => handleViewDetail(record)}>
-          明细
+          {t('productCreation.detail', '明细')}
         </Button>
       ),
     },
@@ -154,18 +156,18 @@ export default function ProductCreationPage() {
 
   return (
     <PageContainer
-      title="货号条码批量创建"
-      subtitle="管理货号条码创建批次"
+      title={t('productCreation.batchCreateTitle', '货号条码批量创建')}
+      subtitle={t('productCreation.batchCreateSubtitle', '管理货号条码创建批次')}
       extra={
         <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateModalVisible(true)}>
-          创建批次
+          {t('productCreation.createBatch', '创建批次')}
         </Button>
       }
     >
       <div style={{ marginBottom: 16 }}>
         <Space wrap>
           <Select
-            placeholder="筛选供应商"
+            placeholder={t('productCreation.filterSupplier', '筛选供应商')}
             allowClear
             showSearch
             optionFilterProp="label"
@@ -200,7 +202,7 @@ export default function ProductCreationPage() {
           total,
           showSizeChanger: true,
           showQuickJumper: true,
-          showTotal: (t) => `共 ${t} 条`,
+          showTotal: (total) => t('common.totalCount', '共 {{count}} 条', { count: total }),
           onChange: (p, ps) => {
             setPage(p)
             setPageSize(ps)

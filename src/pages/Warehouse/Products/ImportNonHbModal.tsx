@@ -1,6 +1,7 @@
 import { Image, Input, Modal, Select, Space, Table, message } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { useEffect, useMemo, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import {
   getActiveLocalSuppliers,
   getNonHotbargainProductsNotInWarehouse,
@@ -31,6 +32,7 @@ function sortByItemNumber<T extends { itemNumber?: string }>(items: T[]) {
 }
 
 export default function ImportNonHbModal({ open, onCancel, onSuccess }: ImportNonHbModalProps) {
+  const { t } = useTranslation()
   const [loading, setLoading] = useState(false)
   const [importing, setImporting] = useState(false)
   const [items, setItems] = useState<NonHotbargainProductNotInWarehouseItem[]>([])
@@ -132,7 +134,7 @@ export default function ImportNonHbModal({ open, onCancel, onSuccess }: ImportNo
         width: 160,
       },
       {
-        title: '条码',
+        title: t('domesticProducts.barcode', '条码'),
         dataIndex: 'barcode',
         width: 160,
         render: (value?: string) => value || '--',
@@ -144,7 +146,7 @@ export default function ImportNonHbModal({ open, onCancel, onSuccess }: ImportNo
         ellipsis: true,
       },
       {
-        title: '供应商',
+        title: t('domesticProducts.supplier', '供应商'),
         dataIndex: 'localSupplierName',
         width: 180,
         ellipsis: true,
@@ -183,7 +185,7 @@ export default function ImportNonHbModal({ open, onCancel, onSuccess }: ImportNo
       const result = await importNonHotbargainProducts(selectedRowKeys.map(String))
 
       if (!result.success) {
-        message.error(result.message || '导入失败')
+        message.error(result.message || t('warehouse.importFailed', '导入失败'))
         return
       }
 
@@ -192,7 +194,7 @@ export default function ImportNonHbModal({ open, onCancel, onSuccess }: ImportNo
       onCancel()
     } catch (error) {
       console.error(error)
-      message.error(error instanceof Error ? error.message : '导入失败')
+      message.error(error instanceof Error ? error.message : t('warehouse.importFailed', '导入失败'))
     } finally {
       setImporting(false)
     }
@@ -205,7 +207,7 @@ export default function ImportNonHbModal({ open, onCancel, onSuccess }: ImportNo
       width={1280}
       destroyOnClose
       okText={`导入选中 (${selectedRowKeys.length})`}
-      cancelText="关闭"
+      cancelText={t('common.close', '关闭')}
       confirmLoading={importing}
       onCancel={onCancel}
       onOk={() => void handleImport()}

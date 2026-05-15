@@ -2,6 +2,7 @@ import { ClearOutlined, DeleteOutlined, PlusOutlined } from '@ant-design/icons'
 import { Button, Checkbox, Image, Input, InputNumber, message, Modal, Select, Space, Table, Tag, Tooltip } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import PageContainer from '../../../components/PageContainer'
 import { getActiveChinaSuppliers } from '../../../services/chinaSupplierService'
 import { assignProductsToContainer, checkContainerConflicts, getContainerList } from '../../../services/containerService'
@@ -24,6 +25,7 @@ const COLUMN_KEY_TO_EDITABLE: Record<string, string | null> = {
 }
 
 export default function ProductImportPage() {
+  const { t } = useTranslation()
   const [state, setState] = useState<PageState>({
     supplier: null,
     mode: 'import',
@@ -55,7 +57,7 @@ export default function ProductImportPage() {
         setLoadingSuppliers(true)
         const result = await getActiveChinaSuppliers()
         setSuppliers(result || [])
-      } catch { message.error('加载供应商列表失败') }
+      } catch { message.error(t('productImport.loadSuppliersFailed', '加载供应商列表失败')) }
       finally { setLoadingSuppliers(false) }
     }
     load()
@@ -112,8 +114,8 @@ export default function ProductImportPage() {
   }, [])
 
   const handleDetect = useCallback(async () => {
-    if (!state.supplier) { message.warning('请先选择供应商'); return }
-    if (state.products.length === 0) { message.warning('没有可检测的数据'); return }
+    if (!state.supplier) { message.warning(t('productImport.selectSupplierFirst', '请先选择供应商')); return }
+    if (state.products.length === 0) { message.warning(t('productImport.noDataToCheck', '没有可检测的数据')); return }
     const duplicates = detectDuplicates(state.products)
     if (duplicates.length > 0) {
       setDuplicateGroups(duplicates)
@@ -163,7 +165,7 @@ export default function ProductImportPage() {
           return { ...prev, products: newProducts, detecting: false, needsDetection: false, statistics: calculateStatistics(newProducts, prev.selectedIds) }
         })
         setShowStatistics(true)
-        message.success('检测完成！')
+        message.success(t('productImport.checkComplete', '检测完成！'))
         try {
           const itemsNeedingImage = (response.data || []).filter((item: any) => !item.isNewProduct && item.existingData && (!item.existingData.productImage || String(item.existingData.productImage).trim() === '') && !!item.existingData.hbProductNo)
           if (itemsNeedingImage.length > 0) {
@@ -176,9 +178,9 @@ export default function ProductImportPage() {
             }))
           }
         } catch { /* ignore */ }
-      } else { throw new Error(response.message || '检测失败') }
+      } else { throw new Error(response.message || t('productImport.checkFailed', '检测失败')) }
     } catch (error: any) {
-      message.error(error.message || '检测失败，请重试')
+      message.error(error.message || t('productImport.checkFailedRetry', '检测失败，请重试'))
       setState((prev) => ({ ...prev, detecting: false }))
     }
   }, [state.supplier, state.products])
@@ -186,13 +188,13 @@ export default function ProductImportPage() {
   const handleMergeDuplicates = useCallback(() => {
     const mergedProducts = mergeDuplicateProducts(state.products)
     setState((prev) => ({ ...prev, products: mergedProducts, selectedIds: [], needsDetection: true, statistics: calculateStatistics(mergedProducts, []) }))
-    message.success(`成功合并重复数据，共 ${duplicateGroups.length} 组`)
+    message.success(t('productImport.mergeSuccess', '成功合并重复数据，共 {{count}} 组', { count: duplicateGroups.length }))
   }, [state.products, duplicateGroups])
 
   const handleBatchCreate = useCallback(async () => {
     const newProducts = state.products.filter((p) => p.status === 'new')
-    if (newProducts.length === 0) { message.warning('没有新商品需要创建'); return }
-    if (!state.supplier) { message.warning('请先选择供应商'); return }
+    if (newProducts.length === 0) { message.warning(t('productImport.noNewProducts', '没有新商品需要创建')); return }
+    if (!state.supplier) { message.warning(t('productImport.selectSupplierFirst', '请先选择供应商')); return }
     setState((prev) => ({ ...prev, saving: true }))
     try {
       const removeUndefined = (obj: any) => Object.fromEntries(Object.entries(obj).filter(([, v]) => v !== undefined && v !== null && v !== ''))
@@ -210,21 +212,21 @@ export default function ProductImportPage() {
       }
       const response = await batchImportConfirm(dto)
       const createdCount = response?.data?.createdProducts?.length ?? response?.data?.created ?? 0
-      message.success(`成功新建 ${createdCount} 个商品`)
+      message.success(t('productImport.createSuccessCount', '成功新建 {{count}} 个商品', { count: createdCount }))
       setState((prev) => {
         const newList = prev.products.map((p) => p.status === 'new' ? { ...p, status: 'unchanged' as const, diffFields: [] } : p)
         return { ...prev, products: newList, saving: false, statistics: calculateStatistics(newList, prev.selectedIds) }
       })
       setTimeout(() => handleDetect(), 0)
     } catch (error: any) {
-      message.error(error?.response?.data?.message || error?.message || '批量创建失败')
+      message.error(error?.response?.data?.message || error?.message || t('productImport.batchCreateFailed', '批量创建失败'))
       setState((prev) => ({ ...prev, saving: false }))
     }
   }, [state.products, state.supplier, handleDetect])
 
   const handleBatchUpdate = useCallback(async () => {
     const updatedProducts = state.products.filter((p) => p.status === 'updated')
-    if (updatedProducts.length === 0) { message.warning('没有商品需要更新'); return }
+    if (updatedProducts.length === 0) { message.warning(t('productImport.noProductsToUpdate', '没有商品需要更新')); return }
     setState((prev) => ({ ...prev, saving: true }))
     try {
       const productsToUpdate = updatedProducts.map((product) => {
@@ -243,19 +245,19 @@ export default function ProductImportPage() {
       }).filter(Boolean) as any[]
       const response = await batchUpdateDomesticProducts({ Products: productsToUpdate })
       const successCount = response?.data?.updatedProducts?.length ?? 0
-      message.success(`成功更新 ${successCount} 个商品`)
+      message.success(t('productImport.updateSuccessCount', '成功更新 {{count}} 个商品', { count: successCount }))
       setState((prev) => {
         const newProducts = prev.products.map((p) => p.status === 'updated' ? { ...p, status: 'unchanged' as const, diffFields: [] } : p)
         return { ...prev, products: newProducts, saving: false, statistics: calculateStatistics(newProducts, prev.selectedIds) }
       })
       setTimeout(() => handleDetect(), 0)
-    } catch { message.error('批量更新失败，请重试'); setState((prev) => ({ ...prev, saving: false })) }
+    } catch { message.error(t('productImport.batchUpdateFailed', '批量更新失败，请重试')); setState((prev) => ({ ...prev, saving: false })) }
   }, [state.products, state.supplier, handleDetect])
 
   const handleSendToContainer = useCallback(async (containerId: string, notes: string) => {
     const selectedProducts = state.products.filter((p) => state.selectedIds.includes(p.id))
     const invalid = selectedProducts.filter((p) => !p.newProduct.quantity || p.newProduct.quantity <= 0)
-    if (invalid.length > 0) { message.error(`以下商品件数不能为空且必须>0：${invalid.map((p) => p.newProduct.productCode || '(无货号)').join(', ')}`); return }
+    if (invalid.length > 0) { message.error(t('productImport.invalidQuantity', '以下商品件数不能为空且必须>0：{{items}}', { items: invalid.map((p) => p.newProduct.productCode || '(无货号)').join(', ') })); return }
     try {
       const checkResp = await checkContainerConflicts(containerId, selectedProducts.filter((p) => p.newProduct.productCode || p.matchedProduct?.productCode).map((p) => ({ hbProductNo: p.newProduct.productCode || undefined, productCode: p.matchedProduct?.productCode || undefined })))
       if (checkResp?.data && checkResp.data.length > 0) {
@@ -266,63 +268,63 @@ export default function ProductImportPage() {
       }
       const assignResp = await assignProductsToContainer(containerId, selectedProducts.map((p) => ({ hbProductNo: p.newProduct.productCode, productCode: p.matchedProduct?.productCode, quantity: p.newProduct.quantity, packingQuantity: p.newProduct.casePackQuantity, unitVolume: p.newProduct.volume, notes })), 'increase', notes)
       if (assignResp.success) {
-        message.success(`发送完成：新建 ${assignResp.data?.created || 0}，更新 ${assignResp.data?.updated || 0}`)
+        message.success(t('productImport.sendResultDetail', '发送完成：新建 {{created}}，更新 {{updated}}', { created: assignResp.data?.created || 0, updated: assignResp.data?.updated || 0 }))
         setState((prev) => ({ ...prev, products: prev.products.map((p) => prev.selectedIds.includes(p.id) ? { ...p, sentToContainer: true } : p) }))
-      } else { message.error(assignResp.message || '发送失败') }
-    } catch (error: any) { message.error(error?.response?.data?.message || error?.message || '发送失败') }
+      } else { message.error(assignResp.message || t('productImport.sendFailed', '发送失败')) }
+    } catch (error: any) { message.error(error?.response?.data?.message || error?.message || t('productImport.sendFailed', '发送失败')) }
   }, [state.products, state.selectedIds])
 
   const handleSyncToHBSales = async () => {
-    if (state.selectedIds.length === 0) { message.warning('请先选择要同步的商品'); return }
+    if (state.selectedIds.length === 0) { message.warning(t('productImport.selectSyncProductsFirst', '请先选择要同步的商品')); return }
     Modal.confirm({
-      title: '同步到HBSales',
+      title: t('productImport.syncToHBSales', '同步到HBSales'),
       content: (
         <div>
-          <p>确定要将选中的 {state.selectedIds.length} 件商品同步到HBSales数据库吗？</p>
+          <p>{t('productImport.syncConfirmText', '确定要将选中的 {{count}} 件商品同步到HBSales数据库吗？', { count: state.selectedIds.length })}</p>
           <div style={{ marginTop: 12 }}>
-            <Checkbox defaultChecked={syncIncludeImageRef.current} onChange={(e) => { syncIncludeImageRef.current = e.target.checked }}>同时更新商品图片</Checkbox>
+            <Checkbox defaultChecked={syncIncludeImageRef.current} onChange={(e) => { syncIncludeImageRef.current = e.target.checked }}>{t('productImport.syncIncludeImage', '同时更新商品图片')}</Checkbox>
           </div>
         </div>
       ),
-      okText: '确定',
-      cancelText: '取消',
+      okText: t('common.confirm', '确定'),
+      cancelText: t('common.cancel', '取消'),
       onOk: async () => {
         try {
           const selectedProducts = state.products.filter((p) => state.selectedIds.includes(p.id))
           const productCodes = selectedProducts.map((p) => p.matchedProduct?.productCode).filter((code): code is string => code !== undefined)
-          if (productCodes.length === 0) { message.warning('选中的商品中没有已匹配的本地商品编码'); return }
+          if (productCodes.length === 0) { message.warning(t('productImport.noMatchedCodes', '选中的商品中没有已匹配的本地商品编码')); return }
           const response = await syncToHBSales(productCodes, syncIncludeImageRef.current)
-          if (response.success) { message.success(response.data?.message || `同步完成：成功 ${response.data?.addedCount || 0} 条`) }
-          else { message.error('同步失败: ' + response.message) }
-        } catch { message.error('同步失败，请稍后重试') }
+          if (response.success) { message.success(response.data?.message || t('productImport.syncResult', '同步完成：成功 {{count}} 条', { count: response.data?.addedCount || 0 })) }
+          else { message.error(t('productImport.syncFailedMsg', '同步失败: ') + response.message) }
+        } catch { message.error(t('productImport.syncFailedRetry', '同步失败，请稍后重试')) }
       },
     })
   }
 
   const handleSendToHq = useCallback(async () => {
-    if (state.selectedIds.length === 0) { message.warning('请先选择要发送的商品'); return }
+    if (state.selectedIds.length === 0) { message.warning(t('productImport.selectSendProductsFirst', '请先选择要发送的商品')); return }
     const selectedProducts = state.products.filter((p) => state.selectedIds.includes(p.id))
     const productCodes = selectedProducts.map((p) => p.matchedProduct?.productCode).filter((code): code is string => !!code)
-    if (productCodes.length === 0) { message.warning('选中的商品中没有已匹配的本地商品编码，请先检测匹配'); return }
+    if (productCodes.length === 0) { message.warning(t('productImport.noMatchedCodesCheck', '选中的商品中没有已匹配的本地商品编码，请先检测匹配')); return }
     const missingPrice = selectedProducts.filter((p) => !p.matchedProduct?.productCode)
-    if (missingPrice.length > 0) { message.warning(`${missingPrice.length} 个商品未匹配，请先检测`); return }
+    if (missingPrice.length > 0) { message.warning(`${t('productImport.unmatchedProducts', '{{count}} 个商品未匹配，请先检测', { count: missingPrice.length })}`); return }
     Modal.confirm({
-      title: '发送商品到HQ',
+      title: t('productImport.sendToHQ', '发送商品到HQ'),
       content: (
         <div>
-          <p>确定要将选中的 {productCodes.length} 个商品发送到HQ数据库吗？</p>
-          <p style={{ fontSize: 12, color: '#888' }}>将写入 DIC_商品信息字典表 和 DIC_商品零售价表（按所有启用分店）</p>
-          <p style={{ fontSize: 12, color: '#f97316' }}>⚠️ 要求商品必须有进口价格和贴牌价格</p>
+          <p>{t('productImport.sendConfirmText', '确定要将选中的 {{count}} 个商品发送到HQ数据库吗？', { count: productCodes.length })}</p>
+          <p style={{ fontSize: 12, color: '#888' }}>{t('productImport.sendHint', '将写入 DIC_商品信息字典表 和 DIC_商品零售价表（按所有启用分店）')}</p>
+          <p style={{ fontSize: 12, color: '#f97316' }}>{t('productImport.sendPriceWarning', '⚠️ 要求商品必须有进口价格和贴牌价格')}</p>
         </div>
       ),
-      okText: '确定发送',
-      cancelText: '取消',
+      okText: t('productImport.confirmSend', '确定发送'),
+      cancelText: t('common.cancel', '取消'),
       onOk: async () => {
         try {
           const response = await sendToHq(productCodes)
-          if (response.success) { message.success(response.data?.message || '发送完成') }
-          else { message.error('发送失败: ' + response.message) }
-        } catch { message.error('发送失败，请稍后重试') }
+          if (response.success) { message.success(response.data?.message || t('productImport.sendComplete', '发送完成')) }
+          else { message.error(t('productImport.sendFailedMsg', '发送失败: ') + response.message) }
+        } catch { message.error(t('productImport.sendFailedRetry', '发送失败，请稍后重试')) }
       },
     })
   }, [state.selectedIds, state.products])
@@ -349,11 +351,11 @@ export default function ProductImportPage() {
         const resp = await assignProductsToContainer(containerId, increaseItems.map((p) => ({ hbProductNo: p.newProduct.productCode, productCode: p.matchedProduct?.productCode, quantity: p.newProduct.quantity, packingQuantity: p.newProduct.casePackQuantity, unitVolume: p.newProduct.volume, notes })), 'increase', notes)
         if (resp.success) { totalCreated += resp.data?.created || 0; totalUpdated += resp.data?.updated || 0 }
       }
-      message.success(`发送完成：新建 ${totalCreated}，更新 ${totalUpdated}`)
+      message.success(t('productImport.sendResult', '发送完成：新建 {{created}}，更新 {{updated}}', { created: totalCreated, updated: totalUpdated }))
       setState((prev) => ({ ...prev, products: prev.products.map((p) => prev.selectedIds.includes(p.id) ? { ...p, sentToContainer: true } : p) }))
       setPendingSend(null)
       setConflictDialogOpen(false)
-    } catch (error: any) { message.error(error?.response?.data?.message || error?.message || '发送失败') }
+    } catch (error: any) { message.error(error?.response?.data?.message || error?.message || t('productImport.sendFailed', '发送失败')) }
   }
 
   const selectedProducts = useMemo(() => state.products.filter((p) => state.selectedIds.includes(p.id)), [state.products, state.selectedIds])
@@ -367,15 +369,6 @@ export default function ProductImportPage() {
     if (row.sentToContainer) return 'row-sent'
     return ''
   }
-
-  const resolveColumnKeyFromTh = useCallback((th: HTMLTableCellElement): string | null => {
-    const thead = th.closest('tr')
-    if (!thead) return null
-    const allThs = Array.from(thead.querySelectorAll('th'))
-    const thIndex = allThs.indexOf(th)
-    if (thIndex < 0 || thIndex >= ALL_COLUMN_KEYS.length) return null
-    return ALL_COLUMN_KEYS[thIndex]
-  }, [])
 
   const resolveColumnKeyFromTd = useCallback((td: HTMLTableCellElement): string | null => {
     const tr = td.closest('tr')
@@ -393,7 +386,7 @@ export default function ProductImportPage() {
   const handleClearColumn = useCallback(() => {
     if (!selectedColumnKey) return
     const editableKey = COLUMN_KEY_TO_EDITABLE[selectedColumnKey]
-    if (!editableKey) { message.warning('该列不支持清空'); return }
+    if (!editableKey) { message.warning(t('productImport.columnCannotClear', '该列不支持清空')); return }
     const defaultValue: any = ['quantity', 'midPackQuantity', 'casePackQuantity'].includes(editableKey) ? undefined
       : ['domesticPrice', 'oemPrice', 'volume'].includes(editableKey) ? undefined
       : ''
@@ -404,7 +397,7 @@ export default function ProductImportPage() {
       })
       return { ...prev, products: newProducts, needsDetection: true, statistics: calculateStatistics(newProducts, prev.selectedIds) }
     })
-    message.success(`已清空列数据`)
+    message.success(t('productImport.columnCleared', '已清空列数据'))
   }, [selectedColumnKey])
 
   const handlePaste = useCallback((e: ClipboardEvent) => {
@@ -426,16 +419,16 @@ export default function ProductImportPage() {
 
     if (selectedColumnKey) {
       const editableKey = COLUMN_KEY_TO_EDITABLE[selectedColumnKey]
-      if (!editableKey) { message.warning('该列不支持粘贴'); return }
+      if (!editableKey) { message.warning(t('productImport.cannotPaste', '该列不支持粘贴')); return }
       startEditableIndex = EDITABLE_COLUMNS.indexOf(editableKey as any)
-      if (startEditableIndex < 0) { message.warning('该列不支持粘贴'); return }
+      if (startEditableIndex < 0) { message.warning(t('productImport.cannotPaste', '该列不支持粘贴')); return }
       const td = target.closest('td')
       if (td) {
         const tr = td.closest('tr')
         if (!tr) return
         const startRowIndex = parseInt(tr.getAttribute('data-row-key') || '0')
         rowIndex = state.products.findIndex((p) => p.id === String(startRowIndex))
-        if (rowIndex === -1) { message.warning('无法确定行位置'); return }
+        if (rowIndex === -1) { message.warning(t('productImport.cannotDetermineRow', '无法确定行位置')); return }
       } else {
         rowIndex = 0
       }
@@ -443,16 +436,16 @@ export default function ProductImportPage() {
       const td = target.closest('td')
       if (td) {
         const colKey = resolveColumnKeyFromTd(td)
-        if (!colKey || !COLUMN_KEY_TO_EDITABLE[colKey]) { message.warning('请先选中一个可编辑列'); return }
+        if (!colKey || !COLUMN_KEY_TO_EDITABLE[colKey]) { message.warning(t('productImport.selectEditableCol', '请先选中一个可编辑列')); return }
         const editableKey = COLUMN_KEY_TO_EDITABLE[colKey]!
         startEditableIndex = EDITABLE_COLUMNS.indexOf(editableKey as any)
         const tr = td.closest('tr')
         if (!tr) return
         const startRowIndex = parseInt(tr.getAttribute('data-row-key') || '0')
         rowIndex = state.products.findIndex((p) => p.id === String(startRowIndex))
-        if (rowIndex === -1) { message.warning('无法确定行位置'); return }
+        if (rowIndex === -1) { message.warning(t('productImport.cannotDetermineRow', '无法确定行位置')); return }
       } else {
-        message.warning('请先选中一个单元格或列头作为粘贴起点')
+        message.warning(t('productImport.selectPasteStart', '请先选中一个单元格或列头作为粘贴起点'))
         return
       }
     }
@@ -478,7 +471,7 @@ export default function ProductImportPage() {
       newProducts[currentRowIndex] = updateCalculatedFields(currentRow)
     })
     setState((prev) => ({ ...prev, products: newProducts, needsDetection: true, statistics: calculateStatistics(newProducts, prev.selectedIds) }))
-    message.success(`成功粘贴 ${data.length} 行数据`)
+    message.success(t('productImport.pasteSuccess', '成功粘贴 {{count}} 行数据', { count: data.length }))
   }, [state.products, selectedColumnKey, resolveColumnKeyFromTd])
 
   useEffect(() => {
@@ -512,7 +505,7 @@ export default function ProductImportPage() {
     }
     const base: ColumnsType<ProductImportItem> = [
       {
-        title: '件数',
+        title: t('productImport.quantity', '件数'),
         dataIndex: ['newProduct', 'quantity'],
         key: 'quantity',
         width: 80,
@@ -522,7 +515,7 @@ export default function ProductImportPage() {
         render: (_, record) => renderEditable('quantity', 'number', record),
       },
       {
-        title: '新图片',
+        title: t('productImport.newImage', '新图片'),
         key: 'newImage',
         width: 70,
         render: (_, record) => {
@@ -531,7 +524,7 @@ export default function ProductImportPage() {
         },
       },
       {
-        title: '货号(hbProductNo)',
+        title: t('productImport.hbProductNoCol', '货号(hbProductNo)'),
         dataIndex: ['newProduct', 'productCode'],
         key: 'productCode',
         width: 130,
@@ -547,7 +540,7 @@ export default function ProductImportPage() {
         ),
       },
       {
-        title: '条码',
+        title: t('domesticProducts.barcode', '条码'),
         dataIndex: ['newProduct', 'barcode'],
         key: 'barcode',
         width: 130,
@@ -556,7 +549,7 @@ export default function ProductImportPage() {
         render: (_, record) => renderEditable('barcode', 'text', record),
       },
       {
-        title: '商品名称',
+        title: t('domesticProducts.productName', '商品名称'),
         dataIndex: ['newProduct', 'productName'],
         key: 'productName',
         width: 150,
@@ -565,7 +558,7 @@ export default function ProductImportPage() {
         render: (_, record) => renderEditable('productName', 'text', record),
       },
       {
-        title: '英文名称',
+        title: t('domesticProducts.englishName', '英文名称'),
         dataIndex: ['newProduct', 'englishName'],
         key: 'englishName',
         width: 130,
@@ -574,7 +567,7 @@ export default function ProductImportPage() {
         render: (_, record) => renderEditable('englishName', 'text', record),
       },
       {
-        title: '国内价格',
+        title: t('productImport.domesticPriceCol', '国内价格'),
         dataIndex: ['newProduct', 'domesticPrice'],
         key: 'domesticPrice',
         width: 90,
@@ -583,7 +576,7 @@ export default function ProductImportPage() {
         render: (_, record) => renderEditable('domesticPrice', 'number', record, { precision: 2 }),
       },
       {
-        title: '贴牌价格',
+        title: t('productImport.oemPriceCol', '贴牌价格'),
         dataIndex: ['newProduct', 'oemPrice'],
         key: 'oemPrice',
         width: 90,
@@ -592,7 +585,7 @@ export default function ProductImportPage() {
         render: (_, record) => renderEditable('oemPrice', 'number', record, { precision: 2 }),
       },
       {
-        title: '中包数',
+        title: t('productImport.middlePackCol', '中包数'),
         dataIndex: ['newProduct', 'midPackQuantity'],
         key: 'midPackQuantity',
         width: 80,
@@ -601,7 +594,7 @@ export default function ProductImportPage() {
         render: (_, record) => renderEditable('midPackQuantity', 'number', record),
       },
       {
-        title: '单件装箱数',
+        title: t('productImport.packingQtyCol', '单件装箱数'),
         dataIndex: ['newProduct', 'casePackQuantity'],
         key: 'casePackQuantity',
         width: 100,
@@ -610,7 +603,7 @@ export default function ProductImportPage() {
         render: (_, record) => renderEditable('casePackQuantity', 'number', record),
       },
       {
-        title: '单件体积',
+        title: t('productImport.unitVolumeCol', '单件体积'),
         dataIndex: ['newProduct', 'volume'],
         key: 'volume',
         width: 100,
@@ -620,69 +613,69 @@ export default function ProductImportPage() {
       },
     ]
     if (showStatistics) {
-      const fieldNameMap: Record<string, string> = { productName: '商品名称', englishProductName: '英文名称', barcode: '条码', domesticPrice: '国内价格', oemPrice: '贴牌价格', packingQuantity: '单件装箱数', unitVolume: '单件体积', middlePackQuantity: '中包数' }
+      const fieldNameMap: Record<string, string> = { productName: t('domesticProducts.productName', '商品名称'), englishProductName: t('domesticProducts.englishName', '英文名称'), barcode: t('domesticProducts.barcode', '条码'), domesticPrice: '国内价格', oemPrice: '贴牌价格', packingQuantity: '单件装箱数', unitVolume: '单件体积', middlePackQuantity: '中包数' }
       base.push(
-        { title: '匹配状态', key: 'matchStatus', width: 100, fixed: 'right', render: (_, record) => {
-          const map: Record<string, { color: string; text: string }> = { new: { color: 'green', text: '✨ 新商品' }, updated: { color: 'orange', text: '📝 需更新' }, unchanged: { color: 'blue', text: '✅ 无变化' }, duplicate: { color: 'default', text: '⚠️ 重复' }, dbDuplicate: { color: 'purple', text: '⚠️ DB重复' }, error: { color: 'red', text: '❌ 错误' } }
-          const info = map[record.status] || { color: 'default', text: '⏳ 未检测' }
+        { title: t('productImport.matchStatus', '匹配状态'), key: 'matchStatus', width: 100, fixed: 'right', render: (_, record) => {
+          const map: Record<string, { color: string; text: string }> = { new: { color: 'green', text: t('productImport.statusNew', '✨ 新商品') }, updated: { color: 'orange', text: '📝 需更新' }, unchanged: { color: 'blue', text: '✅ 无变化' }, duplicate: { color: 'default', text: '⚠️ 重复' }, dbDuplicate: { color: 'purple', text: '⚠️ DB重复' }, error: { color: 'red', text: '❌ 错误' } }
+          const info = map[record.status] || { color: 'default', text: t('productImport.statusUndetected', '⏳ 未检测') }
           return <Tag color={info.color}>{info.text}</Tag>
         }},
-        { title: '旧货号', dataIndex: ['matchedProduct', 'hbProductNo'], key: 'matchedProductCode', width: 120, render: (text) => text || <span style={{ color: '#ccc' }}>-</span> },
-        { title: '旧条码', dataIndex: ['matchedProduct', 'barcode'], key: 'matchedBarcode', width: 120, render: (text) => text || <span style={{ color: '#ccc' }}>-</span> },
-        { title: '旧商品名称', dataIndex: ['matchedProduct', 'productName'], key: 'matchedProductName', width: 130, render: (text) => text || <span style={{ color: '#ccc' }}>-</span> },
-        { title: '旧图片', key: 'matchedProductImage', width: 70, render: (_, record) => {
+        { title: t('productImport.oldHbProductNo', '旧货号'), dataIndex: ['matchedProduct', 'hbProductNo'], key: 'matchedProductCode', width: 120, render: (text) => text || <span style={{ color: '#ccc' }}>-</span> },
+        { title: t('productImport.oldBarcode', '旧条码'), dataIndex: ['matchedProduct', 'barcode'], key: 'matchedBarcode', width: 120, render: (text) => text || <span style={{ color: '#ccc' }}>-</span> },
+        { title: t('productImport.oldProductName', '旧商品名称'), dataIndex: ['matchedProduct', 'productName'], key: 'matchedProductName', width: 130, render: (text) => text || <span style={{ color: '#ccc' }}>-</span> },
+        { title: t('productImport.oldImage', '旧图片'), key: 'matchedProductImage', width: 70, render: (_, record) => {
           const imageUrl = record.matchedProduct?.productImage
           if (!imageUrl || !String(imageUrl).trim()) return <span style={{ color: '#ccc' }}>-</span>
-          return <Image src={String(imageUrl).trim()} alt="旧图片" width={40} height={40} style={{ objectFit: 'contain' }} fallback="data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=" preview />
+          return <Image src={String(imageUrl).trim()} alt={t("productImport.oldImage", "旧图片")} width={40} height={40} style={{ objectFit: 'contain' }} fallback="data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=" preview />
         }},
-        { title: '旧国内价格', key: 'matchedDomesticPrice', width: 100, render: (_, record) => {
+        { title: t('productImport.oldDomesticPrice', '旧国内价格'), key: 'matchedDomesticPrice', width: 100, render: (_, record) => {
           const old = record.matchedProduct?.domesticPrice
           const hasDiff = record.diffFields?.includes('domesticPrice')
           if (!old) return <span style={{ color: '#ccc' }}>-</span>
           return <span style={hasDiff ? { color: '#f97316', fontWeight: 600 } : {}}>{old.toFixed(2)}{hasDiff && record.newProduct.domesticPrice ? ` → ${record.newProduct.domesticPrice.toFixed(2)}` : ''}</span>
         }},
-        { title: '旧贴牌价格', key: 'matchedOemPrice', width: 100, render: (_, record) => {
+        { title: t('productImport.oldOemPrice', '旧贴牌价格'), key: 'matchedOemPrice', width: 100, render: (_, record) => {
           const old = record.matchedProduct?.oemPrice
           const hasDiff = record.diffFields?.includes('oemPrice')
           if (!old) return <span style={{ color: '#ccc' }}>-</span>
           return <span style={hasDiff ? { color: '#f97316', fontWeight: 600 } : {}}>{old.toFixed(2)}{hasDiff && record.newProduct.oemPrice ? ` → ${record.newProduct.oemPrice.toFixed(2)}` : ''}</span>
         }},
-        { title: '旧中包数', key: 'matchedMiddlePackQuantity', width: 90, render: (_, record) => {
+        { title: t('productImport.oldMiddlePack', '旧中包数'), key: 'matchedMiddlePackQuantity', width: 90, render: (_, record) => {
           const old = record.matchedProduct?.middlePackQuantity
           const hasDiff = record.diffFields?.includes('middlePackQuantity')
           if (typeof old !== 'number' || old <= 0) return <span style={{ color: '#ccc' }}>-</span>
           return <span style={hasDiff ? { color: '#f97316', fontWeight: 600 } : {}}>{old}{hasDiff && typeof record.newProduct.midPackQuantity === 'number' ? ` → ${record.newProduct.midPackQuantity}` : ''}</span>
         }},
-        { title: '旧单件装箱数', key: 'matchedPackingQuantity', width: 100, render: (_, record) => {
+        { title: t('productImport.oldPackingQty', '旧单件装箱数'), key: 'matchedPackingQuantity', width: 100, render: (_, record) => {
           const old = record.matchedProduct?.packingQuantity
           const hasDiff = record.diffFields?.includes('packingQuantity')
           if (typeof old !== 'number' || old <= 0) return <span style={{ color: '#ccc' }}>-</span>
           return <span style={hasDiff ? { color: '#f97316', fontWeight: 600 } : {}}>{old}{hasDiff && typeof record.newProduct.casePackQuantity === 'number' ? ` → ${record.newProduct.casePackQuantity}` : ''}</span>
         }},
-        { title: '旧单件体积', key: 'matchedUnitVolume', width: 100, render: (_, record) => {
+        { title: t('productImport.oldUnitVolume', '旧单件体积'), key: 'matchedUnitVolume', width: 100, render: (_, record) => {
           const old = record.matchedProduct?.unitVolume
           const hasDiff = record.diffFields?.includes('unitVolume')
           if (typeof old !== 'number' || old < 0) return <span style={{ color: '#ccc' }}>-</span>
           return <span style={hasDiff ? { color: '#f97316', fontWeight: 600 } : {}}>{old.toFixed(3)}{hasDiff && typeof record.newProduct.volume === 'number' ? ` → ${record.newProduct.volume.toFixed(3)}` : ''}</span>
         }},
-        { title: '差异字段', key: 'diffFields', width: 150, render: (_, record) => {
+        { title: t('productImport.diffFields', '差异字段'), key: 'diffFields', width: 150, render: (_, record) => {
           if (record.diffFields && record.diffFields.length > 0) return <span style={{ color: '#f97316', fontSize: 12, fontWeight: 600 }}>{record.diffFields.map((f) => fieldNameMap[f] || f).join(', ')}</span>
-          if (record.matchedProduct) return <span style={{ color: '#22c55e', fontSize: 12 }}>✓ 完全匹配</span>
+          if (record.matchedProduct) return <span style={{ color: '#22c55e', fontSize: 12 }}>{t('productImport.exactMatch', '✓ 完全匹配')}</span>
           return <span style={{ color: '#ccc' }}>-</span>
         }},
       )
     }
-    base.push({ title: '操作', key: 'actions', width: 60, fixed: 'right', render: (_, record) => <Button type="text" danger size="small" icon={<DeleteOutlined />} onClick={() => setState((prev) => ({ ...prev, products: prev.products.filter((p) => p.id !== record.id) }))} /> })
+    base.push({ title: t('common.action', '操作'), key: 'actions', width: 60, fixed: 'right', render: (_, record) => <Button type="text" danger size="small" icon={<DeleteOutlined />} onClick={() => setState((prev) => ({ ...prev, products: prev.products.filter((p) => p.id !== record.id) }))} /> })
     return base
   }, [showStatistics, updateProduct, selectedColumnKey, selectedColumnEditableKey, handleHeaderClick])
 
   return (
-    <PageContainer title="国内商品导入" subtitle="从Excel粘贴数据导入国内商品">
+    <PageContainer title={t("productImport.pageTitle", "国内商品导入")} subtitle={t("productImport.pageSubtitle", "从Excel粘贴数据导入国内商品")}>
       <div style={{ marginBottom: 12, padding: '8px 12px', background: '#fff', borderRadius: 6, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-        <span style={{ color: '#666', fontSize: 13 }}>供应商 <span style={{ color: 'red' }}>*</span></span>
+        <span style={{ color: '#666', fontSize: 13 }}>{t('domesticProducts.supplier', '供应商')} <span style={{ color: 'red' }}>*</span></span>
         <Select
           style={{ width: 320 }}
-          placeholder={loadingSuppliers ? '加载中...' : '输入名称/编码搜索'}
+          placeholder={loadingSuppliers ? t('common.loading', '加载中...') : t('productImport.searchSupplier', '输入名称/编码搜索')}
           value={state.supplier || undefined}
           onChange={(value) => {
             if (value === state.supplier) return
@@ -691,7 +684,7 @@ export default function ProductImportPage() {
               setShowStatistics(false)
               setDuplicateGroups([])
             }
-            if (state.products.length > 0) { Modal.confirm({ title: '切换供应商', content: '切换供应商将清空当前表格数据，是否继续？', onOk: change }) }
+            if (state.products.length > 0) { Modal.confirm({ title: t('productImport.switchSupplier', '切换供应商'), content: t('productImport.switchSupplierWarning', '切换供应商将清空当前表格数据，是否继续？'), onOk: change }) }
             else change()
           }}
           showSearch
@@ -707,27 +700,27 @@ export default function ProductImportPage() {
 
       <div style={{ marginBottom: 12, padding: '8px 12px', background: '#fff', borderRadius: 6 }}>
         <div style={{ marginBottom: 8, fontSize: 12, color: '#888' }}>
-          💡 点击单元格后按 <kbd style={{ padding: '1px 4px', background: '#f0f0f0', borderRadius: 3, border: '1px solid #d9d9d9' }}>Ctrl+V</kbd> 可从 Excel 粘贴多列多行数据 | 点击列头选中整列，再粘贴可直接定位
+          {t('productImport.clickCellTip', '💡 点击单元格后按')} <kbd style={{ padding: '1px 4px', background: '#f0f0f0', borderRadius: 3, border: '1px solid #d9d9d9' }}>Ctrl+V</kbd> 可从 Excel 粘贴多列多行数据 | 点击列头选中整列，再粘贴可直接定位
         </div>
         <Space wrap size="small">
-          <Button icon={<PlusOutlined />} onClick={() => addEmptyRows(10)}>添加空行(10)</Button>
-          <Button onClick={deleteSelectedRows} disabled={state.selectedIds.length === 0}>删除选中</Button>
-          <Button type="primary" onClick={handleDetect} disabled={state.detecting || !state.supplier} loading={state.detecting}>检测匹配</Button>
+          <Button icon={<PlusOutlined />} onClick={() => addEmptyRows(10)}>{t('productImport.addEmptyRows', '添加空行(10)')}</Button>
+          <Button onClick={deleteSelectedRows} disabled={state.selectedIds.length === 0}>{t('productImport.deleteSelected', '删除选中')}</Button>
+          <Button type="primary" onClick={handleDetect} disabled={state.detecting || !state.supplier} loading={state.detecting}>{t('productImport.detectMatch', '检测匹配')}</Button>
           {!state.needsDetection && (
             <>
-              <Button style={{ background: '#22c55e', color: '#fff', borderColor: '#22c55e' }} onClick={handleBatchCreate} disabled={state.statistics.newCount === 0 || state.saving} loading={state.saving}>批量新建({state.statistics.newCount})</Button>
-              <Button style={{ background: '#f59e0b', color: '#fff', borderColor: '#f59e0b' }} onClick={handleBatchUpdate} disabled={state.statistics.updateCount === 0 || state.saving} loading={state.saving}>批量更新({state.statistics.updateCount})</Button>
+              <Button style={{ background: '#22c55e', color: '#fff', borderColor: '#22c55e' }} onClick={handleBatchCreate} disabled={state.statistics.newCount === 0 || state.saving} loading={state.saving}>{t('productImport.batchCreate', '批量新建')}({state.statistics.newCount})</Button>
+              <Button style={{ background: '#f59e0b', color: '#fff', borderColor: '#f59e0b' }} onClick={handleBatchUpdate} disabled={state.statistics.updateCount === 0 || state.saving} loading={state.saving}>{t('productImport.batchUpdate', '批量更新')}({state.statistics.updateCount})</Button>
             </>
           )}
-          {state.needsDetection && state.products.length > 0 && <span style={{ color: '#f97316', fontWeight: 600 }}>⚠️ 数据已修改，请先执行"检测匹配"</span>}
-          <Select style={{ width: 300 }} placeholder={loadingContainers ? '加载中...' : '请选择货柜'} value={selectedContainerId || undefined} onChange={(v) => setSelectedContainerId(v)} loading={loadingContainers} showSearch optionFilterProp="label" options={containers.map((c: any) => ({ label: `${c.货柜编号} | 装柜日期: ${formatDate(c.装柜日期)}`, value: c.货柜编号 }))} />
-          <Button type="primary" onClick={() => { if (state.selectedIds.length === 0) { message.error('请先选择商品'); return } if (!selectedContainerId) { message.error('请先选择货柜'); return } if (invalidSelectedCount > 0) { message.error('请先修正已选商品的件数'); return } handleSendToContainer(selectedContainerId, '') }} disabled={state.selectedIds.length === 0}>发送货柜({state.selectedIds.length})</Button>
-          <Button onClick={handleSyncToHBSales} disabled={state.selectedIds.length === 0}>同步到HBSales</Button>
-          <Button style={{ background: '#7c3aed', color: '#fff', borderColor: '#7c3aed' }} onClick={handleSendToHq} disabled={state.selectedIds.length === 0}>发送到HQ</Button>
+          {state.needsDetection && state.products.length > 0 && <span style={{ color: '#f97316', fontWeight: 600 }}>{t('productImport.dataModifiedDetect', '⚠️ 数据已修改，请先执行"检测匹配"')}</span>}
+          <Select style={{ width: 300 }} placeholder={loadingContainers ? t('common.loading', '加载中...') : t('productImport.selectContainer', '请选择货柜')} value={selectedContainerId || undefined} onChange={(v) => setSelectedContainerId(v)} loading={loadingContainers} showSearch optionFilterProp="label" options={containers.map((c: any) => ({ label: `${c.货柜编号} | 装柜日期: ${formatDate(c.装柜日期)}`, value: c.货柜编号 }))} />
+          <Button type="primary" onClick={() => { if (state.selectedIds.length === 0) { message.error(t('productImport.selectProductsFirst', '请先选择商品')); return } if (!selectedContainerId) { message.error('请先选择货柜'); return } if (invalidSelectedCount > 0) { message.error('请先修正已选商品的件数'); return } handleSendToContainer(selectedContainerId, '') }} disabled={state.selectedIds.length === 0}>发送货柜({state.selectedIds.length})</Button>
+          <Button onClick={handleSyncToHBSales} disabled={state.selectedIds.length === 0}>{t('productImport.syncToHBSales', '同步到HBSales')}</Button>
+          <Button style={{ background: '#7c3aed', color: '#fff', borderColor: '#7c3aed' }} onClick={handleSendToHq} disabled={state.selectedIds.length === 0}>{t('productImport.sendToHQ', '发送到HQ')}</Button>
           {selectedColumnKey && selectedColumnEditableKey && (
-            <Tooltip title={`清空「${selectedColumnEditableKey}」列所有数据`}>
+            <Tooltip title={t('productImport.clearColumnData', '清空「{{key}}」列所有数据', { key: selectedColumnEditableKey })}>
               <Button icon={<ClearOutlined />} danger onClick={handleClearColumn}>
-                清空列({selectedColumnEditableKey})
+                {t('productImport.clearColumn', '清空列')}({selectedColumnEditableKey})
               </Button>
             </Tooltip>
           )}
@@ -736,16 +729,16 @@ export default function ProductImportPage() {
 
       {showStatistics && (
         <div style={{ marginBottom: 12, padding: '8px 12px', background: '#fff', borderRadius: 6, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', fontSize: 13 }}>
-          {duplicateGroups.length > 0 && <span style={{ color: '#f97316' }}>⚠️ 重复: {duplicateGroups.length}</span>}
-          <span style={{ color: '#22c55e', fontWeight: 500 }}>✨ 新: {state.statistics.newCount}</span>
-          <span style={{ color: '#f59e0b', fontWeight: 500 }}>📝 更新: {state.statistics.updateCount}</span>
-          <span style={{ color: '#3b82f6', fontWeight: 500 }}>✅ 无变化: {state.statistics.unchangedCount}</span>
-          {state.statistics.dbDuplicateCount > 0 && <span style={{ color: '#a855f7', fontWeight: 500 }}>⚠️ DB重复: {state.statistics.dbDuplicateCount}</span>}
-          {state.statistics.errorCount > 0 && <span style={{ color: '#ef4444', fontWeight: 500 }}>❌ 错误: {state.statistics.errorCount}</span>}
-          <span style={{ color: '#888' }}>📌 选中: {state.statistics.selectedCount}</span>
-          <span style={{ color: '#888' }}>📦 总计: {state.statistics.total} 条</span>
-          <span style={{ color: '#888' }}>件数: {state.statistics.totalQuantity}</span>
-          <span style={{ color: '#888' }}>体积: {state.statistics.totalVolume.toFixed(3)} m³</span>
+          {duplicateGroups.length > 0 && <span style={{ color: '#f97316' }}>{t('productImport.statDuplicate', '⚠️ 重复: ')}{duplicateGroups.length}</span>}
+          <span style={{ color: '#22c55e', fontWeight: 500 }}>{t('productImport.statNew', '✨ 新: ')}{state.statistics.newCount}</span>
+          <span style={{ color: '#f59e0b', fontWeight: 500 }}>{t('productImport.statUpdate', '📝 更新: ')}{state.statistics.updateCount}</span>
+          <span style={{ color: '#3b82f6', fontWeight: 500 }}>{t('productImport.statUnchanged', '✅ 无变化: ')}{state.statistics.unchangedCount}</span>
+          {state.statistics.dbDuplicateCount > 0 && <span style={{ color: '#a855f7', fontWeight: 500 }}>{t('productImport.statDbDuplicate', '⚠️ DB重复: ')}{state.statistics.dbDuplicateCount}</span>}
+          {state.statistics.errorCount > 0 && <span style={{ color: '#ef4444', fontWeight: 500 }}>{t('productImport.statError', '❌ 错误: ')}{state.statistics.errorCount}</span>}
+          <span style={{ color: '#888' }}>{t('productImport.statSelected', '📌 选中: ')}{state.statistics.selectedCount}</span>
+          <span style={{ color: '#888' }}>{t('productImport.statTotal', '📦 总计: ')}{state.statistics.total} {t('productImport.records', '条')}</span>
+          <span style={{ color: '#888' }}>{t('productImport.statQuantity', '件数: ')}{state.statistics.totalQuantity}</span>
+          <span style={{ color: '#888' }}>{t('productImport.statVolume', '体积: ')}{state.statistics.totalVolume.toFixed(3)} m³</span>
         </div>
       )}
 

@@ -1,8 +1,10 @@
 import { getActiveLocalSuppliers } from '../../../services/localSupplierService'
-import { getPosProducts, type PosProductDto } from '../../../services/posProductService'
+import { getPosProducts } from '../../../services/posProductService'
+import type { PosProductDto } from '../../../types/posProduct'
 import { Button, Form, Input, message, Modal, Select, Space, Table } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { useEffect, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 
 type RowType = PosProductDto & { key: string }
 
@@ -15,6 +17,7 @@ interface ProductPickerProps {
 }
 
 export default function ProductPicker({ open, onClose, onPick, alreadySelectedCodes = [], onPickMany }: ProductPickerProps) {
+  const { t } = useTranslation()
   const [loading, setLoading] = useState(false)
   const [form] = Form.useForm()
   const [data, setData] = useState<RowType[]>([])
@@ -30,9 +33,9 @@ export default function ProductPicker({ open, onClose, onPick, alreadySelectedCo
       setLoading(true)
       const fv = form.getFieldsValue()
       const result = await getPosProducts({
-        search: [fv?.itemNumber, fv?.productName].filter(Boolean).join(' ') || undefined,
-        localSupplierCode: fv?.supplier || undefined,
-        pageNumber: p ?? page,
+        keyword: [fv?.itemNumber, fv?.productName].filter(Boolean).join(' ') || undefined,
+        supplierCode: fv?.supplier || undefined,
+        pageIndex: p ?? page,
         pageSize: ps ?? pageSize,
       })
       const rows = (result?.items ?? []).map((x, idx) => ({ ...x, key: x.productCode ?? String(idx) } as RowType))
@@ -40,7 +43,7 @@ export default function ProductPicker({ open, onClose, onPick, alreadySelectedCo
       setData(rows)
       setSelectedRowKeys(rows.filter((r) => alreadySelectedCodes.includes(r.productCode)).map((r) => r.key))
     } catch {
-      message.error('加载失败')
+      message.error(t('message.loadFailed'))
     } finally {
       setLoading(false)
     }
@@ -69,20 +72,20 @@ export default function ProductPicker({ open, onClose, onPick, alreadySelectedCo
   }, [open])
 
   const columns: ColumnsType<RowType> = [
-    { title: '供应商', dataIndex: 'localSupplierCode', width: 180, render: (code: string) => supplierNameMap[code] || code || '—' },
-    { title: '货号', dataIndex: 'itemNumber', width: 160, render: (_: any, r) => r.itemNumber || r.productCode || '—' },
-    { title: '商品名称', dataIndex: 'productName' },
-    { title: '进货价', dataIndex: 'purchasePrice', width: 120, render: (v: number) => (v ?? 0).toFixed(2) },
-    { title: '零售价', dataIndex: 'retailPrice', width: 120, render: (v: number) => (v ?? 0).toFixed(2) },
+    { title: t('column.supplier'), dataIndex: 'localSupplierCode', width: 180, render: (code: string) => supplierNameMap[code] || code || '—' },
+    { title: t('column.itemNumber'), dataIndex: 'itemNumber', width: 160, render: (_: any, r) => r.itemNumber || r.productCode || '—' },
+    { title: t('column.productName'), dataIndex: 'productName' },
+    { title: t('column.purchasePrice'), dataIndex: 'purchasePrice', width: 120, render: (v: number) => (v ?? 0).toFixed(2) },
+    { title: t('column.retailPrice'), dataIndex: 'retailPrice', width: 120, render: (v: number) => (v ?? 0).toFixed(2) },
   ]
 
   return (
-    <Modal open={open} title="选择商品" onCancel={onClose} footer={null} width={900}>
+    <Modal open={open} title={t('posAdmin.productPicker.title', '选择商品')} onCancel={onClose} footer={null} width={900}>
       <Form form={form} layout="inline" onFinish={() => { setPage(1); load(1, pageSize) }} style={{ marginBottom: 8 }}>
-        <Form.Item name="supplier" label="供应商"><Select allowClear showSearch optionFilterProp="label" options={supplierOptions} style={{ width: 220 }} /></Form.Item>
-        <Form.Item name="itemNumber" label="货号"><Input allowClear placeholder="按货号" style={{ width: 180 }} /></Form.Item>
-        <Form.Item name="productName" label="商品名称"><Input allowClear placeholder="按名称" style={{ width: 180 }} /></Form.Item>
-        <Form.Item><Space><Button type="primary" htmlType="submit">搜索</Button><Button onClick={() => { form.resetFields(); setPage(1); load(1, pageSize) }}>重置</Button></Space></Form.Item>
+        <Form.Item name="supplier" label={t('column.supplier')}><Select allowClear showSearch optionFilterProp="label" options={supplierOptions} style={{ width: 220 }} /></Form.Item>
+        <Form.Item name="itemNumber" label={t('column.itemNumber')}><Input allowClear placeholder={t('posAdmin.productPicker.byItemNumber', '按货号')} style={{ width: 180 }} /></Form.Item>
+        <Form.Item name="productName" label={t('column.productName')}><Input allowClear placeholder={t('posAdmin.productPicker.byName', '按名称')} style={{ width: 180 }} /></Form.Item>
+        <Form.Item><Space><Button type="primary" htmlType="submit">{t('common.search')}</Button><Button onClick={() => { form.resetFields(); setPage(1); load(1, pageSize) }}>{t('common.reset')}</Button></Space></Form.Item>
       </Form>
       <Table
         rowKey="key"
@@ -94,7 +97,7 @@ export default function ProductPicker({ open, onClose, onPick, alreadySelectedCo
         }}
         onRow={(record) => ({
           onDoubleClick: () => {
-            if (alreadySelectedCodes.includes(record.productCode)) { message.warning('该商品已在当前策略中') }
+            if (alreadySelectedCodes.includes(record.productCode)) { message.warning(t('posAdmin.productPicker.alreadyInStrategy', '该商品已在当前策略中')) }
             else { onPick(record.productCode); onClose() }
           },
         })}
@@ -107,11 +110,11 @@ export default function ProductPicker({ open, onClose, onPick, alreadySelectedCo
       <Space style={{ marginTop: 8 }}>
         <Button type="primary" disabled={selectedRowKeys.length === 0} onClick={() => {
           const codes = data.filter((r) => selectedRowKeys.includes(r.key)).map((r) => r.productCode).filter((c) => !alreadySelectedCodes.includes(c))
-          if (!codes.length) { message.warning('没有可新增的商品'); return }
+          if (!codes.length) { message.warning(t('posAdmin.productPicker.noNewProducts', '没有可新增的商品')); return }
           onPickMany?.(codes)
           onClose()
-        }}>选择所选</Button>
-        <Button onClick={onClose}>关闭</Button>
+        }}>{t('posAdmin.productPicker.selectSelected', '选择所选')}</Button>
+        <Button onClick={onClose}>{t('common.close')}</Button>
       </Space>
     </Modal>
   )

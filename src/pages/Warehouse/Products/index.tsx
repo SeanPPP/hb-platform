@@ -22,6 +22,7 @@ import type { DefaultOptionType } from 'antd/es/select'
 import type { ColumnsType, TablePaginationConfig } from 'antd/es/table'
 import type { SorterResult } from 'antd/es/table/interface'
 import { useEffect, useMemo, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import BarcodePreview from '../../../components/BarcodePreview'
 import PageContainer from '../../../components/PageContainer'
 import {
@@ -70,9 +71,9 @@ interface ProductFormValues {
   isActive: boolean
 }
 
-const statusOptions = [
-  { value: true, label: '上架' },
-  { value: false, label: '下架' },
+const getStatusOptions = (t: ReturnType<typeof useTranslation>['t']) => [
+  { value: true, label: t('warehouse.active', '上架') },
+  { value: false, label: t('warehouse.inactive', '下架') },
 ]
 
 const productTypeOptions = Object.entries(ProductTypeLabels).map(([value, label]) => ({
@@ -198,14 +199,15 @@ function ProductFormModal({
   onCancel: () => void
   onSubmit: () => void
 }) {
+  const { t } = useTranslation()
   return (
     <Modal
-      title={editingItem ? `编辑商品 - ${editingItem.itemNumber || editingItem.name}` : '编辑商品'}
+      title={editingItem ? t('warehouse.editProductTitle', '编辑商品 - {{name}}', { name: editingItem.itemNumber || editingItem.name }) : t('warehouse.editProduct', '编辑商品')}
       open={open}
       width={920}
       destroyOnClose
-      okText="保存"
-      cancelText="取消"
+      okText={t('common.save', '保存')}
+      cancelText={t('common.cancel', '取消')}
       confirmLoading={saving}
       onCancel={onCancel}
       onOk={onSubmit}
@@ -214,13 +216,13 @@ function ProductFormModal({
         <Space size={16} style={{ display: 'flex' }} align="start">
           <Form.Item
             name="supplierCode"
-            label="供应商"
+            label={t('domesticProducts.supplier', '供应商')}
             style={{ flex: 1 }}
-            rules={editingItem ? [] : [{ required: true, message: '请选择供应商' }]}
+            rules={editingItem ? [] : [{ required: true, message: t('domesticProducts.selectSupplier', '请选择供应商') }]}
           >
             <Select
               disabled={Boolean(editingItem)}
-              placeholder="请选择供应商"
+              placeholder={t('domesticProducts.selectSupplier', '请选择供应商')}
               showSearch
               filterOption={filterSupplierOption}
               options={buildSupplierOptions(suppliers)}
@@ -228,81 +230,81 @@ function ProductFormModal({
           </Form.Item>
           <Form.Item
             name="productType"
-            label="商品类型"
+            label={t('warehouse.productType', '商品类型')}
             style={{ width: 180 }}
-            rules={[{ required: true, message: '请选择商品类型' }]}
+            rules={[{ required: true, message: t('warehouse.selectProductType', '请选择商品类型') }]}
           >
-            <Select placeholder="请选择商品类型" options={productTypeOptions} />
+            <Select placeholder={t('warehouse.selectProductType', '请选择商品类型')} options={productTypeOptions} />
           </Form.Item>
-          <Form.Item name="isActive" label="状态" valuePropName="checked" style={{ width: 120 }}>
-            <Switch checkedChildren="上架" unCheckedChildren="下架" />
+          <Form.Item name="isActive" label={t('domesticProducts.status', '状态')} valuePropName="checked" style={{ width: 120 }}>
+            <Switch checkedChildren={t('warehouse.active', '上架')} unCheckedChildren={t('warehouse.inactive', '下架')} />
           </Form.Item>
         </Space>
 
         <Space size={16} style={{ display: 'flex' }} align="start">
           <Form.Item
             name="productName"
-            label="商品名称"
+            label={t('domesticProducts.productName', '商品名称')}
             style={{ flex: 1 }}
-            rules={[{ required: true, message: '请输入商品名称' }]}
+            rules={[{ required: true, message: t('warehouse.enterProductName', '请输入商品名称') }]}
           >
-            <Input placeholder="请输入商品名称" />
+            <Input placeholder={t('warehouse.enterProductName', '请输入商品名称')} />
           </Form.Item>
-          <Form.Item name="englishProductName" label="英文名称" style={{ flex: 1 }}>
-            <Input placeholder="请输入英文名称" />
-          </Form.Item>
-        </Space>
-
-        <Space size={16} style={{ display: 'flex' }} align="start">
-          <Form.Item name="hbProductNo" label="HB货号" style={{ flex: 1 }}>
-            <Input disabled={Boolean(editingItem)} placeholder="不填则后端自动生成" />
-          </Form.Item>
-          <Form.Item name="barcode" label="条码" style={{ flex: 1 }}>
-            <Input placeholder="不填则后端自动生成" />
-          </Form.Item>
-          <Form.Item name="productSpecification" label="规格" style={{ flex: 1 }}>
-            <Input placeholder="请输入商品规格" />
+          <Form.Item name="englishProductName" label={t('warehouse.englishName', '英文名称')} style={{ flex: 1 }}>
+            <Input placeholder={t('warehouse.enterEnglishName', '请输入英文名称')} />
           </Form.Item>
         </Space>
 
         <Space size={16} style={{ display: 'flex' }} align="start">
-          <Form.Item name="domesticPrice" label="国内价" style={{ flex: 1 }}>
+          <Form.Item name="hbProductNo" label={t('warehouse.hbProductNo', 'HB货号')} style={{ flex: 1 }}>
+            <Input disabled={Boolean(editingItem)} placeholder={t('warehouse.autoGenerate', '不填则后端自动生成')} />
+          </Form.Item>
+          <Form.Item name="barcode" label={t('domesticProducts.barcode', '条码')} style={{ flex: 1 }}>
+            <Input placeholder={t('warehouse.autoGenerate', '不填则后端自动生成')} />
+          </Form.Item>
+          <Form.Item name="productSpecification" label={t('domesticProducts.specification', '规格')} style={{ flex: 1 }}>
+            <Input placeholder={t('warehouse.enterSpec', '请输入商品规格')} />
+          </Form.Item>
+        </Space>
+
+        <Space size={16} style={{ display: 'flex' }} align="start">
+          <Form.Item name="domesticPrice" label={t('domesticProducts.domesticPrice', '国内价')} style={{ flex: 1 }}>
             <InputNumber min={0} precision={2} style={{ width: '100%' }} />
           </Form.Item>
-          <Form.Item name="oemPrice" label="贴牌价" style={{ flex: 1 }}>
+          <Form.Item name="oemPrice" label={t('productCreation.privateLabelPrice', '贴牌价')} style={{ flex: 1 }}>
             <InputNumber min={0} precision={2} style={{ width: '100%' }} />
           </Form.Item>
-          <Form.Item name="importPrice" label="进口价" style={{ flex: 1 }}>
+          <Form.Item name="importPrice" label={t('warehouse.importPrice', '进口价')} style={{ flex: 1 }}>
             <InputNumber min={0} precision={2} style={{ width: '100%' }} />
           </Form.Item>
         </Space>
 
         <Space size={16} style={{ display: 'flex' }} align="start">
-          <Form.Item name="packingQuantity" label="装箱数" style={{ flex: 1 }}>
+          <Form.Item name="packingQuantity" label={t('warehouse.packingQuantity', '装箱数')} style={{ flex: 1 }}>
             <InputNumber min={0} precision={0} style={{ width: '100%' }} />
           </Form.Item>
-          <Form.Item name="middlePackQuantity" label="中包数量" style={{ flex: 1 }}>
+          <Form.Item name="middlePackQuantity" label={t('warehouse.middlePackQuantity', '中包数量')} style={{ flex: 1 }}>
             <InputNumber min={0} precision={0} style={{ width: '100%' }} />
           </Form.Item>
-          <Form.Item name="unitVolume" label="体积" style={{ flex: 1 }}>
+          <Form.Item name="unitVolume" label={t('warehouse.volume', '体积')} style={{ flex: 1 }}>
             <InputNumber min={0} precision={4} style={{ width: '100%' }} />
           </Form.Item>
         </Space>
 
         <Space size={16} style={{ display: 'flex' }} align="start">
-          <Form.Item name="packingSize" label="包装尺寸" style={{ flex: 1 }}>
-            <Input placeholder="请输入包装尺寸" />
+          <Form.Item name="packingSize" label={t('warehouse.packingSize', '包装尺寸')} style={{ flex: 1 }}>
+            <Input placeholder={t('warehouse.enterPackingSize', '请输入包装尺寸')} />
           </Form.Item>
-          <Form.Item name="material" label="材质" style={{ flex: 1 }}>
-            <Input placeholder="请输入材质" />
+          <Form.Item name="material" label={t('warehouse.material', '材质')} style={{ flex: 1 }}>
+            <Input placeholder={t('warehouse.enterMaterial', '请输入材质')} />
           </Form.Item>
-          <Form.Item name="productImage" label="图片地址" style={{ flex: 1 }}>
-            <Input placeholder="请输入图片 URL" />
+          <Form.Item name="productImage" label={t('warehouse.imageUrl', '图片地址')} style={{ flex: 1 }}>
+            <Input placeholder={t('warehouse.enterImageUrl', '请输入图片 URL')} />
           </Form.Item>
         </Space>
 
-        <Form.Item name="remarks" label="备注">
-          <Input.TextArea rows={3} placeholder="请输入备注" />
+        <Form.Item name="remarks" label={t('common.remarks', '备注')}>
+          <Input.TextArea rows={3} placeholder={t('common.enterRemarks', '请输入备注')} />
         </Form.Item>
       </Form>
     </Modal>
@@ -334,9 +336,10 @@ function SetItemsModal({
   onChangeField: (rowId: string, field: keyof DomesticProductSetItem, value: string | number | undefined) => void
   onSubmit: () => void
 }) {
+  const { t } = useTranslation()
   const columns: ColumnsType<DomesticProductSetItem> = [
     {
-      title: '商品名称',
+      title: t('domesticProducts.productName', '商品名称'),
       dataIndex: 'productName',
       render: (_, record) => (
         <Input
@@ -347,7 +350,7 @@ function SetItemsModal({
       ),
     },
     {
-      title: '套装货号',
+      title: t('warehouse.setProductNo', '套装货号'),
       dataIndex: 'setProductNo',
       width: 180,
       render: (_, record) => (
@@ -359,7 +362,7 @@ function SetItemsModal({
       ),
     },
     {
-      title: '条码',
+      title: t('domesticProducts.barcode', '条码'),
       dataIndex: 'setBarcode',
       width: 180,
       render: (_, record) => (
@@ -371,7 +374,7 @@ function SetItemsModal({
       ),
     },
     {
-      title: '国内价',
+      title: t('domesticProducts.domesticPrice', '国内价'),
       dataIndex: 'domesticPrice',
       width: 120,
       render: (_, record) => (
@@ -386,7 +389,7 @@ function SetItemsModal({
       ),
     },
     {
-      title: '进口价',
+      title: t('warehouse.importPrice', '进口价'),
       dataIndex: 'importPrice',
       width: 120,
       render: (_, record) => (
@@ -401,7 +404,7 @@ function SetItemsModal({
       ),
     },
     {
-      title: '贴牌价',
+      title: t('productCreation.privateLabelPrice', '贴牌价'),
       dataIndex: 'oemPrice',
       width: 120,
       render: (_, record) => (
@@ -416,13 +419,13 @@ function SetItemsModal({
       ),
     },
     {
-      title: '操作',
+      title: t('common.action', '操作'),
       key: 'action',
       width: 90,
       render: (_, record) =>
         canEdit ? (
           <Button danger type="link" onClick={() => onRemoveRow(record.id)}>
-            删除
+            {t('common.delete', '删除')}
           </Button>
         ) : null,
     },
@@ -430,20 +433,20 @@ function SetItemsModal({
 
   return (
     <Modal
-      title={product ? `套装子项 - ${product.itemNumber || product.name}` : '套装子项'}
+      title={product ? t('warehouse.setDetailsTitle', '套装子项 - {{name}}', { name: product.itemNumber || product.name }) : t('warehouse.setDetails', '套装子项')}
       open={open}
       width={1100}
       destroyOnClose
       onCancel={onCancel}
       onOk={onSubmit}
-      okText="保存"
-      cancelText="关闭"
+      okText={t('common.save', '保存')}
+      cancelText={t('common.close', '关闭')}
       confirmLoading={saving}
       okButtonProps={{ disabled: !canEdit }}
     >
       <Space style={{ marginBottom: 16 }}>
         <Typography.Text type="secondary">
-          仅对套装商品开放编辑，普通商品和多码商品不展示此入口。
+          t('warehouse.setEditHint', '仅对套装商品开放编辑，普通商品和多码商品不展示此入口。')
         </Typography.Text>
         {canEdit ? (
           <Button type="dashed" onClick={onAddRow}>
@@ -464,6 +467,7 @@ function SetItemsModal({
 }
 
 export default function WarehouseProductsPage() {
+  const { t } = useTranslation()
   const [form] = Form.useForm<ProductFormValues>()
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -527,7 +531,7 @@ export default function WarehouseProductsPage() {
       setSelectedRowKeys([])
     } catch (error) {
       console.error(error)
-      message.error(error instanceof Error ? error.message : '加载仓库商品失败')
+      message.error(error instanceof Error ? error.message : t('warehouse.loadProductsFailed', '加载仓库商品失败'))
     } finally {
       setLoading(false)
     }
@@ -540,7 +544,7 @@ export default function WarehouseProductsPage() {
         .then(setSuppliers)
         .catch((error) => {
           console.error(error)
-          message.error('加载供应商列表失败')
+          message.error(t('productCreation.loadSupplierListFailed', '加载供应商列表失败'))
         }),
     ])
   }, [])
@@ -602,7 +606,7 @@ export default function WarehouseProductsPage() {
         isActive: values.isActive,
         supplierCode: values.supplierCode,
       })
-      message.success('更新商品成功')
+      message.success(t('warehouse.updateProductSuccess', '更新商品成功'))
 
       handleCloseModal()
       void loadData({ page })
@@ -611,7 +615,7 @@ export default function WarehouseProductsPage() {
         return
       }
       console.error(error)
-      message.error(error instanceof Error ? error.message : '保存商品失败')
+      message.error(error instanceof Error ? error.message : t('warehouse.saveProductFailed', '保存商品失败'))
     } finally {
       setSaving(false)
     }
@@ -630,15 +634,15 @@ export default function WarehouseProductsPage() {
       })
 
       if (!result.success) {
-        message.error(result.message || '批量更新状态失败')
+        message.error(result.message || t('warehouse.batchStatusUpdateFailed', '批量更新状态失败'))
         return
       }
 
-      message.success(result.message || `已批量${nextIsActive ? '上架' : '下架'} ${selectedRowKeys.length} 个商品`)
+      message.success(result.message || t('warehouse.batchStatusUpdated', '已批量{{status}} {{count}} 个商品', { status: nextIsActive ? t('warehouse.active', '上架') : t('warehouse.inactive', '下架'), count: selectedRowKeys.length }))
       void loadData({ page })
     } catch (error) {
       console.error(error)
-      message.error(error instanceof Error ? error.message : '批量更新状态失败')
+      message.error(error instanceof Error ? error.message : t('warehouse.batchStatusUpdateFailed', '批量更新状态失败'))
     } finally {
       setBatchActionLoading(false)
     }
@@ -653,17 +657,17 @@ export default function WarehouseProductsPage() {
       })
 
       if (!result.success) {
-        message.error(result.message || '切换状态失败')
+        message.error(result.message || t('warehouse.toggleStatusFailed', '切换状态失败'))
         return
       }
 
       setData((current) =>
         current.map((item) => (item.productCode === record.productCode ? { ...item, isActive: nextIsActive } : item)),
       )
-      message.success(result.message || `商品已${nextIsActive ? '上架' : '下架'}`)
+      message.success(result.message || t('warehouse.statusToggled', '商品已{{status}}', { status: nextIsActive ? t('warehouse.active', '上架') : t('warehouse.inactive', '下架') }))
     } catch (error) {
       console.error(error)
-      message.error(error instanceof Error ? error.message : '切换状态失败')
+      message.error(error instanceof Error ? error.message : t('warehouse.toggleStatusFailed', '切换状态失败'))
     } finally {
       setTogglingProductCodes((current) => current.filter((code) => code !== record.productCode))
     }
@@ -679,7 +683,7 @@ export default function WarehouseProductsPage() {
       setSetItemsDraft(items)
     } catch (error) {
       console.error(error)
-      message.error(error instanceof Error ? error.message : '加载套装子项失败')
+      message.error(error instanceof Error ? error.message : t('warehouse.loadSetItemsFailed', '加载套装子项失败'))
       setSetItemsOpen(false)
       setCurrentSetProduct(null)
     } finally {
@@ -695,14 +699,14 @@ export default function WarehouseProductsPage() {
     try {
       setSetItemsSaving(true)
       await updateDomesticProductSetItems(currentSetProduct.productCode, setItemsDraft)
-      message.success('套装子项已更新')
+      message.success(t('warehouse.setItemsUpdated', '套装子项已更新'))
       setSetItemsOpen(false)
       setCurrentSetProduct(null)
       setSetItemsDraft([])
       void loadData()
     } catch (error) {
       console.error(error)
-      message.error(error instanceof Error ? error.message : '保存套装子项失败')
+      message.error(error instanceof Error ? error.message : t('warehouse.saveSetItemsFailed', '保存套装子项失败'))
     } finally {
       setSetItemsSaving(false)
     }
@@ -712,7 +716,7 @@ export default function WarehouseProductsPage() {
     try {
       setExporting(true)
       setExportProgress(0)
-      setExportMessage('准备导出...')
+      setExportMessage(t('warehouse.preparingExport', '准备导出...'))
 
       const selectedProducts = selectedRowKeys.length
         ? data.filter((item) => selectedRowKeys.includes(item.id))
@@ -721,7 +725,7 @@ export default function WarehouseProductsPage() {
       let productsToExport = selectedProducts
       if (!productsToExport.length) {
         if (!total) {
-          message.warning('没有可导出的商品数据')
+          message.warning(t('warehouse.noDataToExport', '没有可导出的商品数据'))
           return
         }
 
@@ -734,7 +738,7 @@ export default function WarehouseProductsPage() {
       }
 
       if (!productsToExport.length) {
-        message.warning('没有可导出的商品数据')
+        message.warning(t('warehouse.noDataToExport', '没有可导出的商品数据'))
         return
       }
 
@@ -752,7 +756,7 @@ export default function WarehouseProductsPage() {
           includeLabelPrice,
           includeBarcodeImage,
           includeProductImage,
-          fileName: '仓库商品',
+          fileName: t('warehouse.warehouseProducts', '仓库商品'),
           onProgress: (progress, nextMessage) => {
             setExportProgress(progress)
             setExportMessage(nextMessage)
@@ -781,7 +785,7 @@ export default function WarehouseProductsPage() {
     () => [
       { title: '#', dataIndex: 'rowNumber', width: 30, fixed: 'left' },
       {
-        title: 'HB货号',
+        title: t('warehouse.hbProductNo', 'HB货号'),
         dataIndex: 'itemNumber',
         width: 120,
         fixed: 'left',
@@ -790,7 +794,7 @@ export default function WarehouseProductsPage() {
           value ? (
             <Space size={4}>
               <span>{value}</span>
-              <Tooltip title="复制">
+              <Tooltip title={t('common.copy', '复制')}>
                 <Button
                   size="small"
                   type="text"
@@ -804,7 +808,7 @@ export default function WarehouseProductsPage() {
           ),
       },
       {
-        title: '商品图片',
+        title: t('warehouse.productImage', '商品图片'),
         dataIndex: 'productImage',
         width: 80,
         render: (value: string | undefined) => (
@@ -821,7 +825,7 @@ export default function WarehouseProductsPage() {
         ),
       },
       {
-        title: '国内供应商',
+        title: t('warehouse.domesticSupplier', '国内供应商'),
         dataIndex: 'domesticSupplierCode',
         width: 150,
         sorter: true,
@@ -838,7 +842,7 @@ export default function WarehouseProductsPage() {
       },
       
       {
-        title: '商品名称',
+        title: t('domesticProducts.productName', '商品名称'),
         dataIndex: 'name',
         width: 200,
         sorter: true,
@@ -846,14 +850,14 @@ export default function WarehouseProductsPage() {
           value ? <div className="warehouse-products-text-2line">{value}</div> : '--',
       },
       {
-        title: '英文名称',
+        title: t('warehouse.englishName', '英文名称'),
         dataIndex: 'nameEn',
         width: 200,
         render: (value: string | undefined) =>
           value ? <div className="warehouse-products-text-2line">{value}</div> : '--',
       },
       {
-        title: '条码',
+        title: t('domesticProducts.barcode', '条码'),
         dataIndex: 'barcode',
         width: 180,
         render: (value: string | undefined) =>
@@ -866,14 +870,14 @@ export default function WarehouseProductsPage() {
           ),
       },
       {
-        title: '状态',
+        title: t('domesticProducts.status', '状态'),
         dataIndex: 'isActive',
         width: 110,
         render: (value: boolean, record) => (
           <Switch
             checked={value}
-            checkedChildren="上架"
-            unCheckedChildren="下架"
+            checkedChildren={t('warehouse.active', '上架')}
+            unCheckedChildren={t('warehouse.inactive', '下架')}
             disabled={!access.canWriteProduct || togglingProductCodes.includes(record.productCode)}
             loading={togglingProductCodes.includes(record.productCode)}
             onChange={(nextChecked) => void handleToggleSingleActive(record, nextChecked)}
@@ -881,59 +885,59 @@ export default function WarehouseProductsPage() {
         ),
       },
       {
-        title: '商品类型',
+        title: t('warehouse.productType', '商品类型'),
         dataIndex: 'productType',
         width: 120,
         render: (value: ProductType) => ProductTypeLabels[value] || '--',
       },
       {
-        title: '国内价',
+        title: t('domesticProducts.domesticPrice', '国内价'),
         dataIndex: 'domesticPrice',
         width: 100,
         render: (value: number | undefined) => formatPrice(value),
       },
       {
-        title: '贴牌价',
+        title: t('productCreation.privateLabelPrice', '贴牌价'),
         dataIndex: 'labelPrice',
         width: 100,
         render: (value: number | undefined) => formatPrice(value),
       },
       {
-        title: '进口价',
+        title: t('warehouse.importPrice', '进口价'),
         dataIndex: 'importPrice',
         width: 100,
         render: (value: number | undefined) => formatPrice(value),
       },
       {
-        title: '装箱数',
+        title: t('warehouse.packingQuantity', '装箱数'),
         dataIndex: 'packingQty',
         width: 140,
         render: (value: number | undefined, record) =>
           value !== undefined && value !== null ? (
             <Space size={4}>
               <span>{value}</span>
-              {record.isPackingQtyFallback ? <Tag color="gold">国内</Tag> : <Tag color="green">仓库</Tag>}
+              {record.isPackingQtyFallback ? <Tag color="gold">{t('warehouse.domestic', '国内')}</Tag> : <Tag color="green">{t('warehouse.warehouse', '仓库')}</Tag>}
             </Space>
           ) : (
             '--'
           ),
       },
       {
-        title: '体积',
+        title: t('warehouse.volume', '体积'),
         dataIndex: 'volume',
         width: 140,
         render: (value: number | undefined, record) =>
           value !== undefined && value !== null ? (
             <Space size={4}>
               <span>{value}</span>
-              {record.isVolumeFallback ? <Tag color="gold">国内</Tag> : <Tag color="green">仓库</Tag>}
+              {record.isVolumeFallback ? <Tag color="gold">{t('warehouse.domestic', '国内')}</Tag> : <Tag color="green">{t('warehouse.warehouse', '仓库')}</Tag>}
             </Space>
           ) : (
             '--'
           ),
       },
       {
-        title: '澳洲供应商',
+        title: t('warehouse.australianSupplier', '澳洲供应商'),
         dataIndex: 'localSupplierCode',
         width: 180,
         sorter: true,
@@ -948,20 +952,20 @@ export default function WarehouseProductsPage() {
       },
       
       {
-        title: '更新时间',
+        title: t('warehouse.updatedAt', '更新时间'),
         dataIndex: 'updatedAt',
         width: 180,
         sorter: true,
         render: (value: string | undefined) => formatDateTime(value),
       },
       {
-        title: '更新人',
+        title: t('warehouse.updatedBy', '更新人'),
         dataIndex: 'updatedBy',
         width: 140,
         render: (value: string | undefined) => value || '--',
       },
       {
-        title: '操作',
+        title: t('common.action', '操作'),
         key: 'action',
         width: 220,
         fixed: 'right',
@@ -977,7 +981,7 @@ export default function WarehouseProductsPage() {
                 套装子项
               </Button>
             ) : (
-              <Tooltip title="仅套装商品可编辑套装子项">
+              <Tooltip title={t('warehouse.setEditOnlyHint', '仅套装商品可编辑套装子项')}>
                 <Button type="link" icon={<GiftOutlined />} disabled>
                   套装子项
                 </Button>
@@ -994,8 +998,8 @@ export default function WarehouseProductsPage() {
     <>
       <style>{warehouseProductsTableStyle}</style>
       <PageContainer
-        title="仓库商品管理"
-        subtitle="已接仓库主列表、新建编辑、国内/本地双供应商显示、批量上下架与单条状态切换。"
+        title={t('warehouse.productManagement', '仓库商品管理')}
+        subtitle={t('warehouse.productManagementSubtitle', '已接仓库主列表、新建编辑、国内/本地双供应商显示、批量上下架与单条状态切换。')}
         extra={
           <Space wrap>
           <Button
@@ -1014,21 +1018,21 @@ export default function WarehouseProductsPage() {
           </Button>
           <Button
             icon={<GiftOutlined />}
-            onClick={() => message.info('批量建套装商品迁移到第二轮补齐')}
+            onClick={() => message.info(t('warehouse.batchSetMigrated', '批量建套装商品迁移到第二轮补齐'))}
           >
             批量建套装
           </Button>
           <Button
             icon={<UploadOutlined />}
-            onClick={() => message.info('批量图片上传迁移到第二轮补齐')}
+            onClick={() => message.info(t('warehouse.batchImageUploadMigrated', '批量图片上传迁移到第二轮补齐'))}
           >
             批量图片上传
           </Button>
           {access.canWriteProduct ? (
             <Popconfirm
-              title="确认批量上架选中的商品吗？"
-              okText="上架"
-              cancelText="取消"
+              title={t('warehouse.confirmBatchActivate', '确认批量上架选中的商品吗？')}
+              okText={t('warehouse.active', '上架')}
+              cancelText={t('common.cancel', '取消')}
               disabled={!selectedRowKeys.length}
               onConfirm={() => void handleBatchToggleActive(true)}
             >
@@ -1039,9 +1043,9 @@ export default function WarehouseProductsPage() {
           ) : null}
           {access.canWriteProduct ? (
             <Popconfirm
-              title="确认批量下架选中的商品吗？"
-              okText="下架"
-              cancelText="取消"
+              title={t('warehouse.confirmBatchDeactivate', '确认批量下架选中的商品吗？')}
+              okText={t('warehouse.inactive', '下架')}
+              cancelText={t('common.cancel', '取消')}
               disabled={!selectedRowKeys.length}
               onConfirm={() => void handleBatchToggleActive(false)}
             >
@@ -1069,7 +1073,7 @@ export default function WarehouseProductsPage() {
             value={searchText}
             onChange={(event) => setSearchText(event.target.value)}
             prefix={<SearchOutlined />}
-            placeholder="搜索商品名称 / 货号 / 条码 / 英文名 / 国内供应商 / 本地供应商"
+            placeholder={t('warehouse.searchProductFull', '搜索商品名称 / 货号 / 条码 / 英文名 / 国内供应商 / 本地供应商')}
             style={{ width: 300 }}
             allowClear
           />
@@ -1077,7 +1081,7 @@ export default function WarehouseProductsPage() {
             value={supplierCode}
             onChange={setSupplierCode}
             options={buildSupplierOptions(suppliers)}
-            placeholder="全部国内供应商"
+            placeholder={t('warehouse.allDomesticSuppliers', '全部国内供应商')}
             style={{ width: 240 }}
             showSearch
             filterOption={filterSupplierOption}
@@ -1087,15 +1091,15 @@ export default function WarehouseProductsPage() {
             value={productType}
             onChange={setProductType}
             options={productTypeOptions}
-            placeholder="全部商品类型"
+            placeholder={t('warehouse.allProductTypes', '全部商品类型')}
             style={{ width: 160 }}
             allowClear
           />
           <Select
             value={isActive}
             onChange={setIsActive}
-            options={statusOptions}
-            placeholder="全部状态"
+            options={getStatusOptions(t)}
+            placeholder={t('warehouse.allStatus', '全部状态')}
             style={{ width: 140 }}
             allowClear
           />
@@ -1231,10 +1235,10 @@ export default function WarehouseProductsPage() {
       />
 
       <Modal
-        title="导出 Excel"
+        title={t('warehouse.exportExcel', '导出 Excel')}
         open={exportConfigOpen}
-        okText="开始导出"
-        cancelText="取消"
+        okText={t('warehouse.startExport', '开始导出')}
+        cancelText={t('common.cancel', '取消')}
         confirmLoading={exporting}
         onCancel={() => {
           if (!exporting) {
@@ -1246,8 +1250,8 @@ export default function WarehouseProductsPage() {
         <Space direction="vertical" size={12} style={{ width: '100%' }}>
           <Typography.Text>
             {selectedRowKeys.length
-              ? `将导出已选择的 ${selectedRowKeys.length} 件商品`
-              : `将导出当前筛选结果共 ${total} 件商品`}
+              ? t('warehouse.exportSelected', '将导出已选择的 {{count}} 件商品', { count: selectedRowKeys.length })
+              : t('warehouse.exportFiltered', '将导出当前筛选结果共 {{count}} 件商品', { count: total })}
           </Typography.Text>
           <Checkbox checked={includeLabelPrice} onChange={(event) => setIncludeLabelPrice(event.target.checked)}>
             包含零售列（贴牌价）
@@ -1267,14 +1271,14 @@ export default function WarehouseProductsPage() {
       </Modal>
 
       <Modal
-        title={`导出完成 — ${exportFailDetail.length} 张图片下载失败`}
+        title={t('warehouse.exportCompleteFailed', '导出完成 — {{count}} 张图片下载失败', { count: exportFailDetail.length })}
         open={exportFailDetailOpen}
         width={700}
         footer={null}
         onCancel={() => setExportFailDetailOpen(false)}
       >
         <Typography.Paragraph type="secondary" style={{ marginBottom: 12 }}>
-          以下商品图片未能成功下载，Excel 对应行的图片列已标记为「图片下载失败」。
+          {t('warehouse.imageDownloadFailedMsg', '以下商品图片未能成功下载，Excel 对应行的图片列已标记为「图片下载失败」。')}
         </Typography.Paragraph>
         <Table
           size="small"
@@ -1283,10 +1287,10 @@ export default function WarehouseProductsPage() {
           dataSource={exportFailDetail}
           rowKey="itemNumber"
           columns={[
-            { title: '货号', dataIndex: 'itemNumber', width: 120 },
-            { title: '失败原因', dataIndex: 'reason', width: 200 },
+            { title: t('productImport.hbProductNoCol', '货号'), dataIndex: 'itemNumber', width: 120 },
+            { title: t('warehouse.failureReason', '失败原因'), dataIndex: 'reason', width: 200 },
             {
-              title: '图片地址',
+              title: t('warehouse.imageUrl', '图片地址'),
               dataIndex: 'url',
               ellipsis: true,
               render: (val: string) => (

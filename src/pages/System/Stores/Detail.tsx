@@ -1,5 +1,6 @@
 import { Card, Descriptions, Spin, Tag, Typography, message } from 'antd'
 import { useEffect, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { useParams } from 'react-router-dom'
 import PageContainer from '../../../components/PageContainer'
 import { useDynamicTabTitle } from '../../../hooks/useDynamicTabTitle'
@@ -7,11 +8,12 @@ import { getStoreByGuid } from '../../../services/storeService'
 import type { StoreDto } from '../../../types/store'
 
 export default function StoreDetailPage() {
+  const { t } = useTranslation()
   const { id = '' } = useParams()
   const [loading, setLoading] = useState(true)
   const [store, setStore] = useState<StoreDto | null>(null)
 
-  useDynamicTabTitle(store ? `分店详情 - ${store.storeCode}` : `分店详情 - ${id}`)
+  useDynamicTabTitle(store ? t('system.stores.detailTitle', { name: store.storeCode }) : t('system.stores.detailTitle', { name: id }))
 
   useEffect(() => {
     const run = async () => {
@@ -21,7 +23,7 @@ export default function StoreDetailPage() {
         setStore(detail)
       } catch (error) {
         console.error(error)
-        message.error('加载分店详情失败')
+        message.error(t('system.stores.loadDetailFailed'))
       } finally {
         setLoading(false)
       }
@@ -35,29 +37,29 @@ export default function StoreDetailPage() {
   }
 
   if (!store) {
-    return <Typography.Text type="danger">未找到分店信息</Typography.Text>
+    return <Typography.Text type="danger">{t('system.stores.notFound')}</Typography.Text>
   }
 
   return (
     <PageContainer
-      title={`分店详情 - ${store.storeCode}`}
-      subtitle="这里展示的是旧系统分店模块在新框架中的详情页打开方式。"
+      title={t('system.stores.detailTitle', { name: store.storeCode })}
+      subtitle={t('system.stores.detailTabSubtitle')}
     >
       <Card>
         <Descriptions bordered column={2}>
-          <Descriptions.Item label="分店名称">{store.storeName}</Descriptions.Item>
-          <Descriptions.Item label="分店编码">{store.storeCode}</Descriptions.Item>
-          <Descriptions.Item label="品牌名称">{store.brandName || '--'}</Descriptions.Item>
+          <Descriptions.Item label={t('system.stores.storeName')}>{store.storeName}</Descriptions.Item>
+          <Descriptions.Item label={t('system.stores.storeCode')}>{store.storeCode}</Descriptions.Item>
+          <Descriptions.Item label={t('system.stores.brandName')}>{store.brandName || '--'}</Descriptions.Item>
           <Descriptions.Item label="ABN">{store.abn || '--'}</Descriptions.Item>
-          <Descriptions.Item label="联系电话">{store.contactPhone || '--'}</Descriptions.Item>
-          <Descriptions.Item label="状态">
-            <Tag color={store.isActive ? 'success' : 'default'}>{store.isActive ? '启用' : '停用'}</Tag>
+          <Descriptions.Item label={t('system.stores.contactPhone')}>{store.contactPhone || '--'}</Descriptions.Item>
+          <Descriptions.Item label={t('column.status')}>
+            <Tag color={store.isActive ? 'success' : 'default'}>{store.isActive ? t('common.active') : t('common.inactive')}</Tag>
           </Descriptions.Item>
-          <Descriptions.Item label="地址" span={2}>
+          <Descriptions.Item label={t('system.stores.address')} span={2}>
             {store.address || '--'}
           </Descriptions.Item>
-          <Descriptions.Item label="创建时间">{store.createdAt}</Descriptions.Item>
-          <Descriptions.Item label="更新时间">{store.updatedAt}</Descriptions.Item>
+          <Descriptions.Item label={t('column.createTime')}>{store.createdAt}</Descriptions.Item>
+          <Descriptions.Item label={t('system.users.updatedAt')}>{store.updatedAt}</Descriptions.Item>
         </Descriptions>
       </Card>
     </PageContainer>

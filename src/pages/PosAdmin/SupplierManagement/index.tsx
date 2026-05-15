@@ -14,6 +14,7 @@ import {
   message,
 } from 'antd'
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { createLocalSupplier, getLocalSuppliers, syncLocalSuppliers } from '../../../services/localSupplierService'
 import type { LocalSupplierDto } from '../../../types/localSupplier'
 
@@ -28,6 +29,7 @@ const SORT_FIELD_MAP: Record<string, string> = {
 }
 
 export default function SupplierManagementPage() {
+  const { t } = useTranslation()
   const [loading, setLoading] = useState(false)
   const [data, setData] = useState<LocalSupplierDto[]>([])
   const [total, setTotal] = useState(0)
@@ -58,7 +60,7 @@ export default function SupplierManagementPage() {
       setData(result?.items ?? [])
       setTotal(result?.total ?? 0)
     } catch {
-      message.error('加载供应商列表失败')
+      message.error(t('message.loadFailed'))
     } finally {
       setLoading(false)
     }
@@ -85,11 +87,15 @@ export default function SupplierManagementPage() {
     try {
       const result = await syncLocalSuppliers()
       message.success(
-        `同步完成：新增${result.createdCount ?? 0}，更新${result.updatedCount ?? 0}，停用${result.deactivatedCount ?? 0}`,
+        t('posAdmin.suppliers.syncComplete', {
+          created: result.createdCount ?? 0,
+          updated: result.updatedCount ?? 0,
+          deactivated: result.deactivatedCount ?? 0,
+        }),
       )
       await loadData()
     } catch {
-      message.error('同步失败')
+      message.error(t('posAdmin.suppliers.syncFailed', '同步失败'))
     }
   }
 
@@ -104,23 +110,23 @@ export default function SupplierManagementPage() {
         email: values.email,
         remark: values.remark,
       })
-      message.success('创建成功')
+      message.success(t('message.createSuccess'))
       setCreateVisible(false)
       createForm.resetFields()
       await loadData()
     } catch {
-      message.error('创建失败')
+      message.error(t('message.createFailed'))
     }
   }
 
   return (
     <Card
-      title="供应商管理"
+      title={t('posAdmin.suppliers.title')}
       extra={
         <Space>
           <Input.Search
             allowClear
-            placeholder="代码/名称"
+            placeholder={t('posAdmin.suppliers.codeNamePlaceholder', '代码/名称')}
             style={{ width: 200 }}
             onSearch={(v) => {
               setKeyword(v)
@@ -129,7 +135,7 @@ export default function SupplierManagementPage() {
           />
           <Select
             allowClear
-            placeholder="状态"
+            placeholder={t('common.status')}
             style={{ width: 120 }}
             value={status}
             onChange={(v) => {
@@ -137,15 +143,15 @@ export default function SupplierManagementPage() {
               setPage(1)
             }}
             options={[
-              { label: '启用', value: '1' },
-              { label: '禁用', value: '0' },
+              { label: t('common.active'), value: '1' },
+              { label: t('common.inactive'), value: '0' },
             ]}
           />
           <Button icon={<ReloadOutlined />} onClick={handleSync}>
-            同步
+            {t('posAdmin.suppliers.sync')}
           </Button>
           <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateVisible(true)}>
-            新建供应商
+            {t('posAdmin.suppliers.createSupplier')}
           </Button>
         </Space>
       }
@@ -171,39 +177,39 @@ export default function SupplierManagementPage() {
             rowClassName={(_, index) => (index % 2 === 1 ? 'table-row-striped' : '')}
             columns={[
               {
-                title: '序号',
+                title: t('column.index'),
                 width: 72,
                 align: 'right',
                 render: (_, __, index) => (page - 1) * pageSize + index + 1,
               },
               {
-                title: '代码',
+                title: t('posAdmin.suppliers.code', '代码'),
                 dataIndex: 'localSupplierCode',
                 sorter: true,
                 sortOrder: sortBy === 'localSupplierCode' ? sortOrder : undefined,
               },
               {
-                title: '名称',
+                title: t('posAdmin.suppliers.name'),
                 dataIndex: 'name',
                 sorter: true,
                 sortOrder: sortBy === 'name' ? sortOrder : undefined,
               },
               {
-                title: '状态',
+                title: t('column.status'),
                 dataIndex: 'status',
                 sorter: true,
                 sortOrder: sortBy === 'status' ? sortOrder : undefined,
                 render: (v: number) =>
-                  v === 1 ? <Tag color="green">启用</Tag> : <Tag color="red">禁用</Tag>,
+                  v === 1 ? <Tag color="green">{t('common.active')}</Tag> : <Tag color="red">{t('common.inactive')}</Tag>,
               },
               {
-                title: '联系人',
+                title: t('posAdmin.suppliers.contactPerson'),
                 dataIndex: 'contactPerson',
                 sorter: true,
                 sortOrder: sortBy === 'contactPerson' ? sortOrder : undefined,
               },
               {
-                title: '电话',
+                title: t('posAdmin.suppliers.phone'),
                 dataIndex: 'phone',
                 sorter: true,
                 sortOrder: sortBy === 'phone' ? sortOrder : undefined,
@@ -215,7 +221,7 @@ export default function SupplierManagementPage() {
                 sortOrder: sortBy === 'email' ? sortOrder : undefined,
               },
               {
-                title: '备注',
+                title: t('column.remarks'),
                 dataIndex: 'remark',
                 sorter: true,
                 sortOrder: sortBy === 'remark' ? sortOrder : undefined,
@@ -226,7 +232,7 @@ export default function SupplierManagementPage() {
               const field = s?.field || s?.column?.dataIndex
               const order = s?.order as 'ascend' | 'descend' | undefined
               if (field && order) {
-                setSortBy(field)
+                setSortBy(String(field))
                 setSortOrder(order)
               } else {
                 setSortBy('name')
@@ -265,7 +271,7 @@ export default function SupplierManagementPage() {
 
       <Modal
         open={createVisible}
-        title="新建供应商"
+        title={t('posAdmin.suppliers.createTitle')}
         onCancel={() => {
           setCreateVisible(false)
           createForm.resetFields()
@@ -273,22 +279,22 @@ export default function SupplierManagementPage() {
         onOk={handleCreate}
       >
         <Form form={createForm} layout="vertical">
-          <Form.Item name="name" label="名称" rules={[{ required: true, message: '请输入名称' }, { max: 128 }]}>
+          <Form.Item name="name" label={t('posAdmin.suppliers.name')} rules={[{ required: true, message: t('posAdmin.suppliers.nameRequired', '请输入名称') }, { max: 128 }]}>
             <Input />
           </Form.Item>
-          <Form.Item name="status" label="启用" valuePropName="checked" initialValue={true}>
+          <Form.Item name="status" label={t('common.active')} valuePropName="checked" initialValue={true}>
             <Switch />
           </Form.Item>
-          <Form.Item name="contactPerson" label="联系人" rules={[{ max: 64 }]}>
+          <Form.Item name="contactPerson" label={t('posAdmin.suppliers.contactPerson')} rules={[{ max: 64 }]}>
             <Input />
           </Form.Item>
-          <Form.Item name="phone" label="电话" rules={[{ max: 32 }]}>
+          <Form.Item name="phone" label={t('posAdmin.suppliers.phone')} rules={[{ max: 32 }]}>
             <Input />
           </Form.Item>
           <Form.Item name="email" label="Email" rules={[{ type: 'email' }, { max: 128 }]}>
             <Input />
           </Form.Item>
-          <Form.Item name="remark" label="备注" rules={[{ max: 256 }]}>
+          <Form.Item name="remark" label={t('column.remarks')} rules={[{ max: 256 }]}>
             <Input />
           </Form.Item>
         </Form>

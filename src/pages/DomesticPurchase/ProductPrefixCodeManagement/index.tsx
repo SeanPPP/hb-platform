@@ -24,6 +24,7 @@ import {
 import type { ColumnsType, TablePaginationConfig } from 'antd/es/table'
 import type { SorterResult } from 'antd/es/table/interface'
 import { useEffect, useMemo, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import PageContainer from '../../../components/PageContainer'
 import { getActiveChinaSuppliers } from '../../../services/chinaSupplierService'
 import {
@@ -54,10 +55,10 @@ interface ExpandedProductState {
   pageSize: number
 }
 
-const statusFilterOptions = [
-  { label: '全部状态', value: 'all' },
-  { label: '启用', value: 'true' },
-  { label: '禁用', value: 'false' },
+const getStatusFilterOptions = (t: ReturnType<typeof useTranslation>['t']) => [
+  { label: t('productImport.allStatus', '全部状态'), value: 'all' },
+  { label: t('common.enable', '启用'), value: 'true' },
+  { label: t('chinaSuppliers.disableStatus', '禁用'), value: 'false' },
 ]
 
 function formatDateTime(value?: string) {
@@ -82,6 +83,7 @@ function formatPrice(value?: number) {
 }
 
 export default function ProductPrefixCodeManagementPage() {
+  const { t } = useTranslation()
   const [createForm] = Form.useForm<SavePrefixCodePayload>()
   const [editForm] = Form.useForm<SavePrefixCodePayload>()
   const [loading, setLoading] = useState(false)
@@ -99,6 +101,7 @@ export default function ProductPrefixCodeManagementPage() {
   const [editingKey, setEditingKey] = useState('')
   const [sortField, setSortField] = useState<string | undefined>(undefined)
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc' | undefined>(undefined)
+  const statusFilterOptions = getStatusFilterOptions(t)
 
   const loadSuppliers = async () => {
     setSupplierLoading(true)
@@ -112,7 +115,7 @@ export default function ProductPrefixCodeManagementPage() {
       )
     } catch (error) {
       console.error(error)
-      message.error(error instanceof Error ? error.message : '加载供应商列表失败')
+      message.error(error instanceof Error ? error.message : t('productCreation.loadSupplierListFailed', '加载供应商列表失败'))
     } finally {
       setSupplierLoading(false)
     }
@@ -144,7 +147,7 @@ export default function ProductPrefixCodeManagementPage() {
       setSortDirection(nextSortDirection)
     } catch (error) {
       console.error(error)
-      message.error(error instanceof Error ? error.message : '加载前缀列表失败')
+      message.error(error instanceof Error ? error.message : t('productCreation.loadPrefixListFailed', '加载前缀列表失败'))
     } finally {
       setLoading(false)
     }
@@ -194,7 +197,7 @@ export default function ProductPrefixCodeManagementPage() {
           pageSize: current[prefixCode]?.pageSize ?? nextPageSize,
         },
       }))
-      message.error(error instanceof Error ? error.message : '加载关联商品失败')
+      message.error(error instanceof Error ? error.message : t('productCreation.loadRelatedProductsFailed', '加载关联商品失败'))
     }
   }
 
@@ -208,7 +211,7 @@ export default function ProductPrefixCodeManagementPage() {
       const values = await createForm.validateFields()
       setSubmitting(true)
       await createPrefixCode(values)
-      message.success('新增前缀成功')
+      message.success(t('productCreation.addPrefixSuccess', '新增前缀成功'))
       createForm.resetFields()
       createForm.setFieldValue('isActive', true)
       void loadList(1, pageSize)
@@ -217,7 +220,7 @@ export default function ProductPrefixCodeManagementPage() {
         return
       }
       console.error(error)
-      message.error(error instanceof Error ? error.message : '新增前缀失败')
+      message.error(error instanceof Error ? error.message : t('productCreation.addPrefixFailed', '新增前缀失败'))
     } finally {
       setSubmitting(false)
     }
@@ -247,7 +250,7 @@ export default function ProductPrefixCodeManagementPage() {
       const values = await editForm.validateFields()
       setSubmitting(true)
       await updatePrefixCode(editingKey, values)
-      message.success('更新前缀成功')
+      message.success(t('productCreation.updatePrefixSuccess', '更新前缀成功'))
       setEditingKey('')
       editForm.resetFields()
       void loadList(page, pageSize)
@@ -256,7 +259,7 @@ export default function ProductPrefixCodeManagementPage() {
         return
       }
       console.error(error)
-      message.error(error instanceof Error ? error.message : '更新前缀失败')
+      message.error(error instanceof Error ? error.message : t('productCreation.updatePrefixFailed', '更新前缀失败'))
     } finally {
       setSubmitting(false)
     }
@@ -265,11 +268,11 @@ export default function ProductPrefixCodeManagementPage() {
   const handleDelete = async (prefixCode: string) => {
     try {
       await deletePrefixCode(prefixCode)
-      message.success('删除前缀成功')
+      message.success(t('productCreation.deletePrefixSuccess', '删除前缀成功'))
       void loadList(page, pageSize)
     } catch (error) {
       console.error(error)
-      message.error(error instanceof Error ? error.message : '删除前缀失败')
+      message.error(error instanceof Error ? error.message : t('productCreation.deletePrefixFailed', '删除前缀失败'))
     }
   }
 
@@ -295,49 +298,49 @@ export default function ProductPrefixCodeManagementPage() {
 
   const productColumns: ColumnsType<PrefixCodeProductItem> = [
     {
-      title: '货号',
+      title: t('productImport.hbProductNoCol', '货号'),
       dataIndex: 'hbProductNo',
       width: 140,
       render: (value?: string) => value || '--',
     },
     {
-      title: '商品名称',
+      title: t('domesticProducts.productName', '商品名称'),
       dataIndex: 'productName',
       width: 220,
       ellipsis: true,
       render: (value?: string) => value || '--',
     },
     {
-      title: '条码',
+      title: t('domesticProducts.barcode', '条码'),
       dataIndex: 'barcode',
       width: 160,
       render: (value?: string) => value || '--',
     },
     {
-      title: '规格',
+      title: t('domesticProducts.specification', '规格'),
       dataIndex: 'productSpecification',
       width: 180,
       ellipsis: true,
       render: (value?: string) => value || '--',
     },
     {
-      title: '类型',
+      title: t('productCreation.type', '类型'),
       dataIndex: 'productType',
       width: 120,
       render: (value: ProductType) => ProductTypeLabels[value] || '--',
     },
     {
-      title: '国内价',
+      title: t('domesticProducts.domesticPrice', '国内价'),
       dataIndex: 'domesticPrice',
       width: 100,
       render: (value?: number) => formatPrice(value),
     },
     {
-      title: '状态',
+      title: t('domesticProducts.status', '状态'),
       dataIndex: 'isActive',
       width: 100,
       render: (value: boolean) => (
-        <Tag color={value ? 'success' : 'default'}>{value ? '启用' : '停用'}</Tag>
+        <Tag color={value ? 'success' : 'default'}>{value ? t('common.enable', '启用') : t('common.disable', '停用')}</Tag>
       ),
     },
   ]
@@ -362,7 +365,7 @@ export default function ProductPrefixCodeManagementPage() {
               total: expanded.total,
               showSizeChanger: true,
               showQuickJumper: true,
-              showTotal: (currentTotal) => `共 ${currentTotal} 条`,
+              showTotal: (total) => t('common.totalCount', '共 {{count}} 条', { count: total }),
               onChange: (nextPage, nextPageSize) => {
                 void loadProducts(record.prefixCode, nextPage, nextPageSize)
               },
@@ -382,7 +385,7 @@ export default function ProductPrefixCodeManagementPage() {
         render: (_v, _r, index) => (page - 1) * pageSize + index + 1,
       },
       {
-        title: '前缀名',
+        title: t('prefixCode.prefixName', '前缀名'),
         dataIndex: 'prefixName',
         width: 100,
         sorter: true,
@@ -399,8 +402,8 @@ export default function ProductPrefixCodeManagementPage() {
                 name="prefixName"
                 style={{ marginBottom: 0 }}
                 rules={[
-                  { required: true, message: '请输入前缀名' },
-                  { pattern: /^[A-Za-z0-9]+$/, message: '前缀名只能包含字母和数字' },
+                  { required: true, message: t('prefixCode.enterPrefixName', '请输入前缀名') },
+                  { pattern: /^[A-Za-z0-9]+$/, message: t('prefixCode.prefixNameAlphaNum', '前缀名只能包含字母和数字') },
                 ]}
               >
                 <Input maxLength={10} />
@@ -412,7 +415,7 @@ export default function ProductPrefixCodeManagementPage() {
         },
       },
       {
-        title: '前缀说明',
+        title: t('prefixCode.prefixDescription', '前缀说明'),
         dataIndex: 'prefixDescription',
         width: 120,
         ellipsis: true,
@@ -429,7 +432,7 @@ export default function ProductPrefixCodeManagementPage() {
         },
       },
       {
-        title: '供应商',
+        title: t('domesticProducts.supplier', '供应商'),
         dataIndex: 'supplierName',
         width: 120,
         sorter: true,
@@ -442,7 +445,7 @@ export default function ProductPrefixCodeManagementPage() {
         render: (_value: string | undefined, record) => record.supplierName || record.supplierCode,
       },
       {
-        title: '供应商代码',
+        title: t('chinaSuppliers.supplierCode', '供应商代码'),
         dataIndex: 'supplierCode',
         width: 100,
         sorter: true,
@@ -454,29 +457,29 @@ export default function ProductPrefixCodeManagementPage() {
             : null,
       },
       {
-        title: '状态',
+        title: t('domesticProducts.status', '状态'),
         dataIndex: 'isActive',
         width: 100,
         render: (value: boolean, record) => {
           if (editingKey === record.prefixCode) {
             return (
               <Form.Item name="isActive" valuePropName="checked" style={{ marginBottom: 0 }}>
-                <Switch checkedChildren="启用" unCheckedChildren="停用" />
+                <Switch checkedChildren={t('common.enable', '启用')} unCheckedChildren={t('common.disable', '停用')} />
               </Form.Item>
             )
           }
 
-          return <Switch checked={value} disabled checkedChildren="启用" unCheckedChildren="停用" />
+          return <Switch checked={value} disabled checkedChildren={t('common.enable', '启用')} unCheckedChildren={t('common.disable', '停用')} />
         },
       },
       {
-        title: '创建时间',
+        title: t('chinaSuppliers.createdAt', '创建时间'),
         dataIndex: 'createdAt',
         width: 120,
         render: (value?: string) => formatDateTime(value),
       },
       {
-        title: '操作',
+        title: t('common.action', '操作'),
         key: 'action',
         width: 150,
         fixed: 'right',
@@ -485,10 +488,10 @@ export default function ProductPrefixCodeManagementPage() {
             return (
               <Space size={0}>
                 <Button type="link" onClick={() => void handleEdit()} loading={submitting}>
-                  保存
+                  {t('common.save', '保存')}
                 </Button>
                 <Button type="link" onClick={cancelEdit}>
-                  取消
+                  {t('common.cancel', '取消')}
                 </Button>
               </Space>
             )
@@ -496,26 +499,26 @@ export default function ProductPrefixCodeManagementPage() {
 
           return (
             <Space size={0}>
-              <Tooltip title="查看关联商品">
+              <Tooltip title={t('productCreation.viewRelatedProducts', '查看关联商品')}>
                 <Button
                   type="link"
                   icon={<ExpandOutlined />}
                   onClick={() => toggleExpand(record.prefixCode, !expandedProducts[record.prefixCode]?.expanded)}
                 >
-                  商品
+                  {t('domesticProducts.product', '商品')}
                 </Button>
               </Tooltip>
               <Button type="link" icon={<EditOutlined />} onClick={() => startEdit(record)}>
-                编辑
+                {t('common.edit', '编辑')}
               </Button>
               <Popconfirm
-                title="确认删除该前缀？"
-                description="删除后不可恢复。"
+                title={t('prefixCode.confirmDeletePrefix', '确认删除该前缀？')}
+                description={t('common.irreversible', '删除后不可恢复。')}
                 onConfirm={() => void handleDelete(record.prefixCode)}
                 disabled={!record.prefixCode}
               >
                 <Button type="link" danger icon={<DeleteOutlined />} disabled={!record.prefixCode}>
-                  删除
+                  {t('common.delete', '删除')}
                 </Button>
               </Popconfirm>
             </Space>
@@ -528,8 +531,8 @@ export default function ProductPrefixCodeManagementPage() {
 
   return (
     <PageContainer
-      title="前缀管理"
-      subtitle="管理前缀信息并查看该前缀关联的国内商品，保留旧系统页顶新增、行内编辑和展开商品交互。"
+      title={t('prefixCode.prefixManagement', '前缀管理')}
+      subtitle={t('prefixCode.prefixManagementSubtitle', '管理前缀信息并查看该前缀关联的国内商品，保留旧系统页顶新增、行内编辑和展开商品交互。')}
     >
       <Card style={{ marginBottom: 16 }}>
         <Form
@@ -539,12 +542,12 @@ export default function ProductPrefixCodeManagementPage() {
         >
           <Form.Item
             name="supplierCode"
-            rules={[{ required: true, message: '请选择供应商' }]}
+            rules={[{ required: true, message: t('domesticProducts.selectSupplier', '请选择供应商') }]}
           >
             <Select
               showSearch
               allowClear
-              placeholder="选择供应商"
+              placeholder={t('domesticProducts.selectSupplier', '选择供应商')}
               options={suppliers}
               loading={supplierLoading}
               style={{ width: 240 }}
@@ -554,21 +557,21 @@ export default function ProductPrefixCodeManagementPage() {
           <Form.Item
             name="prefixName"
             rules={[
-              { required: true, message: '请输入前缀名' },
-              { pattern: /^[A-Za-z0-9]+$/, message: '前缀名只能包含字母和数字' },
+              { required: true, message: t('prefixCode.enterPrefixName', '请输入前缀名') },
+              { pattern: /^[A-Za-z0-9]+$/, message: t('prefixCode.prefixNameAlphaNum', '前缀名只能包含字母和数字') },
             ]}
           >
-            <Input placeholder="前缀名" maxLength={10} style={{ width: 140 }} />
+            <Input placeholder={t('prefixCode.prefixName', '前缀名')} maxLength={10} style={{ width: 140 }} />
           </Form.Item>
           <Form.Item name="prefixDescription">
-            <Input placeholder="前缀说明" style={{ width: 220 }} />
+            <Input placeholder={t('prefixCode.prefixDescription', '前缀说明')} style={{ width: 220 }} />
           </Form.Item>
           <Form.Item name="isActive" valuePropName="checked">
-            <Switch checkedChildren="启用" unCheckedChildren="停用" />
+            <Switch checkedChildren={t('common.enable', '启用')} unCheckedChildren={t('common.disable', '停用')} />
           </Form.Item>
           <Form.Item>
             <Button type="primary" icon={<PlusOutlined />} loading={submitting} onClick={() => void handleAdd()}>
-              新增前缀
+              {t('prefixCode.addPrefix', '新增前缀')}
             </Button>
           </Form.Item>
         </Form>
@@ -579,7 +582,7 @@ export default function ProductPrefixCodeManagementPage() {
           <Select
             showSearch
             allowClear
-            placeholder="筛选供应商"
+            placeholder={t('productCreation.filterSupplier', '筛选供应商')}
             value={supplierCode}
             onChange={(value) => setSupplierCode(value)}
             options={suppliers}
@@ -594,7 +597,7 @@ export default function ProductPrefixCodeManagementPage() {
             style={{ width: 140 }}
           />
           <Input
-            placeholder="搜索前缀名 / 说明 / 供应商名称 / 供应商代码 / 店铺号"
+            placeholder={t('prefixCode.searchPlaceholder', '搜索前缀名 / 说明 / 供应商名称 / 供应商代码 / 店铺号')}
             prefix={<SearchOutlined />}
             value={search}
             onChange={(event) => setSearch(event.target.value)}
@@ -602,10 +605,10 @@ export default function ProductPrefixCodeManagementPage() {
             style={{ width: 240 }}
           />
           <Button type="primary" onClick={() => void loadList(1, pageSize)}>
-            查询
+            {t('common.query', '查询')}
           </Button>
           <Button icon={<ReloadOutlined />} onClick={() => void loadList(page, pageSize)}>
-            刷新
+            {t('common.refresh', '刷新')}
           </Button>
         </Space>
 

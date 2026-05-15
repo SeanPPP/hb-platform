@@ -1,6 +1,7 @@
 import { Button, Modal, Radio, Space, Table } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { useState } from 'react'
+import { useTranslation } from 'react-i18next'
 
 interface ConflictItem {
   productCode: string
@@ -15,14 +16,15 @@ interface ConflictResolutionDialogProps {
 }
 
 export function ConflictResolutionDialog({ open, conflicts, onClose, onConfirm }: ConflictResolutionDialogProps) {
+  const { t } = useTranslation()
   const [globalStrategy, setGlobalStrategy] = useState<'override' | 'increase' | 'perItem'>('increase')
   const [perItemStrategy, setPerItemStrategy] = useState<Record<string, 'override' | 'increase'>>({})
 
   const columns: ColumnsType<ConflictItem> = [
-    { title: '货号', dataIndex: 'productCode', key: 'productCode', width: 150 },
-    { title: '已有件数', dataIndex: 'existingPieces', key: 'existingPieces', width: 100, render: (text) => text ?? '-' },
+    { title: t('productImport.hbProductNoCol', '货号'), dataIndex: 'productCode', key: 'productCode', width: 150 },
+    { title: t('productImport.existingQuantity', '已有件数'), dataIndex: 'existingPieces', key: 'existingPieces', width: 100, render: (text) => text ?? '-' },
     {
-      title: '处理策略',
+      title: t('productImport.resolutionStrategy', '处理策略'),
       key: 'strategy',
       render: (_, record) => (
         <Radio.Group
@@ -30,8 +32,8 @@ export function ConflictResolutionDialog({ open, conflicts, onClose, onConfirm }
           onChange={(e) => setPerItemStrategy((prev) => ({ ...prev, [record.productCode]: e.target.value }))}
           disabled={globalStrategy !== 'perItem'}
         >
-          <Radio value="increase">增加数量</Radio>
-          <Radio value="override">覆盖</Radio>
+          <Radio value="increase">{t('productImport.increaseQuantity', '增加数量')}</Radio>
+          <Radio value="override">{t('productImport.override', '覆盖')}</Radio>
         </Radio.Group>
       ),
     },
@@ -46,12 +48,12 @@ export function ConflictResolutionDialog({ open, conflicts, onClose, onConfirm }
   }
 
   return (
-    <Modal title="货柜冲突处理" open={open} onCancel={onClose} width={700} footer={<Space><Button onClick={onClose}>取消</Button><Button type="primary" onClick={handleConfirm}>确认</Button></Space>}>
+    <Modal title={t("productImport.containerConflictResolution", "货柜冲突处理")} open={open} onCancel={onClose} width={700} footer={<Space><Button onClick={onClose}>{t('common.cancel', '取消')}</Button><Button type="primary" onClick={handleConfirm}>{t('common.confirm', '确认')}</Button></Space>}>
       <div style={{ marginBottom: 16 }}>
         <Radio.Group value={globalStrategy} onChange={(e) => setGlobalStrategy(e.target.value)}>
-          <Radio value="increase">全部增加数量</Radio>
-          <Radio value="override">全部覆盖</Radio>
-          <Radio value="perItem">逐项选择</Radio>
+          <Radio value="increase">{t('productImport.increaseAll', '全部增加数量')}</Radio>
+          <Radio value="override">{t('productImport.overrideAll', '全部覆盖')}</Radio>
+          <Radio value="perItem">{t('productImport.perItemSelect', '逐项选择')}</Radio>
         </Radio.Group>
       </div>
       <Table columns={columns} dataSource={conflicts} rowKey="productCode" size="small" pagination={false} />

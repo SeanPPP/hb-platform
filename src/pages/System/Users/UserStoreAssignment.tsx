@@ -2,6 +2,7 @@ import { Modal, Spin, Transfer, message } from 'antd'
 import type { TransferDirection } from 'antd/es/transfer'
 import type { Key } from 'react'
 import { useEffect, useMemo, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { getStores } from '../../../services/storeService'
 import { assignStoresToUser, getUserStores } from '../../../services/userService'
 import type { StoreDto } from '../../../types/store'
@@ -15,6 +16,7 @@ interface UserStoreAssignmentProps {
 }
 
 export default function UserStoreAssignment({ open, user, onClose, onSuccess }: UserStoreAssignmentProps) {
+  const { t } = useTranslation()
   const [loading, setLoading] = useState(false)
   const [allStores, setAllStores] = useState<StoreDto[]>([])
   const [targetKeys, setTargetKeys] = useState<string[]>([])
@@ -50,7 +52,7 @@ export default function UserStoreAssignment({ open, user, onClose, onSuccess }: 
       )
     } catch (error) {
       console.error(error)
-      message.error('加载分店分配数据失败')
+      message.error(t('system.users.loadStoreDataFailed'))
     } finally {
       setLoading(false)
     }
@@ -79,12 +81,12 @@ export default function UserStoreAssignment({ open, user, onClose, onSuccess }: 
           isPrimary: false,
         })),
       )
-      message.success('分店分配成功')
+      message.success(t('system.users.storeAssignSuccess'))
       onSuccess?.()
       onClose()
     } catch (error) {
       console.error(error)
-      message.error('分店分配失败')
+      message.error(t('system.users.storeAssignFailed'))
     } finally {
       setLoading(false)
     }
@@ -104,7 +106,7 @@ export default function UserStoreAssignment({ open, user, onClose, onSuccess }: 
 
   return (
     <Modal
-      title={user ? `为用户 "${user.username}" 分配分店` : '分配分店'}
+      title={user ? t('system.users.assignStoreTitle', { name: user.username }) : t('system.users.assignStoreTitleShort')}
       open={open}
       onOk={() => void handleSave()}
       onCancel={onClose}
@@ -122,7 +124,7 @@ export default function UserStoreAssignment({ open, user, onClose, onSuccess }: 
           targetKeys={targetKeys}
           onChange={handleChange}
           render={(item) => item.title}
-          titles={['可选分店', '已分配分店']}
+          titles={[t('system.users.availableStores'), t('system.users.assignedStoresLabel')]}
           listStyle={{ width: 320, height: 420 }}
           showSearch
         />

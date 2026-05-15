@@ -17,6 +17,7 @@ import {
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { useEffect, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { HasPermission } from '../../../components/Access'
 import PageContainer from '../../../components/PageContainer'
 import { P } from '../../../types/permissions'
@@ -25,6 +26,7 @@ import type { RoleDetailDto, RoleDto, UpdateRoleDto } from '../../../types/role'
 import RoleUserManagement from './RoleUserManagement'
 
 export default function SystemRolesPage() {
+  const { t } = useTranslation()
   const [loading, setLoading] = useState(false)
   const [keyword, setKeyword] = useState('')
   const [data, setData] = useState<RoleDto[]>([])
@@ -57,7 +59,7 @@ export default function SystemRolesPage() {
       setPageSize(result.pageSize)
     } catch (error) {
       console.error(error)
-      message.error('加载角色列表失败')
+      message.error(t('system.roles.loadListFailed'))
     } finally {
       setLoading(false)
     }
@@ -82,7 +84,7 @@ export default function SystemRolesPage() {
       setDetailRole(detail)
     } catch (error) {
       console.error(error)
-      message.error('加载角色详情失败')
+      message.error(t('system.roles.loadDetailFailed'))
       setDetailOpen(false)
     } finally {
       setDetailLoading(false)
@@ -104,7 +106,7 @@ export default function SystemRolesPage() {
       })
     } catch (error) {
       console.error(error)
-      message.error('加载角色编辑数据失败')
+      message.error(t('system.roles.loadEditFailed'))
       setEditOpen(false)
     } finally {
       setEditLoading(false)
@@ -117,7 +119,7 @@ export default function SystemRolesPage() {
       const values = await form.validateFields()
       setEditLoading(true)
       const updated = await updateRole(editingRole.roleGUID, values)
-      message.success('角色信息已更新')
+      message.success(t('system.roles.updateSuccess'))
       setEditOpen(false)
       setEditingRole(null)
       form.resetFields()
@@ -128,36 +130,36 @@ export default function SystemRolesPage() {
     } catch (error) {
       if (typeof error === 'object' && error !== null && 'errorFields' in error) return
       console.error(error)
-      message.error('更新角色失败')
+      message.error(t('system.roles.updateFailed'))
     } finally {
       setEditLoading(false)
     }
   }
 
   const columns: ColumnsType<RoleDto> = [
-    { title: '角色名称', dataIndex: 'roleName', width: 220 },
-    { title: '描述', dataIndex: 'description', render: (value) => value || '--' },
+    { title: t('system.roles.roleName'), dataIndex: 'roleName', width: 220 },
+    { title: t('column.description'), dataIndex: 'description', render: (value) => value || '--' },
     {
-      title: '状态',
+      title: t('column.status'),
       dataIndex: 'isActive',
       width: 100,
       render: (value: boolean) => (
-        <Tag color={value ? 'success' : 'default'}>{value ? '启用' : '停用'}</Tag>
+        <Tag color={value ? 'success' : 'default'}>{value ? t('common.active') : t('common.inactive')}</Tag>
       ),
     },
-    { title: '关联用户数', dataIndex: 'userCount', width: 140 },
+    { title: t('system.roles.linkedUserCount'), dataIndex: 'userCount', width: 140 },
     {
-      title: '操作',
+      title: t('column.action'),
       key: 'action',
       width: 160,
       render: (_, record) => (
         <Space size={0}>
           <Button type="link" icon={<EyeOutlined />} onClick={() => void handleViewDetail(record)}>
-            详情
+            {t('common.view')}
           </Button>
           <HasPermission code={P.Roles.Edit}>
             <Button type="link" icon={<EditOutlined />} onClick={() => void handleEdit(record)}>
-              编辑
+              {t('common.edit')}
             </Button>
           </HasPermission>
         </Space>
@@ -166,11 +168,11 @@ export default function SystemRolesPage() {
   ]
 
   return (
-    <PageContainer title="角色管理" subtitle="管理角色基本信息和关联用户。">
+    <PageContainer title={t('system.roles.pageTitle')} subtitle={t('system.roles.pageSubtitle')}>
       <Card>
         <Space wrap style={{ marginBottom: 16 }}>
           <Input
-            placeholder="搜索角色名称"
+            placeholder={t('system.roles.searchPlaceholder')}
             value={keyword}
             onChange={(event) => setKeyword(event.target.value)}
             prefix={<SearchOutlined />}
@@ -178,10 +180,10 @@ export default function SystemRolesPage() {
             allowClear
           />
           <Button type="primary" onClick={() => void loadData(1, pageSize)}>
-            查询
+            {t('common.query')}
           </Button>
           <Button icon={<ReloadOutlined />} onClick={() => void loadData(page, pageSize)}>
-            刷新
+            {t('common.refresh')}
           </Button>
         </Space>
 
@@ -203,7 +205,7 @@ export default function SystemRolesPage() {
       </Card>
 
       <Drawer
-        title={detailRole ? `角色详情 - ${detailRole.roleName}` : '角色详情'}
+        title={detailRole ? t('system.roles.detailTitle', { name: detailRole.roleName }) : t('system.roles.detailTitleShort')}
         width={820}
         open={detailOpen}
         onClose={() => {
@@ -215,44 +217,44 @@ export default function SystemRolesPage() {
           detailRole ? (
             <HasPermission code={P.Roles.ManageUsers}>
               <Button type="primary" onClick={() => setRoleUserOpen(true)}>
-                管理用户
+                {t('system.roles.manageUsers')}
               </Button>
             </HasPermission>
           ) : null
         }
       >
         {detailLoading ? (
-          <Typography.Text type="secondary">正在加载角色详情...</Typography.Text>
+          <Typography.Text type="secondary">{t('system.roles.loadingDetail')}</Typography.Text>
         ) : !detailRole ? (
-          <Typography.Text type="danger">未找到角色信息</Typography.Text>
+          <Typography.Text type="danger">{t('system.roles.notFound')}</Typography.Text>
         ) : (
           <Space direction="vertical" size={16} style={{ width: '100%' }}>
             <Descriptions bordered column={2}>
-              <Descriptions.Item label="角色名称">{detailRole.roleName}</Descriptions.Item>
-              <Descriptions.Item label="状态">
+              <Descriptions.Item label={t('system.roles.roleName')}>{detailRole.roleName}</Descriptions.Item>
+              <Descriptions.Item label={t('column.status')}>
                 <Tag color={detailRole.isActive ? 'success' : 'default'}>
-                  {detailRole.isActive ? '启用' : '停用'}
+                  {detailRole.isActive ? t('common.active') : t('common.inactive')}
                 </Tag>
               </Descriptions.Item>
-              <Descriptions.Item label="描述" span={2}>
+              <Descriptions.Item label={t('column.description')} span={2}>
                 {detailRole.description || '--'}
               </Descriptions.Item>
-              <Descriptions.Item label="关联用户数">{detailRole.userCount}</Descriptions.Item>
-              <Descriptions.Item label="更新时间">{detailRole.updatedAt}</Descriptions.Item>
+              <Descriptions.Item label={t('system.roles.linkedUserCount')}>{detailRole.userCount}</Descriptions.Item>
+              <Descriptions.Item label={t('system.users.updatedAt')}>{detailRole.updatedAt}</Descriptions.Item>
             </Descriptions>
 
-            <Card title="权限" size="small">
+            <Card title={t('system.roles.permissions')} size="small">
               <Space wrap>
                 {detailRole.permissions?.length
                   ? detailRole.permissions.map((item) => <Tag key={item}>{item}</Tag>)
-                  : '暂无权限'}
+                  : t('system.roles.noPermissions')}
               </Space>
             </Card>
 
-            <Card title="关联用户" size="small">
+            <Card title={t('system.roles.linkedUsers')} size="small">
               <List
                 dataSource={detailRole.users ?? []}
-                locale={{ emptyText: '暂无关联用户' }}
+                locale={{ emptyText: t('system.roles.noLinkedUsers') }}
                 renderItem={(item) => (
                   <List.Item>
                     <Space>
@@ -268,7 +270,7 @@ export default function SystemRolesPage() {
       </Drawer>
 
       <Modal
-        title={editingRole ? `编辑角色 - ${editingRole.roleName}` : '编辑角色'}
+        title={editingRole ? t('system.roles.editTitle', { name: editingRole.roleName }) : t('system.roles.editTitleShort')}
         open={editOpen}
         onCancel={() => {
           setEditOpen(false)
@@ -281,14 +283,14 @@ export default function SystemRolesPage() {
         destroyOnHidden
       >
         <Form form={form} layout="vertical">
-          <Form.Item label="角色名称" name="roleName" rules={[{ required: true, message: '请输入角色名称' }]}>
+          <Form.Item label={t('system.roles.roleName')} name="roleName" rules={[{ required: true, message: t('system.roles.roleNameRequired') }]}>
             <Input />
           </Form.Item>
-          <Form.Item label="描述" name="description">
+          <Form.Item label={t('column.description')} name="description">
             <Input.TextArea rows={4} />
           </Form.Item>
-          <Form.Item label="状态" name="isActive" valuePropName="checked">
-            <Switch checkedChildren="启用" unCheckedChildren="停用" />
+          <Form.Item label={t('column.status')} name="isActive" valuePropName="checked">
+            <Switch checkedChildren={t('common.active')} unCheckedChildren={t('common.inactive')} />
           </Form.Item>
         </Form>
       </Modal>

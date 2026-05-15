@@ -1,4 +1,4 @@
-import type { BatchDetail, BatchInfo, BatchListParams, CreateBatchRequest, PrefixCodeListParams, PrefixCodeResponse, UpdatePriceItem } from '../types/domesticProductCreation'
+import type { BatchDetail, BatchInfo, BatchListParams, BatchProductItem, CreateBatchRequest, PrefixCodeListParams, PrefixCodeResponse, UpdatePriceItem } from '../types/domesticProductCreation'
 import request from '../utils/request'
 
 const API_BASE = '/api/v1/domestic-product-creation'
@@ -68,7 +68,7 @@ function transformBatchProductItem(raw: Record<string, unknown>): BatchProductIt
   return {
     itemNumber: String(raw.productCode ?? raw.itemNumber ?? ''),
     hbProductNo: String(raw.hbProductNo ?? raw.hBProductNo ?? ''),
-    barcode: raw.barcode ? String(raw.barcode) : undefined,
+    barcode: raw.barcode ? String(raw.barcode) : '',
     productName: String(raw.productName ?? ''),
     productType: Number(raw.productType ?? 0),
     privateLabelPrice: raw.privateLabelPrice != null ? Number(raw.privateLabelPrice) : undefined,

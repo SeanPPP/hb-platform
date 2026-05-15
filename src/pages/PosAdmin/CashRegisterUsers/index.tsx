@@ -16,6 +16,7 @@ import {
 import type { ColumnsType } from 'antd/es/table'
 import dayjs from 'dayjs'
 import { useEffect, useRef, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import BarcodePreview from '../../../components/BarcodePreview'
 import {
   batchDeleteCashRegisterUsers,
@@ -43,6 +44,7 @@ function generateBarcode13(): string {
 }
 
 export default function CashRegisterUsersPage() {
+  const { t } = useTranslation()
   const [loading, setLoading] = useState(false)
   const [data, setData] = useState<CashRegisterUserListDto[]>([])
   const [total, setTotal] = useState(0)
@@ -79,7 +81,7 @@ export default function CashRegisterUsersPage() {
       setData(result?.items ?? [])
       setTotal(result?.total ?? 0)
     } catch {
-      message.error('加载失败')
+      message.error(t('message.loadFailed'))
     } finally {
       setLoading(false)
       inFlightRef.current = false
@@ -102,11 +104,11 @@ export default function CashRegisterUsersPage() {
         userBarcode: values.userBarcode, loginRole: values.loginRole,
         remark: values.remark ?? '', status: values.status ?? true,
       })
-      message.success('创建成功')
+      message.success(t('message.createSuccess'))
       setCreateVisible(false)
       createForm.resetFields()
       await loadData()
-    } catch { message.error('创建失败') }
+    } catch { message.error(t('message.createFailed')) }
   }
 
   const handleEdit = (record: CashRegisterUserListDto) => {
@@ -128,43 +130,43 @@ export default function CashRegisterUsersPage() {
         userBarcode: values.userBarcode, loginRole: values.loginRole,
         remark: values.remark ?? '', status: values.status,
       })
-      message.success('更新成功')
+      message.success(t('message.updateSuccess'))
       setEditVisible(false)
       editForm.resetFields()
       setEditingRecord(null)
       await loadData()
-    } catch { message.error('更新失败') }
+    } catch { message.error(t('message.updateFailed')) }
   }
 
   const handleDelete = async (record: CashRegisterUserListDto) => {
     Modal.confirm({
-      title: '确认删除',
-      content: `确定要删除 ${record.operatorUser || record.userBarcode} 吗？`,
-      okText: '删除', cancelText: '取消', okButtonProps: { danger: true },
+      title: t('message.confirmDelete'),
+      content: t('posAdmin.cashierUsers.confirmDeleteUser', { name: record.operatorUser || record.userBarcode }),
+      okText: t('common.delete'), cancelText: t('common.cancel'), okButtonProps: { danger: true },
       onOk: async () => {
         try {
           await deleteCashRegisterUser(record.hGuid)
-          message.success('删除成功')
+          message.success(t('message.deleteSuccess'))
           await loadData()
-        } catch { message.error('删除失败') }
+        } catch { message.error(t('message.deleteFailed')) }
       },
     })
   }
 
   const handleBatchDelete = async () => {
-    if (!selectedRows.length) { message.warning('请选择要删除的记录'); return }
+    if (!selectedRows.length) { message.warning(t('message.pleaseSelect')); return }
     Modal.confirm({
-      title: '确认批量删除',
-      content: `确定要删除选中的 ${selectedRows.length} 条记录吗？`,
-      okText: '删除', cancelText: '取消', okButtonProps: { danger: true },
+      title: t('posAdmin.cashierUsers.confirmBatchDelete', '确认批量删除'),
+      content: t('message.batchDeleteConfirm', { count: selectedRows.length }),
+      okText: t('common.delete'), cancelText: t('common.cancel'), okButtonProps: { danger: true },
       onOk: async () => {
         try {
           await batchDeleteCashRegisterUsers(selectedRows.map((r) => r.hGuid))
-          message.success('删除成功')
+          message.success(t('message.deleteSuccess'))
           setSelectedRowKeys([])
           setSelectedRows([])
           await loadData()
-        } catch { message.error('删除失败') }
+        } catch { message.error(t('message.deleteFailed')) }
       },
     })
   }
@@ -174,27 +176,27 @@ export default function CashRegisterUsersPage() {
       title: '#', key: 'rowNum', width: 60, align: 'center',
       render: (_, __, index) => (page - 1) * pageSize + index + 1,
     },
-    { title: '分店', dataIndex: 'storeName', sorter: (a, b) => (a.storeName || '').localeCompare(b.storeName || ''), render: (t: string) => <span style={{ color: getColorFromString(t) }}>{t}</span> },
-    { title: '操作员', dataIndex: 'operatorUser', sorter: (a, b) => (a.operatorUser || '').localeCompare(b.operatorUser || ''), render: (t: string) => <span style={{ color: getColorFromString(t) }}>{t}</span> },
-    { title: '条码', dataIndex: 'userBarcode', width: 250, render: (text: string) => text ? <BarcodePreview value={text} showCopy /> : null },
+    { title: t('posAdmin.cashierUsers.store'), dataIndex: 'storeName', sorter: (a, b) => (a.storeName || '').localeCompare(b.storeName || ''), render: (v: string) => <span style={{ color: getColorFromString(v) }}>{v}</span> },
+    { title: t('posAdmin.cashierUsers.operator'), dataIndex: 'operatorUser', sorter: (a, b) => (a.operatorUser || '').localeCompare(b.operatorUser || ''), render: (v: string) => <span style={{ color: getColorFromString(v) }}>{v}</span> },
+    { title: t('posAdmin.cashierUsers.barcode'), dataIndex: 'userBarcode', width: 250, render: (text: string) => text ? <BarcodePreview value={text} showCopy /> : null },
     {
-      title: '登录角色', dataIndex: 'loginRole',
+      title: t('posAdmin.cashierUsers.loginRole'), dataIndex: 'loginRole',
       render: (value: string) => {
-        const roleText = value === '1' ? '管理员' : value === '2' ? '收银员' : value
+        const roleText = value === '1' ? t('posAdmin.cashierUsers.admin') : value === '2' ? t('posAdmin.cashierUsers.cashier') : value
         const color = value === '1' ? '#1890ff' : value === '2' ? '#52c41a' : '#8c8c8c'
         return <span style={{ color }}>{roleText}</span>
       },
     },
-    { title: '打印次数', dataIndex: 'printCount', align: 'right' },
-    { title: '状态', dataIndex: 'status', render: (v: boolean) => v ? <Tag color="green">启用</Tag> : <Tag color="red">禁用</Tag> },
-    { title: '备注', dataIndex: 'remark', ellipsis: true },
-    { title: '创建时间', dataIndex: 'createDate', render: (v: string) => dayjs(v).format('YYYY-MM-DD HH:mm:ss') },
+    { title: t('posAdmin.cashierUsers.printCount', '打印次数'), dataIndex: 'printCount', align: 'right' },
+    { title: t('column.status'), dataIndex: 'status', render: (v: boolean) => v ? <Tag color="green">{t('common.active')}</Tag> : <Tag color="red">{t('common.inactive')}</Tag> },
+    { title: t('column.remarks'), dataIndex: 'remark', ellipsis: true },
+    { title: t('column.createTime'), dataIndex: 'createDate', render: (v: string) => dayjs(v).format('YYYY-MM-DD HH:mm:ss') },
     {
-      title: '操作', key: 'action', width: 150,
+      title: t('column.action'), key: 'action', width: 150,
       render: (_, record) => (
         <Space>
-          <Button type="link" size="small" onClick={() => handleEdit(record)}>编辑</Button>
-          <Button type="link" size="small" danger onClick={() => handleDelete(record)}>删除</Button>
+          <Button type="link" size="small" onClick={() => handleEdit(record)}>{t('common.edit')}</Button>
+          <Button type="link" size="small" danger onClick={() => handleDelete(record)}>{t('common.delete')}</Button>
         </Space>
       ),
     },
@@ -202,23 +204,23 @@ export default function CashRegisterUsersPage() {
 
   const renderFormFields = (formInstance: typeof createForm, barcodeVal?: string, isEdit?: boolean) => (
     <Form form={formInstance} layout="vertical">
-      <Form.Item name="storeCode" label="分店" rules={[{ required: true, message: '请选择分店' }]}>
-        <Select placeholder="选择分店" options={storeOptions} showSearch optionFilterProp="label" />
+      <Form.Item name="storeCode" label={t('posAdmin.cashierUsers.store')} rules={[{ required: true, message: t('form.pleaseSelectStore') }]}>
+        <Select placeholder={t('form.pleaseSelectStore')} options={storeOptions} showSearch optionFilterProp="label" />
       </Form.Item>
-      <Form.Item name="operatorUser" label="操作员" rules={[{ max: 100 }]}><Input placeholder="操作员名称" /></Form.Item>
-      <Form.Item label="条码" required>
+      <Form.Item name="operatorUser" label={t('posAdmin.cashierUsers.operator')} rules={[{ max: 100 }]}><Input placeholder={t('posAdmin.cashierUsers.operatorName')} /></Form.Item>
+      <Form.Item label={t('posAdmin.cashierUsers.barcode')} required>
         <Space.Compact style={{ width: '100%' }}>
-          <Form.Item name="userBarcode" rules={[{ required: true, message: '请输入条码', len: 13 }]} style={{ marginBottom: 0, flex: 1 }}><Input placeholder="13位条码" /></Form.Item>
+          <Form.Item name="userBarcode" rules={[{ required: true, message: t('posAdmin.cashierUsers.barcodeRequired', '请输入条码'), len: 13 }]} style={{ marginBottom: 0, flex: 1 }}><Input placeholder={t('posAdmin.cashierUsers.barcode13')} /></Form.Item>
           <Button icon={<CopyOutlined />} onClick={() => { const bc = formInstance.getFieldValue('userBarcode'); if (bc) copyTextToClipboard(bc) }} />
-          {isEdit && <Button onClick={() => formInstance.setFieldsValue({ userBarcode: generateBarcode13() })}>换码</Button>}
+          {isEdit && <Button onClick={() => formInstance.setFieldsValue({ userBarcode: generateBarcode13() })}>{t('posAdmin.cashierUsers.changeCode')}</Button>}
         </Space.Compact>
       </Form.Item>
       {barcodeVal && <div style={{ marginBottom: 16 }}><BarcodePreview value={barcodeVal} /></div>}
-      <Form.Item name="loginRole" label="登录角色" rules={[{ required: true, message: '请选择角色' }]}>
-        <Radio.Group options={[{ label: '管理员', value: '1' }, { label: '收银员', value: '2' }]} />
+      <Form.Item name="loginRole" label={t('posAdmin.cashierUsers.loginRole')} rules={[{ required: true, message: t('posAdmin.cashierUsers.roleRequired', '请选择角色') }]}>
+        <Radio.Group options={[{ label: t('posAdmin.cashierUsers.admin'), value: '1' }, { label: t('posAdmin.cashierUsers.cashier'), value: '2' }]} />
       </Form.Item>
-      <Form.Item name="remark" label="备注" rules={[{ max: 500 }]}><Input.TextArea placeholder="备注" rows={3} /></Form.Item>
-      <Form.Item name="status" label="状态" valuePropName="checked" initialValue={true}><Switch checkedChildren="启用" unCheckedChildren="禁用" /></Form.Item>
+      <Form.Item name="remark" label={t('column.remarks')} rules={[{ max: 500 }]}><Input.TextArea placeholder={t('column.remarks')} rows={3} /></Form.Item>
+      <Form.Item name="status" label={t('common.status')} valuePropName="checked" initialValue={true}><Switch checkedChildren={t('common.active')} unCheckedChildren={t('common.inactive')} /></Form.Item>
     </Form>
   )
 
@@ -227,13 +229,13 @@ export default function CashRegisterUsersPage() {
 
   return (
     <Card
-      title="收银用户条码管理"
+      title={t('posAdmin.cashierUsers.title')}
       extra={
         <Space>
-          <Input.Search allowClear placeholder="搜索" style={{ width: 240 }} onSearch={(v) => { setKeyword(v); setPage(1) }} />
-          <Select allowClear placeholder="分店" style={{ width: 150 }} value={storeCode} onChange={(v) => { setStoreCode(v); setPage(1) }} options={storeOptions} showSearch optionFilterProp="label" />
-          <Select allowClear placeholder="状态" style={{ width: 100 }} value={status === undefined ? undefined : String(status)} onChange={(v) => { setStatus(v === undefined ? undefined : v === 'true'); setPage(1) }} options={[{ label: '启用', value: 'true' }, { label: '禁用', value: 'false' }]} />
-          <Button type="primary" icon={<PlusOutlined />} onClick={() => { createForm.resetFields(); createForm.setFieldsValue({ userBarcode: generateBarcode13(), loginRole: '2', status: true }); setCreateVisible(true) }}>新建</Button>
+          <Input.Search allowClear placeholder={t('common.search')} style={{ width: 240 }} onSearch={(v) => { setKeyword(v); setPage(1) }} />
+          <Select allowClear placeholder={t('posAdmin.cashierUsers.store')} style={{ width: 150 }} value={storeCode} onChange={(v) => { setStoreCode(v); setPage(1) }} options={storeOptions} showSearch optionFilterProp="label" />
+          <Select allowClear placeholder={t('common.status')} style={{ width: 100 }} value={status === undefined ? undefined : String(status)} onChange={(v) => { setStatus(v === undefined ? undefined : v === 'true'); setPage(1) }} options={[{ label: t('common.active'), value: 'true' }, { label: t('common.inactive'), value: 'false' }]} />
+          <Button type="primary" icon={<PlusOutlined />} onClick={() => { createForm.resetFields(); createForm.setFieldsValue({ userBarcode: generateBarcode13(), loginRole: '2', status: true }); setCreateVisible(true) }}>{t('common.create')}</Button>
         </Space>
       }
       styles={{ body: { padding: 0 } }}
@@ -252,18 +254,18 @@ export default function CashRegisterUsersPage() {
             pageSize,
             showSizeChanger: true,
             pageSizeOptions: ['10','20', '50', '100'],
-            showTotal: (t) => `共 ${t} 条`,
+            showTotal: (total) => t('common.total', { count: total }),
             onChange: (p, ps) => { setPage(p); setPageSize(ps) },
           }}
         />
-        {selectedRows.length > 0 && <Button danger icon={<DeleteOutlined />} onClick={handleBatchDelete} style={{ marginTop: 8 }}>批量删除 ({selectedRows.length})</Button>}
+        {selectedRows.length > 0 && <Button danger icon={<DeleteOutlined />} onClick={handleBatchDelete} style={{ marginTop: 8 }}>{t('common.batchDelete')} ({selectedRows.length})</Button>}
       </div>
 
-      <Modal open={createVisible} title="新建收银用户" onCancel={() => { setCreateVisible(false); createForm.resetFields() }} onOk={handleCreate} width={600}>
+      <Modal open={createVisible} title={t('posAdmin.cashierUsers.createUser')} onCancel={() => { setCreateVisible(false); createForm.resetFields() }} onOk={handleCreate} width={600}>
         {renderFormFields(createForm, createBarcodeVal)}
       </Modal>
 
-      <Modal open={editVisible} title="编辑收银用户" onCancel={() => { setEditVisible(false); editForm.resetFields(); setEditingRecord(null) }} onOk={handleUpdate} width={600}>
+      <Modal open={editVisible} title={t('posAdmin.cashierUsers.editUser')} onCancel={() => { setEditVisible(false); editForm.resetFields(); setEditingRecord(null) }} onOk={handleUpdate} width={600}>
         {renderFormFields(editForm, editBarcodeVal, true)}
       </Modal>
     </Card>

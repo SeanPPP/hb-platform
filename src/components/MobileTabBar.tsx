@@ -6,6 +6,7 @@ import {
   ShopbagOutline,
 } from 'antd-mobile-icons'
 import { useLocation, useNavigate } from 'react-router-dom'
+import { useTranslation } from 'react-i18next'
 import type { AccessControl } from '../types/auth'
 import { useEffect, useRef } from 'react'
 
@@ -17,44 +18,44 @@ interface TabConfig {
   accessKey?: keyof AccessControl
 }
 
-const tabs: TabConfig[] = [
+const getTabs = (t: ReturnType<typeof useTranslation>['t']): TabConfig[] => [
   {
     key: 'dashboard',
-    title: '工作台',
+    title: t('mobileTab.dashboard', '工作台'),
     icon: <AppstoreOutline />,
     path: '/dashboard',
   },
   {
     key: 'warehouse',
-    title: '仓库',
+    title: t('mobileTab.warehouse', '仓库'),
     icon: <ShopbagOutline />,
     path: '/warehouse/store-orders',
     accessKey: 'canManageWarehouse',
   },
   {
     key: 'pos-admin',
-    title: '收银',
+    title: t('mobileTab.posAdmin', '收银'),
     icon: <ReceivePaymentOutline />,
     path: '/pos-admin/suppliers',
     accessKey: 'canManageStore',
   },
   {
     key: 'domestic-purchase',
-    title: '采购',
+    title: t('mobileTab.domesticPurchase', '采购'),
     icon: <BillOutline />,
     path: '/domestic-purchase/china-suppliers',
     accessKey: 'canManageWarehouse',
   },
   {
     key: 'system',
-    title: '系统',
+    title: t('mobileTab.system', '系统'),
     icon: <SetOutline />,
     path: '/system/stores',
     accessKey: 'canReadStore',
   },
 ]
 
-function getActiveTab(pathname: string): string {
+function getActiveTab(pathname: string, tabs: TabConfig[]): string {
   for (const tab of tabs) {
     if (pathname === tab.path || pathname.startsWith('/' + tab.key + '/')) {
       return tab.key
@@ -73,7 +74,9 @@ interface MobileTabBarProps {
 export default function MobileTabBar({ access }: MobileTabBarProps) {
   const navigate = useNavigate()
   const location = useLocation()
-  const activeKey = getActiveTab(location.pathname)
+  const { t } = useTranslation()
+  const tabs = getTabs(t)
+  const activeKey = getActiveTab(location.pathname, tabs)
   const scrollRef = useRef<HTMLDivElement>(null)
   const activeRef = useRef<HTMLButtonElement>(null)
 
@@ -88,7 +91,7 @@ export default function MobileTabBar({ access }: MobileTabBarProps) {
       const el = activeRef.current
       const itemWidth = el.offsetWidth
       const visibleCount = Math.round(container.offsetWidth / itemWidth)
-      const idx = visibleTabs.findIndex((t) => t.key === activeKey)
+      const idx = visibleTabs.findIndex((tab) => tab.key === activeKey)
       const page = Math.floor(idx / visibleCount)
       container.scrollTo({ left: page * visibleCount * itemWidth, behavior: 'smooth' })
     }
