@@ -152,7 +152,9 @@
     "remove": "Remove",
     "remarks": "Remarks",
     "more": "More",
-    "statusN": "Status {{n}}"
+    "statusN": "Status {{n}}",
+    "deleteSuccess": "Deleted successfully",
+    "deleteFailed": "Failed to delete"
   },
   "column": {
     "index": "#",
@@ -2267,7 +2269,31 @@
     "gradeCDesc": "Discounted, warehouse has stock to clear",
     "gradeDDesc": "No stock in warehouse",
     "hbwebDbDesc": "HBweb (DomesticProduct / WarehouseProduct / Product / StoreRetailPrice)",
-    "hqDbDesc": "HQ (DIC_ProductInfo / DIC_RetailPrice / CBP_DIC_Inventory)"
+    "hqDbDesc": "HQ (DIC_ProductInfo / DIC_RetailPrice / CBP_DIC_Inventory)",
+    "title": "Product Grade Management",
+    "subtitle": "Manage product grades (A/B/C/D). Supports batch modification and paste import.",
+    "pasteImport": "Paste Import",
+    "batchPrice": "Batch Price",
+    "batchModify": "Batch Modify",
+    "cancelSelection": "Cancel Selection",
+    "selectTargetGrade": "Select Target Grade",
+    "batchChangePrice": "Batch Price Change",
+    "selectedProducts": "{{count}} products selected",
+    "targetDatabase": "Target Database",
+    "importPrice": "Import Price",
+    "retailPrice": "Retail Price",
+    "confirmWarning": "Please confirm the target database and prices before submitting. Changes will directly affect database records.",
+    "confirmModify": "Confirm Modify",
+    "pasteImportTitle": "Paste Import Product Grades",
+    "match": "Match",
+    "confirmImport": "Confirm Import",
+    "gradeList": "Item No. List",
+    "pasteItemNumbers": "Paste item numbers, one per line or comma/tab separated",
+    "totalItemNumbers": "{{count}} item numbers total",
+    "importResult": "Import complete: {{created}} created, {{updated}} updated",
+    "deleteGradeHint": "After deletion, the product will have no grade.",
+    "deleteGrade": "Delete Grade",
+    "selectSupplier": "Select supplier"
   },
   "storeOrders": {
     "title": "Store Orders",

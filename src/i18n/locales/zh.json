@@ -152,7 +152,9 @@
     "remove": "移除",
     "remarks": "备注",
     "more": "更多",
-    "statusN": "状态 {{n}}"
+    "statusN": "状态 {{n}}",
+    "deleteSuccess": "删除成功",
+    "deleteFailed": "删除失败"
   },
   "column": {
     "index": "序号",
@@ -2267,7 +2269,31 @@
     "gradeCDesc": "超低价，仓库有货可订回帮清库存",
     "gradeDDesc": "仓库无货",
     "hbwebDbDesc": "HBweb（DomesticProduct / WarehouseProduct / Product / StoreRetailPrice）",
-    "hqDbDesc": "HQ（DIC_商品信息字典表 / DIC_商品零售价表 / CBP_DIC_商品库存表）"
+    "hqDbDesc": "HQ（DIC_商品信息字典表 / DIC_商品零售价表 / CBP_DIC_商品库存表）",
+    "title": "商品等级管理",
+    "subtitle": "管理商品的等级分类（A/B/C/D），支持批量修改和粘贴导入。",
+    "pasteImport": "粘贴导入",
+    "batchPrice": "批量改价",
+    "batchModify": "批量修改",
+    "cancelSelection": "取消选择",
+    "selectTargetGrade": "选择目标等级",
+    "batchChangePrice": "批量修改价格",
+    "selectedProducts": "已选 {{count}} 个商品",
+    "targetDatabase": "目标数据库",
+    "importPrice": "进货价格（Import Price）",
+    "retailPrice": "零售价格（Retail Price）",
+    "confirmWarning": "请确认目标数据库和价格无误后再提交，修改将直接影响数据库中的价格记录。",
+    "confirmModify": "确认修改",
+    "pasteImportTitle": "粘贴导入商品等级",
+    "match": "匹配",
+    "confirmImport": "确认导入",
+    "gradeList": "货号列表",
+    "pasteItemNumbers": "粘贴货号，每行一个或用逗号/Tab分隔",
+    "totalItemNumbers": "共 {{count}} 个货号",
+    "importResult": "导入完成：新建 {{created}} 条，更新 {{updated}} 条",
+    "deleteGradeHint": "删除后该商品将无等级标记。",
+    "deleteGrade": "删除等级",
+    "selectSupplier": "请选择供应商"
   },
   "storeOrders": {
     "title": "分店订货列表",
