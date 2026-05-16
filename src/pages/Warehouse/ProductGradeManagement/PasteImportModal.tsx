@@ -16,11 +16,6 @@ interface Props {
   onSuccess: () => void
 }
 
-const gradeOptions = Object.entries(PRODUCT_GRADE_CONFIG).map(([key, cfg]) => ({
-  label: cfg.label,
-  value: key,
-}))
-
 const GRADE_TAG_COLOR: Record<string, string> = {
   A: 'purple',
   B: 'blue',
@@ -35,6 +30,11 @@ export default function PasteImportModal({ open, onClose, onSuccess }: Props) {
   const [previewData, setPreviewData] = useState<PasteImportResult | null>(null)
   const [suppliers, setSuppliers] = useState<Array<{ label: string; value: string }>>([])
   const [supplierLoading, setSupplierLoading] = useState(false)
+
+  const gradeOptions = Object.entries(PRODUCT_GRADE_CONFIG).map(([key, cfg]) => ({
+    label: t(`productGrade.${cfg.i18nKey}`),
+    value: key,
+  }))
 
   const loadSuppliers = async () => {
     setSupplierLoading(true)

@@ -1,4 +1,4 @@
-﻿import {
+import {
   DeleteOutlined,
   DollarOutlined,
   FileExcelOutlined,
@@ -69,7 +69,7 @@ export default function ProductGradeManagementPage() {
   const gradeFilterOptions = [
     { label: t('productGrade.allGrades'), value: '' },
     ...Object.entries(PRODUCT_GRADE_CONFIG).map(([key, cfg]) => ({
-      label: cfg.label,
+      label: t(`productGrade.${cfg.i18nKey}`),
       value: key,
     })),
   ]
@@ -329,7 +329,7 @@ export default function ProductGradeManagementPage() {
                     <Tag color={GRADE_TAG_COLOR[key]} style={{ marginRight: 4 }}>
                       {key}
                     </Tag>
-                    {cfg.label}
+                    {t(`productGrade.${cfg.i18nKey}`)}
                   </Select.Option>
                 ))}
               </Select>

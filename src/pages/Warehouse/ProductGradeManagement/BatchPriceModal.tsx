@@ -1,4 +1,4 @@
-﻿import { DollarOutlined } from '@ant-design/icons'
+import { DollarOutlined } from '@ant-design/icons'
 import { Alert, Form, InputNumber, Modal, Radio, message } from 'antd'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -81,10 +81,10 @@ export default function BatchPriceModal({ open, selectedCount, productCodes, onC
         >
           <Radio.Group>
             <Radio value="HBweb">
-              HBweb锛圖omesticProduct / WarehouseProduct / Product / StoreRetailPrice锛?
+              {t('productGrade.hbwebDbDesc')}
             </Radio>
             <Radio value="HQ">
-              HQ锛圖IC_鍟嗗搧淇℃伅瀛楀吀琛?/ DIC_鍟嗗搧闆跺敭浠疯〃 / CBP_DIC_鍟嗗搧搴撳瓨琛級
+              {t('productGrade.hqDbDesc')}
             </Radio>
           </Radio.Group>
         </Form.Item>
