@@ -10,3 +10,14 @@ dist/
 
 .DS_Store
 Thumbs.db
+
+.claude/
+.sisyphus/
+.trae/
+
+scripts/
+
+vite.config.js.timestamp-*
+vite.config.d.ts
+
+17cfc19*

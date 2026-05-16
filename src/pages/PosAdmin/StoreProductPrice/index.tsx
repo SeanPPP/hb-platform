@@ -40,6 +40,7 @@ import type {
   SyncFromHqRequest,
   SyncToOtherStoresDto,
 } from '../../../types/storeProductPrice'
+import { CopyOutlined } from '@ant-design/icons'
 import { copyTextToClipboard } from '../../../utils/clipboard'
 
 type DataType = StoreProductPriceListDto & { key: string }
@@ -345,13 +346,11 @@ export default function StoreProductPricePage() {
       title: t('posAdmin.productPrice.productCode', '商品代码'),
       dataIndex: 'productCode',
       key: 'productCode',
-      width: 130,
+      width: 50,
       sorter: true,
       render: (v: string) => (
-        <Tooltip title={t('posAdmin.productPrice.clickToCopy', '点击复制')}>
-          <span style={{ cursor: 'pointer' }} onClick={() => void copyTextToClipboard(v)}>
-            {v}
-          </span>
+        <Tooltip title={v}>
+          <Button type="text" size="small" icon={<CopyOutlined />} onClick={() => void copyTextToClipboard(v)} />
         </Tooltip>
       ),
     },
@@ -460,7 +459,7 @@ export default function StoreProductPricePage() {
       key: 'updatedBy',
       width: 100,
     },
-  ], [])
+  ], [t])
 
   const selectedCount = selectedRowKeys.length
 
@@ -528,6 +527,7 @@ export default function StoreProductPricePage() {
           rowSelection={{
             selectedRowKeys,
             onChange: (keys) => setSelectedRowKeys(keys),
+            columnWidth: 40,
           }}
           pagination={{
             total,

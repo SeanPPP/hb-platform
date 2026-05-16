@@ -1,0 +1,51 @@
+services:
+  hb-api:
+    build:
+      context: ../HBweb/Backend
+      dockerfile: BlazorApp.Api/Dockerfile
+    container_name: hb-api
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_URLS: http://+:5001
+      ASPNETCORE_HTTP_PORTS: 5001
+      ConnectionString=REDACTED
+      ConnectionString=REDACTED
+      ConnectionString=REDACTED
+      ConnectionString=REDACTED
+      ConnectionString=REDACTED
+      ConnectionString=REDACTED
+      Jwt__Key: ${JWT_KEY}
+      Jwt__Issuer: ${JWT_ISSUER:-BlazorApp}
+      Jwt__Audience: ${JWT_AUDIENCE:-BlazorAppUsers}
+      Jwt__ExpireMinutes: ${JWT_EXPIRE_MINUTES:-480}
+      Cookie__Secure: ${COOKIE_SECURE:-false}
+      Cookie__SameSite: ${COOKIE_SAMESITE:-Lax}
+      Translation__Kimi__ApiKey=REDACTED
+      TencentCloud__SecretId: ${TENCENT_SECRET_ID:-}
+      TencentCloud__SecretKey: ${TENCENT_SECRET_KEY:-}
+      TencentCloud__BucketName: ${TENCENT_BUCKET_NAME:-}
+      TencentCloud__Region: ${TENCENT_REGION:-}
+      TencentCloud__ImageBucketName: ${TENCENT_IMAGE_BUCKET_NAME:-}
+      TencentCloud__ImageRegion: ${TENCENT_IMAGE_REGION:-}
+    expose:
+      - "5001"
+    restart: unless-stopped
+    networks:
+      - hb-network
+
+  hb-frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: hb-frontend
+    depends_on:
+      - hb-api
+    ports:
+      - "${FRONTEND_BIND:-80}:80"
+    restart: unless-stopped
+    networks:
+      - hb-network
+
+networks:
+  hb-network:
+    driver: bridge

@@ -116,7 +116,7 @@ const warehouseProductsTableStyle = `
     word-break: break-word;
   }
 `;
-function formatDateTime(value?: string) {
+function formatDateTime(value?: string, language?: string) {
     if (!value) {
         return '--';
     }
@@ -124,7 +124,8 @@ function formatDateTime(value?: string) {
     if (Number.isNaN(date.getTime())) {
         return value;
     }
-    return date.toLocaleString('zh-CN', { hour12: false });
+    const locale = language === 'en' ? 'en-AU' : 'zh-CN';
+    return date.toLocaleString(locale, { hour12: false });
 }
 function formatPrice(value?: number) {
     if (value === undefined || value === null) {
@@ -306,7 +307,7 @@ function SetItemsModal({ open, loading, saving, product, items, canEdit, onCance
     </Modal>);
 }
 export default function WarehouseProductsPage() {
-    const { t } = useTranslation();
+    const { t, i18n } = useTranslation();
     const productTypeOptions = getProductTypeOptions(t);
     const [form] = Form.useForm<ProductFormValues>();
     const [loading, setLoading] = useState(false);
@@ -604,7 +605,7 @@ export default function WarehouseProductsPage() {
     const columns = useMemo<ColumnsType<WarehouseProductListItem>>(() => [
         { title: '#', dataIndex: 'rowNumber', width: 30, fixed: 'left' },
         {
-            title: t('warehouse.hbProductNo'),
+            title: t('column.hbItemNumber'),
             dataIndex: 'itemNumber',
             width: 120,
             fixed: 'left',
@@ -617,7 +618,7 @@ export default function WarehouseProductsPage() {
             </Space>) : ('--'),
         },
         {
-            title: t('warehouse.productImage'),
+            title: t('column.image'),
             dataIndex: 'productImage',
             width: 80,
             render: (value: string | undefined) => (<div className="warehouse-products-image-cell">
@@ -625,7 +626,7 @@ export default function WarehouseProductsPage() {
           </div>),
         },
         {
-            title: t('warehouse.domesticSupplier'),
+            title: t('column.supplier'),
             dataIndex: 'domesticSupplierCode',
             width: 150,
             sorter: true,
@@ -636,20 +637,20 @@ export default function WarehouseProductsPage() {
             </div>) : ('--'),
         },
         {
-            title: t('domesticProducts.productName'),
+            title: t('column.productName'),
             dataIndex: 'name',
             width: 200,
             sorter: true,
             render: (value: string | undefined) => value ? <div className="warehouse-products-text-2line">{value}</div> : '--',
         },
         {
-            title: t('warehouse.englishName'),
+            title: t('column.englishName'),
             dataIndex: 'nameEn',
             width: 200,
             render: (value: string | undefined) => value ? <div className="warehouse-products-text-2line">{value}</div> : '--',
         },
         {
-            title: t('domesticProducts.barcode'),
+            title: t('column.barcode'),
             dataIndex: 'barcode',
             width: 180,
             render: (value: string | undefined) => value ? (<div className="warehouse-products-barcode-cell">
@@ -657,37 +658,37 @@ export default function WarehouseProductsPage() {
             </div>) : ('--'),
         },
         {
-            title: t('domesticProducts.status'),
+            title: t('column.status'),
             dataIndex: 'isActive',
             width: 110,
             render: (value: boolean, record) => (<Switch checked={value} checkedChildren={t('warehouse.active')} unCheckedChildren={t('warehouse.inactive')} disabled={!access.canWriteProduct || togglingProductCodes.includes(record.productCode)} loading={togglingProductCodes.includes(record.productCode)} onChange={(nextChecked) => void handleToggleSingleActive(record, nextChecked)}/>),
         },
         {
-            title: t('warehouse.productType'),
+            title: t('column.productType'),
             dataIndex: 'productType',
             width: 120,
             render: (value: ProductType) => getProductTypeLabel(value, t),
         },
         {
-            title: t('domesticProducts.domesticPrice'),
+            title: t('column.domesticPrice'),
             dataIndex: 'domesticPrice',
             width: 100,
             render: (value: number | undefined) => formatPrice(value),
         },
         {
-            title: t('productCreation.privateLabelPrice'),
+            title: t('column.oemPrice'),
             dataIndex: 'labelPrice',
             width: 100,
             render: (value: number | undefined) => formatPrice(value),
         },
         {
-            title: t('warehouse.importPrice'),
+            title: t('column.importPrice'),
             dataIndex: 'importPrice',
             width: 100,
             render: (value: number | undefined) => formatPrice(value),
         },
         {
-            title: t('warehouse.packingQuantity'),
+            title: t('column.packingQuantity'),
             dataIndex: 'packingQty',
             width: 140,
             render: (value: number | undefined, record) => value !== undefined && value !== null ? (<Space size={4}>
@@ -696,7 +697,7 @@ export default function WarehouseProductsPage() {
             </Space>) : ('--'),
         },
         {
-            title: t('warehouse.volume'),
+            title: t('column.volume'),
             dataIndex: 'volume',
             width: 140,
             render: (value: number | undefined, record) => value !== undefined && value !== null ? (<Space size={4}>
@@ -705,7 +706,7 @@ export default function WarehouseProductsPage() {
             </Space>) : ('--'),
         },
         {
-            title: t('warehouse.australianSupplier'),
+            title: t('column.localSupplier'),
             dataIndex: 'localSupplierCode',
             width: 180,
             sorter: true,
@@ -714,20 +715,20 @@ export default function WarehouseProductsPage() {
             </div>) : ('--'),
         },
         {
-            title: t('warehouse.updatedAt'),
+            title: t('column.updateTime'),
             dataIndex: 'updatedAt',
             width: 180,
             sorter: true,
-            render: (value: string | undefined) => formatDateTime(value),
+            render: (value: string | undefined) => formatDateTime(value, i18n.language),
         },
         {
-            title: t('warehouse.updatedBy'),
+            title: t('column.updater'),
             dataIndex: 'updatedBy',
             width: 140,
             render: (value: string | undefined) => value || '--',
         },
         {
-            title: t('common.action'),
+            title: t('column.action'),
             key: 'action',
             width: 220,
             fixed: 'right',
@@ -744,7 +745,7 @@ export default function WarehouseProductsPage() {
               </Tooltip>)}
           </Space>),
         },
-    ], [access.canWriteProduct, togglingProductCodes]);
+    ], [access.canWriteProduct, i18n.language, togglingProductCodes]);
     return (<>
       <style>{warehouseProductsTableStyle}</style>
       <PageContainer title={t('warehouse.productManagement')} subtitle={t('warehouse.productManagementSubtitle')} extra={<Space wrap>
