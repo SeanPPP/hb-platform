@@ -362,12 +362,14 @@ MigrationBackup/
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
 
-# Sensitive configuration files
+# 敏感配置文件（含数据库密码、API密钥、JWT密钥）
 BlazorApp.Api/appsettings.json
+**/appsettings.Development.json
 .env
 .env.local
 .env.*.local
+DOCKER_DEPLOYMENT.md
 
-# Docker related
+# Docker 相关
 .dockerignore
 docker-compose.override.yml
