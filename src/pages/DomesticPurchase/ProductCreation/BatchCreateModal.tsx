@@ -418,7 +418,7 @@ export default function BatchCreateModal({ visible, onClose, onSuccess }: BatchC
                   <Input value={batchEditNameValue} onChange={(e) => setBatchEditNameValue(e.target.value)} style={{ marginLeft: 8, width: 280 }} placeholder={t('productCreation.enterName', '请输入名称')} />
                 </div>
                 <div style={{ color: '#999', fontSize: 12 }}>
-                  {selectedRowKeys.length > 0 ? t('productCreation.applyToSelectedRows', '将应用到已选中的 {{count}} 行', { count: selectedRowKeys.length }) : t('productCreation.applyToAll', '将应用到所有行')}
+                  {selectedRowKeys.length > 0 ? t('productCreation.applyToSelectedRows', { count: selectedRowKeys.length }) : t('productCreation.applyToAll', '将应用到所有行')}
                 </div>
               </Space>
             </Modal>
