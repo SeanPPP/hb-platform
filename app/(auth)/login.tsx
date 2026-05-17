@@ -1,22 +1,36 @@
 import { useRouter } from "expo-router";
-import { View, StyleSheet } from "react-native";
+import {
+  View,
+  StyleSheet,
+  Animated,
+  StatusBar,
+  Dimensions,
+  KeyboardAvoidingView,
+  ScrollView,
+  Platform,
+  TouchableOpacity,
+} from "react-native";
 import type { AxiosError } from "axios";
 import {
   TextInput,
   Button,
   Text,
-  Surface,
   Checkbox,
   Snackbar,
 } from "react-native-paper";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useAuthStore } from "@/store/auth-store";
-import { i18n } from "@/shared/i18n/i18n";
+import { i18n, setAppLanguage } from "@/shared/i18n/i18n";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 import { AppAsyncStorage } from "@/shared/storage/async-storage";
 import { API_BASE_URL } from "@/shared/constants/api";
 
 const REMEMBERED_USERNAME_KEY = "remembered_username";
+const BRAND_RED = "#E53935";
+const BRAND_BG = "#F5F5F5";
+
+const { height: SCREEN_HEIGHT } = Dimensions.get("window");
+const IS_SMALL_SCREEN = SCREEN_HEIGHT < 640;
 
 function getApiOriginLabel() {
   try {
@@ -38,8 +52,7 @@ function getFriendlyLoginErrorMessage(error: unknown): string {
   const normalizedMessage = serverMessage?.toLowerCase() || "";
 
   if (
-    status === 401 ||
-    status === 403 ||
+    status === 401 || status === 403 ||
     normalizedMessage.includes("invalid") ||
     normalizedMessage.includes("unauthorized") ||
     normalizedMessage.includes("password") ||
@@ -47,30 +60,25 @@ function getFriendlyLoginErrorMessage(error: unknown): string {
   ) {
     return i18n.t("login:errors.invalidCredentials");
   }
-
   if (axiosError.code === "ECONNABORTED") {
     return i18n.t("login:errors.timeout", { origin: getApiOriginLabel() });
   }
-
   if (axiosError.message === "Network Error") {
     return i18n.t("login:errors.network", { origin: getApiOriginLabel() });
   }
-
   if (status && status >= 500) {
     return i18n.t("login:errors.server");
   }
-
   if (status) {
     return i18n.t("login:errors.http", { status });
   }
-
   return i18n.t("login:errors.default");
 }
 
 export default function Login() {
   const router = useRouter();
   const { t } = useAppTranslation(["login", "common"]);
-  const login = useAuthStore((s) => s.login);
+  const loginFn = useAuthStore((s) => s.login);
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
@@ -80,20 +88,52 @@ export default function Login() {
   const [snackbarVisible, setSnackbarVisible] = useState(false);
   const [rememberReady, setRememberReady] = useState(false);
 
+  // 动画 refs
+  const logoScale = useRef(new Animated.Value(0)).current;
+  const logoOpacity = useRef(new Animated.Value(0)).current;
+  const titleOpacity = useRef(new Animated.Value(0)).current;
+  const titleTranslateY = useRef(new Animated.Value(20)).current;
+  const usernameSlide = useRef(new Animated.Value(0)).current;
+  const passwordSlide = useRef(new Animated.Value(0)).current;
+  const buttonOpacity = useRef(new Animated.Value(0)).current;
+  const buttonPulse = useRef(new Animated.Value(1)).current;
+
+  useEffect(() => {
+    Animated.sequence([
+      Animated.parallel([
+        Animated.spring(logoScale, { toValue: 1, tension: 70, friction: 7, useNativeDriver: true }),
+        Animated.timing(logoOpacity, { toValue: 1, duration: 600, useNativeDriver: true }),
+      ]),
+      Animated.parallel([
+        Animated.timing(titleOpacity, { toValue: 1, duration: 450, useNativeDriver: true }),
+        Animated.timing(titleTranslateY, { toValue: 0, duration: 450, useNativeDriver: true }),
+      ]),
+      Animated.timing(usernameSlide, { toValue: 1, duration: 400, useNativeDriver: true }),
+      Animated.timing(passwordSlide, { toValue: 1, duration: 400, useNativeDriver: true }),
+      Animated.timing(buttonOpacity, { toValue: 1, duration: 400, useNativeDriver: true }),
+    ]).start();
+
+    const timer = setTimeout(() => {
+      Animated.loop(
+        Animated.sequence([
+          Animated.timing(buttonPulse, { toValue: 1.03, duration: 1200, useNativeDriver: true }),
+          Animated.timing(buttonPulse, { toValue: 1, duration: 1200, useNativeDriver: true }),
+        ]),
+      ).start();
+    }, 2200);
+    return () => clearTimeout(timer);
+  }, []);
+
   useEffect(() => {
     void loadRememberedUsername();
   }, []);
 
   useEffect(() => {
-    if (!rememberReady) {
-      return;
-    }
-
+    if (!rememberReady) return;
     if (!rememberUsername) {
       void AppAsyncStorage.removeItem(REMEMBERED_USERNAME_KEY);
       return;
     }
-
     if (username) {
       void AppAsyncStorage.setString(REMEMBERED_USERNAME_KEY, username);
     }
@@ -112,10 +152,10 @@ export default function Login() {
     setError("");
     setLoading(true);
     try {
-      await login({ username, password });
+      await loginFn({ username, password });
       router.replace("/(tabs)/home");
-    } catch (error) {
-      setError(getFriendlyLoginErrorMessage(error));
+    } catch (err) {
+      setError(getFriendlyLoginErrorMessage(err));
       setSnackbarVisible(true);
     } finally {
       setLoading(false);
@@ -123,56 +163,130 @@ export default function Login() {
   }
 
   return (
-    <View style={styles.container}>
-      <Surface style={styles.card} elevation={2}>
-        <Text variant="headlineMedium" style={styles.title}>
-          {t("common:appName")}
+    <View style={styles.root}>
+      <StatusBar barStyle="light-content" backgroundColor={BRAND_RED} />
+
+      {/* ── 语言切换按钮 ── */}
+      <TouchableOpacity
+        style={styles.langSwitch}
+        onPress={() => setAppLanguage(i18n.language === "zh" ? "en" : "zh")}
+        activeOpacity={0.7}
+      >
+        <Text style={styles.langSwitchText}>
+          {i18n.language === "zh" ? "EN" : "中"}
         </Text>
-        <Text variant="bodyMedium" style={styles.subtitle}>
-          {t("subtitle")}
-        </Text>
-        <TextInput
-          label={t("username")}
-          value={username}
-          onChangeText={setUsername}
-          style={styles.input}
-          mode="outlined"
-          autoCapitalize="none"
-        />
-        <TextInput
-          label={t("password")}
-          value={password}
-          onChangeText={setPassword}
-          style={styles.input}
-          mode="outlined"
-          secureTextEntry={!showPassword}
-          right={
-            <TextInput.Icon
-              icon={showPassword ? "eye-off" : "eye"}
-              onPress={() => setShowPassword((value) => !value)}
-              forceTextInputFocus={false}
-            />
-          }
-        />
-        <Checkbox.Item
-          label={t("rememberUsername")}
-          status={rememberUsername ? "checked" : "unchecked"}
-          onPress={() => setRememberUsername(!rememberUsername)}
-        />
-        <Button
-          mode="contained"
-          onPress={handleLogin}
-          loading={loading}
-          disabled={loading || !username || !password}
-          style={styles.button}
+      </TouchableOpacity>
+
+      {/* ── 品牌区 ── */}
+      <View style={styles.brandSection}>
+        <Animated.View
+          style={{
+            opacity: logoOpacity,
+            transform: [{ scale: logoScale }],
+          }}
         >
-          {t("common:actions.login")}
-        </Button>
-      </Surface>
+          <View style={styles.logoCircle}>
+            <Text style={styles.logoText}>HB</Text>
+          </View>
+        </Animated.View>
+
+        <Animated.View
+          style={{
+            alignItems: "center",
+            opacity: titleOpacity,
+            transform: [{ translateY: titleTranslateY }],
+          }}
+        >
+          <Text style={styles.brandTitle}>{t("common:appName")}</Text>
+          <Text style={styles.brandSubtitle}>{t("subtitle")}</Text>
+        </Animated.View>
+      </View>
+
+      {/* ── 表单区 ── */}
+      <KeyboardAvoidingView
+        style={styles.formSection}
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
+      >
+        <ScrollView
+          contentContainerStyle={styles.formScrollContent}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+        >
+        <View style={styles.formCard}>
+          <Animated.View
+            style={{
+              opacity: usernameSlide,
+              transform: [{ translateX: usernameSlide.interpolate({ inputRange: [0, 1], outputRange: [-60, 0] }) }],
+            }}
+          >
+            <TextInput
+              label={t("username")}
+              value={username}
+              onChangeText={setUsername}
+              mode="outlined"
+              autoCapitalize="none"
+              style={styles.input}
+              outlineColor="#E0E0E0"
+              activeOutlineColor={BRAND_RED}
+            />
+          </Animated.View>
+
+          <Animated.View
+            style={{
+              opacity: passwordSlide,
+              transform: [{ translateX: passwordSlide.interpolate({ inputRange: [0, 1], outputRange: [60, 0] }) }],
+            }}
+          >
+            <TextInput
+              label={t("password")}
+              value={password}
+              onChangeText={setPassword}
+              mode="outlined"
+              secureTextEntry={!showPassword}
+              style={styles.input}
+              outlineColor="#E0E0E0"
+              activeOutlineColor={BRAND_RED}
+              right={
+                <TextInput.Icon
+                  icon={showPassword ? "eye-off" : "eye"}
+                  onPress={() => setShowPassword((v) => !v)}
+                  forceTextInputFocus={false}
+                />
+              }
+            />
+          </Animated.View>
+
+          <Animated.View style={{ opacity: buttonOpacity, transform: [{ scale: buttonPulse }] }}>
+            <Checkbox.Item
+              label={t("rememberUsername")}
+              status={rememberUsername ? "checked" : "unchecked"}
+              onPress={() => setRememberUsername(!rememberUsername)}
+              color={BRAND_RED}
+              labelStyle={styles.checkboxLabel}
+            />
+            <Button
+              mode="contained"
+              onPress={handleLogin}
+              loading={loading}
+              disabled={loading || !username || !password}
+              buttonColor={BRAND_RED}
+              textColor="#FFFFFF"
+              style={styles.button}
+              contentStyle={styles.buttonContent}
+              labelStyle={styles.buttonLabel}
+            >
+              {t("common:actions.login")}
+            </Button>
+          </Animated.View>
+        </View>
+        </ScrollView>
+      </KeyboardAvoidingView>
+
       <Snackbar
         visible={snackbarVisible}
         onDismiss={() => setSnackbarVisible(false)}
         duration={3000}
+        wrapperStyle={styles.snackbar}
       >
         {error}
       </Snackbar>
@@ -181,15 +295,86 @@ export default function Login() {
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    justifyContent: "center",
-    padding: 24,
-    backgroundColor: "#f5f5f5",
+  root: { flex: 1, backgroundColor: BRAND_BG },
+  // 语言切换
+  langSwitch: {
+    position: "absolute",
+    top: 54,
+    right: 16,
+    zIndex: 100,
+    backgroundColor: "rgba(255,255,255,0.25)",
+    borderRadius: 18,
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.4)",
   },
-  card: { padding: 24, borderRadius: 12 },
-  title: { textAlign: "center", fontWeight: "bold" },
-  subtitle: { textAlign: "center", marginBottom: 24, color: "#666" },
-  input: { marginBottom: 16 },
-  button: { marginTop: 8 },
+  langSwitchText: {
+    color: "#FFFFFF",
+    fontSize: 13,
+    fontWeight: "700",
+    letterSpacing: 1,
+  },
+  // 品牌区
+  brandSection: {
+    backgroundColor: BRAND_RED,
+    paddingTop: IS_SMALL_SCREEN ? 50 : 80,
+    paddingBottom: IS_SMALL_SCREEN ? 30 : 50,
+    borderBottomLeftRadius: 36,
+    borderBottomRightRadius: 36,
+    alignItems: "center",
+  },
+  logoCircle: {
+    width: IS_SMALL_SCREEN ? 72 : 100,
+    height: IS_SMALL_SCREEN ? 72 : 100,
+    borderRadius: IS_SMALL_SCREEN ? 36 : 50,
+    backgroundColor: "#FFFFFF",
+    justifyContent: "center",
+    alignItems: "center",
+    marginBottom: IS_SMALL_SCREEN ? 10 : 16,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.25,
+    shadowRadius: 12,
+    elevation: 10,
+  },
+  logoText: {
+    fontSize: IS_SMALL_SCREEN ? 32 : 42,
+    fontWeight: "900",
+    color: BRAND_RED,
+    letterSpacing: 3,
+  },
+  brandTitle: {
+    fontSize: IS_SMALL_SCREEN ? 22 : 26,
+    fontWeight: "800",
+    color: "#FFFFFF",
+    letterSpacing: 2,
+    marginBottom: 6,
+  },
+  brandSubtitle: {
+    fontSize: IS_SMALL_SCREEN ? 12 : 14,
+    color: "rgba(255,255,255,0.85)",
+    letterSpacing: 1,
+  },
+  // 表单区
+  formSection: { flex: 1, paddingHorizontal: 24, paddingTop: 24 },
+  formScrollContent: { flexGrow: 1, justifyContent: "center", paddingBottom: 20 },
+  formCard: {
+    backgroundColor: "#FFFFFF",
+    borderRadius: 16,
+    padding: 24,
+    borderLeftWidth: 4,
+    borderLeftColor: BRAND_RED,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.06,
+    shadowRadius: 8,
+    elevation: 2,
+  },
+  input: { marginBottom: 14, backgroundColor: "#FAFAFA" },
+  checkboxLabel: { fontSize: 14, color: "#555" },
+  button: { marginTop: 6, borderRadius: 14 },
+  buttonContent: { height: 50 },
+  buttonLabel: { fontSize: 17, fontWeight: "700", letterSpacing: 2 },
+  snackbar: { bottom: 40 },
 });
