@@ -1,4 +1,5 @@
 import { Platform } from "react-native";
+import { isAxiosError } from "axios";
 import { apiClient } from "@/shared/api/client";
 import type {
   DeviceProfile,
@@ -44,6 +45,62 @@ function normalizeDeviceProfile(payload: unknown): DeviceProfile {
   };
 }
 
+function toObject(payload: unknown): Record<string, unknown> | null {
+  return payload && typeof payload === "object" ? (payload as Record<string, unknown>) : null;
+}
+
+function readMessage(payload: unknown): string | null {
+  const data = toObject(payload);
+  if (!data) return null;
+
+  const directMessage = data.message ?? data.Message ?? data.error ?? data.Error;
+  if (typeof directMessage === "string" && directMessage.trim()) {
+    return directMessage;
+  }
+
+  const nestedData = data.data ?? data.Data;
+  if (nestedData && nestedData !== payload) {
+    return readMessage(nestedData);
+  }
+
+  return null;
+}
+
+function maskHardwareId(hardwareId: string) {
+  if (hardwareId.length <= 8) return hardwareId;
+  return `${hardwareId.slice(0, 4)}...${hardwareId.slice(-4)}`;
+}
+
+function logRegisterDeviceFailure(payload: DeviceRegistrationRequest, error: unknown) {
+  const responseData = isAxiosError(error) ? error.response?.data : undefined;
+  const status = isAxiosError(error) ? error.response?.status : undefined;
+  const statusText = isAxiosError(error) ? error.response?.statusText : undefined;
+  const backendMessage = readMessage(responseData);
+  const fallbackMessage = error instanceof Error ? error.message : "Unknown error";
+
+  console.error("[Device Registration] 注册设备失败", {
+    endpoint: "POST /register",
+    storeCode: payload.storeCode || "(未选择门店)",
+    deviceType: payload.deviceType,
+    deviceSystem: payload.deviceSystem,
+    hardwareId: maskHardwareId(payload.hardwareId),
+    httpStatus: status ? `${status}${statusText ? ` ${statusText}` : ""}` : "(无 HTTP 响应)",
+    message: backendMessage || fallbackMessage,
+    backendResponse: responseData ?? null,
+  });
+}
+
+function isDeviceAlreadyRegisteredError(error: unknown): boolean {
+  if (!isAxiosError(error)) return false;
+  const msg = readMessage(error.response?.data);
+  return (
+    msg !== null &&
+    (msg.includes("已注册") ||
+      msg.includes("already registered") ||
+      msg.includes("already exists"))
+  );
+}
+
 function resolveStatusDescription(status: number) {
   switch (status) {
     case -1:
@@ -64,8 +121,24 @@ function resolveStatusDescription(status: number) {
 export async function registerDeviceApi(
   payload: DeviceRegistrationRequest
 ): Promise<DeviceProfile> {
-  const response = await apiClient.post("/register", payload);
-  return normalizeDeviceProfile(response.data);
+  try {
+    const response = await apiClient.post("/register", payload);
+    return normalizeDeviceProfile(response.data);
+  } catch (error) {
+    if (isDeviceAlreadyRegisteredError(error)) {
+      console.warn("[Device Registration] 设备已注册，尝试获取已有设备信息", {
+        hardwareId: maskHardwareId(payload.hardwareId),
+      });
+      try {
+        return await getDeviceProfileApi(payload.hardwareId);
+      } catch (profileError) {
+        logRegisterDeviceFailure(payload, error);
+        throw error;
+      }
+    }
+    logRegisterDeviceFailure(payload, error);
+    throw error;
+  }
 }
 
 export async function validateDeviceAuthApi(
