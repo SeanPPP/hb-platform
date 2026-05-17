@@ -12,7 +12,7 @@ import type {
 import request, { unwrapApiData, unwrapPagedResult } from '../utils/request'
 
 export async function getUsers(params: UserQueryDto): Promise<PagedResult<UserDto>> {
-  const response = await request.get<ApiResponse<PagedResult<UserDto>>>('/api/Users', {
+  const response = await request.get<ApiResponse<PagedResult<UserDto>>>('/api/Users/optimized', {
     params: params as Record<string, unknown>,
   })
   return unwrapPagedResult(response)

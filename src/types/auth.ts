@@ -56,16 +56,44 @@ export interface AccessControl {
   canReadStore: boolean
   canWriteStore: boolean
   canDeleteStore: boolean
+  // 旧权限（保留兼容）
   canManageWarehouse: boolean
   canManageStore: boolean
   canViewReports: boolean
   canExportData: boolean
   canModifyPrice: boolean
   canDeletePrice: boolean
+  // 新细粒度权限
+  canManageWarehouseProducts: boolean
+  canManageWarehouseOrders: boolean
+  canManageWarehouseCategories: boolean
+  canManageWarehouseLocations: boolean
+  canManageStoreProducts: boolean
+  canEditStoreProducts: boolean
+  canManageStoreOps: boolean
+  canManageLocalPurchase: boolean
+  canEditLocalPurchase: boolean
+  canManagePricing: boolean
+  canEditPricing: boolean
+  canManagePromotions: boolean
+  canEditPromotions: boolean
+  canViewAustralianSuppliers: boolean
+  canEditAustralianSuppliers: boolean
+  canManageDomesticSuppliers: boolean
+  canManageDomesticProducts: boolean
+  canManageDomesticPrefixCodes: boolean
   hasPermission: (permission: string) => boolean
   hasRole: (role: string) => boolean
   onlyRole: (role: string) => boolean
   hasAnyRole: (roles: string[]) => boolean
   hasAllRoles: (roles: string[]) => boolean
   managedStoreCodes: () => string[] | null
+}
+
+export interface NavigationMenuDto {
+  path: string
+  titleKey: string
+  icon: string
+  permission?: string
+  children?: NavigationMenuDto[]
 }

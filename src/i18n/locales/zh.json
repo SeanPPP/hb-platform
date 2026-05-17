@@ -61,6 +61,9 @@
     "localSupplierInvoices": "分店进货单",
     "invoiceDetail": "进货单详情",
     "editInvoice": "编辑进货单",
+    "executiveSalesIntelligence": "销售看板",
+    "salesData": "销售数据",
+    "salesDetail": "销售明细",
     "pageNotFound": "页面不存在"
   },
   "lang": {
@@ -1631,7 +1634,11 @@
     "accessWarehouse": "仓库管理",
     "canAccess": "可访问",
     "noPermission": "无权限",
-    "noRoleInfo": "暂无角色信息"
+    "noRoleInfo": "暂无角色信息",
+    "myPermissions": "我的权限",
+    "noPermData": "暂无权限数据",
+    "granted": "已授权",
+    "notGranted": "未授权"
   },
   "forbidden": {
     "subTitle": "你当前没有权限访问这个页面。",
@@ -1700,7 +1707,10 @@
       "assignStoreTitle": "为用户「{{name}}」分配分店",
       "assignStoreTitleShort": "分配分店",
       "loadRoleDataFailed": "加载角色分配数据失败",
-      "loadStoreDataFailed": "加载分店分配数据失败"
+      "loadStoreDataFailed": "加载分店分配数据失败",
+      "filterByStore": "按分店过滤",
+      "filterByRole": "按角色过滤",
+      "rowIndex": "序号"
     },
     "roles": {
       "loadListFailed": "加载角色列表失败",
@@ -2494,5 +2504,143 @@
     "paymentInfo": "支付信息",
     "payment": "支付方式",
     "invoicePreview": "发票预览"
+  },
+  "executiveSales": {
+    "title": "销售看板",
+    "subtitle": "实时业绩监控与同比分析",
+    "dateRange": {
+      "today": "今天",
+      "thisWeek": "本周",
+      "lastWeek": "上周",
+      "thisMonth": "本月",
+      "lastMonth": "上月"
+    },
+    "compareMode": {
+      "byWeek": "按周对比",
+      "byDate": "按日期对比",
+      "auto": "自动对比",
+      "manual": "手动选择"
+    },
+    "tag": {
+      "compare": "对比："
+    },
+    "quickSelect": {
+      "label": "快速选择"
+    },
+    "dailyBranchPerformance": "分店日业绩",
+    "viewDetails": "查看详情",
+    "hourlyTrafficDensity": "每小时流量密度",
+    "weeklyPerformanceHierarchy": "周业绩层级",
+    "hierarchy": {
+      "subtitle": "按周、分店、日期的同比分析"
+    },
+    "footer": {
+      "showing": "共展示 {weeks} 周 {branches} 个分店"
+    },
+    "message": {
+      "fetchBranchFailed": "获取分店业绩数据失败",
+      "fetchHourlyFailed": "获取每小时流量数据失败",
+      "fetchWeeklyFailed": "获取周业绩层级数据失败"
+    },
+    "table": {
+      "rank": "排名",
+      "branchName": "分店名称",
+      "revenue": "营业额",
+      "current": "本期",
+      "ly": "同期",
+      "yoy": "同比",
+      "orderCount": "订单数",
+      "aov": "客单价"
+    },
+    "hourly": {
+      "time": "时间",
+      "current": "本期",
+      "ly": "同期",
+      "yoy": "同比",
+      "progress": "进度"
+    },
+    "weekly": {
+      "noData": "所选日期范围内暂无数据",
+      "hierarchy": "层级",
+      "revenue": "营业额",
+      "orders": "订单",
+      "aov": "客单价",
+      "current": "本期",
+      "ly": "同期",
+      "yoy": "同比",
+      "thisWeek": "本周",
+      "lastWeek": "上周",
+      "thisMonth": "本月",
+      "lastMonth": "上月"
+    }
+  },
+  "salesDetailAnalysisV2": {
+    "title": "销售明细查询",
+    "search": {
+      "placeholder": "搜索 SKU / 供应商 / 门店..."
+    },
+    "quickSelect": {
+      "label": "快速选择"
+    },
+    "export": {
+      "comingSoon": "导出功能即将推出"
+    },
+    "compareDate": "对比日期",
+    "card": {
+      "localSuppliers": "澳洲供应商",
+      "chinaSuppliers": "HB仓库",
+      "branchDistribution": "门店分布"
+    },
+    "supplier": {
+      "localBadge": "澳洲直供",
+      "chinaBadge": "仓库直供",
+      "noData": "暂无供应商数据",
+      "name": "供应商名称",
+      "nameId": "供应商名称/ID",
+      "revenue": "销售额",
+      "orders": "订单数",
+      "qty": "数量",
+      "share": "份额"
+    },
+    "branch": {
+      "badge": "HB 份额",
+      "noData": "暂无门店数据",
+      "name": "门店",
+      "revenue": "销售额",
+      "qty": "数量",
+      "orders": "订单数",
+      "ratio": "C/L",
+      "share": "HB 份额"
+    },
+    "table": {
+      "title": "明细销售数据",
+      "liveSync": "实时同步",
+      "records": "条记录",
+      "show": "显示",
+      "noData": "暂无销售数据",
+      "previous": "上一页",
+      "next": "下一页",
+      "paginationInfo": "显示 {start}-{end}，共 {total} 条",
+      "column": {
+        "rank": "#",
+        "media": "图片",
+        "sku": "SKU编码",
+        "product": "产品信息",
+        "soldQty": "销售数量",
+        "discQty": "折扣数量",
+        "avgPrice": "平均单价",
+        "grossTotal": "销售总额"
+      }
+    },
+    "aiButton": {
+      "label": "AI预测报告",
+      "comingSoon": "AI 预测报告功能即将推出"
+    },
+    "error": {
+      "localSuppliers": "获取本地供应商数据失败",
+      "chinaSuppliers": "获取中国供应商数据失败",
+      "branches": "获取门店数据失败",
+      "products": "获取产品销售数据失败"
+    }
   }
 }

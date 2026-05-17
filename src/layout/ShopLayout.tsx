@@ -32,7 +32,7 @@ function supportsHover() {
 export default function ShopLayout() {
   const navigate = useNavigate()
   const location = useLocation()
-  const { currentUser, logout } = useAuthStore()
+  const { currentUser, access, logout } = useAuthStore()
   const { t } = useTranslation()
   const isShopHomePage = location.pathname === '/shop'
   const isBestSellersPage = location.pathname.startsWith('/shop/best-sellers')
@@ -193,7 +193,9 @@ export default function ShopLayout() {
           ) : (
             <Link to="/login">{t('login.submit', 'Login')}</Link>
           )}
-          <span onClick={() => window.open('/dashboard', '_blank')}>{t('menu.dashboard', 'Dashboard')}</span>
+          {!access.onlyOrder && (
+            <span onClick={() => window.open('/dashboard', '_blank')}>{t('menu.dashboard', 'Dashboard')}</span>
+          )}
           <span onClick={() => navigate('/shop/best-sellers')}>{t('shop.bestSellers', 'Best Sellers')}</span>
           <span onClick={() => navigate('/shop/coming-soon')}>{t('shop.comingSoon', 'Coming Soon')}</span>
           <span onClick={() => navigate('/shop/orders')}>{t('shop.orderHistory')}</span>
@@ -320,10 +322,12 @@ export default function ShopLayout() {
             <UserOutlined className="icon" />
             <span>{t('layout.logout', 'Logout')}</span>
           </div>
-          <div className="shop-mobile-grid-item" onClick={() => window.open('/dashboard', '_blank')}>
-            <AppstoreOutlined className="icon" />
-            <span>{t('menu.dashboard', 'Dashboard')}</span>
-          </div>
+          {!access.onlyOrder && (
+            <div className="shop-mobile-grid-item" onClick={() => window.open('/dashboard', '_blank')}>
+              <AppstoreOutlined className="icon" />
+              <span>{t('menu.dashboard', 'Dashboard')}</span>
+            </div>
+          )}
         </div>
       </div>
 

@@ -14,7 +14,7 @@ import { useAuthStore } from './store/auth'
 
 function AppBootstrap() {
   const { t } = useTranslation()
-  const { initialized, loading, currentUser, fetchCurrentUser } = useAuthStore()
+  const { initialized, loading, currentUser, access, fetchCurrentUser } = useAuthStore()
   const location = useLocation()
   const isLoginPath = location.pathname === '/login'
 
@@ -23,6 +23,10 @@ function AppBootstrap() {
       void fetchCurrentUser()
     }
   }, [fetchCurrentUser, initialized, isLoginPath, loading])
+
+  // 仅拥有订货员角色的用户默认进入前台
+  const isOnlyOrder = access.onlyOrder
+  const homePage = isOnlyOrder ? '/shop' : '/dashboard'
 
   if ((!initialized || loading) && !isLoginPath) {
     return (
@@ -34,10 +38,10 @@ function AppBootstrap() {
 
   return (
     <Routes>
-      <Route path="/" element={<Navigate to="/dashboard" replace />} />
+      <Route path="/" element={<Navigate to={homePage} replace />} />
       <Route
         path="/login"
-        element={currentUser ? <Navigate to="/dashboard" replace /> : <LoginPage />}
+        element={currentUser ? <Navigate to={homePage} replace /> : <LoginPage />}
       />
       <Route
         path="/shop"

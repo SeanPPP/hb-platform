@@ -83,6 +83,11 @@ export async function createPermission(dto: CreateSysPermissionDto): Promise<Sys
   return unwrapApiData(response) ?? []
 }
 
+export async function deletePermission(code: string): Promise<boolean> {
+  const response = await request.delete<ApiResponse<boolean>>(`/api/Roles/permissions/${encodeURIComponent(code)}`)
+  return unwrapApiData(response)
+}
+
 export async function getPermissionRoles(code: string): Promise<RoleOptionDto[]> {
   const response = await request.get<ApiResponse<RoleOptionDto[]>>(`/api/Roles/permissions/${encodeURIComponent(code)}/roles`)
   return unwrapApiData(response) ?? []

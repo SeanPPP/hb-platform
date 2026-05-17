@@ -13,9 +13,9 @@ export default function MobileLayout() {
   const [menuOpen, setMenuOpen] = useState(false)
   const navigate = useNavigate()
   const location = useLocation()
-  const { access } = useAuthStore()
+  const { access, navigationMenu } = useAuthStore()
 
-  const menus = buildMenus(access)
+  const menus = buildMenus(access, navigationMenu)
   const currentElement = getCurrentElement(location.pathname, access)
   const currentRoute = getCurrentRoute(location.pathname, access)
 

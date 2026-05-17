@@ -34,6 +34,25 @@ function createEmptyAccess(): AccessControl {
     canExportData: false,
     canModifyPrice: false,
     canDeletePrice: false,
+    // 新细粒度权限
+    canManageWarehouseProducts: false,
+    canManageWarehouseOrders: false,
+    canManageWarehouseCategories: false,
+    canManageWarehouseLocations: false,
+    canManageStoreProducts: false,
+    canEditStoreProducts: false,
+    canManageStoreOps: false,
+    canManageLocalPurchase: false,
+    canEditLocalPurchase: false,
+    canManagePricing: false,
+    canEditPricing: false,
+    canManagePromotions: false,
+    canEditPromotions: false,
+    canViewAustralianSuppliers: false,
+    canEditAustralianSuppliers: false,
+    canManageDomesticSuppliers: false,
+    canManageDomesticProducts: false,
+    canManageDomesticPrefixCodes: false,
     hasPermission: alwaysFalse,
     hasRole: alwaysFalse,
     onlyRole: alwaysFalse,
@@ -43,13 +62,6 @@ function createEmptyAccess(): AccessControl {
   }
 }
 
-/**
- * Build an AccessControl object from the current user.
- *
- * Permission-driven: all `canXxx` flags derive from `currentUser.permissions[]`.
- * Admin role acts as superuser (bypasses all permission checks).
- * Role-based flags (isAdmin, isManager, etc.) remain for backward compatibility.
- */
 export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
   if (!currentUser) {
     return createEmptyAccess()
@@ -99,10 +111,7 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
     return null
   }
 
-  // --- Permission-driven access flags ---
-  // Admin is superuser — bypasses all permission checks.
-  // All other users must have the explicit permission code assigned via their roles.
-
+  // --- 旧权限（保留兼容）---
   const canReadUser = isAdmin || hasPermission('Users.View')
   const canWriteUser = isAdmin || hasPermission('Users.Create') || hasPermission('Users.Edit')
   const canDeleteUser = isAdmin || hasPermission('Users.Delete')
@@ -126,6 +135,41 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
   const canExportData = isAdmin || hasPermission('Reports.Export')
   const canModifyPrice = isAdmin || hasPermission('Prices.Modify')
   const canDeletePrice = isAdmin || hasPermission('Prices.Delete')
+
+  // --- 新细粒度权限 ---
+  // 仓库
+  const canManageWarehouseProducts = isAdmin || hasPermission('Warehouse.ManageProducts') || hasPermission('Warehouse.Manage')
+  const canManageWarehouseOrders = isAdmin || hasPermission('Warehouse.ManageOrders') || hasPermission('Warehouse.Manage')
+  const canManageWarehouseCategories = isAdmin || hasPermission('Warehouse.ManageCategories') || hasPermission('Warehouse.Manage')
+  const canManageWarehouseLocations = isAdmin || hasPermission('Warehouse.ManageLocations') || hasPermission('Warehouse.Manage')
+
+  // 分店商品
+  const canManageStoreProducts = isAdmin || hasPermission('StoreProducts.View')
+  const canEditStoreProducts = isAdmin || hasPermission('StoreProducts.Edit')
+
+  // 分店运营
+  const canManageStoreOps = isAdmin || hasPermission('Store.ManageOperations')
+
+  // 本地进货
+  const canManageLocalPurchase = isAdmin || hasPermission('LocalPurchase.View')
+  const canEditLocalPurchase = isAdmin || hasPermission('LocalPurchase.Edit')
+
+  // 定价策略
+  const canManagePricing = isAdmin || hasPermission('PricingStrategy.View')
+  const canEditPricing = isAdmin || hasPermission('PricingStrategy.Edit')
+
+  // 促销
+  const canManagePromotions = isAdmin || hasPermission('Promotions.View')
+  const canEditPromotions = isAdmin || hasPermission('Promotions.Edit')
+
+  // 澳洲供应商
+  const canViewAustralianSuppliers = isAdmin || hasPermission('AustralianSuppliers.View')
+  const canEditAustralianSuppliers = isAdmin || hasPermission('AustralianSuppliers.Edit')
+
+  // 国内采购
+  const canManageDomesticSuppliers = isAdmin || hasPermission('DomesticPurchase.ManageSuppliers')
+  const canManageDomesticProducts = isAdmin || hasPermission('DomesticPurchase.ManageProducts')
+  const canManageDomesticPrefixCodes = isAdmin || hasPermission('DomesticPurchase.ManagePrefixCodes')
 
   return {
     isAdmin,
@@ -158,6 +202,25 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
     canExportData,
     canModifyPrice,
     canDeletePrice,
+    // 新细粒度
+    canManageWarehouseProducts,
+    canManageWarehouseOrders,
+    canManageWarehouseCategories,
+    canManageWarehouseLocations,
+    canManageStoreProducts,
+    canEditStoreProducts,
+    canManageStoreOps,
+    canManageLocalPurchase,
+    canEditLocalPurchase,
+    canManagePricing,
+    canEditPricing,
+    canManagePromotions,
+    canEditPromotions,
+    canViewAustralianSuppliers,
+    canEditAustralianSuppliers,
+    canManageDomesticSuppliers,
+    canManageDomesticProducts,
+    canManageDomesticPrefixCodes,
     hasPermission,
     hasRole,
     onlyRole,

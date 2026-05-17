@@ -1,4 +1,4 @@
-import { PlusOutlined, ReloadOutlined, TeamOutlined } from '@ant-design/icons'
+import { PlusOutlined, ReloadOutlined, TeamOutlined, DeleteOutlined } from '@ant-design/icons'
 import {
   Button,
   Card,
@@ -6,6 +6,7 @@ import {
   Form,
   Input,
   Modal,
+  Popconfirm,
   Space,
   Table,
   Tag,
@@ -21,6 +22,7 @@ import PageContainer from '../../../components/PageContainer'
 import {
   assignRolesToPermission,
   createPermission,
+  deletePermission,
   getActiveRoles,
   getPermissionRoles,
   getSysPermissions,
@@ -126,6 +128,17 @@ export default function SystemPermissionsPage() {
     }
   }
 
+  const handleDelete = async (record: SysPermissionDto) => {
+    try {
+      await deletePermission(record.code)
+      message.success(t('common.deleteSuccess'))
+      void loadData()
+    } catch (error) {
+      console.error(error)
+      message.error(t('common.deleteFailed'))
+    }
+  }
+
   const columns: ColumnsType<SysPermissionDto> = [
     {
       title: '#',
@@ -154,11 +167,24 @@ export default function SystemPermissionsPage() {
     {
       title: t('column.action'),
       key: 'action',
-      width: 120,
+      width: 180,
       render: (_, record) => (
-        <Button type="link" icon={<TeamOutlined />} onClick={() => void handleAssignRoles(record)}>
-          {t('system.permissions.assignRoles')}
-        </Button>
+        <Space>
+          <Button type="link" icon={<TeamOutlined />} onClick={() => void handleAssignRoles(record)}>
+            {t('system.permissions.assignRoles')}
+          </Button>
+          <Popconfirm
+            title={t('common.delete')}
+            description={t('common.deleteIrreversible', '删除后不可恢复')}
+            onConfirm={() => void handleDelete(record)}
+            okText={t('common.delete')}
+            cancelText={t('common.cancel')}
+          >
+            <Button type="link" danger icon={<DeleteOutlined />}>
+              {t('common.delete')}
+            </Button>
+          </Popconfirm>
+        </Space>
       ),
     },
   ]
@@ -228,12 +254,9 @@ export default function SystemPermissionsPage() {
           <Form.Item label={t('column.description')} name="description">
             <Input.TextArea rows={2} />
           </Form.Item>
-          <Form.Item label={t('system.permissions.batchGeneration')}>
+          <Form.Item name="actions" label={t('system.permissions.batchGeneration')}>
             <Checkbox.Group
               options={actionOptions.map((action) => ({ label: action, value: action }))}
-              onChange={(values) => {
-                createForm.setFieldValue('actions', values as string[])
-              }}
             />
             <div style={{ color: '#999', fontSize: 12, marginTop: 4 }}>
               {t('system.permissions.batchGenDesc')}

@@ -61,6 +61,9 @@
     "localSupplierInvoices": "Local Invoices",
     "invoiceDetail": "Invoice Detail",
     "editInvoice": "Edit Invoice",
+    "executiveSalesIntelligence": "Sales Dashboard",
+    "salesData": "Sales Data",
+    "salesDetail": "Sales Detail",
     "pageNotFound": "Page Not Found"
   },
   "lang": {
@@ -1631,7 +1634,11 @@
     "accessWarehouse": "Warehouse Management",
     "canAccess": "Accessible",
     "noPermission": "No Permission",
-    "noRoleInfo": "No role information"
+    "noRoleInfo": "No role information",
+    "myPermissions": "My Permissions",
+    "noPermData": "No permission data",
+    "granted": "Granted",
+    "notGranted": "Not Granted"
   },
   "forbidden": {
     "subTitle": "You do not have permission to access this page.",
@@ -1700,7 +1707,10 @@
       "assignStoreTitle": "Assign Stores to \"{{name}}\"",
       "assignStoreTitleShort": "Assign Stores",
       "loadRoleDataFailed": "Failed to load role assignment data",
-      "loadStoreDataFailed": "Failed to load store assignment data"
+      "loadStoreDataFailed": "Failed to load store assignment data",
+      "filterByStore": "Filter by Store",
+      "filterByRole": "Filter by Role",
+      "rowIndex": "#"
     },
     "roles": {
       "loadListFailed": "Failed to load role list",
@@ -2494,5 +2504,143 @@
     "paymentInfo": "Payment Info",
     "payment": "Payment",
     "invoicePreview": "Invoice Preview"
+  },
+  "executiveSales": {
+    "title": "Executive Sales Intelligence",
+    "subtitle": "Real-time performance monitoring with year-over-year comparisons",
+    "dateRange": {
+      "today": "Today",
+      "thisWeek": "This Week",
+      "lastWeek": "Last Week",
+      "thisMonth": "This Month",
+      "lastMonth": "Last Month"
+    },
+    "compareMode": {
+      "byWeek": "By Week",
+      "byDate": "By Date",
+      "auto": "Auto Compare",
+      "manual": "Manual Select"
+    },
+    "tag": {
+      "compare": "Compare:"
+    },
+    "quickSelect": {
+      "label": "Quick Select"
+    },
+    "dailyBranchPerformance": "Daily Branch Performance",
+    "viewDetails": "View Details",
+    "hourlyTrafficDensity": "Hourly Traffic Density",
+    "weeklyPerformanceHierarchy": "Weekly Performance Hierarchy",
+    "hierarchy": {
+      "subtitle": "Year-over-Year comparison by week, branch, and date"
+    },
+    "footer": {
+      "showing": "Showing {branches} branches across {weeks} weeks"
+    },
+    "message": {
+      "fetchBranchFailed": "Failed to fetch branch performance data",
+      "fetchHourlyFailed": "Failed to fetch hourly traffic data",
+      "fetchWeeklyFailed": "Failed to fetch weekly hierarchy data"
+    },
+    "table": {
+      "rank": "Rank",
+      "branchName": "Branch Name",
+      "revenue": "Revenue",
+      "current": "Current",
+      "ly": "LY",
+      "yoy": "YoY",
+      "orderCount": "Order Count",
+      "aov": "AOV"
+    },
+    "hourly": {
+      "time": "Time",
+      "current": "Current",
+      "ly": "LY",
+      "yoy": "YoY",
+      "progress": "Progress"
+    },
+    "weekly": {
+      "noData": "No data available for the selected date range",
+      "hierarchy": "Hierarchy",
+      "revenue": "Revenue",
+      "orders": "Orders",
+      "aov": "AOV",
+      "current": "Current",
+      "ly": "LY",
+      "yoy": "YoY",
+      "thisWeek": "This Week",
+      "lastWeek": "Last Week",
+      "thisMonth": "This Month",
+      "lastMonth": "Last Month"
+    }
+  },
+  "salesDetailAnalysisV2": {
+    "title": "Sales Detail Analysis",
+    "search": {
+      "placeholder": "Search SKU / Supplier / Branch..."
+    },
+    "quickSelect": {
+      "label": "Quick Select"
+    },
+    "export": {
+      "comingSoon": "Export feature coming soon"
+    },
+    "compareDate": "Compare Date",
+    "card": {
+      "localSuppliers": "Australian Suppliers",
+      "chinaSuppliers": "HB Warehouse",
+      "branchDistribution": "Branch Distribution"
+    },
+    "supplier": {
+      "localBadge": "AU Direct",
+      "chinaBadge": "WH Direct",
+      "noData": "No supplier data available",
+      "name": "Supplier Name",
+      "nameId": "Supplier Name/ID",
+      "revenue": "Revenue",
+      "orders": "Orders",
+      "qty": "Qty",
+      "share": "Share"
+    },
+    "branch": {
+      "badge": "HB Share",
+      "noData": "No branch data available",
+      "name": "Branch",
+      "revenue": "Revenue",
+      "qty": "Qty",
+      "orders": "Orders",
+      "ratio": "C/L",
+      "share": "HB Share"
+    },
+    "table": {
+      "title": "Granular Sales Detail",
+      "liveSync": "Live Sync",
+      "records": "Records",
+      "show": "Show",
+      "noData": "No sales data available",
+      "previous": "Prev",
+      "next": "Next",
+      "paginationInfo": "Showing {start}-{end} of {total} items",
+      "column": {
+        "rank": "#",
+        "media": "Media",
+        "sku": "SKU Code",
+        "product": "Product Identity",
+        "soldQty": "Sold Qty",
+        "discQty": "Disc Qty",
+        "avgPrice": "Avg Price",
+        "grossTotal": "Gross Total"
+      }
+    },
+    "aiButton": {
+      "label": "AI Forecast Report",
+      "comingSoon": "AI forecast report feature coming soon"
+    },
+    "error": {
+      "localSuppliers": "Failed to fetch local suppliers data",
+      "chinaSuppliers": "Failed to fetch China suppliers data",
+      "branches": "Failed to fetch branch data",
+      "products": "Failed to fetch product sales data"
+    }
   }
 }

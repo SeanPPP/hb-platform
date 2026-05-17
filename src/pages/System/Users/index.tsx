@@ -7,6 +7,7 @@ import {
   Form,
   Input,
   List,
+  Select,
   Space,
   Spin,
   Switch,
@@ -52,6 +53,15 @@ export default function SystemUsersPage() {
   const [pageSize, setPageSize] = useState(10)
   const [total, setTotal] = useState(0)
 
+  const [selectedStoreGuid, setSelectedStoreGuid] = useState<string | undefined>(undefined)
+  const [selectedRoleGuid, setSelectedRoleGuid] = useState<string | undefined>(undefined)
+
+  const [sortBy, setSortBy] = useState<string | undefined>(undefined)
+  const [sortOrder, setSortOrder] = useState<'ascend' | 'descend' | null>(null)
+
+  const [storeOptions, setStoreOptions] = useState<{ label: string; value: string }[]>([])
+  const [roleOptions, setRoleOptions] = useState<{ label: string; value: string }[]>([])
+
   const [detailOpen, setDetailOpen] = useState(false)
   const [detailLoading, setDetailLoading] = useState(false)
   const [detailUser, setDetailUser] = useState<UserDetailDto | null>(null)
@@ -82,13 +92,17 @@ export default function SystemUsersPage() {
     [allStores],
   )
 
-  const loadData = async (nextPage = page, nextPageSize = pageSize) => {
+  const loadData = async (nextPage = page, nextPageSize = pageSize, currentSortBy?: string, currentSortOrder?: 'ascend' | 'descend' | null) => {
     setLoading(true)
     try {
       const result = await getUsers({
         page: nextPage,
         pageSize: nextPageSize,
         search: keyword || undefined,
+        storeGuid: selectedStoreGuid,
+        roleGuid: selectedRoleGuid,
+        sortBy: currentSortBy || undefined,
+        sortDirection: currentSortOrder === 'ascend' ? 'asc' : currentSortOrder === 'descend' ? 'desc' : undefined,
       })
       setData(result.items)
       setTotal(result.total)
@@ -103,7 +117,25 @@ export default function SystemUsersPage() {
   }
 
   useEffect(() => {
-    void loadData(1, pageSize)
+    void loadData(1, pageSize, undefined, undefined)
+  }, [])
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const [storeResult, roles] = await Promise.all([
+          getStores({ page: 1, pageSize: 200, sortField: 'storeName', sortOrder: 'asc' }),
+          getActiveRoles(),
+        ])
+        setStoreOptions(storeResult.items.map((s) => ({
+          label: `${s.storeName} (${s.storeCode})`,
+          value: s.storeGUID,
+        })))
+        setRoleOptions(roles.map((r) => ({ label: r.roleName, value: r.roleGUID })))
+      } catch (error) {
+        console.error(error)
+      }
+    })()
   }, [])
 
   const reloadUserDetail = async (userGuid: string) => {
@@ -228,7 +260,7 @@ export default function SystemUsersPage() {
       if (detailUser?.userGUID === updated.userGUID) {
         setDetailUser(updated)
       }
-      void loadData(page, pageSize)
+      void loadData(page, pageSize, sortBy, sortOrder)
     } catch (error) {
       if (typeof error === 'object' && error !== null && 'errorFields' in error) return
       console.error(error)
@@ -244,7 +276,7 @@ export default function SystemUsersPage() {
     try {
       await assignRolesToUser(editingUser.userGUID, { roleGuids: roleTargetKeys })
       message.success(t('system.users.roleAssignSuccess', '角色分配成功'))
-      void loadData(page, pageSize)
+      void loadData(page, pageSize, sortBy, sortOrder)
       void loadPermData(editingUser.userGUID)
       const updated = await getUserByGuid(editingUser.userGUID)
       setEditingUser(updated)
@@ -270,7 +302,7 @@ export default function SystemUsersPage() {
         })),
       )
       message.success(t('system.users.storeAssignSuccess', '分店分配成功'))
-      void loadData(page, pageSize)
+      void loadData(page, pageSize, sortBy, sortOrder)
       const updated = await getUserByGuid(editingUser.userGUID)
       setEditingUser(updated)
       if (detailUser?.userGUID === updated.userGUID) {
@@ -319,13 +351,22 @@ export default function SystemUsersPage() {
   }, [permCategories, allPermSet])
 
   const columns: ColumnsType<UserDto> = [
-    { title: t('system.users.username', '用户名'), dataIndex: 'username', width: 180 },
-    { title: t('system.users.fullName', '姓名'), dataIndex: 'fullName', width: 160, render: (value) => value || '--' },
+    {
+      title: '#',
+      key: 'rowIndex',
+      width: 60,
+      align: 'center',
+      render: (_: unknown, __: UserDto, index: number) => (page - 1) * pageSize + index + 1,
+    },
+    { title: t('system.users.username', '用户名'), dataIndex: 'username', width: 180, sorter: true, sortOrder: sortBy === 'username' ? sortOrder : null },
+    { title: t('system.users.fullName', '姓名'), dataIndex: 'fullName', width: 160, sorter: true, sortOrder: sortBy === 'fullName' ? sortOrder : null, render: (value) => value || '--' },
     { title: t('system.users.email', '邮箱'), dataIndex: 'email', width: 220 },
     {
       title: t('system.users.roles', '角色'),
       dataIndex: 'roleNames',
       width: 220,
+      sorter: true,
+      sortOrder: sortBy === 'roleNames' ? sortOrder : null,
       render: (value: string[]) =>
         value?.length ? value.map((item) => <Tag key={item} color={getRoleColor(item)}>{item}</Tag>) : '--',
     },
@@ -333,6 +374,8 @@ export default function SystemUsersPage() {
       title: t('system.users.linkedStores', '关联分店'),
       dataIndex: 'storeNames',
       width: 240,
+      sorter: true,
+      sortOrder: sortBy === 'storeNames' ? sortOrder : null,
       render: (value: string[]) => {
         const stores = [...(value || [])].sort((left, right) => left.localeCompare(right))
         if (!stores.length) return '--'
@@ -526,10 +569,30 @@ export default function SystemUsersPage() {
             style={{ width: 280 }}
             allowClear
           />
-          <Button type="primary" onClick={() => void loadData(1, pageSize)}>
+          <Select
+            allowClear
+            showSearch
+            optionFilterProp="label"
+            placeholder={t('system.users.filterByStore', '按分店过滤')}
+            style={{ width: 220 }}
+            value={selectedStoreGuid}
+            onChange={(value) => setSelectedStoreGuid(value)}
+            options={storeOptions}
+          />
+          <Select
+            allowClear
+            showSearch
+            optionFilterProp="label"
+            placeholder={t('system.users.filterByRole', '按角色过滤')}
+            style={{ width: 180 }}
+            value={selectedRoleGuid}
+            onChange={(value) => setSelectedRoleGuid(value)}
+            options={roleOptions}
+          />
+          <Button type="primary" onClick={() => void loadData(1, pageSize, sortBy, sortOrder)}>
             {t('common.query', '查询')}
           </Button>
-          <Button icon={<ReloadOutlined />} onClick={() => void loadData(page, pageSize)}>
+          <Button icon={<ReloadOutlined />} onClick={() => void loadData(page, pageSize, sortBy, sortOrder)}>
             {t('common.refresh', '刷新')}
           </Button>
         </Space>
@@ -539,14 +602,29 @@ export default function SystemUsersPage() {
           loading={loading}
           columns={columns}
           dataSource={data}
-          scroll={{ x: 980 }}
+          scroll={{ x: 1060 }}
+          onChange={(_pagination, _filters, sorter) => {
+            const currentSorter = Array.isArray(sorter) ? sorter[0] : sorter
+            const field = currentSorter?.field || currentSorter?.column?.dataIndex
+            const order = currentSorter?.order as 'ascend' | 'descend' | undefined
+
+            if (field && order) {
+              setSortBy(String(field))
+              setSortOrder(order)
+              void loadData(1, pageSize, String(field), order)
+            } else {
+              setSortBy(undefined)
+              setSortOrder(null)
+              void loadData(1, pageSize, undefined, undefined)
+            }
+          }}
           pagination={{
             current: page,
             pageSize,
             total,
             showSizeChanger: true,
             onChange: (nextPage, nextPageSize) => {
-              void loadData(nextPage, nextPageSize)
+              void loadData(nextPage, nextPageSize, sortBy, sortOrder)
             },
           }}
         />

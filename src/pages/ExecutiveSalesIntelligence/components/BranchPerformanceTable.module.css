@@ -1,0 +1,157 @@
+.tableWrapper {
+  overflow-x: auto;
+  max-height: 600px;
+  overflow-y: auto;
+
+  &::-webkit-scrollbar {
+    width: 6px;
+  }
+
+  &::-webkit-scrollbar-track {
+    background: #f3f3f9;
+    border-radius: 3px;
+  }
+
+  &::-webkit-scrollbar-thumb {
+    background: #c1c4ce;
+    border-radius: 3px;
+
+    &:hover {
+      background: #a1a5af;
+    }
+  }
+}
+
+.table {
+  & :global {
+    .ant-table {
+      background: transparent;
+      font-family: Inter, sans-serif;
+    }
+
+    .ant-table-thead > tr > th {
+      background: #f3f3f9;
+      padding: 8px 16px;
+      font-size: 0.625rem;
+      font-weight: 700;
+      color: #94a3b8;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      border-bottom: none;
+    }
+
+    .ant-table-tbody > tr > td {
+      padding: 8px 16px;
+      border-bottom: 1px solid #ededf4;
+    }
+
+    .ant-table-tbody > tr:hover > td {
+      background: rgba(0, 0, 0, 2%);
+    }
+
+    .ant-table-cell-fix-left {
+      background: #fff;
+    }
+
+    .ant-table-thead > tr > th.ant-table-cell-fix-left:first-child {
+      padding-left: 8px;
+      padding-right: 4px;
+    }
+
+    .ant-table-thead > tr > th.ant-table-cell-fix-left:nth-child(2) {
+      padding-left: 4px;
+      padding-right: 8px;
+    }
+
+    .ant-table-tbody > tr > td.ant-table-cell-fix-left:first-child {
+      padding-left: 8px;
+      padding-right: 4px;
+    }
+
+    .ant-table-tbody > tr > td.ant-table-cell-fix-left:nth-child(2) {
+      padding-left: 4px;
+      padding-right: 8px;
+    }
+  }
+}
+
+.rankNumber {
+  font-weight: 700;
+  color: #94a3b8;
+  font-variant-numeric: tabular-nums;
+}
+
+.branchName {
+  font-weight: 700;
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mainValue {
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.subValue {
+  font-weight: 600;
+  color: #434750;
+  font-variant-numeric: tabular-nums;
+}
+
+.lyValue {
+  font-size: 0.625rem;
+  color: #1a1c20;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.trendBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  font-size: 0.625rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+
+  .material-symbols-outlined {
+    font-size: 0.75rem;
+  }
+}
+
+.trendPositive {
+  color: #005b14;
+}
+
+.trendNegative {
+  color: #ba1a1a;
+}
+
+.tableRow {
+  transition: background-color 0.2s ease;
+
+  &:hover {
+    background-color: rgba(0, 0, 0, 2%);
+  }
+}
+
+.revenueHeader,
+.orderCountHeader,
+.aovHeader {
+  font-weight: 700 !important;
+}
+
+.tableRowClickable {
+  cursor: pointer;
+}
+
+.selectedRow {
+  background-color: #e6f4ff !important;
+
+  &:hover > td {
+    background-color: #bae0ff !important;
+  }
+}

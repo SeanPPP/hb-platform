@@ -38,7 +38,7 @@ function DesktopAdminLayout() {
   const location = useLocation()
   const keepAliveRef = useRef<RouteKeepAliveRef>(null)
 
-  const { currentUser, access, logout } = useAuthStore()
+  const { currentUser, access, navigationMenu, logout } = useAuthStore()
   const {
     tabs,
     activeKey,
@@ -56,7 +56,7 @@ function DesktopAdminLayout() {
   const currentRoute = getCurrentRoute(location.pathname, access)
   const currentTab = tabs.find((item) => item.key === location.pathname || item.key === currentRoute?.path)
   const currentElement = getCurrentElement(location.pathname, access)
-  const menus = useMemo(() => buildMenus(access), [access, i18n.language])
+  const menus = useMemo(() => buildMenus(access, navigationMenu), [access, navigationMenu, i18n.language])
   const selectedKeys = getSelectedMenuKeys(location.pathname, access)
   const cacheKeys = tabs.filter((item) => item.keepAlive).map((item) => item.key)
 

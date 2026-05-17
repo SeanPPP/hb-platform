@@ -1,0 +1,164 @@
+.container {
+  overflow-y: auto;
+  max-height: 600px;
+  min-height: 540px;
+
+  &::-webkit-scrollbar {
+    width: 6px;
+  }
+
+  &::-webkit-scrollbar-track {
+    background: #f3f3f9;
+    border-radius: 3px;
+  }
+
+  &::-webkit-scrollbar-thumb {
+    background: #c1c4ce;
+    border-radius: 3px;
+
+    &:hover {
+      background: #a1a5af;
+    }
+  }
+}
+
+.loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 540px;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.th {
+  padding: 10px 12px;
+  font-size: 0.5625rem;
+  font-weight: 700;
+  color: #94a3b8;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  text-align: center;
+  border-bottom: 1px solid #ededf4;
+  position: sticky;
+  top: 0;
+  background: #fff;
+}
+
+.thRight {
+  text-align: right;
+}
+
+.row {
+  transition: background-color 0.2s ease;
+
+  &:hover {
+    background-color: rgba(0, 0, 0, 2%);
+  }
+}
+
+.peakRow {
+  background-color: rgba(27, 77, 143, 5%);
+
+  &:hover {
+    background-color: rgba(27, 77, 143, 8%);
+  }
+}
+
+.td {
+  padding: 8px 12px;
+  border-bottom: 1px solid #ededf4;
+  vertical-align: middle;
+}
+
+.tdRight {
+  text-align: right;
+}
+
+.time {
+  background: #ededf4;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 0.625rem;
+  font-weight: 700;
+  color: #434750;
+  font-variant-numeric: tabular-nums;
+  min-width: 48px;
+  text-align: center;
+  display: inline-block;
+}
+
+.timePeak {
+  background: #003670;
+  color: #fff;
+}
+
+.value {
+  font-size: 0.75rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: #1a1c20;
+}
+
+.valuePeak {
+  color: #003670;
+  font-weight: 800;
+}
+
+.lyValue {
+  font-size: 0.625rem;
+  color: #1a1c20;
+  font-weight: 500;
+}
+
+.yoyChange {
+  font-size: 0.625rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.yoyPositive {
+  color: #005b14;
+}
+
+.yoyNegative {
+  color: #ba1a1a;
+}
+
+.progressWrapper {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.progressBar {
+  width: 80px;
+  height: 6px;
+  background: #f1f5f9;
+  border-radius: 9999px;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.progressFill {
+  height: 100%;
+  background: #003670;
+  border-radius: 9999px;
+  transition: width 0.3s ease;
+}
+
+.progressPeak {
+  background: #003670;
+}
+
+.percentage {
+  font-size: 0.5625rem;
+  font-weight: 600;
+  color: #94a3b8;
+  min-width: 32px;
+  text-align: right;
+}

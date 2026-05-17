@@ -1,6 +1,7 @@
 import {
   AppstoreOutlined,
   BankOutlined,
+  BarChartOutlined,
   BuildOutlined,
   DashboardOutlined,
   DatabaseOutlined,
@@ -35,6 +36,8 @@ import ProductCreationPage from '../pages/DomesticPurchase/ProductCreation'
 import ProductImportPage from '../pages/DomesticPurchase/ProductImport'
 import ProductGradeManagementPage from '../pages/Warehouse/ProductGradeManagement'
 import NotFoundPage from '../pages/NotFound'
+import ExecutiveSalesIntelligencePage from '../pages/ExecutiveSalesIntelligence'
+import SalesDetailAnalysisPage from '../pages/ExecutiveSalesIntelligence/SalesDetailAnalysisV2'
 import PosmSalesOrdersPage from '../pages/PosmSalesOrders'
 import PosAdminCashRegisterUsersPage from '../pages/PosAdmin/CashRegisterUsers'
 import PosAdminPricingStrategiesPage from '../pages/PosAdmin/PricingStrategies'
@@ -58,6 +61,7 @@ import StoreOrderInvoicePage from '../pages/Warehouse/StoreOrders/Invoice'
 import StoreOrderPickingListPage from '../pages/Warehouse/StoreOrders/PickingList'
 import StoreOrdersPage from '../pages/Warehouse/StoreOrders'
 import type { AccessControl } from '../types/auth'
+import type { NavigationMenuDto } from '../types/auth'
 import type { AppRouteItem, AppRouteMeta, TabItem } from '../types/router'
 
 export interface ResolvedRoute extends AppRouteItem {
@@ -74,6 +78,7 @@ const iconMap = {
   DashboardOutlined: <DashboardOutlined />,
   AppstoreOutlined: <AppstoreOutlined />,
   BankOutlined: <BankOutlined />,
+  BarChartOutlined: <BarChartOutlined />,
   BuildOutlined: <BuildOutlined />,
   DatabaseOutlined: <DatabaseOutlined />,
   DollarOutlined: <DollarOutlined />,
@@ -170,7 +175,7 @@ export const appRoutes: AppRouteItem[] = [
           title: 'menu.chinaSuppliers',
           icon: 'BankOutlined',
           keepAlive: true,
-          accessKey: 'canManageWarehouse',
+          accessKey: 'canManageDomesticSuppliers',
         },
         element: <DomesticChinaSuppliersPage />,
       },
@@ -190,7 +195,7 @@ export const appRoutes: AppRouteItem[] = [
           title: 'menu.prefixCodeManagement',
           icon: 'NumberOutlined',
           keepAlive: true,
-          accessKey: 'canManageWarehouse',
+          accessKey: 'canManageDomesticPrefixCodes',
         },
         element: <ProductPrefixCodeManagementPage />,
       },
@@ -200,7 +205,7 @@ export const appRoutes: AppRouteItem[] = [
           title: 'menu.productCreation',
           icon: 'BuildOutlined',
           keepAlive: true,
-          accessKey: 'canManageWarehouse',
+          accessKey: 'canManageDomesticProducts',
         },
         element: <ProductCreationPage />,
       },
@@ -210,7 +215,7 @@ export const appRoutes: AppRouteItem[] = [
           title: 'menu.productImport',
           icon: 'InboxOutlined',
           keepAlive: true,
-          accessKey: 'canManageWarehouse',
+          accessKey: 'canManageDomesticProducts',
         },
         element: <ProductImportPage />,
       },
@@ -229,7 +234,7 @@ export const appRoutes: AppRouteItem[] = [
           title: 'menu.storeOrders',
           icon: 'ReconciliationOutlined',
           keepAlive: true,
-          accessKey: 'canManageWarehouse',
+          accessKey: 'canManageWarehouseOrders',
         },
         element: <StoreOrdersPage />,
       },
@@ -239,7 +244,7 @@ export const appRoutes: AppRouteItem[] = [
           title: 'menu.storeOrderDetail',
           hidden: true,
           keepAlive: true,
-          accessKey: 'canManageWarehouse',
+          accessKey: 'canManageWarehouseOrders',
           activeMenu: '/warehouse/store-orders',
           dynamicTitle: () => i18n.t('menu.storeOrderDetail'),
         },
@@ -251,7 +256,7 @@ export const appRoutes: AppRouteItem[] = [
           title: 'menu.pickingList',
           hidden: true,
           keepAlive: true,
-          accessKey: 'canManageWarehouse',
+          accessKey: 'canManageWarehouseOrders',
           activeMenu: '/warehouse/store-orders',
           dynamicTitle: () => i18n.t('menu.pickingList'),
         },
@@ -263,7 +268,7 @@ export const appRoutes: AppRouteItem[] = [
           title: 'menu.invoice',
           hidden: true,
           keepAlive: true,
-          accessKey: 'canManageWarehouse',
+          accessKey: 'canManageWarehouseOrders',
           activeMenu: '/warehouse/store-orders',
           dynamicTitle: () => i18n.t('menu.invoice'),
         },
@@ -275,7 +280,7 @@ export const appRoutes: AppRouteItem[] = [
           title: 'menu.warehouseProducts',
           icon: 'AppstoreOutlined',
           keepAlive: true,
-          accessKey: 'canManageWarehouse',
+          accessKey: 'canManageWarehouseProducts',
         },
         element: <WarehouseProductsPage />,
       },
@@ -285,7 +290,7 @@ export const appRoutes: AppRouteItem[] = [
           title: 'menu.categories',
           icon: 'TagsOutlined',
           keepAlive: true,
-          accessKey: 'canManageWarehouse',
+          accessKey: 'canManageWarehouseCategories',
         },
         element: <WarehouseCategoriesPage />,
       },
@@ -295,7 +300,7 @@ export const appRoutes: AppRouteItem[] = [
           title: 'menu.warehouseLocations',
           icon: 'EnvironmentOutlined',
           keepAlive: true,
-          accessKey: 'canManageWarehouse',
+          accessKey: 'canManageWarehouseLocations',
         },
         element: <WarehouseLocationsPage />,
       },
@@ -305,9 +310,38 @@ export const appRoutes: AppRouteItem[] = [
           title: 'menu.productGradeManagement',
           icon: 'TrophyOutlined',
           keepAlive: true,
-          accessKey: 'canManageWarehouse',
+          accessKey: 'canManageWarehouseProducts',
         },
         element: <ProductGradeManagementPage />,
+      },
+    ],
+  },
+  {
+    path: '/executive-sales-intelligence',
+    meta: {
+      title: 'menu.executiveSalesIntelligence',
+      icon: 'BarChartOutlined',
+    },
+    children: [
+      {
+        path: '/executive-sales-intelligence/overview',
+        meta: {
+          title: 'menu.salesData',
+          icon: 'DashboardOutlined',
+          keepAlive: true,
+          accessKey: 'canViewReports',
+        },
+        element: <ExecutiveSalesIntelligencePage />,
+      },
+      {
+        path: '/executive-sales-intelligence/sales-detail-v2',
+        meta: {
+          title: 'menu.salesDetail',
+          icon: 'FileTextOutlined',
+          keepAlive: true,
+          accessKey: 'canViewReports',
+        },
+        element: <SalesDetailAnalysisPage />,
       },
     ],
   },
@@ -324,7 +358,7 @@ export const appRoutes: AppRouteItem[] = [
           title: 'menu.suppliers',
           icon: 'ShopOutlined',
           keepAlive: true,
-          accessKey: 'canManageStore',
+          accessKey: 'canViewAustralianSuppliers',
         },
         element: <PosAdminSupplierManagementPage />,
       },
@@ -334,7 +368,7 @@ export const appRoutes: AppRouteItem[] = [
           title: 'menu.productManagement',
           icon: 'AppstoreOutlined',
           keepAlive: true,
-          accessKey: 'canManageStore',
+          accessKey: 'canManageStoreProducts',
         },
         element: <PosAdminProductManagementPage />,
       },
@@ -344,7 +378,7 @@ export const appRoutes: AppRouteItem[] = [
           title: 'menu.storeProductPrice',
           icon: 'DollarOutlined',
           keepAlive: true,
-          accessKey: 'canManageStore',
+          accessKey: 'canEditStoreProducts',
         },
         element: <PosAdminStoreProductPricePage />,
       },
@@ -354,7 +388,7 @@ export const appRoutes: AppRouteItem[] = [
           title: 'menu.pricingStrategies',
           icon: 'FileTextOutlined',
           keepAlive: true,
-          accessKey: 'isAdmin',
+          accessKey: 'canManagePricing',
         },
         element: <PosAdminPricingStrategiesPage />,
       },
@@ -364,7 +398,7 @@ export const appRoutes: AppRouteItem[] = [
           title: 'menu.promotions',
           icon: 'GiftOutlined',
           keepAlive: true,
-          accessKey: 'isAdmin',
+          accessKey: 'canManagePromotions',
         },
         element: <PosAdminPromotionsPage />,
       },
@@ -374,7 +408,7 @@ export const appRoutes: AppRouteItem[] = [
           title: 'menu.cashRegisterUsers',
           icon: 'UserOutlined',
           keepAlive: true,
-          accessKey: 'canManageStore',
+          accessKey: 'canManageStoreOps',
         },
         element: <PosAdminCashRegisterUsersPage />,
       },
@@ -384,7 +418,7 @@ export const appRoutes: AppRouteItem[] = [
           title: 'menu.deviceRegistration',
           icon: 'BuildOutlined',
           keepAlive: true,
-          accessKey: 'canManageStore',
+          accessKey: 'canManageStoreOps',
         },
         element: <PosAdminDeviceRegistrationPage />,
       },
@@ -404,7 +438,7 @@ export const appRoutes: AppRouteItem[] = [
           title: 'menu.localSupplierInvoices',
           icon: 'ReconciliationOutlined',
           keepAlive: true,
-          accessKey: 'canManageStore',
+          accessKey: 'canManageLocalPurchase',
         },
         element: <LocalSupplierInvoicesPage />,
       },
@@ -414,7 +448,7 @@ export const appRoutes: AppRouteItem[] = [
           title: 'menu.invoiceDetail',
           hidden: true,
           keepAlive: true,
-          accessKey: 'canManageStore',
+          accessKey: 'canManageLocalPurchase',
           activeMenu: '/pos-admin/local-supplier-invoices',
           dynamicTitle: () => i18n.t('menu.invoiceDetail'),
         },
@@ -426,7 +460,7 @@ export const appRoutes: AppRouteItem[] = [
           title: 'menu.editInvoice',
           hidden: true,
           keepAlive: true,
-          accessKey: 'isAdmin',
+          accessKey: 'canEditLocalPurchase',
           activeMenu: '/pos-admin/local-supplier-invoices',
           dynamicTitle: () => i18n.t('menu.editInvoice'),
         },
@@ -537,8 +571,20 @@ function buildMenusInternal(routes: AppRouteItem[], access: AccessControl): Menu
     .filter(Boolean) as MenuProps['items']
 }
 
-export function buildMenus(access: AccessControl) {
+export function buildMenus(access: AccessControl, navigationMenu?: NavigationMenuDto[]) {
+  if (navigationMenu?.length) {
+    return buildMenusFromBackend(navigationMenu)
+  }
   return buildMenusInternal(appRoutes, access)
+}
+
+function buildMenusFromBackend(nodes: NavigationMenuDto[]): MenuProps['items'] {
+  return nodes.map((node) => ({
+    key: node.path,
+    icon: node.icon ? iconMap[node.icon as keyof typeof iconMap] : undefined,
+    label: i18n.t(node.titleKey),
+    children: node.children?.length ? buildMenusFromBackend(node.children) : undefined,
+  }))
 }
 
 export function getBreadcrumbItems(pathname: string, access: AccessControl, currentTabTitle?: string) {
