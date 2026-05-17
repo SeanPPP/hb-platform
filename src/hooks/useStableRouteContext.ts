@@ -4,8 +4,13 @@ import { resolveRoute, type ResolvedRoute } from '../router/routes'
 
 export function useStableRouteContext(): ResolvedRoute | null {
   const location = useLocation()
-  const stablePathRef = useRef(location.pathname)
-  const routeRef = useRef<ResolvedRoute | null>(resolveRoute(stablePathRef.current))
+  const pathnameRef = useRef(location.pathname)
+  const routeRef = useRef<ResolvedRoute | null>(resolveRoute(pathnameRef.current))
+
+  if (location.pathname !== pathnameRef.current) {
+    pathnameRef.current = location.pathname
+    routeRef.current = resolveRoute(pathnameRef.current)
+  }
 
   return routeRef.current
 }

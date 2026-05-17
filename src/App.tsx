@@ -24,8 +24,8 @@ function AppBootstrap() {
     }
   }, [fetchCurrentUser, initialized, isLoginPath, loading])
 
-  // 仅拥有订货员角色的用户默认进入前台
-  const isOnlyOrder = access.onlyOrder
+  // 无Dashboard权限或仅订货员角色的用户默认进入前台
+  const isOnlyOrder = access.onlyOrder || !access.canAccessDashboard
   const homePage = isOnlyOrder ? '/shop' : '/dashboard'
 
   if ((!initialized || loading) && !isLoginPath) {

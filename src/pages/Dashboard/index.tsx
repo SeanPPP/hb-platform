@@ -100,39 +100,40 @@ export default function DashboardPage() {
             ) : (
               <Collapse
                 size="small"
-                items={permGroups.map((group) => {
-                  const groupGranted = group.permissions.filter((p) => p.hasPermission).length
-                  return {
+                items={permGroups
+                  .map((group) => ({
+                    group,
+                    granted: group.permissions.filter((p) => p.hasPermission),
+                  }))
+                  .filter(({ granted }) => granted.length > 0)
+                  .map(({ group, granted }) => ({
                     key: group.category,
                     label: (
                       <Space>
                         <span>{group.displayName}</span>
-                        <Tag color={groupGranted > 0 ? 'blue' : 'default'}>
-                          {groupGranted}/{group.permissions.length}
+                        <Tag color="blue">
+                          {granted.length}/{group.permissions.length}
                         </Tag>
                       </Space>
                     ),
                     children: (
                       <List
                         size="small"
-                        dataSource={group.permissions}
+                        dataSource={granted}
                         renderItem={(perm) => (
                           <List.Item style={{ padding: '4px 0' }}>
-                            <Typography.Text
-                              type={perm.hasPermission ? undefined : 'secondary'}
-                              delete={!perm.hasPermission}
-                            >
+                            <Typography.Text>
                               {perm.displayName || perm.name}
                             </Typography.Text>
-                            <Tag color={perm.hasPermission ? 'success' : 'default'}>
-                              {perm.hasPermission ? t('dashboard.granted', '已授权') : t('dashboard.notGranted', '未授权')}
+                            <Tag color="success">
+                              {t('dashboard.granted', '已授权')}
                             </Tag>
                           </List.Item>
                         )}
                       />
                     ),
-                  }
-                })}
+                  }))
+                }
               />
             )}
           </Card>

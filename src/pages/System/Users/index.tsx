@@ -1,4 +1,4 @@
-import { EditOutlined, EyeOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons'
+import { EditOutlined, EyeOutlined, LockOutlined, PlusOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons'
 import {
   Button,
   Card,
@@ -7,6 +7,7 @@ import {
   Form,
   Input,
   List,
+  Modal,
   Select,
   Space,
   Spin,
@@ -30,19 +31,22 @@ import { P } from '../../../types/permissions'
 import {
   assignRolesToUser,
   assignStoresToUser,
+  createUser,
   getUserByGuid,
   getUserRoles,
   getUserStores,
   getUsers,
   updateUser,
+  updateUserPassword,
 } from '../../../services/userService'
 import { getActiveRoles } from '../../../services/roleService'
 import { getPermissions, getRolePermissions } from '../../../services/roleService'
 import { getStores } from '../../../services/storeService'
-import type { UpdateUserDto, UserDetailDto, UserDto, UserStoreDto } from '../../../types/user'
+import type { CreateUserDto, UpdateUserDto, UserDetailDto, UserDto, UserStoreDto } from '../../../types/user'
 import type { RoleOptionDto, PermissionCategoryDto } from '../../../types/role'
 import type { StoreDto } from '../../../types/store'
 import { getRoleColor, getStoreColor } from '../../../utils/userTableColors'
+import { hashPassword } from '../../../utils/password'
 
 export default function SystemUsersPage() {
   const { t } = useTranslation()
@@ -86,6 +90,21 @@ export default function SystemUsersPage() {
   const [permCategories, setPermCategories] = useState<PermissionCategoryDto[]>([])
   const [rolePermMap, setRolePermMap] = useState<Record<string, string[]>>({})
   const [permLoading, setPermLoading] = useState(false)
+
+  const [resetPwdLoading, setResetPwdLoading] = useState(false)
+  const [resetPwdOpen, setResetPwdOpen] = useState(false)
+  const [resetPwdForm] = Form.useForm<{ newPassword: string }>()
+
+  const [createOpen, setCreateOpen] = useState(false)
+  const [createLoading, setCreateLoading] = useState(false)
+  const [createTab, setCreateTab] = useState('info')
+  const [createForm] = Form.useForm<CreateUserDto & { confirmPassword: string }>()
+
+  const [createRoleTargetKeys, setCreateRoleTargetKeys] = useState<string[]>([])
+  const [createRoleLoading, setCreateRoleLoading] = useState(false)
+
+  const [createStoreTargetKeys, setCreateStoreTargetKeys] = useState<string[]>([])
+  const [createStoreLoading, setCreateStoreLoading] = useState(false)
 
   const sortedStores = useMemo(
     () => [...allStores].sort((a, b) => a.storeName.localeCompare(b.storeName)),
@@ -316,6 +335,76 @@ export default function SystemUsersPage() {
     }
   }
 
+  const handleResetPassword = async () => {
+    if (!editingUser) return
+    try {
+      const values = await resetPwdForm.validateFields()
+      setResetPwdLoading(true)
+      await updateUserPassword(editingUser.userGUID, { newPassword: hashPassword(values.newPassword) })
+      message.success(t('system.users.resetPasswordSuccess', '密码重置成功'))
+      setResetPwdOpen(false)
+      resetPwdForm.resetFields()
+    } catch (error) {
+      if (typeof error === 'object' && error !== null && 'errorFields' in error) return
+      console.error(error)
+      message.error(t('system.users.resetPasswordFailed', '密码重置失败'))
+    } finally {
+      setResetPwdLoading(false)
+    }
+  }
+
+  const handleOpenCreate = async () => {
+    setCreateOpen(true)
+    setCreateTab('info')
+    createForm.resetFields()
+    setCreateRoleTargetKeys([])
+    setCreateStoreTargetKeys([])
+    setCreateRoleLoading(true)
+    setCreateStoreLoading(true)
+    try {
+      const [roles, stores] = await Promise.all([
+        getActiveRoles(),
+        getStores({ page: 1, pageSize: 200, sortField: 'storeName', sortOrder: 'asc' }),
+      ])
+      setAllRoles(roles)
+      setAllStores(stores.items)
+    } catch (error) {
+      console.error(error)
+    } finally {
+      setCreateRoleLoading(false)
+      setCreateStoreLoading(false)
+    }
+  }
+
+  const handleCreateSubmit = async () => {
+    try {
+      const values = await createForm.validateFields()
+      setCreateLoading(true)
+      const payload: CreateUserDto = {
+        username: values.username,
+        email: values.email,
+        password: hashPassword(values.password),
+        fullName: values.fullName,
+        isActive: values.isActive ?? true,
+        roleGuids: createRoleTargetKeys,
+        storeGuids: createStoreTargetKeys,
+      }
+      await createUser(payload)
+      message.success(t('system.users.createUserSuccess', '用户创建成功'))
+      setCreateOpen(false)
+      createForm.resetFields()
+      setCreateRoleTargetKeys([])
+      setCreateStoreTargetKeys([])
+      void loadData(1, pageSize, sortBy, sortOrder)
+    } catch (error) {
+      if (typeof error === 'object' && error !== null && 'errorFields' in error) return
+      console.error(error)
+      message.error(t('system.users.createUserFailed', '用户创建失败'))
+    } finally {
+      setCreateLoading(false)
+    }
+  }
+
   const allPermSet = useMemo(() => {
     const set = new Set<string>()
     Object.values(rolePermMap).forEach((perms) => perms.forEach((p) => set.add(p)))
@@ -448,6 +537,13 @@ export default function SystemUsersPage() {
                 {t('system.users.saveBasicInfo', '保存基本信息')}
               </Button>
             </Form.Item>
+            <HasPermission code={P.Users.ResetPassword}>
+              <div style={{ paddingTop: 16, borderTop: '1px solid #f0f0f0' }}>
+                <Button icon={<LockOutlined />} onClick={() => setResetPwdOpen(true)} danger>
+                    {t('system.users.resetPassword', '重置密码')}
+                  </Button>
+              </div>
+            </HasPermission>
           </Form>
         </Spin>
       ),
@@ -595,6 +691,11 @@ export default function SystemUsersPage() {
           <Button icon={<ReloadOutlined />} onClick={() => void loadData(page, pageSize, sortBy, sortOrder)}>
             {t('common.refresh', '刷新')}
           </Button>
+          <HasPermission code={P.Users.Create}>
+            <Button type="primary" icon={<PlusOutlined />} onClick={() => void handleOpenCreate()}>
+              {t('system.users.createUser', '创建用户')}
+            </Button>
+          </HasPermission>
         </Space>
 
         <Table
@@ -661,6 +762,13 @@ export default function SystemUsersPage() {
                   {detailUser.roleNames?.length ? detailUser.roleNames.map((item) => <Tag key={item}>{item}</Tag>) : '--'}
                 </Space>
               </Descriptions.Item>
+              <Descriptions.Item label={t('system.users.permissions', '权限')} span={2}>
+                <Space wrap>
+                  {detailUser.permissions?.length
+                    ? detailUser.permissions.map((p) => <Tag key={p} color="green">{p}</Tag>)
+                    : '--'}
+                </Space>
+              </Descriptions.Item>
               <Descriptions.Item label={t('system.users.createdAt', '创建时间')}>{detailUser.createdAt}</Descriptions.Item>
               <Descriptions.Item label={t('system.users.updatedAt', '更新时间')}>{detailUser.updatedAt}</Descriptions.Item>
             </Descriptions>
@@ -697,6 +805,181 @@ export default function SystemUsersPage() {
       >
         <Tabs activeKey={editTab} onChange={setEditTab} items={editTabItems} />
       </Drawer>
+
+      <Modal
+        title={t('system.users.resetPassword', '重置密码')}
+        open={resetPwdOpen}
+        onCancel={() => {
+          setResetPwdOpen(false)
+          resetPwdForm.resetFields()
+        }}
+        onOk={() => void handleResetPassword()}
+        confirmLoading={resetPwdLoading}
+        destroyOnHidden
+      >
+        <Form form={resetPwdForm} layout="vertical">
+          <Form.Item
+            label={t('system.users.newPasswordLabel', '请输入新密码')}
+            name="newPassword"
+            rules={[
+              { required: true, message: t('system.users.newPasswordRequired', '请输入新密码') },
+              { min: 6, message: t('system.users.passwordMinLength', '密码至少6位') },
+            ]}
+          >
+            <Input.Password placeholder={t('system.users.newPasswordPlaceholder', '输入新密码')} />
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      <Modal
+        title={t('system.users.createUser', '创建用户')}
+        width={860}
+        open={createOpen}
+        onCancel={() => {
+          if (createLoading) return
+          setCreateOpen(false)
+          createForm.resetFields()
+          setCreateRoleTargetKeys([])
+          setCreateStoreTargetKeys([])
+        }}
+        footer={createTab === 'info' ? [
+          <Button key="cancel" onClick={() => {
+            setCreateOpen(false)
+            createForm.resetFields()
+            setCreateRoleTargetKeys([])
+            setCreateStoreTargetKeys([])
+          }}>
+            {t('common.cancel', '取消')}
+          </Button>,
+          <Button key="submit" type="primary" loading={createLoading} onClick={() => void handleCreateSubmit()}>
+            {t('common.create', '新建')}
+          </Button>,
+        ] : null}
+        destroyOnHidden
+      >
+        <Tabs
+          activeKey={createTab}
+          onChange={setCreateTab}
+          items={[
+            {
+              key: 'info',
+              label: t('system.users.basicInfo', '基本信息'),
+              children: (
+                <Form form={createForm} layout="vertical" style={{ maxWidth: 480 }}>
+                  <Form.Item
+                    label={t('system.users.username', '用户名')}
+                    name="username"
+                    rules={[
+                      { required: true, message: t('system.users.usernameRequired', '请输入用户名') },
+                      { min: 3, max: 50, message: t('system.users.usernameLengthInvalid', '用户名长度3-50个字符') },
+                    ]}
+                  >
+                    <Input />
+                  </Form.Item>
+                  <Form.Item
+                    label={t('system.users.email', '邮箱')}
+                    name="email"
+                    rules={[
+                      { required: true, message: t('system.users.emailRequired', '请输入邮箱') },
+                      { type: 'email', message: t('system.users.emailInvalid', '邮箱格式不正确') },
+                    ]}
+                  >
+                    <Input />
+                  </Form.Item>
+                  <Form.Item
+                    label={t('system.users.password', '密码')}
+                    name="password"
+                    rules={[
+                      { required: true, message: t('system.users.passwordRequired', '请输入密码') },
+                      { min: 6, message: t('system.users.passwordMinLength', '密码至少6位') },
+                    ]}
+                  >
+                    <Input.Password />
+                  </Form.Item>
+                  <Form.Item
+                    label={t('system.users.confirmPassword', '确认密码')}
+                    name="confirmPassword"
+                    dependencies={['password']}
+                    rules={[
+                      { required: true, message: t('system.users.confirmPasswordRequired', '请确认密码') },
+                      ({ getFieldValue }) => ({
+                        validator(_, value) {
+                          if (!value || getFieldValue('password') === value) return Promise.resolve()
+                          return Promise.reject(new Error(t('system.users.confirmPasswordMismatch', '两次输入的密码不一致')))
+                        },
+                      }),
+                    ]}
+                  >
+                    <Input.Password />
+                  </Form.Item>
+                  <Form.Item label={t('system.users.fullName', '姓名')} name="fullName">
+                    <Input />
+                  </Form.Item>
+                  <Form.Item label={t('common.status', '状态')} name="isActive" valuePropName="checked" initialValue={true}>
+                    <Switch checkedChildren={t('common.active', '启用')} unCheckedChildren={t('common.inactive', '停用')} />
+                  </Form.Item>
+                </Form>
+              ),
+            },
+            {
+              key: 'roles',
+              label: t('system.users.roles', '角色'),
+              children: (
+                <Spin spinning={createRoleLoading}>
+                  <div style={{ marginBottom: 12 }}>
+                    <Typography.Text type="secondary">
+                      {t('system.users.createSelectedRoles', '已选择 {{count}} 个角色', { count: createRoleTargetKeys.length })}
+                    </Typography.Text>
+                  </div>
+                  <Transfer
+                    dataSource={allRoles.map((role) => ({
+                      key: role.roleGUID,
+                      title: role.roleName,
+                      description: role.description || '',
+                    }))}
+                    targetKeys={createRoleTargetKeys}
+                    onChange={(nextTargetKeys: Key[]) => {
+                      setCreateRoleTargetKeys(nextTargetKeys.map(String))
+                    }}
+                    render={(item) => item.title}
+                    titles={[t('system.users.availableRoles', '可选角色'), t('system.users.assignedRolesLabel', '已分配角色')]}
+                    listStyle={{ width: 320, height: 400 }}
+                    showSearch
+                  />
+                </Spin>
+              ),
+            },
+            {
+              key: 'stores',
+              label: t('system.users.stores', '分店'),
+              children: (
+                <Spin spinning={createStoreLoading}>
+                  <div style={{ marginBottom: 12 }}>
+                    <Typography.Text type="secondary">
+                      {t('system.users.createSelectedStores', '已选择 {{count}} 个分店', { count: createStoreTargetKeys.length })}
+                    </Typography.Text>
+                  </div>
+                  <Transfer
+                    dataSource={sortedStores.map((store) => ({
+                      key: store.storeGUID,
+                      title: `${store.storeName} (${store.storeCode})`,
+                      description: store.address || '',
+                    }))}
+                    targetKeys={createStoreTargetKeys}
+                    onChange={(nextTargetKeys: Key[]) => {
+                      setCreateStoreTargetKeys(nextTargetKeys.map(String))
+                    }}
+                    render={(item) => item.title}
+                    titles={[t('system.users.availableStores', '可选分店'), t('system.users.assignedStoresLabel', '已分配分店')]}
+                    listStyle={{ width: 320, height: 400 }}
+                    showSearch
+                  />
+                </Spin>
+              ),
+            },
+          ]}
+        />
+      </Modal>
     </PageContainer>
   )
 }

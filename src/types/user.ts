@@ -54,3 +54,18 @@ export interface UserStoreAssignmentDto {
   accessLevel?: string
   isPrimary?: boolean
 }
+
+export interface CreateUserDto {
+  username: string
+  email: string
+  password: string
+  fullName?: string
+  isActive?: boolean
+  roleGuids?: string[]
+  storeGuids?: string[]
+}
+
+export interface UpdateUserPasswordDto {
+  newPassword: string
+  forcePasswordChange?: boolean
+}

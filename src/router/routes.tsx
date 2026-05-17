@@ -110,6 +110,7 @@ export const appRoutes: AppRouteItem[] = [
       affix: true,
       closable: false,
       keepAlive: true,
+      accessKey: 'canAccessDashboard',
     },
     element: <DashboardPage />,
   },

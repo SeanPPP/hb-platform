@@ -83,7 +83,14 @@ export default function SystemPermissionsPage() {
     try {
       const values = await createForm.validateFields()
       setCreateLoading(true)
-      await createPermission(values)
+      const payload: CreateSysPermissionDto = {
+        code: values.code,
+        name: values.name,
+        category: values.category,
+        description: values.description,
+        actions: values.actions?.length ? values.actions : undefined,
+      }
+      await createPermission(payload)
       message.success(t('system.permissions.createSuccess'))
       setCreateOpen(false)
       createForm.resetFields()
@@ -258,10 +265,10 @@ export default function SystemPermissionsPage() {
             <Checkbox.Group
               options={actionOptions.map((action) => ({ label: action, value: action }))}
             />
-            <div style={{ color: '#999', fontSize: 12, marginTop: 4 }}>
-              {t('system.permissions.batchGenDesc')}
-            </div>
           </Form.Item>
+          <div style={{ color: '#999', fontSize: 12, marginTop: -16, marginBottom: 24 }}>
+            {t('system.permissions.batchGenDesc')}
+          </div>
         </Form>
       </Modal>
 

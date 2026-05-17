@@ -69,6 +69,9 @@ export const P = {
     ViewLogs: 'System.ViewLogs',
     ManageSettings: 'System.ManageSettings',
   },
+  Dashboard: {
+    View: 'Dashboard',
+  },
 } as const
 
 /** All permission code values as a flat array */

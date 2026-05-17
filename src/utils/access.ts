@@ -53,6 +53,7 @@ function createEmptyAccess(): AccessControl {
     canManageDomesticSuppliers: false,
     canManageDomesticProducts: false,
     canManageDomesticPrefixCodes: false,
+    canAccessDashboard: false,
     hasPermission: alwaysFalse,
     hasRole: alwaysFalse,
     onlyRole: alwaysFalse,
@@ -171,6 +172,8 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
   const canManageDomesticProducts = isAdmin || hasPermission('DomesticPurchase.ManageProducts')
   const canManageDomesticPrefixCodes = isAdmin || hasPermission('DomesticPurchase.ManagePrefixCodes')
 
+  const canAccessDashboard = isAdmin || hasPermission('Dashboard')
+
   return {
     isAdmin,
     isManager,
@@ -221,6 +224,7 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
     canManageDomesticSuppliers,
     canManageDomesticProducts,
     canManageDomesticPrefixCodes,
+    canAccessDashboard,
     hasPermission,
     hasRole,
     onlyRole,

@@ -1,7 +1,9 @@
 import type { ApiResponse, PagedResult } from '../types/api'
 import type { RoleOptionDto } from '../types/role'
 import type {
+  CreateUserDto,
   UpdateUserDto,
+  UpdateUserPasswordDto,
   UserDetailDto,
   UserDto,
   UserQueryDto,
@@ -16,6 +18,19 @@ export async function getUsers(params: UserQueryDto): Promise<PagedResult<UserDt
     params: params as Record<string, unknown>,
   })
   return unwrapPagedResult(response)
+}
+
+export async function createUser(payload: CreateUserDto): Promise<UserDto> {
+  const response = await request.post<ApiResponse<UserDto>>('/api/Users', {
+    Username: payload.username,
+    Email: payload.email,
+    Password: payload.password,
+    FullName: payload.fullName ?? null,
+    IsActive: payload.isActive ?? true,
+    RoleGuids: payload.roleGuids ?? [],
+    StoreGuids: payload.storeGuids ?? [],
+  })
+  return unwrapApiData(response)
 }
 
 export async function getUserByGuid(guid: string): Promise<UserDetailDto> {
@@ -53,6 +68,14 @@ export async function assignStoresToUser(guid: string, payload: UserStoreAssignm
       AccessLevel: item.accessLevel ?? 'ReadWrite',
       IsPrimary: item.isPrimary ?? false,
     })),
+  )
+  return unwrapApiData(response)
+}
+
+export async function updateUserPassword(guid: string, dto: UpdateUserPasswordDto): Promise<boolean> {
+  const response = await request.put<ApiResponse<boolean>>(
+    `/api/Users/guid/${guid}/password`,
+    dto,
   )
   return unwrapApiData(response)
 }

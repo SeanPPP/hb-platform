@@ -23,6 +23,7 @@ import PageContainer from '../../../components/PageContainer'
 import { P } from '../../../types/permissions'
 import { getRoleByGuid, getRoles, updateRole } from '../../../services/roleService'
 import type { RoleDetailDto, RoleDto, UpdateRoleDto } from '../../../types/role'
+import RolePermissionManager from './RolePermissionManager'
 import RoleUserManagement from './RoleUserManagement'
 
 export default function SystemRolesPage() {
@@ -41,6 +42,7 @@ export default function SystemRolesPage() {
   const [editOpen, setEditOpen] = useState(false)
   const [editLoading, setEditLoading] = useState(false)
   const [editingRole, setEditingRole] = useState<RoleDetailDto | null>(null)
+  const [editRoleGuid, setEditRoleGuid] = useState<string>('')
   const [form] = Form.useForm<UpdateRoleDto>()
 
   const [roleUserOpen, setRoleUserOpen] = useState(false)
@@ -93,6 +95,7 @@ export default function SystemRolesPage() {
 
   const handleEdit = async (record: RoleDto) => {
     setEditOpen(true)
+    setEditRoleGuid(record.roleGUID)
     setEditLoading(true)
     setEditingRole(null)
     form.resetFields()
@@ -274,12 +277,13 @@ export default function SystemRolesPage() {
         open={editOpen}
         onCancel={() => {
           setEditOpen(false)
+          setEditRoleGuid('')
           setEditingRole(null)
           form.resetFields()
         }}
         onOk={() => void handleEditSubmit()}
         confirmLoading={editLoading}
-        width={640}
+        width={820}
         destroyOnHidden
       >
         <Form form={form} layout="vertical">
@@ -293,6 +297,21 @@ export default function SystemRolesPage() {
             <Switch checkedChildren={t('common.active')} unCheckedChildren={t('common.inactive')} />
           </Form.Item>
         </Form>
+
+        {editRoleGuid ? (
+          <div style={{ marginTop: 16, borderTop: '1px solid #f0f0f0', paddingTop: 16 }}>
+            <Typography.Title level={5} style={{ marginBottom: 12 }}>
+              {t('system.roles.permissions', '权限分配')}
+            </Typography.Title>
+            <HasPermission code={P.Roles.ManagePermissions}>
+              <RolePermissionManager
+                roleGuid={editRoleGuid}
+                roleName={editingRole?.roleName ?? ''}
+                onChanged={() => void loadData(page, pageSize)}
+              />
+            </HasPermission>
+          </div>
+        ) : null}
       </Modal>
 
       <RoleUserManagement

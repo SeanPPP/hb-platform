@@ -22,6 +22,7 @@ import {
   message,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
+import dayjs from 'dayjs'
 import { useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useStableRouteContext } from '../../../hooks/useStableRouteContext'
@@ -113,8 +114,8 @@ export default function LocalSupplierInvoiceDetailPage() {
         supplierName: data.supplierName
           ? `${data.supplierCode} - ${data.supplierName}`
           : data.supplierCode,
-        orderDate: data.orderDate || undefined,
-        inboundDate: data.inboundDate || undefined,
+        orderDate: data.orderDate ? dayjs(data.orderDate) : undefined,
+        inboundDate: data.inboundDate ? dayjs(data.inboundDate) : undefined,
         totalAmount: formatAmount(data.totalAmount),
         remarks: data.remarks,
       })
@@ -213,8 +214,8 @@ export default function LocalSupplierInvoiceDetailPage() {
     setSaving(true)
     try {
       await updateInvoice(invoiceGuid, {
-        orderDate: values.orderDate?.format?.('YYYY-MM-DD') || values.orderDate,
-        inboundDate: values.inboundDate?.format?.('YYYY-MM-DD') || values.inboundDate,
+        orderDate: values.orderDate?.format?.('YYYY-MM-DD') || undefined,
+        inboundDate: values.inboundDate?.format?.('YYYY-MM-DD') || undefined,
         remarks: values.remarks?.trim() || undefined,
       })
       message.success(t('posAdmin.invoiceDetail.saveSuccess', '保存成功'))

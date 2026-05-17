@@ -82,6 +82,7 @@ export interface AccessControl {
   canManageDomesticSuppliers: boolean
   canManageDomesticProducts: boolean
   canManageDomesticPrefixCodes: boolean
+  canAccessDashboard: boolean
   hasPermission: (permission: string) => boolean
   hasRole: (role: string) => boolean
   onlyRole: (role: string) => boolean
