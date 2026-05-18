@@ -6,6 +6,10 @@ namespace BlazorApp.Api.Interfaces.React
     public interface ILocalSupplierInvoicesReactService
     {
         Task<GridResponseDto<LocalSupplierInvoiceListDto>> GetGridDataAsync(GridRequestDto request);
+        Task<GridResponseDto<LocalSupplierInvoiceListDto>> GetGridDataAsync(
+            GridRequestDto request,
+            List<string>? allowedStoreCodes
+        );
         Task<ApiResponse<LocalSupplierInvoiceDetailDto>> GetInvoiceAsync(string invoiceGuid);
         Task<ApiResponse<List<LocalSupplierInvoiceItemDto>>> GetDetailsAsync(string invoiceGuid);
         Task<ApiResponse<string>> CreateAsync(CreateInvoiceRequest dto);

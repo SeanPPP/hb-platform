@@ -37,6 +37,11 @@ namespace BlazorApp.Api.Services.React
 
         public async Task<GridResponseDto<LocalSupplierInvoiceListDto>> GetGridDataAsync(
             GridRequestDto request
+        ) => await GetGridDataAsync(request, null);
+
+        public async Task<GridResponseDto<LocalSupplierInvoiceListDto>> GetGridDataAsync(
+            GridRequestDto request,
+            List<string>? allowedStoreCodes
         )
         {
             try
@@ -48,6 +53,18 @@ namespace BlazorApp.Api.Services.React
                         (h, st, sup) => h.SupplierCode == sup.LocalSupplierCode
                     )
                     .Where((h, st, sup) => h.IsDeleted == false);
+
+                if (allowedStoreCodes != null)
+                {
+                    if (!allowedStoreCodes.Any())
+                    {
+                        query = query.Where((h, st, sup) => false);
+                    }
+                    else
+                    {
+                        query = query.Where((h, st, sup) => allowedStoreCodes.Contains(h.StoreCode));
+                    }
+                }
 
                 string? productKeyword = null;
                 if (request.FilterModel != null && request.FilterModel.Any())
