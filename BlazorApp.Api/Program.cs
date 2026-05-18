@@ -367,6 +367,7 @@ builder.Services.AddScoped<ItemBarcodeService>(); // 货号条码生成服务
 builder.Services.AddScoped<IDomesticProductCreationService, DomesticProductCreationService>(); // 国内商品货号条码批量创建服务
 builder.Services.AddScoped<IAutoPricingService, AutoPricingService>(); // 自动定价计算服务
 builder.Services.AddScoped<IVersionInfoService, VersionInfoService>(); // 版本管理服务
+builder.Services.AddScoped<INavigationService, NavigationService>(); // 动态导航菜单服务
 
 // React 专用：仅限 Product 与 WarehouseProduct 的商品检测/更新/新建服务
 builder.Services.AddScoped<

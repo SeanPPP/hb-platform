@@ -53,6 +53,14 @@ namespace BlazorApp.Shared.Constants
             public const string Delete = "Orders.Delete";
         }
 
+        public static class Container
+        {
+            public const string View = "Container.View";
+            public const string Create = "Container.Create";
+            public const string Edit = "Container.Edit";
+            public const string Delete = "Container.Delete";
+        }
+
         public static class Warehouse
         {
             public const string View = "Warehouse.View";
@@ -84,10 +92,52 @@ namespace BlazorApp.Shared.Constants
             public const string Export = "Reports.Export";
         }
 
+        public static class StoreProducts
+        {
+            public const string View = "StoreProducts.View";
+            public const string Create = "StoreProducts.Create";
+            public const string Edit = "StoreProducts.Edit";
+        }
+
+        public static class Promotions
+        {
+            public const string View = "Promotions.View";
+            public const string Edit = "Promotions.Edit";
+        }
+
+        public static class PricingStrategy
+        {
+            public const string View = "PricingStrategy.View";
+            public const string Edit = "PricingStrategy.Edit";
+        }
+
+        public static class LocalPurchase
+        {
+            public const string View = "LocalPurchase.View";
+            public const string Edit = "LocalPurchase.Edit";
+        }
+
+        public static class AustralianSuppliers
+        {
+            public const string View = "AustralianSuppliers.View";
+            public const string Edit = "AustralianSuppliers.Edit";
+        }
+
+        public static class Store
+        {
+            public const string ManageOperations = "Store.ManageOperations";
+            public const string ManageInfo = "Store.ManageInfo";
+        }
+
         public static class System
         {
             public const string ViewLogs = "System.ViewLogs";
             public const string ManageSettings = "System.ManageSettings";
+        }
+
+        public static class Dashboard
+        {
+            public const string View = "Dashboard";
         }
 
         /// <summary>
@@ -131,6 +181,12 @@ namespace BlazorApp.Shared.Constants
             yield return (Orders.Edit, "编辑订单", "订单管理");
             yield return (Orders.Delete, "删除订单", "订单管理");
 
+            // 货柜管理
+            yield return (Container.View, "查看货柜", "货柜管理");
+            yield return (Container.Create, "创建货柜", "货柜管理");
+            yield return (Container.Edit, "编辑货柜", "货柜管理");
+            yield return (Container.Delete, "删除货柜", "货柜管理");
+
             // 仓库管理
             yield return (Warehouse.View, "查看仓库", "仓库管理");
             yield return (Warehouse.Manage, "管理仓库", "仓库管理");
@@ -154,9 +210,37 @@ namespace BlazorApp.Shared.Constants
             yield return (Reports.View, "查看报表", "报表");
             yield return (Reports.Export, "导出数据", "报表");
 
+            // 分店商品管理
+            yield return (StoreProducts.View, "查看分店商品", "分店商品管理");
+            yield return (StoreProducts.Create, "创建分店商品", "分店商品管理");
+            yield return (StoreProducts.Edit, "编辑分店商品", "分店商品管理");
+
+            // 促销管理
+            yield return (Promotions.View, "查看促销", "促销管理");
+            yield return (Promotions.Edit, "编辑促销", "促销管理");
+
+            // 定价策略
+            yield return (PricingStrategy.View, "查看定价策略", "定价策略");
+            yield return (PricingStrategy.Edit, "编辑定价策略", "定价策略");
+
+            // 本地进货
+            yield return (LocalPurchase.View, "查看本地进货", "本地进货管理");
+            yield return (LocalPurchase.Edit, "编辑本地进货", "本地进货管理");
+
+            // 澳洲供应商
+            yield return (AustralianSuppliers.View, "查看澳洲供应商", "澳洲供应商");
+            yield return (AustralianSuppliers.Edit, "编辑澳洲供应商", "澳洲供应商");
+
+            // 分店运营
+            yield return (Store.ManageOperations, "管理分店运营", "分店运营");
+            yield return (Store.ManageInfo, "管理分店信息", "分店运营");
+
             // 系统管理
             yield return (System.ViewLogs, "查看日志", "系统管理");
             yield return (System.ManageSettings, "管理设置", "系统管理");
+
+            // 后台管理
+            yield return (Dashboard.View, "访问后台", "后台管理");
         }
     }
 }
