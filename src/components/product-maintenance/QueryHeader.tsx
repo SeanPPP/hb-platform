@@ -20,7 +20,7 @@ export function QueryHeader({
   return (
     <View style={styles.container}>
       <View style={styles.titleWrap}>
-        <Text variant="titleLarge" style={styles.title}>
+        <Text variant="titleMedium" style={styles.title}>
           {t("title")}
         </Text>
         <Text variant="bodySmall" style={styles.subtitle}>
@@ -28,12 +28,13 @@ export function QueryHeader({
         </Text>
       </View>
       <View style={styles.actions}>
-        <IconButton icon="barcode-scan" size={20} onPress={onScanPress} />
+        <IconButton icon="barcode-scan" size={20} onPress={onScanPress} style={styles.iconButton} />
         <IconButton
           icon={refreshing ? "loading" : "refresh"}
           size={20}
           onPress={onRefreshPress}
           disabled={refreshing}
+          style={styles.iconButton}
         />
       </View>
     </View>
@@ -47,12 +48,12 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     gap: 12,
     paddingHorizontal: 16,
-    paddingTop: 8,
-    paddingBottom: 6,
+    paddingTop: 4,
+    paddingBottom: 2,
   },
   titleWrap: {
     flex: 1,
-    gap: 2,
+    gap: 0,
   },
   title: {
     fontWeight: "700",
@@ -63,6 +64,12 @@ const styles = StyleSheet.create({
   actions: {
     flexDirection: "row",
     alignItems: "center",
-    marginRight: -8,
+    gap: 2,
+    marginRight: -4,
+  },
+  iconButton: {
+    width: 36,
+    height: 36,
+    margin: 0,
   },
 });

@@ -39,7 +39,20 @@
     }
   },
   "hero": {
-    "product": "Product"
+    "unnamedProduct": "Unnamed product",
+    "itemNumber": "Item: {{value}}",
+    "barcode": "Barcode: {{value}}",
+    "barcodeImageLabel": "{{format}} barcode image",
+    "itemNumberLabel": "Item",
+    "barcodeLabel": "Barcode",
+    "productTypeLabel": "Type",
+    "supplierLabel": "Supplier",
+    "productType": {
+      "normal": "Regular product",
+      "set": "Combo set",
+      "multi": "Multi-code set",
+      "unknown": "Unknown type"
+    }
   },
   "storePrice": {
     "fallbackTitle": "Store product info",
@@ -48,8 +61,7 @@
     "rate": "Rate {{value}}",
     "calculating": "Calculating...",
     "auto": "Auto",
-    "special": "Special",
-    "active": "Active"
+    "special": "Special"
   },
   "clearancePrice": {
     "title": "Store clearance price",
@@ -66,7 +78,6 @@
     "retail": "Retail",
     "auto": "Auto",
     "special": "Special",
-    "active": "Active",
     "save": "Save",
     "dirtyCount": "{{count}} changes"
   },

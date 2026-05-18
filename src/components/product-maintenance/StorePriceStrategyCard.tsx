@@ -8,7 +8,6 @@ interface StorePriceStrategyCardProps {
   retailPrice?: string;
   autoPricing: boolean;
   isSpecialProduct: boolean;
-  isActive: boolean;
   rate?: string;
   strategySourceLabel?: string | null;
   strategyRuleLabel?: string | null;
@@ -17,7 +16,6 @@ interface StorePriceStrategyCardProps {
   onChangeRetailPrice: (value: string) => void;
   onToggleAutoPricing: (value: boolean) => void;
   onToggleSpecial: (value: boolean) => void;
-  onToggleActive: (value: boolean) => void;
 }
 
 export function StorePriceStrategyCard({
@@ -26,7 +24,6 @@ export function StorePriceStrategyCard({
   retailPrice,
   autoPricing,
   isSpecialProduct,
-  isActive,
   rate,
   strategySourceLabel,
   strategyRuleLabel,
@@ -35,7 +32,6 @@ export function StorePriceStrategyCard({
   onChangeRetailPrice,
   onToggleAutoPricing,
   onToggleSpecial,
-  onToggleActive,
 }: StorePriceStrategyCardProps) {
   const { t } = useAppTranslation("productQuery");
 
@@ -89,10 +85,6 @@ export function StorePriceStrategyCard({
             <Text variant="bodySmall">{t("storePrice.special")}</Text>
             <Switch value={isSpecialProduct} onValueChange={onToggleSpecial} />
           </View>
-          <View style={styles.toggleItem}>
-            <Text variant="bodySmall">{t("storePrice.active")}</Text>
-            <Switch value={isActive} onValueChange={onToggleActive} />
-          </View>
         </View>
       </Card.Content>
     </Card>
@@ -110,6 +102,7 @@ const styles = StyleSheet.create({
   },
   title: {
     fontWeight: "700",
+    color: "#111827",
   },
   priceRow: {
     flexDirection: "row",
@@ -128,12 +121,12 @@ const styles = StyleSheet.create({
     fontWeight: "700",
   },
   secondary: {
-    color: "#666",
+    color: "#475467",
   },
   toggleRow: {
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "space-between",
+    justifyContent: "flex-start",
     gap: 8,
   },
   toggleItem: {

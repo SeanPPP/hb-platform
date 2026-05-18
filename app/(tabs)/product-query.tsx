@@ -366,7 +366,7 @@ function ProductQueryContent() {
   const clearancePrice = detail?.clearancePrice;
 
   return (
-    <SafeAreaView style={styles.safeArea} edges={["top"]}>
+    <SafeAreaView style={styles.safeArea} edges={[]}>
       <QueryHeader
         storeName={selectedStore?.storeName}
         onScanPress={() => setCameraVisible(true)}
@@ -389,10 +389,11 @@ function ProductQueryContent() {
             <ProductHeroCard
               imageUrl={detail.productImage}
               productName={detail.productName}
-              productCode={detail.productCode}
+              supplierName={detail.localSupplierName}
+              supplierCode={detail.localSupplierCode}
               itemNumber={detail.itemNumber}
               barcode={detail.barcode}
-              productTypeLabel={detail.productTypeLabel}
+              productType={detail.productType}
               grade={detail.grade}
             />
 
@@ -403,7 +404,6 @@ function ProductQueryContent() {
                 retailPrice={formatDecimal(storePrice.retailPrice)}
                 autoPricing={storePrice.isAutoPricing}
                 isSpecialProduct={storePrice.isSpecialProduct}
-                isActive={storePrice.isActive}
                 rate={storePrice.rate == null ? "" : String(storePrice.rate)}
                 strategySourceLabel={storePrice.strategySourceLabel}
                 strategyRuleLabel={storePrice.strategyRuleLabel}
@@ -419,7 +419,6 @@ function ProductQueryContent() {
                 }
                 onToggleAutoPricing={(value) => handleChangeStorePrice({ isAutoPricing: value })}
                 onToggleSpecial={(value) => handleChangeStorePrice({ isSpecialProduct: value })}
-                onToggleActive={(value) => handleChangeStorePrice({ isActive: value })}
               />
             ) : (
               <View style={styles.emptyBlock}>
@@ -535,7 +534,7 @@ export default function ProductQueryScreen() {
   const isFocused = useIsFocused();
 
   if (!isFocused) {
-    return <SafeAreaView style={styles.safeArea} edges={["top"]} />;
+    return <SafeAreaView style={styles.safeArea} edges={[]} />;
   }
 
   return <ProductQueryContent />;
@@ -547,9 +546,9 @@ const styles = StyleSheet.create({
     backgroundColor: "#F7F8FA",
   },
   content: {
-    paddingHorizontal: 16,
-    paddingBottom: 20,
-    gap: 10,
+    paddingHorizontal: 12,
+    paddingBottom: 16,
+    gap: 8,
   },
   hiddenInput: {
     position: "absolute",

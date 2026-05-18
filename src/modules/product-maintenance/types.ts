@@ -79,6 +79,7 @@ export interface ProductDetail {
   productTypeLabel?: string | null;
   grade?: string | null;
   localSupplierCode?: string | null;
+  localSupplierName?: string | null;
   storePrice?: StorePriceEditable | null;
   clearancePrice?: StoreClearancePriceItem | null;
   setCodes: ProductSetCodeItem[];

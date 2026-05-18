@@ -1,5 +1,5 @@
 import { StyleSheet, View } from "react-native";
-import { Button, Searchbar, Text } from "react-native-paper";
+import { IconButton, Searchbar, Text } from "react-native-paper";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 
 interface SearchPanelProps {
@@ -23,21 +23,34 @@ export function SearchPanel({
 
   return (
     <View style={styles.container}>
-      <Searchbar
-        placeholder={t("search.placeholder")}
-        value={value}
-        onChangeText={onChangeText}
-        onSubmitEditing={onSubmit}
-        style={styles.searchbar}
-        inputStyle={styles.input}
-      />
-      <View style={styles.actions}>
-        <Button mode="contained" compact loading={loading} disabled={loading} onPress={onSubmit}>
-          {t("common:actions.search")}
-        </Button>
-        <Button mode="text" compact onPress={onClear}>
-          {t("common:actions.clear")}
-        </Button>
+      <View style={styles.searchRow}>
+        <Searchbar
+          placeholder={t("search.placeholder")}
+          value={value}
+          onChangeText={onChangeText}
+          onSubmitEditing={onSubmit}
+          style={styles.searchbar}
+          inputStyle={styles.input}
+        />
+        <IconButton
+          accessibilityLabel={t("common:actions.search")}
+          icon="magnify"
+          mode="contained"
+          size={20}
+          loading={loading}
+          disabled={loading}
+          onPress={onSubmit}
+          style={styles.iconButton}
+        />
+        <IconButton
+          accessibilityLabel={t("common:actions.clear")}
+          icon="close"
+          mode="contained-tonal"
+          size={18}
+          disabled={loading && !value}
+          onPress={onClear}
+          style={styles.iconButton}
+        />
       </View>
       {lastHitLabel ? (
         <Text variant="bodySmall" style={styles.lastHit}>
@@ -51,22 +64,33 @@ export function SearchPanel({
 const styles = StyleSheet.create({
   container: {
     paddingHorizontal: 16,
-    paddingBottom: 8,
-    gap: 8,
+    paddingBottom: 4,
+    gap: 4,
+  },
+  searchRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
   },
   searchbar: {
+    flex: 1,
+    height: 42,
     elevation: 0,
-    borderRadius: 10,
+    borderRadius: 8,
     backgroundColor: "#F5F5F5",
   },
   input: {
+    alignSelf: "center",
     minHeight: 0,
+    paddingBottom: 0,
+    paddingTop: 0,
     fontSize: 14,
   },
-  actions: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
+  iconButton: {
+    width: 40,
+    height: 40,
+    margin: 0,
+    borderRadius: 8,
   },
   lastHit: {
     color: "#666",

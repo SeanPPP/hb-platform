@@ -151,6 +151,7 @@ function normalizeDetail(payload: unknown): ProductDetail {
     productTypeLabel: (data.productTypeLabel ?? data.ProductTypeLabel ?? null) as string | null,
     grade: (data.grade ?? data.Grade ?? null) as string | null,
     localSupplierCode: (data.localSupplierCode ?? data.LocalSupplierCode ?? null) as string | null,
+    localSupplierName: (data.localSupplierName ?? data.LocalSupplierName ?? null) as string | null,
     storePrice: normalizeStorePrice(data.storePrice ?? data.StorePrice),
     clearancePrice: normalizeClearancePrice(data.clearancePrice ?? data.ClearancePrice),
     setCodes: Array.isArray(setCodesRaw) ? setCodesRaw.map(normalizeSetCodeItem) : [],

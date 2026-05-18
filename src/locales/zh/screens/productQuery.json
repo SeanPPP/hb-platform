@@ -39,7 +39,20 @@
     }
   },
   "hero": {
-    "product": "商品"
+    "unnamedProduct": "未命名商品",
+    "itemNumber": "货号：{{value}}",
+    "barcode": "条码：{{value}}",
+    "barcodeImageLabel": "{{format}} 条码图",
+    "itemNumberLabel": "货号",
+    "barcodeLabel": "条码",
+    "productTypeLabel": "商品类型",
+    "supplierLabel": "供应商",
+    "productType": {
+      "normal": "普商品",
+      "set": "组合套装",
+      "multi": "多码套装",
+      "unknown": "未知类型"
+    }
   },
   "storePrice": {
     "fallbackTitle": "分店商品信息",
@@ -48,8 +61,7 @@
     "rate": "Rate {{value}}",
     "calculating": "计算中...",
     "auto": "自动",
-    "special": "特殊",
-    "active": "启用"
+    "special": "特殊"
   },
   "clearancePrice": {
     "title": "分店清货价",
@@ -66,7 +78,6 @@
     "retail": "零售",
     "auto": "自动",
     "special": "特殊",
-    "active": "启用",
     "save": "存",
     "dirtyCount": "改动 {{count}} 项"
   },

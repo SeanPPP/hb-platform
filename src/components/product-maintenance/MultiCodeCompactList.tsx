@@ -82,13 +82,6 @@ export function MultiCodeCompactList({
                     onValueChange={(value) => onChangeItem(item.uuid, { isSpecialProduct: value })}
                   />
                 </View>
-                <View style={styles.switchItem}>
-                  <Text variant="bodySmall">{t("multiCode.active")}</Text>
-                  <Switch
-                    value={item.isActive}
-                    onValueChange={(value) => onChangeItem(item.uuid, { isActive: value })}
-                  />
-                </View>
               </View>
               <Button
                 compact
@@ -121,6 +114,7 @@ const styles = StyleSheet.create({
   },
   barcode: {
     fontWeight: "600",
+    color: "#0F172A",
   },
   priceRow: {
     flexDirection: "row",
@@ -132,7 +126,7 @@ const styles = StyleSheet.create({
     height: 42,
   },
   rate: {
-    color: "#666",
+    color: "#475467",
   },
   footerRow: {
     flexDirection: "row",
