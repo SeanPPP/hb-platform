@@ -19,14 +19,9 @@ export function QueryHeader({
 
   return (
     <View style={styles.container}>
-      <View style={styles.titleWrap}>
-        <Text variant="titleMedium" style={styles.title}>
-          {t("title")}
-        </Text>
-        <Text variant="bodySmall" style={styles.subtitle}>
-          {t("currentStore", { store: storeName || t("common:na") })}
-        </Text>
-      </View>
+      <Text variant="bodySmall" style={styles.storeLabel} numberOfLines={1}>
+        {t("currentStore", { store: storeName || t("common:na") })}
+      </Text>
       <View style={styles.actions}>
         <IconButton icon="barcode-scan" size={20} onPress={onScanPress} style={styles.iconButton} />
         <IconButton
@@ -46,30 +41,24 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    gap: 12,
-    paddingHorizontal: 16,
-    paddingTop: 4,
-    paddingBottom: 2,
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingTop: 2,
+    paddingBottom: 0,
   },
-  titleWrap: {
+  storeLabel: {
     flex: 1,
-    gap: 0,
-  },
-  title: {
-    fontWeight: "700",
-  },
-  subtitle: {
-    color: "#666",
+    color: "#667085",
   },
   actions: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 2,
-    marginRight: -4,
+    gap: 0,
+    marginRight: -6,
   },
   iconButton: {
-    width: 36,
-    height: 36,
+    width: 32,
+    height: 32,
     margin: 0,
   },
 });

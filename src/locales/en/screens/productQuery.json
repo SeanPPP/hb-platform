@@ -38,6 +38,9 @@
       "fallback": "Match"
     }
   },
+  "sections": {
+    "moreInfo": "More details"
+  },
   "hero": {
     "unnamedProduct": "Unnamed product",
     "itemNumber": "Item: {{value}}",

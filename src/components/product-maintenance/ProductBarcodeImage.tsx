@@ -158,23 +158,24 @@ export function ProductBarcodeImage({ value }: ProductBarcodeImageProps) {
 
 const styles = StyleSheet.create({
   wrapper: {
-    gap: 2,
+    gap: 1,
   },
   bars: {
-    height: 36,
-    maxWidth: 190,
+    height: 28,
+    width: "100%",
     overflow: "hidden",
     flexDirection: "row",
     borderRadius: 4,
     backgroundColor: "#fff",
     paddingHorizontal: 5,
-    paddingVertical: 4,
+    paddingVertical: 3,
   },
   bar: {
     height: "100%",
     flexBasis: 0,
   },
   format: {
+    fontSize: 10,
     color: "#777",
     fontVariant: ["tabular-nums"],
   },

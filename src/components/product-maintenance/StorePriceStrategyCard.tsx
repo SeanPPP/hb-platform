@@ -38,9 +38,14 @@ export function StorePriceStrategyCard({
   return (
     <Card style={styles.card} mode="contained">
       <Card.Content style={styles.content}>
-        <Text variant="titleSmall" style={styles.title}>
-          {storeName || t("storePrice.fallbackTitle")}
-        </Text>
+        <View style={styles.headerRow}>
+          <Text variant="titleSmall" style={styles.title}>
+            {storeName || t("storePrice.fallbackTitle")}
+          </Text>
+          <Text variant="bodySmall" style={styles.rateText}>
+            {t("storePrice.rate", { value: rate || "--" })}
+          </Text>
+        </View>
         <View style={styles.priceRow}>
           <TextInput
             mode="outlined"
@@ -62,9 +67,6 @@ export function StorePriceStrategyCard({
           />
         </View>
         <View style={styles.rateRow}>
-          <Text variant="bodySmall" style={styles.rateText}>
-            {t("storePrice.rate", { value: rate || "--" })}
-          </Text>
           {strategySourceLabel ? (
             <Text variant="bodySmall" style={styles.secondary}>
               {evaluatingRate ? t("storePrice.calculating") : strategySourceLabel}
@@ -97,8 +99,14 @@ const styles = StyleSheet.create({
     backgroundColor: "#fff",
   },
   content: {
+    gap: 6,
+    paddingVertical: 8,
+  },
+  headerRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
     gap: 8,
-    paddingVertical: 10,
   },
   title: {
     fontWeight: "700",
@@ -111,7 +119,7 @@ const styles = StyleSheet.create({
   input: {
     flex: 1,
     backgroundColor: "#fff",
-    height: 44,
+    height: 40,
   },
   rateRow: {
     gap: 2,
@@ -119,6 +127,7 @@ const styles = StyleSheet.create({
   rateText: {
     color: "#1677FF",
     fontWeight: "700",
+    flexShrink: 1,
   },
   secondary: {
     color: "#475467",

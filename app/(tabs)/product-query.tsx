@@ -377,7 +377,7 @@ function ProductQueryContent() {
       <SearchPanel
         value={keyword}
         loading={loading || storesLoading}
-        lastHitLabel={lastHitLabel}
+        lastHitLabel={detail ? undefined : lastHitLabel}
         onChangeText={setKeyword}
         onSubmit={() => void handleLookup()}
         onClear={handleClear}
@@ -386,62 +386,71 @@ function ProductQueryContent() {
       <ScrollView contentContainerStyle={styles.content}>
         {detail ? (
           <>
-            <ProductHeroCard
-              imageUrl={detail.productImage}
-              productName={detail.productName}
-              supplierName={detail.localSupplierName}
-              supplierCode={detail.localSupplierCode}
-              itemNumber={detail.itemNumber}
-              barcode={detail.barcode}
-              productType={detail.productType}
-              grade={detail.grade}
-            />
-
-            {storePrice ? (
-              <StorePriceStrategyCard
-                storeName={storePrice.storeName}
-                purchasePrice={formatDecimal(storePrice.purchasePrice)}
-                retailPrice={formatDecimal(storePrice.retailPrice)}
-                autoPricing={storePrice.isAutoPricing}
-                isSpecialProduct={storePrice.isSpecialProduct}
-                rate={storePrice.rate == null ? "" : String(storePrice.rate)}
-                strategySourceLabel={storePrice.strategySourceLabel}
-                strategyRuleLabel={storePrice.strategyRuleLabel}
-                onChangePurchasePrice={(value) =>
-                  handleChangeStorePrice({
-                    purchasePrice: value.trim() === "" ? null : Number(value),
-                  })
-                }
-                onChangeRetailPrice={(value) =>
-                  handleChangeStorePrice({
-                    retailPrice: value.trim() === "" ? null : Number(value),
-                  })
-                }
-                onToggleAutoPricing={(value) => handleChangeStorePrice({ isAutoPricing: value })}
-                onToggleSpecial={(value) => handleChangeStorePrice({ isSpecialProduct: value })}
+            <View style={styles.firstScreenSection}>
+              <ProductHeroCard
+                imageUrl={detail.productImage}
+                productName={detail.productName}
+                supplierName={detail.localSupplierName}
+                supplierCode={detail.localSupplierCode}
+                itemNumber={detail.itemNumber}
+                barcode={detail.barcode}
+                productType={detail.productType}
+                grade={detail.grade}
               />
-            ) : (
-              <View style={styles.emptyBlock}>
-                <Text variant="bodyMedium">{t("messages.emptyStorePrice")}</Text>
+
+              {storePrice ? (
+                <StorePriceStrategyCard
+                  storeName={storePrice.storeName}
+                  purchasePrice={formatDecimal(storePrice.purchasePrice)}
+                  retailPrice={formatDecimal(storePrice.retailPrice)}
+                  autoPricing={storePrice.isAutoPricing}
+                  isSpecialProduct={storePrice.isSpecialProduct}
+                  rate={storePrice.rate == null ? "" : String(storePrice.rate)}
+                  strategySourceLabel={storePrice.strategySourceLabel}
+                  strategyRuleLabel={storePrice.strategyRuleLabel}
+                  onChangePurchasePrice={(value) =>
+                    handleChangeStorePrice({
+                      purchasePrice: value.trim() === "" ? null : Number(value),
+                    })
+                  }
+                  onChangeRetailPrice={(value) =>
+                    handleChangeStorePrice({
+                      retailPrice: value.trim() === "" ? null : Number(value),
+                    })
+                  }
+                  onToggleAutoPricing={(value) => handleChangeStorePrice({ isAutoPricing: value })}
+                  onToggleSpecial={(value) => handleChangeStorePrice({ isSpecialProduct: value })}
+                />
+              ) : (
+                <View style={styles.emptyBlock}>
+                  <Text variant="bodyMedium">{t("messages.emptyStorePrice")}</Text>
+                </View>
+              )}
+
+              {clearancePrice ? (
+                <StoreClearancePriceCard
+                  storeCode={clearancePrice.storeCode}
+                  storeName={clearancePrice.storeName}
+                  clearanceBarcode={clearancePrice.clearanceBarcode}
+                  clearancePrice={formatCurrency(clearancePrice.clearancePrice)}
+                />
+              ) : null}
+            </View>
+
+            {detail.setCodes.length || detail.multiCodes.length ? (
+              <View style={styles.secondarySection}>
+                <Text variant="titleSmall" style={styles.secondaryTitle}>
+                  {t("sections.moreInfo")}
+                </Text>
+                <SetCodeCompactSection items={detail.setCodes} />
+                <MultiCodeCompactList
+                  items={detail.multiCodes}
+                  onChangeItem={handleChangeMultiCode}
+                  onSaveItem={(uuid) => void handleSaveMultiCode(uuid)}
+                  savingItemId={savingItemId}
+                />
               </View>
-            )}
-
-            {clearancePrice ? (
-              <StoreClearancePriceCard
-                storeCode={clearancePrice.storeCode}
-                storeName={clearancePrice.storeName}
-                clearanceBarcode={clearancePrice.clearanceBarcode}
-                clearancePrice={formatCurrency(clearancePrice.clearancePrice)}
-              />
             ) : null}
-
-            <SetCodeCompactSection items={detail.setCodes} />
-            <MultiCodeCompactList
-              items={detail.multiCodes}
-              onChangeItem={handleChangeMultiCode}
-              onSaveItem={(uuid) => void handleSaveMultiCode(uuid)}
-              savingItemId={savingItemId}
-            />
           </>
         ) : queryFeedback.type === "empty" ? (
           <View style={styles.emptyBlock}>
@@ -547,6 +556,7 @@ const styles = StyleSheet.create({
   },
   content: {
     paddingHorizontal: 12,
+    paddingTop: 2,
     paddingBottom: 16,
     gap: 8,
   },
@@ -555,6 +565,18 @@ const styles = StyleSheet.create({
     width: 1,
     height: 1,
     opacity: 0,
+  },
+  firstScreenSection: {
+    gap: 8,
+  },
+  secondarySection: {
+    gap: 8,
+    paddingTop: 6,
+  },
+  secondaryTitle: {
+    fontWeight: "700",
+    color: "#111827",
+    paddingHorizontal: 4,
   },
   emptyBlock: {
     borderRadius: 8,

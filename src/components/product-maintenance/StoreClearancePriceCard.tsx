@@ -20,9 +20,14 @@ export function StoreClearancePriceCard({
   return (
     <Card style={styles.card} mode="contained">
       <Card.Content style={styles.content}>
-        <Text variant="titleSmall" style={styles.title}>
-          {t("clearancePrice.title")}
-        </Text>
+        <View style={styles.headerRow}>
+          <Text variant="titleSmall" style={styles.title}>
+            {t("clearancePrice.title")}
+          </Text>
+          <Text variant="titleSmall" style={styles.price}>
+            {clearancePrice || t("common:na")}
+          </Text>
+        </View>
         <View style={styles.row}>
           <Text variant="bodySmall" style={styles.label}>
             {t("clearancePrice.store")}
@@ -33,15 +38,7 @@ export function StoreClearancePriceCard({
           <Text variant="bodySmall" style={styles.label}>
             {t("clearancePrice.barcode")}
           </Text>
-          <Text variant="bodyMedium">{clearanceBarcode || t("common:na")}</Text>
-        </View>
-        <View style={styles.row}>
-          <Text variant="bodySmall" style={styles.label}>
-            {t("clearancePrice.price")}
-          </Text>
-          <Text variant="bodyMedium" style={styles.price}>
-            {clearancePrice || t("common:na")}
-          </Text>
+          <Text variant="bodyMedium" numberOfLines={1}>{clearanceBarcode || t("common:na")}</Text>
         </View>
       </Card.Content>
     </Card>
@@ -54,11 +51,18 @@ const styles = StyleSheet.create({
     backgroundColor: "#fff",
   },
   content: {
-    gap: 8,
-    paddingVertical: 10,
+    gap: 6,
+    paddingVertical: 8,
+  },
+  headerRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
   },
   title: {
     fontWeight: "700",
+    color: "#111827",
   },
   row: {
     flexDirection: "row",

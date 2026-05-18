@@ -53,7 +53,7 @@ export function SearchPanel({
         />
       </View>
       {lastHitLabel ? (
-        <Text variant="bodySmall" style={styles.lastHit}>
+        <Text variant="labelSmall" style={styles.lastHit} numberOfLines={1}>
           {t("search.lastHit", { value: lastHitLabel })}
         </Text>
       ) : null}
@@ -63,18 +63,18 @@ export function SearchPanel({
 
 const styles = StyleSheet.create({
   container: {
-    paddingHorizontal: 16,
-    paddingBottom: 4,
-    gap: 4,
+    paddingHorizontal: 12,
+    paddingBottom: 2,
+    gap: 2,
   },
   searchRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 6,
+    gap: 4,
   },
   searchbar: {
     flex: 1,
-    height: 42,
+    height: 38,
     elevation: 0,
     borderRadius: 8,
     backgroundColor: "#F5F5F5",
@@ -84,15 +84,15 @@ const styles = StyleSheet.create({
     minHeight: 0,
     paddingBottom: 0,
     paddingTop: 0,
-    fontSize: 14,
+    fontSize: 13,
   },
   iconButton: {
-    width: 40,
-    height: 40,
+    width: 34,
+    height: 34,
     margin: 0,
     borderRadius: 8,
   },
   lastHit: {
-    color: "#666",
+    color: "#98A2B3",
   },
 });

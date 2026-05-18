@@ -25,6 +25,9 @@ export function ProductHeroCard({
   grade,
 }: ProductHeroCardProps) {
   const { t } = useAppTranslation(["productQuery", "common"]);
+  const supplierDisplay = supplierName || supplierCode || t("common:na");
+  const itemDisplay = itemNumber || t("common:na");
+  const barcodeDisplay = barcode || t("common:na");
   const productTypeKey =
     productType === 0 ? "normal"
     : productType === 1 ? "set"
@@ -34,56 +37,48 @@ export function ProductHeroCard({
   return (
     <Card style={styles.card} mode="contained">
       <Card.Content style={styles.content}>
-        {imageUrl ? (
-          <Image source={{ uri: imageUrl }} style={styles.image} resizeMode="cover" />
-        ) : (
-          <View style={styles.placeholder} />
-        )}
-        <View style={styles.info}>
-          <Text variant="titleSmall" numberOfLines={2} style={styles.name}>
-            {productName || t("hero.unnamedProduct")}
-          </Text>
-          <View style={styles.badgeRow}>
-            <View style={[styles.badge, styles.itemBadge]}>
-              <Text variant="labelSmall" style={styles.badgeLabel}>
-                {t("hero.itemNumberLabel")}
+        <View style={styles.heroRow}>
+          {imageUrl ? (
+            <Image source={{ uri: imageUrl }} style={styles.image} resizeMode="cover" />
+          ) : (
+            <View style={styles.placeholder} />
+          )}
+          <View style={styles.heroMeta}>
+            <View style={[styles.infoBlock, styles.nameBlock]}>
+              <Text variant="titleMedium" numberOfLines={2} style={styles.name}>
+                {productName || t("hero.unnamedProduct")}
               </Text>
-              <Text variant="bodySmall" style={[styles.badgeValue, styles.itemValue]}>
-                {itemNumber || t("common:na")}
-              </Text>
+              {grade ? (
+                <Text variant="bodySmall" style={styles.grade}>
+                  {t("common:grade", { grade })}
+                </Text>
+              ) : null}
             </View>
-            <View style={[styles.badge, styles.typeBadge]}>
-              <Text variant="labelSmall" style={styles.badgeLabel}>
-                {t("hero.productTypeLabel")}
-              </Text>
-              <Text variant="bodySmall" style={[styles.badgeValue, styles.typeValue]}>
+            <View style={[styles.infoBlock, styles.typeBlock]}>
+              <Text variant="bodyMedium" style={[styles.blockValue, styles.typeValue]} numberOfLines={1}>
                 {t(`hero.productType.${productTypeKey}`)}
               </Text>
             </View>
           </View>
-          <View style={styles.badgeRow}>
-            <View style={[styles.badge, styles.barcodeBadge]}>
-              <Text variant="labelSmall" style={styles.badgeLabel}>
-                {t("hero.barcodeLabel")}
-              </Text>
-              <Text variant="bodySmall" style={[styles.badgeValue, styles.barcodeValue]}>
-                {barcode || t("common:na")}
-              </Text>
-            </View>
-            <View style={[styles.badge, styles.supplierBadge]}>
-              <Text variant="labelSmall" style={styles.badgeLabel}>
-                {t("hero.supplierLabel")}
-              </Text>
-              <Text variant="bodySmall" style={[styles.badgeValue, styles.supplierValue]}>
-                {supplierName || supplierCode || t("common:na")}
-              </Text>
-            </View>
-          </View>
-          {grade ? (
-            <Text variant="bodySmall" style={styles.grade}>
-              {t("common:grade", { grade })}
+        </View>
+
+        <View style={styles.metaRow}>
+          <View style={[styles.infoBlock, styles.supplierBlock]}>
+            <Text variant="bodyMedium" style={[styles.blockValue, styles.supplierValue]} numberOfLines={1}>
+              {supplierDisplay}
             </Text>
-          ) : null}
+          </View>
+          <View style={[styles.infoBlock, styles.itemBlock]}>
+            <Text variant="bodyMedium" style={[styles.blockValue, styles.itemValue]} numberOfLines={1}>
+              {itemDisplay}
+            </Text>
+          </View>
+        </View>
+
+        <View style={[styles.infoBlock, styles.barcodeBlock]}>
+          <Text variant="bodyMedium" style={[styles.blockValue, styles.barcodeValue]} numberOfLines={1}>
+            {barcodeDisplay}
+          </Text>
           <ProductBarcodeImage value={barcode} />
         </View>
       </Card.Content>
@@ -97,59 +92,71 @@ const styles = StyleSheet.create({
     backgroundColor: "#fff",
   },
   content: {
-    flexDirection: "row",
-    gap: 12,
-    alignItems: "flex-start",
+    gap: 10,
     paddingVertical: 8,
   },
+  heroRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 10,
+  },
   image: {
-    width: 72,
-    height: 72,
+    width: 112,
+    height: 126,
     borderRadius: 8,
     backgroundColor: "#F3F3F3",
   },
   placeholder: {
-    width: 72,
-    height: 72,
+    width: 112,
+    height: 126,
     borderRadius: 8,
     backgroundColor: "#F1F1F1",
   },
-  info: {
+  heroMeta: {
     flex: 1,
-    gap: 6,
+    minHeight: 126,
+    gap: 10,
+  },
+  metaRow: {
+    flexDirection: "row",
+    gap: 10,
+  },
+  infoBlock: {
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    gap: 4,
+  },
+  nameBlock: {
+    flex: 1,
+    minHeight: 54,
+    justifyContent: "center",
+    backgroundColor: "#FDF2F8",
+  },
+  typeBlock: {
+    minHeight: 46,
+    justifyContent: "center",
+    backgroundColor: "#ECFDF3",
+  },
+  supplierBlock: {
+    flex: 1.2,
+    backgroundColor: "#FEF3F2",
+  },
+  itemBlock: {
+    flex: 1,
+    backgroundColor: "#FFF7ED",
+  },
+  barcodeBlock: {
+    backgroundColor: "#EFF6FF",
+  },
+  blockValue: {
+    fontWeight: "700",
+    flexShrink: 1,
   },
   name: {
     fontWeight: "700",
     color: "#111827",
-  },
-  badgeRow: {
-    flexDirection: "row",
-    gap: 8,
-  },
-  badge: {
-    flex: 1,
-    borderRadius: 8,
-    paddingHorizontal: 8,
-    paddingVertical: 6,
-    gap: 2,
-  },
-  itemBadge: {
-    backgroundColor: "#FFF7ED",
-  },
-  typeBadge: {
-    backgroundColor: "#ECFDF3",
-  },
-  barcodeBadge: {
-    backgroundColor: "#EFF6FF",
-  },
-  supplierBadge: {
-    backgroundColor: "#FEF3F2",
-  },
-  badgeLabel: {
-    color: "#4B5563",
-  },
-  badgeValue: {
-    fontWeight: "700",
+    lineHeight: 22,
   },
   itemValue: {
     color: "#9A3412",
@@ -159,6 +166,7 @@ const styles = StyleSheet.create({
   },
   barcodeValue: {
     color: "#1D4ED8",
+    fontVariant: ["tabular-nums"],
   },
   supplierValue: {
     color: "#B42318",

@@ -38,6 +38,9 @@
       "fallback": "命中"
     }
   },
+  "sections": {
+    "moreInfo": "更多信息"
+  },
   "hero": {
     "unnamedProduct": "未命名商品",
     "itemNumber": "货号：{{value}}",
