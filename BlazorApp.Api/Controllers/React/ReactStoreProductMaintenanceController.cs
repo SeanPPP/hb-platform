@@ -41,8 +41,14 @@ namespace BlazorApp.Api.Controllers.React
         public async Task<IActionResult> Lookup([FromBody] StoreProductLookupRequestDto request)
         {
             var access = await ResolveAccessContextAsync();
+            Console.WriteLine(
+                $"[StoreProductMaintenance][Lookup] keyword='{request.Keyword}', requestedStore='{request.StoreCode}', allowed={access.IsAllowed}, scope={FormatStoreScope(access.StoreCodes)}, actor='{access.ActorLabel}'"
+            );
             if (!access.IsAllowed)
             {
+                Console.WriteLine(
+                    $"[StoreProductMaintenance][Lookup] unauthorized: {access.Message}"
+                );
                 return Unauthorized(ApiResponse<List<StoreProductLookupItemDto>>.Error(access.Message));
             }
 
@@ -54,8 +60,14 @@ namespace BlazorApp.Api.Controllers.React
         public async Task<IActionResult> GetDetail(string productCode, [FromQuery] string? storeCode = null)
         {
             var access = await ResolveAccessContextAsync();
+            Console.WriteLine(
+                $"[StoreProductMaintenance][Detail] productCode='{productCode}', requestedStore='{storeCode}', allowed={access.IsAllowed}, scope={FormatStoreScope(access.StoreCodes)}, actor='{access.ActorLabel}'"
+            );
             if (!access.IsAllowed)
             {
+                Console.WriteLine(
+                    $"[StoreProductMaintenance][Detail] unauthorized: {access.Message}"
+                );
                 return Unauthorized(ApiResponse<StoreProductDetailDto>.Error(access.Message));
             }
 
@@ -230,6 +242,16 @@ namespace BlazorApp.Api.Controllers.React
                 claim.Type == ClaimTypes.Role
                 && claim.Value.Equals(role, StringComparison.OrdinalIgnoreCase)
             ) == true;
+        }
+
+        private static string FormatStoreScope(List<string>? storeCodes)
+        {
+            if (storeCodes == null)
+            {
+                return "ALL";
+            }
+
+            return storeCodes.Count == 0 ? "NONE" : string.Join(",", storeCodes);
         }
 
         private sealed class StoreAccessContext

@@ -31,6 +31,7 @@ namespace BlazorApp.Shared.DTOs
         public string? Grade { get; set; }
         public string? LocalSupplierCode { get; set; }
         public StoreProductStorePriceDto? StorePrice { get; set; }
+        public StoreProductClearancePriceDto? ClearancePrice { get; set; }
         public List<StoreProductSetCodeDto> SetCodes { get; set; } = new();
         public List<StoreProductMultiCodeDto> MultiCodes { get; set; } = new();
     }
@@ -71,6 +72,16 @@ namespace BlazorApp.Shared.DTOs
         public decimal? Rate { get; set; }
         public string? StrategySourceLabel { get; set; }
         public string? StrategyRuleLabel { get; set; }
+    }
+
+    public class StoreProductClearancePriceDto
+    {
+        public string Uuid { get; set; } = string.Empty;
+        public string? StoreCode { get; set; }
+        public string? StoreName { get; set; }
+        public string? ProductCode { get; set; }
+        public string? ClearanceBarcode { get; set; }
+        public decimal? ClearancePrice { get; set; }
     }
 
     public class StoreProductSetCodeDto

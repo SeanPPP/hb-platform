@@ -36,12 +36,19 @@ namespace BlazorApp.Api.Services.React
                 var keyword = request.Keyword?.Trim();
                 if (string.IsNullOrWhiteSpace(keyword))
                 {
+                    Console.WriteLine("[StoreProductMaintenance][LookupService] empty keyword");
                     return ApiResponse<List<StoreProductLookupItemDto>>.Error("查询内容不能为空");
                 }
 
                 var selectedStoreCodes = ResolveScopedStoreCodes(request.StoreCode, accessibleStoreCodes);
+                Console.WriteLine(
+                    $"[StoreProductMaintenance][LookupService] keyword='{keyword}', requestedStore='{request.StoreCode}', scope={FormatStoreScope(selectedStoreCodes)}"
+                );
                 if (selectedStoreCodes != null && selectedStoreCodes.Count == 0)
                 {
+                    Console.WriteLine(
+                        $"[StoreProductMaintenance][LookupService] keyword='{keyword}', no accessible store scope"
+                    );
                     return ApiResponse<List<StoreProductLookupItemDto>>.OK(new List<StoreProductLookupItemDto>());
                 }
 
@@ -51,8 +58,7 @@ namespace BlazorApp.Api.Services.React
                     .LeftJoin<ProductGrade>((p, pg) => p.ProductCode == pg.ProductCode && !pg.IsDeleted)
                     .Where((p, pg) => !p.IsDeleted)
                     .Where((p, pg) =>
-                        p.ProductCode == keyword
-                        || p.ItemNumber == keyword
+                        p.ItemNumber == keyword
                         || p.Barcode == keyword
                     )
                     .Select((p, pg) => new StoreProductLookupItemDto
@@ -65,59 +71,21 @@ namespace BlazorApp.Api.Services.React
                         Grade = pg.Grade,
                         ProductTypeLabel = null,
                         MatchSource =
-                            p.ProductCode == keyword ? "ProductCode"
-                            : p.ItemNumber == keyword ? "ItemNumber"
+                            p.ItemNumber == keyword ? "ItemNumber"
                             : "ProductBarcode",
                         MatchValue = keyword,
                     })
                     .ToListAsync();
+                Console.WriteLine(
+                    $"[StoreProductMaintenance][LookupService] productMatches={productMatches.Count}"
+                );
                 items.AddRange(productMatches);
-
-                var multiMatchesQuery = _db.Queryable<StoreMultiCodeProduct>()
-                    .LeftJoin<Product>((m, p) => m.ProductCode == p.ProductCode)
-                    .LeftJoin<ProductGrade>((m, p, pg) => p.ProductCode == pg.ProductCode && !pg.IsDeleted)
-                    .Where((m, p, pg) => !m.IsDeleted && !p.IsDeleted)
-                    .Where((m, p, pg) =>
-                        m.MultiBarcode == keyword
-                        || m.MultiCodeProductCode == keyword
-                        || m.StoreMultiCodeProductCode == keyword
-                    );
-
-                if (selectedStoreCodes != null)
-                {
-                    multiMatchesQuery = multiMatchesQuery.Where((m, p, pg) =>
-                        m.StoreCode != null && selectedStoreCodes.Contains(m.StoreCode)
-                    );
-                }
-
-                var multiMatches = await multiMatchesQuery
-                    .Select((m, p, pg) => new StoreProductLookupItemDto
-                    {
-                        ProductCode = p.ProductCode ?? string.Empty,
-                        ProductName = p.ProductName,
-                        ItemNumber = p.ItemNumber,
-                        Barcode = m.MultiBarcode ?? p.Barcode,
-                        ProductImage = p.ProductImage,
-                        Grade = pg.Grade,
-                        ProductTypeLabel = null,
-                        MatchSource =
-                            m.MultiBarcode == keyword ? "MultiBarcode"
-                            : m.MultiCodeProductCode == keyword ? "MultiCodeProductCode"
-                            : "StoreMultiCodeProductCode",
-                        MatchValue = keyword,
-                    })
-                    .ToListAsync();
-                items.AddRange(multiMatches);
 
                 var setMatches = await _db.Queryable<ProductSetCode>()
                     .LeftJoin<Product>((s, p) => s.ProductCode == p.ProductCode)
                     .LeftJoin<ProductGrade>((s, p, pg) => p.ProductCode == pg.ProductCode && !pg.IsDeleted)
                     .Where((s, p, pg) => !s.IsDeleted && !p.IsDeleted)
-                    .Where((s, p, pg) =>
-                        s.SetBarcode == keyword
-                        || s.SetItemNumber == keyword
-                        || s.SetProductCode == keyword
-                    )
+                    .Where((s, p, pg) => s.SetBarcode == keyword)
                     .Select((s, p, pg) => new StoreProductLookupItemDto
                     {
                         ProductCode = p.ProductCode ?? string.Empty,
@@ -127,14 +95,49 @@ namespace BlazorApp.Api.Services.React
                         ProductImage = p.ProductImage,
                         Grade = pg.Grade,
                         ProductTypeLabel = null,
-                        MatchSource =
-                            s.SetBarcode == keyword ? "SetBarcode"
-                            : s.SetItemNumber == keyword ? "SetItemNumber"
-                            : "SetProductCode",
+                        MatchSource = "SetBarcode",
                         MatchValue = keyword,
                     })
                     .ToListAsync();
+                Console.WriteLine(
+                    $"[StoreProductMaintenance][LookupService] setMatches={setMatches.Count}"
+                );
                 items.AddRange(setMatches);
+
+                var clearanceMatchesQuery = _db.Queryable<StoreClearancePrice>()
+                    .LeftJoin<Product>((c, p) => c.ProductCode == p.ProductCode)
+                    .LeftJoin<ProductGrade>((c, p, pg) => p.ProductCode == pg.ProductCode && !pg.IsDeleted)
+                    .Where((c, p, pg) =>
+                        !c.IsDeleted
+                        && !p.IsDeleted
+                        && c.ClearanceBarcode == keyword
+                    );
+
+                if (selectedStoreCodes != null)
+                {
+                    clearanceMatchesQuery = clearanceMatchesQuery.Where((c, p, pg) =>
+                        c.StoreCode != null && selectedStoreCodes.Contains(c.StoreCode)
+                    );
+                }
+
+                var clearanceMatches = await clearanceMatchesQuery
+                    .Select((c, p, pg) => new StoreProductLookupItemDto
+                    {
+                        ProductCode = p.ProductCode ?? string.Empty,
+                        ProductName = p.ProductName,
+                        ItemNumber = p.ItemNumber,
+                        Barcode = c.ClearanceBarcode,
+                        ProductImage = p.ProductImage,
+                        Grade = pg.Grade,
+                        ProductTypeLabel = null,
+                        MatchSource = "ClearanceBarcode",
+                        MatchValue = keyword,
+                    })
+                    .ToListAsync();
+                Console.WriteLine(
+                    $"[StoreProductMaintenance][LookupService] clearanceMatches={clearanceMatches.Count}"
+                );
+                items.AddRange(clearanceMatches);
 
                 var normalized = items
                     .Where(item => !string.IsNullOrWhiteSpace(item.ProductCode))
@@ -147,11 +150,17 @@ namespace BlazorApp.Api.Services.React
                     })
                     .OrderBy(item => item.ProductName)
                     .ToList();
+                Console.WriteLine(
+                    $"[StoreProductMaintenance][LookupService] keyword='{keyword}', finalCount={normalized.Count}"
+                );
 
                 return ApiResponse<List<StoreProductLookupItemDto>>.OK(normalized);
             }
             catch (Exception ex)
             {
+                Console.WriteLine(
+                    $"[StoreProductMaintenance][LookupService] error keyword='{request.Keyword}': {ex.Message}"
+                );
                 _logger.LogError(ex, "商品查询失败: {Keyword}", request.Keyword);
                 return ApiResponse<List<StoreProductLookupItemDto>>.Error($"商品查询失败: {ex.Message}");
             }
@@ -171,8 +180,14 @@ namespace BlazorApp.Api.Services.React
                 }
 
                 var selectedStoreCodes = ResolveScopedStoreCodes(storeCode, accessibleStoreCodes);
+                Console.WriteLine(
+                    $"[StoreProductMaintenance][DetailService] productCode='{productCode}', requestedStore='{storeCode}', scope={FormatStoreScope(selectedStoreCodes)}"
+                );
                 if (selectedStoreCodes != null && selectedStoreCodes.Count == 0)
                 {
+                    Console.WriteLine(
+                        $"[StoreProductMaintenance][DetailService] productCode='{productCode}', no accessible store scope"
+                    );
                     return ApiResponse<StoreProductDetailDto>.Error("当前账号或设备无权访问该分店");
                 }
 
@@ -194,16 +209,38 @@ namespace BlazorApp.Api.Services.React
 
                 if (product == null)
                 {
+                    Console.WriteLine(
+                        $"[StoreProductMaintenance][DetailService] productCode='{productCode}', product not found"
+                    );
                     return ApiResponse<StoreProductDetailDto>.Error("商品不存在");
                 }
+                Console.WriteLine(
+                    $"[StoreProductMaintenance][DetailService] productCode='{productCode}', product found"
+                );
 
                 StoreProductStorePriceDto? storePrice = null;
                 if (selectedStoreCodes == null || selectedStoreCodes.Count > 0)
                 {
                     var storePriceEntity = await QueryStorePriceAsync(productCode, selectedStoreCodes);
+                    Console.WriteLine(
+                        $"[StoreProductMaintenance][DetailService] productCode='{productCode}', storePriceFound={storePriceEntity != null}"
+                    );
                     if (storePriceEntity != null)
                     {
                         storePrice = await BuildStorePriceDtoAsync(storePriceEntity, product.LocalSupplierCode);
+                    }
+                }
+
+                StoreProductClearancePriceDto? clearancePrice = null;
+                if (selectedStoreCodes == null || selectedStoreCodes.Count > 0)
+                {
+                    var clearancePriceEntity = await QueryClearancePriceAsync(productCode, selectedStoreCodes);
+                    Console.WriteLine(
+                        $"[StoreProductMaintenance][DetailService] productCode='{productCode}', clearancePriceFound={clearancePriceEntity != null}"
+                    );
+                    if (clearancePriceEntity != null)
+                    {
+                        clearancePrice = await BuildClearancePriceDtoAsync(clearancePriceEntity);
                     }
                 }
 
@@ -219,6 +256,9 @@ namespace BlazorApp.Api.Services.React
                 var multiCodeEntities = await multiCodeQuery
                     .OrderBy(m => m.MultiBarcode)
                     .ToListAsync();
+                Console.WriteLine(
+                    $"[StoreProductMaintenance][DetailService] productCode='{productCode}', multiCodeCount={multiCodeEntities.Count}"
+                );
 
                 var multiCodes = new List<StoreProductMultiCodeDto>();
                 foreach (var entity in multiCodeEntities)
@@ -240,10 +280,16 @@ namespace BlazorApp.Api.Services.React
                         SetRetailPrice = s.SetRetailPrice,
                         SetQuantity = s.SetQuantity,
                         SetType = s.SetType,
-                        SetTypeDescription = s.SetTypeDescription,
                         IsActive = s.IsActive,
                     })
                     .ToListAsync();
+                foreach (var setCode in setCodes)
+                {
+                    setCode.SetTypeDescription = ResolveSetTypeDescription(setCode.SetType);
+                }
+                Console.WriteLine(
+                    $"[StoreProductMaintenance][DetailService] productCode='{productCode}', setCodeCount={setCodes.Count}"
+                );
 
                 var detail = new StoreProductDetailDto
                 {
@@ -257,14 +303,21 @@ namespace BlazorApp.Api.Services.React
                     Grade = product.Grade,
                     LocalSupplierCode = product.LocalSupplierCode,
                     StorePrice = storePrice,
+                    ClearancePrice = clearancePrice,
                     MultiCodes = multiCodes,
                     SetCodes = setCodes,
                 };
+                Console.WriteLine(
+                    $"[StoreProductMaintenance][DetailService] productCode='{productCode}', detail returned"
+                );
 
                 return ApiResponse<StoreProductDetailDto>.OK(detail);
             }
             catch (Exception ex)
             {
+                Console.WriteLine(
+                    $"[StoreProductMaintenance][DetailService] error productCode='{productCode}': {ex.Message}"
+                );
                 _logger.LogError(ex, "获取商品详情失败: {ProductCode}", productCode);
                 return ApiResponse<StoreProductDetailDto>.Error($"获取商品详情失败: {ex.Message}");
             }
@@ -464,6 +517,21 @@ namespace BlazorApp.Api.Services.React
             return await query.OrderBy(x => x.StoreCode).FirstAsync();
         }
 
+        private async Task<StoreClearancePrice?> QueryClearancePriceAsync(
+            string productCode,
+            List<string>? accessibleStoreCodes
+        )
+        {
+            var query = _db.Queryable<StoreClearancePrice>()
+                .Where(x => x.ProductCode == productCode && !x.IsDeleted);
+            if (accessibleStoreCodes != null)
+            {
+                query = query.Where(x => x.StoreCode != null && accessibleStoreCodes.Contains(x.StoreCode));
+            }
+
+            return await query.OrderBy(x => x.StoreCode).FirstAsync();
+        }
+
         private async Task<StoreProductStorePriceDto> BuildStorePriceDtoAsync(
             StoreRetailPrice entity,
             string? fallbackSupplierCode
@@ -541,6 +609,26 @@ namespace BlazorApp.Api.Services.React
             return dto;
         }
 
+        private async Task<StoreProductClearancePriceDto> BuildClearancePriceDtoAsync(
+            StoreClearancePrice entity
+        )
+        {
+            var storeName = await _db.Queryable<Store>()
+                .Where(s => s.StoreCode == entity.StoreCode && !s.IsDeleted)
+                .Select(s => s.StoreName)
+                .FirstAsync();
+
+            return new StoreProductClearancePriceDto
+            {
+                Uuid = entity.UUID,
+                StoreCode = entity.StoreCode,
+                StoreName = storeName,
+                ProductCode = entity.ProductCode,
+                ClearanceBarcode = entity.ClearanceBarcode,
+                ClearancePrice = entity.ClearancePrice,
+            };
+        }
+
         private async Task FillPricingFieldsAsync(
             decimal? purchasePrice,
             string? supplierCode,
@@ -604,6 +692,16 @@ namespace BlazorApp.Api.Services.React
             return !string.IsNullOrWhiteSpace(storeCode) && accessibleStoreCodes.Contains(storeCode);
         }
 
+        private static string FormatStoreScope(List<string>? storeCodes)
+        {
+            if (storeCodes == null)
+            {
+                return "ALL";
+            }
+
+            return storeCodes.Count == 0 ? "NONE" : string.Join(",", storeCodes);
+        }
+
         private static string? NormalizeProductTypeLabel(string? rawValue)
         {
             return rawValue switch
@@ -612,6 +710,17 @@ namespace BlazorApp.Api.Services.React
                 "2" => "多码",
                 "3" => "套装",
                 _ => rawValue,
+            };
+        }
+
+        private static string ResolveSetTypeDescription(int setType)
+        {
+            return setType switch
+            {
+                0 => "普商品",
+                1 => "组合套装",
+                2 => "多码套装",
+                _ => "未知类型",
             };
         }
     }
