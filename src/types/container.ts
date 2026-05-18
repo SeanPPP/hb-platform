@@ -14,6 +14,7 @@ export interface ContainerMain {
   运费?: number
   备注?: string
   状态?: number
+  details?: ContainerDetail[]
 }
 
 export interface ContainerProductInfo {
@@ -54,6 +55,7 @@ export interface ContainerDetail {
   备注?: string
   商品信息?: ContainerProductInfo
   是否新商品?: boolean
+  IsActive?: boolean
   warehouseImportPrice?: number
   warehouseOEMPrice?: number
   warehouseIsActive?: boolean
@@ -76,6 +78,47 @@ export interface ContainerListResponse {
   page: number
   pageSize: number
   totalPages: number
+}
+
+export interface DateFilterOption {
+  value: string
+  label: string
+}
+
+export interface UpdateContainerRequest {
+  实际到货日期?: string
+  汇率?: number
+  运费?: number
+  备注?: string
+}
+
+export interface UpdateContainerDetailRequest {
+  hguid: string
+  调整浮率?: number
+  进口价格?: number
+  运输成本?: number
+  商品名称?: string
+  英文名称?: string
+  贴牌价格?: number
+  IsActive?: boolean
+}
+
+export interface CreateContainerRequest {
+  货柜编号: string
+  装柜日期?: string
+  预计到岸日期?: string
+  汇率?: number
+  运费?: number
+  备注?: string
+}
+
+export interface SyncResult {
+  isSuccess?: boolean
+  IsSuccess?: boolean
+  message?: string
+  Message?: string
+  details?: string
+  Details?: string
 }
 
 export interface ComingSoonHomeProduct {

@@ -181,6 +181,51 @@ export interface BatchToggleWarehouseProductsActivePayload {
   isActive: boolean
 }
 
+export interface DetectionItem {
+  ProductCode?: string
+  ItemNumber?: string
+  Barcode?: string
+}
+
+export interface DetectionResult {
+  ProductCode?: string
+  ItemNumber?: string
+  Exists?: boolean
+  MatchType?: string
+  WarehouseDomesticPrice?: number
+  WarehouseOEMPrice?: number
+  WarehouseImportPrice?: number
+  WarehouseVolume?: number
+  WarehouseIsActive?: boolean
+  productCode?: string
+  warehouseImportPrice?: number
+  importPrice?: number
+}
+
+export interface WarehouseProductBatchCreateItem {
+  ProductCode?: string
+  ItemNumber?: string
+  Barcode?: string
+  ChineseName?: string
+  EnglishName?: string
+  DomesticPrice?: number
+  OEMPrice?: number
+  ImportPrice?: number
+  Volume?: number
+  ImageUrl?: string
+  IsSetProduct?: boolean
+}
+
+export interface WarehouseProductBatchUpdateItem {
+  ProductCode?: string
+  ItemNumber?: string
+  DomesticPrice?: number
+  OEMPrice?: number
+  ImportPrice?: number
+  Volume?: number
+  IsActive?: boolean
+}
+
 export interface WarehouseImportListResult<T> {
   success: boolean
   data: T[]
@@ -459,6 +504,35 @@ export async function createSingleWarehouseProduct(
   return response
 }
 
+export async function detectProducts(items: DetectionItem[]): Promise<DetectionResult[]> {
+  const response = await request<unknown>(`${API_BASE}/detect`, {
+    method: 'POST',
+    data: { Items: items },
+  })
+  const result = unwrapResponse(response, { success: false, data: [] as DetectionResult[] })
+  return Array.isArray((result as { data?: DetectionResult[] }).data)
+    ? (result as { data: DetectionResult[] }).data
+    : Array.isArray(result)
+      ? (result as DetectionResult[])
+      : []
+}
+
+export async function batchCreateProducts(items: WarehouseProductBatchCreateItem[]): Promise<WarehouseImportActionResult> {
+  const response = await request<unknown>(`${API_BASE}/batch-create`, {
+    method: 'POST',
+    data: { Items: items },
+  })
+  return unwrapResponse(response, { success: false })
+}
+
+export async function batchUpdateWarehouseProducts(items: WarehouseProductBatchUpdateItem[]): Promise<WarehouseImportActionResult> {
+  const response = await request<unknown>(`${API_BASE}/batch-update`, {
+    method: 'POST',
+    data: { Items: items },
+  })
+  return unwrapResponse(response, { success: false })
+}
+
 export async function getWarehouseProductsTable(
   query: WarehouseProductsTableQuery,
 ): Promise<WarehouseProductsTableResult> {
@@ -521,4 +595,8 @@ export async function batchToggleWarehouseProductsActive(
   })
 
   return unwrapResponse(response, { success: false })
+}
+
+export async function bulkSetStatus(productCodes: string[], isActive: boolean): Promise<WarehouseImportActionResult> {
+  return batchToggleWarehouseProductsActive({ productCodes, isActive })
 }

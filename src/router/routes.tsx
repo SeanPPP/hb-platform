@@ -54,6 +54,8 @@ import SystemStoresPage from '../pages/System/Stores'
 import SystemUsersPage from '../pages/System/Users'
 import SystemPermissionsPage from '../pages/System/Permissions'
 import WarehouseCategoriesPage from '../pages/Warehouse/Categories'
+import ContainerDetailPage from '../pages/Warehouse/ContainerDetail'
+import ContainersPage from '../pages/Warehouse/Containers'
 import WarehouseLocationsPage from '../pages/Warehouse/Locations'
 import WarehouseProductsPage from '../pages/Warehouse/Products'
 import StoreOrderDetailPage from '../pages/Warehouse/StoreOrders/Detail'
@@ -160,6 +162,16 @@ export const appRoutes: AppRouteItem[] = [
           accessKey: 'canReadRole',
         },
         element: <SystemPermissionsPage />,
+      },
+      {
+        path: '/system/device-registration',
+        meta: {
+          title: 'menu.deviceRegistration',
+          icon: 'BuildOutlined',
+          keepAlive: true,
+          accessKey: 'canManageStoreOps',
+        },
+        element: <PosAdminDeviceRegistrationPage />,
       },
     ],
   },
@@ -276,6 +288,28 @@ export const appRoutes: AppRouteItem[] = [
         element: <StoreOrderInvoicePage />,
       },
       {
+        path: '/warehouse/containers',
+        meta: {
+          title: 'menu.containers',
+          icon: 'InboxOutlined',
+          keepAlive: true,
+          accessKey: 'canViewContainers',
+        },
+        element: <ContainersPage />,
+      },
+      {
+        path: '/warehouse/container/detail/:containerGuid',
+        meta: {
+          title: 'menu.containerDetail',
+          hidden: true,
+          keepAlive: true,
+          accessKey: 'canViewContainers',
+          activeMenu: '/warehouse/containers',
+          dynamicTitle: () => i18n.t('menu.containerDetail'),
+        },
+        element: <ContainerDetailPage />,
+      },
+      {
         path: '/warehouse/products',
         meta: {
           title: 'menu.warehouseProducts',
@@ -322,6 +356,7 @@ export const appRoutes: AppRouteItem[] = [
     meta: {
       title: 'menu.executiveSalesIntelligence',
       icon: 'BarChartOutlined',
+      accessKey: 'canViewReports',
     },
     children: [
       {
@@ -379,7 +414,7 @@ export const appRoutes: AppRouteItem[] = [
           title: 'menu.storeProductPrice',
           icon: 'DollarOutlined',
           keepAlive: true,
-          accessKey: 'canEditStoreProducts',
+          accessKey: 'canManageStoreProducts',
         },
         element: <PosAdminStoreProductPricePage />,
       },
@@ -412,16 +447,6 @@ export const appRoutes: AppRouteItem[] = [
           accessKey: 'canManageStoreOps',
         },
         element: <PosAdminCashRegisterUsersPage />,
-      },
-      {
-        path: '/pos-admin/device-registration',
-        meta: {
-          title: 'menu.deviceRegistration',
-          icon: 'BuildOutlined',
-          keepAlive: true,
-          accessKey: 'canManageStoreOps',
-        },
-        element: <PosAdminDeviceRegistrationPage />,
       },
       {
         path: '/pos-admin/sales-orders',

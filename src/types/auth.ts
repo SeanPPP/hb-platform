@@ -68,8 +68,13 @@ export interface AccessControl {
   canManageWarehouseOrders: boolean
   canManageWarehouseCategories: boolean
   canManageWarehouseLocations: boolean
+  canViewContainers: boolean
+  canCreateContainer: boolean
+  canEditContainer: boolean
+  canDeleteContainer: boolean
   canManageStoreProducts: boolean
   canEditStoreProducts: boolean
+  canCreateStoreProducts: boolean
   canManageStoreOps: boolean
   canManageLocalPurchase: boolean
   canEditLocalPurchase: boolean

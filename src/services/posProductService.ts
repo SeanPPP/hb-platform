@@ -43,6 +43,11 @@ export async function getProductByBarcode(barcode: string): Promise<PosProductDt
   return unwrapApiData(response)
 }
 
+export async function createProduct(data: Partial<PosProductDto> & Record<string, unknown>) {
+  const response = await request.post<ApiResponse<PosProductDto>>(`${API_BASE}`, data)
+  return unwrapApiData(response)
+}
+
 export async function updateProduct(productCode: string, data: Partial<PosProductDto>) {
   const response = await request.put<ApiResponse<PosProductDto>>(`${API_BASE}/${productCode}`, data)
   return unwrapApiData(response)

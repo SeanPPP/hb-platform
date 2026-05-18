@@ -42,6 +42,8 @@
     "productImport": "商品导入",
     "warehouse": "仓库管理",
     "storeOrders": "分店订货列表",
+    "containers": "货柜管理",
+    "containerDetail": "货柜明细",
     "storeOrderDetail": "订货明细",
     "pickingList": "配货单",
     "invoice": "发票",
@@ -65,6 +67,157 @@
     "salesData": "销售数据",
     "salesDetail": "销售明细",
     "pageNotFound": "页面不存在"
+  },
+  "containers": {
+    "title": "货柜管理",
+    "detailTitle": "货柜明细",
+    "detailTitleWithNumber": "货柜明细 - {{number}}",
+    "actions": {
+      "createContainer": "新建货柜",
+      "syncFromHq": "从 HQ 同步",
+      "pushToHbSales": "发送到 HBSales",
+      "confirmSync": "确认同步",
+      "confirmPush": "确认发送",
+      "backToList": "返回列表",
+      "saveContainer": "保存货柜",
+      "editContainer": "编辑货柜",
+      "batchTranslate": "批量翻译",
+      "createNewProducts": "创建新商品",
+      "updateExistingPurchase": "更新已有商品进货价",
+      "batchActivate": "批量上架",
+      "batchDeactivate": "批量下架",
+      "batchActions": "批量操作",
+      "deleteDetails": "删除明细",
+      "applyFloatRate": "应用浮率",
+      "applyPrices": "应用价格",
+      "confirmDelete": "确认删除"
+    },
+    "fields": {
+      "containerNumber": "货柜编号",
+      "loadingDate": "装柜日期",
+      "estimatedArrivalDate": "预计到岸日期",
+      "actualArrivalDate": "实际到货日期",
+      "estimatedArrival": "预计到岸",
+      "actualArrival": "实际到货",
+      "exchangeRate": "汇率",
+      "freight": "运费",
+      "freightUsd": "运费 ($)",
+      "remark": "备注",
+      "status": "状态",
+      "totalPieces": "合计件数",
+      "totalAmount": "合计金额",
+      "totalVolume": "总体积",
+      "totalVolumeCbm": "总体积 (m³)",
+      "itemNumber": "货号",
+      "barcode": "条码",
+      "productName": "商品名称",
+      "englishName": "英文名称",
+      "productType": "类型",
+      "newProduct": "新商品",
+      "containerPieces": "装柜件数",
+      "containerQuantity": "装柜数量",
+      "domesticPrice": "国内价格",
+      "floatRate": "调整浮率",
+      "transportCost": "运输成本",
+      "importPrice": "进口价格",
+      "oemPrice": "贴牌价格",
+      "warehouseStatus": "仓库状态"
+    },
+    "columns": {
+      "index": "编号",
+      "image": "图片"
+    },
+    "status": {
+      "unknown": "未知",
+      "unknownWithCode": "未知({{status}})",
+      "loaded": "已装柜",
+      "inTransit": "运输中",
+      "completed": "已完成",
+      "cancelled": "已取消"
+    },
+    "stats": {
+      "currentPageContainers": "当前页货柜数",
+      "currentPagePieces": "当前页总件数",
+      "currentPageAmount": "当前页总金额",
+      "currentPageVolume": "当前页总体积"
+    },
+    "validation": {
+      "enterContainerNumber": "请输入货柜编号",
+      "selectLoadingDate": "请选择装柜日期"
+    },
+    "placeholders": {
+      "searchItemNumber": "输入货号搜索",
+      "filterItemNumber": "货号过滤"
+    },
+    "modals": {
+      "syncTitle": "从 HQ 同步货柜",
+      "syncContent": "将增量同步最近货柜主表和明细数据到本地数据库。确认执行？",
+      "pushTitle": "发送到 HBSales",
+      "pushContent": "确认将选中的 {{count}} 个货柜发送到 HBSales？",
+      "deleteDetailsTitle": "删除货柜明细",
+      "deleteDetailsContent": "确认删除选中的 {{count}} 条明细？"
+    },
+    "messages": {
+      "loadListFailed": "加载货柜列表失败",
+      "createSuccess": "货柜创建成功",
+      "createFailed": "创建货柜失败",
+      "syncComplete": "同步完成",
+      "syncFailed": "从 HQ 同步失败",
+      "selectContainersToPush": "请先选择要发送的货柜",
+      "pushComplete": "发送完成",
+      "pushFailed": "发送到 HBSales 失败",
+      "missingContainerGuid": "缺少货柜编号，无法加载明细",
+      "loadDetailFailed": "加载货柜明细失败",
+      "headerSaveSuccess": "货柜信息已保存",
+      "headerSaveFailed": "保存货柜信息失败",
+      "enterFloatRate": "请输入调整浮率",
+      "detailsUpdated": "已更新 {{count}} 条明细",
+      "enterImportOrOemPrice": "请输入进口价格或贴牌价格",
+      "selectProducts": "请先选择商品",
+      "detailPricesUpdated": "已更新 {{count}} 条明细价格",
+      "selectedProductsMissingCode": "选中商品缺少商品编码",
+      "batchActiveFailed": "批量上下架失败",
+      "productsActivated": "已上架 {{count}} 个商品",
+      "productsDeactivated": "已下架 {{count}} 个商品",
+      "noNamesToTranslate": "没有可翻译的商品名称",
+      "namesTranslated": "已翻译 {{count}} 条商品名称",
+      "noEligibleNewProducts": "没有符合条件的新商品",
+      "newProductsCreated": "已创建 {{count}} 个新商品",
+      "noExistingProductsToUpdate": "没有可更新的已存在商品",
+      "noPurchasePriceDiff": "进货价无差异，无需更新",
+      "purchasePricesUpdated": "已更新 {{count}} 条商品进货价",
+      "selectDetails": "请先选择明细",
+      "detailsDeleted": "已删除 {{count}} 条明细",
+      "noDataToExport": "没有可导出的数据",
+      "detailsExported": "已导出 {{count}} 条明细"
+    },
+    "productTypes": {
+      "normal": "普通商品",
+      "set": "套装商品",
+      "setChild": "套装子商品"
+    },
+    "tags": {
+      "new": "新",
+      "existing": "已有",
+      "newProduct": "新商品",
+      "existingProduct": "已有商品"
+    },
+    "filters": {
+      "allTags": "全部标签",
+      "missingOemPrice": "缺贴牌价",
+      "abnormalImportPrice": "进口价异常"
+    },
+    "text": {
+      "showingRows": "显示 {{filtered}} / {{total}} 条",
+      "selectedFirst": "选中优先",
+      "allDisplayed": "全部显示"
+    },
+    "empty": {
+      "noImage": "无图"
+    },
+    "export": {
+      "detailSuffix": "商品明细"
+    }
   },
   "lang": {
     "zh": "中文",

@@ -39,8 +39,13 @@ function createEmptyAccess(): AccessControl {
     canManageWarehouseOrders: false,
     canManageWarehouseCategories: false,
     canManageWarehouseLocations: false,
+    canViewContainers: false,
+    canCreateContainer: false,
+    canEditContainer: false,
+    canDeleteContainer: false,
     canManageStoreProducts: false,
     canEditStoreProducts: false,
+    canCreateStoreProducts: false,
     canManageStoreOps: false,
     canManageLocalPurchase: false,
     canEditLocalPurchase: false,
@@ -143,17 +148,22 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
   const canManageWarehouseOrders = isAdmin || hasPermission('Warehouse.ManageOrders') || hasPermission('Warehouse.Manage')
   const canManageWarehouseCategories = isAdmin || hasPermission('Warehouse.ManageCategories') || hasPermission('Warehouse.Manage')
   const canManageWarehouseLocations = isAdmin || hasPermission('Warehouse.ManageLocations') || hasPermission('Warehouse.Manage')
+  const canViewContainers = isAdmin || hasPermission('Container.View')
+  const canCreateContainer = isAdmin || hasPermission('Container.Create')
+  const canEditContainer = isAdmin || hasPermission('Container.Edit')
+  const canDeleteContainer = isAdmin || hasPermission('Container.Delete')
 
   // 分店商品
   const canManageStoreProducts = isAdmin || hasPermission('StoreProducts.View')
   const canEditStoreProducts = isAdmin || hasPermission('StoreProducts.Edit')
+  const canCreateStoreProducts = isAdmin || hasPermission('StoreProducts.Create')
 
   // 分店运营
   const canManageStoreOps = isAdmin || hasPermission('Store.ManageOperations')
 
   // 本地进货
-  const canManageLocalPurchase = isAdmin || hasPermission('LocalPurchase.View')
-  const canEditLocalPurchase = isAdmin || hasPermission('LocalPurchase.Edit')
+  const canManageLocalPurchase = isAdmin || hasPermission('LocalPurchase.View') || hasPermission('LocalInvocie.View')
+  const canEditLocalPurchase = isAdmin || hasPermission('LocalPurchase.Edit') || hasPermission('LocalInvocie.Edit')
 
   // 定价策略
   const canManagePricing = isAdmin || hasPermission('PricingStrategy.View')
@@ -210,8 +220,13 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
     canManageWarehouseOrders,
     canManageWarehouseCategories,
     canManageWarehouseLocations,
+    canViewContainers,
+    canCreateContainer,
+    canEditContainer,
+    canDeleteContainer,
     canManageStoreProducts,
     canEditStoreProducts,
+    canCreateStoreProducts,
     canManageStoreOps,
     canManageLocalPurchase,
     canEditLocalPurchase,

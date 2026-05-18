@@ -42,6 +42,8 @@
     "productImport": "Product Import",
     "warehouse": "Warehouse",
     "storeOrders": "Store Orders",
+    "containers": "Containers",
+    "containerDetail": "Container Detail",
     "storeOrderDetail": "Order Detail",
     "pickingList": "Picking List",
     "invoice": "Invoice",
@@ -65,6 +67,157 @@
     "salesData": "Sales Data",
     "salesDetail": "Sales Detail",
     "pageNotFound": "Page Not Found"
+  },
+  "containers": {
+    "title": "Container Management",
+    "detailTitle": "Container Detail",
+    "detailTitleWithNumber": "Container Detail - {{number}}",
+    "actions": {
+      "createContainer": "New Container",
+      "syncFromHq": "Sync from HQ",
+      "pushToHbSales": "Send to HBSales",
+      "confirmSync": "Sync",
+      "confirmPush": "Send",
+      "backToList": "Back to List",
+      "saveContainer": "Save Container",
+      "editContainer": "Edit Container",
+      "batchTranslate": "Batch Translate",
+      "createNewProducts": "Create New Products",
+      "updateExistingPurchase": "Update Existing Purchase Prices",
+      "batchActivate": "Batch Activate",
+      "batchDeactivate": "Batch Deactivate",
+      "batchActions": "Batch Actions",
+      "deleteDetails": "Delete Details",
+      "applyFloatRate": "Apply Float Rate",
+      "applyPrices": "Apply Prices",
+      "confirmDelete": "Delete"
+    },
+    "fields": {
+      "containerNumber": "Container No.",
+      "loadingDate": "Loading Date",
+      "estimatedArrivalDate": "Estimated Arrival Date",
+      "actualArrivalDate": "Actual Arrival Date",
+      "estimatedArrival": "Estimated Arrival",
+      "actualArrival": "Actual Arrival",
+      "exchangeRate": "Exchange Rate",
+      "freight": "Freight",
+      "freightUsd": "Freight ($)",
+      "remark": "Remark",
+      "status": "Status",
+      "totalPieces": "Total Pieces",
+      "totalAmount": "Total Amount",
+      "totalVolume": "Total Volume",
+      "totalVolumeCbm": "Total Volume (m³)",
+      "itemNumber": "Item No.",
+      "barcode": "Barcode",
+      "productName": "Product Name",
+      "englishName": "English Name",
+      "productType": "Type",
+      "newProduct": "New Product",
+      "containerPieces": "Container Pieces",
+      "containerQuantity": "Container Qty",
+      "domesticPrice": "Domestic Price",
+      "floatRate": "Float Rate",
+      "transportCost": "Transport Cost",
+      "importPrice": "Import Price",
+      "oemPrice": "OEM Price",
+      "warehouseStatus": "Warehouse Status"
+    },
+    "columns": {
+      "index": "No.",
+      "image": "Image"
+    },
+    "status": {
+      "unknown": "Unknown",
+      "unknownWithCode": "Unknown ({{status}})",
+      "loaded": "Loaded",
+      "inTransit": "In Transit",
+      "completed": "Completed",
+      "cancelled": "Cancelled"
+    },
+    "stats": {
+      "currentPageContainers": "Containers on Page",
+      "currentPagePieces": "Pieces on Page",
+      "currentPageAmount": "Amount on Page",
+      "currentPageVolume": "Volume on Page"
+    },
+    "validation": {
+      "enterContainerNumber": "Enter container number",
+      "selectLoadingDate": "Select loading date"
+    },
+    "placeholders": {
+      "searchItemNumber": "Search by item number",
+      "filterItemNumber": "Filter item number"
+    },
+    "modals": {
+      "syncTitle": "Sync Containers from HQ",
+      "syncContent": "Incrementally sync recent container headers and details into the local database. Continue?",
+      "pushTitle": "Send to HBSales",
+      "pushContent": "Send the selected {{count}} containers to HBSales?",
+      "deleteDetailsTitle": "Delete Container Details",
+      "deleteDetailsContent": "Delete the selected {{count}} details?"
+    },
+    "messages": {
+      "loadListFailed": "Failed to load container list",
+      "createSuccess": "Container created",
+      "createFailed": "Failed to create container",
+      "syncComplete": "Sync complete",
+      "syncFailed": "Failed to sync from HQ",
+      "selectContainersToPush": "Select containers to send first",
+      "pushComplete": "Send complete",
+      "pushFailed": "Failed to send to HBSales",
+      "missingContainerGuid": "Missing container ID. Cannot load details.",
+      "loadDetailFailed": "Failed to load container details",
+      "headerSaveSuccess": "Container information saved",
+      "headerSaveFailed": "Failed to save container information",
+      "enterFloatRate": "Enter float rate",
+      "detailsUpdated": "Updated {{count}} details",
+      "enterImportOrOemPrice": "Enter import price or OEM price",
+      "selectProducts": "Select products first",
+      "detailPricesUpdated": "Updated prices for {{count}} details",
+      "selectedProductsMissingCode": "Selected products are missing product codes",
+      "batchActiveFailed": "Batch status update failed",
+      "productsActivated": "Activated {{count}} products",
+      "productsDeactivated": "Deactivated {{count}} products",
+      "noNamesToTranslate": "No product names to translate",
+      "namesTranslated": "Translated {{count}} product names",
+      "noEligibleNewProducts": "No eligible new products",
+      "newProductsCreated": "Created {{count}} new products",
+      "noExistingProductsToUpdate": "No existing products to update",
+      "noPurchasePriceDiff": "No purchase price difference to update",
+      "purchasePricesUpdated": "Updated purchase prices for {{count}} products",
+      "selectDetails": "Select details first",
+      "detailsDeleted": "Deleted {{count}} details",
+      "noDataToExport": "No data to export",
+      "detailsExported": "Exported {{count}} details"
+    },
+    "productTypes": {
+      "normal": "Normal Product",
+      "set": "Set Product",
+      "setChild": "Set Child Product"
+    },
+    "tags": {
+      "new": "New",
+      "existing": "Existing",
+      "newProduct": "New Product",
+      "existingProduct": "Existing Product"
+    },
+    "filters": {
+      "allTags": "All Tags",
+      "missingOemPrice": "Missing OEM Price",
+      "abnormalImportPrice": "Abnormal Import Price"
+    },
+    "text": {
+      "showingRows": "Showing {{filtered}} / {{total}} rows",
+      "selectedFirst": "Selected First",
+      "allDisplayed": "All Displayed"
+    },
+    "empty": {
+      "noImage": "No Image"
+    },
+    "export": {
+      "detailSuffix": "Product Details"
+    }
   },
   "lang": {
     "zh": "中文",

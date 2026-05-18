@@ -3,9 +3,14 @@ import type {
   ComingSoonHomeContainer,
   ComingSoonHomeProduct,
   ContainerDetail,
+  CreateContainerRequest,
+  DateFilterOption,
   ContainerListResponse,
   ContainerMain,
   ContainerQueryRequest,
+  SyncResult,
+  UpdateContainerDetailRequest,
+  UpdateContainerRequest,
 } from '../types/container'
 import request from '../utils/request'
 
@@ -105,6 +110,122 @@ export async function getContainerProducts(containerGuid: string): Promise<Conta
   ensureSuccess(response.success ?? response.isSuccess, response.message, '获取货柜商品列表失败')
 
   return response.data ?? []
+}
+
+export async function getContainerDetail(containerGuid: string): Promise<ContainerMain> {
+  const response = await request<ApiResponse<ContainerMain> | { success?: boolean; isSuccess?: boolean; message?: string; data?: ContainerMain }>(
+    `${API_BASE}/${encodeURIComponent(containerGuid)}`,
+    { method: 'GET' },
+  )
+
+  ensureSuccess(response.success ?? response.isSuccess, response.message, '获取货柜详情失败')
+
+  const data = 'data' in response ? response.data : undefined
+  if (!data) {
+    throw new Error('获取货柜详情失败')
+  }
+  return data
+}
+
+export async function getDateFilterOptions(): Promise<DateFilterOption[]> {
+  const response = await request<ApiResponse<DateFilterOption[]> | { success?: boolean; isSuccess?: boolean; message?: string; data?: DateFilterOption[] }>(
+    `${API_BASE}/date-filter-options`,
+    { method: 'GET' },
+  )
+
+  ensureSuccess(response.success ?? response.isSuccess, response.message, '获取日期筛选项失败')
+
+  return response.data?.length
+    ? response.data
+    : [
+        { value: '预计到岸日期', label: '预计到岸日期' },
+        { value: '实际到货日期', label: '实际到货日期' },
+      ]
+}
+
+export async function createContainer(data: CreateContainerRequest): Promise<string> {
+  const response = await request<{ success?: boolean; message?: string; data?: { containerGuid?: string } }>(API_BASE, {
+    method: 'POST',
+    data,
+  })
+
+  ensureSuccess(response.success, response.message, '创建货柜失败')
+  return response.data?.containerGuid ?? ''
+}
+
+export async function updateContainer(containerGuid: string, data: UpdateContainerRequest): Promise<boolean> {
+  const response = await request<{ success?: boolean; message?: string }>(`${API_BASE}/${encodeURIComponent(containerGuid)}`, {
+    method: 'PUT',
+    data,
+  })
+
+  ensureSuccess(response.success, response.message, '更新货柜失败')
+  return true
+}
+
+export async function batchUpdateDetails(
+  updates: UpdateContainerDetailRequest[],
+): Promise<{ totalUpdated: number; totalRequested: number }> {
+  const response = await request<{
+    success?: boolean
+    message?: string
+    data?: { totalUpdated?: number; totalRequested?: number }
+  }>(`${API_BASE}/batch-update-details`, {
+    method: 'POST',
+    data: updates.map((item) => ({
+      HGUID: item.hguid,
+      调整浮率: item.调整浮率,
+      进口价格: item.进口价格,
+      运输成本: item.运输成本,
+      商品名称: item.商品名称,
+      英文名称: item.英文名称,
+      贴牌价格: item.贴牌价格,
+      IsActive: item.IsActive,
+    })),
+  })
+
+  ensureSuccess(response.success, response.message, '批量更新货柜明细失败')
+  return {
+    totalUpdated: response.data?.totalUpdated ?? updates.length,
+    totalRequested: response.data?.totalRequested ?? updates.length,
+  }
+}
+
+export async function batchDeleteDetails(hguids: string[]): Promise<{ totalDeleted: number; totalRequested: number }> {
+  const response = await request<{
+    success?: boolean
+    message?: string
+    data?: { totalDeleted?: number; totalRequested?: number }
+  }>(`${API_BASE}/batch-delete-details`, {
+    method: 'POST',
+    data: { hguids },
+  })
+
+  ensureSuccess(response.success, response.message, '批量删除货柜明细失败')
+  return {
+    totalDeleted: response.data?.totalDeleted ?? hguids.length,
+    totalRequested: response.data?.totalRequested ?? hguids.length,
+  }
+}
+
+export async function syncContainersFromHq(startDate?: string): Promise<SyncResult> {
+  const response = await request<{ success?: boolean; message?: string; data?: SyncResult }>(`${API_BASE}/sync-from-hq`, {
+    method: 'POST',
+    data: { startDate },
+  })
+
+  ensureSuccess(response.success, response.message, '从HQ同步货柜失败')
+  return response.data ?? { isSuccess: response.success, message: response.message }
+}
+
+export async function pushContainersToHbSales(containerGuids: string[]): Promise<SyncResult> {
+  const response = await request<{ success?: boolean; message?: string; data?: SyncResult }>(`${API_BASE}/push-to-hbsales`, {
+    method: 'POST',
+    data: { containerGuids },
+  })
+
+  ensureSuccess(response.success, response.message, '发送到HBSales失败')
+  return response.data ?? { isSuccess: response.success, message: response.message }
 }
 
 interface CheckConflictItem {

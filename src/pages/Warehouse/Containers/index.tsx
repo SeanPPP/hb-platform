@@ -1,0 +1,405 @@
+import {
+  CloudSyncOutlined,
+  CloudUploadOutlined,
+  EyeOutlined,
+  PlusOutlined,
+  ReloadOutlined,
+  SearchOutlined,
+} from '@ant-design/icons'
+import {
+  Button,
+  Card,
+  Col,
+  DatePicker,
+  Form,
+  Input,
+  InputNumber,
+  Modal,
+  Row,
+  Select,
+  Space,
+  Statistic,
+  Table,
+  Tag,
+  message,
+} from 'antd'
+import type { ColumnsType, TablePaginationConfig } from 'antd/es/table'
+import type { TFunction } from 'i18next'
+import type { Dayjs } from 'dayjs'
+import dayjs from 'dayjs'
+import { useEffect, useMemo, useState, type Key } from 'react'
+import { useTranslation } from 'react-i18next'
+import { useNavigate } from 'react-router-dom'
+import PageContainer from '../../../components/PageContainer'
+import {
+  createContainer,
+  getContainerList,
+  getDateFilterOptions,
+  pushContainersToHbSales,
+  syncContainersFromHq,
+} from '../../../services/containerService'
+import { useAuthStore } from '../../../store/auth'
+import type { ContainerMain, CreateContainerRequest, DateFilterOption } from '../../../types/container'
+
+type RangeValue = [Dayjs | null, Dayjs | null] | null
+
+function formatDate(value?: string) {
+  return value ? dayjs(value).format('YYYY-MM-DD') : '--'
+}
+
+function formatAmount(value?: number) {
+  return value == null ? '--' : `¥${value.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+}
+
+function formatNumber(value?: number, digits = 0) {
+  return value == null ? '--' : value.toLocaleString('zh-CN', { maximumFractionDigits: digits, minimumFractionDigits: digits })
+}
+
+function getStatusTag(status: number | undefined, t: TFunction) {
+  if (status == null) return <Tag>{t('containers.status.unknown')}</Tag>
+  const map: Record<number, { color: string; labelKey: string }> = {
+    0: { color: 'blue', labelKey: 'loaded' },
+    1: { color: 'orange', labelKey: 'inTransit' },
+    2: { color: 'success', labelKey: 'completed' },
+    7: { color: 'error', labelKey: 'cancelled' },
+  }
+  const item = map[status]
+  return item ? <Tag color={item.color}>{t(`containers.status.${item.labelKey}`)}</Tag> : <Tag>{t('containers.status.unknownWithCode', { status })}</Tag>
+}
+
+function getDateOptionLabel(value: string, t: TFunction) {
+  const map: Record<string, string> = {
+    预计到岸日期: 'containers.fields.estimatedArrivalDate',
+    实际到货日期: 'containers.fields.actualArrivalDate',
+    装柜日期: 'containers.fields.loadingDate',
+  }
+  return map[value] ? t(map[value]) : value
+}
+
+interface CreateContainerModalProps {
+  open: boolean
+  loading: boolean
+  onCancel: () => void
+  onSubmit: (values: CreateContainerRequest) => Promise<void>
+}
+
+function CreateContainerModal({ open, loading, onCancel, onSubmit }: CreateContainerModalProps) {
+  const { t } = useTranslation()
+  const [form] = Form.useForm()
+
+  return (
+    <Modal
+      title={t('containers.actions.createContainer')}
+      open={open}
+      width={640}
+      confirmLoading={loading}
+      okText={t('common.create')}
+      cancelText={t('common.cancel')}
+      destroyOnClose
+      onCancel={() => {
+        form.resetFields()
+        onCancel()
+      }}
+      onOk={async () => {
+        const values = await form.validateFields()
+        await onSubmit({
+          货柜编号: values.货柜编号,
+          装柜日期: values.装柜日期 ? dayjs(values.装柜日期).format('YYYY-MM-DD') : undefined,
+          预计到岸日期: values.预计到岸日期 ? dayjs(values.预计到岸日期).format('YYYY-MM-DD') : undefined,
+          汇率: values.汇率,
+          运费: values.运费,
+          备注: values.备注,
+        })
+        form.resetFields()
+      }}
+    >
+      <Form form={form} layout="vertical" initialValues={{ 汇率: 7 }}>
+        <Form.Item name="货柜编号" label={t('containers.fields.containerNumber')} rules={[{ required: true, message: t('containers.validation.enterContainerNumber') }]}>
+          <Input placeholder={t('containers.validation.enterContainerNumber')} />
+        </Form.Item>
+        <Form.Item name="装柜日期" label={t('containers.fields.loadingDate')} rules={[{ required: true, message: t('containers.validation.selectLoadingDate') }]}>
+          <DatePicker style={{ width: '100%' }} />
+        </Form.Item>
+        <Form.Item name="预计到岸日期" label={t('containers.fields.estimatedArrivalDate')}>
+          <DatePicker style={{ width: '100%' }} />
+        </Form.Item>
+        <Row gutter={12}>
+          <Col span={12}>
+            <Form.Item name="汇率" label={t('containers.fields.exchangeRate')}>
+              <InputNumber min={0} precision={4} step={0.0001} style={{ width: '100%' }} />
+            </Form.Item>
+          </Col>
+          <Col span={12}>
+            <Form.Item name="运费" label={t('containers.fields.freightUsd')}>
+              <InputNumber min={0} precision={2} step={100} style={{ width: '100%' }} />
+            </Form.Item>
+          </Col>
+        </Row>
+        <Form.Item name="备注" label={t('containers.fields.remark')}>
+          <Input.TextArea rows={4} maxLength={500} showCount />
+        </Form.Item>
+      </Form>
+    </Modal>
+  )
+}
+
+export default function ContainersPage() {
+  const { t } = useTranslation()
+  const navigate = useNavigate()
+  const access = useAuthStore((state) => state.access)
+  const [loading, setLoading] = useState(false)
+  const [containers, setContainers] = useState<ContainerMain[]>([])
+  const [total, setTotal] = useState(0)
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(20)
+  const [dateType, setDateType] = useState('预计到岸日期')
+  const [dateRange, setDateRange] = useState<RangeValue>(null)
+  const [itemNumberFilter, setItemNumberFilter] = useState('')
+  const [dateOptions, setDateOptions] = useState<DateFilterOption[]>([
+    { value: '预计到岸日期', label: t('containers.fields.estimatedArrivalDate') },
+    { value: '实际到货日期', label: t('containers.fields.actualArrivalDate') },
+  ])
+  const [selectedRowKeys, setSelectedRowKeys] = useState<Key[]>([])
+  const [createOpen, setCreateOpen] = useState(false)
+  const [createLoading, setCreateLoading] = useState(false)
+  const [syncing, setSyncing] = useState(false)
+  const [pushing, setPushing] = useState(false)
+
+  const stats = useMemo(
+    () =>
+      containers.reduce(
+        (acc, item) => ({
+          count: acc.count + 1,
+          pieces: acc.pieces + (item.合计件数 || 0),
+          amount: acc.amount + (item.合计金额 || 0),
+          volume: acc.volume + (item.总体积 || 0),
+        }),
+        { count: 0, pieces: 0, amount: 0, volume: 0 },
+      ),
+    [containers],
+  )
+
+  const loadData = async (nextPage = page, nextPageSize = pageSize) => {
+    setLoading(true)
+    try {
+      const result = await getContainerList({
+        dateType,
+        startDate: dateRange?.[0]?.format('YYYY-MM-DD'),
+        endDate: dateRange?.[1]?.format('YYYY-MM-DD'),
+        page: nextPage,
+        pageSize: nextPageSize,
+        itemNumberFilter: itemNumberFilter || undefined,
+      })
+      setContainers(result.containers)
+      setTotal(result.totalCount)
+      setPage(result.page)
+      setPageSize(result.pageSize)
+    } catch (error) {
+      console.error(error)
+      message.error(error instanceof Error ? error.message : t('containers.messages.loadListFailed'))
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    getDateFilterOptions().then(setDateOptions).catch(() => undefined)
+  }, [])
+
+  useEffect(() => {
+    void loadData()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [page, pageSize])
+
+  const handleCreate = async (values: CreateContainerRequest) => {
+    setCreateLoading(true)
+    try {
+      await createContainer(values)
+      message.success(t('containers.messages.createSuccess'))
+      setCreateOpen(false)
+      await loadData(1, pageSize)
+    } catch (error) {
+      console.error(error)
+      message.error(error instanceof Error ? error.message : t('containers.messages.createFailed'))
+    } finally {
+      setCreateLoading(false)
+    }
+  }
+
+  const handleSync = () => {
+    Modal.confirm({
+      title: t('containers.modals.syncTitle'),
+      content: t('containers.modals.syncContent'),
+      okText: t('containers.actions.confirmSync'),
+      cancelText: t('common.cancel'),
+      onOk: async () => {
+        setSyncing(true)
+        try {
+          const result = await syncContainersFromHq()
+          const success = result.isSuccess ?? result.IsSuccess ?? true
+          const msg = result.message ?? result.Message ?? t('containers.messages.syncComplete')
+          success ? message.success(msg) : message.error(msg)
+          await loadData(1, pageSize)
+        } catch (error) {
+          console.error(error)
+          message.error(error instanceof Error ? error.message : t('containers.messages.syncFailed'))
+        } finally {
+          setSyncing(false)
+        }
+      },
+    })
+  }
+
+  const handlePush = () => {
+    if (!selectedRowKeys.length) {
+      message.warning(t('containers.messages.selectContainersToPush'))
+      return
+    }
+    Modal.confirm({
+      title: t('containers.modals.pushTitle'),
+      content: t('containers.modals.pushContent', { count: selectedRowKeys.length }),
+      okText: t('containers.actions.confirmPush'),
+      cancelText: t('common.cancel'),
+      onOk: async () => {
+        setPushing(true)
+        try {
+          const result = await pushContainersToHbSales(selectedRowKeys.map(String))
+          const success = result.isSuccess ?? result.IsSuccess ?? true
+          const msg = result.message ?? result.Message ?? t('containers.messages.pushComplete')
+          success ? message.success(msg) : message.error(msg)
+          setSelectedRowKeys([])
+        } catch (error) {
+          console.error(error)
+          message.error(error instanceof Error ? error.message : t('containers.messages.pushFailed'))
+        } finally {
+          setPushing(false)
+        }
+      },
+    })
+  }
+
+  const columns: ColumnsType<ContainerMain> = [
+    {
+      title: t('containers.columns.index'),
+      width: 72,
+      render: (_value, _record, index) => (page - 1) * pageSize + index + 1,
+    },
+    {
+      title: t('containers.fields.containerNumber'),
+      dataIndex: '货柜编号',
+      width: 160,
+      render: (text: string, record) => (
+        <Button type="link" onClick={() => navigate(`/warehouse/container/detail/${record.hguid}`)}>
+          {text || record.hguid}
+        </Button>
+      ),
+    },
+    { title: t('containers.fields.loadingDate'), dataIndex: '装柜日期', width: 120, render: formatDate },
+    { title: t('containers.fields.estimatedArrivalDate'), dataIndex: '预计到岸日期', width: 130, render: formatDate },
+    { title: t('containers.fields.actualArrivalDate'), dataIndex: '实际到货日期', width: 130, render: formatDate },
+    { title: t('containers.fields.totalPieces'), dataIndex: '合计件数', width: 100, align: 'right', render: (v) => formatNumber(v) },
+    { title: t('containers.fields.totalAmount'), dataIndex: '合计金额', width: 130, align: 'right', render: formatAmount },
+    { title: t('containers.fields.totalVolumeCbm'), dataIndex: '总体积', width: 120, align: 'right', render: (v) => formatNumber(v, 2) },
+    { title: t('containers.fields.status'), dataIndex: '状态', width: 100, render: (status) => getStatusTag(status, t) },
+    {
+      title: t('common.action'),
+      width: 120,
+      fixed: 'right',
+      render: (_, record) => (
+        <Button icon={<EyeOutlined />} type="link" onClick={() => navigate(`/warehouse/container/detail/${record.hguid}`)}>
+          {t('common.view')}
+        </Button>
+      ),
+    },
+  ]
+
+  return (
+    <PageContainer title={t('containers.title')}>
+      <Space direction="vertical" size={16} style={{ width: '100%' }}>
+        <Card>
+          <Space wrap style={{ width: '100%', justifyContent: 'space-between' }}>
+            <Space wrap>
+              <Select value={dateType} style={{ width: 160 }} options={dateOptions.map((option) => ({ ...option, label: getDateOptionLabel(option.value, t) }))} onChange={setDateType} />
+              <DatePicker.RangePicker value={dateRange} onChange={setDateRange} />
+              <Input
+                allowClear
+                value={itemNumberFilter}
+                placeholder={t('containers.placeholders.searchItemNumber')}
+                prefix={<SearchOutlined />}
+                style={{ width: 220 }}
+                onChange={(event) => setItemNumberFilter(event.target.value)}
+                onPressEnter={() => void loadData(1, pageSize)}
+              />
+              <Button type="primary" icon={<SearchOutlined />} onClick={() => void loadData(1, pageSize)}>
+                {t('common.query')}
+              </Button>
+              <Button
+                icon={<ReloadOutlined />}
+                onClick={() => {
+                  setDateType('预计到岸日期')
+                  setDateRange(null)
+                  setItemNumberFilter('')
+                  void loadData(1, pageSize)
+                }}
+              >
+                {t('common.reset')}
+              </Button>
+            </Space>
+            <Space wrap>
+              {access.canEditContainer ? (
+                <>
+                  <Button icon={<CloudSyncOutlined />} loading={syncing} disabled={pushing} onClick={handleSync}>
+                    {t('containers.actions.syncFromHq')}
+                  </Button>
+                  <Button
+                    icon={<CloudUploadOutlined />}
+                    loading={pushing}
+                    disabled={syncing || !selectedRowKeys.length}
+                    onClick={handlePush}
+                  >
+                    {t('containers.actions.pushToHbSales')}{selectedRowKeys.length ? ` (${selectedRowKeys.length})` : ''}
+                  </Button>
+                </>
+              ) : null}
+              {access.canCreateContainer ? (
+                <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>
+                  {t('containers.actions.createContainer')}
+                </Button>
+              ) : null}
+            </Space>
+          </Space>
+        </Card>
+
+        <Row gutter={16}>
+          <Col span={6}><Card><Statistic title={t('containers.stats.currentPageContainers')} value={stats.count} /></Card></Col>
+          <Col span={6}><Card><Statistic title={t('containers.stats.currentPagePieces')} value={stats.pieces} /></Card></Col>
+          <Col span={6}><Card><Statistic title={t('containers.stats.currentPageAmount')} value={stats.amount} precision={2} prefix="¥" /></Card></Col>
+          <Col span={6}><Card><Statistic title={t('containers.stats.currentPageVolume')} value={stats.volume} precision={2} suffix="m³" /></Card></Col>
+        </Row>
+
+        <Card>
+          <Table
+            rowKey={(record) => record.hguid || String(record.id)}
+            loading={loading}
+            columns={columns}
+            dataSource={containers}
+            rowSelection={{ selectedRowKeys, onChange: setSelectedRowKeys }}
+            scroll={{ x: 1200 }}
+            pagination={{
+              current: page,
+              pageSize,
+              total,
+              showSizeChanger: true,
+              showTotal: (value) => t('common.total', { count: value }),
+              onChange: (nextPage: number, nextPageSize: number) => {
+                setPage(nextPage)
+                setPageSize(nextPageSize)
+              },
+            } satisfies TablePaginationConfig}
+          />
+        </Card>
+      </Space>
+      <CreateContainerModal open={createOpen} loading={createLoading} onCancel={() => setCreateOpen(false)} onSubmit={handleCreate} />
+    </PageContainer>
+  )
+}

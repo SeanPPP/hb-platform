@@ -21,6 +21,25 @@ export interface ExportResult {
   failedProductImages: Array<{ itemNumber: string; url: string; reason: string }>
 }
 
+export interface ContainerDetailExportItem {
+  imageUrl?: string
+  itemNumber: string
+  barcode: string
+  productName: string
+  isNewProduct: boolean
+  containerQuantity: number
+  domesticPrice: number
+  transportCost: number
+  importPrice: number
+  oemPrice: number
+}
+
+export interface ContainerExportOptions {
+  includeImages?: boolean
+  fileName?: string
+  onProgress?: (progress: number, message: string) => void
+}
+
 const defaultExportOptions: ExportOptions = {
   includeLabelPrice: false,
   includeBarcodeImage: true,
@@ -331,4 +350,72 @@ export async function exportDomesticProductsToExcel(
   URL.revokeObjectURL(url)
 
   return { failedProductImages }
+}
+
+export async function exportContainerDetailsToExcel(
+  items: ContainerDetailExportItem[],
+  options: ContainerExportOptions = {},
+): Promise<void> {
+  const workbook = new ExcelJS.Workbook()
+  const worksheet = workbook.addWorksheet('货柜明细')
+
+  worksheet.columns = [
+    { header: '货号', key: 'itemNumber', width: 18 },
+    { header: '条码', key: 'barcode', width: 22 },
+    { header: '商品名称', key: 'productName', width: 36 },
+    { header: '新商品', key: 'isNewProduct', width: 10 },
+    { header: '装柜数量', key: 'containerQuantity', width: 12 },
+    { header: '国内价格', key: 'domesticPrice', width: 12 },
+    { header: '运输成本', key: 'transportCost', width: 12 },
+    { header: '进口价格', key: 'importPrice', width: 12 },
+    { header: '贴牌价格', key: 'oemPrice', width: 12 },
+  ]
+
+  const headerRow = worksheet.getRow(1)
+  headerRow.height = 28
+  headerRow.eachCell((cell) => {
+    cell.font = { bold: true, color: { argb: 'FFFFFFFF' } }
+    cell.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FF1677FF' },
+    }
+    cell.alignment = { horizontal: 'center', vertical: 'middle' }
+  })
+
+  options.onProgress?.(20, '正在写入货柜明细...')
+  items.forEach((item, index) => {
+    worksheet.addRow({
+      ...item,
+      isNewProduct: item.isNewProduct ? '是' : '否',
+    })
+    if (index % 100 === 0) {
+      options.onProgress?.(20 + Math.floor((index / Math.max(items.length, 1)) * 70), `正在处理第 ${index + 1}/${items.length} 条...`)
+    }
+  })
+
+  ;['domesticPrice', 'transportCost', 'importPrice', 'oemPrice'].forEach((key) => {
+    worksheet.getColumn(key).eachCell({ includeEmpty: false }, (cell, rowNumber) => {
+      if (rowNumber > 1) {
+        cell.numFmt = '$#,##0.00'
+      }
+    })
+  })
+
+  worksheet.views = [{ state: 'frozen', ySplit: 1 }]
+  options.onProgress?.(95, '正在生成 Excel 文件...')
+  const buffer = await workbook.xlsx.writeBuffer()
+
+  const blob = new Blob([buffer], {
+    type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = `${options.fileName || '货柜明细'}_${new Date().toISOString().split('T')[0]}.xlsx`
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
+  URL.revokeObjectURL(url)
+  options.onProgress?.(100, '导出完成')
 }
