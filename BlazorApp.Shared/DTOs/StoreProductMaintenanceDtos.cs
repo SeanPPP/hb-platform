@@ -30,6 +30,7 @@ namespace BlazorApp.Shared.DTOs
         public string? ProductTypeLabel { get; set; }
         public string? Grade { get; set; }
         public string? LocalSupplierCode { get; set; }
+        public string? LocalSupplierName { get; set; }
         public StoreProductStorePriceDto? StorePrice { get; set; }
         public StoreProductClearancePriceDto? ClearancePrice { get; set; }
         public List<StoreProductSetCodeDto> SetCodes { get; set; } = new();

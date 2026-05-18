@@ -193,8 +193,11 @@ namespace BlazorApp.Api.Services.React
 
                 var product = await _db.Queryable<Product>()
                     .LeftJoin<ProductGrade>((p, pg) => p.ProductCode == pg.ProductCode && !pg.IsDeleted)
-                    .Where((p, pg) => p.ProductCode == productCode && !p.IsDeleted)
-                    .Select((p, pg) => new
+                    .LeftJoin<HBLocalSupplier>((p, pg, ls) =>
+                        p.LocalSupplierCode == ls.LocalSupplierCode && !ls.IsDeleted
+                    )
+                    .Where((p, pg, ls) => p.ProductCode == productCode && !p.IsDeleted)
+                    .Select((p, pg, ls) => new
                     {
                         p.ProductCode,
                         p.ProductName,
@@ -203,6 +206,7 @@ namespace BlazorApp.Api.Services.React
                         p.ProductImage,
                         p.ProductType,
                         p.LocalSupplierCode,
+                        LocalSupplierName = ls.Name,
                         Grade = pg.Grade,
                     })
                     .FirstAsync();
@@ -302,6 +306,7 @@ namespace BlazorApp.Api.Services.React
                     ProductTypeLabel = NormalizeProductTypeLabel(product.ProductType?.ToString()),
                     Grade = product.Grade,
                     LocalSupplierCode = product.LocalSupplierCode,
+                    LocalSupplierName = product.LocalSupplierName,
                     StorePrice = storePrice,
                     ClearancePrice = clearancePrice,
                     MultiCodes = multiCodes,
