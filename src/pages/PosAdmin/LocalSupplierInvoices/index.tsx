@@ -85,6 +85,8 @@ export default function LocalSupplierInvoicesPage() {
   const navigate = useNavigate()
   const { access } = useAuthStore()
   const isAdmin = access.isAdmin
+  const managedStoreCodes = access.managedStoreCodes()
+  const managedStoreCodeKey = managedStoreCodes?.join(',') ?? 'all'
 
   const [loading, setLoading] = useState(false)
   const [data, setData] = useState<LocalSupplierInvoiceListDto[]>([])
@@ -181,7 +183,13 @@ export default function LocalSupplierInvoicesPage() {
           getActiveStores(),
           getActiveLocalSuppliers(),
         ])
-        setStoreOptions(stores)
+        const filteredStores = managedStoreCodes?.length
+          ? stores.filter((store) => managedStoreCodes.includes(store.value))
+          : stores
+        setStoreOptions(filteredStores)
+        if (storeCode && !filteredStores.some((store) => store.value === storeCode)) {
+          setStoreCode(undefined)
+        }
         setSupplierOptions(
           suppliers.map((s) => ({
             label: s.name || s.localSupplierCode,
@@ -193,7 +201,7 @@ export default function LocalSupplierInvoicesPage() {
       }
     }
     loadOptions()
-  }, [])
+  }, [managedStoreCodeKey])
 
   const handleSearch = () => {
     setPage(1)

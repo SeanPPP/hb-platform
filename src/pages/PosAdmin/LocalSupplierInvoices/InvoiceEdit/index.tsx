@@ -235,6 +235,8 @@ export default function InvoiceEditPage() {
   const navigate = useNavigate()
   const { access } = useAuthStore()
   const isAdmin = access.isAdmin
+  const managedStoreCodes = access.managedStoreCodes()
+  const managedStoreCodeKey = managedStoreCodes?.join(',') ?? 'all'
 
   /* ---- 主表数据 ---- */
   const [_invoice, setInvoice] = useState<LocalSupplierInvoiceDetailDto | null>(null)
@@ -332,8 +334,15 @@ export default function InvoiceEditPage() {
   useEffect(() => {
     loadInvoice()
     loadDetails()
-    getActiveStores().then(setStoreOptions).catch(() => {})
-  }, [invoiceGuid]) // eslint-disable-line react-hooks/exhaustive-deps
+    getActiveStores()
+      .then((stores) => {
+        const filteredStores = managedStoreCodes?.length
+          ? stores.filter((store) => managedStoreCodes.includes(store.value))
+          : stores
+        setStoreOptions(filteredStores)
+      })
+      .catch(() => {})
+  }, [invoiceGuid, managedStoreCodeKey]) // eslint-disable-line react-hooks/exhaustive-deps
 
   /* ---- 动态高度 ---- */
   useLayoutEffect(() => {
