@@ -2919,6 +2919,7 @@ namespace BlazorApp.Api.Services.React
                             H使用状态 = p.IsActive,
                             H是否特殊商品 = false,
                             H供货商编码 = "200",
+                            CBP供应商编码 = p.SupplierCode,
                             FGC_Creator = "HBweb",
                             FGC_CreateDate = DateTime.Now,
                             FGC_LastModifier = "HBweb",
@@ -2967,6 +2968,8 @@ namespace BlazorApp.Api.Services.React
                             if (p.MiddlePackQuantity.HasValue)
                                 updateSql.Add($"[中包数量] = {p.MiddlePackQuantity.Value}");
 
+                            if (!string.IsNullOrWhiteSpace(p.SupplierCode))
+                                updateSql.Add($"[CBP供应商编码] = N'{p.SupplierCode.Replace("'", "''")}'");
                             updateSql.Add("[H供货商编码] = '200'");
                             updateSql.Add($"[FGC_LastModifier] = 'HBweb'");
                             updateSql.Add(
