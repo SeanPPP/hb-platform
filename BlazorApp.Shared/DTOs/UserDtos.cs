@@ -84,7 +84,7 @@ namespace BlazorApp.Shared.DTOs
         public List<string> RoleNames { get; set; } = new();
         public List<string> StoreNames { get; set; } = new();
         public  List<RoleDto>? Roles { get; set; } = new();
-        public List<StoreDto>? Stores { get; set; } = new();
+        public List<UserStoreDto>? Stores { get; set; } = new();
         /// <summary>
         /// 用户权限列表（从所有角色中聚合）
         /// </summary>
@@ -108,6 +108,7 @@ namespace BlazorApp.Shared.DTOs
         public string? CurrentStore { get; set; } // 兼容性
         public List<string> RoleNames { get; set; } = new();
         public List<string> StoreNames { get; set; } = new();
+        public List<string> Permissions { get; set; } = new();
         public List<RoleDto>? Roles { get; set; } = new();
         public List<UserStoreDto>? Stores { get; set; } = new();
     }

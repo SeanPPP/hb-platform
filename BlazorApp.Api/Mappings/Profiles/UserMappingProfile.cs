@@ -36,15 +36,14 @@ namespace BlazorApp.Api.Mappings.Profiles
                     CreatedAt = r.CreatedAt,
                     UpdatedAt = r.UpdatedAt ?? r.CreatedAt
                 }).ToList() : new List<RoleDto>()))
-                .ForMember(dest => dest.Stores, opt => opt.MapFrom(src => src.Stores != null ? src.Stores.Select(s => new StoreDto
+                .ForMember(dest => dest.Stores, opt => opt.MapFrom(src => src.Stores != null ? src.Stores.Select(s => new UserStoreDto
                 {
                     StoreGUID = s.StoreGUID,
                     StoreName = s.StoreName,
                     StoreCode = s.StoreCode,
-                    IsActive = s.IsActive,
-                    CreatedAt = s.CreatedAt,
-                    UpdatedAt = s.UpdatedAt ?? s.CreatedAt
-                }).ToList() : new List<StoreDto>()));
+                    IsPrimary = false,
+                    AssignedAt = DateTime.UtcNow
+                }).ToList() : new List<UserStoreDto>()));
         }
 
         /// <summary>

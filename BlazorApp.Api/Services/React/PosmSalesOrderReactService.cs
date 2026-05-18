@@ -53,6 +53,11 @@ namespace BlazorApp.Api.Services.React
                 baseQuery = baseQuery.Where(o => o.BranchCode == queryParams.BranchCode);
             }
 
+            if (queryParams.BranchCodes != null && queryParams.BranchCodes.Any())
+            {
+                baseQuery = baseQuery.Where(o => queryParams.BranchCodes.Contains(o.BranchCode));
+            }
+
             if (!string.IsNullOrWhiteSpace(queryParams.DeviceCode))
             {
                 baseQuery = baseQuery.Where(o => o.DeviceCode == queryParams.DeviceCode);

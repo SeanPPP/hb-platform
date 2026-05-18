@@ -1,4 +1,5 @@
 using BlazorApp.Api.Interfaces;
+using BlazorApp.Api.Services;
 using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
@@ -446,11 +447,19 @@ namespace BlazorApp.Api.Controllers
 
         /// <summary>
         /// 获取用户的分店列表
+        /// 用户可查看自己的分店，管理员可查看所有用户的分店
         /// </summary>
         [HttpGet("guid/{guid}/stores")]
-        [Authorize(Policy = Permissions.Users.ManageStores)]
-        public async Task<IActionResult> GetUserStores(string guid)
+        public async Task<IActionResult> GetUserStores(string guid, [FromServices] ICurrentUserService currentUser)
         {
+            var currentUserGuid = currentUser.GetCurrentUserGuid();
+            var isSelf = string.Equals(currentUserGuid, guid, StringComparison.OrdinalIgnoreCase);
+
+            if (!isSelf && !User.IsInRole("Admin"))
+            {
+                return Forbid();
+            }
+
             try
             {
                 var result = await _userService.GetUserStoresAsync(guid);

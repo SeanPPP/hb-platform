@@ -16,20 +16,11 @@ namespace BlazorApp.Api.Controllers
     [Route("api/[controller]")]
     public class AuthController : ControllerBase
     {
-        /// <summary>
-        /// 认证服务 - 处理用户认证相关业务逻辑
-        /// </summary>
         private readonly IAuthService _authService;
-
-        /// <summary>
-        /// 数据库上下文 - 用于直接数据库操作
-        /// </summary>
         private readonly SqlSugarContext _dbContext;
-
-        /// <summary>
-        /// 角色服务 - 用于查询用户权限
-        /// </summary>
         private readonly IRoleService _roleService;
+        private readonly IUserService _userService;
+        private readonly ILogger<AuthController> _logger;
 
         /// <summary>
         /// 构造函数 - 依赖注入认证服务、数据库上下文和角色服务
@@ -40,12 +31,16 @@ namespace BlazorApp.Api.Controllers
         public AuthController(
             IAuthService authService,
             SqlSugarContext dbContext,
-            IRoleService roleService
+            IRoleService roleService,
+            IUserService userService,
+            ILogger<AuthController> logger
         )
         {
             _authService = authService;
             _dbContext = dbContext;
             _roleService = roleService;
+            _userService = userService;
+            _logger = logger;
         }
 
         /// <summary>
@@ -259,6 +254,15 @@ namespace BlazorApp.Api.Controllers
                     }
                 }
 
+                // 获取用户的分店信息
+                _logger.LogInformation("GetCurrentUser: userId={UserId}, roles={Roles}",
+                    userId, string.Join(",", user.Roles?.Select(r => r.RoleName) ?? new List<string>()));
+
+                var storesResult = await _userService.GetUserStoresAsync(userId);
+                var userStores = storesResult.Success ? storesResult.Data ?? new List<UserStoreDto>() : new List<UserStoreDto>();
+
+                _logger.LogInformation("GetCurrentUser: userId={UserId}, found {StoreCount} stores", userId, userStores.Count);
+
                 // 构建返回数据
                 var userDto = new UserDto
                 {
@@ -283,7 +287,8 @@ namespace BlazorApp.Api.Controllers
                             .ToList() ?? new List<RoleDto>(),
                     RoleNames = user.Roles?.Select(r => r.RoleName).ToList() ?? new List<string>(),
                     Permissions = allPermissions.Distinct().ToList(), // 🔐 添加权限列表（去重）
-                    StoreNames = new List<string>(), // TODO: 从用户分店关联表获取
+                    StoreNames = userStores.Select(s => s.StoreName).ToList(),
+                    Stores = userStores,
                 };
 
                 return ApiResponse<UserDto>.OK(userDto, "获取用户信息成功");

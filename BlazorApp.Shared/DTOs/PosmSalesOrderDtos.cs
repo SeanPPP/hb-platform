@@ -29,6 +29,7 @@ namespace BlazorApp.Shared.DTOs
         public DateTime? StartDate { get; set; }
         public DateTime? EndDate { get; set; }
         public string? BranchCode { get; set; }
+        public List<string>? BranchCodes { get; set; }
         public string? DeviceCode { get; set; }
         public OrderType? OrderType { get; set; }
         public string? Keyword { get; set; }

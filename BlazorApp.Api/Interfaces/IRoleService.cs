@@ -199,5 +199,10 @@ namespace BlazorApp.Api.Interfaces
         /// <param name="dto">权限信息</param>
         /// <returns>创建的权限对象列表</returns>
         Task<ApiResponse<List<SysPermission>>> CreatePermissionAsync(CreateSysPermissionDto dto);
+
+        /// <summary>
+        /// 软删除权限（按代码）
+        /// </summary>
+        Task<ApiResponse<bool>> DeletePermissionAsync(string code);
     }
 }

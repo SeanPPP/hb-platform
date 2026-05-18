@@ -1319,7 +1319,7 @@ namespace BlazorApp.Api.Services
             try
             {
                 var db = _context.Db;
-                var permissions = await db.Queryable<SysPermission>().ToListAsync();
+                var permissions = await db.Queryable<SysPermission>().Where(p => !p.IsDeleted).ToListAsync();
 
                 var result = permissions
                     .GroupBy(p => p.Category)
@@ -1785,7 +1785,7 @@ namespace BlazorApp.Api.Services
                 foreach (var permission in permissionDtos)
                 {
                     var exists = await db.Queryable<SysPermission>()
-                        .Where(p => p.Code == permission.Code)
+                        .Where(p => p.Code == permission.Code && !p.IsDeleted)
                         .AnyAsync();
 
                     if (!exists)
@@ -1811,6 +1811,45 @@ namespace BlazorApp.Api.Services
             {
                 _logger.LogError(ex, "创建权限失败，BaseCode: {Code}", dto.Code);
                 return ApiResponse<List<SysPermission>>.Error("创建权限失败", "CREATE_PERMISSION_FAILED");
+            }
+        }
+
+        /// <summary>
+        /// 软删除权限（按 code 唯一标识），同时清理 SysRolePermission 关联
+        /// </summary>
+        public async Task<ApiResponse<bool>> DeletePermissionAsync(string code)
+        {
+            try
+            {
+                var db = _context.Db;
+
+                var permission = await db.Queryable<SysPermission>()
+                    .Where(p => p.Code == code && !p.IsDeleted)
+                    .FirstAsync();
+
+                if (permission == null)
+                {
+                    return ApiResponse<bool>.Error("权限不存在或已删除", "PERMISSION_NOT_FOUND");
+                }
+
+                // 删除角色-权限关联
+                await db.Deleteable<SysRolePermission>()
+                    .Where(rp => rp.PermissionCode == code)
+                    .ExecuteCommandAsync();
+
+                // 软删除权限
+                permission.IsDeleted = true;
+                permission.UpdatedAt = DateTime.Now;
+                permission.UpdatedBy = GetCurrentUsername();
+                await db.Updateable(permission).ExecuteCommandAsync();
+
+                _logger.LogInformation("删除权限成功，Code: {Code}", code);
+                return ApiResponse<bool>.OK(true, "权限已删除");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "删除权限失败，Code: {Code}", code);
+                return ApiResponse<bool>.Error("删除权限失败", "DELETE_PERMISSION_FAILED");
             }
         }
     }

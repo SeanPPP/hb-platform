@@ -148,14 +148,13 @@ namespace BlazorApp.Api.Services
                             })
                             .ToList(),
                         Stores = (user.Stores ?? new List<Store>())
-                            .Select(s => new StoreDto
+                            .Select(s => new UserStoreDto
                             {
                                 StoreGUID = s.StoreGUID,
                                 StoreName = s.StoreName,
                                 StoreCode = s.StoreCode,
-                                IsActive = s.IsActive,
-                                CreatedAt = s.CreatedAt,
-                                UpdatedAt = s.UpdatedAt ?? s.CreatedAt,
+                                IsPrimary = false,
+                                AssignedAt = DateTime.UtcNow,
                             })
                             .ToList(),
                     };
@@ -511,6 +510,18 @@ namespace BlazorApp.Api.Services
                 // 填充角色名和分店名
                 userDetail.RoleNames = roles.Select(r => r.RoleName).ToList();
                 userDetail.StoreNames = stores.Select(s => s.StoreName).ToList();
+
+                // 获取用户的权限（通过关联的角色）
+                var roleGuids = roles.Select(r => r.RoleGUID).ToList();
+                var permissions = new List<string>();
+                if (roleGuids.Any())
+                {
+                    permissions = await db.Queryable<SysRolePermission>()
+                        .Where(srp => roleGuids.Contains(srp.RoleGuid) && !srp.IsDeleted)
+                        .Select(srp => srp.PermissionCode)
+                        .ToListAsync();
+                }
+                userDetail.Permissions = permissions;
 
                 return ApiResponse<UserDetailDto>.OK(userDetail, "获取用户详情成功");
             }

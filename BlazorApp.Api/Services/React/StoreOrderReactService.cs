@@ -2534,7 +2534,7 @@ namespace BlazorApp.Api.Services.React
                 using var hqDb = HqSqlSugarContext.CreateConcurrentConnection(_configuration);
 
                 var allHqOrders = await hqDb.Queryable<CBP_RED_分店订货单主表Store>()
-                    .Where(x => SqlFunc.HasValue(x.HGUID) && x.流程状态 == 0)
+                    .Where(x => SqlFunc.HasValue(x.HGUID))
                     .WhereIF(!string.IsNullOrEmpty(storeCode), x => x.分店代码 == storeCode)
                     .ToListAsync();
 
@@ -2547,6 +2547,23 @@ namespace BlazorApp.Api.Services.React
                 var missingHqOrders = allHqOrders
                     .Where(x => !existingOrderGuids.Contains(x.HGUID!))
                     .ToList();
+
+                // 检查 HQ 数据中是否有重复的 HGUID
+                var hqHguidDups = missingHqOrders
+                    .GroupBy(x => x.HGUID)
+                    .Where(g => g.Count() > 1)
+                    .ToList();
+                if (hqHguidDups.Any())
+                {
+                    _logger.LogWarning(
+                        "HQ 订单数据中存在 {Count} 个重复的 HGUID，同步时将自动去重",
+                        hqHguidDups.Count
+                    );
+                    missingHqOrders = missingHqOrders
+                        .GroupBy(x => x.HGUID)
+                        .Select(g => g.First())
+                        .ToList();
+                }
 
                 var updatedHqOrders = allHqOrders
                     .Where(x => existingOrderGuids.Contains(x.HGUID!))
@@ -2585,8 +2602,80 @@ namespace BlazorApp.Api.Services.React
                         newOrderGuids.Add(localOrder.OrderGUID);
                     }
 
-                    await _db.Insertable(newOrders).ExecuteCommandAsync();
-                    result.OrdersSynced = newOrders.Count;
+                    // 按 OrderGUID 去重，防止插入时主键冲突
+                    newOrders = newOrders
+                        .GroupBy(o => o.OrderGUID)
+                        .Select(g => g.First())
+                        .ToList();
+                    newOrderGuids = newOrders.Select(o => o.OrderGUID).ToList();
+
+                    // 检查要插入的 OrderGUID 在本地是否已存在（含软删除的记录）
+                    var allNewGuids = newOrders.Select(o => o.OrderGUID).Distinct().ToList();
+                    var existingAllGuids = await _db.Queryable<WareHouseOrder>()
+                        .Where(x => allNewGuids.Contains(x.OrderGUID))
+                        .Select(x => new { x.OrderGUID, x.IsDeleted })
+                        .ToListAsync();
+                    var existingGuidSet = new HashSet<string>(existingAllGuids.Select(x => x.OrderGUID));
+                    var deletedGuidSet = new HashSet<string>(
+                        existingAllGuids.Where(x => x.IsDeleted).Select(x => x.OrderGUID));
+
+                    if (existingGuidSet.Any())
+                    {
+                        // 分离：真正的新增 vs 已存在需要激活/更新的
+                        var trulyNewOrders = newOrders
+                            .Where(o => !existingGuidSet.Contains(o.OrderGUID))
+                            .ToList();
+                        var reactivateOrders = newOrders
+                            .Where(o => deletedGuidSet.Contains(o.OrderGUID))
+                            .ToList();
+                        var conflictOrders = newOrders
+                            .Where(o => existingGuidSet.Contains(o.OrderGUID) && !deletedGuidSet.Contains(o.OrderGUID))
+                            .ToList();
+
+                        if (conflictOrders.Any())
+                        {
+                            _logger.LogWarning(
+                                "跳过 {Count} 个本地已存在的订单（未删除），OrderGUID: {Guids}",
+                                conflictOrders.Count,
+                                string.Join(", ", conflictOrders.Select(o => o.OrderGUID))
+                            );
+                        }
+
+                        if (reactivateOrders.Any())
+                        {
+                            _logger.LogInformation(
+                                "恢复 {Count} 个已软删除的订单，OrderGUID: {Guids}",
+                                reactivateOrders.Count,
+                                string.Join(", ", reactivateOrders.Select(o => o.OrderGUID))
+                            );
+                            foreach (var order in reactivateOrders)
+                            {
+                                await _db.Updateable<WareHouseOrder>()
+                                    .SetColumns(o => o.IsDeleted == false)
+                                    .SetColumns(o => o.UpdatedAt == order.UpdatedAt)
+                                    .SetColumns(o => o.UpdatedBy == order.UpdatedBy)
+                                    .Where(o => o.OrderGUID == order.OrderGUID)
+                                    .ExecuteCommandAsync();
+                            }
+                            result.OrdersSynced += reactivateOrders.Count;
+                        }
+
+                        newOrders = trulyNewOrders;
+                        newOrderGuids = trulyNewOrders.Select(o => o.OrderGUID).ToList();
+
+                        _logger.LogInformation(
+                            "去重后真正新增: {Count}, 其中恢复已删除: {Reactivate}, 跳过: {Skip}",
+                            trulyNewOrders.Count,
+                            reactivateOrders.Count,
+                            conflictOrders.Count
+                        );
+                    }
+
+                    if (newOrders.Any())
+                    {
+                        await _db.Insertable(newOrders).ExecuteCommandAsync();
+                        result.OrdersSynced += newOrders.Count;
+                    }
 
                     _logger.LogInformation("新增订单主表数量: {Count}", result.OrdersSynced);
 

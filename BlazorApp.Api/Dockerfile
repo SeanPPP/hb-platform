@@ -17,7 +17,6 @@ COPY BlazorApp.Api/*.csproj ./BlazorApp.Api/
 COPY BlazorApp.Shared/*.csproj ./BlazorApp.Shared/
 
 # 恢复NuGet包（利用Docker层缓存，只有项目文件变化时才重新下载）
-# 使用 --verbosity minimal 减少输出，降低网络中断风险
 RUN dotnet restore "BlazorApp.Api/BlazorApp.Api.csproj" --verbosity minimal
 
 # 复制所有源代码文件
@@ -25,9 +24,12 @@ COPY BlazorApp.Api/ ./BlazorApp.Api/
 COPY BlazorApp.Shared/ ./BlazorApp.Shared/
 
 # 构建应用程序（Release模式，优化性能）
-# 使用 --no-restore 利用之前的缓存，避免重复网络请求
+# 先尝试 --no-restore，失败则自动回退到完整 restore
 WORKDIR /src/BlazorApp.Api
-RUN dotnet build "BlazorApp.Api.csproj" -c Release -o /app/build --no-restore
+RUN dotnet build "BlazorApp.Api.csproj" -c Release -o /app/build --no-restore || \
+    (echo 'Retrying build with restore...' && \
+     dotnet restore "BlazorApp.Api.csproj" --verbosity minimal && \
+     dotnet build "BlazorApp.Api.csproj" -c Release -o /app/build --no-restore)
 
 # 发布应用程序（生成运行时所需的所有文件）
 FROM build AS publish

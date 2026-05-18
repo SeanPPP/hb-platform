@@ -17,6 +17,7 @@ namespace BlazorApp.Api.Services
         Task<LoginResponse> LoginAsync(LoginRequest request);
         Task<User?> RegisterAsync(User user);
         string GenerateJwtToken(User user);
+        string GenerateJwtToken(User user, List<string>? permissions);
         Task<TokenResponse> GenerateTokensAsync(User user, string ipAddress, string userAgent);
         Task<TokenResponse?> RefreshTokensAsync(
             string accessToken,
@@ -102,9 +103,18 @@ namespace BlazorApp.Api.Services
                     .UpdateColumns(u => new { u.LastLoginAt, u.UpdatedAt }) // 只更新指定字段，提高性能
                     .ExecuteCommandAsync();
 
-                // 🔑 生成JWT访问令牌
-                // 令牌包含用户身份信息和角色权限
-                var token = GenerateJwtToken(user);
+                var roleGuids = user.Roles?.Select(r => r.RoleGUID).ToList() ?? new List<string>();
+                var permissions = new List<string>();
+                if (roleGuids.Any())
+                {
+                    permissions = await _dbContext.Db.Queryable<SysRolePermission>()
+                        .Where(srp => roleGuids.Contains(srp.RoleGuid) && !srp.IsDeleted)
+                        .Select(srp => srp.PermissionCode)
+                        .Distinct()
+                        .ToListAsync();
+                }
+
+                var token = GenerateJwtToken(user, permissions);
 
                 // ✅ 返回登录成功响应
                 return new LoginResponse
@@ -186,6 +196,11 @@ namespace BlazorApp.Api.Services
         /// <returns>JWT令牌字符串</returns>
         public string GenerateJwtToken(User user)
         {
+            return GenerateJwtToken(user, null);
+        }
+
+        public string GenerateJwtToken(User user, List<string>? permissions)
+        {
             // 📋 从配置文件读取JWT设置（密钥、签发者、受众等）
             var jwtSettings = _configuration.GetSection("Jwt").Get<Models.JwtSettings>();
 
@@ -239,9 +254,13 @@ namespace BlazorApp.Api.Services
                 }
             }
 
-            // 🔐 添加权限声明 - 用于前端权限检查
-            // 注意：这里暂时不添加权限到JWT，因为权限可能很多，会导致token过大
-            // 权限信息通过 /api/auth/current 接口获取
+            if (permissions != null && permissions.Any())
+            {
+                foreach (var perm in permissions.Distinct())
+                {
+                    claims.Add(new Claim("permission", perm));
+                }
+            }
 
             // 🏗️ 创建JWT安全令牌对象
             var token = new JwtSecurityToken(
@@ -295,12 +314,20 @@ namespace BlazorApp.Api.Services
             string userAgent
         )
         {
-            // 📋 从配置文件读取JWT设置
             var jwtSettings = _configuration.GetSection("Jwt").Get<Models.JwtSettings>();
 
-            // 🔑 生成访问令牌（短令牌，15分钟有效）
-            // 访问令牌用于API调用，有效期短以提高安全性
-            var accessToken = GenerateAccessToken(user, jwtSettings!);
+            var roleGuids = user.Roles?.Select(r => r.RoleGUID).ToList() ?? new List<string>();
+            var permissions = new List<string>();
+            if (roleGuids.Any())
+            {
+                permissions = await _dbContext.Db.Queryable<SysRolePermission>()
+                    .Where(srp => roleGuids.Contains(srp.RoleGuid) && !srp.IsDeleted)
+                    .Select(srp => srp.PermissionCode)
+                    .Distinct()
+                    .ToListAsync();
+            }
+
+            var accessToken = GenerateAccessToken(user, jwtSettings!, permissions);
 
             // 🔄 生成刷新令牌（长令牌，7天有效）
             // 刷新令牌用于获取新的访问令牌，有效期长以改善用户体验
@@ -523,7 +550,7 @@ namespace BlazorApp.Api.Services
         /// <param name="user">用户对象</param>
         /// <param name="jwtSettings">JWT配置设置</param>
         /// <returns>JWT访问令牌字符串</returns>
-        private string GenerateAccessToken(User user, Models.JwtSettings jwtSettings)
+        private string GenerateAccessToken(User user, Models.JwtSettings jwtSettings, List<string>? permissions = null)
         {
             // 🔑 创建对称安全密钥
             var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtSettings.Key));
@@ -569,9 +596,13 @@ namespace BlazorApp.Api.Services
                 }
             }
 
-            // 🔐 添加权限声明 - 用于前端权限检查
-            // 注意：这里暂时不添加权限到JWT，因为权限可能很多，会导致token过大
-            // 权限信息通过 /api/auth/current 接口获取
+            if (permissions != null && permissions.Any())
+            {
+                foreach (var perm in permissions.Distinct())
+                {
+                    claims.Add(new Claim("permission", perm));
+                }
+            }
 
             // 🏗️ 创建JWT安全令牌对象
             var token = new JwtSecurityToken(

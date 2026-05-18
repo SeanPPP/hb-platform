@@ -452,7 +452,6 @@ namespace BlazorApp.Api.Controllers
         /// 获取所有权限列表
         /// </summary>
         [HttpGet("permissions")]
-        [Authorize(Policy = Permissions.Roles.View)]
         public async Task<IActionResult> GetPermissions()
         {
             try
@@ -579,6 +578,29 @@ namespace BlazorApp.Api.Controllers
                 return StatusCode(
                     500,
                     ApiResponse<List<SysPermission>>.Error("服务器内部错误", "INTERNAL_SERVER_ERROR")
+                );
+            }
+        }
+
+        /// <summary>
+        /// 删除权限（软删除，同时清理角色-权限关联）
+        /// </summary>
+        [HttpDelete("permissions/{code}")]
+        [Authorize(Policy = Permissions.Roles.ManagePermissions)]
+        public async Task<IActionResult> DeletePermission(string code)
+        {
+            try
+            {
+                code = Uri.UnescapeDataString(code);
+                var result = await _roleService.DeletePermissionAsync(code);
+                return Ok(result);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "删除权限失败，Code: {Code}", code);
+                return StatusCode(
+                    500,
+                    ApiResponse<bool>.Error("服务器内部错误", "INTERNAL_SERVER_ERROR")
                 );
             }
         }
