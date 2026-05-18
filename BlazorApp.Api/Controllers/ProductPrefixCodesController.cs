@@ -168,7 +168,7 @@ namespace BlazorApp.Api.Controllers
         /// <param name="dto">创建商品前缀DTO</param>
         /// <returns>创建的商品前缀</returns>
         [HttpPost]
-        [Authorize(Roles = "Admin")]
+        [Authorize(Roles = "Admin,WarehouseManager")]
         public async Task<IActionResult> CreateProductPrefixCode([FromBody] CreateProductPrefixCodeDto dto)
         {
             try
@@ -212,7 +212,7 @@ namespace BlazorApp.Api.Controllers
         /// <param name="dto">更新商品前缀DTO</param>
         /// <returns>更新的商品前缀</returns>
         [HttpPut("{prefixCode}")]
-        [Authorize(Roles = "Admin")]
+        [Authorize(Roles = "Admin,WarehouseManager")]
         public async Task<IActionResult> UpdateProductPrefixCode(string prefixCode, [FromBody] UpdateProductPrefixCodeDto dto)
         {
             try
@@ -254,7 +254,7 @@ namespace BlazorApp.Api.Controllers
         /// <param name="prefixCode">前缀编码</param>
         /// <returns>删除结果</returns>
         [HttpDelete("{prefixCode}")]
-        [Authorize(Roles = "Admin")]
+        [Authorize(Roles = "Admin,WarehouseManager")]
         public async Task<IActionResult> DeleteProductPrefixCode(string prefixCode)
         {
             try
@@ -292,7 +292,7 @@ namespace BlazorApp.Api.Controllers
         /// <param name="isActive">是否启用</param>
         /// <returns>更新的商品前缀</returns>
         [HttpPatch("{prefixCode}/status/{isActive}")]
-        [Authorize(Roles = "Admin")]
+        [Authorize(Roles = "Admin,WarehouseManager")]
         public async Task<IActionResult> TogglePrefixStatus(string prefixCode, bool isActive)
         {
             try
@@ -357,7 +357,7 @@ namespace BlazorApp.Api.Controllers
         /// <param name="dto">批量创建DTO</param>
         /// <returns>创建结果</returns>
         [HttpPost("batch")]
-        [Authorize(Roles = "Admin")]
+        [Authorize(Roles = "Admin,WarehouseManager")]
         public async Task<IActionResult> BatchCreateProductPrefixCodes([FromBody] BatchCreateProductPrefixCodeDto dto)
         {
             try
@@ -399,7 +399,7 @@ namespace BlazorApp.Api.Controllers
         /// <param name="prefixCodes">前缀编码列表</param>
         /// <returns>删除结果</returns>
         [HttpDelete("batch")]
-        [Authorize(Roles = "Admin")]
+        [Authorize(Roles = "Admin,WarehouseManager")]
         public async Task<IActionResult> BatchDeleteProductPrefixCodes([FromBody] List<string> prefixCodes)
         {
             try
@@ -441,7 +441,7 @@ namespace BlazorApp.Api.Controllers
         /// <param name="prefixCodes">前缀编码和排序顺序的字典</param>
         /// <returns>更新结果</returns>
         [HttpPut("sort-order")]
-        [Authorize(Roles = "Admin")]
+        [Authorize(Roles = "Admin,WarehouseManager")]
         public async Task<IActionResult> UpdatePrefixSortOrder([FromBody] Dictionary<string, int> prefixCodes)
         {
             try

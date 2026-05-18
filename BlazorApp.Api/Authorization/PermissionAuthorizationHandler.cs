@@ -1,5 +1,6 @@
 using System.Security.Claims;
 using BlazorApp.Api.Interfaces;
+using BlazorApp.Shared.Constants;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.Extensions.Caching.Memory;
 
@@ -34,7 +35,16 @@ namespace BlazorApp.Api.Authorization
                 return;
             }
 
-            if (context.User.IsInRole("Admin"))
+            if (context.User.IsInRole("Admin") || context.User.IsInRole("管理员"))
+            {
+                context.Succeed(requirement);
+                return;
+            }
+
+            if (
+                context.User.IsInRole("WarehouseManager")
+                && Permissions.IsWarehouseManagerGranted(requirement.Permission)
+            )
             {
                 context.Succeed(requirement);
                 return;

@@ -76,7 +76,7 @@ namespace BlazorApp.Api.Controllers.React
         /// <param name="dto">批量创建DTO</param>
         /// <returns>创建结果</returns>
         [HttpPost("batch-create")]
-        [Authorize(Roles = "Admin")]
+        [Authorize(Roles = "Admin,WarehouseManager")]
         public async Task<IActionResult> BatchCreateProducts(
             [FromBody] BatchCreateDomesticProductDto dto
         )
@@ -406,7 +406,7 @@ namespace BlazorApp.Api.Controllers.React
         /// <param name="dto">批量更新DTO</param>
         /// <returns>更新结果</returns>
         [HttpPut("batch-update")]
-        [Authorize(Roles = "Admin")]
+        [Authorize(Roles = "Admin,WarehouseManager")]
         public async Task<IActionResult> BatchUpdate([FromBody] BatchUpdateDomesticProductsDto dto)
         {
             try
@@ -473,7 +473,7 @@ namespace BlazorApp.Api.Controllers.React
         /// <param name="request">批量删除请求</param>
         /// <returns>删除结果</returns>
         [HttpDelete("batch-delete")]
-        [Authorize(Roles = "Admin")]
+        [Authorize(Roles = "Admin,WarehouseManager")]
         public async Task<IActionResult> BatchDelete([FromBody] BatchDeleteRequestDto request)
         {
             try
@@ -584,7 +584,7 @@ namespace BlazorApp.Api.Controllers.React
         /// <param name="request">更新请求</param>
         /// <returns>更新结果</returns>
         [HttpPut("{productCode}/set-items")]
-        [Authorize(Roles = "Admin")]
+        [Authorize(Roles = "Admin,WarehouseManager")]
         public async Task<IActionResult> UpdateSetItems(
             string productCode,
             [FromBody] UpdateSetItemsRequestDto request
@@ -624,7 +624,7 @@ namespace BlazorApp.Api.Controllers.React
         /// <param name="dto">批量创建套装商品DTO</param>
         /// <returns>创建结果</returns>
         [HttpPost("batch-create-set-products")]
-        [Authorize(Roles = "Admin")]
+        [Authorize(Roles = "Admin,WarehouseManager")]
         public async Task<IActionResult> BatchCreateSetProducts(
             [FromBody] BatchCreateSetProductsDto dto
         )

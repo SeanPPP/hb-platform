@@ -140,6 +140,52 @@ namespace BlazorApp.Shared.Constants
             public const string View = "Dashboard";
         }
 
+        private static readonly HashSet<string> WarehouseManagerGrantedPermissions = new(
+            StringComparer.OrdinalIgnoreCase
+        )
+        {
+            Stores.View,
+            Stores.Create,
+            Stores.Edit,
+            Stores.Delete,
+            Stores.Sync,
+            Products.View,
+            Products.Create,
+            Products.Edit,
+            Products.Delete,
+            Orders.View,
+            Orders.Create,
+            Orders.Edit,
+            Orders.Delete,
+            Container.View,
+            Container.Create,
+            Container.Edit,
+            Container.Delete,
+            Warehouse.View,
+            Warehouse.Manage,
+            Warehouse.ManageProducts,
+            Warehouse.ManageCategories,
+            Warehouse.ManageLocations,
+            Warehouse.ManageOrders,
+            DomesticPurchase.View,
+            DomesticPurchase.ManageSuppliers,
+            DomesticPurchase.ManageProducts,
+            DomesticPurchase.ManagePrefixCodes,
+            Reports.View,
+            Reports.Export,
+            Dashboard.View,
+        };
+
+        /// <summary>
+        /// WarehouseManager role-level permission grants.
+        /// Keep this list in sync with hbweb_rv/src/types/permissions.ts.
+        /// </summary>
+        public static bool IsWarehouseManagerGranted(string? permission)
+        {
+            return !string.IsNullOrWhiteSpace(permission)
+                && WarehouseManagerGrantedPermissions.Contains(permission);
+        }
+
         /// <summary>
         /// 获取所有权限列表 (用于种子数据初始化)
         /// </summary>

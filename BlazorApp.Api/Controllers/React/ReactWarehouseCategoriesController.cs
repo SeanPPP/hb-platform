@@ -89,7 +89,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpDelete("{categoryGuid}")]
-        [Authorize(Roles = "Admin")]
+        [Authorize(Roles = "Admin,WarehouseManager")]
         public async Task<IActionResult> Delete(string categoryGuid)
         {
             try

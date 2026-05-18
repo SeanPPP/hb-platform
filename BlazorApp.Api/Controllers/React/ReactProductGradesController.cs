@@ -62,7 +62,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPost]
-        [Authorize(Roles = "Admin")]
+        [Authorize(Roles = "Admin,WarehouseManager")]
         public async Task<IActionResult> CreateOrUpdateProductGrade([FromBody] CreateProductGradeDto dto)
         {
             try
@@ -90,7 +90,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPut("batch")]
-        [Authorize(Roles = "Admin")]
+        [Authorize(Roles = "Admin,WarehouseManager")]
         public async Task<IActionResult> BatchUpdateGrades([FromBody] BatchUpdateGradeDto dto)
         {
             try
@@ -118,7 +118,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPost("paste-import")]
-        [Authorize(Roles = "Admin")]
+        [Authorize(Roles = "Admin,WarehouseManager")]
         public async Task<IActionResult> PasteImportGrades([FromBody] PasteImportGradeDto dto)
         {
             try
@@ -146,7 +146,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpDelete("{id}")]
-        [Authorize(Roles = "Admin")]
+        [Authorize(Roles = "Admin,WarehouseManager")]
         public async Task<IActionResult> DeleteProductGrade(string id)
         {
             try
@@ -173,7 +173,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPut("batch-price")]
-        [Authorize(Roles = "Admin")]
+        [Authorize(Roles = "Admin,WarehouseManager")]
         public async Task<IActionResult> BatchUpdateGradePrice([FromBody] BatchUpdateGradePriceDto dto)
         {
             try

@@ -163,6 +163,14 @@ namespace BlazorApp.Api.Services
                 return true;
             }
 
+            if (
+                user.HasClaim(ClaimTypes.Role, "WarehouseManager")
+                && Permissions.IsWarehouseManagerGranted(node.Permission)
+            )
+            {
+                return true;
+            }
+
             if (user.HasClaim("permission", node.Permission)
                 || user.HasClaim(ClaimTypes.Role, "Admin")
                 || user.HasClaim(ClaimTypes.Role, "管理员"))

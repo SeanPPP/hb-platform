@@ -243,7 +243,7 @@ namespace BlazorApp.Api.Controllers
         /// <param name="dto">创建国内商品DTO</param>
         /// <returns>创建的国内商品</returns>
         [HttpPost]
-        [Authorize(Roles = "Admin")]
+        [Authorize(Roles = "Admin,WarehouseManager")]
         public async Task<IActionResult> CreateDomesticProduct([FromBody] CreateDomesticProductDto dto)
         {
             try
@@ -287,7 +287,7 @@ namespace BlazorApp.Api.Controllers
         /// <param name="dto">更新国内商品DTO</param>
         /// <returns>更新的国内商品</returns>
         [HttpPut("{productCode}")]
-        [Authorize(Roles = "Admin")]
+        [Authorize(Roles = "Admin,WarehouseManager")]
         public async Task<IActionResult> UpdateDomesticProduct(string productCode, [FromBody] UpdateDomesticProductDto dto)
         {
             try
@@ -324,7 +324,7 @@ namespace BlazorApp.Api.Controllers
         /// <param name="productCode">商品编码</param>
         /// <returns>删除结果</returns>
         [HttpDelete("{productCode}")]
-        [Authorize(Roles = "Admin")]
+        [Authorize(Roles = "Admin,WarehouseManager")]
         public async Task<IActionResult> DeleteDomesticProduct(string productCode)
         {
             try
@@ -362,7 +362,7 @@ namespace BlazorApp.Api.Controllers
         /// <param name="isActive">是否启用</param>
         /// <returns>更新的国内商品</returns>
         [HttpPatch("{productCode}/status/{isActive}")]
-        [Authorize(Roles = "Admin")]
+        [Authorize(Roles = "Admin,WarehouseManager")]
         public async Task<IActionResult> ToggleProductStatus(string productCode, bool isActive)
         {
             try
@@ -516,7 +516,7 @@ namespace BlazorApp.Api.Controllers
         /// <param name="dto">批量创建DTO</param>
         /// <returns>创建结果</returns>
         [HttpPost("batch")]
-        [Authorize(Roles = "Admin")]
+        [Authorize(Roles = "Admin,WarehouseManager")]
         public async Task<IActionResult> BatchCreateDomesticProducts([FromBody] BatchCreateDomesticProductDto dto)
         {
             try
@@ -553,7 +553,7 @@ namespace BlazorApp.Api.Controllers
         /// <param name="productCodes">商品编码列表</param>
         /// <returns>删除结果</returns>
         [HttpDelete("batch")]
-        [Authorize(Roles = "Admin")]
+        [Authorize(Roles = "Admin,WarehouseManager")]
         public async Task<IActionResult> BatchDeleteDomesticProducts([FromBody] List<string> productCodes)
         {
             try
@@ -595,7 +595,7 @@ namespace BlazorApp.Api.Controllers
         /// <param name="request">批量状态更新请求</param>
         /// <returns>更新结果</returns>
         [HttpPut("batch-status")]
-        [Authorize(Roles = "Admin")]
+        [Authorize(Roles = "Admin,WarehouseManager")]
         public async Task<IActionResult> BatchUpdateProductStatus([FromBody] BatchUpdateStatusRequest request)
         {
             try
@@ -756,7 +756,7 @@ namespace BlazorApp.Api.Controllers
         /// <param name="dryRun">是否仅模拟运行（不实际修改数据库）</param>
         /// <returns>修复结果统计</returns>
         [HttpPost("fix-duplicate-image-urls")]
-        [Authorize(Roles = "Admin")]
+        [Authorize(Roles = "Admin,WarehouseManager")]
         public async Task<IActionResult> FixDuplicateImageUrls([FromQuery] bool dryRun = true)
         {
             try
@@ -823,7 +823,7 @@ namespace BlazorApp.Api.Controllers
         /// <param name="request">批量删除请求</param>
         /// <returns>删除结果</returns>
         [HttpDelete("batch-delete")]
-        [Authorize(Roles = "Admin")]
+        [Authorize(Roles = "Admin,WarehouseManager")]
         public async Task<IActionResult> BatchDelete([FromBody] BatchDeleteRequestDto request)
         {
             try
@@ -882,7 +882,7 @@ namespace BlazorApp.Api.Controllers
         /// <param name="request">更新请求</param>
         /// <returns>更新结果</returns>
         [HttpPut("{productCode}/set-items")]
-        [Authorize(Roles = "Admin")]
+        [Authorize(Roles = "Admin,WarehouseManager")]
         public async Task<IActionResult> UpdateSetItems(string productCode, [FromBody] UpdateSetItemsRequestDto request)
         {
             try

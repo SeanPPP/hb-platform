@@ -98,7 +98,7 @@ namespace BlazorApp.Api.Controllers
         /// <param name="dto">创建国内供应商的数据传输对象</param>
         /// <returns>创建结果</returns>
         [HttpPost]
-        [Authorize(Roles = "Admin")]
+        [Authorize(Roles = "Admin,WarehouseManager")]
         public async Task<IActionResult> CreateChinaSupplier([FromBody] CreateChinaSupplierDto dto)
         {
             try
@@ -198,7 +198,7 @@ namespace BlazorApp.Api.Controllers
         /// <param name="guid">国内供应商GUID</param>
         /// <returns>删除结果</returns>
         [HttpDelete("{guid}")]
-        [Authorize(Roles = "Admin")]
+        [Authorize(Roles = "Admin,WarehouseManager")]
         public async Task<IActionResult> DeleteChinaSupplier(string guid)
         {
             try
@@ -404,7 +404,7 @@ namespace BlazorApp.Api.Controllers
         /// 同步选中的供应商到HBSales数据库
         /// </summary>
         [HttpPost("sync-to-hbsales")]
-        [Authorize(Roles = "Admin")]
+        [Authorize(Roles = "Admin,WarehouseManager")]
         public async Task<IActionResult> SyncToHbSales([FromBody] List<string> guids)
         {
             try

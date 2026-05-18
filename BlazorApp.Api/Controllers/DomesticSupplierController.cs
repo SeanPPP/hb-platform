@@ -247,7 +247,7 @@ namespace BlazorApp.Api.Controllers
         /// <param name="guid">供应商GUID</param>
         /// <returns>操作结果</returns>
         [HttpDelete("{guid}")]
-        [Authorize(Roles = "Admin")]
+        [Authorize(Roles = "Admin,WarehouseManager")]
         public async Task<IActionResult> DeleteSupplier(string guid)
         {
             try
