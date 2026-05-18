@@ -21,14 +21,10 @@ function resolveSourceLabel(source: string | null | undefined, t: (key: string) 
       return t("lookup.source.multiBarcode");
     case "SetBarcode":
       return t("lookup.source.setBarcode");
+    case "ClearanceBarcode":
+      return t("lookup.source.clearanceBarcode");
     case "ItemNumber":
-    case "SetItemNumber":
       return t("lookup.source.itemNumber");
-    case "ProductCode":
-    case "SetProductCode":
-    case "MultiCodeProductCode":
-    case "StoreMultiCodeProductCode":
-      return t("lookup.source.productCode");
     default:
       return source || t("lookup.source.fallback");
   }

@@ -13,7 +13,15 @@ function unwrapEnvelope<T>(payload: unknown): T {
       keys.includes("data") &&
       (keys.includes("success") || keys.includes("isSuccess") || keys.includes("message"));
     if (!isEnvelope) break;
-    current = (current as Record<string, unknown>).data;
+    const envelope = current as Record<string, unknown>;
+    const success = envelope.success ?? envelope.isSuccess;
+    if (success === false) {
+      const message = typeof envelope.message === "string" && envelope.message.trim()
+        ? envelope.message
+        : "Request failed";
+      throw new Error(message);
+    }
+    current = envelope.data;
   }
   return current as T;
 }

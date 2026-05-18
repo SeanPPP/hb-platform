@@ -21,6 +21,10 @@ export function useCameraScan({ cooldownMs = 1200, onBarcode }: UseCameraScanOpt
   const handleBarcodeScanned = useCallback(
     async ({ data }: BarcodeScanningResult) => {
       const barcode = normalizeBarcode(data);
+      console.log("[camera-scan] raw barcode event", {
+        rawData: data,
+        normalized: barcode,
+      });
       if (!barcode) {
         return;
       }
@@ -38,6 +42,7 @@ export function useCameraScan({ cooldownMs = 1200, onBarcode }: UseCameraScanOpt
         timestamp: now,
       };
 
+      console.log("[camera-scan] forwarding barcode", { barcode });
       await onBarcode(barcode);
     },
     [cooldownMs, onBarcode]

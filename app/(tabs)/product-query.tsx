@@ -1,8 +1,8 @@
 import { useCallback, useMemo, useState } from "react";
-import { ScrollView, StyleSheet, View } from "react-native";
+import { ScrollView, StyleSheet, TextInput, View } from "react-native";
 import { CameraView } from "expo-camera";
-import { useIsFocused } from "@react-navigation/native";
-import { Button, Modal, Portal, Snackbar, Text } from "react-native-paper";
+import { useFocusEffect, useIsFocused } from "@react-navigation/native";
+import { Button, Card, Modal, Portal, Snackbar, Text } from "react-native-paper";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { LookupResultSheet } from "@/components/product-maintenance/LookupResultSheet";
 import { MultiCodeCompactList } from "@/components/product-maintenance/MultiCodeCompactList";
@@ -11,6 +11,7 @@ import { QueryHeader } from "@/components/product-maintenance/QueryHeader";
 import { SearchPanel } from "@/components/product-maintenance/SearchPanel";
 import { SetCodeCompactSection } from "@/components/product-maintenance/SetCodeCompactSection";
 import { StickyActionBar } from "@/components/product-maintenance/StickyActionBar";
+import { StoreClearancePriceCard } from "@/components/product-maintenance/StoreClearancePriceCard";
 import { StorePriceStrategyCard } from "@/components/product-maintenance/StorePriceStrategyCard";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 import {
@@ -25,6 +26,7 @@ import type {
   ProductLookupItem,
 } from "@/modules/product-maintenance/types";
 import { useCameraScan } from "@/modules/scanner/use-camera-scan";
+import { useHidBarcodeScanner } from "@/modules/scanner/use-hid-barcode-scanner";
 import { useStores } from "@/modules/shop/use-stores";
 
 function cloneDetail(detail: ProductDetail | null): ProductDetail | null {
@@ -33,6 +35,10 @@ function cloneDetail(detail: ProductDetail | null): ProductDetail | null {
 
 function formatDecimal(value?: number | null) {
   return value == null ? "" : String(value);
+}
+
+function formatCurrency(value?: number | null) {
+  return value == null ? "" : value.toFixed(2);
 }
 
 function isStorePriceDirty(current: ProductDetail | null, initial: ProductDetail | null) {
@@ -48,6 +54,11 @@ function getDirtyMultiCodeIds(current: ProductDetail | null, initial: ProductDet
     .map((item) => item.uuid);
 }
 
+type QueryFeedback =
+  | { type: "idle" }
+  | { type: "empty"; query: string }
+  | { type: "error"; query?: string; message: string };
+
 function ProductQueryContent() {
   const { t } = useAppTranslation(["productQuery", "common"]);
   const { selectedStore, selectedStoreCode, isLoading: storesLoading } = useStores();
@@ -59,6 +70,7 @@ function ProductQueryContent() {
   const [lastHitLabel, setLastHitLabel] = useState<string>();
   const [lookupVisible, setLookupVisible] = useState(false);
   const [cameraVisible, setCameraVisible] = useState(false);
+  const [queryFeedback, setQueryFeedback] = useState<QueryFeedback>({ type: "idle" });
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -72,11 +84,13 @@ function ProductQueryContent() {
         return;
       }
 
+      console.log("[product-query] load detail", { productCode, selectedStoreCode });
       const payload = await getProductDetail(productCode, selectedStoreCode);
       setDetail(payload);
       setInitialDetail(cloneDetail(payload));
       setSelectedLookupProductCode(productCode);
       setLastHitLabel(`${payload.itemNumber || payload.productCode} / ${payload.barcode || "--"}`);
+      setQueryFeedback({ type: "idle" });
     },
     [selectedStoreCode, t]
   );
@@ -94,11 +108,20 @@ function ProductQueryContent() {
         return;
       }
 
+      console.log("[product-query] lookup start", {
+        keyword: nextKeyword,
+        selectedStoreCode,
+      });
       setLoading(true);
+      setQueryFeedback({ type: "idle" });
       try {
         const items = await lookupProducts({
           keyword: nextKeyword,
           storeCode: selectedStoreCode,
+        });
+        console.log("[product-query] lookup success", {
+          keyword: nextKeyword,
+          count: items.length,
         });
         setLookupItems(items);
         if (!items.length) {
@@ -106,6 +129,7 @@ function ProductQueryContent() {
           setInitialDetail(null);
           setSelectedLookupProductCode(undefined);
           setLookupVisible(false);
+          setQueryFeedback({ type: "empty", query: nextKeyword });
           setSnackbarMessage(t("messages.notFound"));
           return;
         }
@@ -119,7 +143,17 @@ function ProductQueryContent() {
         setSelectedLookupProductCode(items[0].productCode);
         setLookupVisible(true);
       } catch (error) {
-        setSnackbarMessage(error instanceof Error ? error.message : t("messages.lookupFailed"));
+        const message = error instanceof Error ? error.message : t("messages.lookupFailed");
+        console.error("[product-query] lookup failed", {
+          keyword: nextKeyword,
+          selectedStoreCode,
+          message,
+        });
+        setDetail(null);
+        setInitialDetail(null);
+        setLookupVisible(false);
+        setQueryFeedback({ type: "error", query: nextKeyword, message });
+        setSnackbarMessage(message);
       } finally {
         setLoading(false);
       }
@@ -129,11 +163,27 @@ function ProductQueryContent() {
 
   const cameraScan = useCameraScan({
     onBarcode: async (barcode) => {
+      console.log("[product-query] barcode scanned", { barcode });
       setKeyword(barcode);
       await handleLookup(barcode);
       setCameraVisible(false);
     },
   });
+  const hidScanner = useHidBarcodeScanner({
+    onScan: async (barcode) => {
+      console.log("[product-query] hid barcode scanned", { barcode });
+      setKeyword(barcode);
+      await handleLookup(barcode);
+    },
+  });
+
+  useFocusEffect(
+    useCallback(() => {
+      if (hidScanner.focusHiddenInput) {
+        hidScanner.focusHiddenInput();
+      }
+    }, [hidScanner.focusHiddenInput])
+  );
 
   const dirtyMultiCodeIds = useMemo(() => getDirtyMultiCodeIds(detail, initialDetail), [detail, initialDetail]);
   const dirtyCount = useMemo(
@@ -171,7 +221,25 @@ function ProductQueryContent() {
     setDetail(null);
     setInitialDetail(null);
     setLookupVisible(false);
+    setQueryFeedback({ type: "idle" });
   }, []);
+
+  const handleConfirmLookup = useCallback(async () => {
+    if (!selectedLookupProductCode) {
+      return;
+    }
+
+    setLookupVisible(false);
+    try {
+      await loadDetail(selectedLookupProductCode);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : t("messages.lookupFailed");
+      setDetail(null);
+      setInitialDetail(null);
+      setQueryFeedback({ type: "error", query: keyword.trim(), message });
+      setSnackbarMessage(message);
+    }
+  }, [keyword, loadDetail, selectedLookupProductCode, t]);
 
   const handleChangeStorePrice = useCallback((patch: Partial<NonNullable<ProductDetail["storePrice"]>>) => {
     setDetail((current) =>
@@ -295,6 +363,7 @@ function ProductQueryContent() {
   }, [initialDetail]);
 
   const storePrice = detail?.storePrice;
+  const clearancePrice = detail?.clearancePrice;
 
   return (
     <SafeAreaView style={styles.safeArea} edges={["top"]}>
@@ -358,6 +427,15 @@ function ProductQueryContent() {
               </View>
             )}
 
+            {clearancePrice ? (
+              <StoreClearancePriceCard
+                storeCode={clearancePrice.storeCode}
+                storeName={clearancePrice.storeName}
+                clearanceBarcode={clearancePrice.clearanceBarcode}
+                clearancePrice={formatCurrency(clearancePrice.clearancePrice)}
+              />
+            ) : null}
+
             <SetCodeCompactSection items={detail.setCodes} />
             <MultiCodeCompactList
               items={detail.multiCodes}
@@ -366,6 +444,24 @@ function ProductQueryContent() {
               savingItemId={savingItemId}
             />
           </>
+        ) : queryFeedback.type === "empty" ? (
+          <View style={styles.emptyBlock}>
+            <Text variant="titleSmall" style={styles.emptyTitle}>
+              {t("messages.noResultTitle")}
+            </Text>
+            <Text variant="bodyMedium" style={styles.emptyText}>
+              {t("messages.noResultDescription", { value: queryFeedback.query })}
+            </Text>
+          </View>
+        ) : queryFeedback.type === "error" ? (
+          <View style={styles.emptyBlock}>
+            <Text variant="titleSmall" style={styles.emptyTitle}>
+              {t("messages.lookupErrorTitle")}
+            </Text>
+            <Text variant="bodyMedium" style={styles.emptyText}>
+              {queryFeedback.message || t("messages.lookupErrorDescription")}
+            </Text>
+          </View>
         ) : (
           <View style={styles.emptyBlock}>
             <Text variant="bodyMedium">{t("messages.emptyPrompt")}</Text>
@@ -388,12 +484,7 @@ function ProductQueryContent() {
         selectedValue={selectedLookupProductCode}
         onSelect={setSelectedLookupProductCode}
         onClose={() => setLookupVisible(false)}
-        onConfirm={() => {
-          if (selectedLookupProductCode) {
-            setLookupVisible(false);
-            void loadDetail(selectedLookupProductCode);
-          }
-        }}
+        onConfirm={() => void handleConfirmLookup()}
       />
 
       <Portal>
@@ -406,9 +497,23 @@ function ProductQueryContent() {
             <Text variant="titleMedium">{t("camera.title")}</Text>
             <Button onPress={() => setCameraVisible(false)}>{t("common:actions.close")}</Button>
           </View>
-          <View style={styles.cameraFrame}>
-            <CameraView style={styles.cameraView} {...cameraScan.cameraProps} />
-          </View>
+          {cameraScan.permission?.granted ? (
+            <View style={styles.cameraFrame}>
+              <CameraView style={styles.cameraView} {...cameraScan.cameraProps} />
+            </View>
+          ) : (
+            <Card style={styles.permissionCard}>
+              <Card.Content style={styles.permissionCardContent}>
+                <Text variant="titleMedium">{t("camera.needPermissionTitle")}</Text>
+                <Text variant="bodySmall" style={styles.cameraTip}>
+                  {t("camera.needPermissionDescription")}
+                </Text>
+                <Button mode="contained" onPress={() => void cameraScan.requestPermission()}>
+                  {t("camera.grantPermission")}
+                </Button>
+              </Card.Content>
+            </Card>
+          )}
           <Text variant="bodySmall" style={styles.cameraTip}>
             {t("messages.cameraTip")}
           </Text>
@@ -418,6 +523,10 @@ function ProductQueryContent() {
       <Snackbar visible={Boolean(snackbarMessage)} onDismiss={() => setSnackbarMessage("")} duration={2500}>
         {snackbarMessage}
       </Snackbar>
+
+      {hidScanner.mode === "textInput" && hidScanner.textInputProps ? (
+        <TextInput style={styles.hiddenInput} {...hidScanner.textInputProps} />
+      ) : null}
     </SafeAreaView>
   );
 }
@@ -442,10 +551,23 @@ const styles = StyleSheet.create({
     paddingBottom: 20,
     gap: 10,
   },
+  hiddenInput: {
+    position: "absolute",
+    width: 1,
+    height: 1,
+    opacity: 0,
+  },
   emptyBlock: {
     borderRadius: 8,
     backgroundColor: "#fff",
     padding: 16,
+    gap: 6,
+  },
+  emptyTitle: {
+    fontWeight: "700",
+  },
+  emptyText: {
+    color: "#555",
   },
   cameraModal: {
     marginHorizontal: 16,
@@ -464,6 +586,13 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     height: 320,
     backgroundColor: "#000",
+  },
+  permissionCard: {
+    borderRadius: 12,
+  },
+  permissionCardContent: {
+    gap: 12,
+    paddingVertical: 8,
   },
   cameraView: {
     flex: 1,

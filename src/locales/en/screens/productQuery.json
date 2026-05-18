@@ -10,7 +10,11 @@
     "keywordRequired": "Enter a barcode, item number, or product code.",
     "storeUnavailable": "No store is currently available.",
     "notFound": "No matching product was found.",
+    "noResultTitle": "No matching product",
+    "noResultDescription": "No result matched \"{{value}}\". Check the barcode, item number, product code, or try another store.",
     "lookupFailed": "Product lookup failed.",
+    "lookupErrorTitle": "Lookup failed",
+    "lookupErrorDescription": "Something went wrong while looking up the product. Please try again later.",
     "refreshFailed": "Refresh failed.",
     "multiCodeSaved": "Multi-code saved.",
     "multiCodeSaveFailed": "Failed to save the multi-code record.",
@@ -28,6 +32,7 @@
       "productBarcode": "Primary barcode match",
       "multiBarcode": "Multi-code match",
       "setBarcode": "Set barcode match",
+      "clearanceBarcode": "Clearance barcode match",
       "itemNumber": "Item number match",
       "productCode": "Product code match",
       "fallback": "Match"
@@ -46,6 +51,12 @@
     "special": "Special",
     "active": "Active"
   },
+  "clearancePrice": {
+    "title": "Store clearance price",
+    "store": "Store",
+    "barcode": "Clearance barcode",
+    "price": "Clearance price"
+  },
   "setCode": {
     "title": "Set barcodes",
     "meta": "{{itemNumber}} · Qty {{quantity}} · {{price}}"
@@ -60,6 +71,9 @@
     "dirtyCount": "{{count}} changes"
   },
   "camera": {
-    "title": "Scan a product"
+    "title": "Scan a product",
+    "needPermissionTitle": "Camera permission required",
+    "needPermissionDescription": "Enable camera access to scan products directly from the product lookup page.",
+    "grantPermission": "Enable camera permission"
   }
 }

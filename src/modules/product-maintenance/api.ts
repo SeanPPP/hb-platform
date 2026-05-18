@@ -6,6 +6,7 @@ import type {
   ProductDetail,
   ProductLookupItem,
   ProductSetCodeItem,
+  StoreClearancePriceItem,
   StorePriceEditable,
   StoreProductLookupRequest,
   UpdateMultiCodeRequest,
@@ -120,6 +121,22 @@ function normalizeSetCodeItem(payload: unknown): ProductSetCodeItem {
   };
 }
 
+function normalizeClearancePrice(payload: unknown): StoreClearancePriceItem | null {
+  if (!payload || typeof payload !== "object") {
+    return null;
+  }
+
+  const data = payload as Record<string, unknown>;
+  return {
+    uuid: String(data.uuid ?? data.Uuid ?? ""),
+    storeCode: (data.storeCode ?? data.StoreCode ?? null) as string | null,
+    storeName: (data.storeName ?? data.StoreName ?? null) as string | null,
+    productCode: (data.productCode ?? data.ProductCode ?? null) as string | null,
+    clearanceBarcode: (data.clearanceBarcode ?? data.ClearanceBarcode ?? null) as string | null,
+    clearancePrice: toNumber(data.clearancePrice ?? data.ClearancePrice),
+  };
+}
+
 function normalizeDetail(payload: unknown): ProductDetail {
   const data = (payload && typeof payload === "object" ? payload : {}) as Record<string, unknown>;
   const setCodesRaw = data.setCodes ?? data.SetCodes;
@@ -135,6 +152,7 @@ function normalizeDetail(payload: unknown): ProductDetail {
     grade: (data.grade ?? data.Grade ?? null) as string | null,
     localSupplierCode: (data.localSupplierCode ?? data.LocalSupplierCode ?? null) as string | null,
     storePrice: normalizeStorePrice(data.storePrice ?? data.StorePrice),
+    clearancePrice: normalizeClearancePrice(data.clearancePrice ?? data.ClearancePrice),
     setCodes: Array.isArray(setCodesRaw) ? setCodesRaw.map(normalizeSetCodeItem) : [],
     multiCodes: Array.isArray(multiCodesRaw) ? multiCodesRaw.map(normalizeMultiCodeItem) : [],
   };
@@ -143,14 +161,21 @@ function normalizeDetail(payload: unknown): ProductDetail {
 export async function lookupProducts(
   payload: StoreProductLookupRequest
 ): Promise<ProductLookupItem[]> {
+  console.log("[product-maintenance-api] lookup request", payload);
   const response = await apiClient.post(BASE_PATH + "/lookup", payload, buildRequestConfig());
-  return Array.isArray(response.data) ? response.data.map(normalizeLookupItem) : [];
+  const items = Array.isArray(response.data) ? response.data.map(normalizeLookupItem) : [];
+  console.log("[product-maintenance-api] lookup response", {
+    keyword: payload.keyword,
+    count: items.length,
+  });
+  return items;
 }
 
 export async function getProductDetail(
   productCode: string,
   storeCode?: string | null
 ): Promise<ProductDetail> {
+  console.log("[product-maintenance-api] detail request", { productCode, storeCode });
   const response = await apiClient.get(
     `${BASE_PATH}/${encodeURIComponent(productCode)}`,
     {
@@ -158,7 +183,14 @@ export async function getProductDetail(
       params: storeCode ? { storeCode } : undefined,
     }
   );
-  return normalizeDetail(response.data);
+  const detail = normalizeDetail(response.data);
+  console.log("[product-maintenance-api] detail response", {
+    productCode: detail.productCode,
+    clearancePriceFound: Boolean(detail.clearancePrice),
+    multiCodeCount: detail.multiCodes.length,
+    setCodeCount: detail.setCodes.length,
+  });
+  return detail;
 }
 
 export async function updateStorePrice(

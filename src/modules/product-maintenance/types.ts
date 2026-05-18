@@ -60,6 +60,15 @@ export interface ProductSetCodeItem {
   isActive: boolean;
 }
 
+export interface StoreClearancePriceItem {
+  uuid: string;
+  storeCode?: string | null;
+  storeName?: string | null;
+  productCode?: string | null;
+  clearanceBarcode?: string | null;
+  clearancePrice?: number | null;
+}
+
 export interface ProductDetail {
   productCode: string;
   productName: string;
@@ -71,6 +80,7 @@ export interface ProductDetail {
   grade?: string | null;
   localSupplierCode?: string | null;
   storePrice?: StorePriceEditable | null;
+  clearancePrice?: StoreClearancePriceItem | null;
   setCodes: ProductSetCodeItem[];
   multiCodes: MultiCodeEditableItem[];
 }
