@@ -23,6 +23,7 @@ import type { ColumnsType } from 'antd/es/table'
 import dayjs from 'dayjs'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { useAuthStore } from '../../store/auth'
 import { getActiveStores } from '../../services/storeService'
 import {
   fetchTaxInvoicePdf,
@@ -62,6 +63,9 @@ function getBranchColor(branchCode?: string): string {
 
 export default function PosmSalesOrdersPage() {
   const { t } = useTranslation()
+  const access = useAuthStore((s) => s.access)
+  const currentUser = useAuthStore((s) => s.currentUser)
+  const managedStoreCodes = access.managedStoreCodes?.()
   const [loading, setLoading] = useState(false)
   const [data, setData] = useState<PosmSalesOrder[]>([])
   const [total, setTotal] = useState(0)
@@ -88,6 +92,8 @@ export default function PosmSalesOrdersPage() {
   const wrapRef = useRef<HTMLDivElement>(null)
   const pagerRef = useRef<HTMLDivElement>(null)
   const [tableScrollY, setTableScrollY] = useState<number | undefined>(undefined)
+
+  const [storesLoaded, setStoresLoaded] = useState(false)
 
   const orderTypeOptions = useMemo(
     () => [
@@ -124,12 +130,26 @@ export default function PosmSalesOrdersPage() {
     }
   }
 
-  const loadStores = async () => {
+  const loadStores = async (codes?: string[] | null) => {
     try {
-      const storeOptions = await getActiveStores()
-      setStores(storeOptions)
+      if (codes === null || codes === undefined) {
+        const storeOptions = await getActiveStores()
+        setStores(storeOptions)
+      } else if (codes.length && currentUser?.stores?.length) {
+        const visible = currentUser.stores
+          .filter((s) => codes.includes(s.storeCode))
+          .map((s) => ({ label: s.storeName || s.storeCode, value: s.storeCode }))
+        setStores(visible)
+        if (visible.length >= 1 && !filterBranchCode) {
+          setFilterBranchCode(visible[0].value)
+        }
+      } else {
+        setStores([])
+      }
     } catch {
       // ignore
+    } finally {
+      setStoresLoaded(true)
     }
   }
 
@@ -146,12 +166,14 @@ export default function PosmSalesOrdersPage() {
   }
 
   useEffect(() => {
-    void loadStores()
-  }, [])
+    void loadStores(managedStoreCodes)
+  }, [managedStoreCodes?.join(',')])
 
   useEffect(() => {
-    void loadData()
-  }, [page, pageSize])
+    if (storesLoaded) {
+      void loadData()
+    }
+  }, [page, pageSize, storesLoaded])
 
   useLayoutEffect(() => {
     const calc = () => {

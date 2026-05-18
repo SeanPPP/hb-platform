@@ -42,6 +42,7 @@ import type {
 } from '../../../types/storeProductPrice'
 import { CopyOutlined } from '@ant-design/icons'
 import { copyTextToClipboard } from '../../../utils/clipboard'
+import { useAuthStore } from '../../../store/auth'
 
 type DataType = StoreProductPriceListDto & { key: string }
 
@@ -53,6 +54,8 @@ const productTypeMap: Record<number, { labelKey: string; color: string }> = {
 
 export default function StoreProductPricePage() {
   const { t } = useTranslation()
+  const currentUser = useAuthStore((s) => s.currentUser)
+  const access = useAuthStore((s) => s.access)
   const [searchForm] = Form.useForm()
   const [loading, setLoading] = useState(false)
   const [data, setData] = useState<DataType[]>([])
@@ -121,8 +124,16 @@ export default function StoreProductPricePage() {
   useEffect(() => {
     ;(async () => {
       try {
-        const stores = await getActiveStores()
-        setStoreOptions(stores)
+        const managedCodes = access.managedStoreCodes()
+        if (managedCodes === null) {
+          const stores = await getActiveStores()
+          setStoreOptions(stores)
+        } else if (currentUser?.stores?.length) {
+          const visible = currentUser.stores
+            .filter((s) => managedCodes.includes(s.storeCode))
+            .map((s) => ({ label: s.storeName || s.storeCode, value: s.storeCode }))
+          setStoreOptions(visible)
+        }
       } catch { /* ignore */ }
       try {
         const suppliers = await getActiveLocalSuppliers()
@@ -131,7 +142,21 @@ export default function StoreProductPricePage() {
         )
       } catch { /* ignore */ }
     })()
-  }, [])
+  }, [currentUser, access])
+
+  useEffect(() => {
+    if (storeOptions.length === 1 && selectedStoreCode !== storeOptions[0].value) {
+      setSelectedStoreCode(storeOptions[0].value)
+      searchForm.setFieldsValue({ storeCode: storeOptions[0].value })
+      setPage(1)
+      setSelectedRowKeys([])
+    } else if (selectedStoreCode && !storeOptions.some((s) => s.value === selectedStoreCode)) {
+      setSelectedStoreCode(undefined)
+      searchForm.setFieldsValue({ storeCode: undefined })
+      setData([])
+      setTotal(0)
+    }
+  }, [storeOptions, selectedStoreCode, searchForm])
 
   useEffect(() => {
     loadData()
@@ -329,6 +354,12 @@ export default function StoreProductPricePage() {
 
   const columns: ColumnsType<DataType> = useMemo(() => [
     {
+      title: t('posAdmin.productPrice.rowIndex', '序号'),
+      key: 'rowIndex',
+      width: 30,
+      render: (_: unknown, __: DataType, index: number) => index + 1,
+    },
+    {
       title: t('posAdmin.productPrice.productImage', '商品图片'),
       dataIndex: 'productImage',
       key: 'productImage',
@@ -343,10 +374,18 @@ export default function StoreProductPricePage() {
         ),
     },
     {
+      title: t('posAdmin.productPrice.itemNumber', '货号'),
+      dataIndex: 'itemNumber',
+      key: 'itemNumber',
+      width: 100,
+      sorter: true,
+    },
+    {
       title: t('posAdmin.productPrice.productCode', '商品代码'),
       dataIndex: 'productCode',
       key: 'productCode',
-      width: 50,
+      width: 50,  
+      fixed: 'left',
       sorter: true,
       render: (v: string) => (
         <Tooltip title={v}>
@@ -358,29 +397,36 @@ export default function StoreProductPricePage() {
       title: t('posAdmin.productPrice.productName', '商品名称'),
       dataIndex: 'productName',
       key: 'productName',
-      width: 180,
-      ellipsis: { showTitle: false },
-      sorter: true,
-    },
-    {
-      title: t('posAdmin.productPrice.itemNumber', '货号'),
-      dataIndex: 'itemNumber',
-      key: 'itemNumber',
       width: 100,
       sorter: true,
+      render: (v: string) => (
+        <div
+          style={{
+            display: '-webkit-box',
+            WebkitLineClamp: 2,
+            WebkitBoxOrient: 'vertical',
+            overflow: 'hidden',
+            wordBreak: 'break-all',
+          }}
+          title={v}
+        >
+          {v}
+        </div>
+      ),
     },
+    
     {
       title: t('posAdmin.productPrice.barcode', '条码'),
       dataIndex: 'barcode',
       key: 'barcode',
       width: 160,
-      render: (v: string) => <BarcodePreview value={v} compactCopy textMaxWidth={100} />,
+      render: (v: string) => <BarcodePreview value={v} compactCopy />,
     },
     {
       title: t('posAdmin.productPrice.supplier', '供应商'),
       dataIndex: 'localSupplierName',
       key: 'localSupplierName',
-      width: 120,
+      width: 100,
       ellipsis: { showTitle: false },
     },
     {
@@ -393,13 +439,7 @@ export default function StoreProductPricePage() {
         return <Tag color={info.color}>{t(info.labelKey)}</Tag>
       },
     },
-    {
-      title: t('posAdmin.productPrice.middlePackQty', '中包数量'),
-      dataIndex: 'middlePackageQuantity',
-      key: 'middlePackageQuantity',
-      width: 100,
-      sorter: true,
-    },
+   
     {
       title: t('posAdmin.productPrice.purchasePrice', '采购价'),
       dataIndex: 'storePurchasePrice',
@@ -506,14 +546,22 @@ export default function StoreProductPricePage() {
 
         <div style={{ marginBottom: 12 }}>
           <Space wrap>
-            <Button type="primary" disabled={selectedCount === 0} onClick={openBatchModal}>
-              {t('posAdmin.productPrice.batchUpdate', '批量更新')} {selectedCount > 0 ? `(${selectedCount})` : ''}
-            </Button>
-            <Button disabled={selectedCount === 0} onClick={openSyncModal}>
-              {t('posAdmin.productPrice.syncToStores', '同步到其他分店')} {selectedCount > 0 ? `(${selectedCount})` : ''}
-            </Button>
-            <Button onClick={openCopyModal}>{t('posAdmin.productPrice.copyStoreData', '复制分店数据')}</Button>
-            <Button onClick={openHqSyncModal}>{t('posAdmin.productPrice.updateFromHQ', '从HQ更新零售价')}</Button>
+            {access.canEditStoreProducts && (
+              <>
+                <Button type="primary" disabled={selectedCount === 0} onClick={openBatchModal}>
+                  {t('posAdmin.productPrice.batchUpdate', '批量更新')} {selectedCount > 0 ? `(${selectedCount})` : ''}
+                </Button>
+                <Button disabled={selectedCount === 0} onClick={openSyncModal}>
+                  {t('posAdmin.productPrice.syncToStores', '同步到其他分店')} {selectedCount > 0 ? `(${selectedCount})` : ''}
+                </Button>
+              </>
+            )}
+            {access.isAdmin && (
+              <Button onClick={openCopyModal}>{t('posAdmin.productPrice.copyStoreData', '复制分店数据')}</Button>
+            )}
+            {access.isAdmin && (
+              <Button onClick={openHqSyncModal}>{t('posAdmin.productPrice.updateFromHQ', '从HQ更新零售价')}</Button>
+            )}
           </Space>
         </div>
 

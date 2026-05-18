@@ -404,7 +404,7 @@ export const appRoutes: AppRouteItem[] = [
           title: 'menu.productManagement',
           icon: 'AppstoreOutlined',
           keepAlive: true,
-          accessKey: 'canManageStoreProducts',
+          accessKey: 'isAdmin',
         },
         element: <PosAdminProductManagementPage />,
       },
