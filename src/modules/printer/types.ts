@@ -23,3 +23,15 @@ export interface PreparedBarcode {
   value: string;
   kind: PrinterBarcodeKind;
 }
+
+export interface ProductLabelPrintPayload {
+  productName: string;
+  itemNumber?: string | null;
+  grade?: string | null;
+  supplierName?: string | null;
+  barcode?: string | null;
+  retailPrice?: number | null;
+  discountRate?: number | null;
+  clearanceBarcode?: string | null;
+  clearancePrice?: number | null;
+}

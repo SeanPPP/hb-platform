@@ -9,6 +9,11 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.Typeface
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -17,10 +22,17 @@ import com.facebook.react.bridge.Promise
 import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.ReactContextBaseJavaModule
 import com.facebook.react.bridge.ReactMethod
+import com.facebook.react.bridge.ReadableMap
 import java.nio.charset.Charset
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.math.ceil
+import kotlin.math.max
+import kotlin.math.roundToInt
 
 class HbPrinterModule(
   reactContext: ReactApplicationContext
@@ -32,6 +44,8 @@ class HbPrinterModule(
   }
   private val handler = Handler(Looper.getMainLooper())
   private val printerUuid: UUID = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
+  private val labelWidth = 570
+  private val labelHeight = 400
 
   @Volatile
   private var socket: BluetoothSocket? = null
@@ -214,22 +228,244 @@ class HbPrinterModule(
   fun print(command: String, encoding: String?, promise: Promise) {
     Thread {
       try {
-        val activeSocket = socket
-        if (activeSocket == null || !activeSocket.isConnected) {
-          promise.reject("PRINT_NOT_CONNECTED", "No Bluetooth printer is connected.")
-          return@Thread
-        }
-
-        val charset = Charset.forName(encoding ?: "GB18030")
-        val bytes = command.toByteArray(charset)
-        val outputStream = activeSocket.outputStream
-        outputStream.write(bytes)
-        outputStream.flush()
+        writePrinterCommand(command, encoding ?: "GB18030")
         promise.resolve(true)
       } catch (error: Exception) {
         promise.reject("PRINT_ERROR", error.message, error)
       }
     }.start()
+  }
+
+  @ReactMethod
+  fun printProductLabel(payload: ReadableMap, promise: Promise) {
+    Thread {
+      try {
+        val command = buildProductLabelCommand(payload)
+        writePrinterCommand(command, "GB18030")
+        promise.resolve(true)
+      } catch (error: Exception) {
+        promise.reject("PRINT_PRODUCT_LABEL_ERROR", error.message, error)
+      }
+    }.start()
+  }
+
+  private fun writePrinterCommand(command: String, encoding: String) {
+    val activeSocket = socket
+    if (activeSocket == null || !activeSocket.isConnected) {
+      throw IllegalStateException("No Bluetooth printer is connected.")
+    }
+
+    val charset = Charset.forName(encoding)
+    val outputStream = activeSocket.outputStream
+    outputStream.write(command.toByteArray(charset))
+    outputStream.flush()
+  }
+
+  private fun buildProductLabelCommand(payload: ReadableMap): String {
+    val productName = payload.getNullableString("productName")
+    val itemNumber = payload.getNullableString("itemNumber")
+    val supplierName = processCapitalization(payload.getNullableString("supplierName"))
+    val barcode = payload.getNullableString("barcode")
+    val retailPrice = payload.getNullableDouble("retailPrice")
+    val discountRate = payload.getNullableDouble("discountRate") ?: 0.0
+    val grade = payload.getNullableString("grade").trim().uppercase(Locale.US).firstOrNull()?.toString()
+
+    val price = formatPriceParts(retailPrice)
+    val priceIntegerBitmap = textToBitmap(price.integer, fontSizeToPixels(40f), true, "sans-serif-black")
+    val priceDotBitmap = textToBitmap(".", fontSizeToPixels(20f), true, "sans-serif-black")
+    val priceDecimalBitmap = textToBitmap(price.decimal, fontSizeToPixels(20f), true, "sans-serif-black")
+    val priceCurrencyBitmap = textToBitmap("$", fontSizeToPixels(20f), false, "sans-serif-black")
+    val itemBitmap = textToBitmap(itemNumber, fontSizeToPixels(8f), true, "sans-serif-black")
+    val supplierBitmap = textToBitmap(supplierName, fontSizeToPixels(8f), true, "sans-serif-light", true, 2)
+    val dateBitmap = textToBitmap(todayString(), fontSizeToPixels(8f), false, "Arial", true, 2)
+    val nameMaxWidth = max(
+      1,
+      labelWidth - priceDecimalBitmap.width - priceDotBitmap.width - priceIntegerBitmap.width - priceCurrencyBitmap.width,
+    )
+    val nameBitmap = longTextToBitmap(productName, fontSizeToPixels(10f), false, "Arial", 2, nameMaxWidth)
+    val discountBitmap = if (discountRate > 0) {
+      textToBitmap("${(discountRate * 100).roundToInt().toString().padStart(2, '0')}%OFF", fontSizeToPixels(8f), false, "sans-serif-light", true, 2)
+    } else {
+      null
+    }
+    val gradeBitmap = grade?.let {
+      textToBitmap(it, fontSizeToPixels(8f), true, "sans-serif-black", true, 4)
+    }
+
+    val startY = 30
+    val startX = labelWidth - priceDecimalBitmap.width
+    val commands = mutableListOf(
+      "! 0 200 200 $labelHeight 1",
+      "PAGE-WIDTH $labelWidth",
+      bitmapCommand(5, 5, nameBitmap),
+      bitmapCommand(5, 120, itemBitmap),
+      bitmapCommand(5 + itemBitmap.width + 10, 118, supplierBitmap),
+    )
+
+    if (barcode.isNotBlank()) {
+      commands += "BARCODE-TEXT 7 0 5"
+      commands += "BARCODE 128 1 2 30 5 145 $barcode"
+    }
+
+    if (discountBitmap != null) {
+      commands += bitmapCommand(labelWidth - discountBitmap.width - dateBitmap.width - 20, 175, discountBitmap)
+    }
+
+    if (gradeBitmap != null) {
+      commands += bitmapCommand(300, 175, gradeBitmap)
+    }
+
+    commands += bitmapCommand(startX, startY, priceDecimalBitmap)
+    commands += bitmapCommand(startX - priceDotBitmap.width, startY + priceIntegerBitmap.height - 10, priceDotBitmap)
+    commands += bitmapCommand(startX - priceDotBitmap.width - priceIntegerBitmap.width, startY, priceIntegerBitmap)
+    commands += bitmapCommand(
+      startX - priceDotBitmap.width - priceIntegerBitmap.width - priceCurrencyBitmap.width,
+      startY,
+      priceCurrencyBitmap,
+    )
+    commands += bitmapCommand(labelWidth - dateBitmap.width, 175, dateBitmap)
+    commands += "PRINT"
+
+    return commands.joinToString("\r\n", postfix = "\r\n")
+  }
+
+  private fun ReadableMap.getNullableString(key: String): String {
+    return if (hasKey(key) && !isNull(key)) getString(key)?.trim().orEmpty() else ""
+  }
+
+  private fun ReadableMap.getNullableDouble(key: String): Double? {
+    return if (hasKey(key) && !isNull(key)) getDouble(key) else null
+  }
+
+  private fun formatPriceParts(value: Double?): PriceParts {
+    val safeValue = value ?: 0.0
+    val cents = (safeValue * 100).roundToInt()
+    val integer = cents / 100
+    val decimal = (cents % 100).toString().padStart(2, '0')
+    return PriceParts(integer.toString(), decimal)
+  }
+
+  private fun todayString(): String {
+    return SimpleDateFormat("yyyy/MM/dd", Locale.US).format(Date())
+  }
+
+  private fun fontSizeToPixels(fontSize: Float): Float {
+    return fontSize * 3f
+  }
+
+  private fun textToBitmap(
+    text: String,
+    fontSize: Float,
+    isBold: Boolean,
+    fontFamily: String,
+    isInverse: Boolean = false,
+    padding: Int = 0,
+  ): Bitmap {
+    val safeText = text.ifBlank { " " }
+    val paint = Paint().apply {
+      isAntiAlias = true
+      color = if (isInverse) Color.WHITE else Color.BLACK
+      textSize = fontSize
+      textAlign = Paint.Align.LEFT
+      typeface = Typeface.create(fontFamily, if (isBold) Typeface.BOLD else Typeface.NORMAL)
+    }
+    val bounds = android.graphics.Rect()
+    paint.getTextBounds(safeText, 0, safeText.length, bounds)
+    val measuredWidth = paint.measureText(safeText)
+    val width = max(1, ceil(max(measuredWidth, bounds.width().toFloat())).toInt() + padding * 2)
+    val height = max(1, bounds.height() + padding * 2)
+    val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+    val canvas = Canvas(bitmap)
+    canvas.drawColor(if (isInverse) Color.BLACK else Color.WHITE)
+    canvas.drawText(safeText, padding.toFloat(), (height - bounds.bottom - padding).toFloat(), paint)
+    return bitmap
+  }
+
+  private fun longTextToBitmap(
+    text: String,
+    fontSize: Float,
+    isBold: Boolean,
+    fontFamily: String,
+    maxLines: Int,
+    maxWidth: Int,
+  ): Bitmap {
+    val safeText = text.ifBlank { " " }
+    val paint = Paint().apply {
+      isAntiAlias = true
+      color = Color.BLACK
+      textSize = fontSize
+      textAlign = Paint.Align.LEFT
+      typeface = Typeface.create(fontFamily, if (isBold) Typeface.BOLD else Typeface.NORMAL)
+    }
+    val lines = wrapText(safeText, paint, maxWidth, maxLines)
+    val metrics = paint.fontMetrics
+    val lineHeight = ceil(metrics.descent - metrics.ascent).toInt()
+    val width = max(1, minOf(maxWidth, ceil(lines.maxOf { paint.measureText(it) }).toInt()))
+    val height = max(1, lineHeight * lines.size)
+    val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+    val canvas = Canvas(bitmap)
+    canvas.drawColor(Color.WHITE)
+    lines.forEachIndexed { index, line ->
+      canvas.drawText(line, 0f, index * lineHeight - metrics.ascent, paint)
+    }
+    return bitmap
+  }
+
+  private fun wrapText(text: String, paint: Paint, maxWidth: Int, maxLines: Int): List<String> {
+    val lines = mutableListOf<String>()
+    var current = StringBuilder()
+    text.forEach { char ->
+      val next = current.toString() + char
+      if (current.isNotEmpty() && paint.measureText(next) > maxWidth && lines.size < maxLines - 1) {
+        lines += current.toString()
+        current = StringBuilder(char.toString())
+      } else {
+        current.append(char)
+      }
+    }
+    if (current.isNotEmpty() || lines.isEmpty()) {
+      lines += current.toString()
+    }
+    return lines.take(maxLines)
+  }
+
+  private fun processCapitalization(value: String): String {
+    return value
+      .lowercase(Locale.US)
+      .split(Regex("\\s+"))
+      .filter { it.isNotBlank() }
+      .joinToString(" ") { word -> word.replaceFirstChar { it.titlecase(Locale.US) } }
+  }
+
+  private fun bitmapCommand(x: Int, y: Int, bitmap: Bitmap): String {
+    val widthBytes = (bitmap.width + 7) / 8
+    return "EG $widthBytes ${bitmap.height} $x $y ${bitmapToHex(bitmap, widthBytes)}"
+  }
+
+  private fun bitmapToHex(bitmap: Bitmap, widthBytes: Int): String {
+    val hex = StringBuilder(widthBytes * bitmap.height * 2)
+    for (y in 0 until bitmap.height) {
+      for (byteIndex in 0 until widthBytes) {
+        var value = 0
+        for (bit in 0 until 8) {
+          val x = byteIndex * 8 + bit
+          if (x < bitmap.width && isBlack(bitmap.getPixel(x, y))) {
+            value = value or (1 shl (7 - bit))
+          }
+        }
+        hex.append(value.toString(16).padStart(2, '0').uppercase(Locale.US))
+      }
+    }
+    return hex.toString()
+  }
+
+  private fun isBlack(pixel: Int): Boolean {
+    val alpha = Color.alpha(pixel)
+    if (alpha == 0) {
+      return false
+    }
+    val luminance = (Color.red(pixel) * 299 + Color.green(pixel) * 587 + Color.blue(pixel) * 114) / 1000
+    return luminance < 200
   }
 
   private fun disconnectInternal() {
@@ -247,5 +483,10 @@ class HbPrinterModule(
     val address: String,
     val bonded: Boolean,
     val connected: Boolean,
+  )
+
+  data class PriceParts(
+    val integer: String,
+    val decimal: String,
   )
 }

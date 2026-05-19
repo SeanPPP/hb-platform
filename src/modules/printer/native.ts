@@ -1,5 +1,5 @@
 import { NativeModules, PermissionsAndroid, Platform } from "react-native";
-import type { PrinterDevice, PrinterStatus } from "@/modules/printer/types";
+import type { PrinterDevice, PrinterStatus, ProductLabelPrintPayload } from "@/modules/printer/types";
 
 type NativePrinterModule = {
   getStatus(): Promise<PrinterStatus>;
@@ -7,6 +7,7 @@ type NativePrinterModule = {
   connect(address: string): Promise<boolean>;
   disconnect(): Promise<boolean>;
   print(command: string, encoding?: string): Promise<boolean>;
+  printProductLabel(payload: ProductLabelPrintPayload): Promise<boolean>;
 };
 
 const nativeModule = NativeModules.HbPrinterModule as NativePrinterModule | undefined;
@@ -74,4 +75,9 @@ export async function disconnectPrinter() {
 export async function printRawCommand(command: string) {
   await ensureBluetoothPermissions();
   return getModule().print(command, "GB18030");
+}
+
+export async function printNativeProductLabel(payload: ProductLabelPrintPayload) {
+  await ensureBluetoothPermissions();
+  return getModule().printProductLabel(payload);
 }

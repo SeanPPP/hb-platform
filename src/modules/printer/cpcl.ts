@@ -1,15 +1,4 @@
-import type { PreparedBarcode, PrinterBarcodeKind } from "@/modules/printer/types";
-
-export interface ProductLabelPrintPayload {
-  productName: string;
-  itemNumber?: string | null;
-  supplierName?: string | null;
-  barcode?: string | null;
-  retailPrice?: number | null;
-  discountRate?: number | null;
-  clearanceBarcode?: string | null;
-  clearancePrice?: number | null;
-}
+import type { PreparedBarcode, PrinterBarcodeKind, ProductLabelPrintPayload } from "@/modules/printer/types";
 
 function cleanText(value?: string | null) {
   return (value ?? "").replace(/\r?\n/g, " ").trim();
@@ -104,28 +93,6 @@ function todayString() {
 
 function finalizeCommands(commands: string[]) {
   return `${commands.filter(Boolean).join("\r\n")}\r\nPRINT\r\n`;
-}
-
-export function buildProductLabelCpcl(payload: ProductLabelPrintPayload) {
-  const [nameLine1, nameLine2] = splitLines(payload.productName, 26, 2);
-  const barcode = prepareBarcode(payload.barcode);
-  const commands = [
-    "! 0 200 200 400 1",
-    "PAGE-WIDTH 570",
-    `TEXT 7 0 18 14 ${limitText(nameLine1, 26)}`,
-    nameLine2 ? `TEXT 7 0 18 48 ${limitText(nameLine2, 26)}` : "",
-    payload.itemNumber ? `TEXT 4 0 18 92 ITEM:${limitText(cleanText(payload.itemNumber), 20)}` : "",
-    payload.supplierName ? `TEXT 4 0 18 120 SUP:${limitText(cleanText(payload.supplierName), 22)}` : "",
-    payload.retailPrice != null ? `TEXT 7 0 360 24 $${formatMoney(payload.retailPrice)}` : "",
-    barcode ? barcodeCommand(18, 165, barcode, 68) : "",
-    barcode ? `TEXT 4 0 18 ${barcodeCaptionY(barcode.kind)} ${barcode.value}` : "",
-    payload.discountRate && payload.discountRate > 0
-      ? `TEXT 4 0 390 300 ${(payload.discountRate * 100).toFixed(0)}%OFF`
-      : "",
-    `TEXT 4 0 390 340 ${todayString()}`,
-  ];
-
-  return finalizeCommands(commands);
 }
 
 export function buildDiscountLabelCpcl(payload: ProductLabelPrintPayload) {

@@ -2,9 +2,15 @@ import type { ProductDetail } from "@/modules/product-maintenance/types";
 import {
   buildClearanceLabelCpcl,
   buildDiscountLabelCpcl,
-  buildProductLabelCpcl,
 } from "@/modules/printer/cpcl";
-import { connectPrinter, disconnectPrinter, getPrinterStatus, printRawCommand, scanPrinters } from "@/modules/printer/native";
+import {
+  connectPrinter,
+  disconnectPrinter,
+  getPrinterStatus,
+  printNativeProductLabel,
+  printRawCommand,
+  scanPrinters,
+} from "@/modules/printer/native";
 import { PrinterStorage } from "@/modules/printer/storage";
 import { usePrinterStore } from "@/modules/printer/state";
 import type { PrinterDevice, SavedPrinter } from "@/modules/printer/types";
@@ -20,6 +26,7 @@ function buildPayload(detail: ProductDetail) {
   return {
     productName: detail.productName,
     itemNumber: detail.itemNumber,
+    grade: detail.grade,
     supplierName: detail.localSupplierName,
     barcode: detail.barcode,
     retailPrice: detail.storePrice?.retailPrice ?? null,
@@ -179,7 +186,7 @@ export async function testPrinterConnection() {
 
 export async function printProductLabel(detail: ProductDetail) {
   await ensureConnectedPrinter();
-  return printRawCommand(buildProductLabelCpcl(buildPayload(detail)));
+  return printNativeProductLabel(buildPayload(detail));
 }
 
 export async function printDiscountLabel(detail: ProductDetail) {
