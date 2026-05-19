@@ -59,6 +59,7 @@ namespace BlazorApp.Shared.DTOs
     public class StoreProductMultiCodeDto
     {
         public string Uuid { get; set; } = string.Empty;
+        public string SetCodeId { get; set; } = string.Empty;
         public string? StoreCode { get; set; }
         public string? ProductCode { get; set; }
         public string? MultiCodeProductCode { get; set; }
@@ -152,5 +153,29 @@ namespace BlazorApp.Shared.DTOs
         public bool? IsAutoPricing { get; set; }
         public bool? IsSpecialProduct { get; set; }
         public bool? IsActive { get; set; }
+    }
+
+    public class CreateStoreProductSetCodeDto
+    {
+        public string ProductCode { get; set; } = string.Empty;
+        public string StoreCode { get; set; } = string.Empty;
+        public int ProductType { get; set; }
+        public string Barcode { get; set; } = string.Empty;
+        public decimal? RetailPrice { get; set; }
+        public bool? IsActive { get; set; }
+    }
+
+    public class UpdateStoreProductSetCodeDto
+    {
+        public string StoreCode { get; set; } = string.Empty;
+        public string Barcode { get; set; } = string.Empty;
+        public decimal? RetailPrice { get; set; }
+        public bool? IsActive { get; set; }
+    }
+
+    public class UpsertStoreProductClearancePriceDto
+    {
+        public string StoreCode { get; set; } = string.Empty;
+        public decimal? ClearancePrice { get; set; }
     }
 }

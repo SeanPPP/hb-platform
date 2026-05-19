@@ -40,5 +40,31 @@ namespace BlazorApp.Api.Interfaces.React
             string updatedBy,
             List<string>? accessibleStoreCodes
         );
+
+        Task<ApiResponse<StoreProductSetCodeDto>> CreateSetCodeAsync(
+            CreateStoreProductSetCodeDto request,
+            string updatedBy,
+            List<string>? accessibleStoreCodes
+        );
+
+        Task<ApiResponse<StoreProductSetCodeDto>> UpdateSetCodeAsync(
+            string setCodeId,
+            UpdateStoreProductSetCodeDto request,
+            string updatedBy,
+            List<string>? accessibleStoreCodes
+        );
+
+        Task<ApiResponse<bool>> DeleteSetCodeAsync(
+            string setCodeId,
+            string updatedBy,
+            List<string>? accessibleStoreCodes
+        );
+
+        Task<ApiResponse<StoreProductClearancePriceDto>> UpsertClearancePriceAsync(
+            string productCode,
+            UpsertStoreProductClearancePriceDto request,
+            string updatedBy,
+            List<string>? accessibleStoreCodes
+        );
     }
 }

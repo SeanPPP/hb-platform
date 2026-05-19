@@ -159,6 +159,74 @@ namespace BlazorApp.Api.Controllers.React
             return Ok(result);
         }
 
+        [HttpPost("set-codes")]
+        public async Task<IActionResult> CreateSetCode([FromBody] CreateStoreProductSetCodeDto request)
+        {
+            var access = await ResolveAccessContextAsync();
+            if (!access.IsAllowed)
+            {
+                return Unauthorized(ApiResponse<StoreProductSetCodeDto>.Error(access.Message));
+            }
+
+            var result = await _service.CreateSetCodeAsync(request, access.ActorLabel, access.StoreCodes);
+            return Ok(result);
+        }
+
+        [HttpPut("set-codes/{setCodeId}")]
+        public async Task<IActionResult> UpdateSetCode(
+            string setCodeId,
+            [FromBody] UpdateStoreProductSetCodeDto request
+        )
+        {
+            var access = await ResolveAccessContextAsync();
+            if (!access.IsAllowed)
+            {
+                return Unauthorized(ApiResponse<StoreProductSetCodeDto>.Error(access.Message));
+            }
+
+            var result = await _service.UpdateSetCodeAsync(
+                setCodeId,
+                request,
+                access.ActorLabel,
+                access.StoreCodes
+            );
+            return Ok(result);
+        }
+
+        [HttpDelete("set-codes/{setCodeId}")]
+        public async Task<IActionResult> DeleteSetCode(string setCodeId)
+        {
+            var access = await ResolveAccessContextAsync();
+            if (!access.IsAllowed)
+            {
+                return Unauthorized(ApiResponse<bool>.Error(access.Message));
+            }
+
+            var result = await _service.DeleteSetCodeAsync(setCodeId, access.ActorLabel, access.StoreCodes);
+            return Ok(result);
+        }
+
+        [HttpPut("products/{productCode}/clearance-price")]
+        public async Task<IActionResult> UpsertClearancePrice(
+            string productCode,
+            [FromBody] UpsertStoreProductClearancePriceDto request
+        )
+        {
+            var access = await ResolveAccessContextAsync();
+            if (!access.IsAllowed)
+            {
+                return Unauthorized(ApiResponse<StoreProductClearancePriceDto>.Error(access.Message));
+            }
+
+            var result = await _service.UpsertClearancePriceAsync(
+                productCode,
+                request,
+                access.ActorLabel,
+                access.StoreCodes
+            );
+            return Ok(result);
+        }
+
         private async Task<StoreAccessContext> ResolveAccessContextAsync()
         {
             if (User?.Identity?.IsAuthenticated == true)

@@ -2,6 +2,7 @@ using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Shared.DTOs;
+using BlazorApp.Shared.Helper;
 using BlazorApp.Shared.Models;
 using BlazorApp.Shared.Models.HBweb;
 using Microsoft.Extensions.Logging;
@@ -223,9 +224,10 @@ namespace BlazorApp.Api.Services.React
                 );
 
                 StoreProductStorePriceDto? storePrice = null;
+                StoreRetailPrice? storePriceEntity = null;
                 if (selectedStoreCodes == null || selectedStoreCodes.Count > 0)
                 {
-                    var storePriceEntity = await QueryStorePriceAsync(productCode, selectedStoreCodes);
+                    storePriceEntity = await QueryStorePriceAsync(productCode, selectedStoreCodes);
                     Console.WriteLine(
                         $"[StoreProductMaintenance][DetailService] productCode='{productCode}', storePriceFound={storePriceEntity != null}"
                     );
@@ -248,51 +250,42 @@ namespace BlazorApp.Api.Services.React
                     }
                 }
 
-                var multiCodeQuery = _db.Queryable<StoreMultiCodeProduct>()
-                    .Where(m => m.ProductCode == productCode && !m.IsDeleted);
-                if (selectedStoreCodes != null)
-                {
-                    multiCodeQuery = multiCodeQuery.Where(m =>
-                        m.StoreCode != null && selectedStoreCodes.Contains(m.StoreCode)
-                    );
-                }
-
-                var multiCodeEntities = await multiCodeQuery
-                    .OrderBy(m => m.MultiBarcode)
-                    .ToListAsync();
-                Console.WriteLine(
-                    $"[StoreProductMaintenance][DetailService] productCode='{productCode}', multiCodeCount={multiCodeEntities.Count}"
-                );
-
-                var multiCodes = new List<StoreProductMultiCodeDto>();
-                foreach (var entity in multiCodeEntities)
-                {
-                    multiCodes.Add(await BuildMultiCodeDtoAsync(entity, product.LocalSupplierCode));
-                }
-
-                var setCodes = await _db.Queryable<ProductSetCode>()
+                var productSetCodes = await _db.Queryable<ProductSetCode>()
                     .Where(s => s.ProductCode == productCode && !s.IsDeleted)
                     .OrderBy(s => s.SetBarcode)
-                    .Select(s => new StoreProductSetCodeDto
-                    {
-                        SetCodeId = s.SetCodeId,
-                        ProductCode = s.ProductCode,
-                        SetProductCode = s.SetProductCode,
-                        SetItemNumber = s.SetItemNumber,
-                        SetBarcode = s.SetBarcode,
-                        SetPurchasePrice = s.SetPurchasePrice,
-                        SetRetailPrice = s.SetRetailPrice,
-                        SetQuantity = s.SetQuantity,
-                        SetType = s.SetType,
-                        IsActive = s.IsActive,
-                    })
                     .ToListAsync();
-                foreach (var setCode in setCodes)
+                Console.WriteLine(
+                    $"[StoreProductMaintenance][DetailService] productCode='{productCode}', productSetCodeCount={productSetCodes.Count}"
+                );
+
+                var currentStoreCode = ResolveCurrentStoreCode(storeCode, selectedStoreCodes, storePriceEntity);
+                var projections = await EnsureProjectedStoreMultiCodesAsync(
+                    productSetCodes,
+                    storePriceEntity,
+                    currentStoreCode,
+                    "system"
+                );
+                var projectionMap = projections.ToDictionary(
+                    p => ResolveSetProductCode(p.MultiCodeProductCode, p.UUID),
+                    p => p
+                );
+
+                var setCodes = new List<StoreProductSetCodeDto>();
+                var multiCodes = new List<StoreProductMultiCodeDto>();
+                foreach (var setCode in productSetCodes)
                 {
-                    setCode.SetTypeDescription = ResolveSetTypeDescription(setCode.SetType);
+                    var setProductCode = ResolveSetProductCode(setCode.SetProductCode, setCode.SetCodeId);
+                    projectionMap.TryGetValue(setProductCode, out var projection);
+                    if (setCode.SetType == 2)
+                    {
+                        multiCodes.Add(await BuildMultiCodeDtoAsync(setCode, projection, product.LocalSupplierCode));
+                        continue;
+                    }
+
+                    setCodes.Add(BuildSetCodeDto(setCode, projection));
                 }
                 Console.WriteLine(
-                    $"[StoreProductMaintenance][DetailService] productCode='{productCode}', setCodeCount={setCodes.Count}"
+                    $"[StoreProductMaintenance][DetailService] productCode='{productCode}', setCodeCount={setCodes.Count}, multiCodeCount={multiCodes.Count}"
                 );
 
                 var detail = new StoreProductDetailDto
@@ -412,6 +405,7 @@ namespace BlazorApp.Api.Services.React
                 entity.UpdatedAt = DateTime.UtcNow;
                 entity.UpdatedBy = updatedBy;
                 await _db.Updateable(entity).ExecuteCommandAsync();
+                await SyncCurrentStoreProjectedRecordsAsync(entity, updatedBy);
 
                 var dto = await BuildStorePriceDtoAsync(entity, supplierCode);
                 return ApiResponse<StoreProductStorePriceDto>.OK(dto, "保存成功");
@@ -673,13 +667,266 @@ namespace BlazorApp.Api.Services.React
                 entity.UpdatedBy = updatedBy;
                 await _db.Updateable(entity).ExecuteCommandAsync();
 
-                var dto = await BuildMultiCodeDtoAsync(entity, supplierCode);
+                var dto = await BuildLegacyMultiCodeDtoAsync(entity, supplierCode);
                 return ApiResponse<StoreProductMultiCodeDto>.OK(dto, "保存成功");
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "更新分店多码失败: {Uuid}", uuid);
                 return ApiResponse<StoreProductMultiCodeDto>.Error($"更新分店多码失败: {ex.Message}");
+            }
+        }
+
+        public async Task<ApiResponse<StoreProductSetCodeDto>> CreateSetCodeAsync(
+            CreateStoreProductSetCodeDto request,
+            string updatedBy,
+            List<string>? accessibleStoreCodes
+        )
+        {
+            try
+            {
+                if (!CanAccessStore(request.StoreCode, accessibleStoreCodes))
+                {
+                    return ApiResponse<StoreProductSetCodeDto>.Error("当前账号或设备无权修改该分店商品");
+                }
+
+                if (request.ProductType is < 1 or > 2)
+                {
+                    return ApiResponse<StoreProductSetCodeDto>.Error("商品类型无效");
+                }
+
+                if (string.IsNullOrWhiteSpace(request.ProductCode) || string.IsNullOrWhiteSpace(request.Barcode))
+                {
+                    return ApiResponse<StoreProductSetCodeDto>.Error("商品编码和条码不能为空");
+                }
+
+                var product = await _db.Queryable<Product>()
+                    .Where(p => p.ProductCode == request.ProductCode && !p.IsDeleted)
+                    .FirstAsync();
+                if (product == null)
+                {
+                    return ApiResponse<StoreProductSetCodeDto>.Error("商品不存在");
+                }
+
+                if (request.ProductType == 1 && (!request.RetailPrice.HasValue || request.RetailPrice.Value < 0))
+                {
+                    return ApiResponse<StoreProductSetCodeDto>.Error("套装零售价不能为空");
+                }
+
+                var existingSetNumbers = await _db.Queryable<ProductSetCode>()
+                    .Where(x => x.ProductCode == request.ProductCode && !x.IsDeleted)
+                    .Select(x => x.SetItemNumber)
+                    .ToListAsync();
+
+                var mainStorePrice = await QueryStorePriceByStoreAsync(request.ProductCode, request.StoreCode);
+                var normalizedRetailPrice = request.ProductType == 2
+                    ? mainStorePrice?.StoreRetailPriceValue
+                    : request.RetailPrice;
+
+                var setCode = new ProductSetCode
+                {
+                    SetCodeId = UuidHelper.GenerateUuid7(),
+                    ProductCode = request.ProductCode.Trim(),
+                    SetProductCode = UuidHelper.GenerateUuid7(),
+                    SetItemNumber = ItemNumberHelper.GenerateSetItemNumber(
+                        product.ItemNumber ?? request.ProductCode.Trim(),
+                        existingSetNumbers
+                    ),
+                    SetBarcode = request.Barcode.Trim(),
+                    SetPurchasePrice = request.ProductType == 1
+                        ? StoreProductMaintenanceSyncHelper.CalculateSetPurchasePrice(
+                            mainStorePrice?.PurchasePrice,
+                            mainStorePrice?.StoreRetailPriceValue,
+                            normalizedRetailPrice
+                        )
+                        : mainStorePrice?.PurchasePrice,
+                    SetRetailPrice = normalizedRetailPrice,
+                    SetQuantity = 1,
+                    SetType = request.ProductType,
+                    IsActive = request.IsActive ?? true,
+                    CreatedAt = DateTime.UtcNow,
+                    UpdatedAt = DateTime.UtcNow,
+                    CreatedBy = updatedBy,
+                    UpdatedBy = updatedBy,
+                    IsDeleted = false,
+                };
+
+                await _db.Insertable(setCode).ExecuteCommandAsync();
+                await SyncSetCodeAcrossStoresAsync(setCode, updatedBy);
+
+                var refreshed = await QueryProjectedSetCodeAsync(setCode.SetCodeId, request.StoreCode, product.LocalSupplierCode);
+                return ApiResponse<StoreProductSetCodeDto>.OK(refreshed, "保存成功");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "新增条码失败: {ProductCode}", request.ProductCode);
+                return ApiResponse<StoreProductSetCodeDto>.Error($"新增条码失败: {ex.Message}");
+            }
+        }
+
+        public async Task<ApiResponse<StoreProductSetCodeDto>> UpdateSetCodeAsync(
+            string setCodeId,
+            UpdateStoreProductSetCodeDto request,
+            string updatedBy,
+            List<string>? accessibleStoreCodes
+        )
+        {
+            try
+            {
+                if (!CanAccessStore(request.StoreCode, accessibleStoreCodes))
+                {
+                    return ApiResponse<StoreProductSetCodeDto>.Error("当前账号或设备无权修改该分店商品");
+                }
+
+                var setCode = await _db.Queryable<ProductSetCode>()
+                    .Where(x => x.SetCodeId == setCodeId && !x.IsDeleted)
+                    .FirstAsync();
+                if (setCode == null)
+                {
+                    return ApiResponse<StoreProductSetCodeDto>.Error("条码记录不存在");
+                }
+
+                var mainStorePrice = await QueryStorePriceByStoreAsync(setCode.ProductCode, request.StoreCode);
+                setCode.SetBarcode = request.Barcode?.Trim();
+                setCode.SetRetailPrice = setCode.SetType == 2
+                    ? mainStorePrice?.StoreRetailPriceValue
+                    : request.RetailPrice;
+                setCode.SetPurchasePrice = setCode.SetType == 1
+                    ? StoreProductMaintenanceSyncHelper.CalculateSetPurchasePrice(
+                        mainStorePrice?.PurchasePrice,
+                        mainStorePrice?.StoreRetailPriceValue,
+                        setCode.SetRetailPrice
+                    )
+                    : mainStorePrice?.PurchasePrice;
+                if (request.IsActive.HasValue)
+                {
+                    setCode.IsActive = request.IsActive.Value;
+                }
+
+                setCode.UpdatedAt = DateTime.UtcNow;
+                setCode.UpdatedBy = updatedBy;
+                await _db.Updateable(setCode).ExecuteCommandAsync();
+                await SyncSetCodeAcrossStoresAsync(setCode, updatedBy);
+
+                var supplierCode = await _db.Queryable<Product>()
+                    .Where(p => p.ProductCode == setCode.ProductCode && !p.IsDeleted)
+                    .Select(p => p.LocalSupplierCode)
+                    .FirstAsync();
+                var refreshed = await QueryProjectedSetCodeAsync(setCode.SetCodeId, request.StoreCode, supplierCode);
+                return ApiResponse<StoreProductSetCodeDto>.OK(refreshed, "保存成功");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "更新条码失败: {SetCodeId}", setCodeId);
+                return ApiResponse<StoreProductSetCodeDto>.Error($"更新条码失败: {ex.Message}");
+            }
+        }
+
+        public async Task<ApiResponse<bool>> DeleteSetCodeAsync(
+            string setCodeId,
+            string updatedBy,
+            List<string>? accessibleStoreCodes
+        )
+        {
+            try
+            {
+                var setCode = await _db.Queryable<ProductSetCode>()
+                    .Where(x => x.SetCodeId == setCodeId && !x.IsDeleted)
+                    .FirstAsync();
+                if (setCode == null)
+                {
+                    return ApiResponse<bool>.Error("条码记录不存在");
+                }
+
+                if (accessibleStoreCodes != null && accessibleStoreCodes.Count == 0)
+                {
+                    return ApiResponse<bool>.Error("当前账号或设备无权修改该分店商品");
+                }
+
+                setCode.IsDeleted = true;
+                setCode.IsActive = false;
+                setCode.UpdatedAt = DateTime.UtcNow;
+                setCode.UpdatedBy = updatedBy;
+                await _db.Updateable(setCode).ExecuteCommandAsync();
+
+                var setProductCode = ResolveSetProductCode(setCode.SetProductCode, setCode.SetCodeId);
+                await _db.Deleteable<StoreMultiCodeProduct>()
+                    .Where(x => x.MultiCodeProductCode == setProductCode)
+                    .ExecuteCommandAsync();
+
+                return ApiResponse<bool>.OK(true, "删除成功");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "删除条码失败: {SetCodeId}", setCodeId);
+                return ApiResponse<bool>.Error($"删除条码失败: {ex.Message}");
+            }
+        }
+
+        public async Task<ApiResponse<StoreProductClearancePriceDto>> UpsertClearancePriceAsync(
+            string productCode,
+            UpsertStoreProductClearancePriceDto request,
+            string updatedBy,
+            List<string>? accessibleStoreCodes
+        )
+        {
+            try
+            {
+                if (!CanAccessStore(request.StoreCode, accessibleStoreCodes))
+                {
+                    return ApiResponse<StoreProductClearancePriceDto>.Error("当前账号或设备无权修改该分店商品");
+                }
+
+                var product = await _db.Queryable<Product>()
+                    .Where(p => p.ProductCode == productCode && !p.IsDeleted)
+                    .FirstAsync();
+                if (product == null)
+                {
+                    return ApiResponse<StoreProductClearancePriceDto>.Error("商品不存在");
+                }
+
+                var entity = await _db.Queryable<StoreClearancePrice>()
+                    .Where(x =>
+                        x.ProductCode == productCode
+                        && x.StoreCode == request.StoreCode
+                        && !x.IsDeleted
+                    )
+                    .FirstAsync();
+
+                if (entity == null)
+                {
+                    entity = new StoreClearancePrice
+                    {
+                        UUID = UuidHelper.GenerateUuid7(),
+                        StoreCode = request.StoreCode,
+                        ProductCode = productCode,
+                        ClearanceBarcode = await GenerateClearanceBarcodeAsync(product.LocalSupplierCode),
+                        CreatedAt = DateTime.UtcNow,
+                        UpdatedAt = DateTime.UtcNow,
+                        CreatedBy = updatedBy,
+                        UpdatedBy = updatedBy,
+                        IsDeleted = false,
+                    };
+                    entity.ClearancePrice = request.ClearancePrice;
+                    await _db.Insertable(entity).ExecuteCommandAsync();
+                }
+                else
+                {
+                    entity.ClearancePrice = request.ClearancePrice;
+                    entity.UpdatedAt = DateTime.UtcNow;
+                    entity.UpdatedBy = updatedBy;
+                    await _db.Updateable(entity).ExecuteCommandAsync();
+                }
+
+                return ApiResponse<StoreProductClearancePriceDto>.OK(
+                    await BuildClearancePriceDtoAsync(entity),
+                    "保存成功"
+                );
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "保存清货价失败: {ProductCode}", productCode);
+                return ApiResponse<StoreProductClearancePriceDto>.Error($"保存清货价失败: {ex.Message}");
             }
         }
 
@@ -696,6 +943,25 @@ namespace BlazorApp.Api.Services.React
             }
 
             return await query.OrderBy(x => x.StoreCode).FirstAsync();
+        }
+
+        private async Task<StoreRetailPrice?> QueryStorePriceByStoreAsync(
+            string productCode,
+            string? storeCode
+        )
+        {
+            if (string.IsNullOrWhiteSpace(storeCode))
+            {
+                return null;
+            }
+
+            return await _db.Queryable<StoreRetailPrice>()
+                .Where(x =>
+                    x.ProductCode == productCode
+                    && x.StoreCode == storeCode
+                    && !x.IsDeleted
+                )
+                .FirstAsync();
         }
 
         private async Task<string?> ResolveStorePriceSupplierCodeAsync(StoreRetailPrice entity)
@@ -768,6 +1034,44 @@ namespace BlazorApp.Api.Services.React
         }
 
         private async Task<StoreProductMultiCodeDto> BuildMultiCodeDtoAsync(
+            ProductSetCode setCode,
+            StoreMultiCodeProduct? entity,
+            string? fallbackSupplierCode
+        )
+        {
+            var dto = new StoreProductMultiCodeDto
+            {
+                Uuid = entity?.UUID ?? setCode.SetCodeId,
+                SetCodeId = setCode.SetCodeId,
+                StoreCode = entity?.StoreCode,
+                ProductCode = setCode.ProductCode,
+                MultiCodeProductCode = ResolveSetProductCode(setCode.SetProductCode, setCode.SetCodeId),
+                StoreMultiCodeProductCode = entity?.StoreMultiCodeProductCode,
+                Barcode = entity?.MultiBarcode ?? setCode.SetBarcode,
+                PurchasePrice = entity?.PurchasePrice ?? setCode.SetPurchasePrice,
+                RetailPrice = entity?.MultiCodeRetailPrice ?? setCode.SetRetailPrice,
+                DiscountRate = entity?.DiscountRate,
+                IsAutoPricing = entity?.IsAutoPricing ?? false,
+                IsSpecialProduct = entity?.IsSpecialProduct ?? false,
+                IsActive = entity?.IsActive ?? setCode.IsActive,
+            };
+
+            await FillPricingFieldsAsync(
+                dto.PurchasePrice,
+                fallbackSupplierCode,
+                entity?.StoreCode,
+                assign: pricing =>
+                {
+                    dto.Rate = pricing.Rate;
+                    dto.StrategySourceLabel = pricing.StrategySourceLabel;
+                    dto.StrategyRuleLabel = pricing.StrategyRuleLabel;
+                }
+            );
+
+            return dto;
+        }
+
+        private async Task<StoreProductMultiCodeDto> BuildLegacyMultiCodeDtoAsync(
             StoreMultiCodeProduct entity,
             string? fallbackSupplierCode
         )
@@ -775,6 +1079,7 @@ namespace BlazorApp.Api.Services.React
             var dto = new StoreProductMultiCodeDto
             {
                 Uuid = entity.UUID,
+                SetCodeId = string.Empty,
                 StoreCode = entity.StoreCode,
                 ProductCode = entity.ProductCode,
                 MultiCodeProductCode = entity.MultiCodeProductCode,
@@ -801,6 +1106,27 @@ namespace BlazorApp.Api.Services.React
             );
 
             return dto;
+        }
+
+        private StoreProductSetCodeDto BuildSetCodeDto(
+            ProductSetCode setCode,
+            StoreMultiCodeProduct? projection
+        )
+        {
+            return new StoreProductSetCodeDto
+            {
+                SetCodeId = setCode.SetCodeId,
+                ProductCode = setCode.ProductCode,
+                SetProductCode = ResolveSetProductCode(setCode.SetProductCode, setCode.SetCodeId),
+                SetItemNumber = setCode.SetItemNumber,
+                SetBarcode = projection?.MultiBarcode ?? setCode.SetBarcode,
+                SetPurchasePrice = projection?.PurchasePrice ?? setCode.SetPurchasePrice,
+                SetRetailPrice = projection?.MultiCodeRetailPrice ?? setCode.SetRetailPrice,
+                SetQuantity = setCode.SetQuantity,
+                SetType = setCode.SetType,
+                SetTypeDescription = ResolveSetTypeDescription(setCode.SetType),
+                IsActive = projection?.IsActive ?? setCode.IsActive,
+            };
         }
 
         private async Task<StoreProductClearancePriceDto> BuildClearancePriceDtoAsync(
@@ -856,6 +1182,322 @@ namespace BlazorApp.Api.Services.React
             );
         }
 
+        private async Task<List<StoreMultiCodeProduct>> EnsureProjectedStoreMultiCodesAsync(
+            List<ProductSetCode> setCodes,
+            StoreRetailPrice? mainStorePrice,
+            string? storeCode,
+            string updatedBy
+        )
+        {
+            if (string.IsNullOrWhiteSpace(storeCode) || setCodes.Count == 0)
+            {
+                return new List<StoreMultiCodeProduct>();
+            }
+
+            var setProductCodes = setCodes
+                .Select(s => ResolveSetProductCode(s.SetProductCode, s.SetCodeId))
+                .Distinct()
+                .ToList();
+            var existing = await _db.Queryable<StoreMultiCodeProduct>()
+                .Where(x =>
+                    x.StoreCode == storeCode
+                    && x.MultiCodeProductCode != null
+                    && setProductCodes.Contains(x.MultiCodeProductCode)
+                    && !x.IsDeleted
+                )
+                .ToListAsync();
+
+            var existingMap = existing.ToDictionary(
+                x => ResolveSetProductCode(x.MultiCodeProductCode, x.UUID),
+                x => x
+            );
+            var inserts = new List<StoreMultiCodeProduct>();
+            foreach (var setCode in setCodes)
+            {
+                var setProductCode = ResolveSetProductCode(setCode.SetProductCode, setCode.SetCodeId);
+                if (existingMap.ContainsKey(setProductCode))
+                {
+                    continue;
+                }
+
+                var projection = BuildProjectedStoreMultiCode(setCode, mainStorePrice, storeCode, updatedBy);
+                inserts.Add(projection);
+                existingMap[setProductCode] = projection;
+            }
+
+            if (inserts.Count > 0)
+            {
+                await _db.Insertable(inserts).ExecuteCommandAsync();
+            }
+
+            return existingMap.Values.OrderBy(x => x.MultiBarcode).ToList();
+        }
+
+        private async Task SyncCurrentStoreProjectedRecordsAsync(
+            StoreRetailPrice mainStorePrice,
+            string updatedBy
+        )
+        {
+            if (string.IsNullOrWhiteSpace(mainStorePrice.StoreCode) || string.IsNullOrWhiteSpace(mainStorePrice.ProductCode))
+            {
+                return;
+            }
+
+            var setCodes = await _db.Queryable<ProductSetCode>()
+                .Where(x => x.ProductCode == mainStorePrice.ProductCode && !x.IsDeleted)
+                .ToListAsync();
+            if (setCodes.Count == 0)
+            {
+                return;
+            }
+
+            var currentStoreRecords = await EnsureProjectedStoreMultiCodesAsync(
+                setCodes,
+                mainStorePrice,
+                mainStorePrice.StoreCode,
+                updatedBy
+            );
+            var projectionMap = currentStoreRecords.ToDictionary(
+                x => ResolveSetProductCode(x.MultiCodeProductCode, x.UUID),
+                x => x
+            );
+            var updates = new List<StoreMultiCodeProduct>();
+            foreach (var setCode in setCodes)
+            {
+                var setProductCode = ResolveSetProductCode(setCode.SetProductCode, setCode.SetCodeId);
+                if (!projectionMap.TryGetValue(setProductCode, out var existing))
+                {
+                    continue;
+                }
+
+                ApplyProjectionValues(existing, setCode, mainStorePrice, updatedBy);
+                updates.Add(existing);
+            }
+
+            if (updates.Count > 0)
+            {
+                await _db.Updateable(updates).ExecuteCommandAsync();
+            }
+        }
+
+        private async Task SyncSetCodeAcrossStoresAsync(ProductSetCode setCode, string updatedBy)
+        {
+            var activeStores = await _db.Queryable<Store>()
+                .Where(s => s.IsActive && !s.IsDeleted && s.StoreCode != null)
+                .Select(s => s.StoreCode!)
+                .ToListAsync();
+            if (activeStores.Count == 0)
+            {
+                return;
+            }
+
+            var mainStorePrices = await _db.Queryable<StoreRetailPrice>()
+                .Where(x =>
+                    x.ProductCode == setCode.ProductCode
+                    && x.StoreCode != null
+                    && activeStores.Contains(x.StoreCode)
+                    && !x.IsDeleted
+                )
+                .ToListAsync();
+            var mainPriceMap = mainStorePrices.ToDictionary(x => x.StoreCode!, x => x);
+
+            var setProductCode = ResolveSetProductCode(setCode.SetProductCode, setCode.SetCodeId);
+            var existing = await _db.Queryable<StoreMultiCodeProduct>()
+                .Where(x =>
+                    x.MultiCodeProductCode == setProductCode
+                    && x.StoreCode != null
+                    && activeStores.Contains(x.StoreCode)
+                    && !x.IsDeleted
+                )
+                .ToListAsync();
+            var existingMap = existing.ToDictionary(x => x.StoreCode!, x => x);
+
+            var inserts = new List<StoreMultiCodeProduct>();
+            var updates = new List<StoreMultiCodeProduct>();
+            foreach (var activeStoreCode in activeStores)
+            {
+                mainPriceMap.TryGetValue(activeStoreCode, out var mainPrice);
+                if (existingMap.TryGetValue(activeStoreCode, out var current))
+                {
+                    ApplyProjectionValues(current, setCode, mainPrice, updatedBy);
+                    updates.Add(current);
+                    continue;
+                }
+
+                inserts.Add(BuildProjectedStoreMultiCode(setCode, mainPrice, activeStoreCode, updatedBy));
+            }
+
+            if (inserts.Count > 0)
+            {
+                await _db.Insertable(inserts).ExecuteCommandAsync();
+            }
+
+            if (updates.Count > 0)
+            {
+                await _db.Updateable(updates).ExecuteCommandAsync();
+            }
+        }
+
+        private StoreMultiCodeProduct BuildProjectedStoreMultiCode(
+            ProductSetCode setCode,
+            StoreRetailPrice? mainStorePrice,
+            string storeCode,
+            string updatedBy
+        )
+        {
+            var projection = new StoreMultiCodeProduct
+            {
+                UUID = UuidHelper.GenerateUuid7(),
+                StoreCode = storeCode,
+                ProductCode = setCode.ProductCode,
+                MultiCodeProductCode = ResolveSetProductCode(setCode.SetProductCode, setCode.SetCodeId),
+                StoreMultiCodeProductCode = storeCode + ResolveSetProductCode(setCode.SetProductCode, setCode.SetCodeId),
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow,
+                CreatedBy = updatedBy,
+                UpdatedBy = updatedBy,
+                IsDeleted = false,
+            };
+            ApplyProjectionValues(projection, setCode, mainStorePrice, updatedBy);
+            return projection;
+        }
+
+        private void ApplyProjectionValues(
+            StoreMultiCodeProduct projection,
+            ProductSetCode setCode,
+            StoreRetailPrice? mainStorePrice,
+            string updatedBy
+        )
+        {
+            projection.ProductCode = setCode.ProductCode;
+            projection.MultiCodeProductCode = ResolveSetProductCode(setCode.SetProductCode, setCode.SetCodeId);
+            projection.StoreMultiCodeProductCode = (projection.StoreCode ?? string.Empty) + projection.MultiCodeProductCode;
+            projection.MultiBarcode = setCode.SetBarcode;
+            projection.DiscountRate = null;
+            projection.IsAutoPricing = false;
+            projection.IsSpecialProduct = false;
+            projection.IsActive = setCode.IsActive;
+
+            if (setCode.SetType == 2)
+            {
+                projection.PurchasePrice = mainStorePrice?.PurchasePrice;
+                projection.MultiCodeRetailPrice = mainStorePrice?.StoreRetailPriceValue;
+            }
+            else
+            {
+                projection.MultiCodeRetailPrice = setCode.SetRetailPrice;
+                projection.PurchasePrice = StoreProductMaintenanceSyncHelper.CalculateSetPurchasePrice(
+                    mainStorePrice?.PurchasePrice,
+                    mainStorePrice?.StoreRetailPriceValue,
+                    setCode.SetRetailPrice
+                );
+                if (
+                    projection.PurchasePrice == null
+                    && setCode.SetRetailPrice.HasValue
+                    && (mainStorePrice?.StoreRetailPriceValue == null || mainStorePrice.StoreRetailPriceValue <= 0)
+                )
+                {
+                    _logger.LogWarning(
+                        "套装进货价无法自动推导: ProductCode={ProductCode}, StoreCode={StoreCode}, SetCodeId={SetCodeId}",
+                        setCode.ProductCode,
+                        projection.StoreCode,
+                        setCode.SetCodeId
+                    );
+                }
+            }
+
+            projection.UpdatedAt = DateTime.UtcNow;
+            projection.UpdatedBy = updatedBy;
+        }
+
+        private async Task<StoreProductSetCodeDto> QueryProjectedSetCodeAsync(
+            string setCodeId,
+            string? storeCode,
+            string? fallbackSupplierCode
+        )
+        {
+            var setCode = await _db.Queryable<ProductSetCode>()
+                .Where(x => x.SetCodeId == setCodeId && !x.IsDeleted)
+                .FirstAsync();
+            var setProductCode = ResolveSetProductCode(setCode.SetProductCode, setCode.SetCodeId);
+            var projection = await _db.Queryable<StoreMultiCodeProduct>()
+                .Where(x =>
+                    x.StoreCode == storeCode
+                    && x.MultiCodeProductCode == setProductCode
+                    && !x.IsDeleted
+                )
+                .FirstAsync();
+
+            if (setCode.SetType == 2)
+            {
+                var multi = await BuildMultiCodeDtoAsync(setCode, projection, fallbackSupplierCode);
+                return new StoreProductSetCodeDto
+                {
+                    SetCodeId = multi.SetCodeId,
+                    ProductCode = multi.ProductCode ?? string.Empty,
+                    SetProductCode = multi.MultiCodeProductCode ?? string.Empty,
+                    SetItemNumber = setCode.SetItemNumber,
+                    SetBarcode = multi.Barcode,
+                    SetPurchasePrice = multi.PurchasePrice,
+                    SetRetailPrice = multi.RetailPrice,
+                    SetQuantity = setCode.SetQuantity,
+                    SetType = setCode.SetType,
+                    SetTypeDescription = ResolveSetTypeDescription(setCode.SetType),
+                    IsActive = multi.IsActive,
+                };
+            }
+
+            return BuildSetCodeDto(setCode, projection);
+        }
+
+        private async Task<string> GenerateClearanceBarcodeAsync(string? supplierCode)
+        {
+            if (string.IsNullOrWhiteSpace(supplierCode))
+            {
+                throw new InvalidOperationException("商品缺少供应商编码，无法生成清货条码");
+            }
+
+            var existingBarcodes = await _db.Queryable<Product>()
+                .Where(p => !p.IsDeleted && p.Barcode != null)
+                .Select(p => p.Barcode!)
+                .ToListAsync();
+            var setBarcodes = await _db.Queryable<ProductSetCode>()
+                .Where(x => !x.IsDeleted && x.SetBarcode != null)
+                .Select(x => x.SetBarcode!)
+                .ToListAsync();
+            var clearanceBarcodes = await _db.Queryable<StoreClearancePrice>()
+                .Where(x => !x.IsDeleted && x.ClearanceBarcode != null)
+                .Select(x => x.ClearanceBarcode!)
+                .ToListAsync();
+            existingBarcodes.AddRange(setBarcodes);
+            existingBarcodes.AddRange(clearanceBarcodes);
+            return BarcodeHelper.GenerateEAN13Barcode(supplierCode, 0, existingBarcodes);
+        }
+
+        private static string ResolveSetProductCode(string? setProductCode, string fallback)
+        {
+            return string.IsNullOrWhiteSpace(setProductCode) ? fallback : setProductCode;
+        }
+
+        private static string? ResolveCurrentStoreCode(
+            string? requestedStoreCode,
+            List<string>? selectedStoreCodes,
+            StoreRetailPrice? storePriceEntity
+        )
+        {
+            if (!string.IsNullOrWhiteSpace(requestedStoreCode))
+            {
+                return requestedStoreCode;
+            }
+
+            if (!string.IsNullOrWhiteSpace(storePriceEntity?.StoreCode))
+            {
+                return storePriceEntity.StoreCode;
+            }
+
+            return selectedStoreCodes?.FirstOrDefault();
+        }
+
         private static List<string>? ResolveScopedStoreCodes(
             string? requestedStoreCode,
             List<string>? accessibleStoreCodes
@@ -903,22 +1545,17 @@ namespace BlazorApp.Api.Services.React
 
         private static string? NormalizeProductTypeLabel(string? rawValue)
         {
-            return rawValue switch
-            {
-                "1" => "单品",
-                "2" => "多码",
-                "3" => "套装",
-                _ => rawValue,
-            };
+            return int.TryParse(rawValue, out var productType)
+                ? StoreProductMaintenanceSyncHelper.NormalizeProductTypeLabel(productType)
+                : rawValue;
         }
 
         private static string ResolveSetTypeDescription(int setType)
         {
             return setType switch
             {
-                0 => "普商品",
-                1 => "组合套装",
-                2 => "多码套装",
+                1 => "套装",
+                2 => "多码",
                 _ => "未知类型",
             };
         }
