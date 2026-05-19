@@ -1,12 +1,11 @@
 import type { ProductDetail } from "@/modules/product-maintenance/types";
 import {
-  buildClearanceLabelCpcl,
-  buildDiscountLabelCpcl,
-} from "@/modules/printer/cpcl";
-import {
   connectPrinter,
   disconnectPrinter,
   getPrinterStatus,
+  printNativeBigDiscountLabel,
+  printNativeClearanceLabel,
+  printNativeDiscountLabel,
   printNativeProductLabel,
   printRawCommand,
   scanPrinters,
@@ -191,10 +190,15 @@ export async function printProductLabel(detail: ProductDetail) {
 
 export async function printDiscountLabel(detail: ProductDetail) {
   await ensureConnectedPrinter();
-  return printRawCommand(buildDiscountLabelCpcl(buildPayload(detail)));
+  return printNativeDiscountLabel(buildPayload(detail));
 }
 
 export async function printClearanceLabel(detail: ProductDetail) {
   await ensureConnectedPrinter();
-  return printRawCommand(buildClearanceLabelCpcl(buildPayload(detail)));
+  return printNativeClearanceLabel(buildPayload(detail));
+}
+
+export async function printBigDiscountLabel(detail: ProductDetail, printType?: string | null) {
+  await ensureConnectedPrinter();
+  return printNativeBigDiscountLabel(buildPayload(detail), printType);
 }

@@ -8,6 +8,8 @@ interface StoreClearancePriceCardProps {
   clearanceBarcode?: string | null;
   clearancePrice: string;
   saving?: boolean;
+  printingBigLabel?: boolean;
+  onPrintBigLabel?: () => void;
   onChangeClearancePrice: (value: string) => void;
   onSave: () => void;
 }
@@ -18,6 +20,8 @@ export function StoreClearancePriceCard({
   clearanceBarcode,
   clearancePrice,
   saving,
+  printingBigLabel,
+  onPrintBigLabel,
   onChangeClearancePrice,
   onSave,
 }: StoreClearancePriceCardProps) {
@@ -58,6 +62,17 @@ export function StoreClearancePriceCard({
             {clearanceBarcode || t("clearancePrice.pendingBarcode")}
           </Text>
         </View>
+
+        <Button
+          compact
+          mode="outlined"
+          onPress={onPrintBigLabel}
+          loading={printingBigLabel}
+          disabled={!onPrintBigLabel || printingBigLabel}
+          style={styles.bigLabelButton}
+        >
+          {printingBigLabel ? t("print.sendingShort") : t("print.bigDiscount")}
+        </Button>
 
         <TextInput
           mode="outlined"
@@ -107,5 +122,8 @@ const styles = StyleSheet.create({
   },
   input: {
     backgroundColor: "#fff",
+  },
+  bigLabelButton: {
+    alignSelf: "flex-start",
   },
 });

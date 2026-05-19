@@ -15,6 +15,7 @@ import { StoreClearancePriceCard } from "@/components/product-maintenance/StoreC
 import { StorePriceStrategyCard } from "@/components/product-maintenance/StorePriceStrategyCard";
 import {
   getSavedPrinter,
+  printBigDiscountLabel,
   printClearanceLabel,
   printDiscountLabel,
   printProductLabel,
@@ -207,7 +208,7 @@ function ProductQueryContent() {
   const [saving, setSaving] = useState(false);
   const [savingItemId, setSavingItemId] = useState<string | null>(null);
   const [snackbarMessage, setSnackbarMessage] = useState("");
-  const [printingKind, setPrintingKind] = useState<"product" | "discount" | "clearance" | null>(null);
+  const [printingKind, setPrintingKind] = useState<"product" | "discount" | "clearance" | "bigDiscount" | null>(null);
   const [continuousPrintEnabled, setContinuousPrintEnabled] = useState(false);
   const [autoPrintOnLookupConfirm, setAutoPrintOnLookupConfirm] = useState(false);
   const [autoPricingDialog, setAutoPricingDialog] = useState<AutoPricingDialogState | null>(null);
@@ -1010,12 +1011,15 @@ function ProductQueryContent() {
   }, [initialDetail]);
 
   const handlePrint = useCallback(
-    async (kind: "product" | "discount" | "clearance") => {
+    async (kind: "product" | "discount" | "clearance" | "bigDiscount") => {
       if (!detail) {
         return;
       }
 
-      if (kind === "discount" && !(detail.storePrice?.discountRate && detail.storePrice.discountRate > 0)) {
+      if (
+        (kind === "discount" || kind === "bigDiscount")
+        && !(detail.storePrice?.discountRate && detail.storePrice.discountRate > 0)
+      ) {
         setSnackbarMessage(t("messages.discountPrintUnavailable"));
         return;
       }
@@ -1032,6 +1036,8 @@ function ProductQueryContent() {
           return;
         } else if (kind === "discount") {
           await printDiscountLabel(detail);
+        } else if (kind === "bigDiscount") {
+          await printBigDiscountLabel(detail);
         } else {
           await printClearanceLabel(detail);
         }
@@ -1134,6 +1140,14 @@ function ProductQueryContent() {
                 clearanceBarcode={clearancePrice?.clearanceBarcode}
                 clearancePrice={clearancePriceInput}
                 saving={savingClearance}
+                printingBigLabel={printingKind === "bigDiscount"}
+                onPrintBigLabel={
+                  printingKind && printingKind !== "bigDiscount"
+                    ? undefined
+                    : normalizedStoreDiscountRate && normalizedStoreDiscountRate > 0
+                      ? () => void handlePrint("bigDiscount")
+                      : undefined
+                }
                 onChangeClearancePrice={setClearancePriceInput}
                 onSave={() => void handleSaveClearancePrice()}
               />

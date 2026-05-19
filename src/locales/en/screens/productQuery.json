@@ -139,6 +139,7 @@
     "quick": "Print",
     "product": "Regular label",
     "discount": "Discount label",
+    "bigDiscount": "Large label",
     "clearance": "Clearance label",
     "sendingShort": "Sending",
     "sending": "Sending..."

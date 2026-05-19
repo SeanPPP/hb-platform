@@ -30,6 +30,7 @@ import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.max
 import kotlin.math.roundToInt
@@ -249,6 +250,45 @@ class HbPrinterModule(
     }.start()
   }
 
+  @ReactMethod
+  fun printDiscountLabel(payload: ReadableMap, promise: Promise) {
+    Thread {
+      try {
+        val command = buildDiscountLabelCommand(payload)
+        writePrinterCommand(command, "GB18030")
+        promise.resolve(true)
+      } catch (error: Exception) {
+        promise.reject("PRINT_DISCOUNT_LABEL_ERROR", error.message, error)
+      }
+    }.start()
+  }
+
+  @ReactMethod
+  fun printClearanceLabel(payload: ReadableMap, promise: Promise) {
+    Thread {
+      try {
+        val command = buildClearanceLabelCommand(payload)
+        writePrinterCommand(command, "GB18030")
+        promise.resolve(true)
+      } catch (error: Exception) {
+        promise.reject("PRINT_CLEARANCE_LABEL_ERROR", error.message, error)
+      }
+    }.start()
+  }
+
+  @ReactMethod
+  fun printBigDiscountLabel(payload: ReadableMap, printType: String?, promise: Promise) {
+    Thread {
+      try {
+        val command = buildBigDiscountLabelCommand(payload, printType?.trim().orEmpty())
+        writePrinterCommand(command, "GB18030")
+        promise.resolve(true)
+      } catch (error: Exception) {
+        promise.reject("PRINT_BIG_DISCOUNT_LABEL_ERROR", error.message, error)
+      }
+    }.start()
+  }
+
   private fun writePrinterCommand(command: String, encoding: String) {
     val activeSocket = socket
     if (activeSocket == null || !activeSocket.isConnected) {
@@ -329,6 +369,200 @@ class HbPrinterModule(
     return commands.joinToString("\r\n", postfix = "\r\n")
   }
 
+  private fun buildDiscountLabelCommand(payload: ReadableMap): String {
+    val productName = payload.getNullableString("productName")
+    val itemNumber = payload.getNullableString("itemNumber")
+    val retailPrice = payload.getNullableDouble("retailPrice") ?: 0.0
+    val discountRate = payload.getNullableDouble("discountRate") ?: 0.0
+    val discountValue = discountRate * 100.0
+    val saveAmount = retailPrice * discountRate
+    val nowPrice = retailPrice - saveAmount
+
+    val nowBitmap = textToBitmap("Now:$${formatMoney(nowPrice)}", fontSizeToPixels(10f), false, "sans-serif-black", true, 2)
+    val discountBitmap = textToBitmap(discountValue.roundToInt().toString().padStart(2, '0'), fontSizeToPixels(44f), false, "sans-serif-black")
+    val offBitmap = textToBitmap("OFF", fontSizeToPixels(16f), true, "sans-serif-black")
+    val percentBitmap = textToBitmap("%", fontSizeToPixels(20f), true, "sans-serif-black")
+    val saveBitmap = textToBitmap("Save:$${formatMoney(saveAmount)}", fontSizeToPixels(10f), true, "sans-serif-black")
+    val dateBitmap = textToBitmap(todayString(), fontSizeToPixels(8f), false, "Arial", true, 2)
+
+    val startY = 20
+    val startX = labelWidth - discountBitmap.width - percentBitmap.width - offBitmap.width + 20
+    val rrpX = startX + discountBitmap.width / 2 + percentBitmap.width / 2 + offBitmap.width / 2 - nowBitmap.width / 2
+    val rrpY = startY + discountBitmap.height + 5
+    val nameMaxWidth = max(1, labelWidth - discountBitmap.width - percentBitmap.width - offBitmap.width + 10)
+    val nameBitmap = longTextToBitmap(productName, fontSizeToPixels(10f), false, "Arial", 4, nameMaxWidth)
+
+    val commands = mutableListOf(
+      "! 0 200 200 $labelHeight 1",
+      "PAGE-WIDTH $labelWidth",
+      bitmapCommand(5, 5, nameBitmap),
+      bitmapCommand(startX, startY, discountBitmap),
+      bitmapCommand(startX + discountBitmap.width, startY, percentBitmap),
+      bitmapCommand(
+        startX + discountBitmap.width + percentBitmap.width / 2,
+        startY + discountBitmap.height - offBitmap.height,
+        offBitmap,
+      ),
+      bitmapCommand(rrpX + 10, rrpY, saveBitmap),
+      bitmapCommand(rrpX + 10, rrpY + saveBitmap.height + 5, nowBitmap),
+    )
+
+    if (itemNumber.isNotBlank()) {
+      commands += "BARCODE 128 1 2 30 5 ${rrpY + saveBitmap.height + 5} ${cpclText(itemNumber)}"
+    }
+
+    commands += bitmapCommand(rrpX - dateBitmap.width - 30, rrpY + saveBitmap.height + 10, dateBitmap)
+    commands += "PRINT"
+
+    return commands.joinToString("\r\n", postfix = "\r\n")
+  }
+
+  private fun buildClearanceLabelCommand(payload: ReadableMap): String {
+    val productName = payload.getNullableString("productName")
+    val itemNumber = payload.getNullableString("itemNumber")
+    val supplierName = processCapitalization(payload.getNullableString("supplierName"))
+    val barcode = payload.getNullableString("clearanceBarcode").ifBlank {
+      payload.getNullableString("barcode")
+    }
+    val retailPrice = payload.getNullableDouble("retailPrice") ?: 0.0
+    val discountRate = payload.getNullableDouble("discountRate") ?: 0.0
+    val clearancePrice = payload.getNullableDouble("clearancePrice") ?: (retailPrice * (1.0 - discountRate))
+    val line1 = productName.ifBlank { " " }.take(35)
+
+    val commands = mutableListOf(
+      "! 0 200 200 $labelHeight 1",
+      "PAGE-WIDTH $labelWidth",
+      "TEXT 4 0 1 5 ${cpclText(line1)}",
+      "TEXT 4 0 10 50 ${cpclText(listOf(itemNumber, supplierName).filter { it.isNotBlank() }.joinToString(" "))}",
+      "BARCODE-TEXT 7 0 5",
+    )
+
+    if (barcode.isNotBlank()) {
+      commands += "BARCODE 128 1 2 30 5 80 ${cpclText(barcode)}"
+    }
+
+    commands += listOf(
+      "SETMAG 1 1",
+      "TEXT 24 0 330 130 was:$${formatMoney(retailPrice)}",
+      "LINE 340 130 440 160 2",
+      "LINE 340 160 440 130 2",
+      "SETMAG 4 4",
+      "TEXT 24 0 300 30 $${formatMoney(clearancePrice)}",
+      "SETMAG 2 2",
+      "TEXT 4 0 20 140 Clearance",
+      "INVERSE-LINE 10 140 240 140 60",
+      "SETMAG 1 1",
+      "TEXT 4 0 310 170 ${todayString("yyyy-MM-dd")}",
+      "INVERSE-LINE 300 170 420 170 24",
+      "PRINT",
+    )
+
+    return commands.joinToString("\r\n", postfix = "\r\n")
+  }
+
+  private fun buildBigDiscountLabelCommand(payload: ReadableMap, printType: String): String {
+    val productName = payload.getNullableString("productName")
+    val barcode = payload.getNullableString("barcode")
+    val retailPrice = payload.getNullableDouble("retailPrice") ?: 0.0
+    val discountRate = payload.getNullableDouble("discountRate") ?: 0.0
+    val paperWidth = 480
+    val afterDiscount = retailPrice * (1.0 - discountRate)
+    val price = formatPriceParts(afterDiscount)
+    val saveAmount = retailPrice * discountRate
+
+    val commands = mutableListOf(
+      "! 0 200 200 1200 1",
+      "PAGE-WIDTH $paperWidth",
+    )
+
+    commands += buildBigDiscountHeaderCommands(discountRate, printType, paperWidth)
+
+    val currencyBitmap = textToBitmap("$", fontSizeToPixels(20f), false, "sans-serif-black")
+    val wasCurrencyBitmap = textToBitmap("$", fontSizeToPixels(8f), true, "sans-serif-black")
+    val saveCurrencyBitmap = textToBitmap("$", fontSizeToPixels(8f), false, "sans-serif-black")
+    val eaBitmap = textToBitmap("ea", fontSizeToPixels(8f), false, "sans-serif-light", true, 2)
+    val wasBitmap = textToBitmap("WAS ", fontSizeToPixels(10f), true, "sans-serif-light")
+    val saveBitmap = textToBitmap("SAVE", fontSizeToPixels(16f), true, "sans-serif-light", true, 2)
+    val intBitmap = textToBitmap(price.integer, fontSizeToPixels(60f), true, "sans-serif-black")
+    val decimalBitmap = textToBitmap(price.decimal, fontSizeToPixels(24f), true, "sans-serif-black")
+    val dotBitmap = textToBitmap(".", fontSizeToPixels(20f), true, "sans-serif-black")
+    val rrpBitmap = textToBitmap(formatMoney(retailPrice), fontSizeToPixels(10f), true, "sans-serif-condensed")
+    val saveAmountBitmap = textToBitmap(formatMoney(saveAmount), fontSizeToPixels(16f), true, "sans-serif-condensed")
+    val nameBitmap = longTextToBitmap(productName, fontSizeToPixels(10f), false, "Arial", 4, paperWidth)
+    val dashLineBitmap = createDashLineBitmap(450, 2)
+    val dateBitmap = textToBitmap(todayString(), fontSizeToPixels(8f), false, "Arial", true, 2)
+
+    val startY = 220
+    var startX = (paperWidth - currencyBitmap.width - intBitmap.width) / 2
+    if (price.decimal.toIntOrNull() != 0) {
+      startX = (paperWidth - currencyBitmap.width - intBitmap.width - dotBitmap.width - decimalBitmap.width) / 2
+      commands += bitmapCommand(startX + currencyBitmap.width + intBitmap.width, startY + (intBitmap.height * 0.9).toInt(), dotBitmap)
+      commands += bitmapCommand(startX + currencyBitmap.width + intBitmap.width + dotBitmap.width, startY, decimalBitmap)
+    }
+
+    commands += bitmapCommand(startX, startY, currencyBitmap)
+    commands += bitmapCommand(startX + currencyBitmap.width, startY, intBitmap)
+    commands += bitmapCommand(startX + currencyBitmap.width + intBitmap.width + 30, startY + (intBitmap.height * 0.9).toInt(), eaBitmap)
+
+    val rrpStartY = startY + intBitmap.height + 20
+    commands += bitmapCommand(5, rrpStartY, wasBitmap)
+    commands += bitmapCommand(5 + wasBitmap.width, rrpStartY, wasCurrencyBitmap)
+    commands += bitmapCommand(5 + wasBitmap.width + wasCurrencyBitmap.width, rrpStartY, rrpBitmap)
+
+    if (discountRate > 0) {
+      commands += "LINE 5 $rrpStartY ${5 + wasBitmap.width + rrpBitmap.width} ${rrpStartY + wasBitmap.height} 2"
+      commands += "LINE 5 ${rrpStartY + wasBitmap.height} ${5 + wasBitmap.width + rrpBitmap.width} $rrpStartY 2"
+      val saveStartX = 30 + wasBitmap.width + wasCurrencyBitmap.width + rrpBitmap.width
+      commands += bitmapCommand(saveStartX, rrpStartY, saveBitmap)
+      commands += bitmapCommand(saveStartX + saveBitmap.width + 5, rrpStartY, saveCurrencyBitmap)
+      commands += bitmapCommand(saveStartX + saveBitmap.width + 5 + saveCurrencyBitmap.width + 5, rrpStartY, saveAmountBitmap)
+    }
+
+    commands += bitmapCommand(5, 550 - nameBitmap.height - 5, nameBitmap)
+    commands += bitmapCommand(15, 550, dashLineBitmap)
+
+    if (barcode.isNotBlank()) {
+      commands += "BARCODE 128 1 2 30 15 560 ${cpclText(barcode)}"
+    }
+
+    commands += bitmapCommand(paperWidth - dateBitmap.width - 10, 630 - dateBitmap.height, dateBitmap)
+    commands += "PRINT"
+
+    return commands.joinToString("\r\n", postfix = "\r\n")
+  }
+
+  private fun buildBigDiscountHeaderCommands(discountRate: Double, printType: String, paperWidth: Int): List<String> {
+    val discount = discountRate * 100.0
+    if (printType.isNotBlank()) {
+      val titleBitmap = textToBitmap(printType, fontSizeToPixels(25f), true, "sans-serif-black")
+      return listOf(bitmapCommand(paperWidth / 2 - titleBitmap.width / 2, 80, titleBitmap))
+    }
+
+    if (discount <= 10.0 || discount > 100.0) {
+      val specialBitmap = textToBitmap("Special", fontSizeToPixels(40f), true, "sans-serif-black")
+      return listOf(bitmapCommand(paperWidth / 2 - specialBitmap.width / 2, 40, specialBitmap))
+    }
+
+    if (abs(discount - 50.0) < 0.01) {
+      val halfBitmap = textToBitmap("1/2", fontSizeToPixels(40f), true, "sans-serif-black")
+      val priceBitmap = textToBitmap("PRICE", fontSizeToPixels(25f), true, "sans-serif-black")
+      return listOf(
+        bitmapCommand(130, 20, halfBitmap),
+        bitmapCommand(120, 20 + halfBitmap.height, priceBitmap),
+      )
+    }
+
+    val discountBitmap = textToBitmap(discount.roundToInt().toString(), fontSizeToPixels(40f), true, "sans-serif-black")
+    val percentBitmap = textToBitmap("%", fontSizeToPixels(24f), true, "sans-serif-condensed")
+    val offBitmap = textToBitmap("OFF", fontSizeToPixels(20f), true, "sans-serif-black")
+    val startX = (paperWidth - discountBitmap.width - percentBitmap.width) / 2
+    return listOf(
+      bitmapCommand(startX, 20, discountBitmap),
+      bitmapCommand(startX + discountBitmap.width, 20, percentBitmap),
+      bitmapCommand((paperWidth - offBitmap.width) / 2, 20 + discountBitmap.height + 20, offBitmap),
+    )
+  }
+
   private fun ReadableMap.getNullableString(key: String): String {
     return if (hasKey(key) && !isNull(key)) getString(key)?.trim().orEmpty() else ""
   }
@@ -345,8 +579,16 @@ class HbPrinterModule(
     return PriceParts(integer.toString(), decimal)
   }
 
-  private fun todayString(): String {
-    return SimpleDateFormat("yyyy/MM/dd", Locale.US).format(Date())
+  private fun todayString(pattern: String = "yyyy/MM/dd"): String {
+    return SimpleDateFormat(pattern, Locale.US).format(Date())
+  }
+
+  private fun formatMoney(value: Double): String {
+    return String.format(Locale.US, "%.2f", value)
+  }
+
+  private fun cpclText(value: String): String {
+    return value.replace(Regex("[\\r\\n]+"), " ").trim()
   }
 
   private fun fontSizeToPixels(fontSize: Float): Float {
@@ -461,6 +703,22 @@ class HbPrinterModule(
   private fun bitmapCommand(x: Int, y: Int, bitmap: Bitmap): String {
     val widthBytes = (bitmap.width + 7) / 8
     return "EG $widthBytes ${bitmap.height} $x $y ${bitmapToHex(bitmap, widthBytes)}"
+  }
+
+  private fun createDashLineBitmap(width: Int, height: Int): Bitmap {
+    val bitmap = Bitmap.createBitmap(max(1, width), max(1, height), Bitmap.Config.ARGB_8888)
+    val canvas = Canvas(bitmap)
+    canvas.drawColor(Color.WHITE)
+    val paint = Paint().apply {
+      color = Color.BLACK
+      strokeWidth = height.toFloat()
+    }
+    var x = 0f
+    while (x < width) {
+      canvas.drawLine(x, height / 2f, minOf(x + 10f, width.toFloat()), height / 2f, paint)
+      x += 18f
+    }
+    return bitmap
   }
 
   private fun bitmapToHex(bitmap: Bitmap, widthBytes: Int): String {

@@ -139,6 +139,7 @@
     "quick": "打",
     "product": "普通标签",
     "discount": "折扣标签",
+    "bigDiscount": "大标签",
     "clearance": "清货标签",
     "sendingShort": "发送中",
     "sending": "发送中..."

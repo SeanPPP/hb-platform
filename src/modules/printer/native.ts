@@ -8,6 +8,9 @@ type NativePrinterModule = {
   disconnect(): Promise<boolean>;
   print(command: string, encoding?: string): Promise<boolean>;
   printProductLabel(payload: ProductLabelPrintPayload): Promise<boolean>;
+  printDiscountLabel(payload: ProductLabelPrintPayload): Promise<boolean>;
+  printClearanceLabel(payload: ProductLabelPrintPayload): Promise<boolean>;
+  printBigDiscountLabel(payload: ProductLabelPrintPayload, printType?: string | null): Promise<boolean>;
 };
 
 const nativeModule = NativeModules.HbPrinterModule as NativePrinterModule | undefined;
@@ -80,4 +83,22 @@ export async function printRawCommand(command: string) {
 export async function printNativeProductLabel(payload: ProductLabelPrintPayload) {
   await ensureBluetoothPermissions();
   return getModule().printProductLabel(payload);
+}
+
+export async function printNativeDiscountLabel(payload: ProductLabelPrintPayload) {
+  await ensureBluetoothPermissions();
+  return getModule().printDiscountLabel(payload);
+}
+
+export async function printNativeClearanceLabel(payload: ProductLabelPrintPayload) {
+  await ensureBluetoothPermissions();
+  return getModule().printClearanceLabel(payload);
+}
+
+export async function printNativeBigDiscountLabel(
+  payload: ProductLabelPrintPayload,
+  printType?: string | null
+) {
+  await ensureBluetoothPermissions();
+  return getModule().printBigDiscountLabel(payload, printType ?? null);
 }
