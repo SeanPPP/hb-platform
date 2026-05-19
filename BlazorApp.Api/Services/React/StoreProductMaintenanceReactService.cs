@@ -361,8 +361,17 @@ namespace BlazorApp.Api.Services.React
                     return ApiResponse<StoreProductStorePriceDto>.Error("零售价不能为负数");
                 }
 
+                if (
+                    request.DiscountRate.HasValue
+                    && (request.DiscountRate.Value < 0 || request.DiscountRate.Value > 1)
+                )
+                {
+                    return ApiResponse<StoreProductStorePriceDto>.Error("折扣率必须在 0 到 1 之间");
+                }
+
                 entity.PurchasePrice = request.PurchasePrice;
                 entity.StoreRetailPriceValue = request.RetailPrice;
+                entity.DiscountRate = request.DiscountRate;
                 if (request.IsAutoPricing.HasValue)
                 {
                     entity.IsAutoPricing = request.IsAutoPricing.Value;
@@ -411,6 +420,173 @@ namespace BlazorApp.Api.Services.React
             {
                 _logger.LogError(ex, "更新分店商品失败: {Uuid}", uuid);
                 return ApiResponse<StoreProductStorePriceDto>.Error($"更新分店商品失败: {ex.Message}");
+            }
+        }
+
+        public async Task<ApiResponse<EvaluateStoreProductAutoPricingResultDto>> EvaluateAutoPricingAsync(
+            EvaluateStoreProductAutoPricingDto request,
+            List<string>? accessibleStoreCodes
+        )
+        {
+            try
+            {
+                var productCode = request.ProductCode?.Trim();
+                if (string.IsNullOrWhiteSpace(productCode))
+                {
+                    return ApiResponse<EvaluateStoreProductAutoPricingResultDto>.Error("商品编码不能为空");
+                }
+
+                var scopedStoreCodes = ResolveScopedStoreCodes(request.StoreCode, accessibleStoreCodes);
+                if (scopedStoreCodes != null && scopedStoreCodes.Count == 0)
+                {
+                    return ApiResponse<EvaluateStoreProductAutoPricingResultDto>.OK(
+                        new EvaluateStoreProductAutoPricingResultDto
+                        {
+                            ProductCode = productCode,
+                            StoreCode = request.StoreCode,
+                        }
+                    );
+                }
+
+                var entity = await QueryStorePriceAsync(productCode, scopedStoreCodes);
+                if (entity == null)
+                {
+                    return ApiResponse<EvaluateStoreProductAutoPricingResultDto>.OK(
+                        new EvaluateStoreProductAutoPricingResultDto
+                        {
+                            ProductCode = productCode,
+                            StoreCode = request.StoreCode,
+                        }
+                    );
+                }
+
+                var result = new EvaluateStoreProductAutoPricingResultDto
+                {
+                    ProductCode = productCode,
+                    StoreCode = entity.StoreCode,
+                    StorePriceUuid = entity.UUID,
+                    CurrentRetailPrice = entity.StoreRetailPriceValue,
+                    CurrentRetailPriceFormatted = FormatPrice(entity.StoreRetailPriceValue),
+                    DiscountRate = entity.DiscountRate,
+                    IsAutoPricing = entity.IsAutoPricing,
+                    HasValidPurchasePrice = entity.PurchasePrice.HasValue && entity.PurchasePrice.Value > 0,
+                    ShouldUpdate = false,
+                };
+
+                if (!request.ForceAutoPricing && !entity.IsAutoPricing)
+                {
+                    return ApiResponse<EvaluateStoreProductAutoPricingResultDto>.OK(result);
+                }
+
+                if (!result.HasValidPurchasePrice)
+                {
+                    return ApiResponse<EvaluateStoreProductAutoPricingResultDto>.OK(result);
+                }
+
+                var supplierCode = await ResolveStorePriceSupplierCodeAsync(entity);
+                var strategy = await _autoPricingService.FindStrategyForPriceAsync(
+                    entity.PurchasePrice!.Value,
+                    supplierCode,
+                    entity.StoreCode
+                );
+                var recalculatedRetailPrice = _autoPricingService.CalculateRetailPrice(
+                    entity.PurchasePrice.Value,
+                    strategy
+                );
+
+                result.RecalculatedRetailPrice = recalculatedRetailPrice;
+                result.RecalculatedRetailPriceFormatted = FormatPrice(recalculatedRetailPrice);
+                result.ShouldUpdate =
+                    result.RecalculatedRetailPriceFormatted != result.CurrentRetailPriceFormatted;
+
+                return ApiResponse<EvaluateStoreProductAutoPricingResultDto>.OK(result);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "评估自动价失败: {ProductCode}", request.ProductCode);
+                return ApiResponse<EvaluateStoreProductAutoPricingResultDto>.Error(
+                    $"评估自动价失败: {ex.Message}"
+                );
+            }
+        }
+
+        public async Task<ApiResponse<StoreProductTypeUpdateResultDto>> UpdateProductTypeAsync(
+            string productCode,
+            UpdateStoreProductTypeDto request,
+            string updatedBy,
+            List<string>? accessibleStoreCodes
+        )
+        {
+            try
+            {
+                var normalizedProductCode = productCode?.Trim();
+                if (string.IsNullOrWhiteSpace(normalizedProductCode))
+                {
+                    return ApiResponse<StoreProductTypeUpdateResultDto>.Error("商品编码不能为空");
+                }
+
+                if (request.ProductType < 0 || request.ProductType > 2)
+                {
+                    return ApiResponse<StoreProductTypeUpdateResultDto>.Error("商品类型无效");
+                }
+
+                var scopedStoreCodes = ResolveScopedStoreCodes(request.StoreCode, accessibleStoreCodes);
+                if (scopedStoreCodes != null && scopedStoreCodes.Count == 0)
+                {
+                    return ApiResponse<StoreProductTypeUpdateResultDto>.Error("当前账号或设备无权修改该分店商品");
+                }
+
+                var storePriceEntity = await QueryStorePriceAsync(normalizedProductCode, scopedStoreCodes);
+                if (scopedStoreCodes != null && storePriceEntity == null)
+                {
+                    return ApiResponse<StoreProductTypeUpdateResultDto>.Error("当前账号或设备无权修改该分店商品");
+                }
+
+                var product = await _db.Queryable<Product>()
+                    .Where(p => p.ProductCode == normalizedProductCode && !p.IsDeleted)
+                    .FirstAsync();
+
+                if (product == null)
+                {
+                    return ApiResponse<StoreProductTypeUpdateResultDto>.Error("商品不存在");
+                }
+
+                var domesticProduct = await _db.Queryable<DomesticProduct>()
+                    .Where(dp => dp.ProductCode == normalizedProductCode && !dp.IsDeleted)
+                    .FirstAsync();
+
+                var now = DateTime.UtcNow;
+
+                product.ProductType = request.ProductType;
+                product.UpdatedAt = now;
+                await _db.Updateable(product)
+                    .UpdateColumns(p => new { p.ProductType, p.UpdatedAt })
+                    .ExecuteCommandAsync();
+
+                if (domesticProduct != null)
+                {
+                    domesticProduct.ProductType = request.ProductType;
+                    domesticProduct.UpdatedAt = now;
+                    domesticProduct.UpdatedBy = updatedBy;
+                    await _db.Updateable(domesticProduct)
+                        .UpdateColumns(dp => new { dp.ProductType, dp.UpdatedAt, dp.UpdatedBy })
+                        .ExecuteCommandAsync();
+                }
+
+                return ApiResponse<StoreProductTypeUpdateResultDto>.OK(
+                    new StoreProductTypeUpdateResultDto
+                    {
+                        ProductCode = normalizedProductCode,
+                        ProductType = request.ProductType,
+                        ProductTypeLabel = NormalizeProductTypeLabel(request.ProductType.ToString()),
+                    },
+                    "保存成功"
+                );
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "更新商品类型失败: {ProductCode}", productCode);
+                return ApiResponse<StoreProductTypeUpdateResultDto>.Error($"更新商品类型失败: {ex.Message}");
             }
         }
 
@@ -520,6 +696,19 @@ namespace BlazorApp.Api.Services.React
             }
 
             return await query.OrderBy(x => x.StoreCode).FirstAsync();
+        }
+
+        private async Task<string?> ResolveStorePriceSupplierCodeAsync(StoreRetailPrice entity)
+        {
+            if (!string.IsNullOrWhiteSpace(entity.SupplierCode))
+            {
+                return entity.SupplierCode;
+            }
+
+            return await _db.Queryable<Product>()
+                .Where(p => p.ProductCode == entity.ProductCode)
+                .Select(p => p.LocalSupplierCode)
+                .FirstAsync();
         }
 
         private async Task<StoreClearancePrice?> QueryClearancePriceAsync(
@@ -695,6 +884,11 @@ namespace BlazorApp.Api.Services.React
             }
 
             return !string.IsNullOrWhiteSpace(storeCode) && accessibleStoreCodes.Contains(storeCode);
+        }
+
+        private static string FormatPrice(decimal? value)
+        {
+            return value.HasValue ? value.Value.ToString("0.00") : string.Empty;
         }
 
         private static string FormatStoreScope(List<string>? storeCodes)

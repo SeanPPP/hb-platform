@@ -75,6 +75,27 @@ namespace BlazorApp.Api.Controllers.React
             return Ok(result);
         }
 
+        [HttpPost("evaluate-auto-pricing")]
+        public async Task<IActionResult> EvaluateAutoPricing(
+            [FromBody] EvaluateStoreProductAutoPricingDto request
+        )
+        {
+            var access = await ResolveAccessContextAsync();
+            Console.WriteLine(
+                $"[StoreProductMaintenance][EvaluateAutoPricing] productCode='{request.ProductCode}', requestedStore='{request.StoreCode}', forceAuto={request.ForceAutoPricing}, allowed={access.IsAllowed}, scope={FormatStoreScope(access.StoreCodes)}, actor='{access.ActorLabel}'"
+            );
+            if (!access.IsAllowed)
+            {
+                Console.WriteLine(
+                    $"[StoreProductMaintenance][EvaluateAutoPricing] unauthorized: {access.Message}"
+                );
+                return Unauthorized(ApiResponse<EvaluateStoreProductAutoPricingResultDto>.Error(access.Message));
+            }
+
+            var result = await _service.EvaluateAutoPricingAsync(request, access.StoreCodes);
+            return Ok(result);
+        }
+
         [HttpPut("store-prices/{uuid}")]
         public async Task<IActionResult> UpdateStorePrice(
             string uuid,
@@ -89,6 +110,27 @@ namespace BlazorApp.Api.Controllers.React
 
             var result = await _service.UpdateStorePriceAsync(
                 uuid,
+                request,
+                access.ActorLabel,
+                access.StoreCodes
+            );
+            return Ok(result);
+        }
+
+        [HttpPut("products/{productCode}/type")]
+        public async Task<IActionResult> UpdateProductType(
+            string productCode,
+            [FromBody] UpdateStoreProductTypeDto request
+        )
+        {
+            var access = await ResolveAccessContextAsync();
+            if (!access.IsAllowed)
+            {
+                return Unauthorized(ApiResponse<StoreProductTypeUpdateResultDto>.Error(access.Message));
+            }
+
+            var result = await _service.UpdateProductTypeAsync(
+                productCode,
                 request,
                 access.ActorLabel,
                 access.StoreCodes

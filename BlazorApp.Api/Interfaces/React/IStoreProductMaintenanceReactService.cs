@@ -15,6 +15,18 @@ namespace BlazorApp.Api.Interfaces.React
             List<string>? accessibleStoreCodes
         );
 
+        Task<ApiResponse<EvaluateStoreProductAutoPricingResultDto>> EvaluateAutoPricingAsync(
+            EvaluateStoreProductAutoPricingDto request,
+            List<string>? accessibleStoreCodes
+        );
+
+        Task<ApiResponse<StoreProductTypeUpdateResultDto>> UpdateProductTypeAsync(
+            string productCode,
+            UpdateStoreProductTypeDto request,
+            string updatedBy,
+            List<string>? accessibleStoreCodes
+        );
+
         Task<ApiResponse<StoreProductStorePriceDto>> UpdateStorePriceAsync(
             string uuid,
             UpdateStoreProductPriceDto request,

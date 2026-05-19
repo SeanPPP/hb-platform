@@ -104,9 +104,45 @@ namespace BlazorApp.Shared.DTOs
     {
         public decimal? PurchasePrice { get; set; }
         public decimal? RetailPrice { get; set; }
+        public decimal? DiscountRate { get; set; }
         public bool? IsAutoPricing { get; set; }
         public bool? IsSpecialProduct { get; set; }
         public bool? IsActive { get; set; }
+    }
+
+    public class EvaluateStoreProductAutoPricingDto
+    {
+        public string ProductCode { get; set; } = string.Empty;
+        public string? StoreCode { get; set; }
+        public bool ForceAutoPricing { get; set; }
+    }
+
+    public class EvaluateStoreProductAutoPricingResultDto
+    {
+        public string ProductCode { get; set; } = string.Empty;
+        public string? StoreCode { get; set; }
+        public string? StorePriceUuid { get; set; }
+        public decimal? CurrentRetailPrice { get; set; }
+        public decimal? RecalculatedRetailPrice { get; set; }
+        public string CurrentRetailPriceFormatted { get; set; } = string.Empty;
+        public string RecalculatedRetailPriceFormatted { get; set; } = string.Empty;
+        public decimal? DiscountRate { get; set; }
+        public bool IsAutoPricing { get; set; }
+        public bool HasValidPurchasePrice { get; set; }
+        public bool ShouldUpdate { get; set; }
+    }
+
+    public class UpdateStoreProductTypeDto
+    {
+        public int ProductType { get; set; }
+        public string? StoreCode { get; set; }
+    }
+
+    public class StoreProductTypeUpdateResultDto
+    {
+        public string ProductCode { get; set; } = string.Empty;
+        public int ProductType { get; set; }
+        public string? ProductTypeLabel { get; set; }
     }
 
     public class UpdateStoreProductMultiCodeDto
