@@ -22,18 +22,21 @@ import {
 import { usePrinterStore } from "@/modules/printer/state";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 import {
+  createSetCode,
   evaluateAutoPricing,
   getProductDetail,
   lookupProducts,
-  updateMultiCode,
+  updateSetCode,
   updateProductType,
   updateStorePrice,
+  upsertClearancePrice,
 } from "@/modules/product-maintenance/api";
 import type {
   EvaluateAutoPricingResult,
   MultiCodeEditableItem,
   ProductDetail,
   ProductLookupItem,
+  ProductSetCodeItem,
 } from "@/modules/product-maintenance/types";
 import { useCameraScan } from "@/modules/scanner/use-camera-scan";
 import { useHidBarcodeScanner } from "@/modules/scanner/use-hid-barcode-scanner";
@@ -146,13 +149,6 @@ function replaceStorePriceDetail(
   };
 }
 
-function getDirtyMultiCodeIds(current: ProductDetail | null, initial: ProductDetail | null) {
-  const baseline = new Map((initial?.multiCodes ?? []).map((item) => [item.uuid, JSON.stringify(item)]));
-  return (current?.multiCodes ?? [])
-    .filter((item) => baseline.get(item.uuid) !== JSON.stringify(item))
-    .map((item) => item.uuid);
-}
-
 type QueryFeedback =
   | { type: "idle" }
   | { type: "empty"; query: string }
@@ -220,12 +216,27 @@ function ProductQueryContent() {
   const [productTypeSaving, setProductTypeSaving] = useState(false);
   const [storePurchaseInput, setStorePurchaseInput] = useState("");
   const [storeRetailInput, setStoreRetailInput] = useState("");
+  const [clearancePriceInput, setClearancePriceInput] = useState("");
+  const [setDraftBarcode, setSetDraftBarcode] = useState("");
+  const [setDraftRetailInput, setSetDraftRetailInput] = useState("");
+  const [multiDraftBarcode, setMultiDraftBarcode] = useState("");
+  const [savingClearance, setSavingClearance] = useState(false);
   const autoPricingDialogResolverRef = useRef<((result: AutoPricingDialogResolution) => void) | null>(null);
 
   useEffect(() => {
     setStorePurchaseInput(formatFixedDecimal(detail?.storePrice?.purchasePrice));
     setStoreRetailInput(formatFixedDecimal(detail?.storePrice?.retailPrice));
   }, [detail?.storePrice?.purchasePrice, detail?.storePrice?.retailPrice, detail?.storePrice?.uuid]);
+
+  useEffect(() => {
+    setClearancePriceInput(formatFixedDecimal(detail?.clearancePrice?.clearancePrice));
+  }, [detail?.clearancePrice?.clearancePrice, detail?.clearancePrice?.uuid]);
+
+  useEffect(() => {
+    setSetDraftBarcode("");
+    setSetDraftRetailInput("");
+    setMultiDraftBarcode("");
+  }, [detail?.productCode]);
 
   useEffect(() => {
     preloadScanFeedbackSounds();
@@ -278,17 +289,16 @@ function ProductQueryContent() {
           isActive: nextStorePrice.isActive,
         });
 
+        if (selectedStoreCode) {
+          const refreshed = await getProductDetail(sourceDetail.productCode, selectedStoreCode);
+          setDetail(refreshed);
+          setInitialDetail(cloneDetail(refreshed));
+          return refreshed;
+        }
+
         const nextDetail = replaceStorePriceDetail(sourceDetail, savedStorePrice);
-        setDetail((current) =>
-          current?.productCode === sourceDetail.productCode
-            ? replaceStorePriceDetail(current, savedStorePrice)
-            : current
-        );
-        setInitialDetail((current) =>
-          current?.productCode === sourceDetail.productCode
-            ? replaceStorePriceDetail(current, savedStorePrice)
-            : current
-        );
+        setDetail(nextDetail);
+        setInitialDetail(cloneDetail(nextDetail));
         return nextDetail;
       } catch (error) {
         const fallback = t("messages.autoPricingUpdateFailed");
@@ -297,7 +307,7 @@ function ProductQueryContent() {
         return null;
       }
     },
-    [playQueryFeedback, t]
+    [playQueryFeedback, selectedStoreCode, t]
   );
 
   const finishAutoPricingDialog = useCallback((result: AutoPricingDialogResolution) => {
@@ -564,11 +574,7 @@ function ProductQueryContent() {
     }, [hidScanner.focusHiddenInput])
   );
 
-  const dirtyMultiCodeIds = useMemo(() => getDirtyMultiCodeIds(detail, initialDetail), [detail, initialDetail]);
-  const dirtyCount = useMemo(
-    () => (isStorePriceDirty(detail, initialDetail) ? 1 : 0) + dirtyMultiCodeIds.length,
-    [detail, dirtyMultiCodeIds, initialDetail]
-  );
+  const dirtyCount = useMemo(() => (isStorePriceDirty(detail, initialDetail) ? 1 : 0), [detail, initialDetail]);
 
   const handleRefresh = useCallback(async () => {
     if (!detail?.productCode) {
@@ -791,50 +797,121 @@ function ProductQueryContent() {
     });
   }, []);
 
-  const handleChangeMultiCode = useCallback((uuid: string, patch: Partial<MultiCodeEditableItem>) => {
+  const handleChangeSetCode = useCallback((setCodeId: string, patch: Partial<ProductSetCodeItem>) => {
     setDetail((current) =>
       current
         ? {
             ...current,
-            multiCodes: current.multiCodes.map((item) => (item.uuid === uuid ? { ...item, ...patch } : item)),
+            setCodes: current.setCodes.map((item) => (item.setCodeId === setCodeId ? { ...item, ...patch } : item)),
           }
         : current
     );
   }, []);
 
-  const handleSaveMultiCode = useCallback(
-    async (uuid: string) => {
-      const target = detail?.multiCodes.find((item) => item.uuid === uuid);
-      if (!target) {
+  const handleChangeMultiCode = useCallback((setCodeId: string, patch: Partial<MultiCodeEditableItem>) => {
+    setDetail((current) =>
+      current
+        ? {
+            ...current,
+            multiCodes: current.multiCodes.map((item) => (item.setCodeId === setCodeId ? { ...item, ...patch } : item)),
+          }
+        : current
+    );
+  }, []);
+
+  const handleSaveSetCode = useCallback(
+    async (setCodeId: string) => {
+      if (!detail?.productCode || !selectedStoreCode) {
         return;
       }
 
-      setSavingItemId(uuid);
+      const target = detail.setCodes.find((item) => item.setCodeId === setCodeId);
+      if (!target || !target.setBarcode?.trim()) {
+        setSnackbarMessage(t("messages.setCodeBarcodeRequired"));
+        return;
+      }
+
+      if (target.setRetailPrice == null || !Number.isFinite(target.setRetailPrice)) {
+        setSnackbarMessage(t("messages.setCodeRetailRequired"));
+        return;
+      }
+
+      setSavingItemId(setCodeId);
       try {
-        const saved = await updateMultiCode(uuid, {
-          purchasePrice: target.purchasePrice ?? null,
-          retailPrice: target.retailPrice ?? null,
-          isAutoPricing: target.isAutoPricing,
-          isSpecialProduct: target.isSpecialProduct,
+        await updateSetCode(setCodeId, {
+          storeCode: selectedStoreCode,
+          barcode: target.setBarcode.trim(),
+          retailPrice: target.setRetailPrice,
           isActive: target.isActive,
         });
+        await loadDetail(detail.productCode);
+        setSnackbarMessage(t("messages.setCodeSaved"));
+      } catch (error) {
+        setSnackbarMessage(error instanceof Error ? error.message : t("messages.setCodeSaveFailed"));
+      } finally {
+        setSavingItemId(null);
+      }
+    },
+    [detail, loadDetail, selectedStoreCode, t]
+  );
 
-        setDetail((current) =>
-          current
-            ? {
-                ...current,
-                multiCodes: current.multiCodes.map((item) => (item.uuid === uuid ? saved : item)),
-              }
-            : current
-        );
-        setInitialDetail((current) =>
-          current
-            ? {
-                ...current,
-                multiCodes: current.multiCodes.map((item) => (item.uuid === uuid ? saved : item)),
-              }
-            : current
-        );
+  const handleCreateSetCode = useCallback(async () => {
+    if (!detail?.productCode || !selectedStoreCode) {
+      return;
+    }
+
+    const retailPrice = parseDecimalInput(setDraftRetailInput);
+    if (!setDraftBarcode.trim()) {
+      setSnackbarMessage(t("messages.setCodeBarcodeRequired"));
+      return;
+    }
+
+    if (retailPrice == null) {
+      setSnackbarMessage(t("messages.setCodeRetailRequired"));
+      return;
+    }
+
+    setSavingItemId("new-set");
+    try {
+      await createSetCode({
+        productCode: detail.productCode,
+        storeCode: selectedStoreCode,
+        productType: 1,
+        barcode: setDraftBarcode.trim(),
+        retailPrice,
+        isActive: true,
+      });
+      setSetDraftBarcode("");
+      setSetDraftRetailInput("");
+      await loadDetail(detail.productCode);
+      setSnackbarMessage(t("messages.setCodeCreated"));
+    } catch (error) {
+      setSnackbarMessage(error instanceof Error ? error.message : t("messages.setCodeSaveFailed"));
+    } finally {
+      setSavingItemId(null);
+    }
+  }, [detail?.productCode, loadDetail, selectedStoreCode, setDraftBarcode, setDraftRetailInput, t]);
+
+  const handleSaveMultiCode = useCallback(
+    async (setCodeId: string) => {
+      if (!detail?.productCode || !selectedStoreCode) {
+        return;
+      }
+
+      const target = detail.multiCodes.find((item) => item.setCodeId === setCodeId);
+      if (!target || !target.barcode?.trim()) {
+        setSnackbarMessage(t("messages.multiCodeBarcodeRequired"));
+        return;
+      }
+
+      setSavingItemId(setCodeId);
+      try {
+        await updateSetCode(setCodeId, {
+          storeCode: selectedStoreCode,
+          barcode: target.barcode.trim(),
+          isActive: target.isActive,
+        });
+        await loadDetail(detail.productCode);
         setSnackbarMessage(t("messages.multiCodeSaved"));
       } catch (error) {
         setSnackbarMessage(error instanceof Error ? error.message : t("messages.multiCodeSaveFailed"));
@@ -842,61 +919,94 @@ function ProductQueryContent() {
         setSavingItemId(null);
       }
     },
-    [detail?.multiCodes, t]
+    [detail, loadDetail, selectedStoreCode, t]
   );
 
+  const handleCreateMultiCode = useCallback(async () => {
+    if (!detail?.productCode || !selectedStoreCode) {
+      return;
+    }
+
+    if (!multiDraftBarcode.trim()) {
+      setSnackbarMessage(t("messages.multiCodeBarcodeRequired"));
+      return;
+    }
+
+    setSavingItemId("new-multi");
+    try {
+      await createSetCode({
+        productCode: detail.productCode,
+        storeCode: selectedStoreCode,
+        productType: 2,
+        barcode: multiDraftBarcode.trim(),
+        isActive: true,
+      });
+      setMultiDraftBarcode("");
+      await loadDetail(detail.productCode);
+      setSnackbarMessage(t("messages.multiCodeCreated"));
+    } catch (error) {
+      setSnackbarMessage(error instanceof Error ? error.message : t("messages.multiCodeSaveFailed"));
+    } finally {
+      setSavingItemId(null);
+    }
+  }, [detail?.productCode, loadDetail, multiDraftBarcode, selectedStoreCode, t]);
+
+  const handleSaveClearancePrice = useCallback(async () => {
+    if (!detail?.productCode || !selectedStoreCode) {
+      return;
+    }
+
+    const clearancePrice = parseDecimalInput(clearancePriceInput);
+    if (clearancePriceInput.trim() && clearancePrice == null) {
+      setSnackbarMessage(t("messages.clearancePriceRequired"));
+      return;
+    }
+
+    setSavingClearance(true);
+    try {
+      await upsertClearancePrice(detail.productCode, {
+        storeCode: selectedStoreCode,
+        clearancePrice,
+      });
+      await loadDetail(detail.productCode);
+      setSnackbarMessage(t("messages.clearanceSaved"));
+    } catch (error) {
+      setSnackbarMessage(error instanceof Error ? error.message : t("messages.clearanceSaveFailed"));
+    } finally {
+      setSavingClearance(false);
+    }
+  }, [clearancePriceInput, detail?.productCode, loadDetail, selectedStoreCode, t]);
+
   const handleSaveAll = useCallback(async () => {
-    if (!detail) {
+    if (!detail?.storePrice || !isStorePriceDirty(detail, initialDetail)) {
       return;
     }
 
     setSaving(true);
     try {
-      const nextDetail = cloneDetail(detail)!;
-      const nextInitial = cloneDetail(initialDetail)!;
-
-      if (detail.storePrice && isStorePriceDirty(detail, initialDetail)) {
-        const savedStorePrice = await updateStorePrice(detail.storePrice.uuid, {
-          purchasePrice: detail.storePrice.purchasePrice ?? null,
-          retailPrice: detail.storePrice.retailPrice ?? null,
-          discountRate: normalizeDiscountRateValue(detail.storePrice.discountRate),
-          isAutoPricing: detail.storePrice.isAutoPricing,
-          isSpecialProduct: detail.storePrice.isSpecialProduct,
-          isActive: detail.storePrice.isActive,
-        });
-        nextDetail.storePrice = savedStorePrice;
-        nextInitial.storePrice = savedStorePrice;
+      const saved = await persistStorePrice(detail, {
+        purchasePrice: detail.storePrice.purchasePrice ?? null,
+        retailPrice: detail.storePrice.retailPrice ?? null,
+        discountRate: normalizeDiscountRateValue(detail.storePrice.discountRate),
+        isAutoPricing: detail.storePrice.isAutoPricing,
+        isSpecialProduct: detail.storePrice.isSpecialProduct,
+        isActive: detail.storePrice.isActive,
+      });
+      if (saved) {
+        setSnackbarMessage(t("messages.saved"));
       }
-
-      for (const uuid of dirtyMultiCodeIds) {
-        const target = nextDetail.multiCodes.find((item) => item.uuid === uuid);
-        if (!target) {
-          continue;
-        }
-
-        const saved = await updateMultiCode(uuid, {
-          purchasePrice: target.purchasePrice ?? null,
-          retailPrice: target.retailPrice ?? null,
-          isAutoPricing: target.isAutoPricing,
-          isSpecialProduct: target.isSpecialProduct,
-          isActive: target.isActive,
-        });
-        nextDetail.multiCodes = nextDetail.multiCodes.map((item) => (item.uuid === uuid ? saved : item));
-        nextInitial.multiCodes = nextInitial.multiCodes.map((item) => (item.uuid === uuid ? saved : item));
-      }
-
-      setDetail(nextDetail);
-      setInitialDetail(nextInitial);
-      setSnackbarMessage(t("messages.saved"));
     } catch (error) {
       setSnackbarMessage(error instanceof Error ? error.message : t("messages.saveFailed"));
     } finally {
       setSaving(false);
     }
-  }, [detail, dirtyMultiCodeIds, initialDetail, t]);
+  }, [detail, initialDetail, persistStorePrice, t]);
 
   const handleReset = useCallback(() => {
     setDetail(cloneDetail(initialDetail));
+    setSetDraftBarcode("");
+    setSetDraftRetailInput("");
+    setMultiDraftBarcode("");
   }, [initialDetail]);
 
   const handlePrint = useCallback(
@@ -975,7 +1085,6 @@ function ProductQueryContent() {
                 productName={detail.productName}
                 supplierName={detail.localSupplierName}
                 supplierCode={detail.localSupplierCode}
-                itemNumber={detail.itemNumber}
                 barcode={detail.barcode}
                 productType={detail.productType}
                 grade={detail.grade}
@@ -1019,16 +1128,17 @@ function ProductQueryContent() {
                 </View>
               )}
 
-              {clearancePrice ? (
-                <StoreClearancePriceCard
-                  storeCode={clearancePrice.storeCode}
-                  storeName={clearancePrice.storeName}
-                  clearanceBarcode={clearancePrice.clearanceBarcode}
-                  clearancePrice={formatCurrency(clearancePrice.clearancePrice)}
-                />
-              ) : null}
+              <StoreClearancePriceCard
+                storeCode={clearancePrice?.storeCode ?? storePrice?.storeCode}
+                storeName={clearancePrice?.storeName ?? storePrice?.storeName}
+                clearanceBarcode={clearancePrice?.clearanceBarcode}
+                clearancePrice={clearancePriceInput}
+                saving={savingClearance}
+                onChangeClearancePrice={setClearancePriceInput}
+                onSave={() => void handleSaveClearancePrice()}
+              />
 
-              {clearancePrice ? (
+              {clearancePrice?.clearanceBarcode ? (
                 <Card style={styles.printCard} mode="contained">
                   <Card.Content style={styles.printCardContent}>
                     <Text variant="titleSmall" style={styles.printTitle}>
@@ -1049,18 +1159,36 @@ function ProductQueryContent() {
               ) : null}
             </View>
 
-            {detail.setCodes.length || detail.multiCodes.length ? (
+            {detail.productType === 1 || detail.productType === 2 ? (
               <View style={styles.secondarySection}>
                 <Text variant="titleSmall" style={styles.secondaryTitle}>
                   {t("sections.moreInfo")}
                 </Text>
-                <SetCodeCompactSection items={detail.setCodes} />
-                <MultiCodeCompactList
-                  items={detail.multiCodes}
-                  onChangeItem={handleChangeMultiCode}
-                  onSaveItem={(uuid) => void handleSaveMultiCode(uuid)}
-                  savingItemId={savingItemId}
-                />
+                {detail.productType === 1 ? (
+                  <SetCodeCompactSection
+                    items={detail.setCodes}
+                    savingItemId={savingItemId}
+                    draftBarcode={setDraftBarcode}
+                    draftRetailPrice={setDraftRetailInput}
+                    onChangeDraftBarcode={setSetDraftBarcode}
+                    onChangeDraftRetailPrice={setSetDraftRetailInput}
+                    onChangeItem={handleChangeSetCode}
+                    onSaveItem={(setCodeId) => void handleSaveSetCode(setCodeId)}
+                    onCreateItem={() => void handleCreateSetCode()}
+                  />
+                ) : null}
+                {detail.productType === 2 ? (
+                  <MultiCodeCompactList
+                    items={detail.multiCodes}
+                    savingItemId={savingItemId}
+                    draftBarcode={multiDraftBarcode}
+                    mainRetailPrice={detail.storePrice?.retailPrice}
+                    onChangeDraftBarcode={setMultiDraftBarcode}
+                    onChangeItem={handleChangeMultiCode}
+                    onSaveItem={(setCodeId) => void handleSaveMultiCode(setCodeId)}
+                    onCreateItem={() => void handleCreateMultiCode()}
+                  />
+                ) : null}
               </View>
             ) : null}
           </>
@@ -1240,18 +1368,26 @@ function ProductQueryContent() {
                   type === 0 ? t("hero.productType.normal")
                   : type === 1 ? t("hero.productType.set")
                   : t("hero.productType.multi");
+                const description =
+                  type === 0 ? t("hero.productTypeDescription.normal")
+                  : type === 1 ? t("hero.productTypeDescription.set")
+                  : t("hero.productTypeDescription.multi");
 
                 return (
-                  <Button
-                    key={type}
-                    mode={selected ? "contained" : "outlined"}
-                    onPress={() => void handleUpdateProductType(type)}
-                    disabled={productTypeSaving}
-                    loading={productTypeSaving && selected}
-                    style={styles.productTypeOptionButton}
-                  >
-                    {label}
-                  </Button>
+                  <View key={type} style={styles.productTypeOptionCard}>
+                    <Button
+                      mode={selected ? "contained" : "outlined"}
+                      onPress={() => void handleUpdateProductType(type)}
+                      disabled={productTypeSaving}
+                      loading={productTypeSaving && selected}
+                      style={styles.productTypeOptionButton}
+                    >
+                      {label}
+                    </Button>
+                    <Text variant="bodySmall" style={styles.productTypeOptionDescription}>
+                      {description}
+                    </Text>
+                  </View>
                 );
               })}
             </View>
@@ -1431,8 +1567,16 @@ const styles = StyleSheet.create({
   productTypeOptions: {
     gap: 8,
   },
+  productTypeOptionCard: {
+    gap: 6,
+  },
   productTypeOptionButton: {
     justifyContent: "center",
+  },
+  productTypeOptionDescription: {
+    color: "#475467",
+    lineHeight: 18,
+    paddingHorizontal: 4,
   },
   productTypeFooter: {
     flexDirection: "row",

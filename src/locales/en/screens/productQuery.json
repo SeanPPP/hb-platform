@@ -17,8 +17,18 @@
     "lookupErrorTitle": "Lookup failed",
     "lookupErrorDescription": "Something went wrong while looking up the product. Please try again later.",
     "refreshFailed": "Refresh failed.",
+    "clearanceSaved": "Clearance price saved.",
+    "clearanceSaveFailed": "Failed to save the clearance price.",
+    "clearancePriceRequired": "Enter a valid clearance price.",
+    "setCodeCreated": "Set barcode added.",
+    "setCodeSaved": "Set barcode saved.",
+    "setCodeSaveFailed": "Failed to save the set barcode.",
+    "setCodeBarcodeRequired": "Enter the set barcode.",
+    "setCodeRetailRequired": "Enter the set retail price.",
+    "multiCodeCreated": "Multi barcode added.",
     "multiCodeSaved": "Multi-code saved.",
     "multiCodeSaveFailed": "Failed to save the multi-code record.",
+    "multiCodeBarcodeRequired": "Enter the multi barcode.",
     "saved": "Product information saved.",
     "saveFailed": "Save failed.",
     "emptyStorePrice": "There is no store price record for this product.",
@@ -67,6 +77,11 @@
       "set": "1 Set",
       "multi": "2 Multi",
       "unknown": "Unknown type"
+    },
+    "productTypeDescription": {
+      "normal": "Regular products use the main barcode's own store price.",
+      "set": "Set retail can be customized, and purchase price follows the main barcode retail-to-cost ratio.",
+      "multi": "Multi barcode retail and purchase prices always stay aligned with the current store price of the main barcode."
     }
   },
   "storePrice": {
@@ -84,19 +99,26 @@
     "title": "Store clearance price",
     "store": "Store",
     "barcode": "Clearance barcode",
-    "price": "Clearance price"
+    "price": "Clearance price",
+    "save": "Save clearance",
+    "pendingBarcode": "Generated after save"
   },
   "setCode": {
     "title": "Set barcodes",
-    "meta": "{{itemNumber}} · Qty {{quantity}} · {{price}}"
+    "barcode": "Barcode",
+    "retail": "Retail",
+    "save": "Save",
+    "add": "Add",
+    "addTitle": "Add set barcode"
   },
   "multiCode": {
-    "purchase": "Cost",
+    "title": "Multi barcodes",
+    "barcode": "Barcode",
     "retail": "Retail",
-    "auto": "Auto",
-    "special": "Special",
     "save": "Save",
-    "dirtyCount": "{{count}} changes"
+    "add": "Add",
+    "addTitle": "Add multi barcode",
+    "followMain": "Retail follows the main barcode"
   },
   "camera": {
     "title": "Scan a product",

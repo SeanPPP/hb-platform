@@ -15,7 +15,6 @@ interface ProductHeroCardProps {
   productName?: string;
   supplierName?: string | null;
   supplierCode?: string | null;
-  itemNumber?: string | null;
   barcode?: string | null;
   productType?: number | null;
   grade?: string | null;
@@ -27,7 +26,6 @@ export function ProductHeroCard({
   productName,
   supplierName,
   supplierCode,
-  itemNumber,
   barcode,
   productType,
   grade,
@@ -35,7 +33,6 @@ export function ProductHeroCard({
 }: ProductHeroCardProps) {
   const { t } = useAppTranslation(["productQuery", "common"]);
   const supplierDisplay = supplierName || supplierCode || t("common:na");
-  const itemDisplay = itemNumber || t("common:na");
   const normalizedGrade = grade?.trim().toUpperCase();
   const gradeColor = normalizedGrade ? PRODUCT_GRADE_CONFIG[normalizedGrade]?.color ?? "#98A2B3" : undefined;
   const productTypeLabel =
@@ -59,13 +56,6 @@ export function ProductHeroCard({
                 {productName || t("hero.unnamedProduct")}
               </Text>
             </View>
-
-            <View style={styles.metaLine}>
-              <Text variant="bodyMedium" style={[styles.blockValue, styles.itemValue]} numberOfLines={1}>
-                {itemDisplay}
-              </Text>
-            </View>
-
             <View style={styles.metaLine}>
               <Text variant="bodySmall" style={[styles.blockValue, styles.supplierValue, styles.supplierText]} numberOfLines={1}>
                 {supplierDisplay}
@@ -219,10 +209,6 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     color: "#111827",
     lineHeight: 18,
-  },
-  itemValue: {
-    color: "#9A3412",
-    flex: 1,
   },
   typeValue: {
     color: "#166534",

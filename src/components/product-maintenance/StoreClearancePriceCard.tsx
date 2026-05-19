@@ -1,12 +1,15 @@
 import { StyleSheet, View } from "react-native";
-import { Card, Text } from "react-native-paper";
+import { Button, Card, Text, TextInput } from "react-native-paper";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 
 interface StoreClearancePriceCardProps {
   storeCode?: string | null;
   storeName?: string | null;
   clearanceBarcode?: string | null;
-  clearancePrice?: string;
+  clearancePrice: string;
+  saving?: boolean;
+  onChangeClearancePrice: (value: string) => void;
+  onSave: () => void;
 }
 
 export function StoreClearancePriceCard({
@@ -14,8 +17,11 @@ export function StoreClearancePriceCard({
   storeName,
   clearanceBarcode,
   clearancePrice,
+  saving,
+  onChangeClearancePrice,
+  onSave,
 }: StoreClearancePriceCardProps) {
-  const { t } = useAppTranslation("productQuery");
+  const { t } = useAppTranslation(["productQuery", "common"]);
 
   return (
     <Card style={styles.card} mode="contained">
@@ -24,22 +30,44 @@ export function StoreClearancePriceCard({
           <Text variant="titleSmall" style={styles.title}>
             {t("clearancePrice.title")}
           </Text>
-          <Text variant="titleSmall" style={styles.price}>
-            {clearancePrice || t("common:na")}
-          </Text>
+          <Button
+            compact
+            mode="contained-tonal"
+            onPress={onSave}
+            loading={saving}
+            disabled={saving}
+          >
+            {t("clearancePrice.save")}
+          </Button>
         </View>
+
         <View style={styles.row}>
           <Text variant="bodySmall" style={styles.label}>
             {t("clearancePrice.store")}
           </Text>
-          <Text variant="bodyMedium">{storeName || storeCode || t("common:na")}</Text>
+          <Text variant="bodyMedium" style={styles.value}>
+            {storeName || storeCode || t("common:na")}
+          </Text>
         </View>
+
         <View style={styles.row}>
           <Text variant="bodySmall" style={styles.label}>
             {t("clearancePrice.barcode")}
           </Text>
-          <Text variant="bodyMedium" numberOfLines={1}>{clearanceBarcode || t("common:na")}</Text>
+          <Text variant="bodyMedium" style={styles.value} numberOfLines={1}>
+            {clearanceBarcode || t("clearancePrice.pendingBarcode")}
+          </Text>
         </View>
+
+        <TextInput
+          mode="outlined"
+          dense
+          label={t("clearancePrice.price")}
+          keyboardType="decimal-pad"
+          value={clearancePrice}
+          onChangeText={onChangeClearancePrice}
+          style={styles.input}
+        />
       </Card.Content>
     </Card>
   );
@@ -51,8 +79,8 @@ const styles = StyleSheet.create({
     backgroundColor: "#fff",
   },
   content: {
-    gap: 6,
-    paddingVertical: 8,
+    gap: 10,
+    paddingVertical: 10,
   },
   headerRow: {
     flexDirection: "row",
@@ -72,8 +100,12 @@ const styles = StyleSheet.create({
   label: {
     color: "#666",
   },
-  price: {
-    color: "#B54708",
-    fontWeight: "700",
+  value: {
+    flex: 1,
+    textAlign: "right",
+    color: "#0F172A",
+  },
+  input: {
+    backgroundColor: "#fff",
   },
 });

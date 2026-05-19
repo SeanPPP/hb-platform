@@ -33,6 +33,7 @@ export interface StorePriceEditable extends PricingEvaluationResult {
 
 export interface MultiCodeEditableItem extends PricingEvaluationResult {
   uuid: string;
+  setCodeId: string;
   storeCode?: string | null;
   productCode?: string | null;
   multiCodeProductCode?: string | null;
@@ -106,6 +107,27 @@ export interface UpdateMultiCodeRequest {
   isAutoPricing?: boolean;
   isSpecialProduct?: boolean;
   isActive?: boolean;
+}
+
+export interface CreateSetCodeRequest {
+  productCode: string;
+  storeCode: string;
+  productType: number;
+  barcode: string;
+  retailPrice?: number | null;
+  isActive?: boolean;
+}
+
+export interface UpdateSetCodeRequest {
+  storeCode: string;
+  barcode: string;
+  retailPrice?: number | null;
+  isActive?: boolean;
+}
+
+export interface UpsertClearancePriceRequest {
+  storeCode: string;
+  clearancePrice?: number | null;
 }
 
 export interface EvaluateAutoPricingRequest {

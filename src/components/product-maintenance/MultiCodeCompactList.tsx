@@ -1,149 +1,149 @@
 import { StyleSheet, View } from "react-native";
-import { Button, Card, Switch, Text, TextInput } from "react-native-paper";
+import { Button, Card, Text, TextInput } from "react-native-paper";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 import type { MultiCodeEditableItem } from "@/modules/product-maintenance/types";
 
 interface MultiCodeCompactListProps {
   items: MultiCodeEditableItem[];
-  onChangeItem: (uuid: string, patch: Partial<MultiCodeEditableItem>) => void;
-  onSaveItem: (uuid: string) => void;
   savingItemId?: string | null;
+  draftBarcode: string;
+  mainRetailPrice?: number | null;
+  onChangeDraftBarcode: (value: string) => void;
+  onChangeItem: (setCodeId: string, patch: Partial<MultiCodeEditableItem>) => void;
+  onSaveItem: (setCodeId: string) => void;
+  onCreateItem: () => void;
 }
 
-function formatDecimal(value?: number | null) {
-  return value == null ? "" : String(value);
+function formatPrice(value?: number | null) {
+  return value == null ? "" : value.toFixed(2);
 }
 
 export function MultiCodeCompactList({
   items,
+  savingItemId,
+  draftBarcode,
+  mainRetailPrice,
+  onChangeDraftBarcode,
   onChangeItem,
   onSaveItem,
-  savingItemId,
+  onCreateItem,
 }: MultiCodeCompactListProps) {
   const { t } = useAppTranslation("productQuery");
 
-  if (!items.length) {
-    return null;
-  }
-
   return (
-    <View style={styles.container}>
-      {items.map((item) => (
-        <Card key={item.uuid} style={styles.card} mode="contained">
-          <Card.Content style={styles.content}>
-            <Text variant="bodyMedium" style={styles.barcode}>
-              {item.barcode || item.multiCodeProductCode || item.uuid}
-            </Text>
-            <View style={styles.priceRow}>
-              <TextInput
-                mode="outlined"
-                dense
-                label={t("multiCode.purchase")}
-                keyboardType="decimal-pad"
-                style={styles.input}
-                value={formatDecimal(item.purchasePrice)}
-                onChangeText={(value) =>
-                  onChangeItem(item.uuid, {
-                    purchasePrice: value.trim() === "" ? null : Number(value),
-                  })
-                }
-              />
+    <Card style={styles.card} mode="contained">
+      <Card.Content style={styles.content}>
+        <Text variant="titleSmall" style={styles.title}>
+          {t("multiCode.title")}
+        </Text>
+
+        {items.map((item) => (
+          <View key={item.setCodeId || item.uuid} style={styles.item}>
+            <TextInput
+              mode="outlined"
+              dense
+              label={t("multiCode.barcode")}
+              value={item.barcode ?? ""}
+              onChangeText={(value) => onChangeItem(item.setCodeId, { barcode: value })}
+              style={styles.input}
+            />
+            <View style={styles.footerRow}>
               <TextInput
                 mode="outlined"
                 dense
                 label={t("multiCode.retail")}
-                keyboardType="decimal-pad"
-                style={styles.input}
-                value={formatDecimal(item.retailPrice)}
-                onChangeText={(value) =>
-                  onChangeItem(item.uuid, {
-                    retailPrice: value.trim() === "" ? null : Number(value),
-                  })
-                }
+                value={formatPrice(item.retailPrice)}
+                editable={false}
+                style={[styles.input, styles.priceInput]}
               />
-            </View>
-            <Text variant="bodySmall" style={styles.rate}>
-              Rate {item.rate == null ? "--" : item.rate}
-              {item.strategySourceLabel ? ` · ${item.strategySourceLabel}` : ""}
-            </Text>
-            <View style={styles.footerRow}>
-              <View style={styles.switches}>
-                <View style={styles.switchItem}>
-                  <Text variant="bodySmall">{t("multiCode.auto")}</Text>
-                  <Switch
-                    value={item.isAutoPricing}
-                    onValueChange={(value) => onChangeItem(item.uuid, { isAutoPricing: value })}
-                  />
-                </View>
-                <View style={styles.switchItem}>
-                  <Text variant="bodySmall">{t("multiCode.special")}</Text>
-                  <Switch
-                    value={item.isSpecialProduct}
-                    onValueChange={(value) => onChangeItem(item.uuid, { isSpecialProduct: value })}
-                  />
-                </View>
-              </View>
               <Button
                 compact
                 mode="contained-tonal"
-                onPress={() => onSaveItem(item.uuid)}
-                loading={savingItemId === item.uuid}
-                disabled={savingItemId === item.uuid}
+                onPress={() => onSaveItem(item.setCodeId)}
+                loading={savingItemId === item.setCodeId}
+                disabled={savingItemId === item.setCodeId}
               >
                 {t("multiCode.save")}
               </Button>
             </View>
-          </Card.Content>
-        </Card>
-      ))}
-    </View>
+          </View>
+        ))}
+
+        <View style={[styles.item, styles.draftItem]}>
+          <Text variant="bodySmall" style={styles.addTitle}>
+            {t("multiCode.addTitle")}
+          </Text>
+          <TextInput
+            mode="outlined"
+            dense
+            label={t("multiCode.barcode")}
+            value={draftBarcode}
+            onChangeText={onChangeDraftBarcode}
+            style={styles.input}
+          />
+          <View style={styles.footerRow}>
+            <TextInput
+              mode="outlined"
+              dense
+              label={t("multiCode.retail")}
+              value={formatPrice(mainRetailPrice)}
+              editable={false}
+              style={[styles.input, styles.priceInput]}
+            />
+            <Button
+              compact
+              mode="contained"
+              onPress={onCreateItem}
+              loading={savingItemId === "new-multi"}
+              disabled={savingItemId === "new-multi"}
+            >
+              {t("multiCode.add")}
+            </Button>
+          </View>
+          <Text variant="bodySmall" style={styles.hint}>
+            {t("multiCode.followMain")}
+          </Text>
+        </View>
+      </Card.Content>
+    </Card>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    gap: 8,
-  },
   card: {
     borderRadius: 8,
     backgroundColor: "#fff",
   },
   content: {
-    gap: 8,
+    gap: 10,
     paddingVertical: 10,
   },
-  barcode: {
-    fontWeight: "600",
-    color: "#0F172A",
+  title: {
+    fontWeight: "700",
   },
-  priceRow: {
-    flexDirection: "row",
-    gap: 10,
+  item: {
+    gap: 8,
+  },
+  draftItem: {
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: "#E5E7EB",
+    paddingTop: 10,
+  },
+  addTitle: {
+    color: "#475467",
   },
   input: {
-    flex: 1,
     backgroundColor: "#fff",
-    height: 42,
-  },
-  rate: {
-    color: "#475467",
   },
   footerRow: {
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "space-between",
-    gap: 12,
+    gap: 10,
   },
-  switches: {
+  priceInput: {
     flex: 1,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: 8,
   },
-  switchItem: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 2,
+  hint: {
+    color: "#475467",
   },
 });

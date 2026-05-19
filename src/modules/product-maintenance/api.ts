@@ -2,6 +2,7 @@ import type { AxiosRequestConfig } from "axios";
 import { apiClient } from "@/shared/api/client";
 import { useDeviceStore } from "@/store/device-store";
 import type {
+  CreateSetCodeRequest,
   MultiCodeEditableItem,
   ProductDetail,
   ProductLookupItem,
@@ -11,10 +12,12 @@ import type {
   StoreProductLookupRequest,
   EvaluateAutoPricingRequest,
   EvaluateAutoPricingResult,
+  UpdateSetCodeRequest,
   UpdateProductTypeRequest,
   UpdateProductTypeResult,
   UpdateMultiCodeRequest,
   UpdateStorePriceRequest,
+  UpsertClearancePriceRequest,
 } from "@/modules/product-maintenance/types";
 
 const BASE_PATH = "/react/v1/store-product-maintenance";
@@ -107,6 +110,7 @@ function normalizeMultiCodeItem(payload: unknown): MultiCodeEditableItem {
   const data = (payload && typeof payload === "object" ? payload : {}) as Record<string, unknown>;
   return {
     uuid: String(data.uuid ?? data.Uuid ?? ""),
+    setCodeId: String(data.setCodeId ?? data.SetCodeId ?? ""),
     storeCode: (data.storeCode ?? data.StoreCode ?? null) as string | null,
     productCode: (data.productCode ?? data.ProductCode ?? null) as string | null,
     multiCodeProductCode: (data.multiCodeProductCode ?? data.MultiCodeProductCode ?? null) as string | null,
@@ -290,4 +294,45 @@ export async function updateMultiCode(
     buildRequestConfig()
   );
   return normalizeMultiCodeItem(response.data);
+}
+
+export async function createSetCode(payload: CreateSetCodeRequest): Promise<ProductSetCodeItem> {
+  const response = await apiClient.post(
+    `${BASE_PATH}/set-codes`,
+    payload,
+    buildRequestConfig()
+  );
+  return normalizeSetCodeItem(response.data);
+}
+
+export async function updateSetCode(
+  setCodeId: string,
+  payload: UpdateSetCodeRequest
+): Promise<ProductSetCodeItem> {
+  const response = await apiClient.put(
+    `${BASE_PATH}/set-codes/${encodeURIComponent(setCodeId)}`,
+    payload,
+    buildRequestConfig()
+  );
+  return normalizeSetCodeItem(response.data);
+}
+
+export async function deleteSetCode(setCodeId: string): Promise<boolean> {
+  const response = await apiClient.delete(
+    `${BASE_PATH}/set-codes/${encodeURIComponent(setCodeId)}`,
+    buildRequestConfig()
+  );
+  return Boolean(response.data);
+}
+
+export async function upsertClearancePrice(
+  productCode: string,
+  payload: UpsertClearancePriceRequest
+): Promise<StoreClearancePriceItem> {
+  const response = await apiClient.put(
+    `${BASE_PATH}/products/${encodeURIComponent(productCode)}/clearance-price`,
+    payload,
+    buildRequestConfig()
+  );
+  return normalizeClearancePrice(response.data)!;
 }

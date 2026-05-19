@@ -17,8 +17,18 @@
     "lookupErrorTitle": "查询失败",
     "lookupErrorDescription": "查询过程中出现问题，请稍后重试。",
     "refreshFailed": "刷新失败",
+    "clearanceSaved": "清货价已保存",
+    "clearanceSaveFailed": "清货价保存失败",
+    "clearancePriceRequired": "请输入有效的清货价",
+    "setCodeCreated": "套装条码已新增",
+    "setCodeSaved": "套装条码已保存",
+    "setCodeSaveFailed": "套装条码保存失败",
+    "setCodeBarcodeRequired": "请输入套装条码",
+    "setCodeRetailRequired": "请输入套装零售价",
+    "multiCodeCreated": "多码条码已新增",
     "multiCodeSaved": "多码已保存",
     "multiCodeSaveFailed": "多码保存失败",
+    "multiCodeBarcodeRequired": "请输入多码条码",
     "saved": "商品信息已保存",
     "saveFailed": "保存失败",
     "emptyStorePrice": "当前分店没有商品价格记录",
@@ -67,6 +77,11 @@
       "set": "1 套装",
       "multi": "2 多码",
       "unknown": "未知类型"
+    },
+    "productTypeDescription": {
+      "normal": "普通商品，使用主条码自己的分店价格。",
+      "set": "套装零售价可自定义，进货价按主条码零售价和进货价比例换算。",
+      "multi": "多码零售价和进货价都与主条码当前分店价格一致。"
     }
   },
   "storePrice": {
@@ -84,19 +99,26 @@
     "title": "分店清货价",
     "store": "分店",
     "barcode": "清货条码",
-    "price": "清货价"
+    "price": "清货价",
+    "save": "保存清货",
+    "pendingBarcode": "保存后自动生成"
   },
   "setCode": {
     "title": "套装条码",
-    "meta": "{{itemNumber}} · 数量{{quantity}} · {{price}}"
+    "barcode": "条码",
+    "retail": "零售价",
+    "save": "保存",
+    "add": "新增",
+    "addTitle": "新增套装条码"
   },
   "multiCode": {
-    "purchase": "进货",
+    "title": "多码条码",
+    "barcode": "条码",
     "retail": "零售",
-    "auto": "自动",
-    "special": "特殊",
-    "save": "存",
-    "dirtyCount": "改动 {{count}} 项"
+    "save": "保存",
+    "add": "新增",
+    "addTitle": "新增多码条码",
+    "followMain": "零售价跟随主条码"
   },
   "camera": {
     "title": "扫码查询商品",
