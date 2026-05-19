@@ -22,7 +22,13 @@
     "saveFailed": "Save failed.",
     "emptyStorePrice": "There is no store price record for this product.",
     "emptyPrompt": "Enter a barcode, item number, or product code to start.",
-    "cameraTip": "Align the barcode with the center of the frame."
+    "cameraTip": "Align the barcode with the center of the frame.",
+    "printerRequired": "Select a label printer in Settings first.",
+    "printerPaused": "Printer connection is paused. Reconnect it in Settings first.",
+    "printSuccess": "The print job was sent.",
+    "printFailed": "Print failed.",
+    "discountPrintUnavailable": "This product has no discount data to print.",
+    "clearancePrintUnavailable": "This product has no clearance data to print."
   },
   "lookup": {
     "title": "Choose a matching product",
@@ -89,5 +95,12 @@
     "needPermissionTitle": "Camera permission required",
     "needPermissionDescription": "Enable camera access to scan products directly from the product lookup page.",
     "grantPermission": "Enable camera permission"
+  },
+  "print": {
+    "title": "Label printing",
+    "product": "Regular label",
+    "discount": "Discount label",
+    "clearance": "Clearance label",
+    "sending": "Sending..."
   }
 }

@@ -13,6 +13,13 @@ import { SetCodeCompactSection } from "@/components/product-maintenance/SetCodeC
 import { StickyActionBar } from "@/components/product-maintenance/StickyActionBar";
 import { StoreClearancePriceCard } from "@/components/product-maintenance/StoreClearancePriceCard";
 import { StorePriceStrategyCard } from "@/components/product-maintenance/StorePriceStrategyCard";
+import {
+  getSavedPrinter,
+  printClearanceLabel,
+  printDiscountLabel,
+  printProductLabel,
+} from "@/modules/printer/api";
+import { usePrinterStore } from "@/modules/printer/state";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 import {
   getProductDetail,
@@ -62,6 +69,7 @@ type QueryFeedback =
 function ProductQueryContent() {
   const { t } = useAppTranslation(["productQuery", "common"]);
   const { selectedStore, selectedStoreCode, isLoading: storesLoading } = useStores();
+  const printerAutoReconnectPaused = usePrinterStore((state) => state.autoReconnectPaused);
   const [keyword, setKeyword] = useState("");
   const [lookupItems, setLookupItems] = useState<ProductLookupItem[]>([]);
   const [selectedLookupProductCode, setSelectedLookupProductCode] = useState<string>();
@@ -76,6 +84,7 @@ function ProductQueryContent() {
   const [saving, setSaving] = useState(false);
   const [savingItemId, setSavingItemId] = useState<string | null>(null);
   const [snackbarMessage, setSnackbarMessage] = useState("");
+  const [printingKind, setPrintingKind] = useState<"product" | "discount" | "clearance" | null>(null);
 
   const loadDetail = useCallback(
     async (productCode: string) => {
@@ -362,6 +371,53 @@ function ProductQueryContent() {
     setDetail(cloneDetail(initialDetail));
   }, [initialDetail]);
 
+  const handlePrint = useCallback(
+    async (kind: "product" | "discount" | "clearance") => {
+      if (!detail) {
+        return;
+      }
+
+      const savedPrinter = await getSavedPrinter();
+      if (!savedPrinter?.address) {
+        setSnackbarMessage(t("messages.printerRequired"));
+        return;
+      }
+
+      if (printerAutoReconnectPaused) {
+        setSnackbarMessage(t("messages.printerPaused"));
+        return;
+      }
+
+      if (kind === "discount" && !(detail.storePrice?.discountRate && detail.storePrice.discountRate > 0)) {
+        setSnackbarMessage(t("messages.discountPrintUnavailable"));
+        return;
+      }
+
+      if (kind === "clearance" && !detail.clearancePrice) {
+        setSnackbarMessage(t("messages.clearancePrintUnavailable"));
+        return;
+      }
+
+      setPrintingKind(kind);
+      try {
+        if (kind === "product") {
+          await printProductLabel(detail);
+        } else if (kind === "discount") {
+          await printDiscountLabel(detail);
+        } else {
+          await printClearanceLabel(detail);
+        }
+        setSnackbarMessage(t("messages.printSuccess"));
+      } catch (error) {
+        const fallback = t("messages.printFailed");
+        setSnackbarMessage(error instanceof Error ? `${fallback}: ${error.message}` : fallback);
+      } finally {
+        setPrintingKind(null);
+      }
+    },
+    [detail, printerAutoReconnectPaused, t]
+  );
+
   const storePrice = detail?.storePrice;
   const clearancePrice = detail?.clearancePrice;
 
@@ -435,6 +491,40 @@ function ProductQueryContent() {
                   clearancePrice={formatCurrency(clearancePrice.clearancePrice)}
                 />
               ) : null}
+
+              <Card style={styles.printCard} mode="contained">
+                <Card.Content style={styles.printCardContent}>
+                  <Text variant="titleSmall" style={styles.printTitle}>
+                    {t("print.title")}
+                  </Text>
+                  <View style={styles.printActions}>
+                    <Button
+                      mode="contained"
+                      onPress={() => void handlePrint("product")}
+                      loading={printingKind === "product"}
+                      disabled={Boolean(printingKind)}
+                    >
+                      {printingKind === "product" ? t("print.sending") : t("print.product")}
+                    </Button>
+                    <Button
+                      mode="outlined"
+                      onPress={() => void handlePrint("discount")}
+                      loading={printingKind === "discount"}
+                      disabled={Boolean(printingKind) || !(storePrice?.discountRate && storePrice.discountRate > 0)}
+                    >
+                      {printingKind === "discount" ? t("print.sending") : t("print.discount")}
+                    </Button>
+                    <Button
+                      mode="outlined"
+                      onPress={() => void handlePrint("clearance")}
+                      loading={printingKind === "clearance"}
+                      disabled={Boolean(printingKind) || !clearancePrice}
+                    >
+                      {printingKind === "clearance" ? t("print.sending") : t("print.clearance")}
+                    </Button>
+                  </View>
+                </Card.Content>
+              </Card>
             </View>
 
             {detail.setCodes.length || detail.multiCodes.length ? (
@@ -589,6 +679,22 @@ const styles = StyleSheet.create({
   },
   emptyText: {
     color: "#555",
+  },
+  printCard: {
+    borderRadius: 8,
+    backgroundColor: "#FFFDF7",
+  },
+  printCardContent: {
+    gap: 10,
+  },
+  printTitle: {
+    fontWeight: "700",
+    color: "#111827",
+  },
+  printActions: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
   },
   cameraModal: {
     marginHorizontal: 16,

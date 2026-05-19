@@ -23,6 +23,29 @@
     "refreshStatus": "刷新设备状态",
     "ready": "当前设备已启用，后续重新打开 App 时无需再次登录。"
   },
+  "printer": {
+    "title": "标签打印机",
+    "description": "扫描并绑定蓝牙标签打印机，商品维护页会使用这里保存的打印机。",
+    "selected": "当前打印机：{{printer}}",
+    "notSelected": "当前还没有选择标签打印机",
+    "statusConnected": "状态：已连接",
+    "statusConnecting": "状态：连接中",
+    "statusReconnecting": "状态：自动重连中",
+    "statusDisconnected": "状态：未连接",
+    "statusPaused": "状态：已暂停自动连接",
+    "filterXPOnly": "仅显示 XP 打印机",
+    "scan": "扫描打印机",
+    "scanning": "扫描中...",
+    "connecting": "连接中...",
+    "connect": "连接",
+    "disconnect": "断开连接",
+    "test": "测试打印",
+    "clear": "清除保存",
+    "empty": "没有找到可用的蓝牙打印机，请确认打印机已开机并处于可发现范围。",
+    "emptyFiltered": "没有找到 XP 开头的设备，可关闭过滤查看全部设备。",
+    "bonded": "已配对",
+    "available": "可用设备"
+  },
   "deviceStatus": {
     "pending": "待确认",
     "disabled": "禁用",
@@ -45,6 +68,16 @@
     "refreshReadyMessage": "当前设备已经启用，后续重新打开 App 时无需再次登录。",
     "refreshPendingMessage": "当前设备还不能直接进入 App，请等待后台确认或检查设备状态。",
     "refreshFailedTitle": "刷新失败",
-    "refreshFailedMessage": "设备状态刷新失败，请稍后重试。"
+    "refreshFailedMessage": "设备状态刷新失败，请稍后重试。",
+    "printerScanFailedTitle": "扫描失败",
+    "printerConnectFailedTitle": "连接失败",
+    "printerTestFailedTitle": "测试打印失败",
+    "printerDisconnectFailedTitle": "断开失败",
+    "printerSavedTitle": "打印机已保存",
+    "printerSavedMessage": "已保存 {{printer}}，之后打印会优先连接这台设备。",
+    "printerTestSuccessTitle": "测试打印成功",
+    "printerTestSuccessMessage": "标签打印机已经收到测试任务。",
+    "printerClearedTitle": "已清除打印机",
+    "printerClearedMessage": "已移除已保存的标签打印机。"
   }
 }

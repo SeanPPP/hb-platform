@@ -23,6 +23,29 @@
     "refreshStatus": "Refresh device status",
     "ready": "This device is enabled. Next time the app opens, it can enter directly."
   },
+  "printer": {
+    "title": "Label printer",
+    "description": "Scan and save the Bluetooth label printer used by product maintenance.",
+    "selected": "Current printer: {{printer}}",
+    "notSelected": "No label printer has been selected yet.",
+    "statusConnected": "Status: Connected",
+    "statusConnecting": "Status: Connecting",
+    "statusReconnecting": "Status: Auto reconnecting",
+    "statusDisconnected": "Status: Disconnected",
+    "statusPaused": "Status: Auto connect paused",
+    "filterXPOnly": "Show XP printers only",
+    "scan": "Scan printers",
+    "scanning": "Scanning...",
+    "connecting": "Connecting...",
+    "connect": "Connect",
+    "disconnect": "Disconnect",
+    "test": "Test print",
+    "clear": "Clear saved printer",
+    "empty": "No Bluetooth printer was found. Make sure the printer is on and nearby.",
+    "emptyFiltered": "No XP-prefixed device was found. Turn off the filter to show all devices.",
+    "bonded": "Paired",
+    "available": "Available devices"
+  },
   "deviceStatus": {
     "pending": "Pending",
     "disabled": "Disabled",
@@ -45,6 +68,16 @@
     "refreshReadyMessage": "This device is enabled. Next time the app opens, it can enter directly.",
     "refreshPendingMessage": "This device cannot enter the app directly yet. Please wait for backend approval or check its status.",
     "refreshFailedTitle": "Refresh failed",
-    "refreshFailedMessage": "Failed to refresh the device status. Please try again later."
+    "refreshFailedMessage": "Failed to refresh the device status. Please try again later.",
+    "printerScanFailedTitle": "Scan failed",
+    "printerConnectFailedTitle": "Connection failed",
+    "printerTestFailedTitle": "Test print failed",
+    "printerDisconnectFailedTitle": "Disconnect failed",
+    "printerSavedTitle": "Printer saved",
+    "printerSavedMessage": "{{printer}} has been saved as the label printer.",
+    "printerTestSuccessTitle": "Test print sent",
+    "printerTestSuccessMessage": "The label printer received the test job.",
+    "printerClearedTitle": "Printer cleared",
+    "printerClearedMessage": "The saved label printer has been removed."
   }
 }

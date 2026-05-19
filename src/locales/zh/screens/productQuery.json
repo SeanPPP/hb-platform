@@ -22,7 +22,13 @@
     "saveFailed": "保存失败",
     "emptyStorePrice": "当前分店没有商品价格记录",
     "emptyPrompt": "输入条码、货号或商品编码开始查询",
-    "cameraTip": "将条码对准取景框中心"
+    "cameraTip": "将条码对准取景框中心",
+    "printerRequired": "请先在设置页选择标签打印机",
+    "printerPaused": "打印机连接已暂停，请先到设置页重新连接",
+    "printSuccess": "打印任务已发送",
+    "printFailed": "打印失败",
+    "discountPrintUnavailable": "当前商品没有折扣信息，无法打印折扣标签",
+    "clearancePrintUnavailable": "当前商品没有清货信息，无法打印清货标签"
   },
   "lookup": {
     "title": "选择匹配商品",
@@ -89,5 +95,12 @@
     "needPermissionTitle": "需要相机权限",
     "needPermissionDescription": "开启权限后，才能在商品查询页里直接扫码查询商品。",
     "grantPermission": "开启相机权限"
+  },
+  "print": {
+    "title": "标签打印",
+    "product": "普通标签",
+    "discount": "折扣标签",
+    "clearance": "清货标签",
+    "sending": "发送中..."
   }
 }

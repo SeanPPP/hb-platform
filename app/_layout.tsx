@@ -5,6 +5,7 @@ import { SafeAreaProvider } from "react-native-safe-area-context";
 import { I18nextProvider } from "react-i18next";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { StatusBar } from "expo-status-bar";
+import { usePrinterAutoConnect } from "@/modules/printer/use-printer-auto-connect";
 import { i18n, initI18n } from "@/shared/i18n/i18n";
 
 const queryClient = new QueryClient({
@@ -27,6 +28,8 @@ const theme = {
 };
 
 export default function RootLayout() {
+  usePrinterAutoConnect();
+
   useEffect(() => {
     void initI18n();
   }, []);

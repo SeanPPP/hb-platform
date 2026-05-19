@@ -1,8 +1,19 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Alert, ScrollView, StyleSheet, View } from "react-native";
 import { useRouter } from "expo-router";
-import { Button, HelperText, Menu, Surface, Text } from "react-native-paper";
+import { Button, HelperText, Menu, Surface, Switch, Text } from "react-native-paper";
 import { SafeAreaView } from "react-native-safe-area-context";
+import {
+  clearSavedPrinter,
+  connectSavedPrinter,
+  disconnectCurrentPrinter,
+  scanPrinterDevices,
+  selectPrinter,
+  syncPrinterStatus,
+  testPrinterConnection,
+} from "@/modules/printer/api";
+import { usePrinterStore, type PrinterConnectionState } from "@/modules/printer/state";
+import type { PrinterDevice } from "@/modules/printer/types";
 import { setAppLanguage } from "@/shared/i18n/i18n";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 import type { AppLanguage } from "@/shared/i18n/types";
@@ -47,9 +58,15 @@ export default function Settings() {
   const validateDevice = useDeviceStore((state) => state.validate);
   const deviceLoading = useDeviceStore((state) => state.isLoading);
   const { stores, selectedStore, selectStore } = useStores();
+  const savedPrinter = usePrinterStore((state) => state.savedPrinter);
+  const printerStatus = usePrinterStore((state) => state.status);
+  const autoReconnectPaused = usePrinterStore((state) => state.autoReconnectPaused);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [storeMenuVisible, setStoreMenuVisible] = useState(false);
   const [languageMenuVisible, setLanguageMenuVisible] = useState(false);
+  const [rawPrinters, setRawPrinters] = useState<PrinterDevice[]>([]);
+  const [printerBusy, setPrinterBusy] = useState(false);
+  const [filterXPOnly, setFilterXPOnly] = useState(true);
 
   const canRegisterDevice = access.hasRole("Order") || access.hasRole("订货员");
   const canViewDeviceCard = canRegisterDevice || Boolean(deviceSession);
@@ -82,6 +99,47 @@ export default function Settings() {
       ),
     [stores]
   );
+
+  const visiblePrinters = useMemo(() => {
+    if (!filterXPOnly) {
+      return rawPrinters;
+    }
+
+    return rawPrinters.filter((printer) => {
+      const name = printer.name?.trim();
+      return typeof name === "string" && name.toUpperCase().startsWith("XP");
+    });
+  }, [filterXPOnly, rawPrinters]);
+
+  useEffect(() => {
+    void syncPrinterStatus();
+  }, []);
+
+  const isPrinterConnected = printerStatus === "connected";
+  const isPrinterConnecting = printerStatus === "connecting";
+  const isPrinterReconnecting = printerStatus === "reconnecting";
+
+  function resolvePrinterStatusText(
+    status: PrinterConnectionState,
+    paused: boolean,
+    tLabel: (key: string, options?: Record<string, unknown>) => string
+  ) {
+    if (paused || status === "paused") {
+      return tLabel("printer.statusPaused");
+    }
+    switch (status) {
+      case "connected":
+        return tLabel("printer.statusConnected");
+      case "connecting":
+        return tLabel("printer.statusConnecting");
+      case "reconnecting":
+        return tLabel("printer.statusReconnecting");
+      case "error":
+        return tLabel("printer.statusDisconnected");
+      default:
+        return tLabel("printer.statusDisconnected");
+    }
+  }
 
   const handleLogout = () => {
     Alert.alert(t("dialogs.logoutTitle"), t("dialogs.logoutMessage"), [
@@ -152,6 +210,97 @@ export default function Settings() {
       );
     } finally {
       setIsSubmitting(false);
+    }
+  };
+
+  const handleScanPrinters = async () => {
+    setPrinterBusy(true);
+    try {
+      const nextPrinters = await scanPrinterDevices();
+      setRawPrinters(nextPrinters);
+    } catch (error) {
+      Alert.alert(
+        t("dialogs.printerScanFailedTitle"),
+        error instanceof Error ? error.message : t("dialogs.refreshFailedMessage")
+      );
+    } finally {
+      setPrinterBusy(false);
+    }
+  };
+
+  const handleConnectPrinter = async (device: PrinterDevice) => {
+    setPrinterBusy(true);
+    try {
+      await selectPrinter(device);
+      Alert.alert(
+        t("dialogs.printerSavedTitle"),
+        t("dialogs.printerSavedMessage", { printer: device.name || device.address })
+      );
+    } catch (error) {
+      Alert.alert(
+        t("dialogs.printerConnectFailedTitle"),
+        error instanceof Error ? error.message : t("dialogs.refreshFailedMessage")
+      );
+    } finally {
+      setPrinterBusy(false);
+    }
+  };
+
+  const handleTestPrinter = async () => {
+    setPrinterBusy(true);
+    try {
+      await testPrinterConnection();
+      Alert.alert(t("dialogs.printerTestSuccessTitle"), t("dialogs.printerTestSuccessMessage"));
+    } catch (error) {
+      Alert.alert(
+        t("dialogs.printerTestFailedTitle"),
+        error instanceof Error ? error.message : t("dialogs.refreshFailedMessage")
+      );
+    } finally {
+      setPrinterBusy(false);
+    }
+  };
+
+  const handleClearPrinter = async () => {
+    setPrinterBusy(true);
+    try {
+      await clearSavedPrinter();
+      Alert.alert(t("dialogs.printerClearedTitle"), t("dialogs.printerClearedMessage"));
+    } catch (error) {
+      Alert.alert(
+        t("dialogs.printerDisconnectFailedTitle"),
+        error instanceof Error ? error.message : t("dialogs.refreshFailedMessage")
+      );
+    } finally {
+      setPrinterBusy(false);
+    }
+  };
+
+  const handleConnectSavedPrinter = async () => {
+    setPrinterBusy(true);
+    try {
+      await connectSavedPrinter();
+    } catch (error) {
+      Alert.alert(
+        t("dialogs.printerConnectFailedTitle"),
+        error instanceof Error ? error.message : t("dialogs.refreshFailedMessage")
+      );
+    } finally {
+      setPrinterBusy(false);
+    }
+  };
+
+  const handleDisconnectPrinter = async () => {
+    setPrinterBusy(true);
+    try {
+      await disconnectCurrentPrinter({ pauseAutoReconnect: true });
+    } catch (error) {
+      Alert.alert(
+        t("dialogs.printerDisconnectFailedTitle"),
+        error instanceof Error ? error.message : t("dialogs.refreshFailedMessage")
+      );
+    } finally {
+      setPrinterBusy(false);
     }
   };
 
@@ -299,6 +448,116 @@ export default function Settings() {
           </Surface>
         ) : null}
 
+        <Surface style={styles.card} elevation={1}>
+          <Text variant="titleMedium">{t("printer.title")}</Text>
+          <Text variant="bodyMedium" style={styles.meta}>
+            {t("printer.description")}
+          </Text>
+          <Text variant="bodyLarge" style={styles.value}>
+            {savedPrinter
+              ? t("printer.selected", { printer: savedPrinter.name || savedPrinter.address })
+              : t("printer.notSelected")}
+          </Text>
+          <Text variant="bodySmall" style={styles.meta}>
+            {resolvePrinterStatusText(printerStatus, autoReconnectPaused, t)}
+          </Text>
+
+          <View style={styles.primaryPrinterActions}>
+            <Button
+              mode="contained"
+              onPress={handleScanPrinters}
+              loading={printerBusy && !isPrinterConnecting}
+              disabled={printerBusy}
+              style={styles.primaryActionButton}
+            >
+              {printerBusy && !isPrinterConnecting ? t("printer.scanning") : t("printer.scan")}
+            </Button>
+            {savedPrinter ? (
+              isPrinterConnected ? (
+                <Button
+                  mode="outlined"
+                  onPress={handleDisconnectPrinter}
+                  disabled={printerBusy}
+                  style={styles.primaryActionButton}
+                >
+                  {t("printer.disconnect")}
+                </Button>
+              ) : (
+                <Button
+                  mode="outlined"
+                  onPress={handleConnectSavedPrinter}
+                  loading={printerBusy && (isPrinterConnecting || isPrinterReconnecting)}
+                  disabled={printerBusy}
+                  style={styles.primaryActionButton}
+                >
+                  {printerBusy && (isPrinterConnecting || isPrinterReconnecting)
+                    ? t("printer.connecting")
+                    : t("printer.connect")}
+                </Button>
+              )
+            ) : null}
+          </View>
+
+          <View style={styles.filterRow}>
+            <Text variant="bodyMedium">{t("printer.filterXPOnly")}</Text>
+            <Switch value={filterXPOnly} onValueChange={setFilterXPOnly} disabled={printerBusy} />
+          </View>
+
+          {visiblePrinters.length ? (
+            <View style={styles.printerList}>
+              <Text variant="labelLarge">{t("printer.available")}</Text>
+              {visiblePrinters.map((printer) => {
+                const selected = savedPrinter?.address === printer.address;
+                return (
+                  <Surface key={printer.address} style={styles.printerRow} elevation={0}>
+                    <View style={styles.printerMeta}>
+                      <Text variant="bodyMedium" style={styles.printerName}>
+                        {printer.name || printer.address}
+                      </Text>
+                      <Text variant="bodySmall" style={styles.meta}>
+                        {printer.address}
+                      </Text>
+                      {printer.bonded ? (
+                        <Text variant="bodySmall" style={styles.meta}>
+                          {t("printer.bonded")}
+                        </Text>
+                      ) : null}
+                    </View>
+                    <Button
+                      mode={selected ? "contained-tonal" : "outlined"}
+                      onPress={() => void handleConnectPrinter(printer)}
+                      disabled={printerBusy}
+                    >
+                      {t("printer.connect")}
+                    </Button>
+                  </Surface>
+                );
+              })}
+            </View>
+          ) : (
+            <HelperText type="info" visible>
+              {rawPrinters.length && filterXPOnly ? t("printer.emptyFiltered") : t("printer.empty")}
+            </HelperText>
+          )}
+
+          <View style={styles.printerActions}>
+            <Button
+              mode="outlined"
+              onPress={handleTestPrinter}
+              disabled={printerBusy || !savedPrinter || !isPrinterConnected}
+            >
+              {t("printer.test")}
+            </Button>
+            <Button
+              mode="text"
+              onPress={handleClearPrinter}
+              disabled={printerBusy || !savedPrinter}
+            >
+              {t("printer.clear")}
+            </Button>
+          </View>
+        </Surface>
+
         {user ? (
           <Button
             mode="contained"
@@ -338,6 +597,46 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
   },
   primaryButton: { marginTop: 4 },
+  filterRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginTop: 4,
+  },
+  primaryPrinterActions: {
+    flexDirection: "row",
+    gap: 10,
+    marginTop: 4,
+  },
+  primaryActionButton: {
+    flex: 1,
+  },
+  printerList: {
+    gap: 8,
+    marginTop: 4,
+  },
+  printerRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+    borderRadius: 12,
+    backgroundColor: "#F7F8FA",
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  printerMeta: {
+    flex: 1,
+    gap: 2,
+  },
+  printerName: {
+    fontWeight: "600",
+  },
+  printerActions: {
+    flexDirection: "row",
+    gap: 10,
+    marginTop: 4,
+  },
   secondaryButton: { marginTop: 8 },
   logoutButton: { marginTop: 2, marginBottom: 6 },
   successText: { color: "#1677FF", marginTop: 8 },

@@ -36,6 +36,11 @@
         "CAMERA",
         "RECORD_AUDIO",
         "VIBRATE",
+        "BLUETOOTH",
+        "BLUETOOTH_ADMIN",
+        "android.permission.BLUETOOTH_CONNECT",
+        "android.permission.BLUETOOTH_SCAN",
+        "android.permission.ACCESS_FINE_LOCATION",
         "android.permission.CAMERA",
         "android.permission.RECORD_AUDIO"
       ]
