@@ -107,3 +107,34 @@ export interface UpdateMultiCodeRequest {
   isSpecialProduct?: boolean;
   isActive?: boolean;
 }
+
+export interface EvaluateAutoPricingRequest {
+  productCode: string;
+  storeCode?: string | null;
+  forceAutoPricing?: boolean;
+}
+
+export interface EvaluateAutoPricingResult {
+  productCode: string;
+  storeCode?: string | null;
+  storePriceUuid?: string | null;
+  currentRetailPrice?: number | null;
+  recalculatedRetailPrice?: number | null;
+  currentRetailPriceFormatted: string;
+  recalculatedRetailPriceFormatted: string;
+  discountRate?: number | null;
+  isAutoPricing: boolean;
+  hasValidPurchasePrice: boolean;
+  shouldUpdate: boolean;
+}
+
+export interface UpdateProductTypeRequest {
+  productType: number;
+  storeCode?: string | null;
+}
+
+export interface UpdateProductTypeResult {
+  productCode: string;
+  productType: number;
+  productTypeLabel?: string | null;
+}

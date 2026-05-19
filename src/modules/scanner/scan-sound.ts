@@ -27,6 +27,13 @@ const SOUND_PATTERNS: Record<PlayableScanStatus, ToneStep[]> = {
     { frequency: 0, durationMs: 35 },
     { frequency: 988, durationMs: 100, volume: 0.32 },
   ],
+  price_update_required: [
+    { frequency: 988, durationMs: 85, volume: 0.32 },
+    { frequency: 0, durationMs: 30 },
+    { frequency: 1319, durationMs: 110, volume: 0.34 },
+    { frequency: 0, durationMs: 30 },
+    { frequency: 988, durationMs: 120, volume: 0.32 },
+  ],
   not_found: [
     { frequency: 392, durationMs: 110, volume: 0.34 },
     { frequency: 0, durationMs: 30 },

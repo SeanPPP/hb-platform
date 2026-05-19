@@ -1,12 +1,17 @@
-import { Image, StyleSheet, View } from "react-native";
-import { Card, IconButton, Text } from "react-native-paper";
+import { Image, Pressable, StyleSheet, View } from "react-native";
+import { Card, Text } from "react-native-paper";
 import { ProductBarcodeImage } from "@/components/product-maintenance/ProductBarcodeImage";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 
+const PRODUCT_GRADE_CONFIG: Record<string, { color: string }> = {
+  A: { color: "#722ED1" },
+  B: { color: "#1890FF" },
+  C: { color: "#FA8C16" },
+  D: { color: "#F5222D" },
+};
+
 interface ProductHeroCardProps {
   imageUrl?: string | null;
-  isPrintingProductLabel?: boolean;
-  onPrintProductLabel?: () => void;
   productName?: string;
   supplierName?: string | null;
   supplierCode?: string | null;
@@ -14,12 +19,11 @@ interface ProductHeroCardProps {
   barcode?: string | null;
   productType?: number | null;
   grade?: string | null;
+  onPressProductType?: () => void;
 }
 
 export function ProductHeroCard({
   imageUrl,
-  isPrintingProductLabel = false,
-  onPrintProductLabel,
   productName,
   supplierName,
   supplierCode,
@@ -27,10 +31,13 @@ export function ProductHeroCard({
   barcode,
   productType,
   grade,
+  onPressProductType,
 }: ProductHeroCardProps) {
   const { t } = useAppTranslation(["productQuery", "common"]);
   const supplierDisplay = supplierName || supplierCode || t("common:na");
   const itemDisplay = itemNumber || t("common:na");
+  const normalizedGrade = grade?.trim().toUpperCase();
+  const gradeColor = normalizedGrade ? PRODUCT_GRADE_CONFIG[normalizedGrade]?.color ?? "#98A2B3" : undefined;
   const productTypeLabel =
     productType === 0 ? t("hero.productType.normal")
     : productType === 1 ? t("hero.productType.set")
@@ -61,11 +68,22 @@ export function ProductHeroCard({
 
             <View style={styles.metaLine}>
               <Text variant="bodySmall" style={[styles.blockValue, styles.supplierValue, styles.supplierText]} numberOfLines={1}>
-                {grade ? `${supplierDisplay} · ${t("common:grade", { grade })}` : supplierDisplay}
+                {supplierDisplay}
               </Text>
-              <Text variant="bodySmall" style={[styles.blockValue, styles.typeValue]} numberOfLines={1}>
-                {productTypeLabel}
-              </Text>
+              <Pressable
+                accessibilityRole="button"
+                onPress={onPressProductType}
+                disabled={!onPressProductType}
+                style={({ pressed }) => [
+                  styles.typeBadge,
+                  !onPressProductType ? styles.typeBadgeStatic : null,
+                  pressed && onPressProductType ? styles.typeBadgePressed : null,
+                ]}
+              >
+                <Text variant="bodySmall" style={[styles.blockValue, styles.typeValue]} numberOfLines={1}>
+                  {productTypeLabel}
+                </Text>
+              </Pressable>
             </View>
           </View>
         </View>
@@ -83,22 +101,17 @@ export function ProductHeroCard({
           </View>
         </View>
 
-        <View style={[styles.infoBlock, styles.barcodeBlock]}>
-          <View style={styles.barcodeRow}>
-            <View style={styles.barcodeImageWrap}>
-              <ProductBarcodeImage value={barcode} />
-            </View>
-            <IconButton
-              accessibilityLabel={isPrintingProductLabel ? t("print.sendingShort") : t("print.quick")}
-              icon="printer-outline"
-              onPress={onPrintProductLabel}
-              loading={isPrintingProductLabel}
-              disabled={!onPrintProductLabel || isPrintingProductLabel}
-              mode="contained"
-              size={18}
-              style={styles.printButton}
-            />
+        <View style={[styles.infoBlock, styles.barcodeBlock, styles.barcodeRow]}>
+          <View style={styles.barcodeImageWrap}>
+            <ProductBarcodeImage value={barcode} />
           </View>
+          {normalizedGrade ? (
+            <View style={[styles.gradeBadge, { backgroundColor: gradeColor }]}>
+              <Text variant="labelMedium" style={styles.gradeBadgeText}>
+                {t("common:grade", { grade: normalizedGrade })}
+              </Text>
+            </View>
+          ) : null}
         </View>
       </Card.Content>
     </Card>
@@ -179,10 +192,23 @@ const styles = StyleSheet.create({
   barcodeRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
+    gap: 10,
+  },
+  gradeBadge: {
+    alignSelf: "flex-start",
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    flexShrink: 0,
+  },
+  gradeBadgeText: {
+    color: "#FFFFFF",
+    fontWeight: "800",
+    letterSpacing: 0.2,
   },
   barcodeImageWrap: {
-    flex: 1,
+    width: 150,
+    maxWidth: "58%",
     minWidth: 0,
   },
   blockValue: {
@@ -202,17 +228,25 @@ const styles = StyleSheet.create({
     color: "#166534",
     flexShrink: 0,
   },
-  printButton: {
-    width: 36,
-    height: 36,
-    margin: 0,
-    borderRadius: 8,
-    alignSelf: "center",
-  },
   supplierValue: {
     color: "#B42318",
   },
   supplierText: {
     flex: 1,
+  },
+  typeBadge: {
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    backgroundColor: "#DCFCE7",
+    borderWidth: 1,
+    borderColor: "#86EFAC",
+    flexShrink: 0,
+  },
+  typeBadgeStatic: {
+    opacity: 1,
+  },
+  typeBadgePressed: {
+    opacity: 0.78,
   },
 });

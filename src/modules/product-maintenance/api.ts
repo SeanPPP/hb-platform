@@ -9,6 +9,10 @@ import type {
   StoreClearancePriceItem,
   StorePriceEditable,
   StoreProductLookupRequest,
+  EvaluateAutoPricingRequest,
+  EvaluateAutoPricingResult,
+  UpdateProductTypeRequest,
+  UpdateProductTypeResult,
   UpdateMultiCodeRequest,
   UpdateStorePriceRequest,
 } from "@/modules/product-maintenance/types";
@@ -176,6 +180,36 @@ function normalizeDetail(payload: unknown): ProductDetail {
   };
 }
 
+function normalizeAutoPricingEvaluation(payload: unknown): EvaluateAutoPricingResult {
+  const data = (payload && typeof payload === "object" ? payload : {}) as Record<string, unknown>;
+  return {
+    productCode: String(data.productCode ?? data.ProductCode ?? ""),
+    storeCode: (data.storeCode ?? data.StoreCode ?? null) as string | null,
+    storePriceUuid: (data.storePriceUuid ?? data.StorePriceUuid ?? null) as string | null,
+    currentRetailPrice: toNumber(data.currentRetailPrice ?? data.CurrentRetailPrice),
+    recalculatedRetailPrice: toNumber(data.recalculatedRetailPrice ?? data.RecalculatedRetailPrice),
+    currentRetailPriceFormatted: String(
+      data.currentRetailPriceFormatted ?? data.CurrentRetailPriceFormatted ?? ""
+    ),
+    recalculatedRetailPriceFormatted: String(
+      data.recalculatedRetailPriceFormatted ?? data.RecalculatedRetailPriceFormatted ?? ""
+    ),
+    discountRate: normalizeDiscountRate(data.discountRate ?? data.DiscountRate),
+    isAutoPricing: Boolean(data.isAutoPricing ?? data.IsAutoPricing),
+    hasValidPurchasePrice: Boolean(data.hasValidPurchasePrice ?? data.HasValidPurchasePrice),
+    shouldUpdate: Boolean(data.shouldUpdate ?? data.ShouldUpdate),
+  };
+}
+
+function normalizeProductTypeUpdate(payload: unknown): UpdateProductTypeResult {
+  const data = (payload && typeof payload === "object" ? payload : {}) as Record<string, unknown>;
+  return {
+    productCode: String(data.productCode ?? data.ProductCode ?? ""),
+    productType: Number(data.productType ?? data.ProductType ?? 0),
+    productTypeLabel: (data.productTypeLabel ?? data.ProductTypeLabel ?? null) as string | null,
+  };
+}
+
 export async function lookupProducts(
   payload: StoreProductLookupRequest
 ): Promise<ProductLookupItem[]> {
@@ -221,6 +255,29 @@ export async function updateStorePrice(
     buildRequestConfig()
   );
   return normalizeStorePrice(response.data)!;
+}
+
+export async function evaluateAutoPricing(
+  payload: EvaluateAutoPricingRequest
+): Promise<EvaluateAutoPricingResult> {
+  const response = await apiClient.post(
+    `${BASE_PATH}/evaluate-auto-pricing`,
+    payload,
+    buildRequestConfig()
+  );
+  return normalizeAutoPricingEvaluation(response.data);
+}
+
+export async function updateProductType(
+  productCode: string,
+  payload: UpdateProductTypeRequest
+): Promise<UpdateProductTypeResult> {
+  const response = await apiClient.put(
+    `${BASE_PATH}/products/${encodeURIComponent(productCode)}/type`,
+    payload,
+    buildRequestConfig()
+  );
+  return normalizeProductTypeUpdate(response.data);
 }
 
 export async function updateMultiCode(

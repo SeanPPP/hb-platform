@@ -28,6 +28,10 @@
     "printerPaused": "Printer connection is paused. Reconnect it in Settings first.",
     "printSuccess": "The print job was sent.",
     "printFailed": "Print failed.",
+    "autoPricingEvaluateFailed": "Auto pricing evaluation failed.",
+    "autoPricingUpdateFailed": "Auto pricing update failed.",
+    "productTypeUpdateFailed": "Failed to update product type.",
+    "productTypeUpdated": "Product type updated.",
     "discountPrintUnavailable": "This product has no discount data to print.",
     "clearancePrintUnavailable": "This product has no clearance data to print."
   },
@@ -57,6 +61,7 @@
     "barcodeLabel": "Barcode",
     "productTypeLabel": "Type",
     "supplierLabel": "Supplier",
+    "productTypeChooseTitle": "Choose product type",
     "productType": {
       "normal": "0 Regular",
       "set": "1 Set",
@@ -69,7 +74,7 @@
     "purchase": "Cost",
     "retail": "Retail",
     "discountPercent": "Discount %",
-    "discountedRetail": "Now Price",
+    "discountedRetail": "Discount Price",
     "rate": "Rate {{value}}",
     "calculating": "Calculating...",
     "auto": "Auto",
@@ -98,6 +103,14 @@
     "needPermissionTitle": "Camera permission required",
     "needPermissionDescription": "Enable camera access to scan products directly from the product lookup page.",
     "grantPermission": "Enable camera permission"
+  },
+  "autoPricingConfirm": {
+    "title": "Auto price changed",
+    "description": "The automatic retail price for {{name}} ({{code}}) has changed.",
+    "currentRetail": "Current retail: {{value}}",
+    "nextRetail": "New retail: {{value}}",
+    "discountHint": "Confirm to update the retail price and refresh the regular label.",
+    "confirm": "Update price and label"
   },
   "print": {
     "title": "Label printing",

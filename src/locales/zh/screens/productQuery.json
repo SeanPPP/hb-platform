@@ -28,6 +28,10 @@
     "printerPaused": "打印机连接已暂停，请先到设置页重新连接",
     "printSuccess": "打印任务已发送",
     "printFailed": "打印失败",
+    "autoPricingEvaluateFailed": "自动价格评估失败",
+    "autoPricingUpdateFailed": "自动价格更新失败",
+    "productTypeUpdateFailed": "商品类型更新失败",
+    "productTypeUpdated": "商品类型已更新",
     "discountPrintUnavailable": "当前商品没有折扣信息，无法打印折扣标签",
     "clearancePrintUnavailable": "当前商品没有清货信息，无法打印清货标签"
   },
@@ -57,6 +61,7 @@
     "barcodeLabel": "条码",
     "productTypeLabel": "商品类型",
     "supplierLabel": "供应商",
+    "productTypeChooseTitle": "选择商品类型",
     "productType": {
       "normal": "0 普通",
       "set": "1 套装",
@@ -69,7 +74,7 @@
     "purchase": "进货",
     "retail": "零售",
     "discountPercent": "折扣率%",
-    "discountedRetail": "折后价",
+    "discountedRetail": "折扣价格",
     "rate": "Rate {{value}}",
     "calculating": "计算中...",
     "auto": "自动",
@@ -98,6 +103,14 @@
     "needPermissionTitle": "需要相机权限",
     "needPermissionDescription": "开启权限后，才能在商品查询页里直接扫码查询商品。",
     "grantPermission": "开启相机权限"
+  },
+  "autoPricingConfirm": {
+    "title": "发现自动价变化",
+    "description": "{{name}}（{{code}}）的自动零售价有更新。",
+    "currentRetail": "当前零售价：{{value}}",
+    "nextRetail": "新零售价：{{value}}",
+    "discountHint": "确认后会同步更新零售价，并按新价格更新普通标签。",
+    "confirm": "更新价格并更新标签"
   },
   "print": {
     "title": "标签打印",

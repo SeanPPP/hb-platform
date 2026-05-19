@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ScrollView, StyleSheet, TextInput, View } from "react-native";
 import { CameraView } from "expo-camera";
 import { useFocusEffect, useIsFocused } from "@react-navigation/native";
@@ -22,18 +22,23 @@ import {
 import { usePrinterStore } from "@/modules/printer/state";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 import {
+  evaluateAutoPricing,
   getProductDetail,
   lookupProducts,
   updateMultiCode,
+  updateProductType,
   updateStorePrice,
 } from "@/modules/product-maintenance/api";
 import type {
+  EvaluateAutoPricingResult,
   MultiCodeEditableItem,
   ProductDetail,
   ProductLookupItem,
 } from "@/modules/product-maintenance/types";
 import { useCameraScan } from "@/modules/scanner/use-camera-scan";
 import { useHidBarcodeScanner } from "@/modules/scanner/use-hid-barcode-scanner";
+import { playScanFeedbackSound, preloadScanFeedbackSounds } from "@/modules/scanner/scan-sound";
+import type { ScanSource } from "@/modules/scanner/types";
 import { useStores } from "@/modules/shop/use-stores";
 
 type LookupTrigger = "manual" | "scan";
@@ -42,12 +47,12 @@ function cloneDetail(detail: ProductDetail | null): ProductDetail | null {
   return detail ? JSON.parse(JSON.stringify(detail)) : null;
 }
 
-function formatDecimal(value?: number | null) {
-  return value == null ? "" : String(value);
-}
-
 function formatCurrency(value?: number | null) {
   return value == null ? "" : value.toFixed(2);
+}
+
+function formatFixedDecimal(value?: number | null) {
+  return value == null || !Number.isFinite(value) ? "" : value.toFixed(2);
 }
 
 function clamp(value: number, min: number, max: number) {
@@ -117,10 +122,28 @@ function formatPercentValue(value?: number | null) {
   return Number.isInteger(percent) ? String(percent) : percent.toFixed(2).replace(/\.?0+$/, "");
 }
 
+function toFixedDecimalInput(value: string) {
+  const numeric = parseDecimalInput(value);
+  return {
+    numeric,
+    display: numeric == null ? "" : numeric.toFixed(2),
+  };
+}
+
 function isStorePriceDirty(current: ProductDetail | null, initial: ProductDetail | null) {
   const left = current?.storePrice;
   const right = initial?.storePrice;
   return JSON.stringify(left ?? null) !== JSON.stringify(right ?? null);
+}
+
+function replaceStorePriceDetail(
+  detail: ProductDetail,
+  storePrice: NonNullable<ProductDetail["storePrice"]>
+) {
+  return {
+    ...detail,
+    storePrice,
+  };
 }
 
 function getDirtyMultiCodeIds(current: ProductDetail | null, initial: ProductDetail | null) {
@@ -135,6 +158,40 @@ type QueryFeedback =
   | { type: "empty"; query: string }
   | { type: "error"; query?: string; message: string };
 
+type AutoPricingFlowStatus =
+  | "no_action"
+  | "saved_without_prompt"
+  | "prompt_confirmed"
+  | "prompt_cancelled"
+  | "failed";
+
+interface LookupFlowResult {
+  keepCameraOpen: boolean;
+  labelPrinted: boolean;
+  autoPricingStatus: AutoPricingFlowStatus;
+}
+
+interface AutoPricingDialogState {
+  detail: ProductDetail;
+  evaluation: EvaluateAutoPricingResult;
+  scanSource: ScanSource | null;
+}
+
+interface AutoPricingDialogResolution {
+  status: "confirmed" | "cancelled" | "failed";
+  keepCameraOpen: boolean;
+  labelPrinted: boolean;
+  updatedDetail?: ProductDetail | null;
+}
+
+const PRODUCT_TYPE_OPTIONS = [0, 1, 2] as const;
+
+const DEFAULT_LOOKUP_FLOW_RESULT: LookupFlowResult = {
+  keepCameraOpen: false,
+  labelPrinted: false,
+  autoPricingStatus: "no_action",
+};
+
 function ProductQueryContent() {
   const { t } = useAppTranslation(["productQuery", "common"]);
   const { selectedStore, selectedStoreCode, isLoading: storesLoading } = useStores();
@@ -146,6 +203,7 @@ function ProductQueryContent() {
   const [initialDetail, setInitialDetail] = useState<ProductDetail | null>(null);
   const [lastHitLabel, setLastHitLabel] = useState<string>();
   const [lookupVisible, setLookupVisible] = useState(false);
+  const [lookupSelectionSource, setLookupSelectionSource] = useState<ScanSource | null>(null);
   const [cameraVisible, setCameraVisible] = useState(false);
   const [queryFeedback, setQueryFeedback] = useState<QueryFeedback>({ type: "idle" });
   const [loading, setLoading] = useState(false);
@@ -156,6 +214,26 @@ function ProductQueryContent() {
   const [printingKind, setPrintingKind] = useState<"product" | "discount" | "clearance" | null>(null);
   const [continuousPrintEnabled, setContinuousPrintEnabled] = useState(false);
   const [autoPrintOnLookupConfirm, setAutoPrintOnLookupConfirm] = useState(false);
+  const [autoPricingDialog, setAutoPricingDialog] = useState<AutoPricingDialogState | null>(null);
+  const [autoPricingDialogSaving, setAutoPricingDialogSaving] = useState(false);
+  const [productTypeDialogVisible, setProductTypeDialogVisible] = useState(false);
+  const [productTypeSaving, setProductTypeSaving] = useState(false);
+  const [storePurchaseInput, setStorePurchaseInput] = useState("");
+  const [storeRetailInput, setStoreRetailInput] = useState("");
+  const autoPricingDialogResolverRef = useRef<((result: AutoPricingDialogResolution) => void) | null>(null);
+
+  useEffect(() => {
+    setStorePurchaseInput(formatFixedDecimal(detail?.storePrice?.purchasePrice));
+    setStoreRetailInput(formatFixedDecimal(detail?.storePrice?.retailPrice));
+  }, [detail?.storePrice?.purchasePrice, detail?.storePrice?.retailPrice, detail?.storePrice?.uuid]);
+
+  useEffect(() => {
+    preloadScanFeedbackSounds();
+  }, []);
+
+  const playQueryFeedback = useCallback((status: "found" | "multiple" | "not_found" | "error" | "price_update_required") => {
+    playScanFeedbackSound(status);
+  }, []);
 
   const loadDetail = useCallback(
     async (productCode: string) => {
@@ -176,16 +254,81 @@ function ProductQueryContent() {
     [selectedStoreCode, t]
   );
 
+  const persistStorePrice = useCallback(
+    async (
+      sourceDetail: ProductDetail,
+      patch: Partial<NonNullable<ProductDetail["storePrice"]>>
+    ) => {
+      if (!sourceDetail.storePrice) {
+        return null;
+      }
+
+      const nextStorePrice = {
+        ...sourceDetail.storePrice,
+        ...patch,
+      };
+
+      try {
+        const savedStorePrice = await updateStorePrice(sourceDetail.storePrice.uuid, {
+          purchasePrice: nextStorePrice.purchasePrice ?? null,
+          retailPrice: nextStorePrice.retailPrice ?? null,
+          discountRate: normalizeDiscountRateValue(nextStorePrice.discountRate),
+          isAutoPricing: nextStorePrice.isAutoPricing,
+          isSpecialProduct: nextStorePrice.isSpecialProduct,
+          isActive: nextStorePrice.isActive,
+        });
+
+        const nextDetail = replaceStorePriceDetail(sourceDetail, savedStorePrice);
+        setDetail((current) =>
+          current?.productCode === sourceDetail.productCode
+            ? replaceStorePriceDetail(current, savedStorePrice)
+            : current
+        );
+        setInitialDetail((current) =>
+          current?.productCode === sourceDetail.productCode
+            ? replaceStorePriceDetail(current, savedStorePrice)
+            : current
+        );
+        return nextDetail;
+      } catch (error) {
+        const fallback = t("messages.autoPricingUpdateFailed");
+        setSnackbarMessage(error instanceof Error ? `${fallback}: ${error.message}` : fallback);
+        playQueryFeedback("error");
+        return null;
+      }
+    },
+    [playQueryFeedback, t]
+  );
+
+  const finishAutoPricingDialog = useCallback((result: AutoPricingDialogResolution) => {
+    setAutoPricingDialog(null);
+    setAutoPricingDialogSaving(false);
+    const resolve = autoPricingDialogResolverRef.current;
+    autoPricingDialogResolverRef.current = null;
+    resolve?.(result);
+  }, []);
+
+  const openAutoPricingDialog = useCallback(
+    (state: AutoPricingDialogState) =>
+      new Promise<AutoPricingDialogResolution>((resolve) => {
+        autoPricingDialogResolverRef.current = resolve;
+        setAutoPricingDialog(state);
+      }),
+    []
+  );
+
   const sendProductLabel = useCallback(
     async (targetDetail: ProductDetail) => {
       const savedPrinter = await getSavedPrinter();
       if (!savedPrinter?.address) {
         setSnackbarMessage(t("messages.printerRequired"));
+        playQueryFeedback("error");
         return false;
       }
 
       if (printerAutoReconnectPaused) {
         setSnackbarMessage(t("messages.printerPaused"));
+        playQueryFeedback("error");
         return false;
       }
 
@@ -197,25 +340,106 @@ function ProductQueryContent() {
       } catch (error) {
         const fallback = t("messages.printFailed");
         setSnackbarMessage(error instanceof Error ? `${fallback}: ${error.message}` : fallback);
+        playQueryFeedback("error");
         return false;
       } finally {
         setPrintingKind(null);
       }
     },
-    [printerAutoReconnectPaused, t]
+    [playQueryFeedback, printerAutoReconnectPaused, t]
+  );
+
+  const maybeHandleAutoPricing = useCallback(
+    async (
+      targetDetail: ProductDetail,
+      options?: {
+        forceAutoPricing?: boolean;
+        scanSource?: ScanSource | null;
+      }
+    ): Promise<LookupFlowResult> => {
+      const storePrice = targetDetail.storePrice;
+      const scanSource = options?.scanSource ?? null;
+      if (!storePrice || !selectedStoreCode) {
+        return DEFAULT_LOOKUP_FLOW_RESULT;
+      }
+
+      const shouldEvaluate = options?.forceAutoPricing === true || storePrice.isAutoPricing;
+      if (!shouldEvaluate) {
+        return DEFAULT_LOOKUP_FLOW_RESULT;
+      }
+
+      try {
+        const evaluation = await evaluateAutoPricing({
+          productCode: targetDetail.productCode,
+          storeCode: storePrice.storeCode ?? selectedStoreCode,
+          forceAutoPricing: options?.forceAutoPricing === true,
+        });
+
+        if (evaluation.shouldUpdate && evaluation.recalculatedRetailPrice != null) {
+          playQueryFeedback("price_update_required");
+          const dialogResult = await openAutoPricingDialog({
+            detail: targetDetail,
+            evaluation,
+            scanSource,
+          });
+
+          return {
+            keepCameraOpen: dialogResult.keepCameraOpen,
+            labelPrinted: dialogResult.labelPrinted,
+            autoPricingStatus:
+              dialogResult.status === "confirmed"
+                ? "prompt_confirmed"
+                : dialogResult.status === "failed"
+                  ? "failed"
+                  : "prompt_cancelled",
+          };
+        }
+
+        if (options?.forceAutoPricing === true) {
+          const savedDetail = await persistStorePrice(targetDetail, { isAutoPricing: true });
+          return savedDetail
+            ? {
+                keepCameraOpen: false,
+                labelPrinted: false,
+                autoPricingStatus: "saved_without_prompt",
+              }
+            : {
+                keepCameraOpen: false,
+                labelPrinted: false,
+                autoPricingStatus: "failed",
+              };
+        }
+
+        return DEFAULT_LOOKUP_FLOW_RESULT;
+      } catch (error) {
+        const fallback = t("messages.autoPricingEvaluateFailed");
+        setSnackbarMessage(error instanceof Error ? `${fallback}: ${error.message}` : fallback);
+        playQueryFeedback("error");
+        return {
+          keepCameraOpen: false,
+          labelPrinted: false,
+          autoPricingStatus: "failed",
+        };
+      }
+    },
+    [openAutoPricingDialog, persistStorePrice, playQueryFeedback, selectedStoreCode, t]
   );
 
   const handleLookup = useCallback(
-    async (sourceKeyword?: string, trigger: LookupTrigger = "manual") => {
+    async (
+      sourceKeyword?: string,
+      trigger: LookupTrigger = "manual",
+      scanSource?: ScanSource
+    ): Promise<LookupFlowResult> => {
       const nextKeyword = (sourceKeyword ?? keyword).trim();
       if (!nextKeyword) {
         setSnackbarMessage(t("messages.keywordRequired"));
-        return;
+        return DEFAULT_LOOKUP_FLOW_RESULT;
       }
 
       if (!selectedStoreCode) {
         setSnackbarMessage(t("messages.storeUnavailable"));
-        return;
+        return DEFAULT_LOOKUP_FLOW_RESULT;
       }
 
       console.log("[product-query] lookup start", {
@@ -240,24 +464,37 @@ function ProductQueryContent() {
           setDetail(null);
           setInitialDetail(null);
           setSelectedLookupProductCode(undefined);
+          setLookupSelectionSource(null);
           setLookupVisible(false);
           setQueryFeedback({ type: "empty", query: nextKeyword });
           setSnackbarMessage(t("messages.notFound"));
-          return;
+          playQueryFeedback("not_found");
+          return DEFAULT_LOOKUP_FLOW_RESULT;
         }
 
         if (items.length === 1) {
           setLookupVisible(false);
+          setLookupSelectionSource(null);
           const nextDetail = await loadDetail(items[0].productCode);
-          if (nextDetail && trigger === "scan" && continuousPrintEnabled) {
-            await sendProductLabel(nextDetail);
+          if (nextDetail) {
+            const autoPricingResult = await maybeHandleAutoPricing(nextDetail, { scanSource });
+            if (autoPricingResult.autoPricingStatus === "no_action") {
+              playQueryFeedback("found");
+              if (trigger === "scan" && continuousPrintEnabled && !autoPricingResult.labelPrinted) {
+                await sendProductLabel(nextDetail);
+              }
+            }
+            return autoPricingResult;
           }
-          return;
+          return DEFAULT_LOOKUP_FLOW_RESULT;
         }
 
         setSelectedLookupProductCode(items[0].productCode);
         setAutoPrintOnLookupConfirm(trigger === "scan" && continuousPrintEnabled);
+        setLookupSelectionSource(scanSource ?? null);
         setLookupVisible(true);
+        playQueryFeedback("multiple");
+        return DEFAULT_LOOKUP_FLOW_RESULT;
       } catch (error) {
         const message = error instanceof Error ? error.message : t("messages.lookupFailed");
         console.error("[product-query] lookup failed", {
@@ -270,28 +507,54 @@ function ProductQueryContent() {
         setLookupVisible(false);
         setQueryFeedback({ type: "error", query: nextKeyword, message });
         setSnackbarMessage(message);
+        playQueryFeedback("error");
+        return DEFAULT_LOOKUP_FLOW_RESULT;
       } finally {
         setLoading(false);
       }
     },
-    [continuousPrintEnabled, keyword, loadDetail, selectedStoreCode, sendProductLabel, t]
+    [
+      continuousPrintEnabled,
+      keyword,
+      loadDetail,
+      maybeHandleAutoPricing,
+      playQueryFeedback,
+      selectedStoreCode,
+      sendProductLabel,
+      t,
+    ]
   );
 
   const cameraScan = useCameraScan({
     onBarcode: async (barcode) => {
       console.log("[product-query] barcode scanned", { barcode });
       setKeyword(barcode);
-      await handleLookup(barcode, "scan");
-      setCameraVisible(false);
+      const result = await handleLookup(barcode, "scan", "camera");
+      if (!result.keepCameraOpen) {
+        setCameraVisible(false);
+      }
     },
   });
   const hidScanner = useHidBarcodeScanner({
     onScan: async (barcode) => {
       console.log("[product-query] hid barcode scanned", { barcode });
       setKeyword(barcode);
-      await handleLookup(barcode, "scan");
+      await handleLookup(barcode, "scan", "hid");
     },
   });
+
+  const restoreScanAbility = useCallback(
+    (source?: ScanSource | null) => {
+      if (source === "camera") {
+        setCameraVisible(true);
+      }
+
+      setTimeout(() => {
+        hidScanner.focusHiddenInput?.();
+      }, source === "camera" ? 160 : 60);
+    },
+    [hidScanner.focusHiddenInput]
+  );
 
   useFocusEffect(
     useCallback(() => {
@@ -337,6 +600,7 @@ function ProductQueryContent() {
     setDetail(null);
     setInitialDetail(null);
     setLookupVisible(false);
+    setLookupSelectionSource(null);
     setAutoPrintOnLookupConfirm(false);
     setQueryFeedback({ type: "idle" });
   }, []);
@@ -349,8 +613,16 @@ function ProductQueryContent() {
     setLookupVisible(false);
     try {
       const nextDetail = await loadDetail(selectedLookupProductCode);
-      if (nextDetail && autoPrintOnLookupConfirm) {
-        await sendProductLabel(nextDetail);
+      if (nextDetail) {
+        const autoPricingResult = await maybeHandleAutoPricing(nextDetail, {
+          scanSource: lookupSelectionSource,
+        });
+        if (autoPricingResult.autoPricingStatus === "no_action") {
+          playQueryFeedback("found");
+          if (autoPrintOnLookupConfirm && !autoPricingResult.labelPrinted) {
+            await sendProductLabel(nextDetail);
+          }
+        }
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : t("messages.lookupFailed");
@@ -358,10 +630,22 @@ function ProductQueryContent() {
       setInitialDetail(null);
       setQueryFeedback({ type: "error", query: keyword.trim(), message });
       setSnackbarMessage(message);
+      playQueryFeedback("error");
     } finally {
       setAutoPrintOnLookupConfirm(false);
+      setLookupSelectionSource(null);
     }
-  }, [autoPrintOnLookupConfirm, keyword, loadDetail, selectedLookupProductCode, sendProductLabel, t]);
+  }, [
+    autoPrintOnLookupConfirm,
+    keyword,
+    loadDetail,
+    lookupSelectionSource,
+    maybeHandleAutoPricing,
+    playQueryFeedback,
+    selectedLookupProductCode,
+    sendProductLabel,
+    t,
+  ]);
 
   const handleChangeStorePrice = useCallback((patch: Partial<NonNullable<ProductDetail["storePrice"]>>) => {
     setDetail((current) =>
@@ -377,9 +661,83 @@ function ProductQueryContent() {
     );
   }, []);
 
+  const handleUpdateProductType = useCallback(
+    async (productType: number) => {
+      if (!detail?.productCode || !selectedStoreCode) {
+        return;
+      }
+
+      if (detail.productType === productType) {
+        setProductTypeDialogVisible(false);
+        return;
+      }
+
+      setProductTypeSaving(true);
+      try {
+        const result = await updateProductType(detail.productCode, {
+          productType,
+          storeCode: selectedStoreCode,
+        });
+
+        setDetail((current) =>
+          current
+            ? {
+                ...current,
+                productType: result.productType,
+                productTypeLabel: result.productTypeLabel,
+              }
+            : current
+        );
+        setInitialDetail((current) =>
+          current
+            ? {
+                ...current,
+                productType: result.productType,
+                productTypeLabel: result.productTypeLabel,
+              }
+            : current
+        );
+        setSnackbarMessage(t("messages.productTypeUpdated"));
+        setProductTypeDialogVisible(false);
+      } catch (error) {
+        const fallback = t("messages.productTypeUpdateFailed");
+        setSnackbarMessage(error instanceof Error ? `${fallback}: ${error.message}` : fallback);
+      } finally {
+        setProductTypeSaving(false);
+      }
+    },
+    [detail, selectedStoreCode, t]
+  );
+
+  const handleToggleAutoPricing = useCallback(
+    async (value: boolean) => {
+      if (!detail?.storePrice) {
+        return;
+      }
+
+      if (!value) {
+        handleChangeStorePrice({ isAutoPricing: false });
+        return;
+      }
+
+      await maybeHandleAutoPricing(detail, { forceAutoPricing: true });
+    },
+    [detail, handleChangeStorePrice, maybeHandleAutoPricing]
+  );
+
+  const handleChangeStorePurchasePrice = useCallback(
+    (value: string) => {
+      const next = toFixedDecimalInput(value);
+      setStorePurchaseInput(next.display);
+      handleChangeStorePrice({ purchasePrice: next.numeric });
+    },
+    [handleChangeStorePrice]
+  );
+
   const handleChangeStoreRetailPrice = useCallback(
     (value: string) => {
-      const retailPrice = parseDecimalInput(value);
+      const next = toFixedDecimalInput(value);
+      setStoreRetailInput(next.display);
       setDetail((current) => {
         if (!current?.storePrice) {
           return current;
@@ -390,7 +748,7 @@ function ProductQueryContent() {
           ...current,
           storePrice: {
             ...current.storePrice,
-            retailPrice,
+            retailPrice: next.numeric,
             discountRate,
           },
         };
@@ -614,8 +972,6 @@ function ProductQueryContent() {
             <View style={styles.firstScreenSection}>
               <ProductHeroCard
                 imageUrl={detail.productImage}
-                isPrintingProductLabel={printingKind === "product"}
-                onPrintProductLabel={() => void handlePrint("product")}
                 productName={detail.productName}
                 supplierName={detail.localSupplierName}
                 supplierCode={detail.localSupplierCode}
@@ -623,13 +979,14 @@ function ProductQueryContent() {
                 barcode={detail.barcode}
                 productType={detail.productType}
                 grade={detail.grade}
+                onPressProductType={() => setProductTypeDialogVisible(true)}
               />
 
               {storePrice ? (
                 <StorePriceStrategyCard
                   storeName={storePrice.storeName}
-                  purchasePrice={formatDecimal(storePrice.purchasePrice)}
-                  retailPrice={formatDecimal(storePrice.retailPrice)}
+                  purchasePrice={storePurchaseInput}
+                  retailPrice={storeRetailInput}
                   discountPercent={formatPercentValue(normalizedStoreDiscountRate)}
                   discountedRetailPrice={formatCurrency(discountedRetailPrice)}
                   autoPricing={storePrice.isAutoPricing}
@@ -637,15 +994,23 @@ function ProductQueryContent() {
                   rate={storePrice.rate == null ? "" : String(storePrice.rate)}
                   strategySourceLabel={storePrice.strategySourceLabel}
                   strategyRuleLabel={storePrice.strategyRuleLabel}
-                  onChangePurchasePrice={(value) =>
-                    handleChangeStorePrice({
-                      purchasePrice: parseDecimalInput(value),
-                    })
-                  }
+                  isPrintingProductLabel={printingKind === "product"}
+                  isPrintingDiscountLabel={printingKind === "discount"}
+                  onChangePurchasePrice={handleChangeStorePurchasePrice}
                   onChangeRetailPrice={handleChangeStoreRetailPrice}
                   onChangeDiscountPercent={handleChangeStoreDiscountPercent}
                   onChangeDiscountedRetailPrice={handleChangeStoreDiscountedRetailPrice}
-                  onToggleAutoPricing={(value) => handleChangeStorePrice({ isAutoPricing: value })}
+                  onPrintProductLabel={
+                    printingKind && printingKind !== "product" ? undefined : () => void handlePrint("product")
+                  }
+                  onPrintDiscountLabel={
+                    printingKind && printingKind !== "discount"
+                      ? undefined
+                      : normalizedStoreDiscountRate && normalizedStoreDiscountRate > 0
+                        ? () => void handlePrint("discount")
+                        : undefined
+                  }
+                  onToggleAutoPricing={(value) => void handleToggleAutoPricing(value)}
                   onToggleSpecial={(value) => handleChangeStorePrice({ isSpecialProduct: value })}
                 />
               ) : (
@@ -663,31 +1028,25 @@ function ProductQueryContent() {
                 />
               ) : null}
 
-              <Card style={styles.printCard} mode="contained">
-                <Card.Content style={styles.printCardContent}>
-                  <Text variant="titleSmall" style={styles.printTitle}>
-                    {t("print.title")}
-                  </Text>
-                  <View style={styles.printActions}>
-                    <Button
-                      mode="outlined"
-                      onPress={() => void handlePrint("discount")}
-                      loading={printingKind === "discount"}
-                      disabled={Boolean(printingKind) || !(storePrice?.discountRate && storePrice.discountRate > 0)}
-                    >
-                      {printingKind === "discount" ? t("print.sending") : t("print.discount")}
-                    </Button>
-                    <Button
-                      mode="outlined"
-                      onPress={() => void handlePrint("clearance")}
-                      loading={printingKind === "clearance"}
-                      disabled={Boolean(printingKind) || !clearancePrice}
-                    >
-                      {printingKind === "clearance" ? t("print.sending") : t("print.clearance")}
-                    </Button>
-                  </View>
-                </Card.Content>
-              </Card>
+              {clearancePrice ? (
+                <Card style={styles.printCard} mode="contained">
+                  <Card.Content style={styles.printCardContent}>
+                    <Text variant="titleSmall" style={styles.printTitle}>
+                      {t("print.title")}
+                    </Text>
+                    <View style={styles.printActions}>
+                      <Button
+                        mode="outlined"
+                        onPress={() => void handlePrint("clearance")}
+                        loading={printingKind === "clearance"}
+                        disabled={Boolean(printingKind) || !clearancePrice}
+                      >
+                        {printingKind === "clearance" ? t("print.sending") : t("print.clearance")}
+                      </Button>
+                    </View>
+                  </Card.Content>
+                </Card>
+              ) : null}
             </View>
 
             {detail.setCodes.length || detail.multiCodes.length ? (
@@ -749,6 +1108,165 @@ function ProductQueryContent() {
       />
 
       <Portal>
+        <Modal
+          visible={Boolean(autoPricingDialog)}
+          onDismiss={autoPricingDialogSaving ? undefined : () => {
+            if (!autoPricingDialog) {
+              return;
+            }
+
+            const keepCameraOpen = autoPricingDialog.scanSource === "camera";
+            restoreScanAbility(autoPricingDialog.scanSource);
+            finishAutoPricingDialog({
+              status: "cancelled",
+              keepCameraOpen,
+              labelPrinted: false,
+              updatedDetail: autoPricingDialog.detail,
+            });
+          }}
+          contentContainerStyle={styles.autoPricingModal}
+        >
+          {autoPricingDialog ? (
+            <View style={styles.autoPricingContent}>
+              <Text variant="titleMedium" style={styles.autoPricingTitle}>
+                {t("autoPricingConfirm.title")}
+              </Text>
+              <Text variant="bodyMedium" style={styles.autoPricingDescription}>
+                {t("autoPricingConfirm.description", {
+                  name: autoPricingDialog.detail.productName || t("hero.unnamedProduct"),
+                  code: autoPricingDialog.detail.itemNumber || autoPricingDialog.detail.productCode,
+                })}
+              </Text>
+              <View style={styles.autoPricingPriceBlock}>
+                <Text variant="bodyMedium" style={styles.autoPricingCurrentPrice}>
+                  {t("autoPricingConfirm.currentRetail", {
+                    value: autoPricingDialog.evaluation.currentRetailPriceFormatted || "--",
+                  })}
+                </Text>
+                <Text variant="bodyMedium" style={styles.autoPricingNextPrice}>
+                  {t("autoPricingConfirm.nextRetail", {
+                    value: autoPricingDialog.evaluation.recalculatedRetailPriceFormatted || "--",
+                  })}
+                </Text>
+              </View>
+              <Text variant="bodySmall" style={styles.autoPricingHint}>
+                {t("autoPricingConfirm.discountHint")}
+              </Text>
+              <View style={styles.autoPricingActions}>
+                <Button
+                  mode="outlined"
+                  onPress={() => {
+                    if (!autoPricingDialog) {
+                      return;
+                    }
+
+                    const keepCameraOpen = autoPricingDialog.scanSource === "camera";
+                    restoreScanAbility(autoPricingDialog.scanSource);
+                    finishAutoPricingDialog({
+                      status: "cancelled",
+                      keepCameraOpen,
+                      labelPrinted: false,
+                      updatedDetail: autoPricingDialog.detail,
+                    });
+                  }}
+                  disabled={autoPricingDialogSaving}
+                >
+                  {t("common:actions.cancel")}
+                </Button>
+                <Button
+                  mode="contained"
+                  loading={autoPricingDialogSaving}
+                  disabled={autoPricingDialogSaving}
+                  onPress={async () => {
+                    if (!autoPricingDialog) {
+                      return;
+                    }
+
+                    setAutoPricingDialogSaving(true);
+                    const keepCameraOpen = autoPricingDialog.scanSource === "camera";
+                    const savedDetail = await persistStorePrice(autoPricingDialog.detail, {
+                      retailPrice:
+                        autoPricingDialog.evaluation.recalculatedRetailPrice
+                        ?? autoPricingDialog.detail.storePrice?.retailPrice
+                        ?? null,
+                      discountRate: normalizeDiscountRateValue(
+                        autoPricingDialog.evaluation.discountRate
+                        ?? autoPricingDialog.detail.storePrice?.discountRate
+                      ),
+                      isAutoPricing: true,
+                    });
+
+                    if (!savedDetail) {
+                      restoreScanAbility(autoPricingDialog.scanSource);
+                      finishAutoPricingDialog({
+                        status: "failed",
+                        keepCameraOpen,
+                        labelPrinted: false,
+                        updatedDetail: autoPricingDialog.detail,
+                      });
+                      return;
+                    }
+
+                    const labelPrinted = await sendProductLabel(savedDetail);
+                    restoreScanAbility(autoPricingDialog.scanSource);
+                    finishAutoPricingDialog({
+                      status: "confirmed",
+                      keepCameraOpen,
+                      labelPrinted,
+                      updatedDetail: savedDetail,
+                    });
+                  }}
+                >
+                  {t("autoPricingConfirm.confirm")}
+                </Button>
+              </View>
+            </View>
+          ) : null}
+        </Modal>
+
+        <Modal
+          visible={productTypeDialogVisible}
+          onDismiss={productTypeSaving ? undefined : () => setProductTypeDialogVisible(false)}
+          contentContainerStyle={styles.productTypeModal}
+        >
+          <View style={styles.productTypeModalContent}>
+            <Text variant="titleMedium" style={styles.productTypeModalTitle}>
+              {t("hero.productTypeChooseTitle")}
+            </Text>
+            <View style={styles.productTypeOptions}>
+              {PRODUCT_TYPE_OPTIONS.map((type) => {
+                const selected = detail?.productType === type;
+                const label =
+                  type === 0 ? t("hero.productType.normal")
+                  : type === 1 ? t("hero.productType.set")
+                  : t("hero.productType.multi");
+
+                return (
+                  <Button
+                    key={type}
+                    mode={selected ? "contained" : "outlined"}
+                    onPress={() => void handleUpdateProductType(type)}
+                    disabled={productTypeSaving}
+                    loading={productTypeSaving && selected}
+                    style={styles.productTypeOptionButton}
+                  >
+                    {label}
+                  </Button>
+                );
+              })}
+            </View>
+            <View style={styles.productTypeFooter}>
+              <Button
+                mode="text"
+                onPress={() => setProductTypeDialogVisible(false)}
+                disabled={productTypeSaving}
+              >
+                {t("common:actions.cancel")}
+              </Button>
+            </View>
+          </View>
+        </Modal>
+
         <Modal
           visible={cameraVisible}
           onDismiss={() => setCameraVisible(false)}
@@ -859,6 +1377,66 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     flexWrap: "wrap",
     gap: 6,
+  },
+  autoPricingModal: {
+    marginHorizontal: 18,
+    borderRadius: 16,
+    backgroundColor: "#fff",
+    padding: 16,
+  },
+  autoPricingContent: {
+    gap: 12,
+  },
+  autoPricingTitle: {
+    fontWeight: "700",
+    color: "#111827",
+  },
+  autoPricingDescription: {
+    color: "#344054",
+  },
+  autoPricingPriceBlock: {
+    gap: 6,
+    borderRadius: 12,
+    backgroundColor: "#F8FAFC",
+    padding: 12,
+  },
+  autoPricingCurrentPrice: {
+    color: "#475467",
+  },
+  autoPricingNextPrice: {
+    color: "#1677FF",
+    fontWeight: "700",
+  },
+  autoPricingHint: {
+    color: "#667085",
+  },
+  autoPricingActions: {
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    gap: 8,
+  },
+  productTypeModal: {
+    marginHorizontal: 18,
+    borderRadius: 16,
+    backgroundColor: "#fff",
+    padding: 16,
+  },
+  productTypeModalContent: {
+    gap: 12,
+  },
+  productTypeModalTitle: {
+    fontWeight: "700",
+    color: "#111827",
+  },
+  productTypeOptions: {
+    gap: 8,
+  },
+  productTypeOptionButton: {
+    justifyContent: "center",
+  },
+  productTypeFooter: {
+    flexDirection: "row",
+    justifyContent: "flex-end",
   },
   cameraModal: {
     marginHorizontal: 16,
