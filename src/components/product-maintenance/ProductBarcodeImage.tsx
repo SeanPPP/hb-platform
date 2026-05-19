@@ -1,6 +1,5 @@
 import { StyleSheet, View } from "react-native";
 import { Text } from "react-native-paper";
-import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 import { resolveBarcodeFormat } from "@/shared/utils/barcode";
 
 const EAN13_LEFT_ODD = [
@@ -123,7 +122,6 @@ function encodeCode128(value: string) {
 }
 
 export function ProductBarcodeImage({ value }: ProductBarcodeImageProps) {
-  const { t } = useAppTranslation("productQuery");
   const normalized = value?.trim();
 
   if (!normalized) {
@@ -135,7 +133,10 @@ export function ProductBarcodeImage({ value }: ProductBarcodeImageProps) {
 
   return (
     <View style={styles.wrapper}>
-      <View style={styles.bars} accessibilityLabel={t("hero.barcodeImageLabel", { format })}>
+      <View
+        style={styles.bars}
+        accessibilityLabel={normalized}
+      >
         {runs.map((run, index) => (
           <View
             key={`${index}-${run.width}-${run.black ? "b" : "w"}`}
@@ -150,7 +151,7 @@ export function ProductBarcodeImage({ value }: ProductBarcodeImageProps) {
         ))}
       </View>
       <Text variant="labelSmall" style={styles.format}>
-        {format}
+        {normalized}
       </Text>
     </View>
   );
@@ -158,7 +159,7 @@ export function ProductBarcodeImage({ value }: ProductBarcodeImageProps) {
 
 const styles = StyleSheet.create({
   wrapper: {
-    gap: 1,
+    gap: 2,
   },
   bars: {
     height: 28,
@@ -178,5 +179,7 @@ const styles = StyleSheet.create({
     fontSize: 10,
     color: "#777",
     fontVariant: ["tabular-nums"],
+    letterSpacing: 0.2,
+    maxWidth: 124,
   },
 });

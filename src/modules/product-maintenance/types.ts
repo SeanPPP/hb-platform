@@ -94,6 +94,7 @@ export interface StoreProductLookupRequest {
 export interface UpdateStorePriceRequest {
   purchasePrice?: number | null;
   retailPrice?: number | null;
+  discountRate?: number | null;
   isAutoPricing?: boolean;
   isSpecialProduct?: boolean;
   isActive?: boolean;

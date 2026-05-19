@@ -1,20 +1,24 @@
 import { StyleSheet, View } from "react-native";
-import { IconButton, Searchbar, Text } from "react-native-paper";
+import { IconButton, Searchbar, Switch, Text } from "react-native-paper";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 
 interface SearchPanelProps {
+  continuousPrint: boolean;
   value: string;
   loading?: boolean;
   lastHitLabel?: string;
+  onToggleContinuousPrint: (value: boolean) => void;
   onChangeText: (value: string) => void;
   onSubmit: () => void;
   onClear: () => void;
 }
 
 export function SearchPanel({
+  continuousPrint,
   value,
   loading = false,
   lastHitLabel,
+  onToggleContinuousPrint,
   onChangeText,
   onSubmit,
   onClear,
@@ -51,6 +55,12 @@ export function SearchPanel({
           onPress={onClear}
           style={styles.iconButton}
         />
+        <View style={styles.autoWrap}>
+          <Text variant="labelSmall" style={styles.autoLabel}>
+            {t("search.auto")}
+          </Text>
+          <Switch value={continuousPrint} onValueChange={onToggleContinuousPrint} />
+        </View>
       </View>
       {lastHitLabel ? (
         <Text variant="labelSmall" style={styles.lastHit} numberOfLines={1}>
@@ -70,11 +80,11 @@ const styles = StyleSheet.create({
   searchRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 4,
+    gap: 2,
   },
   searchbar: {
     flex: 1,
-    height: 38,
+    height: 36,
     elevation: 0,
     borderRadius: 8,
     backgroundColor: "#F5F5F5",
@@ -84,13 +94,23 @@ const styles = StyleSheet.create({
     minHeight: 0,
     paddingBottom: 0,
     paddingTop: 0,
-    fontSize: 13,
+    fontSize: 12,
   },
   iconButton: {
-    width: 34,
-    height: 34,
+    width: 32,
+    height: 32,
     margin: 0,
     borderRadius: 8,
+  },
+  autoWrap: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 2,
+    paddingLeft: 2,
+  },
+  autoLabel: {
+    color: "#667085",
+    fontSize: 11,
   },
   lastHit: {
     color: "#98A2B3",

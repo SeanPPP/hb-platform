@@ -305,7 +305,7 @@ export default function Settings() {
   };
 
   return (
-    <SafeAreaView edges={["left", "right"]} style={styles.container}>
+    <SafeAreaView edges={["top", "left", "right"]} style={styles.container}>
       <ScrollView contentContainerStyle={styles.content}>
         <Text variant="headlineSmall" style={styles.title}>
           {t("title")}
@@ -577,7 +577,7 @@ export default function Settings() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#F5F7FA" },
-  content: { paddingHorizontal: 14, paddingTop: 8, paddingBottom: 10, gap: 14 },
+  content: { paddingHorizontal: 14, paddingTop: 4, paddingBottom: 10, gap: 14 },
   title: { textAlign: "center", marginBottom: 2 },
   card: { padding: 22, borderRadius: 18, gap: 12 },
   value: { marginTop: 8, fontWeight: "600" },

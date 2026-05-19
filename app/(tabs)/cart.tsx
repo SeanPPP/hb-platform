@@ -465,7 +465,7 @@ export default function Cart() {
   }
 
   return (
-    <SafeAreaView edges={["left", "right"]} style={styles.container}>
+    <SafeAreaView edges={["top", "left", "right"]} style={styles.container}>
       <View style={styles.header}>
         <View style={styles.headerRow}>
           <Text variant="titleLarge" style={styles.headerTitle}>
@@ -655,7 +655,7 @@ const styles = StyleSheet.create({
   },
   header: {
     paddingHorizontal: 16,
-    paddingTop: 4,
+    paddingTop: 0,
     paddingBottom: 2,
   },
   headerRow: {
@@ -679,7 +679,7 @@ const styles = StyleSheet.create({
   listContent: {
     flexGrow: 1,
     paddingHorizontal: 10,
-    paddingTop: 4,
+    paddingTop: 2,
     paddingBottom: 0,
   },
   filtersModal: {

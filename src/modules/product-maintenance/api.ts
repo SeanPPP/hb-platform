@@ -42,6 +42,23 @@ function toNumber(value: unknown): number | null {
   return null;
 }
 
+function normalizeDiscountRate(value: unknown): number | null {
+  const numeric = toNumber(value);
+  if (numeric == null || numeric < 0) {
+    return null;
+  }
+
+  if (numeric <= 1) {
+    return numeric;
+  }
+
+  if (numeric <= 100) {
+    return numeric / 100;
+  }
+
+  return null;
+}
+
 function normalizeLookupItem(payload: unknown): ProductLookupItem {
   const data = (payload && typeof payload === "object" ? payload : {}) as Record<string, unknown>;
   return {
@@ -72,7 +89,7 @@ function normalizeStorePrice(payload: unknown): StorePriceEditable | null {
     supplierCode: (data.supplierCode ?? data.SupplierCode ?? null) as string | null,
     purchasePrice: toNumber(data.purchasePrice ?? data.PurchasePrice),
     retailPrice: toNumber(data.retailPrice ?? data.RetailPrice),
-    discountRate: toNumber(data.discountRate ?? data.DiscountRate),
+    discountRate: normalizeDiscountRate(data.discountRate ?? data.DiscountRate),
     isAutoPricing: Boolean(data.isAutoPricing ?? data.IsAutoPricing),
     isSpecialProduct: Boolean(data.isSpecialProduct ?? data.IsSpecialProduct),
     isActive: Boolean(data.isActive ?? data.IsActive),
@@ -94,7 +111,7 @@ function normalizeMultiCodeItem(payload: unknown): MultiCodeEditableItem {
     barcode: (data.barcode ?? data.Barcode ?? null) as string | null,
     purchasePrice: toNumber(data.purchasePrice ?? data.PurchasePrice),
     retailPrice: toNumber(data.retailPrice ?? data.RetailPrice),
-    discountRate: toNumber(data.discountRate ?? data.DiscountRate),
+    discountRate: normalizeDiscountRate(data.discountRate ?? data.DiscountRate),
     isAutoPricing: Boolean(data.isAutoPricing ?? data.IsAutoPricing),
     isSpecialProduct: Boolean(data.isSpecialProduct ?? data.IsSpecialProduct),
     isActive: Boolean(data.isActive ?? data.IsActive),

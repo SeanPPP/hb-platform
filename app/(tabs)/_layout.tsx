@@ -91,7 +91,7 @@ export default function TabsLayout() {
   }
 
   return (
-    <Tabs>
+    <Tabs screenOptions={{ headerShown: false }}>
       <Tabs.Screen
         name="home"
         options={{

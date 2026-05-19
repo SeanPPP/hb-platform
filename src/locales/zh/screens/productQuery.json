@@ -3,6 +3,7 @@
   "currentStore": "当前分店：{{store}}",
   "search": {
     "placeholder": "条码 / 货号 / 编码",
+    "auto": "Print.auto",
     "lastHit": "最近命中：{{value}}"
   },
   "messages": {
@@ -57,9 +58,9 @@
     "productTypeLabel": "商品类型",
     "supplierLabel": "供应商",
     "productType": {
-      "normal": "普商品",
-      "set": "组合套装",
-      "multi": "多码套装",
+      "normal": "0 普通",
+      "set": "1 套装",
+      "multi": "2 多码",
       "unknown": "未知类型"
     }
   },
@@ -67,6 +68,8 @@
     "fallbackTitle": "分店商品信息",
     "purchase": "进货",
     "retail": "零售",
+    "discountPercent": "折扣率%",
+    "discountedRetail": "折后价",
     "rate": "Rate {{value}}",
     "calculating": "计算中...",
     "auto": "自动",
@@ -98,9 +101,11 @@
   },
   "print": {
     "title": "标签打印",
+    "quick": "打",
     "product": "普通标签",
     "discount": "折扣标签",
     "clearance": "清货标签",
+    "sendingShort": "发送中",
     "sending": "发送中..."
   }
 }

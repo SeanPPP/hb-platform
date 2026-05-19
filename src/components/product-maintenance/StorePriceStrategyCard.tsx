@@ -6,6 +6,8 @@ interface StorePriceStrategyCardProps {
   storeName?: string | null;
   purchasePrice?: string;
   retailPrice?: string;
+  discountPercent?: string;
+  discountedRetailPrice?: string;
   autoPricing: boolean;
   isSpecialProduct: boolean;
   rate?: string;
@@ -14,6 +16,8 @@ interface StorePriceStrategyCardProps {
   evaluatingRate?: boolean;
   onChangePurchasePrice: (value: string) => void;
   onChangeRetailPrice: (value: string) => void;
+  onChangeDiscountPercent: (value: string) => void;
+  onChangeDiscountedRetailPrice: (value: string) => void;
   onToggleAutoPricing: (value: boolean) => void;
   onToggleSpecial: (value: boolean) => void;
 }
@@ -22,6 +26,8 @@ export function StorePriceStrategyCard({
   storeName,
   purchasePrice,
   retailPrice,
+  discountPercent,
+  discountedRetailPrice,
   autoPricing,
   isSpecialProduct,
   rate,
@@ -30,6 +36,8 @@ export function StorePriceStrategyCard({
   evaluatingRate = false,
   onChangePurchasePrice,
   onChangeRetailPrice,
+  onChangeDiscountPercent,
+  onChangeDiscountedRetailPrice,
   onToggleAutoPricing,
   onToggleSpecial,
 }: StorePriceStrategyCardProps) {
@@ -66,6 +74,26 @@ export function StorePriceStrategyCard({
             keyboardType="decimal-pad"
             value={retailPrice}
             onChangeText={onChangeRetailPrice}
+            style={styles.input}
+          />
+        </View>
+        <View style={styles.priceRow}>
+          <TextInput
+            mode="outlined"
+            label={t("storePrice.discountPercent")}
+            dense
+            keyboardType="decimal-pad"
+            value={discountPercent}
+            onChangeText={onChangeDiscountPercent}
+            style={styles.input}
+          />
+          <TextInput
+            mode="outlined"
+            label={t("storePrice.discountedRetail")}
+            dense
+            keyboardType="decimal-pad"
+            value={discountedRetailPrice}
+            onChangeText={onChangeDiscountedRetailPrice}
             style={styles.input}
           />
         </View>

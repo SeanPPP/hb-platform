@@ -36,6 +36,8 @@ import { useCameraScan } from "@/modules/scanner/use-camera-scan";
 import { useHidBarcodeScanner } from "@/modules/scanner/use-hid-barcode-scanner";
 import { useStores } from "@/modules/shop/use-stores";
 
+type LookupTrigger = "manual" | "scan";
+
 function cloneDetail(detail: ProductDetail | null): ProductDetail | null {
   return detail ? JSON.parse(JSON.stringify(detail)) : null;
 }
@@ -46,6 +48,73 @@ function formatDecimal(value?: number | null) {
 
 function formatCurrency(value?: number | null) {
   return value == null ? "" : value.toFixed(2);
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(Math.max(value, min), max);
+}
+
+function parseDecimalInput(value: string): number | null {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const parsed = Number(trimmed);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function normalizeDiscountRateValue(value?: number | null) {
+  if (value == null || !Number.isFinite(value) || value < 0) {
+    return null;
+  }
+
+  if (value <= 1) {
+    return value;
+  }
+
+  if (value <= 100) {
+    return value / 100;
+  }
+
+  return null;
+}
+
+function getDiscountedRetailPrice(retailPrice?: number | null, discountRate?: number | null) {
+  if (
+    retailPrice == null
+    || !Number.isFinite(retailPrice)
+    || retailPrice <= 0
+    || discountRate == null
+    || !Number.isFinite(discountRate)
+  ) {
+    return null;
+  }
+
+  return retailPrice * (1 - clamp(discountRate, 0, 1));
+}
+
+function getDiscountRateFromDiscountedRetail(retailPrice?: number | null, discountedRetail?: number | null) {
+  if (
+    retailPrice == null
+    || !Number.isFinite(retailPrice)
+    || retailPrice <= 0
+    || discountedRetail == null
+    || !Number.isFinite(discountedRetail)
+  ) {
+    return null;
+  }
+
+  return clamp(1 - discountedRetail / retailPrice, 0, 1);
+}
+
+function formatPercentValue(value?: number | null) {
+  if (value == null || !Number.isFinite(value)) {
+    return "";
+  }
+
+  const percent = value * 100;
+  return Number.isInteger(percent) ? String(percent) : percent.toFixed(2).replace(/\.?0+$/, "");
 }
 
 function isStorePriceDirty(current: ProductDetail | null, initial: ProductDetail | null) {
@@ -85,12 +154,14 @@ function ProductQueryContent() {
   const [savingItemId, setSavingItemId] = useState<string | null>(null);
   const [snackbarMessage, setSnackbarMessage] = useState("");
   const [printingKind, setPrintingKind] = useState<"product" | "discount" | "clearance" | null>(null);
+  const [continuousPrintEnabled, setContinuousPrintEnabled] = useState(false);
+  const [autoPrintOnLookupConfirm, setAutoPrintOnLookupConfirm] = useState(false);
 
   const loadDetail = useCallback(
     async (productCode: string) => {
       if (!selectedStoreCode) {
         setSnackbarMessage(t("messages.selectStoreFirst"));
-        return;
+        return null;
       }
 
       console.log("[product-query] load detail", { productCode, selectedStoreCode });
@@ -100,12 +171,42 @@ function ProductQueryContent() {
       setSelectedLookupProductCode(productCode);
       setLastHitLabel(`${payload.itemNumber || payload.productCode} / ${payload.barcode || "--"}`);
       setQueryFeedback({ type: "idle" });
+      return payload;
     },
     [selectedStoreCode, t]
   );
 
+  const sendProductLabel = useCallback(
+    async (targetDetail: ProductDetail) => {
+      const savedPrinter = await getSavedPrinter();
+      if (!savedPrinter?.address) {
+        setSnackbarMessage(t("messages.printerRequired"));
+        return false;
+      }
+
+      if (printerAutoReconnectPaused) {
+        setSnackbarMessage(t("messages.printerPaused"));
+        return false;
+      }
+
+      setPrintingKind("product");
+      try {
+        await printProductLabel(targetDetail);
+        setSnackbarMessage(t("messages.printSuccess"));
+        return true;
+      } catch (error) {
+        const fallback = t("messages.printFailed");
+        setSnackbarMessage(error instanceof Error ? `${fallback}: ${error.message}` : fallback);
+        return false;
+      } finally {
+        setPrintingKind(null);
+      }
+    },
+    [printerAutoReconnectPaused, t]
+  );
+
   const handleLookup = useCallback(
-    async (sourceKeyword?: string) => {
+    async (sourceKeyword?: string, trigger: LookupTrigger = "manual") => {
       const nextKeyword = (sourceKeyword ?? keyword).trim();
       if (!nextKeyword) {
         setSnackbarMessage(t("messages.keywordRequired"));
@@ -120,8 +221,10 @@ function ProductQueryContent() {
       console.log("[product-query] lookup start", {
         keyword: nextKeyword,
         selectedStoreCode,
+        trigger,
       });
       setLoading(true);
+      setAutoPrintOnLookupConfirm(false);
       setQueryFeedback({ type: "idle" });
       try {
         const items = await lookupProducts({
@@ -145,11 +248,15 @@ function ProductQueryContent() {
 
         if (items.length === 1) {
           setLookupVisible(false);
-          await loadDetail(items[0].productCode);
+          const nextDetail = await loadDetail(items[0].productCode);
+          if (nextDetail && trigger === "scan" && continuousPrintEnabled) {
+            await sendProductLabel(nextDetail);
+          }
           return;
         }
 
         setSelectedLookupProductCode(items[0].productCode);
+        setAutoPrintOnLookupConfirm(trigger === "scan" && continuousPrintEnabled);
         setLookupVisible(true);
       } catch (error) {
         const message = error instanceof Error ? error.message : t("messages.lookupFailed");
@@ -167,14 +274,14 @@ function ProductQueryContent() {
         setLoading(false);
       }
     },
-    [keyword, loadDetail, selectedStoreCode, t]
+    [continuousPrintEnabled, keyword, loadDetail, selectedStoreCode, sendProductLabel, t]
   );
 
   const cameraScan = useCameraScan({
     onBarcode: async (barcode) => {
       console.log("[product-query] barcode scanned", { barcode });
       setKeyword(barcode);
-      await handleLookup(barcode);
+      await handleLookup(barcode, "scan");
       setCameraVisible(false);
     },
   });
@@ -182,7 +289,7 @@ function ProductQueryContent() {
     onScan: async (barcode) => {
       console.log("[product-query] hid barcode scanned", { barcode });
       setKeyword(barcode);
-      await handleLookup(barcode);
+      await handleLookup(barcode, "scan");
     },
   });
 
@@ -230,6 +337,7 @@ function ProductQueryContent() {
     setDetail(null);
     setInitialDetail(null);
     setLookupVisible(false);
+    setAutoPrintOnLookupConfirm(false);
     setQueryFeedback({ type: "idle" });
   }, []);
 
@@ -240,15 +348,20 @@ function ProductQueryContent() {
 
     setLookupVisible(false);
     try {
-      await loadDetail(selectedLookupProductCode);
+      const nextDetail = await loadDetail(selectedLookupProductCode);
+      if (nextDetail && autoPrintOnLookupConfirm) {
+        await sendProductLabel(nextDetail);
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : t("messages.lookupFailed");
       setDetail(null);
       setInitialDetail(null);
       setQueryFeedback({ type: "error", query: keyword.trim(), message });
       setSnackbarMessage(message);
+    } finally {
+      setAutoPrintOnLookupConfirm(false);
     }
-  }, [keyword, loadDetail, selectedLookupProductCode, t]);
+  }, [autoPrintOnLookupConfirm, keyword, loadDetail, selectedLookupProductCode, sendProductLabel, t]);
 
   const handleChangeStorePrice = useCallback((patch: Partial<NonNullable<ProductDetail["storePrice"]>>) => {
     setDetail((current) =>
@@ -262,6 +375,62 @@ function ProductQueryContent() {
           }
         : current
     );
+  }, []);
+
+  const handleChangeStoreRetailPrice = useCallback(
+    (value: string) => {
+      const retailPrice = parseDecimalInput(value);
+      setDetail((current) => {
+        if (!current?.storePrice) {
+          return current;
+        }
+
+        const discountRate = normalizeDiscountRateValue(current.storePrice.discountRate);
+        return {
+          ...current,
+          storePrice: {
+            ...current.storePrice,
+            retailPrice,
+            discountRate,
+          },
+        };
+      });
+    },
+    []
+  );
+
+  const handleChangeStoreDiscountPercent = useCallback(
+    (value: string) => {
+      const percentValue = parseDecimalInput(value);
+      const discountRate =
+        percentValue == null ? null : normalizeDiscountRateValue(clamp(percentValue, 0, 100));
+      handleChangeStorePrice({ discountRate });
+    },
+    [handleChangeStorePrice]
+  );
+
+  const handleChangeStoreDiscountedRetailPrice = useCallback((value: string) => {
+    const discountedRetail = parseDecimalInput(value);
+    setDetail((current) => {
+      if (!current?.storePrice) {
+        return current;
+      }
+
+      const retailPrice = current.storePrice.retailPrice ?? null;
+      const boundedDiscountedRetail =
+        discountedRetail == null || retailPrice == null || retailPrice <= 0
+          ? discountedRetail
+          : clamp(discountedRetail, 0, retailPrice);
+      const discountRate = getDiscountRateFromDiscountedRetail(retailPrice, boundedDiscountedRetail);
+
+      return {
+        ...current,
+        storePrice: {
+          ...current.storePrice,
+          discountRate,
+        },
+      };
+    });
   }, []);
 
   const handleChangeMultiCode = useCallback((uuid: string, patch: Partial<MultiCodeEditableItem>) => {
@@ -332,6 +501,7 @@ function ProductQueryContent() {
         const savedStorePrice = await updateStorePrice(detail.storePrice.uuid, {
           purchasePrice: detail.storePrice.purchasePrice ?? null,
           retailPrice: detail.storePrice.retailPrice ?? null,
+          discountRate: normalizeDiscountRateValue(detail.storePrice.discountRate),
           isAutoPricing: detail.storePrice.isAutoPricing,
           isSpecialProduct: detail.storePrice.isSpecialProduct,
           isActive: detail.storePrice.isActive,
@@ -377,17 +547,6 @@ function ProductQueryContent() {
         return;
       }
 
-      const savedPrinter = await getSavedPrinter();
-      if (!savedPrinter?.address) {
-        setSnackbarMessage(t("messages.printerRequired"));
-        return;
-      }
-
-      if (printerAutoReconnectPaused) {
-        setSnackbarMessage(t("messages.printerPaused"));
-        return;
-      }
-
       if (kind === "discount" && !(detail.storePrice?.discountRate && detail.storePrice.discountRate > 0)) {
         setSnackbarMessage(t("messages.discountPrintUnavailable"));
         return;
@@ -401,7 +560,8 @@ function ProductQueryContent() {
       setPrintingKind(kind);
       try {
         if (kind === "product") {
-          await printProductLabel(detail);
+          await sendProductLabel(detail);
+          return;
         } else if (kind === "discount") {
           await printDiscountLabel(detail);
         } else {
@@ -412,17 +572,24 @@ function ProductQueryContent() {
         const fallback = t("messages.printFailed");
         setSnackbarMessage(error instanceof Error ? `${fallback}: ${error.message}` : fallback);
       } finally {
-        setPrintingKind(null);
+        if (kind !== "product") {
+          setPrintingKind(null);
+        }
       }
     },
-    [detail, printerAutoReconnectPaused, t]
+    [detail, sendProductLabel, t]
   );
 
   const storePrice = detail?.storePrice;
   const clearancePrice = detail?.clearancePrice;
+  const normalizedStoreDiscountRate = normalizeDiscountRateValue(storePrice?.discountRate);
+  const discountedRetailPrice = getDiscountedRetailPrice(
+    storePrice?.retailPrice,
+    normalizedStoreDiscountRate
+  );
 
   return (
-    <SafeAreaView style={styles.safeArea} edges={[]}>
+    <SafeAreaView style={styles.safeArea} edges={["top", "left", "right"]}>
       <QueryHeader
         storeName={selectedStore?.storeName}
         onScanPress={() => setCameraVisible(true)}
@@ -431,10 +598,12 @@ function ProductQueryContent() {
       />
 
       <SearchPanel
+        continuousPrint={continuousPrintEnabled}
         value={keyword}
         loading={loading || storesLoading}
         lastHitLabel={detail ? undefined : lastHitLabel}
         onChangeText={setKeyword}
+        onToggleContinuousPrint={setContinuousPrintEnabled}
         onSubmit={() => void handleLookup()}
         onClear={handleClear}
       />
@@ -445,6 +614,8 @@ function ProductQueryContent() {
             <View style={styles.firstScreenSection}>
               <ProductHeroCard
                 imageUrl={detail.productImage}
+                isPrintingProductLabel={printingKind === "product"}
+                onPrintProductLabel={() => void handlePrint("product")}
                 productName={detail.productName}
                 supplierName={detail.localSupplierName}
                 supplierCode={detail.localSupplierCode}
@@ -459,6 +630,8 @@ function ProductQueryContent() {
                   storeName={storePrice.storeName}
                   purchasePrice={formatDecimal(storePrice.purchasePrice)}
                   retailPrice={formatDecimal(storePrice.retailPrice)}
+                  discountPercent={formatPercentValue(normalizedStoreDiscountRate)}
+                  discountedRetailPrice={formatCurrency(discountedRetailPrice)}
                   autoPricing={storePrice.isAutoPricing}
                   isSpecialProduct={storePrice.isSpecialProduct}
                   rate={storePrice.rate == null ? "" : String(storePrice.rate)}
@@ -466,14 +639,12 @@ function ProductQueryContent() {
                   strategyRuleLabel={storePrice.strategyRuleLabel}
                   onChangePurchasePrice={(value) =>
                     handleChangeStorePrice({
-                      purchasePrice: value.trim() === "" ? null : Number(value),
+                      purchasePrice: parseDecimalInput(value),
                     })
                   }
-                  onChangeRetailPrice={(value) =>
-                    handleChangeStorePrice({
-                      retailPrice: value.trim() === "" ? null : Number(value),
-                    })
-                  }
+                  onChangeRetailPrice={handleChangeStoreRetailPrice}
+                  onChangeDiscountPercent={handleChangeStoreDiscountPercent}
+                  onChangeDiscountedRetailPrice={handleChangeStoreDiscountedRetailPrice}
                   onToggleAutoPricing={(value) => handleChangeStorePrice({ isAutoPricing: value })}
                   onToggleSpecial={(value) => handleChangeStorePrice({ isSpecialProduct: value })}
                 />
@@ -498,14 +669,6 @@ function ProductQueryContent() {
                     {t("print.title")}
                   </Text>
                   <View style={styles.printActions}>
-                    <Button
-                      mode="contained"
-                      onPress={() => void handlePrint("product")}
-                      loading={printingKind === "product"}
-                      disabled={Boolean(printingKind)}
-                    >
-                      {printingKind === "product" ? t("print.sending") : t("print.product")}
-                    </Button>
                     <Button
                       mode="outlined"
                       onPress={() => void handlePrint("discount")}
@@ -633,7 +796,7 @@ export default function ProductQueryScreen() {
   const isFocused = useIsFocused();
 
   if (!isFocused) {
-    return <SafeAreaView style={styles.safeArea} edges={[]} />;
+    return <SafeAreaView style={styles.safeArea} edges={["top", "left", "right"]} />;
   }
 
   return <ProductQueryContent />;
@@ -646,9 +809,9 @@ const styles = StyleSheet.create({
   },
   content: {
     paddingHorizontal: 12,
-    paddingTop: 2,
+    paddingTop: 0,
     paddingBottom: 16,
-    gap: 8,
+    gap: 6,
   },
   hiddenInput: {
     position: "absolute",
@@ -657,11 +820,11 @@ const styles = StyleSheet.create({
     opacity: 0,
   },
   firstScreenSection: {
-    gap: 8,
+    gap: 6,
   },
   secondarySection: {
     gap: 8,
-    paddingTop: 6,
+    paddingTop: 4,
   },
   secondaryTitle: {
     fontWeight: "700",
@@ -671,7 +834,7 @@ const styles = StyleSheet.create({
   emptyBlock: {
     borderRadius: 8,
     backgroundColor: "#fff",
-    padding: 16,
+    padding: 14,
     gap: 6,
   },
   emptyTitle: {
@@ -685,7 +848,8 @@ const styles = StyleSheet.create({
     backgroundColor: "#FFFDF7",
   },
   printCardContent: {
-    gap: 10,
+    gap: 8,
+    paddingVertical: 6,
   },
   printTitle: {
     fontWeight: "700",
@@ -694,7 +858,7 @@ const styles = StyleSheet.create({
   printActions: {
     flexDirection: "row",
     flexWrap: "wrap",
-    gap: 8,
+    gap: 6,
   },
   cameraModal: {
     marginHorizontal: 16,

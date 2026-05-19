@@ -445,7 +445,7 @@ export default function Home() {
     </View>
   );
   return (
-    <SafeAreaView edges={["left", "right"]} style={styles.container}>
+    <SafeAreaView edges={["top", "left", "right"]} style={styles.container}>
       {fixedHeaderContent}
       <FlatList
         style={styles.content}
@@ -643,12 +643,12 @@ const styles = StyleSheet.create({
   },
   header: {
     paddingHorizontal: 16,
-    paddingTop: 4,
+    paddingTop: 0,
     gap: 12,
   },
   headerCompact: {
     gap: 8,
-    paddingTop: 2,
+    paddingTop: 0,
   },
   headerTopRow: {
     flexDirection: "row",
@@ -895,4 +895,3 @@ const styles = StyleSheet.create({
     color: "#666",
   },
 });
-

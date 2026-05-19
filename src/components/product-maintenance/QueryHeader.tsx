@@ -43,7 +43,7 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     gap: 8,
     paddingHorizontal: 12,
-    paddingTop: 2,
+    paddingTop: 0,
     paddingBottom: 0,
   },
   storeLabel: {

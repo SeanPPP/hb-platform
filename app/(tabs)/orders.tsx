@@ -373,7 +373,7 @@ export default function Orders() {
   );
 
   return (
-    <SafeAreaView edges={["left", "right"]} style={styles.container}>
+    <SafeAreaView edges={["top", "left", "right"]} style={styles.container}>
       <View style={styles.headerRow}>
         <Text variant="titleLarge" style={styles.pageTitle}>
           {t("title")}
@@ -565,7 +565,7 @@ const styles = StyleSheet.create({
   },
   listContent: {
     paddingHorizontal: 16,
-    paddingTop: 2,
+    paddingTop: 0,
     paddingBottom: 0,
     gap: 12,
     flexGrow: 1,

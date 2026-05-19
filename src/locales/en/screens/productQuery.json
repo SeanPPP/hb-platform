@@ -3,6 +3,7 @@
   "currentStore": "Store: {{store}}",
   "search": {
     "placeholder": "Barcode / item / code",
+    "auto": "Print.auto",
     "lastHit": "Last hit: {{value}}"
   },
   "messages": {
@@ -57,9 +58,9 @@
     "productTypeLabel": "Type",
     "supplierLabel": "Supplier",
     "productType": {
-      "normal": "Regular product",
-      "set": "Combo set",
-      "multi": "Multi-code set",
+      "normal": "0 Regular",
+      "set": "1 Set",
+      "multi": "2 Multi",
       "unknown": "Unknown type"
     }
   },
@@ -67,6 +68,8 @@
     "fallbackTitle": "Store product info",
     "purchase": "Cost",
     "retail": "Retail",
+    "discountPercent": "Discount %",
+    "discountedRetail": "Now Price",
     "rate": "Rate {{value}}",
     "calculating": "Calculating...",
     "auto": "Auto",
@@ -98,9 +101,11 @@
   },
   "print": {
     "title": "Label printing",
+    "quick": "Print",
     "product": "Regular label",
     "discount": "Discount label",
     "clearance": "Clearance label",
+    "sendingShort": "Sending",
     "sending": "Sending..."
   }
 }
