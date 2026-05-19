@@ -34,6 +34,9 @@ export function StorePriceStrategyCard({
   onToggleSpecial,
 }: StorePriceStrategyCardProps) {
   const { t } = useAppTranslation("productQuery");
+  const strategyText = evaluatingRate
+    ? t("storePrice.calculating")
+    : [strategySourceLabel, strategyRuleLabel].filter(Boolean).join(" ");
 
   return (
     <Card style={styles.card} mode="contained">
@@ -66,26 +69,23 @@ export function StorePriceStrategyCard({
             style={styles.input}
           />
         </View>
-        <View style={styles.rateRow}>
-          {strategySourceLabel ? (
-            <Text variant="bodySmall" style={styles.secondary}>
-              {evaluatingRate ? t("storePrice.calculating") : strategySourceLabel}
+        <View style={styles.summaryRow}>
+          {strategyText ? (
+            <Text variant="bodySmall" style={styles.secondary} numberOfLines={1}>
+              {strategyText}
             </Text>
-          ) : null}
-          {strategyRuleLabel ? (
-            <Text variant="bodySmall" style={styles.secondary}>
-              {strategyRuleLabel}
-            </Text>
-          ) : null}
-        </View>
-        <View style={styles.toggleRow}>
-          <View style={styles.toggleItem}>
-            <Text variant="bodySmall">{t("storePrice.auto")}</Text>
-            <Switch value={autoPricing} onValueChange={onToggleAutoPricing} />
-          </View>
-          <View style={styles.toggleItem}>
-            <Text variant="bodySmall">{t("storePrice.special")}</Text>
-            <Switch value={isSpecialProduct} onValueChange={onToggleSpecial} />
+          ) : (
+            <View style={styles.summarySpacer} />
+          )}
+          <View style={styles.toggleRow}>
+            <View style={styles.toggleItem}>
+              <Text variant="bodySmall" style={styles.toggleLabel}>{t("storePrice.auto")}</Text>
+              <Switch value={autoPricing} onValueChange={onToggleAutoPricing} />
+            </View>
+            <View style={styles.toggleItem}>
+              <Text variant="bodySmall" style={styles.toggleLabel}>{t("storePrice.special")}</Text>
+              <Switch value={isSpecialProduct} onValueChange={onToggleSpecial} />
+            </View>
           </View>
         </View>
       </Card.Content>
@@ -99,14 +99,14 @@ const styles = StyleSheet.create({
     backgroundColor: "#fff",
   },
   content: {
-    gap: 6,
-    paddingVertical: 8,
+    gap: 4,
+    paddingVertical: 6,
   },
   headerRow: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    gap: 8,
+    gap: 6,
   },
   title: {
     fontWeight: "700",
@@ -114,34 +114,47 @@ const styles = StyleSheet.create({
   },
   priceRow: {
     flexDirection: "row",
-    gap: 10,
+    gap: 8,
   },
   input: {
     flex: 1,
     backgroundColor: "#fff",
-    height: 40,
-  },
-  rateRow: {
-    gap: 2,
+    height: 38,
   },
   rateText: {
     color: "#1677FF",
     fontWeight: "700",
-    flexShrink: 1,
+    flexShrink: 0,
   },
   secondary: {
     color: "#475467",
+    flex: 1,
+    minWidth: 0,
+  },
+  summaryRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+    paddingTop: 2,
+  },
+  summarySpacer: {
+    flex: 1,
   },
   toggleRow: {
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "flex-start",
-    gap: 8,
+    justifyContent: "flex-end",
+    gap: 6,
+    flexShrink: 0,
   },
   toggleItem: {
-    flex: 1,
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "space-between",
+    justifyContent: "flex-end",
+    gap: 2,
+  },
+  toggleLabel: {
+    color: "#344054",
   },
 });
