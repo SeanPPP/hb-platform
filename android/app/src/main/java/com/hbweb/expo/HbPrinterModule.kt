@@ -264,7 +264,7 @@ class HbPrinterModule(
   private fun buildProductLabelCommand(payload: ReadableMap): String {
     val productName = payload.getNullableString("productName")
     val itemNumber = payload.getNullableString("itemNumber")
-    val supplierName = processCapitalization(payload.getNullableString("supplierName"))
+    val supplierName = formatSupplierAbbreviation(payload.getNullableString("supplierName"))
     val barcode = payload.getNullableString("barcode")
     val retailPrice = payload.getNullableDouble("retailPrice")
     val discountRate = payload.getNullableDouble("discountRate") ?: 0.0
@@ -435,6 +435,27 @@ class HbPrinterModule(
       .split(Regex("\\s+"))
       .filter { it.isNotBlank() }
       .joinToString(" ") { word -> word.replaceFirstChar { it.titlecase(Locale.US) } }
+  }
+
+  private fun formatSupplierAbbreviation(value: String): String {
+    val words = value
+      .lowercase(Locale.US)
+      .split(Regex("\\s+"))
+      .filter { it.isNotBlank() }
+      .map { word -> word.replaceFirstChar { it.titlecase(Locale.US) } }
+
+    if (words.isEmpty()) {
+      return ""
+    }
+
+    if (words.size == 1) {
+      return words.first().take(3).uppercase(Locale.US)
+    }
+
+    return words
+      .take(4)
+      .map { it.first().uppercaseChar() }
+      .joinToString(".")
   }
 
   private fun bitmapCommand(x: Int, y: Int, bitmap: Bitmap): String {
