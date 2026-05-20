@@ -32,6 +32,7 @@
     "system": "系统管理",
     "systemStores": "分店管理",
     "systemEmployeeProfiles": "员工个人信息维护",
+    "employeeProfiles": "员工个人信息维护",
     "systemUsers": "用户管理",
     "systemRoles": "角色管理",
     "systemPermissions": "权限管理",

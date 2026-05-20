@@ -32,6 +32,7 @@
     "system": "System",
     "systemStores": "Stores",
     "systemEmployeeProfiles": "Employee Profiles",
+    "employeeProfiles": "Employee Profiles",
     "systemUsers": "Users",
     "systemRoles": "Roles",
     "systemPermissions": "Permissions",
