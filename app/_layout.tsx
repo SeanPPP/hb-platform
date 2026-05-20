@@ -7,6 +7,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { StatusBar } from "expo-status-bar";
 import { usePrinterAutoConnect } from "@/modules/printer/use-printer-auto-connect";
 import { i18n, initI18n } from "@/shared/i18n/i18n";
+import { useDeviceStore } from "@/store/device-store";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -32,6 +33,10 @@ export default function RootLayout() {
 
   useEffect(() => {
     void initI18n();
+  }, []);
+
+  useEffect(() => {
+    void useDeviceStore.getState().hydrate();
   }, []);
 
   return (

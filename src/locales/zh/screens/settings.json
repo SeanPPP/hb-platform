@@ -61,6 +61,8 @@
     "selectStoreMessage": "设备注册前需要先选择一个分店。",
     "registerSuccessTitle": "设备注册已提交",
     "registerSuccessMessage": "设备已绑定到 {{store}}，当前状态：{{status}}。管理员在后台启用后，这台设备后续即可直接进入 App。",
+    "registerExistingTitle": "设备状态已同步",
+    "registerExistingMessage": "检测到这台设备已在 {{store}} 注册，当前状态：{{status}}。已同步本机设备信息；设备启用后，后续重新打开 App 可直接进入系统。",
     "registerFailedTitle": "注册失败",
     "registerFailedMessage": "设备注册失败，请稍后重试。",
     "refreshReadyTitle": "设备已启用",

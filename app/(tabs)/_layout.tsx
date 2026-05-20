@@ -14,6 +14,7 @@ export default function TabsLayout() {
   const isLoading = useAuthStore((state) => state.isLoading);
   const restoreSession = useAuthStore((state) => state.restoreSession);
   const deviceSession = useDeviceStore((state) => state.session);
+  const deviceHydrated = useDeviceStore((state) => state.isReady);
   const validateDevice = useDeviceStore((state) => state.validate);
   const hasRestored = useRef(false);
 
@@ -22,23 +23,40 @@ export default function TabsLayout() {
       return;
     }
 
+    if (!deviceHydrated) {
+      return;
+    }
+
     if (isAuthenticated && userGuid) {
+      console.info("[startup-auth] using existing user session");
       hasRestored.current = true;
       return;
     }
 
     if (deviceSession?.hardwareId && deviceSession.authCode && deviceSession.storeCode) {
       let cancelled = false;
+      const currentDeviceSession = deviceSession;
       hasRestored.current = true;
 
       async function ensureDeviceSession() {
         try {
+          console.info("[startup-auth] validating device session", {
+            hardwareId: currentDeviceSession.hardwareId,
+            storeCode: currentDeviceSession.storeCode,
+            status: currentDeviceSession.status ?? null,
+          });
           const isReady = await validateDevice();
           if (!isReady && !cancelled) {
+            console.warn("[startup-auth] device session not ready, redirecting to login", {
+              hardwareId: currentDeviceSession.hardwareId,
+              storeCode: currentDeviceSession.storeCode,
+              status: currentDeviceSession.status ?? null,
+            });
             router.replace("/(auth)/login");
           }
         } catch {
           if (!cancelled) {
+            console.warn("[startup-auth] device validation failed, redirecting to login");
             router.replace("/(auth)/login");
           }
         }
@@ -54,9 +72,11 @@ export default function TabsLayout() {
     let cancelled = false;
 
     async function ensureAuthenticated() {
+      console.info("[startup-auth] restoring account session");
       const restored = await restoreSession();
       hasRestored.current = true;
       if (!restored && !cancelled) {
+        console.warn("[startup-auth] no device session and no account session, redirecting to login");
         router.replace("/(auth)/login");
       }
     }
@@ -66,14 +86,14 @@ export default function TabsLayout() {
     return () => {
       cancelled = true;
     };
-  }, [deviceSession?.authCode, deviceSession?.hardwareId, deviceSession?.storeCode, isAuthenticated, restoreSession, router, userGuid, validateDevice]);
+  }, [deviceHydrated, deviceSession?.authCode, deviceSession?.hardwareId, deviceSession?.status, deviceSession?.storeCode, isAuthenticated, restoreSession, router, userGuid, validateDevice]);
 
   const isDeviceMode = Boolean(
     deviceSession?.hardwareId && deviceSession.authCode && deviceSession.storeCode
   );
 
   if (
-    !hasRestored.current &&
+    (!deviceHydrated || !hasRestored.current) &&
     (isLoading || (isDeviceMode ? true : !isAuthenticated && !userGuid))
   ) {
     return (

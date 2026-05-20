@@ -179,8 +179,10 @@ export default function Settings() {
       });
 
       Alert.alert(
-        t("dialogs.registerSuccessTitle"),
-        t("dialogs.registerSuccessMessage", {
+        session.resolvedFromExisting
+          ? t("dialogs.registerExistingTitle")
+          : t("dialogs.registerSuccessTitle"),
+        t(session.resolvedFromExisting ? "dialogs.registerExistingMessage" : "dialogs.registerSuccessMessage", {
           store: session.storeName || session.storeCode,
           status: resolveDeviceStatusText(session.status, session.statusDescription, t, language),
         })

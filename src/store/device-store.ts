@@ -29,6 +29,12 @@ export const useDeviceStore = create<DeviceState>((set, get) => ({
 
   async hydrate() {
     const session = await DeviceStorage.getSession();
+    console.info("[device-session] hydrate", {
+      hasSession: Boolean(session),
+      hardwareId: session?.hardwareId ?? null,
+      storeCode: session?.storeCode ?? null,
+      status: session?.status ?? null,
+    });
     set({ session, isReady: true });
     return session;
   },
@@ -52,6 +58,7 @@ export const useDeviceStore = create<DeviceState>((set, get) => ({
         systemDeviceNumber: device.systemDeviceNumber || null,
         status: device.status,
         statusDescription: device.statusDescription,
+        resolvedFromExisting: device.resolvedFromExisting ?? false,
       };
 
       await DeviceStorage.setSession(session);
@@ -88,9 +95,15 @@ export const useDeviceStore = create<DeviceState>((set, get) => ({
               profile.systemDeviceNumber || currentSession.systemDeviceNumber || null,
             status: profile.status,
             statusDescription: profile.statusDescription,
+            resolvedFromExisting: currentSession.resolvedFromExisting ?? false,
           };
           await DeviceStorage.setSession(nextSession);
           set({ session: nextSession, isReady: true, isLoading: false });
+          console.warn("[device-session] validation rejected", {
+            hardwareId: currentSession.hardwareId,
+            storeCode: nextSession.storeCode,
+            status: nextSession.status,
+          });
         } catch {
           set({ isLoading: false });
         }
@@ -107,6 +120,7 @@ export const useDeviceStore = create<DeviceState>((set, get) => ({
         systemDeviceNumber: profile.systemDeviceNumber || currentSession.systemDeviceNumber || null,
         status: profile.status,
         statusDescription: profile.statusDescription,
+        resolvedFromExisting: currentSession.resolvedFromExisting ?? false,
       };
 
       await DeviceStorage.setSession(nextSession);
@@ -114,6 +128,12 @@ export const useDeviceStore = create<DeviceState>((set, get) => ({
         session: nextSession,
         isReady: true,
         isLoading: false,
+      });
+      console.info("[device-session] validation completed", {
+        hardwareId: nextSession.hardwareId,
+        storeCode: nextSession.storeCode,
+        status: nextSession.status,
+        granted: profile.status === 1 && Boolean(nextSession.storeCode),
       });
 
       return profile.status === 1 && Boolean(nextSession.storeCode);

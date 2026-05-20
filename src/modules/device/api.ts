@@ -130,7 +130,11 @@ export async function registerDeviceApi(
         hardwareId: maskHardwareId(payload.hardwareId),
       });
       try {
-        return await getDeviceProfileApi(payload.hardwareId);
+        const existingProfile = await getDeviceProfileApi(payload.hardwareId);
+        return {
+          ...existingProfile,
+          resolvedFromExisting: true,
+        };
       } catch (profileError) {
         logRegisterDeviceFailure(payload, error);
         throw error;

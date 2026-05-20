@@ -25,6 +25,7 @@ export interface DeviceProfile {
   deviceType: string
   deviceSystem: string
   storeCode?: string | null
+  resolvedFromExisting?: boolean
 }
 
 export interface PersistedDeviceSession {
@@ -35,4 +36,5 @@ export interface PersistedDeviceSession {
   systemDeviceNumber?: string | null
   status?: number
   statusDescription?: string | null
+  resolvedFromExisting?: boolean
 }
