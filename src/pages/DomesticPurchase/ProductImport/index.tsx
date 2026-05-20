@@ -313,7 +313,7 @@ export default function ProductImportPage() {
       content: (
         <div>
           <p>{t('productImport.sendConfirmText', '确定要将选中的 {{count}} 个商品发送到HQ数据库吗？', { count: productCodes.length })}</p>
-          <p style={{ fontSize: 12, color: '#888' }}>{t('productImport.sendHint', '将写入 DIC_商品信息字典表 和 DIC_商品零售价表（按所有启用分店）')}</p>
+          <p style={{ fontSize: 12, color: '#888' }}>{t('productImport.sendHint', '将先同步到 HBSales（含商品图片），再写入 HQ 的 DIC_商品信息字典表、DIC_商品零售价表 和 CBP_DIC_商品库存表')}</p>
           <p style={{ fontSize: 12, color: '#f97316' }}>{t('productImport.sendPriceWarning', '⚠️ 要求商品必须有进口价格和贴牌价格')}</p>
         </div>
       ),
