@@ -372,23 +372,35 @@ class HbPrinterModule(
   private fun buildDiscountLabelCommand(payload: ReadableMap): String {
     val productName = payload.getNullableString("productName")
     val itemNumber = payload.getNullableString("itemNumber")
+    val barcode = payload.getNullableString("barcode").ifBlank { itemNumber }
     val retailPrice = payload.getNullableDouble("retailPrice") ?: 0.0
     val discountRate = payload.getNullableDouble("discountRate") ?: 0.0
     val discountValue = discountRate * 100.0
-    val saveAmount = retailPrice * discountRate
-    val nowPrice = retailPrice - saveAmount
+    val nowPrice = retailPrice * (1.0 - discountRate)
 
-    val nowBitmap = textToBitmap("Now:$${formatMoney(nowPrice)}", fontSizeToPixels(10f), false, "sans-serif-black", true, 2)
+    val nowLabelBitmap = textToBitmap("Now", fontSizeToPixels(12f), true, "sans-serif-black", true, 4)
+    val nowPriceBitmap = textToBitmap("$${formatMoney(nowPrice)}", fontSizeToPixels(22f), true, "sans-serif-black", true, 4)
     val discountBitmap = textToBitmap(discountValue.roundToInt().toString().padStart(2, '0'), fontSizeToPixels(44f), false, "sans-serif-black")
     val offBitmap = textToBitmap("OFF", fontSizeToPixels(16f), true, "sans-serif-black")
     val percentBitmap = textToBitmap("%", fontSizeToPixels(20f), true, "sans-serif-black")
-    val saveBitmap = textToBitmap("Save:$${formatMoney(saveAmount)}", fontSizeToPixels(10f), true, "sans-serif-black")
     val dateBitmap = textToBitmap(todayString(), fontSizeToPixels(8f), false, "Arial", true, 2)
+    val itemBitmap = itemNumber.takeIf { it.isNotBlank() }?.let {
+      textToBitmap(it, fontSizeToPixels(8f), true, "sans-serif-black")
+    }
 
     val startY = 20
     val startX = labelWidth - discountBitmap.width - percentBitmap.width - offBitmap.width + 20
-    val rrpX = startX + discountBitmap.width / 2 + percentBitmap.width / 2 + offBitmap.width / 2 - nowBitmap.width / 2
-    val rrpY = startY + discountBitmap.height + 5
+    val valueCenterX = startX + discountBitmap.width / 2 + percentBitmap.width / 2 + offBitmap.width / 2
+    val nowPriceX = valueCenterX - nowPriceBitmap.width / 2
+    val nowLabelX = valueCenterX - nowLabelBitmap.width / 2
+    val nowLabelY = startY + discountBitmap.height + 8
+    val nowPriceY = nowLabelY + nowLabelBitmap.height + 8
+    val qrSize = 120
+    val qrX = 10
+    val qrY = labelHeight - qrSize - 40
+    val itemY = qrY - (itemBitmap?.height ?: 0) - 8
+    val dateX = labelWidth - dateBitmap.width - 15
+    val dateY = qrY + qrSize - dateBitmap.height
     val nameMaxWidth = max(1, labelWidth - discountBitmap.width - percentBitmap.width - offBitmap.width + 10)
     val nameBitmap = longTextToBitmap(productName, fontSizeToPixels(10f), false, "Arial", 4, nameMaxWidth)
 
@@ -403,15 +415,19 @@ class HbPrinterModule(
         startY + discountBitmap.height - offBitmap.height,
         offBitmap,
       ),
-      bitmapCommand(rrpX + 10, rrpY, saveBitmap),
-      bitmapCommand(rrpX + 10, rrpY + saveBitmap.height + 5, nowBitmap),
+      bitmapCommand(nowLabelX, nowLabelY, nowLabelBitmap),
+      bitmapCommand(nowPriceX, nowPriceY, nowPriceBitmap),
     )
 
-    if (itemNumber.isNotBlank()) {
-      commands += "BARCODE 128 1 2 30 5 ${rrpY + saveBitmap.height + 5} ${cpclText(itemNumber)}"
+    if (itemBitmap != null) {
+      commands += bitmapCommand(5, itemY, itemBitmap)
     }
 
-    commands += bitmapCommand(rrpX - dateBitmap.width - 30, rrpY + saveBitmap.height + 10, dateBitmap)
+    if (barcode.isNotBlank()) {
+      commands += qrCodeCommand(qrX, qrY, barcode, 6)
+    }
+
+    commands += bitmapCommand(dateX, dateY, dateBitmap)
     commands += "PRINT"
 
     return commands.joinToString("\r\n", postfix = "\r\n")
@@ -703,6 +719,14 @@ class HbPrinterModule(
   private fun bitmapCommand(x: Int, y: Int, bitmap: Bitmap): String {
     val widthBytes = (bitmap.width + 7) / 8
     return "EG $widthBytes ${bitmap.height} $x $y ${bitmapToHex(bitmap, widthBytes)}"
+  }
+
+  private fun qrCodeCommand(x: Int, y: Int, value: String, unit: Int = 6): String {
+    return listOf(
+      "B QR $x $y M 2 U $unit",
+      "MA,${cpclText(value)}",
+      "ENDQR",
+    ).joinToString("\r\n")
   }
 
   private fun createDashLineBitmap(width: Int, height: Int): Bitmap {
