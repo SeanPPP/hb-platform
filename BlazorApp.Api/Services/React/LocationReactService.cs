@@ -1,4 +1,5 @@
 using System.Linq.Expressions;
+using System.Text.RegularExpressions;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Api.Services;
@@ -10,6 +11,10 @@ namespace BlazorApp.Api.Services.React
 {
     public class LocationReactService : ILocationReactService
     {
+        private const int PickingLocationType = 1;
+        private const int StorageLocationType = 2;
+        private const string LocationCodePattern = @"^[A-Z](0[1-9]|[1-9][0-9]){3}$";
+
         private readonly SqlSugarContext _context;
         private readonly ICurrentUserService _currentUserService;
         private readonly ILogger<LocationReactService> _logger;
@@ -203,9 +208,16 @@ namespace BlazorApp.Api.Services.React
         {
             try
             {
+                var validationError = ValidateLocationInput(dto.LocationCode, dto.LocationType, dto.Status);
+                if (validationError != null)
+                {
+                    return ApiResponse<LocationReactDto>.Error(validationError.Value.Message, validationError.Value.ErrorCode);
+                }
+
+                var locationCode = NormalizeLocationCode(dto.LocationCode);
                 var existingList = await _context
                     .Db.Queryable<Location>()
-                    .Where(l => l.LocationCode == dto.LocationCode && !l.IsDeleted)
+                    .Where(l => l.LocationCode == locationCode && !l.IsDeleted)
                     .ToListAsync();
 
                 if (existingList.Count > 0)
@@ -213,12 +225,13 @@ namespace BlazorApp.Api.Services.React
                     return ApiResponse<LocationReactDto>.Error("货位代码已存在", "CONFLICT");
                 }
 
+                var locationBarcode = await GenerateUniqueLocationBarcodeAsync();
                 var username = _currentUserService.GetCurrentUsername();
                 var location = new Location
                 {
                     LocationGuid = Guid.NewGuid().ToString(),
-                    LocationCode = dto.LocationCode,
-                    LocationBarcode = dto.LocationBarcode,
+                    LocationCode = locationCode,
+                    LocationBarcode = locationBarcode,
                     LocationType = dto.LocationType,
                     Status = dto.Status ?? 1,
                     CreatedBy = username,
@@ -261,10 +274,17 @@ namespace BlazorApp.Api.Services.React
 
                 var location = locationList[0];
 
+                var validationError = ValidateLocationInput(dto.LocationCode, dto.LocationType, dto.Status);
+                if (validationError != null)
+                {
+                    return ApiResponse<LocationReactDto>.Error(validationError.Value.Message, validationError.Value.ErrorCode);
+                }
+
+                var locationCode = NormalizeLocationCode(dto.LocationCode);
                 var duplicateList = await _context
                     .Db.Queryable<Location>()
                     .Where(l =>
-                        l.LocationCode == dto.LocationCode
+                        l.LocationCode == locationCode
                         && l.LocationGuid != locationGuid
                         && !l.IsDeleted
                     )
@@ -279,8 +299,11 @@ namespace BlazorApp.Api.Services.React
                 }
 
                 var username = _currentUserService.GetCurrentUsername();
-                location.LocationCode = dto.LocationCode;
-                location.LocationBarcode = dto.LocationBarcode;
+                location.LocationCode = locationCode;
+                if (string.IsNullOrWhiteSpace(location.LocationBarcode))
+                {
+                    location.LocationBarcode = await GenerateUniqueLocationBarcodeAsync();
+                }
                 location.LocationType = dto.LocationType;
                 location.Status = dto.Status;
                 location.UpdatedBy = username;
@@ -392,9 +415,10 @@ namespace BlazorApp.Api.Services.React
 
         public async Task<ApiResponse<LocationReactDto>> BindProductAsync(
             string locationGuid,
-            string productCode
+            string productIdentifier
         )
         {
+            var transactionStarted = false;
             try
             {
                 var location = await _context
@@ -406,15 +430,17 @@ namespace BlazorApp.Api.Services.React
                     return ApiResponse<LocationReactDto>.Error("货位不存在", "NOT_FOUND");
                 }
 
-                var product = await _context
-                    .Db.Queryable<Product>()
-                    .Where(p => p.ProductCode == productCode && !p.IsDeleted)
-                    .FirstAsync();
-                if (product == null)
+                var productResult = await ResolveProductAsync(productIdentifier);
+                if (!productResult.Success || productResult.Data == null)
                 {
-                    return ApiResponse<LocationReactDto>.Error("商品不存在", "NOT_FOUND");
+                    return ApiResponse<LocationReactDto>.Error(
+                        productResult.Message,
+                        productResult.ErrorCode,
+                        productResult.Details
+                    );
                 }
 
+                var productCode = productResult.Data.ProductCode;
                 var warehouseProduct = await _context
                     .Db.Queryable<WarehouseProduct>()
                     .Where(w => w.ProductCode == productCode && !w.IsDeleted)
@@ -424,11 +450,76 @@ namespace BlazorApp.Api.Services.React
                     return ApiResponse<LocationReactDto>.Error("仓库商品不存在", "NOT_FOUND");
                 }
 
+                var existingSameBinding = await _context
+                    .Db.Queryable<ProductLocation>()
+                    .AnyAsync(pl =>
+                        pl.LocationGuid == locationGuid
+                        && pl.ProductCode == productCode
+                        && !pl.IsDeleted
+                    );
+                if (existingSameBinding)
+                {
+                    return await GetByIdAsync(locationGuid);
+                }
+
+                if (location.LocationType == PickingLocationType)
+                {
+                    var existingLocationProduct = await _context
+                        .Db.Queryable<ProductLocation>()
+                        .Where(pl => pl.LocationGuid == locationGuid && !pl.IsDeleted)
+                        .FirstAsync();
+
+                    if (existingLocationProduct != null)
+                    {
+                        return ApiResponse<LocationReactDto>.Error(
+                            "该配货位已绑定商品，请解绑后继续绑定新的货位",
+                            "PICKING_LOCATION_ALREADY_BOUND",
+                            new
+                            {
+                                locationGuid,
+                                existingProductCode = existingLocationProduct.ProductCode,
+                            }
+                        );
+                    }
+
+                    var existingPickingLocation = await _context
+                        .Db.Queryable<ProductLocation, Location>((pl, l) => new JoinQueryInfos(
+                            JoinType.Inner,
+                            pl.LocationGuid == l.LocationGuid
+                        ))
+                        .Where((pl, l) =>
+                            pl.ProductCode == productCode
+                            && !pl.IsDeleted
+                            && !l.IsDeleted
+                            && l.LocationType == PickingLocationType
+                        )
+                        .Select((pl, l) => new { pl.LocationGuid, l.LocationCode })
+                        .FirstAsync();
+
+                    if (existingPickingLocation != null)
+                    {
+                        return ApiResponse<LocationReactDto>.Error(
+                            "该商品已绑定配货位，请解绑后继续绑定新的货位",
+                            "PRODUCT_PICKING_LOCATION_ALREADY_BOUND",
+                            new
+                            {
+                                productCode,
+                                existingPickingLocation.LocationGuid,
+                                existingPickingLocation.LocationCode,
+                            }
+                        );
+                    }
+                }
+                else if (location.LocationType != StorageLocationType)
+                {
+                    return ApiResponse<LocationReactDto>.Error(
+                        "货位类型只能是1=配货位或2=存货位",
+                        "INVALID_LOCATION_TYPE"
+                    );
+                }
+
                 await _context.Db.Ado.BeginTranAsync();
-                await _context
-                    .Db.Deleteable<ProductLocation>()
-                    .Where(pl => pl.ProductCode == productCode)
-                    .ExecuteCommandAsync();
+                transactionStarted = true;
 
                 var username = _currentUserService.GetCurrentUsername();
                 await _context
@@ -449,9 +540,144 @@ namespace BlazorApp.Api.Services.React
             }
             catch (Exception ex)
             {
-                await _context.Db.Ado.RollbackTranAsync();
-                _logger.LogError(ex, "绑定货位商品失败: {LocationGuid} {ProductCode}", locationGuid, productCode);
+                if (transactionStarted)
+                {
+                    await _context.Db.Ado.RollbackTranAsync();
+                }
+                _logger.LogError(ex, "绑定货位商品失败: {LocationGuid} {ProductIdentifier}", locationGuid, productIdentifier);
                 return ApiResponse<LocationReactDto>.Error("绑定商品失败", "DATABASE_ERROR", ex.Message);
+            }
+        }
+
+        public async Task<ApiResponse<LocationProductResolveDto>> ResolveProductAsync(
+            string productIdentifier
+        )
+        {
+            var keyword = productIdentifier?.Trim();
+            if (string.IsNullOrWhiteSpace(keyword))
+            {
+                return ApiResponse<LocationProductResolveDto>.Error(
+                    "商品货号或条码不能为空",
+                    "VALIDATION_ERROR"
+                );
+            }
+
+            try
+            {
+                var matches = new Dictionary<string, (Product Product, string MatchedBy, string MatchedValue)>();
+
+                var products = await _context
+                    .Db.Queryable<Product>()
+                    .Where(p =>
+                        !p.IsDeleted
+                        && (
+                            p.ProductCode == keyword
+                            || p.ItemNumber == keyword
+                            || p.Barcode == keyword
+                        )
+                    )
+                    .ToListAsync();
+
+                foreach (var product in products)
+                {
+                    AddProductResolveMatch(matches, product, keyword);
+                }
+
+                var setProductCodes = await _context
+                    .Db.Queryable<ProductSetCode>()
+                    .Where(psc =>
+                        !psc.IsDeleted
+                        && (
+                            psc.SetItemNumber == keyword
+                            || psc.SetBarcode == keyword
+                            || psc.SetProductCode == keyword
+                        )
+                    )
+                    .Select(psc => psc.ProductCode)
+                    .Distinct()
+                    .ToListAsync();
+
+                var multiProductCodes = await _context
+                    .Db.Queryable<StoreMultiCodeProduct>()
+                    .Where(smp =>
+                        !smp.IsDeleted
+                        && (
+                            smp.MultiBarcode == keyword
+                            || smp.MultiCodeProductCode == keyword
+                            || smp.StoreMultiCodeProductCode == keyword
+                        )
+                    )
+                    .Select(smp => smp.ProductCode)
+                    .Distinct()
+                    .ToListAsync();
+
+                var relatedProductCodes = setProductCodes
+                    .Concat(multiProductCodes)
+                    .Where(code => !string.IsNullOrWhiteSpace(code))
+                    .Distinct()
+                    .ToList();
+
+                if (relatedProductCodes.Count > 0)
+                {
+                    var relatedProducts = await _context
+                        .Db.Queryable<Product>()
+                        .Where(p => relatedProductCodes.Contains(p.ProductCode) && !p.IsDeleted)
+                        .ToListAsync();
+
+                    foreach (var product in relatedProducts)
+                    {
+                        if (!string.IsNullOrWhiteSpace(product.ProductCode)
+                            && !matches.ContainsKey(product.ProductCode))
+                        {
+                            matches[product.ProductCode] = (product, "barcode", keyword);
+                        }
+                    }
+                }
+
+                if (matches.Count == 0)
+                {
+                    return ApiResponse<LocationProductResolveDto>.Error(
+                        "商品不存在",
+                        "NOT_FOUND",
+                        new { productIdentifier = keyword }
+                    );
+                }
+
+                if (matches.Count > 1)
+                {
+                    return ApiResponse<LocationProductResolveDto>.Error(
+                        "商品货号或条码匹配到多个商品，请使用商品编码绑定",
+                        "AMBIGUOUS_PRODUCT",
+                        new
+                        {
+                            productIdentifier = keyword,
+                            productCodes = matches.Keys.ToList(),
+                        }
+                    );
+                }
+
+                var match = matches.Values.First();
+                var dto = new LocationProductResolveDto
+                {
+                    ProductCode = match.Product.ProductCode ?? string.Empty,
+                    ItemNumber = match.Product.ItemNumber,
+                    Barcode = match.Product.Barcode,
+                    ProductName = match.Product.ProductName,
+                    ProductImage = match.Product.ProductImage,
+                    MatchedBy = match.MatchedBy,
+                    MatchedValue = match.MatchedValue,
+                };
+
+                return ApiResponse<LocationProductResolveDto>.OK(dto, "商品解析成功");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "解析货位绑定商品失败: {ProductIdentifier}", productIdentifier);
+                return ApiResponse<LocationProductResolveDto>.Error(
+                    "解析商品失败",
+                    "DATABASE_ERROR",
+                    ex.Message
+                );
             }
         }
 
@@ -518,10 +744,98 @@ namespace BlazorApp.Api.Services.React
                 {
                     ProductCode = p.ProductCode,
                     ItemNumber = p.ItemNumber,
+                    Barcode = p.Barcode,
                     ProductName = p.ProductName,
                     ProductImage = p.ProductImage,
                 })
                 .ToList();
+        }
+
+        private async Task<string> GenerateUniqueLocationBarcodeAsync()
+        {
+            var timestamp = DateTime.Now;
+            for (var attempt = 0; attempt < 10; attempt++)
+            {
+                var barcode12 = timestamp.AddSeconds(attempt).ToString("yyMMddHHmmss");
+                var barcode = barcode12 + CalculateEan13CheckDigit(barcode12);
+                var exists = await _context
+                    .Db.Queryable<Location>()
+                    .AnyAsync(l => l.LocationBarcode == barcode && !l.IsDeleted);
+
+                if (!exists)
+                {
+                    return barcode;
+                }
+            }
+
+            throw new InvalidOperationException("生成货位条码失败，请稍后重试");
+        }
+
+        private static int CalculateEan13CheckDigit(string barcode12)
+        {
+            var sum = 0;
+            for (var i = 0; i < barcode12.Length; i++)
+            {
+                var digit = barcode12[i] - '0';
+                sum += i % 2 == 0 ? digit : digit * 3;
+            }
+
+            return (10 - sum % 10) % 10;
+        }
+
+        private static (string Message, string ErrorCode)? ValidateLocationInput(
+            string? locationCode,
+            int? locationType,
+            int? status
+        )
+        {
+            var normalizedCode = NormalizeLocationCode(locationCode);
+            if (string.IsNullOrWhiteSpace(normalizedCode))
+            {
+                return ("货位代码不能为空", "VALIDATION_ERROR");
+            }
+
+            if (!Regex.IsMatch(normalizedCode, LocationCodePattern))
+            {
+                return ("货位代码格式不正确，应为A010101格式：字母A-Z + 01-99 + 01-99 + 01-99", "INVALID_LOCATION_CODE");
+            }
+
+            if (locationType != PickingLocationType && locationType != StorageLocationType)
+            {
+                return ("货位类型只能是1=配货位或2=存货位", "INVALID_LOCATION_TYPE");
+            }
+
+            if (status.HasValue && status.Value != 0 && status.Value != 1)
+            {
+                return ("货位状态只能是0或1", "INVALID_STATUS");
+            }
+
+            return null;
+        }
+
+        private static string NormalizeLocationCode(string? locationCode)
+        {
+            return locationCode?.Trim().ToUpperInvariant() ?? string.Empty;
+        }
+
+        private static void AddProductResolveMatch(
+            Dictionary<string, (Product Product, string MatchedBy, string MatchedValue)> matches,
+            Product product,
+            string keyword
+        )
+        {
+            if (string.IsNullOrWhiteSpace(product.ProductCode))
+            {
+                return;
+            }
+
+            var matchedBy = product.ProductCode == keyword
+                ? "productCode"
+                : product.ItemNumber == keyword
+                    ? "itemNumber"
+                    : "barcode";
+
+            matches[product.ProductCode] = (product, matchedBy, keyword);
         }
 
         private static LocationReactDto MapToDto(Location location)

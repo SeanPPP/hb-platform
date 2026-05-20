@@ -15,6 +15,9 @@ namespace BlazorApp.Api.Services
     /// </summary>
     public class ProductLocationService : IProductLocationService
     {
+        private const int PickingLocationType = 1;
+        private const int StorageLocationType = 2;
+
         // 数据库上下文，用于数据库操作
         private readonly SqlSugarContext _db;
         // AutoMapper对象映射器，用于实体与DTO之间的转换
@@ -117,6 +120,8 @@ namespace BlazorApp.Api.Services
                 if (await ExistsAsync(createDto.ProductCode, createDto.LocationGuid))
                     throw new ValidationException($"商品 {createDto.ProductCode} 与位置 {createDto.LocationGuid} 的映射已存在");
 
+                await ValidateProductLocationRuleAsync(createDto.ProductCode, createDto.LocationGuid);
+
                 var productLocation = _mapper.Map<ProductLocation>(createDto);
                 productLocation.Guid = Guid.NewGuid().ToString();
 
@@ -151,6 +156,8 @@ namespace BlazorApp.Api.Services
                                    && pl.LocationGuid == updateDto.LocationGuid
                                    && pl.Guid != updateDto.Guid))
                     throw new ValidationException($"商品 {updateDto.ProductCode} 与位置 {updateDto.LocationGuid} 的映射已存在");
+
+                await ValidateProductLocationRuleAsync(updateDto.ProductCode, updateDto.LocationGuid, updateDto.Guid);
 
                 _mapper.Map(updateDto, existing);
 
@@ -384,6 +391,8 @@ namespace BlazorApp.Api.Services
                     // 检查是否已存在相同的商品位置映射，避免重复创建
                     if (!await ExistsAsync(batchDto.ProductCode, locationGuid))
                     {
+                        await ValidateProductLocationRuleAsync(batchDto.ProductCode, locationGuid);
+
                         productLocations.Add(new ProductLocation
                         {
                             Guid = Guid.NewGuid().ToString(),
@@ -498,6 +507,50 @@ namespace BlazorApp.Api.Services
 
             if (string.IsNullOrWhiteSpace(dto.LocationGuid))
                 throw new ValidationException("位置GUID不能为空");
+        }
+
+        private async Task ValidateProductLocationRuleAsync(
+            string productCode,
+            string locationGuid,
+            string? excludeGuid = null
+        )
+        {
+            var location = await _db.LocationDb.AsQueryable()
+                .Where(l => l.LocationGuid == locationGuid && !l.IsDeleted)
+                .FirstAsync();
+
+            if (location == null)
+                throw new KeyNotFoundException($"找不到货位: {locationGuid}");
+
+            if (location.LocationType == StorageLocationType)
+                return;
+
+            if (location.LocationType != PickingLocationType)
+                throw new ValidationException("货位类型只能是1=配货位或2=存货位");
+
+            var locationQuery = _db.ProductLocationDb.AsQueryable()
+                .Where(pl => pl.LocationGuid == locationGuid && !pl.IsDeleted);
+            if (!string.IsNullOrWhiteSpace(excludeGuid))
+                locationQuery = locationQuery.Where(pl => pl.Guid != excludeGuid);
+
+            var existingLocationProduct = await locationQuery.FirstAsync();
+            if (existingLocationProduct != null)
+                throw new ValidationException("该配货位已绑定商品，请解绑后继续绑定新的货位");
+
+            var productPickingQuery = _db.ProductLocationDb.AsQueryable()
+                .InnerJoin<Location>((pl, l) => pl.LocationGuid == l.LocationGuid)
+                .Where((pl, l) =>
+                    pl.ProductCode == productCode
+                    && !pl.IsDeleted
+                    && !l.IsDeleted
+                    && l.LocationType == PickingLocationType
+                );
+            if (!string.IsNullOrWhiteSpace(excludeGuid))
+                productPickingQuery = productPickingQuery.Where((pl, l) => pl.Guid != excludeGuid);
+
+            var existingProductPicking = await productPickingQuery.FirstAsync();
+            if (existingProductPicking != null)
+                throw new ValidationException("该商品已绑定配货位，请解绑后继续绑定新的货位");
         }
     }
 }

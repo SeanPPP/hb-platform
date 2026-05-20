@@ -421,12 +421,14 @@ namespace BlazorApp.Shared.DTOs
         public string? LocalSupplierCode { get; set; }
         public string? SupplierCode { get; set; }
         public string? SupplierName { get; set; }
+        public string? Grade { get; set; }
         public bool IsActive { get; set; }
         public decimal? PurchasePrice { get; set; }
         public decimal? RetailPrice { get; set; }
         public decimal? DomesticPrice { get; set; }
         public decimal? OEMPrice { get; set; }
         public decimal? ImportPrice { get; set; }
+        public int? StockQuantity { get; set; }
         public int? MiddlePackageQuantity { get; set; }
         public int? PackingQuantity { get; set; }
         public decimal? Volume { get; set; }
@@ -444,9 +446,11 @@ namespace BlazorApp.Shared.DTOs
         public decimal? DomesticPrice { get; set; }
         public decimal? OEMPrice { get; set; }
         public decimal? ImportPrice { get; set; }
+        public int? StockQuantity { get; set; }
         public int? MiddlePackageQuantity { get; set; }
         public int? PackingQuantity { get; set; }
         public decimal? Volume { get; set; }
+        public string? Grade { get; set; }
         public string? ProductImage { get; set; }
     }
 

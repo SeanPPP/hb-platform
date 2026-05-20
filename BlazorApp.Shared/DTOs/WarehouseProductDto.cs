@@ -22,11 +22,21 @@ namespace BlazorApp.Shared.DTOs
         /// OEM价格
         /// </summary>
         public decimal? OEMPrice { get; set; }
+
+        /// <summary>
+        /// 零售价格（兼容前端 retail 字段，持久化到 Product.RetailPrice / StoreRetailPriceValue）
+        /// </summary>
+        public decimal? RetailPrice { get; set; }
         
         /// <summary>
         /// 进口价格
         /// </summary>
         public decimal? ImportPrice { get; set; }
+
+        /// <summary>
+        /// 进货价（兼容前端 purchase 字段，持久化到 Product.PurchasePrice / StoreRetailPrice.PurchasePrice）
+        /// </summary>
+        public decimal? PurchasePrice { get; set; }
         
         /// <summary>
         /// 库存数量
@@ -75,6 +85,26 @@ namespace BlazorApp.Shared.DTOs
         public decimal? Volume { get; set; }
 
         /// <summary>
+        /// 中包数（来自 Product 表）
+        /// </summary>
+        public int? MiddlePackageQuantity { get; set; }
+
+        /// <summary>
+        /// PackingQty（前端字段名，持久化到 WarehouseProduct.PackingQuantity）
+        /// </summary>
+        public int? PackingQty { get; set; }
+
+        /// <summary>
+        /// 单件装箱数（后端字段名）
+        /// </summary>
+        public int? PackingQuantity { get; set; }
+
+        /// <summary>
+        /// 分店代码；传入时限定 StoreRetailPrice 更新目标分店。
+        /// </summary>
+        public string? StoreCode { get; set; }
+
+        /// <summary>
         /// 类别GUID
         /// </summary>
         public string? CategoryGUID { get; set; }
@@ -109,11 +139,21 @@ namespace BlazorApp.Shared.DTOs
         /// OEM价格
         /// </summary>
         public decimal? OEMPrice { get; set; }
+
+        /// <summary>
+        /// 零售价格（兼容前端 retail 字段）
+        /// </summary>
+        public decimal? RetailPrice { get; set; }
         
         /// <summary>
         /// 进口价格
         /// </summary>
         public decimal? ImportPrice { get; set; }
+
+        /// <summary>
+        /// 进货价（兼容前端 purchase 字段）
+        /// </summary>
+        public decimal? PurchasePrice { get; set; }
         
         /// <summary>
         /// 库存数量
@@ -162,6 +202,26 @@ namespace BlazorApp.Shared.DTOs
         public decimal? Volume { get; set; }
 
         /// <summary>
+        /// 中包数
+        /// </summary>
+        public int? MiddlePackageQuantity { get; set; }
+
+        /// <summary>
+        /// PackingQty（前端字段名）
+        /// </summary>
+        public int? PackingQty { get; set; }
+
+        /// <summary>
+        /// 单件装箱数（后端字段名）
+        /// </summary>
+        public int? PackingQuantity { get; set; }
+
+        /// <summary>
+        /// 分店代码；传入时限定 StoreRetailPrice 更新目标分店。
+        /// </summary>
+        public string? StoreCode { get; set; }
+
+        /// <summary>
         /// 类别GUID
         /// </summary>
         public string? CategoryGUID { get; set; }
@@ -187,11 +247,21 @@ namespace BlazorApp.Shared.DTOs
         /// OEM价格
         /// </summary>
         public decimal? OEMPrice { get; set; }
+
+        /// <summary>
+        /// 零售价格（兼容前端 retail 字段）
+        /// </summary>
+        public decimal? RetailPrice { get; set; }
         
         /// <summary>
         /// 进口价格
         /// </summary>
         public decimal? ImportPrice { get; set; }
+
+        /// <summary>
+        /// 进货价（兼容前端 purchase 字段）
+        /// </summary>
+        public decimal? PurchasePrice { get; set; }
         
         /// <summary>
         /// 库存数量
@@ -238,6 +308,26 @@ namespace BlazorApp.Shared.DTOs
         ///
         [Display(Name = "单件体积")]
         public decimal? Volume { get; set; }
+
+        /// <summary>
+        /// 中包数
+        /// </summary>
+        public int? MiddlePackageQuantity { get; set; }
+
+        /// <summary>
+        /// PackingQty（前端字段名）
+        /// </summary>
+        public int? PackingQty { get; set; }
+
+        /// <summary>
+        /// 单件装箱数（后端字段名）
+        /// </summary>
+        public int? PackingQuantity { get; set; }
+
+        /// <summary>
+        /// 分店代码；传入时限定 StoreRetailPrice 更新目标分店。
+        /// </summary>
+        public string? StoreCode { get; set; }
 
         /// <summary>
         /// 类别GUID

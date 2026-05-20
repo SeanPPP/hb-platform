@@ -73,7 +73,24 @@ namespace BlazorApp.Api.Mappings.Profiles
                 .ForMember(
                     dest => dest.ProductName,
                     opt => opt.MapFrom(src => src.Product != null ? src.Product.ProductName : null)
-                );
+                )
+                .ForMember(
+                    dest => dest.PurchasePrice,
+                    opt =>
+                        opt.MapFrom(src => src.Product != null ? src.Product.PurchasePrice : null)
+                )
+                .ForMember(
+                    dest => dest.RetailPrice,
+                    opt => opt.MapFrom(src => src.Product != null ? src.Product.RetailPrice : null)
+                )
+                .ForMember(
+                    dest => dest.MiddlePackageQuantity,
+                    opt =>
+                        opt.MapFrom(src =>
+                            src.Product != null ? src.Product.MiddlePackageQuantity : null
+                        )
+                )
+                .ForMember(dest => dest.PackingQty, opt => opt.MapFrom(src => src.PackingQuantity));
 
             // WarehouseProduct -> WarehouseProductListDto 映射
             CreateMap<WarehouseProduct, WarehouseProductListDto>()
@@ -108,9 +125,17 @@ namespace BlazorApp.Api.Mappings.Profiles
                         opt.MapFrom(src => src.Product != null ? src.Product.PurchasePrice : null)
                 )
                 .ForMember(
+                    dest => dest.MiddlePackageQuantity,
+                    opt =>
+                        opt.MapFrom(src =>
+                            src.Product != null ? src.Product.MiddlePackageQuantity : null
+                        )
+                )
+                .ForMember(
                     dest => dest.RetailPrice,
                     opt => opt.MapFrom(src => src.Product != null ? src.Product.RetailPrice : null)
                 )
+                .ForMember(dest => dest.PackingQty, opt => opt.MapFrom(src => src.PackingQuantity))
                 .ForMember(
                     dest => dest.IsAutoPricing,
                     opt =>
@@ -159,6 +184,18 @@ namespace BlazorApp.Api.Mappings.Profiles
             // UpdateWarehouseProductDto -> WarehouseProduct 映射
             CreateMap<UpdateWarehouseProductDto, WarehouseProduct>()
                 .ForMember(dest => dest.ProductCode, opt => opt.Ignore())
+                .ForMember(
+                    dest => dest.ImportPrice,
+                    opt => opt.MapFrom(src => src.PurchasePrice ?? src.ImportPrice)
+                )
+                .ForMember(
+                    dest => dest.OEMPrice,
+                    opt => opt.MapFrom(src => src.RetailPrice ?? src.OEMPrice)
+                )
+                .ForMember(
+                    dest => dest.PackingQuantity,
+                    opt => opt.MapFrom(src => src.PackingQty ?? src.PackingQuantity)
+                )
                 .ForMember(dest => dest.CreatedAt, opt => opt.Ignore())
                 .ForMember(dest => dest.UpdatedAt, opt => opt.MapFrom(src => DateTime.UtcNow));
         }

@@ -298,18 +298,74 @@ namespace BlazorApp.Api.Services
         {
             try
             {
+                var now = DateTime.UtcNow;
+                var productCode = Guid.NewGuid().ToString();
+                var purchasePrice = productDto.PurchasePrice ?? productDto.ImportPrice;
+                var retailPrice = productDto.RetailPrice ?? productDto.OEMPrice;
+                var packingQuantity = productDto.PackingQty ?? productDto.PackingQuantity;
+
                 // 将DTO转换为实体对象
                 var product = _mapper.Map<WarehouseProduct>(productDto);
 
                 // 自动生成唯一商品编码
-                product.ProductCode = Guid.NewGuid().ToString();
-                product.CreatedAt = DateTime.UtcNow; // 设置创建时间
-                product.UpdatedAt = DateTime.UtcNow; // 设置更新时间
+                product.ProductCode = productCode;
+                product.ImportPrice = purchasePrice;
+                product.OEMPrice = retailPrice;
+                product.PackingQuantity = packingQuantity;
+                product.CreatedAt = now; // 设置创建时间
+                product.UpdatedAt = now; // 设置更新时间
+
+                var productEntity = new Product
+                {
+                    ProductCode = productCode,
+                    ProductName = productDto.ProductName ?? string.Empty,
+                    Barcode = productDto.Barcode,
+                    PurchasePrice = purchasePrice,
+                    RetailPrice = retailPrice,
+                    MiddlePackageQuantity = productDto.MiddlePackageQuantity,
+                    CreatedAt = now,
+                    UpdatedAt = now,
+                };
+
+                StoreRetailPrice? storeRetailPrice = null;
+                if (!string.IsNullOrWhiteSpace(productDto.StoreCode))
+                {
+                    var storeCode = productDto.StoreCode.Trim();
+                    storeRetailPrice = new StoreRetailPrice
+                    {
+                        StoreCode = storeCode,
+                        ProductCode = productCode,
+                        StoreProductCode = $"{storeCode}{productCode}",
+                        PurchasePrice = purchasePrice,
+                        StoreRetailPriceValue = retailPrice,
+                        CreatedAt = now,
+                        UpdatedAt = now,
+                    };
+                }
 
                 // 插入数据库并返回插入后的实体
-                var insertedProduct = await _context
-                    .Db.Insertable(product)
-                    .ExecuteReturnEntityAsync();
+                WarehouseProduct insertedProduct;
+                _context.Db.Ado.BeginTran();
+                try
+                {
+                    insertedProduct = await _context
+                        .Db.Insertable(product)
+                        .ExecuteReturnEntityAsync();
+                    await _context.Db.Insertable(productEntity).ExecuteCommandAsync();
+                    if (storeRetailPrice != null)
+                    {
+                        await _context.Db.Insertable(storeRetailPrice).ExecuteCommandAsync();
+                    }
+
+                    _context.Db.Ado.CommitTran();
+                }
+                catch
+                {
+                    _context.Db.Ado.RollbackTran();
+                    throw;
+                }
+
+                insertedProduct.Product = productEntity;
                 return _mapper.Map<WarehouseProductDto>(insertedProduct);
             }
             catch (Exception ex)
@@ -333,20 +389,108 @@ namespace BlazorApp.Api.Services
         {
             try
             {
+                var normalizedProductCode = productCode.Trim();
+                var now = DateTime.UtcNow;
+
                 // 查找要更新的商品
                 var existingProduct = await _context
                     .Db.Queryable<WarehouseProduct>()
-                    .FirstAsync(wp => wp.ProductCode == productCode);
+                    .FirstAsync(wp => wp.ProductCode == normalizedProductCode);
 
                 if (existingProduct == null)
                     return null;
 
-                // 将DTO的属性映射到现有实体
-                _mapper.Map(productDto, existingProduct);
-                existingProduct.UpdatedAt = DateTime.UtcNow; // 更新修改时间
+                var productEntity = await _context
+                    .Db.Queryable<Product>()
+                    .FirstAsync(p => p.ProductCode == normalizedProductCode);
+                var shouldInsertProduct = productEntity == null;
+                productEntity ??= new Product
+                {
+                    ProductCode = normalizedProductCode,
+                    ProductName = productDto.ProductName ?? string.Empty,
+                    Barcode = productDto.Barcode,
+                    CreatedAt = now,
+                    UpdatedAt = now,
+                };
 
-                // 执行数据库更新操作
-                await _context.Db.Updateable(existingProduct).ExecuteCommandAsync();
+                var storeRetailPrices = await GetStoreRetailPricesForWarehouseUpdateAsync(
+                    normalizedProductCode,
+                    productDto.StoreCode
+                );
+
+                WarehouseProductPricePersistenceMapper.ApplyUpdate(
+                    productDto,
+                    existingProduct,
+                    productEntity,
+                    storeRetailPrices,
+                    now
+                );
+
+                var hasStoreCode = !string.IsNullOrWhiteSpace(productDto.StoreCode);
+                var shouldInsertStoreRetailPrice = hasStoreCode && storeRetailPrices.Count == 0;
+                if (shouldInsertStoreRetailPrice)
+                {
+                    var newStoreRetailPrice = new StoreRetailPrice
+                    {
+                        StoreCode = productDto.StoreCode!.Trim(),
+                        ProductCode = normalizedProductCode,
+                        SupplierCode = productEntity.LocalSupplierCode,
+                        StoreProductCode = $"{productDto.StoreCode!.Trim()}{normalizedProductCode}",
+                        CreatedAt = now,
+                        UpdatedAt = now,
+                    };
+                    WarehouseProductPricePersistenceMapper.ApplyUpdate(
+                        productDto,
+                        existingProduct,
+                        productEntity,
+                        new[] { newStoreRetailPrice },
+                        now
+                    );
+                    storeRetailPrices.Add(newStoreRetailPrice);
+                }
+                else if (!hasStoreCode && storeRetailPrices.Count == 0)
+                {
+                    _logger.LogWarning(
+                        "仓库商品价格已更新 Product，但未找到可同步的 StoreRetailPrice，且请求未提供 StoreCode。ProductCode={ProductCode}",
+                        normalizedProductCode
+                    );
+                }
+
+                _context.Db.Ado.BeginTran();
+                try
+                {
+                    await _context.Db.Updateable(existingProduct).ExecuteCommandAsync();
+
+                    if (shouldInsertProduct)
+                    {
+                        await _context.Db.Insertable(productEntity).ExecuteCommandAsync();
+                    }
+                    else
+                    {
+                        await _context.Db.Updateable(productEntity).ExecuteCommandAsync();
+                    }
+
+                    if (storeRetailPrices.Count > 0)
+                    {
+                        if (shouldInsertStoreRetailPrice)
+                        {
+                            await _context.Db.Insertable(storeRetailPrices[0]).ExecuteCommandAsync();
+                        }
+                        else
+                        {
+                            await _context.Db.Updateable(storeRetailPrices).ExecuteCommandAsync();
+                        }
+                    }
+
+                    _context.Db.Ado.CommitTran();
+                }
+                catch
+                {
+                    _context.Db.Ado.RollbackTran();
+                    throw;
+                }
+
+                existingProduct.Product = productEntity;
                 return _mapper.Map<WarehouseProductDto>(existingProduct);
             }
             catch (Exception ex)
@@ -354,6 +498,24 @@ namespace BlazorApp.Api.Services
                 _logger.LogError(ex, "更新商品失败，商品编码：{ProductCode}", productCode);
                 throw;
             }
+        }
+
+        private async Task<List<StoreRetailPrice>> GetStoreRetailPricesForWarehouseUpdateAsync(
+            string productCode,
+            string? storeCode
+        )
+        {
+            var query = _context
+                .Db.Queryable<StoreRetailPrice>()
+                .Where(srp => srp.ProductCode == productCode && !srp.IsDeleted);
+
+            if (!string.IsNullOrWhiteSpace(storeCode))
+            {
+                var normalizedStoreCode = storeCode.Trim();
+                query = query.Where(srp => srp.StoreCode == normalizedStoreCode);
+            }
+
+            return await query.ToListAsync();
         }
 
         /// <summary>

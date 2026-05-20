@@ -60,6 +60,8 @@ namespace BlazorApp.Shared.DTOs
 
         public string? ItemNumber { get; set; }
 
+        public string? Barcode { get; set; }
+
         public string? ProductName { get; set; }
 
         public string? ProductImage { get; set; }
@@ -101,5 +103,24 @@ namespace BlazorApp.Shared.DTOs
         public int? Status { get; set; }
         public int? LocationType { get; set; }
         public int ProductCount { get; set; }
+    }
+
+    public class BindLocationProductReactDto
+    {
+        public string? ProductIdentifier { get; set; }
+        public string? ProductCode { get; set; }
+        public string? ItemNumber { get; set; }
+        public string? Barcode { get; set; }
+    }
+
+    public class LocationProductResolveDto
+    {
+        public string ProductCode { get; set; } = string.Empty;
+        public string? ItemNumber { get; set; }
+        public string? Barcode { get; set; }
+        public string? ProductName { get; set; }
+        public string? ProductImage { get; set; }
+        public string MatchedBy { get; set; } = string.Empty;
+        public string MatchedValue { get; set; } = string.Empty;
     }
 }

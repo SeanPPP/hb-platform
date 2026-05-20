@@ -3468,6 +3468,7 @@ namespace BlazorApp.Api.Services.React
                     w.DomesticPrice,
                     w.OEMPrice,
                     w.ImportPrice,
+                    w.StockQuantity,
                     MiddlePackageQuantity = p.MiddlePackageQuantity,
                     PackingQuantity = SqlFunc.IsNull(w.PackingQuantity, dp.PackingQuantity),
                     Volume = SqlFunc.IsNull(w.Volume, dp.UnitVolume),
@@ -3500,6 +3501,7 @@ namespace BlazorApp.Api.Services.React
                     DomesticPrice = row.DomesticPrice,
                     OEMPrice = row.OEMPrice,
                     ImportPrice = row.ImportPrice,
+                    StockQuantity = row.StockQuantity,
                     MiddlePackageQuantity = row.MiddlePackageQuantity,
                     PackingQuantity = row.PackingQuantity,
                     Volume = row.Volume,
@@ -3545,6 +3547,11 @@ namespace BlazorApp.Api.Services.React
                 .Db.Queryable<DomesticProduct>()
                 .Where(dp => dp.ProductCode == productCode && !dp.IsDeleted)
                 .FirstAsync();
+            var productGrade = await _context
+                .Db.Queryable<ProductGrade>()
+                .Where(pg => pg.ProductCode == productCode && !pg.IsDeleted)
+                .FirstAsync();
+            var shouldInsertProductGrade = false;
 
             var now = DateTime.UtcNow;
             if (dto.IsActive.HasValue)
@@ -3584,6 +3591,10 @@ namespace BlazorApp.Api.Services.React
                 warehouseProduct.ImportPrice = dto.ImportPrice;
                 if (domesticProduct != null) domesticProduct.ImportPrice = dto.ImportPrice;
             }
+            if (dto.StockQuantity.HasValue)
+            {
+                warehouseProduct.StockQuantity = dto.StockQuantity;
+            }
             if (dto.PackingQuantity.HasValue)
             {
                 warehouseProduct.PackingQuantity = dto.PackingQuantity;
@@ -3597,6 +3608,35 @@ namespace BlazorApp.Api.Services.React
             if (dto.MiddlePackageQuantity.HasValue && domesticProduct != null)
             {
                 domesticProduct.MiddlePackQuantity = dto.MiddlePackageQuantity;
+            }
+
+            if (dto.Grade != null)
+            {
+                var normalizedGrade = dto.Grade.Trim().ToUpperInvariant();
+                if (string.IsNullOrWhiteSpace(normalizedGrade))
+                {
+                    if (productGrade != null)
+                    {
+                        productGrade.IsDeleted = true;
+                        productGrade.UpdatedAt = now;
+                    }
+                }
+                else if (productGrade != null)
+                {
+                    productGrade.Grade = normalizedGrade;
+                    productGrade.UpdatedAt = now;
+                }
+                else
+                {
+                    productGrade = new ProductGrade
+                    {
+                        ProductCode = productCode,
+                        Grade = normalizedGrade,
+                        CreatedAt = now,
+                        UpdatedAt = now,
+                    };
+                    shouldInsertProductGrade = true;
+                }
             }
 
             product.UpdatedAt = now;
@@ -3614,6 +3654,17 @@ namespace BlazorApp.Api.Services.React
                 if (domesticProduct != null)
                 {
                     await _context.Db.Updateable(domesticProduct).ExecuteCommandAsync();
+                }
+                if (productGrade != null)
+                {
+                    if (shouldInsertProductGrade)
+                    {
+                        await _context.Db.Insertable(productGrade).ExecuteCommandAsync();
+                    }
+                    else
+                    {
+                        await _context.Db.Updateable(productGrade).ExecuteCommandAsync();
+                    }
                 }
 
                 await _context.Db.Ado.CommitTranAsync();
@@ -3714,10 +3765,13 @@ namespace BlazorApp.Api.Services.React
                 .LeftJoin<Location>(
                     (w, p, dp, s, pl, l) => l.LocationGuid == pl.LocationGuid && !l.IsDeleted
                 )
-                .Where((w, p, dp, s, pl, l) =>
+                .LeftJoin<ProductGrade>(
+                    (w, p, dp, s, pl, l, pg) => pg.ProductCode == w.ProductCode && !pg.IsDeleted
+                )
+                .Where((w, p, dp, s, pl, l, pg) =>
                     !w.IsDeleted && w.ProductCode == productCode
                 )
-                .Select((w, p, dp, s, pl, l) => new WarehouseMobileProductDto
+                .Select((w, p, dp, s, pl, l, pg) => new WarehouseMobileProductDto
                 {
                     ProductCode = w.ProductCode,
                     ProductName = p.ProductName ?? string.Empty,
@@ -3733,12 +3787,14 @@ namespace BlazorApp.Api.Services.React
                     LocalSupplierCode = p.LocalSupplierCode,
                     SupplierCode = dp.SupplierCode,
                     SupplierName = s.SupplierName,
+                    Grade = pg.Grade,
                     IsActive = w.IsActive,
                     PurchasePrice = p.PurchasePrice,
                     RetailPrice = p.RetailPrice,
                     DomesticPrice = w.DomesticPrice,
                     OEMPrice = w.OEMPrice,
                     ImportPrice = w.ImportPrice,
+                    StockQuantity = w.StockQuantity,
                     MiddlePackageQuantity = p.MiddlePackageQuantity,
                     PackingQuantity = SqlFunc.IsNull(w.PackingQuantity, dp.PackingQuantity),
                     Volume = SqlFunc.IsNull(w.Volume, dp.UnitVolume),

@@ -10,7 +10,8 @@ namespace BlazorApp.Api.Interfaces.React
         Task<ApiResponse<LocationReactDto>> UpdateAsync(string locationGuid, UpdateLocationReactDto dto);
         Task<ApiResponse<bool>> DeleteAsync(string locationGuid);
         Task<List<LocationLookupItemDto>> LookupAsync(string keyword);
-        Task<ApiResponse<LocationReactDto>> BindProductAsync(string locationGuid, string productCode);
+        Task<ApiResponse<LocationProductResolveDto>> ResolveProductAsync(string productIdentifier);
+        Task<ApiResponse<LocationReactDto>> BindProductAsync(string locationGuid, string productIdentifier);
         Task<ApiResponse<LocationReactDto>> UnbindProductAsync(string locationGuid, string productCode);
     }
 }

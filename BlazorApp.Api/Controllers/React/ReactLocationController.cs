@@ -135,7 +135,7 @@ namespace BlazorApp.Api.Controllers.React
                 var result = await _locationService.CreateAsync(dto);
                 if (!result.Success)
                 {
-                    return BadRequest(new { success = false, message = result.Message });
+                    return BadRequest(ToErrorBody(result));
                 }
                 return Ok(new { success = true, data = result.Data, message = result.Message });
             }
@@ -161,8 +161,8 @@ namespace BlazorApp.Api.Controllers.React
                 if (!result.Success)
                 {
                     if (result.ErrorCode == "NOT_FOUND")
-                        return NotFound(new { success = false, message = result.Message });
-                    return BadRequest(new { success = false, message = result.Message });
+                        return NotFound(ToErrorBody(result));
+                    return BadRequest(ToErrorBody(result));
                 }
                 return Ok(new { success = true, data = result.Data, message = result.Message });
             }
@@ -183,8 +183,8 @@ namespace BlazorApp.Api.Controllers.React
                 if (!result.Success)
                 {
                     if (result.ErrorCode == "NOT_FOUND")
-                        return NotFound(new { success = false, message = result.Message });
-                    return BadRequest(new { success = false, message = result.Message });
+                        return NotFound(ToErrorBody(result));
+                    return BadRequest(ToErrorBody(result));
                 }
                 return Ok(new { success = true, message = result.Message });
             }
@@ -206,10 +206,10 @@ namespace BlazorApp.Api.Controllers.React
                 {
                     if (result.ErrorCode == "NOT_FOUND")
                     {
-                        return NotFound(new { success = false, message = result.Message });
+                        return NotFound(ToErrorBody(result));
                     }
 
-                    return BadRequest(new { success = false, message = result.Message });
+                    return BadRequest(ToErrorBody(result));
                 }
 
                 return Ok(new { success = true, data = result.Data, message = result.Message });
@@ -217,6 +217,71 @@ namespace BlazorApp.Api.Controllers.React
             catch (Exception ex)
             {
                 _logger.LogError(ex, "绑定货位商品失败: {LocationGuid} {ProductCode}", locationGuid, productCode);
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
+        [HttpGet("products/resolve")]
+        [Authorize(Roles = "Admin,WarehouseManager")]
+        public async Task<IActionResult> ResolveProduct([FromQuery] string keyword)
+        {
+            try
+            {
+                var result = await _locationService.ResolveProductAsync(keyword);
+                if (!result.Success)
+                {
+                    if (result.ErrorCode == "NOT_FOUND")
+                    {
+                        return NotFound(ToErrorBody(result));
+                    }
+
+                    return BadRequest(ToErrorBody(result));
+                }
+
+                return Ok(new { success = true, data = result.Data, message = result.Message });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "解析货位绑定商品失败: {Keyword}", keyword);
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
+        [HttpPost("{locationGuid}/products/bind")]
+        [Authorize(Roles = "Admin,WarehouseManager")]
+        public async Task<IActionResult> BindProductByIdentifier(
+            string locationGuid,
+            [FromBody] BindLocationProductReactDto dto
+        )
+        {
+            try
+            {
+                if (dto == null)
+                {
+                    return BadRequest(new { success = false, message = "请求参数不能为空" });
+                }
+
+                var productIdentifier = dto.ProductIdentifier
+                    ?? dto.ProductCode
+                    ?? dto.ItemNumber
+                    ?? dto.Barcode;
+
+                var result = await _locationService.BindProductAsync(locationGuid, productIdentifier ?? string.Empty);
+                if (!result.Success)
+                {
+                    if (result.ErrorCode == "NOT_FOUND")
+                    {
+                        return NotFound(ToErrorBody(result));
+                    }
+
+                    return BadRequest(ToErrorBody(result));
+                }
+
+                return Ok(new { success = true, data = result.Data, message = result.Message });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "绑定货位商品失败: {LocationGuid}", locationGuid);
                 return StatusCode(500, new { success = false, message = "服务器内部错误" });
             }
         }
@@ -232,10 +297,10 @@ namespace BlazorApp.Api.Controllers.React
                 {
                     if (result.ErrorCode == "NOT_FOUND")
                     {
-                        return NotFound(new { success = false, message = result.Message });
+                        return NotFound(ToErrorBody(result));
                     }
 
-                    return BadRequest(new { success = false, message = result.Message });
+                    return BadRequest(ToErrorBody(result));
                 }
 
                 return Ok(new { success = true, data = result.Data, message = result.Message });
@@ -286,6 +351,17 @@ namespace BlazorApp.Api.Controllers.React
                 || User.Claims.Any(c =>
                     c.Type == ClaimTypes.Role && string.Equals(c.Value, role, StringComparison.OrdinalIgnoreCase))
             );
+        }
+
+        private static object ToErrorBody<T>(ApiResponse<T> result)
+        {
+            return new
+            {
+                success = false,
+                message = result.Message,
+                errorCode = result.ErrorCode,
+                details = result.Details,
+            };
         }
 
         private sealed record LocationReadAccessContext(bool IsAllowed, string? Message)

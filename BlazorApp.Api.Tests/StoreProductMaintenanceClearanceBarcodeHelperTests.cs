@@ -1,4 +1,7 @@
 using BlazorApp.Api.Services.React;
+using BlazorApp.Api.Services;
+using BlazorApp.Shared.DTOs;
+using BlazorApp.Shared.Models;
 using Xunit;
 
 namespace BlazorApp.Api.Tests
@@ -123,6 +126,46 @@ namespace BlazorApp.Api.Tests
             );
 
             Assert.Contains("随机段已耗尽", ex.Message);
+        }
+    }
+
+    public class WarehouseProductPricePersistenceMapperTests
+    {
+        [Fact]
+        public void ApplyUpdate_MapsWarehouseProductProductAndStoreRetailPriceFields()
+        {
+            var dto = new UpdateWarehouseProductDto
+            {
+                ProductCode = "P001",
+                DomesticPrice = 10.5m,
+                ImportPrice = 2.25m,
+                OEMPrice = 6.75m,
+                MiddlePackageQuantity = 12,
+                PackingQty = 24,
+                Volume = 0.33m,
+            };
+            var warehouseProduct = new WarehouseProduct { ProductCode = "P001" };
+            var product = new Product { ProductCode = "P001" };
+            var storeRetailPrice = new StoreRetailPrice { ProductCode = "P001", StoreCode = "200" };
+
+            WarehouseProductPricePersistenceMapper.ApplyUpdate(
+                dto,
+                warehouseProduct,
+                product,
+                new[] { storeRetailPrice },
+                new DateTime(2026, 5, 20, 0, 0, 0, DateTimeKind.Utc)
+            );
+
+            Assert.Equal(10.5m, warehouseProduct.DomesticPrice);
+            Assert.Equal(2.25m, warehouseProduct.ImportPrice);
+            Assert.Equal(6.75m, warehouseProduct.OEMPrice);
+            Assert.Equal(24, warehouseProduct.PackingQuantity);
+            Assert.Equal(0.33m, warehouseProduct.Volume);
+            Assert.Equal(2.25m, product.PurchasePrice);
+            Assert.Equal(6.75m, product.RetailPrice);
+            Assert.Equal(12, product.MiddlePackageQuantity);
+            Assert.Equal(2.25m, storeRetailPrice.PurchasePrice);
+            Assert.Equal(6.75m, storeRetailPrice.StoreRetailPriceValue);
         }
     }
 }

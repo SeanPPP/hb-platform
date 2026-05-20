@@ -18,10 +18,10 @@ namespace BlazorApp.Shared.Models
         public string LocationGuid { get; set; } = Guid.NewGuid().ToString();
 
         /// <summary>
-        /// 货位类型分类
+        /// 货位类型分类（1: 配货位, 2: 存货位）
         /// </summary>
         [SugarColumn(IsNullable = true), Length(20, 20)]
-        public int? LocationType { get; set; } //存货位，配货位
+        public int? LocationType { get; set; }
 
         /// <summary>
         /// 货位代码/标识符

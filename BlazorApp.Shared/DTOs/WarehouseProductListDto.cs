@@ -128,6 +128,21 @@ namespace BlazorApp.Shared.DTOs
         public decimal? ImportPrice { get; set; }
 
         /// <summary>
+        /// 中包数（来自Product表）
+        /// </summary>
+        public int? MiddlePackageQuantity { get; set; }
+
+        /// <summary>
+        /// PackingQty（前端字段名，来自 WarehouseProduct.PackingQuantity）
+        /// </summary>
+        public int? PackingQty { get; set; }
+
+        /// <summary>
+        /// 单件装箱数（后端字段名）
+        /// </summary>
+        public int? PackingQuantity { get; set; }
+
+        /// <summary>
         /// 库存数量
         /// </summary>
         public int? StockQuantity { get; set; }
