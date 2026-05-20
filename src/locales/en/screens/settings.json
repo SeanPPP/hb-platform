@@ -4,7 +4,9 @@
     "title": "Current account",
     "guestEmail": "Not using account mode right now",
     "roles": "Roles: {{roles}}",
-    "deviceMode": "Roles: Device mode"
+    "deviceMode": "Roles: Device mode",
+    "profileButton": "My profile",
+    "profileHelper": "View and update your own personal details."
   },
   "language": {
     "description": "Change the app display language and apply it immediately."
@@ -81,5 +83,8 @@
     "printerTestSuccessMessage": "The label printer received the test job.",
     "printerClearedTitle": "Printer cleared",
     "printerClearedMessage": "The saved label printer has been removed."
+  },
+  "messages": {
+    "profileLoginRequired": "Sign in with an account before opening your profile."
   }
 }

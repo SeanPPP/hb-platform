@@ -1,0 +1,61 @@
+{
+  "title": "My profile",
+  "subtitle": "Review and maintain your personal details.",
+  "readonly": {
+    "username": "Username",
+    "displayName": "Display name",
+    "createdAt": "Created",
+    "updatedAt": "Updated"
+  },
+  "fields": {
+    "bankBsb": "BSB",
+    "bankAccountNumber": "Bank account number",
+    "superannuationCompanyName": "Super company",
+    "superannuationCompanyCode": "Super company code",
+    "superannuationAccountNumber": "Super account number",
+    "birthday": "Birthday",
+    "gender": "Gender",
+    "employmentType": "Employment type",
+    "avatarUrl": "Avatar URL",
+    "identityId": "Identity ID",
+    "identityPhotoUrl": "Identity photo URL",
+    "address": "Address"
+  },
+  "placeholders": {
+    "birthday": "YYYY-MM-DD",
+    "avatarUrl": "https://example.com/avatar.jpg",
+    "identityPhotoUrl": "https://example.com/id-photo.jpg",
+    "address": "Street, suburb, state, postcode"
+  },
+  "sections": {
+    "banking": "Banking",
+    "superannuation": "Superannuation",
+    "personal": "Personal details",
+    "identity": "Identity",
+    "images": "Images"
+  },
+  "genderOptions": {
+    "male": "Male",
+    "female": "Female",
+    "other": "Other"
+  },
+  "employmentTypeOptions": {
+    "fullTime": "Full-time",
+    "partTime": "Part-time",
+    "casual": "Casual"
+  },
+  "actions": {
+    "save": "Save profile"
+  },
+  "messages": {
+    "loadFailed": "Failed to load your profile.",
+    "saveSuccess": "Your profile has been saved.",
+    "saveFailed": "Failed to save your profile.",
+    "loginRequired": "Please sign in before opening your profile."
+  },
+  "preview": {
+    "avatar": "Avatar preview",
+    "identityPhoto": "Identity photo preview",
+    "empty": "Paste an image URL to preview it here."
+  }
+}

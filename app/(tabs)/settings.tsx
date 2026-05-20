@@ -326,6 +326,24 @@ export default function Settings() {
               ? t("account.roles", { roles: user.roleNames.join(" / ") })
               : t("account.deviceMode")}
           </Text>
+          <Text variant="bodyMedium" style={styles.meta}>
+            {t("account.profileHelper")}
+          </Text>
+          <Button
+            mode="outlined"
+            icon="account-circle-outline"
+            onPress={() => {
+              if (!user) {
+                Alert.alert(t("title"), t("messages.profileLoginRequired"));
+                return;
+              }
+
+              router.push("/(tabs)/employee-profile");
+            }}
+            style={styles.secondaryButton}
+          >
+            {t("account.profileButton")}
+          </Button>
         </Surface>
 
         <Surface style={styles.card} elevation={1}>

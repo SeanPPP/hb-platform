@@ -220,8 +220,18 @@ export default function TabsLayout() {
           href: isRouteVisible("settings") ? undefined : null,
           title: t("tabs.settings"),
           tabBarIcon: ({ color, size }) => (
-            <MaterialCommunityIcons name="cog" color={color} size={size} />
+            <MaterialCommunityIcons
+              name="account-circle-outline"
+              color={color}
+              size={size}
+            />
           ),
+        }}
+      />
+      <Tabs.Screen
+        name="employee-profile"
+        options={{
+          href: null,
         }}
       />
     </Tabs>

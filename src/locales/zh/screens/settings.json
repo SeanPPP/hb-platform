@@ -4,7 +4,9 @@
     "title": "当前账号",
     "guestEmail": "当前未使用账号模式",
     "roles": "角色：{{roles}}",
-    "deviceMode": "角色：设备模式"
+    "deviceMode": "角色：设备模式",
+    "profileButton": "个人信息",
+    "profileHelper": "查看并维护你自己的个人资料。"
   },
   "language": {
     "description": "切换 App 显示语言，立即生效。"
@@ -81,5 +83,8 @@
     "printerTestSuccessMessage": "标签打印机已经收到测试任务。",
     "printerClearedTitle": "已清除打印机",
     "printerClearedMessage": "已移除已保存的标签打印机。"
+  },
+  "messages": {
+    "profileLoginRequired": "请先使用账号登录，再打开个人信息。"
   }
 }
