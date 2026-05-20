@@ -1,0 +1,72 @@
+{
+  "title": "Store Staff",
+  "searchPlaceholder": "Search username, name, email, or phone",
+  "currentStore": {
+    "label": "Current store",
+    "value": "{{name}} ({{code}})",
+    "empty": "No store selected",
+    "helper": "All staff accounts stay bound to the current store and always use the StoreStaff role."
+  },
+  "actions": {
+    "refresh": "Refresh",
+    "create": "Create staff",
+    "edit": "Edit",
+    "save": "Save",
+    "cancel": "Cancel",
+    "enable": "Enable",
+    "disable": "Disable",
+    "resetPassword": "Reset password",
+    "confirmReset": "Reset"
+  },
+  "statuses": {
+    "active": "Active",
+    "disabled": "Disabled"
+  },
+  "fields": {
+    "username": "Username",
+    "fullName": "Full name",
+    "email": "Email",
+    "phone": "Phone",
+    "enabled": "Enabled",
+    "initialPassword": "Initial password",
+    "newPassword": "New password",
+    "fixedRoleHint": "The role stays fixed as {{role}}. Role changes and cross-store assignments are not available here.",
+    "roleValue": "Role: {{role}}",
+    "emailValue": "Email: {{value}}",
+    "phoneValue": "Phone: {{value}}",
+    "lastLoginValue": "Last login: {{value}}",
+    "updatedAtValue": "Updated: {{value}}"
+  },
+  "dialogs": {
+    "createTitle": "Create staff account",
+    "editTitle": "Edit staff account",
+    "resetPasswordTitle": "Reset staff password",
+    "resetPasswordDescription": "Set a new password for {{username}}.",
+    "statusConfirmMessage": "Confirm to {{action}} {{username}}?"
+  },
+  "messages": {
+    "noAccessTitle": "No staff management access",
+    "noAccessDescription": "The current account is not a StoreManager, or it does not have usable user-management permissions.",
+    "selectStoreTitle": "Select a current store first",
+    "selectStoreDescription": "Choose a store before viewing or managing staff accounts for that store.",
+    "selectStoreFirst": "Select a current store first",
+    "loadFailedTitle": "Failed to load staff accounts",
+    "loadFailedDescription": "Try again later or pull to refresh.",
+    "refreshFailed": "Failed to refresh staff accounts",
+    "emptyTitle": "No staff accounts yet",
+    "emptyDescription": "Use the action button to create a staff account for the current store.",
+    "emptySearchTitle": "No matching staff found",
+    "emptySearchDescription": "No staff account matched \"{{keyword}}\".",
+    "usernameRequired": "Enter a username",
+    "passwordRequired": "Enter a password",
+    "saveFailed": "Failed to save the staff account",
+    "statusFailed": "Failed to update the staff status",
+    "passwordResetFailed": "Failed to reset the password",
+    "userCreated": "Staff account created",
+    "userUpdated": "Staff account updated",
+    "userEnabled": "Staff account enabled",
+    "userDisabled": "Staff account disabled",
+    "passwordReset": "Password reset successfully"
+  }
+}
+

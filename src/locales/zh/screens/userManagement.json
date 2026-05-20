@@ -1,0 +1,72 @@
+{
+  "title": "店员管理",
+  "searchPlaceholder": "搜索账号、姓名、邮箱或电话",
+  "currentStore": {
+    "label": "当前分店",
+    "value": "{{name}} ({{code}})",
+    "empty": "尚未选择分店",
+    "helper": "所有店员账号都会固定绑定到当前分店，默认角色为 StoreStaff。"
+  },
+  "actions": {
+    "refresh": "刷新",
+    "create": "新建店员",
+    "edit": "编辑",
+    "save": "保存",
+    "cancel": "取消",
+    "enable": "启用",
+    "disable": "停用",
+    "resetPassword": "重置密码",
+    "confirmReset": "确认重置"
+  },
+  "statuses": {
+    "active": "启用中",
+    "disabled": "已停用"
+  },
+  "fields": {
+    "username": "账号",
+    "fullName": "姓名",
+    "email": "邮箱",
+    "phone": "电话",
+    "enabled": "启用状态",
+    "initialPassword": "初始密码",
+    "newPassword": "新密码",
+    "fixedRoleHint": "角色固定为 {{role}}，不支持在此页面修改角色或跨店分配。",
+    "roleValue": "角色：{{role}}",
+    "emailValue": "邮箱：{{value}}",
+    "phoneValue": "电话：{{value}}",
+    "lastLoginValue": "最近登录：{{value}}",
+    "updatedAtValue": "最近更新：{{value}}"
+  },
+  "dialogs": {
+    "createTitle": "新建店员账号",
+    "editTitle": "编辑店员账号",
+    "resetPasswordTitle": "重置店员密码",
+    "resetPasswordDescription": "为 {{username}} 设置一个新密码。",
+    "statusConfirmMessage": "确认{{action}}{{username}}吗？"
+  },
+  "messages": {
+    "noAccessTitle": "暂无店员管理权限",
+    "noAccessDescription": "当前账号不是 StoreManager，或没有可用的用户管理权限。",
+    "selectStoreTitle": "请先选择当前分店",
+    "selectStoreDescription": "选择分店后，才能查看和维护该分店的店员账号。",
+    "selectStoreFirst": "请先选择当前分店",
+    "loadFailedTitle": "加载店员列表失败",
+    "loadFailedDescription": "请稍后重试，或下拉刷新重新加载。",
+    "refreshFailed": "刷新店员列表失败",
+    "emptyTitle": "还没有店员账号",
+    "emptyDescription": "可通过右下角按钮为当前分店创建新的店员账号。",
+    "emptySearchTitle": "未找到匹配的店员",
+    "emptySearchDescription": "没有找到与“{{keyword}}”匹配的店员账号。",
+    "usernameRequired": "请输入账号",
+    "passwordRequired": "请输入密码",
+    "saveFailed": "保存店员失败",
+    "statusFailed": "更新店员状态失败",
+    "passwordResetFailed": "重置密码失败",
+    "userCreated": "店员账号已创建",
+    "userUpdated": "店员账号已更新",
+    "userEnabled": "店员账号已启用",
+    "userDisabled": "店员账号已停用",
+    "passwordReset": "密码已重置"
+  }
+}
+
