@@ -451,44 +451,63 @@ class HbPrinterModule(
   }
 
   private fun buildClearanceLabelCommand(payload: ReadableMap): String {
+    val w = 614
+    val h = 205
     val productName = payload.getNullableString("productName")
     val itemNumber = payload.getNullableString("itemNumber")
-    val supplierName = processCapitalization(payload.getNullableString("supplierName"))
+    val supplierName = formatSupplierAbbreviation(payload.getNullableString("supplierName"))
     val barcode = payload.getNullableString("clearanceBarcode").ifBlank {
       payload.getNullableString("barcode")
     }
     val retailPrice = payload.getNullableDouble("retailPrice") ?: 0.0
     val discountRate = payload.getNullableDouble("discountRate") ?: 0.0
     val clearancePrice = payload.getNullableDouble("clearancePrice") ?: (retailPrice * (1.0 - discountRate))
-    val line1 = productName.ifBlank { " " }.take(35)
+
+    val clearanceLabelBitmap = textToBitmap("CLEARANCE", fontSizeToPixels(30f), true, "sans-serif-black", true, 2)
+    val dateBitmap = textToBitmap(todayString(), fontSizeToPixels(7f), true, "sans-serif-black", true, 2)
+    val itemBitmap = textToBitmap(itemNumber, fontSizeToPixels(7f), true, "sans-serif-black")
+    val price = formatPriceParts(clearancePrice)
+    val priceIntegerBitmap = textToBitmap(price.integer, fontSizeToPixels(40f), true, "sans-serif-black")
+    val priceDotBitmap = textToBitmap(".", fontSizeToPixels(20f), true, "sans-serif-black")
+    val priceDecimalBitmap = textToBitmap(price.decimal, fontSizeToPixels(20f), true, "sans-serif-black")
+    val priceCurrencyBitmap = textToBitmap("$", fontSizeToPixels(20f), false, "sans-serif-black")
+    val priceTotalWidth = priceCurrencyBitmap.width + priceIntegerBitmap.width + priceDotBitmap.width + priceDecimalBitmap.width
+    val qrBitmap = barcode.takeIf { it.isNotBlank() }?.let { createQrCodeBitmap(it, 64) }
+    val qrVisualWidth = qrBitmap?.width ?: 0
+    val infoAreaLeft = qrVisualWidth + 15
+    val nameMaxWidth = max(1, w - priceTotalWidth - infoAreaLeft - 15)
+    val nameBitmap = longTextToBitmap(productName, fontSizeToPixels(8f), false, "Arial", 2, nameMaxWidth)
+
+    val nameY = 21
+    val priceStartY = nameY + 8
+    val priceStartX = w - priceDecimalBitmap.width - 68
+    val clearanceLabelY = h - clearanceLabelBitmap.height - 5
+    val clearanceLabelX = max(0, (w - clearanceLabelBitmap.width) / 2)
+    val qrY = clearanceLabelY - (qrBitmap?.height ?: 64) - 5
+    val infoY = qrY + 5
+    val dateY = infoY + max(itemBitmap.height, dateBitmap.height) + 3
 
     val commands = mutableListOf(
-      "! 0 200 200 $labelHeight 1",
-      "PAGE-WIDTH $labelWidth",
-      "TEXT 4 0 1 5 ${cpclText(line1)}",
-      "TEXT 4 0 10 50 ${cpclText(listOf(itemNumber, supplierName).filter { it.isNotBlank() }.joinToString(" "))}",
-      "BARCODE-TEXT 7 0 5",
+      "! 0 200 200 $h 1",
+      "PAGE-WIDTH $w",
+      bitmapCommand(5, nameY, nameBitmap),
+      bitmapCommand(priceStartX, priceStartY, priceDecimalBitmap),
+      bitmapCommand(priceStartX - priceDotBitmap.width, priceStartY + priceIntegerBitmap.height - 10, priceDotBitmap),
+      bitmapCommand(priceStartX - priceDotBitmap.width - priceIntegerBitmap.width, priceStartY, priceIntegerBitmap),
+      bitmapCommand(
+        priceStartX - priceDotBitmap.width - priceIntegerBitmap.width - priceCurrencyBitmap.width,
+        priceStartY,
+        priceCurrencyBitmap,
+      ),
+      bitmapCommand(clearanceLabelX, clearanceLabelY, clearanceLabelBitmap),
+      bitmapCommand(infoAreaLeft, infoY, itemBitmap),
+      bitmapCommand(infoAreaLeft, dateY, dateBitmap),
     )
 
-    if (barcode.isNotBlank()) {
-      commands += "BARCODE 128 1 2 30 5 80 ${cpclText(barcode)}"
+    if (qrBitmap != null) {
+      commands += bitmapCommand(5, qrY, qrBitmap)
     }
-
-    commands += listOf(
-      "SETMAG 1 1",
-      "TEXT 24 0 330 130 was:$${formatMoney(retailPrice)}",
-      "LINE 340 130 440 160 2",
-      "LINE 340 160 440 130 2",
-      "SETMAG 4 4",
-      "TEXT 24 0 300 30 $${formatMoney(clearancePrice)}",
-      "SETMAG 2 2",
-      "TEXT 4 0 20 140 Clearance",
-      "INVERSE-LINE 10 140 240 140 60",
-      "SETMAG 1 1",
-      "TEXT 4 0 310 170 ${todayString("yyyy-MM-dd")}",
-      "INVERSE-LINE 300 170 420 170 24",
-      "PRINT",
-    )
+    commands += "PRINT"
 
     return commands.joinToString("\r\n", postfix = "\r\n")
   }
@@ -635,6 +654,7 @@ class HbPrinterModule(
     fontFamily: String,
     isInverse: Boolean = false,
     padding: Int = 0,
+    strikeThrough: Boolean = false,
   ): Bitmap {
     val safeText = text.ifBlank { " " }
     val paint = Paint().apply {
@@ -643,6 +663,9 @@ class HbPrinterModule(
       textSize = fontSize
       textAlign = Paint.Align.LEFT
       typeface = Typeface.create(fontFamily, if (isBold) Typeface.BOLD else Typeface.NORMAL)
+      if (strikeThrough) {
+        flags = flags or Paint.STRIKE_THRU_TEXT_FLAG
+      }
     }
     val bounds = android.graphics.Rect()
     paint.getTextBounds(safeText, 0, safeText.length, bounds)

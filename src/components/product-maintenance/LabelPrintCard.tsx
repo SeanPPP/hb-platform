@@ -7,17 +7,14 @@ interface LabelPrintCardProps {
   isPrintingDiscount?: boolean;
   isPrintingClearance?: boolean;
   isPrintingBigDiscount?: boolean;
-  isPrintingClearanceProduct?: boolean;
   canPrintDiscount?: boolean;
   canPrintClearance?: boolean;
   canPrintBigDiscount?: boolean;
-  canPrintClearanceProduct?: boolean;
   smallLabel?: boolean;
   onPrintProduct?: () => void;
   onPrintDiscount?: () => void;
   onPrintClearance?: () => void;
   onPrintBigDiscount?: () => void;
-  onPrintClearanceProduct?: () => void;
   onToggleSmallLabel?: () => void;
 }
 
@@ -26,17 +23,14 @@ export function LabelPrintCard({
   isPrintingDiscount = false,
   isPrintingClearance = false,
   isPrintingBigDiscount = false,
-  isPrintingClearanceProduct = false,
   canPrintDiscount = false,
   canPrintClearance = false,
   canPrintBigDiscount = false,
-  canPrintClearanceProduct = false,
   smallLabel = false,
   onPrintProduct,
   onPrintDiscount,
   onPrintClearance,
   onPrintBigDiscount,
-  onPrintClearanceProduct,
   onToggleSmallLabel,
 }: LabelPrintCardProps) {
   const { t } = useAppTranslation("productQuery");
@@ -79,16 +73,6 @@ export function LabelPrintCard({
             disabled={!onPrintDiscount || !canPrintDiscount || isPrintingDiscount}
           >
             {isPrintingDiscount ? t("print.sendingShort") : t("print.discount")}
-          </Button>
-          <Button
-            compact
-            mode="outlined"
-            icon="barcode"
-            onPress={onPrintClearanceProduct}
-            loading={isPrintingClearanceProduct}
-            disabled={!onPrintClearanceProduct || !canPrintClearanceProduct || isPrintingClearanceProduct}
-          >
-            {isPrintingClearanceProduct ? t("print.sendingShort") : t("print.clearanceProduct")}
           </Button>
           <Button
             compact

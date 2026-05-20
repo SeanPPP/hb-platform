@@ -159,7 +159,6 @@ type PrintAction =
   | "discount"
   | "clearance"
   | "bigDiscount"
-  | "clearanceProduct"
   | `set:${string}`
   | `multi:${string}`;
 
@@ -1403,7 +1402,7 @@ function ProductQueryContent() {
   );
 
   const handlePrint = useCallback(
-    async (kind: "product" | "discount" | "clearance" | "bigDiscount" | "clearanceProduct") => {
+    async (kind: "product" | "discount" | "clearance" | "bigDiscount") => {
       if (!detail) {
         return;
       }
@@ -1418,20 +1417,6 @@ function ProductQueryContent() {
 
       if (kind === "clearance" && !detail.clearancePrice) {
         setSnackbarMessage(t("messages.clearancePrintUnavailable"));
-        return;
-      }
-
-      if (kind === "clearanceProduct") {
-        if (!detail.clearancePrice?.clearanceBarcode) {
-          setSnackbarMessage(t("messages.clearancePrintUnavailable"));
-          return;
-        }
-
-        await sendProductLabel(detail, {
-          barcode: detail.clearancePrice.clearanceBarcode,
-          retailPrice: detail.clearancePrice.clearancePrice ?? null,
-          action: "clearanceProduct",
-        });
         return;
       }
 
@@ -1531,23 +1516,16 @@ function ProductQueryContent() {
               <LabelPrintCard
                 isPrintingProduct={printingAction === "product"}
                 isPrintingDiscount={printingAction === "discount"}
-                isPrintingClearanceProduct={printingAction === "clearanceProduct"}
                 isPrintingClearance={printingAction === "clearance"}
                 isPrintingBigDiscount={printingAction === "bigDiscount"}
                 canPrintDiscount={Boolean(normalizedStoreDiscountRate && normalizedStoreDiscountRate > 0)}
                 canPrintClearance={Boolean(clearancePrice)}
                 canPrintBigDiscount={Boolean(normalizedStoreDiscountRate && normalizedStoreDiscountRate > 0)}
-                canPrintClearanceProduct={Boolean(clearancePrice?.clearanceBarcode)}
                 onPrintProduct={
                   printingAction && printingAction !== "product" ? undefined : () => void handlePrint("product")
                 }
                 onPrintDiscount={
                   printingAction && printingAction !== "discount" ? undefined : () => void handlePrint("discount")
-                }
-                onPrintClearanceProduct={
-                  printingAction && printingAction !== "clearanceProduct"
-                    ? undefined
-                    : () => void handlePrint("clearanceProduct")
                 }
                 onPrintClearance={
                   printingAction && printingAction !== "clearance" ? undefined : () => void handlePrint("clearance")
