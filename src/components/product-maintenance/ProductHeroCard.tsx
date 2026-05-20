@@ -13,6 +13,7 @@ const PRODUCT_GRADE_CONFIG: Record<string, { color: string }> = {
 interface ProductHeroCardProps {
   imageUrl?: string | null;
   productName?: string;
+  itemNumber?: string | null;
   supplierName?: string | null;
   supplierCode?: string | null;
   barcode?: string | null;
@@ -24,6 +25,7 @@ interface ProductHeroCardProps {
 export function ProductHeroCard({
   imageUrl,
   productName,
+  itemNumber,
   supplierName,
   supplierCode,
   barcode,
@@ -57,6 +59,11 @@ export function ProductHeroCard({
               </Text>
             </View>
             <View style={styles.metaLine}>
+              <Text variant="bodySmall" style={[styles.blockValue, styles.itemNumberValue]} numberOfLines={1}>
+                {itemNumber || t("common:na")}
+              </Text>
+            </View>
+            <View style={styles.metaLine}>
               <Text variant="bodySmall" style={[styles.blockValue, styles.supplierValue, styles.supplierText]} numberOfLines={1}>
                 {supplierDisplay}
               </Text>
@@ -75,19 +82,6 @@ export function ProductHeroCard({
                 </Text>
               </Pressable>
             </View>
-          </View>
-        </View>
-
-        <View style={styles.barcodeInfoRow}>
-          <View style={[styles.infoBlock, styles.barcodeMetaBlock]}>
-            <Text variant="bodyMedium" style={[styles.blockValue, styles.supplierValue]} numberOfLines={1}>
-              {supplierDisplay}
-            </Text>
-          </View>
-          <View style={[styles.infoBlock, styles.typeBlock]}>
-            <Text variant="bodyMedium" style={[styles.blockValue, styles.typeValue]} numberOfLines={1}>
-              {productTypeLabel}
-            </Text>
           </View>
         </View>
 
@@ -165,17 +159,6 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     backgroundColor: "#FFF7ED",
   },
-  barcodeInfoRow: {
-    display: "none",
-  },
-  barcodeMetaBlock: {
-    display: "none",
-  },
-  typeBlock: {
-    minHeight: 0,
-    justifyContent: "center",
-    backgroundColor: "#ECFDF3",
-  },
   barcodeBlock: {
     backgroundColor: "#EFF6FF",
   },
@@ -219,6 +202,11 @@ const styles = StyleSheet.create({
   },
   supplierText: {
     flex: 1,
+  },
+  itemNumberValue: {
+    color: "#1D4ED8",
+    flexShrink: 1,
+    textAlign: "left",
   },
   typeBadge: {
     borderRadius: 999,
