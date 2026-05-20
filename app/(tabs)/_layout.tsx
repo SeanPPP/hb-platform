@@ -1,13 +1,25 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { ActivityIndicator, View } from "react-native";
-import { Tabs, useRouter } from "expo-router";
+import { Tabs, usePathname, useRouter } from "expo-router";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
+import { ScrollableTabBar } from "@/components/navigation/ScrollableTabBar";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 import { useAuthStore } from "@/store/auth-store";
 import { useDeviceStore } from "@/store/device-store";
+import { useAppNavigationStore } from "@/modules/navigation/store";
+
+const TAB_PATHS: Record<string, "/(tabs)/home" | "/(tabs)/orders" | "/(tabs)/cart" | "/(tabs)/warehouse" | "/(tabs)/product-query" | "/(tabs)/settings"> = {
+  home: "/(tabs)/home",
+  orders: "/(tabs)/orders",
+  cart: "/(tabs)/cart",
+  warehouse: "/(tabs)/warehouse",
+  "product-query": "/(tabs)/product-query",
+  settings: "/(tabs)/settings",
+};
 
 export default function TabsLayout() {
   const router = useRouter();
+  const pathname = usePathname();
   const { t } = useAppTranslation("common");
   const userGuid = useAuthStore((state) => state.user?.userGUID);
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated);
@@ -16,6 +28,9 @@ export default function TabsLayout() {
   const deviceSession = useDeviceStore((state) => state.session);
   const deviceHydrated = useDeviceStore((state) => state.isReady);
   const validateDevice = useDeviceStore((state) => state.validate);
+  const navigationItems = useAppNavigationStore((state) => state.items);
+  const navigationReady = useAppNavigationStore((state) => state.isReady);
+  const navigationLoading = useAppNavigationStore((state) => state.isLoading);
   const hasRestored = useRef(false);
   const hasUserSession = Boolean(isAuthenticated && userGuid);
   const hasStoredDeviceSession = Boolean(
@@ -101,10 +116,33 @@ export default function TabsLayout() {
   }, [deviceHydrated, deviceSession, hasStoredDeviceSession, hasUserSession, restoreSession, router, validateDevice]);
 
   const isDeviceMode = Boolean(hasStoredDeviceSession && !hasUserSession);
+  const visibleRouteNames = useMemo(
+    () => new Set(navigationItems.map((item) => item.routeName)),
+    [navigationItems]
+  );
+  const firstVisibleRouteName = navigationItems[0]?.routeName ?? "settings";
+  const shouldWaitForNavigation =
+    (hasUserSession || isDeviceMode) && (!navigationReady || navigationLoading);
+  const isRouteVisible = (routeName: string) =>
+    visibleRouteNames.size === 0 ? routeName === "settings" : visibleRouteNames.has(routeName);
+
+  useEffect(() => {
+    if (shouldWaitForNavigation || visibleRouteNames.size === 0) {
+      return;
+    }
+
+    const currentRouteName = pathname.split("/").filter(Boolean).pop();
+    if (!currentRouteName || isRouteVisible(currentRouteName)) {
+      return;
+    }
+
+    router.replace(TAB_PATHS[firstVisibleRouteName] ?? "/(tabs)/settings");
+  }, [firstVisibleRouteName, pathname, router, shouldWaitForNavigation, visibleRouteNames]);
 
   if (
-    (!deviceHydrated || !hasRestored.current) &&
-    (isLoading || (isDeviceMode ? true : !isAuthenticated && !userGuid))
+    shouldWaitForNavigation ||
+    ((!deviceHydrated || !hasRestored.current) &&
+      (isLoading || (isDeviceMode ? true : !isAuthenticated && !userGuid)))
   ) {
     return (
       <View
@@ -121,10 +159,11 @@ export default function TabsLayout() {
   }
 
   return (
-    <Tabs screenOptions={{ headerShown: false }}>
+    <Tabs screenOptions={{ headerShown: false }} tabBar={(props) => <ScrollableTabBar {...props} />}>
       <Tabs.Screen
         name="home"
         options={{
+          href: isRouteVisible("home") ? undefined : null,
           title: t("tabs.home"),
           tabBarIcon: ({ color, size }) => (
             <MaterialCommunityIcons name="home" color={color} size={size} />
@@ -134,6 +173,7 @@ export default function TabsLayout() {
       <Tabs.Screen
         name="orders"
         options={{
+          href: isRouteVisible("orders") ? undefined : null,
           title: t("tabs.orders"),
           tabBarIcon: ({ color, size }) => (
             <MaterialCommunityIcons
@@ -147,6 +187,7 @@ export default function TabsLayout() {
       <Tabs.Screen
         name="cart"
         options={{
+          href: isRouteVisible("cart") ? undefined : null,
           title: t("tabs.cart"),
           tabBarIcon: ({ color, size }) => (
             <MaterialCommunityIcons name="cart-outline" color={color} size={size} />
@@ -156,6 +197,7 @@ export default function TabsLayout() {
       <Tabs.Screen
         name="warehouse"
         options={{
+          href: isRouteVisible("warehouse") ? undefined : null,
           title: t("tabs.warehouse"),
           tabBarIcon: ({ color, size }) => (
             <MaterialCommunityIcons name="warehouse" color={color} size={size} />
@@ -165,6 +207,7 @@ export default function TabsLayout() {
       <Tabs.Screen
         name="product-query"
         options={{
+          href: isRouteVisible("product-query") ? undefined : null,
           title: t("tabs.productQuery"),
           tabBarIcon: ({ color, size }) => (
             <MaterialCommunityIcons name="barcode-scan" color={color} size={size} />
@@ -174,6 +217,7 @@ export default function TabsLayout() {
       <Tabs.Screen
         name="settings"
         options={{
+          href: isRouteVisible("settings") ? undefined : null,
           title: t("tabs.settings"),
           tabBarIcon: ({ color, size }) => (
             <MaterialCommunityIcons name="cog" color={color} size={size} />

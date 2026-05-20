@@ -11,6 +11,7 @@ import {
 } from "@/modules/auth/api";
 import { STORE_SELECTION_STORAGE_KEY } from "@/modules/shop/types";
 import { useCartStore } from "@/store/cart-store";
+import { useAppNavigationStore } from "@/modules/navigation/store";
 
 interface AuthState {
   user: CurrentUser | null;
@@ -47,6 +48,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         isAuthenticated: true,
         isLoading: false,
       });
+      await useAppNavigationStore.getState().fetchMenu();
     } catch (error) {
       set({ isLoading: false });
       throw error;
@@ -63,6 +65,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       await SecureStorage.clearAll();
       await AppAsyncStorage.removeItem(STORE_SELECTION_STORAGE_KEY);
       useCartStore.getState().reset();
+      useAppNavigationStore.getState().reset();
       set({
         user: null,
         access: buildAccess(null),
@@ -89,11 +92,13 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         isAuthenticated: true,
         isLoading: false,
       });
+      await useAppNavigationStore.getState().fetchMenu();
       return true;
     } catch {
       await SecureStorage.clearAll();
       await AppAsyncStorage.removeItem(STORE_SELECTION_STORAGE_KEY);
       useCartStore.getState().reset();
+      useAppNavigationStore.getState().reset();
       set({
         user: null,
         access: buildAccess(null),

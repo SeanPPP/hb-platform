@@ -7,6 +7,7 @@ import {
 } from "@/modules/device/api";
 import { DeviceStorage } from "@/modules/device/storage";
 import type { PersistedDeviceSession } from "@/modules/device/types";
+import { useAppNavigationStore } from "@/modules/navigation/store";
 
 interface DeviceState {
   session: PersistedDeviceSession | null;
@@ -108,6 +109,7 @@ export const useDeviceStore = create<DeviceState>((set, get) => ({
           set({ isLoading: false });
         }
         set({ isLoading: false });
+        useAppNavigationStore.getState().reset();
         return false;
       }
 
@@ -136,6 +138,12 @@ export const useDeviceStore = create<DeviceState>((set, get) => ({
         granted: profile.status === 1 && Boolean(nextSession.storeCode),
       });
 
+      if (profile.status === 1 && Boolean(nextSession.storeCode)) {
+        await useAppNavigationStore.getState().fetchMenu();
+      } else {
+        useAppNavigationStore.getState().reset();
+      }
+
       return profile.status === 1 && Boolean(nextSession.storeCode);
     } catch (error) {
       set({ isLoading: false, isReady: true });
@@ -145,6 +153,7 @@ export const useDeviceStore = create<DeviceState>((set, get) => ({
 
   async clear() {
     await DeviceStorage.clearSession();
+    useAppNavigationStore.getState().reset();
     set({ session: null, isReady: true, isLoading: false });
   },
 }));

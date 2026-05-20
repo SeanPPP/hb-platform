@@ -1,6 +1,7 @@
 import axios, { AxiosError, InternalAxiosRequestConfig } from "axios";
 import { router } from "expo-router";
 import { SecureStorage } from "@/shared/storage/secure";
+import { DeviceStorage } from "@/modules/device/storage";
 
 const BASE_URL = process.env.EXPO_PUBLIC_API_BASE_URL || "http://192.168.31.246:5001/api";
 
@@ -41,7 +42,16 @@ let refreshQueue: Array<{
 apiClient.interceptors.request.use(
   async (config: InternalAxiosRequestConfig) => {
     const token = await SecureStorage.getToken();
-    if (token && config.headers) config.headers.Authorization = `Bearer ${token}`;
+    if (token && config.headers) {
+      config.headers.Authorization = `Bearer ${token}`;
+      return config;
+    }
+
+    const deviceSession = await DeviceStorage.getSession();
+    if (deviceSession?.hardwareId && deviceSession.authCode && config.headers) {
+      config.headers["X-Device-Id"] = deviceSession.hardwareId;
+      config.headers["X-Auth-Code"] = deviceSession.authCode;
+    }
     return config;
   },
   (error) => Promise.reject(error)

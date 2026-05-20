@@ -37,18 +37,26 @@ export function ScrollableTabBar({
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
   const scrollViewRef = useRef<ScrollView>(null);
-  const visibleTabCount = Math.min(state.routes.length, MAX_VISIBLE_TABS);
+  const visibleRoutes = state.routes
+    .map((route, index) => ({ route, index }))
+    .filter(({ route }) => {
+      const options = descriptors[route.key]?.options as { href?: unknown } | undefined;
+      return options?.href !== null;
+    });
+  const visibleTabCount = Math.min(visibleRoutes.length, MAX_VISIBLE_TABS);
   const tabWidth = width / Math.max(visibleTabCount, 1);
-  const isScrollable = state.routes.length > MAX_VISIBLE_TABS;
+  const isScrollable = visibleRoutes.length > MAX_VISIBLE_TABS;
+  const focusedVisibleIndex = visibleRoutes.findIndex(({ index }) => index === state.index);
 
   useEffect(() => {
     if (!isScrollable) {
       return;
     }
 
-    const offset = Math.max(0, state.index * tabWidth - tabWidth * 2);
+    const activeIndex = focusedVisibleIndex >= 0 ? focusedVisibleIndex : 0;
+    const offset = Math.max(0, activeIndex * tabWidth - tabWidth * 2);
     scrollViewRef.current?.scrollTo({ x: offset, animated: true });
-  }, [isScrollable, state.index, tabWidth]);
+  }, [focusedVisibleIndex, isScrollable, tabWidth]);
 
   return (
     <View style={[styles.container, { paddingBottom: insets.bottom }]}>
@@ -61,11 +69,11 @@ export function ScrollableTabBar({
           styles.contentContainer,
           {
             minWidth: width,
-            width: isScrollable ? tabWidth * state.routes.length : width,
+            width: isScrollable ? tabWidth * visibleRoutes.length : width,
           },
         ]}
       >
-        {state.routes.map((route, index) => {
+        {visibleRoutes.map(({ route, index }) => {
           const descriptor = descriptors[route.key];
           const { options } = descriptor;
           const isFocused = state.index === index;
