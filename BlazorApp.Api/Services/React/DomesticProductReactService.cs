@@ -2502,6 +2502,7 @@ namespace BlazorApp.Api.Services.React
                             .Select(
                                 p => new BlazorApp.Shared.Models.HqEntities.CPT_DIC_商品信息字典表
                                 {
+                                    HGUID = Guid.NewGuid().ToString(),
                                     商品编码 = p.ProductCode,
                                     中文名称 = p.ProductName,
                                     英文名称 = p.EnglishProductName,
@@ -2521,6 +2522,7 @@ namespace BlazorApp.Api.Services.React
                                     FGC_CreateDate = DateTime.Now,
                                     FGC_LastModifier = "HBweb",
                                     FGC_LastModifyDate = DateTime.Now,
+                                    FGC_UpdateHelp = Guid.NewGuid().ToString(),
                                 }
                             )
                             .ToList();
@@ -2786,6 +2788,12 @@ namespace BlazorApp.Api.Services.React
                         updateSqlParts.Add(
                             $"[FGC_LastModifier] = 'HBweb', [FGC_LastModifyDate] = GETDATE()"
                         );
+                        updateSqlParts.Add(
+                            "[HGUID] = CASE WHEN [HGUID] IS NULL OR LTRIM(RTRIM([HGUID])) = '' THEN CONVERT(nvarchar(36), NEWID()) ELSE [HGUID] END"
+                        );
+                        updateSqlParts.Add(
+                            "[FGC_UpdateHelp] = CASE WHEN [FGC_UpdateHelp] IS NULL OR LTRIM(RTRIM([FGC_UpdateHelp])) = '' THEN CONVERT(nvarchar(36), NEWID()) ELSE [FGC_UpdateHelp] END"
+                        );
 
                         if (updateSqlParts.Any())
                         {
@@ -2856,6 +2864,19 @@ namespace BlazorApp.Api.Services.React
                     "[SendToHq] 开始发送商品到HQ，数量: {Count}",
                     productCodes.Count
                 );
+
+                var hbSalesSyncResult = await SyncSelectedToHBSalesAsync(
+                    productCodes,
+                    includeImage: true
+                );
+                if (!hbSalesSyncResult.Success)
+                {
+                    return ApiResponse<SyncResult>.Error(
+                        $"发送HQ前同步HBSales失败: {hbSalesSyncResult.Message}",
+                        hbSalesSyncResult.ErrorCode ?? "HBSALES_SYNC_FAILED",
+                        hbSalesSyncResult.Details
+                    );
+                }
 
                 var products = await _context
                     .Db.Queryable<DomesticProduct>()
@@ -3168,8 +3189,12 @@ namespace BlazorApp.Api.Services.React
                 }
 
                 result.EndTime = DateTime.Now;
+                var hbSalesMessage =
+                    hbSalesSyncResult.Data == null
+                        ? hbSalesSyncResult.Message
+                        : $"新增 {hbSalesSyncResult.Data.AddedCount}，更新 {hbSalesSyncResult.Data.UpdatedCount}";
                 result.Message =
-                    $"发送完成：商品字典 {productCount} 条，零售价 {retailPriceCount} 条（{activeStores.Count} 个分店 × {validProducts.Count} 个商品），库存 {inventoryCount} 条，失败 {failCount} 条";
+                    $"发送完成：已先同步HBSales（{hbSalesMessage}）；HQ写入：商品字典 {productCount} 条，零售价 {retailPriceCount} 条（{activeStores.Count} 个分店 × {validProducts.Count} 个商品），库存 {inventoryCount} 条，失败 {failCount} 条";
                 result.AddedCount = productCount;
                 result.UpdatedCount = retailPriceCount;
 
