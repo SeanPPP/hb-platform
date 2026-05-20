@@ -321,14 +321,14 @@ class HbPrinterModule(
     val priceCurrencyBitmap = textToBitmap("$", fontSizeToPixels(20f), false, "sans-serif-black")
     val itemBitmap = textToBitmap(itemNumber, fontSizeToPixels(8f), true, "sans-serif-black")
     val supplierBitmap = textToBitmap(supplierName, fontSizeToPixels(8f), true, "sans-serif-light", true, 2)
-    val dateBitmap = textToBitmap(todayString(), fontSizeToPixels(8f), false, "Arial", true, 2)
+    val dateBitmap = textToBitmap(todayString(), fontSizeToPixels(8f), true, "sans-serif-black", true, 2)
     val nameMaxWidth = max(
       1,
       labelWidth - priceDecimalBitmap.width - priceDotBitmap.width - priceIntegerBitmap.width - priceCurrencyBitmap.width,
     )
     val nameBitmap = longTextToBitmap(productName, fontSizeToPixels(10f), false, "Arial", 2, nameMaxWidth)
     val discountBitmap = if (discountRate > 0) {
-      textToBitmap("${(discountRate * 100).roundToInt().toString().padStart(2, '0')}%OFF", fontSizeToPixels(8f), false, "sans-serif-light", true, 2)
+      textToBitmap("${(discountRate * 100).roundToInt().toString().padStart(2, '0')}%OFF", fontSizeToPixels(8f), true, "sans-serif-black", true, 2)
     } else {
       null
     }
@@ -404,13 +404,14 @@ class HbPrinterModule(
     val infoBandBottom = effectiveLabelBottom - bottomMargin
     val qrX = 10
     val qrY = infoBandBottom - (qrBitmap?.height ?: 64)
-    val itemY = qrY - (itemBitmap?.height ?: 0) - 8
     val nowPriceX = labelWidth - rightMargin - nowPriceBitmap.width
     val nowLabelX = nowPriceX - nowGroupGap - nowLabelBitmap.width
     val nowLabelY = infoBandBottom - nowLabelBitmap.height
     val nowPriceY = infoBandBottom - nowPriceBitmap.height
     val dateX = qrX + qrVisualWidth + columnGap
     val dateY = infoBandBottom - dateBitmap.height
+    val itemX = dateX
+    val itemY = dateY - (itemBitmap?.height ?: 0) - 6
     val nameMaxWidth = max(1, labelWidth - discountBitmap.width - percentBitmap.width - offBitmap.width + 10)
     val nameBitmap = longTextToBitmap(productName, fontSizeToPixels(10f), false, "Arial", 2, nameMaxWidth)
 
@@ -428,7 +429,7 @@ class HbPrinterModule(
     )
 
     if (itemBitmap != null) {
-      commands += bitmapCommand(5, itemY, itemBitmap)
+      commands += bitmapCommand(itemX, itemY, itemBitmap)
     }
 
     if (qrBitmap != null) {
