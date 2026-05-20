@@ -2,7 +2,7 @@
   "title": "仓库",
   "segments": {
     "product": "仓库商品",
-    "location": "标签管理"
+    "location": "货位信息"
   },
   "messages": {
     "noAccessTitle": "暂无仓库访问权限",
@@ -36,16 +36,21 @@
     "takePhoto": "更新图片",
     "printProduct": "打印商品标签",
     "printLocation": "打印货位标签",
+    "gradeText": "等级 {{grade}}",
     "fields": {
       "purchasePrice": "采购价",
+      "purchaseImportPrice": "进货/进口价",
       "retailPrice": "零售价",
+      "retailOemPrice": "零售/OEM价",
       "domesticPrice": "国内价",
       "oemPrice": "OEM价",
       "importPrice": "进口价",
+      "stockQuantity": "库存",
       "isActive": "启用",
       "middlePackageQuantity": "中包数",
       "packingQuantity": "装箱数",
-      "volume": "体积"
+      "volume": "体积",
+      "grade": "等级"
     }
   },
   "location": {
@@ -57,7 +62,16 @@
     "deleteLocation": "删除货位",
     "bindProduct": "绑定商品",
     "unbindProduct": "解绑商品",
-    "lookupProductPlaceholder": "输入商品编码绑定到当前货位",
+    "lookupProductPlaceholder": "输入货号 / 条码绑定到当前货位",
+    "barcodeAutoHint": "货位条码将按 EAN13 自动生成",
+    "typePick": "配货位",
+    "typeStorage": "存货位",
+    "codeParts": {
+      "letter": "字母",
+      "section": "区",
+      "shelf": "架",
+      "slot": "位"
+    },
     "fields": {
       "locationCode": "货位编码",
       "locationBarcode": "货位条码",

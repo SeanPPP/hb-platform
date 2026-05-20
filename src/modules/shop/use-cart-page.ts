@@ -15,6 +15,15 @@ function getUpdatedTime(item: StoreOrderCartItem) {
   return Number.isFinite(timestamp) ? timestamp : 0;
 }
 
+function getFiniteNumber(value: unknown) {
+  if (value == null || value === "") {
+    return undefined;
+  }
+
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
 export function useCartPage({ page, pageSize, priorityProductCode, storeCode }: UseCartPageOptions) {
   const cartQuery = useQuery({
     queryKey: ["cartSummary", storeCode],
@@ -47,10 +56,28 @@ export function useCartPage({ page, pageSize, priorityProductCode, storeCode }: 
     return sortedItems.slice(start, start + pageSize);
   }, [page, pageSize, sortedItems]);
 
+  const stats = useMemo(() => {
+    const cart = cartQuery.data;
+    const fallbackTotalQuantity = sortedItems.reduce((sum, item) => sum + item.quantity, 0);
+    const fallbackImportAmount = sortedItems.reduce(
+      (sum, item) => sum + (getFiniteNumber(item.importAmount) ?? item.importPrice * item.quantity),
+      0
+    );
+    const fallbackSkuCount = new Set(sortedItems.map((item) => item.productCode).filter(Boolean)).size;
+
+    return {
+      itemCount: sortedItems.length,
+      skuCount: getFiniteNumber(cart?.totalSku) ?? fallbackSkuCount,
+      totalImportAmount: getFiniteNumber(cart?.totalImportAmount) ?? fallbackImportAmount,
+      totalQuantity: getFiniteNumber(cart?.totalQuantity) ?? fallbackTotalQuantity,
+    };
+  }, [cartQuery.data, sortedItems]);
+
   return {
     ...cartQuery,
     cart: cartQuery.data ?? null,
     items: pagedItems,
+    stats,
     total: sortedItems.length,
   };
 }

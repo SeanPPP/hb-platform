@@ -9,12 +9,14 @@ export interface WarehouseProduct {
   localSupplierCode?: string | null;
   supplierCode?: string | null;
   supplierName?: string | null;
+  grade?: string | null;
   isActive: boolean;
   purchasePrice?: number | null;
   retailPrice?: number | null;
   domesticPrice?: number | null;
   oemPrice?: number | null;
   importPrice?: number | null;
+  stockQuantity?: number | null;
   middlePackageQuantity?: number | null;
   packingQuantity?: number | null;
   volume?: number | null;
@@ -31,9 +33,11 @@ export interface WarehouseProductPatchRequest {
   domesticPrice?: number | null;
   oemPrice?: number | null;
   importPrice?: number | null;
+  stockQuantity?: number | null;
   middlePackageQuantity?: number | null;
   packingQuantity?: number | null;
   volume?: number | null;
+  grade?: string | null;
   productImage?: string | null;
 }
 
@@ -81,6 +85,9 @@ export interface WarehouseProductPrintPayload {
   itemNumber?: string | null;
   barcode?: string | null;
   supplierName?: string | null;
+  middlePackageQuantity?: number | null;
+  purchasePrice?: number | null;
+  retailPrice?: number | null;
   domesticPrice?: number | null;
   oemPrice?: number | null;
   importPrice?: number | null;

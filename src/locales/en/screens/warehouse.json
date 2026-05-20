@@ -2,7 +2,7 @@
   "title": "Warehouse",
   "segments": {
     "product": "Products",
-    "location": "Labels"
+    "location": "Location"
   },
   "messages": {
     "noAccessTitle": "No warehouse access",
@@ -36,16 +36,21 @@
     "takePhoto": "Update image",
     "printProduct": "Print product label",
     "printLocation": "Print location label",
+    "gradeText": "Grade {{grade}}",
     "fields": {
       "purchasePrice": "Purchase",
+      "purchaseImportPrice": "Purchase / import",
       "retailPrice": "Retail",
+      "retailOemPrice": "Retail / OEM",
       "domesticPrice": "Domestic",
       "oemPrice": "OEM",
       "importPrice": "Import",
+      "stockQuantity": "Stock",
       "isActive": "Active",
       "middlePackageQuantity": "Middle pack",
       "packingQuantity": "Packing qty",
-      "volume": "Volume"
+      "volume": "Volume",
+      "grade": "Grade"
     }
   },
   "location": {
@@ -57,7 +62,16 @@
     "deleteLocation": "Delete location",
     "bindProduct": "Bind product",
     "unbindProduct": "Unbind product",
-    "lookupProductPlaceholder": "Enter a product code to bind to this location",
+    "lookupProductPlaceholder": "Enter item number / barcode to bind to this location",
+    "barcodeAutoHint": "Location barcode will be generated automatically as EAN13.",
+    "typePick": "Pick",
+    "typeStorage": "Storage",
+    "codeParts": {
+      "letter": "Letter",
+      "section": "Zone",
+      "shelf": "Shelf",
+      "slot": "Slot"
+    },
     "fields": {
       "locationCode": "Location code",
       "locationBarcode": "Location barcode",

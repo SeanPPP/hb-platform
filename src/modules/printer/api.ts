@@ -79,6 +79,8 @@ function normalizeWarehouseProductLabelPayload(
     itemNumber: toNullableString(data.itemNumber ?? data.ItemNumber),
     barcode: toNullableString(data.barcode ?? data.Barcode),
     supplierName: toNullableString(data.supplierName ?? data.SupplierName),
+    middlePackageQuantity: toNullableNumber(data.middlePackageQuantity ?? data.MiddlePackageQuantity),
+    purchasePrice: toNullableNumber(data.purchasePrice ?? data.PurchasePrice),
     retailPrice: toNullableNumber(data.retailPrice ?? data.RetailPrice),
     domesticPrice: toNullableNumber(data.domesticPrice ?? data.DomesticPrice),
     oemPrice: toNullableNumber(data.oEMPrice ?? data.OEMPrice ?? data.oemPrice ?? data.OemPrice),

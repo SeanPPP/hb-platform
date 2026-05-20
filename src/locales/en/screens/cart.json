@@ -1,5 +1,11 @@
 {
   "title": "Cart",
+  "summary": {
+    "quantity": "Quantity",
+    "sku": "Cart product types",
+    "orderTotal": "Order total",
+    "money": "${{amount}}"
+  },
   "filters": {
     "title": "Filters",
     "currentStore": "Store: {{store}}",
@@ -46,7 +52,7 @@
   "item": {
     "deleting": "Deleting",
     "delete": "Delete",
-    "subtotal": "Subtotal ${{amount}}",
+    "subtotal": "Import ${{price}} × {{quantity}} = ${{amount}}",
     "import": "Import ${{amount}}",
     "inCart": "In cart"
   },

@@ -53,12 +53,14 @@ function normalizeWarehouseProduct(payload: unknown): WarehouseProduct {
     localSupplierCode: (data.localSupplierCode ?? data.LocalSupplierCode ?? null) as string | null,
     supplierCode: (data.supplierCode ?? data.SupplierCode ?? null) as string | null,
     supplierName: (data.supplierName ?? data.SupplierName ?? null) as string | null,
+    grade: (data.grade ?? data.Grade ?? null) as string | null,
     isActive: Boolean(data.isActive ?? data.IsActive),
     purchasePrice: toNumber(data.purchasePrice ?? data.PurchasePrice),
     retailPrice: toNumber(data.retailPrice ?? data.RetailPrice),
     domesticPrice: toNumber(data.domesticPrice ?? data.DomesticPrice),
     oemPrice: toNumber(data.oEMPrice ?? data.OEMPrice ?? data.oemPrice ?? data.OemPrice),
     importPrice: toNumber(data.importPrice ?? data.ImportPrice),
+    stockQuantity: toNumber(data.stockQuantity ?? data.StockQuantity),
     middlePackageQuantity: toNumber(data.middlePackageQuantity ?? data.MiddlePackageQuantity),
     packingQuantity: toNumber(data.packingQuantity ?? data.PackingQuantity),
     volume: toNumber(data.volume ?? data.Volume),
@@ -205,8 +207,10 @@ export async function deleteLocation(locationGuid: string) {
   return true;
 }
 
-export async function bindProductToLocation(locationGuid: string, productCode: string) {
-  const response = await apiClient.post(`${LOCATION_BASE_PATH}/${encodeURIComponent(locationGuid)}/products/${encodeURIComponent(productCode)}`);
+export async function bindProductToLocation(locationGuid: string, productIdentifier: string) {
+  const response = await apiClient.post(`${LOCATION_BASE_PATH}/${encodeURIComponent(locationGuid)}/products/bind`, {
+    productIdentifier,
+  });
   return normalizeWarehouseLocationDetail(response.data);
 }
 

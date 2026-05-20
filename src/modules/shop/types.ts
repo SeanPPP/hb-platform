@@ -2,7 +2,7 @@ import type { UserStoreDto } from "@/modules/auth/types";
 import type {
   StoreOrderProductItem,
   StoreOrderCartItem,
-  StoreOrderCart,
+  StoreOrderCart as BaseStoreOrderCart,
   StoreOrderProductListResult,
   StoreOrderScanLookupResult,
 } from "@/modules/orders/types";
@@ -17,10 +17,15 @@ export interface Store extends UserStoreDto {
 export type {
   StoreOrderProductItem,
   StoreOrderCartItem,
-  StoreOrderCart,
   StoreOrderProductListResult,
   StoreOrderScanLookupResult,
 };
+
+export interface StoreOrderCart extends BaseStoreOrderCart {
+  totalSku: number;
+  importTotal?: number;
+  importTotalAmount?: number;
+}
 
 export interface StoreOrderProductQuery {
   storeCode?: string;

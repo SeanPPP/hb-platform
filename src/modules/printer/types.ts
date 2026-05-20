@@ -42,6 +42,8 @@ export interface WarehouseProductLabelPrintPayload {
   itemNumber?: string | null;
   barcode?: string | null;
   supplierName?: string | null;
+  middlePackageQuantity?: number | null;
+  purchasePrice?: number | null;
   retailPrice?: number | null;
   domesticPrice?: number | null;
   oemPrice?: number | null;

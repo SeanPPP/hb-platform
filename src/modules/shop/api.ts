@@ -16,6 +16,21 @@ import { apiClient } from "@/shared/api/client";
 
 type ApiItem = Record<string, unknown>;
 
+function getFiniteNumber(...values: unknown[]) {
+  for (const value of values) {
+    if (value == null || value === "") {
+      continue;
+    }
+
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+
+  return undefined;
+}
+
 function transformProductItem(raw: ApiItem): StoreOrderProductItem {
   const stockQuantity =
     raw.stockQuantity != null
@@ -138,24 +153,70 @@ function normalizeCart(payload: Partial<StoreOrderCart> | null | undefined): Sto
     return null;
   }
 
-  const normalizedPayload = payload as (Partial<StoreOrderCart> & { items?: ApiItem[]; Items?: ApiItem[] }) | null | undefined;
+  const normalizedPayload = payload as
+    | (Partial<StoreOrderCart> & {
+        ImportTotal?: unknown;
+        ImportTotalAmount?: unknown;
+        Items?: ApiItem[];
+        SKUCount?: unknown;
+        SkuCount?: unknown;
+        TotalAmount?: unknown;
+        TotalImportAmount?: unknown;
+        TotalQuantity?: unknown;
+        TotalSKU?: unknown;
+        TotalSku?: unknown;
+        TotalVolume?: unknown;
+        importTotal?: unknown;
+        importTotalAmount?: unknown;
+        items?: ApiItem[];
+        skuCount?: unknown;
+        totalSKU?: unknown;
+      })
+    | null
+    | undefined;
   const items = normalizedPayload?.items ?? normalizedPayload?.Items;
+  const cartItems = Array.isArray(items) ? items.map(transformCartItem) : [];
+  const fallbackImportAmount = cartItems.reduce(
+    (sum, item) => sum + (Number.isFinite(item.importAmount) ? item.importAmount : item.importPrice * item.quantity),
+    0
+  );
+  const fallbackTotalQuantity = cartItems.reduce((sum, item) => sum + item.quantity, 0);
+  const fallbackTotalSku = new Set(cartItems.map((item) => item.productCode).filter(Boolean)).size;
 
   return {
     orderGUID: payload.orderGUID ?? "",
     orderNo: payload.orderNo,
     storeCode: payload.storeCode,
     storeName: payload.storeName,
-    totalAmount: payload.totalAmount ?? 0,
-    totalQuantity: payload.totalQuantity ?? 0,
-    totalImportAmount: payload.totalImportAmount ?? 0,
-    totalVolume: payload.totalVolume ?? 0,
+    totalAmount: getFiniteNumber(normalizedPayload?.totalAmount, normalizedPayload?.TotalAmount) ?? 0,
+    totalQuantity:
+      getFiniteNumber(normalizedPayload?.totalQuantity, normalizedPayload?.TotalQuantity) ?? fallbackTotalQuantity,
+    totalImportAmount:
+      getFiniteNumber(
+        normalizedPayload?.totalImportAmount,
+        normalizedPayload?.TotalImportAmount,
+        normalizedPayload?.importTotalAmount,
+        normalizedPayload?.ImportTotalAmount,
+        normalizedPayload?.importTotal,
+        normalizedPayload?.ImportTotal
+      ) ?? fallbackImportAmount,
+    totalSku:
+      getFiniteNumber(
+        normalizedPayload?.totalSku,
+        normalizedPayload?.totalSKU,
+        normalizedPayload?.TotalSku,
+        normalizedPayload?.TotalSKU,
+        normalizedPayload?.skuCount,
+        normalizedPayload?.SkuCount,
+        normalizedPayload?.SKUCount
+      ) ?? fallbackTotalSku,
+    totalVolume: getFiniteNumber(normalizedPayload?.totalVolume, normalizedPayload?.TotalVolume) ?? 0,
     remarks: payload.remarks,
     shippingFee: payload.shippingFee,
     orderDate: payload.orderDate,
     storeAddress: payload.storeAddress,
     flowStatus: payload.flowStatus,
-    items: Array.isArray(items) ? items.map(transformCartItem) : [],
+    items: cartItems,
   };
 }
 

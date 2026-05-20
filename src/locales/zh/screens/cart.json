@@ -1,5 +1,11 @@
 {
   "title": "购物车",
+  "summary": {
+    "quantity": "商品数量",
+    "sku": "购物车商品种类",
+    "orderTotal": "订货合计",
+    "money": "${{amount}}"
+  },
   "filters": {
     "title": "过滤面板",
     "currentStore": "当前门店: {{store}}",
@@ -46,7 +52,7 @@
   "item": {
     "deleting": "删除中",
     "delete": "删除",
-    "subtotal": "小计 ${{amount}}",
+    "subtotal": "进货 ${{price}} × {{quantity}} = ${{amount}}",
     "import": "进口 ${{amount}}",
     "inCart": "购物车"
   },

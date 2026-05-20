@@ -51,6 +51,7 @@ class HbPrinterModule(
   private val printerUuid: UUID = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
   private val labelWidth = 570
   private val labelHeight = 400
+  private val warehouseLabelHeight = 208
 
   @Volatile
   private var socket: BluetoothSocket? = null
@@ -643,97 +644,70 @@ class HbPrinterModule(
 
   private fun buildWarehouseProductLabelCommand(payload: ReadableMap): String {
     val w = labelWidth
-    val h = 360
+    val h = warehouseLabelHeight
     val productName = payload.getNullableString("productName")
     val itemNumber = payload.getNullableString("itemNumber")
-    val productCode = payload.getNullableString("productCode")
-    val barcode = payload.getNullableString("barcode").ifBlank { itemNumber.ifBlank { productCode } }
-    val supplierName = processCapitalization(payload.getNullableString("supplierName"))
+    val barcode = payload.getNullableString("barcode").ifBlank { itemNumber }
+    val middlePackageQuantity = payload.getNullableDouble("middlePackageQuantity")
+    val purchasePrice = payload.getNullableDouble("purchasePrice")
     val retailPrice = payload.getNullableDouble("retailPrice")
     val locationCode = payload.getNullableString("locationCode")
     val locationBarcode = payload.getNullableString("locationBarcode")
     val domesticPrice = payload.getNullableDouble("domesticPrice")
     val oemPrice = payload.getNullableDouble("oemPrice")
     val importPrice = payload.getNullableDouble("importPrice")
-    val displayCode = itemNumber.ifBlank { productCode }
     val displayPrice = retailPrice ?: domesticPrice ?: oemPrice ?: importPrice
-    val priceDetail = buildList {
-      domesticPrice?.let { add("D ${formatMoney(it)}") }
-      oemPrice?.let { add("O ${formatMoney(it)}") }
-      importPrice?.let { add("I ${formatMoney(it)}") }
-    }.joinToString("   ")
-    val qrBitmap = barcode.takeIf { it.isNotBlank() }?.let { createQrCodeBitmap(it, 88) }
-    val contentWidth = w - (qrBitmap?.width ?: 0) - 35
-
-    val titleBitmap = textToBitmap("WAREHOUSE", fontSizeToPixels(11f), true, "sans-serif-black", true, 3)
-    val nameBitmap = longTextToBitmap(productName, fontSizeToPixels(10f), true, "Arial", 2, max(180, contentWidth))
-    val itemBitmap = textToBitmap("ITEM ${cpclText(displayCode)}", fontSizeToPixels(8f), true, "sans-serif-black")
-    val productCodeBitmap = textToBitmap("CODE ${cpclText(productCode)}", fontSizeToPixels(8f), true, "sans-serif-black")
-    val supplierBitmap = supplierName.takeIf { it.isNotBlank() }?.let {
-      textToBitmap("SUP ${cpclText(it)}", fontSizeToPixels(8f), true, "sans-serif-light", true, 2)
-    }
-    val priceBitmap = textToBitmap(
-      "PRICE ${formatOptionalMoney(displayPrice)}",
-      fontSizeToPixels(10f),
-      true,
-      "sans-serif-black",
-      true,
-      3,
+    val costPrice = purchasePrice ?: importPrice ?: domesticPrice ?: oemPrice
+    val priceDetails = listOf(
+      "PK ${formatOptionalQuantity(middlePackageQuantity)}",
+      "COST ${formatOptionalMoney(costPrice)}",
+      "RRP ${formatOptionalMoney(displayPrice)}",
     )
-    val priceDetailBitmap = priceDetail.takeIf { it.isNotBlank() }?.let {
-      textToBitmap(it, fontSizeToPixels(8f), true, "sans-serif-black")
-    }
+    val contentWidth = w - 40
+
+    val titleBitmap = textToBitmap("WAREHOUSE PRODUCT", fontSizeToPixels(8f), true, "sans-serif-black", true, 2)
+    val nameBitmap = longTextToBitmap(productName, fontSizeToPixels(8f), true, "Arial", 1, max(180, contentWidth))
+    val itemBitmap = textToBitmap("ITEM ${cpclText(itemNumber.ifBlank { "--" })}", fontSizeToPixels(7f), true, "sans-serif-black")
+    val packBitmap = textToBitmap(priceDetails[0], fontSizeToPixels(7f), true, "sans-serif-black")
+    val costBitmap = textToBitmap(priceDetails[1], fontSizeToPixels(7f), true, "sans-serif-black")
+    val rrpBitmap = textToBitmap(priceDetails[2], fontSizeToPixels(7f), true, "sans-serif-black")
     val locationBitmap = textToBitmap(
       "LOC ${cpclText(locationCode.ifBlank { "UNASSIGNED" })}",
-      fontSizeToPixels(10f),
+      fontSizeToPixels(8f),
       true,
       "sans-serif-black",
       true,
-      3,
+      2,
     )
     val locationBarcodeBitmap = locationBarcode.takeIf { it.isNotBlank() }?.let {
-      textToBitmap("LOC BAR ${cpclText(it)}", fontSizeToPixels(8f), true, "sans-serif-black")
+      textToBitmap(cpclText(it), fontSizeToPixels(7f), true, "sans-serif-black")
     }
-    val barcodeTextBitmap = barcode.takeIf { it.isNotBlank() }?.let {
-      textToBitmap("BAR ${cpclText(it)}", fontSizeToPixels(8f), true, "sans-serif-black")
-    }
-    val dateBitmap = textToBitmap(todayString(), fontSizeToPixels(8f), true, "sans-serif-black", true, 2)
+    val dateBitmap = textToBitmap(todayString(), fontSizeToPixels(7f), true, "sans-serif-black", true, 2)
+    fun centerX(bitmap: Bitmap) = max(0, (w - bitmap.width) / 2)
 
     val commands = mutableListOf(
       "! 0 200 200 $h 1",
       "PAGE-WIDTH $w",
-      bitmapCommand(10, 8, titleBitmap),
-      bitmapCommand(10, 46, nameBitmap),
-      bitmapCommand(10, 116, itemBitmap),
-      bitmapCommand(10, 144, productCodeBitmap),
-      bitmapCommand(10, 176, priceBitmap),
-      bitmapCommand(10, 206, locationBitmap),
-      bitmapCommand(w - dateBitmap.width - 10, 206, dateBitmap),
+      bitmapCommand(centerX(titleBitmap), 12, titleBitmap),
+      bitmapCommand(centerX(nameBitmap), 38, nameBitmap),
+      bitmapCommand(centerX(itemBitmap), 66, itemBitmap),
+      bitmapCommand(20, 92, locationBitmap),
+      bitmapCommand(w - dateBitmap.width - 20, 92, dateBitmap),
     )
 
-    if (supplierBitmap != null) {
-      commands += bitmapCommand(10, 236, supplierBitmap)
-    }
-
-    if (priceDetailBitmap != null) {
-      commands += bitmapCommand(10, 266, priceDetailBitmap)
-    }
-
     if (locationBarcodeBitmap != null) {
-      commands += bitmapCommand(10, 292, locationBarcodeBitmap)
-    }
-
-    if (barcodeTextBitmap != null) {
-      commands += bitmapCommand(10, 318, barcodeTextBitmap)
-    }
-
-    if (qrBitmap != null) {
-      commands += bitmapCommand(w - qrBitmap.width - 15, 46, qrBitmap)
+      commands += bitmapCommand(centerX(locationBarcodeBitmap), 120, locationBarcodeBitmap)
     }
 
     if (barcode.isNotBlank()) {
-      commands += "BARCODE-TEXT 7 0 5"
-      commands += "BARCODE 128 1 2 24 10 330 ${cpclText(barcode)}"
+      commands += "BARCODE 128 1 1 38 24 146 ${cpclText(barcode)}"
+      commands += bitmapCommand(380, 132, packBitmap)
+      commands += bitmapCommand(380, 156, costBitmap)
+      commands += bitmapCommand(380, 180, rrpBitmap)
+    } else {
+      commands += bitmapCommand(centerX(packBitmap), 132, packBitmap)
+      commands += bitmapCommand(centerX(costBitmap), 156, costBitmap)
+      commands += bitmapCommand(centerX(rrpBitmap), 180, rrpBitmap)
     }
 
     commands += "PRINT"
@@ -742,33 +716,28 @@ class HbPrinterModule(
 
   private fun buildWarehouseLocationLabelCommand(payload: ReadableMap): String {
     val w = labelWidth
-    val h = 300
+    val h = warehouseLabelHeight
     val locationCode = payload.getNullableString("locationCode")
     val locationBarcode = payload.getNullableString("locationBarcode")
     val locationGuid = payload.getNullableString("locationGuid")
-    val productCount = payload.getNullableDouble("productCount")?.roundToInt() ?: 0
     val displayCode = locationCode.ifBlank { locationBarcode.ifBlank { locationGuid } }
     val barcode = locationBarcode.ifBlank { displayCode }
 
-    val titleBitmap = textToBitmap("LOCATION", fontSizeToPixels(12f), true, "sans-serif-black", true, 3)
-    val codeBitmap = longTextToBitmap(displayCode, fontSizeToPixels(22f), true, "sans-serif-black", 2, w - 30)
-    val barcodeTextBitmap = textToBitmap("BAR ${cpclText(barcode)}", fontSizeToPixels(8f), true, "sans-serif-black")
-    val countBitmap = textToBitmap("QTY $productCount", fontSizeToPixels(14f), true, "sans-serif-black", true, 3)
-    val dateBitmap = textToBitmap(todayString(), fontSizeToPixels(8f), true, "sans-serif-black", true, 2)
+    val titleBitmap = textToBitmap("LOCATION", fontSizeToPixels(9f), true, "sans-serif-black", true, 2)
+    val codeBitmap = longTextToBitmap(displayCode, fontSizeToPixels(18f), true, "sans-serif-black", 1, w - 30)
+    val dateBitmap = textToBitmap(todayString(), fontSizeToPixels(7f), true, "sans-serif-black", true, 2)
+    fun centerX(bitmap: Bitmap) = max(0, (w - bitmap.width) / 2)
 
     val commands = mutableListOf(
       "! 0 200 200 $h 1",
       "PAGE-WIDTH $w",
-      bitmapCommand(10, 8, titleBitmap),
-      bitmapCommand(10, 55, codeBitmap),
-      bitmapCommand(10, 170, countBitmap),
-      bitmapCommand(w - dateBitmap.width - 10, 170, dateBitmap),
-      bitmapCommand(10, 210, barcodeTextBitmap),
+      bitmapCommand(centerX(titleBitmap), 12, titleBitmap),
+      bitmapCommand(centerX(codeBitmap), 48, codeBitmap),
+      bitmapCommand(w - dateBitmap.width - 20, 104, dateBitmap),
     )
 
     if (barcode.isNotBlank()) {
-      commands += "BARCODE-TEXT 7 0 5"
-      commands += "BARCODE 128 1 2 40 10 240 ${cpclText(barcode)}"
+      commands += "BARCODE 128 1 1 56 60 132 ${cpclText(barcode)}"
     }
 
     commands += "PRINT"
@@ -801,6 +770,14 @@ class HbPrinterModule(
 
   private fun formatOptionalMoney(value: Double?): String {
     return if (value == null) "--" else formatMoney(value)
+  }
+
+  private fun formatOptionalQuantity(value: Double?): String {
+    if (value == null) {
+      return "--"
+    }
+    val rounded = value.roundToInt()
+    return if (abs(value - rounded) < 0.01) rounded.toString() else String.format(Locale.US, "%.2f", value)
   }
 
   private fun cpclText(value: String): String {

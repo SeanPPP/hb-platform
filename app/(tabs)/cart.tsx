@@ -83,6 +83,9 @@ function CartListItemCard({
   const isBusy = isUpdating || isDeleting || clearCartPending;
   const grade = item.grade?.trim().toUpperCase();
   const gradeColor = grade ? PRODUCT_GRADE_CONFIG[grade]?.color ?? "#999" : undefined;
+  const importPrice = Number(item.importPrice ?? 0);
+  const importAmount = Number(item.importAmount ?? importPrice * item.quantity);
+  const hasZeroImportPrice = importPrice <= 0;
 
   const animateTo = useCallback(
     (toValue: number) => {
@@ -214,42 +217,49 @@ function CartListItemCard({
                       {item.itemNumber || "--"}
                     </Text>
                   </View>
-                  <View style={styles.quantityStepper}>
-                    <IconButton
-                      icon="minus"
-                      mode="contained-tonal"
-                      size={18}
-                      disabled={isBusy}
-                      loading={isUpdating}
-                      onPress={() => void onUpdateQuantity(item, Math.max(0, item.quantity - step))}
-                      style={styles.quantityButton}
-                    />
-                    <View style={styles.quantityValueWrap}>
-                      <Text variant="titleMedium" style={styles.quantityValue}>
-                        {item.quantity}
-                      </Text>
+                  <View style={styles.itemRightColumn}>
+                    <View style={styles.quantityStepper}>
+                      <IconButton
+                        icon="minus"
+                        mode="contained-tonal"
+                        size={18}
+                        disabled={isBusy}
+                        loading={isUpdating}
+                        onPress={() => void onUpdateQuantity(item, Math.max(0, item.quantity - step))}
+                        style={styles.quantityButton}
+                      />
+                      <View style={styles.quantityValueWrap}>
+                        <Text variant="titleMedium" style={styles.quantityValue}>
+                          {item.quantity}
+                        </Text>
+                      </View>
+                      <IconButton
+                        icon="plus"
+                        mode="contained"
+                        size={18}
+                        disabled={isBusy}
+                        loading={isUpdating}
+                        onPress={() => void onUpdateQuantity(item, item.quantity + step)}
+                        style={styles.quantityButton}
+                      />
                     </View>
-                    <IconButton
-                      icon="plus"
-                      mode="contained"
-                      size={18}
-                      disabled={isBusy}
-                      loading={isUpdating}
-                      onPress={() => void onUpdateQuantity(item, item.quantity + step)}
-                      style={styles.quantityButton}
-                    />
+                    <Text
+                      variant="labelSmall"
+                      numberOfLines={1}
+                      style={[styles.importPriceText, hasZeroImportPrice ? styles.zeroImportText : null]}
+                    >
+                      {t("item.subtotal", {
+                        amount: importAmount.toFixed(2),
+                        price: importPrice.toFixed(2),
+                        quantity: item.quantity,
+                      })}
+                    </Text>
                   </View>
                 </View>
 
                 <View style={styles.itemMetaRow}>
                   <Text variant="bodySmall" style={styles.secondaryText}>
                     ${Number(item.price ?? 0).toFixed(2)}
-                  </Text>
-                  <Text variant="bodySmall" style={styles.amountText}>
-                    {t("item.subtotal", { amount: Number(item.amount ?? 0).toFixed(2) })}
-                  </Text>
-                  <Text variant="bodySmall" style={styles.secondaryText}>
-                    {t("item.import", { amount: Number(item.importAmount ?? 0).toFixed(2) })}
                   </Text>
                 </View>
               </View>
@@ -508,6 +518,38 @@ export default function Cart() {
         renderItem={renderCartItem}
         contentContainerStyle={styles.listContent}
         keyboardShouldPersistTaps="handled"
+        ListHeaderComponent={
+          cartQuery.total ? (
+            <View style={styles.cartStatsBar}>
+              <View style={styles.cartStatItem}>
+                <Text variant="labelSmall" style={styles.cartStatLabel}>
+                  {t("summary.quantity")}
+                </Text>
+                <Text variant="titleSmall" style={styles.cartStatValue}>
+                  {cartQuery.stats.totalQuantity}
+                </Text>
+              </View>
+              <View style={styles.cartStatDivider} />
+              <View style={styles.cartStatItem}>
+                <Text variant="labelSmall" style={styles.cartStatLabel}>
+                  {t("summary.sku")}
+                </Text>
+                <Text variant="titleSmall" style={styles.cartStatValue}>
+                  {cartQuery.stats.skuCount}
+                </Text>
+              </View>
+              <View style={styles.cartStatDivider} />
+              <View style={[styles.cartStatItem, styles.cartStatAmountItem]}>
+                <Text variant="labelSmall" style={styles.cartStatLabel}>
+                  {t("summary.orderTotal")}
+                </Text>
+                <Text variant="titleSmall" style={styles.cartStatAmount}>
+                  {t("summary.money", { amount: cartQuery.stats.totalImportAmount.toFixed(2) })}
+                </Text>
+              </View>
+            </View>
+          ) : null
+        }
         ListEmptyComponent={
           <EmptyState
             title={selectedStoreCode ? t("empty.cartEmptyTitle") : t("empty.selectStoreTitle")}
@@ -682,6 +724,42 @@ const styles = StyleSheet.create({
     paddingTop: 2,
     paddingBottom: 0,
   },
+  cartStatsBar: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 14,
+    backgroundColor: "#F7FAFF",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "#DCEBFF",
+  },
+  cartStatItem: {
+    flex: 1,
+    gap: 2,
+  },
+  cartStatAmountItem: {
+    flex: 1.35,
+  },
+  cartStatLabel: {
+    color: "#64748B",
+    fontWeight: "600",
+  },
+  cartStatValue: {
+    color: "#0F172A",
+    fontWeight: "800",
+  },
+  cartStatAmount: {
+    color: "#D46B08",
+    fontWeight: "800",
+  },
+  cartStatDivider: {
+    width: StyleSheet.hairlineWidth,
+    height: 28,
+    marginHorizontal: 8,
+    backgroundColor: "#C9DDF5",
+  },
   filtersModal: {
     margin: 16,
     borderRadius: 16,
@@ -812,6 +890,10 @@ const styles = StyleSheet.create({
     color: "#1F1F1F",
     fontWeight: "600",
   },
+  itemRightColumn: {
+    alignItems: "flex-end",
+    gap: 2,
+  },
   quantityStepper: {
     flexDirection: "row",
     alignItems: "center",
@@ -835,9 +917,13 @@ const styles = StyleSheet.create({
     flexWrap: "wrap",
     gap: 8,
   },
-  amountText: {
-    color: "#1677FF",
+  importPriceText: {
+    color: "#D46B08",
     fontWeight: "700",
+    textAlign: "right",
+  },
+  zeroImportText: {
+    color: "#F5222D",
   },
   deleteAction: {
     width: 92,

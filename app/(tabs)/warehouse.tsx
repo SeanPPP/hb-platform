@@ -2,10 +2,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Image, ScrollView, StyleSheet, TextInput as NativeTextInput, View } from "react-native";
 import { useFocusEffect } from "@react-navigation/native";
 import { CameraView, useCameraPermissions } from "expo-camera";
-import { Button, Card, IconButton, Modal, Portal, Searchbar, SegmentedButtons, Snackbar, Switch, Text, TextInput } from "react-native-paper";
+import { Button, Card, IconButton, Menu, Modal, Portal, Searchbar, SegmentedButtons, Snackbar, Switch, Text, TextInput } from "react-native-paper";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { LoadingOverlay } from "@/components/ui/LoadingOverlay";
+import { NumericInputModal } from "@/components/product-maintenance/NumericInputModal";
 import { useCameraScan } from "@/modules/scanner/use-camera-scan";
 import { useHidBarcodeScanner } from "@/modules/scanner/use-hid-barcode-scanner";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
@@ -32,6 +33,51 @@ import type { WarehouseLocation, WarehouseLocationDetail, WarehouseLocationMutat
 import { printWarehouseLocationLabel, printWarehouseProductLabel } from "@/modules/printer/api";
 
 type SegmentValue = "product" | "location";
+type LocationCodePart = "letter" | "section" | "shelf" | "slot";
+type NumericProductFieldKey =
+  | "purchasePrice"
+  | "retailPrice"
+  | "domesticPrice"
+  | "stockQuantity"
+  | "middlePackageQuantity"
+  | "packingQuantity"
+  | "volume";
+
+interface NumericInputModalState {
+  field: NumericProductFieldKey;
+  title: string;
+  value: string;
+  allowDecimal: boolean;
+}
+
+const LOCATION_LETTER_OPTIONS = Array.from({ length: 26 }, (_, index) => String.fromCharCode(65 + index));
+const LOCATION_NUMBER_OPTIONS = Array.from({ length: 99 }, (_, index) => String(index + 1).padStart(2, "0"));
+const PRODUCT_GRADE_OPTIONS = ["A", "B", "C", "D"];
+const PRODUCT_GRADE_CONFIG: Record<string, { color: string }> = {
+  A: { color: "#722ED1" },
+  B: { color: "#1890FF" },
+  C: { color: "#FA8C16" },
+  D: { color: "#F5222D" },
+};
+
+function buildLocationCode(parts: Record<LocationCodePart, string>) {
+  return `${parts.letter}${parts.section}${parts.shelf}${parts.slot}`;
+}
+
+function splitLocationCode(code?: string | null): Record<LocationCodePart, string> {
+  const normalized = (code ?? "").trim().toUpperCase();
+  const match = /^([A-Z])(\d{2})(\d{2})(\d{2})$/.exec(normalized);
+  if (!match) {
+    return { letter: "A", section: "01", shelf: "01", slot: "01" };
+  }
+
+  return {
+    letter: match[1],
+    section: match[2],
+    shelf: match[3],
+    slot: match[4],
+  };
+}
 
 function formatNumber(value?: number | null, digits = 2) {
   if (value == null || Number.isNaN(value)) {
@@ -40,27 +86,70 @@ function formatNumber(value?: number | null, digits = 2) {
   return value.toFixed(digits);
 }
 
-function ProductField({
+function ProductNumericField({
   label,
   value,
-  onChangeText,
-  keyboardType = "numeric",
+  onPress,
 }: {
   label: string;
   value: string;
-  onChangeText: (value: string) => void;
-  keyboardType?: "default" | "numeric";
+  onPress: () => void;
 }) {
   return (
-    <TextInput
-      mode="outlined"
-      label={label}
-      value={value}
-      onChangeText={onChangeText}
-      keyboardType={keyboardType}
-      style={styles.input}
-      dense
-    />
+    <Button mode="outlined" compact onPress={onPress} contentStyle={styles.numericFieldContent} style={styles.numericField}>
+      <View style={styles.numericFieldInner}>
+        <Text variant="labelSmall" style={styles.numericFieldLabel} numberOfLines={1}>{label}</Text>
+        <Text variant="bodyMedium" style={styles.numericFieldValue} numberOfLines={1}>{value || "--"}</Text>
+      </View>
+    </Button>
+  );
+}
+
+function LocationPartMenu({
+  label,
+  value,
+  options,
+  visible,
+  onDismiss,
+  onOpen,
+  onSelect,
+}: {
+  label: string;
+  value: string;
+  options: string[];
+  visible: boolean;
+  onDismiss: () => void;
+  onOpen: () => void;
+  onSelect: (value: string) => void;
+}) {
+  return (
+    <View style={styles.locationPart}>
+      <Text variant="labelSmall" style={styles.locationPartLabel}>
+        {label}
+      </Text>
+      <Menu
+        visible={visible}
+        onDismiss={onDismiss}
+        anchor={
+          <Button mode="outlined" compact onPress={onOpen} contentStyle={styles.locationPartButton}>
+            {value}
+          </Button>
+        }
+      >
+        <ScrollView style={styles.locationPartMenu}>
+          {options.map((option) => (
+            <Menu.Item
+              key={`${label}-${option}`}
+              title={option}
+              onPress={() => {
+                onSelect(option);
+                onDismiss();
+              }}
+            />
+          ))}
+        </ScrollView>
+      </Menu>
+    </View>
   );
 }
 
@@ -82,13 +171,14 @@ export default function WarehouseScreen() {
     purchasePrice: "",
     retailPrice: "",
     domesticPrice: "",
-    oemPrice: "",
-    importPrice: "",
+    stockQuantity: "",
     middlePackageQuantity: "",
     packingQuantity: "",
     volume: "",
+    grade: "",
     isActive: true,
   });
+  const [numericInputModal, setNumericInputModal] = useState<NumericInputModalState | null>(null);
   const [locationLookupKeyword, setLocationLookupKeyword] = useState("");
   const [locationMatches, setLocationMatches] = useState<WarehouseLocation[]>([]);
 
@@ -102,6 +192,18 @@ export default function WarehouseScreen() {
     locationBarcode: "",
     locationType: 1,
     status: 1,
+  });
+  const [locationCodeParts, setLocationCodeParts] = useState<Record<LocationCodePart, string>>({
+    letter: "A",
+    section: "01",
+    shelf: "01",
+    slot: "01",
+  });
+  const [locationPartMenus, setLocationPartMenus] = useState<Record<LocationCodePart, boolean>>({
+    letter: false,
+    section: false,
+    shelf: false,
+    slot: false,
   });
   const [editingLocationGuid, setEditingLocationGuid] = useState<string | null>(null);
   const [scannerVisible, setScannerVisible] = useState(false);
@@ -131,17 +233,42 @@ export default function WarehouseScreen() {
 
   const syncFormFromProduct = useCallback((item: WarehouseProduct | null) => {
     setProductForm({
-      purchasePrice: formatNumber(item?.purchasePrice),
-      retailPrice: formatNumber(item?.retailPrice),
+      purchasePrice: formatNumber(item?.purchasePrice ?? item?.importPrice),
+      retailPrice: formatNumber(item?.retailPrice ?? item?.oemPrice),
       domesticPrice: formatNumber(item?.domesticPrice),
-      oemPrice: formatNumber(item?.oemPrice),
-      importPrice: formatNumber(item?.importPrice),
+      stockQuantity: item?.stockQuantity?.toString() ?? "",
       middlePackageQuantity: item?.middlePackageQuantity?.toString() ?? "",
       packingQuantity: item?.packingQuantity?.toString() ?? "",
       volume: formatNumber(item?.volume, 3),
+      grade: item?.grade?.trim().toUpperCase() ?? "",
       isActive: item?.isActive ?? true,
     });
   }, []);
+
+  const openNumericInputModal = useCallback((field: NumericProductFieldKey, title: string, allowDecimal: boolean) => {
+    setNumericInputModal({
+      field,
+      title,
+      value: productForm[field],
+      allowDecimal,
+    });
+  }, [productForm]);
+
+  const dismissNumericInputModal = useCallback(() => {
+    setNumericInputModal(null);
+  }, []);
+
+  const handleConfirmNumericInputModal = useCallback(() => {
+    if (!numericInputModal) {
+      return;
+    }
+
+    setProductForm((current) => ({
+      ...current,
+      [numericInputModal.field]: numericInputModal.value,
+    }));
+    dismissNumericInputModal();
+  }, [dismissNumericInputModal, numericInputModal]);
 
   const applyProduct = useCallback((item: WarehouseProduct | null) => {
     setProduct(item);
@@ -193,13 +320,15 @@ export default function WarehouseScreen() {
     try {
       const saved = await patchWarehouseProduct(product.productCode, {
         purchasePrice: parseNullableNumber(productForm.purchasePrice),
+        importPrice: parseNullableNumber(productForm.purchasePrice),
         retailPrice: parseNullableNumber(productForm.retailPrice),
+        oemPrice: parseNullableNumber(productForm.retailPrice),
         domesticPrice: parseNullableNumber(productForm.domesticPrice),
-        oemPrice: parseNullableNumber(productForm.oemPrice),
-        importPrice: parseNullableNumber(productForm.importPrice),
+        stockQuantity: parseNullableNumber(productForm.stockQuantity),
         middlePackageQuantity: parseNullableNumber(productForm.middlePackageQuantity),
         packingQuantity: parseNullableNumber(productForm.packingQuantity),
         volume: parseNullableNumber(productForm.volume),
+        grade: productForm.grade || null,
         isActive: productForm.isActive,
       });
       applyProduct(saved);
@@ -272,6 +401,23 @@ export default function WarehouseScreen() {
       setSnackbar(error instanceof Error ? error.message : t("messages.printFailed"));
     }
   }, [product, t]);
+
+  const handlePrintSelectedLocation = useCallback(async () => {
+    if (!selectedLocation) {
+      return;
+    }
+    try {
+      await printWarehouseLocationLabel({
+        locationGuid: selectedLocation.locationGuid,
+        locationCode: selectedLocation.locationCode,
+        locationBarcode: selectedLocation.locationBarcode,
+        productCount: selectedLocation.products.length,
+      });
+      setSnackbar(t("messages.printSent"));
+    } catch (error) {
+      setSnackbar(error instanceof Error ? error.message : t("messages.printFailed"));
+    }
+  }, [selectedLocation, t]);
 
   const handleCapturePhoto = useCallback(async () => {
     if (!product || !photoCameraRef.current) {
@@ -367,15 +513,19 @@ export default function WarehouseScreen() {
   }, [t]);
 
   const openCreateLocation = useCallback(() => {
+    const initialParts = splitLocationCode(null);
     setEditingLocationGuid(null);
-    setLocationModalState({ locationCode: "", locationBarcode: "", locationType: 1, status: 1 });
+    setLocationCodeParts(initialParts);
+    setLocationModalState({ locationCode: buildLocationCode(initialParts), locationBarcode: "", locationType: 1, status: 1 });
     setLocationModalVisible(true);
   }, []);
 
   const openEditLocation = useCallback((detail: WarehouseLocationDetail) => {
+    const nextParts = splitLocationCode(detail.locationCode);
     setEditingLocationGuid(detail.locationGuid);
+    setLocationCodeParts(nextParts);
     setLocationModalState({
-      locationCode: detail.locationCode ?? "",
+      locationCode: buildLocationCode(nextParts),
       locationBarcode: detail.locationBarcode ?? "",
       locationType: detail.locationType ?? 1,
       status: detail.status ?? 1,
@@ -384,15 +534,21 @@ export default function WarehouseScreen() {
   }, []);
 
   const handleSaveLocation = useCallback(async () => {
-    if (!locationModalState.locationCode.trim()) {
+    const locationCode = buildLocationCode(locationCodeParts);
+    if (!locationCode.trim()) {
       return;
     }
 
     setBusy(true);
     try {
+      const payload = {
+        ...locationModalState,
+        locationCode,
+        locationBarcode: editingLocationGuid ? locationModalState.locationBarcode : null,
+      };
       const detail = editingLocationGuid
-        ? await updateLocation(editingLocationGuid, locationModalState)
-        : await createLocation(locationModalState);
+        ? await updateLocation(editingLocationGuid, payload)
+        : await createLocation(payload);
       setSelectedLocation(detail);
       setLocationModalVisible(false);
       setSnackbar(t("messages.saved"));
@@ -402,7 +558,7 @@ export default function WarehouseScreen() {
     } finally {
       setBusy(false);
     }
-  }, [editingLocationGuid, handleLookupLocations, locationModalState, t]);
+  }, [editingLocationGuid, handleLookupLocations, locationCodeParts, locationModalState, t]);
 
   const handleDeleteLocation = useCallback(async () => {
     if (!selectedLocation) {
@@ -462,6 +618,23 @@ export default function WarehouseScreen() {
     }
     return product.productTypeLabel || product.productType?.toString() || "";
   }, [product]);
+
+  const normalizedProductGrade = productForm.grade.trim().toUpperCase();
+  const productGradeColor = normalizedProductGrade
+    ? PRODUCT_GRADE_CONFIG[normalizedProductGrade]?.color ?? "#98A2B3"
+    : "#98A2B3";
+
+  const setLocationPart = useCallback((part: LocationCodePart, value: string) => {
+    setLocationCodeParts((current) => {
+      const next = { ...current, [part]: value };
+      setLocationModalState((modal) => ({ ...modal, locationCode: buildLocationCode(next) }));
+      return next;
+    });
+  }, []);
+
+  const setLocationPartMenuVisible = useCallback((part: LocationCodePart, visible: boolean) => {
+    setLocationPartMenus((current) => ({ ...current, [part]: visible }));
+  }, []);
 
   if (!hasWarehouseAccess) {
     return (
@@ -539,7 +712,16 @@ export default function WarehouseScreen() {
                       <Text variant="titleMedium">{product.productName}</Text>
                       <Text variant="bodyMedium">{product.itemNumber || product.productCode}</Text>
                       <Text variant="bodySmall">{product.barcode || notAvailableText}</Text>
-                      <Text variant="bodySmall">{productTypeText || notAvailableText}</Text>
+                      <View style={styles.heroBadgeRow}>
+                        <Text variant="bodySmall" style={styles.heroTypeText}>{productTypeText || notAvailableText}</Text>
+                        {normalizedProductGrade ? (
+                          <View style={[styles.gradeBadge, { backgroundColor: productGradeColor }]}>
+                            <Text variant="labelSmall" style={styles.gradeBadgeText}>
+                              {t("product.gradeText", { grade: normalizedProductGrade })}
+                            </Text>
+                          </View>
+                        ) : null}
+                      </View>
                       <Text variant="bodySmall">{product.supplierName || product.localSupplierCode || notAvailableText}</Text>
                       <View style={styles.switchRow}>
                         <Text variant="bodyMedium">{t("product.fields.isActive")}</Text>
@@ -553,14 +735,44 @@ export default function WarehouseScreen() {
                   <Card.Title title={t("segments.product")} />
                   <Card.Content>
                     <View style={styles.fieldGrid}>
-                      <ProductField label={t("product.fields.purchasePrice")} value={productForm.purchasePrice} onChangeText={(value) => setProductForm((current) => ({ ...current, purchasePrice: value }))} />
-                      <ProductField label={t("product.fields.retailPrice")} value={productForm.retailPrice} onChangeText={(value) => setProductForm((current) => ({ ...current, retailPrice: value }))} />
-                      <ProductField label={t("product.fields.domesticPrice")} value={productForm.domesticPrice} onChangeText={(value) => setProductForm((current) => ({ ...current, domesticPrice: value }))} />
-                      <ProductField label={t("product.fields.oemPrice")} value={productForm.oemPrice} onChangeText={(value) => setProductForm((current) => ({ ...current, oemPrice: value }))} />
-                      <ProductField label={t("product.fields.importPrice")} value={productForm.importPrice} onChangeText={(value) => setProductForm((current) => ({ ...current, importPrice: value }))} />
-                      <ProductField label={t("product.fields.middlePackageQuantity")} value={productForm.middlePackageQuantity} onChangeText={(value) => setProductForm((current) => ({ ...current, middlePackageQuantity: value }))} />
-                      <ProductField label={t("product.fields.packingQuantity")} value={productForm.packingQuantity} onChangeText={(value) => setProductForm((current) => ({ ...current, packingQuantity: value }))} />
-                      <ProductField label={t("product.fields.volume")} value={productForm.volume} onChangeText={(value) => setProductForm((current) => ({ ...current, volume: value }))} />
+                      <View style={styles.fieldRow}>
+                        <View style={styles.fieldCell}>
+                          <ProductNumericField label={t("product.fields.domesticPrice")} value={productForm.domesticPrice} onPress={() => openNumericInputModal("domesticPrice", t("product.fields.domesticPrice"), true)} />
+                        </View>
+                        <View style={styles.fieldCell}>
+                          <ProductNumericField label={t("product.fields.purchaseImportPrice")} value={productForm.purchasePrice} onPress={() => openNumericInputModal("purchasePrice", t("product.fields.purchaseImportPrice"), true)} />
+                        </View>
+                        <View style={styles.fieldCell}>
+                          <ProductNumericField label={t("product.fields.retailOemPrice")} value={productForm.retailPrice} onPress={() => openNumericInputModal("retailPrice", t("product.fields.retailOemPrice"), true)} />
+                        </View>
+                      </View>
+                      <View style={styles.fieldRow}>
+                        <View style={styles.fieldCell}>
+                          <ProductNumericField label={t("product.fields.stockQuantity")} value={productForm.stockQuantity} onPress={() => openNumericInputModal("stockQuantity", t("product.fields.stockQuantity"), false)} />
+                        </View>
+                        <View style={styles.fieldCell}>
+                          <ProductNumericField label={t("product.fields.middlePackageQuantity")} value={productForm.middlePackageQuantity} onPress={() => openNumericInputModal("middlePackageQuantity", t("product.fields.middlePackageQuantity"), false)} />
+                        </View>
+                        <View style={styles.fieldCell}>
+                          <ProductNumericField label={t("product.fields.packingQuantity")} value={productForm.packingQuantity} onPress={() => openNumericInputModal("packingQuantity", t("product.fields.packingQuantity"), false)} />
+                        </View>
+                      </View>
+                      <View style={styles.fieldRow}>
+                        <View style={styles.fieldCell}>
+                          <ProductNumericField label={t("product.fields.volume")} value={productForm.volume} onPress={() => openNumericInputModal("volume", t("product.fields.volume"), true)} />
+                        </View>
+                        <View style={[styles.fieldCell, styles.gradeCell]}>
+                          <Text variant="labelSmall" style={styles.gradeFieldLabel}>
+                            {t("product.fields.grade")}
+                          </Text>
+                          <SegmentedButtons
+                            value={normalizedProductGrade}
+                            onValueChange={(value) => setProductForm((current) => ({ ...current, grade: value }))}
+                            buttons={PRODUCT_GRADE_OPTIONS.map((grade) => ({ value: grade, label: grade }))}
+                            style={styles.gradeSegmented}
+                          />
+                        </View>
+                      </View>
                     </View>
                     <Button mode="contained" onPress={() => void handleSaveProduct()} style={styles.primaryButton}>
                       {t("common:actions.save")}
@@ -631,6 +843,7 @@ export default function WarehouseScreen() {
                   subtitle={selectedLocation.locationBarcode || notAvailableText}
                   right={() => (
                     <View style={styles.inlineActions}>
+                      <IconButton icon="printer-outline" onPress={() => void handlePrintSelectedLocation()} />
                       <IconButton icon="pencil-outline" onPress={() => openEditLocation(selectedLocation)} />
                       <IconButton icon="delete-outline" onPress={() => void handleDeleteLocation()} />
                     </View>
@@ -701,15 +914,91 @@ export default function WarehouseScreen() {
           <Text variant="titleMedium" style={styles.modalTitle}>
             {editingLocationGuid ? t("location.editLocation") : t("location.newLocation")}
           </Text>
-          <TextInput mode="outlined" label={t("location.fields.locationCode")} value={locationModalState.locationCode} onChangeText={(value) => setLocationModalState((current) => ({ ...current, locationCode: value }))} style={styles.input} />
-          <TextInput mode="outlined" label={t("location.fields.locationBarcode")} value={locationModalState.locationBarcode ?? ""} onChangeText={(value) => setLocationModalState((current) => ({ ...current, locationBarcode: value }))} style={styles.input} />
-          <ProductField label={t("location.fields.locationType")} value={String(locationModalState.locationType ?? 1)} onChangeText={(value) => setLocationModalState((current) => ({ ...current, locationType: Number(value || 1) }))} />
-          <ProductField label={t("location.fields.status")} value={String(locationModalState.status ?? 1)} onChangeText={(value) => setLocationModalState((current) => ({ ...current, status: Number(value || 1) }))} />
+          <View style={styles.generatedLocationCode}>
+            <Text variant="labelMedium">{t("location.fields.locationCode")}</Text>
+            <Text variant="titleMedium">{buildLocationCode(locationCodeParts)}</Text>
+          </View>
+          <View style={styles.locationPartRow}>
+            <LocationPartMenu
+              label={t("location.codeParts.letter")}
+              value={locationCodeParts.letter}
+              options={LOCATION_LETTER_OPTIONS}
+              visible={locationPartMenus.letter}
+              onOpen={() => setLocationPartMenuVisible("letter", true)}
+              onDismiss={() => setLocationPartMenuVisible("letter", false)}
+              onSelect={(value) => setLocationPart("letter", value)}
+            />
+            <LocationPartMenu
+              label={t("location.codeParts.section")}
+              value={locationCodeParts.section}
+              options={LOCATION_NUMBER_OPTIONS}
+              visible={locationPartMenus.section}
+              onOpen={() => setLocationPartMenuVisible("section", true)}
+              onDismiss={() => setLocationPartMenuVisible("section", false)}
+              onSelect={(value) => setLocationPart("section", value)}
+            />
+            <LocationPartMenu
+              label={t("location.codeParts.shelf")}
+              value={locationCodeParts.shelf}
+              options={LOCATION_NUMBER_OPTIONS}
+              visible={locationPartMenus.shelf}
+              onOpen={() => setLocationPartMenuVisible("shelf", true)}
+              onDismiss={() => setLocationPartMenuVisible("shelf", false)}
+              onSelect={(value) => setLocationPart("shelf", value)}
+            />
+            <LocationPartMenu
+              label={t("location.codeParts.slot")}
+              value={locationCodeParts.slot}
+              options={LOCATION_NUMBER_OPTIONS}
+              visible={locationPartMenus.slot}
+              onOpen={() => setLocationPartMenuVisible("slot", true)}
+              onDismiss={() => setLocationPartMenuVisible("slot", false)}
+              onSelect={(value) => setLocationPart("slot", value)}
+            />
+          </View>
+          {editingLocationGuid && locationModalState.locationBarcode ? (
+            <View style={styles.generatedLocationCode}>
+              <Text variant="labelMedium">{t("location.fields.locationBarcode")}</Text>
+              <Text variant="bodyMedium">{locationModalState.locationBarcode}</Text>
+            </View>
+          ) : (
+            <Text variant="bodySmall" style={styles.secondaryText}>{t("location.barcodeAutoHint")}</Text>
+          )}
+          <SegmentedButtons
+            value={String(locationModalState.locationType ?? 1)}
+            onValueChange={(value) => setLocationModalState((current) => ({ ...current, locationType: Number(value) }))}
+            buttons={[
+              { value: "1", label: t("location.typePick") },
+              { value: "2", label: t("location.typeStorage") },
+            ]}
+          />
+          <View style={styles.switchRow}>
+            <Text variant="bodyMedium">{t("location.fields.status")}</Text>
+            <Switch
+              value={(locationModalState.status ?? 1) === 1}
+              onValueChange={(value) => setLocationModalState((current) => ({ ...current, status: value ? 1 : 0 }))}
+            />
+          </View>
           <Button mode="contained" onPress={() => void handleSaveLocation()} style={styles.primaryButton}>
             {t("common:actions.save")}
           </Button>
         </Modal>
+
       </Portal>
+
+      {numericInputModal ? (
+        <NumericInputModal
+          visible
+          title={numericInputModal.title}
+          value={numericInputModal.value}
+          allowDecimal={numericInputModal.allowDecimal}
+          onChangeValue={(value) =>
+            setNumericInputModal((current) => (current ? { ...current, value } : current))
+          }
+          onConfirm={handleConfirmNumericInputModal}
+          onDismiss={dismissNumericInputModal}
+        />
+      ) : null}
 
       {busy ? <LoadingOverlay /> : null}
 
@@ -776,6 +1065,23 @@ const styles = StyleSheet.create({
     flex: 1,
     gap: 4,
   },
+  heroBadgeRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  heroTypeText: {
+    flexShrink: 1,
+  },
+  gradeBadge: {
+    borderRadius: 999,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+  },
+  gradeBadgeText: {
+    color: "#fff",
+    fontWeight: "700",
+  },
   switchRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -785,8 +1091,47 @@ const styles = StyleSheet.create({
   fieldGrid: {
     gap: 10,
   },
+  fieldRow: {
+    flexDirection: "row",
+    gap: 8,
+  },
+  fieldCell: {
+    flex: 1,
+    minWidth: 0,
+  },
   input: {
     backgroundColor: "#fff",
+  },
+  numericField: {
+    borderRadius: 8,
+  },
+  numericFieldContent: {
+    minHeight: 42,
+    justifyContent: "flex-start",
+  },
+  numericFieldInner: {
+    width: "100%",
+    alignItems: "flex-start",
+  },
+  numericFieldLabel: {
+    color: "#64748B",
+  },
+  numericFieldValue: {
+    color: "#111827",
+    fontWeight: "700",
+  },
+  gradeCell: {
+    flex: 2,
+    gap: 4,
+  },
+  gradeFieldLabel: {
+    color: "#64748B",
+  },
+  gradeSegmented: {
+    minHeight: 36,
+  },
+  secondaryText: {
+    color: "#64748B",
   },
   primaryButton: {
     marginTop: 8,
@@ -810,6 +1155,29 @@ const styles = StyleSheet.create({
   locationProductMeta: {
     flex: 1,
     gap: 2,
+  },
+  generatedLocationCode: {
+    gap: 4,
+    padding: 12,
+    borderRadius: 12,
+    backgroundColor: "#F8FAFC",
+  },
+  locationPartRow: {
+    flexDirection: "row",
+    gap: 8,
+  },
+  locationPart: {
+    flex: 1,
+    gap: 4,
+  },
+  locationPartLabel: {
+    color: "#64748B",
+  },
+  locationPartButton: {
+    minHeight: 36,
+  },
+  locationPartMenu: {
+    maxHeight: 260,
   },
   modal: {
     backgroundColor: "#fff",
