@@ -1,57 +1,57 @@
-# Attendance Scheduling and Punch Design
+# App 排班与打卡功能设计方案
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:writing-plans before implementation. This file is the approved design input; do not start coding until the implementation plan is reviewed.
+> **给后续执行代理的要求：** 实施前必须先使用 `superpowers:writing-plans` 写实施计划。本文件是已确认的设计输入，不能跳过计划直接编码。
 
-**Goal:** Build a first-version attendance module that supports weekly scheduling, basic App punch-in/out, manager review, store-specific public holidays, and leave/public-holiday approval.
+**目标：** 创建第一版考勤模块，支持周排班、App 基础打卡、店长审核、分店公共假期、年假/病假/公共假期申请与审核。
 
-**Architecture:** The unified backend in `/Users/sean/DEV/HBBblazorweb-master-vite` owns all attendance data, permissions, and business rules. The Expo App in `/Users/sean/DEV/HbwebExpo/HbwebExpoApp` adds a bottom `考勤` tab for staff and store-manager workflows. The Web app in `/Users/sean/DEV/hbweb_rv` adds a `门店运营 / 排班考勤` management page for weekly schedules, punch records, approvals, holidays, and Admin-only settings.
+**架构：** 统一后端 `/Users/sean/DEV/HBBblazorweb-master-vite` 负责所有考勤数据、权限和业务规则。Expo App `/Users/sean/DEV/HbwebExpo/HbwebExpoApp` 新增底部 `考勤` Tab，覆盖员工和店长工作流。Web 端 `/Users/sean/DEV/hbweb_rv` 新增 `门店运营 / 排班考勤` 页面，用于周排班、打卡记录、审核、公共假期和 Admin-only 考勤设置。
 
-**Tech Stack:** .NET API with SqlSugar-style models/services/controllers, React/Ant Design web management, Expo React Native App with existing auth/navigation/i18n patterns.
+**技术栈：** .NET API、SqlSugar 风格 Model/Service/Controller、React/Ant Design Web 管理端、Expo React Native App，并沿用现有认证、导航和国际化模式。
 
 ---
 
-## Confirmed Scope
+## 已确认范围
 
-- First version uses basic manual punch. No required GPS, photo, face recognition, or Wi-Fi validation.
-- App adds a dedicated bottom tab named `考勤`.
-- Schedules are shown as weekly tables from Monday to Sunday.
-- StoreStaff can view their own schedules and the weekly schedule table for related stores.
-- StoreManager can view, create, edit, and cancel schedules for multiple stores they manage.
-- StoreManager can manage public holidays for stores they manage.
-- Admin can manage all stores, all holidays, and all attendance settings.
-- Late and early-leave grace periods default to 5 minutes and are editable in the backend settings page.
-- Attendance settings are editable by Admin only in version one.
-- Public holidays are store-specific and can differ between stores.
-- Public holidays can still be business days.
-- Public holiday business status supports `Open`, `Closed`, and `Partial`.
-- `Partial` only displays special hours and schedule warnings in version one; it does not hard-block schedules outside the special hours.
-- Annual leave, sick leave, and public holiday requests require approval.
+- 第一版只做基础手动打卡，不强制 GPS、拍照、人脸识别、Wi-Fi 校验。
+- App 底部新增独立 Tab：`考勤`。
+- 排班按周表展示，从周一到周日。
+- StoreStaff 可以查看自己的排班，也可以查看自己相关分店的周排班表。
+- StoreManager 可以查看、创建、编辑、取消自己管理的多个分店排班。
+- StoreManager 可以维护自己管理分店的公共假期。
+- Admin 可以管理全部分店、全部公共假期和全部考勤设置。
+- 迟到/早退缓冲时间默认 5 分钟，并且可以在后台设置中修改。
+- 第一版考勤设置只允许 Admin 修改。
+- 公共假期按分店配置，每个分店可以不同。
+- 公共假期不等于停业，公共假期也可能营业。
+- 公共假期营业状态支持 `Open`、`Closed`、`Partial`。
+- `Partial` 第一版只做显示和排班提醒，不强制限制排班时间。
+- 年假、病假、公共假期申请都需要审核。
 
-## Roles And Permissions
+## 角色与权限
 
-StoreStaff:
+StoreStaff：
 
-- View their own today/week schedules.
-- View weekly schedule tables for related stores.
-- Punch in and punch out for themselves.
-- Submit annual leave, sick leave, and public holiday requests.
-- View their own request and punch status.
+- 查看自己的今日排班和本周排班。
+- 查看自己相关分店的周排班表。
+- 自己上班打卡、下班打卡。
+- 提交年假、病假、公共假期申请。
+- 查看自己的申请状态和打卡状态。
 
-StoreManager:
+StoreManager：
 
-- View schedules for all managed stores.
-- Create, edit, and cancel schedules for managed stores.
-- View punch records for managed stores.
-- Review abnormal punches for managed stores.
-- Configure public holidays for managed stores.
-- Review annual leave, sick leave, and public holiday requests for managed stores.
+- 查看自己管理的所有分店排班。
+- 创建、编辑、取消自己管理分店的排班。
+- 查看自己管理分店的打卡记录。
+- 审核自己管理分店的异常打卡。
+- 配置自己管理分店的公共假期。
+- 审核自己管理分店员工的年假、病假、公共假期申请。
 
-Admin:
+Admin：
 
-- View and manage all schedules, punch records, approvals, and store holidays.
-- Modify global attendance settings.
+- 查看和管理全部排班、打卡记录、审核记录、分店公共假期。
+- 修改全局考勤设置。
 
-Suggested permission constants:
+建议权限常量：
 
 ```text
 Attendance.Schedule.ViewSelf
@@ -70,15 +70,15 @@ Attendance.Settings.Edit
 Attendance.Admin.View
 ```
 
-## Backend Design
+## 后端设计
 
-Backend root:
+后端根目录：
 
 ```text
 /Users/sean/DEV/HBBblazorweb-master-vite
 ```
 
-Suggested files:
+建议新增或修改文件：
 
 ```text
 BlazorApp.Shared/DTOs/AttendanceDtos.cs
@@ -96,49 +96,49 @@ BlazorApp.Api/Services/NavigationService.cs
 BlazorApp.Api/Program.cs
 ```
 
-Core models:
+核心模型：
 
 ```text
-AttendanceSchedule
+AttendanceSchedule 排班表
 - Id
 - ScheduleGuid
-- StoreCode
-- UserGuid
-- WorkDate
-- StartTime
-- EndTime
+- StoreCode 分店编码
+- UserGuid 员工用户 GUID
+- WorkDate 工作日期
+- StartTime 上班时间
+- EndTime 下班时间
 - Status: Active / Cancelled
-- Remark
+- Remark 备注
 - CreatedAt / CreatedBy
 - UpdatedAt / UpdatedBy
 ```
 
 ```text
-AttendancePunch
+AttendancePunch 打卡记录
 - Id
 - PunchGuid
 - ScheduleGuid nullable
-- StoreCode
-- UserGuid
-- WorkDate
+- StoreCode 分店编码
+- UserGuid 员工用户 GUID
+- WorkDate 工作日期
 - PunchType: ClockIn / ClockOut
-- PunchTime
+- PunchTime 打卡时间
 - Status: Normal / Late / EarlyLeave / NoSchedule / Duplicate / PendingApproval / Approved / Rejected
 - DeviceId nullable
 - Source: App
-- Remark
+- Remark 备注
 - CreatedAt / CreatedBy
 ```
 
 ```text
-AttendanceApproval
+AttendanceApproval 审核记录
 - Id
 - ApprovalGuid
 - SourceType: Punch / Leave
-- SourceGuid
-- StoreCode
-- ApplicantUserGuid
-- ReviewerUserGuid nullable
+- SourceGuid 来源记录 GUID
+- StoreCode 分店编码
+- ApplicantUserGuid 申请人
+- ReviewerUserGuid nullable 审核人
 - ReviewStatus: Pending / Approved / Rejected / Cancelled
 - ReviewRemark nullable
 - ReviewedAt nullable
@@ -146,33 +146,33 @@ AttendanceApproval
 ```
 
 ```text
-AttendanceStoreHoliday
+AttendanceStoreHoliday 分店公共假期
 - Id
 - HolidayGuid
-- StoreCode
-- HolidayDate
-- HolidayName
+- StoreCode 分店编码
+- HolidayDate 假期日期
+- HolidayName 假期名称
 - BusinessStatus: Open / Closed / Partial
 - OpenTime nullable
 - CloseTime nullable
-- IsPaidHoliday
-- Remark
+- IsPaidHoliday 是否带薪假期
+- Remark 备注
 - CreatedAt / CreatedBy
 - UpdatedAt / UpdatedBy
 ```
 
 ```text
-AttendanceLeaveRequest
+AttendanceLeaveRequest 请假/公共假期申请
 - Id
 - LeaveGuid
-- StoreCode
-- UserGuid
+- StoreCode 分店编码
+- UserGuid 员工用户 GUID
 - LeaveType: AnnualLeave / SickLeave / PublicHoliday
 - StartDate
 - EndDate
 - StartTime nullable
 - EndTime nullable
-- Reason
+- Reason 申请原因
 - AttachmentUrl nullable
 - Status: Pending / Approved / Rejected / Cancelled
 - ReviewedBy nullable
@@ -182,7 +182,7 @@ AttendanceLeaveRequest
 ```
 
 ```text
-AttendanceSettings
+AttendanceSettings 考勤设置
 - Id
 - LateGraceMinutes default 5
 - EarlyLeaveGraceMinutes default 5
@@ -193,15 +193,15 @@ AttendanceSettings
 - UpdatedAt / UpdatedBy
 ```
 
-## API Design
+## API 设计
 
-Use React API style under:
+统一使用 React API 风格：
 
 ```text
 /api/react/v1/attendance
 ```
 
-Schedule:
+排班：
 
 ```text
 GET    /schedules
@@ -211,7 +211,7 @@ DELETE /schedules/{scheduleGuid}
 GET    /schedules/week
 ```
 
-App self-service:
+App 员工自助：
 
 ```text
 GET  /my/today
@@ -222,7 +222,7 @@ POST /my/leave-requests
 POST /my/leave-requests/{leaveGuid}/cancel
 ```
 
-Punch records and approvals:
+打卡记录与审核：
 
 ```text
 GET  /punches
@@ -232,7 +232,7 @@ POST /approvals/{approvalGuid}/approve
 POST /approvals/{approvalGuid}/reject
 ```
 
-Store holidays:
+分店公共假期：
 
 ```text
 GET    /holidays
@@ -241,44 +241,44 @@ PUT    /holidays/{holidayGuid}
 DELETE /holidays/{holidayGuid}
 ```
 
-Settings:
+考勤设置：
 
 ```text
 GET /settings
 PUT /settings
 ```
 
-## Punch Rules
+## 打卡规则
 
-- Clock-in is late when `PunchTime > Schedule.StartTime + LateGraceMinutes`.
-- Clock-out is early leave when `PunchTime < Schedule.EndTime - EarlyLeaveGraceMinutes`.
-- No schedule punch is allowed by default but creates an approval record.
-- Duplicate punch creates an abnormal status and requires review.
-- Normal punches do not require approval.
-- Late, early leave, no schedule, and duplicate punches require approval by default.
-- Approved abnormal punches become accepted attendance records.
-- Rejected abnormal punches remain visible but should not count as accepted attendance.
+- 上班打卡时间 `PunchTime > Schedule.StartTime + LateGraceMinutes` 时判定为迟到。
+- 下班打卡时间 `PunchTime < Schedule.EndTime - EarlyLeaveGraceMinutes` 时判定为早退。
+- 默认允许未排班打卡，但会生成待审核记录。
+- 重复打卡会生成异常状态并进入审核。
+- 正常打卡不需要审核。
+- 迟到、早退、未排班、重复打卡默认都需要审核。
+- 审核通过的异常打卡视为有效考勤记录。
+- 审核拒绝的异常打卡仍保留记录，但不作为有效考勤。
 
-## Weekly Schedule Rules
+## 周排班规则
 
-- Week view always starts on Monday and ends on Sunday.
-- Web schedule view can filter by store, employee, and week.
-- App staff view defaults to the current week and highlights the current user.
-- A user can have multiple shifts in one day.
-- Version one should prevent overlapping shifts for the same employee in the same store and date.
-- Public holidays are displayed in the week table header or day cell.
-- Closed public holidays show a warning when scheduling.
-- Partial public holidays show special hours and a warning but do not block saving.
+- 周视图固定从周一到周日。
+- Web 端周排班支持按分店、员工、周筛选。
+- App 员工视图默认展示当前周，并突出显示当前员工自己的班次。
+- 一个员工同一天可以有多个班次。
+- 第一版应禁止同一员工在同一分店、同一天出现时间重叠的班次。
+- 公共假期要显示在周表的日期头或日期单元格中。
+- `Closed` 公共假期排班时显示提醒。
+- `Partial` 公共假期显示特殊营业时间和提醒，但不阻止保存。
 
-## App Design
+## App 设计
 
-App root:
+App 根目录：
 
 ```text
 /Users/sean/DEV/HbwebExpo/HbwebExpoApp
 ```
 
-Suggested files:
+建议新增或修改文件：
 
 ```text
 app/(tabs)/attendance.tsx
@@ -295,43 +295,43 @@ src/locales/zh/common.json
 src/locales/en/common.json
 ```
 
-App `考勤` tab sections:
+App `考勤` Tab 页面分区：
 
 ```text
 今日打卡
-- Today schedule
-- Clock-in / clock-out button
-- Current punch status
-- Public holiday notice if applicable
+- 今日班次
+- 上班/下班打卡按钮
+- 当前打卡状态
+- 如当天为公共假期，显示公共假期提示
 
 本周排班
-- Monday to Sunday weekly table
-- Related store selector when the user has multiple stores
-- Staff can view related store weekly schedules read-only
-- Current user's shifts are visually emphasized
+- 周一到周日周排班表
+- 用户有多个相关分店时显示分店选择
+- 员工可以只读查看相关分店周排班
+- 当前员工自己的班次需要明显突出
 
 请假申请
-- Annual leave
-- Sick leave
-- Public holiday request
-- Own request status list
+- 年假申请
+- 病假申请
+- 公共假期申请
+- 查看自己的申请状态
 
 店长审核
-- Visible for StoreManager
-- Managed store selector
-- Abnormal punch review
-- Leave/public-holiday review
+- 仅 StoreManager 显示
+- 管理分店选择
+- 异常打卡审核
+- 年假/病假/公共假期审核
 ```
 
-## Web Design
+## Web 端设计
 
-Web root:
+Web 根目录：
 
 ```text
 /Users/sean/DEV/hbweb_rv
 ```
 
-Suggested files:
+建议新增或修改文件：
 
 ```text
 src/pages/StoreOperations/Attendance/index.tsx
@@ -340,77 +340,77 @@ src/router/routes.tsx
 src/utils/access.ts
 ```
 
-Menu:
+菜单位置：
 
 ```text
 门店运营
 - 排班考勤
 ```
 
-Page tabs:
+页面 Tab：
 
 ```text
 周排班
-- Store, week, and employee filters
-- Monday to Sunday table
-- Create/edit/cancel shifts
-- StoreManager limited to managed stores
+- 分店、周、员工筛选
+- 周一到周日周表
+- 新增、编辑、取消班次
+- StoreManager 只能操作自己管理的分店
 
 打卡记录
-- Clock-in and clock-out records
-- Normal, late, early leave, no schedule, duplicate, approved, rejected filters
+- 上班、下班打卡记录
+- 支持正常、迟到、早退、未排班、重复打卡、已通过、已拒绝筛选
 
 审核中心
-- Abnormal punch approvals
-- Annual leave approvals
-- Sick leave approvals
-- Public holiday approvals
+- 异常打卡审核
+- 年假审核
+- 病假审核
+- 公共假期审核
 
 公共假期
-- Store-specific holiday list
-- BusinessStatus Open / Closed / Partial
-- OpenTime and CloseTime for Partial
+- 分店公共假期列表
+- BusinessStatus 支持 Open / Closed / Partial
+- Partial 支持 OpenTime / CloseTime
 
 考勤设置
-- Admin only
-- Late grace minutes
-- Early-leave grace minutes
-- No schedule punch allowance
-- Approval requirements
+- 仅 Admin 可见和可修改
+- 迟到缓冲分钟数
+- 早退缓冲分钟数
+- 是否允许未排班打卡
+- 各类异常是否需要审核
 ```
 
-## Navigation And Access
+## 导航与访问控制
 
-Backend navigation must expose the Web menu when the user has attendance permissions. App navigation must expose the `attendance` route for authenticated StoreStaff, StoreManager, and Admin users. Device-only anonymous mode should not receive the `attendance` tab unless a later requirement explicitly allows device attendance.
+后端导航需要在用户拥有考勤权限时暴露 Web 菜单。App 导航需要给已登录的 StoreStaff、StoreManager、Admin 暴露 `attendance` 路由。设备匿名模式第一版不显示 `考勤` Tab，除非后续明确要求设备模式也支持考勤。
 
-Access checks must be enforced in both layers:
+访问控制必须前后端都做：
 
-- Backend filters data by current user's roles and managed/related store scope.
-- Web hides actions based on `access.ts`.
-- App hides StoreManager approval and edit affordances for StoreStaff.
+- 后端按当前用户角色和可管理/相关分店范围过滤数据。
+- Web 端通过 `access.ts` 隐藏无权限操作。
+- App 端对 StoreStaff 隐藏店长审核和编辑入口。
 
-## Out Of Scope For Version One
+## 第一版不做
 
-- GPS geofencing.
-- Photo punch.
-- Face recognition.
-- Wi-Fi or device-location enforcement.
-- Payroll calculation.
-- Leave balance accrual.
-- Cross-day overnight shift handling.
-- Shift templates and recurring schedule generation.
-- Hard enforcement of partial public holiday hours.
+- GPS 围栏。
+- 拍照打卡。
+- 人脸识别。
+- Wi-Fi 或设备位置强校验。
+- 工资计算。
+- 年假/病假余额自动累计。
+- 跨天夜班。
+- 班次模板和周期性自动生成排班。
+- `Partial` 公共假期营业时间强制限制。
 
-## Acceptance Criteria
+## 验收标准
 
-- Admin can configure global attendance settings, including both grace periods.
-- StoreManager can create and edit schedules only for managed stores.
-- StoreManager can configure holidays only for managed stores.
-- StoreStaff can view their own and related-store weekly schedules in the App.
-- App has a bottom `考勤` tab.
-- Staff can punch in and out from the App.
-- Late, early leave, no schedule, and duplicate punch records create pending approvals.
-- Staff can submit annual leave, sick leave, and public holiday requests.
-- StoreManager can approve or reject managed-store punch and leave/public-holiday requests.
-- Public holidays can be Open, Closed, or Partial per store.
-- Partial public holidays display special hours and warning text but do not block schedule save.
+- Admin 可以配置全局考勤设置，包括迟到/早退缓冲分钟数。
+- StoreManager 只能创建和编辑自己管理分店的排班。
+- StoreManager 只能配置自己管理分店的公共假期。
+- StoreStaff 可以在 App 查看自己的排班和相关分店周排班。
+- App 底部存在 `考勤` Tab。
+- 员工可以在 App 完成上班/下班打卡。
+- 迟到、早退、未排班、重复打卡会生成待审核记录。
+- 员工可以提交年假、病假、公共假期申请。
+- StoreManager 可以通过或拒绝自己管理分店的打卡和请假/公共假期申请。
+- 每个分店的公共假期都可以设置为 Open、Closed、Partial。
+- `Partial` 公共假期显示特殊营业时间和提醒，但不阻止保存排班。
