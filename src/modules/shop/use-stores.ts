@@ -47,6 +47,7 @@ function isPrivilegedStoreViewer(roleNames: string[] | undefined) {
 export function useStores() {
   const user = useAuthStore((state) => state.user);
   const access = useAuthStore((state) => state.access);
+  const isAuthenticated = useAuthStore((state) => state.isAuthenticated);
   const deviceSession = useDeviceStore((state) => state.session);
   const userStores = useCartStore((state) => state.userStores);
   const selectedStore = useCartStore((state) => state.selectedStore);
@@ -55,7 +56,13 @@ export function useStores() {
   const setCartSummary = useCartStore((state) => state.setCartSummary);
   const [isHydratingSelection, setIsHydratingSelection] = useState(false);
   const userGuid = user?.userGUID ?? null;
-  const isDeviceMode = Boolean(deviceSession?.hardwareId && deviceSession.authCode && deviceSession.storeCode);
+  const hasUserSession = Boolean(isAuthenticated && userGuid);
+  const isDeviceMode = Boolean(
+    deviceSession?.hardwareId &&
+      deviceSession.authCode &&
+      deviceSession.storeCode &&
+      !hasUserSession
+  );
   const deviceBoundStore = useMemo<Store | null>(
     () =>
       deviceSession?.storeCode

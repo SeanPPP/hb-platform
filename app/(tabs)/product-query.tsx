@@ -68,6 +68,14 @@ function clamp(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), max);
 }
 
+function calcGpPercent(sellPrice?: number | null, purchasePrice?: number | null): string {
+  if (sellPrice == null || !Number.isFinite(sellPrice) || sellPrice <= 0) return "";
+  if (purchasePrice == null || !Number.isFinite(purchasePrice) || purchasePrice < 0) return "";
+  const gp = ((sellPrice - purchasePrice) / sellPrice) * 100;
+  if (!Number.isFinite(gp)) return "";
+  return gp.toFixed(0) + "%";
+}
+
 function parseDecimalInput(value: string): number | null {
   const trimmed = value.trim();
   if (!trimmed) {
@@ -266,6 +274,7 @@ function ProductQueryContent() {
   const [printSettingsVisible, setPrintSettingsVisible] = useState(false);
   const autoPricingDialogResolverRef = useRef<((result: AutoPricingDialogResolution) => void) | null>(null);
   const numericInputConfirmRef = useRef<((value: string) => void) | null>(null);
+  const saveClearanceRef = useRef<() => Promise<void>>(async () => {});
   const [numericInputModal, setNumericInputModal] = useState<NumericInputModalState | null>(null);
 
   useEffect(() => {
@@ -286,7 +295,7 @@ function ProductQueryContent() {
   }, []);
 
   const loadProductCodes = useCallback(
-    async (sourceDetail: ProductDetail, nextPage = 1, append = false) => {
+    async (sourceDetail: ProductDetail, nextPage = 1, append = false): Promise<ProductDetail | undefined> => {
       if (!selectedStoreCode) {
         return;
       }
@@ -327,6 +336,14 @@ function ProductQueryContent() {
           setInitialDetail((current) => cloneDetail(applyPage(current)));
           setCodePage(page.page);
           setCodesHasMore(page.hasMore);
+          if (!append) {
+            return {
+              ...sourceDetail,
+              setCodes: page.items,
+              setCodeCount: page.totalCount,
+              codesIncluded: true,
+            };
+          }
           return;
         }
 
@@ -350,6 +367,14 @@ function ProductQueryContent() {
         setInitialDetail((current) => cloneDetail(applyPage(current)));
         setCodePage(page.page);
         setCodesHasMore(page.hasMore);
+        if (!append) {
+          return {
+            ...sourceDetail,
+            multiCodes: page.items,
+            multiCodeCount: page.totalCount,
+            codesIncluded: true,
+          };
+        }
       } catch (error) {
         const fallback = t("messages.codesLoadFailed");
         let detail = "";
@@ -386,8 +411,8 @@ function ProductQueryContent() {
       setQueryFeedback({ type: "idle" });
       setCodePage(1);
       setCodesHasMore(false);
-      void loadProductCodes(payload, 1, false);
-      return payload;
+      const detailWithCodes = await loadProductCodes(payload, 1, false);
+      return detailWithCodes ?? payload;
     },
     [loadProductCodes, selectedStoreCode, t]
   );
@@ -746,7 +771,7 @@ function ProductQueryContent() {
             if (autoPricingResult.autoPricingStatus === "no_action") {
               playQueryFeedback("found");
               if (trigger === "scan" && continuousPrintEnabled && !autoPricingResult.labelPrinted) {
-                await smartAutoPrint(keyword, nextDetail);
+                await smartAutoPrint(nextKeyword, nextDetail);
               }
             }
             return autoPricingResult;
@@ -1332,7 +1357,10 @@ function ProductQueryContent() {
       title: t("clearancePrice.price"),
       value: clearancePriceInput,
       allowDecimal: true,
-      onConfirmValue: setClearancePriceInput,
+      onConfirmValue: (value: string) => {
+        setClearancePriceInput(value);
+        setTimeout(() => void saveClearanceRef.current(), 0);
+      },
     });
   }, [clearancePriceInput, openNumericInputModal, t]);
 
@@ -1399,6 +1427,8 @@ function ProductQueryContent() {
       setSavingClearance(false);
     }
   }, [clearancePriceInput, detail?.productCode, loadDetail, selectedStoreCode, t]);
+
+  saveClearanceRef.current = handleSaveClearancePrice;
 
   const handleSaveAll = useCallback(async () => {
     if (!detail?.storePrice || !isStorePriceDirty(detail, initialDetail)) {
@@ -1540,6 +1570,8 @@ function ProductQueryContent() {
     storePrice?.retailPrice,
     normalizedStoreDiscountRate
   );
+  const retailGp = calcGpPercent(storePrice?.retailPrice, storePrice?.purchasePrice);
+  const discountedRetailGp = calcGpPercent(discountedRetailPrice, storePrice?.purchasePrice);
 
   return (
     <SafeAreaView style={styles.safeArea} edges={["top", "left", "right"]}>
@@ -1581,8 +1613,10 @@ function ProductQueryContent() {
                   storeName={storePrice.storeName}
                   purchasePrice={storePurchaseInput}
                   retailPrice={storeRetailInput}
+                  retailGp={retailGp}
                   discountPercent={formatPercentValue(normalizedStoreDiscountRate)}
                   discountedRetailPrice={formatCurrency(discountedRetailPrice)}
+                  discountedRetailGp={discountedRetailGp}
                   autoPricing={storePrice.isAutoPricing}
                   isSpecialProduct={storePrice.isSpecialProduct}
                   rate={formatFixedDecimal(storePrice.rate)}
@@ -1604,19 +1638,14 @@ function ProductQueryContent() {
               <LabelPrintCard
                 isPrintingProduct={printingAction === "product"}
                 isPrintingDiscount={printingAction === "discount"}
-                isPrintingClearance={printingAction === "clearance"}
                 isPrintingBigDiscount={printingAction === "bigDiscount"}
                 canPrintDiscount={Boolean(normalizedStoreDiscountRate && normalizedStoreDiscountRate > 0)}
-                canPrintClearance={Boolean(clearancePrice)}
                 canPrintBigDiscount={Boolean(normalizedStoreDiscountRate && normalizedStoreDiscountRate > 0)}
                 onPrintProduct={
                   printingAction && printingAction !== "product" ? undefined : () => void handlePrint("product")
                 }
                 onPrintDiscount={
                   printingAction && printingAction !== "discount" ? undefined : () => void handlePrint("discount")
-                }
-                onPrintClearance={
-                  printingAction && printingAction !== "clearance" ? undefined : () => void handlePrint("clearance")
                 }
                 onPrintBigDiscount={
                   printingAction && printingAction !== "bigDiscount"

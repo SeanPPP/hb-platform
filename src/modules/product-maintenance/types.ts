@@ -85,6 +85,17 @@ export interface ProductDetail {
   clearancePrice?: StoreClearancePriceItem | null;
   setCodes: ProductSetCodeItem[];
   multiCodes: MultiCodeEditableItem[];
+  setCodeCount: number;
+  multiCodeCount: number;
+  codesIncluded: boolean;
+}
+
+export interface ProductCodePage<T> {
+  items: T[];
+  totalCount: number;
+  page: number;
+  pageSize: number;
+  hasMore: boolean;
 }
 
 export interface StoreProductLookupRequest {

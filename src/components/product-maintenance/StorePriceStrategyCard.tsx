@@ -6,8 +6,10 @@ interface StorePriceStrategyCardProps {
   storeName?: string | null;
   purchasePrice?: string;
   retailPrice?: string;
+  retailGp?: string;
   discountPercent?: string;
   discountedRetailPrice?: string;
+  discountedRetailGp?: string;
   autoPricing: boolean;
   isSpecialProduct: boolean;
   rate?: string;
@@ -26,8 +28,10 @@ export function StorePriceStrategyCard({
   storeName,
   purchasePrice,
   retailPrice,
+  retailGp,
   discountPercent,
   discountedRetailPrice,
+  discountedRetailGp,
   autoPricing,
   isSpecialProduct,
   rate,
@@ -58,7 +62,7 @@ export function StorePriceStrategyCard({
           </Text>
         </View>
         <View style={styles.priceRow}>
-          <Pressable style={styles.inputPressable} onPress={onEditPurchasePrice}>
+          <Pressable style={styles.narrowInput} onPress={onEditPurchasePrice}>
             <View pointerEvents="none">
               <TextInput
                 mode="outlined"
@@ -70,18 +74,25 @@ export function StorePriceStrategyCard({
               />
             </View>
           </Pressable>
-          <Pressable style={styles.inputPressable} onPress={onEditRetailPrice}>
-            <View pointerEvents="none">
-              <TextInput
-                mode="outlined"
-                label={t("storePrice.retail")}
-                dense
-                value={retailPrice}
-                editable={false}
-                style={styles.input}
-              />
+          <View style={styles.inputFill}>
+            <View style={styles.inlineRow}>
+              <Pressable style={styles.inputFlex} onPress={onEditRetailPrice}>
+                <View pointerEvents="none">
+                  <TextInput
+                    mode="outlined"
+                    label={t("storePrice.retail")}
+                    dense
+                    value={retailPrice}
+                    editable={false}
+                    style={styles.input}
+                  />
+                </View>
+              </Pressable>
+              <Text variant="labelSmall" style={styles.gpText}>
+                GP:{retailGp || "--"}
+              </Text>
             </View>
-          </Pressable>
+          </View>
         </View>
         <View style={styles.summaryRow}>
           {strategyText ? (
@@ -103,7 +114,7 @@ export function StorePriceStrategyCard({
           </View>
         </View>
         <View style={styles.discountRow}>
-          <Pressable style={styles.inputPressable} onPress={onEditDiscountPercent}>
+          <Pressable style={styles.narrowInput} onPress={onEditDiscountPercent}>
             <View pointerEvents="none">
               <TextInput
                 mode="outlined"
@@ -116,19 +127,26 @@ export function StorePriceStrategyCard({
               />
             </View>
           </Pressable>
-          <Pressable style={styles.inputPressable} onPress={onEditDiscountedRetailPrice}>
-            <View pointerEvents="none">
-              <TextInput
-                mode="outlined"
-                label={t("storePrice.discountedRetail")}
-                dense
-                value={discountedRetailPrice}
-                editable={false}
-                style={styles.input}
-                textColor="#166534"
-              />
+          <View style={styles.inputFill}>
+            <View style={styles.inlineRow}>
+              <Pressable style={styles.inputFlex} onPress={onEditDiscountedRetailPrice}>
+                <View pointerEvents="none">
+                  <TextInput
+                    mode="outlined"
+                    label={t("storePrice.discountedRetail")}
+                    dense
+                    value={discountedRetailPrice}
+                    editable={false}
+                    style={styles.input}
+                    textColor="#166534"
+                  />
+                </View>
+              </Pressable>
+              <Text variant="labelSmall" style={styles.gpText}>
+                GP:{discountedRetailGp || "--"}
+              </Text>
             </View>
-          </Pressable>
+          </View>
         </View>
       </Card.Content>
     </Card>
@@ -168,8 +186,26 @@ const styles = StyleSheet.create({
     backgroundColor: "#fff",
     height: 38,
   },
-  inputPressable: {
+  narrowInput: {
+    width: 88,
+    flexShrink: 0,
+  },
+  inputFill: {
     flex: 1,
+  },
+  inputFlex: {
+    flex: 1,
+  },
+  inlineRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+  },
+  gpText: {
+    fontWeight: "700",
+    fontSize: 12,
+    color: "#1677FF",
+    flexShrink: 0,
   },
   rateText: {
     color: "#1677FF",

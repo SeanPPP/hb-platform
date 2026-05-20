@@ -1,114 +1,89 @@
 import { Pressable, StyleSheet, View } from "react-native";
-import { Button, Card, Text, TextInput } from "react-native-paper";
+import { IconButton, Text } from "react-native-paper";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 
 interface StoreClearancePriceCardProps {
-  storeCode?: string | null;
-  storeName?: string | null;
   clearanceBarcode?: string | null;
   clearancePrice: string;
-  saving?: boolean;
+  isPrintingClearance?: boolean;
   onEditClearancePrice: () => void;
-  onSave: () => void;
+  onPrintClearance?: () => void;
 }
 
 export function StoreClearancePriceCard({
-  storeCode,
-  storeName,
   clearanceBarcode,
   clearancePrice,
-  saving,
+  isPrintingClearance = false,
   onEditClearancePrice,
-  onSave,
+  onPrintClearance,
 }: StoreClearancePriceCardProps) {
   const { t } = useAppTranslation(["productQuery", "common"]);
 
   return (
-    <Card style={styles.card} mode="contained">
-      <Card.Content style={styles.content}>
-        <View style={styles.headerRow}>
-          <Text variant="titleSmall" style={styles.title}>
-            {t("clearancePrice.title")}
-          </Text>
-          <Button
-            compact
-            mode="contained-tonal"
-            onPress={onSave}
-            loading={saving}
-            disabled={saving}
-          >
-            {t("clearancePrice.save")}
-          </Button>
-        </View>
+    <View style={styles.container}>
+      <Text
+        variant="bodySmall"
+        style={styles.barcode}
+        numberOfLines={1}
+      >
+        {clearanceBarcode || t("clearancePrice.pendingBarcode")}
+      </Text>
 
-        <View style={styles.row}>
-          <Text variant="bodySmall" style={styles.label}>
-            {t("clearancePrice.store")}
+      <Pressable onPress={onEditClearancePrice} style={styles.pricePressable}>
+        <View style={styles.priceContent} pointerEvents="none">
+          <Text variant="labelSmall" style={styles.priceLabel}>
+            {t("clearancePrice.price")}
           </Text>
-          <Text variant="bodyMedium" style={styles.value}>
-            {storeName || storeCode || t("common:na")}
+          <Text variant="bodyMedium" style={styles.priceValue}>
+            {clearancePrice || "--"}
           </Text>
         </View>
+      </Pressable>
 
-        <View style={styles.row}>
-          <Text variant="bodySmall" style={styles.label}>
-            {t("clearancePrice.barcode")}
-          </Text>
-          <Text variant="bodyMedium" style={styles.value} numberOfLines={1}>
-            {clearanceBarcode || t("clearancePrice.pendingBarcode")}
-          </Text>
-        </View>
-
-        <Pressable onPress={onEditClearancePrice}>
-          <View pointerEvents="none">
-            <TextInput
-              mode="outlined"
-              dense
-              label={t("clearancePrice.price")}
-              value={clearancePrice}
-              editable={false}
-              style={styles.input}
-            />
-          </View>
-        </Pressable>
-      </Card.Content>
-    </Card>
+      <IconButton
+        icon="tag-outline"
+        size={20}
+        onPress={onPrintClearance}
+        loading={isPrintingClearance}
+        disabled={!onPrintClearance || isPrintingClearance}
+        style={styles.printIcon}
+        accessibilityLabel={t("print.clearance")}
+      />
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  card: {
-    borderRadius: 8,
-    backgroundColor: "#fff",
-  },
-  content: {
-    gap: 10,
-    paddingVertical: 10,
-  },
-  headerRow: {
+  container: {
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "space-between",
-    gap: 12,
+    backgroundColor: "#fff",
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 4,
+    gap: 10,
   },
-  title: {
-    fontWeight: "700",
-    color: "#111827",
-  },
-  row: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    gap: 12,
-  },
-  label: {
+  barcode: {
+    flex: 1,
+    flexShrink: 1,
     color: "#666",
   },
-  value: {
-    flex: 1,
-    textAlign: "right",
-    color: "#0F172A",
+  pricePressable: {
+    flexShrink: 0,
   },
-  input: {
-    backgroundColor: "#fff",
+  priceContent: {
+    alignItems: "center",
+    gap: 1,
+  },
+  priceLabel: {
+    color: "#999",
+    fontSize: 10,
+  },
+  priceValue: {
+    color: "#0F172A",
+    fontWeight: "700",
+  },
+  printIcon: {
+    margin: 0,
   },
 });

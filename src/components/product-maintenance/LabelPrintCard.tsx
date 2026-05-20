@@ -1,6 +1,5 @@
 import { StyleSheet, View } from "react-native";
-import { Button, Card, Text } from "react-native-paper";
-import { useAppTranslation } from "@/shared/i18n/use-app-translation";
+import { Button, Card } from "react-native-paper";
 
 interface LabelPrintCardProps {
   isPrintingProduct?: boolean;
@@ -23,14 +22,9 @@ export function LabelPrintCard({
   onPrintDiscount,
   onPrintBigDiscount,
 }: LabelPrintCardProps) {
-  const { t } = useAppTranslation("productQuery");
-
   return (
     <Card style={styles.card} mode="contained">
       <Card.Content style={styles.content}>
-        <Text variant="titleSmall" style={styles.title}>
-          {t("print.title")}
-        </Text>
         <View style={styles.actions}>
           <Button
             compact
@@ -41,7 +35,7 @@ export function LabelPrintCard({
             disabled={!onPrintProduct || isPrintingProduct}
             style={styles.button}
           >
-            {isPrintingProduct ? t("print.sendingShort") : t("print.product")}
+            Regular
           </Button>
           <Button
             compact
@@ -52,7 +46,7 @@ export function LabelPrintCard({
             disabled={!onPrintDiscount || !canPrintDiscount || isPrintingDiscount}
             style={styles.button}
           >
-            {isPrintingDiscount ? t("print.sendingShort") : t("print.discount")}
+            Discount
           </Button>
           <Button
             compact
@@ -63,7 +57,7 @@ export function LabelPrintCard({
             disabled={!onPrintBigDiscount || !canPrintBigDiscount || isPrintingBigDiscount}
             style={styles.button}
           >
-            {isPrintingBigDiscount ? t("print.sendingShort") : t("print.bigDiscount")}
+            Large
           </Button>
         </View>
       </Card.Content>
@@ -77,12 +71,7 @@ const styles = StyleSheet.create({
     backgroundColor: "#FFFDF7",
   },
   content: {
-    gap: 8,
     paddingVertical: 8,
-  },
-  title: {
-    fontWeight: "700",
-    color: "#111827",
   },
   actions: {
     flexDirection: "row",
