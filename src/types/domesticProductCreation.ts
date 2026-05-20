@@ -47,7 +47,7 @@ export interface CreateBatchRequest {
   prefixCode?: string
   prefixName?: string
   items: Array<{
-    productName: string
+    productName?: string
     productType: ProductCreationType
     privateLabelPrice?: number
     setQuantity?: number
