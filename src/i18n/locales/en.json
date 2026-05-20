@@ -60,6 +60,7 @@
     "pricingStrategies": "Pricing Strategies",
     "promotions": "Promotions",
     "cashRegisterUsers": "Cashier Barcodes",
+    "scheduleAttendance": "Schedule Attendance",
     "deviceRegistration": "Device Registration",
     "salesOrders": "Sales Records",
     "localSupplierInvoices": "Local Invoices",
@@ -1566,6 +1567,140 @@
       "printCount": "Print Count",
       "confirmDeleteUser": "Are you sure to delete {{name}}?",
       "confirmBatchDelete": "Are you sure to delete {{count}} selected records?"
+    },
+    "scheduleAttendance": {
+      "title": "Schedule Attendance",
+      "tabs": {
+        "schedules": "Weekly Schedule",
+        "availability": "Employee Availability",
+        "punches": "Punch Records",
+        "approvals": "Review Center",
+        "holidays": "Public Holidays",
+        "settings": "Attendance Settings"
+      },
+      "filters": {
+        "store": "Filter Store",
+        "userGuid": "Employee GUID"
+      },
+      "actions": {
+        "createSchedule": "New Schedule",
+        "createHoliday": "New Holiday",
+        "addShift": "Add Shift",
+        "publishWeek": "Publish This Week",
+        "approve": "Approve",
+        "reject": "Reject"
+      },
+      "drawer": {
+        "createSchedule": "New Schedule",
+        "editSchedule": "Edit Schedule",
+        "createHoliday": "New Public Holiday",
+        "editHoliday": "Edit Public Holiday",
+        "approve": "Approve Review",
+        "reject": "Reject Review"
+      },
+      "fields": {
+        "store": "Store",
+        "employee": "Employee",
+        "employeeGuid": "Employee GUID",
+        "workDate": "Work Date",
+        "shift": "Shift",
+        "weekStartDate": "Week Start",
+        "availableDate": "Available Date",
+        "availableTime": "Available Time",
+        "punchType": "Punch Type",
+        "punchTimeLocal": "Local Punch Time",
+        "timeZone": "Time Zone",
+        "applicant": "Applicant",
+        "sourceType": "Source",
+        "reviewedAt": "Reviewed At",
+        "holidayDate": "Holiday Date",
+        "holidayName": "Holiday Name",
+        "businessStatus": "Business Status",
+        "businessTime": "Business Time",
+        "paidHoliday": "Paid Holiday",
+        "lateGraceMinutes": "Late Grace Minutes",
+        "earlyLeaveGraceMinutes": "Early Leave Grace Minutes",
+        "allowNoSchedulePunch": "Allow No-schedule Punch",
+        "requireApprovalForLate": "Require Approval for Late",
+        "requireApprovalForEarlyLeave": "Require Approval for Early Leave",
+        "requireApprovalForNoSchedule": "Require Approval for No-schedule Punch",
+        "updatedAt": "Last Updated",
+        "reviewRemark": "Review Remark"
+      },
+      "status": {
+        "schedule": {
+          "Draft": "Draft",
+          "Active": "Active",
+          "Cancelled": "Cancelled"
+        },
+        "punch": {
+          "Normal": "Normal",
+          "Late": "Late",
+          "EarlyLeave": "Early Leave",
+          "NoSchedule": "No Schedule",
+          "Duplicate": "Duplicate",
+          "PendingApproval": "Pending Approval",
+          "Approved": "Approved",
+          "Rejected": "Rejected"
+        },
+        "punchType": {
+          "ClockIn": "Clock In",
+          "ClockOut": "Clock Out"
+        },
+        "review": {
+          "Pending": "Pending",
+          "Approved": "Approved",
+          "Rejected": "Rejected",
+          "Cancelled": "Cancelled"
+        },
+        "sourceType": {
+          "Punch": "Punch Exception",
+          "Leave": "Leave Request"
+        },
+        "holiday": {
+          "Open": "Open",
+          "Closed": "Closed",
+          "Partial": "Partial"
+        }
+      },
+      "validation": {
+        "userGuidRequired": "Please enter employee GUID",
+        "holidayNameRequired": "Please enter holiday name"
+      },
+      "weekdays": {
+        "0": "Mon",
+        "1": "Tue",
+        "2": "Wed",
+        "3": "Thu",
+        "4": "Fri",
+        "5": "Sat",
+        "6": "Sun"
+      },
+      "confirm": {
+        "deleteSchedule": "Delete this schedule?",
+        "deleteHoliday": "Delete this public holiday?"
+      },
+      "emptyShift": "No shift",
+      "emptyEmployees": "No employees in this store",
+      "selectStoreToSchedule": "Select a store to schedule",
+      "messages": {
+        "loadStoresFailed": "Failed to load stores",
+        "loadStoreUsersFailed": "Failed to load store employees",
+        "loadSchedulesFailed": "Failed to load schedules",
+        "loadAvailabilityFailed": "Failed to load employee availability",
+        "loadPunchesFailed": "Failed to load punch records",
+        "loadApprovalsFailed": "Failed to load review records",
+        "loadHolidaysFailed": "Failed to load public holidays",
+        "loadSettingsFailed": "Failed to load attendance settings",
+        "saveScheduleFailed": "Failed to save schedule",
+        "saveHolidayFailed": "Failed to save public holiday",
+        "saveSettingsFailed": "Failed to save attendance settings",
+        "selectStoreBeforePublish": "Please select a store first",
+        "publishWeekSuccess": "This week's schedule has been published",
+        "publishWeekFailed": "Failed to publish this week's schedule",
+        "reviewSuccess": "Review submitted",
+        "reviewFailed": "Failed to submit review"
+      }
     },
     "devices": {
       "title": "Device Registration",

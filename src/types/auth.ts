@@ -87,6 +87,13 @@ export interface AccessControl {
   canManageDomesticSuppliers: boolean
   canManageDomesticProducts: boolean
   canManageDomesticPrefixCodes: boolean
+  canViewAttendanceSchedule: boolean
+  canEditAttendanceSchedule: boolean
+  canViewAttendanceAvailability: boolean
+  canViewAttendancePunches: boolean
+  canReviewAttendance: boolean
+  canEditAttendanceHoliday: boolean
+  canEditAttendanceSettings: boolean
   canAccessDashboard: boolean
   hasPermission: (permission: string) => boolean
   hasRole: (role: string) => boolean

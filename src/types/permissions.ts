@@ -72,6 +72,24 @@ export const P = {
   Dashboard: {
     View: 'Dashboard',
   },
+  Attendance: {
+    ScheduleViewSelf: 'Attendance.Schedule.ViewSelf',
+    ScheduleViewStore: 'Attendance.Schedule.ViewStore',
+    ScheduleEditManagedStore: 'Attendance.Schedule.EditManagedStore',
+    AvailabilitySubmitSelf: 'Attendance.Availability.SubmitSelf',
+    AvailabilityViewManagedStore: 'Attendance.Availability.ViewManagedStore',
+    PunchSelf: 'Attendance.Punch.Self',
+    PunchViewManagedStore: 'Attendance.Punch.ViewManagedStore',
+    ApprovalViewManagedStore: 'Attendance.Approval.ViewManagedStore',
+    ApprovalReviewManagedStore: 'Attendance.Approval.ReviewManagedStore',
+    HolidayViewStore: 'Attendance.Holiday.ViewStore',
+    HolidayEditManagedStore: 'Attendance.Holiday.EditManagedStore',
+    LeaveApplySelf: 'Attendance.Leave.ApplySelf',
+    LeaveViewManagedStore: 'Attendance.Leave.ViewManagedStore',
+    LeaveReviewManagedStore: 'Attendance.Leave.ReviewManagedStore',
+    SettingsEdit: 'Attendance.Settings.Edit',
+    AdminView: 'Attendance.Admin.View',
+  },
 } as const
 
 /**

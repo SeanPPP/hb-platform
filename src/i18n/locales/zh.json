@@ -60,6 +60,7 @@
     "pricingStrategies": "自动价格策略",
     "promotions": "促销管理",
     "cashRegisterUsers": "收银用户条码",
+    "scheduleAttendance": "排班考勤",
     "deviceRegistration": "设备注册",
     "salesOrders": "收银记录",
     "localSupplierInvoices": "分店进货单",
@@ -1566,6 +1567,140 @@
       "printCount": "打印次数",
       "confirmDeleteUser": "确定要删除 {{name}} 吗？",
       "confirmBatchDelete": "确定要删除选中的 {{count}} 条记录吗？"
+    },
+    "scheduleAttendance": {
+      "title": "排班考勤",
+      "tabs": {
+        "schedules": "周排班",
+        "availability": "员工可用时间",
+        "punches": "打卡记录",
+        "approvals": "审核中心",
+        "holidays": "公共假期",
+        "settings": "考勤设置"
+      },
+      "filters": {
+        "store": "筛选分店",
+        "userGuid": "员工 GUID"
+      },
+      "actions": {
+        "createSchedule": "新建排班",
+        "createHoliday": "新建假期",
+        "addShift": "添加班次",
+        "publishWeek": "发布本周",
+        "approve": "通过",
+        "reject": "拒绝"
+      },
+      "drawer": {
+        "createSchedule": "新建排班",
+        "editSchedule": "编辑排班",
+        "createHoliday": "新建公共假期",
+        "editHoliday": "编辑公共假期",
+        "approve": "通过审核",
+        "reject": "拒绝审核"
+      },
+      "fields": {
+        "store": "分店",
+        "employee": "员工",
+        "employeeGuid": "员工 GUID",
+        "workDate": "工作日期",
+        "shift": "班次",
+        "weekStartDate": "周开始日期",
+        "availableDate": "可上班日期",
+        "availableTime": "可上班时间",
+        "punchType": "打卡类型",
+        "punchTimeLocal": "本地打卡时间",
+        "timeZone": "时区",
+        "applicant": "申请人",
+        "sourceType": "来源",
+        "reviewedAt": "审核时间",
+        "holidayDate": "假期日期",
+        "holidayName": "假期名称",
+        "businessStatus": "营业状态",
+        "businessTime": "营业时间",
+        "paidHoliday": "带薪假期",
+        "lateGraceMinutes": "迟到缓冲分钟",
+        "earlyLeaveGraceMinutes": "早退缓冲分钟",
+        "allowNoSchedulePunch": "允许未排班打卡",
+        "requireApprovalForLate": "迟到需要审核",
+        "requireApprovalForEarlyLeave": "早退需要审核",
+        "requireApprovalForNoSchedule": "未排班打卡需要审核",
+        "updatedAt": "最后更新",
+        "reviewRemark": "审核备注"
+      },
+      "status": {
+        "schedule": {
+          "Draft": "草稿",
+          "Active": "有效",
+          "Cancelled": "已取消"
+        },
+        "punch": {
+          "Normal": "正常",
+          "Late": "迟到",
+          "EarlyLeave": "早退",
+          "NoSchedule": "未排班",
+          "Duplicate": "重复打卡",
+          "PendingApproval": "待审核",
+          "Approved": "已通过",
+          "Rejected": "已拒绝"
+        },
+        "punchType": {
+          "ClockIn": "上班打卡",
+          "ClockOut": "下班打卡"
+        },
+        "review": {
+          "Pending": "待审核",
+          "Approved": "已通过",
+          "Rejected": "已拒绝",
+          "Cancelled": "已取消"
+        },
+        "sourceType": {
+          "Punch": "打卡异常",
+          "Leave": "请假申请"
+        },
+        "holiday": {
+          "Open": "营业",
+          "Closed": "休息",
+          "Partial": "部分营业"
+        }
+      },
+      "validation": {
+        "userGuidRequired": "请输入员工 GUID",
+        "holidayNameRequired": "请输入假期名称"
+      },
+      "weekdays": {
+        "0": "周一",
+        "1": "周二",
+        "2": "周三",
+        "3": "周四",
+        "4": "周五",
+        "5": "周六",
+        "6": "周日"
+      },
+      "confirm": {
+        "deleteSchedule": "确认删除该排班吗？",
+        "deleteHoliday": "确认删除该公共假期吗？"
+      },
+      "emptyShift": "无班次",
+      "emptyEmployees": "该分店暂无员工",
+      "selectStoreToSchedule": "请选择分店后排班",
+      "messages": {
+        "loadStoresFailed": "加载分店失败",
+        "loadStoreUsersFailed": "加载分店员工失败",
+        "loadSchedulesFailed": "加载排班失败",
+        "loadAvailabilityFailed": "加载员工可用时间失败",
+        "loadPunchesFailed": "加载打卡记录失败",
+        "loadApprovalsFailed": "加载审核记录失败",
+        "loadHolidaysFailed": "加载公共假期失败",
+        "loadSettingsFailed": "加载考勤设置失败",
+        "saveScheduleFailed": "保存排班失败",
+        "saveHolidayFailed": "保存公共假期失败",
+        "saveSettingsFailed": "保存考勤设置失败",
+        "selectStoreBeforePublish": "请先选择分店",
+        "publishWeekSuccess": "本周排班已发布",
+        "publishWeekFailed": "发布本周排班失败",
+        "reviewSuccess": "审核已提交",
+        "reviewFailed": "提交审核失败"
+      }
     },
     "devices": {
       "title": "设备注册管理",

@@ -3,6 +3,7 @@ import {
   BankOutlined,
   BarChartOutlined,
   BuildOutlined,
+  CalendarOutlined,
   DashboardOutlined,
   DatabaseOutlined,
   DollarOutlined,
@@ -11,10 +12,12 @@ import {
   FileTextOutlined,
   GiftOutlined,
   InboxOutlined,
+  IdcardOutlined,
   KeyOutlined,
   MoneyCollectOutlined,
   NumberOutlined,
   ReconciliationOutlined,
+  ScheduleOutlined,
   SettingOutlined,
   ShopOutlined,
   ShoppingCartOutlined,
@@ -42,6 +45,7 @@ import PosmSalesOrdersPage from '../pages/PosmSalesOrders'
 import PosAdminCashRegisterUsersPage from '../pages/PosAdmin/CashRegisterUsers'
 import PosAdminPricingStrategiesPage from '../pages/PosAdmin/PricingStrategies'
 import PosAdminPromotionsPage from '../pages/PosAdmin/Promotions'
+import PosAdminScheduleAttendancePage from '../pages/PosAdmin/ScheduleAttendance'
 import PosAdminDeviceRegistrationPage from '../pages/PosAdmin/DeviceRegistration'
 import PosAdminSupplierManagementPage from '../pages/PosAdmin/SupplierManagement'
 import PosAdminProductManagementPage from '../pages/PosAdmin/ProductManagement'
@@ -83,6 +87,7 @@ const iconMap = {
   BankOutlined: <BankOutlined />,
   BarChartOutlined: <BarChartOutlined />,
   BuildOutlined: <BuildOutlined />,
+  CalendarOutlined: <CalendarOutlined />,
   DatabaseOutlined: <DatabaseOutlined />,
   DollarOutlined: <DollarOutlined />,
   EnvironmentOutlined: <EnvironmentOutlined />,
@@ -90,10 +95,12 @@ const iconMap = {
   FileTextOutlined: <FileTextOutlined />,
   GiftOutlined: <GiftOutlined />,
   InboxOutlined: <InboxOutlined />,
+  IdcardOutlined: <IdcardOutlined />,
   UserOutlined: <UserOutlined />,
   TeamOutlined: <TeamOutlined />,
   NumberOutlined: <NumberOutlined />,
   ReconciliationOutlined: <ReconciliationOutlined />,
+  ScheduleOutlined: <ScheduleOutlined />,
   SettingOutlined: <SettingOutlined />,
   ShopOutlined: <ShopOutlined />,
   ShoppingCartOutlined: <ShoppingCartOutlined />,
@@ -138,7 +145,7 @@ export const appRoutes: AppRouteItem[] = [
         path: '/system/employee-profiles',
         meta: {
           title: 'menu.systemEmployeeProfiles',
-          icon: 'WalletOutlined',
+          icon: 'IdcardOutlined',
           keepAlive: true,
           accessKey: 'isAdmin',
         },
@@ -448,6 +455,16 @@ export const appRoutes: AppRouteItem[] = [
           accessKey: 'canManagePromotions',
         },
         element: <PosAdminPromotionsPage />,
+      },
+      {
+        path: '/pos-admin/schedule-attendance',
+        meta: {
+          title: 'menu.scheduleAttendance',
+          icon: 'CalendarOutlined',
+          keepAlive: true,
+          accessKey: 'canViewAttendanceSchedule',
+        },
+        element: <PosAdminScheduleAttendancePage />,
       },
       {
         path: '/pos-admin/cash-register-users',

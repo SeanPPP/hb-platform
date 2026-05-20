@@ -1,5 +1,5 @@
 import type { AccessControl, CurrentUser } from '../types/auth'
-import { WAREHOUSE_MANAGER_PERMISSION_CODES } from '../types/permissions'
+import { P, WAREHOUSE_MANAGER_PERMISSION_CODES } from '../types/permissions'
 
 const warehouseManagerPermissionSet = new Set<string>(WAREHOUSE_MANAGER_PERMISSION_CODES)
 
@@ -61,6 +61,13 @@ function createEmptyAccess(): AccessControl {
     canManageDomesticSuppliers: false,
     canManageDomesticProducts: false,
     canManageDomesticPrefixCodes: false,
+    canViewAttendanceSchedule: false,
+    canEditAttendanceSchedule: false,
+    canViewAttendanceAvailability: false,
+    canViewAttendancePunches: false,
+    canReviewAttendance: false,
+    canEditAttendanceHoliday: false,
+    canEditAttendanceSettings: false,
     canAccessDashboard: false,
     hasPermission: alwaysFalse,
     hasRole: alwaysFalse,
@@ -186,6 +193,34 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
   const canManageDomesticProducts = isAdmin || hasPermission('DomesticPurchase.ManageProducts')
   const canManageDomesticPrefixCodes = isAdmin || hasPermission('DomesticPurchase.ManagePrefixCodes')
 
+  // 排班考勤
+  const canViewAttendanceSchedule =
+    isAdmin ||
+    hasPermission(P.Attendance.AdminView) ||
+    hasPermission(P.Attendance.ScheduleViewStore)
+  const canEditAttendanceSchedule =
+    isAdmin ||
+    hasPermission(P.Attendance.AdminView) ||
+    hasPermission(P.Attendance.ScheduleEditManagedStore)
+  const canViewAttendanceAvailability =
+    isAdmin ||
+    hasPermission(P.Attendance.AdminView) ||
+    hasPermission(P.Attendance.AvailabilityViewManagedStore)
+  const canViewAttendancePunches =
+    isAdmin ||
+    hasPermission(P.Attendance.AdminView) ||
+    hasPermission(P.Attendance.PunchViewManagedStore)
+  const canReviewAttendance =
+    isAdmin ||
+    hasPermission(P.Attendance.AdminView) ||
+    hasPermission(P.Attendance.ApprovalReviewManagedStore) ||
+    hasPermission(P.Attendance.LeaveReviewManagedStore)
+  const canEditAttendanceHoliday =
+    isAdmin ||
+    hasPermission(P.Attendance.AdminView) ||
+    hasPermission(P.Attendance.HolidayEditManagedStore)
+  const canEditAttendanceSettings = isAdmin || hasPermission(P.Attendance.SettingsEdit)
+
   const canAccessDashboard = isAdmin || hasPermission('Dashboard')
 
   return {
@@ -243,6 +278,13 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
     canManageDomesticSuppliers,
     canManageDomesticProducts,
     canManageDomesticPrefixCodes,
+    canViewAttendanceSchedule,
+    canEditAttendanceSchedule,
+    canViewAttendanceAvailability,
+    canViewAttendancePunches,
+    canReviewAttendance,
+    canEditAttendanceHoliday,
+    canEditAttendanceSettings,
     canAccessDashboard,
     hasPermission,
     hasRole,
