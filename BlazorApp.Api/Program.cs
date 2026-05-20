@@ -512,7 +512,7 @@ try
         // 🔄 智能模式：增量更新数据库结构
         // 只创建不存在的表，更新表结构，保留现有数据
         Console.WriteLine("🧠 使用智能初始化模式（保留现有数据）");
-        //dbContext.CreateTable();
+        dbContext.CreateTable();
         //await posmDbContext.InitializeTablesAsync();
         Console.WriteLine("✅ 主数据库表检查完成");
 
@@ -569,27 +569,38 @@ catch (Exception ex)
 }
 
 // ===================== 缓存预热 =====================
-_ = Task.Run(async () =>
+var enableStoreOrderWarmUp = builder.Configuration.GetValue<bool>(
+    "Cache:EnableStoreOrderWarmUp",
+    false
+);
+if (enableStoreOrderWarmUp)
 {
-    try
+    _ = Task.Run(async () =>
     {
-        await Task.Delay(TimeSpan.FromSeconds(3));
-        using (var scope = app.Services.CreateScope())
+        try
         {
-            var cacheWarmer =
-                scope.ServiceProvider.GetRequiredService<BlazorApp.Api.Interfaces.IStoreOrderCacheWarmer>();
-            var logger = scope.ServiceProvider.GetRequiredService<ILogger<Program>>();
-            logger.LogInformation("开始预热首页商品列表缓存");
-            await cacheWarmer.WarmUpHomePageAsync();
-            logger.LogInformation("首页商品列表缓存预热完成");
+            var cacheWarmUpDelaySeconds = builder.Configuration.GetValue<int>(
+                "Cache:StoreOrderWarmUpDelaySeconds",
+                30
+            );
+            await Task.Delay(TimeSpan.FromSeconds(cacheWarmUpDelaySeconds));
+            using (var scope = app.Services.CreateScope())
+            {
+                var cacheWarmer =
+                    scope.ServiceProvider.GetRequiredService<BlazorApp.Api.Interfaces.IStoreOrderCacheWarmer>();
+                var logger = scope.ServiceProvider.GetRequiredService<ILogger<Program>>();
+                logger.LogInformation("开始预热首页商品列表缓存");
+                await cacheWarmer.WarmUpHomePageAsync();
+                logger.LogInformation("首页商品列表缓存预热完成");
+            }
         }
-    }
-    catch (Exception ex)
-    {
-        var logger = app.Services.GetRequiredService<ILogger<Program>>();
-        logger.LogError(ex, "预热首页商品列表缓存失败，但不影响应用启动");
-    }
-});
+        catch (Exception ex)
+        {
+            var logger = app.Services.GetRequiredService<ILogger<Program>>();
+            logger.LogError(ex, "预热首页商品列表缓存失败，但不影响应用启动");
+        }
+    });
+}
 
 /*
 

@@ -35,6 +35,18 @@ namespace BlazorApp.Shared.DTOs
         public StoreProductClearancePriceDto? ClearancePrice { get; set; }
         public List<StoreProductSetCodeDto> SetCodes { get; set; } = new();
         public List<StoreProductMultiCodeDto> MultiCodes { get; set; } = new();
+        public int SetCodeCount { get; set; }
+        public int MultiCodeCount { get; set; }
+        public bool CodesIncluded { get; set; } = true;
+    }
+
+    public class StoreProductCodePageDto<T>
+    {
+        public List<T> Items { get; set; } = new();
+        public int TotalCount { get; set; }
+        public int Page { get; set; }
+        public int PageSize { get; set; }
+        public bool HasMore { get; set; }
     }
 
     public class StoreProductStorePriceDto

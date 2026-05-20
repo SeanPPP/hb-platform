@@ -12,6 +12,31 @@ namespace BlazorApp.Api.Interfaces.React
         Task<ApiResponse<StoreProductDetailDto>> GetDetailAsync(
             string productCode,
             string? storeCode,
+            List<string>? accessibleStoreCodes,
+            bool includeCodes = true
+        );
+
+        Task<ApiResponse<StoreProductDetailDto>> GetFastDetailAsync(
+            string productCode,
+            string? storeCode,
+            List<string>? accessibleStoreCodes
+        );
+
+        Task<ApiResponse<StoreProductCodePageDto<StoreProductSetCodeDto>>> GetSetCodesAsync(
+            string productCode,
+            string? storeCode,
+            int page,
+            int pageSize,
+            string? keyword,
+            List<string>? accessibleStoreCodes
+        );
+
+        Task<ApiResponse<StoreProductCodePageDto<StoreProductMultiCodeDto>>> GetMultiCodesAsync(
+            string productCode,
+            string? storeCode,
+            int page,
+            int pageSize,
+            string? keyword,
             List<string>? accessibleStoreCodes
         );
 

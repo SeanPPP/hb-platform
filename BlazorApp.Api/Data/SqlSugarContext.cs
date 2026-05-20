@@ -12,6 +12,7 @@ namespace BlazorApp.Api.Data
     {
         private readonly ISqlSugarClient _db;
         private readonly ILogger<SqlSugarContext> _logger;
+        private readonly bool _syncExistingTableStructureOnStartup;
 
         public SqlSugarContext(
             IConfiguration configuration,
@@ -20,6 +21,10 @@ namespace BlazorApp.Api.Data
         )
         {
             _logger = logger;
+            _syncExistingTableStructureOnStartup = configuration.GetValue<bool>(
+                "Database:SyncExistingTableStructureOnStartup",
+                false
+            );
 
             var connectionString =
                 configuration.GetConnectionString("DefaultConnection")
@@ -328,7 +333,7 @@ namespace BlazorApp.Api.Data
 
                 // 智能初始化：只在需要时创建或更新表
                  InitializeTablesIfNeeded();
-                // CreateNormalIndexes();
+                 CreateNormalIndexes();
 
                 Console.WriteLine("数据库表检查完成！");
             }
@@ -417,25 +422,34 @@ namespace BlazorApp.Api.Data
                 typeof(ProductGrade),
             };
 
+            var existingTables = GetExistingTableNames();
+
             // 检查并创建不存在的表
             foreach (var tableType in tableTypes)
             {
                 var tableName = _db.EntityMaintenance.GetTableName(tableType);
 
-                if (!_db.DbMaintenance.IsAnyTable(tableName))
+                if (!existingTables.Contains(tableName))
                 {
                     Console.WriteLine($"表 {tableName} 不存在，正在创建...");
                     _db.CodeFirst.InitTables(tableType);
                     Console.WriteLine($"✓ {tableName} 表创建成功");
+                    existingTables.Add(tableName);
                 }
                 else
                 {
                     Console.WriteLine($"✓ {tableName} 表已存在");
 
-                    // 检查是否需要更新表结构
+                    if (!_syncExistingTableStructureOnStartup)
+                    {
+                        continue;
+                    }
+
                     try
                     {
-                        // 使用CodeFirst的非删除模式更新表结构
+                        CleanupLegacyIndexesBeforeSmartInit(tableName);
+
+                        // 仅在显式开启时，对已有表执行结构同步。
                         _db.CodeFirst.InitTables(tableType);
                         Console.WriteLine($"✓ {tableName} 表结构检查完成");
                     }
@@ -444,6 +458,63 @@ namespace BlazorApp.Api.Data
                         Console.WriteLine($"⚠️ {tableName} 表结构更新时出现警告: {ex.Message}");
                     }
                 }
+            }
+        }
+
+        private HashSet<string> GetExistingTableNames()
+        {
+            try
+            {
+                if (_db.CurrentConnectionConfig.DbType == DbType.SqlServer)
+                {
+                    var tableNames = _db.Ado.SqlQuery<string>(
+                        "SELECT name FROM sys.tables WHERE type = 'U'"
+                    );
+                    return new HashSet<string>(tableNames, StringComparer.OrdinalIgnoreCase);
+                }
+
+                if (_db.CurrentConnectionConfig.DbType == DbType.PostgreSQL)
+                {
+                    var tableNames = _db.Ado.SqlQuery<string>(
+                        "SELECT tablename FROM pg_tables WHERE schemaname = 'public'"
+                    );
+                    return new HashSet<string>(tableNames, StringComparer.OrdinalIgnoreCase);
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"⚠️ 批量读取现有表名失败，将回退逐表检查: {ex.Message}");
+            }
+
+            return new HashSet<string>(
+                _db.DbMaintenance.GetTableInfoList(false).Select(x => x.Name),
+                StringComparer.OrdinalIgnoreCase
+            );
+        }
+
+        private void CleanupLegacyIndexesBeforeSmartInit(string tableName)
+        {
+            if (_db.CurrentConnectionConfig.DbType != DbType.SqlServer)
+            {
+                return;
+            }
+
+            if (!string.Equals(tableName, "Cart", StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            const string dropCartCreatedAtIndexSql =
+                "IF EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_Cart_CreatedAt' AND object_id = OBJECT_ID('Cart')) "
+                + "DROP INDEX IX_Cart_CreatedAt ON [Cart]";
+
+            try
+            {
+                _db.Ado.ExecuteCommand(dropCartCreatedAtIndexSql);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"⚠️ 清理 Cart 旧索引时出现警告: {ex.Message}");
             }
         }
 
@@ -912,6 +983,26 @@ namespace BlazorApp.Api.Data
                     "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_LocalSupplier_Status' AND object_id = OBJECT_ID('LocalSupplier')) CREATE INDEX IX_LocalSupplier_Status ON [LocalSupplier](Status)",
                 ["IX_LocalSupplier_Name"] =
                     "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_LocalSupplier_Name' AND object_id = OBJECT_ID('LocalSupplier')) CREATE INDEX IX_LocalSupplier_Name ON [LocalSupplier](Name)",
+                ["IX_Product_ItemNumber"] =
+                    "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_Product_ItemNumber' AND object_id = OBJECT_ID('Product')) CREATE INDEX IX_Product_ItemNumber ON [Product]([ItemNumber]) WHERE [ItemNumber] IS NOT NULL",
+                ["IX_Product_Barcode"] =
+                    "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_Product_Barcode' AND object_id = OBJECT_ID('Product')) CREATE INDEX IX_Product_Barcode ON [Product]([Barcode]) WHERE [Barcode] IS NOT NULL",
+                ["IX_Product_ItemNumber_Lookup"] =
+                    "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_Product_ItemNumber_Lookup' AND object_id = OBJECT_ID('Product')) CREATE INDEX IX_Product_ItemNumber_Lookup ON [Product]([ItemNumber]) INCLUDE([ProductCode], [Barcode]) WHERE [ItemNumber] IS NOT NULL AND [IsDeleted] = 0",
+                ["IX_Product_Barcode_Lookup"] =
+                    "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_Product_Barcode_Lookup' AND object_id = OBJECT_ID('Product')) CREATE INDEX IX_Product_Barcode_Lookup ON [Product]([Barcode]) INCLUDE([ProductCode], [ItemNumber]) WHERE [Barcode] IS NOT NULL AND [IsDeleted] = 0",
+                ["IX_ProductSetCode_ProductCode_SetBarcode_Active"] =
+                    "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_ProductSetCode_ProductCode_SetBarcode_Active' AND object_id = OBJECT_ID('ProductSetCode')) CREATE INDEX IX_ProductSetCode_ProductCode_SetBarcode_Active ON [ProductSetCode]([ProductCode], [SetBarcode]) WHERE [SetBarcode] IS NOT NULL AND [IsDeleted] = 0",
+                ["IX_ProductSetCode_SetBarcode_Lookup"] =
+                    "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_ProductSetCode_SetBarcode_Lookup' AND object_id = OBJECT_ID('ProductSetCode')) CREATE INDEX IX_ProductSetCode_SetBarcode_Lookup ON [ProductSetCode]([SetBarcode]) INCLUDE([ProductCode], [SetItemNumber]) WHERE [SetBarcode] IS NOT NULL AND [IsDeleted] = 0",
+                ["IX_ProductSetCode_ProductCode_Detail"] =
+                    "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_ProductSetCode_ProductCode_Detail' AND object_id = OBJECT_ID('ProductSetCode')) CREATE INDEX IX_ProductSetCode_ProductCode_Detail ON [ProductSetCode]([ProductCode], [SetBarcode]) INCLUDE([SetCodeId], [SetProductCode], [SetItemNumber], [SetPurchasePrice], [SetRetailPrice], [SetQuantity], [SetType], [IsActive]) WHERE [IsDeleted] = 0",
+                ["IX_ProductSetCode_ProductCode_SetType_Active"] =
+                    "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_ProductSetCode_ProductCode_SetType_Active' AND object_id = OBJECT_ID('ProductSetCode')) CREATE INDEX IX_ProductSetCode_ProductCode_SetType_Active ON [ProductSetCode]([ProductCode], [SetType]) WHERE [IsDeleted] = 0",
+                ["IX_StoreMultiCodeProduct_StoreCode_MultiCodeProductCode"] =
+                    "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_StoreMultiCodeProduct_StoreCode_MultiCodeProductCode' AND object_id = OBJECT_ID('StoreMultiCodeProduct')) CREATE INDEX IX_StoreMultiCodeProduct_StoreCode_MultiCodeProductCode ON [StoreMultiCodeProduct]([StoreCode], [MultiCodeProductCode]) WHERE [StoreCode] IS NOT NULL AND [MultiCodeProductCode] IS NOT NULL AND [IsDeleted] = 0",
+                ["IX_StoreClearancePrice_ClearanceBarcode_Lookup"] =
+                    "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_StoreClearancePrice_ClearanceBarcode_Lookup' AND object_id = OBJECT_ID('StoreClearancePrice')) CREATE INDEX IX_StoreClearancePrice_ClearanceBarcode_Lookup ON [StoreClearancePrice]([ClearanceBarcode]) INCLUDE([ProductCode], [StoreCode]) WHERE [ClearanceBarcode] IS NOT NULL AND [IsDeleted] = 0",
             };
 
             foreach (var indexCheck in normalIndexChecks)
@@ -1047,7 +1138,6 @@ namespace BlazorApp.Api.Data
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_Cart_CartStatus' AND object_id = OBJECT_ID('Cart')) CREATE INDEX IX_Cart_CartStatus ON [Cart](CartStatus)",
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_Cart_LastModified' AND object_id = OBJECT_ID('Cart')) CREATE INDEX IX_Cart_LastModified ON [Cart](LastModified)",
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_Cart_ExpiresAt' AND object_id = OBJECT_ID('Cart')) CREATE INDEX IX_Cart_ExpiresAt ON [Cart](ExpiresAt)",
-                "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_Cart_CreatedAt' AND object_id = OBJECT_ID('Cart')) CREATE INDEX IX_Cart_CreatedAt ON [Cart](CreatedAt)",
                 // CartItem表的普通索引
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_CartItem_CartGUID' AND object_id = OBJECT_ID('CartItem')) CREATE INDEX IX_CartItem_CartGUID ON [CartItem](CartGUID)",
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_CartItem_ProductCode' AND object_id = OBJECT_ID('CartItem')) CREATE INDEX IX_CartItem_ProductCode ON [CartItem](ProductCode)",
@@ -1076,6 +1166,10 @@ namespace BlazorApp.Api.Data
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_StoreRetailPrice_IsActive' AND object_id = OBJECT_ID('StoreRetailPrice')) CREATE INDEX IX_StoreRetailPrice_IsActive ON [StoreRetailPrice](IsActive)",
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_StoreRetailPrice_IsAutoPricing' AND object_id = OBJECT_ID('StoreRetailPrice')) CREATE INDEX IX_StoreRetailPrice_IsAutoPricing ON [StoreRetailPrice](IsAutoPricing)",
                 // Product表的普通索引
+                "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_Product_ItemNumber' AND object_id = OBJECT_ID('Product')) CREATE INDEX IX_Product_ItemNumber ON [Product]([ItemNumber]) WHERE [ItemNumber] IS NOT NULL",
+                "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_Product_Barcode' AND object_id = OBJECT_ID('Product')) CREATE INDEX IX_Product_Barcode ON [Product]([Barcode]) WHERE [Barcode] IS NOT NULL",
+                "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_Product_ItemNumber_Lookup' AND object_id = OBJECT_ID('Product')) CREATE INDEX IX_Product_ItemNumber_Lookup ON [Product]([ItemNumber]) INCLUDE([ProductCode], [Barcode]) WHERE [ItemNumber] IS NOT NULL AND [IsDeleted] = 0",
+                "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_Product_Barcode_Lookup' AND object_id = OBJECT_ID('Product')) CREATE INDEX IX_Product_Barcode_Lookup ON [Product]([Barcode]) INCLUDE([ProductCode], [ItemNumber]) WHERE [Barcode] IS NOT NULL AND [IsDeleted] = 0",
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_Product_ProductName' AND object_id = OBJECT_ID('Product')) CREATE INDEX IX_Product_ProductName ON [Product](ProductName)",
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_Product_IsActive' AND object_id = OBJECT_ID('Product')) CREATE INDEX IX_Product_IsActive ON [Product](IsActive)",
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_Product_IsSpecialProduct' AND object_id = OBJECT_ID('Product')) CREATE INDEX IX_Product_IsSpecialProduct ON [Product](IsSpecialProduct)",
@@ -1085,16 +1179,24 @@ namespace BlazorApp.Api.Data
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_Product_LocalSupplierCode' AND object_id = OBJECT_ID('Product')) CREATE INDEX IX_Product_LocalSupplierCode ON [Product](LocalSupplierCode)",
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_Product_Search' AND object_id = OBJECT_ID('Product')) CREATE INDEX IX_Product_Search ON [Product](ProductName, ProductCode, ItemNumber, Barcode)",
                 // WarehouseProduct表的普通索引
-                "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_WarehouseProduct_Barcode' AND object_id = OBJECT_ID('WarehouseProduct')) CREATE INDEX IX_WarehouseProduct_Barcode ON [WarehouseProduct]([Barcode]) WHERE [Barcode] IS NOT NULL",
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_WarehouseProduct_ProductCode' AND object_id = OBJECT_ID('WarehouseProduct')) CREATE UNIQUE INDEX IX_WarehouseProduct_ProductCode ON [WarehouseProduct]([ProductCode])",
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_WarehouseProduct_IsActive' AND object_id = OBJECT_ID('WarehouseProduct')) CREATE INDEX IX_WarehouseProduct_IsActive ON [WarehouseProduct]([IsActive])",
-                "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_WarehouseProduct_Barcode_Search' AND object_id = OBJECT_ID('WarehouseProduct')) CREATE INDEX IX_WarehouseProduct_Barcode_Search ON [WarehouseProduct]([IsActive], [Barcode]) WHERE [Barcode] IS NOT NULL",
                 // ProductSetCode表的普通索引
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_ProductSetCode_SetBarcode' AND object_id = OBJECT_ID('ProductSetCode')) CREATE INDEX IX_ProductSetCode_SetBarcode ON [ProductSetCode]([SetBarcode]) WHERE [SetBarcode] IS NOT NULL",
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_ProductSetCode_ProductCode' AND object_id = OBJECT_ID('ProductSetCode')) CREATE INDEX IX_ProductSetCode_ProductCode ON [ProductSetCode]([ProductCode])",
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_ProductSetCode_Barcode_ProductCode' AND object_id = OBJECT_ID('ProductSetCode')) CREATE INDEX IX_ProductSetCode_Barcode_ProductCode ON [ProductSetCode]([SetBarcode], [ProductCode]) WHERE [SetBarcode] IS NOT NULL",
+                "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_ProductSetCode_ProductCode_SetBarcode_Active' AND object_id = OBJECT_ID('ProductSetCode')) CREATE INDEX IX_ProductSetCode_ProductCode_SetBarcode_Active ON [ProductSetCode]([ProductCode], [SetBarcode]) WHERE [SetBarcode] IS NOT NULL AND [IsDeleted] = 0",
+                "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_ProductSetCode_SetBarcode_Lookup' AND object_id = OBJECT_ID('ProductSetCode')) CREATE INDEX IX_ProductSetCode_SetBarcode_Lookup ON [ProductSetCode]([SetBarcode]) INCLUDE([ProductCode], [SetItemNumber]) WHERE [SetBarcode] IS NOT NULL AND [IsDeleted] = 0",
+                "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_ProductSetCode_ProductCode_Detail' AND object_id = OBJECT_ID('ProductSetCode')) CREATE INDEX IX_ProductSetCode_ProductCode_Detail ON [ProductSetCode]([ProductCode], [SetBarcode]) INCLUDE([SetCodeId], [SetProductCode], [SetItemNumber], [SetPurchasePrice], [SetRetailPrice], [SetQuantity], [SetType], [IsActive]) WHERE [IsDeleted] = 0",
+                "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_ProductSetCode_ProductCode_SetType_Active' AND object_id = OBJECT_ID('ProductSetCode')) CREATE INDEX IX_ProductSetCode_ProductCode_SetType_Active ON [ProductSetCode]([ProductCode], [SetType]) WHERE [IsDeleted] = 0",
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_ProductSetCode_SetItemNumber' AND object_id = OBJECT_ID('ProductSetCode')) CREATE INDEX IX_ProductSetCode_SetItemNumber ON [ProductSetCode]([SetItemNumber]) WHERE [SetItemNumber] IS NOT NULL",
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_ProductSetCode_IsActive' AND object_id = OBJECT_ID('ProductSetCode')) CREATE INDEX IX_ProductSetCode_IsActive ON [ProductSetCode]([IsActive])",
+                // StoreMultiCodeProduct表的普通索引
+                "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_StoreMultiCodeProduct_StoreCode_MultiCodeProductCode' AND object_id = OBJECT_ID('StoreMultiCodeProduct')) CREATE INDEX IX_StoreMultiCodeProduct_StoreCode_MultiCodeProductCode ON [StoreMultiCodeProduct]([StoreCode], [MultiCodeProductCode]) WHERE [StoreCode] IS NOT NULL AND [MultiCodeProductCode] IS NOT NULL AND [IsDeleted] = 0",
+                // StoreClearancePrice表的普通索引
+                "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_StoreClearancePrice_ClearanceBarcode' AND object_id = OBJECT_ID('StoreClearancePrice')) CREATE INDEX IX_StoreClearancePrice_ClearanceBarcode ON [StoreClearancePrice]([ClearanceBarcode]) WHERE [ClearanceBarcode] IS NOT NULL",
+                "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_StoreClearancePrice_ClearanceBarcode_Lookup' AND object_id = OBJECT_ID('StoreClearancePrice')) CREATE INDEX IX_StoreClearancePrice_ClearanceBarcode_Lookup ON [StoreClearancePrice]([ClearanceBarcode]) INCLUDE([ProductCode], [StoreCode]) WHERE [ClearanceBarcode] IS NOT NULL AND [IsDeleted] = 0",
+                "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_StoreClearancePrice_ProductCode_StoreCode' AND object_id = OBJECT_ID('StoreClearancePrice')) CREATE INDEX IX_StoreClearancePrice_ProductCode_StoreCode ON [StoreClearancePrice]([ProductCode], [StoreCode])",
                 // ScheduledTaskLog表的普通索引
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_ScheduledTaskLog_TaskType' AND object_id = OBJECT_ID('ScheduledTaskLog')) CREATE INDEX IX_ScheduledTaskLog_TaskType ON [ScheduledTaskLog](TaskType)",
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_ScheduledTaskLog_Status' AND object_id = OBJECT_ID('ScheduledTaskLog')) CREATE INDEX IX_ScheduledTaskLog_Status ON [ScheduledTaskLog](Status)",
