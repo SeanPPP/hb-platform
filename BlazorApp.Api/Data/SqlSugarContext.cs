@@ -420,6 +420,7 @@ namespace BlazorApp.Api.Data
                 typeof(HolidayProduct),
                 typeof(ProductCategory),
                 typeof(ProductGrade),
+                typeof(EmployeeProfile),
             };
 
             var existingTables = GetExistingTableNames();
