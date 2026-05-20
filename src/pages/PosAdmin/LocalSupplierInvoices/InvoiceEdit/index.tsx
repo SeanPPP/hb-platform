@@ -65,6 +65,7 @@ import type {
   UpdateToStorePricesRequest,
 } from '../../../../types/localSupplierInvoice'
 import { copyTextToClipboard } from '../../../../utils/clipboard'
+import { discountRateToDecimal, formatDiscountRate } from '../../../../utils/discountRate'
 import { DetailAction as DetailActionEnum } from '../../../../types/localSupplierInvoice'
 
 
@@ -535,7 +536,7 @@ export default function InvoiceEditPage() {
       updateIsSpecialProduct: values.updateIsSpecialProduct ?? false,
       isSpecialProduct: values.updateIsSpecialProduct ? values.isSpecialProduct : undefined,
       updateDiscountRate: values.updateDiscountRate ?? false,
-      discountRate: values.updateDiscountRate ? values.discountRate : undefined,
+      discountRate: values.updateDiscountRate ? discountRateToDecimal(values.discountRate) : undefined,
       updateAction: false,
     }
 
@@ -942,8 +943,7 @@ export default function InvoiceEditPage() {
       dataIndex: 'discountRate',
       width: 80,
       align: 'right',
-      render: (v: number) =>
-        v !== undefined && v !== null ? `${(v * 100).toFixed(1)}%` : '--',
+      render: (v: number) => formatDiscountRate(v),
     },
     {
       title: t('posAdmin.invoiceDetail.amount', '金额'),
@@ -1377,9 +1377,10 @@ export default function InvoiceEditPage() {
                 <Form.Item name="discountRate" label={t('posAdmin.invoiceDetail.discountRate', '折扣率')} style={{ marginLeft: 24 }}>
                   <InputNumber
                     min={0}
-                    max={1}
-                    step={0.01}
-                    precision={2}
+                    max={100}
+                    step={1}
+                    precision={1}
+                    addonAfter="%"
                     style={{ width: '100%' }}
                   />
                 </Form.Item>

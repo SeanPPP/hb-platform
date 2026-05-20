@@ -1,4 +1,7 @@
 import type { AccessControl, CurrentUser } from '../types/auth'
+import { WAREHOUSE_MANAGER_PERMISSION_CODES } from '../types/permissions'
+
+const warehouseManagerPermissionSet = new Set<string>(WAREHOUSE_MANAGER_PERMISSION_CODES)
 
 function createEmptyAccess(): AccessControl {
   const alwaysFalse = () => false
@@ -77,9 +80,11 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
     currentUser.roleNames?.some((item) => item.toLowerCase() === role.toLowerCase()) ?? false
 
   const isAdmin = hasRole('Admin') || hasRole('管理员')
+  const isWarehouseManager = hasRole('WarehouseManager') || hasRole('仓库经理')
 
   const hasPermission = (permission: string) => {
     if (isAdmin) return true
+    if (isWarehouseManager && warehouseManagerPermissionSet.has(permission)) return true
     return currentUser.permissions?.some((item) => item.toLowerCase() === permission.toLowerCase()) ?? false
   }
 
@@ -94,7 +99,6 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
   const hasAllRoles = (roles: string[]) => roles.every((role) => hasRole(role))
 
   // --- Role identity flags (backward compat) ---
-  const isWarehouseManager = hasRole('WarehouseManager') || hasRole('仓库经理')
   const isStoreManager = hasRole('StoreManager') || hasRole('经理')
   const isManager = isStoreManager || isWarehouseManager
   const isUser = hasRole('User') || hasRole('用户')

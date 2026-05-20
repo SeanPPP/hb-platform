@@ -42,6 +42,7 @@ import type {
 } from '../../../types/storeProductPrice'
 import { CopyOutlined } from '@ant-design/icons'
 import { copyTextToClipboard } from '../../../utils/clipboard'
+import { discountRateToDecimal, formatDiscountRate } from '../../../utils/discountRate'
 import { useAuthStore } from '../../../store/auth'
 
 type DataType = StoreProductPriceListDto & { key: string }
@@ -231,7 +232,7 @@ export default function StoreProductPricePage() {
         dto.isSpecialProduct = !!values.isSpecialProduct
       }
       if (values.updateDiscountRate && values.discountRate != null) {
-        dto.discountRate = Number(values.discountRate)
+        dto.discountRate = discountRateToDecimal(Number(values.discountRate))
       }
       await batchUpdateStoreRetailPrices(dto)
       message.success(t('posAdmin.productPrice.batchUpdateSuccess', '批量更新成功'))
@@ -476,7 +477,7 @@ export default function StoreProductPricePage() {
       key: 'discountRate',
       width: 90,
       sorter: true,
-      render: (v: number) => (v != null ? (v * 100).toFixed(1) + '%' : '-'),
+      render: (v: number) => formatDiscountRate(v),
     },
     {
       title: t('posAdmin.productPrice.enabled', '启用'),
@@ -660,8 +661,8 @@ export default function StoreProductPricePage() {
           <Form.Item noStyle shouldUpdate={(prev, cur) => prev.updateDiscountRate !== cur.updateDiscountRate}>
             {({ getFieldValue }) =>
               getFieldValue('updateDiscountRate') ? (
-                <Form.Item name="discountRate" label={t('posAdmin.productPrice.discountRate', '折扣率')} rules={[{ required: true, type: 'number', min: 0, max: 1 }]}>
-                  <InputNumber min={0} max={1} step={0.01} precision={4} style={{ width: '100%' }} />
+                <Form.Item name="discountRate" label={t('posAdmin.productPrice.discountRate', '折扣率')} rules={[{ required: true, type: 'number', min: 0, max: 100 }]}>
+                  <InputNumber min={0} max={100} step={1} precision={1} addonAfter="%" style={{ width: '100%' }} />
                 </Form.Item>
               ) : null
             }

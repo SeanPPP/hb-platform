@@ -74,6 +74,43 @@ export const P = {
   },
 } as const
 
+/**
+ * Role-level permission grants for WarehouseManager.
+ * Keep this list in sync with backend BlazorApp.Shared.Constants.Permissions.
+ */
+export const WAREHOUSE_MANAGER_PERMISSION_CODES = [
+  P.Stores.View,
+  P.Stores.Create,
+  P.Stores.Edit,
+  P.Stores.Delete,
+  P.Stores.Sync,
+  P.Products.View,
+  P.Products.Create,
+  P.Products.Edit,
+  P.Products.Delete,
+  P.Orders.View,
+  P.Orders.Create,
+  P.Orders.Edit,
+  P.Orders.Delete,
+  'Container.View',
+  'Container.Create',
+  'Container.Edit',
+  'Container.Delete',
+  P.Warehouse.View,
+  P.Warehouse.Manage,
+  P.Warehouse.ManageProducts,
+  P.Warehouse.ManageCategories,
+  P.Warehouse.ManageLocations,
+  P.Warehouse.ManageOrders,
+  P.DomesticPurchase.View,
+  P.DomesticPurchase.ManageSuppliers,
+  P.DomesticPurchase.ManageProducts,
+  P.DomesticPurchase.ManagePrefixCodes,
+  P.Reports.View,
+  P.Reports.Export,
+  P.Dashboard.View,
+] as const
+
 /** All permission code values as a flat array */
 export const ALL_PERMISSIONS: string[] = Object.values(P).flatMap((group) =>
   Object.values(group),

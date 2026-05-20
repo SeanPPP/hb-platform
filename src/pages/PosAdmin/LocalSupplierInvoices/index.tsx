@@ -178,30 +178,36 @@ export default function LocalSupplierInvoicesPage() {
 
   useEffect(() => {
     const loadOptions = async () => {
-      try {
-        const [stores, suppliers] = await Promise.all([
-          getActiveStores(),
-          getActiveLocalSuppliers(),
-        ])
-        const filteredStores = managedStoreCodes?.length
-          ? stores.filter((store) => managedStoreCodes.includes(store.value))
-          : stores
+      const [storesResult, suppliersResult] = await Promise.allSettled([
+        getActiveStores(),
+        getActiveLocalSuppliers(),
+      ])
+
+      if (storesResult.status === 'fulfilled') {
+        const filteredStores = managedStoreCodes === null
+          ? storesResult.value
+          : storesResult.value.filter((store) => managedStoreCodes.includes(store.value))
         setStoreOptions(filteredStores)
         if (storeCode && !filteredStores.some((store) => store.value === storeCode)) {
           setStoreCode(undefined)
         }
+      } else {
+        setStoreOptions([])
+      }
+
+      if (suppliersResult.status === 'fulfilled') {
         setSupplierOptions(
-          suppliers.map((s) => ({
+          suppliersResult.value.map((s) => ({
             label: s.name || s.localSupplierCode,
             value: s.localSupplierCode,
           })),
         )
-      } catch {
-        /* ignore */
+      } else {
+        setSupplierOptions([])
       }
     }
     loadOptions()
-  }, [managedStoreCodeKey])
+  }, [managedStoreCodeKey, storeCode])
 
   const handleSearch = () => {
     setPage(1)

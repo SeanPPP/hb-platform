@@ -44,6 +44,7 @@ import {
   batchUpdateDetails,
   getContainerDetail,
   getContainerProducts,
+  translateHqProductNamesByContainerNumber,
   updateContainer,
 } from '../../../services/containerService'
 import { exportContainerDetailsToExcel, type ContainerDetailExportItem } from '../../../services/exportService'
@@ -58,7 +59,7 @@ import {
   detectProducts,
 } from '../../../services/warehouseProductService'
 import { useAuthStore } from '../../../store/auth'
-import type { ContainerDetail, ContainerMain, UpdateContainerDetailRequest } from '../../../types/container'
+import type { ContainerDetail, ContainerMain, HqTranslationResult, UpdateContainerDetailRequest } from '../../../types/container'
 
 type TagFilter = 'all' | 'new' | 'existing' | 'noOemPrice' | 'abnormalImport'
 
@@ -120,6 +121,7 @@ export default function ContainerDetailPage() {
   const [batchOemPrice, setBatchOemPrice] = useState<number | null>(null)
   const [exporting, setExporting] = useState(false)
   const [exportProgress, setExportProgress] = useState(0)
+  const [hqTranslating, setHqTranslating] = useState(false)
   const [headerEditing, setHeaderEditing] = useState(false)
   const [headerForm, setHeaderForm] = useState<{
     实际到货日期?: Dayjs | null
@@ -317,6 +319,70 @@ export default function ContainerDetailPage() {
       )
     }
     message.success(t('containers.messages.namesTranslated', { count: updates.length }))
+  }
+
+  const showHqTranslationResult = (result: HqTranslationResult) => {
+    const samples = Object.entries(result.Samples ?? {}).slice(0, 10)
+
+    Modal.info({
+      title: t('containers.modals.hqTranslationResultTitle'),
+      width: 640,
+      content: (
+        <Space direction="vertical" size={8} style={{ width: '100%' }}>
+          <Typography.Text>{t('containers.messages.hqTranslationResultSummary', {
+            candidates: result.TotalCandidates ?? 0,
+            translated: result.TotalTranslated ?? 0,
+            skipped: result.TotalSkipped ?? 0,
+            failed: result.TotalFailed ?? 0,
+          })}</Typography.Text>
+          {samples.length ? (
+            <>
+              <Typography.Text strong>{t('containers.text.hqTranslationSamples')}</Typography.Text>
+              <Space direction="vertical" size={4} style={{ width: '100%' }}>
+                {samples.map(([chinese, english]) => (
+                  <Typography.Text key={chinese}>
+                    {`${chinese} -> ${english}`}
+                  </Typography.Text>
+                ))}
+              </Space>
+            </>
+          ) : null}
+        </Space>
+      ),
+    })
+  }
+
+  const translateHqData = async () => {
+    const containerNumber = container?.货柜编号?.trim()
+    if (!containerNumber) {
+      message.warning(t('containers.messages.missingContainerNumberForHqTranslation'))
+      return
+    }
+
+    setHqTranslating(true)
+    message.loading({
+      content: t('containers.messages.hqTranslationInProgress'),
+      key: 'hq-translation',
+      duration: 0,
+    })
+
+    try {
+      const result = await translateHqProductNamesByContainerNumber(containerNumber)
+      message.success({
+        content: t('containers.messages.hqTranslationCompleted'),
+        key: 'hq-translation',
+      })
+      showHqTranslationResult(result)
+      await loadData()
+    } catch (error) {
+      console.error(error)
+      message.error({
+        content: error instanceof Error ? error.message : t('containers.messages.hqTranslationFailed'),
+        key: 'hq-translation',
+      })
+    } finally {
+      setHqTranslating(false)
+    }
   }
 
   const createNewProducts = async () => {
@@ -611,6 +677,11 @@ export default function ContainerDetailPage() {
                 </Space>
                 <Space wrap>
                   <Button icon={<DownloadOutlined />} loading={exporting} onClick={() => void exportExcel()}>{t('common.export')}</Button>
+                  {access.canEditContainer ? (
+                    <Button loading={hqTranslating} onClick={() => void translateHqData()}>
+                      {t('containers.actions.translateHqData')}
+                    </Button>
+                  ) : null}
                   {access.canEditContainer ? (
                     <Dropdown
                       menu={{

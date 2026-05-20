@@ -84,6 +84,7 @@
       "saveContainer": "保存货柜",
       "editContainer": "编辑货柜",
       "batchTranslate": "批量翻译",
+      "translateHqData": "翻译 HQ数据",
       "createNewProducts": "创建新商品",
       "updateExistingPurchase": "更新已有商品进货价",
       "batchActivate": "批量上架",
@@ -157,7 +158,8 @@
       "pushTitle": "发送到 HBSales",
       "pushContent": "确认将选中的 {{count}} 个货柜发送到 HBSales？",
       "deleteDetailsTitle": "删除货柜明细",
-      "deleteDetailsContent": "确认删除选中的 {{count}} 条明细？"
+      "deleteDetailsContent": "确认删除选中的 {{count}} 条明细？",
+      "hqTranslationResultTitle": "HQ 数据翻译结果"
     },
     "messages": {
       "loadListFailed": "加载货柜列表失败",
@@ -181,8 +183,13 @@
       "batchActiveFailed": "批量上下架失败",
       "productsActivated": "已上架 {{count}} 个商品",
       "productsDeactivated": "已下架 {{count}} 个商品",
+      "missingContainerNumberForHqTranslation": "当前货柜缺少货柜编号，无法翻译 HQ 数据",
       "noNamesToTranslate": "没有可翻译的商品名称",
       "namesTranslated": "已翻译 {{count}} 条商品名称",
+      "hqTranslationInProgress": "正在翻译 HQ 数据...",
+      "hqTranslationCompleted": "HQ 数据翻译完成",
+      "hqTranslationFailed": "翻译 HQ 数据失败",
+      "hqTranslationResultSummary": "候选 {{candidates}} 条，已翻译 {{translated}} 条，跳过 {{skipped}} 条，失败 {{failed}} 条",
       "noEligibleNewProducts": "没有符合条件的新商品",
       "newProductsCreated": "已创建 {{count}} 个新商品",
       "noExistingProductsToUpdate": "没有可更新的已存在商品",
@@ -212,7 +219,8 @@
     "text": {
       "showingRows": "显示 {{filtered}} / {{total}} 条",
       "selectedFirst": "选中优先",
-      "allDisplayed": "全部显示"
+      "allDisplayed": "全部显示",
+      "hqTranslationSamples": "翻译样例"
     },
     "empty": {
       "noImage": "无图"

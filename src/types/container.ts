@@ -121,6 +121,14 @@ export interface SyncResult {
   Details?: string
 }
 
+export interface HqTranslationResult {
+  TotalCandidates?: number
+  TotalTranslated?: number
+  TotalSkipped?: number
+  TotalFailed?: number
+  Samples?: Record<string, string>
+}
+
 export interface ComingSoonHomeProduct {
   id: number
   hguid: string

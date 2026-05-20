@@ -8,6 +8,7 @@ import type {
   ContainerListResponse,
   ContainerMain,
   ContainerQueryRequest,
+  HqTranslationResult,
   SyncResult,
   UpdateContainerDetailRequest,
   UpdateContainerRequest,
@@ -216,6 +217,18 @@ export async function syncContainersFromHq(startDate?: string): Promise<SyncResu
 
   ensureSuccess(response.success, response.message, '从HQ同步货柜失败')
   return response.data ?? { isSuccess: response.success, message: response.message }
+}
+
+export async function translateHqProductNamesByContainerNumber(containerNumber: string): Promise<HqTranslationResult> {
+  const response = await request<{ success?: boolean; message?: string; data?: HqTranslationResult }>(
+    `/api/react/v1/hq-products/translate-names/by-container-number/${encodeURIComponent(containerNumber)}`,
+    {
+      method: 'POST',
+    },
+  )
+
+  ensureSuccess(response.success, response.message, '翻译HQ数据失败')
+  return response.data ?? {}
 }
 
 export async function pushContainersToHbSales(containerGuids: string[]): Promise<SyncResult> {

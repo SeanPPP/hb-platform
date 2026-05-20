@@ -414,7 +414,7 @@ export default function BatchCreateModal({ visible, onClose, onSuccess }: BatchC
                   <Select value={batchEditNameMode} onChange={(v) => setBatchEditNameMode(v)} style={{ marginLeft: 8, width: 160 }} options={[{ label: t('productCreation.replace', '替换'), value: 'replace' }, { label: t('productCreation.addPrefix', '加前缀'), value: 'prefix' }, { label: t('productCreation.addSuffix', '加后缀'), value: 'suffix' }]} />
                 </div>
                 <div>
-                  t('productCreation.value', '值') + ':'
+                  {t('productCreation.value', '值')}:
                   <Input value={batchEditNameValue} onChange={(e) => setBatchEditNameValue(e.target.value)} style={{ marginLeft: 8, width: 280 }} placeholder={t('productCreation.enterName', '请输入名称')} />
                 </div>
                 <div style={{ color: '#999', fontSize: 12 }}>

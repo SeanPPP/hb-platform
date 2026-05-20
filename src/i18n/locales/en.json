@@ -84,6 +84,7 @@
       "saveContainer": "Save Container",
       "editContainer": "Edit Container",
       "batchTranslate": "Batch Translate",
+      "translateHqData": "Translate HQ Data",
       "createNewProducts": "Create New Products",
       "updateExistingPurchase": "Update Existing Purchase Prices",
       "batchActivate": "Batch Activate",
@@ -157,7 +158,8 @@
       "pushTitle": "Send to HBSales",
       "pushContent": "Send the selected {{count}} containers to HBSales?",
       "deleteDetailsTitle": "Delete Container Details",
-      "deleteDetailsContent": "Delete the selected {{count}} details?"
+      "deleteDetailsContent": "Delete the selected {{count}} details?",
+      "hqTranslationResultTitle": "HQ Translation Result"
     },
     "messages": {
       "loadListFailed": "Failed to load container list",
@@ -181,8 +183,13 @@
       "batchActiveFailed": "Batch status update failed",
       "productsActivated": "Activated {{count}} products",
       "productsDeactivated": "Deactivated {{count}} products",
+      "missingContainerNumberForHqTranslation": "The current container is missing a container number, so HQ data cannot be translated.",
       "noNamesToTranslate": "No product names to translate",
       "namesTranslated": "Translated {{count}} product names",
+      "hqTranslationInProgress": "Translating HQ data...",
+      "hqTranslationCompleted": "HQ data translation completed",
+      "hqTranslationFailed": "Failed to translate HQ data",
+      "hqTranslationResultSummary": "{{candidates}} candidates, {{translated}} translated, {{skipped}} skipped, {{failed}} failed",
       "noEligibleNewProducts": "No eligible new products",
       "newProductsCreated": "Created {{count}} new products",
       "noExistingProductsToUpdate": "No existing products to update",
@@ -212,7 +219,8 @@
     "text": {
       "showingRows": "Showing {{filtered}} / {{total}} rows",
       "selectedFirst": "Selected First",
-      "allDisplayed": "All Displayed"
+      "allDisplayed": "All Displayed",
+      "hqTranslationSamples": "Translation Samples"
     },
     "empty": {
       "noImage": "No Image"
