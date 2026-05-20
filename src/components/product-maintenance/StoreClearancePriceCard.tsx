@@ -1,4 +1,4 @@
-import { StyleSheet, View } from "react-native";
+import { Pressable, StyleSheet, View } from "react-native";
 import { Button, Card, Text, TextInput } from "react-native-paper";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 
@@ -8,9 +8,7 @@ interface StoreClearancePriceCardProps {
   clearanceBarcode?: string | null;
   clearancePrice: string;
   saving?: boolean;
-  printingBigLabel?: boolean;
-  onPrintBigLabel?: () => void;
-  onChangeClearancePrice: (value: string) => void;
+  onEditClearancePrice: () => void;
   onSave: () => void;
 }
 
@@ -20,9 +18,7 @@ export function StoreClearancePriceCard({
   clearanceBarcode,
   clearancePrice,
   saving,
-  printingBigLabel,
-  onPrintBigLabel,
-  onChangeClearancePrice,
+  onEditClearancePrice,
   onSave,
 }: StoreClearancePriceCardProps) {
   const { t } = useAppTranslation(["productQuery", "common"]);
@@ -63,26 +59,18 @@ export function StoreClearancePriceCard({
           </Text>
         </View>
 
-        <Button
-          compact
-          mode="outlined"
-          onPress={onPrintBigLabel}
-          loading={printingBigLabel}
-          disabled={!onPrintBigLabel || printingBigLabel}
-          style={styles.bigLabelButton}
-        >
-          {printingBigLabel ? t("print.sendingShort") : t("print.bigDiscount")}
-        </Button>
-
-        <TextInput
-          mode="outlined"
-          dense
-          label={t("clearancePrice.price")}
-          keyboardType="decimal-pad"
-          value={clearancePrice}
-          onChangeText={onChangeClearancePrice}
-          style={styles.input}
-        />
+        <Pressable onPress={onEditClearancePrice}>
+          <View pointerEvents="none">
+            <TextInput
+              mode="outlined"
+              dense
+              label={t("clearancePrice.price")}
+              value={clearancePrice}
+              editable={false}
+              style={styles.input}
+            />
+          </View>
+        </Pressable>
       </Card.Content>
     </Card>
   );
@@ -122,8 +110,5 @@ const styles = StyleSheet.create({
   },
   input: {
     backgroundColor: "#fff",
-  },
-  bigLabelButton: {
-    alignSelf: "flex-start",
   },
 });

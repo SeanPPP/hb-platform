@@ -5,7 +5,9 @@ import { useFocusEffect, useIsFocused } from "@react-navigation/native";
 import { Button, Card, Modal, Portal, Snackbar, Text } from "react-native-paper";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { LookupResultSheet } from "@/components/product-maintenance/LookupResultSheet";
+import { LabelPrintCard } from "@/components/product-maintenance/LabelPrintCard";
 import { MultiCodeCompactList } from "@/components/product-maintenance/MultiCodeCompactList";
+import { NumericInputModal } from "@/components/product-maintenance/NumericInputModal";
 import { ProductHeroCard } from "@/components/product-maintenance/ProductHeroCard";
 import { QueryHeader } from "@/components/product-maintenance/QueryHeader";
 import { SearchPanel } from "@/components/product-maintenance/SearchPanel";
@@ -25,7 +27,8 @@ import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 import {
   createSetCode,
   evaluateAutoPricing,
-  getProductDetail,
+  getProductCodes,
+  getProductFastDetail,
   lookupProducts,
   updateSetCode,
   updateProductType,
@@ -150,6 +153,15 @@ function replaceStorePriceDetail(
   };
 }
 
+type PrintAction =
+  | "product"
+  | "discount"
+  | "clearance"
+  | "bigDiscount"
+  | "clearanceProduct"
+  | `set:${string}`
+  | `multi:${string}`;
+
 type QueryFeedback =
   | { type: "idle" }
   | { type: "empty"; query: string }
@@ -181,7 +193,16 @@ interface AutoPricingDialogResolution {
   updatedDetail?: ProductDetail | null;
 }
 
+interface NumericInputModalState {
+  key: string;
+  title: string;
+  value: string;
+  allowDecimal: boolean;
+  confirmLabel?: string;
+}
+
 const PRODUCT_TYPE_OPTIONS = [0, 1, 2] as const;
+const CODE_PAGE_SIZE = 50;
 
 const DEFAULT_LOOKUP_FLOW_RESULT: LookupFlowResult = {
   keepCameraOpen: false,
@@ -208,7 +229,7 @@ function ProductQueryContent() {
   const [saving, setSaving] = useState(false);
   const [savingItemId, setSavingItemId] = useState<string | null>(null);
   const [snackbarMessage, setSnackbarMessage] = useState("");
-  const [printingKind, setPrintingKind] = useState<"product" | "discount" | "clearance" | "bigDiscount" | null>(null);
+  const [printingAction, setPrintingAction] = useState<PrintAction | null>(null);
   const [continuousPrintEnabled, setContinuousPrintEnabled] = useState(false);
   const [autoPrintOnLookupConfirm, setAutoPrintOnLookupConfirm] = useState(false);
   const [autoPricingDialog, setAutoPricingDialog] = useState<AutoPricingDialogState | null>(null);
@@ -222,7 +243,13 @@ function ProductQueryContent() {
   const [setDraftRetailInput, setSetDraftRetailInput] = useState("");
   const [multiDraftBarcode, setMultiDraftBarcode] = useState("");
   const [savingClearance, setSavingClearance] = useState(false);
+  const [codesLoading, setCodesLoading] = useState(false);
+  const [codesLoadingMore, setCodesLoadingMore] = useState(false);
+  const [codePage, setCodePage] = useState(1);
+  const [codesHasMore, setCodesHasMore] = useState(false);
   const autoPricingDialogResolverRef = useRef<((result: AutoPricingDialogResolution) => void) | null>(null);
+  const numericInputConfirmRef = useRef<((value: string) => void) | null>(null);
+  const [numericInputModal, setNumericInputModal] = useState<NumericInputModalState | null>(null);
 
   useEffect(() => {
     setStorePurchaseInput(formatFixedDecimal(detail?.storePrice?.purchasePrice));
@@ -247,6 +274,77 @@ function ProductQueryContent() {
     playScanFeedbackSound(status);
   }, []);
 
+  const loadProductCodes = useCallback(
+    async (sourceDetail: ProductDetail, nextPage = 1, append = false) => {
+      if (!selectedStoreCode || (sourceDetail.productType !== 1 && sourceDetail.productType !== 2)) {
+        return;
+      }
+
+      if (append) {
+        setCodesLoadingMore(true);
+      } else {
+        setCodesLoading(true);
+        setCodePage(1);
+        setCodesHasMore(false);
+      }
+
+      try {
+        if (sourceDetail.productType === 1) {
+          const page = await getProductCodes(
+            sourceDetail.productCode,
+            selectedStoreCode,
+            1,
+            nextPage,
+            CODE_PAGE_SIZE
+          );
+          const applyPage = (current: ProductDetail | null) =>
+            current?.productCode === sourceDetail.productCode
+              ? {
+                  ...current,
+                  setCodes: append ? [...current.setCodes, ...page.items] : page.items,
+                  setCodeCount: page.totalCount,
+                  codesIncluded: true,
+                }
+              : current;
+          setDetail(applyPage);
+          setInitialDetail((current) => cloneDetail(applyPage(current)));
+          setCodePage(page.page);
+          setCodesHasMore(page.hasMore);
+          return;
+        }
+
+        const page = await getProductCodes(
+          sourceDetail.productCode,
+          selectedStoreCode,
+          2,
+          nextPage,
+          CODE_PAGE_SIZE
+        );
+        const applyPage = (current: ProductDetail | null) =>
+          current?.productCode === sourceDetail.productCode
+            ? {
+                ...current,
+                multiCodes: append ? [...current.multiCodes, ...page.items] : page.items,
+                multiCodeCount: page.totalCount,
+                codesIncluded: true,
+              }
+            : current;
+        setDetail(applyPage);
+        setInitialDetail((current) => cloneDetail(applyPage(current)));
+        setCodePage(page.page);
+        setCodesHasMore(page.hasMore);
+      } catch (error) {
+        const fallback = t("messages.codesLoadFailed");
+        setSnackbarMessage(error instanceof Error ? `${fallback}: ${error.message}` : fallback);
+        playQueryFeedback("error");
+      } finally {
+        setCodesLoading(false);
+        setCodesLoadingMore(false);
+      }
+    },
+    [playQueryFeedback, selectedStoreCode, t]
+  );
+
   const loadDetail = useCallback(
     async (productCode: string) => {
       if (!selectedStoreCode) {
@@ -255,15 +353,18 @@ function ProductQueryContent() {
       }
 
       console.log("[product-query] load detail", { productCode, selectedStoreCode });
-      const payload = await getProductDetail(productCode, selectedStoreCode);
+      const payload = await getProductFastDetail(productCode, selectedStoreCode);
       setDetail(payload);
       setInitialDetail(cloneDetail(payload));
       setSelectedLookupProductCode(productCode);
       setLastHitLabel(`${payload.itemNumber || payload.productCode} / ${payload.barcode || "--"}`);
       setQueryFeedback({ type: "idle" });
+      setCodePage(1);
+      setCodesHasMore(false);
+      void loadProductCodes(payload, 1, false);
       return payload;
     },
-    [selectedStoreCode, t]
+    [loadProductCodes, selectedStoreCode, t]
   );
 
   const persistStorePrice = useCallback(
@@ -291,9 +392,10 @@ function ProductQueryContent() {
         });
 
         if (selectedStoreCode) {
-          const refreshed = await getProductDetail(sourceDetail.productCode, selectedStoreCode);
+          const refreshed = await getProductFastDetail(sourceDetail.productCode, selectedStoreCode);
           setDetail(refreshed);
           setInitialDetail(cloneDetail(refreshed));
+          void loadProductCodes(refreshed, 1, false);
           return refreshed;
         }
 
@@ -308,7 +410,7 @@ function ProductQueryContent() {
         return null;
       }
     },
-    [playQueryFeedback, selectedStoreCode, t]
+    [loadProductCodes, playQueryFeedback, selectedStoreCode, t]
   );
 
   const finishAutoPricingDialog = useCallback((result: AutoPricingDialogResolution) => {
@@ -318,6 +420,34 @@ function ProductQueryContent() {
     autoPricingDialogResolverRef.current = null;
     resolve?.(result);
   }, []);
+
+  const openNumericInputModal = useCallback(
+    (config: NumericInputModalState & { onConfirmValue: (value: string) => void }) => {
+      numericInputConfirmRef.current = config.onConfirmValue;
+      setNumericInputModal({
+        key: config.key,
+        title: config.title,
+        value: config.value,
+        allowDecimal: config.allowDecimal,
+        confirmLabel: config.confirmLabel,
+      });
+    },
+    []
+  );
+
+  const dismissNumericInputModal = useCallback(() => {
+    numericInputConfirmRef.current = null;
+    setNumericInputModal(null);
+  }, []);
+
+  const handleConfirmNumericInputModal = useCallback(() => {
+    if (!numericInputModal) {
+      return;
+    }
+
+    numericInputConfirmRef.current?.(numericInputModal.value);
+    dismissNumericInputModal();
+  }, [dismissNumericInputModal, numericInputModal]);
 
   const openAutoPricingDialog = useCallback(
     (state: AutoPricingDialogState) =>
@@ -329,7 +459,14 @@ function ProductQueryContent() {
   );
 
   const sendProductLabel = useCallback(
-    async (targetDetail: ProductDetail) => {
+    async (
+      targetDetail: ProductDetail,
+      options?: {
+        barcode?: string | null;
+        retailPrice?: number | null;
+        action?: PrintAction;
+      }
+    ) => {
       const savedPrinter = await getSavedPrinter();
       if (!savedPrinter?.address) {
         setSnackbarMessage(t("messages.printerRequired"));
@@ -343,9 +480,13 @@ function ProductQueryContent() {
         return false;
       }
 
-      setPrintingKind("product");
+      const action = options?.action ?? "product";
+      setPrintingAction(action);
       try {
-        await printProductLabel(targetDetail);
+        await printProductLabel(targetDetail, {
+          barcode: options?.barcode,
+          retailPrice: options?.retailPrice,
+        });
         setSnackbarMessage(t("messages.printSuccess"));
         return true;
       } catch (error) {
@@ -354,7 +495,7 @@ function ProductQueryContent() {
         playQueryFeedback("error");
         return false;
       } finally {
-        setPrintingKind(null);
+        setPrintingAction(null);
       }
     },
     [playQueryFeedback, printerAutoReconnectPaused, t]
@@ -798,12 +939,79 @@ function ProductQueryContent() {
     });
   }, []);
 
+  const openStorePurchasePriceEditor = useCallback(() => {
+    openNumericInputModal({
+      key: "store-purchase",
+      title: t("storePrice.purchase"),
+      value: storePurchaseInput,
+      allowDecimal: true,
+      onConfirmValue: handleChangeStorePurchasePrice,
+    });
+  }, [handleChangeStorePurchasePrice, openNumericInputModal, storePurchaseInput, t]);
+
+  const openStoreRetailPriceEditor = useCallback(() => {
+    openNumericInputModal({
+      key: "store-retail",
+      title: t("storePrice.retail"),
+      value: storeRetailInput,
+      allowDecimal: true,
+      onConfirmValue: handleChangeStoreRetailPrice,
+    });
+  }, [handleChangeStoreRetailPrice, openNumericInputModal, storeRetailInput, t]);
+
+  const openStoreDiscountPercentEditor = useCallback(() => {
+    const currentDiscountRate = normalizeDiscountRateValue(detail?.storePrice?.discountRate);
+    openNumericInputModal({
+      key: "store-discount-percent",
+      title: t("storePrice.discountPercent"),
+      value: formatPercentValue(currentDiscountRate),
+      allowDecimal: true,
+      onConfirmValue: handleChangeStoreDiscountPercent,
+    });
+  }, [detail?.storePrice?.discountRate, handleChangeStoreDiscountPercent, openNumericInputModal, t]);
+
+  const openStoreDiscountedRetailEditor = useCallback(() => {
+    const currentDiscountRate = normalizeDiscountRateValue(detail?.storePrice?.discountRate);
+    const currentDiscountedRetail = getDiscountedRetailPrice(
+      detail?.storePrice?.retailPrice,
+      currentDiscountRate
+    );
+    openNumericInputModal({
+      key: "store-discounted-retail",
+      title: t("storePrice.discountedRetail"),
+      value: formatCurrency(currentDiscountedRetail),
+      allowDecimal: true,
+      onConfirmValue: handleChangeStoreDiscountedRetailPrice,
+    });
+  }, [
+    detail?.storePrice?.discountRate,
+    detail?.storePrice?.retailPrice,
+    handleChangeStoreDiscountedRetailPrice,
+    openNumericInputModal,
+    t,
+  ]);
+
   const handleChangeSetCode = useCallback((setCodeId: string, patch: Partial<ProductSetCodeItem>) => {
     setDetail((current) =>
       current
         ? {
             ...current,
             setCodes: current.setCodes.map((item) => (item.setCodeId === setCodeId ? { ...item, ...patch } : item)),
+          }
+        : current
+    );
+  }, []);
+
+  const handleChangeSetCodeRetail = useCallback((setCodeId: string, value: string) => {
+    setDetail((current) =>
+      current
+        ? {
+            ...current,
+            setCodes: current.setCodes.map((item) =>
+              item.setCodeId === setCodeId
+                ? { ...item, setRetailPrice: value.trim() === "" ? null : Number(value) }
+                : item
+            ),
           }
         : current
     );
@@ -893,6 +1101,44 @@ function ProductQueryContent() {
     }
   }, [detail?.productCode, loadDetail, selectedStoreCode, setDraftBarcode, setDraftRetailInput, t]);
 
+  const openClearancePriceEditor = useCallback(() => {
+    openNumericInputModal({
+      key: "clearance-price",
+      title: t("clearancePrice.price"),
+      value: clearancePriceInput,
+      allowDecimal: true,
+      onConfirmValue: setClearancePriceInput,
+    });
+  }, [clearancePriceInput, openNumericInputModal, t]);
+
+  const openSetCodeRetailEditor = useCallback(
+    (setCodeId: string) => {
+      const target = detail?.setCodes.find((item) => item.setCodeId === setCodeId);
+      if (!target) {
+        return;
+      }
+
+      openNumericInputModal({
+        key: `set-retail-${setCodeId}`,
+        title: t("setCode.retail"),
+        value: formatFixedDecimal(target.setRetailPrice),
+        allowDecimal: true,
+        onConfirmValue: (value) => handleChangeSetCodeRetail(setCodeId, value),
+      });
+    },
+    [detail?.setCodes, handleChangeSetCodeRetail, openNumericInputModal, t]
+  );
+
+  const openSetDraftRetailEditor = useCallback(() => {
+    openNumericInputModal({
+      key: "set-draft-retail",
+      title: t("setCode.retail"),
+      value: setDraftRetailInput,
+      allowDecimal: true,
+      onConfirmValue: setSetDraftRetailInput,
+    });
+  }, [openNumericInputModal, setDraftRetailInput, t]);
+
   const handleSaveMultiCode = useCallback(
     async (setCodeId: string) => {
       if (!detail?.productCode || !selectedStoreCode) {
@@ -952,6 +1198,14 @@ function ProductQueryContent() {
     }
   }, [detail?.productCode, loadDetail, multiDraftBarcode, selectedStoreCode, t]);
 
+  const handleLoadMoreCodes = useCallback(() => {
+    if (!detail || codesLoading || codesLoadingMore || !codesHasMore) {
+      return;
+    }
+
+    void loadProductCodes(detail, codePage + 1, true);
+  }, [codePage, codesHasMore, codesLoading, codesLoadingMore, detail, loadProductCodes]);
+
   const handleSaveClearancePrice = useCallback(async () => {
     if (!detail?.productCode || !selectedStoreCode) {
       return;
@@ -1010,8 +1264,55 @@ function ProductQueryContent() {
     setMultiDraftBarcode("");
   }, [initialDetail]);
 
+  const handlePrintSetCodeProduct = useCallback(
+    async (setCodeId: string) => {
+      if (!detail) {
+        return;
+      }
+
+      const target = detail.setCodes.find((item) => item.setCodeId === setCodeId);
+      if (!target?.setBarcode?.trim()) {
+        setSnackbarMessage(t("messages.setCodeBarcodeRequired"));
+        return;
+      }
+
+      if (target.setRetailPrice == null || !Number.isFinite(target.setRetailPrice)) {
+        setSnackbarMessage(t("messages.setCodeRetailRequired"));
+        return;
+      }
+
+      await sendProductLabel(detail, {
+        barcode: target.setBarcode.trim(),
+        retailPrice: target.setRetailPrice,
+        action: `set:${setCodeId}`,
+      });
+    },
+    [detail, sendProductLabel, t]
+  );
+
+  const handlePrintMultiCodeProduct = useCallback(
+    async (setCodeId: string) => {
+      if (!detail) {
+        return;
+      }
+
+      const target = detail.multiCodes.find((item) => item.setCodeId === setCodeId);
+      if (!target?.barcode?.trim()) {
+        setSnackbarMessage(t("messages.multiCodeBarcodeRequired"));
+        return;
+      }
+
+      await sendProductLabel(detail, {
+        barcode: target.barcode.trim(),
+        retailPrice: target.retailPrice ?? detail.storePrice?.retailPrice ?? null,
+        action: `multi:${setCodeId}`,
+      });
+    },
+    [detail, sendProductLabel, t]
+  );
+
   const handlePrint = useCallback(
-    async (kind: "product" | "discount" | "clearance" | "bigDiscount") => {
+    async (kind: "product" | "discount" | "clearance" | "bigDiscount" | "clearanceProduct") => {
       if (!detail) {
         return;
       }
@@ -1029,10 +1330,24 @@ function ProductQueryContent() {
         return;
       }
 
-      setPrintingKind(kind);
+      if (kind === "clearanceProduct") {
+        if (!detail.clearancePrice?.clearanceBarcode) {
+          setSnackbarMessage(t("messages.clearancePrintUnavailable"));
+          return;
+        }
+
+        await sendProductLabel(detail, {
+          barcode: detail.clearancePrice.clearanceBarcode,
+          retailPrice: detail.clearancePrice.clearancePrice ?? null,
+          action: "clearanceProduct",
+        });
+        return;
+      }
+
+      setPrintingAction(kind);
       try {
         if (kind === "product") {
-          await sendProductLabel(detail);
+          await sendProductLabel(detail, { action: "product" });
           return;
         } else if (kind === "discount") {
           await printDiscountLabel(detail);
@@ -1046,9 +1361,7 @@ function ProductQueryContent() {
         const fallback = t("messages.printFailed");
         setSnackbarMessage(error instanceof Error ? `${fallback}: ${error.message}` : fallback);
       } finally {
-        if (kind !== "product") {
-          setPrintingKind(null);
-        }
+        setPrintingAction(null);
       }
     },
     [detail, sendProductLabel, t]
@@ -1106,25 +1419,13 @@ function ProductQueryContent() {
                   discountedRetailPrice={formatCurrency(discountedRetailPrice)}
                   autoPricing={storePrice.isAutoPricing}
                   isSpecialProduct={storePrice.isSpecialProduct}
-                  rate={storePrice.rate == null ? "" : String(storePrice.rate)}
+                  rate={formatFixedDecimal(storePrice.rate)}
                   strategySourceLabel={storePrice.strategySourceLabel}
                   strategyRuleLabel={storePrice.strategyRuleLabel}
-                  isPrintingProductLabel={printingKind === "product"}
-                  isPrintingDiscountLabel={printingKind === "discount"}
-                  onChangePurchasePrice={handleChangeStorePurchasePrice}
-                  onChangeRetailPrice={handleChangeStoreRetailPrice}
-                  onChangeDiscountPercent={handleChangeStoreDiscountPercent}
-                  onChangeDiscountedRetailPrice={handleChangeStoreDiscountedRetailPrice}
-                  onPrintProductLabel={
-                    printingKind && printingKind !== "product" ? undefined : () => void handlePrint("product")
-                  }
-                  onPrintDiscountLabel={
-                    printingKind && printingKind !== "discount"
-                      ? undefined
-                      : normalizedStoreDiscountRate && normalizedStoreDiscountRate > 0
-                        ? () => void handlePrint("discount")
-                        : undefined
-                  }
+                  onEditPurchasePrice={openStorePurchasePriceEditor}
+                  onEditRetailPrice={openStoreRetailPriceEditor}
+                  onEditDiscountPercent={openStoreDiscountPercentEditor}
+                  onEditDiscountedRetailPrice={openStoreDiscountedRetailEditor}
                   onToggleAutoPricing={(value) => void handleToggleAutoPricing(value)}
                   onToggleSpecial={(value) => handleChangeStorePrice({ isSpecialProduct: value })}
                 />
@@ -1134,43 +1435,46 @@ function ProductQueryContent() {
                 </View>
               )}
 
+              <LabelPrintCard
+                isPrintingProduct={printingAction === "product"}
+                isPrintingDiscount={printingAction === "discount"}
+                isPrintingClearanceProduct={printingAction === "clearanceProduct"}
+                isPrintingClearance={printingAction === "clearance"}
+                isPrintingBigDiscount={printingAction === "bigDiscount"}
+                canPrintDiscount={Boolean(normalizedStoreDiscountRate && normalizedStoreDiscountRate > 0)}
+                canPrintClearance={Boolean(clearancePrice)}
+                canPrintBigDiscount={Boolean(normalizedStoreDiscountRate && normalizedStoreDiscountRate > 0)}
+                canPrintClearanceProduct={Boolean(clearancePrice?.clearanceBarcode)}
+                onPrintProduct={
+                  printingAction && printingAction !== "product" ? undefined : () => void handlePrint("product")
+                }
+                onPrintDiscount={
+                  printingAction && printingAction !== "discount" ? undefined : () => void handlePrint("discount")
+                }
+                onPrintClearanceProduct={
+                  printingAction && printingAction !== "clearanceProduct"
+                    ? undefined
+                    : () => void handlePrint("clearanceProduct")
+                }
+                onPrintClearance={
+                  printingAction && printingAction !== "clearance" ? undefined : () => void handlePrint("clearance")
+                }
+                onPrintBigDiscount={
+                  printingAction && printingAction !== "bigDiscount"
+                    ? undefined
+                    : () => void handlePrint("bigDiscount")
+                }
+              />
+
               <StoreClearancePriceCard
                 storeCode={clearancePrice?.storeCode ?? storePrice?.storeCode}
                 storeName={clearancePrice?.storeName ?? storePrice?.storeName}
                 clearanceBarcode={clearancePrice?.clearanceBarcode}
                 clearancePrice={clearancePriceInput}
                 saving={savingClearance}
-                printingBigLabel={printingKind === "bigDiscount"}
-                onPrintBigLabel={
-                  printingKind && printingKind !== "bigDiscount"
-                    ? undefined
-                    : normalizedStoreDiscountRate && normalizedStoreDiscountRate > 0
-                      ? () => void handlePrint("bigDiscount")
-                      : undefined
-                }
-                onChangeClearancePrice={setClearancePriceInput}
+                onEditClearancePrice={openClearancePriceEditor}
                 onSave={() => void handleSaveClearancePrice()}
               />
-
-              {clearancePrice?.clearanceBarcode ? (
-                <Card style={styles.printCard} mode="contained">
-                  <Card.Content style={styles.printCardContent}>
-                    <Text variant="titleSmall" style={styles.printTitle}>
-                      {t("print.title")}
-                    </Text>
-                    <View style={styles.printActions}>
-                      <Button
-                        mode="outlined"
-                        onPress={() => void handlePrint("clearance")}
-                        loading={printingKind === "clearance"}
-                        disabled={Boolean(printingKind) || !clearancePrice}
-                      >
-                        {printingKind === "clearance" ? t("print.sending") : t("print.clearance")}
-                      </Button>
-                    </View>
-                  </Card.Content>
-                </Card>
-              ) : null}
             </View>
 
             {detail.productType === 1 || detail.productType === 2 ? (
@@ -1182,25 +1486,40 @@ function ProductQueryContent() {
                   <SetCodeCompactSection
                     items={detail.setCodes}
                     savingItemId={savingItemId}
+                    printingItemId={printingAction?.startsWith("set:") ? printingAction.slice(4) : null}
                     draftBarcode={setDraftBarcode}
                     draftRetailPrice={setDraftRetailInput}
+                    totalCount={detail.setCodeCount}
+                    loading={codesLoading}
+                    loadingMore={codesLoadingMore}
+                    hasMore={codesHasMore}
                     onChangeDraftBarcode={setSetDraftBarcode}
-                    onChangeDraftRetailPrice={setSetDraftRetailInput}
+                    onEditDraftRetailPrice={openSetDraftRetailEditor}
                     onChangeItem={handleChangeSetCode}
+                    onEditItemRetailPrice={openSetCodeRetailEditor}
                     onSaveItem={(setCodeId) => void handleSaveSetCode(setCodeId)}
+                    onPrintItem={(setCodeId) => void handlePrintSetCodeProduct(setCodeId)}
                     onCreateItem={() => void handleCreateSetCode()}
+                    onLoadMore={handleLoadMoreCodes}
                   />
                 ) : null}
                 {detail.productType === 2 ? (
                   <MultiCodeCompactList
                     items={detail.multiCodes}
                     savingItemId={savingItemId}
+                    printingItemId={printingAction?.startsWith("multi:") ? printingAction.slice(6) : null}
                     draftBarcode={multiDraftBarcode}
                     mainRetailPrice={detail.storePrice?.retailPrice}
+                    totalCount={detail.multiCodeCount}
+                    loading={codesLoading}
+                    loadingMore={codesLoadingMore}
+                    hasMore={codesHasMore}
                     onChangeDraftBarcode={setMultiDraftBarcode}
                     onChangeItem={handleChangeMultiCode}
                     onSaveItem={(setCodeId) => void handleSaveMultiCode(setCodeId)}
+                    onPrintItem={(setCodeId) => void handlePrintMultiCodeProduct(setCodeId)}
                     onCreateItem={() => void handleCreateMultiCode()}
+                    onLoadMore={handleLoadMoreCodes}
                   />
                 ) : null}
               </View>
@@ -1366,6 +1685,19 @@ function ProductQueryContent() {
           ) : null}
         </Modal>
 
+        <NumericInputModal
+          visible={Boolean(numericInputModal)}
+          title={numericInputModal?.title ?? ""}
+          value={numericInputModal?.value ?? ""}
+          allowDecimal={numericInputModal?.allowDecimal ?? true}
+          confirmLabel={numericInputModal?.confirmLabel}
+          onChangeValue={(value) =>
+            setNumericInputModal((current) => (current ? { ...current, value } : current))
+          }
+          onConfirm={handleConfirmNumericInputModal}
+          onDismiss={dismissNumericInputModal}
+        />
+
         <Modal
           visible={productTypeDialogVisible}
           onDismiss={productTypeSaving ? undefined : () => setProductTypeDialogVisible(false)}
@@ -1510,23 +1842,6 @@ const styles = StyleSheet.create({
   },
   emptyText: {
     color: "#555",
-  },
-  printCard: {
-    borderRadius: 8,
-    backgroundColor: "#FFFDF7",
-  },
-  printCardContent: {
-    gap: 8,
-    paddingVertical: 6,
-  },
-  printTitle: {
-    fontWeight: "700",
-    color: "#111827",
-  },
-  printActions: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 6,
   },
   autoPricingModal: {
     marginHorizontal: 18,

@@ -29,6 +29,7 @@
     "multiCodeSaved": "多码已保存",
     "multiCodeSaveFailed": "多码保存失败",
     "multiCodeBarcodeRequired": "请输入多码条码",
+    "codesLoadFailed": "条码列表加载失败",
     "saved": "商品信息已保存",
     "saveFailed": "保存失败",
     "emptyStorePrice": "当前分店没有商品价格记录",
@@ -109,7 +110,9 @@
     "retail": "零售价",
     "save": "保存",
     "add": "新增",
-    "addTitle": "新增套装条码"
+    "addTitle": "新增套装条码",
+    "loading": "正在加载套装条码...",
+    "loadMore": "加载更多"
   },
   "multiCode": {
     "title": "多码条码",
@@ -118,7 +121,9 @@
     "save": "保存",
     "add": "新增",
     "addTitle": "新增多码条码",
-    "followMain": "零售价跟随主条码"
+    "followMain": "零售价跟随主条码",
+    "loading": "正在加载多码条码...",
+    "loadMore": "加载更多"
   },
   "camera": {
     "title": "扫码查询商品",
@@ -138,6 +143,7 @@
     "title": "标签打印",
     "quick": "打",
     "product": "普通标签",
+    "clearanceProduct": "清货普通标签",
     "discount": "折扣标签",
     "bigDiscount": "大标签",
     "clearance": "清货标签",

@@ -1,18 +1,26 @@
-import { StyleSheet, View } from "react-native";
-import { Button, Card, Text, TextInput } from "react-native-paper";
+import { Pressable, StyleSheet, View } from "react-native";
+import { ActivityIndicator, Button, Card, Text, TextInput } from "react-native-paper";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 import type { ProductSetCodeItem } from "@/modules/product-maintenance/types";
 
 interface SetCodeCompactSectionProps {
   items: ProductSetCodeItem[];
   savingItemId?: string | null;
+  printingItemId?: string | null;
   draftBarcode: string;
   draftRetailPrice: string;
+  totalCount?: number;
+  loading?: boolean;
+  loadingMore?: boolean;
+  hasMore?: boolean;
   onChangeDraftBarcode: (value: string) => void;
-  onChangeDraftRetailPrice: (value: string) => void;
+  onEditDraftRetailPrice: () => void;
   onChangeItem: (setCodeId: string, patch: Partial<ProductSetCodeItem>) => void;
+  onEditItemRetailPrice: (setCodeId: string) => void;
   onSaveItem: (setCodeId: string) => void;
+  onPrintItem: (setCodeId: string) => void;
   onCreateItem: () => void;
+  onLoadMore?: () => void;
 }
 
 function formatPrice(value?: number | null) {
@@ -22,13 +30,21 @@ function formatPrice(value?: number | null) {
 export function SetCodeCompactSection({
   items,
   savingItemId,
+  printingItemId,
   draftBarcode,
   draftRetailPrice,
+  totalCount,
+  loading,
+  loadingMore,
+  hasMore,
   onChangeDraftBarcode,
-  onChangeDraftRetailPrice,
+  onEditDraftRetailPrice,
   onChangeItem,
+  onEditItemRetailPrice,
   onSaveItem,
+  onPrintItem,
   onCreateItem,
+  onLoadMore,
 }: SetCodeCompactSectionProps) {
   const { t } = useAppTranslation("productQuery");
 
@@ -37,7 +53,17 @@ export function SetCodeCompactSection({
       <Card.Content style={styles.content}>
         <Text variant="titleSmall" style={styles.title}>
           {t("setCode.title")}
+          {totalCount != null ? ` (${items.length}/${totalCount})` : ""}
         </Text>
+
+        {loading ? (
+          <View style={styles.loadingRow}>
+            <ActivityIndicator size="small" />
+            <Text variant="bodySmall" style={styles.loadingText}>
+              {t("setCode.loading")}
+            </Text>
+          </View>
+        ) : null}
 
         {items.map((item) => (
           <View key={item.setCodeId} style={styles.item}>
@@ -50,19 +76,28 @@ export function SetCodeCompactSection({
               style={styles.input}
             />
             <View style={styles.footerRow}>
-              <TextInput
+              <Pressable style={styles.priceInput} onPress={() => onEditItemRetailPrice(item.setCodeId)}>
+                <View pointerEvents="none">
+                  <TextInput
+                    mode="outlined"
+                    dense
+                    label={t("setCode.retail")}
+                    value={formatPrice(item.setRetailPrice)}
+                    editable={false}
+                    style={styles.input}
+                  />
+                </View>
+              </Pressable>
+              <Button
+                compact
                 mode="outlined"
-                dense
-                label={t("setCode.retail")}
-                keyboardType="decimal-pad"
-                value={formatPrice(item.setRetailPrice)}
-                onChangeText={(value) =>
-                  onChangeItem(item.setCodeId, {
-                    setRetailPrice: value.trim() === "" ? null : Number(value),
-                  })
-                }
-                style={[styles.input, styles.priceInput]}
-              />
+                icon="printer-outline"
+                onPress={() => onPrintItem(item.setCodeId)}
+                loading={printingItemId === item.setCodeId}
+                disabled={printingItemId === item.setCodeId}
+              >
+                {printingItemId === item.setCodeId ? t("print.sendingShort") : t("print.product")}
+              </Button>
               <Button
                 compact
                 mode="contained-tonal"
@@ -75,6 +110,18 @@ export function SetCodeCompactSection({
             </View>
           </View>
         ))}
+
+        {hasMore && onLoadMore ? (
+          <Button
+            compact
+            mode="text"
+            onPress={onLoadMore}
+            loading={loadingMore}
+            disabled={loadingMore}
+          >
+            {t("setCode.loadMore")}
+          </Button>
+        ) : null}
 
         <View style={[styles.item, styles.draftItem]}>
           <Text variant="bodySmall" style={styles.addTitle}>
@@ -89,15 +136,18 @@ export function SetCodeCompactSection({
             style={styles.input}
           />
           <View style={styles.footerRow}>
-            <TextInput
-              mode="outlined"
-              dense
-              label={t("setCode.retail")}
-              keyboardType="decimal-pad"
-              value={draftRetailPrice}
-              onChangeText={onChangeDraftRetailPrice}
-              style={[styles.input, styles.priceInput]}
-            />
+            <Pressable style={styles.priceInput} onPress={onEditDraftRetailPrice}>
+              <View pointerEvents="none">
+                <TextInput
+                  mode="outlined"
+                  dense
+                  label={t("setCode.retail")}
+                  value={draftRetailPrice}
+                  editable={false}
+                  style={styles.input}
+                />
+              </View>
+            </Pressable>
             <Button
               compact
               mode="contained"
@@ -125,6 +175,14 @@ const styles = StyleSheet.create({
   },
   title: {
     fontWeight: "700",
+  },
+  loadingRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  loadingText: {
+    color: "#475467",
   },
   item: {
     gap: 8,

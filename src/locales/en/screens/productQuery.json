@@ -29,6 +29,7 @@
     "multiCodeSaved": "Multi-code saved.",
     "multiCodeSaveFailed": "Failed to save the multi-code record.",
     "multiCodeBarcodeRequired": "Enter the multi barcode.",
+    "codesLoadFailed": "Failed to load barcode list.",
     "saved": "Product information saved.",
     "saveFailed": "Save failed.",
     "emptyStorePrice": "There is no store price record for this product.",
@@ -109,7 +110,9 @@
     "retail": "Retail",
     "save": "Save",
     "add": "Add",
-    "addTitle": "Add set barcode"
+    "addTitle": "Add set barcode",
+    "loading": "Loading set barcodes...",
+    "loadMore": "Load more"
   },
   "multiCode": {
     "title": "Multi barcodes",
@@ -118,7 +121,9 @@
     "save": "Save",
     "add": "Add",
     "addTitle": "Add multi barcode",
-    "followMain": "Retail follows the main barcode"
+    "followMain": "Retail follows the main barcode",
+    "loading": "Loading multi barcodes...",
+    "loadMore": "Load more"
   },
   "camera": {
     "title": "Scan a product",
@@ -138,6 +143,7 @@
     "title": "Label printing",
     "quick": "Print",
     "product": "Regular label",
+    "clearanceProduct": "Clearance regular",
     "discount": "Discount label",
     "bigDiscount": "Large label",
     "clearance": "Clearance label",

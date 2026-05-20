@@ -1,17 +1,24 @@
 import { StyleSheet, View } from "react-native";
-import { Button, Card, Text, TextInput } from "react-native-paper";
+import { ActivityIndicator, Button, Card, Text, TextInput } from "react-native-paper";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 import type { MultiCodeEditableItem } from "@/modules/product-maintenance/types";
 
 interface MultiCodeCompactListProps {
   items: MultiCodeEditableItem[];
   savingItemId?: string | null;
+  printingItemId?: string | null;
   draftBarcode: string;
   mainRetailPrice?: number | null;
+  totalCount?: number;
+  loading?: boolean;
+  loadingMore?: boolean;
+  hasMore?: boolean;
   onChangeDraftBarcode: (value: string) => void;
   onChangeItem: (setCodeId: string, patch: Partial<MultiCodeEditableItem>) => void;
   onSaveItem: (setCodeId: string) => void;
+  onPrintItem: (setCodeId: string) => void;
   onCreateItem: () => void;
+  onLoadMore?: () => void;
 }
 
 function formatPrice(value?: number | null) {
@@ -21,12 +28,19 @@ function formatPrice(value?: number | null) {
 export function MultiCodeCompactList({
   items,
   savingItemId,
+  printingItemId,
   draftBarcode,
   mainRetailPrice,
+  totalCount,
+  loading,
+  loadingMore,
+  hasMore,
   onChangeDraftBarcode,
   onChangeItem,
   onSaveItem,
+  onPrintItem,
   onCreateItem,
+  onLoadMore,
 }: MultiCodeCompactListProps) {
   const { t } = useAppTranslation("productQuery");
 
@@ -35,7 +49,17 @@ export function MultiCodeCompactList({
       <Card.Content style={styles.content}>
         <Text variant="titleSmall" style={styles.title}>
           {t("multiCode.title")}
+          {totalCount != null ? ` (${items.length}/${totalCount})` : ""}
         </Text>
+
+        {loading ? (
+          <View style={styles.loadingRow}>
+            <ActivityIndicator size="small" />
+            <Text variant="bodySmall" style={styles.loadingText}>
+              {t("multiCode.loading")}
+            </Text>
+          </View>
+        ) : null}
 
         {items.map((item) => (
           <View key={item.setCodeId || item.uuid} style={styles.item}>
@@ -58,6 +82,16 @@ export function MultiCodeCompactList({
               />
               <Button
                 compact
+                mode="outlined"
+                icon="printer-outline"
+                onPress={() => onPrintItem(item.setCodeId)}
+                loading={printingItemId === item.setCodeId}
+                disabled={printingItemId === item.setCodeId}
+              >
+                {printingItemId === item.setCodeId ? t("print.sendingShort") : t("print.product")}
+              </Button>
+              <Button
+                compact
                 mode="contained-tonal"
                 onPress={() => onSaveItem(item.setCodeId)}
                 loading={savingItemId === item.setCodeId}
@@ -68,6 +102,18 @@ export function MultiCodeCompactList({
             </View>
           </View>
         ))}
+
+        {hasMore && onLoadMore ? (
+          <Button
+            compact
+            mode="text"
+            onPress={onLoadMore}
+            loading={loadingMore}
+            disabled={loadingMore}
+          >
+            {t("multiCode.loadMore")}
+          </Button>
+        ) : null}
 
         <View style={[styles.item, styles.draftItem]}>
           <Text variant="bodySmall" style={styles.addTitle}>
@@ -120,6 +166,14 @@ const styles = StyleSheet.create({
   },
   title: {
     fontWeight: "700",
+  },
+  loadingRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  loadingText: {
+    color: "#475467",
   },
   item: {
     gap: 8,

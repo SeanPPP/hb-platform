@@ -1,5 +1,5 @@
-import { StyleSheet, View } from "react-native";
-import { Card, IconButton, Switch, Text, TextInput } from "react-native-paper";
+import { Pressable, StyleSheet, View } from "react-native";
+import { Card, Switch, Text, TextInput } from "react-native-paper";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 
 interface StorePriceStrategyCardProps {
@@ -14,14 +14,10 @@ interface StorePriceStrategyCardProps {
   strategySourceLabel?: string | null;
   strategyRuleLabel?: string | null;
   evaluatingRate?: boolean;
-  isPrintingProductLabel?: boolean;
-  isPrintingDiscountLabel?: boolean;
-  onChangePurchasePrice: (value: string) => void;
-  onChangeRetailPrice: (value: string) => void;
-  onChangeDiscountPercent: (value: string) => void;
-  onChangeDiscountedRetailPrice: (value: string) => void;
-  onPrintProductLabel?: () => void;
-  onPrintDiscountLabel?: () => void;
+  onEditPurchasePrice: () => void;
+  onEditRetailPrice: () => void;
+  onEditDiscountPercent: () => void;
+  onEditDiscountedRetailPrice: () => void;
   onToggleAutoPricing: (value: boolean) => void;
   onToggleSpecial: (value: boolean) => void;
 }
@@ -38,14 +34,10 @@ export function StorePriceStrategyCard({
   strategySourceLabel,
   strategyRuleLabel,
   evaluatingRate = false,
-  isPrintingProductLabel = false,
-  isPrintingDiscountLabel = false,
-  onChangePurchasePrice,
-  onChangeRetailPrice,
-  onChangeDiscountPercent,
-  onChangeDiscountedRetailPrice,
-  onPrintProductLabel,
-  onPrintDiscountLabel,
+  onEditPurchasePrice,
+  onEditRetailPrice,
+  onEditDiscountPercent,
+  onEditDiscountedRetailPrice,
   onToggleAutoPricing,
   onToggleSpecial,
 }: StorePriceStrategyCardProps) {
@@ -66,34 +58,30 @@ export function StorePriceStrategyCard({
           </Text>
         </View>
         <View style={styles.priceRow}>
-          <TextInput
-            mode="outlined"
-            label={t("storePrice.purchase")}
-            dense
-            keyboardType="decimal-pad"
-            value={purchasePrice}
-            onChangeText={onChangePurchasePrice}
-            style={styles.input}
-          />
-          <TextInput
-            mode="outlined"
-            label={t("storePrice.retail")}
-            dense
-            keyboardType="decimal-pad"
-            value={retailPrice}
-            onChangeText={onChangeRetailPrice}
-            style={styles.input}
-          />
-          <IconButton
-            accessibilityLabel={isPrintingProductLabel ? t("print.sendingShort") : t("print.quick")}
-            icon="printer-outline"
-            onPress={onPrintProductLabel}
-            loading={isPrintingProductLabel}
-            disabled={!onPrintProductLabel || isPrintingProductLabel}
-            mode="contained"
-            size={18}
-            style={styles.iconButton}
-          />
+          <Pressable style={styles.inputPressable} onPress={onEditPurchasePrice}>
+            <View pointerEvents="none">
+              <TextInput
+                mode="outlined"
+                label={t("storePrice.purchase")}
+                dense
+                value={purchasePrice}
+                editable={false}
+                style={styles.input}
+              />
+            </View>
+          </Pressable>
+          <Pressable style={styles.inputPressable} onPress={onEditRetailPrice}>
+            <View pointerEvents="none">
+              <TextInput
+                mode="outlined"
+                label={t("storePrice.retail")}
+                dense
+                value={retailPrice}
+                editable={false}
+                style={styles.input}
+              />
+            </View>
+          </Pressable>
         </View>
         <View style={styles.summaryRow}>
           {strategyText ? (
@@ -115,36 +103,32 @@ export function StorePriceStrategyCard({
           </View>
         </View>
         <View style={styles.discountRow}>
-          <TextInput
-            mode="outlined"
-            label={t("storePrice.discountPercent")}
-            dense
-            keyboardType="decimal-pad"
-            value={discountPercent}
-            onChangeText={onChangeDiscountPercent}
-            style={styles.input}
-            textColor="#B42318"
-          />
-          <TextInput
-            mode="outlined"
-            label={t("storePrice.discountedRetail")}
-            dense
-            keyboardType="decimal-pad"
-            value={discountedRetailPrice}
-            onChangeText={onChangeDiscountedRetailPrice}
-            style={styles.input}
-            textColor="#166534"
-          />
-          <IconButton
-            accessibilityLabel={isPrintingDiscountLabel ? t("print.sendingShort") : t("print.discount")}
-            icon="sale-outline"
-            onPress={onPrintDiscountLabel}
-            loading={isPrintingDiscountLabel}
-            disabled={!onPrintDiscountLabel || isPrintingDiscountLabel}
-            mode="contained-tonal"
-            size={18}
-            style={[styles.iconButton, styles.discountIconButton]}
-          />
+          <Pressable style={styles.inputPressable} onPress={onEditDiscountPercent}>
+            <View pointerEvents="none">
+              <TextInput
+                mode="outlined"
+                label={t("storePrice.discountPercent")}
+                dense
+                value={discountPercent}
+                editable={false}
+                style={styles.input}
+                textColor="#B42318"
+              />
+            </View>
+          </Pressable>
+          <Pressable style={styles.inputPressable} onPress={onEditDiscountedRetailPrice}>
+            <View pointerEvents="none">
+              <TextInput
+                mode="outlined"
+                label={t("storePrice.discountedRetail")}
+                dense
+                value={discountedRetailPrice}
+                editable={false}
+                style={styles.input}
+                textColor="#166534"
+              />
+            </View>
+          </Pressable>
         </View>
       </Card.Content>
     </Card>
@@ -181,19 +165,11 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   input: {
-    flex: 1,
     backgroundColor: "#fff",
     height: 38,
   },
-  iconButton: {
-    width: 36,
-    height: 36,
-    margin: 0,
-    borderRadius: 8,
-    alignSelf: "center",
-  },
-  discountIconButton: {
-    backgroundColor: "#ECFDF3",
+  inputPressable: {
+    flex: 1,
   },
   rateText: {
     color: "#1677FF",

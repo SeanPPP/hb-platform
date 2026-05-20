@@ -14,6 +14,14 @@ import { PrinterStorage } from "@/modules/printer/storage";
 import { usePrinterStore } from "@/modules/printer/state";
 import type { PrinterDevice, SavedPrinter } from "@/modules/printer/types";
 
+interface ProductLabelOverrides {
+  barcode?: string | null;
+  retailPrice?: number | null;
+  discountRate?: number | null;
+  clearanceBarcode?: string | null;
+  clearancePrice?: number | null;
+}
+
 function toSavedPrinter(device: PrinterDevice | SavedPrinter): SavedPrinter {
   return {
     name: device.name ?? null,
@@ -21,17 +29,17 @@ function toSavedPrinter(device: PrinterDevice | SavedPrinter): SavedPrinter {
   };
 }
 
-function buildPayload(detail: ProductDetail) {
+function buildPayload(detail: ProductDetail, overrides?: ProductLabelOverrides) {
   return {
     productName: detail.productName,
     itemNumber: detail.itemNumber,
     grade: detail.grade,
     supplierName: detail.localSupplierName,
-    barcode: detail.barcode,
-    retailPrice: detail.storePrice?.retailPrice ?? null,
-    discountRate: detail.storePrice?.discountRate ?? null,
-    clearanceBarcode: detail.clearancePrice?.clearanceBarcode ?? null,
-    clearancePrice: detail.clearancePrice?.clearancePrice ?? null,
+    barcode: overrides?.barcode ?? detail.barcode,
+    retailPrice: overrides?.retailPrice ?? detail.storePrice?.retailPrice ?? null,
+    discountRate: overrides?.discountRate ?? detail.storePrice?.discountRate ?? null,
+    clearanceBarcode: overrides?.clearanceBarcode ?? detail.clearancePrice?.clearanceBarcode ?? null,
+    clearancePrice: overrides?.clearancePrice ?? detail.clearancePrice?.clearancePrice ?? null,
   };
 }
 
@@ -183,9 +191,9 @@ export async function testPrinterConnection() {
   return printRawCommand("! 0 200 200 160 1\r\nPAGE-WIDTH 570\r\nTEXT 7 0 20 30 HB LABEL PRINTER\r\nTEXT 4 0 20 78 Connection OK\r\nTEXT 4 0 20 118 TEST\r\nPRINT\r\n");
 }
 
-export async function printProductLabel(detail: ProductDetail) {
+export async function printProductLabel(detail: ProductDetail, overrides?: ProductLabelOverrides) {
   await ensureConnectedPrinter();
-  return printNativeProductLabel(buildPayload(detail));
+  return printNativeProductLabel(buildPayload(detail, overrides));
 }
 
 export async function printDiscountLabel(detail: ProductDetail) {
