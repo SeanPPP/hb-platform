@@ -1,0 +1,101 @@
+using System.ComponentModel.DataAnnotations;
+
+namespace BlazorApp.Shared.DTOs
+{
+    public class StoreUserGridRequestDto
+    {
+        [Required(ErrorMessage = "分店代码不能为空")]
+        public string StoreCode { get; set; } = string.Empty;
+
+        public string? Keyword { get; set; }
+
+        public int Status { get; set; } = -1;
+    }
+
+    public class StoreUserListDto
+    {
+        public string UserGuid { get; set; } = string.Empty;
+        public string Username { get; set; } = string.Empty;
+        public string? FullName { get; set; }
+        public string? Email { get; set; }
+        public string? Phone { get; set; }
+        public int Status { get; set; }
+        public string StoreGuid { get; set; } = string.Empty;
+        public string StoreCode { get; set; } = string.Empty;
+        public string StoreName { get; set; } = string.Empty;
+        public List<string> RoleNames { get; set; } = new();
+        public DateTime? LastLoginTime { get; set; }
+        public DateTime CreatedAt { get; set; }
+        public DateTime? UpdatedAt { get; set; }
+    }
+
+    public class StoreUserDetailDto : StoreUserListDto
+    {
+        public string? Remarks { get; set; }
+    }
+
+    public class CreateStoreUserDto
+    {
+        [Required(ErrorMessage = "用户名不能为空")]
+        [StringLength(50, MinimumLength = 3, ErrorMessage = "用户名长度必须在3-50个字符之间")]
+        public string Username { get; set; } = string.Empty;
+
+        [EmailAddress(ErrorMessage = "邮箱格式不正确")]
+        public string? Email { get; set; }
+
+        [Required(ErrorMessage = "密码不能为空")]
+        [StringLength(100, MinimumLength = 6, ErrorMessage = "密码长度必须在6-100个字符之间")]
+        public string Password { get; set; } = string.Empty;
+
+        [StringLength(100, ErrorMessage = "姓名长度不能超过100个字符")]
+        public string? FullName { get; set; }
+
+        public string? Phone { get; set; }
+
+        [Required(ErrorMessage = "分店代码不能为空")]
+        public string StoreCode { get; set; } = string.Empty;
+
+        public int Status { get; set; } = 1;
+
+        public List<string>? RoleNames { get; set; }
+    }
+
+    public class UpdateStoreUserDto
+    {
+        [StringLength(50, MinimumLength = 3, ErrorMessage = "用户名长度必须在3-50个字符之间")]
+        public string? Username { get; set; }
+
+        [EmailAddress(ErrorMessage = "邮箱格式不正确")]
+        public string? Email { get; set; }
+
+        [StringLength(100, ErrorMessage = "姓名长度不能超过100个字符")]
+        public string? FullName { get; set; }
+
+        public string? Phone { get; set; }
+
+        [Required(ErrorMessage = "分店代码不能为空")]
+        public string StoreCode { get; set; } = string.Empty;
+
+        public int Status { get; set; } = 1;
+
+        public List<string>? RoleNames { get; set; }
+    }
+
+    public class UpdateStoreUserStatusDto
+    {
+        [Required(ErrorMessage = "分店代码不能为空")]
+        public string StoreCode { get; set; } = string.Empty;
+
+        public int Status { get; set; }
+    }
+
+    public class UpdateStoreUserPasswordDto
+    {
+        [Required(ErrorMessage = "分店代码不能为空")]
+        public string StoreCode { get; set; } = string.Empty;
+
+        [Required(ErrorMessage = "新密码不能为空")]
+        [StringLength(100, MinimumLength = 6, ErrorMessage = "密码长度必须在6-100个字符之间")]
+        public string NewPassword { get; set; } = string.Empty;
+    }
+}

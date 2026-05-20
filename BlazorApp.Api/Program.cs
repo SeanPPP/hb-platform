@@ -294,6 +294,10 @@ builder.Services.AddScoped<
     BlazorApp.Api.Services.ICurrentUserService,
     BlazorApp.Api.Services.CurrentUserService
 >();
+builder.Services.AddScoped<
+    BlazorApp.Api.Interfaces.ICurrentUserManageableStoreScopeService,
+    BlazorApp.Api.Services.CurrentUserManageableStoreScopeService
+>();
 
 // 📁 数据库上下文服务 - 使用作用域模式（Scoped）
 // 说明：将原先的 Singleton 改为 Scoped，避免多个请求并发复用同一底层连接
@@ -403,6 +407,7 @@ builder.Services.AddScoped<IStoreRetailPriceReactService, StoreRetailPriceReactS
 builder.Services.AddScoped<IStoreProductPriceReactService, StoreProductPriceReactService>();
 builder.Services.AddScoped<IStoreMultiCodePricesReactService, StoreMultiCodePricesReactService>();
 builder.Services.AddScoped<ICashRegisterUserReactService, CashRegisterUserReactService>();
+builder.Services.AddScoped<IStoreUserReactService, StoreUserReactService>();
 builder.Services.AddScoped<IDataSyncFullService, DataSyncFullService>();
 builder.Services.AddScoped<IDataSyncIncrementalService, DataSyncIncrementalService>();
 builder.Services.AddScoped<IDataSyncReactService, DataSyncReactService>();

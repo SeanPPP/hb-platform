@@ -125,6 +125,34 @@ namespace BlazorApp.Api.Services
                 );
             }
 
+            if (!existingRoles.Any(r => r.RoleName == "StoreManager"))
+            {
+                rolesToCreate.Add(
+                    new Role
+                    {
+                        RoleGUID = Guid.NewGuid().ToString(),
+                        RoleName = "StoreManager",
+                        Description = "Store manager role for branch staff maintenance",
+                        IsActive = true,
+                        CreatedAt = DateTime.UtcNow,
+                    }
+                );
+            }
+
+            if (!existingRoles.Any(r => r.RoleName == "StoreStaff"))
+            {
+                rolesToCreate.Add(
+                    new Role
+                    {
+                        RoleGUID = Guid.NewGuid().ToString(),
+                        RoleName = "StoreStaff",
+                        Description = "Store staff role for branch employees",
+                        IsActive = true,
+                        CreatedAt = DateTime.UtcNow,
+                    }
+                );
+            }
+
             if (rolesToCreate.Any())
             {
                 await db.Insertable(rolesToCreate).ExecuteCommandAsync();

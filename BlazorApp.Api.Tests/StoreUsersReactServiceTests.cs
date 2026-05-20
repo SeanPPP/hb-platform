@@ -1,0 +1,316 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Reflection;
+using System.Runtime.CompilerServices;
+using System.Security.Claims;
+using System.Threading.Tasks;
+using BlazorApp.Api.Data;
+using BlazorApp.Api.Services;
+using BlazorApp.Api.Services.React;
+using BlazorApp.Shared.DTOs;
+using BlazorApp.Shared.Models;
+using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Data.Sqlite;
+using SqlSugar;
+using Xunit;
+
+namespace BlazorApp.Api.Tests
+{
+    public sealed class StoreUsersReactServiceTests : IDisposable
+    {
+        private readonly string _dbPath;
+        private readonly SqliteConnection _sqliteConnection;
+        private readonly SqlSugarClient _db;
+
+        public StoreUsersReactServiceTests()
+        {
+            _dbPath = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid():N}.db");
+            _sqliteConnection = new SqliteConnection($"Data Source={_dbPath}");
+            _sqliteConnection.Open();
+
+            _db = new SqlSugarClient(new ConnectionConfig
+            {
+                ConnectionString = _sqliteConnection.ConnectionString,
+                DbType = DbType.Sqlite,
+                IsAutoCloseConnection = false,
+                InitKeyType = InitKeyType.Attribute,
+            });
+
+            _db.CodeFirst.InitTables<User, Role, UserRole, Store, UserStore>();
+        }
+
+        [Fact]
+        public async Task CreateAsync_WhenStoreManagerTargetsForeignStore_ReturnsScopeError()
+        {
+            await SeedStoreUserDataAsync();
+            var service = CreateService("manager-1", "StoreManager");
+
+            var result = await service.CreateAsync(
+                new CreateStoreUserDto
+                {
+                    Username = "new_staff",
+                    Email = "new_staff@example.com",
+                    Password = "Secret123",
+                    FullName = "New Staff",
+                    StoreCode = "S002",
+                    Status = 1,
+                },
+                "manager-1"
+            );
+
+            Assert.False(result.Success);
+            Assert.Contains("分店", result.Message ?? string.Empty);
+        }
+
+        [Fact]
+        public async Task CreateAsync_WhenStoreManagerUsesManagedStore_AssignsStoreStaffRole()
+        {
+            await SeedStoreUserDataAsync();
+            var service = CreateService("manager-1", "StoreManager");
+
+            var result = await service.CreateAsync(
+                new CreateStoreUserDto
+                {
+                    Username = "staff_created",
+                    Email = "staff_created@example.com",
+                    Password = "Secret123",
+                    FullName = "Created Staff",
+                    StoreCode = "S001",
+                    Status = 1,
+                },
+                "manager-1"
+            );
+
+            Assert.True(result.Success);
+            Assert.NotNull(result.Data);
+            Assert.Equal("store-1", result.Data!.StoreGuid);
+
+            var createdRoleNames = await _db.Queryable<UserRole>()
+                .InnerJoin<Role>((ur, r) => ur.RoleGUID == r.RoleGUID)
+                .Where((ur, r) => ur.UserGUID == result.Data.UserGuid)
+                .Select((ur, r) => r.RoleName)
+                .ToListAsync();
+            Assert.Equal(new[] { "StoreStaff" }, createdRoleNames);
+        }
+
+        [Fact]
+        public async Task GetGridDataAsync_WhenStoreManager_OnlyReturnsManagedStoreStaff()
+        {
+            await SeedStoreUserDataAsync();
+            var service = CreateService("manager-1", "StoreManager");
+
+            var result = await service.GetGridDataAsync(new StoreUserGridRequestDto
+            {
+                StoreCode = "S001",
+            });
+
+            Assert.True(result.Success);
+            Assert.Single(result.Items!);
+            Assert.All(result.Items!, item => Assert.Equal("store-1", item.StoreGuid));
+            Assert.All(result.Items!, item => Assert.Contains("StoreStaff", item.RoleNames));
+        }
+
+        [Fact]
+        public async Task UpdatePasswordAsync_WhenStoreManagerTargetsForeignStore_ReturnsScopeError()
+        {
+            await SeedStoreUserDataAsync();
+            var service = CreateService("manager-1", "StoreManager");
+
+            var result = await service.UpdatePasswordAsync(
+                "staff-2",
+                new UpdateStoreUserPasswordDto
+                {
+                    StoreCode = "S001",
+                    NewPassword = "Changed123",
+                },
+                "manager-1"
+            );
+
+            Assert.False(result.Success);
+            Assert.Contains("权限", result.Message ?? string.Empty);
+        }
+
+        public void Dispose()
+        {
+            _db.Dispose();
+            _sqliteConnection.Dispose();
+
+            if (File.Exists(_dbPath))
+            {
+                File.Delete(_dbPath);
+            }
+        }
+
+        private StoreUserReactService CreateService(string userGuid, params string[] roles)
+        {
+            var httpContextAccessor = new HttpContextAccessor
+            {
+                HttpContext = new DefaultHttpContext
+                {
+                    User = new ClaimsPrincipal(
+                        new ClaimsIdentity(CreateClaims(userGuid, roles), "TestAuth")
+                    ),
+                },
+            };
+
+            var currentUserService = new CurrentUserService(httpContextAccessor);
+            var context = CreateSqlSugarContext(_db);
+            var scopeService = new CurrentUserManageableStoreScopeService(
+                context,
+                currentUserService,
+                httpContextAccessor
+            );
+
+            return new StoreUserReactService(
+                context,
+                NullLogger<StoreUserReactService>.Instance,
+                scopeService
+            );
+        }
+
+        private async Task SeedStoreUserDataAsync()
+        {
+            await _db.Insertable(
+                new[]
+                {
+                    new Store
+                    {
+                        StoreGUID = "store-1",
+                        StoreCode = "S001",
+                        StoreName = "Store 1",
+                        IsActive = true,
+                    },
+                    new Store
+                    {
+                        StoreGUID = "store-2",
+                        StoreCode = "S002",
+                        StoreName = "Store 2",
+                        IsActive = true,
+                    },
+                }
+            ).ExecuteCommandAsync();
+
+            await _db.Insertable(
+                new[]
+                {
+                    new Role { RoleGUID = "role-admin", RoleName = "Admin", IsActive = true },
+                    new Role
+                    {
+                        RoleGUID = "role-manager",
+                        RoleName = "StoreManager",
+                        IsActive = true,
+                    },
+                    new Role
+                    {
+                        RoleGUID = "role-staff",
+                        RoleName = "StoreStaff",
+                        IsActive = true,
+                    },
+                }
+            ).ExecuteCommandAsync();
+
+            await _db.Insertable(
+                new[]
+                {
+                    CreateUser("manager-1", "manager_1", "manager1@example.com"),
+                    CreateUser("staff-1", "staff_1", "staff1@example.com"),
+                    CreateUser("staff-2", "staff_2", "staff2@example.com"),
+                    CreateUser("admin-1", "admin_1", "admin1@example.com"),
+                }
+            ).ExecuteCommandAsync();
+
+            await _db.Insertable(
+                new[]
+                {
+                    CreateUserRole("manager-1", "role-manager"),
+                    CreateUserRole("staff-1", "role-staff"),
+                    CreateUserRole("staff-2", "role-staff"),
+                    CreateUserRole("admin-1", "role-admin"),
+                }
+            ).ExecuteCommandAsync();
+
+            await _db.Insertable(
+                new[]
+                {
+                    CreateUserStore("manager-1", "store-1", true),
+                    CreateUserStore("staff-1", "store-1", true),
+                    CreateUserStore("staff-2", "store-2", true),
+                    CreateUserStore("admin-1", "store-2", true),
+                }
+            ).ExecuteCommandAsync();
+        }
+
+        private static SqlSugarContext CreateSqlSugarContext(ISqlSugarClient db)
+        {
+            var context = (SqlSugarContext)RuntimeHelpers.GetUninitializedObject(
+                typeof(SqlSugarContext)
+            );
+
+            var dbField = typeof(SqlSugarContext).GetField(
+                "_db",
+                BindingFlags.Instance | BindingFlags.NonPublic
+            );
+            dbField!.SetValue(context, db);
+
+            return context;
+        }
+
+        private static IEnumerable<Claim> CreateClaims(string userGuid, IEnumerable<string> roles)
+        {
+            yield return new Claim("userGuid", userGuid);
+            yield return new Claim("userId", userGuid);
+            yield return new Claim(ClaimTypes.NameIdentifier, userGuid);
+            yield return new Claim(ClaimTypes.Name, userGuid);
+
+            foreach (var role in roles)
+            {
+                yield return new Claim(ClaimTypes.Role, role);
+            }
+        }
+
+        private static User CreateUser(string userGuid, string username, string email)
+        {
+            return new User
+            {
+                UserGUID = userGuid,
+                Username = username,
+                Email = email,
+                PasswordHash = "hashed",
+                FullName = username,
+                IsActive = true,
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow,
+            };
+        }
+
+        private static UserRole CreateUserRole(string userGuid, string roleGuid)
+        {
+            return new UserRole
+            {
+                UserRoleGUID = Guid.NewGuid().ToString(),
+                UserGUID = userGuid,
+                RoleGUID = roleGuid,
+                AssignedAt = DateTime.UtcNow,
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow,
+            };
+        }
+
+        private static UserStore CreateUserStore(string userGuid, string storeGuid, bool isPrimary)
+        {
+            return new UserStore
+            {
+                UserStoreGUID = Guid.NewGuid().ToString(),
+                UserGUID = userGuid,
+                StoreGUID = storeGuid,
+                IsPrimary = isPrimary,
+                AssignedAt = DateTime.UtcNow,
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow,
+            };
+        }
+    }
+}
