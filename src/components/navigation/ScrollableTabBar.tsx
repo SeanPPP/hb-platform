@@ -10,7 +10,7 @@ import {
 import type { BottomTabBarProps } from "@react-navigation/bottom-tabs";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-const MAX_VISIBLE_TABS = 5;
+const MAX_VISIBLE_TABS = 4;
 const ACTIVE_TINT_COLOR = "#1677FF";
 const INACTIVE_TINT_COLOR = "#6B7280";
 

@@ -1,0 +1,52 @@
+{
+  "title": "国内采购",
+  "summary": "已显示 {{shown}} / {{total}} 个批次",
+  "actions": {
+    "create": "创建",
+    "detail": "明细",
+    "export": "导出",
+    "loadMore": "加载更多",
+    "cancel": "取消",
+    "confirmCreate": "确认创建"
+  },
+  "empty": {
+    "noAccessTitle": "无国内采购权限",
+    "noAccessDescription": "当前账号没有国内采购批量创建权限。",
+    "noBatchTitle": "暂无批次",
+    "noBatchDescription": "创建货号条码批次后会显示在这里。"
+  },
+  "create": {
+    "title": "创建货号条码批次",
+    "selectSupplier": "选择供应商",
+    "selectPrefix": "选择前缀码",
+    "noPrefix": "不使用前缀码",
+    "count": "创建数量",
+    "privateLabelPrice": "统一贴牌价格"
+  },
+  "fields": {
+    "normalCount": "普通 {{value}}",
+    "setCount": "套装 {{value}}",
+    "barcode": "条码 {{value}}",
+    "privateLabelPrice": "贴牌 {{value}}",
+    "parent": "父货号 {{value}}",
+    "emptyName": "--"
+  },
+  "types": {
+    "normal": "普通",
+    "set": "套装",
+    "setSubItem": "套装子项"
+  },
+  "messages": {
+    "loadFailed": "加载批次失败",
+    "loadDetailFailed": "加载明细失败",
+    "loadSuppliersFailed": "加载供应商失败",
+    "loadPrefixesFailed": "加载前缀码失败",
+    "selectSupplier": "请先选择供应商",
+    "invalidCount": "创建数量需要在 1 到 100 之间",
+    "invalidPrice": "贴牌价格格式不正确",
+    "createSuccess": "创建成功",
+    "createFailed": "创建失败",
+    "exportSuccess": "导出成功",
+    "exportFailed": "导出失败"
+  }
+}

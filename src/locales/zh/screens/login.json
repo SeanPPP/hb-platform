@@ -3,6 +3,16 @@
   "username": "用户名",
   "password": "密码",
   "rememberUsername": "记住用户名",
+  "apiHost": {
+    "label": "服务器地址",
+    "current": "当前服务器地址",
+    "change": "修改",
+    "title": "服务器地址设置",
+    "description": "只输入 IP 或域名即可，系统会自动补全 http、5001 端口和 /api。",
+    "inputLabel": "IP 或域名",
+    "empty": "请输入后端 IP 或域名",
+    "saved": "后端地址已保存：{{host}}"
+  },
   "errors": {
     "invalidCredentials": "用户名或密码不正确，请重新输入。",
     "timeout": "登录超时，后端未及时响应。\n当前接口: {{origin}}",

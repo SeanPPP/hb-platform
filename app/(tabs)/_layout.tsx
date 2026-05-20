@@ -8,13 +8,28 @@ import { useAuthStore } from "@/store/auth-store";
 import { useDeviceStore } from "@/store/device-store";
 import { useAppNavigationStore } from "@/modules/navigation/store";
 
-const TAB_PATHS: Record<string, "/(tabs)/home" | "/(tabs)/orders" | "/(tabs)/cart" | "/(tabs)/warehouse" | "/(tabs)/attendance" | "/(tabs)/product-query" | "/(tabs)/settings"> = {
+type TabPath =
+  | "/(tabs)/home"
+  | "/(tabs)/orders"
+  | "/(tabs)/cart"
+  | "/(tabs)/warehouse"
+  | "/(tabs)/domestic-purchase"
+  | "/(tabs)/attendance"
+  | "/(tabs)/product-query"
+  | "/(tabs)/users"
+  | "/(tabs)/employee-profile"
+  | "/(tabs)/settings";
+
+const TAB_PATHS: Record<string, TabPath> = {
   home: "/(tabs)/home",
   orders: "/(tabs)/orders",
   cart: "/(tabs)/cart",
   warehouse: "/(tabs)/warehouse",
+  "domestic-purchase": "/(tabs)/domestic-purchase",
   attendance: "/(tabs)/attendance",
   "product-query": "/(tabs)/product-query",
+  users: "/(tabs)/users",
+  "employee-profile": "/(tabs)/employee-profile",
   settings: "/(tabs)/settings",
 };
 
@@ -207,6 +222,16 @@ export default function TabsLayout() {
         }}
       />
       <Tabs.Screen
+        name="domestic-purchase"
+        options={{
+          href: isRouteVisible("domestic-purchase") ? undefined : null,
+          title: t("tabs.domesticPurchase"),
+          tabBarIcon: ({ color, size }) => (
+            <MaterialCommunityIcons name="shopping-outline" color={color} size={size} />
+          ),
+        }}
+      />
+      <Tabs.Screen
         name="attendance"
         options={{
           href: isRouteVisible("attendance") ? undefined : null,
@@ -227,6 +252,26 @@ export default function TabsLayout() {
         }}
       />
       <Tabs.Screen
+        name="users"
+        options={{
+          href: isRouteVisible("users") ? undefined : null,
+          title: t("tabs.users"),
+          tabBarIcon: ({ color, size }) => (
+            <MaterialCommunityIcons name="account-group-outline" color={color} size={size} />
+          ),
+        }}
+      />
+      <Tabs.Screen
+        name="employee-profile"
+        options={{
+          href: isRouteVisible("employee-profile") ? undefined : null,
+          title: t("tabs.employeeProfile"),
+          tabBarIcon: ({ color, size }) => (
+            <MaterialCommunityIcons name="card-account-details-outline" color={color} size={size} />
+          ),
+        }}
+      />
+      <Tabs.Screen
         name="settings"
         options={{
           href: isRouteVisible("settings") ? undefined : null,
@@ -238,12 +283,6 @@ export default function TabsLayout() {
               size={size}
             />
           ),
-        }}
-      />
-      <Tabs.Screen
-        name="employee-profile"
-        options={{
-          href: null,
         }}
       />
     </Tabs>

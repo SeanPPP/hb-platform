@@ -31,8 +31,11 @@
     "orders": "订单",
     "cart": "购物车",
     "warehouse": "仓库",
+    "domesticPurchase": "国内采购",
     "attendance": "考勤",
     "productQuery": "商品维护",
+    "users": "用户",
+    "employeeProfile": "员工",
     "settings": "设置"
   },
   "language": {

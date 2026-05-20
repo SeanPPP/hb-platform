@@ -3,6 +3,16 @@
   "username": "Username",
   "password": "Password",
   "rememberUsername": "Remember username",
+  "apiHost": {
+    "label": "Server address",
+    "current": "Current server address",
+    "change": "Change",
+    "title": "Server address settings",
+    "description": "Enter only an IP or domain. The app will add http, port 5001, and /api.",
+    "inputLabel": "IP or domain",
+    "empty": "Enter a backend IP or domain.",
+    "saved": "Backend address saved: {{host}}"
+  },
   "errors": {
     "invalidCredentials": "The username or password is incorrect.",
     "timeout": "Login timed out before the backend responded.\nEndpoint: {{origin}}",

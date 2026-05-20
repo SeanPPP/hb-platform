@@ -1,2 +1,2 @@
-export const API_BASE_URL = process.env.EXPO_PUBLIC_API_BASE_URL || "http://192.168.31.246:5001/api";
+export { DEFAULT_API_BASE_URL as API_BASE_URL } from "@/shared/api/config";
 export const API_TIMEOUT = 15000;

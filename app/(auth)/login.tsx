@@ -17,13 +17,16 @@ import {
   Text,
   Checkbox,
   Snackbar,
+  Portal,
+  Modal,
+  IconButton,
 } from "react-native-paper";
 import { useState, useEffect, useRef } from "react";
 import { useAuthStore } from "@/store/auth-store";
 import { i18n, setAppLanguage } from "@/shared/i18n/i18n";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 import { AppAsyncStorage } from "@/shared/storage/async-storage";
-import { API_BASE_URL } from "@/shared/constants/api";
+import { getCurrentApiHost, getStoredApiHost, normalizeApiHost, setStoredApiHost } from "@/shared/api/config";
 
 const REMEMBERED_USERNAME_KEY = "remembered_username";
 const BRAND_RED = "#E53935";
@@ -33,12 +36,7 @@ const { height: SCREEN_HEIGHT } = Dimensions.get("window");
 const IS_SMALL_SCREEN = SCREEN_HEIGHT < 640;
 
 function getApiOriginLabel() {
-  try {
-    const url = new URL(API_BASE_URL);
-    return `${url.origin}${url.pathname}`;
-  } catch {
-    return API_BASE_URL;
-  }
+  return getCurrentApiHost();
 }
 
 function getFriendlyLoginErrorMessage(error: unknown): string {
@@ -87,6 +85,9 @@ export default function Login() {
   const [rememberUsername, setRememberUsername] = useState(false);
   const [snackbarVisible, setSnackbarVisible] = useState(false);
   const [rememberReady, setRememberReady] = useState(false);
+  const [apiHost, setApiHost] = useState(getCurrentApiHost());
+  const [apiHostDraft, setApiHostDraft] = useState(getCurrentApiHost());
+  const [apiHostModalVisible, setApiHostModalVisible] = useState(false);
 
   // 动画 refs
   const logoScale = useRef(new Animated.Value(0)).current;
@@ -126,6 +127,7 @@ export default function Login() {
 
   useEffect(() => {
     void loadRememberedUsername();
+    void loadApiHost();
   }, []);
 
   useEffect(() => {
@@ -148,6 +150,28 @@ export default function Login() {
     setRememberReady(true);
   }
 
+  async function loadApiHost() {
+    const host = await getStoredApiHost();
+    setApiHost(host);
+    setApiHostDraft(host);
+  }
+
+  async function handleSaveApiHost() {
+    const normalizedHost = normalizeApiHost(apiHostDraft);
+    if (!normalizedHost) {
+      setError(t("apiHost.empty"));
+      setSnackbarVisible(true);
+      return;
+    }
+
+    const host = await setStoredApiHost(normalizedHost);
+    setApiHost(host);
+    setApiHostDraft(host);
+    setApiHostModalVisible(false);
+    setError(t("apiHost.saved", { host }));
+    setSnackbarVisible(true);
+  }
+
   async function handleLogin() {
     setError("");
     setLoading(true);
@@ -165,6 +189,18 @@ export default function Login() {
   return (
     <View style={styles.root}>
       <StatusBar barStyle="light-content" backgroundColor={BRAND_RED} />
+
+      <IconButton
+        icon="cog-outline"
+        iconColor="#FFFFFF"
+        mode="contained-tonal"
+        accessibilityLabel={t("apiHost.title")}
+        style={styles.serverSettingsButton}
+        onPress={() => {
+          setApiHostDraft(apiHost);
+          setApiHostModalVisible(true);
+        }}
+      />
 
       {/* ── 语言切换按钮 ── */}
       <TouchableOpacity
@@ -282,6 +318,40 @@ export default function Login() {
         </ScrollView>
       </KeyboardAvoidingView>
 
+      <Portal>
+        <Modal
+          visible={apiHostModalVisible}
+          onDismiss={() => setApiHostModalVisible(false)}
+          contentContainerStyle={styles.apiHostModal}
+        >
+          <Text style={styles.apiHostModalTitle}>{t("apiHost.title")}</Text>
+          <Text style={styles.apiHostModalDescription}>{t("apiHost.description")}</Text>
+          <View style={styles.apiHostCurrentBox}>
+            <Text style={styles.apiHostLabel}>{t("apiHost.current")}</Text>
+            <Text style={styles.apiHostValue} numberOfLines={1}>{apiHost}</Text>
+          </View>
+          <TextInput
+            label={t("apiHost.inputLabel")}
+            value={apiHostDraft}
+            onChangeText={setApiHostDraft}
+            mode="outlined"
+            autoCapitalize="none"
+            autoCorrect={false}
+            style={styles.input}
+            outlineColor="#E0E0E0"
+            activeOutlineColor={BRAND_RED}
+          />
+          <View style={styles.apiHostModalActions}>
+            <Button mode="text" textColor="#555" onPress={() => setApiHostModalVisible(false)}>
+              {t("common:actions.cancel")}
+            </Button>
+            <Button mode="contained" buttonColor={BRAND_RED} onPress={handleSaveApiHost}>
+              {t("common:actions.save")}
+            </Button>
+          </View>
+        </Modal>
+      </Portal>
+
       <Snackbar
         visible={snackbarVisible}
         onDismiss={() => setSnackbarVisible(false)}
@@ -296,6 +366,15 @@ export default function Login() {
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: BRAND_BG },
+  serverSettingsButton: {
+    backgroundColor: "rgba(255,255,255,0.25)",
+    borderColor: "rgba(255,255,255,0.4)",
+    borderWidth: 1,
+    left: 12,
+    position: "absolute",
+    top: 46,
+    zIndex: 100,
+  },
   // 语言切换
   langSwitch: {
     position: "absolute",
@@ -372,6 +451,39 @@ const styles = StyleSheet.create({
     elevation: 2,
   },
   input: { marginBottom: 14, backgroundColor: "#FAFAFA" },
+  apiHostCurrentBox: {
+    borderColor: "#F2D7D5",
+    borderRadius: 12,
+    borderWidth: 1,
+    marginBottom: 14,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  apiHostLabel: { color: "#777", fontSize: 12, marginBottom: 2 },
+  apiHostValue: { color: "#333", fontSize: 14, fontWeight: "700" },
+  apiHostModal: {
+    backgroundColor: "#FFFFFF",
+    borderRadius: 16,
+    marginHorizontal: 24,
+    padding: 20,
+  },
+  apiHostModalTitle: {
+    color: "#222",
+    fontSize: 18,
+    fontWeight: "800",
+    marginBottom: 8,
+  },
+  apiHostModalDescription: {
+    color: "#666",
+    fontSize: 13,
+    lineHeight: 19,
+    marginBottom: 16,
+  },
+  apiHostModalActions: {
+    flexDirection: "row",
+    gap: 8,
+    justifyContent: "flex-end",
+  },
   checkboxLabel: { fontSize: 14, color: "#555" },
   button: { marginTop: 6, borderRadius: 14 },
   buttonContent: { height: 50 },

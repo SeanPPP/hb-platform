@@ -3,6 +3,7 @@ import { initReactI18next } from "react-i18next";
 import commonEn from "@/locales/en/common.json";
 import attendanceEn from "@/locales/en/screens/attendance.json";
 import cartEn from "@/locales/en/screens/cart.json";
+import domesticPurchaseEn from "@/locales/en/screens/domesticPurchase.json";
 import employeeProfileEn from "@/locales/en/screens/employeeProfile.json";
 import homeEn from "@/locales/en/screens/home.json";
 import loginEn from "@/locales/en/screens/login.json";
@@ -13,6 +14,7 @@ import warehouseEn from "@/locales/en/screens/warehouse.json";
 import commonZh from "@/locales/zh/common.json";
 import attendanceZh from "@/locales/zh/screens/attendance.json";
 import cartZh from "@/locales/zh/screens/cart.json";
+import domesticPurchaseZh from "@/locales/zh/screens/domesticPurchase.json";
 import employeeProfileZh from "@/locales/zh/screens/employeeProfile.json";
 import homeZh from "@/locales/zh/screens/home.json";
 import loginZh from "@/locales/zh/screens/login.json";
@@ -34,6 +36,7 @@ const resources = {
     login: loginZh,
     home: homeZh,
     cart: cartZh,
+    domesticPurchase: domesticPurchaseZh,
     employeeProfile: employeeProfileZh,
     orders: ordersZh,
     settings: settingsZh,
@@ -46,6 +49,7 @@ const resources = {
     login: loginEn,
     home: homeEn,
     cart: cartEn,
+    domesticPurchase: domesticPurchaseEn,
     employeeProfile: employeeProfileEn,
     orders: ordersEn,
     settings: settingsEn,
@@ -76,7 +80,7 @@ if (!i18n.isInitialized) {
     lng: DEFAULT_APP_LANGUAGE,
     fallbackLng: DEFAULT_APP_LANGUAGE,
     defaultNS: "common",
-    ns: ["common", "attendance", "login", "home", "cart", "employeeProfile", "orders", "settings", "productQuery", "warehouse"],
+    ns: ["common", "attendance", "login", "home", "cart", "domesticPurchase", "employeeProfile", "orders", "settings", "productQuery", "warehouse"],
     interpolation: {
       escapeValue: false,
     },

@@ -2,8 +2,7 @@ import axios, { AxiosError, InternalAxiosRequestConfig } from "axios";
 import { router } from "expo-router";
 import { SecureStorage } from "@/shared/storage/secure";
 import { DeviceStorage } from "@/modules/device/storage";
-
-const BASE_URL = process.env.EXPO_PUBLIC_API_BASE_URL || "http://192.168.31.246:5001/api";
+import { buildApiBaseUrl, DEFAULT_API_BASE_URL, getStoredApiHost } from "@/shared/api/config";
 
 function unwrapEnvelope<T>(payload: unknown): T {
   let current = payload;
@@ -28,10 +27,17 @@ function unwrapEnvelope<T>(payload: unknown): T {
 }
 
 export const apiClient = axios.create({
-  baseURL: BASE_URL,
+  baseURL: DEFAULT_API_BASE_URL,
   timeout: 15000,
   headers: { "Content-Type": "application/json" },
 });
+
+async function syncApiBaseUrl() {
+  const host = await getStoredApiHost();
+  const baseURL = buildApiBaseUrl(host);
+  apiClient.defaults.baseURL = baseURL;
+  return baseURL;
+}
 
 let isRefreshing = false;
 let refreshQueue: Array<{
@@ -41,6 +47,7 @@ let refreshQueue: Array<{
 
 apiClient.interceptors.request.use(
   async (config: InternalAxiosRequestConfig) => {
+    config.baseURL = await syncApiBaseUrl();
     const token = await SecureStorage.getToken();
     if (token && config.headers) {
       config.headers.Authorization = `Bearer ${token}`;
@@ -79,9 +86,10 @@ apiClient.interceptors.response.use(
       original._retry = true;
       isRefreshing = true;
       try {
+        const baseURL = await syncApiBaseUrl();
         const rt = await SecureStorage.getRefreshToken();
         if (!rt) throw new Error("No refresh token");
-        const res = await axios.post(`${BASE_URL}/auth/refresh`, {
+        const res = await axios.post(`${baseURL}/auth/refresh`, {
           refreshToken: rt,
         });
         const { accessToken, refreshToken: newRt } = res.data.data ?? res.data;

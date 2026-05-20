@@ -1,0 +1,52 @@
+{
+  "title": "Domestic Purchase",
+  "summary": "Showing {{shown}} / {{total}} batches",
+  "actions": {
+    "create": "Create",
+    "detail": "Detail",
+    "export": "Export",
+    "loadMore": "Load more",
+    "cancel": "Cancel",
+    "confirmCreate": "Create"
+  },
+  "empty": {
+    "noAccessTitle": "No domestic purchase access",
+    "noAccessDescription": "The current account cannot create domestic purchase batches.",
+    "noBatchTitle": "No batches",
+    "noBatchDescription": "Created item/barcode batches will appear here."
+  },
+  "create": {
+    "title": "Create item/barcode batch",
+    "selectSupplier": "Select supplier",
+    "selectPrefix": "Select prefix",
+    "noPrefix": "No prefix",
+    "count": "Quantity",
+    "privateLabelPrice": "Private label price"
+  },
+  "fields": {
+    "normalCount": "Normal {{value}}",
+    "setCount": "Set {{value}}",
+    "barcode": "Barcode {{value}}",
+    "privateLabelPrice": "Private label {{value}}",
+    "parent": "Parent {{value}}",
+    "emptyName": "--"
+  },
+  "types": {
+    "normal": "Normal",
+    "set": "Set",
+    "setSubItem": "Set item"
+  },
+  "messages": {
+    "loadFailed": "Failed to load batches",
+    "loadDetailFailed": "Failed to load detail",
+    "loadSuppliersFailed": "Failed to load suppliers",
+    "loadPrefixesFailed": "Failed to load prefixes",
+    "selectSupplier": "Select a supplier first",
+    "invalidCount": "Quantity must be between 1 and 100",
+    "invalidPrice": "Invalid private label price",
+    "createSuccess": "Created",
+    "createFailed": "Create failed",
+    "exportSuccess": "Exported",
+    "exportFailed": "Export failed"
+  }
+}

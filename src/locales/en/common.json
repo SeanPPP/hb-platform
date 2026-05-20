@@ -31,8 +31,11 @@
     "orders": "Orders",
     "cart": "Cart",
     "warehouse": "Warehouse",
+    "domesticPurchase": "Purchase",
     "attendance": "Attendance",
     "productQuery": "Products",
+    "users": "Users",
+    "employeeProfile": "Employee",
     "settings": "Settings"
   },
   "language": {

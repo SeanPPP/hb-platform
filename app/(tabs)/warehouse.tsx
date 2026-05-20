@@ -51,7 +51,7 @@ interface NumericInputModalState {
 }
 
 const LOCATION_LETTER_OPTIONS = Array.from({ length: 26 }, (_, index) => String.fromCharCode(65 + index));
-const LOCATION_NUMBER_OPTIONS = Array.from({ length: 99 }, (_, index) => String(index + 1).padStart(2, "0"));
+const LOCATION_NUMBER_OPTIONS = Array.from({ length: 100 }, (_, index) => String(index).padStart(2, "0"));
 const PRODUCT_GRADE_OPTIONS = ["A", "B", "C", "D"];
 const PRODUCT_GRADE_CONFIG: Record<string, { color: string }> = {
   A: { color: "#722ED1" },
@@ -61,14 +61,14 @@ const PRODUCT_GRADE_CONFIG: Record<string, { color: string }> = {
 };
 
 function buildLocationCode(parts: Record<LocationCodePart, string>) {
-  return `${parts.letter}${parts.section}${parts.shelf}${parts.slot}`;
+  return `${parts.letter}-${parts.section}-${parts.shelf}-${parts.slot}`;
 }
 
 function splitLocationCode(code?: string | null): Record<LocationCodePart, string> {
   const normalized = (code ?? "").trim().toUpperCase();
-  const match = /^([A-Z])(\d{2})(\d{2})(\d{2})$/.exec(normalized);
+  const match = /^([A-Z])-(\d{2})-(\d{2})-(\d{2})$/.exec(normalized);
   if (!match) {
-    return { letter: "A", section: "01", shelf: "01", slot: "01" };
+    return { letter: "A", section: "00", shelf: "00", slot: "01" };
   }
 
   return {
