@@ -215,8 +215,7 @@ namespace BlazorApp.Api.Services.React
                 var codeCounts = includeCodes
                     ? new ProductSetCodeCounts
                     {
-                        SetCodeCount = productSetCodes.Count(x => x.SetType == 1),
-                        MultiCodeCount = productSetCodes.Count(x => x.SetType == 2),
+                        TotalSetCodeCount = productSetCodes.Count,
                     }
                     : await QueryProductSetCodeCountsAsync(productCode);
                 setCodesSw.Stop();
@@ -268,7 +267,7 @@ namespace BlazorApp.Api.Services.React
                 {
                     var setProductCode = ResolveSetProductCode(setCode.SetProductCode, setCode.SetCodeId);
                     projectionMap.TryGetValue(setProductCode, out var projection);
-                    if (setCode.SetType == 2)
+                    if (product.ProductType == 2)
                     {
                         multiCodes.Add(
                             BuildMultiCodeDto(
@@ -301,8 +300,8 @@ namespace BlazorApp.Api.Services.React
                     ClearancePrice = clearancePrice,
                     MultiCodes = multiCodes,
                     SetCodes = setCodes,
-                    SetCodeCount = codeCounts.SetCodeCount,
-                    MultiCodeCount = codeCounts.MultiCodeCount,
+                    SetCodeCount = product.ProductType == 2 ? 0 : codeCounts.TotalSetCodeCount,
+                    MultiCodeCount = product.ProductType == 2 ? codeCounts.TotalSetCodeCount : 0,
                     CodesIncluded = includeCodes,
                 };
 
@@ -379,6 +378,16 @@ namespace BlazorApp.Api.Services.React
                 var responseBuildSw = Stopwatch.StartNew();
                 var storePriceEntity = BuildStorePriceEntity(fastRow);
                 var clearancePriceEntity = BuildClearancePriceEntity(fastRow);
+                var totalSetCodes = fastRow.TotalSetCodeCount;
+                int setCodeCount = 0;
+                int multiCodeCount = 0;
+                if (totalSetCodes > 0)
+                {
+                    if (fastRow.ProductType == 2)
+                        multiCodeCount = totalSetCodes;
+                    else
+                        setCodeCount = totalSetCodes;
+                }
                 var detail = new StoreProductDetailDto
                 {
                     ProductCode = fastRow.ProductCode ?? string.Empty,
@@ -404,8 +413,8 @@ namespace BlazorApp.Api.Services.React
                         : BuildClearancePriceDto(clearancePriceEntity, fastRow.ClearanceStoreName),
                     SetCodes = new List<StoreProductSetCodeDto>(),
                     MultiCodes = new List<StoreProductMultiCodeDto>(),
-                    SetCodeCount = fastRow.SetCodeCount,
-                    MultiCodeCount = fastRow.MultiCodeCount,
+                    SetCodeCount = setCodeCount,
+                    MultiCodeCount = multiCodeCount,
                     CodesIncluded = false,
                 };
                 responseBuildSw.Stop();
@@ -544,7 +553,7 @@ namespace BlazorApp.Api.Services.React
                 var pageResult = await QueryProductCodesPageAsync(
                     productCode,
                     storeCode,
-                    1,
+                    null,
                     page,
                     pageSize,
                     keyword,
@@ -1192,7 +1201,7 @@ namespace BlazorApp.Api.Services.React
         private async Task<ProductCodePageQueryResult> QueryProductCodesPageAsync(
             string productCode,
             string? storeCode,
-            int setType,
+            int? setType,
             int page,
             int pageSize,
             string? keyword,
@@ -1293,7 +1302,7 @@ namespace BlazorApp.Api.Services.React
             var pageIndex = Math.Max(1, page);
             var normalizedPageSize = Math.Clamp(pageSize, 1, 100);
             RefAsync<int> totalCount = 0;
-            var setCodes = await BuildProductSetCodeQuery(normalizedProductCode, 2, keyword)
+            var setCodes = await BuildProductSetCodeQuery(normalizedProductCode, null, keyword)
                 .OrderBy(s => s.SetBarcode)
                 .Select(s => new ProductSetCode
                 {
@@ -1374,9 +1383,7 @@ namespace BlazorApp.Api.Services.React
         {
             var rows = await _db.Ado.SqlQueryAsync<ProductSetCodeCounts>(
                 """
-                SELECT
-                    ISNULL(SUM(CASE WHEN SetType = 1 THEN 1 ELSE 0 END), 0) AS SetCodeCount,
-                    ISNULL(SUM(CASE WHEN SetType = 2 THEN 1 ELSE 0 END), 0) AS MultiCodeCount
+                SELECT ISNULL(COUNT(1), 0) AS TotalSetCodeCount
                 FROM [ProductSetCode]
                 WHERE ProductCode = @ProductCode AND IsDeleted = 0
                 """,
@@ -1421,17 +1428,14 @@ namespace BlazorApp.Api.Services.React
                     cp.ProductCode AS ClearanceProductCode,
                     cp.ClearanceBarcode AS ClearanceBarcode,
                     cp.ClearancePrice AS ClearancePrice,
-                    ISNULL(codeCounts.SetCodeCount, 0) AS SetCodeCount,
-                    ISNULL(codeCounts.MultiCodeCount, 0) AS MultiCodeCount
+                    ISNULL(codeCounts.TotalSetCodeCount, 0) AS TotalSetCodeCount
                 FROM [Product] p
                 LEFT JOIN [ProductGrade] pg
                     ON pg.ProductCode = p.ProductCode AND ISNULL(pg.IsDeleted, 0) = 0
                 LEFT JOIN [LocalSupplier] ls
                     ON ls.LocalSupplierCode = p.LocalSupplierCode AND ISNULL(ls.IsDeleted, 0) = 0
                 OUTER APPLY (
-                    SELECT
-                        SUM(CASE WHEN psc.SetType = 1 THEN 1 ELSE 0 END) AS SetCodeCount,
-                        SUM(CASE WHEN psc.SetType = 2 THEN 1 ELSE 0 END) AS MultiCodeCount
+                    SELECT COUNT(1) AS TotalSetCodeCount
                     FROM [ProductSetCode] psc
                     WHERE psc.ProductCode = p.ProductCode
                         AND ISNULL(psc.IsDeleted, 0) = 0
@@ -2519,8 +2523,7 @@ namespace BlazorApp.Api.Services.React
 
         private sealed class ProductSetCodeCounts
         {
-            public int SetCodeCount { get; set; }
-            public int MultiCodeCount { get; set; }
+            public int TotalSetCodeCount { get; set; }
         }
 
         private sealed class FastDetailBaseRow
@@ -2552,8 +2555,7 @@ namespace BlazorApp.Api.Services.React
             public string? ClearanceProductCode { get; set; }
             public string? ClearanceBarcode { get; set; }
             public decimal? ClearancePrice { get; set; }
-            public int SetCodeCount { get; set; }
-            public int MultiCodeCount { get; set; }
+            public int TotalSetCodeCount { get; set; }
         }
 
         private sealed class ProductCodePageQueryResult
