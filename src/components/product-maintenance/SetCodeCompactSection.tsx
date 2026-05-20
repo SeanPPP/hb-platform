@@ -1,5 +1,5 @@
 import { Pressable, StyleSheet, View } from "react-native";
-import { ActivityIndicator, Button, Card, Text, TextInput } from "react-native-paper";
+import { ActivityIndicator, Button, Card, IconButton, Text } from "react-native-paper";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 import type { ProductSetCodeItem } from "@/modules/product-maintenance/types";
 
@@ -7,43 +7,35 @@ interface SetCodeCompactSectionProps {
   items: ProductSetCodeItem[];
   savingItemId?: string | null;
   printingItemId?: string | null;
-  draftBarcode: string;
-  draftRetailPrice: string;
   totalCount?: number;
   loading?: boolean;
   loadingMore?: boolean;
   hasMore?: boolean;
-  onChangeDraftBarcode: (value: string) => void;
-  onEditDraftRetailPrice: () => void;
-  onChangeItem: (setCodeId: string, patch: Partial<ProductSetCodeItem>) => void;
+  onEditItemBarcode: (setCodeId: string) => void;
   onEditItemRetailPrice: (setCodeId: string) => void;
   onSaveItem: (setCodeId: string) => void;
   onPrintItem: (setCodeId: string) => void;
-  onCreateItem: () => void;
+  onAddItem: () => void;
   onLoadMore?: () => void;
 }
 
 function formatPrice(value?: number | null) {
-  return value == null ? "" : value.toFixed(2);
+  return value == null ? "--" : `$${value.toFixed(2)}`;
 }
 
 export function SetCodeCompactSection({
   items,
   savingItemId,
   printingItemId,
-  draftBarcode,
-  draftRetailPrice,
   totalCount,
   loading,
   loadingMore,
   hasMore,
-  onChangeDraftBarcode,
-  onEditDraftRetailPrice,
-  onChangeItem,
+  onEditItemBarcode,
   onEditItemRetailPrice,
   onSaveItem,
   onPrintItem,
-  onCreateItem,
+  onAddItem,
   onLoadMore,
 }: SetCodeCompactSectionProps) {
   const { t } = useAppTranslation("productQuery");
@@ -51,10 +43,22 @@ export function SetCodeCompactSection({
   return (
     <Card style={styles.card} mode="contained">
       <Card.Content style={styles.content}>
-        <Text variant="titleSmall" style={styles.title}>
-          {t("setCode.title")}
-          {totalCount != null ? ` (${items.length}/${totalCount})` : ""}
-        </Text>
+        <View style={styles.headerRow}>
+          <Text variant="titleSmall" style={styles.title}>
+            {t("setCode.title")}
+            {totalCount != null ? ` (${items.length}/${totalCount})` : ""}
+          </Text>
+          <Button
+            compact
+            mode="contained"
+            icon="plus"
+            onPress={onAddItem}
+            loading={savingItemId === "new-set"}
+            disabled={savingItemId === "new-set"}
+          >
+            {t("setCode.add")}
+          </Button>
+        </View>
 
         {loading ? (
           <View style={styles.loadingRow}>
@@ -65,49 +69,29 @@ export function SetCodeCompactSection({
           </View>
         ) : null}
 
-        {items.map((item) => (
-          <View key={item.setCodeId} style={styles.item}>
-            <TextInput
-              mode="outlined"
-              dense
-              label={t("setCode.barcode")}
-              value={item.setBarcode ?? ""}
-              onChangeText={(value) => onChangeItem(item.setCodeId, { setBarcode: value })}
-              style={styles.input}
+        {items.map((item, index) => (
+          <View key={item.setCodeId} style={styles.row}>
+            <Text variant="bodySmall" style={styles.rowNumber}>
+              {index + 1}
+            </Text>
+            <Pressable style={styles.barcodeCell} onPress={() => onEditItemBarcode(item.setCodeId)}>
+              <Text variant="bodyMedium" style={styles.barcodeText} numberOfLines={1}>
+                {item.setBarcode ?? "--"}
+              </Text>
+            </Pressable>
+            <Pressable style={styles.priceCell} onPress={() => onEditItemRetailPrice(item.setCodeId)}>
+              <Text variant="bodyMedium" style={styles.priceText}>
+                {formatPrice(item.setRetailPrice)}
+              </Text>
+            </Pressable>
+            <IconButton
+              icon="printer-outline"
+              size={18}
+              onPress={() => onPrintItem(item.setCodeId)}
+              loading={printingItemId === item.setCodeId}
+              disabled={printingItemId === item.setCodeId}
+              style={styles.printButton}
             />
-            <View style={styles.footerRow}>
-              <Pressable style={styles.priceInput} onPress={() => onEditItemRetailPrice(item.setCodeId)}>
-                <View pointerEvents="none">
-                  <TextInput
-                    mode="outlined"
-                    dense
-                    label={t("setCode.retail")}
-                    value={formatPrice(item.setRetailPrice)}
-                    editable={false}
-                    style={styles.input}
-                  />
-                </View>
-              </Pressable>
-              <Button
-                compact
-                mode="outlined"
-                icon="printer-outline"
-                onPress={() => onPrintItem(item.setCodeId)}
-                loading={printingItemId === item.setCodeId}
-                disabled={printingItemId === item.setCodeId}
-              >
-                {printingItemId === item.setCodeId ? t("print.sendingShort") : t("print.product")}
-              </Button>
-              <Button
-                compact
-                mode="contained-tonal"
-                onPress={() => onSaveItem(item.setCodeId)}
-                loading={savingItemId === item.setCodeId}
-                disabled={savingItemId === item.setCodeId}
-              >
-                {t("setCode.save")}
-              </Button>
-            </View>
           </View>
         ))}
 
@@ -122,43 +106,6 @@ export function SetCodeCompactSection({
             {t("setCode.loadMore")}
           </Button>
         ) : null}
-
-        <View style={[styles.item, styles.draftItem]}>
-          <Text variant="bodySmall" style={styles.addTitle}>
-            {t("setCode.addTitle")}
-          </Text>
-          <TextInput
-            mode="outlined"
-            dense
-            label={t("setCode.barcode")}
-            value={draftBarcode}
-            onChangeText={onChangeDraftBarcode}
-            style={styles.input}
-          />
-          <View style={styles.footerRow}>
-            <Pressable style={styles.priceInput} onPress={onEditDraftRetailPrice}>
-              <View pointerEvents="none">
-                <TextInput
-                  mode="outlined"
-                  dense
-                  label={t("setCode.retail")}
-                  value={draftRetailPrice}
-                  editable={false}
-                  style={styles.input}
-                />
-              </View>
-            </Pressable>
-            <Button
-              compact
-              mode="contained"
-              onPress={onCreateItem}
-              loading={savingItemId === "new-set"}
-              disabled={savingItemId === "new-set"}
-            >
-              {t("setCode.add")}
-            </Button>
-          </View>
-        </View>
       </Card.Content>
     </Card>
   );
@@ -170,8 +117,13 @@ const styles = StyleSheet.create({
     backgroundColor: "#fff",
   },
   content: {
-    gap: 10,
+    gap: 6,
     paddingVertical: 10,
+  },
+  headerRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
   },
   title: {
     fontWeight: "700",
@@ -184,26 +136,37 @@ const styles = StyleSheet.create({
   loadingText: {
     color: "#475467",
   },
-  item: {
-    gap: 8,
-  },
-  draftItem: {
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: "#E5E7EB",
-    paddingTop: 10,
-  },
-  addTitle: {
-    color: "#475467",
-  },
-  input: {
-    backgroundColor: "#fff",
-  },
-  footerRow: {
+  row: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 10,
+    paddingVertical: 4,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: "#F1F5F9",
   },
-  priceInput: {
+  rowNumber: {
+    width: 24,
+    color: "#94A3B8",
+    textAlign: "center",
+  },
+  barcodeCell: {
     flex: 1,
+    paddingHorizontal: 6,
+    paddingVertical: 4,
+  },
+  barcodeText: {
+    color: "#334155",
+  },
+  priceCell: {
+    paddingHorizontal: 6,
+    paddingVertical: 4,
+    minWidth: 70,
+    alignItems: "flex-end",
+  },
+  priceText: {
+    color: "#334155",
+    fontWeight: "600",
+  },
+  printButton: {
+    margin: 0,
   },
 });

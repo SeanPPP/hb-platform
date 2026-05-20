@@ -7,8 +7,8 @@ type NativePrinterModule = {
   connect(address: string): Promise<boolean>;
   disconnect(): Promise<boolean>;
   print(command: string, encoding?: string): Promise<boolean>;
-  printProductLabel(payload: ProductLabelPrintPayload): Promise<boolean>;
-  printDiscountLabel(payload: ProductLabelPrintPayload): Promise<boolean>;
+  printProductLabel(payload: ProductLabelPrintPayload, printType?: string | null): Promise<boolean>;
+  printDiscountLabel(payload: ProductLabelPrintPayload, printType?: string | null): Promise<boolean>;
   printClearanceLabel(payload: ProductLabelPrintPayload): Promise<boolean>;
   printBigDiscountLabel(payload: ProductLabelPrintPayload, printType?: string | null): Promise<boolean>;
 };
@@ -80,14 +80,14 @@ export async function printRawCommand(command: string) {
   return getModule().print(command, "GB18030");
 }
 
-export async function printNativeProductLabel(payload: ProductLabelPrintPayload) {
+export async function printNativeProductLabel(payload: ProductLabelPrintPayload, printType?: string | null) {
   await ensureBluetoothPermissions();
-  return getModule().printProductLabel(payload);
+  return getModule().printProductLabel(payload, printType ?? null);
 }
 
-export async function printNativeDiscountLabel(payload: ProductLabelPrintPayload) {
+export async function printNativeDiscountLabel(payload: ProductLabelPrintPayload, printType?: string | null) {
   await ensureBluetoothPermissions();
-  return getModule().printDiscountLabel(payload);
+  return getModule().printDiscountLabel(payload, printType ?? null);
 }
 
 export async function printNativeClearanceLabel(payload: ProductLabelPrintPayload) {

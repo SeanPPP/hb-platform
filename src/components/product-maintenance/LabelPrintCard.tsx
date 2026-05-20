@@ -1,5 +1,5 @@
 import { StyleSheet, View } from "react-native";
-import { Button, Card, Text } from "react-native-paper";
+import { Button, Card, Switch, Text } from "react-native-paper";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 
 interface LabelPrintCardProps {
@@ -12,11 +12,13 @@ interface LabelPrintCardProps {
   canPrintClearance?: boolean;
   canPrintBigDiscount?: boolean;
   canPrintClearanceProduct?: boolean;
+  smallLabel?: boolean;
   onPrintProduct?: () => void;
   onPrintDiscount?: () => void;
   onPrintClearance?: () => void;
   onPrintBigDiscount?: () => void;
   onPrintClearanceProduct?: () => void;
+  onToggleSmallLabel?: () => void;
 }
 
 export function LabelPrintCard({
@@ -29,20 +31,34 @@ export function LabelPrintCard({
   canPrintClearance = false,
   canPrintBigDiscount = false,
   canPrintClearanceProduct = false,
+  smallLabel = false,
   onPrintProduct,
   onPrintDiscount,
   onPrintClearance,
   onPrintBigDiscount,
   onPrintClearanceProduct,
+  onToggleSmallLabel,
 }: LabelPrintCardProps) {
   const { t } = useAppTranslation("productQuery");
 
   return (
     <Card style={styles.card} mode="contained">
       <Card.Content style={styles.content}>
-        <Text variant="titleSmall" style={styles.title}>
-          {t("print.title")}
-        </Text>
+        <View style={styles.headerRow}>
+          <Text variant="titleSmall" style={styles.title}>
+            {t("print.title")}
+          </Text>
+          <View style={styles.smallLabelRow}>
+            <Text variant="bodySmall" style={styles.smallLabelText}>
+              {t("print.smallLabel")}
+            </Text>
+            <Switch
+              value={smallLabel}
+              onValueChange={onToggleSmallLabel}
+              style={styles.smallLabelSwitch}
+            />
+          </View>
+        </View>
         <View style={styles.actions}>
           <Button
             compact
@@ -109,9 +125,25 @@ const styles = StyleSheet.create({
     gap: 8,
     paddingVertical: 8,
   },
+  headerRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
   title: {
     fontWeight: "700",
     color: "#111827",
+  },
+  smallLabelRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+  },
+  smallLabelText: {
+    color: "#64748B",
+  },
+  smallLabelSwitch: {
+    transform: [{ scaleX: 0.8 }, { scaleY: 0.8 }],
   },
   actions: {
     flexDirection: "row",

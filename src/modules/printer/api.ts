@@ -191,14 +191,14 @@ export async function testPrinterConnection() {
   return printRawCommand("! 0 200 200 160 1\r\nPAGE-WIDTH 570\r\nTEXT 7 0 20 30 HB LABEL PRINTER\r\nTEXT 4 0 20 78 Connection OK\r\nTEXT 4 0 20 118 TEST\r\nPRINT\r\n");
 }
 
-export async function printProductLabel(detail: ProductDetail, overrides?: ProductLabelOverrides) {
+export async function printProductLabel(detail: ProductDetail, overrides?: ProductLabelOverrides, printType?: string | null) {
   await ensureConnectedPrinter();
-  return printNativeProductLabel(buildPayload(detail, overrides));
+  return printNativeProductLabel(buildPayload(detail, overrides), printType);
 }
 
-export async function printDiscountLabel(detail: ProductDetail) {
+export async function printDiscountLabel(detail: ProductDetail, printType?: string | null) {
   await ensureConnectedPrinter();
-  return printNativeDiscountLabel(buildPayload(detail));
+  return printNativeDiscountLabel(buildPayload(detail), printType);
 }
 
 export async function printClearanceLabel(detail: ProductDetail) {

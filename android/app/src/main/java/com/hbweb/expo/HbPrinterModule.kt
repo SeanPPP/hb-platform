@@ -242,10 +242,10 @@ class HbPrinterModule(
   }
 
   @ReactMethod
-  fun printProductLabel(payload: ReadableMap, promise: Promise) {
+  fun printProductLabel(payload: ReadableMap, printType: String?, promise: Promise) {
     Thread {
       try {
-        val command = buildProductLabelCommand(payload)
+        val command = buildProductLabelCommand(payload, printType?.trim().orEmpty())
         writePrinterCommand(command, "GB18030")
         promise.resolve(true)
       } catch (error: Exception) {
@@ -255,10 +255,10 @@ class HbPrinterModule(
   }
 
   @ReactMethod
-  fun printDiscountLabel(payload: ReadableMap, promise: Promise) {
+  fun printDiscountLabel(payload: ReadableMap, printType: String?, promise: Promise) {
     Thread {
       try {
-        val command = buildDiscountLabelCommand(payload)
+        val command = buildDiscountLabelCommand(payload, printType?.trim().orEmpty())
         writePrinterCommand(command, "GB18030")
         promise.resolve(true)
       } catch (error: Exception) {
@@ -305,7 +305,10 @@ class HbPrinterModule(
     outputStream.flush()
   }
 
-  private fun buildProductLabelCommand(payload: ReadableMap): String {
+  private fun buildProductLabelCommand(payload: ReadableMap, printType: String = ""): String {
+    val isSmall = printType.equals("small", ignoreCase = true)
+    val w = if (isSmall) 472 else labelWidth
+    val h = if (isSmall) 320 else labelHeight
     val productName = payload.getNullableString("productName")
     val itemNumber = payload.getNullableString("itemNumber")
     val supplierName = formatSupplierAbbreviation(payload.getNullableString("supplierName"))
@@ -324,7 +327,7 @@ class HbPrinterModule(
     val dateBitmap = textToBitmap(todayString(), fontSizeToPixels(8f), true, "sans-serif-black", true, 2)
     val nameMaxWidth = max(
       1,
-      labelWidth - priceDecimalBitmap.width - priceDotBitmap.width - priceIntegerBitmap.width - priceCurrencyBitmap.width,
+      w - priceDecimalBitmap.width - priceDotBitmap.width - priceIntegerBitmap.width - priceCurrencyBitmap.width,
     )
     val nameBitmap = longTextToBitmap(productName, fontSizeToPixels(10f), false, "Arial", 2, nameMaxWidth)
     val discountBitmap = if (discountRate > 0) {
@@ -337,10 +340,10 @@ class HbPrinterModule(
     }
 
     val startY = 30
-    val startX = labelWidth - priceDecimalBitmap.width
+    val startX = w - priceDecimalBitmap.width
     val commands = mutableListOf(
-      "! 0 200 200 $labelHeight 1",
-      "PAGE-WIDTH $labelWidth",
+      "! 0 200 200 $h 1",
+      "PAGE-WIDTH $w",
       bitmapCommand(5, 5, nameBitmap),
       bitmapCommand(5, 120, itemBitmap),
       bitmapCommand(5 + itemBitmap.width + 10, 118, supplierBitmap),
@@ -352,7 +355,7 @@ class HbPrinterModule(
     }
 
     if (discountBitmap != null) {
-      commands += bitmapCommand(labelWidth - discountBitmap.width - dateBitmap.width - 20, 175, discountBitmap)
+      commands += bitmapCommand(w - discountBitmap.width - dateBitmap.width - 20, 175, discountBitmap)
     }
 
     if (gradeBitmap != null) {
@@ -367,13 +370,16 @@ class HbPrinterModule(
       startY,
       priceCurrencyBitmap,
     )
-    commands += bitmapCommand(labelWidth - dateBitmap.width, 175, dateBitmap)
+    commands += bitmapCommand(w - dateBitmap.width, 175, dateBitmap)
     commands += "PRINT"
 
     return commands.joinToString("\r\n", postfix = "\r\n")
   }
 
-  private fun buildDiscountLabelCommand(payload: ReadableMap): String {
+  private fun buildDiscountLabelCommand(payload: ReadableMap, printType: String = ""): String {
+    val isSmall = printType.equals("small", ignoreCase = true)
+    val w = if (isSmall) 472 else labelWidth
+    val h = if (isSmall) 320 else labelHeight
     val productName = payload.getNullableString("productName")
     val itemNumber = payload.getNullableString("itemNumber")
     val barcode = payload.getNullableString("barcode").ifBlank { itemNumber }
@@ -393,7 +399,7 @@ class HbPrinterModule(
     }
 
     val startY = 20
-    val startX = labelWidth - discountBitmap.width - percentBitmap.width - offBitmap.width + 20
+    val startX = w - discountBitmap.width - percentBitmap.width - offBitmap.width + 20
     val rightMargin = 12
     val columnGap = 10
     val nowGroupGap = 6
@@ -404,7 +410,7 @@ class HbPrinterModule(
     val infoBandBottom = effectiveLabelBottom - bottomMargin
     val qrX = 10
     val qrY = infoBandBottom - (qrBitmap?.height ?: 64)
-    val nowPriceX = labelWidth - rightMargin - nowPriceBitmap.width
+    val nowPriceX = w - rightMargin - nowPriceBitmap.width
     val nowLabelX = nowPriceX - nowGroupGap - nowLabelBitmap.width
     val nowLabelY = infoBandBottom - nowLabelBitmap.height
     val nowPriceY = infoBandBottom - nowPriceBitmap.height
@@ -412,12 +418,12 @@ class HbPrinterModule(
     val dateY = infoBandBottom - dateBitmap.height
     val itemX = dateX
     val itemY = dateY - (itemBitmap?.height ?: 0) - 6
-    val nameMaxWidth = max(1, labelWidth - discountBitmap.width - percentBitmap.width - offBitmap.width + 10)
+    val nameMaxWidth = max(1, w - discountBitmap.width - percentBitmap.width - offBitmap.width + 10)
     val nameBitmap = longTextToBitmap(productName, fontSizeToPixels(10f), false, "Arial", 2, nameMaxWidth)
 
     val commands = mutableListOf(
-      "! 0 200 200 $labelHeight 1",
-      "PAGE-WIDTH $labelWidth",
+      "! 0 200 200 $h 1",
+      "PAGE-WIDTH $w",
       bitmapCommand(5, 5, nameBitmap),
       bitmapCommand(startX, startY, discountBitmap),
       bitmapCommand(startX + discountBitmap.width, startY, percentBitmap),

@@ -1,10 +1,12 @@
 import type { AxiosRequestConfig } from "axios";
+import { isAxiosError } from "axios";
 import { apiClient } from "@/shared/api/client";
 import { useDeviceStore } from "@/store/device-store";
 import type {
   CreateSetCodeRequest,
   MultiCodeEditableItem,
   ProductDetail,
+  ProductCodePage,
   ProductLookupItem,
   ProductSetCodeItem,
   StoreClearancePriceItem,
@@ -181,6 +183,9 @@ function normalizeDetail(payload: unknown): ProductDetail {
     clearancePrice: normalizeClearancePrice(data.clearancePrice ?? data.ClearancePrice),
     setCodes: Array.isArray(setCodesRaw) ? setCodesRaw.map(normalizeSetCodeItem) : [],
     multiCodes: Array.isArray(multiCodesRaw) ? multiCodesRaw.map(normalizeMultiCodeItem) : [],
+    setCodeCount: Number(data.setCodeCount ?? data.SetCodeCount ?? 0),
+    multiCodeCount: Number(data.multiCodeCount ?? data.MultiCodeCount ?? 0),
+    codesIncluded: Boolean(data.codesIncluded ?? data.CodesIncluded),
   };
 }
 
@@ -229,14 +234,18 @@ export async function lookupProducts(
 
 export async function getProductDetail(
   productCode: string,
-  storeCode?: string | null
+  storeCode?: string | null,
+  options?: { includeCodes?: boolean }
 ): Promise<ProductDetail> {
-  console.log("[product-maintenance-api] detail request", { productCode, storeCode });
+  console.log("[product-maintenance-api] detail request", { productCode, storeCode, options });
   const response = await apiClient.get(
     `${BASE_PATH}/${encodeURIComponent(productCode)}`,
     {
       ...buildRequestConfig(),
-      params: storeCode ? { storeCode } : undefined,
+      params: {
+        ...(storeCode ? { storeCode } : {}),
+        ...(options?.includeCodes == null ? {} : { includeCodes: options.includeCodes }),
+      },
     }
   );
   const detail = normalizeDetail(response.data);
@@ -247,6 +256,93 @@ export async function getProductDetail(
     setCodeCount: detail.setCodes.length,
   });
   return detail;
+}
+
+export async function getProductFastDetail(
+  productCode: string,
+  storeCode?: string | null
+): Promise<ProductDetail> {
+  console.log("[product-maintenance-api] fast-detail request", { productCode, storeCode });
+  const response = await apiClient.get(
+    `${BASE_PATH}/${encodeURIComponent(productCode)}/fast-detail`,
+    {
+      ...buildRequestConfig(),
+      params: {
+        ...(storeCode ? { storeCode } : {}),
+      },
+    }
+  );
+  const detail = normalizeDetail(response.data);
+  console.log("[product-maintenance-api] fast-detail response", {
+    productCode: detail.productCode,
+    productType: detail.productType,
+    clearancePriceFound: Boolean(detail.clearancePrice),
+    multiCodeCount: detail.multiCodeCount,
+    setCodeCount: detail.setCodeCount,
+    codesIncluded: detail.codesIncluded,
+  });
+  return detail;
+}
+
+function normalizeCodePage<T>(
+  payload: unknown,
+  normalizeItem: (item: unknown) => T
+): ProductCodePage<T> {
+  const data = (payload && typeof payload === "object" ? payload : {}) as Record<string, unknown>;
+  const rawItems = data.items ?? data.Items;
+  const pageSize = Number(data.pageSize ?? data.PageSize ?? 50);
+  const page = Number(data.page ?? data.Page ?? 1);
+  const totalCount = Number(data.totalCount ?? data.TotalCount ?? 0);
+  return {
+    items: Array.isArray(rawItems) ? rawItems.map(normalizeItem) : [],
+    totalCount,
+    page,
+    pageSize,
+    hasMore: Boolean(data.hasMore ?? data.HasMore ?? page * pageSize < totalCount),
+  };
+}
+
+export async function getProductCodes(
+  productCode: string,
+  storeCode: string | null | undefined,
+  type: 1,
+  page: number,
+  pageSize: number,
+  keyword?: string | null
+): Promise<ProductCodePage<ProductSetCodeItem>>;
+export async function getProductCodes(
+  productCode: string,
+  storeCode: string | null | undefined,
+  type: 2,
+  page: number,
+  pageSize: number,
+  keyword?: string | null
+): Promise<ProductCodePage<MultiCodeEditableItem>>;
+export async function getProductCodes(
+  productCode: string,
+  storeCode: string | null | undefined,
+  type: 1 | 2,
+  page: number,
+  pageSize: number,
+  keyword?: string | null
+): Promise<ProductCodePage<ProductSetCodeItem> | ProductCodePage<MultiCodeEditableItem>> {
+  const response = await apiClient.get(
+    `${BASE_PATH}/${encodeURIComponent(productCode)}/codes`,
+    {
+      ...buildRequestConfig(),
+      params: {
+        ...(storeCode ? { storeCode } : {}),
+        type,
+        page,
+        pageSize,
+        ...(keyword?.trim() ? { keyword: keyword.trim() } : {}),
+      },
+    }
+  );
+
+  return type === 1
+    ? normalizeCodePage(response.data, normalizeSetCodeItem)
+    : normalizeCodePage(response.data, normalizeMultiCodeItem);
 }
 
 export async function updateStorePrice(
@@ -329,10 +425,23 @@ export async function upsertClearancePrice(
   productCode: string,
   payload: UpsertClearancePriceRequest
 ): Promise<StoreClearancePriceItem> {
-  const response = await apiClient.put(
-    `${BASE_PATH}/products/${encodeURIComponent(productCode)}/clearance-price`,
-    payload,
-    buildRequestConfig()
-  );
-  return normalizeClearancePrice(response.data)!;
+  try {
+    const response = await apiClient.put(
+      `${BASE_PATH}/products/${encodeURIComponent(productCode)}/clearance-price`,
+      payload,
+      buildRequestConfig()
+    );
+    return normalizeClearancePrice(response.data)!;
+  } catch (error) {
+    console.error("[product-maintenance-api] clearance-price request failed", {
+      productCode,
+      payload,
+      isAxiosError: isAxiosError(error),
+      message: error instanceof Error ? error.message : String(error),
+      responseStatus: isAxiosError(error) ? error.response?.status ?? null : null,
+      responseData: isAxiosError(error) ? error.response?.data ?? null : null,
+      requestHeaders: buildRequestConfig().headers ?? null,
+    });
+    throw error;
+  }
 }

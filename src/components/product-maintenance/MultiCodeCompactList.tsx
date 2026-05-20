@@ -1,5 +1,5 @@
-import { StyleSheet, View } from "react-native";
-import { ActivityIndicator, Button, Card, Text, TextInput } from "react-native-paper";
+import { Pressable, StyleSheet, View } from "react-native";
+import { ActivityIndicator, Button, Card, IconButton, Text } from "react-native-paper";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 import type { MultiCodeEditableItem } from "@/modules/product-maintenance/types";
 
@@ -7,39 +7,35 @@ interface MultiCodeCompactListProps {
   items: MultiCodeEditableItem[];
   savingItemId?: string | null;
   printingItemId?: string | null;
-  draftBarcode: string;
-  mainRetailPrice?: number | null;
   totalCount?: number;
   loading?: boolean;
   loadingMore?: boolean;
   hasMore?: boolean;
-  onChangeDraftBarcode: (value: string) => void;
-  onChangeItem: (setCodeId: string, patch: Partial<MultiCodeEditableItem>) => void;
+  onEditItemBarcode: (setCodeId: string) => void;
+  onEditItemRetailPrice: (setCodeId: string) => void;
   onSaveItem: (setCodeId: string) => void;
   onPrintItem: (setCodeId: string) => void;
-  onCreateItem: () => void;
+  onAddItem: () => void;
   onLoadMore?: () => void;
 }
 
 function formatPrice(value?: number | null) {
-  return value == null ? "" : value.toFixed(2);
+  return value == null ? "--" : `$${value.toFixed(2)}`;
 }
 
 export function MultiCodeCompactList({
   items,
   savingItemId,
   printingItemId,
-  draftBarcode,
-  mainRetailPrice,
   totalCount,
   loading,
   loadingMore,
   hasMore,
-  onChangeDraftBarcode,
-  onChangeItem,
+  onEditItemBarcode,
+  onEditItemRetailPrice,
   onSaveItem,
   onPrintItem,
-  onCreateItem,
+  onAddItem,
   onLoadMore,
 }: MultiCodeCompactListProps) {
   const { t } = useAppTranslation("productQuery");
@@ -47,10 +43,22 @@ export function MultiCodeCompactList({
   return (
     <Card style={styles.card} mode="contained">
       <Card.Content style={styles.content}>
-        <Text variant="titleSmall" style={styles.title}>
-          {t("multiCode.title")}
-          {totalCount != null ? ` (${items.length}/${totalCount})` : ""}
-        </Text>
+        <View style={styles.headerRow}>
+          <Text variant="titleSmall" style={styles.title}>
+            {t("multiCode.title")}
+            {totalCount != null ? ` (${items.length}/${totalCount})` : ""}
+          </Text>
+          <Button
+            compact
+            mode="contained"
+            icon="plus"
+            onPress={onAddItem}
+            loading={savingItemId === "new-multi"}
+            disabled={savingItemId === "new-multi"}
+          >
+            {t("multiCode.add")}
+          </Button>
+        </View>
 
         {loading ? (
           <View style={styles.loadingRow}>
@@ -61,45 +69,29 @@ export function MultiCodeCompactList({
           </View>
         ) : null}
 
-        {items.map((item) => (
-          <View key={item.setCodeId || item.uuid} style={styles.item}>
-            <TextInput
-              mode="outlined"
-              dense
-              label={t("multiCode.barcode")}
-              value={item.barcode ?? ""}
-              onChangeText={(value) => onChangeItem(item.setCodeId, { barcode: value })}
-              style={styles.input}
+        {items.map((item, index) => (
+          <View key={item.setCodeId || item.uuid} style={styles.row}>
+            <Text variant="bodySmall" style={styles.rowNumber}>
+              {index + 1}
+            </Text>
+            <Pressable style={styles.barcodeCell} onPress={() => onEditItemBarcode(item.setCodeId)}>
+              <Text variant="bodyMedium" style={styles.barcodeText} numberOfLines={1}>
+                {item.barcode ?? "--"}
+              </Text>
+            </Pressable>
+            <Pressable style={styles.priceCell} onPress={() => onEditItemRetailPrice(item.setCodeId)}>
+              <Text variant="bodyMedium" style={styles.priceText}>
+                {formatPrice(item.retailPrice)}
+              </Text>
+            </Pressable>
+            <IconButton
+              icon="printer-outline"
+              size={18}
+              onPress={() => onPrintItem(item.setCodeId)}
+              loading={printingItemId === item.setCodeId}
+              disabled={printingItemId === item.setCodeId}
+              style={styles.printButton}
             />
-            <View style={styles.footerRow}>
-              <TextInput
-                mode="outlined"
-                dense
-                label={t("multiCode.retail")}
-                value={formatPrice(item.retailPrice)}
-                editable={false}
-                style={[styles.input, styles.priceInput]}
-              />
-              <Button
-                compact
-                mode="outlined"
-                icon="printer-outline"
-                onPress={() => onPrintItem(item.setCodeId)}
-                loading={printingItemId === item.setCodeId}
-                disabled={printingItemId === item.setCodeId}
-              >
-                {printingItemId === item.setCodeId ? t("print.sendingShort") : t("print.product")}
-              </Button>
-              <Button
-                compact
-                mode="contained-tonal"
-                onPress={() => onSaveItem(item.setCodeId)}
-                loading={savingItemId === item.setCodeId}
-                disabled={savingItemId === item.setCodeId}
-              >
-                {t("multiCode.save")}
-              </Button>
-            </View>
           </View>
         ))}
 
@@ -114,42 +106,6 @@ export function MultiCodeCompactList({
             {t("multiCode.loadMore")}
           </Button>
         ) : null}
-
-        <View style={[styles.item, styles.draftItem]}>
-          <Text variant="bodySmall" style={styles.addTitle}>
-            {t("multiCode.addTitle")}
-          </Text>
-          <TextInput
-            mode="outlined"
-            dense
-            label={t("multiCode.barcode")}
-            value={draftBarcode}
-            onChangeText={onChangeDraftBarcode}
-            style={styles.input}
-          />
-          <View style={styles.footerRow}>
-            <TextInput
-              mode="outlined"
-              dense
-              label={t("multiCode.retail")}
-              value={formatPrice(mainRetailPrice)}
-              editable={false}
-              style={[styles.input, styles.priceInput]}
-            />
-            <Button
-              compact
-              mode="contained"
-              onPress={onCreateItem}
-              loading={savingItemId === "new-multi"}
-              disabled={savingItemId === "new-multi"}
-            >
-              {t("multiCode.add")}
-            </Button>
-          </View>
-          <Text variant="bodySmall" style={styles.hint}>
-            {t("multiCode.followMain")}
-          </Text>
-        </View>
       </Card.Content>
     </Card>
   );
@@ -161,8 +117,13 @@ const styles = StyleSheet.create({
     backgroundColor: "#fff",
   },
   content: {
-    gap: 10,
+    gap: 6,
     paddingVertical: 10,
+  },
+  headerRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
   },
   title: {
     fontWeight: "700",
@@ -175,29 +136,37 @@ const styles = StyleSheet.create({
   loadingText: {
     color: "#475467",
   },
-  item: {
-    gap: 8,
-  },
-  draftItem: {
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: "#E5E7EB",
-    paddingTop: 10,
-  },
-  addTitle: {
-    color: "#475467",
-  },
-  input: {
-    backgroundColor: "#fff",
-  },
-  footerRow: {
+  row: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 10,
+    paddingVertical: 4,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: "#F1F5F9",
   },
-  priceInput: {
+  rowNumber: {
+    width: 24,
+    color: "#94A3B8",
+    textAlign: "center",
+  },
+  barcodeCell: {
     flex: 1,
+    paddingHorizontal: 6,
+    paddingVertical: 4,
   },
-  hint: {
-    color: "#475467",
+  barcodeText: {
+    color: "#334155",
+  },
+  priceCell: {
+    paddingHorizontal: 6,
+    paddingVertical: 4,
+    minWidth: 70,
+    alignItems: "flex-end",
+  },
+  priceText: {
+    color: "#334155",
+    fontWeight: "600",
+  },
+  printButton: {
+    margin: 0,
   },
 });
