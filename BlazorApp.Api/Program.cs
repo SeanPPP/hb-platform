@@ -344,6 +344,7 @@ builder.Services.AddAutoMapper(cfg => { }, typeof(MappingProfile).Assembly);
 // 适合包含状态或需要事务管理的业务服务
 builder.Services.AddScoped<IAuthService, AuthService>(); // 认证服务
 builder.Services.AddScoped<IUserService, UserService>(); // 用户管理服务
+builder.Services.AddScoped<IEmployeeProfileService, EmployeeProfileService>(); // 员工个人信息服务
 builder.Services.AddScoped<IRoleService, RoleService>(); // 角色管理服务
 builder.Services.AddScoped<IStoreService, StoreService>(); // 分店管理服务
 builder.Services.AddScoped<StoreSyncService>(); // 分店数据同步服务

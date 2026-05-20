@@ -744,6 +744,9 @@ namespace BlazorApp.Api.Data
             _db.CodeFirst.InitTables(typeof(CashRegisterUser));
             Console.WriteLine("✓ CashRegisterUser表创建成功");
 
+            _db.CodeFirst.InitTables(typeof(EmployeeProfile));
+            Console.WriteLine("✓ EmployeeProfile表创建成功");
+
             // 创建索引
             CreateIndexes();
         }

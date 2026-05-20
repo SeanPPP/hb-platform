@@ -18,6 +18,12 @@ namespace BlazorApp.Shared.Constants
             public const string ResetPassword = "Users.ResetPassword";
         }
 
+        public static class EmployeeProfiles
+        {
+            public const string View = "EmployeeProfiles.View";
+            public const string Edit = "EmployeeProfiles.Edit";
+        }
+
         public static class Roles
         {
             public const string View = "Roles.View";
@@ -199,6 +205,8 @@ namespace BlazorApp.Shared.Constants
             yield return (Users.ManageRoles, "管理用户角色", "用户管理");
             yield return (Users.ManageStores, "管理用户分店", "用户管理");
             yield return (Users.ResetPassword, "重置密码", "用户管理");
+            yield return (EmployeeProfiles.View, "查看员工个人信息", "用户管理");
+            yield return (EmployeeProfiles.Edit, "维护员工个人信息", "用户管理");
 
             // 角色管理
             yield return (Roles.View, "查看角色", "角色管理");

@@ -26,5 +26,6 @@
     <Compile Include="StoreProductMaintenanceSyncHelperTests.cs" />
     <Compile Include="StoreProductMaintenanceClearanceBarcodeHelperTests.cs" />
     <Compile Include="ReactProductWarehouseControllerTests.cs" />
+    <Compile Include="EmployeeProfileServiceTests.cs" />
   </ItemGroup>
 </Project>
