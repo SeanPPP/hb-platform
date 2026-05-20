@@ -51,6 +51,7 @@ import LocalSupplierInvoiceDetailPage from '../pages/PosAdmin/LocalSupplierInvoi
 import InvoiceEditPage from '../pages/PosAdmin/LocalSupplierInvoices/InvoiceEdit'
 import SystemRolesPage from '../pages/System/Roles'
 import SystemStoresPage from '../pages/System/Stores'
+import SystemEmployeeProfilesPage from '../pages/System/EmployeeProfiles'
 import SystemUsersPage from '../pages/System/Users'
 import SystemPermissionsPage from '../pages/System/Permissions'
 import WarehouseCategoriesPage from '../pages/Warehouse/Categories'
@@ -132,6 +133,16 @@ export const appRoutes: AppRouteItem[] = [
           accessKey: 'canReadStore',
         },
         element: <SystemStoresPage />,
+      },
+      {
+        path: '/system/employee-profiles',
+        meta: {
+          title: 'menu.systemEmployeeProfiles',
+          icon: 'WalletOutlined',
+          keepAlive: true,
+          accessKey: 'isAdmin',
+        },
+        element: <SystemEmployeeProfilesPage />,
       },
       {
         path: '/system/users',
