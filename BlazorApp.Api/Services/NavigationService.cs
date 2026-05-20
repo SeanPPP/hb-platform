@@ -7,10 +7,22 @@ namespace BlazorApp.Api.Services
     public interface INavigationService
     {
         List<NavigationMenuDto> BuildMenu(ClaimsPrincipal user);
+        List<AppNavigationMenuDto> BuildAppMenu(ClaimsPrincipal user);
+        List<AppNavigationMenuDto> BuildDeviceAppMenu(string? deviceType);
     }
 
     public class NavigationService : INavigationService
     {
+        private sealed class AppNavigationDefinition
+        {
+            public string RouteName { get; init; } = string.Empty;
+            public string TitleKey { get; init; } = string.Empty;
+            public string Icon { get; init; } = string.Empty;
+            public string? Permission { get; init; }
+            public bool RequireAdmin { get; init; }
+            public int Order { get; init; }
+        }
+
         /// <summary>
         /// 完整导航树（与前端 routes.tsx 结构一致）
         /// Permission 字段为空表示所有人可见
@@ -96,6 +108,67 @@ namespace BlazorApp.Api.Services
             },
         };
 
+        private static readonly List<AppNavigationDefinition> FullAppMenu = new()
+        {
+            new()
+            {
+                RouteName = "home",
+                TitleKey = "tabs.home",
+                Icon = "home",
+                Permission = Permissions.Orders.Create,
+                Order = 10,
+            },
+            new()
+            {
+                RouteName = "orders",
+                TitleKey = "tabs.orders",
+                Icon = "clipboard-list",
+                Permission = Permissions.Orders.View,
+                Order = 20,
+            },
+            new()
+            {
+                RouteName = "cart",
+                TitleKey = "tabs.cart",
+                Icon = "cart-outline",
+                Permission = Permissions.Orders.Create,
+                Order = 30,
+            },
+            new()
+            {
+                RouteName = "warehouse",
+                TitleKey = "tabs.warehouse",
+                Icon = "warehouse",
+                Permission = Permissions.Warehouse.ManageProducts,
+                Order = 40,
+            },
+            new()
+            {
+                RouteName = "product-query",
+                TitleKey = "tabs.productQuery",
+                Icon = "barcode-scan",
+                Permission = Permissions.StoreProducts.View,
+                Order = 50,
+            },
+            new()
+            {
+                RouteName = "settings",
+                TitleKey = "tabs.settings",
+                Icon = "account-circle-outline",
+                Order = 60,
+            },
+        };
+
+        private static readonly HashSet<string> DeviceBaseRouteNames = new(
+            new[] { "home", "orders", "cart", "product-query", "settings" },
+            StringComparer.OrdinalIgnoreCase
+        );
+
+        private static readonly HashSet<string> WarehouseDeviceTypes = new(
+            new[] { "Warehouse", "PDA-Warehouse", "WarehousePDA", "PDAWarehouse", "仓库", "仓库设备" },
+            StringComparer.OrdinalIgnoreCase
+        );
+
         public List<NavigationMenuDto> BuildMenu(ClaimsPrincipal user)
         {
             var isAdmin = user.IsInRole("Admin") || user.IsInRole("管理员");
@@ -105,6 +178,29 @@ namespace BlazorApp.Api.Services
             }
 
             return FilterMenu(FullMenu, user);
+        }
+
+        public List<AppNavigationMenuDto> BuildAppMenu(ClaimsPrincipal user)
+        {
+            return FullAppMenu
+                .Where(node => CanAccess(node, user))
+                .OrderBy(node => node.Order)
+                .Select(ToAppNavigationMenuDto)
+                .ToList();
+        }
+
+        public List<AppNavigationMenuDto> BuildDeviceAppMenu(string? deviceType)
+        {
+            var isWarehouseDevice = IsWarehouseDevice(deviceType);
+
+            return FullAppMenu
+                .Where(node =>
+                    DeviceBaseRouteNames.Contains(node.RouteName)
+                    || (isWarehouseDevice && node.RouteName.Equals("warehouse", StringComparison.OrdinalIgnoreCase))
+                )
+                .OrderBy(node => node.Order)
+                .Select(ToAppNavigationMenuDto)
+                .ToList();
         }
 
         private static List<NavigationMenuDto> FilterMenu(List<NavigationMenuDto> nodes, ClaimsPrincipal user)
@@ -184,6 +280,49 @@ namespace BlazorApp.Api.Services
                 return true;
 
             return false;
+        }
+
+        private static bool CanAccess(AppNavigationDefinition node, ClaimsPrincipal user)
+        {
+            if (node.RequireAdmin && !user.IsInRole("Admin") && !user.IsInRole("管理员"))
+            {
+                return false;
+            }
+
+            if (string.IsNullOrEmpty(node.Permission))
+            {
+                return true;
+            }
+
+            if (
+                user.HasClaim(ClaimTypes.Role, "WarehouseManager")
+                && Permissions.IsWarehouseManagerGranted(node.Permission)
+            )
+            {
+                return true;
+            }
+
+            return user.HasClaim("permission", node.Permission)
+                || user.HasClaim(ClaimTypes.Role, "Admin")
+                || user.HasClaim(ClaimTypes.Role, "管理员");
+        }
+
+        private static bool IsWarehouseDevice(string? deviceType)
+        {
+            return !string.IsNullOrWhiteSpace(deviceType)
+                && WarehouseDeviceTypes.Contains(deviceType.Trim());
+        }
+
+        private static AppNavigationMenuDto ToAppNavigationMenuDto(AppNavigationDefinition node)
+        {
+            return new AppNavigationMenuDto
+            {
+                RouteName = node.RouteName,
+                TitleKey = node.TitleKey,
+                Icon = node.Icon,
+                Permission = node.Permission,
+                Order = node.Order,
+            };
         }
     }
 }
