@@ -26,6 +26,7 @@
 - 公共假期营业状态支持 `Open`、`Closed`、`Partial`。
 - `Partial` 第一版只做显示和排班提醒，不强制限制排班时间。
 - 年假、病假、公共假期申请都需要审核。
+- 打卡时间按分店时区做业务判断，模型中保留 `StoreTimeZone`。支持 `Australia/Brisbane`、`Australia/Melbourne`，默认 `Australia/Sydney`。
 
 ## 角色与权限
 
@@ -121,8 +122,10 @@ AttendancePunch 打卡记录
 - StoreCode 分店编码
 - UserGuid 员工用户 GUID
 - WorkDate 工作日期
+- StoreTimeZone 分店时区，默认 Australia/Sydney
 - PunchType: ClockIn / ClockOut
-- PunchTime 打卡时间
+- PunchTimeUtc UTC 打卡时间
+- PunchTimeLocal 分店本地打卡时间
 - Status: Normal / Late / EarlyLeave / NoSchedule / Duplicate / PendingApproval / Approved / Rejected
 - DeviceId nullable
 - Source: App
@@ -250,8 +253,12 @@ PUT /settings
 
 ## 打卡规则
 
-- 上班打卡时间 `PunchTime > Schedule.StartTime + LateGraceMinutes` 时判定为迟到。
-- 下班打卡时间 `PunchTime < Schedule.EndTime - EarlyLeaveGraceMinutes` 时判定为早退。
+- 打卡业务判断使用分店时区，不使用服务器本地时区。
+- 第一版支持的分店时区为 `Australia/Brisbane`、`Australia/Melbourne`，未配置时默认 `Australia/Sydney`。
+- 后端保存 `PunchTimeUtc`，同时保存按 `StoreTimeZone` 转换后的 `PunchTimeLocal` 和 `WorkDate`。
+- `WorkDate` 必须按分店本地日期计算，不能直接使用服务器日期。
+- 上班打卡时间 `PunchTimeLocal > Schedule.StartTime + LateGraceMinutes` 时判定为迟到。
+- 下班打卡时间 `PunchTimeLocal < Schedule.EndTime - EarlyLeaveGraceMinutes` 时判定为早退。
 - 默认允许未排班打卡，但会生成待审核记录。
 - 重复打卡会生成异常状态并进入审核。
 - 正常打卡不需要审核。
@@ -414,3 +421,4 @@ src/utils/access.ts
 - StoreManager 可以通过或拒绝自己管理分店的打卡和请假/公共假期申请。
 - 每个分店的公共假期都可以设置为 Open、Closed、Partial。
 - `Partial` 公共假期显示特殊营业时间和提醒，但不阻止保存排班。
+- 打卡记录保存 UTC 时间、分店本地时间、分店时区，并按分店本地时间判断迟到/早退。
