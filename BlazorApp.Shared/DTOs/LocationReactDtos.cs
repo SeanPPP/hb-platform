@@ -92,4 +92,14 @@ namespace BlazorApp.Shared.DTOs
 
         public int? Status { get; set; }
     }
+
+    public class LocationLookupItemDto
+    {
+        public string LocationGuid { get; set; } = string.Empty;
+        public string? LocationCode { get; set; }
+        public string? LocationBarcode { get; set; }
+        public int? Status { get; set; }
+        public int? LocationType { get; set; }
+        public int ProductCount { get; set; }
+    }
 }

@@ -58,5 +58,17 @@ namespace BlazorApp.Api.Interfaces.React
         /// 同步规则：没有的添加，多的删除，有变化的更新
         /// </summary>
         Task<WarehouseProductSyncResultDto> SyncFromHqAsync();
+        Task<List<WarehouseMobileProductDto>> LookupMobileProductsAsync(string keyword);
+        Task<WarehouseMobileProductDto?> GetMobileProductAsync(string productCode);
+        Task<WarehouseMobileProductDto?> PatchMobileProductAsync(
+            string productCode,
+            WarehouseMobileProductPatchDto dto
+        );
+        Task<WarehouseMobileProductDto?> SetMobileProductLocationAsync(
+            string productCode,
+            string? locationGuid
+        );
+        Task<WarehouseProductLabelPrintDto?> GetMobileProductPrintPayloadAsync(string productCode);
+        Task<WarehouseLocationLabelPrintDto?> GetMobileLocationPrintPayloadAsync(string productCode);
     }
 }

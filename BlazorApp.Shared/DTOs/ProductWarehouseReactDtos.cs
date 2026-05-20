@@ -408,4 +408,73 @@ namespace BlazorApp.Shared.DTOs
     {
         public List<string> ProductCodes { get; set; } = new List<string>();
     }
+
+    public class WarehouseMobileProductDto
+    {
+        public string ProductCode { get; set; } = string.Empty;
+        public string ProductName { get; set; } = string.Empty;
+        public string? ItemNumber { get; set; }
+        public string? Barcode { get; set; }
+        public string? ProductImage { get; set; }
+        public int? ProductType { get; set; }
+        public string? ProductTypeLabel { get; set; }
+        public string? LocalSupplierCode { get; set; }
+        public string? SupplierCode { get; set; }
+        public string? SupplierName { get; set; }
+        public bool IsActive { get; set; }
+        public decimal? PurchasePrice { get; set; }
+        public decimal? RetailPrice { get; set; }
+        public decimal? DomesticPrice { get; set; }
+        public decimal? OEMPrice { get; set; }
+        public decimal? ImportPrice { get; set; }
+        public int? MiddlePackageQuantity { get; set; }
+        public int? PackingQuantity { get; set; }
+        public decimal? Volume { get; set; }
+        public string? LocationGuid { get; set; }
+        public string? LocationCode { get; set; }
+        public string? LocationBarcode { get; set; }
+        public DateTime? UpdatedAt { get; set; }
+    }
+
+    public class WarehouseMobileProductPatchDto
+    {
+        public bool? IsActive { get; set; }
+        public decimal? PurchasePrice { get; set; }
+        public decimal? RetailPrice { get; set; }
+        public decimal? DomesticPrice { get; set; }
+        public decimal? OEMPrice { get; set; }
+        public decimal? ImportPrice { get; set; }
+        public int? MiddlePackageQuantity { get; set; }
+        public int? PackingQuantity { get; set; }
+        public decimal? Volume { get; set; }
+        public string? ProductImage { get; set; }
+    }
+
+    public class SetWarehouseProductLocationDto
+    {
+        public string? LocationGuid { get; set; }
+    }
+
+    public class WarehouseProductLabelPrintDto
+    {
+        public string ProductCode { get; set; } = string.Empty;
+        public string ProductName { get; set; } = string.Empty;
+        public string? ItemNumber { get; set; }
+        public string? Barcode { get; set; }
+        public string? SupplierName { get; set; }
+        public decimal? RetailPrice { get; set; }
+        public decimal? DomesticPrice { get; set; }
+        public decimal? OEMPrice { get; set; }
+        public decimal? ImportPrice { get; set; }
+        public string? LocationCode { get; set; }
+        public string? LocationBarcode { get; set; }
+    }
+
+    public class WarehouseLocationLabelPrintDto
+    {
+        public string LocationGuid { get; set; } = string.Empty;
+        public string? LocationCode { get; set; }
+        public string? LocationBarcode { get; set; }
+        public int ProductCount { get; set; }
+    }
 }

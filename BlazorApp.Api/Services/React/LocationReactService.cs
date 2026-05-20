@@ -342,6 +342,154 @@ namespace BlazorApp.Api.Services.React
             }
         }
 
+        public async Task<List<LocationLookupItemDto>> LookupAsync(string keyword)
+        {
+            var trimmed = keyword?.Trim();
+            if (string.IsNullOrWhiteSpace(trimmed))
+            {
+                return new List<LocationLookupItemDto>();
+            }
+
+            var lowered = trimmed.ToLower();
+            var locations = await _context
+                .Db.Queryable<Location>()
+                .Where(l =>
+                    !l.IsDeleted
+                    && (
+                        (l.LocationCode != null && l.LocationCode.ToLower().Contains(lowered))
+                        || (l.LocationBarcode != null && l.LocationBarcode.ToLower().Contains(lowered))
+                    )
+                )
+                .OrderBy(l => l.LocationCode)
+                .Take(20)
+                .ToListAsync();
+
+            if (locations.Count == 0)
+            {
+                return new List<LocationLookupItemDto>();
+            }
+
+            var locationGuids = locations.Select(item => item.LocationGuid).ToList();
+            var counts = await _context
+                .Db.Queryable<ProductLocation>()
+                .Where(pl => !pl.IsDeleted && locationGuids.Contains(pl.LocationGuid!))
+                .GroupBy(pl => pl.LocationGuid)
+                .Select(pl => new { LocationGuid = pl.LocationGuid, Count = SqlFunc.AggregateCount(pl.Guid) })
+                .ToListAsync();
+
+            var countMap = counts.ToDictionary(item => item.LocationGuid ?? string.Empty, item => item.Count);
+
+            return locations.Select(location => new LocationLookupItemDto
+            {
+                LocationGuid = location.LocationGuid,
+                LocationCode = location.LocationCode,
+                LocationBarcode = location.LocationBarcode,
+                Status = location.Status,
+                LocationType = location.LocationType,
+                ProductCount = countMap.TryGetValue(location.LocationGuid, out var count) ? count : 0,
+            }).ToList();
+        }
+
+        public async Task<ApiResponse<LocationReactDto>> BindProductAsync(
+            string locationGuid,
+            string productCode
+        )
+        {
+            try
+            {
+                var location = await _context
+                    .Db.Queryable<Location>()
+                    .Where(l => l.LocationGuid == locationGuid && !l.IsDeleted)
+                    .FirstAsync();
+                if (location == null)
+                {
+                    return ApiResponse<LocationReactDto>.Error("货位不存在", "NOT_FOUND");
+                }
+
+                var product = await _context
+                    .Db.Queryable<Product>()
+                    .Where(p => p.ProductCode == productCode && !p.IsDeleted)
+                    .FirstAsync();
+                if (product == null)
+                {
+                    return ApiResponse<LocationReactDto>.Error("商品不存在", "NOT_FOUND");
+                }
+
+                var warehouseProduct = await _context
+                    .Db.Queryable<WarehouseProduct>()
+                    .Where(w => w.ProductCode == productCode && !w.IsDeleted)
+                    .FirstAsync();
+                if (warehouseProduct == null)
+                {
+                    return ApiResponse<LocationReactDto>.Error("仓库商品不存在", "NOT_FOUND");
+                }
+
+                await _context.Db.Ado.BeginTranAsync();
+                await _context
+                    .Db.Deleteable<ProductLocation>()
+                    .Where(pl => pl.ProductCode == productCode)
+                    .ExecuteCommandAsync();
+
+                var username = _currentUserService.GetCurrentUsername();
+                await _context
+                    .Db.Insertable(new ProductLocation
+                    {
+                        Guid = Guid.NewGuid().ToString(),
+                        ProductCode = productCode,
+                        LocationGuid = locationGuid,
+                        CreatedAt = DateTime.UtcNow,
+                        CreatedBy = username,
+                        UpdatedAt = DateTime.UtcNow,
+                        UpdatedBy = username,
+                    })
+                    .ExecuteCommandAsync();
+
+                await _context.Db.Ado.CommitTranAsync();
+                return await GetByIdAsync(locationGuid);
+            }
+            catch (Exception ex)
+            {
+                await _context.Db.Ado.RollbackTranAsync();
+                _logger.LogError(ex, "绑定货位商品失败: {LocationGuid} {ProductCode}", locationGuid, productCode);
+                return ApiResponse<LocationReactDto>.Error("绑定商品失败", "DATABASE_ERROR", ex.Message);
+            }
+        }
+
+        public async Task<ApiResponse<LocationReactDto>> UnbindProductAsync(
+            string locationGuid,
+            string productCode
+        )
+        {
+            try
+            {
+                var location = await _context
+                    .Db.Queryable<Location>()
+                    .Where(l => l.LocationGuid == locationGuid && !l.IsDeleted)
+                    .FirstAsync();
+                if (location == null)
+                {
+                    return ApiResponse<LocationReactDto>.Error("货位不存在", "NOT_FOUND");
+                }
+
+                var affected = await _context
+                    .Db.Deleteable<ProductLocation>()
+                    .Where(pl => pl.LocationGuid == locationGuid && pl.ProductCode == productCode)
+                    .ExecuteCommandAsync();
+
+                if (affected == 0)
+                {
+                    return ApiResponse<LocationReactDto>.Error("货位商品关联不存在", "NOT_FOUND");
+                }
+
+                return await GetByIdAsync(locationGuid);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "解绑货位商品失败: {LocationGuid} {ProductCode}", locationGuid, productCode);
+                return ApiResponse<LocationReactDto>.Error("解绑商品失败", "DATABASE_ERROR", ex.Message);
+            }
+        }
+
         private async Task LoadProductsAsync(LocationReactDto dto)
         {
             var productLocations = await _context

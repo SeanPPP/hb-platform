@@ -3420,6 +3420,395 @@ namespace BlazorApp.Api.Services.React
             return result;
         }
 
+        public async Task<List<WarehouseMobileProductDto>> LookupMobileProductsAsync(string keyword)
+        {
+            var trimmed = keyword?.Trim();
+            if (string.IsNullOrWhiteSpace(trimmed))
+            {
+                return new List<WarehouseMobileProductDto>();
+            }
+
+            var lowered = trimmed.ToLower();
+            var rows = await _context
+                .Db.Queryable<WarehouseProduct>()
+                .LeftJoin<Product>((w, p) => p.ProductCode == w.ProductCode && !p.IsDeleted)
+                .LeftJoin<DomesticProduct>((w, p, dp) => dp.ProductCode == w.ProductCode && !dp.IsDeleted)
+                .LeftJoin<ChinaSupplier>((w, p, dp, s) => dp.SupplierCode == s.SupplierCode && !s.IsDeleted)
+                .LeftJoin<ProductLocation>((w, p, dp, s, pl) => pl.ProductCode == w.ProductCode && !pl.IsDeleted)
+                .LeftJoin<Location>((w, p, dp, s, pl, l) => l.LocationGuid == pl.LocationGuid && !l.IsDeleted)
+                .Where((w, p, dp, s, pl, l) =>
+                    !w.IsDeleted
+                    && (
+                        (w.ProductCode != null && w.ProductCode.ToLower().Contains(lowered))
+                        || (p.ProductName != null && p.ProductName.ToLower().Contains(lowered))
+                        || (p.ItemNumber != null && p.ItemNumber.ToLower().Contains(lowered))
+                        || (p.Barcode != null && p.Barcode.ToLower().Contains(lowered))
+                        || (p.LocalSupplierCode != null && p.LocalSupplierCode.ToLower().Contains(lowered))
+                        || (s.SupplierName != null && s.SupplierName.ToLower().Contains(lowered))
+                        || (s.SupplierCode != null && s.SupplierCode.ToLower().Contains(lowered))
+                        || (l.LocationCode != null && l.LocationCode.ToLower().Contains(lowered))
+                        || (l.LocationBarcode != null && l.LocationBarcode.ToLower().Contains(lowered))
+                    )
+                )
+                .OrderBy((w, p, dp, s, pl, l) => p.ItemNumber)
+                .Select((w, p, dp, s, pl, l) => new
+                {
+                    w.ProductCode,
+                    ProductName = p.ProductName,
+                    p.ItemNumber,
+                    p.Barcode,
+                    ProductImage = SqlFunc.IsNullOrEmpty(p.ProductImage) ? dp.ProductImage : p.ProductImage,
+                    p.ProductType,
+                    p.LocalSupplierCode,
+                    SupplierCode = dp.SupplierCode,
+                    SupplierName = s.SupplierName,
+                    w.IsActive,
+                    p.PurchasePrice,
+                    p.RetailPrice,
+                    w.DomesticPrice,
+                    w.OEMPrice,
+                    w.ImportPrice,
+                    MiddlePackageQuantity = p.MiddlePackageQuantity,
+                    PackingQuantity = SqlFunc.IsNull(w.PackingQuantity, dp.PackingQuantity),
+                    Volume = SqlFunc.IsNull(w.Volume, dp.UnitVolume),
+                    l.LocationGuid,
+                    l.LocationCode,
+                    l.LocationBarcode,
+                    UpdatedAt = SqlFunc.IsNull(p.UpdatedAt, w.UpdatedAt),
+                })
+                .Take(50)
+                .ToListAsync();
+
+            return rows
+                .GroupBy(row => row.ProductCode)
+                .Select(group => group.First())
+                .Select(row => new WarehouseMobileProductDto
+                {
+                    ProductCode = row.ProductCode,
+                    ProductName = row.ProductName ?? string.Empty,
+                    ItemNumber = row.ItemNumber,
+                    Barcode = row.Barcode,
+                    ProductImage = row.ProductImage,
+                    ProductType = row.ProductType,
+                    ProductTypeLabel = GetProductTypeLabel(row.ProductType),
+                    LocalSupplierCode = row.LocalSupplierCode,
+                    SupplierCode = row.SupplierCode,
+                    SupplierName = row.SupplierName,
+                    IsActive = row.IsActive,
+                    PurchasePrice = row.PurchasePrice,
+                    RetailPrice = row.RetailPrice,
+                    DomesticPrice = row.DomesticPrice,
+                    OEMPrice = row.OEMPrice,
+                    ImportPrice = row.ImportPrice,
+                    MiddlePackageQuantity = row.MiddlePackageQuantity,
+                    PackingQuantity = row.PackingQuantity,
+                    Volume = row.Volume,
+                    LocationGuid = row.LocationGuid,
+                    LocationCode = row.LocationCode,
+                    LocationBarcode = row.LocationBarcode,
+                    UpdatedAt = row.UpdatedAt,
+                })
+                .ToList();
+        }
+
+        public async Task<WarehouseMobileProductDto?> GetMobileProductAsync(string productCode)
+        {
+            var trimmed = productCode?.Trim();
+            if (string.IsNullOrWhiteSpace(trimmed))
+            {
+                return null;
+            }
+
+            return await FindMobileProductByCodeAsync(trimmed);
+        }
+
+        public async Task<WarehouseMobileProductDto?> PatchMobileProductAsync(
+            string productCode,
+            WarehouseMobileProductPatchDto dto
+        )
+        {
+            var product = await _context
+                .Db.Queryable<Product>()
+                .Where(p => p.ProductCode == productCode && !p.IsDeleted)
+                .FirstAsync();
+            var warehouseProduct = await _context
+                .Db.Queryable<WarehouseProduct>()
+                .Where(w => w.ProductCode == productCode && !w.IsDeleted)
+                .FirstAsync();
+
+            if (product == null || warehouseProduct == null)
+            {
+                return null;
+            }
+
+            var domesticProduct = await _context
+                .Db.Queryable<DomesticProduct>()
+                .Where(dp => dp.ProductCode == productCode && !dp.IsDeleted)
+                .FirstAsync();
+
+            var now = DateTime.UtcNow;
+            if (dto.IsActive.HasValue)
+            {
+                product.IsActive = dto.IsActive.Value;
+                warehouseProduct.IsActive = dto.IsActive.Value;
+                if (domesticProduct != null)
+                {
+                    domesticProduct.IsActive = dto.IsActive.Value;
+                }
+            }
+
+            if (dto.PurchasePrice.HasValue) product.PurchasePrice = dto.PurchasePrice;
+            if (dto.RetailPrice.HasValue) product.RetailPrice = dto.RetailPrice;
+            if (dto.MiddlePackageQuantity.HasValue) product.MiddlePackageQuantity = dto.MiddlePackageQuantity;
+            if (dto.ProductImage != null)
+            {
+                product.ProductImage = dto.ProductImage;
+                if (domesticProduct != null)
+                {
+                    domesticProduct.ProductImage = dto.ProductImage;
+                }
+            }
+
+            if (dto.DomesticPrice.HasValue)
+            {
+                warehouseProduct.DomesticPrice = dto.DomesticPrice;
+                if (domesticProduct != null) domesticProduct.DomesticPrice = dto.DomesticPrice;
+            }
+            if (dto.OEMPrice.HasValue)
+            {
+                warehouseProduct.OEMPrice = dto.OEMPrice;
+                if (domesticProduct != null) domesticProduct.OEMPrice = dto.OEMPrice;
+            }
+            if (dto.ImportPrice.HasValue)
+            {
+                warehouseProduct.ImportPrice = dto.ImportPrice;
+                if (domesticProduct != null) domesticProduct.ImportPrice = dto.ImportPrice;
+            }
+            if (dto.PackingQuantity.HasValue)
+            {
+                warehouseProduct.PackingQuantity = dto.PackingQuantity;
+                if (domesticProduct != null) domesticProduct.PackingQuantity = dto.PackingQuantity;
+            }
+            if (dto.Volume.HasValue)
+            {
+                warehouseProduct.Volume = dto.Volume;
+                if (domesticProduct != null) domesticProduct.UnitVolume = dto.Volume;
+            }
+            if (dto.MiddlePackageQuantity.HasValue && domesticProduct != null)
+            {
+                domesticProduct.MiddlePackQuantity = dto.MiddlePackageQuantity;
+            }
+
+            product.UpdatedAt = now;
+            warehouseProduct.UpdatedAt = now;
+            if (domesticProduct != null)
+            {
+                domesticProduct.UpdatedAt = now;
+            }
+
+            await _context.Db.Ado.BeginTranAsync();
+            try
+            {
+                await _context.Db.Updateable(product).ExecuteCommandAsync();
+                await _context.Db.Updateable(warehouseProduct).ExecuteCommandAsync();
+                if (domesticProduct != null)
+                {
+                    await _context.Db.Updateable(domesticProduct).ExecuteCommandAsync();
+                }
+
+                await _context.Db.Ado.CommitTranAsync();
+            }
+            catch
+            {
+                await _context.Db.Ado.RollbackTranAsync();
+                throw;
+            }
+
+            return await GetMobileProductAsync(productCode);
+        }
+
+        public async Task<WarehouseMobileProductDto?> SetMobileProductLocationAsync(
+            string productCode,
+            string? locationGuid
+        )
+        {
+            var trimmedProductCode = productCode?.Trim();
+            if (string.IsNullOrWhiteSpace(trimmedProductCode))
+            {
+                return null;
+            }
+
+            var warehouseProduct = await _context
+                .Db.Queryable<WarehouseProduct>()
+                .Where(w => w.ProductCode == trimmedProductCode && !w.IsDeleted)
+                .FirstAsync();
+            var product = await _context
+                .Db.Queryable<Product>()
+                .Where(p => p.ProductCode == trimmedProductCode && !p.IsDeleted)
+                .FirstAsync();
+            if (warehouseProduct == null || product == null)
+            {
+                return null;
+            }
+
+            var trimmedLocationGuid = locationGuid?.Trim();
+            if (!string.IsNullOrWhiteSpace(trimmedLocationGuid))
+            {
+                var location = await _context
+                    .Db.Queryable<Location>()
+                    .Where(l => l.LocationGuid == trimmedLocationGuid && !l.IsDeleted)
+                    .FirstAsync();
+                if (location == null)
+                {
+                    throw new InvalidOperationException("货位不存在");
+                }
+            }
+
+            await _context.Db.Ado.BeginTranAsync();
+            try
+            {
+                await _context
+                    .Db.Deleteable<ProductLocation>()
+                    .Where(pl => pl.ProductCode == trimmedProductCode)
+                    .ExecuteCommandAsync();
+
+                if (!string.IsNullOrWhiteSpace(trimmedLocationGuid))
+                {
+                    await _context
+                        .Db.Insertable(new ProductLocation
+                        {
+                            Guid = Guid.NewGuid().ToString(),
+                            ProductCode = trimmedProductCode,
+                            LocationGuid = trimmedLocationGuid,
+                            CreatedAt = DateTime.UtcNow,
+                            UpdatedAt = DateTime.UtcNow,
+                        })
+                        .ExecuteCommandAsync();
+                }
+
+                await _context.Db.Ado.CommitTranAsync();
+            }
+            catch
+            {
+                await _context.Db.Ado.RollbackTranAsync();
+                throw;
+            }
+
+            return await GetMobileProductAsync(trimmedProductCode);
+        }
+
+        private async Task<WarehouseMobileProductDto?> FindMobileProductByCodeAsync(string productCode)
+        {
+            var row = await _context
+                .Db.Queryable<WarehouseProduct>()
+                .LeftJoin<Product>((w, p) => p.ProductCode == w.ProductCode && !p.IsDeleted)
+                .LeftJoin<DomesticProduct>(
+                    (w, p, dp) => dp.ProductCode == w.ProductCode && !dp.IsDeleted
+                )
+                .LeftJoin<ChinaSupplier>(
+                    (w, p, dp, s) => dp.SupplierCode == s.SupplierCode && !s.IsDeleted
+                )
+                .LeftJoin<ProductLocation>(
+                    (w, p, dp, s, pl) => pl.ProductCode == w.ProductCode && !pl.IsDeleted
+                )
+                .LeftJoin<Location>(
+                    (w, p, dp, s, pl, l) => l.LocationGuid == pl.LocationGuid && !l.IsDeleted
+                )
+                .Where((w, p, dp, s, pl, l) =>
+                    !w.IsDeleted && w.ProductCode == productCode
+                )
+                .Select((w, p, dp, s, pl, l) => new WarehouseMobileProductDto
+                {
+                    ProductCode = w.ProductCode,
+                    ProductName = p.ProductName ?? string.Empty,
+                    ItemNumber = p.ItemNumber,
+                    Barcode = p.Barcode,
+                    ProductImage = SqlFunc.IsNullOrEmpty(p.ProductImage) ? dp.ProductImage : p.ProductImage,
+                    ProductType = p.ProductType,
+                    ProductTypeLabel = p.ProductType == 1
+                        ? "套装商品"
+                        : p.ProductType == 2
+                            ? "多码商品"
+                            : "普通商品",
+                    LocalSupplierCode = p.LocalSupplierCode,
+                    SupplierCode = dp.SupplierCode,
+                    SupplierName = s.SupplierName,
+                    IsActive = w.IsActive,
+                    PurchasePrice = p.PurchasePrice,
+                    RetailPrice = p.RetailPrice,
+                    DomesticPrice = w.DomesticPrice,
+                    OEMPrice = w.OEMPrice,
+                    ImportPrice = w.ImportPrice,
+                    MiddlePackageQuantity = p.MiddlePackageQuantity,
+                    PackingQuantity = SqlFunc.IsNull(w.PackingQuantity, dp.PackingQuantity),
+                    Volume = SqlFunc.IsNull(w.Volume, dp.UnitVolume),
+                    LocationGuid = l.LocationGuid,
+                    LocationCode = l.LocationCode,
+                    LocationBarcode = l.LocationBarcode,
+                    UpdatedAt = SqlFunc.IsNull(p.UpdatedAt, w.UpdatedAt),
+                })
+                .FirstAsync();
+
+            return row;
+        }
+
+        public async Task<WarehouseProductLabelPrintDto?> GetMobileProductPrintPayloadAsync(string productCode)
+        {
+            var item = await GetMobileProductAsync(productCode);
+            if (item == null)
+            {
+                return null;
+            }
+
+            return new WarehouseProductLabelPrintDto
+            {
+                ProductCode = item.ProductCode,
+                ProductName = item.ProductName,
+                ItemNumber = item.ItemNumber,
+                Barcode = item.Barcode,
+                SupplierName = item.SupplierName,
+                RetailPrice = item.RetailPrice,
+                DomesticPrice = item.DomesticPrice,
+                OEMPrice = item.OEMPrice,
+                ImportPrice = item.ImportPrice,
+                LocationCode = item.LocationCode,
+                LocationBarcode = item.LocationBarcode,
+            };
+        }
+
+        public async Task<WarehouseLocationLabelPrintDto?> GetMobileLocationPrintPayloadAsync(string productCode)
+        {
+            var item = await GetMobileProductAsync(productCode);
+            if (item == null || string.IsNullOrWhiteSpace(item.LocationGuid))
+            {
+                return null;
+            }
+
+            var productCount = await _context
+                .Db.Queryable<ProductLocation>()
+                .Where(pl => !pl.IsDeleted && pl.LocationGuid == item.LocationGuid)
+                .CountAsync();
+
+            return new WarehouseLocationLabelPrintDto
+            {
+                LocationGuid = item.LocationGuid,
+                LocationCode = item.LocationCode,
+                LocationBarcode = item.LocationBarcode,
+                ProductCount = productCount,
+            };
+        }
+
+        private static string GetProductTypeLabel(int? productType)
+        {
+            return productType switch
+            {
+                0 => "普通",
+                1 => "套装",
+                2 => "多码",
+                _ => "未知",
+            };
+        }
+
         /// <summary>
         /// 检查 HQ 数据与本地数据是否有变化
         /// </summary>
