@@ -23,9 +23,13 @@ import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.ReactContextBaseJavaModule
 import com.facebook.react.bridge.ReactMethod
 import com.facebook.react.bridge.ReadableMap
+import com.google.zxing.BarcodeFormat
+import com.google.zxing.EncodeHintType
+import com.google.zxing.MultiFormatWriter
 import java.nio.charset.Charset
 import java.text.SimpleDateFormat
 import java.util.Date
+import java.util.EnumMap
 import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
@@ -378,8 +382,8 @@ class HbPrinterModule(
     val discountValue = discountRate * 100.0
     val nowPrice = retailPrice * (1.0 - discountRate)
 
-    val nowLabelBitmap = textToBitmap("Now", fontSizeToPixels(12f), true, "sans-serif-black", true, 4)
-    val nowPriceBitmap = textToBitmap("$${formatMoney(nowPrice)}", fontSizeToPixels(22f), true, "sans-serif-black", true, 4)
+    val nowLabelBitmap = textToBitmap("Now", fontSizeToPixels(8f), true, "sans-serif-black", true, 2)
+    val nowPriceBitmap = textToBitmap("$${formatMoney(nowPrice)}", fontSizeToPixels(16f), true, "sans-serif-black", true, 2)
     val discountBitmap = textToBitmap(discountValue.roundToInt().toString().padStart(2, '0'), fontSizeToPixels(44f), false, "sans-serif-black")
     val offBitmap = textToBitmap("OFF", fontSizeToPixels(16f), true, "sans-serif-black")
     val percentBitmap = textToBitmap("%", fontSizeToPixels(20f), true, "sans-serif-black")
@@ -390,19 +394,25 @@ class HbPrinterModule(
 
     val startY = 20
     val startX = labelWidth - discountBitmap.width - percentBitmap.width - offBitmap.width + 20
-    val valueCenterX = startX + discountBitmap.width / 2 + percentBitmap.width / 2 + offBitmap.width / 2
-    val nowPriceX = valueCenterX - nowPriceBitmap.width / 2
-    val nowLabelX = valueCenterX - nowLabelBitmap.width / 2
-    val nowLabelY = startY + discountBitmap.height + 8
-    val nowPriceY = nowLabelY + nowLabelBitmap.height + 8
-    val qrSize = 120
+    val rightMargin = 12
+    val columnGap = 10
+    val nowGroupGap = 6
+    val qrBitmap = barcode.takeIf { it.isNotBlank() }?.let { createQrCodeBitmap(it, 64) }
+    val qrVisualWidth = qrBitmap?.width ?: 64
+    val effectiveLabelBottom = 204
+    val bottomMargin = 10
+    val infoBandBottom = effectiveLabelBottom - bottomMargin
     val qrX = 10
-    val qrY = labelHeight - qrSize - 40
+    val qrY = infoBandBottom - (qrBitmap?.height ?: 64)
     val itemY = qrY - (itemBitmap?.height ?: 0) - 8
-    val dateX = labelWidth - dateBitmap.width - 15
-    val dateY = qrY + qrSize - dateBitmap.height
+    val nowPriceX = labelWidth - rightMargin - nowPriceBitmap.width
+    val nowLabelX = nowPriceX - nowGroupGap - nowLabelBitmap.width
+    val nowLabelY = infoBandBottom - nowLabelBitmap.height
+    val nowPriceY = infoBandBottom - nowPriceBitmap.height
+    val dateX = qrX + qrVisualWidth + columnGap
+    val dateY = infoBandBottom - dateBitmap.height
     val nameMaxWidth = max(1, labelWidth - discountBitmap.width - percentBitmap.width - offBitmap.width + 10)
-    val nameBitmap = longTextToBitmap(productName, fontSizeToPixels(10f), false, "Arial", 4, nameMaxWidth)
+    val nameBitmap = longTextToBitmap(productName, fontSizeToPixels(10f), false, "Arial", 2, nameMaxWidth)
 
     val commands = mutableListOf(
       "! 0 200 200 $labelHeight 1",
@@ -415,19 +425,19 @@ class HbPrinterModule(
         startY + discountBitmap.height - offBitmap.height,
         offBitmap,
       ),
-      bitmapCommand(nowLabelX, nowLabelY, nowLabelBitmap),
-      bitmapCommand(nowPriceX, nowPriceY, nowPriceBitmap),
     )
 
     if (itemBitmap != null) {
       commands += bitmapCommand(5, itemY, itemBitmap)
     }
 
-    if (barcode.isNotBlank()) {
-      commands += qrCodeCommand(qrX, qrY, barcode, 6)
+    if (qrBitmap != null) {
+      commands += bitmapCommand(qrX, qrY, qrBitmap)
     }
 
     commands += bitmapCommand(dateX, dateY, dateBitmap)
+    commands += bitmapCommand(nowLabelX, nowLabelY, nowLabelBitmap)
+    commands += bitmapCommand(nowPriceX, nowPriceY, nowPriceBitmap)
     commands += "PRINT"
 
     return commands.joinToString("\r\n", postfix = "\r\n")
@@ -721,12 +731,25 @@ class HbPrinterModule(
     return "EG $widthBytes ${bitmap.height} $x $y ${bitmapToHex(bitmap, widthBytes)}"
   }
 
-  private fun qrCodeCommand(x: Int, y: Int, value: String, unit: Int = 6): String {
-    return listOf(
-      "B QR $x $y M 2 U $unit",
-      "MA,${cpclText(value)}",
-      "ENDQR",
-    ).joinToString("\r\n")
+  private fun createQrCodeBitmap(value: String, size: Int): Bitmap {
+    val hints = EnumMap<EncodeHintType, Any>(EncodeHintType::class.java).apply {
+      put(EncodeHintType.MARGIN, 0)
+      put(EncodeHintType.CHARACTER_SET, "UTF-8")
+    }
+    val matrix = MultiFormatWriter().encode(
+      value,
+      BarcodeFormat.QR_CODE,
+      size,
+      size,
+      hints,
+    )
+    val bitmap = Bitmap.createBitmap(matrix.width, matrix.height, Bitmap.Config.ARGB_8888)
+    for (y in 0 until matrix.height) {
+      for (x in 0 until matrix.width) {
+        bitmap.setPixel(x, y, if (matrix.get(x, y)) Color.BLACK else Color.WHITE)
+      }
+    }
+    return bitmap
   }
 
   private fun createDashLineBitmap(width: Int, height: Int): Bitmap {
