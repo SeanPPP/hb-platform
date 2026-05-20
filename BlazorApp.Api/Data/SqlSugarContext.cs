@@ -421,6 +421,13 @@ namespace BlazorApp.Api.Data
                 typeof(ProductCategory),
                 typeof(ProductGrade),
                 typeof(EmployeeProfile),
+                typeof(AttendanceSchedule),
+                typeof(AttendanceAvailability),
+                typeof(AttendancePunch),
+                typeof(AttendanceApproval),
+                typeof(AttendanceStoreHoliday),
+                typeof(AttendanceLeaveRequest),
+                typeof(AttendanceSettings),
             };
 
             var existingTables = GetExistingTableNames();
@@ -747,6 +754,17 @@ namespace BlazorApp.Api.Data
 
             _db.CodeFirst.InitTables(typeof(EmployeeProfile));
             Console.WriteLine("✓ EmployeeProfile表创建成功");
+
+            _db.CodeFirst.InitTables(
+                typeof(AttendanceSchedule),
+                typeof(AttendanceAvailability),
+                typeof(AttendancePunch),
+                typeof(AttendanceApproval),
+                typeof(AttendanceStoreHoliday),
+                typeof(AttendanceLeaveRequest),
+                typeof(AttendanceSettings)
+            );
+            Console.WriteLine("✓ Attendance表创建成功");
 
             // 创建索引
             CreateIndexes();

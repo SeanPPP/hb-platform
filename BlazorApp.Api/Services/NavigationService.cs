@@ -103,6 +103,7 @@ namespace BlazorApp.Api.Services
                     new() { Path = "/pos-admin/pricing-strategies",    TitleKey = "menu.pricingStrategies",      Icon = "FileTextOutlined",           Permission = Permissions.PricingStrategy.View },
                     new() { Path = "/pos-admin/promotions",            TitleKey = "menu.promotions",             Icon = "GiftOutlined",               Permission = Permissions.Promotions.View },
                     new() { Path = "/pos-admin/cash-register-users",   TitleKey = "menu.cashRegisterUsers",      Icon = "UserOutlined",               Permission = Permissions.Store.ManageOperations },
+                    new() { Path = "/pos-admin/schedule-attendance",   TitleKey = "menu.scheduleAttendance",     Icon = "CalendarOutlined",           Permission = Permissions.Attendance.Schedule.ViewStore },
                     new() { Path = "/pos-admin/sales-orders",          TitleKey = "menu.salesOrders",            Icon = "FileDoneOutlined",           Permission = Permissions.Orders.View },
                     new() { Path = "/pos-admin/local-supplier-invoices", TitleKey = "menu.localSupplierInvoices", Icon = "ReconciliationOutlined",     Permission = Permissions.LocalPurchase.View },
                 },
@@ -150,6 +151,14 @@ namespace BlazorApp.Api.Services
                 Icon = "barcode-scan",
                 Permission = Permissions.StoreProducts.View,
                 Order = 50,
+            },
+            new()
+            {
+                RouteName = "attendance",
+                TitleKey = "tabs.attendance",
+                Icon = "calendar-clock",
+                Permission = Permissions.Attendance.Schedule.ViewSelf,
+                Order = 55,
             },
             new()
             {

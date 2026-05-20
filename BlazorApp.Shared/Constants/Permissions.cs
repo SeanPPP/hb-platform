@@ -135,6 +135,57 @@ namespace BlazorApp.Shared.Constants
             public const string ManageInfo = "Store.ManageInfo";
         }
 
+        public static class Attendance
+        {
+            public static class Schedule
+            {
+                public const string ViewSelf = "Attendance.Schedule.ViewSelf";
+                public const string ViewStore = "Attendance.Schedule.ViewStore";
+                public const string EditManagedStore = "Attendance.Schedule.EditManagedStore";
+            }
+
+            public static class Availability
+            {
+                public const string SubmitSelf = "Attendance.Availability.SubmitSelf";
+                public const string ViewManagedStore = "Attendance.Availability.ViewManagedStore";
+            }
+
+            public static class Punch
+            {
+                public const string Self = "Attendance.Punch.Self";
+                public const string ViewManagedStore = "Attendance.Punch.ViewManagedStore";
+            }
+
+            public static class Approval
+            {
+                public const string ViewManagedStore = "Attendance.Approval.ViewManagedStore";
+                public const string ReviewManagedStore = "Attendance.Approval.ReviewManagedStore";
+            }
+
+            public static class Holiday
+            {
+                public const string ViewStore = "Attendance.Holiday.ViewStore";
+                public const string EditManagedStore = "Attendance.Holiday.EditManagedStore";
+            }
+
+            public static class Leave
+            {
+                public const string ApplySelf = "Attendance.Leave.ApplySelf";
+                public const string ViewManagedStore = "Attendance.Leave.ViewManagedStore";
+                public const string ReviewManagedStore = "Attendance.Leave.ReviewManagedStore";
+            }
+
+            public static class Settings
+            {
+                public const string Edit = "Attendance.Settings.Edit";
+            }
+
+            public static class Admin
+            {
+                public const string View = "Attendance.Admin.View";
+            }
+        }
+
         public static class System
         {
             public const string ViewLogs = "System.ViewLogs";
@@ -288,6 +339,24 @@ namespace BlazorApp.Shared.Constants
             // 分店运营
             yield return (Store.ManageOperations, "管理分店运营", "分店运营");
             yield return (Store.ManageInfo, "管理分店信息", "分店运营");
+
+            // 排班考勤
+            yield return (Attendance.Schedule.ViewSelf, "查看自己的排班", "排班考勤");
+            yield return (Attendance.Schedule.ViewStore, "查看相关分店排班", "排班考勤");
+            yield return (Attendance.Schedule.EditManagedStore, "编辑管理分店排班", "排班考勤");
+            yield return (Attendance.Availability.SubmitSelf, "上报自己的可上班时间", "排班考勤");
+            yield return (Attendance.Availability.ViewManagedStore, "查看管理分店可上班时间", "排班考勤");
+            yield return (Attendance.Punch.Self, "本人打卡", "排班考勤");
+            yield return (Attendance.Punch.ViewManagedStore, "查看管理分店打卡记录", "排班考勤");
+            yield return (Attendance.Approval.ViewManagedStore, "查看管理分店审核记录", "排班考勤");
+            yield return (Attendance.Approval.ReviewManagedStore, "审核管理分店考勤", "排班考勤");
+            yield return (Attendance.Holiday.ViewStore, "查看分店公共假期", "排班考勤");
+            yield return (Attendance.Holiday.EditManagedStore, "编辑管理分店公共假期", "排班考勤");
+            yield return (Attendance.Leave.ApplySelf, "本人提交请假申请", "排班考勤");
+            yield return (Attendance.Leave.ViewManagedStore, "查看管理分店请假申请", "排班考勤");
+            yield return (Attendance.Leave.ReviewManagedStore, "审核管理分店请假申请", "排班考勤");
+            yield return (Attendance.Settings.Edit, "编辑考勤设置", "排班考勤");
+            yield return (Attendance.Admin.View, "查看全部考勤管理", "排班考勤");
 
             // 系统管理
             yield return (System.ViewLogs, "查看日志", "系统管理");
