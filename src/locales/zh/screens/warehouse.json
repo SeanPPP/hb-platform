@@ -1,0 +1,76 @@
+{
+  "title": "仓库",
+  "segments": {
+    "product": "仓库商品",
+    "location": "标签管理"
+  },
+  "messages": {
+    "noAccessTitle": "暂无仓库访问权限",
+    "noAccessDescription": "当前账号或设备没有可用的仓库访问权限。",
+    "keywordRequired": "请输入条码、货号、商品编码或货位信息",
+    "lookupFailed": "查询失败",
+    "invalidNumber": "请输入有效数字",
+    "notAvailable": "--",
+    "saved": "保存成功",
+    "saveFailed": "保存失败",
+    "locationSaved": "货位已更新",
+    "locationLookupFailed": "货位查询失败",
+    "locationBound": "货位绑定成功",
+    "locationUnbound": "货位解绑成功",
+    "locationDeleteFailed": "删除货位失败",
+    "printFailed": "打印失败",
+    "printSent": "打印任务已发送",
+    "uploadFailed": "图片上传失败",
+    "photoCaptured": "已拍照，正在上传图片"
+  },
+  "product": {
+    "searchPlaceholder": "条码 / 货号 / 商品编码 / 货位",
+    "scan": "扫码",
+    "emptyTitle": "查询仓库商品",
+    "emptyDescription": "输入关键字或扫码后查看仓库商品详情。",
+    "multipleTitle": "匹配到多个商品",
+    "currentLocation": "当前货位",
+    "noLocation": "未绑定",
+    "clearLocation": "清空货位",
+    "bindLocation": "绑定货位",
+    "takePhoto": "更新图片",
+    "printProduct": "打印商品标签",
+    "printLocation": "打印货位标签",
+    "fields": {
+      "purchasePrice": "采购价",
+      "retailPrice": "零售价",
+      "domesticPrice": "国内价",
+      "oemPrice": "OEM价",
+      "importPrice": "进口价",
+      "isActive": "启用",
+      "middlePackageQuantity": "中包数",
+      "packingQuantity": "装箱数",
+      "volume": "体积"
+    }
+  },
+  "location": {
+    "searchPlaceholder": "货位编码 / 货位条码",
+    "emptyTitle": "查询或维护货位",
+    "emptyDescription": "可搜索货位、创建货位，并绑定或解绑仓库商品。",
+    "newLocation": "新建货位",
+    "editLocation": "编辑货位",
+    "deleteLocation": "删除货位",
+    "bindProduct": "绑定商品",
+    "unbindProduct": "解绑商品",
+    "lookupProductPlaceholder": "输入商品编码绑定到当前货位",
+    "fields": {
+      "locationCode": "货位编码",
+      "locationBarcode": "货位条码",
+      "locationType": "货位类型",
+      "status": "状态"
+    }
+  },
+  "camera": {
+    "scanTitle": "扫码查询",
+    "photoTitle": "拍照上传商品图",
+    "capture": "拍照",
+    "permissionTitle": "需要相机权限",
+    "permissionDescription": "开启相机权限后，才能扫码或拍照上传商品图片。",
+    "grantPermission": "开启相机权限"
+  }
+}

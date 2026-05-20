@@ -293,6 +293,32 @@ class HbPrinterModule(
     }.start()
   }
 
+  @ReactMethod
+  fun printWarehouseProductLabel(payload: ReadableMap, promise: Promise) {
+    Thread {
+      try {
+        val command = buildWarehouseProductLabelCommand(payload)
+        writePrinterCommand(command, "GB18030")
+        promise.resolve(true)
+      } catch (error: Exception) {
+        promise.reject("PRINT_WAREHOUSE_PRODUCT_LABEL_ERROR", error.message, error)
+      }
+    }.start()
+  }
+
+  @ReactMethod
+  fun printWarehouseLocationLabel(payload: ReadableMap, promise: Promise) {
+    Thread {
+      try {
+        val command = buildWarehouseLocationLabelCommand(payload)
+        writePrinterCommand(command, "GB18030")
+        promise.resolve(true)
+      } catch (error: Exception) {
+        promise.reject("PRINT_WAREHOUSE_LOCATION_LABEL_ERROR", error.message, error)
+      }
+    }.start()
+  }
+
   private fun writePrinterCommand(command: String, encoding: String) {
     val activeSocket = socket
     if (activeSocket == null || !activeSocket.isConnected) {
@@ -615,6 +641,140 @@ class HbPrinterModule(
     )
   }
 
+  private fun buildWarehouseProductLabelCommand(payload: ReadableMap): String {
+    val w = labelWidth
+    val h = 360
+    val productName = payload.getNullableString("productName")
+    val itemNumber = payload.getNullableString("itemNumber")
+    val productCode = payload.getNullableString("productCode")
+    val barcode = payload.getNullableString("barcode").ifBlank { itemNumber.ifBlank { productCode } }
+    val supplierName = processCapitalization(payload.getNullableString("supplierName"))
+    val retailPrice = payload.getNullableDouble("retailPrice")
+    val locationCode = payload.getNullableString("locationCode")
+    val locationBarcode = payload.getNullableString("locationBarcode")
+    val domesticPrice = payload.getNullableDouble("domesticPrice")
+    val oemPrice = payload.getNullableDouble("oemPrice")
+    val importPrice = payload.getNullableDouble("importPrice")
+    val displayCode = itemNumber.ifBlank { productCode }
+    val displayPrice = retailPrice ?: domesticPrice ?: oemPrice ?: importPrice
+    val priceDetail = buildList {
+      domesticPrice?.let { add("D ${formatMoney(it)}") }
+      oemPrice?.let { add("O ${formatMoney(it)}") }
+      importPrice?.let { add("I ${formatMoney(it)}") }
+    }.joinToString("   ")
+    val qrBitmap = barcode.takeIf { it.isNotBlank() }?.let { createQrCodeBitmap(it, 88) }
+    val contentWidth = w - (qrBitmap?.width ?: 0) - 35
+
+    val titleBitmap = textToBitmap("WAREHOUSE", fontSizeToPixels(11f), true, "sans-serif-black", true, 3)
+    val nameBitmap = longTextToBitmap(productName, fontSizeToPixels(10f), true, "Arial", 2, max(180, contentWidth))
+    val itemBitmap = textToBitmap("ITEM ${cpclText(displayCode)}", fontSizeToPixels(8f), true, "sans-serif-black")
+    val productCodeBitmap = textToBitmap("CODE ${cpclText(productCode)}", fontSizeToPixels(8f), true, "sans-serif-black")
+    val supplierBitmap = supplierName.takeIf { it.isNotBlank() }?.let {
+      textToBitmap("SUP ${cpclText(it)}", fontSizeToPixels(8f), true, "sans-serif-light", true, 2)
+    }
+    val priceBitmap = textToBitmap(
+      "PRICE ${formatOptionalMoney(displayPrice)}",
+      fontSizeToPixels(10f),
+      true,
+      "sans-serif-black",
+      true,
+      3,
+    )
+    val priceDetailBitmap = priceDetail.takeIf { it.isNotBlank() }?.let {
+      textToBitmap(it, fontSizeToPixels(8f), true, "sans-serif-black")
+    }
+    val locationBitmap = textToBitmap(
+      "LOC ${cpclText(locationCode.ifBlank { "UNASSIGNED" })}",
+      fontSizeToPixels(10f),
+      true,
+      "sans-serif-black",
+      true,
+      3,
+    )
+    val locationBarcodeBitmap = locationBarcode.takeIf { it.isNotBlank() }?.let {
+      textToBitmap("LOC BAR ${cpclText(it)}", fontSizeToPixels(8f), true, "sans-serif-black")
+    }
+    val barcodeTextBitmap = barcode.takeIf { it.isNotBlank() }?.let {
+      textToBitmap("BAR ${cpclText(it)}", fontSizeToPixels(8f), true, "sans-serif-black")
+    }
+    val dateBitmap = textToBitmap(todayString(), fontSizeToPixels(8f), true, "sans-serif-black", true, 2)
+
+    val commands = mutableListOf(
+      "! 0 200 200 $h 1",
+      "PAGE-WIDTH $w",
+      bitmapCommand(10, 8, titleBitmap),
+      bitmapCommand(10, 46, nameBitmap),
+      bitmapCommand(10, 116, itemBitmap),
+      bitmapCommand(10, 144, productCodeBitmap),
+      bitmapCommand(10, 176, priceBitmap),
+      bitmapCommand(10, 206, locationBitmap),
+      bitmapCommand(w - dateBitmap.width - 10, 206, dateBitmap),
+    )
+
+    if (supplierBitmap != null) {
+      commands += bitmapCommand(10, 236, supplierBitmap)
+    }
+
+    if (priceDetailBitmap != null) {
+      commands += bitmapCommand(10, 266, priceDetailBitmap)
+    }
+
+    if (locationBarcodeBitmap != null) {
+      commands += bitmapCommand(10, 292, locationBarcodeBitmap)
+    }
+
+    if (barcodeTextBitmap != null) {
+      commands += bitmapCommand(10, 318, barcodeTextBitmap)
+    }
+
+    if (qrBitmap != null) {
+      commands += bitmapCommand(w - qrBitmap.width - 15, 46, qrBitmap)
+    }
+
+    if (barcode.isNotBlank()) {
+      commands += "BARCODE-TEXT 7 0 5"
+      commands += "BARCODE 128 1 2 24 10 330 ${cpclText(barcode)}"
+    }
+
+    commands += "PRINT"
+    return commands.joinToString("\r\n", postfix = "\r\n")
+  }
+
+  private fun buildWarehouseLocationLabelCommand(payload: ReadableMap): String {
+    val w = labelWidth
+    val h = 300
+    val locationCode = payload.getNullableString("locationCode")
+    val locationBarcode = payload.getNullableString("locationBarcode")
+    val locationGuid = payload.getNullableString("locationGuid")
+    val productCount = payload.getNullableDouble("productCount")?.roundToInt() ?: 0
+    val displayCode = locationCode.ifBlank { locationBarcode.ifBlank { locationGuid } }
+    val barcode = locationBarcode.ifBlank { displayCode }
+
+    val titleBitmap = textToBitmap("LOCATION", fontSizeToPixels(12f), true, "sans-serif-black", true, 3)
+    val codeBitmap = longTextToBitmap(displayCode, fontSizeToPixels(22f), true, "sans-serif-black", 2, w - 30)
+    val barcodeTextBitmap = textToBitmap("BAR ${cpclText(barcode)}", fontSizeToPixels(8f), true, "sans-serif-black")
+    val countBitmap = textToBitmap("QTY $productCount", fontSizeToPixels(14f), true, "sans-serif-black", true, 3)
+    val dateBitmap = textToBitmap(todayString(), fontSizeToPixels(8f), true, "sans-serif-black", true, 2)
+
+    val commands = mutableListOf(
+      "! 0 200 200 $h 1",
+      "PAGE-WIDTH $w",
+      bitmapCommand(10, 8, titleBitmap),
+      bitmapCommand(10, 55, codeBitmap),
+      bitmapCommand(10, 170, countBitmap),
+      bitmapCommand(w - dateBitmap.width - 10, 170, dateBitmap),
+      bitmapCommand(10, 210, barcodeTextBitmap),
+    )
+
+    if (barcode.isNotBlank()) {
+      commands += "BARCODE-TEXT 7 0 5"
+      commands += "BARCODE 128 1 2 40 10 240 ${cpclText(barcode)}"
+    }
+
+    commands += "PRINT"
+    return commands.joinToString("\r\n", postfix = "\r\n")
+  }
+
   private fun ReadableMap.getNullableString(key: String): String {
     return if (hasKey(key) && !isNull(key)) getString(key)?.trim().orEmpty() else ""
   }
@@ -637,6 +797,10 @@ class HbPrinterModule(
 
   private fun formatMoney(value: Double): String {
     return String.format(Locale.US, "%.2f", value)
+  }
+
+  private fun formatOptionalMoney(value: Double?): String {
+    return if (value == null) "--" else formatMoney(value)
   }
 
   private fun cpclText(value: String): String {

@@ -2,8 +2,6 @@ import { useEffect, useRef } from "react";
 import { ActivityIndicator, View } from "react-native";
 import { Tabs, useRouter } from "expo-router";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
-import type { ComponentProps } from "react";
-import { ScrollableTabBar } from "@/components/navigation";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 import { useAuthStore } from "@/store/auth-store";
 import { useDeviceStore } from "@/store/device-store";
@@ -12,7 +10,6 @@ export default function TabsLayout() {
   const router = useRouter();
   const { t } = useAppTranslation("common");
   const userGuid = useAuthStore((state) => state.user?.userGUID);
-  const access = useAuthStore((state) => state.access);
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated);
   const isLoading = useAuthStore((state) => state.isLoading);
   const restoreSession = useAuthStore((state) => state.restoreSession);
@@ -104,45 +101,6 @@ export default function TabsLayout() {
   }, [deviceHydrated, deviceSession, hasStoredDeviceSession, hasUserSession, restoreSession, router, validateDevice]);
 
   const isDeviceMode = Boolean(hasStoredDeviceSession && !hasUserSession);
-  const tabItems: Array<{
-    name: string;
-    title: string;
-    icon: ComponentProps<typeof MaterialCommunityIcons>["name"];
-  }> = [
-    {
-      name: "home",
-      title: t("tabs.home"),
-      icon: "home",
-    },
-    {
-      name: "orders",
-      title: t("tabs.orders"),
-      icon: "clipboard-list",
-    },
-    {
-      name: "cart",
-      title: t("tabs.cart"),
-      icon: "cart-outline",
-    },
-    {
-      name: "product-query",
-      title: t("tabs.productQuery"),
-      icon: "barcode-scan",
-    },
-    {
-      name: "settings",
-      title: t("tabs.settings"),
-      icon: "cog",
-    },
-  ];
-
-  if (access.isStoreManager || access.canReadUser) {
-    tabItems.push({
-      name: "users",
-      title: t("tabs.users"),
-      icon: "account-multiple-outline",
-    });
-  }
 
   if (
     (!deviceHydrated || !hasRestored.current) &&
@@ -163,22 +121,65 @@ export default function TabsLayout() {
   }
 
   return (
-    <Tabs
-      screenOptions={{ headerShown: false }}
-      tabBar={(props) => <ScrollableTabBar {...props} />}
-    >
-      {tabItems.map((tabItem) => (
-        <Tabs.Screen
-          key={tabItem.name}
-          name={tabItem.name}
-          options={{
-            title: tabItem.title,
-            tabBarIcon: ({ color, size }) => (
-              <MaterialCommunityIcons name={tabItem.icon} color={color} size={size} />
-            ),
-          }}
-        />
-      ))}
+    <Tabs screenOptions={{ headerShown: false }}>
+      <Tabs.Screen
+        name="home"
+        options={{
+          title: t("tabs.home"),
+          tabBarIcon: ({ color, size }) => (
+            <MaterialCommunityIcons name="home" color={color} size={size} />
+          ),
+        }}
+      />
+      <Tabs.Screen
+        name="orders"
+        options={{
+          title: t("tabs.orders"),
+          tabBarIcon: ({ color, size }) => (
+            <MaterialCommunityIcons
+              name="clipboard-list"
+              color={color}
+              size={size}
+            />
+          ),
+        }}
+      />
+      <Tabs.Screen
+        name="cart"
+        options={{
+          title: t("tabs.cart"),
+          tabBarIcon: ({ color, size }) => (
+            <MaterialCommunityIcons name="cart-outline" color={color} size={size} />
+          ),
+        }}
+      />
+      <Tabs.Screen
+        name="warehouse"
+        options={{
+          title: t("tabs.warehouse"),
+          tabBarIcon: ({ color, size }) => (
+            <MaterialCommunityIcons name="warehouse" color={color} size={size} />
+          ),
+        }}
+      />
+      <Tabs.Screen
+        name="product-query"
+        options={{
+          title: t("tabs.productQuery"),
+          tabBarIcon: ({ color, size }) => (
+            <MaterialCommunityIcons name="barcode-scan" color={color} size={size} />
+          ),
+        }}
+      />
+      <Tabs.Screen
+        name="settings"
+        options={{
+          title: t("tabs.settings"),
+          tabBarIcon: ({ color, size }) => (
+            <MaterialCommunityIcons name="cog" color={color} size={size} />
+          ),
+        }}
+      />
     </Tabs>
   );
 }

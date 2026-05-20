@@ -1,0 +1,76 @@
+{
+  "title": "Warehouse",
+  "segments": {
+    "product": "Products",
+    "location": "Labels"
+  },
+  "messages": {
+    "noAccessTitle": "No warehouse access",
+    "noAccessDescription": "The current account or device does not have warehouse access.",
+    "keywordRequired": "Enter a barcode, item number, product code, or location keyword.",
+    "lookupFailed": "Lookup failed",
+    "invalidNumber": "Enter a valid number",
+    "notAvailable": "--",
+    "saved": "Saved successfully",
+    "saveFailed": "Save failed",
+    "locationSaved": "Location updated",
+    "locationLookupFailed": "Failed to look up locations",
+    "locationBound": "Location bound successfully",
+    "locationUnbound": "Location unbound successfully",
+    "locationDeleteFailed": "Failed to delete location",
+    "printFailed": "Print failed",
+    "printSent": "Print job sent",
+    "uploadFailed": "Image upload failed",
+    "photoCaptured": "Photo captured, uploading image"
+  },
+  "product": {
+    "searchPlaceholder": "Barcode / item / product code / location",
+    "scan": "Scan",
+    "emptyTitle": "Find a warehouse product",
+    "emptyDescription": "Search or scan to view the warehouse product details.",
+    "multipleTitle": "Multiple products matched",
+    "currentLocation": "Current location",
+    "noLocation": "Not bound",
+    "clearLocation": "Clear location",
+    "bindLocation": "Bind location",
+    "takePhoto": "Update image",
+    "printProduct": "Print product label",
+    "printLocation": "Print location label",
+    "fields": {
+      "purchasePrice": "Purchase",
+      "retailPrice": "Retail",
+      "domesticPrice": "Domestic",
+      "oemPrice": "OEM",
+      "importPrice": "Import",
+      "isActive": "Active",
+      "middlePackageQuantity": "Middle pack",
+      "packingQuantity": "Packing qty",
+      "volume": "Volume"
+    }
+  },
+  "location": {
+    "searchPlaceholder": "Location code / barcode",
+    "emptyTitle": "Find or manage a location",
+    "emptyDescription": "Search locations, create locations, and bind or unbind warehouse products.",
+    "newLocation": "New location",
+    "editLocation": "Edit location",
+    "deleteLocation": "Delete location",
+    "bindProduct": "Bind product",
+    "unbindProduct": "Unbind product",
+    "lookupProductPlaceholder": "Enter a product code to bind to this location",
+    "fields": {
+      "locationCode": "Location code",
+      "locationBarcode": "Location barcode",
+      "locationType": "Location type",
+      "status": "Status"
+    }
+  },
+  "camera": {
+    "scanTitle": "Scan lookup",
+    "photoTitle": "Capture product image",
+    "capture": "Take photo",
+    "permissionTitle": "Camera permission required",
+    "permissionDescription": "Enable camera access before scanning or taking product photos.",
+    "grantPermission": "Enable camera"
+  }
+}

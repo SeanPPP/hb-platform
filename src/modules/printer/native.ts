@@ -1,5 +1,11 @@
 import { NativeModules, PermissionsAndroid, Platform } from "react-native";
-import type { PrinterDevice, PrinterStatus, ProductLabelPrintPayload } from "@/modules/printer/types";
+import type {
+  PrinterDevice,
+  PrinterStatus,
+  ProductLabelPrintPayload,
+  WarehouseLocationLabelPrintPayload,
+  WarehouseProductLabelPrintPayload,
+} from "@/modules/printer/types";
 
 type NativePrinterModule = {
   getStatus(): Promise<PrinterStatus>;
@@ -11,6 +17,8 @@ type NativePrinterModule = {
   printDiscountLabel(payload: ProductLabelPrintPayload, printType?: string | null): Promise<boolean>;
   printClearanceLabel(payload: ProductLabelPrintPayload): Promise<boolean>;
   printBigDiscountLabel(payload: ProductLabelPrintPayload, printType?: string | null): Promise<boolean>;
+  printWarehouseProductLabel(payload: WarehouseProductLabelPrintPayload): Promise<boolean>;
+  printWarehouseLocationLabel(payload: WarehouseLocationLabelPrintPayload): Promise<boolean>;
 };
 
 const nativeModule = NativeModules.HbPrinterModule as NativePrinterModule | undefined;
@@ -101,4 +109,14 @@ export async function printNativeBigDiscountLabel(
 ) {
   await ensureBluetoothPermissions();
   return getModule().printBigDiscountLabel(payload, printType ?? null);
+}
+
+export async function printNativeWarehouseProductLabel(payload: WarehouseProductLabelPrintPayload) {
+  await ensureBluetoothPermissions();
+  return getModule().printWarehouseProductLabel(payload);
+}
+
+export async function printNativeWarehouseLocationLabel(payload: WarehouseLocationLabelPrintPayload) {
+  await ensureBluetoothPermissions();
+  return getModule().printWarehouseLocationLabel(payload);
 }

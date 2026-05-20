@@ -7,12 +7,19 @@ import {
   printNativeClearanceLabel,
   printNativeDiscountLabel,
   printNativeProductLabel,
+  printNativeWarehouseLocationLabel,
+  printNativeWarehouseProductLabel,
   printRawCommand,
   scanPrinters,
 } from "@/modules/printer/native";
 import { PrinterStorage } from "@/modules/printer/storage";
 import { usePrinterStore } from "@/modules/printer/state";
-import type { PrinterDevice, SavedPrinter } from "@/modules/printer/types";
+import type {
+  PrinterDevice,
+  SavedPrinter,
+  WarehouseLocationLabelPrintPayload,
+  WarehouseProductLabelPrintPayload,
+} from "@/modules/printer/types";
 
 interface ProductLabelOverrides {
   barcode?: string | null;
@@ -40,6 +47,56 @@ function buildPayload(detail: ProductDetail, overrides?: ProductLabelOverrides) 
     discountRate: overrides?.discountRate ?? detail.storePrice?.discountRate ?? null,
     clearanceBarcode: overrides?.clearanceBarcode ?? detail.clearancePrice?.clearanceBarcode ?? null,
     clearancePrice: overrides?.clearancePrice ?? detail.clearancePrice?.clearancePrice ?? null,
+  };
+}
+
+function toNullableString(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const trimmed = value.trim();
+  return trimmed ? trimmed : null;
+}
+
+function toNullableNumber(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function normalizeWarehouseProductLabelPayload(
+  payload: WarehouseProductLabelPrintPayload
+): WarehouseProductLabelPrintPayload {
+  const data = (payload && typeof payload === "object" ? payload : {}) as Record<string, unknown>;
+  return {
+    productCode: String(data.productCode ?? data.ProductCode ?? ""),
+    productName: String(data.productName ?? data.ProductName ?? ""),
+    itemNumber: toNullableString(data.itemNumber ?? data.ItemNumber),
+    barcode: toNullableString(data.barcode ?? data.Barcode),
+    supplierName: toNullableString(data.supplierName ?? data.SupplierName),
+    retailPrice: toNullableNumber(data.retailPrice ?? data.RetailPrice),
+    domesticPrice: toNullableNumber(data.domesticPrice ?? data.DomesticPrice),
+    oemPrice: toNullableNumber(data.oEMPrice ?? data.OEMPrice ?? data.oemPrice ?? data.OemPrice),
+    importPrice: toNullableNumber(data.importPrice ?? data.ImportPrice),
+    locationCode: toNullableString(data.locationCode ?? data.LocationCode),
+    locationBarcode: toNullableString(data.locationBarcode ?? data.LocationBarcode),
+  };
+}
+
+function normalizeWarehouseLocationLabelPayload(
+  payload: WarehouseLocationLabelPrintPayload
+): WarehouseLocationLabelPrintPayload {
+  const data = (payload && typeof payload === "object" ? payload : {}) as Record<string, unknown>;
+  return {
+    locationGuid: String(data.locationGuid ?? data.LocationGuid ?? ""),
+    locationCode: toNullableString(data.locationCode ?? data.LocationCode),
+    locationBarcode: toNullableString(data.locationBarcode ?? data.LocationBarcode),
+    productCount: toNullableNumber(data.productCount ?? data.ProductCount) ?? 0,
   };
 }
 
@@ -209,4 +266,14 @@ export async function printClearanceLabel(detail: ProductDetail) {
 export async function printBigDiscountLabel(detail: ProductDetail, printType?: string | null) {
   await ensureConnectedPrinter();
   return printNativeBigDiscountLabel(buildPayload(detail), printType);
+}
+
+export async function printWarehouseProductLabel(payload: WarehouseProductLabelPrintPayload) {
+  await ensureConnectedPrinter();
+  return printNativeWarehouseProductLabel(normalizeWarehouseProductLabelPayload(payload));
+}
+
+export async function printWarehouseLocationLabel(payload: WarehouseLocationLabelPrintPayload) {
+  await ensureConnectedPrinter();
+  return printNativeWarehouseLocationLabel(normalizeWarehouseLocationLabelPayload(payload));
 }

@@ -35,3 +35,24 @@ export interface ProductLabelPrintPayload {
   clearanceBarcode?: string | null;
   clearancePrice?: number | null;
 }
+
+export interface WarehouseProductLabelPrintPayload {
+  productCode: string;
+  productName: string;
+  itemNumber?: string | null;
+  barcode?: string | null;
+  supplierName?: string | null;
+  retailPrice?: number | null;
+  domesticPrice?: number | null;
+  oemPrice?: number | null;
+  importPrice?: number | null;
+  locationCode?: string | null;
+  locationBarcode?: string | null;
+}
+
+export interface WarehouseLocationLabelPrintPayload {
+  locationGuid: string;
+  locationCode?: string | null;
+  locationBarcode?: string | null;
+  productCount: number;
+}
