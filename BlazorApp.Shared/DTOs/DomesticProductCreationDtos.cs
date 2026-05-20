@@ -36,8 +36,7 @@ namespace BlazorApp.Shared.DTOs
     /// </summary>
     public class CreateBatchItemDto
     {
-        [Required]
-        public string ProductName { get; set; }
+        public string? ProductName { get; set; }
 
         /// <summary>
         /// 0=Normal, 1=Set
@@ -157,6 +156,17 @@ namespace BlazorApp.Shared.DTOs
         public int NormalProductCount { get; set; }
         public int SetProductCount { get; set; }
         public List<BatchDetailItemDto> Items { get; set; } = new();
+    }
+
+    /// <summary>
+    /// Response: batch export file
+    /// </summary>
+    public class DomesticProductBatchExportFileDto
+    {
+        public byte[] Content { get; set; } = Array.Empty<byte>();
+        public string ContentType { get; set; } =
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+        public string FileName { get; set; } = string.Empty;
     }
 
     /// <summary>

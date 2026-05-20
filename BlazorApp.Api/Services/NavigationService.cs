@@ -19,6 +19,7 @@ namespace BlazorApp.Api.Services
             public string TitleKey { get; init; } = string.Empty;
             public string Icon { get; init; } = string.Empty;
             public string? Permission { get; init; }
+            public string[] Roles { get; init; } = Array.Empty<string>();
             public bool RequireAdmin { get; init; }
             public int Order { get; init; }
         }
@@ -146,6 +147,14 @@ namespace BlazorApp.Api.Services
             },
             new()
             {
+                RouteName = "domestic-purchase",
+                TitleKey = "tabs.domesticPurchase",
+                Icon = "shopping-outline",
+                Permission = Permissions.DomesticPurchase.ManageProducts,
+                Order = 45,
+            },
+            new()
+            {
                 RouteName = "product-query",
                 TitleKey = "tabs.productQuery",
                 Icon = "barcode-scan",
@@ -159,6 +168,21 @@ namespace BlazorApp.Api.Services
                 Icon = "calendar-clock",
                 Permission = Permissions.Attendance.Schedule.ViewSelf,
                 Order = 55,
+            },
+            new()
+            {
+                RouteName = "users",
+                TitleKey = "tabs.users",
+                Icon = "account-group-outline",
+                Roles = new[] { "Admin", "管理员", "StoreManager" },
+                Order = 56,
+            },
+            new()
+            {
+                RouteName = "employee-profile",
+                TitleKey = "tabs.employeeProfile",
+                Icon = "card-account-details-outline",
+                Order = 57,
             },
             new()
             {
@@ -295,6 +319,16 @@ namespace BlazorApp.Api.Services
         private static bool CanAccess(AppNavigationDefinition node, ClaimsPrincipal user)
         {
             if (node.RequireAdmin && !user.IsInRole("Admin") && !user.IsInRole("管理员"))
+            {
+                return false;
+            }
+
+            if (node.Roles.Any(user.IsInRole))
+            {
+                return true;
+            }
+
+            if (node.Roles.Length > 0 && string.IsNullOrEmpty(node.Permission))
             {
                 return false;
             }

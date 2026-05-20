@@ -38,6 +38,13 @@ namespace BlazorApp.Api.Services
         Task<ApiResponse<DomesticProductBatchDetailDto>> GetBatchDetailAsync(string batchNumber);
 
         /// <summary>
+        /// 导出批次创建结果
+        /// </summary>
+        /// <param name="batchNumber">批次号</param>
+        /// <returns>Excel文件</returns>
+        Task<ApiResponse<DomesticProductBatchExportFileDto>> ExportBatchAsync(string batchNumber);
+
+        /// <summary>
         /// 批量更新私牌价格
         /// </summary>
         /// <param name="batchNumber">批次号</param>

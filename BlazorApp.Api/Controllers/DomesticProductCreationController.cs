@@ -135,6 +135,43 @@ namespace BlazorApp.Api.Controllers
         }
 
         /// <summary>
+        /// 导出批次创建结果
+        /// </summary>
+        /// <param name="batchNumber">批次号</param>
+        /// <returns>Excel文件</returns>
+        [HttpGet("batch/{batchNumber}/export")]
+        [Authorize(Roles = "Admin,WarehouseManager")]
+        public async Task<IActionResult> ExportBatch(string batchNumber)
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(batchNumber))
+                {
+                    return BadRequest(ApiResponse<object>.Error("批次号不能为空", "VALIDATION_ERROR"));
+                }
+
+                var result = await _service.ExportBatchAsync(batchNumber);
+
+                if (result.Success && result.Data != null)
+                {
+                    return File(result.Data.Content, result.Data.ContentType, result.Data.FileName);
+                }
+
+                if (result.ErrorCode == "BATCH_NOT_FOUND")
+                {
+                    return NotFound(result);
+                }
+
+                return BadRequest(result);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "导出批次创建结果失败: {BatchNumber}", batchNumber);
+                return StatusCode(500, ApiResponse<object>.Error("服务器内部错误", "INTERNAL_SERVER_ERROR"));
+            }
+        }
+
+        /// <summary>
         /// 批量更新私牌价格
         /// </summary>
         /// <param name="batchNumber">批次号</param>

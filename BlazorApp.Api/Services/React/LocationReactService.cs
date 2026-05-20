@@ -13,7 +13,7 @@ namespace BlazorApp.Api.Services.React
     {
         private const int PickingLocationType = 1;
         private const int StorageLocationType = 2;
-        private const string LocationCodePattern = @"^[A-Z](0[1-9]|[1-9][0-9]){3}$";
+        private const string LocationCodePattern = @"^[A-Z]-\d{2}-\d{2}-\d{2}$";
 
         private readonly SqlSugarContext _context;
         private readonly ICurrentUserService _currentUserService;
@@ -797,7 +797,7 @@ namespace BlazorApp.Api.Services.React
 
             if (!Regex.IsMatch(normalizedCode, LocationCodePattern))
             {
-                return ("货位代码格式不正确，应为A010101格式：字母A-Z + 01-99 + 01-99 + 01-99", "INVALID_LOCATION_CODE");
+                return ("货位代码格式不正确，应为 A-00-00-01 格式：字母A-Z + 00-99 + 00-99 + 00-99", "INVALID_LOCATION_CODE");
             }
 
             if (locationType != PickingLocationType && locationType != StorageLocationType)

@@ -1,6 +1,7 @@
 using BlazorApp.Api.Data;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
+using ClosedXML.Excel;
 using Microsoft.Extensions.Logging;
 using SqlSugar;
 
@@ -109,7 +110,7 @@ namespace BlazorApp.Api.Services
                                 ProductCode = productCode,
                                 HBProductNo = itemNumber,
                                 Barcode = barcode,
-                                ProductName = item.ProductName,
+                                ProductName = item.ProductName ?? "",
                                 ProductType = 0,
                                 PrivateLabelPrice = item.PrivateLabelPrice,
                                 SubItems = new List<SubItemDto>(),
@@ -185,7 +186,7 @@ namespace BlazorApp.Api.Services
                             ProductCode = productCode,
                             HBProductNo = itemNumber,
                             Barcode = barcode,
-                            ProductName = item.ProductName,
+                            ProductName = item.ProductName ?? "",
                             ProductType = 1,
                             PrivateLabelPrice = item.PrivateLabelPrice,
                             SetQuantity = item.SetQuantity,
@@ -272,7 +273,7 @@ namespace BlazorApp.Api.Services
                                 ProductCode = subProductCode,
                                 HBProductNo = subItemNumber,
                                 Barcode = subBarcode,
-                                ProductName = subProductName,
+                                ProductName = subProductName ?? "",
                                 PrivateLabelPrice = subItem.PrivateLabelPrice,
                             }
                         );
@@ -397,7 +398,7 @@ namespace BlazorApp.Api.Services
                     ProductCode = domesticProduct.ProductCode,
                     HBProductNo = itemNumber,
                     Barcode = barcode,
-                    ProductName = item.ProductName,
+                    ProductName = item.ProductName ?? "",
                     ProductType = item.ProductType,
                     PrivateLabelPrice = item.PrivateLabelPrice,
                     SetQuantity = item.SetQuantity,
@@ -483,7 +484,7 @@ namespace BlazorApp.Api.Services
                     ProductCode = domesticProduct.ProductCode,
                     HBProductNo = itemNumber,
                     Barcode = barcode,
-                    ProductName = item.SubItemProductName ?? item.ProductName,
+                    ProductName = item.SubItemProductName ?? item.ProductName ?? "",
                     PrivateLabelPrice = item.PrivateLabelPrice,
                 };
             }
@@ -741,6 +742,124 @@ namespace BlazorApp.Api.Services
             {
                 return null;
             }
+        }
+
+        /// <summary>
+        /// 导出批次创建结果
+        /// </summary>
+        public async Task<ApiResponse<DomesticProductBatchExportFileDto>> ExportBatchAsync(
+            string batchNumber
+        )
+        {
+            try
+            {
+                var detailResult = await GetBatchDetailAsync(batchNumber);
+                if (!detailResult.Success || detailResult.Data == null)
+                {
+                    return ApiResponse<DomesticProductBatchExportFileDto>.Error(
+                        detailResult.Message ?? "批次不存在",
+                        detailResult.ErrorCode ?? "BATCH_NOT_FOUND"
+                    );
+                }
+
+                var detail = detailResult.Data;
+                using var workbook = new XLWorkbook();
+                var worksheet = workbook.Worksheets.Add("批次明细");
+
+                worksheet.Cell(1, 1).Value = "批次号";
+                worksheet.Cell(1, 2).Value = detail.BatchNumber;
+                worksheet.Cell(1, 3).Value = "供应商";
+                worksheet.Cell(1, 4).Value = string.IsNullOrWhiteSpace(detail.SupplierName)
+                    ? detail.SupplierCode
+                    : $"{detail.SupplierCode} - {detail.SupplierName}";
+                worksheet.Cell(2, 1).Value = "创建时间";
+                worksheet.Cell(2, 2).Value = detail.CreatedTime.ToString("yyyy-MM-dd HH:mm:ss");
+                worksheet.Cell(2, 3).Value = "总数量";
+                worksheet.Cell(2, 4).Value = detail.Items.Count;
+
+                var headerRow = 4;
+                var headers = new[]
+                {
+                    "批次号",
+                    "供应商",
+                    "货号",
+                    "条码",
+                    "商品名称",
+                    "类型",
+                    "贴牌价格",
+                    "套装数量",
+                    "套装价格",
+                    "父货号",
+                };
+
+                for (var i = 0; i < headers.Length; i++)
+                {
+                    worksheet.Cell(headerRow, i + 1).Value = headers[i];
+                }
+
+                var headerRange = worksheet.Range(headerRow, 1, headerRow, headers.Length);
+                headerRange.Style.Font.Bold = true;
+                headerRange.Style.Fill.BackgroundColor = XLColor.LightGray;
+                headerRange.Style.Alignment.Horizontal = XLAlignmentHorizontalValues.Center;
+
+                var supplierText = string.IsNullOrWhiteSpace(detail.SupplierName)
+                    ? detail.SupplierCode
+                    : $"{detail.SupplierCode} - {detail.SupplierName}";
+                var sortedItems = detail.Items
+                    .OrderBy(item => item.HBProductNo)
+                    .ThenBy(item => item.Barcode)
+                    .ToList();
+
+                var row = headerRow + 1;
+                foreach (var item in sortedItems)
+                {
+                    worksheet.Cell(row, 1).Value = detail.BatchNumber;
+                    worksheet.Cell(row, 2).Value = supplierText;
+                    worksheet.Cell(row, 3).Value = item.HBProductNo;
+                    worksheet.Cell(row, 4).Style.NumberFormat.Format = "@";
+                    worksheet.Cell(row, 4).Value = item.Barcode ?? "";
+                    worksheet.Cell(row, 5).Value = item.ProductName ?? "";
+                    worksheet.Cell(row, 6).Value = GetProductTypeLabel(item.ProductType);
+                    worksheet.Cell(row, 7).Value = item.PrivateLabelPrice;
+                    worksheet.Cell(row, 8).Value = item.SetQuantity;
+                    worksheet.Cell(row, 9).Value = item.SetPrice;
+                    worksheet.Cell(row, 10).Value = item.ParentHBProductNo ?? "";
+                    row++;
+                }
+
+                worksheet.Columns().AdjustToContents();
+                worksheet.SheetView.FreezeRows(headerRow);
+
+                using var stream = new MemoryStream();
+                workbook.SaveAs(stream);
+
+                return ApiResponse<DomesticProductBatchExportFileDto>.OK(
+                    new DomesticProductBatchExportFileDto
+                    {
+                        Content = stream.ToArray(),
+                        FileName = $"domestic-product-batch-{batchNumber}.xlsx",
+                    },
+                    "导出成功"
+                );
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "导出批次创建结果失败: {BatchNumber}", batchNumber);
+                return ApiResponse<DomesticProductBatchExportFileDto>.Error(
+                    "导出失败: " + ex.Message,
+                    "EXPORT_BATCH_ERROR"
+                );
+            }
+        }
+
+        private static string GetProductTypeLabel(int productType)
+        {
+            return productType switch
+            {
+                1 => "套装",
+                2 => "套装子项",
+                _ => "普通",
+            };
         }
 
         /// <summary>
