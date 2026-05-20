@@ -6,6 +6,7 @@ import { Button, Card, Modal, Portal, Snackbar, Text } from "react-native-paper"
 import { SafeAreaView } from "react-native-safe-area-context";
 import { LookupResultSheet } from "@/components/product-maintenance/LookupResultSheet";
 import { LabelPrintCard } from "@/components/product-maintenance/LabelPrintCard";
+import { PrintSettingsModal } from "@/components/product-maintenance/PrintSettingsModal";
 import { MultiCodeCompactList } from "@/components/product-maintenance/MultiCodeCompactList";
 import { NumericInputModal } from "@/components/product-maintenance/NumericInputModal";
 import { ProductHeroCard } from "@/components/product-maintenance/ProductHeroCard";
@@ -260,6 +261,9 @@ function ProductQueryContent() {
   const [barcodeEditModal, setBarcodeEditModal] = useState<BarcodeEditModalState | null>(null);
   const [codeAddModal, setCodeAddModal] = useState<CodeAddModalState | null>(null);
   const [smallLabel, setSmallLabel] = useState(false);
+  const [printQuantity, setPrintQuantity] = useState(1);
+  const [quantitySingleUse, setQuantitySingleUse] = useState(true);
+  const [printSettingsVisible, setPrintSettingsVisible] = useState(false);
   const autoPricingDialogResolverRef = useRef<((result: AutoPricingDialogResolution) => void) | null>(null);
   const numericInputConfirmRef = useRef<((value: string) => void) | null>(null);
   const [numericInputModal, setNumericInputModal] = useState<NumericInputModalState | null>(null);
@@ -516,8 +520,18 @@ function ProductQueryContent() {
           barcode: options?.barcode,
           retailPrice: options?.retailPrice,
         }, options?.printType);
-        console.log("[product-query] sendProductLabel success", { action });
+        const qty = printQuantity;
+        for (let i = 1; i < qty; i++) {
+          await printProductLabel(targetDetail, {
+            barcode: options?.barcode,
+            retailPrice: options?.retailPrice,
+          }, options?.printType);
+        }
+        console.log("[product-query] sendProductLabel success", { action, quantity: qty });
         setSnackbarMessage(t("messages.printSuccess"));
+        if (quantitySingleUse && qty > 1) {
+          setPrintQuantity(1);
+        }
         return true;
       } catch (error) {
         console.error("[product-query] sendProductLabel failed", {
@@ -534,7 +548,70 @@ function ProductQueryContent() {
         setPrintingAction(null);
       }
     },
-    [playQueryFeedback, printerAutoReconnectPaused, t]
+    [playQueryFeedback, printQuantity, printerAutoReconnectPaused, quantitySingleUse, t]
+  );
+
+  const smartAutoPrint = useCallback(
+    async (scanKeyword: string, targetDetail: ProductDetail) => {
+      const kw = scanKeyword.trim();
+
+      const setMatch = targetDetail.setCodes.find(
+        (item) => item.setBarcode?.trim() === kw,
+      );
+      if (setMatch?.setBarcode?.trim()) {
+        await sendProductLabel(targetDetail, {
+          barcode: setMatch.setBarcode.trim(),
+          retailPrice: setMatch.setRetailPrice,
+          action: `set:${setMatch.setCodeId}`,
+          printType: smallLabel ? "small" : null,
+        });
+        return;
+      }
+
+      const multiMatch = targetDetail.multiCodes.find(
+        (item) => item.barcode?.trim() === kw,
+      );
+      if (multiMatch?.barcode?.trim()) {
+        await sendProductLabel(targetDetail, {
+          barcode: multiMatch.barcode.trim(),
+          retailPrice:
+            multiMatch.retailPrice ??
+            targetDetail.storePrice?.retailPrice ??
+            null,
+          action: `multi:${multiMatch.setCodeId}`,
+          printType: smallLabel ? "small" : null,
+        });
+        return;
+      }
+
+      if (
+        targetDetail.clearancePrice?.clearanceBarcode?.trim() === kw
+      ) {
+        try {
+          setPrintingAction("clearance");
+          for (let i = 0; i < printQuantity; i++) {
+            await printClearanceLabel(targetDetail);
+          }
+          setSnackbarMessage(t("messages.printSuccess"));
+          if (quantitySingleUse && printQuantity > 1) {
+            setPrintQuantity(1);
+          }
+        } catch (error) {
+          const fallback = t("messages.printFailed");
+          setSnackbarMessage(
+            error instanceof Error
+              ? `${fallback}: ${error.message}`
+              : fallback,
+          );
+        } finally {
+          setPrintingAction(null);
+        }
+        return;
+      }
+
+      await sendProductLabel(targetDetail);
+    },
+    [printQuantity, quantitySingleUse, sendProductLabel, smallLabel, t],
   );
 
   const maybeHandleAutoPricing = useCallback(
@@ -669,7 +746,7 @@ function ProductQueryContent() {
             if (autoPricingResult.autoPricingStatus === "no_action") {
               playQueryFeedback("found");
               if (trigger === "scan" && continuousPrintEnabled && !autoPricingResult.labelPrinted) {
-                await sendProductLabel(nextDetail);
+                await smartAutoPrint(keyword, nextDetail);
               }
             }
             return autoPricingResult;
@@ -818,7 +895,7 @@ function ProductQueryContent() {
         if (autoPricingResult.autoPricingStatus === "no_action") {
           playQueryFeedback("found");
           if (autoPrintOnLookupConfirm && !autoPricingResult.labelPrinted) {
-            await sendProductLabel(nextDetail);
+            await smartAutoPrint(keyword, nextDetail);
           }
         }
       }
@@ -1428,12 +1505,24 @@ function ProductQueryContent() {
           return;
         } else if (kind === "discount") {
           await printDiscountLabel(detail, printType);
+          for (let i = 1; i < printQuantity; i++) {
+            await printDiscountLabel(detail, printType);
+          }
         } else if (kind === "bigDiscount") {
           await printBigDiscountLabel(detail);
+          for (let i = 1; i < printQuantity; i++) {
+            await printBigDiscountLabel(detail);
+          }
         } else {
           await printClearanceLabel(detail);
+          for (let i = 1; i < printQuantity; i++) {
+            await printClearanceLabel(detail);
+          }
         }
         setSnackbarMessage(t("messages.printSuccess"));
+        if (quantitySingleUse && printQuantity > 1) {
+          setPrintQuantity(1);
+        }
       } catch (error) {
         const fallback = t("messages.printFailed");
         setSnackbarMessage(error instanceof Error ? `${fallback}: ${error.message}` : fallback);
@@ -1441,7 +1530,7 @@ function ProductQueryContent() {
         setPrintingAction(null);
       }
     },
-    [detail, sendProductLabel, smallLabel, t]
+    [detail, printQuantity, quantitySingleUse, sendProductLabel, smallLabel, t]
   );
 
   const storePrice = detail?.storePrice;
@@ -1462,12 +1551,11 @@ function ProductQueryContent() {
       />
 
       <SearchPanel
-        continuousPrint={continuousPrintEnabled}
         value={keyword}
         loading={loading || storesLoading}
         lastHitLabel={detail ? undefined : lastHitLabel}
         onChangeText={setKeyword}
-        onToggleContinuousPrint={setContinuousPrintEnabled}
+        onOpenPrintSettings={() => setPrintSettingsVisible(true)}
         onSubmit={() => void handleLookup()}
         onClear={handleClear}
       />
@@ -1535,18 +1623,18 @@ function ProductQueryContent() {
                     ? undefined
                     : () => void handlePrint("bigDiscount")
                 }
-                smallLabel={smallLabel}
-                onToggleSmallLabel={() => setSmallLabel((v) => !v)}
               />
 
               <StoreClearancePriceCard
-                storeCode={clearancePrice?.storeCode ?? storePrice?.storeCode}
-                storeName={clearancePrice?.storeName ?? storePrice?.storeName}
                 clearanceBarcode={clearancePrice?.clearanceBarcode}
                 clearancePrice={clearancePriceInput}
-                saving={savingClearance}
+                isPrintingClearance={printingAction === "clearance"}
                 onEditClearancePrice={openClearancePriceEditor}
-                onSave={() => void handleSaveClearancePrice()}
+                onPrintClearance={
+                  printingAction && printingAction !== "clearance"
+                    ? undefined
+                    : () => void handlePrint("clearance")
+                }
               />
             </View>
 
@@ -1874,6 +1962,19 @@ function ProductQueryContent() {
             </View>
           </View>
         </Modal>
+
+        <PrintSettingsModal
+          visible={printSettingsVisible}
+          continuousPrint={continuousPrintEnabled}
+          smallLabel={smallLabel}
+          printQuantity={printQuantity}
+          quantitySingleUse={quantitySingleUse}
+          onToggleContinuousPrint={setContinuousPrintEnabled}
+          onToggleSmallLabel={setSmallLabel}
+          onChangePrintQuantity={setPrintQuantity}
+          onToggleQuantitySingleUse={setQuantitySingleUse}
+          onDismiss={() => setPrintSettingsVisible(false)}
+        />
 
         <Modal
           visible={cameraVisible}

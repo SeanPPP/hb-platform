@@ -3,7 +3,6 @@
   "currentStore": "Store: {{store}}",
   "search": {
     "placeholder": "Barcode / item / code",
-    "auto": "Print.auto",
     "lastHit": "Last hit: {{value}}"
   },
   "messages": {
@@ -150,12 +149,15 @@
     "title": "Label printing",
     "quick": "Print",
     "product": "Regular label",
-    "clearanceProduct": "Clearance regular",
     "discount": "Discount label",
     "bigDiscount": "Large label",
     "clearance": "Clearance label",
     "sendingShort": "Sending",
     "sending": "Sending...",
-    "smallLabel": "Small label"
+    "settingsTitle": "Print Settings",
+    "continuousPrint": "Auto print",
+    "smallLabel": "Small label (60mm)",
+    "quantity": "Print quantity",
+    "quantitySingleUse": "Single use"
   }
 }
