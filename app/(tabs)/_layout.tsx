@@ -8,11 +8,12 @@ import { useAuthStore } from "@/store/auth-store";
 import { useDeviceStore } from "@/store/device-store";
 import { useAppNavigationStore } from "@/modules/navigation/store";
 
-const TAB_PATHS: Record<string, "/(tabs)/home" | "/(tabs)/orders" | "/(tabs)/cart" | "/(tabs)/warehouse" | "/(tabs)/product-query" | "/(tabs)/settings"> = {
+const TAB_PATHS: Record<string, "/(tabs)/home" | "/(tabs)/orders" | "/(tabs)/cart" | "/(tabs)/warehouse" | "/(tabs)/attendance" | "/(tabs)/product-query" | "/(tabs)/settings"> = {
   home: "/(tabs)/home",
   orders: "/(tabs)/orders",
   cart: "/(tabs)/cart",
   warehouse: "/(tabs)/warehouse",
+  attendance: "/(tabs)/attendance",
   "product-query": "/(tabs)/product-query",
   settings: "/(tabs)/settings",
 };
@@ -136,7 +137,8 @@ export default function TabsLayout() {
       return;
     }
 
-    router.replace(TAB_PATHS[firstVisibleRouteName] ?? "/(tabs)/settings");
+    const nextPath = TAB_PATHS[firstVisibleRouteName] ?? "/(tabs)/settings";
+    router.replace(nextPath as Parameters<typeof router.replace>[0]);
   }, [firstVisibleRouteName, pathname, router, shouldWaitForNavigation, visibleRouteNames]);
 
   if (
@@ -201,6 +203,16 @@ export default function TabsLayout() {
           title: t("tabs.warehouse"),
           tabBarIcon: ({ color, size }) => (
             <MaterialCommunityIcons name="warehouse" color={color} size={size} />
+          ),
+        }}
+      />
+      <Tabs.Screen
+        name="attendance"
+        options={{
+          href: isRouteVisible("attendance") ? undefined : null,
+          title: t("tabs.attendance"),
+          tabBarIcon: ({ color, size }) => (
+            <MaterialCommunityIcons name="calendar-clock" color={color} size={size} />
           ),
         }}
       />

@@ -31,6 +31,7 @@
     "orders": "Orders",
     "cart": "Cart",
     "warehouse": "Warehouse",
+    "attendance": "Attendance",
     "productQuery": "Products",
     "settings": "Settings"
   },

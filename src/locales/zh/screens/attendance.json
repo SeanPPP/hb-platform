@@ -1,0 +1,122 @@
+{
+  "title": "考勤",
+  "subtitle": "查看排班、打卡和申请",
+  "sections": {
+    "today": "今日打卡",
+    "week": "本周排班",
+    "availability": "可上班时间",
+    "leave": "请假申请",
+    "approvals": "店长审核",
+    "scheduleManagement": "排班管理"
+  },
+  "today": {
+    "schedules": "今日班次",
+    "punches": "打卡记录",
+    "noSchedule": "今天暂无排班",
+    "noPunch": "今天暂无打卡"
+  },
+  "week": {
+    "empty": "暂无本周排班",
+    "noSchedule": "无排班"
+  },
+  "availability": {
+    "empty": "暂无已上报时间段"
+  },
+  "leave": {
+    "empty": "暂无请假申请"
+  },
+  "approvals": {
+    "empty": "暂无待审核事项"
+  },
+  "scheduleManagement": {
+    "employeeColumn": "分店/员工",
+    "previousWeek": "上周",
+    "nextWeek": "下周",
+    "tapToAdd": "点按新增",
+    "createTitle": "新增班次",
+    "editTitle": "编辑班次",
+    "deleteAction": "删除",
+    "deleteTitle": "删除班次",
+    "deleteMessage": "确定删除这个班次吗？",
+    "deleteConfirm": "删除",
+    "noStore": "请先选择分店",
+    "noEmployees": "当前分店暂无员工"
+  },
+  "fields": {
+    "workDate": "日期",
+    "startTime": "开始时间",
+    "endTime": "结束时间",
+    "note": "备注",
+    "startDate": "开始日期",
+    "endDate": "结束日期",
+    "reason": "原因",
+    "remark": "审核备注"
+  },
+  "actions": {
+    "clockIn": "上班打卡",
+    "clockOut": "下班打卡",
+    "addAvailability": "添加时间段",
+    "submitLeave": "提交申请",
+    "approve": "通过",
+    "reject": "拒绝",
+    "publishWeek": "发布本周"
+  },
+  "punchTypes": {
+    "ClockIn": "上班",
+    "ClockOut": "下班"
+  },
+  "leaveTypes": {
+    "AnnualLeave": "年假",
+    "SickLeave": "病假",
+    "PublicHoliday": "公共假期"
+  },
+  "sourceTypes": {
+    "Punch": "打卡",
+    "Leave": "请假"
+  },
+  "statuses": {
+    "Normal": "正常",
+    "Late": "迟到",
+    "EarlyLeave": "早退",
+    "NoSchedule": "未排班",
+    "Duplicate": "重复",
+    "PendingApproval": "待审核",
+    "Pending": "待审核",
+    "Approved": "已通过",
+    "Rejected": "已拒绝",
+    "Submitted": "已提交",
+    "Cancelled": "已取消",
+    "Draft": "草稿",
+    "Active": "已发布"
+  },
+  "weekdays": {
+    "0": "周一",
+    "1": "周二",
+    "2": "周三",
+    "3": "周四",
+    "4": "周五",
+    "5": "周六",
+    "6": "周日"
+  },
+  "messages": {
+    "loginRequired": "请先登录后再使用考勤",
+    "loadFailed": "加载考勤数据失败",
+    "refreshFailed": "刷新失败",
+    "saveFailed": "保存失败",
+    "cancelFailed": "取消失败",
+    "punchSuccess": "打卡已提交",
+    "punchFailed": "打卡失败",
+    "availabilitySaved": "可上班时间已保存",
+    "availabilityCancelled": "可上班时间已取消",
+    "leaveSubmitted": "请假申请已提交",
+    "leaveCancelled": "请假申请已取消",
+    "approvalApproved": "审核已通过",
+    "approvalRejected": "审核已拒绝",
+    "approvalFailed": "审核操作失败",
+    "selectStoreFirst": "请先选择分店",
+    "scheduleSaved": "排班已保存",
+    "scheduleDeleted": "排班已删除",
+    "weekPublished": "本周排班已发布",
+    "publishFailed": "发布失败"
+  }
+}

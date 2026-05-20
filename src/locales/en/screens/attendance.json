@@ -1,0 +1,122 @@
+{
+  "title": "Attendance",
+  "subtitle": "Schedules, punches, and requests",
+  "sections": {
+    "today": "Today",
+    "week": "Weekly schedule",
+    "availability": "Availability",
+    "leave": "Leave request",
+    "approvals": "Manager approvals",
+    "scheduleManagement": "Schedule management"
+  },
+  "today": {
+    "schedules": "Today's shifts",
+    "punches": "Punches",
+    "noSchedule": "No shift today",
+    "noPunch": "No punches yet"
+  },
+  "week": {
+    "empty": "No schedule this week",
+    "noSchedule": "No shift"
+  },
+  "availability": {
+    "empty": "No availability submitted"
+  },
+  "leave": {
+    "empty": "No leave requests"
+  },
+  "approvals": {
+    "empty": "No pending approvals"
+  },
+  "scheduleManagement": {
+    "employeeColumn": "Store / employee",
+    "previousWeek": "Previous",
+    "nextWeek": "Next",
+    "tapToAdd": "Tap to add",
+    "createTitle": "Add shift",
+    "editTitle": "Edit shift",
+    "deleteAction": "Delete",
+    "deleteTitle": "Delete shift",
+    "deleteMessage": "Delete this shift?",
+    "deleteConfirm": "Delete",
+    "noStore": "Select a store first",
+    "noEmployees": "No employees in this store"
+  },
+  "fields": {
+    "workDate": "Date",
+    "startTime": "Start time",
+    "endTime": "End time",
+    "note": "Note",
+    "startDate": "Start date",
+    "endDate": "End date",
+    "reason": "Reason",
+    "remark": "Review note"
+  },
+  "actions": {
+    "clockIn": "Clock in",
+    "clockOut": "Clock out",
+    "addAvailability": "Add slot",
+    "submitLeave": "Submit request",
+    "approve": "Approve",
+    "reject": "Reject",
+    "publishWeek": "Publish week"
+  },
+  "punchTypes": {
+    "ClockIn": "Clock in",
+    "ClockOut": "Clock out"
+  },
+  "leaveTypes": {
+    "AnnualLeave": "Annual leave",
+    "SickLeave": "Sick leave",
+    "PublicHoliday": "Public holiday"
+  },
+  "sourceTypes": {
+    "Punch": "Punch",
+    "Leave": "Leave"
+  },
+  "statuses": {
+    "Normal": "Normal",
+    "Late": "Late",
+    "EarlyLeave": "Early leave",
+    "NoSchedule": "No schedule",
+    "Duplicate": "Duplicate",
+    "PendingApproval": "Pending",
+    "Pending": "Pending",
+    "Approved": "Approved",
+    "Rejected": "Rejected",
+    "Submitted": "Submitted",
+    "Cancelled": "Cancelled",
+    "Draft": "Draft",
+    "Active": "Published"
+  },
+  "weekdays": {
+    "0": "Mon",
+    "1": "Tue",
+    "2": "Wed",
+    "3": "Thu",
+    "4": "Fri",
+    "5": "Sat",
+    "6": "Sun"
+  },
+  "messages": {
+    "loginRequired": "Please sign in before using attendance.",
+    "loadFailed": "Failed to load attendance.",
+    "refreshFailed": "Refresh failed.",
+    "saveFailed": "Save failed.",
+    "cancelFailed": "Cancel failed.",
+    "punchSuccess": "Punch submitted.",
+    "punchFailed": "Punch failed.",
+    "availabilitySaved": "Availability saved.",
+    "availabilityCancelled": "Availability cancelled.",
+    "leaveSubmitted": "Leave request submitted.",
+    "leaveCancelled": "Leave request cancelled.",
+    "approvalApproved": "Approval accepted.",
+    "approvalRejected": "Approval rejected.",
+    "approvalFailed": "Approval action failed.",
+    "selectStoreFirst": "Please select a store first.",
+    "scheduleSaved": "Schedule saved.",
+    "scheduleDeleted": "Schedule deleted.",
+    "weekPublished": "This week's schedule was published.",
+    "publishFailed": "Publish failed."
+  }
+}

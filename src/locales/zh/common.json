@@ -31,6 +31,7 @@
     "orders": "订单",
     "cart": "购物车",
     "warehouse": "仓库",
+    "attendance": "考勤",
     "productQuery": "商品维护",
     "settings": "设置"
   },
