@@ -1290,46 +1290,23 @@ namespace BlazorApp.Api.Services.React
                 return ProductCodePageQueryResult.Fail("当前商品没有可用的分店上下文");
             }
 
-            var normalizedKeyword = keyword?.Trim();
             var pageIndex = Math.Max(1, page);
             var normalizedPageSize = Math.Clamp(pageSize, 1, 100);
-
-            var query = _db.Queryable<StoreMultiCodeProduct>()
-                .InnerJoin<ProductSetCode>((multi, setCode) =>
-                    multi.MultiCodeProductCode == setCode.SetProductCode
-                    && setCode.ProductCode == normalizedProductCode
-                    && setCode.SetType == 2
-                    && !setCode.IsDeleted
-                )
-                .Where((multi, setCode) =>
-                    multi.ProductCode == normalizedProductCode
-                    && multi.StoreCode == currentStoreCode
-                    && !multi.IsDeleted
-                );
-
-            if (!string.IsNullOrWhiteSpace(normalizedKeyword))
-            {
-                query = query.Where((multi, setCode) =>
-                    (multi.MultiBarcode != null && multi.MultiBarcode.Contains(normalizedKeyword))
-                    || (setCode.SetItemNumber != null && setCode.SetItemNumber.Contains(normalizedKeyword))
-                );
-            }
-
             RefAsync<int> totalCount = 0;
-            var setCodes = await query
-                .OrderBy((multi, setCode) => multi.MultiBarcode)
-                .Select((multi, setCode) => new ProductSetCode
+            var setCodes = await BuildProductSetCodeQuery(normalizedProductCode, 2, keyword)
+                .OrderBy(s => s.SetBarcode)
+                .Select(s => new ProductSetCode
                 {
-                    SetCodeId = setCode.SetCodeId,
-                    ProductCode = setCode.ProductCode,
-                    SetProductCode = setCode.SetProductCode,
-                    SetItemNumber = setCode.SetItemNumber,
-                    SetBarcode = setCode.SetBarcode,
-                    SetPurchasePrice = setCode.SetPurchasePrice,
-                    SetRetailPrice = setCode.SetRetailPrice,
-                    SetQuantity = setCode.SetQuantity,
-                    SetType = setCode.SetType,
-                    IsActive = setCode.IsActive,
+                    SetCodeId = s.SetCodeId,
+                    ProductCode = s.ProductCode,
+                    SetProductCode = s.SetProductCode,
+                    SetItemNumber = s.SetItemNumber,
+                    SetBarcode = s.SetBarcode,
+                    SetPurchasePrice = s.SetPurchasePrice,
+                    SetRetailPrice = s.SetRetailPrice,
+                    SetQuantity = s.SetQuantity,
+                    SetType = s.SetType,
+                    IsActive = s.IsActive,
                 })
                 .ToPageListAsync(pageIndex, normalizedPageSize, totalCount);
 
@@ -1445,7 +1422,7 @@ namespace BlazorApp.Api.Services.React
                     cp.ClearanceBarcode AS ClearanceBarcode,
                     cp.ClearancePrice AS ClearancePrice,
                     ISNULL(codeCounts.SetCodeCount, 0) AS SetCodeCount,
-                    ISNULL(multiCodeCounts.MultiCodeCount, 0) AS MultiCodeCount
+                    ISNULL(codeCounts.MultiCodeCount, 0) AS MultiCodeCount
                 FROM [Product] p
                 LEFT JOIN [ProductGrade] pg
                     ON pg.ProductCode = p.ProductCode AND ISNULL(pg.IsDeleted, 0) = 0
@@ -1453,19 +1430,12 @@ namespace BlazorApp.Api.Services.React
                     ON ls.LocalSupplierCode = p.LocalSupplierCode AND ISNULL(ls.IsDeleted, 0) = 0
                 OUTER APPLY (
                     SELECT
-                        SUM(CASE WHEN psc.SetType = 1 THEN 1 ELSE 0 END) AS SetCodeCount
+                        SUM(CASE WHEN psc.SetType = 1 THEN 1 ELSE 0 END) AS SetCodeCount,
+                        SUM(CASE WHEN psc.SetType = 2 THEN 1 ELSE 0 END) AS MultiCodeCount
                     FROM [ProductSetCode] psc
                     WHERE psc.ProductCode = p.ProductCode
                         AND ISNULL(psc.IsDeleted, 0) = 0
                 ) codeCounts
-                OUTER APPLY (
-                    SELECT
-                        COUNT(1) AS MultiCodeCount
-                    FROM [StoreMultiCodeProduct] smcp
-                    WHERE smcp.ProductCode = p.ProductCode
-                        AND ISNULL(smcp.IsDeleted, 0) = 0
-                        AND (@StoreCode IS NULL OR smcp.StoreCode = @StoreCode)
-                ) multiCodeCounts
                 OUTER APPLY (
                     SELECT TOP 1 srp.*
                     FROM [StoreRetailPrice] srp
