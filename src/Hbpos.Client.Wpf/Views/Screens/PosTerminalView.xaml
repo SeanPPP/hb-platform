@@ -479,9 +479,9 @@
                 <Button Command="{Binding SyncCommand}" Style="{StaticResource PosStitchActionButtonStyle}">
                     <StackPanel>
                         <Border Style="{StaticResource PosStitchActionIconCircleStyle}">
-                            <materialDesign:PackIcon Kind="Sync" Width="18" Height="18" Foreground="{StaticResource PosPrimaryBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                            <materialDesign:PackIcon Kind="Download" Width="18" Height="18" Foreground="{StaticResource PosPrimaryBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" />
                         </Border>
-                        <TextBlock Text="{Binding SyncText}" Style="{StaticResource PosStitchTileLabelStyle}" />
+                        <TextBlock Text="{loc:Loc pos.terminal.actions.dataDownload}" Style="{StaticResource PosStitchTileLabelStyle}" />
                     </StackPanel>
                 </Button>
                 <Button IsEnabled="False" Style="{StaticResource PosStitchActionButtonStyle}">

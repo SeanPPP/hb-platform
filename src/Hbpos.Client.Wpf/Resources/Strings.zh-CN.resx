@@ -108,6 +108,7 @@
   <data name="pos.terminal.actions.recallOrder" xml:space="preserve"><value>取单</value></data>
   <data name="pos.terminal.actions.member" xml:space="preserve"><value>会员</value></data>
   <data name="pos.terminal.actions.sync" xml:space="preserve"><value>同步</value></data>
+  <data name="pos.terminal.actions.dataDownload" xml:space="preserve"><value>&#x6570;&#x636E;&#x4E0B;&#x8F7D;</value></data>
   <data name="pos.terminal.actions.discount" xml:space="preserve"><value>折扣</value></data>
   <data name="pos.terminal.actions.noBarcode" xml:space="preserve"><value>无码商品</value></data>
   <data name="pos.terminal.actions.qtyPlus" xml:space="preserve"><value>数量 +</value></data>
