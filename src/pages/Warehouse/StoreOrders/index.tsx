@@ -53,6 +53,7 @@ import {
 } from '../../../types/storeOrder'
 import { getDateTagColor } from '../../../utils/tagColors'
 import { getStoreColor } from '../../../utils/userTableColors'
+import { copyTextToClipboard } from '../../../utils/clipboard'
 
 type RangeValue = [Dayjs | null, Dayjs | null] | null
 
@@ -585,13 +586,10 @@ export default function StoreOrdersPage() {
   }
 
   const handleCopyOrderNo = async (orderNo: string) => {
-    try {
-      await navigator.clipboard.writeText(orderNo)
-      message.success(t('storeOrders.copyOrderNoSuccess', { orderNo }))
-    } catch (error) {
-      console.error(error)
-      message.error(t('storeOrders.copyOrderNoFailed'))
-    }
+    await copyTextToClipboard(orderNo, {
+      successMessage: t('storeOrders.copyOrderNoSuccess', { orderNo }),
+      failureMessage: t('storeOrders.copyOrderNoFailed'),
+    })
   }
 
   const columns = useMemo<ColumnsType<StoreOrderListItem>>(
