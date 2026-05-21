@@ -8,7 +8,7 @@
     "current": "当前服务器地址",
     "change": "修改",
     "title": "服务器地址设置",
-    "description": "只输入 IP 或域名即可，系统会自动补全 http、5001 端口和 /api。",
+    "description": "只输入 IP 或域名即可。",
     "inputLabel": "IP 或域名",
     "empty": "请输入后端 IP 或域名",
     "saved": "后端地址已保存：{{host}}"

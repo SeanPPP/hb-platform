@@ -8,7 +8,7 @@
     "current": "Current server address",
     "change": "Change",
     "title": "Server address settings",
-    "description": "Enter only an IP or domain. The app will add http, port 5001, and /api.",
+    "description": "Enter only an IP or domain.",
     "inputLabel": "IP or domain",
     "empty": "Enter a backend IP or domain.",
     "saved": "Backend address saved: {{host}}"
