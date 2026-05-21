@@ -1,0 +1,20 @@
+﻿<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UserSecretsId>e8332d8b-3f15-4d52-b46d-b3d5205b58f8</UserSecretsId>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="9.0.15" />
+    <PackageReference Include="SqlSugarCore" Version="5.1.4.151" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Hbpos.Contracts\Hbpos.Contracts.csproj" />
+    <ProjectReference Include="..\..\..\HBweb-worktrees\Backend\publish-master\BlazorApp.Shared\BlazorApp.Shared.csproj" />
+  </ItemGroup>
+
+</Project>

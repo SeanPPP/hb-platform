@@ -1,0 +1,159 @@
+<UserControl x:Class="Hbpos.Client.Wpf.Views.Screens.PaymentSuccessView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:loc="clr-namespace:Hbpos.Client.Wpf.Localization"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             mc:Ignorable="d"
+             d:DesignHeight="734"
+             d:DesignWidth="1280">
+    <Grid Background="{DynamicResource PosScreenBackgroundBrush}"
+          HorizontalAlignment="Center"
+          MaxWidth="1000">
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="660" />
+            <ColumnDefinition Width="300" />
+        </Grid.ColumnDefinitions>
+
+        <Border Grid.Column="0"
+                Background="White"
+                Margin="0,58,20,58"
+                Padding="28"
+                CornerRadius="6">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
+
+                <Border Width="104" Height="104" CornerRadius="8" Background="{StaticResource PosAccentBrush}" HorizontalAlignment="Center">
+                    <TextBlock Text="&#x2713;"
+                               Foreground="#3A2400"
+                               FontSize="46"
+                               FontWeight="Bold"
+                               HorizontalAlignment="Center"
+                               VerticalAlignment="Center" />
+                </Border>
+
+                <StackPanel Grid.Row="1" HorizontalAlignment="Center" Margin="0,20,0,24">
+                    <TextBlock Text="{loc:Loc PaymentSuccessful}"
+                               FontSize="30"
+                               FontWeight="Bold"
+                               Foreground="{StaticResource PosPrimaryDarkBrush}"
+                               TextAlignment="Center" />
+                    <TextBlock Text="{loc:Loc success.subtitle}"
+                               Margin="0,8,0,0"
+                               Foreground="{DynamicResource PosMutedForegroundBrush}"
+                               TextAlignment="Center" />
+                </StackPanel>
+
+                <Grid Grid.Row="2" Background="#FFECEFF4" Margin="0,0,0,28" MinHeight="92">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="1" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <StackPanel Margin="24,16">
+                        <TextBlock Text="{loc:Loc success.totalPaid}" Foreground="{DynamicResource PosMutedForegroundBrush}" FontSize="11" />
+                        <TextBlock Text="{Binding TotalAmountPaid, StringFormat={}{0:C2}}" FontSize="34" FontWeight="Bold" />
+                    </StackPanel>
+                    <Border Grid.Column="1" Background="{StaticResource PosBorderBrush}" Margin="0,20" />
+                    <StackPanel Grid.Column="2" Margin="24,16">
+                        <TextBlock Text="{loc:Loc success.transactionId}" Foreground="{DynamicResource PosMutedForegroundBrush}" FontSize="11" />
+                        <TextBlock Text="{Binding TransactionIdDisplay}" FontSize="18" FontWeight="Bold" />
+                        <TextBlock Text="{Binding SoldAtDisplay}" Foreground="{DynamicResource PosMutedForegroundBrush}" Margin="0,4,0,0" />
+                    </StackPanel>
+                </Grid>
+
+                <StackPanel Grid.Row="3">
+                    <TextBlock Text="{loc:Loc success.digitalReceipt}" FontSize="16" FontWeight="SemiBold" Foreground="{StaticResource PosPrimaryDarkBrush}" />
+                    <Grid Margin="0,16,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <StackPanel>
+                            <TextBlock Text="{loc:Loc success.email}" FontSize="11" Foreground="{DynamicResource PosMutedForegroundBrush}" Margin="0,0,0,4" />
+                            <TextBox Text="customer@example.com" Height="44" Padding="12,0" VerticalContentAlignment="Center" Style="{StaticResource PosSearchTextBoxStyle}" />
+                        </StackPanel>
+                        <StackPanel Grid.Column="1" Margin="12,0,0,0">
+                            <TextBlock Text="{loc:Loc success.sms}" FontSize="11" Foreground="{DynamicResource PosMutedForegroundBrush}" Margin="0,0,0,4" />
+                            <TextBox Text="+1 (555) 000-0000" Height="44" Padding="12,0" VerticalContentAlignment="Center" Style="{StaticResource PosSearchTextBoxStyle}" />
+                        </StackPanel>
+                    </Grid>
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <Border Grid.Column="1"
+                Background="White"
+                Margin="0,58,0,58"
+                Padding="20"
+                CornerRadius="6">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+
+                <TextBlock Text="{loc:Loc success.receiptPreview}" FontSize="16" FontWeight="SemiBold" />
+
+                <ItemsControl Grid.Row="1" ItemsSource="{Binding ReceiptLines}" Margin="0,18,0,18">
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <Grid Margin="0,0,0,12">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="32" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <Border Background="#FFF2F4F7" Width="24" Height="24" CornerRadius="2">
+                                    <TextBlock Text="{Binding QuantityDisplay}" FontSize="11" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                </Border>
+                                <StackPanel Grid.Column="1">
+                                    <TextBlock Text="{Binding DisplayName}" FontWeight="SemiBold" />
+                                    <TextBlock Text="{Binding LookupCode}" FontSize="11" Foreground="{DynamicResource PosMutedForegroundBrush}" />
+                                </StackPanel>
+                                <TextBlock Grid.Column="2" Text="{Binding ActualAmount, StringFormat={}{0:C2}}" FontWeight="SemiBold" />
+                            </Grid>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+
+                <StackPanel Grid.Row="2">
+                    <Border Height="1" Background="{StaticResource PosBorderBrush}" Margin="0,0,0,14" />
+                    <Grid Margin="0,0,0,8">
+                        <TextBlock Text="{loc:Loc Subtotal}" Foreground="{DynamicResource PosMutedForegroundBrush}" />
+                        <TextBlock Text="{Binding Subtotal, StringFormat={}{0:C2}}" HorizontalAlignment="Right" />
+                    </Grid>
+                    <Grid Margin="0,0,0,8">
+                        <TextBlock Text="{loc:Loc Discount}" Foreground="{DynamicResource PosMutedForegroundBrush}" />
+                        <TextBlock Text="{Binding DiscountTotal, StringFormat={}{0:C2}}" HorizontalAlignment="Right" />
+                    </Grid>
+                    <Border Background="#FFECEFF4" Padding="10">
+                        <Grid>
+                            <TextBlock Text="{loc:Loc Total}" Foreground="{StaticResource PosPrimaryDarkBrush}" FontWeight="SemiBold" />
+                            <TextBlock Text="{Binding TotalAmountPaid, StringFormat={}{0:C2}}" HorizontalAlignment="Right" Foreground="{StaticResource PosPrimaryDarkBrush}" FontWeight="Bold" />
+                        </Grid>
+                    </Border>
+                </StackPanel>
+
+                <StackPanel Grid.Row="3" Margin="0,18,0,0">
+                    <Button Content="{loc:Loc success.printReceipt}"
+                            Command="{Binding PrintReceiptCommand}"
+                            Style="{StaticResource PosSecondaryButtonStyle}"
+                            Height="46" />
+                    <Button Content="{loc:Loc success.newTransaction}"
+                            Command="{Binding NewTransactionCommand}"
+                            Style="{StaticResource PosPrimaryButtonStyle}"
+                            Height="46"
+                            Margin="0,10,0,0" />
+                </StackPanel>
+            </Grid>
+        </Border>
+    </Grid>
+</UserControl>

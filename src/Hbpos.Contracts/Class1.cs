@@ -1,0 +1,2 @@
+﻿namespace Hbpos.Contracts;
+

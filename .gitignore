@@ -1,0 +1,9 @@
+.vs/
+.codex/
+**/bin/
+**/obj/
+*.user
+*.suo
+*.db
+*.sqlite
+TestResults/

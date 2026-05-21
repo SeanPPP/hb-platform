@@ -1,0 +1,11 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Hbpos.Api/Hbpos.Api.csproj" />
+    <Project Path="src/Hbpos.Client.Wpf/Hbpos.Client.Wpf.csproj" />
+    <Project Path="src/Hbpos.Contracts/Hbpos.Contracts.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Hbpos.Api.Tests/Hbpos.Api.Tests.csproj" />
+    <Project Path="tests/Hbpos.Client.Tests/Hbpos.Client.Tests.csproj" />
+  </Folder>
+</Solution>

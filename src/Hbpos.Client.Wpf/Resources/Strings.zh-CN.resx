@@ -1,0 +1,165 @@
+<?xml version="1.0" encoding="utf-8"?>
+<root>
+  <resheader name="resmimetype">
+    <value>text/microsoft-resx</value>
+  </resheader>
+  <resheader name="version">
+    <value>2.0</value>
+  </resheader>
+  <resheader name="reader">
+    <value>System.Resources.ResXResourceReader, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value>
+  </resheader>
+  <resheader name="writer">
+    <value>System.Resources.ResXResourceWriter, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value>
+  </resheader>
+  <data name="Add" xml:space="preserve"><value>加入</value></data>
+  <data name="Amount" xml:space="preserve"><value>金额</value></data>
+  <data name="AmountDue" xml:space="preserve"><value>应收金额</value></data>
+  <data name="AppName" xml:space="preserve"><value>Apex Retail Pro</value></data>
+  <data name="Backspace" xml:space="preserve"><value>退格</value></data>
+  <data name="Barcode" xml:space="preserve"><value>条码</value></data>
+  <data name="Cancel" xml:space="preserve"><value>取消</value></data>
+  <data name="CardPayment" xml:space="preserve"><value>刷卡支付</value></data>
+  <data name="CashPayment" xml:space="preserve"><value>现金支付</value></data>
+  <data name="Cashier" xml:space="preserve"><value>收银员</value></data>
+  <data name="Change" xml:space="preserve"><value>找零</value></data>
+  <data name="Clear" xml:space="preserve"><value>清除</value></data>
+  <data name="ClearCart" xml:space="preserve"><value>清空购物车</value></data>
+  <data name="Confirm" xml:space="preserve"><value>确认</value></data>
+  <data name="ConfirmPayment" xml:space="preserve"><value>确认支付</value></data>
+  <data name="CustomerDisplay" xml:space="preserve"><value>客显</value></data>
+  <data name="Device" xml:space="preserve"><value>设备</value></data>
+  <data name="Display" xml:space="preserve"><value>客显</value></data>
+  <data name="Discount" xml:space="preserve"><value>折扣</value></data>
+  <data name="ErrorInvalidCashAmount" xml:space="preserve"><value>请输入有效的现金金额。</value></data>
+  <data name="ErrorItemNotFound" xml:space="preserve"><value>未找到商品，本地缓存仍可继续使用。</value></data>
+  <data name="ErrorPaymentFailed" xml:space="preserve"><value>支付失败，请重试。</value></data>
+  <data name="Exit" xml:space="preserve"><value>退出</value></data>
+  <data name="History" xml:space="preserve"><value>历史</value></data>
+  <data name="Home" xml:space="preserve"><value>首页</value></data>
+  <data name="Item" xml:space="preserve"><value>商品</value></data>
+  <data name="ItemDescription" xml:space="preserve"><value>商品描述</value></data>
+  <data name="ItemNumber" xml:space="preserve"><value>货号</value></data>
+  <data name="Items" xml:space="preserve"><value>件数</value></data>
+  <data name="Language" xml:space="preserve"><value>语言</value></data>
+  <data name="LanguageEnglish" xml:space="preserve"><value>英文</value></data>
+  <data name="LanguageChineseSimplified" xml:space="preserve"><value>简体中文</value></data>
+  <data name="LineTotal" xml:space="preserve"><value>小计</value></data>
+  <data name="NavCart" xml:space="preserve"><value>购物车</value></data>
+  <data name="NavCheckout" xml:space="preserve"><value>结账</value></data>
+  <data name="NavCustomerDisplay" xml:space="preserve"><value>客显</value></data>
+  <data name="NavHistory" xml:space="preserve"><value>历史</value></data>
+  <data name="NavPos" xml:space="preserve"><value>收银</value></data>
+  <data name="NavProducts" xml:space="preserve"><value>商品</value></data>
+  <data name="NavSettings" xml:space="preserve"><value>设置</value></data>
+  <data name="Offline" xml:space="preserve"><value>离线</value></data>
+  <data name="Online" xml:space="preserve"><value>在线</value></data>
+  <data name="OpenCashDrawer" xml:space="preserve"><value>打开钱箱</value></data>
+  <data name="OrderCode" xml:space="preserve"><value>订单编码</value></data>
+  <data name="OrderNumber" xml:space="preserve"><value>订单号</value></data>
+  <data name="Pay" xml:space="preserve"><value>支付</value></data>
+  <data name="Payment" xml:space="preserve"><value>支付</value></data>
+  <data name="PaymentSuccessful" xml:space="preserve"><value>支付成功</value></data>
+  <data name="PendingSync" xml:space="preserve"><value>待同步</value></data>
+  <data name="PosTerminal" xml:space="preserve"><value>POS 收银台</value></data>
+  <data name="Price" xml:space="preserve"><value>价格</value></data>
+  <data name="ProductCode" xml:space="preserve"><value>商品编码</value></data>
+  <data name="Quantity" xml:space="preserve"><value>数量</value></data>
+  <data name="Receipt" xml:space="preserve"><value>小票</value></data>
+  <data name="Refund" xml:space="preserve"><value>退款</value></data>
+  <data name="Remove" xml:space="preserve"><value>移除</value></data>
+  <data name="ScanOrSearch" xml:space="preserve"><value>扫描条码或搜索商品...</value></data>
+  <data name="Search" xml:space="preserve"><value>搜索</value></data>
+  <data name="Settings" xml:space="preserve"><value>设置</value></data>
+  <data name="Source" xml:space="preserve"><value>来源</value></data>
+  <data name="StatusAddedItem" xml:space="preserve"><value>已加入商品。</value></data>
+  <data name="StatusCartCleared" xml:space="preserve"><value>购物车已清空。</value></data>
+  <data name="StatusOfflineReady" xml:space="preserve"><value>离线模式已就绪。</value></data>
+  <data name="StatusPaymentComplete" xml:space="preserve"><value>现金支付完成。</value></data>
+  <data name="StatusReady" xml:space="preserve"><value>就绪</value></data>
+  <data name="Store" xml:space="preserve"><value>门店</value></data>
+  <data name="Subtotal" xml:space="preserve"><value>小计</value></data>
+  <data name="Success" xml:space="preserve"><value>成功</value></data>
+  <data name="Savings" xml:space="preserve"><value>节省</value></data>
+  <data name="Tax" xml:space="preserve"><value>税费</value></data>
+  <data name="Tendered" xml:space="preserve"><value>实收</value></data>
+  <data name="Terminal" xml:space="preserve"><value>终端</value></data>
+  <data name="Time" xml:space="preserve"><value>时间</value></data>
+  <data name="Total" xml:space="preserve"><value>合计</value></data>
+  <data name="TotalDue" xml:space="preserve"><value>应付合计</value></data>
+  <data name="TransactionHistory" xml:space="preserve"><value>交易历史</value></data>
+  <data name="UnitPrice" xml:space="preserve"><value>单价</value></data>
+  <data name="Void" xml:space="preserve"><value>作废</value></data>
+
+  <data name="common.cancel" xml:space="preserve"><value>取消</value></data>
+  <data name="common.load" xml:space="preserve"><value>加载</value></data>
+  <data name="common.status" xml:space="preserve"><value>状态</value></data>
+
+  <data name="pos.terminal.title" xml:space="preserve"><value>POS 收银台</value></data>
+  <data name="pos.terminal.search.placeholder" xml:space="preserve"><value>扫描条码或搜索商品...</value></data>
+  <data name="pos.terminal.search.action" xml:space="preserve"><value>加入</value></data>
+  <data name="pos.terminal.addSelected" xml:space="preserve"><value>加入所选</value></data>
+  <data name="pos.terminal.currentItem" xml:space="preserve"><value>当前商品</value></data>
+  <data name="pos.terminal.cart.title" xml:space="preserve"><value>当前订单</value></data>
+  <data name="pos.terminal.totals.total" xml:space="preserve"><value>最终合计</value></data>
+  <data name="pos.terminal.payNow" xml:space="preserve"><value>立即付款</value></data>
+  <data name="pos.terminal.actions.clearCart" xml:space="preserve"><value>清空购物车</value></data>
+  <data name="pos.terminal.actions.holdOrder" xml:space="preserve"><value>挂单</value></data>
+  <data name="pos.terminal.actions.recallOrder" xml:space="preserve"><value>取单</value></data>
+  <data name="pos.terminal.actions.member" xml:space="preserve"><value>会员</value></data>
+  <data name="pos.terminal.actions.sync" xml:space="preserve"><value>同步</value></data>
+  <data name="pos.terminal.actions.discount" xml:space="preserve"><value>折扣</value></data>
+  <data name="pos.terminal.actions.noBarcode" xml:space="preserve"><value>无码商品</value></data>
+  <data name="pos.status.ready" xml:space="preserve"><value>离线收银已就绪。</value></data>
+  <data name="pos.status.online" xml:space="preserve"><value>在线</value></data>
+  <data name="pos.status.offline" xml:space="preserve"><value>离线</value></data>
+  <data name="pos.status.pendingSync" xml:space="preserve"><value>待同步：{0}</value></data>
+  <data name="pos.status.noLocalMatch" xml:space="preserve"><value>本地未找到商品，离线收银仍可继续。</value></data>
+  <data name="pos.status.multipleMatches" xml:space="preserve"><value>找到 {0} 个商品，请选择后加入。</value></data>
+  <data name="pos.status.added" xml:space="preserve"><value>已加入 {0}</value></data>
+  <data name="pos.status.cartCleared" xml:space="preserve"><value>购物车已清空。</value></data>
+
+  <data name="payment.cash.title" xml:space="preserve"><value>现金支付</value></data>
+  <data name="payment.cash.orderSummary" xml:space="preserve"><value>当前订单</value></data>
+  <data name="payment.cash.amountTendered" xml:space="preserve"><value>实收金额</value></data>
+  <data name="payment.cash.changeDue" xml:space="preserve"><value>找零</value></data>
+  <data name="payment.cash.quickCash" xml:space="preserve"><value>快捷金额</value></data>
+  <data name="payment.cash.paymentMethod" xml:space="preserve"><value>付款方式</value></data>
+  <data name="payment.cash.confirm" xml:space="preserve"><value>立即付款</value></data>
+  <data name="payment.cash.status.ready" xml:space="preserve"><value>请输入收到的现金金额。</value></data>
+  <data name="payment.cash.status.invalidTendered" xml:space="preserve"><value>请输入有效现金金额。</value></data>
+  <data name="payment.cash.status.completed" xml:space="preserve"><value>现金支付已完成。</value></data>
+  <data name="payment.method.cash" xml:space="preserve"><value>现金</value></data>
+  <data name="payment.method.card" xml:space="preserve"><value>银行卡</value></data>
+  <data name="payment.method.account" xml:space="preserve"><value>信用账户</value></data>
+  <data name="payment.method.installment" xml:space="preserve"><value>分期付款</value></data>
+
+  <data name="success.subtitle" xml:space="preserve"><value>本次交易已成功处理。</value></data>
+  <data name="success.totalPaid" xml:space="preserve"><value>实付金额</value></data>
+  <data name="success.transactionId" xml:space="preserve"><value>交易编号</value></data>
+  <data name="success.digitalReceipt" xml:space="preserve"><value>电子小票</value></data>
+  <data name="success.email" xml:space="preserve"><value>通过邮件发送</value></data>
+  <data name="success.sms" xml:space="preserve"><value>通过短信发送</value></data>
+  <data name="success.printReceipt" xml:space="preserve"><value>打印小票</value></data>
+  <data name="success.newTransaction" xml:space="preserve"><value>新交易</value></data>
+  <data name="success.receiptPreview" xml:space="preserve"><value>小票预览</value></data>
+
+  <data name="history.advancedFilters" xml:space="preserve"><value>高级筛选</value></data>
+  <data name="history.exportCsv" xml:space="preserve"><value>导出 CSV</value></data>
+  <data name="history.dateRange" xml:space="preserve"><value>今日</value></data>
+  <data name="history.allStores" xml:space="preserve"><value>全部门店</value></data>
+  <data name="history.allTerminals" xml:space="preserve"><value>全部终端</value></data>
+  <data name="history.search" xml:space="preserve"><value>搜索订单、收银员或终端...</value></data>
+  <data name="history.showing" xml:space="preserve"><value>显示 {0} 笔交易</value></data>
+  <data name="history.showingPrefix" xml:space="preserve"><value>显示 </value></data>
+  <data name="history.transactions" xml:space="preserve"><value>笔交易</value></data>
+  <data name="history.reprint" xml:space="preserve"><value>重印</value></data>
+  <data name="history.refund" xml:space="preserve"><value>退款</value></data>
+
+  <data name="customer.totalToPay" xml:space="preserve"><value>应付合计</value></data>
+  <data name="customer.readyForPayment" xml:space="preserve"><value>准备支付</value></data>
+  <data name="customer.insertOrTap" xml:space="preserve"><value>插卡或轻触刷卡</value></data>
+  <data name="customer.promotionTitle" xml:space="preserve"><value>本周特惠</value></data>
+  <data name="customer.promotionSubtitle" xml:space="preserve"><value>有机生鲜最高 7 折</value></data>
+  <data name="customer.promotionBody" xml:space="preserve"><value>本周末精选新鲜商品与会员专享优惠。</value></data>
+</root>

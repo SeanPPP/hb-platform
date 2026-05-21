@@ -1,0 +1,165 @@
+<?xml version="1.0" encoding="utf-8"?>
+<root>
+  <resheader name="resmimetype">
+    <value>text/microsoft-resx</value>
+  </resheader>
+  <resheader name="version">
+    <value>2.0</value>
+  </resheader>
+  <resheader name="reader">
+    <value>System.Resources.ResXResourceReader, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value>
+  </resheader>
+  <resheader name="writer">
+    <value>System.Resources.ResXResourceWriter, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value>
+  </resheader>
+  <data name="Add" xml:space="preserve"><value>Add</value></data>
+  <data name="Amount" xml:space="preserve"><value>Amount</value></data>
+  <data name="AmountDue" xml:space="preserve"><value>Amount Due</value></data>
+  <data name="AppName" xml:space="preserve"><value>Apex Retail Pro</value></data>
+  <data name="Backspace" xml:space="preserve"><value>Back</value></data>
+  <data name="Barcode" xml:space="preserve"><value>Barcode</value></data>
+  <data name="Cancel" xml:space="preserve"><value>Cancel</value></data>
+  <data name="CardPayment" xml:space="preserve"><value>Card Payment</value></data>
+  <data name="CashPayment" xml:space="preserve"><value>Cash Payment</value></data>
+  <data name="Cashier" xml:space="preserve"><value>Cashier</value></data>
+  <data name="Change" xml:space="preserve"><value>Change</value></data>
+  <data name="Clear" xml:space="preserve"><value>Clear</value></data>
+  <data name="ClearCart" xml:space="preserve"><value>Clear Cart</value></data>
+  <data name="Confirm" xml:space="preserve"><value>Confirm</value></data>
+  <data name="ConfirmPayment" xml:space="preserve"><value>Confirm Payment</value></data>
+  <data name="CustomerDisplay" xml:space="preserve"><value>Customer Display</value></data>
+  <data name="Device" xml:space="preserve"><value>Device</value></data>
+  <data name="Display" xml:space="preserve"><value>Display</value></data>
+  <data name="Discount" xml:space="preserve"><value>Discount</value></data>
+  <data name="ErrorInvalidCashAmount" xml:space="preserve"><value>Enter a valid cash amount.</value></data>
+  <data name="ErrorItemNotFound" xml:space="preserve"><value>No item found. Local cache is still available.</value></data>
+  <data name="ErrorPaymentFailed" xml:space="preserve"><value>Payment failed. Please try again.</value></data>
+  <data name="Exit" xml:space="preserve"><value>Exit</value></data>
+  <data name="History" xml:space="preserve"><value>History</value></data>
+  <data name="Home" xml:space="preserve"><value>Home</value></data>
+  <data name="Item" xml:space="preserve"><value>Item</value></data>
+  <data name="ItemDescription" xml:space="preserve"><value>Item Description</value></data>
+  <data name="ItemNumber" xml:space="preserve"><value>Item No.</value></data>
+  <data name="Items" xml:space="preserve"><value>Items</value></data>
+  <data name="Language" xml:space="preserve"><value>Language</value></data>
+  <data name="LanguageEnglish" xml:space="preserve"><value>English</value></data>
+  <data name="LanguageChineseSimplified" xml:space="preserve"><value>Simplified Chinese</value></data>
+  <data name="LineTotal" xml:space="preserve"><value>Line Total</value></data>
+  <data name="NavCart" xml:space="preserve"><value>Cart</value></data>
+  <data name="NavCheckout" xml:space="preserve"><value>Checkout</value></data>
+  <data name="NavCustomerDisplay" xml:space="preserve"><value>Customer Display</value></data>
+  <data name="NavHistory" xml:space="preserve"><value>History</value></data>
+  <data name="NavPos" xml:space="preserve"><value>POS</value></data>
+  <data name="NavProducts" xml:space="preserve"><value>Products</value></data>
+  <data name="NavSettings" xml:space="preserve"><value>Settings</value></data>
+  <data name="Offline" xml:space="preserve"><value>Offline</value></data>
+  <data name="Online" xml:space="preserve"><value>Online</value></data>
+  <data name="OpenCashDrawer" xml:space="preserve"><value>Open Cash Drawer</value></data>
+  <data name="OrderCode" xml:space="preserve"><value>Order Code</value></data>
+  <data name="OrderNumber" xml:space="preserve"><value>Order No.</value></data>
+  <data name="Pay" xml:space="preserve"><value>Pay</value></data>
+  <data name="Payment" xml:space="preserve"><value>Payment</value></data>
+  <data name="PaymentSuccessful" xml:space="preserve"><value>Payment Successful</value></data>
+  <data name="PendingSync" xml:space="preserve"><value>Pending Sync</value></data>
+  <data name="PosTerminal" xml:space="preserve"><value>POS Terminal</value></data>
+  <data name="Price" xml:space="preserve"><value>Price</value></data>
+  <data name="ProductCode" xml:space="preserve"><value>Product Code</value></data>
+  <data name="Quantity" xml:space="preserve"><value>Qty</value></data>
+  <data name="Receipt" xml:space="preserve"><value>Receipt</value></data>
+  <data name="Refund" xml:space="preserve"><value>Refund</value></data>
+  <data name="Remove" xml:space="preserve"><value>Remove</value></data>
+  <data name="ScanOrSearch" xml:space="preserve"><value>Scan barcode or search product...</value></data>
+  <data name="Search" xml:space="preserve"><value>Search</value></data>
+  <data name="Settings" xml:space="preserve"><value>Settings</value></data>
+  <data name="Source" xml:space="preserve"><value>Source</value></data>
+  <data name="StatusAddedItem" xml:space="preserve"><value>Item added.</value></data>
+  <data name="StatusCartCleared" xml:space="preserve"><value>Cart cleared.</value></data>
+  <data name="StatusOfflineReady" xml:space="preserve"><value>Offline mode is ready.</value></data>
+  <data name="StatusPaymentComplete" xml:space="preserve"><value>Cash payment complete.</value></data>
+  <data name="StatusReady" xml:space="preserve"><value>Ready</value></data>
+  <data name="Store" xml:space="preserve"><value>Store</value></data>
+  <data name="Subtotal" xml:space="preserve"><value>Subtotal</value></data>
+  <data name="Success" xml:space="preserve"><value>Success</value></data>
+  <data name="Savings" xml:space="preserve"><value>Savings</value></data>
+  <data name="Tax" xml:space="preserve"><value>Tax</value></data>
+  <data name="Tendered" xml:space="preserve"><value>Tendered</value></data>
+  <data name="Terminal" xml:space="preserve"><value>Terminal</value></data>
+  <data name="Time" xml:space="preserve"><value>Time</value></data>
+  <data name="Total" xml:space="preserve"><value>Total</value></data>
+  <data name="TotalDue" xml:space="preserve"><value>Total Due</value></data>
+  <data name="TransactionHistory" xml:space="preserve"><value>Transaction History</value></data>
+  <data name="UnitPrice" xml:space="preserve"><value>Unit Price</value></data>
+  <data name="Void" xml:space="preserve"><value>Void</value></data>
+
+  <data name="common.cancel" xml:space="preserve"><value>Cancel</value></data>
+  <data name="common.load" xml:space="preserve"><value>Load</value></data>
+  <data name="common.status" xml:space="preserve"><value>Status</value></data>
+
+  <data name="pos.terminal.title" xml:space="preserve"><value>POS Terminal</value></data>
+  <data name="pos.terminal.search.placeholder" xml:space="preserve"><value>Scan barcode or search product...</value></data>
+  <data name="pos.terminal.search.action" xml:space="preserve"><value>Add</value></data>
+  <data name="pos.terminal.addSelected" xml:space="preserve"><value>Add Selected</value></data>
+  <data name="pos.terminal.currentItem" xml:space="preserve"><value>Current Item</value></data>
+  <data name="pos.terminal.cart.title" xml:space="preserve"><value>Current Order</value></data>
+  <data name="pos.terminal.totals.total" xml:space="preserve"><value>Final Total</value></data>
+  <data name="pos.terminal.payNow" xml:space="preserve"><value>Pay Now</value></data>
+  <data name="pos.terminal.actions.clearCart" xml:space="preserve"><value>Clear Cart</value></data>
+  <data name="pos.terminal.actions.holdOrder" xml:space="preserve"><value>Hold Order</value></data>
+  <data name="pos.terminal.actions.recallOrder" xml:space="preserve"><value>Recall Order</value></data>
+  <data name="pos.terminal.actions.member" xml:space="preserve"><value>Member</value></data>
+  <data name="pos.terminal.actions.sync" xml:space="preserve"><value>Sync</value></data>
+  <data name="pos.terminal.actions.discount" xml:space="preserve"><value>Discount</value></data>
+  <data name="pos.terminal.actions.noBarcode" xml:space="preserve"><value>No Barcode</value></data>
+  <data name="pos.status.ready" xml:space="preserve"><value>Ready for offline checkout.</value></data>
+  <data name="pos.status.online" xml:space="preserve"><value>Online</value></data>
+  <data name="pos.status.offline" xml:space="preserve"><value>Offline</value></data>
+  <data name="pos.status.pendingSync" xml:space="preserve"><value>Pending Sync: {0}</value></data>
+  <data name="pos.status.noLocalMatch" xml:space="preserve"><value>No local item found. Checkout can continue offline.</value></data>
+  <data name="pos.status.multipleMatches" xml:space="preserve"><value>Found {0} items. Select one to add.</value></data>
+  <data name="pos.status.added" xml:space="preserve"><value>Added {0}</value></data>
+  <data name="pos.status.cartCleared" xml:space="preserve"><value>Cart cleared.</value></data>
+
+  <data name="payment.cash.title" xml:space="preserve"><value>Cash Payment</value></data>
+  <data name="payment.cash.orderSummary" xml:space="preserve"><value>Current order</value></data>
+  <data name="payment.cash.amountTendered" xml:space="preserve"><value>Amount Tendered</value></data>
+  <data name="payment.cash.changeDue" xml:space="preserve"><value>Change Due</value></data>
+  <data name="payment.cash.quickCash" xml:space="preserve"><value>Quick Cash</value></data>
+  <data name="payment.cash.paymentMethod" xml:space="preserve"><value>Payment Method</value></data>
+  <data name="payment.cash.confirm" xml:space="preserve"><value>Pay Now</value></data>
+  <data name="payment.cash.status.ready" xml:space="preserve"><value>Enter the received cash amount.</value></data>
+  <data name="payment.cash.status.invalidTendered" xml:space="preserve"><value>Enter a valid cash amount.</value></data>
+  <data name="payment.cash.status.completed" xml:space="preserve"><value>Cash payment completed.</value></data>
+  <data name="payment.method.cash" xml:space="preserve"><value>Cash</value></data>
+  <data name="payment.method.card" xml:space="preserve"><value>Credit/Debit Card</value></data>
+  <data name="payment.method.account" xml:space="preserve"><value>Credit Account</value></data>
+  <data name="payment.method.installment" xml:space="preserve"><value>Installment</value></data>
+
+  <data name="success.subtitle" xml:space="preserve"><value>The transaction has been processed successfully.</value></data>
+  <data name="success.totalPaid" xml:space="preserve"><value>Total Amount Paid</value></data>
+  <data name="success.transactionId" xml:space="preserve"><value>Transaction ID</value></data>
+  <data name="success.digitalReceipt" xml:space="preserve"><value>Digital Receipt</value></data>
+  <data name="success.email" xml:space="preserve"><value>Send via email</value></data>
+  <data name="success.sms" xml:space="preserve"><value>Send via SMS</value></data>
+  <data name="success.printReceipt" xml:space="preserve"><value>Print Receipt</value></data>
+  <data name="success.newTransaction" xml:space="preserve"><value>New Transaction</value></data>
+  <data name="success.receiptPreview" xml:space="preserve"><value>Receipt Preview</value></data>
+
+  <data name="history.advancedFilters" xml:space="preserve"><value>Advanced Filters</value></data>
+  <data name="history.exportCsv" xml:space="preserve"><value>Export CSV</value></data>
+  <data name="history.dateRange" xml:space="preserve"><value>Today</value></data>
+  <data name="history.allStores" xml:space="preserve"><value>All Stores</value></data>
+  <data name="history.allTerminals" xml:space="preserve"><value>All Terminals</value></data>
+  <data name="history.search" xml:space="preserve"><value>Search order, cashier, or terminal...</value></data>
+  <data name="history.showing" xml:space="preserve"><value>Showing {0} transactions</value></data>
+  <data name="history.showingPrefix" xml:space="preserve"><value>Showing </value></data>
+  <data name="history.transactions" xml:space="preserve"><value>transactions</value></data>
+  <data name="history.reprint" xml:space="preserve"><value>Reprint</value></data>
+  <data name="history.refund" xml:space="preserve"><value>Refund</value></data>
+
+  <data name="customer.totalToPay" xml:space="preserve"><value>Total To Pay</value></data>
+  <data name="customer.readyForPayment" xml:space="preserve"><value>Ready for Payment</value></data>
+  <data name="customer.insertOrTap" xml:space="preserve"><value>Insert or tap card</value></data>
+  <data name="customer.promotionTitle" xml:space="preserve"><value>Deal of the Week</value></data>
+  <data name="customer.promotionSubtitle" xml:space="preserve"><value>Organic Produce Up to 30% Off</value></data>
+  <data name="customer.promotionBody" xml:space="preserve"><value>Fresh market selection this weekend and member-only savings.</value></data>
+</root>

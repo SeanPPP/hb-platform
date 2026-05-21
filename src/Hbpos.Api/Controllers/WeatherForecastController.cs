@@ -1,0 +1,1 @@
+namespace Hbpos.Api.Controllers;

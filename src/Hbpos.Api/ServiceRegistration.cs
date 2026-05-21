@@ -1,0 +1,21 @@
+using Hbpos.Api.Data;
+using Hbpos.Api.Services;
+
+namespace Hbpos.Api;
+
+public static class ServiceRegistration
+{
+    public static IServiceCollection AddHbposApiServices(this IServiceCollection services)
+    {
+        services.AddScoped<HbposSqlSugarContext>();
+        services.AddScoped<IDeviceService, DeviceService>();
+        services.AddScoped<ICashierService, CashierService>();
+        services.AddScoped<ICatalogService, CatalogService>();
+        services.AddScoped<IOrderRepository, SqlSugarOrderRepository>();
+        services.AddScoped<IOrderSyncService, OrderSyncService>();
+        services.AddSingleton<IPriceIndexBuilder, PriceIndexBuilder>();
+        services.AddSingleton<IOrderSyncPlanner, OrderSyncPlanner>();
+
+        return services;
+    }
+}

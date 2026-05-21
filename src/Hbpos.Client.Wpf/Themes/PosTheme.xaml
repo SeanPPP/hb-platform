@@ -1,0 +1,204 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:sys="clr-namespace:System;assembly=mscorlib">
+    <Color x:Key="PosColorCanvas">#FFF3F5F9</Color>
+    <Color x:Key="PosColorSurface">#FFFFFFFF</Color>
+    <Color x:Key="PosColorSurfaceAlt">#FFF8FAFD</Color>
+    <Color x:Key="PosColorPrimary">#FF075CE5</Color>
+    <Color x:Key="PosColorPrimaryDark">#FF053A91</Color>
+    <Color x:Key="PosColorAccent">#FFFF7A00</Color>
+    <Color x:Key="PosColorSuccess">#FF12805C</Color>
+    <Color x:Key="PosColorWarning">#FFFFB020</Color>
+    <Color x:Key="PosColorDanger">#FFB42318</Color>
+    <Color x:Key="PosColorText">#FF111827</Color>
+    <Color x:Key="PosColorMutedText">#FF667085</Color>
+    <Color x:Key="PosColorBorder">#FFD0D5DD</Color>
+    <Color x:Key="PosColorHeader">#FFFFFFFF</Color>
+    <Color x:Key="PosColorFooter">#FFFFFFFF</Color>
+
+    <SolidColorBrush x:Key="PosScreenBackgroundBrush" Color="{StaticResource PosColorCanvas}" />
+    <SolidColorBrush x:Key="PosSurfaceBrush" Color="{StaticResource PosColorSurface}" />
+    <SolidColorBrush x:Key="PosSurfaceAltBrush" Color="{StaticResource PosColorSurfaceAlt}" />
+    <SolidColorBrush x:Key="PosPrimaryBrush" Color="{StaticResource PosColorPrimary}" />
+    <SolidColorBrush x:Key="PosPrimaryDarkBrush" Color="{StaticResource PosColorPrimaryDark}" />
+    <SolidColorBrush x:Key="PosAccentBrush" Color="{StaticResource PosColorAccent}" />
+    <SolidColorBrush x:Key="PosSuccessBrush" Color="{StaticResource PosColorSuccess}" />
+    <SolidColorBrush x:Key="PosWarningBrush" Color="{StaticResource PosColorWarning}" />
+    <SolidColorBrush x:Key="PosDangerBrush" Color="{StaticResource PosColorDanger}" />
+    <SolidColorBrush x:Key="PosTextBrush" Color="{StaticResource PosColorText}" />
+    <SolidColorBrush x:Key="PosMutedForegroundBrush" Color="{StaticResource PosColorMutedText}" />
+    <SolidColorBrush x:Key="PosBorderBrush" Color="{StaticResource PosColorBorder}" />
+    <SolidColorBrush x:Key="PosHeaderBackgroundBrush" Color="{StaticResource PosColorHeader}" />
+    <SolidColorBrush x:Key="PosHeaderForegroundBrush" Color="{StaticResource PosColorPrimaryDark}" />
+    <SolidColorBrush x:Key="PosHeaderMutedForegroundBrush" Color="{StaticResource PosColorMutedText}" />
+    <SolidColorBrush x:Key="PosFooterBackgroundBrush" Color="{StaticResource PosColorFooter}" />
+    <SolidColorBrush x:Key="PosAccentForegroundBrush" Color="{StaticResource PosColorAccent}" />
+
+    <FontFamily x:Key="PosFontFamily">Segoe UI</FontFamily>
+    <sys:Double x:Key="PosFontSizeBody">14</sys:Double>
+    <sys:Double x:Key="PosFontSizeSmall">12</sys:Double>
+    <sys:Double x:Key="PosFontSizeTitle">22</sys:Double>
+    <sys:Double x:Key="PosFontSizeAmount">32</sys:Double>
+
+    <Style TargetType="TextBlock">
+        <Setter Property="FontFamily" Value="{StaticResource PosFontFamily}" />
+        <Setter Property="Foreground" Value="{StaticResource PosTextBrush}" />
+        <Setter Property="FontSize" Value="{StaticResource PosFontSizeBody}" />
+    </Style>
+
+    <Style x:Key="PosTitleTextBlock" TargetType="TextBlock">
+        <Setter Property="FontFamily" Value="{StaticResource PosFontFamily}" />
+        <Setter Property="Foreground" Value="{StaticResource PosTextBrush}" />
+        <Setter Property="FontSize" Value="{StaticResource PosFontSizeTitle}" />
+        <Setter Property="FontWeight" Value="SemiBold" />
+    </Style>
+
+    <Style x:Key="PosCardStyle" TargetType="Border">
+        <Setter Property="Background" Value="{StaticResource PosSurfaceBrush}" />
+        <Setter Property="BorderBrush" Value="{StaticResource PosBorderBrush}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="CornerRadius" Value="6" />
+        <Setter Property="Padding" Value="16" />
+    </Style>
+
+    <Style x:Key="PosPillBaseStyle" TargetType="Border">
+        <Setter Property="CornerRadius" Value="12" />
+        <Setter Property="Padding" Value="10,4" />
+        <Setter Property="VerticalAlignment" Value="Center" />
+    </Style>
+
+    <Style x:Key="PosStatusPillStyle" TargetType="Border" BasedOn="{StaticResource PosPillBaseStyle}">
+        <Setter Property="Background" Value="#FFE7F7EF" />
+    </Style>
+
+    <Style x:Key="PosWarningPillStyle" TargetType="Border" BasedOn="{StaticResource PosPillBaseStyle}">
+        <Setter Property="Background" Value="#FFFFF1D6" />
+    </Style>
+
+    <Style x:Key="PosPriceSourceBadgeStyle" TargetType="Border" BasedOn="{StaticResource PosPillBaseStyle}">
+        <Setter Property="Background" Value="#FFE8F0FE" />
+        <Setter Property="Padding" Value="8,2" />
+    </Style>
+
+    <Style x:Key="PosButtonBaseStyle" TargetType="Button">
+        <Setter Property="MinHeight" Value="40" />
+        <Setter Property="Padding" Value="14,8" />
+        <Setter Property="FontFamily" Value="{StaticResource PosFontFamily}" />
+        <Setter Property="FontSize" Value="{StaticResource PosFontSizeBody}" />
+        <Setter Property="FontWeight" Value="SemiBold" />
+        <Setter Property="Cursor" Value="Hand" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="{x:Type Button}">
+                    <Border x:Name="Root"
+                            Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}"
+                            CornerRadius="5"
+                            SnapsToDevicePixels="True">
+                        <ContentPresenter HorizontalAlignment="Center"
+                                          VerticalAlignment="Center"
+                                          Margin="{TemplateBinding Padding}"
+                                          RecognizesAccessKey="True" />
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Root" Property="Opacity" Value="0.92" />
+                        </Trigger>
+                        <Trigger Property="IsPressed" Value="True">
+                            <Setter TargetName="Root" Property="Opacity" Value="0.82" />
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter TargetName="Root" Property="Opacity" Value="0.45" />
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <Style x:Key="PosPrimaryButtonStyle" TargetType="Button" BasedOn="{StaticResource PosButtonBaseStyle}">
+        <Setter Property="Background" Value="{StaticResource PosPrimaryBrush}" />
+        <Setter Property="BorderBrush" Value="{StaticResource PosPrimaryBrush}" />
+        <Setter Property="Foreground" Value="White" />
+    </Style>
+
+    <Style x:Key="PosSecondaryButtonStyle" TargetType="Button" BasedOn="{StaticResource PosButtonBaseStyle}">
+        <Setter Property="Background" Value="{StaticResource PosSurfaceBrush}" />
+        <Setter Property="BorderBrush" Value="{StaticResource PosBorderBrush}" />
+        <Setter Property="Foreground" Value="{StaticResource PosPrimaryDarkBrush}" />
+    </Style>
+
+    <Style x:Key="PosDangerButtonStyle" TargetType="Button" BasedOn="{StaticResource PosPrimaryButtonStyle}">
+        <Setter Property="Background" Value="{StaticResource PosDangerBrush}" />
+        <Setter Property="BorderBrush" Value="{StaticResource PosDangerBrush}" />
+    </Style>
+
+    <Style x:Key="PosNumberButtonStyle" TargetType="Button" BasedOn="{StaticResource PosSecondaryButtonStyle}">
+        <Setter Property="MinHeight" Value="54" />
+        <Setter Property="Margin" Value="4" />
+        <Setter Property="FontSize" Value="22" />
+        <Setter Property="Background" Value="White" />
+    </Style>
+
+    <Style x:Key="PosActionTileButtonStyle" TargetType="Button" BasedOn="{StaticResource PosSecondaryButtonStyle}">
+        <Setter Property="Margin" Value="6" />
+        <Setter Property="MinHeight" Value="64" />
+        <Setter Property="TextBlock.TextWrapping" Value="Wrap" />
+    </Style>
+
+    <Style x:Key="PosPaymentMethodButtonStyle" TargetType="Button" BasedOn="{StaticResource PosSecondaryButtonStyle}">
+        <Setter Property="HorizontalContentAlignment" Value="Left" />
+        <Setter Property="MinHeight" Value="52" />
+        <Setter Property="Margin" Value="0,0,0,10" />
+    </Style>
+
+    <Style x:Key="PosSearchTextBoxStyle" TargetType="TextBox">
+        <Setter Property="Background" Value="{StaticResource PosSurfaceBrush}" />
+        <Setter Property="BorderBrush" Value="{StaticResource PosBorderBrush}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="Padding" Value="12,0" />
+        <Setter Property="FontFamily" Value="{StaticResource PosFontFamily}" />
+        <Setter Property="VerticalContentAlignment" Value="Center" />
+    </Style>
+
+    <Style x:Key="PosAmountTextBoxStyle" TargetType="TextBox" BasedOn="{StaticResource PosSearchTextBoxStyle}">
+        <Setter Property="TextAlignment" Value="Right" />
+        <Setter Property="FontWeight" Value="SemiBold" />
+    </Style>
+
+    <Style x:Key="PosSearchResultListStyle" TargetType="ListBox">
+        <Setter Property="Background" Value="{StaticResource PosSurfaceBrush}" />
+        <Setter Property="BorderBrush" Value="{StaticResource PosBorderBrush}" />
+        <Setter Property="BorderThickness" Value="1" />
+    </Style>
+
+    <Style x:Key="PosCartDataGridStyle" TargetType="DataGrid">
+        <Setter Property="AutoGenerateColumns" Value="False" />
+        <Setter Property="CanUserAddRows" Value="False" />
+        <Setter Property="CanUserDeleteRows" Value="False" />
+        <Setter Property="HeadersVisibility" Value="Column" />
+        <Setter Property="GridLinesVisibility" Value="Horizontal" />
+        <Setter Property="Background" Value="{StaticResource PosSurfaceBrush}" />
+        <Setter Property="BorderBrush" Value="{StaticResource PosBorderBrush}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="Foreground" Value="{StaticResource PosTextBrush}" />
+        <Setter Property="RowHeight" Value="44" />
+        <Setter Property="FontFamily" Value="{StaticResource PosFontFamily}" />
+        <Setter Property="FontSize" Value="{StaticResource PosFontSizeBody}" />
+        <Setter Property="ColumnHeaderStyle">
+            <Setter.Value>
+                <Style TargetType="DataGridColumnHeader">
+                    <Setter Property="Background" Value="#FFF8FAFD" />
+                    <Setter Property="Foreground" Value="{StaticResource PosMutedForegroundBrush}" />
+                    <Setter Property="FontSize" Value="{StaticResource PosFontSizeSmall}" />
+                    <Setter Property="FontWeight" Value="SemiBold" />
+                    <Setter Property="Padding" Value="10,8" />
+                    <Setter Property="BorderThickness" Value="0,0,0,1" />
+                    <Setter Property="BorderBrush" Value="{StaticResource PosBorderBrush}" />
+                </Style>
+            </Setter.Value>
+        </Setter>
+    </Style>
+</ResourceDictionary>
