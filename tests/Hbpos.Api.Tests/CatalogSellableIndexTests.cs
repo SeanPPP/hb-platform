@@ -76,6 +76,32 @@ public sealed class CatalogSellableIndexTests
     }
 
     [Fact]
+    public void ProductImage_is_returned_and_changes_row_version()
+    {
+        var firstIndex = CreateIndex(CreateItem(
+            "P01",
+            "IMAGE-CODE",
+            "Image item",
+            1m,
+            "https://images.example/P01-a.jpg"));
+        var secondIndex = CreateIndex(CreateItem(
+            "P01",
+            "IMAGE-CODE",
+            "Image item",
+            1m,
+            "https://images.example/P01-b.jpg"));
+
+        var pageItem = Assert.Single(firstIndex.GetPage(cursor: null, pageSize: 10).Items);
+        var lookup = firstIndex.Lookup("image-code", lookupCodeNormalized: null);
+        var changedItem = Assert.Single(secondIndex.Items);
+
+        Assert.Equal("https://images.example/P01-a.jpg", pageItem.ProductImage);
+        Assert.True(lookup.Found);
+        Assert.Equal("https://images.example/P01-a.jpg", lookup.Item?.ProductImage);
+        Assert.NotEqual(pageItem.RowVersion, changedItem.RowVersion);
+    }
+
+    [Fact]
     public void GetPage_uses_normalized_cursor_and_reports_next_cursor()
     {
         var index = CreateIndex(
@@ -104,7 +130,8 @@ public sealed class CatalogSellableIndexTests
         string productCode,
         string lookupCode,
         string displayName,
-        decimal retailPrice)
+        decimal retailPrice,
+        string? productImage = null)
     {
         return new SellableItemDto(
             "S01",
@@ -118,6 +145,7 @@ public sealed class CatalogSellableIndexTests
             PriceSourceKind.ProductBase,
             "product",
             1m,
-            UpdatedAt);
+            UpdatedAt,
+            productImage);
     }
 }

@@ -113,7 +113,8 @@ public sealed class CatalogService(
                 x.ItemNumber,
                 x.Barcode,
                 x.RetailPrice,
-                ToOffset(x.UpdatedAt ?? x.CreatedAt)))
+                ToOffset(x.UpdatedAt ?? x.CreatedAt),
+                x.ProductImage))
             .ToList();
 
         var storeRetailPriceEntities = await dbContext.MainDb.Queryable<StoreRetailPrice>()
@@ -355,7 +356,9 @@ public sealed class CatalogSellableIndex
                 item.RetailPrice,
                 item.PriceSource,
                 item.PriceSourceLabel.Trim(),
-                item.QuantityFactor));
+                item.QuantityFactor,
+                item.ProductImage ?? string.Empty),
+            item.ProductImage);
     }
 
     private static string CreateRowVersion(
@@ -369,7 +372,8 @@ public sealed class CatalogSellableIndex
         decimal retailPrice,
         PriceSourceKind priceSource,
         string priceSourceLabel,
-        decimal quantityFactor)
+        decimal quantityFactor,
+        string productImage)
     {
         var builder = new StringBuilder();
         AppendCanonical(builder, storeCode);
@@ -383,6 +387,7 @@ public sealed class CatalogSellableIndex
         AppendCanonical(builder, ((int)priceSource).ToString(CultureInfo.InvariantCulture));
         AppendCanonical(builder, priceSourceLabel);
         AppendCanonical(builder, quantityFactor.ToString("0.#############################", CultureInfo.InvariantCulture));
+        AppendCanonical(builder, productImage);
 
         var hashBytes = SHA256.HashData(Encoding.UTF8.GetBytes(builder.ToString()));
         return Convert.ToHexString(hashBytes);

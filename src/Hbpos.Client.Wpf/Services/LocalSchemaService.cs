@@ -49,6 +49,11 @@ public sealed class LocalSchemaService(LocalSqliteStore store) : ILocalSchemaSer
             await ExecuteAsync(connection, "ALTER TABLE LocalSellableItemIndex ADD COLUMN SyncedAt TEXT;", cancellationToken);
         }
 
+        if (!columns.Contains("ProductImage"))
+        {
+            await ExecuteAsync(connection, "ALTER TABLE LocalSellableItemIndex ADD COLUMN ProductImage TEXT NULL;", cancellationToken);
+        }
+
         await ExecuteAsync(
             connection,
             """
@@ -73,7 +78,8 @@ public sealed class LocalSchemaService(LocalSqliteStore store) : ILocalSchemaSer
                 RetailPrice || '|' ||
                 PriceSource || '|' ||
                 PriceSourceLabel || '|' ||
-                QuantityFactor
+                QuantityFactor || '|' ||
+                IFNULL(ProductImage, '')
             WHERE ContentHash IS NULL OR TRIM(ContentHash) = '';
             """,
             cancellationToken);
@@ -146,6 +152,7 @@ public sealed class LocalSchemaService(LocalSqliteStore store) : ILocalSchemaSer
             LookupCodeNormalized TEXT NOT NULL,
             ItemNumber TEXT NULL,
             Barcode TEXT NULL,
+            ProductImage TEXT NULL,
             RetailPrice TEXT NOT NULL,
             PriceSource INTEGER NOT NULL,
             PriceSourceLabel TEXT NOT NULL,

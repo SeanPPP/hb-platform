@@ -78,6 +78,7 @@ public sealed class LocalCatalogRepository(LocalSqliteStore store) : ILocalCatal
                     LookupCodeNormalized,
                     ItemNumber,
                     Barcode,
+                    ProductImage,
                     RetailPrice,
                     PriceSource,
                     PriceSourceLabel,
@@ -96,6 +97,7 @@ public sealed class LocalCatalogRepository(LocalSqliteStore store) : ILocalCatal
                     $LookupCodeNormalized,
                     $ItemNumber,
                     $Barcode,
+                    $ProductImage,
                     $RetailPrice,
                     $PriceSource,
                     $PriceSourceLabel,
@@ -111,6 +113,7 @@ public sealed class LocalCatalogRepository(LocalSqliteStore store) : ILocalCatal
                     LookupCode = excluded.LookupCode,
                     ItemNumber = excluded.ItemNumber,
                     Barcode = excluded.Barcode,
+                    ProductImage = excluded.ProductImage,
                     RetailPrice = excluded.RetailPrice,
                     PriceSource = excluded.PriceSource,
                     PriceSourceLabel = excluded.PriceSourceLabel,
@@ -261,7 +264,7 @@ public sealed class LocalCatalogRepository(LocalSqliteStore store) : ILocalCatal
     }
 
     private const string SelectSellableItemSql = """
-        SELECT StoreCode, ProductCode, ReferenceCode, DisplayName, LookupCode, ItemNumber, Barcode, RetailPrice, PriceSource, PriceSourceLabel, QuantityFactor, UpdatedAt
+        SELECT StoreCode, ProductCode, ReferenceCode, DisplayName, LookupCode, ItemNumber, Barcode, ProductImage, RetailPrice, PriceSource, PriceSourceLabel, QuantityFactor, UpdatedAt
         FROM LocalSellableItemIndex
         """;
 
@@ -281,6 +284,7 @@ public sealed class LocalCatalogRepository(LocalSqliteStore store) : ILocalCatal
         command.Parameters.AddWithValue("$LookupCodeNormalized", lookupCodeNormalized);
         command.Parameters.AddWithValue("$ItemNumber", (object?)item.ItemNumber ?? DBNull.Value);
         command.Parameters.AddWithValue("$Barcode", (object?)item.Barcode ?? DBNull.Value);
+        command.Parameters.AddWithValue("$ProductImage", (object?)item.ProductImage ?? DBNull.Value);
         command.Parameters.AddWithValue("$RetailPrice", item.RetailPrice);
         command.Parameters.AddWithValue("$PriceSource", (int)item.PriceSource);
         command.Parameters.AddWithValue("$PriceSourceLabel", item.PriceSourceLabel);
@@ -304,7 +308,8 @@ public sealed class LocalCatalogRepository(LocalSqliteStore store) : ILocalCatal
             (PriceSourceKind)ReadInt32(reader, "PriceSource"),
             ReadString(reader, "PriceSourceLabel"),
             ReadDecimal(reader, "QuantityFactor"),
-            ReadNullableDateTimeOffset(reader, "UpdatedAt"));
+            ReadNullableDateTimeOffset(reader, "UpdatedAt"),
+            ReadNullableString(reader, "ProductImage"));
     }
 
     private static string CreateContentHash(SellableItemDto item, string storeCode, string lookupCodeNormalized)
@@ -321,6 +326,7 @@ public sealed class LocalCatalogRepository(LocalSqliteStore store) : ILocalCatal
         AppendCanonical(builder, ((int)item.PriceSource).ToString(CultureInfo.InvariantCulture));
         AppendCanonical(builder, item.PriceSourceLabel.Trim());
         AppendCanonical(builder, item.QuantityFactor.ToString("0.#############################", CultureInfo.InvariantCulture));
+        AppendCanonical(builder, item.ProductImage ?? string.Empty);
 
         var hashBytes = SHA256.HashData(Encoding.UTF8.GetBytes(builder.ToString()));
         return Convert.ToHexString(hashBytes);

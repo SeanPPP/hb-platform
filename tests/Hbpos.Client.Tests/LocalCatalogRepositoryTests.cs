@@ -13,8 +13,8 @@ public sealed class LocalCatalogRepositoryTests
         try
         {
             var repository = await CreateRepositoryAsync(databasePath);
-            var original = CreateItem("S001", "SKU-001", " abc ", "Original name", 1.25m);
-            var updated = CreateItem("S001", "SKU-001B", "ABC", "Updated name", 2.50m);
+            var original = CreateItem("S001", "SKU-001", " abc ", "Original name", 1.25m, "https://images.example/original.jpg");
+            var updated = CreateItem("S001", "SKU-001B", "ABC", "Updated name", 2.50m, "https://images.example/updated.jpg");
 
             await repository.UpsertSellableItemsAsync([original]);
             await repository.UpsertSellableItemsAsync([updated]);
@@ -24,6 +24,7 @@ public sealed class LocalCatalogRepositoryTests
             Assert.Equal("SKU-001B", saved.ProductCode);
             Assert.Equal("Updated name", saved.DisplayName);
             Assert.Equal(2.50m, saved.RetailPrice);
+            Assert.Equal("https://images.example/updated.jpg", saved.ProductImage);
         }
         finally
         {
@@ -133,7 +134,8 @@ public sealed class LocalCatalogRepositoryTests
         string productCode,
         string lookupCode,
         string displayName,
-        decimal retailPrice)
+        decimal retailPrice,
+        string? productImage = null)
     {
         return new SellableItemDto(
             StoreCode: storeCode,
@@ -147,7 +149,8 @@ public sealed class LocalCatalogRepositoryTests
             PriceSource: PriceSourceKind.StoreRetailPrice,
             PriceSourceLabel: PriceSourceKind.StoreRetailPrice.ToString(),
             QuantityFactor: 1m,
-            UpdatedAt: DateTimeOffset.UtcNow);
+            UpdatedAt: DateTimeOffset.UtcNow,
+            ProductImage: productImage);
     }
 
     private static string CreateTempDatabasePath()

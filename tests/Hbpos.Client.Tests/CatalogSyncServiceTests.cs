@@ -99,8 +99,12 @@ public sealed class CatalogSyncServiceTests
 
         Assert.Equal(new LocalCatalogSyncResult("S01", ComparePages: 1, RemotePages: 1, UpsertedCount: 2, DeletedCount: 2), result);
         Assert.Equal(2, repository.UpsertedBatches.Count);
-        Assert.Equal("CMP-001", Assert.Single(repository.UpsertedBatches[0]).ProductCode);
-        Assert.Equal("PAGE-001", Assert.Single(repository.UpsertedBatches[1]).ProductCode);
+        var compareUpsert = Assert.Single(repository.UpsertedBatches[0]);
+        var pageUpsert = Assert.Single(repository.UpsertedBatches[1]);
+        Assert.Equal("CMP-001", compareUpsert.ProductCode);
+        Assert.Equal("https://images.example/CMP-001.jpg", compareUpsert.ProductImage);
+        Assert.Equal("PAGE-001", pageUpsert.ProductCode);
+        Assert.Equal("https://images.example/PAGE-001.jpg", pageUpsert.ProductImage);
         Assert.Equal(["OLD-CODE"], repository.DeleteCalls[0].LookupCodes);
         Assert.Equal(["GONE-CODE"], repository.DeleteCalls[1].LookupCodes);
         Assert.NotNull(apiClient.LastCompareRequest);
@@ -191,7 +195,8 @@ public sealed class CatalogSyncServiceTests
             "store-retail",
             QuantityFactor: 1m,
             UpdatedAt: Timestamp,
-            RowVersion: $"row-{productCode}");
+            RowVersion: $"row-{productCode}",
+            ProductImage: $"https://images.example/{productCode}.jpg");
     }
 
     private static DeletedLookupDto CreateDeletedLookup(string lookupCode)

@@ -155,7 +155,8 @@ public sealed class PriceIndexBuilder : IPriceIndexBuilder
             source,
             label,
             1m,
-            updatedAt);
+            updatedAt,
+            product?.ProductImage);
     }
 
     private static bool HasText(string? value) => !string.IsNullOrWhiteSpace(value);
@@ -192,7 +193,8 @@ public sealed record ProductPriceRecord(
     string? ItemNumber,
     string? Barcode,
     decimal? RetailPrice,
-    DateTimeOffset? UpdatedAt);
+    DateTimeOffset? UpdatedAt,
+    string? ProductImage = null);
 
 public sealed record StoreRetailPriceRecord(
     string? ProductCode,

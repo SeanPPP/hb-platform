@@ -24,6 +24,21 @@ public sealed class PriceIndexBuilderTests
     }
 
     [Fact]
+    public void Build_CarriesProductImageFromProductRecord()
+    {
+        var items = _builder.Build("S01", new PriceIndexInput(
+            null,
+            [new ProductPriceRecord("P01", "Apple", "ITEM01", "BAR01", 10m, null, "https://images.example/P01.jpg")],
+            [],
+            [],
+            [],
+            []));
+
+        var item = Assert.Single(items, x => x.LookupCode == "BAR01");
+        Assert.Equal("https://images.example/P01.jpg", item.ProductImage);
+    }
+
+    [Fact]
     public void Build_FallsBackToProductBasePriceWhenStoreRetailPriceMissing()
     {
         var items = _builder.Build("S01", new PriceIndexInput(
