@@ -26,6 +26,7 @@
     <Compile Include="StoreProductMaintenanceSyncHelperTests.cs" />
     <Compile Include="StoreProductMaintenanceClearanceBarcodeHelperTests.cs" />
     <Compile Include="ReactProductWarehouseControllerTests.cs" />
+    <Compile Include="DeviceRegistrationControllerTests.cs" />
     <Compile Include="DomesticProductCreationControllerTests.cs" />
     <Compile Include="EmployeeProfileServiceTests.cs" />
     <Compile Include="AttendanceReactServiceTests.cs" />

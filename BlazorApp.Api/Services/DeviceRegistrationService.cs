@@ -253,10 +253,14 @@ namespace BlazorApp.Api.Services
                         await UpdateDeviceAsync(existingDevice, "System");
                         return existingDevice;
                     }
-                    else
-                    {
-                        throw new InvalidOperationException($"设备 {hardwareId} 已注册");
-                    }
+
+                    _logger.LogInformation(
+                        "设备已注册，返回已有设备信息: {HardwareId}, Status: {Status}, StoreCode: {StoreCode}",
+                        hardwareId,
+                        existingDevice.设备状态,
+                        existingDevice.分店代码
+                    );
+                    return existingDevice;
                 }
 
                 // 创建新设备

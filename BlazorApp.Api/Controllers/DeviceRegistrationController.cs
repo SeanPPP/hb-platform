@@ -299,7 +299,7 @@ namespace BlazorApp.Api.Controllers
                     new
                     {
                         success = true,
-                        message = "设备注册成功，等待管理员确认",
+                        message = "设备注册信息已同步",
                         data = responseData,
                     }
                 );
