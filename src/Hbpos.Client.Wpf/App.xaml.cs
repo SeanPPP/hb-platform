@@ -33,6 +33,7 @@ public partial class App : Application
                 });
                 services.AddSingleton<ILocalSchemaService, LocalSchemaService>();
                 services.AddSingleton<ILocalAppSettingsRepository, LocalAppSettingsRepository>();
+                services.AddSingleton<ILocalDeviceRepository, LocalDeviceRepository>();
                 services.AddSingleton<ILocalCatalogRepository, LocalCatalogRepository>();
                 services.AddSingleton<ILocalOrderRepository, LocalOrderRepository>();
                 services.AddSingleton<ISyncQueueRepository, SyncQueueRepository>();
@@ -40,6 +41,11 @@ public partial class App : Application
                 {
                     client.BaseAddress = GetCatalogApiBaseAddress();
                 });
+                services.AddHttpClient<IDeviceApiClient, DeviceApiClient>(client =>
+                {
+                    client.BaseAddress = GetCatalogApiBaseAddress();
+                });
+                services.AddSingleton<IDeviceFingerprintService, DeviceFingerprintService>();
                 services.AddSingleton<ILocalCatalogSyncService, LocalCatalogSyncService>();
                 services.AddSingleton<IRemoteLookupRefreshService, RemoteLookupRefreshService>();
                 services.AddSingleton<ICustomerDisplayWindowService, CustomerDisplayWindowService>();

@@ -187,6 +187,11 @@
   <data name="shell.top.cashierInfo" xml:space="preserve"><value>收银员：{0}</value></data>
   <data name="shell.footer.terminalInfo" xml:space="preserve"><value>终端：{0}</value></data>
   <data name="shell.footer.versionReady" xml:space="preserve"><value>离线 Shell 就绪</value></data>
+  <data name="shell.catalogDownload.downloading" xml:space="preserve"><value>&#x6570;&#x636E;&#x4E0B;&#x8F7D;&#x4E2D; {0}%</value></data>
+  <data name="shell.catalogDownload.completed" xml:space="preserve"><value>&#x6570;&#x636E;&#x4E0B;&#x8F7D;&#x5B8C;&#x6210; {0}%</value></data>
+  <data name="shell.catalogDownload.failed" xml:space="preserve"><value>&#x6570;&#x636E;&#x4E0B;&#x8F7D;&#x5931;&#x8D25; {0}%</value></data>
+  <data name="shell.catalogDownload.detail" xml:space="preserve"><value>{0}/{1}  &#x9875;: {2}  &#x5199;&#x5165;: {3}  &#x5220;&#x9664;: {4}  &#x8017;&#x65F6;: {5}</value></data>
+  <data name="shell.catalogDownload.elapsedSeconds" xml:space="preserve"><value>{0:0.0}s</value></data>
   <data name="shell.sync.title" xml:space="preserve"><value>同步中心</value></data>
   <data name="shell.sync.orderStatus" xml:space="preserve"><value>订单 {0}/{1}/{2}</value></data>
   <data name="shell.sync.detailTitle" xml:space="preserve"><value>{0} 个活跃上传任务</value></data>

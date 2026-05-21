@@ -43,11 +43,13 @@ public sealed class CatalogService(
     {
         var stores = await dbContext.MainDb.Queryable<Store>()
             .Where(x => x.IsActive && !x.IsDeleted)
+            .OrderBy(x => x.StoreName)
             .OrderBy(x => x.StoreCode)
-            .Select(x => new StoreDto(x.StoreCode, x.StoreName, x.IsActive))
             .ToListAsync(cancellationToken);
 
-        return stores;
+        return stores
+            .Select(x => new StoreDto(x.StoreCode, x.StoreName, x.IsActive))
+            .ToArray();
     }
 
     public async Task<SellableItemsResponse?> GetSellableItemsAsync(
@@ -290,7 +292,8 @@ public sealed class CatalogSellableIndex
             pageItems,
             [],
             nextCursor,
-            hasMore);
+            hasMore,
+            Items.Count);
     }
 
     public CatalogCompareResponse Compare(CatalogCompareRequest request)

@@ -20,7 +20,7 @@ public sealed class CatalogControllerTests
     [Fact]
     public async Task GetSellableItemsPage_ReturnsWrappedServiceResponse()
     {
-        var expected = new CatalogSyncPageResponse("S01", DateTimeOffset.UnixEpoch, null, [], [], null, false);
+        var expected = new CatalogSyncPageResponse("S01", DateTimeOffset.UnixEpoch, null, [], [], null, false, 0);
         var service = new FakeCatalogService { PageResponse = expected };
         var controller = new CatalogController(service);
 

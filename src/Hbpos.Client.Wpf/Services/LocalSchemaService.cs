@@ -20,6 +20,7 @@ public sealed class LocalSchemaService(LocalSqliteStore store) : ILocalSchemaSer
         }
 
         await EnsureLocalSellableItemIndexColumnsAsync(connection, cancellationToken);
+        await EnsureDeviceCacheColumnsAsync(connection, cancellationToken);
 
         foreach (var sql in IndexStatements)
         {
@@ -29,11 +30,32 @@ public sealed class LocalSchemaService(LocalSqliteStore store) : ILocalSchemaSer
         }
     }
 
+    private static async Task EnsureDeviceCacheColumnsAsync(
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+        var columns = await ReadColumnNamesAsync(connection, "DeviceCache", cancellationToken);
+        if (!columns.Contains("HardwareId"))
+        {
+            await ExecuteAsync(connection, "ALTER TABLE DeviceCache ADD COLUMN HardwareId TEXT NOT NULL DEFAULT '';", cancellationToken);
+        }
+
+        if (!columns.Contains("DeviceStatus"))
+        {
+            await ExecuteAsync(connection, "ALTER TABLE DeviceCache ADD COLUMN DeviceStatus INTEGER NOT NULL DEFAULT 0;", cancellationToken);
+        }
+
+        if (!columns.Contains("Message"))
+        {
+            await ExecuteAsync(connection, "ALTER TABLE DeviceCache ADD COLUMN Message TEXT NULL;", cancellationToken);
+        }
+    }
+
     private static async Task EnsureLocalSellableItemIndexColumnsAsync(
         SqliteConnection connection,
         CancellationToken cancellationToken)
     {
-        var columns = await ReadColumnNamesAsync(connection, cancellationToken);
+        var columns = await ReadColumnNamesAsync(connection, "LocalSellableItemIndex", cancellationToken);
         if (!columns.Contains("LookupCodeNormalized"))
         {
             await ExecuteAsync(connection, "ALTER TABLE LocalSellableItemIndex ADD COLUMN LookupCodeNormalized TEXT;", cancellationToken);
@@ -96,10 +118,11 @@ public sealed class LocalSchemaService(LocalSqliteStore store) : ILocalSchemaSer
 
     private static async Task<HashSet<string>> ReadColumnNamesAsync(
         SqliteConnection connection,
+        string tableName,
         CancellationToken cancellationToken)
     {
         await using var command = connection.CreateCommand();
-        command.CommandText = "PRAGMA table_info(LocalSellableItemIndex);";
+        command.CommandText = $"PRAGMA table_info({tableName});";
 
         var columns = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
@@ -128,7 +151,10 @@ public sealed class LocalSchemaService(LocalSqliteStore store) : ILocalSchemaSer
             DeviceCode TEXT PRIMARY KEY,
             StoreCode TEXT NOT NULL,
             StoreName TEXT NOT NULL,
+            HardwareId TEXT NOT NULL DEFAULT '',
+            DeviceStatus INTEGER NOT NULL DEFAULT 0,
             IsAllowed INTEGER NOT NULL,
+            Message TEXT NULL,
             UpdatedAt TEXT NOT NULL
         );
         """,

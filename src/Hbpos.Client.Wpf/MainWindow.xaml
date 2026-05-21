@@ -35,6 +35,9 @@
         <DataTemplate DataType="{x:Type vm:CustomerDisplayViewModel}">
             <views:CustomerDisplayView />
         </DataTemplate>
+        <DataTemplate DataType="{x:Type vm:DeviceRegistrationViewModel}">
+            <views:DeviceRegistrationView />
+        </DataTemplate>
     </Window.Resources>
 
     <Grid Background="{StaticResource PosScreenBackgroundBrush}">
@@ -300,7 +303,65 @@
                            Foreground="{StaticResource PosMutedForegroundBrush}"
                            VerticalAlignment="Center"
                            Margin="18,0,0,0"
-                           TextTrimming="CharacterEllipsis" />
+                           TextTrimming="CharacterEllipsis">
+                    <TextBlock.Style>
+                        <Style TargetType="TextBlock">
+                            <Setter Property="Visibility" Value="Visible" />
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding IsCatalogDownloadProgressVisible}" Value="True">
+                                    <Setter Property="Visibility" Value="Collapsed" />
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </TextBlock.Style>
+                </TextBlock>
+
+                <Border Grid.Column="1"
+                        Visibility="{Binding IsCatalogDownloadProgressVisible, Converter={StaticResource BoolToVis}}"
+                        Margin="18,0,16,0"
+                        VerticalAlignment="Center"
+                        MaxWidth="560">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="160" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="{Binding CatalogDownloadProgressText}"
+                                   FontSize="10"
+                                   FontWeight="Black"
+                                   VerticalAlignment="Center"
+                                   Margin="0,0,10,0"
+                                   TextTrimming="CharacterEllipsis">
+                            <TextBlock.Style>
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="Foreground" Value="{StaticResource PosSuccessBrush}" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding IsCatalogDownloadProgressFailed}" Value="True">
+                                            <Setter Property="Foreground" Value="{StaticResource PosDangerBrush}" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </TextBlock.Style>
+                        </TextBlock>
+                        <ProgressBar Grid.Column="1"
+                                     Height="6"
+                                     Minimum="0"
+                                     Maximum="100"
+                                     Value="{Binding CatalogDownloadProgressValue}"
+                                     Foreground="{StaticResource PosSuccessBrush}"
+                                     Background="#FFE1F4EA"
+                                     BorderThickness="0"
+                                     VerticalAlignment="Center"
+                                     Margin="0,0,10,0" />
+                        <TextBlock Grid.Column="2"
+                                   Text="{Binding CatalogDownloadProgressDetailText}"
+                                   FontSize="10"
+                                   Foreground="{StaticResource PosMutedForegroundBrush}"
+                                   VerticalAlignment="Center"
+                                   TextTrimming="CharacterEllipsis" />
+                    </Grid>
+                </Border>
 
                 <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
                     <Border Style="{StaticResource PosSyncBadgeStyle}" Margin="0,0,10,0">

@@ -9,14 +9,21 @@ namespace Hbpos.Api.Controllers;
 [Route("api/v1/devices")]
 public sealed class DevicesController(IDeviceService deviceService) : ControllerBase
 {
+    [HttpPost("register")]
+    public async Task<ActionResult<ApiResult<DeviceRegisterResponse>>> Register(
+        [FromBody] DeviceRegisterRequest request,
+        CancellationToken cancellationToken)
+    {
+        var response = await deviceService.RegisterAsync(request, cancellationToken);
+        return Ok(ApiResult<DeviceRegisterResponse>.Ok(response));
+    }
+
     [HttpPost("verify")]
     public async Task<ActionResult<ApiResult<DeviceVerifyResponse>>> Verify(
         [FromBody] DeviceVerifyRequest request,
         CancellationToken cancellationToken)
     {
         var response = await deviceService.VerifyAsync(request, cancellationToken);
-        return response.IsAllowed
-            ? Ok(ApiResult<DeviceVerifyResponse>.Ok(response))
-            : Ok(ApiResult<DeviceVerifyResponse>.Fail("DEVICE_NOT_ALLOWED", response.Message ?? "设备不可用"));
+        return Ok(ApiResult<DeviceVerifyResponse>.Ok(response));
     }
 }

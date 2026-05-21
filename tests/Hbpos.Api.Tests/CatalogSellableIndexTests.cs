@@ -115,10 +115,12 @@ public sealed class CatalogSellableIndexTests
         Assert.Equal(["A-CODE", "B-CODE"], firstPage.Items.Select(x => x.LookupCodeNormalized).ToArray());
         Assert.True(firstPage.HasMore);
         Assert.Equal("B-CODE", firstPage.NextCursor);
+        Assert.Equal(3, firstPage.TotalCount);
         var item = Assert.Single(secondPage.Items);
         Assert.Equal("C-CODE", item.LookupCodeNormalized);
         Assert.False(secondPage.HasMore);
         Assert.Null(secondPage.NextCursor);
+        Assert.Equal(3, secondPage.TotalCount);
     }
 
     private static CatalogSellableIndex CreateIndex(params SellableItemDto[] items)

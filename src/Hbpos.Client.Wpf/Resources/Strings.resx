@@ -117,7 +117,7 @@
   <data name="pos.terminal.actions.entireOrder" xml:space="preserve"><value>Entire Order</value></data>
   <data name="pos.terminal.actions.discountAmount" xml:space="preserve"><value>Discount Amount</value></data>
   <data name="pos.terminal.actions.discountPercent" xml:space="preserve"><value>Discount %</value></data>
-  <data name="pos.terminal.actions.wholeOrderToggle" xml:space="preserve"><value>Whole Order Operation</value></data>
+  <data name="pos.terminal.actions.wholeOrderToggle" xml:space="preserve"><value>Whole Order</value></data>
   <data name="pos.terminal.actions.specialItems" xml:space="preserve"><value>Special Items</value></data>
   <data name="pos.terminal.actions.switchUser" xml:space="preserve"><value>Switch User</value></data>
   <data name="pos.terminal.inputBuffer" xml:space="preserve"><value>Input Buffer</value></data>
@@ -183,6 +183,11 @@
   <data name="shell.top.cashierInfo" xml:space="preserve"><value>Cashier: {0}</value></data>
   <data name="shell.footer.terminalInfo" xml:space="preserve"><value>Terminal: {0}</value></data>
   <data name="shell.footer.versionReady" xml:space="preserve"><value>Offline shell ready</value></data>
+  <data name="shell.catalogDownload.downloading" xml:space="preserve"><value>Data download {0}%</value></data>
+  <data name="shell.catalogDownload.completed" xml:space="preserve"><value>Data download complete {0}%</value></data>
+  <data name="shell.catalogDownload.failed" xml:space="preserve"><value>Data download failed {0}%</value></data>
+  <data name="shell.catalogDownload.detail" xml:space="preserve"><value>{0}/{1}  Pages: {2}  Upserted: {3}  Deleted: {4}  Elapsed: {5}</value></data>
+  <data name="shell.catalogDownload.elapsedSeconds" xml:space="preserve"><value>{0:0.0}s</value></data>
   <data name="shell.sync.title" xml:space="preserve"><value>Sync Center</value></data>
   <data name="shell.sync.orderStatus" xml:space="preserve"><value>Orders {0}/{1}/{2}</value></data>
   <data name="shell.sync.detailTitle" xml:space="preserve"><value>{0} active upload tasks</value></data>

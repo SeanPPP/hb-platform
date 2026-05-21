@@ -23,11 +23,15 @@ public sealed partial class MainViewModel : ObservableObject
     private readonly ILocalCatalogRepository _catalogRepository;
     private readonly ILocalCatalogSyncService _catalogSync;
     private readonly IRemoteLookupRefreshService _remoteLookupRefresh;
+    private readonly ILocalDeviceRepository _deviceRepository;
+    private readonly IDeviceApiClient _deviceApiClient;
+    private readonly IDeviceFingerprintService _fingerprintService;
     private readonly ILocalOrderRepository _orderRepository;
     private readonly ISyncQueueRepository _syncQueueRepository;
     private readonly ILocalizationService _localization;
     private readonly ICustomerDisplayWindowService _customerDisplayWindowService;
     private readonly DispatcherTimer _clockTimer = new() { Interval = TimeSpan.FromSeconds(1) };
+    private readonly DispatcherTimer _catalogDownloadHideTimer = new();
 
     private bool _isApplyingCulture;
     private bool _schemaReady;
@@ -90,6 +94,21 @@ public sealed partial class MainViewModel : ObservableObject
     [ObservableProperty]
     private int _syncingOrderCount;
 
+    [ObservableProperty]
+    private bool _isCatalogDownloadProgressVisible;
+
+    [ObservableProperty]
+    private double _catalogDownloadProgressValue;
+
+    [ObservableProperty]
+    private string _catalogDownloadProgressText = string.Empty;
+
+    [ObservableProperty]
+    private string _catalogDownloadProgressDetailText = string.Empty;
+
+    [ObservableProperty]
+    private bool _isCatalogDownloadProgressFailed;
+
     public MainViewModel(
         LocalSellableItemIndex priceIndex,
         PosCartService cart,
@@ -99,6 +118,9 @@ public sealed partial class MainViewModel : ObservableObject
         ILocalCatalogRepository catalogRepository,
         ILocalCatalogSyncService catalogSync,
         IRemoteLookupRefreshService remoteLookupRefresh,
+        ILocalDeviceRepository deviceRepository,
+        IDeviceApiClient deviceApiClient,
+        IDeviceFingerprintService fingerprintService,
         ILocalOrderRepository orderRepository,
         ISyncQueueRepository syncQueueRepository,
         ILocalizationService localization,
@@ -112,6 +134,9 @@ public sealed partial class MainViewModel : ObservableObject
         _catalogRepository = catalogRepository;
         _catalogSync = catalogSync;
         _remoteLookupRefresh = remoteLookupRefresh;
+        _deviceRepository = deviceRepository;
+        _deviceApiClient = deviceApiClient;
+        _fingerprintService = fingerprintService;
         _orderRepository = orderRepository;
         _syncQueueRepository = syncQueueRepository;
         _localization = localization;
@@ -132,6 +157,11 @@ public sealed partial class MainViewModel : ObservableObject
         _localization.CultureChanged += OnCultureChanged;
         _customerDisplayWindowService.Closed += (_, _) => IsCustomerDisplayOpen = false;
         _clockTimer.Tick += (_, _) => RefreshClock();
+        _catalogDownloadHideTimer.Tick += (_, _) =>
+        {
+            _catalogDownloadHideTimer.Stop();
+            IsCatalogDownloadProgressVisible = false;
+        };
         RefreshLocalizedShell(resetStatus: true);
     }
 
@@ -144,6 +174,8 @@ public sealed partial class MainViewModel : ObservableObject
     public TransactionHistoryViewModel? TransactionHistory { get; private set; }
 
     public CustomerDisplayViewModel CustomerDisplay { get; } = new();
+
+    public DeviceRegistrationViewModel? DeviceRegistration { get; private set; }
 
     public ObservableCollection<SyncQueueListItem> SyncCenterOrders { get; } = [];
 
@@ -170,6 +202,51 @@ public sealed partial class MainViewModel : ObservableObject
 
         await RestoreLanguageAsync(startupOptions);
 
+        if (!startupOptions.PreviewMode)
+        {
+            var cachedDevice = await _deviceRepository.GetLatestAsync();
+            var hardwareId = _fingerprintService.GetHardwareId();
+            if (cachedDevice is null
+                || !cachedDevice.IsAllowed
+                || !string.Equals(cachedDevice.HardwareId, hardwareId, StringComparison.OrdinalIgnoreCase))
+            {
+                DeviceRegistration = new DeviceRegistrationViewModel(
+                    _deviceApiClient,
+                    _deviceRepository,
+                    _fingerprintService);
+                DeviceRegistration.DeviceActivated += async (_, args) => await ActivateDeviceAsync(args, startupOptions);
+                CurrentScreen = DeviceRegistration;
+                await DeviceRegistration.InitializeAsync(cachedDevice);
+                RefreshClock();
+                _clockTimer.Start();
+                return;
+            }
+
+            Session = Session with
+            {
+                StoreCode = cachedDevice.StoreCode,
+                StoreName = cachedDevice.StoreName,
+                DeviceCode = cachedDevice.DeviceCode
+            };
+        }
+
+        await InitializePosExperienceAsync(startupOptions);
+    }
+
+    private async Task ActivateDeviceAsync(DeviceActivatedEventArgs args, AppStartupOptions startupOptions)
+    {
+        Session = Session with
+        {
+            StoreCode = args.StoreCode,
+            StoreName = args.StoreName,
+            DeviceCode = args.DeviceCode
+        };
+
+        await InitializePosExperienceAsync(startupOptions);
+    }
+
+    private async Task InitializePosExperienceAsync(AppStartupOptions startupOptions)
+    {
         IReadOnlyList<SellableItemDto> cachedItems;
         if (startupOptions.PreviewMode)
         {
@@ -379,8 +456,64 @@ public sealed partial class MainViewModel : ObservableObject
 
     private async Task<IReadOnlyList<SellableItemDto>> SyncCatalogAndReloadAsync(CancellationToken cancellationToken)
     {
-        await _catalogSync.FullSyncAsync(Session.StoreCode, cancellationToken);
+        var progress = new Progress<CatalogSyncProgress>(ApplyCatalogDownloadProgress);
+        await _catalogSync.FullSyncAsync(Session.StoreCode, cancellationToken, progress);
         return await ReloadCatalogIndexAsync(cancellationToken);
+    }
+
+    private void ApplyCatalogDownloadProgress(CatalogSyncProgress progress)
+    {
+        _catalogDownloadHideTimer.Stop();
+        IsCatalogDownloadProgressVisible = true;
+        IsCatalogDownloadProgressFailed = progress.Stage == CatalogSyncProgressStage.Failed;
+        CatalogDownloadProgressValue = progress.Percent;
+
+        if (progress.Stage == CatalogSyncProgressStage.Failed)
+        {
+            CatalogDownloadProgressText = string.Format(
+                _localization.CurrentCulture,
+                _localization.T("shell.catalogDownload.failed"),
+                progress.Percent);
+            CatalogDownloadProgressDetailText = progress.ErrorMessage ?? string.Empty;
+            StartCatalogDownloadHideTimer(TimeSpan.FromSeconds(15));
+            return;
+        }
+
+        var titleKey = progress.Stage == CatalogSyncProgressStage.Completed
+            ? "shell.catalogDownload.completed"
+            : "shell.catalogDownload.downloading";
+        CatalogDownloadProgressText = string.Format(
+            _localization.CurrentCulture,
+            _localization.T(titleKey),
+            progress.Percent);
+        CatalogDownloadProgressDetailText = string.Format(
+            _localization.CurrentCulture,
+            _localization.T("shell.catalogDownload.detail"),
+            progress.DownloadedCount,
+            progress.TotalCount,
+            progress.RemotePages,
+            progress.UpsertedCount,
+            progress.DeletedCount,
+            FormatElapsed(progress.ElapsedMilliseconds));
+
+        if (progress.Stage == CatalogSyncProgressStage.Completed)
+        {
+            StartCatalogDownloadHideTimer(TimeSpan.FromSeconds(5));
+        }
+    }
+
+    private void StartCatalogDownloadHideTimer(TimeSpan interval)
+    {
+        _catalogDownloadHideTimer.Interval = interval;
+        _catalogDownloadHideTimer.Start();
+    }
+
+    private string FormatElapsed(long elapsedMilliseconds)
+    {
+        return string.Format(
+            _localization.CurrentCulture,
+            _localization.T("shell.catalogDownload.elapsedSeconds"),
+            elapsedMilliseconds / 1000d);
     }
 
     private async Task<IReadOnlyList<SellableItemDto>> ReloadCatalogIndexAsync(CancellationToken cancellationToken = default)

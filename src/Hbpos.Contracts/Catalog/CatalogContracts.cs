@@ -91,7 +91,8 @@ public sealed record CatalogSyncPageResponse(
     IReadOnlyList<CatalogLookupItemDto> Items,
     IReadOnlyList<DeletedLookupDto> DeletedLookups,
     string? NextCursor,
-    bool HasMore);
+    bool HasMore,
+    int TotalCount);
 
 public sealed record CatalogLookupResponse(
     string StoreCode,

@@ -50,7 +50,7 @@ public sealed class CatalogApiClient(HttpClient httpClient) : ICatalogApiClient
             using var response = await httpClient.GetAsync(requestUri, cancellationToken);
             var result = await ReadApiResultAsync<CatalogSyncPageResponse>(response, cancellationToken);
             stopwatch.Stop();
-            Log($"GET {requestUri} completed status={(int)response.StatusCode} items={result.Items.Count} deletedLookups={result.DeletedLookups.Count} elapsedMs={stopwatch.ElapsedMilliseconds}");
+            Log($"GET {requestUri} completed status={(int)response.StatusCode} items={result.Items.Count} total={result.TotalCount} deletedLookups={result.DeletedLookups.Count} elapsedMs={stopwatch.ElapsedMilliseconds}");
             return result;
         }
         catch (Exception ex)

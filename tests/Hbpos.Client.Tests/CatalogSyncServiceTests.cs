@@ -92,7 +92,8 @@ public sealed class CatalogSyncServiceTests
             [CreateLookupItem("PAGE-001", "page-code")],
             [CreateDeletedLookup("gone-code")],
             NextCursor: null,
-            HasMore: false));
+            HasMore: false,
+            TotalCount: 1));
         var service = new LocalCatalogSyncService(repository, apiClient);
 
         var result = await service.FullSyncAsync("S01");
@@ -111,6 +112,50 @@ public sealed class CatalogSyncServiceTests
         var localVersion = Assert.Single(apiClient.LastCompareRequest.LocalLookups);
         Assert.Equal("LOCAL-CODE", localVersion.LookupCodeNormalized);
         Assert.Equal("local-hash", localVersion.RowVersion);
+    }
+
+    [Fact]
+    public async Task FullSyncAsync_ReportsDownloadProgressWithPercentAndTotals()
+    {
+        var repository = new FakeLocalCatalogRepository();
+        repository.ComparePages.Enqueue([]);
+        var apiClient = new FakeCatalogApiClient();
+        apiClient.PageResponses.Enqueue(new CatalogSyncPageResponse(
+            "S01",
+            Timestamp,
+            Cursor: null,
+            [CreateLookupItem("PAGE-001", "page-code-1")],
+            [],
+            NextCursor: "PAGE-CODE-1",
+            HasMore: true,
+            TotalCount: 2));
+        apiClient.PageResponses.Enqueue(new CatalogSyncPageResponse(
+            "S01",
+            Timestamp,
+            Cursor: "PAGE-CODE-1",
+            [CreateLookupItem("PAGE-002", "page-code-2")],
+            [CreateDeletedLookup("gone-code")],
+            NextCursor: null,
+            HasMore: false,
+            TotalCount: 2));
+        var service = new LocalCatalogSyncService(repository, apiClient);
+        var progressReports = new List<CatalogSyncProgress>();
+        var progress = new CapturingProgress<CatalogSyncProgress>(progressReports);
+
+        await service.FullSyncAsync("S01", progress: progress);
+
+        Assert.Contains(progressReports, report =>
+            report.Stage == CatalogSyncProgressStage.Downloading &&
+            report.DownloadedCount == 1 &&
+            report.TotalCount == 2 &&
+            report.Percent == 50);
+        var completed = Assert.Single(progressReports.Where(report => report.Stage == CatalogSyncProgressStage.Completed));
+        Assert.Equal(100, completed.Percent);
+        Assert.Equal(2, completed.DownloadedCount);
+        Assert.Equal(2, completed.TotalCount);
+        Assert.Equal(2, completed.RemotePages);
+        Assert.Equal(2, completed.UpsertedCount);
+        Assert.Equal(1, completed.DeletedCount);
     }
 
     [Fact]
@@ -312,6 +357,14 @@ public sealed class CatalogSyncServiceTests
             return LookupException is not null
                 ? Task.FromException<CatalogLookupResponse?>(LookupException)
                 : Task.FromResult(LookupResponse);
+        }
+    }
+
+    private sealed class CapturingProgress<T>(ICollection<T> reports) : IProgress<T>
+    {
+        public void Report(T value)
+        {
+            reports.Add(value);
         }
     }
 
