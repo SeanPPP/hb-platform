@@ -71,14 +71,7 @@
                                 <Border Grid.Column="1" Background="{StaticResource PosSurfaceBrush}" BorderBrush="#FFC3C6D6" BorderThickness="1,1,1,1" CornerRadius="0,10,10,0" />
                                 <Button Grid.Column="0"
                                         Command="{Binding ScanCommand}"
-                                        Background="Transparent"
-                                        BorderThickness="0"
-                                        Padding="0">
-                                    <Button.Template>
-                                        <ControlTemplate TargetType="Button">
-                                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
-                                        </ControlTemplate>
-                                    </Button.Template>
+                                        Style="{StaticResource PosSearchSegmentButtonStyle}">
                                     <StackPanel Orientation="Horizontal">
                                         <materialDesign:PackIcon Kind="BarcodeScan" Width="16" Height="16" Foreground="White" Margin="0,0,6,0" />
                                         <TextBlock Text="{Binding SearchButtonText}" Foreground="White" FontWeight="Bold" />
@@ -86,15 +79,10 @@
                                 </Button>
                                 <Button Grid.Column="1"
                                         Command="{Binding ToggleTouchKeyboardCommand}"
-                                        Background="Transparent"
-                                        BorderThickness="0"
-                                        Padding="0"
-                                        ToolTip="触摸键盘">
-                                    <Button.Template>
-                                        <ControlTemplate TargetType="Button">
-                                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
-                                        </ControlTemplate>
-                                    </Button.Template>
+                                        Style="{StaticResource PosSearchSegmentButtonStyle}"
+                                        HorizontalContentAlignment="Stretch"
+                                        VerticalContentAlignment="Stretch"
+                                        ToolTip="{loc:Loc shell.numpad}">
                                     <materialDesign:PackIcon Kind="KeyboardOutline"
                                                              Width="20"
                                                              Height="20"
@@ -140,6 +128,7 @@
                                             Padding="0"
                                             Background="Transparent"
                                             BorderThickness="0"
+                                            Style="{StaticResource PosSearchSegmentButtonStyle}"
                                             Command="{Binding DataContext.SelectMatchCommand, Source={x:Reference Root}}"
                                             CommandParameter="{Binding}">
                                         <Border Background="{StaticResource PosSurfaceBrush}"
@@ -178,111 +167,159 @@
                    Grid.Row="0"
                    DataContext="{Binding DataContext, ElementName=SearchBoxHost}"
                    IsOpen="{Binding IsTouchKeyboardOpen, Mode=TwoWay}"
+                   AllowsTransparency="True"
+                   PopupAnimation="Fade"
                    Placement="Bottom"
                    PlacementTarget="{Binding ElementName=SearchBoxHost}"
                    StaysOpen="False"
                    VerticalOffset="6">
-                <Border Width="320"
-                        Background="{StaticResource PosSurfaceBrush}"
-                        BorderBrush="#FFE2E2E6"
-                        BorderThickness="1"
-                        CornerRadius="12"
-                        Padding="10">
-                    <Border.Effect>
-                        <DropShadowEffect BlurRadius="18" ShadowDepth="3" Opacity="0.18" />
-                    </Border.Effect>
-                    <UniformGrid Columns="3" Rows="5">
-                        <Button Content="1" Command="{Binding NumberInputCommand}" CommandParameter="1" Style="{StaticResource PosStitchNumberButtonStyle}" />
-                        <Button Content="2" Command="{Binding NumberInputCommand}" CommandParameter="2" Style="{StaticResource PosStitchNumberButtonStyle}" />
-                        <Button Content="3" Command="{Binding NumberInputCommand}" CommandParameter="3" Style="{StaticResource PosStitchNumberButtonStyle}" />
-                        <Button Content="4" Command="{Binding NumberInputCommand}" CommandParameter="4" Style="{StaticResource PosStitchNumberButtonStyle}" />
-                        <Button Content="5" Command="{Binding NumberInputCommand}" CommandParameter="5" Style="{StaticResource PosStitchNumberButtonStyle}" />
-                        <Button Content="6" Command="{Binding NumberInputCommand}" CommandParameter="6" Style="{StaticResource PosStitchNumberButtonStyle}" />
-                        <Button Content="7" Command="{Binding NumberInputCommand}" CommandParameter="7" Style="{StaticResource PosStitchNumberButtonStyle}" />
-                        <Button Content="8" Command="{Binding NumberInputCommand}" CommandParameter="8" Style="{StaticResource PosStitchNumberButtonStyle}" />
-                        <Button Content="9" Command="{Binding NumberInputCommand}" CommandParameter="9" Style="{StaticResource PosStitchNumberButtonStyle}" />
-                        <Button Content="{loc:Loc Backspace}" Command="{Binding NumberInputCommand}" CommandParameter="Back" Style="{StaticResource PosStitchClearNumberButtonStyle}" />
-                        <Button Content="0" Command="{Binding NumberInputCommand}" CommandParameter="0" Style="{StaticResource PosStitchNumberButtonStyle}" />
-                        <Button Content="Enter" Command="{Binding NumberInputCommand}" CommandParameter="Enter" Style="{StaticResource PosStitchQuickButtonStyle}" />
-                        <Button Content="{loc:Loc Clear}" Command="{Binding NumberInputCommand}" CommandParameter="Clear" Style="{StaticResource PosStitchClearNumberButtonStyle}" />
-                    </UniformGrid>
-                </Border>
+                <Grid Width="620" Background="Transparent">
+                    <Border Background="{StaticResource PosSurfaceBrush}"
+                            BorderBrush="#FFE2E2E6"
+                            BorderThickness="1"
+                            CornerRadius="12"
+                            ClipToBounds="True"
+                            Padding="10">
+                        <StackPanel>
+                        <UniformGrid Columns="11">
+                            <Button Content="1" Command="{Binding NumberInputCommand}" CommandParameter="1" Style="{StaticResource PosStitchNumberButtonStyle}" />
+                            <Button Content="2" Command="{Binding NumberInputCommand}" CommandParameter="2" Style="{StaticResource PosStitchNumberButtonStyle}" />
+                            <Button Content="3" Command="{Binding NumberInputCommand}" CommandParameter="3" Style="{StaticResource PosStitchNumberButtonStyle}" />
+                            <Button Content="4" Command="{Binding NumberInputCommand}" CommandParameter="4" Style="{StaticResource PosStitchNumberButtonStyle}" />
+                            <Button Content="5" Command="{Binding NumberInputCommand}" CommandParameter="5" Style="{StaticResource PosStitchNumberButtonStyle}" />
+                            <Button Content="6" Command="{Binding NumberInputCommand}" CommandParameter="6" Style="{StaticResource PosStitchNumberButtonStyle}" />
+                            <Button Content="7" Command="{Binding NumberInputCommand}" CommandParameter="7" Style="{StaticResource PosStitchNumberButtonStyle}" />
+                            <Button Content="8" Command="{Binding NumberInputCommand}" CommandParameter="8" Style="{StaticResource PosStitchNumberButtonStyle}" />
+                            <Button Content="9" Command="{Binding NumberInputCommand}" CommandParameter="9" Style="{StaticResource PosStitchNumberButtonStyle}" />
+                            <Button Content="0" Command="{Binding NumberInputCommand}" CommandParameter="0" Style="{StaticResource PosStitchNumberButtonStyle}" />
+                            <Button Content="{loc:Loc Backspace}" Command="{Binding NumberInputCommand}" CommandParameter="Back" Style="{StaticResource PosStitchClearNumberButtonStyle}" />
+                        </UniformGrid>
+                        <UniformGrid Columns="10">
+                            <Button Content="Q" Command="{Binding NumberInputCommand}" CommandParameter="Q" Style="{StaticResource PosStitchNumberButtonStyle}" />
+                            <Button Content="W" Command="{Binding NumberInputCommand}" CommandParameter="W" Style="{StaticResource PosStitchNumberButtonStyle}" />
+                            <Button Content="E" Command="{Binding NumberInputCommand}" CommandParameter="E" Style="{StaticResource PosStitchNumberButtonStyle}" />
+                            <Button Content="R" Command="{Binding NumberInputCommand}" CommandParameter="R" Style="{StaticResource PosStitchNumberButtonStyle}" />
+                            <Button Content="T" Command="{Binding NumberInputCommand}" CommandParameter="T" Style="{StaticResource PosStitchNumberButtonStyle}" />
+                            <Button Content="Y" Command="{Binding NumberInputCommand}" CommandParameter="Y" Style="{StaticResource PosStitchNumberButtonStyle}" />
+                            <Button Content="U" Command="{Binding NumberInputCommand}" CommandParameter="U" Style="{StaticResource PosStitchNumberButtonStyle}" />
+                            <Button Content="I" Command="{Binding NumberInputCommand}" CommandParameter="I" Style="{StaticResource PosStitchNumberButtonStyle}" />
+                            <Button Content="O" Command="{Binding NumberInputCommand}" CommandParameter="O" Style="{StaticResource PosStitchNumberButtonStyle}" />
+                            <Button Content="P" Command="{Binding NumberInputCommand}" CommandParameter="P" Style="{StaticResource PosStitchNumberButtonStyle}" />
+                        </UniformGrid>
+                        <UniformGrid Columns="9" Margin="18,0">
+                            <Button Content="A" Command="{Binding NumberInputCommand}" CommandParameter="A" Style="{StaticResource PosStitchNumberButtonStyle}" />
+                            <Button Content="S" Command="{Binding NumberInputCommand}" CommandParameter="S" Style="{StaticResource PosStitchNumberButtonStyle}" />
+                            <Button Content="D" Command="{Binding NumberInputCommand}" CommandParameter="D" Style="{StaticResource PosStitchNumberButtonStyle}" />
+                            <Button Content="F" Command="{Binding NumberInputCommand}" CommandParameter="F" Style="{StaticResource PosStitchNumberButtonStyle}" />
+                            <Button Content="G" Command="{Binding NumberInputCommand}" CommandParameter="G" Style="{StaticResource PosStitchNumberButtonStyle}" />
+                            <Button Content="H" Command="{Binding NumberInputCommand}" CommandParameter="H" Style="{StaticResource PosStitchNumberButtonStyle}" />
+                            <Button Content="J" Command="{Binding NumberInputCommand}" CommandParameter="J" Style="{StaticResource PosStitchNumberButtonStyle}" />
+                            <Button Content="K" Command="{Binding NumberInputCommand}" CommandParameter="K" Style="{StaticResource PosStitchNumberButtonStyle}" />
+                            <Button Content="L" Command="{Binding NumberInputCommand}" CommandParameter="L" Style="{StaticResource PosStitchNumberButtonStyle}" />
+                        </UniformGrid>
+                        <UniformGrid Columns="7" Margin="48,0">
+                            <Button Content="Z" Command="{Binding NumberInputCommand}" CommandParameter="Z" Style="{StaticResource PosStitchNumberButtonStyle}" />
+                            <Button Content="X" Command="{Binding NumberInputCommand}" CommandParameter="X" Style="{StaticResource PosStitchNumberButtonStyle}" />
+                            <Button Content="C" Command="{Binding NumberInputCommand}" CommandParameter="C" Style="{StaticResource PosStitchNumberButtonStyle}" />
+                            <Button Content="V" Command="{Binding NumberInputCommand}" CommandParameter="V" Style="{StaticResource PosStitchNumberButtonStyle}" />
+                            <Button Content="B" Command="{Binding NumberInputCommand}" CommandParameter="B" Style="{StaticResource PosStitchNumberButtonStyle}" />
+                            <Button Content="N" Command="{Binding NumberInputCommand}" CommandParameter="N" Style="{StaticResource PosStitchNumberButtonStyle}" />
+                            <Button Content="M" Command="{Binding NumberInputCommand}" CommandParameter="M" Style="{StaticResource PosStitchNumberButtonStyle}" />
+                        </UniformGrid>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="1.2*" />
+                                <ColumnDefinition Width="2.4*" />
+                                <ColumnDefinition Width="1.2*" />
+                                <ColumnDefinition Width="1.2*" />
+                            </Grid.ColumnDefinitions>
+                            <Button Grid.Column="0" Content="{loc:Loc Clear}" Command="{Binding NumberInputCommand}" CommandParameter="Clear" Style="{StaticResource PosStitchClearNumberButtonStyle}" />
+                            <Button Grid.Column="1" Content="Space" Command="{Binding NumberInputCommand}" CommandParameter="Space" Style="{StaticResource PosStitchNumberButtonStyle}" />
+                            <Button Grid.Column="2" Content="." Command="{Binding NumberInputCommand}" CommandParameter="." Style="{StaticResource PosStitchNumberButtonStyle}" />
+                            <Button Grid.Column="3" Content="{Binding SearchButtonText}" Command="{Binding NumberInputCommand}" CommandParameter="Enter" Style="{StaticResource PosStitchQuickButtonStyle}" />
+                        </Grid>
+                        </StackPanel>
+                    </Border>
+                </Grid>
             </Popup>
 
-            <DataGrid Grid.Row="1"
-                      ItemsSource="{Binding CartLines}"
-                      IsReadOnly="True"
-                      Margin="14,0,14,6"
-                      AlternatingRowBackground="{StaticResource PosSurfaceAltBrush}"
-                      RowBackground="{StaticResource PosSurfaceBrush}"
-                      RowHeight="78"
-                      GridLinesVisibility="None"
-                      BorderThickness="0"
-                      Style="{StaticResource PosCartDataGridStyle}">
-                <DataGrid.Columns>
-                    <DataGridTemplateColumn Header="{loc:Loc Item}" Width="2.5*">
-                        <DataGridTemplateColumn.CellTemplate>
-                            <DataTemplate>
-                                <Grid Margin="0,6,8,6">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="46" />
-                                        <ColumnDefinition Width="*" />
-                                    </Grid.ColumnDefinitions>
-                                    <Border Width="42" Height="42" Background="#FFE8F0FE" CornerRadius="8" Margin="0,0,10,0">
-                                        <materialDesign:PackIcon Kind="Shopping" Width="22" Height="22" Foreground="{StaticResource PosPrimaryBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" />
-                                    </Border>
-                                    <StackPanel Grid.Column="1" VerticalAlignment="Center">
-                                        <TextBlock Text="{Binding DisplayName}" FontSize="13" FontWeight="Black" TextTrimming="CharacterEllipsis" />
-                                        <TextBlock Text="{Binding ProductCode}" FontSize="10" Foreground="{StaticResource PosMutedForegroundBrush}" Margin="0,3,0,0" TextTrimming="CharacterEllipsis" />
-                                        <TextBlock Text="{Binding LookupCode}" FontSize="10" Foreground="{StaticResource PosMutedForegroundBrush}" TextTrimming="CharacterEllipsis" />
+            <Grid Grid.Row="1" Margin="14,0,14,6">
+                <DataGrid ItemsSource="{Binding CartLines}"
+                          IsReadOnly="True"
+                          AlternatingRowBackground="{StaticResource PosSurfaceAltBrush}"
+                          RowBackground="{StaticResource PosSurfaceBrush}"
+                          RowHeight="78"
+                          GridLinesVisibility="None"
+                          BorderThickness="0"
+                          Style="{StaticResource PosCartDataGridStyle}">
+                    <DataGrid.Columns>
+                        <DataGridTemplateColumn Header="{loc:Loc Item}" Width="2.5*">
+                            <DataGridTemplateColumn.CellTemplate>
+                                <DataTemplate>
+                                    <Grid Margin="0,6,8,6">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="46" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <Border Width="42" Height="42" Background="#FFE8F0FE" CornerRadius="8" Margin="0,0,10,0">
+                                            <materialDesign:PackIcon Kind="Shopping" Width="22" Height="22" Foreground="{StaticResource PosPrimaryBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                        </Border>
+                                        <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                            <TextBlock Text="{Binding DisplayName}" FontSize="13" FontWeight="Black" TextTrimming="CharacterEllipsis" />
+                                            <TextBlock Text="{Binding ProductCode}" FontSize="10" Foreground="{StaticResource PosMutedForegroundBrush}" Margin="0,3,0,0" TextTrimming="CharacterEllipsis" />
+                                            <TextBlock Text="{Binding LookupCode}" FontSize="10" Foreground="{StaticResource PosMutedForegroundBrush}" TextTrimming="CharacterEllipsis" />
+                                        </StackPanel>
+                                    </Grid>
+                                </DataTemplate>
+                            </DataGridTemplateColumn.CellTemplate>
+                        </DataGridTemplateColumn>
+                        <DataGridTemplateColumn Header="{loc:Loc UnitPrice}" Width="0.95*">
+                            <DataGridTemplateColumn.CellTemplate>
+                                <DataTemplate>
+                                    <StackPanel VerticalAlignment="Center" Margin="0,6">
+                                        <TextBlock Text="{Binding UnitPrice, StringFormat={}{0:C2}}" FontSize="13" FontWeight="Black" TextAlignment="Right" />
+                                        <TextBlock Text="{Binding DiscountRateText}"
+                                                   Visibility="{Binding HasDiscount, Converter={StaticResource BoolToVis}}"
+                                                   FontSize="10"
+                                                   FontWeight="Black"
+                                                   Foreground="{StaticResource PosAccentBrush}"
+                                                   TextAlignment="Right" />
                                     </StackPanel>
-                                </Grid>
-                            </DataTemplate>
-                        </DataGridTemplateColumn.CellTemplate>
-                    </DataGridTemplateColumn>
-                    <DataGridTemplateColumn Header="{loc:Loc UnitPrice}" Width="0.95*">
-                        <DataGridTemplateColumn.CellTemplate>
-                            <DataTemplate>
-                                <StackPanel VerticalAlignment="Center" Margin="0,6">
-                                    <TextBlock Text="{Binding UnitPrice, StringFormat={}{0:C2}}" FontSize="13" FontWeight="Black" TextAlignment="Right" />
-                                    <TextBlock Text="{Binding DiscountRateText}"
-                                               Visibility="{Binding HasDiscount, Converter={StaticResource BoolToVis}}"
-                                               FontSize="10"
+                                </DataTemplate>
+                            </DataGridTemplateColumn.CellTemplate>
+                        </DataGridTemplateColumn>
+                        <DataGridTemplateColumn Header="{loc:Loc Quantity}" Width="0.7*">
+                            <DataGridTemplateColumn.CellTemplate>
+                                <DataTemplate>
+                                    <TextBlock Text="{Binding Quantity, StringFormat={}{0:0.##}}"
+                                               FontSize="13"
                                                FontWeight="Black"
-                                               Foreground="{StaticResource PosAccentBrush}"
-                                               TextAlignment="Right" />
-                                </StackPanel>
-                            </DataTemplate>
-                        </DataGridTemplateColumn.CellTemplate>
-                    </DataGridTemplateColumn>
-                    <DataGridTemplateColumn Header="{loc:Loc Quantity}" Width="0.7*">
-                        <DataGridTemplateColumn.CellTemplate>
-                            <DataTemplate>
-                                <TextBlock Text="{Binding Quantity, StringFormat={}{0:0.##}}"
-                                           FontSize="13"
-                                           FontWeight="Black"
-                                           TextAlignment="Center"
-                                           VerticalAlignment="Center" />
-                            </DataTemplate>
-                        </DataGridTemplateColumn.CellTemplate>
-                    </DataGridTemplateColumn>
-                    <DataGridTemplateColumn Header="{loc:Loc Total}" Width="1*">
-                        <DataGridTemplateColumn.CellTemplate>
-                            <DataTemplate>
-                                <StackPanel VerticalAlignment="Center" Margin="0,6">
-                                    <TextBlock Text="{Binding GrossAmount, StringFormat={}{0:C2}}" FontSize="13" FontWeight="Black" TextAlignment="Right" />
-                                    <TextBlock Text="{Binding ActualAmount, StringFormat={}{0:C2}}"
-                                               Visibility="{Binding HasDiscount, Converter={StaticResource BoolToVis}}"
-                                               FontSize="10"
-                                               FontWeight="Black"
-                                               Foreground="{StaticResource PosAccentBrush}"
-                                               TextAlignment="Right" />
-                                </StackPanel>
-                            </DataTemplate>
-                        </DataGridTemplateColumn.CellTemplate>
-                    </DataGridTemplateColumn>
-                </DataGrid.Columns>
-            </DataGrid>
+                                               TextAlignment="Center"
+                                               VerticalAlignment="Center" />
+                                </DataTemplate>
+                            </DataGridTemplateColumn.CellTemplate>
+                        </DataGridTemplateColumn>
+                        <DataGridTemplateColumn Header="{loc:Loc Total}" Width="1*">
+                            <DataGridTemplateColumn.CellTemplate>
+                                <DataTemplate>
+                                    <StackPanel VerticalAlignment="Center" Margin="0,6">
+                                        <TextBlock Text="{Binding GrossAmount, StringFormat={}{0:C2}}" FontSize="13" FontWeight="Black" TextAlignment="Right" />
+                                        <TextBlock Text="{Binding ActualAmount, StringFormat={}{0:C2}}"
+                                                   Visibility="{Binding HasDiscount, Converter={StaticResource BoolToVis}}"
+                                                   FontSize="10"
+                                                   FontWeight="Black"
+                                                   Foreground="{StaticResource PosAccentBrush}"
+                                                   TextAlignment="Right" />
+                                    </StackPanel>
+                                </DataTemplate>
+                            </DataGridTemplateColumn.CellTemplate>
+                        </DataGridTemplateColumn>
+                    </DataGrid.Columns>
+                </DataGrid>
+                <Border Background="#33000000"
+                        IsHitTestVisible="True"
+                        Visibility="{Binding IsTouchKeyboardOpen, Converter={StaticResource BoolToVis}}" />
+            </Grid>
 
             <Border Grid.Row="2" Padding="18,12,18,14" Background="{StaticResource PosSurfaceBrush}" BorderBrush="#FFE2E2E6" BorderThickness="0,1,0,0">
                 <Grid>
@@ -324,7 +361,7 @@
                     <Button Grid.Row="1"
                             Command="{Binding OpenPaymentCommand}"
                             Height="52"
-                            Style="{StaticResource PosPrimaryButtonStyle}">
+                            Style="{StaticResource PosBlueGradientButtonStyle}">
                         <StackPanel Orientation="Horizontal">
                             <materialDesign:PackIcon Kind="Cash" Width="20" Height="20" Foreground="White" Margin="0,0,10,0" />
                             <TextBlock Text="{Binding PayNowText}" Foreground="White" FontSize="17" FontWeight="Black" />
@@ -338,81 +375,88 @@
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
                 <RowDefinition Height="*" />
             </Grid.RowDefinitions>
 
-            <UniformGrid Grid.Row="0" Columns="2" Margin="10,10,10,8">
-                <Button IsEnabled="False" Style="{StaticResource PosStitchFunctionButtonStyle}">
-                    <StackPanel HorizontalAlignment="Center">
-                        <materialDesign:PackIcon Kind="PlusCircle" Width="18" Height="18" Foreground="{StaticResource PosPrimaryBrush}" HorizontalAlignment="Center" />
-                        <TextBlock Text="{loc:Loc pos.terminal.actions.qtyPlus}" Style="{StaticResource PosStitchTileLabelStyle}" />
-                    </StackPanel>
-                </Button>
-                <Button IsEnabled="False" Style="{StaticResource PosStitchFunctionButtonStyle}">
-                    <StackPanel HorizontalAlignment="Center">
-                        <materialDesign:PackIcon Kind="MinusCircle" Width="18" Height="18" Foreground="{StaticResource PosPrimaryBrush}" HorizontalAlignment="Center" />
-                        <TextBlock Text="{loc:Loc pos.terminal.actions.qtyMinus}" Style="{StaticResource PosStitchTileLabelStyle}" />
-                    </StackPanel>
-                </Button>
-                <Button Command="{Binding ScanCommand}" Style="{StaticResource PosStitchFunctionButtonStyle}">
-                    <StackPanel HorizontalAlignment="Center">
-                        <materialDesign:PackIcon Kind="BarcodeScan" Width="18" Height="18" Foreground="{StaticResource PosPrimaryBrush}" HorizontalAlignment="Center" />
-                        <TextBlock Text="{loc:Loc pos.terminal.actions.noBarcode}" Style="{StaticResource PosStitchTileLabelStyle}" />
-                    </StackPanel>
-                </Button>
-                <Button IsEnabled="False" Style="{StaticResource PosStitchFunctionButtonStyle}">
-                    <StackPanel HorizontalAlignment="Center">
-                        <materialDesign:PackIcon Kind="Pencil" Width="18" Height="18" Foreground="{StaticResource PosPrimaryBrush}" HorizontalAlignment="Center" />
-                        <TextBlock Text="{loc:Loc pos.terminal.actions.modifyQty}" Style="{StaticResource PosStitchTileLabelStyle}" />
-                    </StackPanel>
-                </Button>
-                <Button Command="{Binding AddSelectedCommand}" Style="{StaticResource PosStitchFunctionButtonStyle}">
-                    <StackPanel HorizontalAlignment="Center">
-                        <materialDesign:PackIcon Kind="Cash" Width="18" Height="18" Foreground="{StaticResource PosPrimaryBrush}" HorizontalAlignment="Center" />
-                        <TextBlock Text="{Binding AddSelectedText}" Style="{StaticResource PosStitchTileLabelStyle}" />
-                    </StackPanel>
-                </Button>
-                <Button IsEnabled="False" Style="{StaticResource PosStitchDiscountButtonStyle}">
-                    <StackPanel HorizontalAlignment="Center">
-                        <materialDesign:PackIcon Kind="Tag" Width="18" Height="18" Foreground="#FF623400" HorizontalAlignment="Center" />
-                        <TextBlock Text="{loc:Loc Discount}" Style="{StaticResource PosStitchTileLabelStyle}" Foreground="#FF623400" />
-                    </StackPanel>
-                </Button>
-                <Button Grid.ColumnSpan="2" Command="{Binding OpenPaymentCommand}" Style="{StaticResource PosStitchCheckoutButtonStyle}">
-                    <StackPanel HorizontalAlignment="Center">
-                        <materialDesign:PackIcon Kind="CartCheck" Width="18" Height="18" Foreground="White" HorizontalAlignment="Center" />
-                        <TextBlock Text="{loc:Loc pos.terminal.actions.entireOrder}" Style="{StaticResource PosStitchTileLabelStyle}" Foreground="White" />
-                    </StackPanel>
-                </Button>
-            </UniformGrid>
-
-            <Border Grid.Row="1" Margin="12,0,12,8" Padding="12" Background="#FFE2E2E6" BorderBrush="#80C3C6D6" BorderThickness="1" CornerRadius="14">
+            <Border Grid.Row="0" Margin="12,8,12,6" Padding="10,8" Background="#FFE2E2E6" BorderBrush="#80C3C6D6" BorderThickness="1" CornerRadius="14">
                 <StackPanel>
                     <TextBlock Text="{loc:Loc pos.terminal.inputBuffer}" FontSize="9" FontWeight="Black" Foreground="{StaticResource PosMutedForegroundBrush}" />
-                    <TextBlock Text="{Binding ScanText, TargetNullValue=0}"
+                    <TextBlock Text="{Binding KeypadBuffer, TargetNullValue=0}"
                                FontFamily="Consolas"
-                               FontSize="32"
+                               FontSize="30"
                                FontWeight="Black"
                                TextAlignment="Right"
                                TextTrimming="CharacterEllipsis" />
                 </StackPanel>
             </Border>
 
-            <UniformGrid Grid.Row="2" Columns="3" Rows="5" Margin="12,0,12,12">
-                <Button Content="1" Command="{Binding NumberInputCommand}" CommandParameter="1" Style="{StaticResource PosStitchNumberButtonStyle}" />
-                <Button Content="2" Command="{Binding NumberInputCommand}" CommandParameter="2" Style="{StaticResource PosStitchNumberButtonStyle}" />
-                <Button Content="3" Command="{Binding NumberInputCommand}" CommandParameter="3" Style="{StaticResource PosStitchNumberButtonStyle}" />
-                <Button Content="4" Command="{Binding NumberInputCommand}" CommandParameter="4" Style="{StaticResource PosStitchNumberButtonStyle}" />
-                <Button Content="5" Command="{Binding NumberInputCommand}" CommandParameter="5" Style="{StaticResource PosStitchNumberButtonStyle}" />
-                <Button Content="6" Command="{Binding NumberInputCommand}" CommandParameter="6" Style="{StaticResource PosStitchNumberButtonStyle}" />
-                <Button Content="7" Command="{Binding NumberInputCommand}" CommandParameter="7" Style="{StaticResource PosStitchNumberButtonStyle}" />
-                <Button Content="8" Command="{Binding NumberInputCommand}" CommandParameter="8" Style="{StaticResource PosStitchNumberButtonStyle}" />
-                <Button Content="9" Command="{Binding NumberInputCommand}" CommandParameter="9" Style="{StaticResource PosStitchNumberButtonStyle}" />
-                <Button Content="{loc:Loc Clear}" Command="{Binding NumberInputCommand}" CommandParameter="Clear" Style="{StaticResource PosStitchClearNumberButtonStyle}" />
-                <Button Content="0" Command="{Binding NumberInputCommand}" CommandParameter="0" Style="{StaticResource PosStitchNumberButtonStyle}" />
-                <Button Content="." Command="{Binding NumberInputCommand}" CommandParameter="." Style="{StaticResource PosStitchNumberButtonStyle}" />
-                <Button Content="{loc:Loc pos.terminal.quickHalf}" IsEnabled="False" Style="{StaticResource PosStitchQuickButtonStyle}" />
-                <Button Content="{loc:Loc pos.terminal.quickNinetyNine}" Grid.ColumnSpan="2" IsEnabled="False" Style="{StaticResource PosStitchQuickButtonStyle}" />
+            <UniformGrid Grid.Row="1" Columns="3" Rows="5" Margin="12,0,12,6">
+                <Button Content="1" Command="{Binding KeypadInputCommand}" CommandParameter="1" Style="{StaticResource PosMainNumberButtonStyle}" />
+                <Button Content="2" Command="{Binding KeypadInputCommand}" CommandParameter="2" Style="{StaticResource PosMainNumberButtonStyle}" />
+                <Button Content="3" Command="{Binding KeypadInputCommand}" CommandParameter="3" Style="{StaticResource PosMainNumberButtonStyle}" />
+                <Button Content="4" Command="{Binding KeypadInputCommand}" CommandParameter="4" Style="{StaticResource PosMainNumberButtonStyle}" />
+                <Button Content="5" Command="{Binding KeypadInputCommand}" CommandParameter="5" Style="{StaticResource PosMainNumberButtonStyle}" />
+                <Button Content="6" Command="{Binding KeypadInputCommand}" CommandParameter="6" Style="{StaticResource PosMainNumberButtonStyle}" />
+                <Button Content="7" Command="{Binding KeypadInputCommand}" CommandParameter="7" Style="{StaticResource PosMainNumberButtonStyle}" />
+                <Button Content="8" Command="{Binding KeypadInputCommand}" CommandParameter="8" Style="{StaticResource PosMainNumberButtonStyle}" />
+                <Button Content="9" Command="{Binding KeypadInputCommand}" CommandParameter="9" Style="{StaticResource PosMainNumberButtonStyle}" />
+                <Button Content="{loc:Loc Clear}" Command="{Binding KeypadInputCommand}" CommandParameter="Clear" Style="{StaticResource PosMainClearNumberButtonStyle}" />
+                <Button Content="0" Command="{Binding KeypadInputCommand}" CommandParameter="0" Style="{StaticResource PosMainNumberButtonStyle}" />
+                <Button Content="." Command="{Binding KeypadInputCommand}" CommandParameter="." Style="{StaticResource PosMainNumberButtonStyle}" />
+                <Button Content="{loc:Loc pos.terminal.quickHalf}" Command="{Binding KeypadInputCommand}" CommandParameter="QuickHalf" Style="{StaticResource PosMainQuickButtonStyle}" />
+                <Button Content="{loc:Loc pos.terminal.quickNinetyNine}" Command="{Binding KeypadInputCommand}" CommandParameter="QuickNinetyNine" Style="{StaticResource PosMainQuickButtonStyle}" />
+                <ToggleButton Content="{loc:Loc pos.terminal.actions.wholeOrderToggle}" Style="{StaticResource PosMainSwitchButtonStyle}" />
+            </UniformGrid>
+
+            <Button Grid.Row="2"
+                    Command="{Binding ScanCommand}"
+                    Height="48"
+                    Margin="12,0,12,6"
+                    Style="{StaticResource PosNoBarcodeButtonStyle}">
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                    <materialDesign:PackIcon Kind="BarcodeScan" Width="20" Height="20" Foreground="White" VerticalAlignment="Center" Margin="0,0,8,0" />
+                    <TextBlock Text="{loc:Loc pos.terminal.actions.noBarcode}" Foreground="White" FontSize="14" FontWeight="Black" VerticalAlignment="Center" />
+                </StackPanel>
+            </Button>
+
+            <UniformGrid Grid.Row="3" Columns="2" Margin="10,0,10,10" VerticalAlignment="Top">
+                <Button Style="{StaticResource PosStitchFunctionButtonStyle}">
+                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Center">
+                        <materialDesign:PackIcon Kind="PlusCircle" Width="20" Height="20" Foreground="{StaticResource PosPrimaryBrush}" VerticalAlignment="Center" />
+                        <TextBlock Text="{loc:Loc pos.terminal.actions.qtyPlus}" Style="{StaticResource PosStitchTileLabelStyle}" />
+                    </StackPanel>
+                </Button>
+                <Button Style="{StaticResource PosStitchFunctionButtonStyle}">
+                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Center">
+                        <materialDesign:PackIcon Kind="MinusCircle" Width="20" Height="20" Foreground="{StaticResource PosPrimaryBrush}" VerticalAlignment="Center" />
+                        <TextBlock Text="{loc:Loc pos.terminal.actions.qtyMinus}" Style="{StaticResource PosStitchTileLabelStyle}" />
+                    </StackPanel>
+                </Button>
+                <Button Style="{StaticResource PosStitchFunctionButtonStyle}">
+                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Center">
+                        <materialDesign:PackIcon Kind="Pencil" Width="20" Height="20" Foreground="{StaticResource PosPrimaryBrush}" VerticalAlignment="Center" />
+                        <TextBlock Text="{loc:Loc pos.terminal.actions.modifyQty}" Style="{StaticResource PosStitchTileLabelStyle}" />
+                    </StackPanel>
+                </Button>
+                <Button Style="{StaticResource PosStitchFunctionButtonStyle}">
+                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Center">
+                        <materialDesign:PackIcon Kind="CurrencyUsd" Width="20" Height="20" Foreground="{StaticResource PosPrimaryBrush}" VerticalAlignment="Center" />
+                        <TextBlock Text="{loc:Loc Price}" Style="{StaticResource PosStitchTileLabelStyle}" />
+                    </StackPanel>
+                </Button>
+                <Button Style="{StaticResource PosStitchDiscountButtonStyle}">
+                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Center">
+                        <materialDesign:PackIcon Kind="Tag" Width="20" Height="20" Foreground="#FF623400" VerticalAlignment="Center" />
+                        <TextBlock Text="{loc:Loc pos.terminal.actions.discountAmount}" Style="{StaticResource PosStitchTileLabelStyle}" Foreground="#FF623400" />
+                    </StackPanel>
+                </Button>
+                <Button Style="{StaticResource PosStitchDiscountButtonStyle}">
+                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Center">
+                        <materialDesign:PackIcon Kind="Percent" Width="20" Height="20" Foreground="#FF623400" VerticalAlignment="Center" />
+                        <TextBlock Text="{loc:Loc pos.terminal.actions.discountPercent}" Style="{StaticResource PosStitchTileLabelStyle}" Foreground="#FF623400" />
+                    </StackPanel>
+                </Button>
             </UniformGrid>
         </Grid>
 

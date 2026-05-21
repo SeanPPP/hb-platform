@@ -28,6 +28,9 @@ public sealed partial class PosTerminalViewModel : ObservableObject
     private string _scanText = string.Empty;
 
     [ObservableProperty]
+    private string _keypadBuffer = string.Empty;
+
+    [ObservableProperty]
     private SellableItemDto? _selectedItem;
 
     [ObservableProperty]
@@ -61,6 +64,7 @@ public sealed partial class PosTerminalViewModel : ObservableObject
 
         ScanCommand = new RelayCommand(SearchAndAdd);
         NumberInputCommand = new RelayCommand<string>(AppendScanText);
+        KeypadInputCommand = new RelayCommand<string>(AppendKeypadBuffer);
         ToggleTouchKeyboardCommand = new RelayCommand(ToggleTouchKeyboard);
         AddSelectedCommand = new RelayCommand(AddSelected, () => SelectedItem is not null);
         SelectMatchCommand = new RelayCommand<SellableItemDto>(SelectMatch);
@@ -76,6 +80,8 @@ public sealed partial class PosTerminalViewModel : ObservableObject
     public IRelayCommand ScanCommand { get; }
 
     public IRelayCommand<string> NumberInputCommand { get; }
+
+    public IRelayCommand<string> KeypadInputCommand { get; }
 
     public IRelayCommand ToggleTouchKeyboardCommand { get; }
 
@@ -158,12 +164,19 @@ public sealed partial class PosTerminalViewModel : ObservableObject
         if (value == "Enter")
         {
             SearchAndAdd();
+            IsTouchKeyboardOpen = false;
             return;
         }
 
         if (value == "Back")
         {
             ScanText = ScanText.Length > 0 ? ScanText[..^1] : string.Empty;
+            return;
+        }
+
+        if (value == "Space")
+        {
+            ScanText += " ";
             return;
         }
 
@@ -175,6 +188,67 @@ public sealed partial class PosTerminalViewModel : ObservableObject
         }
 
         ScanText += value;
+    }
+
+    private void AppendKeypadBuffer(string? value)
+    {
+        if (value == "QuickHalf")
+        {
+            ReplaceKeypadDecimal("50");
+            return;
+        }
+
+        if (value == "QuickNinetyNine")
+        {
+            ReplaceKeypadDecimal("99");
+            return;
+        }
+
+        if (value == "Back")
+        {
+            KeypadBuffer = KeypadBuffer.Length > 0 ? KeypadBuffer[..^1] : string.Empty;
+            return;
+        }
+
+        if (value == "Clear")
+        {
+            KeypadBuffer = string.Empty;
+            return;
+        }
+
+        if (string.IsNullOrEmpty(value) || value == "Enter" || value == "Space")
+        {
+            return;
+        }
+
+        if (value == ".")
+        {
+            if (!KeypadBuffer.Contains('.'))
+            {
+                KeypadBuffer = KeypadBuffer.Length == 0 ? "0." : KeypadBuffer + ".";
+            }
+
+            return;
+        }
+
+        if (value.Length != 1 || !char.IsDigit(value[0]) || HasTwoDecimalDigits(KeypadBuffer))
+        {
+            return;
+        }
+
+        KeypadBuffer += value;
+    }
+
+    private void ReplaceKeypadDecimal(string decimalDigits)
+    {
+        var wholePart = KeypadBuffer.Split('.')[0];
+        KeypadBuffer = $"{(string.IsNullOrEmpty(wholePart) ? "0" : wholePart)}.{decimalDigits}";
+    }
+
+    private static bool HasTwoDecimalDigits(string value)
+    {
+        var decimalPointIndex = value.IndexOf('.', StringComparison.Ordinal);
+        return decimalPointIndex >= 0 && value.Length - decimalPointIndex - 1 >= 2;
     }
 
     private void ToggleTouchKeyboard()

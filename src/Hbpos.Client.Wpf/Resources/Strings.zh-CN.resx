@@ -117,8 +117,11 @@
   <data name="pos.terminal.actions.specialItems" xml:space="preserve"><value>特殊商品</value></data>
   <data name="pos.terminal.actions.switchUser" xml:space="preserve"><value>切换用户</value></data>
   <data name="pos.terminal.inputBuffer" xml:space="preserve"><value>输入缓冲</value></data>
+  <data name="pos.terminal.actions.discountAmount" xml:space="preserve"><value>&#x6298;&#x6263;&#x91D1;&#x989D;</value></data>
+  <data name="pos.terminal.actions.discountPercent" xml:space="preserve"><value>&#x6298;&#x6263;%</value></data>
+  <data name="pos.terminal.actions.wholeOrderToggle" xml:space="preserve"><value>&#x6574;&#x5355;&#x64CD;&#x4F5C;</value></data>
   <data name="pos.terminal.quickHalf" xml:space="preserve"><value>0.5</value></data>
-  <data name="pos.terminal.quickNinetyNine" xml:space="preserve"><value>0.99 快捷</value></data>
+  <data name="pos.terminal.quickNinetyNine" xml:space="preserve"><value>0.99</value></data>
   <data name="pos.status.ready" xml:space="preserve"><value>离线收银已就绪。</value></data>
   <data name="pos.status.online" xml:space="preserve"><value>在线</value></data>
   <data name="pos.status.offline" xml:space="preserve"><value>离线</value></data>

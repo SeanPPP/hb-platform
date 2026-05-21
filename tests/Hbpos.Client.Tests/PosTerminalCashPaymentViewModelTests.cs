@@ -30,6 +30,118 @@ public sealed class PosTerminalCashPaymentViewModelTests
     }
 
     [Fact]
+    public void Pos_terminal_keeps_touch_keyboard_and_main_keypad_buffers_separate()
+    {
+        var cart = new PosCartService();
+        var index = new LocalSellableItemIndex();
+        var viewModel = new PosTerminalViewModel(
+            index,
+            cart,
+            Session,
+            onOpenPayment: null);
+
+        viewModel.NumberInputCommand.Execute("A");
+        viewModel.NumberInputCommand.Execute("1");
+        viewModel.KeypadInputCommand.Execute("9");
+        viewModel.KeypadInputCommand.Execute(".");
+        viewModel.KeypadInputCommand.Execute("5");
+
+        Assert.Equal("A1", viewModel.ScanText);
+        Assert.Equal("9.5", viewModel.KeypadBuffer);
+
+        viewModel.KeypadInputCommand.Execute("Clear");
+
+        Assert.Equal("A1", viewModel.ScanText);
+        Assert.Empty(viewModel.KeypadBuffer);
+    }
+
+    [Fact]
+    public void Pos_terminal_touch_keyboard_enter_closes_keyboard_after_search()
+    {
+        var cart = new PosCartService();
+        var index = new LocalSellableItemIndex();
+        index.ReplaceAll([CreateItem("SKU-109", "Match Tea", "930109", PriceSourceKind.StoreRetailPrice, 4.8m)]);
+        var viewModel = new PosTerminalViewModel(
+            index,
+            cart,
+            Session,
+            onOpenPayment: null)
+        {
+            IsTouchKeyboardOpen = true,
+            ScanText = "930109",
+        };
+
+        viewModel.NumberInputCommand.Execute("Enter");
+
+        Assert.False(viewModel.IsTouchKeyboardOpen);
+        Assert.Empty(viewModel.ScanText);
+        Assert.Single(viewModel.CartLines);
+    }
+
+    [Fact]
+    public void Pos_terminal_touch_keyboard_typing_keeps_keyboard_open()
+    {
+        var cart = new PosCartService();
+        var index = new LocalSellableItemIndex();
+        var viewModel = new PosTerminalViewModel(
+            index,
+            cart,
+            Session,
+            onOpenPayment: null)
+        {
+            IsTouchKeyboardOpen = true,
+        };
+
+        viewModel.NumberInputCommand.Execute("A");
+        viewModel.NumberInputCommand.Execute("1");
+
+        Assert.True(viewModel.IsTouchKeyboardOpen);
+        Assert.Equal("A1", viewModel.ScanText);
+    }
+
+    [Fact]
+    public void Pos_terminal_keypad_caps_decimal_input_at_two_places()
+    {
+        var cart = new PosCartService();
+        var index = new LocalSellableItemIndex();
+        var viewModel = new PosTerminalViewModel(
+            index,
+            cart,
+            Session,
+            onOpenPayment: null);
+
+        viewModel.KeypadInputCommand.Execute("1");
+        viewModel.KeypadInputCommand.Execute(".");
+        viewModel.KeypadInputCommand.Execute("2");
+        viewModel.KeypadInputCommand.Execute("3");
+        viewModel.KeypadInputCommand.Execute("4");
+
+        Assert.Equal("1.23", viewModel.KeypadBuffer);
+    }
+
+    [Fact]
+    public void Pos_terminal_keypad_quick_decimal_buttons_replace_decimal_places()
+    {
+        var cart = new PosCartService();
+        var index = new LocalSellableItemIndex();
+        var viewModel = new PosTerminalViewModel(
+            index,
+            cart,
+            Session,
+            onOpenPayment: null);
+
+        viewModel.KeypadInputCommand.Execute("1");
+        viewModel.KeypadInputCommand.Execute("2");
+        viewModel.KeypadInputCommand.Execute("QuickHalf");
+
+        Assert.Equal("12.50", viewModel.KeypadBuffer);
+
+        viewModel.KeypadInputCommand.Execute("QuickNinetyNine");
+
+        Assert.Equal("12.99", viewModel.KeypadBuffer);
+    }
+
+    [Fact]
     public async Task Pos_terminal_keeps_local_add_when_remote_lookup_fails()
     {
         var cart = new PosCartService();
