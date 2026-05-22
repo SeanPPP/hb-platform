@@ -41,6 +41,21 @@ namespace BlazorApp.Api.Authorization
                 return;
             }
 
+            if (Permissions.IsAttendanceSelfServiceGranted(requirement.Permission))
+            {
+                context.Succeed(requirement);
+                return;
+            }
+
+            if (
+                context.User.IsInRole("StoreManager")
+                && Permissions.IsStoreManagerGranted(requirement.Permission)
+            )
+            {
+                context.Succeed(requirement);
+                return;
+            }
+
             if (
                 context.User.IsInRole("WarehouseManager")
                 && Permissions.IsWarehouseManagerGranted(requirement.Permission)

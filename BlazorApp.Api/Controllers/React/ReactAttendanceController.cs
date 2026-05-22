@@ -52,8 +52,10 @@ namespace BlazorApp.Api.Controllers.React
 
         [HttpGet("my/today")]
         [Authorize(Policy = Permissions.Attendance.Schedule.ViewSelf)]
-        public async Task<IActionResult> GetMyToday([FromQuery] string? storeCode = null) =>
-            Ok(await _service.GetMyTodayAsync(storeCode));
+        public async Task<IActionResult> GetMyToday(
+            [FromQuery] string? storeCode = null,
+            [FromQuery] DateTime? workDate = null
+        ) => Ok(await _service.GetMyTodayAsync(workDate, storeCode));
 
         [HttpGet("my/week")]
         [Authorize(Policy = Permissions.Attendance.Schedule.ViewSelf)]

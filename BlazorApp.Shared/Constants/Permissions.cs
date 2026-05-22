@@ -233,6 +233,36 @@ namespace BlazorApp.Shared.Constants
             Dashboard.View,
         };
 
+        private static readonly HashSet<string> AttendanceSelfServicePermissions = new(
+            StringComparer.OrdinalIgnoreCase
+        )
+        {
+            Attendance.Schedule.ViewSelf,
+            Attendance.Availability.SubmitSelf,
+            Attendance.Punch.Self,
+            Attendance.Leave.ApplySelf,
+        };
+
+        private static readonly HashSet<string> StoreManagerGrantedPermissions = new(
+            StringComparer.OrdinalIgnoreCase
+        )
+        {
+            Attendance.Schedule.ViewSelf,
+            Attendance.Schedule.ViewStore,
+            Attendance.Schedule.EditManagedStore,
+            Attendance.Availability.SubmitSelf,
+            Attendance.Availability.ViewManagedStore,
+            Attendance.Punch.Self,
+            Attendance.Punch.ViewManagedStore,
+            Attendance.Approval.ViewManagedStore,
+            Attendance.Approval.ReviewManagedStore,
+            Attendance.Holiday.ViewStore,
+            Attendance.Holiday.EditManagedStore,
+            Attendance.Leave.ApplySelf,
+            Attendance.Leave.ViewManagedStore,
+            Attendance.Leave.ReviewManagedStore,
+        };
+
         /// <summary>
         /// WarehouseManager role-level permission grants.
         /// Keep this list in sync with hbweb_rv/src/types/permissions.ts.
@@ -241,6 +271,18 @@ namespace BlazorApp.Shared.Constants
         {
             return !string.IsNullOrWhiteSpace(permission)
                 && WarehouseManagerGrantedPermissions.Contains(permission);
+        }
+
+        public static bool IsAttendanceSelfServiceGranted(string? permission)
+        {
+            return !string.IsNullOrWhiteSpace(permission)
+                && AttendanceSelfServicePermissions.Contains(permission);
+        }
+
+        public static bool IsStoreManagerGranted(string? permission)
+        {
+            return !string.IsNullOrWhiteSpace(permission)
+                && StoreManagerGrantedPermissions.Contains(permission);
         }
 
         public static IEnumerable<(string Code, string Name, string Category)> GetAllPermissions() =>

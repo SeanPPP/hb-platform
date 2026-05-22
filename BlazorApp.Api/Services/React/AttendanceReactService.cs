@@ -210,7 +210,10 @@ namespace BlazorApp.Api.Services.React
             return ApiResponse<bool>.OK(true, "排班已取消");
         }
 
-        public async Task<ApiResponse<AttendanceTodayDto>> GetMyTodayAsync(string? storeCode = null)
+        public async Task<ApiResponse<AttendanceTodayDto>> GetMyTodayAsync(
+            DateTime? workDate = null,
+            string? storeCode = null
+        )
         {
             var userGuid = ResolveCurrentUserGuid();
             if (string.IsNullOrWhiteSpace(userGuid))
@@ -224,7 +227,7 @@ namespace BlazorApp.Api.Services.React
                 return ApiResponse<AttendanceTodayDto>.Error(access.Message, access.ErrorCode);
             }
 
-            var today = DateTime.Today;
+            var today = (workDate ?? DateTime.Today).Date;
             var tomorrow = today.AddDays(1);
             var schedules = await _db.Queryable<AttendanceSchedule>()
                 .Where(item =>
@@ -272,7 +275,6 @@ namespace BlazorApp.Api.Services.React
                 .Where(item =>
                     !item.IsDeleted
                     && item.Status == "Active"
-                    && item.UserGuid == userGuid
                     && item.WorkDate >= start
                     && item.WorkDate <= end
                 )
@@ -281,7 +283,9 @@ namespace BlazorApp.Api.Services.React
                 .OrderBy(item => item.StartTime)
                 .ToListAsync();
 
-            return ApiResponse<List<AttendanceScheduleDto>>.OK(rows.Select(item => ToDto(item, userGuid)).ToList());
+            var result = rows.Select(item => ToDto(item, userGuid)).ToList();
+            await PopulateScheduleDisplayFieldsAsync(result);
+            return ApiResponse<List<AttendanceScheduleDto>>.OK(result);
         }
 
         public async Task<ApiResponse<List<AttendanceAvailabilityDto>>> GetMyAvailabilityAsync(
@@ -600,7 +604,9 @@ namespace BlazorApp.Api.Services.React
                 .WhereIF(!string.IsNullOrWhiteSpace(query.ReviewStatus), item => item.ReviewStatus == query.ReviewStatus!.Trim())
                 .OrderByDescending(item => item.CreatedAt)
                 .ToListAsync();
-            return ApiResponse<List<AttendanceApprovalDto>>.OK(rows.Select(ToDto).ToList());
+            var result = rows.Select(ToDto).ToList();
+            await PopulateApprovalDisplayFieldsAsync(result);
+            return ApiResponse<List<AttendanceApprovalDto>>.OK(result);
         }
 
         public Task<ApiResponse<List<AttendanceApprovalDto>>> GetPendingApprovalsAsync(
@@ -1011,6 +1017,118 @@ namespace BlazorApp.Api.Services.React
                 .ToListAsync();
         }
 
+        private async Task PopulateScheduleDisplayFieldsAsync(List<AttendanceScheduleDto> schedules)
+        {
+            if (schedules.Count == 0)
+            {
+                return;
+            }
+
+            var userGuids = schedules.Select(item => item.UserGuid).Distinct().ToList();
+            var storeCodes = schedules.Select(item => item.StoreCode).Distinct().ToList();
+            var users = await _db.Queryable<User>()
+                .Where(item => userGuids.Contains(item.UserGUID))
+                .ToListAsync();
+            var stores = await _db.Queryable<Store>()
+                .Where(item => storeCodes.Contains(item.StoreCode))
+                .ToListAsync();
+            var userMap = users.ToDictionary(item => item.UserGUID, StringComparer.OrdinalIgnoreCase);
+            var storeMap = stores.ToDictionary(item => item.StoreCode, StringComparer.OrdinalIgnoreCase);
+
+            foreach (var schedule in schedules)
+            {
+                if (userMap.TryGetValue(schedule.UserGuid, out var user))
+                {
+                    schedule.EmployeeName = string.IsNullOrWhiteSpace(user.FullName)
+                        ? user.Username
+                        : user.FullName;
+                }
+
+                if (storeMap.TryGetValue(schedule.StoreCode, out var store))
+                {
+                    schedule.StoreName = store.StoreName;
+                }
+            }
+        }
+
+        private async Task PopulateApprovalDisplayFieldsAsync(List<AttendanceApprovalDto> approvals)
+        {
+            if (approvals.Count == 0)
+            {
+                return;
+            }
+
+            var userGuids = approvals.Select(item => item.ApplicantUserGuid).Distinct().ToList();
+            var storeCodes = approvals.Select(item => item.StoreCode).Distinct().ToList();
+            var punchGuids = approvals
+                .Where(item => item.SourceType.Equals("Punch", StringComparison.OrdinalIgnoreCase))
+                .Select(item => item.SourceGuid)
+                .Distinct()
+                .ToList();
+            var leaveGuids = approvals
+                .Where(item => item.SourceType.Equals("Leave", StringComparison.OrdinalIgnoreCase))
+                .Select(item => item.SourceGuid)
+                .Distinct()
+                .ToList();
+
+            var users = await _db.Queryable<User>()
+                .Where(item => userGuids.Contains(item.UserGUID))
+                .ToListAsync();
+            var stores = await _db.Queryable<Store>()
+                .Where(item => storeCodes.Contains(item.StoreCode))
+                .ToListAsync();
+            var punches = punchGuids.Count == 0
+                ? new List<AttendancePunch>()
+                : await _db.Queryable<AttendancePunch>()
+                    .Where(item => punchGuids.Contains(item.PunchGuid))
+                    .ToListAsync();
+            var leaves = leaveGuids.Count == 0
+                ? new List<AttendanceLeaveRequest>()
+                : await _db.Queryable<AttendanceLeaveRequest>()
+                    .Where(item => leaveGuids.Contains(item.LeaveGuid))
+                    .ToListAsync();
+
+            var userMap = users.ToDictionary(item => item.UserGUID, StringComparer.OrdinalIgnoreCase);
+            var storeMap = stores.ToDictionary(item => item.StoreCode, StringComparer.OrdinalIgnoreCase);
+            var punchMap = punches.ToDictionary(item => item.PunchGuid, StringComparer.OrdinalIgnoreCase);
+            var leaveMap = leaves.ToDictionary(item => item.LeaveGuid, StringComparer.OrdinalIgnoreCase);
+
+            foreach (var approval in approvals)
+            {
+                if (userMap.TryGetValue(approval.ApplicantUserGuid, out var user))
+                {
+                    approval.EmployeeName = string.IsNullOrWhiteSpace(user.FullName)
+                        ? user.Username
+                        : user.FullName;
+                }
+
+                if (storeMap.TryGetValue(approval.StoreCode, out var store))
+                {
+                    approval.StoreName = store.StoreName;
+                }
+
+                if (approval.SourceType.Equals("Punch", StringComparison.OrdinalIgnoreCase)
+                    && punchMap.TryGetValue(approval.SourceGuid, out var punch))
+                {
+                    approval.WorkDate = punch.WorkDate;
+                    approval.Title = punch.PunchType;
+                    approval.Detail = $"{punch.PunchType} · {punch.Status}";
+                }
+                else if (approval.SourceType.Equals("Leave", StringComparison.OrdinalIgnoreCase)
+                    && leaveMap.TryGetValue(approval.SourceGuid, out var leave))
+                {
+                    approval.WorkDate = leave.StartDate;
+                    approval.Title = leave.LeaveType;
+                    approval.Detail = $"{leave.StartDate:yyyy-MM-dd} - {leave.EndDate:yyyy-MM-dd}"
+                        + (string.IsNullOrWhiteSpace(leave.Reason) ? string.Empty : $" · {leave.Reason}");
+                }
+                else
+                {
+                    approval.Title = approval.SourceType;
+                }
+            }
+        }
+
         private string ResolveCurrentUserGuid()
         {
             var user = _httpContextAccessor.HttpContext?.User;
@@ -1152,6 +1270,7 @@ namespace BlazorApp.Api.Services.React
             StoreCode = item.StoreCode,
             ApplicantUserGuid = item.ApplicantUserGuid,
             ReviewerUserGuid = item.ReviewerUserGuid,
+            Title = item.SourceType,
             ReviewStatus = item.ReviewStatus,
             ReviewRemark = item.ReviewRemark,
             ReviewedAt = item.ReviewedAt,

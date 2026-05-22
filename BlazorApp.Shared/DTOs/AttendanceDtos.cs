@@ -39,7 +39,9 @@ namespace BlazorApp.Shared.DTOs
     {
         public string ScheduleGuid { get; set; } = string.Empty;
         public string StoreCode { get; set; } = string.Empty;
+        public string? StoreName { get; set; }
         public string UserGuid { get; set; } = string.Empty;
+        public string? EmployeeName { get; set; }
         public bool IsMine { get; set; }
         public DateTime WorkDate { get; set; }
         public TimeSpan StartTime { get; set; }
@@ -153,8 +155,13 @@ namespace BlazorApp.Shared.DTOs
         public string SourceType { get; set; } = string.Empty;
         public string SourceGuid { get; set; } = string.Empty;
         public string StoreCode { get; set; } = string.Empty;
+        public string? StoreName { get; set; }
         public string ApplicantUserGuid { get; set; } = string.Empty;
+        public string? EmployeeName { get; set; }
         public string? ReviewerUserGuid { get; set; }
+        public DateTime? WorkDate { get; set; }
+        public string Title { get; set; } = string.Empty;
+        public string? Detail { get; set; }
         public string ReviewStatus { get; set; } = string.Empty;
         public string? ReviewRemark { get; set; }
         public DateTime? ReviewedAt { get; set; }

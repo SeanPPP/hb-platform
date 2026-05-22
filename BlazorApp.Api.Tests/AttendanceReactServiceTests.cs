@@ -219,7 +219,7 @@ namespace BlazorApp.Api.Tests
         }
 
         [Fact]
-        public async Task GetMyWeekAsync_ReturnsOnlyCurrentUsersActiveSchedules()
+        public async Task GetMyWeekAsync_ReturnsRelatedStoreActiveSchedules()
         {
             await SeedStoreScopeAsync();
             await SeedScheduleAsync("my-active", "BRI", "staff-user", new DateTime(2026, 5, 18), "Active");
@@ -230,9 +230,59 @@ namespace BlazorApp.Api.Tests
             var result = await service.GetMyWeekAsync(new DateTime(2026, 5, 18), "BRI");
 
             Assert.True(result.Success);
-            var schedule = Assert.Single(result.Data!);
-            Assert.Equal("my-active", schedule.ScheduleGuid);
-            Assert.Equal("Active", schedule.Status);
+            Assert.Collection(
+                result.Data!,
+                schedule =>
+                {
+                    Assert.Equal("my-active", schedule.ScheduleGuid);
+                    Assert.True(schedule.IsMine);
+                    Assert.Equal("Active", schedule.Status);
+                },
+                schedule =>
+                {
+                    Assert.Equal("manager-active", schedule.ScheduleGuid);
+                    Assert.False(schedule.IsMine);
+                    Assert.Equal("manager", schedule.EmployeeName);
+                }
+            );
+        }
+
+        [Fact]
+        public async Task GetMyTodayAsync_WhenWorkDateProvided_ReturnsSelectedDateData()
+        {
+            await SeedStoreScopeAsync();
+            await SeedScheduleAsync("selected-day", "BRI", "staff-user", new DateTime(2026, 5, 19), "Active");
+            await SeedScheduleAsync("other-day", "BRI", "staff-user", new DateTime(2026, 5, 20), "Active");
+            await _db.Insertable(new AttendancePunch
+            {
+                PunchGuid = "selected-punch",
+                StoreCode = "BRI",
+                UserGuid = "staff-user",
+                WorkDate = new DateTime(2026, 5, 19),
+                PunchType = "ClockIn",
+                PunchTimeUtc = DateTime.Parse("2026-05-18T23:00:00Z").ToUniversalTime(),
+                PunchTimeLocal = new DateTime(2026, 5, 19, 9, 0, 0),
+                Status = "Normal",
+                CreatedAt = DateTime.UtcNow,
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new AttendanceStoreHoliday
+            {
+                HolidayGuid = "selected-holiday",
+                StoreCode = "BRI",
+                HolidayDate = new DateTime(2026, 5, 19),
+                HolidayName = "Selected holiday",
+                BusinessStatus = "Open",
+                CreatedAt = DateTime.UtcNow,
+            }).ExecuteCommandAsync();
+            var service = CreateService("staff-user", "staff", "StoreStaff");
+
+            var result = await service.GetMyTodayAsync(new DateTime(2026, 5, 19), "BRI");
+
+            Assert.True(result.Success);
+            Assert.Equal("2026-05-19", result.Data!.WorkDate.ToString("yyyy-MM-dd"));
+            Assert.Equal("selected-day", Assert.Single(result.Data.Schedules).ScheduleGuid);
+            Assert.Equal("selected-punch", Assert.Single(result.Data.Punches).PunchGuid);
+            Assert.Equal("selected-holiday", Assert.Single(result.Data.Holidays).HolidayGuid);
         }
 
         [Fact]
