@@ -133,6 +133,17 @@
                             Style="{StaticResource PosShellNavButtonStyle}"
                             ToolTip="{loc:Loc Language}"
                             Margin="0,0,8,0" />
+                    <Button Content="扫码枪"
+                            Command="{Binding ResetScannerBindingCommand}"
+                            Width="58"
+                            Height="30"
+                            Padding="0"
+                            FontWeight="Black"
+                            Background="#FFF5F7FA"
+                            Foreground="{StaticResource PosMutedForegroundBrush}"
+                            Style="{StaticResource PosShellNavButtonStyle}"
+                            ToolTip="重新学习扫码枪"
+                            Margin="0,0,8,0" />
                     <Button Click="MinimizeButton_Click"
                             Style="{StaticResource TitleBarButtonStyle}"
                             ToolTip="{loc:Loc shell.window.minimize}">

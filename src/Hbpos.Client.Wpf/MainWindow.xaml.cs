@@ -1,5 +1,7 @@
 using System.Windows;
 using System.Windows.Input;
+using System.Windows.Interop;
+using Hbpos.Client.Wpf.Services;
 using Hbpos.Client.Wpf.ViewModels;
 
 namespace Hbpos.Client.Wpf;
@@ -8,20 +10,42 @@ public partial class MainWindow : Window
 {
     private readonly MainViewModel _viewModel;
     private readonly AppStartupOptions _startupOptions;
+    private readonly IRawScannerService _rawScannerService;
+    private HwndSource? _hwndSource;
 
-    public MainWindow(MainViewModel viewModel, AppStartupOptions startupOptions)
+    public MainWindow(
+        MainViewModel viewModel,
+        AppStartupOptions startupOptions,
+        IRawScannerService rawScannerService)
     {
         _viewModel = viewModel;
         _startupOptions = startupOptions;
+        _rawScannerService = rawScannerService;
         DataContext = _viewModel;
         InitializeComponent();
+        SourceInitialized += MainWindowSourceInitialized;
         Loaded += MainWindowLoaded;
+        Closed += MainWindowClosed;
     }
 
     private async void MainWindowLoaded(object sender, RoutedEventArgs e)
     {
         Loaded -= MainWindowLoaded;
+        await _rawScannerService.InitializeAsync();
+        _rawScannerService.Start(new WindowInteropHelper(this).Handle);
         await _viewModel.InitializeAsync(_startupOptions);
+    }
+
+    private void MainWindowSourceInitialized(object? sender, EventArgs e)
+    {
+        _hwndSource = (HwndSource?)PresentationSource.FromVisual(this);
+        _hwndSource?.AddHook(_rawScannerService.ProcessWindowMessage);
+    }
+
+    private void MainWindowClosed(object? sender, EventArgs e)
+    {
+        _hwndSource?.RemoveHook(_rawScannerService.ProcessWindowMessage);
+        _rawScannerService.Stop();
     }
 
     private void TitleBar_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)

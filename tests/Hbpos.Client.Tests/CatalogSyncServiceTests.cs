@@ -83,7 +83,7 @@ public sealed class CatalogSyncServiceTests
         apiClient.CompareResponses.Enqueue(new CatalogCompareResponse(
             "S01",
             Timestamp,
-            [CreateLookupItem("CMP-001", "cmp-code")],
+            [CreateLookupItem("CMP-001", "cmp-code", "CMP-REF-001")],
             [CreateDeletedLookup("old-code")],
             NextCursor: null,
             HasMore: false));
@@ -91,7 +91,7 @@ public sealed class CatalogSyncServiceTests
             "S01",
             Timestamp,
             Cursor: null,
-            [CreateLookupItem("PAGE-001", "page-code")],
+            [CreateLookupItem("PAGE-001", "page-code", "PAGE-REF-001")],
             [CreateDeletedLookup("gone-code")],
             NextCursor: null,
             HasMore: false,
@@ -105,8 +105,10 @@ public sealed class CatalogSyncServiceTests
         var compareUpsert = Assert.Single(repository.UpsertedBatches[0]);
         var pageUpsert = Assert.Single(repository.UpsertedBatches[1]);
         Assert.Equal("CMP-001", compareUpsert.ProductCode);
+        Assert.Equal("CMP-REF-001", compareUpsert.ReferenceCode);
         Assert.Equal("https://images.example/CMP-001.jpg", compareUpsert.ProductImage);
         Assert.Equal("PAGE-001", pageUpsert.ProductCode);
+        Assert.Equal("PAGE-REF-001", pageUpsert.ReferenceCode);
         Assert.Equal("https://images.example/PAGE-001.jpg", pageUpsert.ProductImage);
         Assert.Equal(["OLD-CODE"], repository.DeleteCalls[0].LookupCodes);
         Assert.Equal(["GONE-CODE"], repository.DeleteCalls[1].LookupCodes);
@@ -158,6 +160,29 @@ public sealed class CatalogSyncServiceTests
         Assert.Equal(2, completed.RemotePages);
         Assert.Equal(2, completed.UpsertedCount);
         Assert.Equal(1, completed.DeletedCount);
+    }
+
+    [Fact]
+    public async Task FullSyncAsync_RequestsRemotePagesWithMaxBatchSize()
+    {
+        var repository = new FakeLocalCatalogRepository();
+        repository.ComparePages.Enqueue([]);
+        var apiClient = new FakeCatalogApiClient();
+        apiClient.PageResponses.Enqueue(new CatalogSyncPageResponse(
+            "S01",
+            Timestamp,
+            Cursor: null,
+            [],
+            [],
+            NextCursor: null,
+            HasMore: false,
+            TotalCount: 0));
+        var service = new LocalCatalogSyncService(repository, apiClient);
+
+        await service.FullSyncAsync("S01");
+
+        var pageRequest = Assert.Single(apiClient.PageRequests);
+        Assert.Equal(("S01", null, 1000), pageRequest);
     }
 
     [Fact]
@@ -298,13 +323,13 @@ public sealed class CatalogSyncServiceTests
         Assert.False(isOnline);
     }
 
-    private static CatalogLookupItemDto CreateLookupItem(string productCode, string lookupCode)
+    private static CatalogLookupItemDto CreateLookupItem(string productCode, string lookupCode, string? referenceCode = null)
     {
         var normalizedLookupCode = lookupCode.Trim().ToUpperInvariant();
         return new CatalogLookupItemDto(
             "S01",
             productCode,
-            ReferenceCode: null,
+            ReferenceCode: referenceCode,
             $"{productCode} item",
             lookupCode,
             normalizedLookupCode,
@@ -397,6 +422,8 @@ public sealed class CatalogSyncServiceTests
 
         public Queue<CatalogCompareResponse> CompareResponses { get; } = new();
 
+        public List<(string StoreCode, string? Cursor, int PageSize)> PageRequests { get; } = [];
+
         public Exception? CompareException { get; init; }
 
         public Exception? LookupException { get; init; }
@@ -411,6 +438,7 @@ public sealed class CatalogSyncServiceTests
             int pageSize,
             CancellationToken cancellationToken = default)
         {
+            PageRequests.Add((storeCode, cursor, pageSize));
             return Task.FromResult(PageResponses.Dequeue());
         }
 

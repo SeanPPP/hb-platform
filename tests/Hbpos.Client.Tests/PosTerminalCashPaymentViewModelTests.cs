@@ -100,6 +100,29 @@ public sealed class PosTerminalCashPaymentViewModelTests
     }
 
     [Fact]
+    public void Pos_terminal_adds_item_from_raw_scanner_event()
+    {
+        var cart = new PosCartService();
+        var index = new LocalSellableItemIndex();
+        var scanner = new FakeRawScannerService();
+        index.ReplaceAll([CreateItem("SKU-110", "Scanner Apple", "930110", PriceSourceKind.StoreRetailPrice, 1.8m)]);
+        var viewModel = new PosTerminalViewModel(
+            index,
+            cart,
+            Session,
+            onOpenPayment: null,
+            rawScannerService: scanner);
+        scanner.SetActivePage(PosTerminalViewModel.PageId);
+
+        scanner.Emit("930110");
+
+        Assert.Empty(viewModel.ScanText);
+        Assert.Equal(1.8m, viewModel.ActualAmount);
+        var line = Assert.Single(viewModel.CartLines);
+        Assert.Equal("Scanner Apple", line.DisplayName);
+    }
+
+    [Fact]
     public void Pos_terminal_keypad_caps_decimal_input_at_two_places()
     {
         var cart = new PosCartService();
@@ -383,6 +406,66 @@ public sealed class PosTerminalCashPaymentViewModelTests
         public Task<IReadOnlyList<SyncQueueListItem>> GetActiveItemsAsync(int take = 20, CancellationToken cancellationToken = default)
         {
             return Task.FromResult<IReadOnlyList<SyncQueueListItem>>([]);
+        }
+    }
+
+    private sealed class FakeRawScannerService : IRawScannerService
+    {
+        private readonly Dictionary<string, Action<RawBarcodeScannedEventArgs>> _handlers = [];
+        private string? _activePageId;
+
+        public bool IsActive { get; private set; }
+
+        public Task InitializeAsync(CancellationToken cancellationToken = default)
+        {
+            return Task.CompletedTask;
+        }
+
+        public void Subscribe(string pageId, Action<RawBarcodeScannedEventArgs> handler)
+        {
+            _handlers[pageId] = handler;
+        }
+
+        public void Unsubscribe(string pageId)
+        {
+            _handlers.Remove(pageId);
+        }
+
+        public void SetActivePage(string? pageId)
+        {
+            _activePageId = pageId;
+        }
+
+        public void Start(IntPtr hwnd)
+        {
+            IsActive = true;
+        }
+
+        public void Stop()
+        {
+            IsActive = false;
+        }
+
+        public Task ResetBindingAsync(CancellationToken cancellationToken = default)
+        {
+            return Task.CompletedTask;
+        }
+
+        public IntPtr ProcessWindowMessage(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
+        {
+            return IntPtr.Zero;
+        }
+
+        public void Emit(string barcode)
+        {
+            if (_activePageId is not null && _handlers.TryGetValue(_activePageId, out var handler))
+            {
+                handler(new RawBarcodeScannedEventArgs(barcode, "scanner-device", DateTimeOffset.Now));
+            }
+        }
+
+        public void Dispose()
+        {
         }
     }
 }

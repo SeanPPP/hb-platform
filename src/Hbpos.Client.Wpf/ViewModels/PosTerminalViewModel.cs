@@ -8,12 +8,16 @@ using Hbpos.Contracts.Catalog;
 
 namespace Hbpos.Client.Wpf.ViewModels;
 
-public sealed partial class PosTerminalViewModel : ObservableObject
+public sealed partial class PosTerminalViewModel : ObservableObject, IDisposable
 {
+    public const string PageId = "PosTerminal";
+    private static readonly TimeSpan DuplicateScanWindow = TimeSpan.FromMilliseconds(350);
+
     private readonly LocalSellableItemIndex _priceIndex;
     private readonly PosCartService _cart;
     private readonly Action? _onOpenPayment;
     private readonly ILocalizationService? _localization;
+    private readonly IRawScannerService? _rawScannerService;
     private readonly Func<string, string, CancellationToken, Task<RemoteLookupRefreshResult>>? _remoteLookupRefreshAsync;
     private readonly Func<CancellationToken, Task<IReadOnlyList<SellableItemDto>>>? _reloadCatalogAsync;
     private readonly Func<CancellationToken, Task<IReadOnlyList<SellableItemDto>>>? _syncCatalogAsync;
@@ -21,6 +25,8 @@ public sealed partial class PosTerminalViewModel : ObservableObject
     private string _statusKey = "pos.status.ready";
     private object[] _statusArgs = [];
     private string? _statusText;
+    private string? _lastSubmittedScanText;
+    private DateTimeOffset _lastSubmittedScanAt = DateTimeOffset.MinValue;
 
     [ObservableProperty]
     private PosSessionState _session;
@@ -49,7 +55,8 @@ public sealed partial class PosTerminalViewModel : ObservableObject
         Func<string, string, CancellationToken, Task<RemoteLookupRefreshResult>>? remoteLookupRefreshAsync = null,
         Func<CancellationToken, Task<IReadOnlyList<SellableItemDto>>>? reloadCatalogAsync = null,
         Func<CancellationToken, Task<IReadOnlyList<SellableItemDto>>>? syncCatalogAsync = null,
-        Func<CancellationToken, Task<bool>>? refreshOnlineAsync = null)
+        Func<CancellationToken, Task<bool>>? refreshOnlineAsync = null,
+        IRawScannerService? rawScannerService = null)
     {
         _priceIndex = priceIndex;
         _cart = cart;
@@ -60,10 +67,13 @@ public sealed partial class PosTerminalViewModel : ObservableObject
         _reloadCatalogAsync = reloadCatalogAsync;
         _syncCatalogAsync = syncCatalogAsync;
         _refreshOnlineAsync = refreshOnlineAsync;
+        _rawScannerService = rawScannerService;
         if (_localization is not null)
         {
             _localization.CultureChanged += (_, _) => RaiseLocalizedProperties();
         }
+
+        _rawScannerService?.Subscribe(PageId, OnRawBarcodeScanned);
 
         ScanCommand = new RelayCommand(SearchAndAdd);
         NumberInputCommand = new RelayCommand<string>(AppendScanText);
@@ -135,6 +145,11 @@ public sealed partial class PosTerminalViewModel : ObservableObject
     public decimal DiscountAmount => _cart.DiscountAmount;
 
     public decimal ActualAmount => _cart.ActualAmount;
+
+    public void Dispose()
+    {
+        _rawScannerService?.Unsubscribe(PageId);
+    }
 
     partial void OnSelectedItemChanged(SellableItemDto? value)
     {
@@ -265,6 +280,7 @@ public sealed partial class PosTerminalViewModel : ObservableObject
 
     private void SearchAndAdd()
     {
+        var submittedScanText = ScanText;
         var matches = _priceIndex.Search(ScanText);
         Matches.ReplaceWith(matches);
         SelectedItem = matches.FirstOrDefault();
@@ -281,6 +297,7 @@ public sealed partial class PosTerminalViewModel : ObservableObject
             IsMatchesPopupOpen = false;
             AddItem(SelectedItem);
             ScanText = string.Empty;
+            RememberSubmittedScan(submittedScanText);
         }
         else
         {
@@ -318,6 +335,35 @@ public sealed partial class PosTerminalViewModel : ObservableObject
         RefreshCart();
         SetStatus("pos.status.added", item.DisplayName);
         BeginRemoteLookup(item);
+    }
+
+    private void OnRawBarcodeScanned(RawBarcodeScannedEventArgs e)
+    {
+        if (IsDuplicateSubmittedScan(e.Barcode, e.ScannedAt))
+        {
+            return;
+        }
+
+        ScanText = e.Barcode;
+        SearchAndAdd();
+    }
+
+    private void RememberSubmittedScan(string scanText)
+    {
+        if (string.IsNullOrWhiteSpace(scanText))
+        {
+            return;
+        }
+
+        _lastSubmittedScanText = scanText.Trim();
+        _lastSubmittedScanAt = DateTimeOffset.Now;
+    }
+
+    private bool IsDuplicateSubmittedScan(string scanText, DateTimeOffset scannedAt)
+    {
+        return !string.IsNullOrWhiteSpace(_lastSubmittedScanText) &&
+            string.Equals(_lastSubmittedScanText, scanText.Trim(), StringComparison.OrdinalIgnoreCase) &&
+            scannedAt - _lastSubmittedScanAt <= DuplicateScanWindow;
     }
 
     private void ClearCart()

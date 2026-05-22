@@ -62,6 +62,32 @@ public sealed class LocalizationAndSettingsTests
     }
 
     [Fact]
+    public async Task Scanner_binding_service_clears_saved_device_path()
+    {
+        var databasePath = CreateTempDatabasePath();
+
+        try
+        {
+            var store = new LocalSqliteStore(databasePath);
+            var schema = new LocalSchemaService(store);
+            var settings = new LocalAppSettingsRepository(store);
+            var binding = new ScannerBindingService(settings);
+            await schema.InitializeAsync();
+
+            await binding.SetBoundDevicePathAsync("scanner-device");
+            Assert.Equal("scanner-device", await binding.GetBoundDevicePathAsync());
+
+            await binding.ClearBoundDevicePathAsync();
+
+            Assert.Null(await binding.GetBoundDevicePathAsync());
+        }
+        finally
+        {
+            DeleteTempDatabase(databasePath);
+        }
+    }
+
+    [Fact]
     public async Task Local_schema_creates_app_settings_table()
     {
         var databasePath = CreateTempDatabasePath();

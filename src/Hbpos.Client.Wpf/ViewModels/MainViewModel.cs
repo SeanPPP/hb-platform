@@ -32,6 +32,7 @@ public sealed partial class MainViewModel : ObservableObject
     private readonly ISyncQueueRepository _syncQueueRepository;
     private readonly ILocalizationService _localization;
     private readonly ICustomerDisplayWindowService _customerDisplayWindowService;
+    private readonly IRawScannerService _rawScannerService;
     private readonly DispatcherTimer _clockTimer = new() { Interval = TimeSpan.FromSeconds(1) };
     private readonly DispatcherTimer _connectivityTimer = new() { Interval = TimeSpan.FromSeconds(30) };
     private readonly DispatcherTimer _catalogDownloadHideTimer = new();
@@ -130,7 +131,8 @@ public sealed partial class MainViewModel : ObservableObject
         ILocalOrderRepository orderRepository,
         ISyncQueueRepository syncQueueRepository,
         ILocalizationService localization,
-        ICustomerDisplayWindowService customerDisplayWindowService)
+        ICustomerDisplayWindowService customerDisplayWindowService,
+        IRawScannerService rawScannerService)
     {
         _priceIndex = priceIndex;
         _cart = cart;
@@ -149,6 +151,7 @@ public sealed partial class MainViewModel : ObservableObject
         _syncQueueRepository = syncQueueRepository;
         _localization = localization;
         _customerDisplayWindowService = customerDisplayWindowService;
+        _rawScannerService = rawScannerService;
 
         PaymentSuccess = new PaymentSuccessViewModel(_orderRepository);
 
@@ -160,6 +163,7 @@ public sealed partial class MainViewModel : ObservableObject
         ToggleSyncCenterCommand = new AsyncRelayCommand(ToggleSyncCenterAsync);
         ToggleCustomerDisplayWindowCommand = new RelayCommand(ToggleCustomerDisplayWindow);
         ToggleCultureCommand = new AsyncRelayCommand(ToggleCultureAsync);
+        ResetScannerBindingCommand = new AsyncRelayCommand(ResetScannerBindingAsync);
 
         _cart.CartChanged += OnCartChanged;
         _localization.CultureChanged += OnCultureChanged;
@@ -203,6 +207,8 @@ public sealed partial class MainViewModel : ObservableObject
     public IRelayCommand ToggleCustomerDisplayWindowCommand { get; }
 
     public IAsyncRelayCommand ToggleCultureCommand { get; }
+
+    public IAsyncRelayCommand ResetScannerBindingCommand { get; }
 
     public async Task InitializeAsync(AppStartupOptions startupOptions)
     {
@@ -292,7 +298,8 @@ public sealed partial class MainViewModel : ObservableObject
             RefreshRemoteLookupAsync,
             ReloadCatalogIndexAsync,
             SyncCatalogAndReloadAsync,
-            RefreshOnlineStateAsync);
+            RefreshOnlineStateAsync,
+            _rawScannerService);
         PosTerminal.LoadMatches(cachedItems);
 
         TransactionHistory = new TransactionHistoryViewModel(_orderRepository);
@@ -322,6 +329,11 @@ public sealed partial class MainViewModel : ObservableObject
     {
         RefreshLocalizedShell();
         ApplySessionToScreens();
+    }
+
+    partial void OnCurrentScreenChanged(object? value)
+    {
+        _rawScannerService.SetActivePage(value == PosTerminal ? PosTerminalViewModel.PageId : null);
     }
 
     partial void OnSelectedCultureNameChanged(string value)
@@ -688,6 +700,12 @@ public sealed partial class MainViewModel : ObservableObject
 
         _customerDisplayWindowService.Toggle(CustomerDisplay, owner);
         IsCustomerDisplayOpen = _customerDisplayWindowService.IsOpen;
+    }
+
+    private async Task ResetScannerBindingAsync()
+    {
+        await _rawScannerService.ResetBindingAsync();
+        StatusMessage = "扫码枪绑定已清除，请在收银页扫描一次重新学习。";
     }
 
     private void ResetForNewTransaction()

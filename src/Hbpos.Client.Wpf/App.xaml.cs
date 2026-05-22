@@ -36,6 +36,7 @@ public partial class App : Application
                 services.AddSingleton<DeviceAuthorizationState>();
                 services.AddTransient<DeviceAuthorizationMessageHandler>();
                 services.AddSingleton<ILocalAppSettingsRepository, LocalAppSettingsRepository>();
+                services.AddSingleton<IScannerBindingService, ScannerBindingService>();
                 services.AddSingleton<ILocalDeviceRepository, LocalDeviceRepository>();
                 services.AddSingleton<ILocalCatalogRepository, LocalCatalogRepository>();
                 services.AddSingleton<ILocalOrderRepository, LocalOrderRepository>();
@@ -58,6 +59,8 @@ public partial class App : Application
                 services.AddSingleton<ILocalCatalogSyncService, LocalCatalogSyncService>();
                 services.AddSingleton<IRemoteLookupRefreshService, RemoteLookupRefreshService>();
                 services.AddSingleton<ICustomerDisplayWindowService, CustomerDisplayWindowService>();
+                services.AddSingleton<RawScannerInputProcessor>();
+                services.AddSingleton<IRawScannerService, RawScannerService>();
                 services.AddSingleton<LocalSellableItemIndex>();
                 services.AddSingleton<PosCartService>();
                 services.AddSingleton<CashCheckoutService>();

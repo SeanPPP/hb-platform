@@ -35,6 +35,7 @@ public sealed class OrderSyncServiceTests
         Assert.True(repository.InsertCalled);
         Assert.Equal(orderGuid.ToString("D"), repository.LastPlan?.Order.OrderGuid);
         Assert.Equal(9.99m, repository.LastPlan?.Lines.Single().Price);
+        Assert.Equal("SOURCE-GUID-01", repository.LastPlan?.Lines.Single().ReferenceGUID);
         Assert.Equal("priceSource=1", repository.LastPlan?.Lines.Single().Remark);
     }
 
@@ -54,7 +55,7 @@ public sealed class OrderSyncServiceTests
                 new OrderLineSyncDto(
                     Guid.NewGuid(),
                     "P01",
-                    null,
+                    "SOURCE-GUID-01",
                     "Apple",
                     "BAR01",
                     1m,

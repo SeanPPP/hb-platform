@@ -37,7 +37,8 @@ public interface ICatalogService
 
 public sealed class CatalogService(
     HbposSqlSugarContext dbContext,
-    IPriceIndexBuilder priceIndexBuilder) : ICatalogService
+    IPriceIndexBuilder priceIndexBuilder,
+    ICatalogIndexCache catalogIndexCache) : ICatalogService
 {
     public async Task<IReadOnlyList<StoreDto>> GetStoresAsync(CancellationToken cancellationToken)
     {
@@ -92,13 +93,25 @@ public sealed class CatalogService(
         return index?.CatalogIndex.Lookup(lookupCode, lookupCodeNormalized);
     }
 
-    private async Task<SellableIndexBuildResult?> BuildSellableIndexAsync(
+    private async Task<CatalogIndexBuildResult?> BuildSellableIndexAsync(
         string storeCode,
         DateTimeOffset? since,
         CancellationToken cancellationToken)
     {
-        var totalStopwatch = Stopwatch.StartNew();
         var normalizedStoreCode = NormalizeStoreCode(storeCode);
+        return await catalogIndexCache.GetOrBuildAsync(
+            normalizedStoreCode,
+            since,
+            token => BuildSellableIndexCoreAsync(normalizedStoreCode, since, token),
+            cancellationToken);
+    }
+
+    private async Task<CatalogIndexBuildResult?> BuildSellableIndexCoreAsync(
+        string normalizedStoreCode,
+        DateTimeOffset? since,
+        CancellationToken cancellationToken)
+    {
+        var totalStopwatch = Stopwatch.StartNew();
         Log($"build index start store={normalizedStoreCode} since={since?.ToString("O") ?? "<null>"}");
 
         var stepStopwatch = Stopwatch.StartNew();
@@ -128,7 +141,8 @@ public sealed class CatalogService(
                 x.Barcode,
                 x.RetailPrice,
                 ToOffset(x.UpdatedAt ?? x.CreatedAt),
-                x.ProductImage))
+                x.ProductImage,
+                x.UUID))
             .ToList();
 
         stepStopwatch.Restart();
@@ -141,7 +155,8 @@ public sealed class CatalogService(
             .Select(x => new StoreRetailPriceRecord(
                 x.ProductCode,
                 x.StoreRetailPriceValue,
-                ToOffset(x.UpdatedAt ?? x.CreatedAt)))
+                ToOffset(x.UpdatedAt ?? x.CreatedAt),
+                x.UUID))
             .ToList();
 
         stepStopwatch.Restart();
@@ -156,7 +171,8 @@ public sealed class CatalogService(
                 x.MultiCodeProductCode,
                 x.MultiBarcode,
                 x.MultiCodeRetailPrice,
-                ToOffset(x.UpdatedAt ?? x.CreatedAt)))
+                ToOffset(x.UpdatedAt ?? x.CreatedAt),
+                x.UUID))
             .ToList();
 
         stepStopwatch.Restart();
@@ -170,7 +186,8 @@ public sealed class CatalogService(
                 x.ProductCode,
                 x.ClearanceBarcode,
                 x.ClearancePrice,
-                ToOffset(x.UpdatedAt ?? x.CreatedAt)))
+                ToOffset(x.UpdatedAt ?? x.CreatedAt),
+                x.UUID))
             .ToList();
 
         stepStopwatch.Restart();
@@ -185,7 +202,8 @@ public sealed class CatalogService(
                 x.SetProductCode,
                 x.SetBarcode,
                 x.SetRetailPrice,
-                ToOffset(x.UpdatedAt ?? x.CreatedAt)))
+                ToOffset(x.UpdatedAt ?? x.CreatedAt),
+                x.SetCodeId))
             .ToList();
 
         var input = new PriceIndexInput(
@@ -202,7 +220,7 @@ public sealed class CatalogService(
         stepStopwatch.Stop();
         totalStopwatch.Stop();
         Log($"build index completed store={store.StoreCode} items={items.Count} buildElapsedMs={stepStopwatch.ElapsedMilliseconds} totalElapsedMs={totalStopwatch.ElapsedMilliseconds}");
-        return new SellableIndexBuildResult(
+        return new CatalogIndexBuildResult(
             store.StoreCode,
             generatedAt,
             items,
@@ -226,11 +244,6 @@ public sealed class CatalogService(
         Console.WriteLine($"[HBPOS][Api][CatalogService] {DateTimeOffset.Now:O} {message}");
     }
 
-    private sealed record SellableIndexBuildResult(
-        string StoreCode,
-        DateTimeOffset GeneratedAt,
-        IReadOnlyList<SellableItemDto> SellableItems,
-        CatalogSellableIndex CatalogIndex);
 }
 
 public sealed class CatalogSellableIndex

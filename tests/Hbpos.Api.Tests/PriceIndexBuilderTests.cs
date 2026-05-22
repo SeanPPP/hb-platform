@@ -13,7 +13,7 @@ public sealed class PriceIndexBuilderTests
         var items = _builder.Build("S01", new PriceIndexInput(
             null,
             [new ProductPriceRecord("P01", "Apple", "ITEM01", "BAR01", 10m, null)],
-            [new StoreRetailPriceRecord("P01", 8.5m, null)],
+            [new StoreRetailPriceRecord("P01", 8.5m, null, ReferenceCode: "SRP-UUID-01")],
             [],
             [],
             []));
@@ -21,6 +21,7 @@ public sealed class PriceIndexBuilderTests
         var barcodeItem = Assert.Single(items, x => x.LookupCode == "BAR01");
         Assert.Equal(8.5m, barcodeItem.RetailPrice);
         Assert.Equal(PriceSourceKind.StoreRetailPrice, barcodeItem.PriceSource);
+        Assert.Equal("SRP-UUID-01", barcodeItem.ReferenceCode);
     }
 
     [Fact]
@@ -43,7 +44,7 @@ public sealed class PriceIndexBuilderTests
     {
         var items = _builder.Build("S01", new PriceIndexInput(
             null,
-            [new ProductPriceRecord("P01", "Apple", null, "BAR01", 10m, null)],
+            [new ProductPriceRecord("P01", "Apple", null, "BAR01", 10m, null, ReferenceCode: "PRODUCT-UUID-01")],
             [],
             [],
             [],
@@ -52,6 +53,7 @@ public sealed class PriceIndexBuilderTests
         var item = Assert.Single(items);
         Assert.Equal(10m, item.RetailPrice);
         Assert.Equal(PriceSourceKind.ProductBase, item.PriceSource);
+        Assert.Equal("PRODUCT-UUID-01", item.ReferenceCode);
     }
 
     [Fact]
@@ -62,12 +64,13 @@ public sealed class PriceIndexBuilderTests
             [new ProductPriceRecord("P01", "Apple", null, "BAR01", 10m, null)],
             [],
             [],
-            [new StoreClearancePriceRecord("P01", "CLR01", 3m, null)],
+            [new StoreClearancePriceRecord("P01", "CLR01", 3m, null, ReferenceCode: "CLR-UUID-01")],
             []));
 
         var clearanceItem = Assert.Single(items, x => x.LookupCode == "CLR01");
         Assert.Equal(3m, clearanceItem.RetailPrice);
         Assert.Equal(PriceSourceKind.StoreClearancePrice, clearanceItem.PriceSource);
+        Assert.Equal("CLR-UUID-01", clearanceItem.ReferenceCode);
     }
 
     [Fact]
@@ -77,13 +80,14 @@ public sealed class PriceIndexBuilderTests
             null,
             [new ProductPriceRecord("P01", "Apple Set", null, null, 10m, null)],
             [],
-            [new StoreMultiCodeProductRecord("P01", "SET-P01", null, 7m, null)],
+            [new StoreMultiCodeProductRecord("P01", "SET-P01", null, 7m, null, ReferenceCode: "SMCP-UUID-01")],
             [],
-            [new ProductSetCodeRecord("P01", "SET-P01", "SETBAR01", 12m, null)]));
+            [new ProductSetCodeRecord("P01", "SET-P01", "SETBAR01", 12m, null, ReferenceCode: "SET-UUID-01")]));
 
         var setItem = Assert.Single(items);
         Assert.Equal(7m, setItem.RetailPrice);
         Assert.Equal(PriceSourceKind.StoreMultiCodeProduct, setItem.PriceSource);
+        Assert.Equal("SMCP-UUID-01", setItem.ReferenceCode);
     }
 
     [Fact]
@@ -95,11 +99,12 @@ public sealed class PriceIndexBuilderTests
             [],
             [],
             [],
-            [new ProductSetCodeRecord("P01", "SET-P01", "SETBAR01", 12m, null)]));
+            [new ProductSetCodeRecord("P01", "SET-P01", "SETBAR01", 12m, null, ReferenceCode: "SET-UUID-01")]));
 
         var setItem = Assert.Single(items);
         Assert.Equal(12m, setItem.RetailPrice);
         Assert.Equal(PriceSourceKind.ProductSetCode, setItem.PriceSource);
+        Assert.Equal("SET-UUID-01", setItem.ReferenceCode);
     }
 
     [Fact]
@@ -109,13 +114,14 @@ public sealed class PriceIndexBuilderTests
             null,
             [new ProductPriceRecord("P01", "Apple", null, null, 10m, null)],
             [],
-            [new StoreMultiCodeProductRecord("P01", "M01", "MULTI01", 6m, null)],
+            [new StoreMultiCodeProductRecord("P01", "M01", "MULTI01", 6m, null, ReferenceCode: "SMCP-UUID-01")],
             [],
             []));
 
         var item = Assert.Single(items);
         Assert.Equal(6m, item.RetailPrice);
         Assert.Equal(PriceSourceKind.StoreMultiCodeProduct, item.PriceSource);
+        Assert.Equal("SMCP-UUID-01", item.ReferenceCode);
     }
 
     [Fact]

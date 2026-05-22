@@ -13,8 +13,8 @@ public sealed class LocalCatalogRepositoryTests
         try
         {
             var repository = await CreateRepositoryAsync(databasePath);
-            var original = CreateItem("S001", "SKU-001", " abc ", "Original name", 1.25m, "https://images.example/original.jpg");
-            var updated = CreateItem("S001", "SKU-001B", "ABC", "Updated name", 2.50m, "https://images.example/updated.jpg");
+            var original = CreateItem("S001", "SKU-001", " abc ", "Original name", 1.25m, "https://images.example/original.jpg", "REF-001");
+            var updated = CreateItem("S001", "SKU-001B", "ABC", "Updated name", 2.50m, "https://images.example/updated.jpg", "REF-002");
 
             await repository.UpsertSellableItemsAsync([original]);
             await repository.UpsertSellableItemsAsync([updated]);
@@ -23,6 +23,7 @@ public sealed class LocalCatalogRepositoryTests
             var saved = Assert.Single(items);
             Assert.Equal("SKU-001B", saved.ProductCode);
             Assert.Equal("Updated name", saved.DisplayName);
+            Assert.Equal("REF-002", saved.ReferenceCode);
             Assert.Equal(2.50m, saved.RetailPrice);
             Assert.Equal("https://images.example/updated.jpg", saved.ProductImage);
         }
@@ -135,12 +136,13 @@ public sealed class LocalCatalogRepositoryTests
         string lookupCode,
         string displayName,
         decimal retailPrice,
-        string? productImage = null)
+        string? productImage = null,
+        string? referenceCode = null)
     {
         return new SellableItemDto(
             StoreCode: storeCode,
             ProductCode: productCode,
-            ReferenceCode: null,
+            ReferenceCode: referenceCode,
             DisplayName: displayName,
             LookupCode: lookupCode,
             ItemNumber: productCode,

@@ -44,7 +44,7 @@ public sealed class LocalCatalogSyncService(
     ILocalCatalogRepository localCatalogRepository,
     ICatalogApiClient catalogApiClient) : ILocalCatalogSyncService
 {
-    private const int PageSize = 500;
+    private const int PageSize = 1000;
 
     public async Task<LocalCatalogSyncResult> FullSyncAsync(
         string storeCode,
