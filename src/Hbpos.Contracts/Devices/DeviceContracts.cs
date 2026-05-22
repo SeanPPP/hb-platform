@@ -12,7 +12,8 @@ public sealed record DeviceVerifyResponse(
     string StoreName,
     int DeviceStatus,
     bool IsAllowed,
-    string? Message = null);
+    string? Message = null,
+    string? AuthorizationCode = null);
 
 public sealed record DeviceRegisterRequest(
     string StoreCode,
@@ -25,4 +26,5 @@ public sealed record DeviceRegisterResponse(
     string StoreName,
     int DeviceStatus,
     bool IsAllowed,
-    string? Message = null);
+    string? Message = null,
+    string? AuthorizationCode = null);

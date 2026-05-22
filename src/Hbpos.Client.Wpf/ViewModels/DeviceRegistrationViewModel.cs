@@ -164,9 +164,15 @@ public sealed partial class DeviceRegistrationViewModel : ObservableObject
         StatusMessage = response.Message ?? (response.IsAllowed ? "Device is enabled." : "Device registration is pending approval.");
         if (response.IsAllowed)
         {
+            if (string.IsNullOrWhiteSpace(response.AuthorizationCode))
+            {
+                StatusMessage = "Device authorization code was not returned. Please verify again.";
+                return;
+            }
+
             DeviceActivated?.Invoke(
                 this,
-                new DeviceActivatedEventArgs(response.DeviceCode, response.StoreCode, response.StoreName, HardwareId));
+                new DeviceActivatedEventArgs(response.DeviceCode, response.StoreCode, response.StoreName, HardwareId, response.AuthorizationCode));
         }
     }
 
@@ -176,9 +182,15 @@ public sealed partial class DeviceRegistrationViewModel : ObservableObject
         StatusMessage = response.Message ?? (response.IsAllowed ? "Device is enabled." : "Device registration is pending approval.");
         if (response.IsAllowed)
         {
+            if (string.IsNullOrWhiteSpace(response.AuthorizationCode))
+            {
+                StatusMessage = "Device authorization code was not returned. Please verify again.";
+                return;
+            }
+
             DeviceActivated?.Invoke(
                 this,
-                new DeviceActivatedEventArgs(response.DeviceCode, response.StoreCode, response.StoreName, HardwareId));
+                new DeviceActivatedEventArgs(response.DeviceCode, response.StoreCode, response.StoreName, HardwareId, response.AuthorizationCode));
         }
     }
 
@@ -203,4 +215,5 @@ public sealed record DeviceActivatedEventArgs(
     string DeviceCode,
     string StoreCode,
     string StoreName,
-    string HardwareId);
+    string HardwareId,
+    string AuthorizationCode = "");

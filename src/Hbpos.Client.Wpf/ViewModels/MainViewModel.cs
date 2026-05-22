@@ -23,17 +23,21 @@ public sealed partial class MainViewModel : ObservableObject
     private readonly ILocalCatalogRepository _catalogRepository;
     private readonly ILocalCatalogSyncService _catalogSync;
     private readonly IRemoteLookupRefreshService _remoteLookupRefresh;
+    private readonly IConnectivityApiClient _connectivityApiClient;
     private readonly ILocalDeviceRepository _deviceRepository;
     private readonly IDeviceApiClient _deviceApiClient;
     private readonly IDeviceFingerprintService _fingerprintService;
+    private readonly DeviceAuthorizationState _deviceAuthorizationState;
     private readonly ILocalOrderRepository _orderRepository;
     private readonly ISyncQueueRepository _syncQueueRepository;
     private readonly ILocalizationService _localization;
     private readonly ICustomerDisplayWindowService _customerDisplayWindowService;
     private readonly DispatcherTimer _clockTimer = new() { Interval = TimeSpan.FromSeconds(1) };
+    private readonly DispatcherTimer _connectivityTimer = new() { Interval = TimeSpan.FromSeconds(30) };
     private readonly DispatcherTimer _catalogDownloadHideTimer = new();
 
     private bool _isApplyingCulture;
+    private bool _isRefreshingConnectivity;
     private bool _schemaReady;
     private LocalOrder? _lastCompletedOrder;
 
@@ -118,9 +122,11 @@ public sealed partial class MainViewModel : ObservableObject
         ILocalCatalogRepository catalogRepository,
         ILocalCatalogSyncService catalogSync,
         IRemoteLookupRefreshService remoteLookupRefresh,
+        IConnectivityApiClient connectivityApiClient,
         ILocalDeviceRepository deviceRepository,
         IDeviceApiClient deviceApiClient,
         IDeviceFingerprintService fingerprintService,
+        DeviceAuthorizationState deviceAuthorizationState,
         ILocalOrderRepository orderRepository,
         ISyncQueueRepository syncQueueRepository,
         ILocalizationService localization,
@@ -134,9 +140,11 @@ public sealed partial class MainViewModel : ObservableObject
         _catalogRepository = catalogRepository;
         _catalogSync = catalogSync;
         _remoteLookupRefresh = remoteLookupRefresh;
+        _connectivityApiClient = connectivityApiClient;
         _deviceRepository = deviceRepository;
         _deviceApiClient = deviceApiClient;
         _fingerprintService = fingerprintService;
+        _deviceAuthorizationState = deviceAuthorizationState;
         _orderRepository = orderRepository;
         _syncQueueRepository = syncQueueRepository;
         _localization = localization;
@@ -157,6 +165,7 @@ public sealed partial class MainViewModel : ObservableObject
         _localization.CultureChanged += OnCultureChanged;
         _customerDisplayWindowService.Closed += (_, _) => IsCustomerDisplayOpen = false;
         _clockTimer.Tick += (_, _) => RefreshClock();
+        _connectivityTimer.Tick += async (_, _) => await RefreshOnlineStateAsync(CancellationToken.None);
         _catalogDownloadHideTimer.Tick += (_, _) =>
         {
             _catalogDownloadHideTimer.Stop();
@@ -208,8 +217,10 @@ public sealed partial class MainViewModel : ObservableObject
             var hardwareId = _fingerprintService.GetHardwareId();
             if (cachedDevice is null
                 || !cachedDevice.IsAllowed
+                || string.IsNullOrWhiteSpace(cachedDevice.AuthorizationCode)
                 || !string.Equals(cachedDevice.HardwareId, hardwareId, StringComparison.OrdinalIgnoreCase))
             {
+                _deviceAuthorizationState.Clear();
                 DeviceRegistration = new DeviceRegistrationViewModel(
                     _deviceApiClient,
                     _deviceRepository,
@@ -228,6 +239,11 @@ public sealed partial class MainViewModel : ObservableObject
                 StoreName = cachedDevice.StoreName,
                 DeviceCode = cachedDevice.DeviceCode
             };
+            _deviceAuthorizationState.Set(new DeviceAuthorizationContext(
+                cachedDevice.DeviceCode,
+                cachedDevice.StoreCode,
+                cachedDevice.HardwareId,
+                cachedDevice.AuthorizationCode));
         }
 
         await InitializePosExperienceAsync(startupOptions);
@@ -241,6 +257,14 @@ public sealed partial class MainViewModel : ObservableObject
             StoreName = args.StoreName,
             DeviceCode = args.DeviceCode
         };
+        if (!string.IsNullOrWhiteSpace(args.AuthorizationCode))
+        {
+            _deviceAuthorizationState.Set(new DeviceAuthorizationContext(
+                args.DeviceCode,
+                args.StoreCode,
+                args.HardwareId,
+                args.AuthorizationCode));
+        }
 
         await InitializePosExperienceAsync(startupOptions);
     }
@@ -267,7 +291,8 @@ public sealed partial class MainViewModel : ObservableObject
             _localization,
             RefreshRemoteLookupAsync,
             ReloadCatalogIndexAsync,
-            SyncCatalogAndReloadAsync);
+            SyncCatalogAndReloadAsync,
+            RefreshOnlineStateAsync);
         PosTerminal.LoadMatches(cachedItems);
 
         TransactionHistory = new TransactionHistoryViewModel(_orderRepository);
@@ -287,6 +312,8 @@ public sealed partial class MainViewModel : ObservableObject
 
         if (!startupOptions.PreviewMode)
         {
+            await RefreshOnlineStateAsync(CancellationToken.None);
+            _connectivityTimer.Start();
             BeginInitialCatalogSync();
         }
     }
@@ -429,6 +456,30 @@ public sealed partial class MainViewModel : ObservableObject
         }
 
         _ = TryInitialCatalogSyncAsync();
+    }
+
+    private async Task<bool> RefreshOnlineStateAsync(CancellationToken cancellationToken)
+    {
+        if (_isRefreshingConnectivity)
+        {
+            return Session.IsOnline;
+        }
+
+        _isRefreshingConnectivity = true;
+        try
+        {
+            var isOnline = await _connectivityApiClient.CheckOnlineAsync(cancellationToken);
+            if (Session.IsOnline != isOnline)
+            {
+                Session = Session with { IsOnline = isOnline };
+            }
+
+            return isOnline;
+        }
+        finally
+        {
+            _isRefreshingConnectivity = false;
+        }
     }
 
     private async Task TryInitialCatalogSyncAsync()

@@ -32,6 +32,9 @@ public partial class App : Application
                     return new LocalSqliteStore(databasePath);
                 });
                 services.AddSingleton<ILocalSchemaService, LocalSchemaService>();
+                services.AddSingleton<IDeviceAuthorizationProtector, WindowsDpapiDeviceAuthorizationProtector>();
+                services.AddSingleton<DeviceAuthorizationState>();
+                services.AddTransient<DeviceAuthorizationMessageHandler>();
                 services.AddSingleton<ILocalAppSettingsRepository, LocalAppSettingsRepository>();
                 services.AddSingleton<ILocalDeviceRepository, LocalDeviceRepository>();
                 services.AddSingleton<ILocalCatalogRepository, LocalCatalogRepository>();
@@ -40,10 +43,16 @@ public partial class App : Application
                 services.AddHttpClient<ICatalogApiClient, CatalogApiClient>(client =>
                 {
                     client.BaseAddress = GetCatalogApiBaseAddress();
-                });
+                })
+                .AddHttpMessageHandler<DeviceAuthorizationMessageHandler>();
                 services.AddHttpClient<IDeviceApiClient, DeviceApiClient>(client =>
                 {
                     client.BaseAddress = GetCatalogApiBaseAddress();
+                });
+                services.AddHttpClient<IConnectivityApiClient, ConnectivityApiClient>(client =>
+                {
+                    client.BaseAddress = GetCatalogApiBaseAddress();
+                    client.Timeout = TimeSpan.FromSeconds(3);
                 });
                 services.AddSingleton<IDeviceFingerprintService, DeviceFingerprintService>();
                 services.AddSingleton<ILocalCatalogSyncService, LocalCatalogSyncService>();

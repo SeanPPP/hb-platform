@@ -58,6 +58,38 @@ public sealed class PosCoreTests
     }
 
     [Fact]
+    public async Task Pos_terminal_sync_refreshes_online_state_before_syncing()
+    {
+        var index = new LocalSellableItemIndex();
+        var cart = new PosCartService();
+        var item = CreateItem("SKU-001", "Milk 1L", "690001", PriceSourceKind.StoreRetailPrice, 12.5m);
+        var refreshedOnline = false;
+        var synced = false;
+        var viewModel = new PosTerminalViewModel(
+            index,
+            cart,
+            new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", false, 0),
+            onOpenPayment: null,
+            refreshOnlineAsync: _ =>
+            {
+                refreshedOnline = true;
+                return Task.FromResult(true);
+            },
+            syncCatalogAsync: _ =>
+            {
+                synced = true;
+                return Task.FromResult<IReadOnlyList<SellableItemDto>>([item]);
+            });
+
+        await viewModel.SyncCommand.ExecuteAsync(null);
+
+        Assert.True(refreshedOnline);
+        Assert.True(synced);
+        Assert.True(viewModel.Session.IsOnline);
+        Assert.Equal("Catalog sync completed.", viewModel.StatusMessage);
+    }
+
+    [Fact]
     public async Task Local_repositories_initialize_catalog_order_and_sync_queue()
     {
         var databasePath = Path.Combine(Path.GetTempPath(), $"hbpos-client-{Guid.NewGuid():N}.db");

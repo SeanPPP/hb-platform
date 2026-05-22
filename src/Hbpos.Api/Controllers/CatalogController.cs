@@ -1,17 +1,21 @@
 using System.Diagnostics;
+using Hbpos.Api.Auth;
 using Hbpos.Api.Services;
 using Hbpos.Contracts.Catalog;
 using Hbpos.Contracts.Common;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
 namespace Hbpos.Api.Controllers;
 
 [ApiController]
 [Route("api/v1/catalog")]
+[Authorize]
 public sealed class CatalogController(ICatalogService catalogService) : ControllerBase
 {
     private const int MaxPageSize = 1000;
 
+    [AllowAnonymous]
     [HttpGet("stores")]
     public async Task<ActionResult<ApiResult<IReadOnlyList<StoreDto>>>> GetStores(
         CancellationToken cancellationToken)
@@ -29,6 +33,11 @@ public sealed class CatalogController(ICatalogService catalogService) : Controll
         if (string.IsNullOrWhiteSpace(storeCode))
         {
             return BadRequest(ApiResult<SellableItemsResponse>.Fail("STORE_CODE_REQUIRED", "storeCode 不能为空"));
+        }
+
+        if (!this.IsDeviceScopeAllowed(storeCode))
+        {
+            return DeviceAuthorizationExtensions.DeviceScopeForbidden<SellableItemsResponse>("Device is not authorized for this store.");
         }
 
         var response = await catalogService.GetSellableItemsAsync(storeCode, since, cancellationToken);
@@ -53,6 +62,11 @@ public sealed class CatalogController(ICatalogService catalogService) : Controll
         if (pageSize <= 0 || pageSize > MaxPageSize)
         {
             return BadRequest(ApiResult<CatalogSyncPageResponse>.Fail("PAGE_SIZE_INVALID", $"pageSize must be between 1 and {MaxPageSize}"));
+        }
+
+        if (!this.IsDeviceScopeAllowed(storeCode))
+        {
+            return DeviceAuthorizationExtensions.DeviceScopeForbidden<CatalogSyncPageResponse>("Device is not authorized for this store.");
         }
 
         var stopwatch = Stopwatch.StartNew();
@@ -88,6 +102,11 @@ public sealed class CatalogController(ICatalogService catalogService) : Controll
             return BadRequest(ApiResult<CatalogCompareResponse>.Fail("STORE_CODE_REQUIRED", "storeCode is required"));
         }
 
+        if (!this.IsDeviceScopeAllowed(request.StoreCode))
+        {
+            return DeviceAuthorizationExtensions.DeviceScopeForbidden<CatalogCompareResponse>("Device is not authorized for this store.");
+        }
+
         var stopwatch = Stopwatch.StartNew();
         Log($"compare request store={request.StoreCode} localLookups={request.LocalLookups.Count}");
         var response = await catalogService.CompareSellableItemsAsync(request, cancellationToken);
@@ -115,6 +134,11 @@ public sealed class CatalogController(ICatalogService catalogService) : Controll
         if (string.IsNullOrWhiteSpace(lookupCode) && string.IsNullOrWhiteSpace(lookupCodeNormalized))
         {
             return BadRequest(ApiResult<CatalogLookupResponse>.Fail("LOOKUP_CODE_REQUIRED", "lookupCode or lookupCodeNormalized is required"));
+        }
+
+        if (!this.IsDeviceScopeAllowed(storeCode))
+        {
+            return DeviceAuthorizationExtensions.DeviceScopeForbidden<CatalogLookupResponse>("Device is not authorized for this store.");
         }
 
         var stopwatch = Stopwatch.StartNew();

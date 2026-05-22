@@ -1,10 +1,19 @@
 using Hbpos.Api;
+using Hbpos.Api.Auth;
+using Hbpos.Contracts.Devices;
+using Microsoft.AspNetCore.Authentication;
 
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddControllers();
 builder.Services.AddOpenApi();
 builder.Services.AddSwaggerGen();
+builder.Services
+    .AddAuthentication(DeviceAuthConstants.Scheme)
+    .AddScheme<AuthenticationSchemeOptions, DeviceAuthenticationHandler>(
+        DeviceAuthConstants.Scheme,
+        options => { });
+builder.Services.AddAuthorization();
 builder.Services.AddHbposApiServices();
 
 var app = builder.Build();
@@ -19,6 +28,7 @@ if (app.Environment.IsDevelopment())
 
 app.UseHttpsRedirection();
 
+app.UseAuthentication();
 app.UseAuthorization();
 
 app.MapControllers();

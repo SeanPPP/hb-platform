@@ -16,11 +16,11 @@ public sealed class DeviceRegistrationTests
         {
             var store = new LocalSqliteStore(databasePath);
             var schema = new LocalSchemaService(store);
-            var repository = new LocalDeviceRepository(store);
+            var repository = new LocalDeviceRepository(store, new FakeAuthorizationProtector());
             await schema.InitializeAsync();
 
             await repository.SaveAsync(
-                new DeviceRegisterResponse("POS-001", "1002", "Lutwyche", -1, false, "Pending approval"),
+                new DeviceRegisterResponse("POS-001", "1002", "Lutwyche", 1, true, "Device is enabled.", "AUTH-001"),
                 "HW-001");
 
             var cached = await repository.GetLatestAsync();
@@ -30,9 +30,10 @@ public sealed class DeviceRegistrationTests
             Assert.Equal("1002", cached.StoreCode);
             Assert.Equal("Lutwyche", cached.StoreName);
             Assert.Equal("HW-001", cached.HardwareId);
-            Assert.Equal(-1, cached.DeviceStatus);
-            Assert.False(cached.IsAllowed);
-            Assert.Equal("Pending approval", cached.Message);
+            Assert.Equal(1, cached.DeviceStatus);
+            Assert.True(cached.IsAllowed);
+            Assert.Equal("Device is enabled.", cached.Message);
+            Assert.Equal("AUTH-001", cached.AuthorizationCode);
         }
         finally
         {
@@ -75,7 +76,7 @@ public sealed class DeviceRegistrationTests
         var api = new FakeDeviceApiClient
         {
             Stores = [new StoreSelectionItem("1002", "Lutwyche", true)],
-            VerifyResponse = new DeviceVerifyResponse("POS-001", "1002", "Lutwyche", 1, true, "Device is enabled.")
+            VerifyResponse = new DeviceVerifyResponse("POS-001", "1002", "Lutwyche", 1, true, "Device is enabled.", "AUTH-001")
         };
         var repository = new FakeLocalDeviceRepository();
         var viewModel = new DeviceRegistrationViewModel(
@@ -94,6 +95,7 @@ public sealed class DeviceRegistrationTests
         Assert.Equal("1002", activated.StoreCode);
         Assert.Equal("Lutwyche", activated.StoreName);
         Assert.Equal("HW-001", activated.HardwareId);
+        Assert.Equal("AUTH-001", activated.AuthorizationCode);
         Assert.NotNull(repository.LastVerifyResponse);
     }
 
@@ -173,5 +175,23 @@ public sealed class DeviceRegistrationTests
     private sealed class FakeFingerprintService(string hardwareId) : IDeviceFingerprintService
     {
         public string GetHardwareId() => hardwareId;
+    }
+
+    private sealed class FakeAuthorizationProtector : IDeviceAuthorizationProtector
+    {
+        public string? LastProtectedValue { get; private set; }
+
+        public string? Protect(string? value)
+        {
+            LastProtectedValue = value;
+            return string.IsNullOrWhiteSpace(value) ? null : $"protected:{value}";
+        }
+
+        public string? Unprotect(string? protectedValue)
+        {
+            return protectedValue?.StartsWith("protected:", StringComparison.Ordinal) == true
+                ? protectedValue["protected:".Length..]
+                : null;
+        }
     }
 }

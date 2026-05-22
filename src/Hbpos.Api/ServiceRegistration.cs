@@ -9,6 +9,7 @@ public static class ServiceRegistration
     {
         services.AddScoped<HbposSqlSugarContext>();
         services.AddScoped<IDeviceService, DeviceService>();
+        services.AddScoped<IDeviceAuthorizationService, DeviceAuthorizationService>();
         services.AddScoped<ICashierService, CashierService>();
         services.AddScoped<ICatalogService, CatalogService>();
         services.AddScoped<IOrderRepository, SqlSugarOrderRepository>();

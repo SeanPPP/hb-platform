@@ -1,7 +1,12 @@
+using System.Security.Claims;
+using Hbpos.Api.Auth;
 using Hbpos.Api.Controllers;
 using Hbpos.Api.Services;
 using Hbpos.Contracts.Catalog;
 using Hbpos.Contracts.Common;
+using Hbpos.Contracts.Devices;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 
 namespace Hbpos.Api.Tests;
@@ -15,6 +20,18 @@ public sealed class CatalogControllerTests
         Assert.Equal("sellable-items/lookup", GetHttpGetTemplate(nameof(CatalogController.LookupSellableItem)));
         Assert.Equal("sellable-items/compare", GetHttpPostTemplate(nameof(CatalogController.CompareSellableItems)));
         Assert.Equal("sellable-items", GetHttpGetTemplate(nameof(CatalogController.GetSellableItems)));
+    }
+
+    [Fact]
+    public void CatalogController_RequiresAuthorizationExceptStoreList()
+    {
+        Assert.NotNull(typeof(CatalogController)
+            .GetCustomAttributes(typeof(AuthorizeAttribute), inherit: false)
+            .SingleOrDefault());
+        Assert.NotNull(typeof(CatalogController)
+            .GetMethod(nameof(CatalogController.GetStores))?
+            .GetCustomAttributes(typeof(AllowAnonymousAttribute), inherit: false)
+            .SingleOrDefault());
     }
 
     [Fact]
@@ -99,6 +116,26 @@ public sealed class CatalogControllerTests
         Assert.Equal("STORE_NOT_FOUND", apiResult.ErrorCode);
     }
 
+    [Fact]
+    public async Task GetSellableItemsPage_ReturnsForbiddenWhenDeviceStoreDoesNotMatch()
+    {
+        var controller = new CatalogController(new FakeCatalogService());
+        SetAuthenticatedDevice(controller, storeCode: "S02", deviceCode: "POS-02");
+
+        var result = await controller.GetSellableItemsPage(
+            "S01",
+            since: null,
+            cursor: null,
+            pageSize: 100,
+            CancellationToken.None);
+
+        var forbidden = Assert.IsType<ObjectResult>(result.Result);
+        Assert.Equal(StatusCodes.Status403Forbidden, forbidden.StatusCode);
+        var apiResult = Assert.IsType<ApiResult<CatalogSyncPageResponse>>(forbidden.Value);
+        Assert.False(apiResult.Success);
+        Assert.Equal("DEVICE_SCOPE_FORBIDDEN", apiResult.ErrorCode);
+    }
+
     private static string? GetHttpGetTemplate(string methodName)
     {
         return typeof(CatalogController)
@@ -117,6 +154,27 @@ public sealed class CatalogControllerTests
             .Cast<HttpPostAttribute>()
             .Single()
             .Template;
+    }
+
+    private static void SetAuthenticatedDevice(
+        ControllerBase controller,
+        string storeCode,
+        string deviceCode)
+    {
+        var identity = new ClaimsIdentity(
+        [
+            new Claim(DeviceAuthConstants.StoreCodeClaim, storeCode),
+            new Claim(DeviceAuthConstants.DeviceCodeClaim, deviceCode),
+            new Claim(DeviceAuthConstants.HardwareIdClaim, "HW-001")
+        ], DeviceAuthConstants.Scheme);
+
+        controller.ControllerContext = new ControllerContext
+        {
+            HttpContext = new DefaultHttpContext
+            {
+                User = new ClaimsPrincipal(identity)
+            }
+        };
     }
 
     private sealed class FakeCatalogService : ICatalogService

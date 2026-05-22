@@ -4,6 +4,8 @@ using System.Text.Json;
 using Hbpos.Client.Wpf.Services;
 using Hbpos.Contracts.Catalog;
 using Hbpos.Contracts.Common;
+using Hbpos.Contracts.Health;
+using Hbpos.Contracts.Devices;
 
 namespace Hbpos.Client.Tests;
 
@@ -188,6 +190,42 @@ public sealed class CatalogSyncServiceTests
     }
 
     [Fact]
+    public async Task DeviceAuthorizationMessageHandler_AddsBearerAndDeviceHeaders()
+    {
+        HttpRequestMessage? capturedRequest = null;
+        var state = new DeviceAuthorizationState();
+        state.Set(new DeviceAuthorizationContext("POS-001", "S01", "HW-001", "AUTH-001"));
+        var handler = new DeviceAuthorizationMessageHandler(state)
+        {
+            InnerHandler = new StubHttpMessageHandler((request, _) =>
+            {
+                capturedRequest = request;
+                return JsonResponse(ApiResult<CatalogSyncPageResponse>.Ok(new CatalogSyncPageResponse(
+                    "S01",
+                    Timestamp,
+                    Cursor: null,
+                    [],
+                    [],
+                    NextCursor: null,
+                    HasMore: false,
+                    TotalCount: 0)));
+            })
+        };
+        var client = new CatalogApiClient(new HttpClient(handler)
+        {
+            BaseAddress = new Uri("http://localhost:5000/")
+        });
+
+        await client.GetSellableItemsPageAsync("S01", cursor: null, pageSize: 100);
+
+        Assert.Equal("Bearer", capturedRequest?.Headers.Authorization?.Scheme);
+        Assert.Equal("AUTH-001", capturedRequest?.Headers.Authorization?.Parameter);
+        Assert.Equal("POS-001", capturedRequest?.Headers.GetValues(DeviceAuthConstants.DeviceCodeHeader).Single());
+        Assert.Equal("S01", capturedRequest?.Headers.GetValues(DeviceAuthConstants.StoreCodeHeader).Single());
+        Assert.Equal("HW-001", capturedRequest?.Headers.GetValues(DeviceAuthConstants.HardwareIdHeader).Single());
+    }
+
+    [Fact]
     public async Task CatalogApiClient_LookupSellableItemAsync_ThrowsForStoreNotFound404()
     {
         var handler = new StubHttpMessageHandler((_, _) =>
@@ -221,6 +259,43 @@ public sealed class CatalogSyncServiceTests
         var response = await client.LookupSellableItemAsync("S01", "abc");
 
         Assert.Null(response);
+    }
+
+    [Fact]
+    public async Task ConnectivityApiClient_CheckOnlineAsync_ReturnsTrueWhenHealthEndpointSucceeds()
+    {
+        HttpRequestMessage? capturedRequest = null;
+        var handler = new StubHttpMessageHandler((request, _) =>
+        {
+            capturedRequest = request;
+            return JsonResponse(ApiResult<HealthCheckResponse>.Ok(
+                new HealthCheckResponse(true, DateTimeOffset.UnixEpoch, "ok")));
+        });
+        var client = new ConnectivityApiClient(new HttpClient(handler)
+        {
+            BaseAddress = new Uri("http://localhost:5000/")
+        });
+
+        var isOnline = await client.CheckOnlineAsync();
+
+        Assert.True(isOnline);
+        Assert.Equal(HttpMethod.Get, capturedRequest?.Method);
+        Assert.Equal("http://localhost:5000/api/v1/health", capturedRequest?.RequestUri?.ToString());
+    }
+
+    [Fact]
+    public async Task ConnectivityApiClient_CheckOnlineAsync_ReturnsFalseWhenHealthEndpointFails()
+    {
+        var handler = new StubHttpMessageHandler((_, _) =>
+            new HttpResponseMessage(HttpStatusCode.ServiceUnavailable));
+        var client = new ConnectivityApiClient(new HttpClient(handler)
+        {
+            BaseAddress = new Uri("http://localhost:5000/")
+        });
+
+        var isOnline = await client.CheckOnlineAsync();
+
+        Assert.False(isOnline);
     }
 
     private static CatalogLookupItemDto CreateLookupItem(string productCode, string lookupCode)

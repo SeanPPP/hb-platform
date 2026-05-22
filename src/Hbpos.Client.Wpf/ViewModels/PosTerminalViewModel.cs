@@ -17,6 +17,7 @@ public sealed partial class PosTerminalViewModel : ObservableObject
     private readonly Func<string, string, CancellationToken, Task<RemoteLookupRefreshResult>>? _remoteLookupRefreshAsync;
     private readonly Func<CancellationToken, Task<IReadOnlyList<SellableItemDto>>>? _reloadCatalogAsync;
     private readonly Func<CancellationToken, Task<IReadOnlyList<SellableItemDto>>>? _syncCatalogAsync;
+    private readonly Func<CancellationToken, Task<bool>>? _refreshOnlineAsync;
     private string _statusKey = "pos.status.ready";
     private object[] _statusArgs = [];
     private string? _statusText;
@@ -47,7 +48,8 @@ public sealed partial class PosTerminalViewModel : ObservableObject
         ILocalizationService? localization = null,
         Func<string, string, CancellationToken, Task<RemoteLookupRefreshResult>>? remoteLookupRefreshAsync = null,
         Func<CancellationToken, Task<IReadOnlyList<SellableItemDto>>>? reloadCatalogAsync = null,
-        Func<CancellationToken, Task<IReadOnlyList<SellableItemDto>>>? syncCatalogAsync = null)
+        Func<CancellationToken, Task<IReadOnlyList<SellableItemDto>>>? syncCatalogAsync = null,
+        Func<CancellationToken, Task<bool>>? refreshOnlineAsync = null)
     {
         _priceIndex = priceIndex;
         _cart = cart;
@@ -57,6 +59,7 @@ public sealed partial class PosTerminalViewModel : ObservableObject
         _remoteLookupRefreshAsync = remoteLookupRefreshAsync;
         _reloadCatalogAsync = reloadCatalogAsync;
         _syncCatalogAsync = syncCatalogAsync;
+        _refreshOnlineAsync = refreshOnlineAsync;
         if (_localization is not null)
         {
             _localization.CultureChanged += (_, _) => RaiseLocalizedProperties();
@@ -368,6 +371,12 @@ public sealed partial class PosTerminalViewModel : ObservableObject
 
     private async Task SyncAsync()
     {
+        if (_refreshOnlineAsync is not null)
+        {
+            var isOnline = await _refreshOnlineAsync(CancellationToken.None);
+            Session = Session with { IsOnline = isOnline };
+        }
+
         if (!Session.IsOnline)
         {
             SetStatusText("Offline: catalog sync skipped.");

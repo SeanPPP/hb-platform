@@ -13,14 +13,16 @@ public interface ILocalDeviceRepository
     Task SaveAsync(DeviceVerifyResponse response, string hardwareId, CancellationToken cancellationToken = default);
 }
 
-public sealed class LocalDeviceRepository(LocalSqliteStore store) : ILocalDeviceRepository
+public sealed class LocalDeviceRepository(
+    LocalSqliteStore store,
+    IDeviceAuthorizationProtector authorizationProtector) : ILocalDeviceRepository
 {
     public async Task<LocalDeviceCache?> GetLatestAsync(CancellationToken cancellationToken = default)
     {
         await using var connection = await store.OpenConnectionAsync(cancellationToken);
         await using var command = connection.CreateCommand();
         command.CommandText = """
-            SELECT DeviceCode, StoreCode, StoreName, HardwareId, DeviceStatus, IsAllowed, Message, UpdatedAt
+            SELECT DeviceCode, StoreCode, StoreName, HardwareId, DeviceStatus, IsAllowed, Message, AuthorizationCodeProtected, UpdatedAt
             FROM DeviceCache
             ORDER BY UpdatedAt DESC
             LIMIT 1;
@@ -40,7 +42,8 @@ public sealed class LocalDeviceRepository(LocalSqliteStore store) : ILocalDevice
             ReadInt(reader, "DeviceStatus"),
             ReadInt(reader, "IsAllowed") == 1,
             ReadNullableString(reader, "Message"),
-            ReadDateTimeOffset(reader, "UpdatedAt"));
+            ReadDateTimeOffset(reader, "UpdatedAt"),
+            authorizationProtector.Unprotect(ReadNullableString(reader, "AuthorizationCodeProtected")));
     }
 
     public Task SaveAsync(DeviceRegisterResponse response, string hardwareId, CancellationToken cancellationToken = default)
@@ -53,6 +56,7 @@ public sealed class LocalDeviceRepository(LocalSqliteStore store) : ILocalDevice
             response.DeviceStatus,
             response.IsAllowed,
             response.Message,
+            response.AuthorizationCode,
             cancellationToken);
     }
 
@@ -66,6 +70,7 @@ public sealed class LocalDeviceRepository(LocalSqliteStore store) : ILocalDevice
             response.DeviceStatus,
             response.IsAllowed,
             response.Message,
+            response.AuthorizationCode,
             cancellationToken);
     }
 
@@ -77,13 +82,14 @@ public sealed class LocalDeviceRepository(LocalSqliteStore store) : ILocalDevice
         int deviceStatus,
         bool isAllowed,
         string? message,
+        string? authorizationCode,
         CancellationToken cancellationToken)
     {
         await using var connection = await store.OpenConnectionAsync(cancellationToken);
         await using var command = connection.CreateCommand();
         command.CommandText = """
-            INSERT INTO DeviceCache (DeviceCode, StoreCode, StoreName, HardwareId, DeviceStatus, IsAllowed, Message, UpdatedAt)
-            VALUES ($DeviceCode, $StoreCode, $StoreName, $HardwareId, $DeviceStatus, $IsAllowed, $Message, $UpdatedAt)
+            INSERT INTO DeviceCache (DeviceCode, StoreCode, StoreName, HardwareId, DeviceStatus, IsAllowed, Message, AuthorizationCodeProtected, UpdatedAt)
+            VALUES ($DeviceCode, $StoreCode, $StoreName, $HardwareId, $DeviceStatus, $IsAllowed, $Message, $AuthorizationCodeProtected, $UpdatedAt)
             ON CONFLICT(DeviceCode) DO UPDATE SET
                 StoreCode = excluded.StoreCode,
                 StoreName = excluded.StoreName,
@@ -91,6 +97,7 @@ public sealed class LocalDeviceRepository(LocalSqliteStore store) : ILocalDevice
                 DeviceStatus = excluded.DeviceStatus,
                 IsAllowed = excluded.IsAllowed,
                 Message = excluded.Message,
+                AuthorizationCodeProtected = excluded.AuthorizationCodeProtected,
                 UpdatedAt = excluded.UpdatedAt;
             """;
         command.Parameters.AddWithValue("$DeviceCode", deviceCode);
@@ -100,6 +107,7 @@ public sealed class LocalDeviceRepository(LocalSqliteStore store) : ILocalDevice
         command.Parameters.AddWithValue("$DeviceStatus", deviceStatus);
         command.Parameters.AddWithValue("$IsAllowed", isAllowed ? 1 : 0);
         command.Parameters.AddWithValue("$Message", (object?)message ?? DBNull.Value);
+        command.Parameters.AddWithValue("$AuthorizationCodeProtected", (object?)authorizationProtector.Protect(authorizationCode) ?? DBNull.Value);
         command.Parameters.AddWithValue("$UpdatedAt", DateTimeOffset.UtcNow.ToString("O"));
 
         await command.ExecuteNonQueryAsync(cancellationToken);

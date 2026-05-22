@@ -49,6 +49,11 @@ public sealed class LocalSchemaService(LocalSqliteStore store) : ILocalSchemaSer
         {
             await ExecuteAsync(connection, "ALTER TABLE DeviceCache ADD COLUMN Message TEXT NULL;", cancellationToken);
         }
+
+        if (!columns.Contains("AuthorizationCodeProtected"))
+        {
+            await ExecuteAsync(connection, "ALTER TABLE DeviceCache ADD COLUMN AuthorizationCodeProtected TEXT NULL;", cancellationToken);
+        }
     }
 
     private static async Task EnsureLocalSellableItemIndexColumnsAsync(
@@ -155,6 +160,7 @@ public sealed class LocalSchemaService(LocalSqliteStore store) : ILocalSchemaSer
             DeviceStatus INTEGER NOT NULL DEFAULT 0,
             IsAllowed INTEGER NOT NULL,
             Message TEXT NULL,
+            AuthorizationCodeProtected TEXT NULL,
             UpdatedAt TEXT NOT NULL
         );
         """,

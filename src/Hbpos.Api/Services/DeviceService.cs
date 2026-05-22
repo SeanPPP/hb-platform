@@ -64,10 +64,12 @@ public sealed class DeviceService(HbposSqlSugarContext dbContext) : IDeviceServi
                 store.StoreName,
                 existing.DeviceStatus,
                 existing.DeviceStatus == EnabledStatus,
-                GetStatusMessage(existing.DeviceStatus));
+                GetStatusMessage(existing.DeviceStatus),
+                existing.DeviceStatus == EnabledStatus ? existing.AuthorizationCode : null);
         }
 
         var deviceCode = CreateDeviceCode(storeCode, DateTime.Now);
+        var authorizationCode = Guid.NewGuid().ToString("N");
         const string sql = """
             INSERT INTO [POSM_设备注册信息表]
                 ([设备硬件识别码], [系统设备编号], [分店代码], [设备类型], [设备系统], [设备状态], [设备授权码], [备注], [创建时间], [创建人])
@@ -83,7 +85,7 @@ public sealed class DeviceService(HbposSqlSugarContext dbContext) : IDeviceServi
             new SugarParameter("@DeviceType", "POS"),
             new SugarParameter("@DeviceSystem", "Windows"),
             new SugarParameter("@DeviceStatus", PendingStatus),
-            new SugarParameter("@AuthorizationCode", Guid.NewGuid().ToString("N")),
+            new SugarParameter("@AuthorizationCode", authorizationCode),
             new SugarParameter("@Remark", string.IsNullOrWhiteSpace(terminalName) ? "HBPOS client registration" : $"HBPOS client registration: {terminalName}"),
             new SugarParameter("@CreatedAt", DateTime.Now),
             new SugarParameter("@CreatedBy", "HBPOS_CLIENT")
@@ -97,7 +99,8 @@ public sealed class DeviceService(HbposSqlSugarContext dbContext) : IDeviceServi
             store.StoreName,
             PendingStatus,
             false,
-            GetStatusMessage(PendingStatus));
+            GetStatusMessage(PendingStatus),
+            null);
     }
 
     public async Task<DeviceVerifyResponse> VerifyAsync(
@@ -134,7 +137,8 @@ public sealed class DeviceService(HbposSqlSugarContext dbContext) : IDeviceServi
             store.StoreName,
             device.DeviceStatus,
             device.DeviceStatus == EnabledStatus,
-            GetStatusMessage(device.DeviceStatus));
+            GetStatusMessage(device.DeviceStatus),
+            device.DeviceStatus == EnabledStatus ? device.AuthorizationCode : null);
     }
 
     private async Task<DeviceRegistrationRow?> FindDeviceByHardwareIdAsync(string hardwareId)
@@ -144,7 +148,8 @@ public sealed class DeviceService(HbposSqlSugarContext dbContext) : IDeviceServi
                 [系统设备编号] AS DeviceCode,
                 [分店代码] AS StoreCode,
                 [设备硬件识别码] AS HardwareId,
-                [设备状态] AS DeviceStatus
+                [设备状态] AS DeviceStatus,
+                [设备授权码] AS AuthorizationCode
             FROM [POSM_设备注册信息表]
             WHERE [设备硬件识别码] = @HardwareId
             ORDER BY [ID] DESC;
@@ -162,7 +167,8 @@ public sealed class DeviceService(HbposSqlSugarContext dbContext) : IDeviceServi
                 [系统设备编号] AS DeviceCode,
                 [分店代码] AS StoreCode,
                 [设备硬件识别码] AS HardwareId,
-                [设备状态] AS DeviceStatus
+                [设备状态] AS DeviceStatus,
+                [设备授权码] AS AuthorizationCode
             FROM [POSM_设备注册信息表]
             WHERE [系统设备编号] = @DeviceCode
               AND [分店代码] = @StoreCode;
@@ -226,5 +232,7 @@ public sealed class DeviceService(HbposSqlSugarContext dbContext) : IDeviceServi
         public string? HardwareId { get; set; }
 
         public int DeviceStatus { get; set; }
+
+        public string? AuthorizationCode { get; set; }
     }
 }

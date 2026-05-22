@@ -8,7 +8,8 @@ public sealed record LocalDeviceCache(
     int DeviceStatus,
     bool IsAllowed,
     string? Message,
-    DateTimeOffset UpdatedAt);
+    DateTimeOffset UpdatedAt,
+    string? AuthorizationCode = null);
 
 public sealed record StoreSelectionItem(
     string StoreCode,
