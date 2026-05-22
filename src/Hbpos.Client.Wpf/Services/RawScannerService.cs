@@ -51,8 +51,11 @@ public sealed class RawScannerService(
     private readonly DispatcherTimer _flushTimer = new() { Interval = TimeSpan.FromMilliseconds(40) };
     private string? _activePageId;
     private string? _boundDevicePath;
+    private string? _lastRejectedDevicePath;
+    private Key? _lastUnmappedKey;
     private bool _isBinding;
     private bool _isInitialized;
+    private bool _loggedEmptyDevicePath;
 
     public bool IsActive { get; private set; }
 
@@ -73,16 +76,19 @@ public sealed class RawScannerService(
     public void Subscribe(string pageId, Action<RawBarcodeScannedEventArgs> handler)
     {
         _handlers[pageId] = handler;
+        ConsoleLog.Write("RawScanner", $"handler subscribed page={pageId}");
     }
 
     public void Unsubscribe(string pageId)
     {
         _handlers.Remove(pageId);
+        ConsoleLog.Write("RawScanner", $"handler unsubscribed page={pageId}");
     }
 
     public void SetActivePage(string? pageId)
     {
         _activePageId = pageId;
+        ConsoleLog.Write("RawScanner", $"active page set page={pageId ?? "<none>"}");
     }
 
     public void Start(IntPtr hwnd)
@@ -186,20 +192,13 @@ public sealed class RawScannerService(
             var devicePath = GetDevicePath(raw.header.hDevice);
             if (string.IsNullOrWhiteSpace(devicePath))
             {
+                LogEmptyDevicePath();
                 return;
             }
 
-            RawScannerInputResult? result = null;
             var timestamp = DateTimeOffset.Now;
             var key = KeyInterop.KeyFromVirtualKey(raw.keyboard.VKey);
-            if (key == Key.Enter)
-            {
-                result = inputProcessor.ProcessEnter(devicePath, timestamp, _boundDevicePath);
-            }
-            else if (TryMapCharacter(key, out var character))
-            {
-                result = inputProcessor.ProcessCharacter(devicePath, character, timestamp, _boundDevicePath);
-            }
+            var result = ProcessScannerKey(devicePath, key, timestamp);
 
             if (result is not null)
             {
@@ -210,6 +209,40 @@ public sealed class RawScannerService(
         {
             Marshal.FreeHGlobal(buffer);
         }
+    }
+
+    internal RawScannerInputResult? ProcessScannerKeyForDiagnostics(string devicePath, Key key, DateTimeOffset timestamp)
+    {
+        return ProcessScannerKey(devicePath, key, timestamp);
+    }
+
+    internal void DispatchResultForDiagnostics(RawScannerInputResult result)
+    {
+        DispatchResult(result);
+    }
+
+    private RawScannerInputResult? ProcessScannerKey(string devicePath, Key key, DateTimeOffset timestamp)
+    {
+        if (!RawScannerInputProcessor.CanAcceptDevice(devicePath, _boundDevicePath))
+        {
+            LogRejectedDevice(devicePath);
+            return null;
+        }
+
+        _lastRejectedDevicePath = null;
+        if (key == Key.Enter)
+        {
+            return inputProcessor.ProcessEnter(devicePath, timestamp, _boundDevicePath);
+        }
+
+        if (TryMapCharacter(key, out var character))
+        {
+            _lastUnmappedKey = null;
+            return inputProcessor.ProcessCharacter(devicePath, character, timestamp, _boundDevicePath);
+        }
+
+        LogUnmappedKey(key, devicePath);
+        return null;
     }
 
     private void OnFlushTimerTick(object? sender, EventArgs e)
@@ -224,7 +257,7 @@ public sealed class RawScannerService(
     {
         if (_activePageId is null || !_handlers.TryGetValue(_activePageId, out var handler))
         {
-            ConsoleLog.Write("RawScanner", $"scan ignored because no active handler barcode={result.Barcode}");
+            ConsoleLog.Write("RawScanner", $"scan ignored because no active handler page={_activePageId ?? "<none>"} barcode={result.Barcode}");
             return;
         }
 
@@ -236,6 +269,41 @@ public sealed class RawScannerService(
 
         ConsoleLog.Write("RawScanner", $"scan accepted barcode={result.Barcode} completion={result.CompletionKind}");
         handler(new RawBarcodeScannedEventArgs(result.Barcode, result.DevicePath, DateTimeOffset.Now));
+    }
+
+    private void LogEmptyDevicePath()
+    {
+        if (_loggedEmptyDevicePath)
+        {
+            return;
+        }
+
+        _loggedEmptyDevicePath = true;
+        ConsoleLog.Write("RawScanner", "raw input ignored because device path is empty");
+    }
+
+    private void LogRejectedDevice(string devicePath)
+    {
+        if (string.Equals(_lastRejectedDevicePath, devicePath, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        _lastRejectedDevicePath = devicePath;
+        ConsoleLog.Write(
+            "RawScanner",
+            $"raw input ignored because scanner device does not match binding currentPath={devicePath} boundPath={_boundDevicePath ?? "<none>"}; use Reset scanner binding and scan once to learn the scanner");
+    }
+
+    private void LogUnmappedKey(Key key, string devicePath)
+    {
+        if (_lastUnmappedKey == key)
+        {
+            return;
+        }
+
+        _lastUnmappedKey = key;
+        ConsoleLog.Write("RawScanner", $"raw input key ignored because it cannot be mapped key={key} devicePath={devicePath}");
     }
 
     private async Task PersistBoundDevicePathAsync(string devicePath)

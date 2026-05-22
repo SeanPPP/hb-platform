@@ -1,4 +1,6 @@
 using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Threading;
@@ -14,6 +16,7 @@ public partial class MainWindow : Window
     private readonly IRawScannerService _rawScannerService;
     private HwndSource? _hwndSource;
     private Task? _startupInitializationTask;
+    private readonly KeyboardScannerFallbackBuffer _keyboardScannerFallback = new();
     private bool _postShowStartupStarted;
 
     public event EventHandler? StartupCompleted;
@@ -30,6 +33,7 @@ public partial class MainWindow : Window
         InitializeComponent();
         SourceInitialized += MainWindowSourceInitialized;
         Loaded += MainWindowLoaded;
+        PreviewKeyDown += MainWindowPreviewKeyDown;
         Closed += MainWindowClosed;
     }
 
@@ -87,8 +91,34 @@ public partial class MainWindow : Window
 
     private void MainWindowClosed(object? sender, EventArgs e)
     {
+        PreviewKeyDown -= MainWindowPreviewKeyDown;
         _hwndSource?.RemoveHook(_rawScannerService.ProcessWindowMessage);
         _rawScannerService.Stop();
+    }
+
+    private void MainWindowPreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (IsTextInputFocused())
+        {
+            _keyboardScannerFallback.Clear();
+            return;
+        }
+
+        var result = _keyboardScannerFallback.Process(e.Key, DateTimeOffset.Now);
+        if (result is null)
+        {
+            return;
+        }
+
+        if (_viewModel.TryProcessKeyboardScannerInput(result))
+        {
+            e.Handled = true;
+        }
+    }
+
+    private static bool IsTextInputFocused()
+    {
+        return Keyboard.FocusedElement is TextBoxBase or PasswordBox or ComboBox;
     }
 
     private void TitleBar_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
@@ -125,5 +155,82 @@ public partial class MainWindow : Window
         WindowState = WindowState == WindowState.Maximized
             ? WindowState.Normal
             : WindowState.Maximized;
+    }
+}
+
+internal sealed class KeyboardScannerFallbackBuffer
+{
+    private static readonly TimeSpan ScanTimeout = TimeSpan.FromMilliseconds(120);
+    private const int MinBarcodeLength = 3;
+    private readonly System.Text.StringBuilder _buffer = new();
+    private DateTimeOffset _lastInputAt = DateTimeOffset.MinValue;
+
+    public string? Process(Key key, DateTimeOffset timestamp)
+    {
+        if (key == Key.Enter)
+        {
+            return Complete();
+        }
+
+        if (!TryMapCharacter(key, out var character))
+        {
+            Clear();
+            return null;
+        }
+
+        if (_buffer.Length > 0 && timestamp - _lastInputAt > ScanTimeout)
+        {
+            _buffer.Clear();
+        }
+
+        _buffer.Append(character);
+        _lastInputAt = timestamp;
+        return null;
+    }
+
+    public void Clear()
+    {
+        _buffer.Clear();
+        _lastInputAt = DateTimeOffset.MinValue;
+    }
+
+    private string? Complete()
+    {
+        var barcode = _buffer.ToString();
+        Clear();
+        return barcode.Length >= MinBarcodeLength ? barcode : null;
+    }
+
+    private static bool TryMapCharacter(Key key, out char character)
+    {
+        if (key >= Key.D0 && key <= Key.D9)
+        {
+            character = (char)('0' + (key - Key.D0));
+            return true;
+        }
+
+        if (key >= Key.NumPad0 && key <= Key.NumPad9)
+        {
+            character = (char)('0' + (key - Key.NumPad0));
+            return true;
+        }
+
+        if (key >= Key.A && key <= Key.Z)
+        {
+            character = (char)('A' + (key - Key.A));
+            return true;
+        }
+
+        character = key switch
+        {
+            Key.OemMinus or Key.Subtract => '-',
+            Key.OemPlus or Key.Add => '+',
+            Key.OemPeriod or Key.Decimal => '.',
+            Key.OemComma => ',',
+            Key.Space => ' ',
+            _ => '\0'
+        };
+
+        return character != '\0';
     }
 }

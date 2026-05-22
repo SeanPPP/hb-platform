@@ -41,7 +41,7 @@
                            FontWeight="Black"
                            Foreground="#FF1E293B"
                            HorizontalAlignment="Center" />
-                <TextBlock Text="Starting point of sale"
+                <TextBlock Text="正在加载商品目录..."
                            Margin="0,6,0,0"
                            FontSize="13"
                            Foreground="#FF64748B"

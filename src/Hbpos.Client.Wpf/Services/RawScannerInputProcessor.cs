@@ -105,6 +105,13 @@ public sealed class RawScannerInputProcessor
         }
     }
 
+    public static bool CanAcceptDevice(string devicePath, string? boundDevicePath)
+    {
+        return !string.IsNullOrWhiteSpace(devicePath) &&
+            (string.IsNullOrWhiteSpace(boundDevicePath) ||
+                string.Equals(devicePath, boundDevicePath, StringComparison.OrdinalIgnoreCase));
+    }
+
     private ScannerBuffer GetBuffer(string devicePath)
     {
         if (!_buffers.TryGetValue(devicePath, out var buffer))
@@ -127,13 +134,6 @@ public sealed class RawScannerInputProcessor
         return barcode.Length >= _minBarcodeLength
             ? new RawScannerInputResult(barcode, devicePath, completionKind)
             : null;
-    }
-
-    private static bool CanAcceptDevice(string devicePath, string? boundDevicePath)
-    {
-        return !string.IsNullOrWhiteSpace(devicePath) &&
-            (string.IsNullOrWhiteSpace(boundDevicePath) ||
-                string.Equals(devicePath, boundDevicePath, StringComparison.OrdinalIgnoreCase));
     }
 
     private sealed class ScannerBuffer

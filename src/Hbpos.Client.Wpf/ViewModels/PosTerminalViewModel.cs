@@ -543,9 +543,15 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IDisposable
 
     private void OnRawBarcodeScanned(RawBarcodeScannedEventArgs e)
     {
-        ScanText = e.Barcode;
+        ProcessScannerBarcode(e.Barcode, e.DevicePath, "raw");
+    }
+
+    public void ProcessScannerBarcode(string barcode, string devicePath, string source)
+    {
+        ConsoleLog.Write("PosScan", $"{source} scanner event received barcode={barcode} devicePath={devicePath}");
+        ScanText = barcode;
         IsTouchKeyboardOpen = false;
-        ProcessScan(e.Barcode, preferExactLookup: true, source: "raw");
+        ProcessScan(barcode, preferExactLookup: true, source);
     }
 
     private void ClearSearch()

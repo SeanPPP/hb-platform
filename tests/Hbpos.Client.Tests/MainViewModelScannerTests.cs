@@ -73,6 +73,113 @@ public sealed class MainViewModelScannerTests
         Assert.Equal(0, deviceApi.GetStoresCallCount);
     }
 
+    [Fact]
+    public async Task InitializeAsync_LoadsLocalCatalogBeforeShowingPos()
+    {
+        var index = new LocalSellableItemIndex();
+        var catalog = new FakeCatalogRepository
+        {
+            Items = [CreateItem("1042", "SKU-001", "9528502522381")]
+        };
+        var viewModel = new MainViewModel(
+            index,
+            new PosCartService(),
+            new CashCheckoutService(),
+            new FakeLocalSchemaService(),
+            new FakeSettingsRepository(),
+            catalog,
+            new FakeCatalogSyncService(),
+            new FakeRemoteLookupRefreshService(),
+            new FakeConnectivityApiClient(),
+            new FakeLocalDeviceRepository { Latest = CreateAllowedDevice("1042") },
+            new FakeDeviceApiClient(),
+            new FakeDeviceFingerprintService(),
+            new DeviceAuthorizationState(),
+            new FakeLocalOrderRepository(),
+            new FakeSyncQueueRepository(),
+            new LocalizationService(),
+            new FakeCustomerDisplayWindowService(),
+            new FakeRawScannerService());
+
+        var startupOptions = new AppStartupOptions([], false, null, null);
+
+        await viewModel.InitializeAsync(startupOptions);
+
+        Assert.Equal(1, catalog.LoadSellableItemsCallCount);
+        Assert.Same(viewModel.PosTerminal, viewModel.CurrentScreen);
+        Assert.Equal("SKU-001", Assert.Single(index.FindExactMatches("1042", "9528502522381")).ProductCode);
+
+        await viewModel.ContinueStartupAfterShownAsync(startupOptions);
+
+        Assert.Equal(1, catalog.LoadSellableItemsCallCount);
+    }
+
+    [Fact]
+    public async Task InitializeAsync_WhenLocalCatalogLoadFails_StillShowsPosWithStatusMessage()
+    {
+        var catalog = new FakeCatalogRepository
+        {
+            LoadSellableItemsException = new InvalidOperationException("catalog load failed")
+        };
+        var viewModel = new MainViewModel(
+            new LocalSellableItemIndex(),
+            new PosCartService(),
+            new CashCheckoutService(),
+            new FakeLocalSchemaService(),
+            new FakeSettingsRepository(),
+            catalog,
+            new FakeCatalogSyncService(),
+            new FakeRemoteLookupRefreshService(),
+            new FakeConnectivityApiClient(),
+            new FakeLocalDeviceRepository { Latest = CreateAllowedDevice("1042") },
+            new FakeDeviceApiClient(),
+            new FakeDeviceFingerprintService(),
+            new DeviceAuthorizationState(),
+            new FakeLocalOrderRepository(),
+            new FakeSyncQueueRepository(),
+            new LocalizationService(),
+            new FakeCustomerDisplayWindowService(),
+            new FakeRawScannerService());
+
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+
+        Assert.Equal(1, catalog.LoadSellableItemsCallCount);
+        Assert.Same(viewModel.PosTerminal, viewModel.CurrentScreen);
+        Assert.Contains("catalog load failed", viewModel.StatusMessage, StringComparison.Ordinal);
+    }
+
+    private static LocalDeviceCache CreateAllowedDevice(string storeCode)
+    {
+        return new LocalDeviceCache(
+            "POS-001",
+            storeCode,
+            "Main Store",
+            "HW-001",
+            1,
+            true,
+            null,
+            DateTimeOffset.UtcNow,
+            "AUTH-001");
+    }
+
+    private static SellableItemDto CreateItem(string storeCode, string productCode, string lookupCode)
+    {
+        return new SellableItemDto(
+            storeCode,
+            productCode,
+            null,
+            "Test Item",
+            lookupCode,
+            null,
+            lookupCode,
+            9.9m,
+            PriceSourceKind.StoreRetailPrice,
+            "Store price",
+            1m,
+            DateTimeOffset.UtcNow,
+            null);
+    }
+
     private sealed class FakeRawScannerService : IRawScannerService
     {
         public bool IsActive { get; private set; }
@@ -150,6 +257,12 @@ public sealed class MainViewModelScannerTests
 
     private sealed class FakeCatalogRepository : ILocalCatalogRepository
     {
+        public IReadOnlyList<SellableItemDto> Items { get; init; } = [];
+
+        public Exception? LoadSellableItemsException { get; init; }
+
+        public int LoadSellableItemsCallCount { get; private set; }
+
         public Task ReplaceSellableItemsAsync(IEnumerable<SellableItemDto> items, CancellationToken cancellationToken = default)
         {
             return Task.CompletedTask;
@@ -181,7 +294,10 @@ public sealed class MainViewModelScannerTests
 
         public Task<IReadOnlyList<SellableItemDto>> LoadSellableItemsAsync(CancellationToken cancellationToken = default)
         {
-            return Task.FromResult<IReadOnlyList<SellableItemDto>>([]);
+            LoadSellableItemsCallCount++;
+            return LoadSellableItemsException is null
+                ? Task.FromResult(Items)
+                : Task.FromException<IReadOnlyList<SellableItemDto>>(LoadSellableItemsException);
         }
     }
 
@@ -217,9 +333,11 @@ public sealed class MainViewModelScannerTests
 
     private sealed class FakeLocalDeviceRepository : ILocalDeviceRepository
     {
+        public LocalDeviceCache? Latest { get; init; }
+
         public Task<LocalDeviceCache?> GetLatestAsync(CancellationToken cancellationToken = default)
         {
-            return Task.FromResult<LocalDeviceCache?>(null);
+            return Task.FromResult(Latest);
         }
 
         public Task SaveAsync(DeviceRegisterResponse response, string hardwareId, CancellationToken cancellationToken = default)

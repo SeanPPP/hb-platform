@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.Diagnostics;
 using System.Windows;
 using System.Windows.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
@@ -275,6 +276,18 @@ public sealed partial class MainViewModel : ObservableObject
         return ContinuePosStartupAfterShownAsync(startupOptions);
     }
 
+    public bool TryProcessKeyboardScannerInput(string barcode)
+    {
+        if (CurrentScreen != PosTerminal || PosTerminal is null)
+        {
+            ConsoleLog.Write("RawScanner", $"keyboard fallback scan ignored because POS is not active barcode={barcode}");
+            return false;
+        }
+
+        PosTerminal.ProcessScannerBarcode(barcode, "keyboard-focus-fallback", "keyboard-fallback");
+        return true;
+    }
+
     private async Task ActivateDeviceAsync(DeviceActivatedEventArgs args, AppStartupOptions startupOptions)
     {
         Session = Session with
@@ -304,6 +317,10 @@ public sealed partial class MainViewModel : ObservableObject
             cachedItems = CreateStarterItems();
             await _catalogRepository.ReplaceSellableItemsAsync(cachedItems);
             _priceIndex.ReplaceAll(cachedItems);
+        }
+        else
+        {
+            cachedItems = await LoadStartupCatalogIndexAsync();
         }
 
         PosTerminal = new PosTerminalViewModel(
@@ -352,24 +369,31 @@ public sealed partial class MainViewModel : ObservableObject
 
     private async Task ContinuePosStartupAfterShownCoreAsync()
     {
-        await LoadStartupCatalogIndexAsync();
         await RefreshOnlineStateAsync(CancellationToken.None);
         _connectivityTimer.Start();
         BeginInitialCatalogSync();
     }
 
-    private async Task LoadStartupCatalogIndexAsync()
+    private async Task<IReadOnlyList<SellableItemDto>> LoadStartupCatalogIndexAsync()
     {
+        var stopwatch = Stopwatch.StartNew();
+        ConsoleLog.Write("CatalogStartup", $"local catalog load start store={Session.StoreCode}");
         try
         {
             var cachedItems = await Task.Run(() => ReloadCatalogIndexAsync(CancellationToken.None));
             PosTerminal?.LoadMatches(cachedItems);
             PosTerminal?.RefreshCart();
             CashPayment?.RefreshCart();
+            stopwatch.Stop();
+            ConsoleLog.Write("CatalogStartup", $"local catalog load completed store={Session.StoreCode} items={cachedItems.Count} elapsedMs={stopwatch.ElapsedMilliseconds}");
+            return cachedItems;
         }
         catch (Exception ex)
         {
+            stopwatch.Stop();
+            ConsoleLog.Write("CatalogStartup", $"local catalog load failed store={Session.StoreCode} elapsedMs={stopwatch.ElapsedMilliseconds} error={ex.Message}");
             StatusMessage = ex.Message;
+            return [];
         }
     }
 

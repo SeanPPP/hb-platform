@@ -9,13 +9,18 @@ internal static class ConsoleLog
     private const int AttachParentProcess = -1;
     private static int _attachAttempted;
 
+    internal static event Action<string>? LineWritten;
+
     public static void Write(string category, string message)
     {
         EnsureConsoleAttached();
         var line = $"[HBPOS][Client][{category}] {DateTimeOffset.Now:O} {message}";
         Console.WriteLine(line);
         Debug.WriteLine(line);
+        Trace.WriteLine(line);
+        WriteDebuggerOutput(line);
         WriteFileLog(line);
+        LineWritten?.Invoke(line);
     }
 
     private static void WriteFileLog(string line)
@@ -46,6 +51,17 @@ internal static class ConsoleLog
         _ = AttachConsole(AttachParentProcess);
     }
 
+    private static void WriteDebuggerOutput(string line)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            OutputDebugString(line + Environment.NewLine);
+        }
+    }
+
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool AttachConsole(int dwProcessId);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+    private static extern void OutputDebugString(string lpOutputString);
 }
