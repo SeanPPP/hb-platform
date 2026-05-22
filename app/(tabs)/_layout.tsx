@@ -7,31 +7,7 @@ import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 import { useAuthStore } from "@/store/auth-store";
 import { useDeviceStore } from "@/store/device-store";
 import { useAppNavigationStore } from "@/modules/navigation/store";
-
-type TabPath =
-  | "/(tabs)/home"
-  | "/(tabs)/orders"
-  | "/(tabs)/cart"
-  | "/(tabs)/warehouse"
-  | "/(tabs)/domestic-purchase"
-  | "/(tabs)/attendance"
-  | "/(tabs)/product-query"
-  | "/(tabs)/users"
-  | "/(tabs)/employee-profile"
-  | "/(tabs)/settings";
-
-const TAB_PATHS: Record<string, TabPath> = {
-  home: "/(tabs)/home",
-  orders: "/(tabs)/orders",
-  cart: "/(tabs)/cart",
-  warehouse: "/(tabs)/warehouse",
-  "domestic-purchase": "/(tabs)/domestic-purchase",
-  attendance: "/(tabs)/attendance",
-  "product-query": "/(tabs)/product-query",
-  users: "/(tabs)/users",
-  "employee-profile": "/(tabs)/employee-profile",
-  settings: "/(tabs)/settings",
-};
+import { resolveDefaultTabRoute } from "@/modules/navigation/default-route";
 
 export default function TabsLayout() {
   const router = useRouter();
@@ -136,7 +112,10 @@ export default function TabsLayout() {
     () => new Set(navigationItems.map((item) => item.routeName)),
     [navigationItems]
   );
-  const firstVisibleRouteName = navigationItems[0]?.routeName ?? "settings";
+  const orderedVisibleRouteNames = useMemo(
+    () => navigationItems.map((item) => item.routeName),
+    [navigationItems]
+  );
   const shouldWaitForNavigation =
     (hasUserSession || isDeviceMode) && (!navigationReady || navigationLoading);
   const isRouteVisible = (routeName: string) =>
@@ -152,9 +131,12 @@ export default function TabsLayout() {
       return;
     }
 
-    const nextPath = TAB_PATHS[firstVisibleRouteName] ?? "/(tabs)/settings";
+    const nextPath = resolveDefaultTabRoute({
+      isDeviceMode,
+      routeNames: orderedVisibleRouteNames,
+    });
     router.replace(nextPath as Parameters<typeof router.replace>[0]);
-  }, [firstVisibleRouteName, pathname, router, shouldWaitForNavigation, visibleRouteNames]);
+  }, [isDeviceMode, orderedVisibleRouteNames, pathname, router, shouldWaitForNavigation, visibleRouteNames]);
 
   if (
     shouldWaitForNavigation ||

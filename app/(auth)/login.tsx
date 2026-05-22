@@ -23,6 +23,8 @@ import {
 } from "react-native-paper";
 import { useState, useEffect, useRef } from "react";
 import { useAuthStore } from "@/store/auth-store";
+import { resolveDefaultTabRoute } from "@/modules/navigation/default-route";
+import { useAppNavigationStore } from "@/modules/navigation/store";
 import { i18n, setAppLanguage } from "@/shared/i18n/i18n";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 import { AppAsyncStorage } from "@/shared/storage/async-storage";
@@ -71,6 +73,10 @@ function getFriendlyLoginErrorMessage(error: unknown): string {
     return i18n.t("login:errors.http", { status });
   }
   return i18n.t("login:errors.default");
+}
+
+function getVisibleRouteNames() {
+  return useAppNavigationStore.getState().items.map((item) => item.routeName);
 }
 
 export default function Login() {
@@ -177,7 +183,12 @@ export default function Login() {
     setLoading(true);
     try {
       await loginFn({ username, password });
-      router.replace("/(tabs)/home");
+      router.replace(
+        resolveDefaultTabRoute({
+          isDeviceMode: false,
+          routeNames: getVisibleRouteNames(),
+        }) as Parameters<typeof router.replace>[0]
+      );
     } catch (err) {
       setError(getFriendlyLoginErrorMessage(err));
       setSnackbarVisible(true);
