@@ -2,51 +2,63 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { RefreshControl, ScrollView, StyleSheet, View } from "react-native";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "expo-router";
-import { ActivityIndicator, Button, Chip, Snackbar, Text } from "react-native-paper";
+import { ActivityIndicator, Button, Chip, SegmentedButtons, Snackbar, Text } from "react-native-paper";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { AvailabilityForm } from "@/components/attendance/AvailabilityForm";
-import { LeaveRequestCard } from "@/components/attendance/LeaveRequestCard";
+import { HolidayManagementCard } from "@/components/attendance/HolidayManagementCard";
 import { ManagerApprovalList } from "@/components/attendance/ManagerApprovalList";
+import { MonthDatePickerCard } from "@/components/attendance/MonthDatePicker";
 import { ScheduleManagementCard } from "@/components/attendance/ScheduleManagementCard";
 import { TodayPunchCard } from "@/components/attendance/TodayPunchCard";
 import { WeeklyScheduleTable } from "@/components/attendance/WeeklyScheduleTable";
 import {
   approveAttendanceApproval,
   cancelAvailability,
-  cancelLeaveRequest,
+  createAttendanceHoliday,
   createAttendanceSchedule,
   createAvailability,
-  createLeaveRequest,
+  deleteAttendanceHoliday,
   deleteAttendanceSchedule,
+  getAttendanceHolidays,
   getAttendanceSchedulesWeek,
   getMyAttendanceToday,
   getMyAttendanceWeek,
   getMyAvailability,
-  getMyLeaveRequests,
   getPendingApprovals,
   punchAttendance,
   publishAttendanceSchedulesWeek,
   rejectAttendanceApproval,
+  updateAttendanceHoliday,
   updateAttendanceSchedule,
   updateAvailability,
 } from "@/modules/attendance/api";
 import type {
   AttendanceAvailabilityPayload,
-  AttendanceLeaveRequestPayload,
   AttendancePunchType,
   AttendanceSchedulePayload,
   AttendanceScheduleUpdatePayload,
+  AttendanceStoreHolidayPayload,
 } from "@/modules/attendance/types";
 import { useStoreUsers } from "@/modules/users";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 import { useAuthStore } from "@/store/auth-store";
 
+type AttendanceSection = "employee" | "manager";
+
 function toDateString(date: Date) {
-  return date.toISOString().slice(0, 10);
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
 }
 
-function getWeekStartDate(value = new Date()) {
-  const date = new Date(value);
+function parseDate(value: Date | string) {
+  const date = value instanceof Date ? new Date(value) : new Date(`${value}T00:00:00`);
+  return Number.isNaN(date.getTime()) ? new Date() : date;
+}
+
+function getWeekStartDate(value: Date | string = new Date()) {
+  const date = parseDate(value);
   const diff = (date.getDay() + 6) % 7;
   date.setDate(date.getDate() - diff);
   return toDateString(date);
@@ -62,11 +74,14 @@ function addWeeks(weekStartDate: string, weeks: number) {
 }
 
 const attendanceKeys = {
-  today: (storeCode?: string) => ["attendance", "my", "today", storeCode ?? "all"] as const,
-  week: (storeCode?: string) => ["attendance", "my", "week", storeCode ?? "all"] as const,
-  availability: (storeCode?: string) => ["attendance", "my", "availability", storeCode ?? "all"] as const,
-  leaves: ["attendance", "my", "leave-requests"] as const,
+  today: (storeCode?: string, workDate?: string) =>
+    ["attendance", "my", "today", storeCode ?? "all", workDate ?? "today"] as const,
+  week: (storeCode?: string, weekStartDate?: string) =>
+    ["attendance", "my", "week", storeCode ?? "all", weekStartDate ?? "current"] as const,
+  availability: (storeCode?: string, weekStartDate?: string) =>
+    ["attendance", "my", "availability", storeCode ?? "all", weekStartDate ?? "current"] as const,
   approvals: (storeCode?: string) => ["attendance", "approvals", "pending", storeCode ?? "all"] as const,
+  holidays: (storeCode?: string) => ["attendance", "holidays", storeCode ?? "all"] as const,
   schedulesWeek: (storeCode?: string, weekStartDate?: string) =>
     ["attendance", "schedules", "week", storeCode ?? "all", weekStartDate ?? "current"] as const,
 };
@@ -78,6 +93,8 @@ export default function AttendanceScreen() {
   const user = useAuthStore((state) => state.user);
   const access = useAuthStore((state) => state.access);
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated);
+  const [activeSection, setActiveSection] = useState<AttendanceSection>("employee");
+  const [selectedDate, setSelectedDate] = useState(() => toDateString(new Date()));
   const [selectedStoreCode, setSelectedStoreCode] = useState<string | undefined>(undefined);
   const [managerWeekStartDate, setManagerWeekStartDate] = useState(getWeekStartDate);
   const [snackbarMessage, setSnackbarMessage] = useState("");
@@ -85,12 +102,22 @@ export default function AttendanceScreen() {
 
   const stores = user?.stores ?? [];
   const canReview = access.isAdmin || access.isStoreManager;
+  const isEmployeeSection = activeSection === "employee";
+  const isManagerSection = canReview && activeSection === "manager";
+  const employeeWeekStartDate = useMemo(() => getWeekStartDate(selectedDate), [selectedDate]);
+  const todayDate = useMemo(() => toDateString(new Date()), []);
 
   useEffect(() => {
     if (!selectedStoreCode && stores.length > 0) {
       setSelectedStoreCode(stores[0].storeCode);
     }
   }, [selectedStoreCode, stores]);
+
+  useEffect(() => {
+    if (!canReview && activeSection !== "employee") {
+      setActiveSection("employee");
+    }
+  }, [activeSection, canReview]);
 
   const showMessage = useCallback((message: string) => {
     setSnackbarMessage(message);
@@ -106,35 +133,35 @@ export default function AttendanceScreen() {
   }, [isAuthenticated, router, showMessage, t, user]);
 
   const todayQuery = useQuery({
-    queryKey: attendanceKeys.today(selectedStoreCode),
-    queryFn: () => getMyAttendanceToday(selectedStoreCode),
-    enabled: Boolean(isAuthenticated && user),
+    queryKey: attendanceKeys.today(selectedStoreCode, selectedDate),
+    queryFn: () => getMyAttendanceToday(selectedStoreCode, selectedDate),
+    enabled: Boolean(isAuthenticated && user && isEmployeeSection),
   });
   const weekQuery = useQuery({
-    queryKey: attendanceKeys.week(selectedStoreCode),
-    queryFn: () => getMyAttendanceWeek(selectedStoreCode),
-    enabled: Boolean(isAuthenticated && user),
+    queryKey: attendanceKeys.week(selectedStoreCode, employeeWeekStartDate),
+    queryFn: () => getMyAttendanceWeek(selectedStoreCode, employeeWeekStartDate),
+    enabled: Boolean(isAuthenticated && user && isEmployeeSection),
   });
   const availabilityQuery = useQuery({
-    queryKey: attendanceKeys.availability(selectedStoreCode),
-    queryFn: () => getMyAvailability(selectedStoreCode),
-    enabled: Boolean(isAuthenticated && user),
-  });
-  const leaveQuery = useQuery({
-    queryKey: attendanceKeys.leaves,
-    queryFn: getMyLeaveRequests,
-    enabled: Boolean(isAuthenticated && user),
+    queryKey: attendanceKeys.availability(selectedStoreCode, employeeWeekStartDate),
+    queryFn: () => getMyAvailability(selectedStoreCode, employeeWeekStartDate),
+    enabled: Boolean(isAuthenticated && user && isEmployeeSection),
   });
   const approvalsQuery = useQuery({
     queryKey: attendanceKeys.approvals(selectedStoreCode),
     queryFn: () => getPendingApprovals(selectedStoreCode),
-    enabled: Boolean(isAuthenticated && user && canReview),
+    enabled: Boolean(isAuthenticated && user && isManagerSection),
   });
-  const storeUsersQuery = useStoreUsers(canReview ? selectedStoreCode : null);
+  const storeUsersQuery = useStoreUsers(isManagerSection ? selectedStoreCode : null);
   const managerSchedulesQuery = useQuery({
     queryKey: attendanceKeys.schedulesWeek(selectedStoreCode, managerWeekStartDate),
     queryFn: () => getAttendanceSchedulesWeek({ storeCode: selectedStoreCode, weekStartDate: managerWeekStartDate }),
-    enabled: Boolean(isAuthenticated && user && canReview && selectedStoreCode),
+    enabled: Boolean(isAuthenticated && user && isManagerSection && selectedStoreCode),
+  });
+  const holidaysQuery = useQuery({
+    queryKey: attendanceKeys.holidays(selectedStoreCode),
+    queryFn: () => getAttendanceHolidays({ storeCode: selectedStoreCode }),
+    enabled: Boolean(isAuthenticated && user && isManagerSection && selectedStoreCode),
   });
 
   const invalidateEmployeeData = useCallback(async () => {
@@ -142,7 +169,6 @@ export default function AttendanceScreen() {
       queryClient.invalidateQueries({ queryKey: ["attendance", "my", "today"] }),
       queryClient.invalidateQueries({ queryKey: ["attendance", "my", "week"] }),
       queryClient.invalidateQueries({ queryKey: ["attendance", "my", "availability"] }),
-      queryClient.invalidateQueries({ queryKey: attendanceKeys.leaves }),
     ]);
   }, [queryClient]);
 
@@ -152,6 +178,13 @@ export default function AttendanceScreen() {
       invalidateEmployeeData(),
     ]);
   }, [invalidateEmployeeData, queryClient]);
+
+  const invalidateHolidayManagementData = useCallback(async () => {
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ["attendance", "holidays"] }),
+      invalidateScheduleManagementData(),
+    ]);
+  }, [invalidateScheduleManagementData, queryClient]);
 
   const punchMutation = useMutation({
     mutationFn: punchAttendance,
@@ -186,27 +219,6 @@ export default function AttendanceScreen() {
     onSuccess: async () => {
       await invalidateEmployeeData();
       showMessage(t("messages.availabilityCancelled"));
-    },
-    onError: (error) => showMessage(error instanceof Error ? error.message : t("messages.cancelFailed")),
-  });
-
-  const createLeaveMutation = useMutation({
-    mutationFn: createLeaveRequest,
-    onSuccess: async () => {
-      await invalidateEmployeeData();
-      if (canReview) {
-        await queryClient.invalidateQueries({ queryKey: ["attendance", "approvals", "pending"] });
-      }
-      showMessage(t("messages.leaveSubmitted"));
-    },
-    onError: (error) => showMessage(error instanceof Error ? error.message : t("messages.saveFailed")),
-  });
-
-  const cancelLeaveMutation = useMutation({
-    mutationFn: cancelLeaveRequest,
-    onSuccess: async () => {
-      await invalidateEmployeeData();
-      showMessage(t("messages.leaveCancelled"));
     },
     onError: (error) => showMessage(error instanceof Error ? error.message : t("messages.cancelFailed")),
   });
@@ -268,29 +280,64 @@ export default function AttendanceScreen() {
     onError: (error) => showMessage(error instanceof Error ? error.message : t("messages.publishFailed")),
   });
 
-  const isRefreshing =
-    todayQuery.isRefetching ||
-    weekQuery.isRefetching ||
-    availabilityQuery.isRefetching ||
-    leaveQuery.isRefetching ||
+  const createHolidayMutation = useMutation({
+    mutationFn: createAttendanceHoliday,
+    onSuccess: async () => {
+      await invalidateHolidayManagementData();
+      showMessage(t("messages.holidaySaved"));
+    },
+    onError: (error) => showMessage(error instanceof Error ? error.message : t("messages.saveFailed")),
+  });
+
+  const updateHolidayMutation = useMutation({
+    mutationFn: ({ holidayGuid, payload }: { holidayGuid: string; payload: AttendanceStoreHolidayPayload }) =>
+      updateAttendanceHoliday(holidayGuid, payload),
+    onSuccess: async () => {
+      await invalidateHolidayManagementData();
+      showMessage(t("messages.holidaySaved"));
+    },
+    onError: (error) => showMessage(error instanceof Error ? error.message : t("messages.saveFailed")),
+  });
+
+  const deleteHolidayMutation = useMutation({
+    mutationFn: deleteAttendanceHoliday,
+    onSuccess: async () => {
+      await invalidateHolidayManagementData();
+      showMessage(t("messages.holidayDeleted"));
+    },
+    onError: (error) => showMessage(error instanceof Error ? error.message : t("messages.cancelFailed")),
+  });
+
+  const isEmployeeRefreshing = todayQuery.isRefetching || weekQuery.isRefetching || availabilityQuery.isRefetching;
+  const isManagerRefreshing =
     approvalsQuery.isRefetching ||
     managerSchedulesQuery.isRefetching ||
-    storeUsersQuery.isRefetching;
+    storeUsersQuery.isRefetching ||
+    holidaysQuery.isRefetching;
+  const isRefreshing = isEmployeeSection ? isEmployeeRefreshing : isManagerRefreshing;
 
   const isAvailabilityBusy =
     createAvailabilityMutation.isPending ||
     updateAvailabilityMutation.isPending ||
     cancelAvailabilityMutation.isPending;
-  const isLeaveBusy = createLeaveMutation.isPending || cancelLeaveMutation.isPending;
   const isApprovalBusy = approveMutation.isPending || rejectMutation.isPending;
   const isScheduleBusy =
     createScheduleMutation.isPending ||
     updateScheduleMutation.isPending ||
     deleteScheduleMutation.isPending ||
     publishWeekMutation.isPending;
+  const isHolidayBusy =
+    createHolidayMutation.isPending || updateHolidayMutation.isPending || deleteHolidayMutation.isPending;
 
-  const initialLoading = todayQuery.isLoading || weekQuery.isLoading || availabilityQuery.isLoading || leaveQuery.isLoading;
-  const loadError = todayQuery.error || weekQuery.error || availabilityQuery.error || leaveQuery.error;
+  const employeeInitialLoading =
+    isEmployeeSection && (todayQuery.isLoading || weekQuery.isLoading || availabilityQuery.isLoading);
+  const managerInitialLoading =
+    isManagerSection &&
+    (approvalsQuery.isLoading || storeUsersQuery.isLoading || managerSchedulesQuery.isLoading || holidaysQuery.isLoading);
+  const initialLoading = employeeInitialLoading || managerInitialLoading;
+  const loadError = isEmployeeSection
+    ? todayQuery.error || weekQuery.error || availabilityQuery.error
+    : approvalsQuery.error || storeUsersQuery.error || managerSchedulesQuery.error || holidaysQuery.error;
 
   const selectedStoreName = useMemo(
     () => stores.find((store) => store.storeCode === selectedStoreCode)?.storeName,
@@ -300,13 +347,13 @@ export default function AttendanceScreen() {
   const refresh = useCallback(async () => {
     try {
       await Promise.all([
-        todayQuery.refetch(),
-        weekQuery.refetch(),
-        availabilityQuery.refetch(),
-        leaveQuery.refetch(),
-        canReview ? approvalsQuery.refetch() : Promise.resolve(),
-        canReview && selectedStoreCode ? storeUsersQuery.refetch() : Promise.resolve(),
-        canReview && selectedStoreCode ? managerSchedulesQuery.refetch() : Promise.resolve(),
+        isEmployeeSection ? todayQuery.refetch() : Promise.resolve(),
+        isEmployeeSection ? weekQuery.refetch() : Promise.resolve(),
+        isEmployeeSection ? availabilityQuery.refetch() : Promise.resolve(),
+        isManagerSection ? approvalsQuery.refetch() : Promise.resolve(),
+        isManagerSection && selectedStoreCode ? storeUsersQuery.refetch() : Promise.resolve(),
+        isManagerSection && selectedStoreCode ? managerSchedulesQuery.refetch() : Promise.resolve(),
+        isManagerSection && selectedStoreCode ? holidaysQuery.refetch() : Promise.resolve(),
       ]);
     } catch (error) {
       showMessage(error instanceof Error ? error.message : t("messages.refreshFailed"));
@@ -314,8 +361,9 @@ export default function AttendanceScreen() {
   }, [
     approvalsQuery,
     availabilityQuery,
-    canReview,
-    leaveQuery,
+    holidaysQuery,
+    isEmployeeSection,
+    isManagerSection,
     managerSchedulesQuery,
     selectedStoreCode,
     showMessage,
@@ -345,6 +393,26 @@ export default function AttendanceScreen() {
     }
 
     publishWeekMutation.mutate({ storeCode: selectedStoreCode, weekStartDate: managerWeekStartDate });
+  };
+
+  const handleCreateHoliday = (payload: AttendanceStoreHolidayPayload) => {
+    const payloadWithStore = withSelectedStore(payload);
+    if (!payloadWithStore.storeCode) {
+      showMessage(t("messages.selectStoreFirst"));
+      return;
+    }
+
+    createHolidayMutation.mutate(payloadWithStore);
+  };
+
+  const handleUpdateHoliday = (holidayGuid: string, payload: AttendanceStoreHolidayPayload) => {
+    const payloadWithStore = withSelectedStore(payload);
+    if (!payloadWithStore.storeCode) {
+      showMessage(t("messages.selectStoreFirst"));
+      return;
+    }
+
+    updateHolidayMutation.mutate({ holidayGuid, payload: payloadWithStore });
   };
 
   if (!isAuthenticated || !user || initialLoading) {
@@ -407,52 +475,83 @@ export default function AttendanceScreen() {
           </View>
         ) : null}
 
-        <TodayPunchCard
-          today={todayQuery.data}
-          isLoading={todayQuery.isFetching}
-          isPunching={punchMutation.isPending}
-          onPunch={handlePunch}
-        />
-        <WeeklyScheduleTable week={weekQuery.data} />
         {canReview ? (
-          <ScheduleManagementCard
-            weekStartDate={managerWeekStartDate}
-            storeCode={selectedStoreCode}
-            storeName={selectedStoreName}
-            users={storeUsersQuery.data ?? []}
-            schedules={managerSchedulesQuery.data ?? []}
-            isLoading={storeUsersQuery.isLoading || managerSchedulesQuery.isLoading}
-            isBusy={isScheduleBusy}
-            onPreviousWeek={() => setManagerWeekStartDate((current) => addWeeks(current, -1))}
-            onNextWeek={() => setManagerWeekStartDate((current) => addWeeks(current, 1))}
-            onCreate={handleCreateSchedule}
-            onUpdate={(scheduleGuid, payload) => updateScheduleMutation.mutate({ scheduleGuid, payload })}
-            onDelete={(scheduleGuid) => deleteScheduleMutation.mutate(scheduleGuid)}
-            onPublishWeek={handlePublishWeek}
+          <SegmentedButtons
+            value={activeSection}
+            onValueChange={(value) => setActiveSection(value as AttendanceSection)}
+            buttons={[
+              { value: "employee", label: t("sections.employeeAttendance") },
+              { value: "manager", label: t("sections.managerSchedule") },
+            ]}
+            style={styles.sectionTabs}
           />
         ) : null}
-        <AvailabilityForm
-          availability={availabilityQuery.data ?? []}
-          isBusy={isAvailabilityBusy}
-          onCreate={(payload) => createAvailabilityMutation.mutate(withSelectedStore(payload))}
-          onUpdate={(availabilityGuid, payload) =>
-            updateAvailabilityMutation.mutate({ availabilityGuid, payload: withSelectedStore(payload) })
-          }
-          onCancel={(availabilityGuid) => cancelAvailabilityMutation.mutate(availabilityGuid)}
-        />
-        <LeaveRequestCard
-          requests={leaveQuery.data ?? []}
-          isBusy={isLeaveBusy}
-          onCreate={(payload: AttendanceLeaveRequestPayload) => createLeaveMutation.mutate(withSelectedStore(payload))}
-          onCancel={(leaveGuid) => cancelLeaveMutation.mutate(leaveGuid)}
-        />
-        {canReview ? (
-          <ManagerApprovalList
-            approvals={approvalsQuery.data ?? []}
-            isBusy={isApprovalBusy}
-            onApprove={(approvalGuid, remark) => approveMutation.mutate({ approvalGuid, remark })}
-            onReject={(approvalGuid, remark) => rejectMutation.mutate({ approvalGuid, remark })}
-          />
+
+        {isEmployeeSection ? (
+          <>
+            <MonthDatePickerCard
+              title={t("sections.calendar")}
+              subtitle={selectedDate}
+              value={selectedDate}
+              onChange={setSelectedDate}
+            />
+            <TodayPunchCard
+              title={t("sections.selectedDay")}
+              selectedDate={selectedDate}
+              allowPunch={selectedDate === todayDate}
+              today={todayQuery.data}
+              isLoading={todayQuery.isFetching}
+              isPunching={punchMutation.isPending}
+              onPunch={handlePunch}
+            />
+            <WeeklyScheduleTable week={weekQuery.data} />
+            <AvailabilityForm
+              availability={availabilityQuery.data ?? []}
+              defaultDate={selectedDate}
+              isBusy={isAvailabilityBusy}
+              onCreate={(payload) => createAvailabilityMutation.mutate(withSelectedStore(payload))}
+              onUpdate={(availabilityGuid, payload) =>
+                updateAvailabilityMutation.mutate({ availabilityGuid, payload: withSelectedStore(payload) })
+              }
+              onCancel={(availabilityGuid) => cancelAvailabilityMutation.mutate(availabilityGuid)}
+            />
+          </>
+        ) : null}
+
+        {isManagerSection ? (
+          <>
+            <ScheduleManagementCard
+              weekStartDate={managerWeekStartDate}
+              storeCode={selectedStoreCode}
+              storeName={selectedStoreName}
+              users={storeUsersQuery.data ?? []}
+              schedules={managerSchedulesQuery.data ?? []}
+              isLoading={storeUsersQuery.isLoading || managerSchedulesQuery.isLoading}
+              isBusy={isScheduleBusy}
+              onPreviousWeek={() => setManagerWeekStartDate((current) => addWeeks(current, -1))}
+              onNextWeek={() => setManagerWeekStartDate((current) => addWeeks(current, 1))}
+              onCreate={handleCreateSchedule}
+              onUpdate={(scheduleGuid, payload) => updateScheduleMutation.mutate({ scheduleGuid, payload })}
+              onDelete={(scheduleGuid) => deleteScheduleMutation.mutate(scheduleGuid)}
+              onPublishWeek={handlePublishWeek}
+            />
+            <ManagerApprovalList
+              approvals={approvalsQuery.data ?? []}
+              isBusy={isApprovalBusy}
+              onApprove={(approvalGuid, remark) => approveMutation.mutate({ approvalGuid, remark })}
+              onReject={(approvalGuid, remark) => rejectMutation.mutate({ approvalGuid, remark })}
+            />
+            <HolidayManagementCard
+              holidays={holidaysQuery.data ?? []}
+              storeCode={selectedStoreCode}
+              storeName={selectedStoreName}
+              isBusy={isHolidayBusy}
+              selectedDate={selectedDate}
+              onCreate={handleCreateHoliday}
+              onUpdate={handleUpdateHoliday}
+              onDelete={(holidayGuid) => deleteHolidayMutation.mutate(holidayGuid)}
+            />
+          </>
         ) : null}
       </ScrollView>
       <Snackbar visible={snackbarVisible} onDismiss={() => setSnackbarVisible(false)}>
@@ -494,6 +593,9 @@ const styles = StyleSheet.create({
   },
   muted: {
     color: "#6B7280",
+  },
+  sectionTabs: {
+    marginTop: 2,
   },
   storeChips: {
     flexDirection: "row",

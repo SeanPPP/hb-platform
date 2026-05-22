@@ -1,24 +1,29 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { StyleSheet, View } from "react-native";
 import { Button, Card, IconButton, Text, TextInput } from "react-native-paper";
+import { MonthDatePicker, normalizeMonthDate } from "@/components/attendance/MonthDatePicker";
 import type { AttendanceAvailability, AttendanceAvailabilityPayload } from "@/modules/attendance/types";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 
-const EMPTY_FORM: AttendanceAvailabilityPayload = {
-  workDate: "",
-  startTime: "",
-  endTime: "",
-  note: "",
-};
+function createEmptyForm(defaultDate?: string): AttendanceAvailabilityPayload {
+  return {
+    workDate: normalizeMonthDate(defaultDate),
+    startTime: "",
+    endTime: "",
+    note: "",
+  };
+}
 
 export function AvailabilityForm({
   availability,
+  defaultDate,
   isBusy,
   onCreate,
   onUpdate,
   onCancel,
 }: {
   availability: AttendanceAvailability[];
+  defaultDate?: string;
   isBusy: boolean;
   onCreate: (payload: AttendanceAvailabilityPayload) => void;
   onUpdate: (availabilityGuid: string, payload: AttendanceAvailabilityPayload) => void;
@@ -26,12 +31,21 @@ export function AvailabilityForm({
 }) {
   const { t } = useAppTranslation(["attendance", "common"]);
   const [editingGuid, setEditingGuid] = useState<string | null>(null);
-  const [form, setForm] = useState<AttendanceAvailabilityPayload>(EMPTY_FORM);
+  const [form, setForm] = useState<AttendanceAvailabilityPayload>(() => createEmptyForm(defaultDate));
 
   const activeItems = useMemo(
     () => availability.filter((item) => item.status.toLowerCase() !== "cancelled"),
     [availability]
   );
+
+  useEffect(() => {
+    if (editingGuid) {
+      return;
+    }
+
+    const nextDate = normalizeMonthDate(defaultDate);
+    setForm((current) => (current.workDate === nextDate ? current : { ...current, workDate: nextDate }));
+  }, [defaultDate, editingGuid]);
 
   const setField = (key: keyof AttendanceAvailabilityPayload, value: string) => {
     setForm((current) => ({ ...current, [key]: value }));
@@ -39,7 +53,7 @@ export function AvailabilityForm({
 
   const resetForm = () => {
     setEditingGuid(null);
-    setForm(EMPTY_FORM);
+    setForm(createEmptyForm(defaultDate));
   };
 
   const submit = () => {
@@ -76,13 +90,10 @@ export function AvailabilityForm({
       <Card.Title title={t("sections.availability")} />
       <Card.Content style={styles.content}>
         <View style={styles.formGrid}>
-          <TextInput
-            mode="outlined"
-            label={t("fields.workDate")}
-            value={form.workDate}
-            placeholder="YYYY-MM-DD"
-            onChangeText={(value) => setField("workDate", value)}
-          />
+          <View style={styles.datePickerBlock}>
+            <Text variant="labelLarge">{t("fields.workDate")}</Text>
+            <MonthDatePicker value={form.workDate} onChange={(value) => setField("workDate", value)} disabled={isBusy} />
+          </View>
           <View style={styles.timeRow}>
             <TextInput
               mode="outlined"
@@ -157,6 +168,9 @@ const styles = StyleSheet.create({
   },
   content: {
     gap: 12,
+  },
+  datePickerBlock: {
+    gap: 8,
   },
   formGrid: {
     gap: 8,

@@ -3,11 +3,16 @@
   "subtitle": "Schedules, punches, and requests",
   "sections": {
     "today": "Today",
+    "selectedDay": "Selected day",
+    "calendar": "Date selector",
     "week": "Weekly schedule",
     "availability": "Availability",
     "leave": "Leave request",
     "approvals": "Manager approvals",
-    "scheduleManagement": "Schedule management"
+    "scheduleManagement": "Schedule management",
+    "employeeAttendance": "Employee attendance",
+    "managerSchedule": "Manager schedule",
+    "holidayManagement": "Public holidays"
   },
   "today": {
     "schedules": "Today's shifts",
@@ -27,6 +32,25 @@
   },
   "approvals": {
     "empty": "No pending approvals"
+  },
+  "holidayManagement": {
+    "noStore": "Select a store first",
+    "empty": "No public holidays for this store.",
+    "addAction": "Add holiday",
+    "deleteTitle": "Delete holiday",
+    "deleteMessage": "Delete this public holiday?",
+    "deleteConfirm": "Delete",
+    "closedAllDay": "Closed all day",
+    "paidLabel": "Paid",
+    "fields": {
+      "name": "Holiday name",
+      "paidHoliday": "Paid holiday"
+    },
+    "businessStatuses": {
+      "Open": "Open",
+      "Closed": "Closed",
+      "Partial": "Partial"
+    }
   },
   "scheduleManagement": {
     "employeeColumn": "Store / employee",
@@ -117,6 +141,8 @@
     "scheduleSaved": "Schedule saved.",
     "scheduleDeleted": "Schedule deleted.",
     "weekPublished": "This week's schedule was published.",
-    "publishFailed": "Publish failed."
+    "publishFailed": "Publish failed.",
+    "holidaySaved": "Public holiday saved.",
+    "holidayDeleted": "Public holiday deleted."
   }
 }

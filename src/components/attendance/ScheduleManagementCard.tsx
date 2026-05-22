@@ -41,7 +41,10 @@ function addDays(date: string, days: number) {
     return "";
   }
   parsed.setDate(parsed.getDate() + days);
-  return parsed.toISOString().slice(0, 10);
+  const year = parsed.getFullYear();
+  const month = String(parsed.getMonth() + 1).padStart(2, "0");
+  const day = String(parsed.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
 }
 
 function shortDate(value: string) {

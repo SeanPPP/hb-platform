@@ -13,11 +13,19 @@ function formatTime(value?: string) {
 
 export function TodayPunchCard({
   today,
+  title,
+  subtitle,
+  selectedDate,
+  allowPunch = true,
   isLoading,
   isPunching,
   onPunch,
 }: {
   today?: AttendanceToday;
+  title?: string;
+  subtitle?: string;
+  selectedDate?: string;
+  allowPunch?: boolean;
   isLoading: boolean;
   isPunching: boolean;
   onPunch: (punchType: AttendancePunchType) => void;
@@ -25,10 +33,11 @@ export function TodayPunchCard({
   const { t } = useAppTranslation(["attendance", "common"]);
   const nextPunchType = today?.nextPunchType ?? "ClockIn";
   const canPunch = nextPunchType === "ClockOut" ? today?.canClockOut !== false : today?.canClockIn !== false;
+  const cardSubtitle = subtitle ?? selectedDate ?? today?.workDate ?? t("common:loading");
 
   return (
     <Card mode="elevated" style={styles.card}>
-      <Card.Title title={t("sections.today")} subtitle={today?.workDate || t("common:loading")} />
+      <Card.Title title={title ?? t("sections.today")} subtitle={cardSubtitle} />
       <Card.Content style={styles.content}>
         {today?.holidayName ? (
           <Chip icon="calendar-alert" style={styles.holidayChip}>
@@ -80,7 +89,7 @@ export function TodayPunchCard({
           mode="contained"
           icon={nextPunchType === "ClockOut" ? "clock-out" : "clock-in"}
           loading={isPunching}
-          disabled={isLoading || isPunching || !canPunch}
+          disabled={isLoading || isPunching || !allowPunch || !canPunch}
           onPress={() => onPunch(nextPunchType)}
         >
           {t(`actions.${nextPunchType === "ClockOut" ? "clockOut" : "clockIn"}`)}

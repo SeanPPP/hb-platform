@@ -4,6 +4,7 @@ import type {
   AttendanceApprovalPayload,
   AttendanceAvailability,
   AttendanceAvailabilityPayload,
+  AttendanceHolidayQueryParams,
   AttendanceLeaveRequest,
   AttendanceLeaveRequestPayload,
   AttendancePublishWeekPayload,
@@ -13,6 +14,8 @@ import type {
   AttendanceSchedulePayload,
   AttendanceScheduleUpdatePayload,
   AttendanceScheduleWeekParams,
+  AttendanceStoreHoliday,
+  AttendanceStoreHolidayPayload,
   AttendanceToday,
   AttendanceWeek,
   AttendanceWeekDay,
@@ -78,6 +81,28 @@ function asNumber(value: unknown, fallback = 0): number {
   return fallback;
 }
 
+function formatDateOnly(date: Date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function parseDateOnly(value: string) {
+  const normalized = value.slice(0, 10);
+  const parsed = new Date(`${normalized}T00:00:00`);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function addDays(value: string, days: number) {
+  const parsed = parseDateOnly(value);
+  if (!parsed) {
+    return value;
+  }
+  parsed.setDate(parsed.getDate() + days);
+  return formatDateOnly(parsed);
+}
+
 function getArray(payload: unknown): ApiRecord[] {
   const candidate = Array.isArray(payload)
     ? payload
@@ -121,17 +146,37 @@ function normalizePunch(raw: ApiRecord): AttendancePunch {
   };
 }
 
+export function normalizeHoliday(payload: unknown): AttendanceStoreHoliday {
+  const raw = isRecord(payload) ? payload : {};
+  return {
+    holidayGuid: asString(pick(raw, "holidayGuid", "HolidayGuid", "guid", "Guid")),
+    storeCode: asString(pick(raw, "storeCode", "StoreCode")),
+    storeName: asOptionalString(pick(raw, "storeName", "StoreName")),
+    holidayDate: asDateString(pick(raw, "holidayDate", "HolidayDate", "date", "Date")),
+    holidayName: asString(pick(raw, "holidayName", "HolidayName", "name", "Name")),
+    businessStatus: asString(pick(raw, "businessStatus", "BusinessStatus"), "Open"),
+    openTime: asOptionalString(pick(raw, "openTime", "OpenTime")),
+    closeTime: asOptionalString(pick(raw, "closeTime", "CloseTime")),
+    isPaidHoliday: asBoolean(pick(raw, "isPaidHoliday", "IsPaidHoliday")),
+    remark: asOptionalString(pick(raw, "remark", "Remark", "note", "Note")),
+  };
+}
+
 function normalizeToday(payload: unknown): AttendanceToday {
   const raw = isRecord(payload) ? payload : {};
   const punches = getArray(pick(raw, "punches", "Punches")).map(normalizePunch);
+  const holidays = getArray(pick(raw, "holidays", "Holidays")).map(normalizeHoliday);
+  const primaryHoliday = holidays[0];
   const hasClockIn = punches.some((item) => item.punchType === "ClockIn");
   const hasClockOut = punches.some((item) => item.punchType === "ClockOut");
   const fallbackNextPunchType = hasClockIn && !hasClockOut ? "ClockOut" : "ClockIn";
   return {
     workDate: asDateString(pick(raw, "workDate", "WorkDate")),
     storeTimeZone: asOptionalString(pick(raw, "storeTimeZone", "StoreTimeZone")),
-    holidayName: asOptionalString(pick(raw, "holidayName", "HolidayName")),
-    holidayBusinessStatus: asOptionalString(pick(raw, "holidayBusinessStatus", "HolidayBusinessStatus")),
+    holidayName: asOptionalString(pick(raw, "holidayName", "HolidayName")) ?? primaryHoliday?.holidayName,
+    holidayBusinessStatus:
+      asOptionalString(pick(raw, "holidayBusinessStatus", "HolidayBusinessStatus")) ?? primaryHoliday?.businessStatus,
+    holidays,
     schedules: getArray(pick(raw, "schedules", "Schedules")).map(normalizeSchedule),
     punches,
     nextPunchType: asString(pick(raw, "nextPunchType", "NextPunchType"), fallbackNextPunchType) as AttendancePunchType,
@@ -150,23 +195,20 @@ function normalizeWeekDay(raw: ApiRecord): AttendanceWeekDay {
   };
 }
 
-function normalizeWeek(payload: unknown): AttendanceWeek {
+function normalizeWeek(payload: unknown, fallbackWeekStart?: string): AttendanceWeek {
   const raw = isRecord(payload) ? payload : {};
   const rawDays = getArray(pick(raw, "days", "Days"));
   const rawSchedules = Array.isArray(payload) ? getArray(payload).map(normalizeSchedule) : [];
-  if (!rawDays.length && rawSchedules.length) {
+  if (!rawDays.length && (rawSchedules.length || fallbackWeekStart)) {
     const dates = rawSchedules.map((item) => item.workDate).filter(Boolean).sort();
-    const weekStart = dates[0] ?? "";
+    const weekStart = fallbackWeekStart ?? dates[0] ?? "";
     const grouped = rawSchedules.reduce<Record<string, AttendanceSchedule[]>>((current, schedule) => {
       const key = schedule.workDate;
       current[key] = [...(current[key] ?? []), schedule];
       return current;
     }, {});
-    const startDate = weekStart ? new Date(`${weekStart.slice(0, 10)}T00:00:00`) : null;
     const days = Array.from({ length: 7 }).map((_, index) => {
-      const workDate = startDate && !Number.isNaN(startDate.getTime())
-        ? new Date(startDate.getTime() + index * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
-        : dates[index] ?? "";
+      const workDate = weekStart ? addDays(weekStart, index) : dates[index] ?? "";
       return {
         workDate,
         dayOfWeek: index,
@@ -175,7 +217,7 @@ function normalizeWeek(payload: unknown): AttendanceWeek {
     });
     return {
       weekStart,
-      weekEnd: days[6]?.workDate ?? dates[dates.length - 1] ?? "",
+      weekEnd: days[6]?.workDate ?? (weekStart ? addDays(weekStart, 6) : dates[dates.length - 1] ?? ""),
       days,
     };
   }
@@ -241,13 +283,13 @@ function sanitizePayload<T extends Record<string, unknown>>(payload: T): T {
 }
 
 function weekStartFromDate(value: string) {
-  const parsed = new Date(`${value.slice(0, 10)}T00:00:00`);
-  if (Number.isNaN(parsed.getTime())) {
+  const parsed = parseDateOnly(value);
+  if (!parsed) {
     return value;
   }
   const diff = (parsed.getDay() + 6) % 7;
   parsed.setDate(parsed.getDate() - diff);
-  return parsed.toISOString().slice(0, 10);
+  return formatDateOnly(parsed);
 }
 
 function toCreateAvailabilityPayload(payload: AttendanceAvailabilityPayload) {
@@ -296,8 +338,21 @@ function toUpdateSchedulePayload(payload: AttendanceScheduleUpdatePayload) {
   });
 }
 
-export async function getMyAttendanceToday(storeCode?: string): Promise<AttendanceToday> {
-  const response = await apiClient.get(`${ATTENDANCE_BASE}/my/today`, { params: { storeCode } });
+function toHolidayPayload(payload: AttendanceStoreHolidayPayload) {
+  return sanitizePayload({
+    storeCode: payload.storeCode,
+    holidayDate: payload.holidayDate,
+    holidayName: payload.holidayName,
+    businessStatus: payload.businessStatus,
+    openTime: payload.openTime,
+    closeTime: payload.closeTime,
+    isPaidHoliday: payload.isPaidHoliday,
+    remark: payload.remark,
+  });
+}
+
+export async function getMyAttendanceToday(storeCode?: string, workDate?: string): Promise<AttendanceToday> {
+  const response = await apiClient.get(`${ATTENDANCE_BASE}/my/today`, { params: { storeCode, workDate } });
   const today = normalizeToday(response.data);
   return {
     ...today,
@@ -305,9 +360,9 @@ export async function getMyAttendanceToday(storeCode?: string): Promise<Attendan
   };
 }
 
-export async function getMyAttendanceWeek(storeCode?: string): Promise<AttendanceWeek> {
-  const response = await apiClient.get(`${ATTENDANCE_BASE}/my/week`, { params: { storeCode } });
-  const week = normalizeWeek(response.data);
+export async function getMyAttendanceWeek(storeCode?: string, weekStartDate?: string): Promise<AttendanceWeek> {
+  const response = await apiClient.get(`${ATTENDANCE_BASE}/my/week`, { params: { storeCode, weekStartDate } });
+  const week = normalizeWeek(response.data, weekStartDate);
   return {
     ...week,
     days: week.days.map((day) => ({
@@ -317,8 +372,8 @@ export async function getMyAttendanceWeek(storeCode?: string): Promise<Attendanc
   };
 }
 
-export async function getMyAvailability(storeCode?: string): Promise<AttendanceAvailability[]> {
-  const response = await apiClient.get(`${ATTENDANCE_BASE}/my/availability`, { params: { storeCode } });
+export async function getMyAvailability(storeCode?: string, weekStartDate?: string): Promise<AttendanceAvailability[]> {
+  const response = await apiClient.get(`${ATTENDANCE_BASE}/my/availability`, { params: { storeCode, weekStartDate } });
   return getArray(response.data).map(normalizeAvailability);
 }
 
@@ -387,6 +442,37 @@ export async function getAttendanceSchedulesWeek(params: AttendanceScheduleWeekP
     },
   });
   return getArray(response.data).map(normalizeSchedule);
+}
+
+export async function getAttendanceHolidays(params: AttendanceHolidayQueryParams = {}): Promise<AttendanceStoreHoliday[]> {
+  const response = await apiClient.get(`${ATTENDANCE_BASE}/holidays`, {
+    params: {
+      storeCode: params.storeCode,
+      fromDate: params.fromDate,
+      toDate: params.toDate,
+    },
+  });
+  return getArray(response.data).map(normalizeHoliday);
+}
+
+export async function createAttendanceHoliday(payload: AttendanceStoreHolidayPayload): Promise<AttendanceStoreHoliday> {
+  const response = await apiClient.post(`${ATTENDANCE_BASE}/holidays`, toHolidayPayload(payload));
+  return normalizeHoliday(response.data);
+}
+
+export async function updateAttendanceHoliday(
+  holidayGuid: string,
+  payload: AttendanceStoreHolidayPayload
+): Promise<AttendanceStoreHoliday> {
+  const response = await apiClient.put(
+    `${ATTENDANCE_BASE}/holidays/${encodeURIComponent(holidayGuid)}`,
+    toHolidayPayload(payload)
+  );
+  return normalizeHoliday(response.data);
+}
+
+export async function deleteAttendanceHoliday(holidayGuid: string): Promise<void> {
+  await apiClient.delete(`${ATTENDANCE_BASE}/holidays/${encodeURIComponent(holidayGuid)}`);
 }
 
 export async function createAttendanceSchedule(payload: AttendanceSchedulePayload): Promise<AttendanceSchedule> {

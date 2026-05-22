@@ -19,6 +19,8 @@ export type AttendanceApprovalStatus = "Pending" | "Approved" | "Rejected" | str
 
 export type AttendanceScheduleStatus = "Draft" | "Active" | "Cancelled" | string;
 
+export type AttendanceHolidayBusinessStatus = "Open" | "Closed" | "Partial" | string;
+
 export interface AttendanceSchedule {
   scheduleGuid: string;
   storeCode: string;
@@ -53,6 +55,7 @@ export interface AttendanceToday {
   storeTimeZone?: string;
   holidayName?: string;
   holidayBusinessStatus?: string;
+  holidays?: AttendanceStoreHoliday[];
   schedules: AttendanceSchedule[];
   punches: AttendancePunch[];
   nextPunchType: AttendancePunchType;
@@ -91,6 +94,36 @@ export interface AttendanceAvailabilityPayload {
   startTime: string;
   endTime: string;
   note?: string;
+}
+
+export interface AttendanceStoreHoliday {
+  holidayGuid: string;
+  storeCode: string;
+  storeName?: string;
+  holidayDate: string;
+  holidayName: string;
+  businessStatus: AttendanceHolidayBusinessStatus;
+  openTime?: string;
+  closeTime?: string;
+  isPaidHoliday: boolean;
+  remark?: string;
+}
+
+export interface AttendanceStoreHolidayPayload {
+  storeCode: string;
+  holidayDate: string;
+  holidayName: string;
+  businessStatus: AttendanceHolidayBusinessStatus;
+  openTime?: string;
+  closeTime?: string;
+  isPaidHoliday: boolean;
+  remark?: string;
+}
+
+export interface AttendanceHolidayQueryParams {
+  storeCode?: string;
+  fromDate?: string;
+  toDate?: string;
 }
 
 export interface AttendanceLeaveRequest {

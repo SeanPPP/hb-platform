@@ -3,11 +3,16 @@
   "subtitle": "查看排班、打卡和申请",
   "sections": {
     "today": "今日打卡",
+    "selectedDay": "某日打卡",
+    "calendar": "日期选择",
     "week": "本周排班",
     "availability": "可上班时间",
     "leave": "请假申请",
     "approvals": "店长审核",
-    "scheduleManagement": "排班管理"
+    "scheduleManagement": "排班管理",
+    "employeeAttendance": "员工考勤",
+    "managerSchedule": "店长排班",
+    "holidayManagement": "公共假期管理"
   },
   "today": {
     "schedules": "今日班次",
@@ -27,6 +32,25 @@
   },
   "approvals": {
     "empty": "暂无待审核事项"
+  },
+  "holidayManagement": {
+    "noStore": "请先选择分店",
+    "empty": "当前分店暂无公共假期",
+    "addAction": "新增假期",
+    "deleteTitle": "删除公共假期",
+    "deleteMessage": "确定删除这个公共假期吗？",
+    "deleteConfirm": "删除",
+    "closedAllDay": "全天休业",
+    "paidLabel": "带薪",
+    "fields": {
+      "name": "假期名称",
+      "paidHoliday": "带薪公共假期"
+    },
+    "businessStatuses": {
+      "Open": "营业",
+      "Closed": "休业",
+      "Partial": "部分营业"
+    }
   },
   "scheduleManagement": {
     "employeeColumn": "分店/员工",
@@ -117,6 +141,8 @@
     "scheduleSaved": "排班已保存",
     "scheduleDeleted": "排班已删除",
     "weekPublished": "本周排班已发布",
-    "publishFailed": "发布失败"
+    "publishFailed": "发布失败",
+    "holidaySaved": "公共假期已保存",
+    "holidayDeleted": "公共假期已删除"
   }
 }
