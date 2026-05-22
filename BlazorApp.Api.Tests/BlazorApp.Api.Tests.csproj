@@ -30,5 +30,6 @@
     <Compile Include="DomesticProductCreationControllerTests.cs" />
     <Compile Include="EmployeeProfileServiceTests.cs" />
     <Compile Include="AttendanceReactServiceTests.cs" />
+    <Compile Include="SeedDataServiceTests.cs" />
   </ItemGroup>
 </Project>

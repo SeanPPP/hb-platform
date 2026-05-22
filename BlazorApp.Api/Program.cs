@@ -556,6 +556,7 @@ try
         // 创建默认管理员账号、基础角色、系统配置等
         Console.WriteLine("🌱 开始初始化种子数据...");
         var seedDataService = services.GetRequiredService<SeedDataService>();
+        await seedDataService.InitializePermissionSeedsAsync();
         //  await seedDataService.InitializeAsync();
 
         // 🔍 检查并初始化角色数据

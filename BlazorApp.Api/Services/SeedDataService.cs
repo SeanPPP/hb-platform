@@ -43,7 +43,7 @@ namespace BlazorApp.Api.Services
                 // await AssignDefaultStoreToAdminAsync();
 
                 // 6. 初始化权限数据并分配给Admin
-                await InitializePermissionsAsync();
+                await InitializePermissionSeedsAsync();
 
                 // 7. 验证管理员角色分配
                 await VerifyAdminRoleAssignmentAsync();
@@ -414,29 +414,32 @@ namespace BlazorApp.Api.Services
         }
 
         /// <summary>
-        /// 初始化权限数据
+        /// 初始化权限种子数据
         /// </summary>
-        private async Task InitializePermissionsAsync()
+        public async Task InitializePermissionSeedsAsync()
         {
             var db = _dbContext.Db;
 
             // 1. 同步权限定义
-            var allPermissions = Permissions.GetAllPermissions().ToList();
+            var allPermissions = PermissionSeedData.AllPermissions.ToList();
             var existingPermissions = await db.Queryable<SysPermission>().ToListAsync();
+            var existingPermissionCodes = existingPermissions
+                .Select(permission => permission.Code)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
             var newPermissions = new List<SysPermission>();
-            foreach (var (code, name, category) in allPermissions)
+            foreach (var seed in allPermissions)
             {
-                if (!existingPermissions.Any(p => p.Code == code))
+                if (!existingPermissionCodes.Contains(seed.Code))
                 {
                     newPermissions.Add(
                         new SysPermission
                         {
                             Id = UuidHelper.GenerateUuid7(),
-                            Code = code,
-                            Name = name,
-                            Category = category,
-                            Description = $"{category}-{name}",
+                            Code = seed.Code,
+                            Name = seed.Name,
+                            Category = seed.Category,
+                            Description = seed.Description,
                         }
                     );
                 }
@@ -457,10 +460,16 @@ namespace BlazorApp.Api.Services
                     .Where(rp => rp.RoleGuid == adminRole.RoleGUID)
                     .Select(rp => rp.PermissionCode)
                     .ToListAsync();
+                var currentRolePermissionCodes = currentRolePermissions.ToHashSet(
+                    StringComparer.OrdinalIgnoreCase
+                );
 
                 // 找出需要新增的关联
-                var allPermissionCodes = allPermissions.Select(p => p.Code).ToList();
-                var missingCodes = allPermissionCodes.Except(currentRolePermissions).ToList();
+                var missingCodes = allPermissions
+                    .Select(permission => permission.Code)
+                    .Where(code => !currentRolePermissionCodes.Contains(code))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
 
                 if (missingCodes.Any())
                 {
