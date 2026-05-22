@@ -28,6 +28,11 @@ interface ResolveDefaultTabRouteOptions {
   routeNames: Iterable<string>;
 }
 
+interface ResolveTabRouteCorrectionOptions extends ResolveDefaultTabRouteOptions {
+  currentRouteName: string | undefined;
+  hasAppliedDefaultRoute: boolean;
+}
+
 export function resolveDefaultTabRoute({
   isDeviceMode,
   routeNames,
@@ -41,4 +46,30 @@ export function resolveDefaultTabRoute({
 
   const firstVisibleRouteName = orderedRouteNames.find((routeName) => Boolean(TAB_PATHS[routeName]));
   return firstVisibleRouteName ? TAB_PATHS[firstVisibleRouteName] : TAB_PATHS.settings;
+}
+
+export function resolveTabRouteCorrection({
+  currentRouteName,
+  hasAppliedDefaultRoute,
+  isDeviceMode,
+  routeNames,
+}: ResolveTabRouteCorrectionOptions): AppTabPath | null {
+  if (!currentRouteName) {
+    return null;
+  }
+
+  const orderedRouteNames = Array.from(routeNames);
+  const visibleRouteNames = new Set(orderedRouteNames);
+  const defaultRoute = resolveDefaultTabRoute({ isDeviceMode, routeNames: orderedRouteNames });
+  const currentRoute = TAB_PATHS[currentRouteName];
+
+  if (!currentRoute || !visibleRouteNames.has(currentRouteName)) {
+    return defaultRoute;
+  }
+
+  if (!hasAppliedDefaultRoute && currentRouteName === "home" && currentRoute !== defaultRoute) {
+    return defaultRoute;
+  }
+
+  return null;
 }

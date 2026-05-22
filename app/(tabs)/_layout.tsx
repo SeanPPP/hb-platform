@@ -7,7 +7,7 @@ import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 import { useAuthStore } from "@/store/auth-store";
 import { useDeviceStore } from "@/store/device-store";
 import { useAppNavigationStore } from "@/modules/navigation/store";
-import { resolveDefaultTabRoute } from "@/modules/navigation/default-route";
+import { resolveTabRouteCorrection } from "@/modules/navigation/default-route";
 
 export default function TabsLayout() {
   const router = useRouter();
@@ -24,6 +24,7 @@ export default function TabsLayout() {
   const navigationReady = useAppNavigationStore((state) => state.isReady);
   const navigationLoading = useAppNavigationStore((state) => state.isLoading);
   const hasRestored = useRef(false);
+  const hasAppliedDefaultRoute = useRef(false);
   const hasUserSession = Boolean(isAuthenticated && userGuid);
   const hasStoredDeviceSession = Boolean(
     deviceSession?.hardwareId && deviceSession.authCode && deviceSession.storeCode
@@ -127,14 +128,19 @@ export default function TabsLayout() {
     }
 
     const currentRouteName = pathname.split("/").filter(Boolean).pop();
-    if (!currentRouteName || isRouteVisible(currentRouteName)) {
-      return;
-    }
-
-    const nextPath = resolveDefaultTabRoute({
+    const nextPath = resolveTabRouteCorrection({
+      currentRouteName,
+      hasAppliedDefaultRoute: hasAppliedDefaultRoute.current,
       isDeviceMode,
       routeNames: orderedVisibleRouteNames,
     });
+
+    if (!nextPath) {
+      hasAppliedDefaultRoute.current = true;
+      return;
+    }
+
+    hasAppliedDefaultRoute.current = true;
     router.replace(nextPath as Parameters<typeof router.replace>[0]);
   }, [isDeviceMode, orderedVisibleRouteNames, pathname, router, shouldWaitForNavigation, visibleRouteNames]);
 

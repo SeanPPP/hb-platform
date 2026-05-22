@@ -1,4 +1,4 @@
-import { resolveDefaultTabRoute } from "./default-route";
+import { resolveDefaultTabRoute, resolveTabRouteCorrection } from "./default-route";
 
 function assertEqual(actual: unknown, expected: unknown, label: string) {
   if (actual !== expected) {
@@ -40,4 +40,26 @@ assertEqual(
   }),
   "/(tabs)/settings",
   "empty navigation falls back to settings"
+);
+
+assertEqual(
+  resolveTabRouteCorrection({
+    currentRouteName: "home",
+    hasAppliedDefaultRoute: false,
+    isDeviceMode: false,
+    routeNames: ["home", "attendance", "settings"],
+  }),
+  "/(tabs)/attendance",
+  "startup home route redirects user sessions to attendance"
+);
+
+assertEqual(
+  resolveTabRouteCorrection({
+    currentRouteName: "home",
+    hasAppliedDefaultRoute: true,
+    isDeviceMode: false,
+    routeNames: ["home", "attendance", "settings"],
+  }),
+  null,
+  "manual home navigation is allowed after startup default was applied"
 );
