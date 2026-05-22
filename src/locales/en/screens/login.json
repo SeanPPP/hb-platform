@@ -7,6 +7,7 @@
     "label": "Server address",
     "current": "Current server address",
     "change": "Change",
+    "settingsButton": "Server settings",
     "title": "Server address settings",
     "description": "Enter only an IP or domain.",
     "inputLabel": "IP or domain",

@@ -7,6 +7,7 @@
     "label": "服务器地址",
     "current": "当前服务器地址",
     "change": "修改",
+    "settingsButton": "服务器设置",
     "title": "服务器地址设置",
     "description": "只输入 IP 或域名即可。",
     "inputLabel": "IP 或域名",

@@ -19,7 +19,6 @@ import {
   Snackbar,
   Portal,
   Modal,
-  IconButton,
 } from "react-native-paper";
 import { useState, useEffect, useRef } from "react";
 import { useAuthStore } from "@/store/auth-store";
@@ -201,31 +200,36 @@ export default function Login() {
     <View style={styles.root}>
       <StatusBar barStyle="light-content" backgroundColor={BRAND_RED} />
 
-      <IconButton
-        icon="cog-outline"
-        iconColor="#FFFFFF"
-        mode="contained-tonal"
-        accessibilityLabel={t("apiHost.title")}
-        style={styles.serverSettingsButton}
-        onPress={() => {
-          setApiHostDraft(apiHost);
-          setApiHostModalVisible(true);
-        }}
-      />
-
-      {/* ── 语言切换按钮 ── */}
-      <TouchableOpacity
-        style={styles.langSwitch}
-        onPress={() => setAppLanguage(i18n.language === "zh" ? "en" : "zh")}
-        activeOpacity={0.7}
-      >
-        <Text style={styles.langSwitchText}>
-          {i18n.language === "zh" ? "EN" : "中"}
-        </Text>
-      </TouchableOpacity>
-
       {/* ── 品牌区 ── */}
       <View style={styles.brandSection}>
+        <View style={styles.topActions}>
+          <Button
+            icon="cog-outline"
+            mode="outlined"
+            compact
+            textColor="#FFFFFF"
+            accessibilityLabel={t("apiHost.title")}
+            style={styles.serverSettingsButton}
+            contentStyle={styles.serverSettingsButtonContent}
+            labelStyle={styles.serverSettingsButtonLabel}
+            onPress={() => {
+              setApiHostDraft(apiHost);
+              setApiHostModalVisible(true);
+            }}
+          >
+            {t("apiHost.settingsButton")}
+          </Button>
+
+          <TouchableOpacity
+            style={styles.langSwitch}
+            onPress={() => setAppLanguage(i18n.language === "zh" ? "en" : "zh")}
+            activeOpacity={0.7}
+          >
+            <Text style={styles.langSwitchText}>
+              {i18n.language === "zh" ? "EN" : "中"}
+            </Text>
+          </TouchableOpacity>
+        </View>
         <Animated.View
           style={{
             opacity: logoOpacity,
@@ -324,6 +328,17 @@ export default function Login() {
             >
               {t("common:actions.login")}
             </Button>
+            <Button
+              mode="text"
+              icon="cog-outline"
+              textColor={BRAND_RED}
+              onPress={() => {
+                setApiHostDraft(apiHost);
+                setApiHostModalVisible(true);
+              }}
+            >
+              {t("apiHost.settingsButton")}
+            </Button>
           </Animated.View>
         </View>
         </ScrollView>
@@ -377,21 +392,31 @@ export default function Login() {
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: BRAND_BG },
+  topActions: {
+    alignItems: "center",
+    alignSelf: "stretch",
+    flexDirection: "row",
+    justifyContent: "space-between",
+    marginBottom: IS_SMALL_SCREEN ? 14 : 20,
+    paddingHorizontal: 14,
+  },
   serverSettingsButton: {
     backgroundColor: "rgba(255,255,255,0.25)",
     borderColor: "rgba(255,255,255,0.4)",
     borderWidth: 1,
-    left: 12,
-    position: "absolute",
-    top: 46,
-    zIndex: 100,
+    borderRadius: 18,
+  },
+  serverSettingsButtonContent: {
+    minHeight: 32,
+    paddingHorizontal: 2,
+  },
+  serverSettingsButtonLabel: {
+    fontSize: 12,
+    fontWeight: "700",
+    marginHorizontal: 4,
   },
   // 语言切换
   langSwitch: {
-    position: "absolute",
-    top: 54,
-    right: 16,
-    zIndex: 100,
     backgroundColor: "rgba(255,255,255,0.25)",
     borderRadius: 18,
     paddingHorizontal: 14,
