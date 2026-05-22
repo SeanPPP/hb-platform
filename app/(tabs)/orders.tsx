@@ -186,6 +186,8 @@ function OrderDetailContent({
   loading,
   errorMessage,
   localeTag,
+  onClose,
+  onRetry,
   statusLabel,
   t,
 }: {
@@ -193,6 +195,8 @@ function OrderDetailContent({
   loading: boolean;
   errorMessage?: string;
   localeTag: string;
+  onClose: () => void;
+  onRetry: () => void;
   statusLabel: (status?: StoreOrderFlowStatus) => string;
   t: (key: string, options?: Record<string, unknown>) => string;
 }) {
@@ -205,11 +209,25 @@ function OrderDetailContent({
   }
 
   if (errorMessage) {
-    return <EmptyState title={t("empty.detailFailedTitle")} description={errorMessage} />;
+    return (
+      <EmptyState
+        title={t("empty.detailFailedTitle")}
+        description={errorMessage}
+        primaryAction={{ label: t("common:actions.retry"), icon: "refresh", onPress: onRetry }}
+        secondaryAction={{ label: t("common:actions.close"), icon: "close", onPress: onClose }}
+      />
+    );
   }
 
   if (!detail) {
-    return <EmptyState title={t("empty.detailNotFoundTitle")} description={t("empty.detailNotFoundDescription")} />;
+    return (
+      <EmptyState
+        title={t("empty.detailNotFoundTitle")}
+        description={t("empty.detailNotFoundDescription")}
+        primaryAction={{ label: t("common:actions.retry"), icon: "refresh", onPress: onRetry }}
+        secondaryAction={{ label: t("common:actions.close"), icon: "close", onPress: onClose }}
+      />
+    );
   }
 
   return (
@@ -413,10 +431,20 @@ export default function Orders() {
               <View style={styles.loadingWrap}>
                 <ActivityIndicator animating size="large" color="#1677FF" />
               </View>
+            ) : ordersQuery.isError ? (
+              <EmptyState
+                title={t("empty.listFailedTitle")}
+                description={ordersQuery.error instanceof Error ? ordersQuery.error.message : t("empty.noHistoryDescription")}
+                primaryAction={{
+                  label: t("common:actions.retry"),
+                  icon: "refresh",
+                  onPress: () => void ordersQuery.refetch(),
+                }}
+              />
             ) : (
               <EmptyState
                 title={selectedStoreCode ? t("empty.noHistoryTitle") : t("empty.noAccessTitle")}
-                description={ordersQuery.error instanceof Error ? ordersQuery.error.message : t("empty.noHistoryDescription")}
+                description={t("empty.noHistoryDescription")}
               />
             )
           }
@@ -524,6 +552,8 @@ export default function Orders() {
             loading={detailQuery.isLoading || detailQuery.isFetching}
             errorMessage={detailQuery.error instanceof Error ? detailQuery.error.message : undefined}
             localeTag={localeTag}
+            onClose={() => setSelectedOrderGuid(null)}
+            onRetry={() => void detailQuery.refetch()}
             statusLabel={statusLabel}
             t={t}
           />

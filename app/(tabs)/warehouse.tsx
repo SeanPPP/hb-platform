@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Image, ScrollView, StyleSheet, TextInput as NativeTextInput, View } from "react-native";
 import { useFocusEffect } from "@react-navigation/native";
 import { CameraView, useCameraPermissions } from "expo-camera";
+import { useRouter } from "expo-router";
 import { Button, Card, IconButton, Menu, Modal, Portal, Searchbar, SegmentedButtons, Snackbar, Switch, Text, TextInput } from "react-native-paper";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { EmptyState } from "@/components/ui/EmptyState";
@@ -154,6 +155,7 @@ function LocationPartMenu({
 }
 
 export default function WarehouseScreen() {
+  const router = useRouter();
   const { t } = useAppTranslation(["warehouse", "common"]);
   const access = useAuthStore((state) => state.access);
   const deviceSession = useDeviceStore((state) => state.session);
@@ -642,6 +644,11 @@ export default function WarehouseScreen() {
         <EmptyState
           title={t("messages.noAccessTitle")}
           description={t("messages.noAccessDescription")}
+          primaryAction={{
+            label: t("common:actions.goToSettings"),
+            icon: "cog-outline",
+            onPress: () => router.replace("/(tabs)/settings"),
+          }}
         />
       </SafeAreaView>
     );

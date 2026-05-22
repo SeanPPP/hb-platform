@@ -16,6 +16,7 @@
   "empty": {
     "selectStoreTitle": "Select a store first",
     "selectStoreDescription": "Choose a store to view its order history.",
+    "listFailedTitle": "Failed to load orders",
     "noHistoryTitle": "No order history yet",
     "noHistoryDescription": "Try a different filter.",
     "noAccessTitle": "No orders available",

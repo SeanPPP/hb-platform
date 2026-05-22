@@ -125,6 +125,9 @@
   "messages": {
     "loginRequired": "Please sign in before using attendance.",
     "loadFailed": "Failed to load attendance.",
+    "managerLoadFailedTitle": "Manager schedule failed to load",
+    "noManagedStoreTitle": "No managed stores",
+    "noManagedStoreDescription": "This account has no managed stores, or the latest permissions have not synced.",
     "refreshFailed": "Refresh failed.",
     "saveFailed": "Save failed.",
     "cancelFailed": "Cancel failed.",

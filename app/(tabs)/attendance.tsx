@@ -11,6 +11,7 @@ import { MonthDatePickerCard } from "@/components/attendance/MonthDatePicker";
 import { ScheduleManagementCard } from "@/components/attendance/ScheduleManagementCard";
 import { TodayPunchCard } from "@/components/attendance/TodayPunchCard";
 import { WeeklyScheduleTable } from "@/components/attendance/WeeklyScheduleTable";
+import { EmptyState } from "@/components/ui/EmptyState";
 import {
   approveAttendanceApproval,
   cancelAvailability,
@@ -73,6 +74,10 @@ function addWeeks(weekStartDate: string, weeks: number) {
   return toDateString(date);
 }
 
+function isPrimaryStore(store: object) {
+  return "isPrimary" in store && store.isPrimary === true;
+}
+
 const attendanceKeys = {
   today: (storeCode?: string, workDate?: string) =>
     ["attendance", "my", "today", storeCode ?? "all", workDate ?? "today"] as const,
@@ -101,17 +106,26 @@ export default function AttendanceScreen() {
   const [snackbarVisible, setSnackbarVisible] = useState(false);
 
   const stores = user?.stores ?? [];
+  const managerStores = useMemo(
+    () => (access.isAdmin ? stores : stores.filter(isPrimaryStore)),
+    [access.isAdmin, stores]
+  );
   const canReview = access.isAdmin || access.isStoreManager;
   const isEmployeeSection = activeSection === "employee";
   const isManagerSection = canReview && activeSection === "manager";
+  const sectionStores = isManagerSection ? managerStores : stores;
   const employeeWeekStartDate = useMemo(() => getWeekStartDate(selectedDate), [selectedDate]);
   const todayDate = useMemo(() => toDateString(new Date()), []);
 
   useEffect(() => {
-    if (!selectedStoreCode && stores.length > 0) {
-      setSelectedStoreCode(stores[0].storeCode);
-    }
-  }, [selectedStoreCode, stores]);
+    setSelectedStoreCode((current) => {
+      if (current && sectionStores.some((store) => store.storeCode === current)) {
+        return current;
+      }
+
+      return sectionStores[0]?.storeCode;
+    });
+  }, [sectionStores]);
 
   useEffect(() => {
     if (!canReview && activeSection !== "employee") {
@@ -152,7 +166,7 @@ export default function AttendanceScreen() {
     queryFn: () => getPendingApprovals(selectedStoreCode),
     enabled: Boolean(isAuthenticated && user && isManagerSection),
   });
-  const storeUsersQuery = useStoreUsers(isManagerSection ? selectedStoreCode : null);
+  const storeUsersQuery = useStoreUsers(isManagerSection && selectedStoreCode ? selectedStoreCode : null);
   const managerSchedulesQuery = useQuery({
     queryKey: attendanceKeys.schedulesWeek(selectedStoreCode, managerWeekStartDate),
     queryFn: () => getAttendanceSchedulesWeek({ storeCode: selectedStoreCode, weekStartDate: managerWeekStartDate }),
@@ -334,15 +348,23 @@ export default function AttendanceScreen() {
   const managerInitialLoading =
     isManagerSection &&
     (approvalsQuery.isLoading || storeUsersQuery.isLoading || managerSchedulesQuery.isLoading || holidaysQuery.isLoading);
-  const initialLoading = employeeInitialLoading || managerInitialLoading;
-  const loadError = isEmployeeSection
-    ? todayQuery.error || weekQuery.error || availabilityQuery.error
-    : approvalsQuery.error || storeUsersQuery.error || managerSchedulesQuery.error || holidaysQuery.error;
+  const employeeLoadError = todayQuery.error || weekQuery.error || availabilityQuery.error;
+  const managerLoadError =
+    isManagerSection && (approvalsQuery.error || storeUsersQuery.error || managerSchedulesQuery.error || holidaysQuery.error);
 
   const selectedStoreName = useMemo(
     () => stores.find((store) => store.storeCode === selectedStoreCode)?.storeName,
     [selectedStoreCode, stores]
   );
+
+  const handleBack = useCallback(() => {
+    if (router.canGoBack()) {
+      router.back();
+      return;
+    }
+
+    router.replace("/(tabs)/settings");
+  }, [router]);
 
   const refresh = useCallback(async () => {
     try {
@@ -415,7 +437,7 @@ export default function AttendanceScreen() {
     updateHolidayMutation.mutate({ holidayGuid, payload: payloadWithStore });
   };
 
-  if (!isAuthenticated || !user || initialLoading) {
+  if (!isAuthenticated || !user || employeeInitialLoading) {
     return (
       <SafeAreaView style={styles.container} edges={["top", "left", "right"]}>
         <View style={styles.centered}>
@@ -428,16 +450,24 @@ export default function AttendanceScreen() {
     );
   }
 
-  if (loadError) {
+  if (isEmployeeSection && employeeLoadError) {
     return (
       <SafeAreaView style={styles.container} edges={["top", "left", "right"]}>
         <View style={styles.centered}>
-          <Text variant="bodyLarge" style={styles.errorText}>
-            {loadError instanceof Error ? loadError.message : t("messages.loadFailed")}
-          </Text>
-          <Button mode="contained" icon="refresh" onPress={() => void refresh()}>
-            {t("common:actions.retry")}
-          </Button>
+          <EmptyState
+            title={t("messages.loadFailed")}
+            description={employeeLoadError instanceof Error ? employeeLoadError.message : t("messages.loadFailed")}
+            primaryAction={{
+              label: t("common:actions.retry"),
+              icon: "refresh",
+              onPress: () => void refresh(),
+            }}
+            secondaryAction={{
+              label: t("common:actions.back"),
+              icon: "arrow-left",
+              onPress: handleBack,
+            }}
+          />
         </View>
       </SafeAreaView>
     );
@@ -461,9 +491,9 @@ export default function AttendanceScreen() {
           </Button>
         </View>
 
-        {stores.length > 1 ? (
+        {sectionStores.length > 1 ? (
           <View style={styles.storeChips}>
-            {stores.map((store) => (
+            {sectionStores.map((store) => (
               <Chip
                 key={store.storeCode}
                 selected={store.storeCode === selectedStoreCode}
@@ -518,7 +548,36 @@ export default function AttendanceScreen() {
           </>
         ) : null}
 
-        {isManagerSection ? (
+        {isManagerSection && managerStores.length === 0 ? (
+          <EmptyState
+            title={t("messages.noManagedStoreTitle")}
+            description={t("messages.noManagedStoreDescription")}
+            primaryAction={{
+              label: t("common:actions.goToSettings"),
+              icon: "cog-outline",
+              onPress: () => router.replace("/(tabs)/settings"),
+            }}
+          />
+        ) : null}
+
+        {isManagerSection && managerStores.length > 0 && managerLoadError ? (
+          <EmptyState
+            title={t("messages.managerLoadFailedTitle")}
+            description={managerLoadError instanceof Error ? managerLoadError.message : t("messages.loadFailed")}
+            primaryAction={{
+              label: t("common:actions.retry"),
+              icon: "refresh",
+              onPress: () => void refresh(),
+            }}
+            secondaryAction={{
+              label: t("common:actions.back"),
+              icon: "arrow-left",
+              onPress: handleBack,
+            }}
+          />
+        ) : null}
+
+        {isManagerSection && managerStores.length > 0 && !managerLoadError ? (
           <>
             <ScheduleManagementCard
               weekStartDate={managerWeekStartDate}

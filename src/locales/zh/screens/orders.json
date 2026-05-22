@@ -16,6 +16,7 @@
   "empty": {
     "selectStoreTitle": "请先选择分店",
     "selectStoreDescription": "选择一个分店后即可查看该分店的历史订单",
+    "listFailedTitle": "订单列表加载失败",
     "noHistoryTitle": "暂无历史订单",
     "noHistoryDescription": "换个筛选条件试试",
     "noAccessTitle": "暂无可查看订单",

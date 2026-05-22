@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Image, ScrollView, StyleSheet, View } from "react-native";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "expo-router";
@@ -13,6 +13,7 @@ import {
   TextInput,
 } from "react-native-paper";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { EmptyState } from "@/components/ui/EmptyState";
 import {
   getMyEmployeeProfileApi,
   updateMyEmployeeProfileApi,
@@ -111,6 +112,15 @@ export default function EmployeeProfileScreen() {
   const [snackbarVisible, setSnackbarVisible] = useState(false);
 
   const locale = useMemo(() => resolveLocaleTag(language), [language]);
+
+  const handleBack = useCallback(() => {
+    if (router.canGoBack()) {
+      router.back();
+      return;
+    }
+
+    router.replace("/(tabs)/settings");
+  }, [router]);
 
   const showMessage = (message: string) => {
     setSnackbarMessage(message);
@@ -214,12 +224,20 @@ export default function EmployeeProfileScreen() {
     return (
       <SafeAreaView style={styles.container} edges={["top", "left", "right"]}>
         <View style={styles.centered}>
-          <Text variant="bodyLarge" style={styles.errorText}>
-            {profileQuery.error instanceof Error ? profileQuery.error.message : t("messages.loadFailed")}
-          </Text>
-          <Button mode="contained" onPress={() => void profileQuery.refetch()}>
-            {t("common:actions.retry")}
-          </Button>
+          <EmptyState
+            title={t("messages.loadFailed")}
+            description={profileQuery.error instanceof Error ? profileQuery.error.message : t("messages.loadFailed")}
+            primaryAction={{
+              label: t("common:actions.retry"),
+              icon: "refresh",
+              onPress: () => void profileQuery.refetch(),
+            }}
+            secondaryAction={{
+              label: t("common:actions.back"),
+              icon: "arrow-left",
+              onPress: handleBack,
+            }}
+          />
         </View>
       </SafeAreaView>
     );

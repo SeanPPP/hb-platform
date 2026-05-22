@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Alert, FlatList, RefreshControl, ScrollView, StyleSheet, View } from "react-native";
+import { useRouter } from "expo-router";
 import {
   ActivityIndicator,
   Button,
@@ -55,7 +56,8 @@ function formatDateTime(value: string | undefined, locale: string) {
 }
 
 export default function UsersScreen() {
-  const { t, language } = useAppTranslation("userManagement");
+  const router = useRouter();
+  const { t, language } = useAppTranslation(["userManagement", "common"]);
   const access = useAuthStore((state) => state.access);
   const { selectedStore, selectedStoreCode, isHydratingSelection } = useStores();
   const [keywordInput, setKeywordInput] = useState("");
@@ -371,6 +373,11 @@ export default function UsersScreen() {
         <EmptyState
           title={t("messages.noAccessTitle")}
           description={t("messages.noAccessDescription")}
+          primaryAction={{
+            label: t("common:actions.goToSettings"),
+            icon: "cog-outline",
+            onPress: () => router.replace("/(tabs)/settings"),
+          }}
         />
       </View>
     );
@@ -440,6 +447,11 @@ export default function UsersScreen() {
                     ? usersQuery.error.message
                     : t("messages.loadFailedDescription")
                 }
+                primaryAction={{
+                  label: t("common:actions.retry"),
+                  icon: "refresh",
+                  onPress: () => void handleRefresh(),
+                }}
               />
             ) : null}
 

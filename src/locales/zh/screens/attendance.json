@@ -125,6 +125,9 @@
   "messages": {
     "loginRequired": "请先登录后再使用考勤",
     "loadFailed": "加载考勤数据失败",
+    "managerLoadFailedTitle": "店长排班加载失败",
+    "noManagedStoreTitle": "暂无可管理分店",
+    "noManagedStoreDescription": "当前账号没有可管理分店，或权限尚未同步。",
     "refreshFailed": "刷新失败",
     "saveFailed": "保存失败",
     "cancelFailed": "取消失败",

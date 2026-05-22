@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { FlatList, RefreshControl, ScrollView, StyleSheet, View } from "react-native";
 import { useFocusEffect } from "@react-navigation/native";
+import { useRouter } from "expo-router";
 import {
   ActivityIndicator,
   Button,
@@ -67,6 +68,7 @@ function typeLabel(type: ProductCreationType, t: (key: string) => string) {
 }
 
 export default function DomesticPurchaseScreen() {
+  const router = useRouter();
   const { t, language } = useAppTranslation(["domesticPurchase", "common"]);
   const localeTag = resolveLocaleTag(language);
   const access = useAuthStore((state) => state.access);
@@ -79,10 +81,12 @@ export default function DomesticPurchaseScreen() {
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [loadErrorMessage, setLoadErrorMessage] = useState("");
   const [snackbar, setSnackbar] = useState("");
 
   const [detailVisible, setDetailVisible] = useState(false);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [detailErrorMessage, setDetailErrorMessage] = useState("");
   const [selectedBatch, setSelectedBatch] = useState<DomesticProductBatch | null>(null);
   const [detail, setDetail] = useState<DomesticProductBatchDetail | null>(null);
 
@@ -110,8 +114,11 @@ export default function DomesticPurchaseScreen() {
         setBatches((current) => (mode === "append" ? [...current, ...result.items] : result.items));
         setTotal(result.total);
         setPage(result.page);
+        setLoadErrorMessage("");
       } catch (error) {
-        setSnackbar(error instanceof Error ? error.message : t("messages.loadFailed"));
+        const message = error instanceof Error ? error.message : t("messages.loadFailed");
+        setLoadErrorMessage(message);
+        setSnackbar(message);
       } finally {
         setLoading(false);
         setRefreshing(false);
@@ -145,10 +152,14 @@ export default function DomesticPurchaseScreen() {
       setSelectedBatch(batch);
       setDetailVisible(true);
       setDetailLoading(true);
+      setDetail(null);
+      setDetailErrorMessage("");
       try {
         setDetail(await fetchDomesticProductBatchDetail(batch.batchNumber));
       } catch (error) {
-        setSnackbar(error instanceof Error ? error.message : t("messages.loadDetailFailed"));
+        const message = error instanceof Error ? error.message : t("messages.loadDetailFailed");
+        setDetailErrorMessage(message);
+        setSnackbar(message);
       } finally {
         setDetailLoading(false);
       }
@@ -244,7 +255,15 @@ export default function DomesticPurchaseScreen() {
   if (!hasAccess) {
     return (
       <SafeAreaView style={styles.safeArea}>
-        <EmptyState title={t("empty.noAccessTitle")} description={t("empty.noAccessDescription")} />
+        <EmptyState
+          title={t("empty.noAccessTitle")}
+          description={t("empty.noAccessDescription")}
+          primaryAction={{
+            label: t("common:actions.goToSettings"),
+            icon: "cog-outline",
+            onPress: () => router.replace("/(tabs)/settings"),
+          }}
+        />
       </SafeAreaView>
     );
   }
@@ -281,6 +300,16 @@ export default function DomesticPurchaseScreen() {
         ListEmptyComponent={
           loading ? (
             <ActivityIndicator style={styles.emptyLoader} />
+          ) : loadErrorMessage ? (
+            <EmptyState
+              title={t("messages.loadFailed")}
+              description={loadErrorMessage}
+              primaryAction={{
+                label: t("common:actions.retry"),
+                icon: "refresh",
+                onPress: () => void loadBatches(1, "replace"),
+              }}
+            />
           ) : (
             <EmptyState title={t("empty.noBatchTitle")} description={t("empty.noBatchDescription")} />
           )
@@ -454,6 +483,21 @@ export default function DomesticPurchaseScreen() {
           <Divider style={styles.divider} />
           {detailLoading ? (
             <ActivityIndicator style={styles.detailLoader} />
+          ) : detailErrorMessage ? (
+            <EmptyState
+              title={t("messages.loadDetailFailed")}
+              description={detailErrorMessage}
+              primaryAction={{
+                label: t("common:actions.retry"),
+                icon: "refresh",
+                onPress: () => selectedBatch && void openDetail(selectedBatch),
+              }}
+              secondaryAction={{
+                label: t("common:actions.close"),
+                icon: "close",
+                onPress: () => setDetailVisible(false),
+              }}
+            />
           ) : (
             <ScrollView style={styles.detailList}>
               {(detail?.items ?? []).map((item, index) => (
