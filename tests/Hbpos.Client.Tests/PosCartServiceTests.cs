@@ -27,7 +27,8 @@ public sealed class PosCartServiceTests
             lookupCode: "690001",
             displayName: "Old Milk",
             price: 10m,
-            priceSource: PriceSourceKind.ProductBase));
+            priceSource: PriceSourceKind.ProductBase,
+            productImage: "https://images.example/old-milk.jpg"));
         cart.AddItem(CreateItem(
             productCode: "SKU-001",
             lookupCode: "690001",
@@ -40,13 +41,15 @@ public sealed class PosCartServiceTests
             lookupCode: "REMOTE-690001",
             displayName: "Fresh Milk",
             price: 12.5m,
-            priceSource: PriceSourceKind.StoreClearancePrice);
+            priceSource: PriceSourceKind.StoreClearancePrice,
+            productImage: "https://images.example/fresh-milk.jpg");
 
         Assert.True(cart.UpdateLineFromRemote("S001", "690001", updated));
 
         var line = Assert.Single(cart.Lines);
         Assert.Equal(2m, line.Quantity);
         Assert.Equal("Fresh Milk", line.DisplayName);
+        Assert.Equal("https://images.example/fresh-milk.jpg", line.ProductImage);
         Assert.Equal("REMOTE-690001", line.LookupCodeNormalized);
         Assert.Equal(12.5m, line.UnitPrice);
         Assert.Equal(PriceSourceKind.StoreClearancePrice, line.PriceSource);
@@ -120,7 +123,8 @@ public sealed class PosCartServiceTests
         string displayName = "Milk 1L",
         string? itemNumber = null,
         decimal price = 10m,
-        PriceSourceKind priceSource = PriceSourceKind.StoreRetailPrice)
+        PriceSourceKind priceSource = PriceSourceKind.StoreRetailPrice,
+        string? productImage = null)
     {
         return new SellableItemDto(
             StoreCode: storeCode,
@@ -134,6 +138,7 @@ public sealed class PosCartServiceTests
             PriceSource: priceSource,
             PriceSourceLabel: priceSource.ToString(),
             QuantityFactor: 1m,
-            UpdatedAt: DateTimeOffset.UtcNow);
+            UpdatedAt: DateTimeOffset.UtcNow,
+            ProductImage: productImage);
     }
 }

@@ -14,6 +14,8 @@
     <UserControl.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVis" />
         <converters:AlternationIndexToRowNumberConverter x:Key="RowNumberConverter" />
+        <converters:StringNullOrWhiteSpaceToVisibilityConverter x:Key="StringHasValueToVis" />
+        <converters:StringNullOrWhiteSpaceToVisibilityConverter x:Key="StringIsEmptyToVis" Invert="True" />
 
         <Style x:Key="CartColumnHeaderCenterStyle" TargetType="DataGridColumnHeader">
             <Setter Property="Background" Value="#FFF8FAFD" />
@@ -33,6 +35,69 @@
 
         <Style x:Key="CartColumnHeaderLeftStyle" TargetType="DataGridColumnHeader" BasedOn="{StaticResource CartColumnHeaderCenterStyle}">
             <Setter Property="HorizontalContentAlignment" Value="Left" />
+        </Style>
+
+        <Style x:Key="CartDataGridRowStyle" TargetType="DataGridRow">
+            <Setter Property="Background" Value="{StaticResource PosSurfaceBrush}" />
+            <Setter Property="BorderBrush" Value="#FFE2E2E6" />
+            <Setter Property="BorderThickness" Value="0,0,0,1" />
+            <Setter Property="SnapsToDevicePixels" Value="True" />
+            <Style.Triggers>
+                <Trigger Property="IsSelected" Value="True">
+                    <Setter Property="Background" Value="#FFE8F1FF" />
+                    <Setter Property="Foreground" Value="{StaticResource PosTextBrush}" />
+                    <Setter Property="BorderBrush" Value="{StaticResource PosPrimaryBrush}" />
+                    <Setter Property="BorderThickness" Value="4,0,0,1" />
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+
+        <Style x:Key="CartDataGridCellStyle" TargetType="DataGridCell">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+            <Style.Triggers>
+                <Trigger Property="IsSelected" Value="True">
+                    <Setter Property="Background" Value="Transparent" />
+                    <Setter Property="Foreground" Value="{StaticResource PosTextBrush}" />
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+
+        <Style x:Key="CartDeleteButtonStyle" TargetType="Button">
+            <Setter Property="Width" Value="36" />
+            <Setter Property="Height" Value="36" />
+            <Setter Property="Padding" Value="0" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Background" Value="#FFFFEEF0" />
+            <Setter Property="Foreground" Value="{StaticResource PosDangerBrush}" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Focusable" Value="False" />
+            <Setter Property="IsTabStop" Value="False" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type Button}">
+                        <Border x:Name="Root"
+                                Background="{TemplateBinding Background}"
+                                CornerRadius="12">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center"
+                                              TextBlock.Foreground="{TemplateBinding Foreground}" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Root" Property="Background" Value="#FFFFDDE2" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="Root" Property="Background" Value="#FFFFC8D0" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Opacity" Value="0.55" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
         </Style>
     </UserControl.Resources>
 
@@ -267,6 +332,10 @@
 
             <Grid Grid.Row="1" Margin="14,0,14,6">
                 <DataGrid ItemsSource="{Binding CartLines}"
+                          SelectedItem="{Binding SelectedCartLine, Mode=TwoWay}"
+                          SelectionMode="Single"
+                          SelectionUnit="FullRow"
+                          SelectionChanged="CartDataGrid_SelectionChanged"
                           IsReadOnly="True"
                           AlternationCount="1000000"
                           AlternatingRowBackground="{StaticResource PosSurfaceAltBrush}"
@@ -279,6 +348,8 @@
                           ScrollViewer.CanContentScroll="True"
                           GridLinesVisibility="None"
                           BorderThickness="0"
+                          RowStyle="{StaticResource CartDataGridRowStyle}"
+                          CellStyle="{StaticResource CartDataGridCellStyle}"
                           Style="{StaticResource PosCartDataGridStyle}">
                     <DataGrid.Columns>
                         <DataGridTemplateColumn Header="#" Width="52" HeaderStyle="{StaticResource CartColumnHeaderCenterStyle}">
@@ -299,11 +370,30 @@
                                 <DataTemplate>
                                     <Grid Margin="0,6,8,6">
                                         <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="46" />
+                                            <ColumnDefinition Width="54" />
                                             <ColumnDefinition Width="*" />
                                         </Grid.ColumnDefinitions>
-                                        <Border Width="42" Height="42" Background="#FFE8F0FE" CornerRadius="8" Margin="0,0,10,0">
-                                            <materialDesign:PackIcon Kind="Shopping" Width="22" Height="22" Foreground="{StaticResource PosPrimaryBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                        <Border Width="48"
+                                                Height="48"
+                                                Background="#FFE8F0FE"
+                                                CornerRadius="9"
+                                                Margin="0,0,10,0"
+                                                ClipToBounds="True">
+                                            <Grid>
+                                                <Image Source="{Binding ProductImage}"
+                                                       Stretch="Uniform"
+                                                       Margin="3"
+                                                       SnapsToDevicePixels="True"
+                                                       RenderOptions.BitmapScalingMode="HighQuality"
+                                                       Visibility="{Binding ProductImage, Converter={StaticResource StringHasValueToVis}}" />
+                                                <materialDesign:PackIcon Kind="Shopping"
+                                                                         Width="22"
+                                                                         Height="22"
+                                                                         Foreground="{StaticResource PosPrimaryBrush}"
+                                                                         HorizontalAlignment="Center"
+                                                                         VerticalAlignment="Center"
+                                                                         Visibility="{Binding ProductImage, Converter={StaticResource StringIsEmptyToVis}}" />
+                                            </Grid>
                                         </Border>
                                         <StackPanel Grid.Column="1" VerticalAlignment="Center">
                                             <TextBlock Text="{Binding DisplayName}" FontSize="13" FontWeight="Black" TextTrimming="CharacterEllipsis" />
@@ -363,17 +453,11 @@
                                 <DataTemplate>
                                     <Button Command="{Binding DataContext.RemoveLineCommand, RelativeSource={RelativeSource AncestorType=DataGrid}}"
                                             CommandParameter="{Binding}"
-                                            Width="34"
-                                            Height="34"
-                                            Padding="0"
-                                            BorderThickness="0"
-                                            Background="#FFFFEEF0"
-                                            Foreground="{StaticResource PosDangerBrush}"
-                                            Cursor="Hand"
+                                            Style="{StaticResource CartDeleteButtonStyle}"
                                             HorizontalAlignment="Center"
                                             VerticalAlignment="Center"
                                             ToolTip="{loc:Loc Remove}">
-                                        <materialDesign:PackIcon Kind="DeleteOutline" Width="18" Height="18" />
+                                        <materialDesign:PackIcon Kind="DeleteOutline" Width="19" Height="19" />
                                     </Button>
                                 </DataTemplate>
                             </DataGridTemplateColumn.CellTemplate>

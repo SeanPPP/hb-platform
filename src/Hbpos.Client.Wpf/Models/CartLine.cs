@@ -9,6 +9,7 @@ public sealed class CartLine : ObservableObject
     private string _productCode = string.Empty;
     private string? _itemNumber;
     private string? _referenceCode;
+    private string? _productImage;
     private string _displayName = string.Empty;
     private string _lookupCode = string.Empty;
     private string _lookupCodeNormalized = string.Empty;
@@ -46,6 +47,12 @@ public sealed class CartLine : ObservableObject
     {
         get => _referenceCode;
         private set => SetProperty(ref _referenceCode, value);
+    }
+
+    public string? ProductImage
+    {
+        get => _productImage;
+        private set => SetProperty(ref _productImage, value);
     }
 
     public string DisplayName
@@ -145,6 +152,7 @@ public sealed class CartLine : ObservableObject
         ProductCode = item.ProductCode;
         ItemNumber = item.ItemNumber;
         ReferenceCode = item.ReferenceCode;
+        ProductImage = item.ProductImage;
         DisplayName = item.DisplayName;
         LookupCode = item.LookupCode;
         LookupCodeNormalized = NormalizeLookupCode(item.LookupCode);

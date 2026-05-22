@@ -39,6 +39,9 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IDisposable
     private SellableItemDto? _selectedItem;
 
     [ObservableProperty]
+    private CartLine? _selectedCartLine;
+
+    [ObservableProperty]
     private bool _isMatchesPopupOpen;
 
     [ObservableProperty]
@@ -207,6 +210,11 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IDisposable
             {
                 CartLines.Move(currentIndex, sourceIndex);
             }
+        }
+
+        if (SelectedCartLine is not null && !sourceLines.Contains(SelectedCartLine))
+        {
+            SelectedCartLine = null;
         }
     }
 
@@ -468,10 +476,21 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IDisposable
 
     private void AddItem(SellableItemDto item)
     {
-        _cart.AddItem(item);
+        var line = _cart.AddItem(item);
+        SelectCartLine(line);
         IsTouchKeyboardOpen = false;
         SetStatus("pos.status.added", item.DisplayName);
         BeginRemoteLookup(item);
+    }
+
+    private void SelectCartLine(CartLine line)
+    {
+        if (ReferenceEquals(SelectedCartLine, line))
+        {
+            SelectedCartLine = null;
+        }
+
+        SelectedCartLine = line;
     }
 
     private void OnRawBarcodeScanned(RawBarcodeScannedEventArgs e)

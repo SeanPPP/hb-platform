@@ -12,7 +12,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
     {
         var cart = new PosCartService();
         var index = new LocalSellableItemIndex();
-        index.ReplaceAll([CreateItem("SKU-101", "Sparkling Water", "930101", PriceSourceKind.StoreRetailPrice, 2.5m, itemNumber: "ITEM-101")]);
+        index.ReplaceAll([CreateItem("SKU-101", "Sparkling Water", "930101", PriceSourceKind.StoreRetailPrice, 2.5m, itemNumber: "ITEM-101", productImage: "https://images.example/sparkling-water.jpg")]);
         var viewModel = new PosTerminalViewModel(
             index,
             cart,
@@ -27,7 +27,37 @@ public sealed class PosTerminalCashPaymentViewModelTests
         var line = Assert.Single(viewModel.CartLines);
         Assert.Equal("Sparkling Water", line.DisplayName);
         Assert.Equal("ITEM-101", line.ItemNumber);
+        Assert.Equal("https://images.example/sparkling-water.jpg", line.ProductImage);
+        Assert.Same(line, viewModel.SelectedCartLine);
         Assert.Equal("StoreRetailPrice", line.PriceSourceLabel);
+    }
+
+    [Fact]
+    public void Pos_terminal_selects_the_latest_added_cart_line()
+    {
+        var cart = new PosCartService();
+        var index = new LocalSellableItemIndex();
+        index.ReplaceAll(
+        [
+            CreateItem("SKU-121", "First Item", "930121", PriceSourceKind.StoreRetailPrice, 1.5m),
+            CreateItem("SKU-122", "Second Item", "930122", PriceSourceKind.StoreRetailPrice, 2.5m)
+        ]);
+        var viewModel = new PosTerminalViewModel(
+            index,
+            cart,
+            Session,
+            onOpenPayment: null);
+
+        viewModel.ScanText = "930121";
+        viewModel.ScanCommand.Execute(null);
+        var firstLine = Assert.Single(viewModel.CartLines);
+
+        viewModel.ScanText = "930122";
+        viewModel.ScanCommand.Execute(null);
+
+        var secondLine = Assert.Single(viewModel.CartLines, line => line.LookupCode == "930122");
+        Assert.NotSame(firstLine, secondLine);
+        Assert.Same(secondLine, viewModel.SelectedCartLine);
     }
 
     [Fact]
@@ -256,6 +286,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
         var line = Assert.Single(viewModel.CartLines);
         Assert.Same(firstLine, line);
         Assert.Equal(2m, line.Quantity);
+        Assert.Same(line, viewModel.SelectedCartLine);
         Assert.Equal(4m, viewModel.ActualAmount);
     }
 
@@ -511,7 +542,8 @@ public sealed class PosTerminalCashPaymentViewModelTests
         PriceSourceKind priceSource,
         decimal price,
         string? itemNumber = null,
-        string? productBarcode = null)
+        string? productBarcode = null,
+        string? productImage = null)
     {
         return new SellableItemDto(
             StoreCode: "S001",
@@ -525,7 +557,8 @@ public sealed class PosTerminalCashPaymentViewModelTests
             PriceSource: priceSource,
             PriceSourceLabel: priceSource.ToString(),
             QuantityFactor: 1m,
-            UpdatedAt: DateTimeOffset.UtcNow);
+            UpdatedAt: DateTimeOffset.UtcNow,
+            ProductImage: productImage);
     }
 
     private static async Task WaitUntilAsync(Func<bool> condition)
