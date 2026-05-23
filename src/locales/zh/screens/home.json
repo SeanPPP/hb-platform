@@ -1,6 +1,7 @@
 {
   "title": "商品列表",
   "filterTitle": "过滤面板",
+  "gradeFilterTitle": "等级筛选",
   "scanResultHint": "当前为扫码结果，点清除按钮恢复全部商品",
   "searchPlaceholder": "按货号搜索",
   "searchToggleOpen": "展开搜索框",

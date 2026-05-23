@@ -51,6 +51,9 @@
   },
   "filters": {
     "store": "分店",
+    "chooseStore": "选择分店",
+    "currentStore": "当前分店: {{store}}",
+    "noStores": "当前账号没有可用分店。",
     "status": "状态",
     "allHistory": "全部历史"
   },

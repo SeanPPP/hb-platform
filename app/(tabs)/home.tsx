@@ -84,6 +84,7 @@ export default function Home() {
   const [cameraVisible, setCameraVisible] = useState(false);
   const [storePickerVisible, setStorePickerVisible] = useState(false);
   const [filtersVisible, setFiltersVisible] = useState(false);
+  const [gradeFilterVisible, setGradeFilterVisible] = useState(false);
   const [searchInput, setSearchInput] = useState("");
   const [autoAddWhenSingle, setAutoAddWhenSingle] = useState(true);
   const [keyword, setKeyword] = useState("");
@@ -461,7 +462,7 @@ export default function Home() {
           compact
           mode={selectedGrade ? "flat" : "outlined"}
           icon="label-outline"
-          onPress={() => setFiltersVisible(true)}
+          onPress={() => setGradeFilterVisible(true)}
           style={[styles.utilityChip, selectedGrade ? styles.utilityChipActive : null]}
           textStyle={[styles.utilityChipText, selectedGrade ? styles.utilityChipTextActive : null]}
         >
@@ -640,9 +641,6 @@ export default function Home() {
                 <Text variant="bodySmall" style={styles.secondaryText}>
                   {t("filters.currentCategory", { category: selectedCategoryName })}
                 </Text>
-                <Text variant="bodySmall" style={styles.secondaryText}>
-                  {t("filters.currentGrade", { grade: selectedGradeLabel })}
-                </Text>
               </View>
               <Button mode="text" onPress={() => setFiltersVisible(false)}>
                 {t("common:actions.close")}
@@ -667,6 +665,28 @@ export default function Home() {
                 {renderCategoryTree(categoryOptions)}
               </View>
             </View>
+          </ScrollView>
+        </Modal>
+      </Portal>
+
+      <Portal>
+        <Modal
+          visible={gradeFilterVisible}
+          onDismiss={() => setGradeFilterVisible(false)}
+          contentContainerStyle={styles.filtersModal}
+        >
+          <ScrollView contentContainerStyle={styles.filtersModalContent}>
+            <View style={styles.filtersModalHeader}>
+              <View style={styles.filtersModalTitleWrap}>
+                <Text variant="titleMedium">{t("gradeFilterTitle")}</Text>
+                <Text variant="bodySmall" style={styles.secondaryText}>
+                  {t("filters.currentGrade", { grade: selectedGradeLabel })}
+                </Text>
+              </View>
+              <Button mode="text" onPress={() => setGradeFilterVisible(false)}>
+                {t("common:actions.close")}
+              </Button>
+            </View>
             <View style={styles.filtersSection}>
               <View style={styles.filtersSectionHeader}>
                 <Text variant="labelLarge">{t("filters.grade")}</Text>
@@ -679,7 +699,10 @@ export default function Home() {
                   compact
                   mode={!selectedGrade ? "flat" : "outlined"}
                   selected={!selectedGrade}
-                  onPress={() => setSelectedGrade(undefined)}
+                  onPress={() => {
+                    setSelectedGrade(undefined);
+                    setGradeFilterVisible(false);
+                  }}
                   style={[styles.filterChip, !selectedGrade ? styles.filterChipActive : null]}
                   textStyle={[styles.filterChipText, !selectedGrade ? styles.filterChipTextActive : null]}
                 >
@@ -695,7 +718,10 @@ export default function Home() {
                       compact
                       mode={isSelected ? "flat" : "outlined"}
                       selected={isSelected}
-                      onPress={() => setSelectedGrade(isSelected ? undefined : grade)}
+                      onPress={() => {
+                        setSelectedGrade(isSelected ? undefined : grade);
+                        setGradeFilterVisible(false);
+                      }}
                       style={[styles.filterChip, isSelected ? styles.filterChipActive : null]}
                       textStyle={[styles.filterChipText, isSelected ? styles.filterChipTextActive : null]}
                     >

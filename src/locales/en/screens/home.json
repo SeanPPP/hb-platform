@@ -1,6 +1,7 @@
 {
   "title": "Products",
   "filterTitle": "Filters",
+  "gradeFilterTitle": "Grade filter",
   "scanResultHint": "Showing scan results. Clear the filter to return to the full product list.",
   "searchPlaceholder": "Search by item number",
   "searchToggleOpen": "Expand search",

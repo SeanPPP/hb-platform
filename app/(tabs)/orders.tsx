@@ -15,9 +15,9 @@ import {
   Chip,
   Divider,
   IconButton,
-  Menu,
   Portal,
   Modal,
+  RadioButton,
   Text,
 } from "react-native-paper";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -292,7 +292,7 @@ export default function Orders() {
   const [pageNumber, setPageNumber] = useState(1);
   const [selectedOrderGuid, setSelectedOrderGuid] = useState<string | null>(null);
   const [filtersVisible, setFiltersVisible] = useState(false);
-  const [storeMenuVisible, setStoreMenuVisible] = useState(false);
+  const [storePickerVisible, setStorePickerVisible] = useState(false);
   const [ordersRefreshing, setOrdersRefreshing] = useState(false);
 
   const statusLabel = useCallback(
@@ -492,32 +492,18 @@ export default function Orders() {
               <Text variant="labelLarge" style={styles.filtersSectionTitle}>
                 {t("filters.store")}
               </Text>
-              <Menu
-                visible={storeMenuVisible}
-                onDismiss={() => setStoreMenuVisible(false)}
-                anchor={
-                  <Button
-                    mode="outlined"
-                    icon="chevron-down"
-                    contentStyle={styles.storeDropdownButtonContent}
-                    style={styles.storeDropdownButton}
-                    onPress={() => setStoreMenuVisible(true)}
-                  >
-                    {selectedStore?.storeName || t("selectStore")}
-                  </Button>
-                }
+              <Button
+                mode="outlined"
+                icon="storefront-outline"
+                contentStyle={styles.storeSelectorButtonContent}
+                style={styles.storeSelectorButton}
+                onPress={() => setStorePickerVisible(true)}
               >
-                {stores.map((store) => (
-                  <Menu.Item
-                    key={store.storeCode}
-                    title={store.storeName}
-                    onPress={() => {
-                      void selectStore(store);
-                      setStoreMenuVisible(false);
-                    }}
-                  />
-                ))}
-              </Menu>
+                {selectedStore?.storeName || t("selectStore")}
+              </Button>
+              <Text variant="bodySmall" style={styles.filtersCurrentText}>
+                {t("filters.currentStore", { store: selectedStore?.storeName || t("common:na") })}
+              </Text>
             </View>
 
             <View style={styles.filtersSection}>
@@ -547,6 +533,74 @@ export default function Orders() {
               </View>
             </View>
           </ScrollView>
+        </Modal>
+        <Modal
+          visible={storePickerVisible}
+          onDismiss={() => setStorePickerVisible(false)}
+          contentContainerStyle={styles.storePickerModalContent}
+        >
+          <View style={styles.storePickerHeader}>
+            <View style={styles.storePickerTitleWrap}>
+              <Text variant="titleMedium" style={styles.filtersModalTitle}>
+                {t("filters.chooseStore")}
+              </Text>
+              <Text variant="bodySmall" style={styles.filtersCurrentText}>
+                {t("filters.currentStore", { store: selectedStore?.storeName || t("common:na") })}
+              </Text>
+            </View>
+            <Button compact onPress={() => setStorePickerVisible(false)}>
+              {t("common:actions.close")}
+            </Button>
+          </View>
+
+          {storesLoading ? (
+            <View style={styles.storePickerLoading}>
+              <ActivityIndicator animating color="#1677FF" />
+              <Text variant="bodyMedium" style={styles.filtersCurrentText}>
+                {t("common:loading")}
+              </Text>
+            </View>
+          ) : stores.length ? (
+            <FlatList
+              data={stores}
+              keyExtractor={(store) => store.storeCode}
+              contentContainerStyle={styles.storePickerListContent}
+              renderItem={({ item: store }) => {
+                const selected = store.storeCode === selectedStoreCode;
+
+                return (
+                  <Pressable
+                    style={[styles.storePickerRow, selected ? styles.storePickerRowSelected : null]}
+                    onPress={() => {
+                      void selectStore(store);
+                      setStorePickerVisible(false);
+                    }}
+                  >
+                    <RadioButton
+                      value={store.storeCode}
+                      status={selected ? "checked" : "unchecked"}
+                      onPress={() => {
+                        void selectStore(store);
+                        setStorePickerVisible(false);
+                      }}
+                    />
+                    <View style={styles.storePickerRowTextWrap}>
+                      <Text variant="bodyMedium" style={styles.storePickerStoreName}>
+                        {store.storeName || store.storeCode}
+                      </Text>
+                      <Text variant="bodySmall" style={styles.filtersCurrentText}>
+                        {store.storeCode}
+                      </Text>
+                    </View>
+                  </Pressable>
+                );
+              }}
+            />
+          ) : (
+            <Text variant="bodyMedium" style={styles.filtersCurrentText}>
+              {t("filters.noStores")}
+            </Text>
+          )}
         </Modal>
         <Modal
           visible={Boolean(selectedOrderGuid)}
@@ -592,12 +646,15 @@ const styles = StyleSheet.create({
   filterChip: {
     backgroundColor: "#FFFFFF",
   },
-  storeDropdownButton: {
+  storeSelectorButton: {
     alignSelf: "stretch",
   },
-  storeDropdownButtonContent: {
+  storeSelectorButtonContent: {
     flexDirection: "row-reverse",
     justifyContent: "space-between",
+  },
+  filtersCurrentText: {
+    color: "#64748B",
   },
   listContent: {
     paddingHorizontal: 16,
@@ -723,6 +780,60 @@ const styles = StyleSheet.create({
   },
   filtersSectionTitle: {
     color: "#475569",
+  },
+  storePickerModalContent: {
+    marginHorizontal: 16,
+    marginVertical: 84,
+    backgroundColor: "#FFFFFF",
+    borderRadius: 20,
+    maxHeight: "78%",
+    overflow: "hidden",
+    padding: 16,
+    gap: 14,
+  },
+  storePickerHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+  storePickerTitleWrap: {
+    flex: 1,
+    gap: 4,
+  },
+  storePickerLoading: {
+    minHeight: 160,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 10,
+  },
+  storePickerListContent: {
+    gap: 8,
+    paddingBottom: 4,
+  },
+  storePickerRow: {
+    minHeight: 56,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+    backgroundColor: "#FFFFFF",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingRight: 12,
+  },
+  storePickerRowSelected: {
+    borderColor: "#1677FF",
+    backgroundColor: "#EFF6FF",
+  },
+  storePickerRowTextWrap: {
+    flex: 1,
+    minWidth: 0,
+    gap: 2,
+  },
+  storePickerStoreName: {
+    color: "#0F172A",
+    fontWeight: "700",
   },
   filterChipsGrid: {
     flexDirection: "row",

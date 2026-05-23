@@ -51,6 +51,9 @@
   },
   "filters": {
     "store": "Store",
+    "chooseStore": "Choose store",
+    "currentStore": "Current store: {{store}}",
+    "noStores": "No stores are available for this account.",
     "status": "Status",
     "allHistory": "All history"
   },
