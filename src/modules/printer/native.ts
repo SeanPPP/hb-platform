@@ -22,6 +22,12 @@ type NativePrinterModule = {
 };
 
 const nativeModule = NativeModules.HbPrinterModule as NativePrinterModule | undefined;
+const unsupportedPrinterStatus: PrinterStatus = {
+  supported: false,
+  enabled: false,
+  connected: false,
+  address: null,
+};
 
 function getModule() {
   if (Platform.OS !== "android") {
@@ -66,6 +72,10 @@ export async function ensureBluetoothPermissions() {
 }
 
 export async function getPrinterStatus() {
+  if (Platform.OS !== "android" || !nativeModule) {
+    return unsupportedPrinterStatus;
+  }
+
   return getModule().getStatus();
 }
 
