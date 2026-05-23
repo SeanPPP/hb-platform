@@ -21,6 +21,49 @@ namespace BlazorApp.Api.Controllers.React
             _logger = logger;
         }
 
+        [HttpGet("options")]
+        [AllowAnonymous]
+        public async Task<IActionResult> GetProductGradeOptions()
+        {
+            try
+            {
+                var query = new ProductGradeListQueryDto
+                {
+                    Page = 1,
+                    PageSize = 1000,
+                    SortField = "grade",
+                    SortDirection = "asc",
+                };
+
+                var result = await _productGradeReactService.GetProductGradesAsync(query);
+
+                if (result.Success)
+                {
+                    var options = (result.Data?.Items ?? new List<ProductGradeDto>())
+                        .Select(item => item.Grade?.Trim())
+                        .Where(grade => !string.IsNullOrWhiteSpace(grade))
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .OrderBy(grade => grade)
+                        .Select(grade => new
+                        {
+                            grade,
+                            label = grade,
+                            value = grade,
+                        })
+                        .ToList();
+
+                    return Ok(new { success = true, data = options, message = "获取商品等级选项成功" });
+                }
+
+                return BadRequest(new { success = false, message = result.Message });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "获取商品等级选项失败");
+                return StatusCode(500, new { success = false, message = "获取商品等级选项失败" });
+            }
+        }
+
         [HttpGet]
         [Authorize(Roles = "Admin,WarehouseManager")]
         public async Task<IActionResult> GetProductGrades(
