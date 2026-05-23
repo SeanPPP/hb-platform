@@ -3,14 +3,17 @@ import { Alert, FlatList, RefreshControl, ScrollView, StyleSheet, View } from "r
 import { useRouter } from "expo-router";
 import {
   ActivityIndicator,
+  Avatar,
   Button,
   Card,
   Chip,
   Dialog,
   FAB,
+  IconButton,
   Menu,
   Portal,
   Searchbar,
+  SegmentedButtons,
   Snackbar,
   Switch,
   Text,
@@ -31,6 +34,8 @@ import { extractApiErrorMessage } from "@/shared/api/error-message";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 import { useAuthStore } from "@/store/auth-store";
 
+type StatusFilter = "all" | "active" | "disabled";
+
 const EMPTY_FORM: StoreUserFormValues = {
   username: "",
   fullName: "",
@@ -39,6 +44,18 @@ const EMPTY_FORM: StoreUserFormValues = {
   password: "",
   status: true,
 };
+
+function getInitials(user: StoreUserListItem) {
+  const source = user.fullName || user.username || "?";
+  const words = source.trim().split(/\s+/).filter(Boolean);
+  if (!words.length) {
+    return "?";
+  }
+  if (words.length === 1) {
+    return words[0].slice(0, 2).toUpperCase();
+  }
+  return `${words[0][0]}${words[1][0]}`.toUpperCase();
+}
 
 function formatDateTime(value: string | undefined, locale: string) {
   if (!value) {
@@ -65,6 +82,7 @@ export default function UsersScreen() {
   const [storeMenuVisible, setStoreMenuVisible] = useState(false);
   const [keywordInput, setKeywordInput] = useState("");
   const [keyword, setKeyword] = useState("");
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [snackbarMessage, setSnackbarMessage] = useState("");
   const [dialogVisible, setDialogVisible] = useState(false);
   const [dialogMode, setDialogMode] = useState<UserDialogMode>("create");
@@ -74,10 +92,7 @@ export default function UsersScreen() {
   const [resetPasswordValue, setResetPasswordValue] = useState("");
   const [passwordUser, setPasswordUser] = useState<StoreUserListItem | null>(null);
 
-  const canManageUsers =
-    access.isAdmin ||
-    (access.canReadUser && access.canWriteUser);
-
+  const canManageUsers = access.isAdmin || (access.canReadUser && access.canWriteUser);
   const manageableStores = useMemo(
     () => (access.isAdmin ? stores : stores.filter((store) => store.isPrimary === true)),
     [access.isAdmin, stores]
@@ -117,12 +132,11 @@ export default function UsersScreen() {
   const { createMutation, updateMutation, statusMutation, passwordMutation } =
     useStoreUserMutations(managedStoreCode, keyword);
 
-  const activeMutationCount =
-    (createMutation.isPending ? 1 : 0) +
-    (updateMutation.isPending ? 1 : 0) +
-    (statusMutation.isPending ? 1 : 0) +
-    (passwordMutation.isPending ? 1 : 0);
-  const isBusy = activeMutationCount > 0;
+  const isBusy =
+    createMutation.isPending ||
+    updateMutation.isPending ||
+    statusMutation.isPending ||
+    passwordMutation.isPending;
 
   useEffect(() => {
     if (!detailQuery.isSuccess || dialogMode !== "edit" || !dialogVisible) {
@@ -166,6 +180,21 @@ export default function UsersScreen() {
     });
     setDialogVisible(true);
   }, []);
+
+  const openStaffDetail = useCallback(
+    (user: StoreUserListItem) => {
+      if (!managedStoreCode) {
+        setSnackbarMessage(t("messages.selectStoreFirst"));
+        return;
+      }
+
+      router.push({
+        pathname: "/staff/[userGuid]",
+        params: { userGuid: user.userGUID, storeCode: managedStoreCode },
+      } as Parameters<typeof router.push>[0]);
+    },
+    [managedStoreCode, router, t]
+  );
 
   const closeResetPasswordDialog = useCallback(() => {
     setPasswordUser(null);
@@ -219,16 +248,10 @@ export default function UsersScreen() {
 
     try {
       if (dialogMode === "edit" && editingUserGuid) {
-        await updateMutation.mutateAsync({
-          ...payload,
-          userGuid: editingUserGuid,
-        });
+        await updateMutation.mutateAsync({ ...payload, userGuid: editingUserGuid });
         setSnackbarMessage(t("messages.userUpdated"));
       } else {
-        await createMutation.mutateAsync({
-          ...payload,
-          employmentType: "casual",
-        });
+        await createMutation.mutateAsync({ ...payload, employmentType: "casual" });
         setSnackbarMessage(t("messages.userCreated"));
       }
 
@@ -241,12 +264,7 @@ export default function UsersScreen() {
     createMutation,
     dialogMode,
     editingUserGuid,
-    formValues.email,
-    formValues.fullName,
-    formValues.password,
-    formValues.phone,
-    formValues.status,
-    formValues.username,
+    formValues,
     managedStoreCode,
     resetDialogState,
     t,
@@ -265,10 +283,7 @@ export default function UsersScreen() {
       const actionLabel = nextEnabled ? t("actions.enable") : t("actions.disable");
       Alert.alert(
         actionLabel,
-        t("dialogs.statusConfirmMessage", {
-          action: actionLabel,
-          username: user.username,
-        }),
+        t("dialogs.statusConfirmMessage", { action: actionLabel, username: user.username }),
         [
           { text: t("actions.cancel"), style: "cancel" },
           {
@@ -281,9 +296,7 @@ export default function UsersScreen() {
                   storeCode: managedStoreCode,
                   status: nextEnabled ? 1 : 0,
                 });
-                setSnackbarMessage(
-                  nextEnabled ? t("messages.userEnabled") : t("messages.userDisabled")
-                );
+                setSnackbarMessage(nextEnabled ? t("messages.userEnabled") : t("messages.userDisabled"));
               } catch (error) {
                 console.warn("[store-users] status failed", error);
                 setSnackbarMessage(extractApiErrorMessage(error, t("messages.statusFailed")));
@@ -335,7 +348,23 @@ export default function UsersScreen() {
     t,
   ]);
 
-  const renderedUsers = usersQuery.data ?? [];
+  const filteredUsers = useMemo(() => {
+    const items = usersQuery.data ?? [];
+    const filtered = items.filter((item) => {
+      if (statusFilter === "active") {
+        return item.status === 1;
+      }
+      if (statusFilter === "disabled") {
+        return item.status !== 1;
+      }
+      return true;
+    });
+
+    return [...filtered].sort((left, right) =>
+      (left.fullName || left.username).localeCompare(right.fullName || right.username)
+    );
+  }, [statusFilter, usersQuery.data]);
+
   const storeCaption = useMemo(() => {
     if (!managedStore) {
       return t("currentStore.empty");
@@ -351,30 +380,55 @@ export default function UsersScreen() {
     ({ item }: { item: StoreUserListItem }) => {
       const lastLogin = formatDateTime(item.lastLoginTime, language);
       const updatedAt = formatDateTime(item.updatedAt, language);
+      const storeName = item.storeName || managedStore?.storeName || item.storeCode || managedStoreCode;
+
       return (
-        <Card style={styles.userCard} mode="outlined">
+        <Card style={styles.userCard} mode="elevated" onPress={() => openStaffDetail(item)}>
           <Card.Content style={styles.userCardContent}>
             <View style={styles.userCardHeader}>
-              <View style={styles.userTitleWrap}>
-                <Text variant="titleMedium">{item.fullName || item.username}</Text>
-                <Text variant="bodySmall" style={styles.secondaryText}>
-                  {item.username}
-                </Text>
+              <View style={styles.identityRow}>
+                <Avatar.Text size={44} label={getInitials(item)} style={styles.avatar} />
+                <View style={styles.userTitleWrap}>
+                  <Text variant="titleMedium">{item.fullName || item.username}</Text>
+                  <Text variant="bodySmall" style={styles.secondaryText}>
+                    {item.username}
+                  </Text>
+                </View>
               </View>
-              <Chip compact style={item.status === 1 ? styles.activeChip : styles.inactiveChip}>
-                {item.status === 1 ? t("statuses.active") : t("statuses.disabled")}
-              </Chip>
+              <View style={styles.cardMenuActions}>
+                <Chip compact style={item.status === 1 ? styles.activeChip : styles.inactiveChip}>
+                  {item.status === 1 ? t("statuses.active") : t("statuses.disabled")}
+                </Chip>
+                <IconButton
+                  icon="dots-vertical"
+                  size={20}
+                  accessibilityLabel={t("actions.more")}
+                  onPress={() => openEditDialog(item)}
+                />
+              </View>
             </View>
 
             <View style={styles.metaWrap}>
-              <Text variant="bodyMedium">{t("fields.roleValue")}</Text>
+              <Text variant="bodyMedium">{t("fields.positionValue")}</Text>
+              {storeName ? <Text variant="bodyMedium">{t("fields.storeValue", { value: storeName })}</Text> : null}
               {item.email ? <Text variant="bodyMedium">{t("fields.emailValue", { value: item.email })}</Text> : null}
               {item.phone ? <Text variant="bodyMedium">{t("fields.phoneValue", { value: item.phone })}</Text> : null}
-              {lastLogin ? <Text variant="bodySmall" style={styles.secondaryText}>{t("fields.lastLoginValue", { value: lastLogin })}</Text> : null}
-              {updatedAt ? <Text variant="bodySmall" style={styles.secondaryText}>{t("fields.updatedAtValue", { value: updatedAt })}</Text> : null}
+              {lastLogin ? (
+                <Text variant="bodySmall" style={styles.secondaryText}>
+                  {t("fields.lastLoginValue", { value: lastLogin })}
+                </Text>
+              ) : null}
+              {updatedAt ? (
+                <Text variant="bodySmall" style={styles.secondaryText}>
+                  {t("fields.updatedAtValue", { value: updatedAt })}
+                </Text>
+              ) : null}
             </View>
 
             <View style={styles.actionRow}>
+              <Button compact mode="outlined" icon="account-details-outline" onPress={() => openStaffDetail(item)}>
+                {t("actions.viewDetails")}
+              </Button>
               <Button compact mode="outlined" icon="pencil-outline" onPress={() => openEditDialog(item)}>
                 {t("actions.edit")}
               </Button>
@@ -394,7 +448,16 @@ export default function UsersScreen() {
         </Card>
       );
     },
-    [handleToggleStatus, language, openEditDialog, openResetPasswordDialog, t]
+    [
+      handleToggleStatus,
+      language,
+      managedStore?.storeName,
+      managedStoreCode,
+      openEditDialog,
+      openResetPasswordDialog,
+      openStaffDetail,
+      t,
+    ]
   );
 
   if (!canManageUsers) {
@@ -416,78 +479,79 @@ export default function UsersScreen() {
   return (
     <View style={styles.screen}>
       <FlatList
-        data={renderedUsers}
+        data={filteredUsers}
         keyExtractor={(item) => item.userGUID}
         renderItem={renderUserCard}
         refreshControl={
-          <RefreshControl
-            refreshing={usersQuery.isFetching && !usersQuery.isLoading}
-            onRefresh={handleRefresh}
-          />
+          <RefreshControl refreshing={usersQuery.isFetching && !usersQuery.isLoading} onRefresh={handleRefresh} />
         }
         contentContainerStyle={styles.listContent}
         ListHeaderComponent={
           <View style={styles.headerWrap}>
-            <Text variant="headlineSmall">{t("title")}</Text>
-            <Card mode="outlined">
-              <Card.Content style={styles.currentStoreCard}>
-                <Text variant="titleMedium">{t("currentStore.label")}</Text>
-                <Text variant="bodyMedium" style={styles.currentStoreValue}>
+            <View style={styles.titleRow}>
+              <View>
+                <Text variant="headlineSmall">{t("title")}</Text>
+                <Text variant="bodyMedium" style={styles.secondaryText}>
                   {storeCaption}
                 </Text>
-                {manageableStores.length > 1 ? (
-                  <Menu
-                    visible={storeMenuVisible}
-                    onDismiss={() => setStoreMenuVisible(false)}
-                    anchor={
-                      <Button
-                        mode="outlined"
-                        icon="store-outline"
-                        onPress={() => setStoreMenuVisible(true)}
-                        style={styles.storeSelectButton}
-                      >
-                        {managedStore?.storeName || t("currentStore.select")}
-                      </Button>
-                    }
-                  >
-                    {manageableStores.map((store) => (
-                      <Menu.Item
-                        key={store.storeCode}
-                        title={store.storeName || store.storeCode}
-                        onPress={() => {
-                          setManagedStoreCode(store.storeCode);
-                          setStoreMenuVisible(false);
-                        }}
-                      />
-                    ))}
-                  </Menu>
-                ) : null}
-                <Text variant="bodySmall" style={styles.secondaryText}>
-                  {t("currentStore.helper")}
-                </Text>
-              </Card.Content>
-            </Card>
+              </View>
+              <Button mode="contained" icon="account-plus-outline" onPress={openCreateDialog} disabled={!managedStoreCode}>
+                {t("actions.create")}
+              </Button>
+            </View>
 
-            <Card mode="outlined">
-              <Card.Content style={styles.toolbarCard}>
-                <Searchbar
-                  placeholder={t("searchPlaceholder")}
-                  value={keywordInput}
-                  onChangeText={setKeywordInput}
-                  onIconPress={submitKeyword}
-                  onSubmitEditing={submitKeyword}
-                  style={styles.searchbar}
-                />
-                <View style={styles.toolbarActions}>
-                  <Button mode="outlined" icon="refresh" onPress={handleRefresh} disabled={!managedStoreCode}>
-                    {t("actions.refresh")}
+            <View style={styles.filterPanel}>
+              <Menu
+                visible={storeMenuVisible}
+                onDismiss={() => setStoreMenuVisible(false)}
+                anchor={
+                  <Button
+                    mode="outlined"
+                    icon="store-outline"
+                    onPress={() => setStoreMenuVisible(true)}
+                    disabled={manageableStores.length <= 1}
+                  >
+                    {managedStore?.storeName || t("currentStore.select")}
                   </Button>
-                  <Button mode="contained" icon="account-plus-outline" onPress={openCreateDialog} disabled={!managedStoreCode}>
-                    {t("actions.create")}
-                  </Button>
-                </View>
-              </Card.Content>
-            </Card>
+                }
+              >
+                {manageableStores.map((store) => (
+                  <Menu.Item
+                    key={store.storeCode}
+                    title={store.storeName || store.storeCode}
+                    onPress={() => {
+                      setManagedStoreCode(store.storeCode);
+                      setStoreMenuVisible(false);
+                    }}
+                  />
+                ))}
+              </Menu>
+              <Searchbar
+                placeholder={t("searchPlaceholder")}
+                value={keywordInput}
+                onChangeText={setKeywordInput}
+                onIconPress={submitKeyword}
+                onSubmitEditing={submitKeyword}
+                style={styles.searchbar}
+              />
+              <View style={styles.filterActions}>
+                <Chip icon="sort-alphabetical-ascending" compact>
+                  {t("filters.sortByName")}
+                </Chip>
+                <Button mode="outlined" icon="refresh" onPress={handleRefresh} disabled={!managedStoreCode}>
+                  {t("actions.refresh")}
+                </Button>
+              </View>
+              <SegmentedButtons
+                value={statusFilter}
+                onValueChange={(value) => setStatusFilter(value as StatusFilter)}
+                buttons={[
+                  { value: "all", label: t("filters.statusAll") },
+                  { value: "active", label: t("filters.statusActive") },
+                  { value: "disabled", label: t("filters.statusDisabled") },
+                ]}
+              />
+            </View>
 
             {!managedStoreCode && !isHydratingSelection && !storesLoading ? (
               <EmptyState
@@ -512,16 +576,11 @@ export default function UsersScreen() {
               />
             ) : null}
 
-            {managedStoreCode &&
-            !usersQuery.isLoading &&
-            !usersQuery.isError &&
-            renderedUsers.length === 0 ? (
+            {managedStoreCode && !usersQuery.isLoading && !usersQuery.isError && filteredUsers.length === 0 ? (
               <EmptyState
                 title={keyword ? t("messages.emptySearchTitle") : t("messages.emptyTitle")}
                 description={
-                  keyword
-                    ? t("messages.emptySearchDescription", { keyword })
-                    : t("messages.emptyDescription")
+                  keyword ? t("messages.emptySearchDescription", { keyword }) : t("messages.emptyDescription")
                 }
               />
             ) : null}
@@ -626,9 +685,7 @@ export default function UsersScreen() {
           <Dialog.Title>{t("dialogs.resetPasswordTitle")}</Dialog.Title>
           <Dialog.Content style={styles.dialogContent}>
             <Text variant="bodyMedium">
-              {t("dialogs.resetPasswordDescription", {
-                username: passwordUser?.username ?? "",
-              })}
+              {t("dialogs.resetPasswordDescription", { username: passwordUser?.username ?? "" })}
             </Text>
             <TextInput
               mode="outlined"
@@ -659,92 +716,110 @@ export default function UsersScreen() {
 }
 
 const styles = StyleSheet.create({
-  screen: {
-    flex: 1,
-    backgroundColor: "#f5f7fb",
-  },
-  listContent: {
-    padding: 16,
-    paddingBottom: 112,
-    gap: 12,
-  },
-  headerWrap: {
-    gap: 12,
-    marginBottom: 12,
-  },
-  currentStoreCard: {
-    gap: 6,
-  },
-  currentStoreValue: {
-    color: "#1f2937",
-  },
-  storeSelectButton: {
-    alignSelf: "flex-start",
-  },
-  toolbarCard: {
-    gap: 12,
-  },
-  searchbar: {
-    backgroundColor: "#fff",
-  },
-  toolbarActions: {
-    flexDirection: "row",
-    gap: 10,
-    flexWrap: "wrap",
-  },
-  userCard: {
-    backgroundColor: "#fff",
-  },
-  userCardContent: {
-    gap: 12,
-  },
-  userCardHeader: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "flex-start",
-    gap: 12,
-  },
-  userTitleWrap: {
-    flex: 1,
-    gap: 2,
-  },
-  activeChip: {
-    backgroundColor: "#d1fae5",
-  },
-  inactiveChip: {
-    backgroundColor: "#fee2e2",
-  },
-  metaWrap: {
-    gap: 4,
-  },
   actionRow: {
     flexDirection: "row",
     flexWrap: "wrap",
     gap: 8,
   },
-  secondaryText: {
-    color: "#6b7280",
+  activeChip: {
+    backgroundColor: "#D1FAE5",
   },
-  loadingWrap: {
-    paddingVertical: 24,
-    alignItems: "center",
+  avatar: {
+    backgroundColor: "#111827",
   },
-  fab: {
-    position: "absolute",
-    right: 20,
-    bottom: 24,
+  cardMenuActions: {
+    alignItems: "flex-end",
+    gap: 4,
   },
   dialogContent: {
     gap: 12,
     paddingBottom: 8,
   },
-  switchRow: {
-    flexDirection: "row",
-    justifyContent: "space-between",
+  fab: {
+    bottom: 24,
+    position: "absolute",
+    right: 20,
+  },
+  filterActions: {
     alignItems: "center",
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 10,
+    justifyContent: "space-between",
+  },
+  filterPanel: {
+    backgroundColor: "#FFFFFF",
+    borderColor: "#E5E7EB",
+    borderRadius: 12,
+    borderWidth: StyleSheet.hairlineWidth,
+    gap: 10,
+    padding: 12,
+  },
+  headerWrap: {
+    gap: 12,
+    marginBottom: 12,
+  },
+  identityRow: {
+    alignItems: "center",
+    flex: 1,
+    flexDirection: "row",
+    gap: 12,
+  },
+  inactiveChip: {
+    backgroundColor: "#FEE2E2",
   },
   inlineLoading: {
-    paddingVertical: 8,
     alignItems: "center",
+    paddingVertical: 8,
+  },
+  listContent: {
+    gap: 12,
+    padding: 16,
+    paddingBottom: 112,
+  },
+  loadingWrap: {
+    alignItems: "center",
+    paddingVertical: 24,
+  },
+  metaWrap: {
+    gap: 4,
+  },
+  screen: {
+    backgroundColor: "#F5F7FB",
+    flex: 1,
+  },
+  searchbar: {
+    backgroundColor: "#F8FAFC",
+  },
+  secondaryText: {
+    color: "#6B7280",
+  },
+  switchRow: {
+    alignItems: "center",
+    flexDirection: "row",
+    justifyContent: "space-between",
+  },
+  titleRow: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: 12,
+    justifyContent: "space-between",
+  },
+  userCard: {
+    backgroundColor: "#FFFFFF",
+    borderRadius: 12,
+  },
+  userCardContent: {
+    gap: 12,
+  },
+  userCardHeader: {
+    alignItems: "flex-start",
+    flexDirection: "row",
+    gap: 12,
+    justifyContent: "space-between",
+  },
+  userTitleWrap: {
+    flex: 1,
+    gap: 2,
   },
 });

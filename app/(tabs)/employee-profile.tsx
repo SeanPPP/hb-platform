@@ -4,7 +4,9 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "expo-router";
 import {
   ActivityIndicator,
+  Avatar,
   Button,
+  Chip,
   HelperText,
   SegmentedButtons,
   Snackbar,
@@ -73,6 +75,17 @@ function formatDateTime(value: string | undefined, locale: string) {
     dateStyle: "medium",
     timeStyle: "short",
   }).format(parsed);
+}
+
+function getInitials(value: string) {
+  const words = value.trim().split(/\s+/).filter(Boolean);
+  if (!words.length) {
+    return "?";
+  }
+  if (words.length === 1) {
+    return words[0].slice(0, 2).toUpperCase();
+  }
+  return `${words[0][0]}${words[1][0]}`.toUpperCase();
 }
 
 function ProfileImagePreview({
@@ -245,15 +258,23 @@ export default function EmployeeProfileScreen() {
   return (
     <SafeAreaView style={styles.container} edges={["top", "left", "right"]}>
       <ScrollView contentContainerStyle={styles.content}>
-        <Text variant="headlineSmall" style={styles.title}>
-          {t("title")}
-        </Text>
-        <Text variant="bodyMedium" style={styles.subtitle}>
-          {t("subtitle")}
-        </Text>
+        <Surface style={styles.heroCard} elevation={1}>
+          <Avatar.Text size={68} label={getInitials(readonlyDisplayName || readonlyUsername)} style={styles.heroAvatar} />
+          <View style={styles.heroCopy}>
+            <Text variant="headlineSmall">{readonlyDisplayName}</Text>
+            <Text variant="bodyMedium" style={styles.subtitle}>
+              {readonlyUsername || t("common:na")}
+            </Text>
+            <Chip compact style={styles.profileChip}>
+              {formValues.employmentType
+                ? t(`employmentTypeOptions.${formValues.employmentType}`, formValues.employmentType)
+                : t("subtitle")}
+            </Chip>
+          </View>
+        </Surface>
 
         <Surface style={styles.card} elevation={1}>
-          <Text variant="titleMedium">{t("title")}</Text>
+          <Text variant="titleMedium">{t("sections.personal")}</Text>
           <View style={styles.readonlyGrid}>
             <View style={styles.readonlyItem}>
               <Text variant="labelMedium" style={styles.metaText}>
@@ -445,6 +466,24 @@ const styles = StyleSheet.create({
     padding: 18,
     borderRadius: 18,
     gap: 12,
+  },
+  heroAvatar: {
+    backgroundColor: "#111827",
+  },
+  heroCard: {
+    alignItems: "center",
+    borderRadius: 18,
+    flexDirection: "row",
+    gap: 16,
+    padding: 18,
+  },
+  heroCopy: {
+    flex: 1,
+    gap: 6,
+  },
+  profileChip: {
+    alignSelf: "flex-start",
+    backgroundColor: "#E8F5E9",
   },
   readonlyGrid: {
     gap: 12,

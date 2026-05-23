@@ -14,6 +14,8 @@
     "edit": "Edit",
     "save": "Save",
     "cancel": "Cancel",
+    "more": "More actions",
+    "viewDetails": "Details",
     "enable": "Enable",
     "disable": "Disable",
     "resetPassword": "Reset password",
@@ -33,10 +35,55 @@
     "newPassword": "New password",
     "fixedRoleHint": "Accounts created here are always staff accounts, assigned to the selected managed store, and set as casual staff.",
     "roleValue": "Role: Staff",
+    "positionValue": "Store staff",
+    "storeValue": "Store: {{value}}",
     "emailValue": "Email: {{value}}",
     "phoneValue": "Phone: {{value}}",
     "lastLoginValue": "Last login: {{value}}",
     "updatedAtValue": "Updated: {{value}}"
+  },
+  "filters": {
+    "sortByName": "Sort by name",
+    "statusAll": "All",
+    "statusActive": "Active",
+    "statusDisabled": "Disabled"
+  },
+  "detail": {
+    "title": "Staff Details",
+    "missingTitle": "Staff member not selected",
+    "missingDescription": "Open a staff profile from Staff Management.",
+    "loadFailedTitle": "Failed to load staff details",
+    "tabs": {
+      "personalInfo": "Personal Info",
+      "schedule": "Schedule",
+      "records": "Records"
+    },
+    "sections": {
+      "employeeDetails": "Employee Details",
+      "payroll": "Payroll",
+      "quickActions": "Quick Actions"
+    },
+    "fields": {
+      "employeeId": "Employee ID",
+      "phone": "Phone Number",
+      "email": "Email",
+      "store": "Store Location",
+      "joinDate": "Join Date",
+      "birthday": "Birthday",
+      "address": "Address",
+      "bankBsb": "BSB",
+      "bankAccount": "Bank account",
+      "superCompany": "Super company",
+      "superAccount": "Super account"
+    },
+    "actions": {
+      "viewFullSchedule": "View Full Schedule"
+    },
+    "employmentTypes": {
+      "fullTime": "Full-time",
+      "partTime": "Part-time",
+      "casual": "Casual"
+    }
   },
   "dialogs": {
     "createTitle": "Create staff account",

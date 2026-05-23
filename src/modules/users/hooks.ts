@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   createStoreUser,
   fetchStoreUserDetail,
+  fetchStoreUserProfile,
   fetchStoreUsers,
   resetStoreUserPassword,
   updateStoreUser,
@@ -34,6 +35,14 @@ export function useStoreUserDetail(userGuid?: string | null, storeCode?: string 
   });
 }
 
+export function useStoreUserProfile(userGuid?: string | null, storeCode?: string | null) {
+  return useQuery({
+    queryKey: ["storeUserProfile", storeCode ?? "", userGuid ?? ""],
+    enabled: Boolean(userGuid && storeCode),
+    queryFn: () => fetchStoreUserProfile(userGuid!, storeCode!),
+  });
+}
+
 export function useStoreUserMutations(storeCode?: string | null, keyword?: string) {
   const queryClient = useQueryClient();
 
@@ -61,6 +70,9 @@ export function useStoreUserMutations(storeCode?: string | null, keyword?: strin
         queryClient.invalidateQueries({
           queryKey: ["storeUserDetail", variables.storeCode, variables.userGuid],
         }),
+        queryClient.invalidateQueries({
+          queryKey: ["storeUserProfile", variables.storeCode, variables.userGuid],
+        }),
       ]);
     },
   });
@@ -72,6 +84,9 @@ export function useStoreUserMutations(storeCode?: string | null, keyword?: strin
         invalidateUsers(),
         queryClient.invalidateQueries({
           queryKey: ["storeUserDetail", variables.storeCode, variables.userGuid],
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ["storeUserProfile", variables.storeCode, variables.userGuid],
         }),
       ]);
     },
@@ -88,4 +103,3 @@ export function useStoreUserMutations(storeCode?: string | null, keyword?: strin
     passwordMutation,
   };
 }
-

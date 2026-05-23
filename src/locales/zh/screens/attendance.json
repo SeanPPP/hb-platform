@@ -18,7 +18,39 @@
     "schedules": "今日班次",
     "punches": "打卡记录",
     "noSchedule": "今天暂无排班",
-    "noPunch": "今天暂无打卡"
+    "noPunch": "今天暂无打卡",
+    "status": {
+      "readyToClockIn": "状态: 未上班打卡",
+      "readyToClockOut": "状态: 已上班，等待下班打卡",
+      "completed": "状态: 今日打卡已完成",
+      "holiday": "状态: 今日为假期安排",
+      "viewOnly": "状态: 当前为历史记录查看"
+    },
+    "info": {
+      "location": "位置",
+      "network": "网络",
+      "locationPlaceholder": "暂无定位校验信息",
+      "networkPlaceholder": "暂无网络校验信息",
+      "timeZoneValue": "时区 {{timeZone}}"
+    },
+    "dailyRecords": {
+      "title": "每日记录",
+      "clockInTitle": "上班打卡",
+      "clockOutTitle": "下班打卡",
+      "clockInBadge": "上",
+      "clockOutBadge": "下",
+      "systemAlertTitle": "系统提示",
+      "clockInSuccess": "已记录上班打卡，状态：{{status}}。",
+      "clockOutSuccess": "已记录下班打卡，状态：{{status}}。",
+      "clockInPending": "尚未打卡，预计开始时间 {{startTime}}。",
+      "clockOutPending": "班次进行中，预计结束时间 {{endTime}}。",
+      "noSchedule": "当天没有已发布班次。",
+      "awaitingShift": "等待排班后才能生成下班记录。",
+      "alertSelectedDate": "当前查看的是所选日期记录，只有当天才能执行打卡。",
+      "alertHoliday": "今日标记为 {{holidayName}}，请按门店安排确认是否需要打卡。",
+      "alertNetworkFallback": "定位与网络校验信息暂未接入，当前仅展示占位状态。",
+      "alertNoSchedule": "当前日期没有排班，若需上班请先联系店长安排。"
+    }
   },
   "week": {
     "empty": "暂无本周排班",
@@ -67,6 +99,18 @@
     "noEmployees": "当前分店暂无员工",
     "publishTitle": "发布排班",
     "publishSubtitle": "发布后员工可查看本周正式排班",
+    "quickEntryTitle": "快速排班",
+    "quickEntrySubtitle": "先选员工和日期，再用默认班次或滚动时间快速创建。",
+    "restDay": "休息",
+    "fullscreen": "全屏维护",
+    "exitFullscreen": "退出全屏",
+    "fullscreenTitle": "周排班表",
+    "stats": {
+      "totalPeople": "总人数",
+      "plannedHours": "预计总工时",
+      "peopleUnit": "人",
+      "hoursUnit": "小时"
+    },
     "quickShiftTitle": "常用班次",
     "quickShifts": {
       "nineToFiveThirty": "09:00 - 17:30",

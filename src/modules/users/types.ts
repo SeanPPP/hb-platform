@@ -19,6 +19,20 @@ export interface StoreUserDetail extends StoreUserListItem {
   remarks?: string;
 }
 
+export interface StoreUserProfile extends StoreUserDetail {
+  employmentType?: string;
+  identityId?: string;
+  birthday?: string;
+  gender?: string;
+  avatarUrl?: string;
+  address?: string;
+  bankBsb?: string;
+  bankAccountNumber?: string;
+  superannuationCompanyName?: string;
+  superannuationCompanyCode?: string;
+  superannuationAccountNumber?: string;
+}
+
 export interface StoreUserGridParams {
   storeCode: string;
   keyword?: string;

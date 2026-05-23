@@ -14,6 +14,8 @@
     "edit": "编辑",
     "save": "保存",
     "cancel": "取消",
+    "more": "更多操作",
+    "viewDetails": "详情",
     "enable": "启用",
     "disable": "停用",
     "resetPassword": "重置密码",
@@ -33,10 +35,55 @@
     "newPassword": "新密码",
     "fixedRoleHint": "此页面创建的账号固定为店员，绑定到所选管理分店，员工类型默认为临时。",
     "roleValue": "角色：店员",
+    "positionValue": "门店店员",
+    "storeValue": "分店：{{value}}",
     "emailValue": "邮箱：{{value}}",
     "phoneValue": "电话：{{value}}",
     "lastLoginValue": "最近登录：{{value}}",
     "updatedAtValue": "最近更新：{{value}}"
+  },
+  "filters": {
+    "sortByName": "按姓名排序",
+    "statusAll": "全部",
+    "statusActive": "启用",
+    "statusDisabled": "停用"
+  },
+  "detail": {
+    "title": "员工详细资料",
+    "missingTitle": "未选择员工",
+    "missingDescription": "请从员工管理页面打开员工资料。",
+    "loadFailedTitle": "员工资料加载失败",
+    "tabs": {
+      "personalInfo": "个人信息",
+      "schedule": "排班",
+      "records": "记录"
+    },
+    "sections": {
+      "employeeDetails": "员工资料",
+      "payroll": "薪资资料",
+      "quickActions": "快捷操作"
+    },
+    "fields": {
+      "employeeId": "员工编号",
+      "phone": "电话号码",
+      "email": "邮箱",
+      "store": "所属分店",
+      "joinDate": "加入日期",
+      "birthday": "生日",
+      "address": "地址",
+      "bankBsb": "BSB",
+      "bankAccount": "银行账号",
+      "superCompany": "养老金公司",
+      "superAccount": "养老金账号"
+    },
+    "actions": {
+      "viewFullSchedule": "查看完整排班"
+    },
+    "employmentTypes": {
+      "fullTime": "全职",
+      "partTime": "兼职",
+      "casual": "临时工"
+    }
   },
   "dialogs": {
     "createTitle": "新建店员账号",

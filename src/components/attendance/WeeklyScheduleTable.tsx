@@ -8,7 +8,9 @@ function shortDate(value: string) {
 }
 
 function formatTime(value: string) {
-  return value.includes("T") ? value.split("T").pop()?.slice(0, 5) || value : value.slice(0, 5);
+  return value.includes("T")
+    ? value.split("T").pop()?.slice(0, 5) || value
+    : value.slice(0, 5);
 }
 
 export function WeeklyScheduleTable({ week }: { week?: AttendanceWeek }) {
@@ -16,28 +18,55 @@ export function WeeklyScheduleTable({ week }: { week?: AttendanceWeek }) {
 
   return (
     <Card mode="elevated" style={styles.card}>
-      <Card.Title title={t("sections.week")} subtitle={week?.weekStart && week?.weekEnd ? `${week.weekStart} - ${week.weekEnd}` : undefined} />
+      <Card.Title
+        title={t("sections.week")}
+        subtitle={
+          week?.weekStart && week?.weekEnd
+            ? `${week.weekStart} - ${week.weekEnd}`
+            : undefined
+        }
+      />
       <Card.Content style={styles.content}>
         {week?.days.length ? (
           week.days.map((day, index) => (
             <View key={day.workDate || index} style={styles.dayBlock}>
               <View style={styles.dayHeader}>
-                <Text variant="titleSmall">
-                  {t(`weekdays.${index}`)} {shortDate(day.workDate)}
-                </Text>
-                {day.holidayName ? <Chip compact>{day.holidayName}</Chip> : null}
+                <View style={styles.dayTitleBlock}>
+                  <Text variant="titleSmall">{t(`weekdays.${index}`)}</Text>
+                  <Text variant="bodySmall" style={styles.muted}>
+                    {shortDate(day.workDate)}
+                  </Text>
+                </View>
+                {day.holidayName ? (
+                  <Chip compact>{day.holidayName}</Chip>
+                ) : null}
               </View>
               {day.schedules.length ? (
                 day.schedules.map((schedule) => (
                   <View
-                    key={schedule.scheduleGuid || `${schedule.workDate}-${schedule.startTime}-${schedule.userGuid}`}
-                    style={[styles.scheduleRow, schedule.isMine ? styles.mineRow : null]}
+                    key={
+                      schedule.scheduleGuid ||
+                      `${schedule.workDate}-${schedule.startTime}-${schedule.userGuid}`
+                    }
+                    style={[
+                      styles.scheduleRow,
+                      schedule.isMine ? styles.mineRow : null,
+                    ]}
                   >
-                    <Text variant="bodyMedium" style={styles.flexText}>
-                      {schedule.employeeName || schedule.storeName || schedule.storeCode || t("common:na")}
-                    </Text>
-                    <Text variant="bodyMedium">
-                      {formatTime(schedule.startTime)} - {formatTime(schedule.endTime)}
+                    <View style={styles.scheduleMeta}>
+                      <Text variant="bodyMedium" style={styles.flexText}>
+                        {schedule.employeeName ||
+                          schedule.storeName ||
+                          schedule.storeCode ||
+                          t("common:na")}
+                      </Text>
+                      <Text variant="bodySmall" style={styles.muted}>
+                        {t(`statuses.${schedule.status}`, schedule.status)}
+                      </Text>
+                    </View>
+                    <Text variant="titleSmall">
+                      {formatTime(schedule.startTime)} -{" "}
+                      {formatTime(schedule.endTime)}
                     </Text>
                   </View>
                 ))
@@ -66,10 +95,12 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   dayBlock: {
-    borderBottomColor: "#E5E7EB",
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    gap: 6,
-    paddingBottom: 10,
+    backgroundColor: "#FFFFFF",
+    borderColor: "#E5E7EB",
+    borderRadius: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+    gap: 8,
+    padding: 12,
   },
   dayHeader: {
     alignItems: "center",
@@ -77,24 +108,32 @@ const styles = StyleSheet.create({
     gap: 8,
     justifyContent: "space-between",
   },
+  dayTitleBlock: {
+    gap: 2,
+  },
   flexText: {
     flex: 1,
   },
   mineRow: {
-    backgroundColor: "#E8F5E9",
-    borderColor: "#A5D6A7",
+    backgroundColor: "#ECFDF5",
+    borderColor: "#6EE7B7",
   },
   muted: {
     color: "#6B7280",
   },
+  scheduleMeta: {
+    flex: 1,
+    gap: 2,
+  },
   scheduleRow: {
-    alignItems: "center",
+    backgroundColor: "#F8FAFC",
     borderColor: "#E5E7EB",
-    borderRadius: 6,
+    borderLeftWidth: 3,
+    borderRadius: 8,
     borderWidth: StyleSheet.hairlineWidth,
-    flexDirection: "row",
-    gap: 8,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
+    flexDirection: "column",
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
   },
 });

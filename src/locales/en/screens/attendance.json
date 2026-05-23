@@ -18,7 +18,39 @@
     "schedules": "Today's shifts",
     "punches": "Punches",
     "noSchedule": "No shift today",
-    "noPunch": "No punches yet"
+    "noPunch": "No punches yet",
+    "status": {
+      "readyToClockIn": "Status: Not clocked in",
+      "readyToClockOut": "Status: Clocked in, waiting to clock out",
+      "completed": "Status: Today's punches are complete",
+      "holiday": "Status: Holiday arrangement",
+      "viewOnly": "Status: Viewing a past date"
+    },
+    "info": {
+      "location": "Location",
+      "network": "Network",
+      "locationPlaceholder": "Location verification unavailable",
+      "networkPlaceholder": "Network verification unavailable",
+      "timeZoneValue": "Timezone {{timeZone}}"
+    },
+    "dailyRecords": {
+      "title": "Daily Records",
+      "clockInTitle": "Clock-in",
+      "clockOutTitle": "Clock-out",
+      "clockInBadge": "IN",
+      "clockOutBadge": "OUT",
+      "systemAlertTitle": "System Alert",
+      "clockInSuccess": "Clock-in recorded with status: {{status}}.",
+      "clockOutSuccess": "Clock-out recorded with status: {{status}}.",
+      "clockInPending": "Waiting for clock-in. Expected start {{startTime}}.",
+      "clockOutPending": "Shift in progress. Expected finish {{endTime}}.",
+      "noSchedule": "No published shift for this day.",
+      "awaitingShift": "Clock-out record will appear after a shift is scheduled.",
+      "alertSelectedDate": "You are viewing a selected date. Punch actions are only available for today.",
+      "alertHoliday": "This day is marked as {{holidayName}}. Confirm with the store before punching.",
+      "alertNetworkFallback": "Location and network verification are not connected yet, so placeholders are shown.",
+      "alertNoSchedule": "There is no shift for this date. Contact the manager if work needs to be arranged."
+    }
   },
   "week": {
     "empty": "No schedule this week",
@@ -67,6 +99,18 @@
     "noEmployees": "No employees in this store",
     "publishTitle": "Publish schedule",
     "publishSubtitle": "Employees can see this week's official schedule after publishing.",
+    "quickEntryTitle": "Quick scheduling",
+    "quickEntrySubtitle": "Pick an employee and day first, then use presets or the HH/MM scroller to create a shift.",
+    "restDay": "Off",
+    "fullscreen": "Full screen",
+    "exitFullscreen": "Exit full screen",
+    "fullscreenTitle": "Weekly schedule",
+    "stats": {
+      "totalPeople": "Total people",
+      "plannedHours": "Planned hours",
+      "peopleUnit": "staff",
+      "hoursUnit": "hrs"
+    },
     "quickShiftTitle": "Common shifts",
     "quickShifts": {
       "nineToFiveThirty": "09:00 - 17:30",
