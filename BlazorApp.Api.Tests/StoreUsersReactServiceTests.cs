@@ -146,6 +146,35 @@ namespace BlazorApp.Api.Tests
         }
 
         [Fact]
+        public async Task UpdateStatusAsync_WhenStoreManagerDisablesManagedStoreStaff_GridReturnsDisabled()
+        {
+            await SeedStoreUserDataAsync();
+            var service = CreateService("manager-1", "StoreManager");
+
+            var updateResult = await service.UpdateStatusAsync(
+                "staff-1",
+                new UpdateStoreUserStatusDto
+                {
+                    StoreCode = "S001",
+                    Status = 0,
+                },
+                "manager-1"
+            );
+
+            Assert.True(updateResult.Success);
+
+            var gridResult = await service.GetGridDataAsync(new StoreUserGridRequestDto
+            {
+                StoreCode = "S001",
+            });
+
+            Assert.True(gridResult.Success);
+            var staff = Assert.Single(gridResult.Items!);
+            Assert.Equal("staff-1", staff.UserGuid);
+            Assert.Equal(0, staff.Status);
+        }
+
+        [Fact]
         public async Task UpdatePasswordAsync_WhenStoreManagerTargetsForeignStore_ReturnsScopeError()
         {
             await SeedStoreUserDataAsync();

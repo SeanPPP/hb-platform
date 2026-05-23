@@ -410,13 +410,12 @@ namespace BlazorApp.Api.Services.React
                     return await BuildMissingUserResponseAsync<bool>(userGuid, "未找到可管理的店员账号");
                 }
 
+                var nextIsActive = dto.Status == 1;
+                var now = DateTime.UtcNow;
                 var result = await _db.Updateable<User>()
-                    .SetColumns(item => new User
-                    {
-                        IsActive = dto.Status == 1,
-                        UpdatedAt = DateTime.UtcNow,
-                        UpdatedBy = updatedBy,
-                    })
+                    .SetColumns(item => item.IsActive == nextIsActive)
+                    .SetColumns(item => item.UpdatedAt == now)
+                    .SetColumns(item => item.UpdatedBy == updatedBy)
                     .Where(item => item.UserGUID == userGuid)
                     .ExecuteCommandAsync();
 
