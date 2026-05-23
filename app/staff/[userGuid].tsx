@@ -17,6 +17,7 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { useStoreUserMutations, useStoreUserProfile } from "@/modules/users";
+import { calculateAge, maskTrailingFour } from "@/modules/users/profile-display";
 import { validatePasswordValue } from "@/modules/users/validation";
 import { extractApiErrorMessage } from "@/shared/api/error-message";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
@@ -94,6 +95,13 @@ export default function StaffDetailScreen() {
   const title = profile?.fullName || profile?.username || t("detail.title");
   const isActive = profile?.status === 1;
   const emptyValue = t("common:na");
+  const age = calculateAge(profile?.birthday);
+  const gender = profile?.gender
+    ? t(`detail.genders.${profile.gender}`, profile.gender)
+    : emptyValue;
+  const employmentType = profile?.employmentType
+    ? t(`detail.employmentTypes.${profile.employmentType}`, profile.employmentType)
+    : emptyValue;
 
   const handleBack = useCallback(() => {
     if (router.canGoBack()) {
@@ -285,7 +293,25 @@ export default function StaffDetailScreen() {
               emptyValue={emptyValue}
               icon="badge-account-outline"
               label={t("detail.fields.employeeId")}
-              value={profile?.identityId || profile?.userGUID}
+              value={profile?.userGUID}
+            />
+            <DetailRow
+              emptyValue={emptyValue}
+              icon="calendar-account-outline"
+              label={t("detail.fields.age")}
+              value={age === null ? null : String(age)}
+            />
+            <DetailRow
+              emptyValue={emptyValue}
+              icon="account-heart-outline"
+              label={t("detail.fields.gender")}
+              value={gender}
+            />
+            <DetailRow
+              emptyValue={emptyValue}
+              icon="briefcase-account-outline"
+              label={t("detail.fields.employmentType")}
+              value={employmentType}
             />
             <DetailRow
               emptyValue={emptyValue}
@@ -328,6 +354,32 @@ export default function StaffDetailScreen() {
 
         <Card mode="elevated" style={styles.sectionCard}>
           <Card.Content style={styles.sectionContent}>
+            <Text variant="titleMedium">
+              {t("detail.sections.accountInfo")}
+            </Text>
+            <DetailRow
+              emptyValue={emptyValue}
+              icon="badge-account-outline"
+              label={t("detail.fields.identityId")}
+              value={maskTrailingFour(profile?.identityId, emptyValue)}
+            />
+            <DetailRow
+              emptyValue={emptyValue}
+              icon="credit-card-outline"
+              label={t("detail.fields.bankAccount")}
+              value={maskTrailingFour(profile?.bankAccountNumber, emptyValue)}
+            />
+            <DetailRow
+              emptyValue={emptyValue}
+              icon="identifier"
+              label={t("detail.fields.superAccount")}
+              value={maskTrailingFour(profile?.superannuationAccountNumber, emptyValue)}
+            />
+          </Card.Content>
+        </Card>
+
+        <Card mode="elevated" style={styles.sectionCard}>
+          <Card.Content style={styles.sectionContent}>
             <Text variant="titleMedium">{t("detail.sections.payroll")}</Text>
             <DetailRow
               emptyValue={emptyValue}
@@ -337,21 +389,9 @@ export default function StaffDetailScreen() {
             />
             <DetailRow
               emptyValue={emptyValue}
-              icon="credit-card-outline"
-              label={t("detail.fields.bankAccount")}
-              value={profile?.bankAccountNumber}
-            />
-            <DetailRow
-              emptyValue={emptyValue}
               icon="shield-account-outline"
               label={t("detail.fields.superCompany")}
               value={profile?.superannuationCompanyName}
-            />
-            <DetailRow
-              emptyValue={emptyValue}
-              icon="identifier"
-              label={t("detail.fields.superAccount")}
-              value={profile?.superannuationAccountNumber}
             />
           </Card.Content>
         </Card>

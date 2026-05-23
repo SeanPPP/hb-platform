@@ -38,6 +38,9 @@
     "roleValue": "角色：店员",
     "positionValue": "门店店员",
     "storeValue": "分店：{{value}}",
+    "ageValue": "年龄：{{value}}",
+    "genderValue": "性别：{{value}}",
+    "employmentTypeValue": "员工类型：{{value}}",
     "emailValue": "邮箱：{{value}}",
     "phoneValue": "电话：{{value}}",
     "lastLoginValue": "最近登录：{{value}}",
@@ -61,11 +64,16 @@
     },
     "sections": {
       "employeeDetails": "员工资料",
+      "accountInfo": "账号信息",
       "payroll": "薪资资料",
       "quickActions": "快捷操作"
     },
     "fields": {
       "employeeId": "员工编号",
+      "age": "年龄",
+      "gender": "性别",
+      "employmentType": "员工类型",
+      "identityId": "证件号",
       "phone": "电话号码",
       "email": "邮箱",
       "store": "所属分店",
@@ -84,6 +92,12 @@
       "fullTime": "全职",
       "partTime": "兼职",
       "casual": "临时工"
+    },
+    "genders": {
+      "unknown": "未知",
+      "male": "男",
+      "female": "女",
+      "other": "其他"
     }
   },
   "dialogs": {

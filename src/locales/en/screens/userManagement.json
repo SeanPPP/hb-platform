@@ -38,6 +38,9 @@
     "roleValue": "Role: Staff",
     "positionValue": "Store staff",
     "storeValue": "Store: {{value}}",
+    "ageValue": "Age: {{value}}",
+    "genderValue": "Gender: {{value}}",
+    "employmentTypeValue": "Employment type: {{value}}",
     "emailValue": "Email: {{value}}",
     "phoneValue": "Phone: {{value}}",
     "lastLoginValue": "Last login: {{value}}",
@@ -61,11 +64,16 @@
     },
     "sections": {
       "employeeDetails": "Employee Details",
+      "accountInfo": "Account Info",
       "payroll": "Payroll",
       "quickActions": "Quick Actions"
     },
     "fields": {
       "employeeId": "Employee ID",
+      "age": "Age",
+      "gender": "Gender",
+      "employmentType": "Employment type",
+      "identityId": "Identity ID",
       "phone": "Phone Number",
       "email": "Email",
       "store": "Store Location",
@@ -84,6 +92,12 @@
       "fullTime": "Full-time",
       "partTime": "Part-time",
       "casual": "Casual"
+    },
+    "genders": {
+      "unknown": "Unknown",
+      "male": "Male",
+      "female": "Female",
+      "other": "Other"
     }
   },
   "dialogs": {
