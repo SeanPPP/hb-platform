@@ -332,8 +332,9 @@ namespace BlazorApp.Api.Data
                 Console.WriteLine("开始检查和初始化数据库表...");
 
                 // 智能初始化：只在需要时创建或更新表
-                 InitializeTablesIfNeeded();
-                 CreateNormalIndexes();
+                InitializeTablesIfNeeded();
+                EnsureEmployeeProfilePhoneColumn();
+                CreateNormalIndexes();
 
                 Console.WriteLine("数据库表检查完成！");
             }
@@ -498,6 +499,45 @@ namespace BlazorApp.Api.Data
                 _db.DbMaintenance.GetTableInfoList(false).Select(x => x.Name),
                 StringComparer.OrdinalIgnoreCase
             );
+        }
+
+        private void EnsureEmployeeProfilePhoneColumn()
+        {
+            var tableName = _db.EntityMaintenance.GetTableName(typeof(EmployeeProfile));
+            if (!_db.DbMaintenance.IsAnyTable(tableName))
+            {
+                return;
+            }
+
+            var columns = _db.DbMaintenance.GetColumnInfosByTableName(tableName, false);
+            if (columns.Any(column => string.Equals(column.DbColumnName, "Phone", StringComparison.OrdinalIgnoreCase)))
+            {
+                return;
+            }
+
+            if (_db.CurrentConnectionConfig.DbType == DbType.SqlServer)
+            {
+                _db.Ado.ExecuteCommand(
+                    $"IF COL_LENGTH('{tableName}', 'Phone') IS NULL ALTER TABLE [{tableName}] ADD [Phone] nvarchar(50) NULL"
+                );
+                Console.WriteLine($"✓ {tableName}.Phone 列已补齐");
+                return;
+            }
+
+            if (_db.CurrentConnectionConfig.DbType == DbType.PostgreSQL)
+            {
+                _db.Ado.ExecuteCommand(
+                    $"ALTER TABLE \"{tableName}\" ADD COLUMN IF NOT EXISTS \"Phone\" varchar(50) NULL"
+                );
+                Console.WriteLine($"✓ {tableName}.Phone 列已补齐");
+                return;
+            }
+
+            if (_db.CurrentConnectionConfig.DbType == DbType.Sqlite)
+            {
+                _db.Ado.ExecuteCommand($"ALTER TABLE [{tableName}] ADD COLUMN [Phone] varchar(50) NULL");
+                Console.WriteLine($"✓ {tableName}.Phone 列已补齐");
+            }
         }
 
         private void CleanupLegacyIndexesBeforeSmartInit(string tableName)

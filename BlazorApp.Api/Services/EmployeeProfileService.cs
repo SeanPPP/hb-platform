@@ -81,6 +81,7 @@ namespace BlazorApp.Api.Services
                                 user.Username,
                                 user.Email,
                                 user.FullName,
+                                profile.Phone,
                                 profile.BankBSB,
                                 profile.BankACC,
                                 profile.SuperannuationCompanyName,
@@ -106,6 +107,7 @@ namespace BlazorApp.Api.Services
                         Email = row.Email,
                         FullName = row.FullName,
                         HasProfile = row.EmployeeInfoId > 0,
+                        Phone = row.Phone,
                         BankBsb = row.BankBSB,
                         BankAccountNumber = row.BankACC,
                         SuperannuationCompanyName = row.SuperannuationCompanyName,
@@ -269,6 +271,7 @@ namespace BlazorApp.Api.Services
         )
         {
             profile.UserGUID = userGuid;
+            profile.Phone = Normalize(dto.Phone);
             profile.BankBSB = Normalize(dto.BankBsb);
             profile.BankACC = Normalize(dto.BankAccountNumber);
             profile.SuperannuationCompanyName = Normalize(dto.SuperannuationCompanyName);
@@ -301,6 +304,7 @@ namespace BlazorApp.Api.Services
                 Username = user.Username,
                 Email = user.Email,
                 FullName = user.FullName,
+                Phone = profile?.Phone,
                 BankBsb = profile?.BankBSB,
                 BankAccountNumber = profile?.BankACC,
                 SuperannuationCompanyName = profile?.SuperannuationCompanyName,

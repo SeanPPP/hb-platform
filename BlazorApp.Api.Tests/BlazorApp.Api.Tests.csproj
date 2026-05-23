@@ -35,5 +35,6 @@
     <Compile Include="SeedDataServiceTests.cs" />
     <Compile Include="NavigationServiceTests.cs" />
     <Compile Include="ProductWarehouseReactServiceTests.cs" />
+    <Compile Include="AuthServiceTests.cs" />
   </ItemGroup>
 </Project>

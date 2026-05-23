@@ -92,7 +92,7 @@ namespace BlazorApp.Api.Services.React
                         u.Username,
                         u.FullName,
                         u.Email,
-                        u.Phone,
+                        profile.Phone,
                         Status = u.IsActive ? 1 : 0,
                         StoreGuid = s.StoreGUID,
                         StoreCode = s.StoreCode,
@@ -228,7 +228,6 @@ namespace BlazorApp.Api.Services.React
                     Email = email,
                     PasswordHash = PasswordHasher.HashPassword(dto.Password),
                     FullName = dto.FullName?.Trim(),
-                    Phone = Normalize(dto.Phone),
                     IsActive = dto.Status == 1,
                     CreatedAt = now,
                     UpdatedAt = now,
@@ -271,6 +270,7 @@ namespace BlazorApp.Api.Services.React
                         new EmployeeProfile
                         {
                             UserGUID = userGuid,
+                            Phone = Normalize(dto.Phone),
                             EmployeeType = ParseEmployeeTypeOrDefault(dto.EmploymentType),
                             CreatedAt = now,
                             UpdatedAt = now,
@@ -363,11 +363,11 @@ namespace BlazorApp.Api.Services.React
                     user.Username = nextUsername;
                     user.Email = nextEmail;
                     user.FullName = dto.FullName?.Trim();
-                    user.Phone = Normalize(dto.Phone);
                     user.IsActive = dto.Status == 1;
                     user.UpdatedAt = now;
                     user.UpdatedBy = updatedBy;
                     await _db.Updateable(user).ExecuteCommandAsync();
+                    await UpsertEmployeeProfilePhoneAsync(userGuid, dto.Phone, updatedBy, now);
 
                     await _db.Deleteable<UserStore>()
                         .Where(item => item.UserGUID == userGuid)
@@ -523,7 +523,7 @@ namespace BlazorApp.Api.Services.React
                     u.Username,
                     u.FullName,
                     u.Email,
-                    u.Phone,
+                    profile.Phone,
                     Status = u.IsActive ? 1 : 0,
                     StoreGuid = s.StoreGUID,
                     StoreCode = s.StoreCode,
@@ -592,6 +592,41 @@ namespace BlazorApp.Api.Services.React
             return await _db.Queryable<Role>()
                 .Where(item => !item.IsDeleted && item.IsActive && item.RoleName == StoreStaffRoleName)
                 .FirstAsync();
+        }
+
+        private async Task UpsertEmployeeProfilePhoneAsync(
+            string userGuid,
+            string? phone,
+            string updatedBy,
+            DateTime now
+        )
+        {
+            var normalizedPhone = Normalize(phone);
+            var profile = await _db.Queryable<EmployeeProfile>()
+                .FirstAsync(item => item.UserGUID == userGuid && !item.IsDeleted);
+
+            if (profile == null)
+            {
+                await _db.Insertable(
+                    new EmployeeProfile
+                    {
+                        UserGUID = userGuid,
+                        Phone = normalizedPhone,
+                        CreatedAt = now,
+                        UpdatedAt = now,
+                        CreatedBy = updatedBy,
+                        UpdatedBy = updatedBy,
+                    }
+                ).ExecuteCommandAsync();
+                return;
+            }
+
+            profile.Phone = normalizedPhone;
+            profile.UpdatedAt = now;
+            profile.UpdatedBy = updatedBy;
+            await _db.Updateable(profile)
+                .UpdateColumns(item => new { item.Phone, item.UpdatedAt, item.UpdatedBy })
+                .ExecuteCommandAsync();
         }
 
         private async Task<ApiResponse<T>> BuildMissingUserResponseAsync<T>(

@@ -30,6 +30,9 @@ namespace BlazorApp.Shared.Models
         [SugarColumn(IsNullable = true, Length = 100)]
         public string? SuperannuationAccount { get; set; }
 
+        [SugarColumn(IsNullable = true, Length = 50)]
+        public string? Phone { get; set; }
+
         [SugarColumn(IsNullable = true)]
         public DateTime? Birthday { get; set; }
 

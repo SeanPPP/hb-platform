@@ -24,6 +24,7 @@ namespace BlazorApp.Shared.DTOs
         public string Email { get; set; } = string.Empty;
         public string? FullName { get; set; }
         public bool HasProfile { get; set; }
+        public string? Phone { get; set; }
         public string? BankBsb { get; set; }
         public string? BankAccountNumber { get; set; }
         public string? SuperannuationCompanyName { get; set; }
@@ -43,6 +44,7 @@ namespace BlazorApp.Shared.DTOs
         public string Username { get; set; } = string.Empty;
         public string Email { get; set; } = string.Empty;
         public string? FullName { get; set; }
+        public string? Phone { get; set; }
         public string? BankBsb { get; set; }
         public string? BankAccountNumber { get; set; }
         public string? SuperannuationCompanyName { get; set; }
@@ -64,6 +66,9 @@ namespace BlazorApp.Shared.DTOs
     public class EmployeeProfileUpsertDto
     {
         public string? UserGUID { get; set; }
+
+        [StringLength(50)]
+        public string? Phone { get; set; }
 
         [StringLength(20)]
         public string? BankBsb { get; set; }
