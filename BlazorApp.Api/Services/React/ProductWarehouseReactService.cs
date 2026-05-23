@@ -3436,7 +3436,8 @@ namespace BlazorApp.Api.Services.React
                 .LeftJoin<ChinaSupplier>((w, p, dp, s) => dp.SupplierCode == s.SupplierCode && !s.IsDeleted)
                 .LeftJoin<ProductLocation>((w, p, dp, s, pl) => pl.ProductCode == w.ProductCode && !pl.IsDeleted)
                 .LeftJoin<Location>((w, p, dp, s, pl, l) => l.LocationGuid == pl.LocationGuid && !l.IsDeleted)
-                .Where((w, p, dp, s, pl, l) =>
+                .LeftJoin<ProductGrade>((w, p, dp, s, pl, l, pg) => pg.ProductCode == w.ProductCode && !pg.IsDeleted)
+                .Where((w, p, dp, s, pl, l, pg) =>
                     !w.IsDeleted
                     && (
                         (w.ProductCode != null && w.ProductCode.ToLower().Contains(lowered))
@@ -3450,8 +3451,8 @@ namespace BlazorApp.Api.Services.React
                         || (l.LocationBarcode != null && l.LocationBarcode.ToLower().Contains(lowered))
                     )
                 )
-                .OrderBy((w, p, dp, s, pl, l) => p.ItemNumber)
-                .Select((w, p, dp, s, pl, l) => new
+                .OrderBy((w, p, dp, s, pl, l, pg) => p.ItemNumber)
+                .Select((w, p, dp, s, pl, l, pg) => new
                 {
                     w.ProductCode,
                     ProductName = p.ProductName,
@@ -3462,6 +3463,7 @@ namespace BlazorApp.Api.Services.React
                     p.LocalSupplierCode,
                     SupplierCode = dp.SupplierCode,
                     SupplierName = s.SupplierName,
+                    Grade = pg.Grade,
                     w.IsActive,
                     p.PurchasePrice,
                     p.RetailPrice,
@@ -3495,6 +3497,7 @@ namespace BlazorApp.Api.Services.React
                     LocalSupplierCode = row.LocalSupplierCode,
                     SupplierCode = row.SupplierCode,
                     SupplierName = row.SupplierName,
+                    Grade = row.Grade,
                     IsActive = row.IsActive,
                     PurchasePrice = row.PurchasePrice,
                     RetailPrice = row.RetailPrice,
