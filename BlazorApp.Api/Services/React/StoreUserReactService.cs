@@ -40,13 +40,12 @@ namespace BlazorApp.Api.Services.React
                     return GridResponseDto<StoreUserListDto>.Error(scope.Message);
                 }
 
-                var normalizedStoreCode = request.StoreCode.Trim();
-                if (string.IsNullOrWhiteSpace(normalizedStoreCode))
-                {
-                    return GridResponseDto<StoreUserListDto>.Error("分店代码不能为空");
-                }
+                var normalizedStoreCode = request.StoreCode?.Trim();
 
-                if (!scope.CanAccessStoreCode(normalizedStoreCode))
+                if (
+                    !string.IsNullOrWhiteSpace(normalizedStoreCode)
+                    && !scope.CanAccessStoreCode(normalizedStoreCode)
+                )
                 {
                     return GridResponseDto<StoreUserListDto>.Error("没有权限查看该分店店员");
                 }
@@ -66,7 +65,14 @@ namespace BlazorApp.Api.Services.React
                         && !us.IsDeleted
                         && !s.IsDeleted
                         && r.RoleName == StoreStaffRoleName
-                        && s.StoreCode == normalizedStoreCode
+                    )
+                    .WhereIF(
+                        !scope.IsAdmin && string.IsNullOrWhiteSpace(normalizedStoreCode),
+                        (u, ur, r, us, s) => scope.StoreGuids.Contains(s.StoreGUID)
+                    )
+                    .WhereIF(
+                        !string.IsNullOrWhiteSpace(normalizedStoreCode),
+                        (u, ur, r, us, s) => s.StoreCode == normalizedStoreCode
                     )
                     .WhereIF(
                         !string.IsNullOrWhiteSpace(keyword),

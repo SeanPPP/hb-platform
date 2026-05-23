@@ -131,6 +131,35 @@ namespace BlazorApp.Api.Tests
         }
 
         [Fact]
+        public async Task GetGridDataAsync_WhenStoreManagerOmitsStore_ReturnsManagedStoreStaff()
+        {
+            await SeedStoreUserDataAsync();
+            var service = CreateService("manager-1", "StoreManager");
+
+            var result = await service.GetGridDataAsync(new StoreUserGridRequestDto());
+
+            Assert.True(result.Success);
+            var staff = Assert.Single(result.Items!);
+            Assert.Equal("staff-1", staff.UserGuid);
+            Assert.Equal("S001", staff.StoreCode);
+            Assert.Equal("store-1", staff.StoreGuid);
+        }
+
+        [Fact]
+        public async Task GetGridDataAsync_WhenAdminOmitsStore_ReturnsAllStoreStaff()
+        {
+            await SeedStoreUserDataAsync();
+            var service = CreateService("admin-1", "Admin");
+
+            var result = await service.GetGridDataAsync(new StoreUserGridRequestDto());
+
+            Assert.True(result.Success);
+            Assert.Equal(2, result.Items!.Count);
+            Assert.Contains(result.Items!, item => item.UserGuid == "staff-1" && item.StoreCode == "S001");
+            Assert.Contains(result.Items!, item => item.UserGuid == "staff-2" && item.StoreCode == "S002");
+        }
+
+        [Fact]
         public async Task GetGridDataAsync_WhenStoreManagerTargetsNonPrimaryStore_ReturnsScopeError()
         {
             await SeedStoreUserDataAsync();

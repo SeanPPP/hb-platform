@@ -215,5 +215,55 @@ namespace BlazorApp.Api.Controllers
                 return StatusCode(500, ApiResponse<object>.Error("服务器内部错误", "INTERNAL_SERVER_ERROR"));
             }
         }
+
+        /// <summary>
+        /// 更新批次明细商品名称和贴牌价格
+        /// </summary>
+        /// <param name="batchNumber">批次号</param>
+        /// <param name="request">更新请求</param>
+        /// <returns>更新结果</returns>
+        [HttpPut("batch/{batchNumber}/items")]
+        [Authorize(Roles = "Admin,WarehouseManager")]
+        public async Task<IActionResult> UpdateBatchItems(
+            string batchNumber,
+            [FromBody] UpdateBatchItemsRequest request)
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(batchNumber))
+                {
+                    return BadRequest(ApiResponse<object>.Error("批次号不能为空", "VALIDATION_ERROR"));
+                }
+
+                if (!ModelState.IsValid)
+                {
+                    return BadRequest(ApiResponse<object>.Error("请求参数验证失败", "VALIDATION_ERROR", ModelState));
+                }
+
+                if (request.Items == null || !request.Items.Any())
+                {
+                    return BadRequest(ApiResponse<object>.Error("商品列表不能为空", "VALIDATION_ERROR"));
+                }
+
+                var result = await _service.UpdateBatchItemsAsync(batchNumber, request);
+
+                if (result.Success)
+                {
+                    return Ok(result);
+                }
+
+                if (result.ErrorCode == "BATCH_NOT_FOUND")
+                {
+                    return NotFound(result);
+                }
+
+                return BadRequest(result);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "更新批次明细失败: {BatchNumber}", batchNumber);
+                return StatusCode(500, ApiResponse<object>.Error("服务器内部错误", "INTERNAL_SERVER_ERROR"));
+            }
+        }
     }
 }

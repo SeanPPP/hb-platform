@@ -89,6 +89,28 @@ namespace BlazorApp.Shared.DTOs
     }
 
     /// <summary>
+    /// Request: update batch detail item fields
+    /// </summary>
+    public class UpdateBatchItemsRequest
+    {
+        public List<UpdateBatchItemDto> Items { get; set; } = new();
+    }
+
+    /// <summary>
+    /// Batch item field update
+    /// </summary>
+    public class UpdateBatchItemDto
+    {
+        [Required]
+        public string ProductCode { get; set; }
+
+        public string? ProductName { get; set; }
+
+        [Range(0, double.MaxValue, ErrorMessage = "贴牌价格不能为负数")]
+        public decimal? PrivateLabelPrice { get; set; }
+    }
+
+    /// <summary>
     /// Response: batch creation result
     /// </summary>
     public class CreateDomesticProductBatchResponse

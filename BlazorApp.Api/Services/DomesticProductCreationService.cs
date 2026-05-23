@@ -918,5 +918,82 @@ namespace BlazorApp.Api.Services
                 );
             }
         }
+
+        /// <summary>
+        /// 更新批次明细商品名称和贴牌价格
+        /// </summary>
+        public async Task<ApiResponse<object>> UpdateBatchItemsAsync(
+            string batchNumber,
+            UpdateBatchItemsRequest request
+        )
+        {
+            try
+            {
+                var logs = await _context.DomesticProductCreationLogDb.GetListAsync(x =>
+                    x.BatchNumber == batchNumber
+                );
+
+                if (logs == null || !logs.Any())
+                {
+                    return ApiResponse<object>.Error("批次不存在", "BATCH_NOT_FOUND");
+                }
+
+                var logsByProductCode = logs
+                    .Where(log => !string.IsNullOrWhiteSpace(log.ProductCode))
+                    .ToDictionary(log => log.ProductCode, log => log);
+                var updatedCount = 0;
+
+                foreach (var item in request.Items)
+                {
+                    if (string.IsNullOrWhiteSpace(item.ProductCode))
+                    {
+                        return ApiResponse<object>.Error("商品编码不能为空", "VALIDATION_ERROR");
+                    }
+
+                    if (item.PrivateLabelPrice.HasValue && item.PrivateLabelPrice.Value < 0)
+                    {
+                        return ApiResponse<object>.Error("贴牌价格不能为负数", "VALIDATION_ERROR");
+                    }
+
+                    if (!logsByProductCode.TryGetValue(item.ProductCode, out var log))
+                    {
+                        return ApiResponse<object>.Error("商品不属于该批次", "VALIDATION_ERROR");
+                    }
+
+                    var productName = item.ProductName ?? "";
+                    var product = await _context.DomesticProductDb.GetByIdAsync(item.ProductCode);
+                    if (product != null)
+                    {
+                        product.ProductName = productName;
+                        product.OEMPrice = item.PrivateLabelPrice;
+                        await _context.DomesticProductDb.UpdateAsync(product);
+
+                        var setProducts = await _context.DomesticSetProductDb.GetListAsync(x =>
+                            x.ProductCode == item.ProductCode
+                        );
+                        foreach (var setProduct in setProducts)
+                        {
+                            setProduct.OEMPrice = item.PrivateLabelPrice;
+                            await _context.DomesticSetProductDb.UpdateAsync(setProduct);
+                        }
+
+                        updatedCount++;
+                    }
+
+                    log.ProductName = productName;
+                    await _context.DomesticProductCreationLogDb.UpdateAsync(log);
+                }
+
+                return ApiResponse<object>.CreateSuccess($"成功更新 {updatedCount} 个商品");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "更新批次明细失败: {BatchNumber}", batchNumber);
+                return ApiResponse<object>.Error(
+                    "更新批次明细失败: " + ex.Message,
+                    "UPDATE_BATCH_ITEMS_ERROR"
+                );
+            }
+        }
     }
 }

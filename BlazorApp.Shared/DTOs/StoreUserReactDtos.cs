@@ -4,8 +4,7 @@ namespace BlazorApp.Shared.DTOs
 {
     public class StoreUserGridRequestDto
     {
-        [Required(ErrorMessage = "分店代码不能为空")]
-        public string StoreCode { get; set; } = string.Empty;
+        public string? StoreCode { get; set; }
 
         public string? Keyword { get; set; }
 

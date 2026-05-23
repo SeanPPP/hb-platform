@@ -51,5 +51,13 @@ namespace BlazorApp.Api.Services
         /// <param name="request">更新请求</param>
         /// <returns>更新结果</returns>
         Task<ApiResponse<object>> UpdatePrivateLabelPriceAsync(string batchNumber, UpdatePrivateLabelPriceRequest request);
+
+        /// <summary>
+        /// 更新批次明细商品字段
+        /// </summary>
+        /// <param name="batchNumber">批次号</param>
+        /// <param name="request">更新请求</param>
+        /// <returns>更新结果</returns>
+        Task<ApiResponse<object>> UpdateBatchItemsAsync(string batchNumber, UpdateBatchItemsRequest request);
     }
 }
