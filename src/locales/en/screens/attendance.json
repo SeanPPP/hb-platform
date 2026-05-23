@@ -105,6 +105,7 @@
     "fullscreen": "Full screen",
     "exitFullscreen": "Exit full screen",
     "fullscreenTitle": "Weekly schedule",
+    "weekNumberLabel": "Week {{week}}, {{year}}",
     "stats": {
       "totalPeople": "Total people",
       "plannedHours": "Planned hours",

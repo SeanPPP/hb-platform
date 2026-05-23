@@ -26,7 +26,7 @@ function sanitizeMutationPayload<T extends { storeCode: string; roleNames?: stri
 
 export async function fetchStoreUsers(params: StoreUserGridParams): Promise<StoreUserListItem[]> {
   const response = await apiClient.post("/react/v1/store-users/grid", {
-    storeCode: params.storeCode,
+    storeCode: params.storeCode?.trim() || undefined,
     keyword: params.keyword?.trim() || undefined,
   });
 

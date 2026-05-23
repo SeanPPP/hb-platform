@@ -56,7 +56,8 @@
     "autoAddShort": "Auto add",
     "scanResults": "Scan results",
     "currentStore": "Current store",
-    "selectStore": "Select store"
+    "selectStore": "Select store",
+    "allRelatedStores": "All related stores"
   },
   "errors": {
     "selectStoreFirst": "Please select a store first.",

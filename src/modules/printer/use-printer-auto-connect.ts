@@ -79,7 +79,17 @@ export function usePrinterAutoConnect() {
         return;
       }
 
-      const nativeStatus = await syncPrinterStatus();
+      let nativeStatus;
+      try {
+        nativeStatus = await syncPrinterStatus();
+      } catch (error) {
+        if (!cancelled) {
+          setLastError(error instanceof Error ? error.message : "Printer status check failed.");
+          setStatus("error");
+        }
+        return;
+      }
+
       const current = usePrinterStore.getState();
 
       if (current.autoReconnectPaused || !current.savedPrinter) {

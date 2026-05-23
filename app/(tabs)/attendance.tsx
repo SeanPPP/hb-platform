@@ -5,7 +5,6 @@ import { useRouter } from "expo-router";
 import {
   ActivityIndicator,
   Button,
-  Chip,
   SegmentedButtons,
   Snackbar,
   Text,
@@ -19,6 +18,7 @@ import { ScheduleManagementCard } from "@/components/attendance/ScheduleManageme
 import { TodayPunchCard } from "@/components/attendance/TodayPunchCard";
 import { WeeklyScheduleTable } from "@/components/attendance/WeeklyScheduleTable";
 import { EmptyState } from "@/components/ui/EmptyState";
+import { StorePickerModal } from "@/components/ui/StorePickerModal";
 import {
   approveAttendanceApproval,
   cancelAvailability,
@@ -47,6 +47,8 @@ import type {
   AttendanceScheduleUpdatePayload,
   AttendanceStoreHolidayPayload,
 } from "@/modules/attendance/types";
+import type { Store } from "@/modules/shop/types";
+import { useStores } from "@/modules/shop/use-stores";
 import { useStoreUsers } from "@/modules/users";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 import { useAuthStore } from "@/store/auth-store";
@@ -84,6 +86,12 @@ function addWeeks(weekStartDate: string, weeks: number) {
 
 function isPrimaryStore(store: object) {
   return "isPrimary" in store && store.isPrimary === true;
+}
+
+function findStoreByCode(stores: Store[], storeCode?: string | null) {
+  return storeCode
+    ? stores.find((store) => store.storeCode === storeCode)
+    : undefined;
 }
 
 const attendanceKeys = {
@@ -132,6 +140,12 @@ export default function AttendanceScreen() {
   const user = useAuthStore((state) => state.user);
   const access = useAuthStore((state) => state.access);
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated);
+  const {
+    stores,
+    selectedStoreCode: rememberedStoreCode,
+    isHydratingSelection,
+    selectStore,
+  } = useStores();
   const [activeSection, setActiveSection] =
     useState<AttendanceSection>("employee");
   const [selectedDate, setSelectedDate] = useState(() =>
@@ -140,12 +154,12 @@ export default function AttendanceScreen() {
   const [selectedStoreCode, setSelectedStoreCode] = useState<
     string | undefined
   >(undefined);
+  const [storePickerVisible, setStorePickerVisible] = useState(false);
   const [managerWeekStartDate, setManagerWeekStartDate] =
     useState(getWeekStartDate);
   const [snackbarMessage, setSnackbarMessage] = useState("");
   const [snackbarVisible, setSnackbarVisible] = useState(false);
 
-  const stores = user?.stores ?? [];
   const managerStores = useMemo(
     () => (access.isAdmin ? stores : stores.filter(isPrimaryStore)),
     [access.isAdmin, stores],
@@ -169,9 +183,16 @@ export default function AttendanceScreen() {
         return current;
       }
 
+      if (
+        rememberedStoreCode &&
+        sectionStores.some((store) => store.storeCode === rememberedStoreCode)
+      ) {
+        return rememberedStoreCode;
+      }
+
       return sectionStores[0]?.storeCode;
     });
-  }, [sectionStores]);
+  }, [rememberedStoreCode, sectionStores]);
 
   useEffect(() => {
     if (!canReview && activeSection !== "employee") {
@@ -217,7 +238,7 @@ export default function AttendanceScreen() {
     enabled: Boolean(isAuthenticated && user && isManagerSection),
   });
   const storeUsersQuery = useStoreUsers(
-    isManagerSection && selectedStoreCode ? selectedStoreCode : null,
+    isManagerSection && selectedStoreCode ? selectedStoreCode : undefined,
   );
   const managerSchedulesQuery = useQuery({
     queryKey: attendanceKeys.schedulesWeek(
@@ -498,9 +519,26 @@ export default function AttendanceScreen() {
       holidaysQuery.error);
 
   const selectedStoreName = useMemo(
-    () =>
-      stores.find((store) => store.storeCode === selectedStoreCode)?.storeName,
+    () => findStoreByCode(stores, selectedStoreCode)?.storeName,
     [selectedStoreCode, stores],
+  );
+
+  const handleSelectStore = useCallback(
+    async (store: Store | null) => {
+      if (!store) {
+        return;
+      }
+
+      setSelectedStoreCode(store.storeCode);
+      setStorePickerVisible(false);
+
+      try {
+        await selectStore(store);
+      } catch (error) {
+        console.warn("[attendance] failed to persist store selection", error);
+      }
+    },
+    [selectStore],
   );
 
   const handleBack = useCallback(() => {
@@ -599,7 +637,12 @@ export default function AttendanceScreen() {
     updateHolidayMutation.mutate({ holidayGuid, payload: payloadWithStore });
   };
 
-  if (!isAuthenticated || !user || employeeInitialLoading) {
+  if (
+    !isAuthenticated ||
+    !user ||
+    isHydratingSelection ||
+    employeeInitialLoading
+  ) {
     return (
       <SafeAreaView style={styles.container} edges={["top", "left", "right"]}>
         <View style={styles.centered}>
@@ -672,17 +715,16 @@ export default function AttendanceScreen() {
         </View>
 
         {sectionStores.length > 1 ? (
-          <View style={styles.storeChips}>
-            {sectionStores.map((store) => (
-              <Chip
-                key={store.storeCode}
-                selected={store.storeCode === selectedStoreCode}
-                onPress={() => setSelectedStoreCode(store.storeCode)}
-              >
-                {store.storeName || store.storeCode}
-              </Chip>
-            ))}
-          </View>
+          <Button
+            mode="outlined"
+            icon="storefront-outline"
+            onPress={() => setStorePickerVisible(true)}
+            contentStyle={styles.storePickerButtonContent}
+          >
+            {selectedStoreName ||
+              selectedStoreCode ||
+              t("common:labels.selectStore")}
+          </Button>
         ) : null}
 
         {canReview ? (
@@ -829,6 +871,15 @@ export default function AttendanceScreen() {
       >
         {snackbarMessage}
       </Snackbar>
+      <StorePickerModal
+        visible={storePickerVisible}
+        stores={sectionStores}
+        selectedStoreCode={selectedStoreCode}
+        title={t("common:labels.selectStore")}
+        cancelLabel={t("common:actions.cancel")}
+        onDismiss={() => setStorePickerVisible(false)}
+        onSelectStore={handleSelectStore}
+      />
     </SafeAreaView>
   );
 }
@@ -869,9 +920,7 @@ const styles = StyleSheet.create({
   sectionTabs: {
     marginTop: 2,
   },
-  storeChips: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 8,
+  storePickerButtonContent: {
+    justifyContent: "flex-start",
   },
 });

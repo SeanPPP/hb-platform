@@ -22,8 +22,8 @@ export function storeUsersQueryKey(storeCode?: string | null, keyword?: string) 
 export function useStoreUsers(storeCode?: string | null, keyword?: string) {
   return useQuery({
     queryKey: storeUsersQueryKey(storeCode, keyword),
-    enabled: Boolean(storeCode),
-    queryFn: () => fetchStoreUsers({ storeCode: storeCode!, keyword }),
+    enabled: storeCode !== undefined,
+    queryFn: () => fetchStoreUsers({ storeCode, keyword }),
   });
 }
 
@@ -47,13 +47,9 @@ export function useStoreUserMutations(storeCode?: string | null, keyword?: strin
   const queryClient = useQueryClient();
 
   const invalidateUsers = async () => {
-    if (!storeCode) {
-      return;
-    }
-
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: storeUsersQueryKey(storeCode, keyword) }),
-      queryClient.invalidateQueries({ queryKey: ["storeUsers", storeCode] }),
+      queryClient.invalidateQueries({ queryKey: ["storeUsers"] }),
     ]);
   };
 

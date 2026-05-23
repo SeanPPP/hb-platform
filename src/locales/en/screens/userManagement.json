@@ -5,8 +5,9 @@
     "label": "Current store",
     "value": "{{name}} ({{code}})",
     "empty": "No store selected",
+    "allRelated": "All related stores",
     "select": "Select store",
-    "helper": "Choose a managed store. If only one store is available, it is selected automatically."
+    "helper": "Choose a managed store, or view every staff account in your managed store scope."
   },
   "actions": {
     "refresh": "Refresh",

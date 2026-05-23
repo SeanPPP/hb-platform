@@ -112,7 +112,22 @@ export default function Settings() {
   }, [filterXPOnly, rawPrinters]);
 
   useEffect(() => {
-    void syncPrinterStatus();
+    let cancelled = false;
+
+    void syncPrinterStatus().catch((error) => {
+      if (cancelled) {
+        return;
+      }
+
+      const message = error instanceof Error ? error.message : "Printer status check failed.";
+      const store = usePrinterStore.getState();
+      store.setLastError(message);
+      store.setStatus("error");
+    });
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const isPrinterConnected = printerStatus === "connected";

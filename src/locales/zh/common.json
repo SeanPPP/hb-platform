@@ -56,7 +56,8 @@
     "autoAddShort": "自动加购",
     "scanResults": "扫码结果",
     "currentStore": "当前门店",
-    "selectStore": "选择门店"
+    "selectStore": "选择门店",
+    "allRelatedStores": "全部相关分店"
   },
   "errors": {
     "selectStoreFirst": "请先选择门店",

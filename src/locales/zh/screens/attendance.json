@@ -105,6 +105,7 @@
     "fullscreen": "全屏维护",
     "exitFullscreen": "退出全屏",
     "fullscreenTitle": "周排班表",
+    "weekNumberLabel": "{{year}} 年第 {{week}} 周",
     "stats": {
       "totalPeople": "总人数",
       "plannedHours": "预计总工时",

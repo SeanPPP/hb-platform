@@ -34,7 +34,7 @@ export interface StoreUserProfile extends StoreUserDetail {
 }
 
 export interface StoreUserGridParams {
-  storeCode: string;
+  storeCode?: string | null;
   keyword?: string;
 }
 

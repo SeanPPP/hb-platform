@@ -90,6 +90,31 @@ function formatWeekRange(start: string, end: string) {
   return `${start} - ${end}`;
 }
 
+function getIsoWeekInfo(value: string) {
+  const parsed = new Date(`${value}T00:00:00Z`);
+  if (Number.isNaN(parsed.getTime())) {
+    return null;
+  }
+
+  const date = new Date(
+    Date.UTC(
+      parsed.getUTCFullYear(),
+      parsed.getUTCMonth(),
+      parsed.getUTCDate(),
+    ),
+  );
+  const day = date.getUTCDay() || 7;
+  date.setUTCDate(date.getUTCDate() + 4 - day);
+
+  const year = date.getUTCFullYear();
+  const yearStart = new Date(Date.UTC(year, 0, 1));
+  const week = Math.ceil(
+    ((date.getTime() - yearStart.getTime()) / 86400000 + 1) / 7,
+  );
+
+  return { week, year };
+}
+
 function formatTime(value: string) {
   return value.includes("T")
     ? value.split("T").pop()?.slice(0, 5) || value
@@ -440,6 +465,10 @@ export function ScheduleManagementCard({
 
   const weekRangeLabel = formatWeekRange(weekStartDate, weekEndDate);
   const storeLabel = storeName || storeCode || t("scheduleManagement.noStore");
+  const weekInfo = getIsoWeekInfo(weekStartDate);
+  const weekNumberLabel = weekInfo
+    ? t("scheduleManagement.weekNumberLabel", weekInfo)
+    : weekRangeLabel;
   const plannedHoursLabel = Number.isInteger(totalPlannedHours)
     ? String(totalPlannedHours)
     : totalPlannedHours.toFixed(1);
@@ -741,9 +770,9 @@ export function ScheduleManagementCard({
               {t("scheduleManagement.previousWeek")}
             </Button>
             <View style={styles.weekTitle}>
-              <Text variant="titleMedium">{weekRangeLabel}</Text>
+              <Text variant="titleMedium">{weekNumberLabel}</Text>
               <Text variant="bodySmall" style={styles.muted}>
-                {storeLabel}
+                {storeLabel} · {weekRangeLabel}
               </Text>
             </View>
             <Button
@@ -828,7 +857,7 @@ export function ScheduleManagementCard({
                   {t("scheduleManagement.fullscreenTitle")}
                 </Text>
                 <Text variant="bodyMedium" style={styles.muted}>
-                  {storeLabel} · {weekRangeLabel}
+                  {weekNumberLabel} · {storeLabel} · {weekRangeLabel}
                 </Text>
               </View>
               <View style={styles.fullscreenControls}>

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Alert, FlatList, RefreshControl, ScrollView, StyleSheet, View } from "react-native";
 import { useRouter } from "expo-router";
+import { SafeAreaView } from "react-native-safe-area-context";
 import {
   ActivityIndicator,
   Avatar,
@@ -10,7 +11,6 @@ import {
   Dialog,
   FAB,
   IconButton,
-  Menu,
   Portal,
   Searchbar,
   SegmentedButtons,
@@ -20,6 +20,8 @@ import {
   TextInput,
 } from "react-native-paper";
 import { EmptyState } from "@/components/ui/EmptyState";
+import { StorePickerModal } from "@/components/ui/StorePickerModal";
+import type { Store } from "@/modules/shop/types";
 import { useStores } from "@/modules/shop/use-stores";
 import {
   STORE_STAFF_ROLE,
@@ -77,9 +79,15 @@ export default function UsersScreen() {
   const router = useRouter();
   const { t, language } = useAppTranslation(["userManagement", "common"]);
   const access = useAuthStore((state) => state.access);
-  const { stores, selectedStoreCode, isHydratingSelection, isLoading: storesLoading } = useStores();
+  const {
+    stores,
+    selectedStoreCode: rememberedStoreCode,
+    isHydratingSelection,
+    isLoading: storesLoading,
+    selectStore,
+  } = useStores();
   const [managedStoreCode, setManagedStoreCode] = useState<string | null>(null);
-  const [storeMenuVisible, setStoreMenuVisible] = useState(false);
+  const [storePickerVisible, setStorePickerVisible] = useState(false);
   const [keywordInput, setKeywordInput] = useState("");
   const [keyword, setKeyword] = useState("");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
@@ -87,6 +95,7 @@ export default function UsersScreen() {
   const [dialogVisible, setDialogVisible] = useState(false);
   const [dialogMode, setDialogMode] = useState<UserDialogMode>("create");
   const [editingUserGuid, setEditingUserGuid] = useState<string | null>(null);
+  const [editingStoreCode, setEditingStoreCode] = useState<string | null>(null);
   const [formValues, setFormValues] = useState<StoreUserFormValues>(EMPTY_FORM);
   const [resetPasswordVisible, setResetPasswordVisible] = useState(false);
   const [resetPasswordValue, setResetPasswordValue] = useState("");
@@ -108,26 +117,26 @@ export default function UsersScreen() {
         return current;
       }
 
-      const selectedManageableStore = selectedStoreCode
-        ? manageableStores.find((store) => store.storeCode === selectedStoreCode)
+      const selectedManageableStore = rememberedStoreCode
+        ? manageableStores.find((store) => store.storeCode === rememberedStoreCode)
         : null;
       if (selectedManageableStore) {
         return selectedManageableStore.storeCode;
       }
 
-      return manageableStores.length === 1 ? manageableStores[0].storeCode : null;
+      return null;
     });
-  }, [isHydratingSelection, manageableStores, selectedStoreCode, storesLoading]);
+  }, [isHydratingSelection, manageableStores, rememberedStoreCode, storesLoading]);
 
   const managedStore = useMemo(
     () => manageableStores.find((store) => store.storeCode === managedStoreCode) ?? null,
     [manageableStores, managedStoreCode]
   );
 
-  const usersQuery = useStoreUsers(managedStoreCode, keyword);
+  const usersQuery = useStoreUsers(canManageUsers ? managedStoreCode : undefined, keyword);
   const detailQuery = useStoreUserDetail(
     dialogMode === "edit" ? editingUserGuid : null,
-    dialogMode === "edit" ? managedStoreCode : null
+    dialogMode === "edit" ? editingStoreCode : null
   );
   const { createMutation, updateMutation, statusMutation, passwordMutation } =
     useStoreUserMutations(managedStoreCode, keyword);
@@ -137,6 +146,11 @@ export default function UsersScreen() {
     updateMutation.isPending ||
     statusMutation.isPending ||
     passwordMutation.isPending;
+
+  const resolveUserStoreCode = useCallback(
+    (user: StoreUserListItem) => managedStoreCode || user.storeCode || null,
+    [managedStoreCode]
+  );
 
   useEffect(() => {
     if (!detailQuery.isSuccess || dialogMode !== "edit" || !dialogVisible) {
@@ -157,43 +171,56 @@ export default function UsersScreen() {
     setDialogVisible(false);
     setDialogMode("create");
     setEditingUserGuid(null);
+    setEditingStoreCode(null);
     setFormValues(EMPTY_FORM);
   }, []);
 
   const openCreateDialog = useCallback(() => {
     setDialogMode("create");
     setEditingUserGuid(null);
+    setEditingStoreCode(null);
     setFormValues(EMPTY_FORM);
     setDialogVisible(true);
   }, []);
 
-  const openEditDialog = useCallback((user: StoreUserListItem) => {
-    setDialogMode("edit");
-    setEditingUserGuid(user.userGUID);
-    setFormValues({
-      username: user.username,
-      fullName: user.fullName ?? "",
-      email: user.email ?? "",
-      phone: user.phone ?? "",
-      password: "",
-      status: user.status === 1,
-    });
-    setDialogVisible(true);
-  }, []);
+  const openEditDialog = useCallback(
+    (user: StoreUserListItem) => {
+      const targetStoreCode = resolveUserStoreCode(user);
+      if (!targetStoreCode) {
+        setSnackbarMessage(t("messages.selectStoreFirst"));
+        return;
+      }
+
+      setDialogMode("edit");
+      setEditingUserGuid(user.userGUID);
+      setEditingStoreCode(targetStoreCode);
+      setFormValues({
+        username: user.username,
+        fullName: user.fullName ?? "",
+        email: user.email ?? "",
+        phone: user.phone ?? "",
+        password: "",
+        status: user.status === 1,
+      });
+      setDialogVisible(true);
+    },
+    [resolveUserStoreCode, t]
+  );
 
   const openStaffDetail = useCallback(
     (user: StoreUserListItem) => {
-      if (!managedStoreCode) {
+      const targetStoreCode = resolveUserStoreCode(user);
+      if (!targetStoreCode) {
         setSnackbarMessage(t("messages.selectStoreFirst"));
         return;
       }
 
       router.push({
         pathname: "/staff/[userGuid]",
-        params: { userGuid: user.userGUID, storeCode: managedStoreCode },
+        params: { userGuid: user.userGUID, storeCode: targetStoreCode },
       } as Parameters<typeof router.push>[0]);
     },
-    [managedStoreCode, router, t]
+    [resolveUserStoreCode, router, t]
   );
 
   const closeResetPasswordDialog = useCallback(() => {
@@ -205,6 +232,20 @@ export default function UsersScreen() {
   const submitKeyword = useCallback(() => {
     setKeyword(keywordInput.trim());
   }, [keywordInput]);
+
+  const handleSelectManagedStore = useCallback(
+    async (store: Store | null) => {
+      setManagedStoreCode(store?.storeCode ?? null);
+      setStorePickerVisible(false);
+
+      try {
+        await selectStore(store);
+      } catch (error) {
+        console.warn("[store-users] failed to persist store selection", error);
+      }
+    },
+    [selectStore]
+  );
 
   const handleRefresh = useCallback(async () => {
     try {
@@ -226,7 +267,8 @@ export default function UsersScreen() {
   }, [dialogMode, formValues, t]);
 
   const handleSubmit = useCallback(async () => {
-    if (!managedStoreCode) {
+    const targetStoreCode = dialogMode === "edit" ? editingStoreCode : managedStoreCode;
+    if (!targetStoreCode) {
       setSnackbarMessage(t("messages.selectStoreFirst"));
       return;
     }
@@ -242,7 +284,7 @@ export default function UsersScreen() {
       phone: formValues.phone.trim() || undefined,
       password: formValues.password.trim() || undefined,
       status: formValues.status ? 1 : 0,
-      storeCode: managedStoreCode,
+      storeCode: targetStoreCode,
       roleNames: [STORE_STAFF_ROLE],
     };
 
@@ -263,6 +305,7 @@ export default function UsersScreen() {
   }, [
     createMutation,
     dialogMode,
+    editingStoreCode,
     editingUserGuid,
     formValues,
     managedStoreCode,
@@ -274,7 +317,8 @@ export default function UsersScreen() {
 
   const handleToggleStatus = useCallback(
     (user: StoreUserListItem) => {
-      if (!managedStoreCode) {
+      const targetStoreCode = resolveUserStoreCode(user);
+      if (!targetStoreCode) {
         setSnackbarMessage(t("messages.selectStoreFirst"));
         return;
       }
@@ -293,7 +337,7 @@ export default function UsersScreen() {
               try {
                 await statusMutation.mutateAsync({
                   userGuid: user.userGUID,
-                  storeCode: managedStoreCode,
+                  storeCode: targetStoreCode,
                   status: nextEnabled ? 1 : 0,
                 });
                 setSnackbarMessage(nextEnabled ? t("messages.userEnabled") : t("messages.userDisabled"));
@@ -306,7 +350,7 @@ export default function UsersScreen() {
         ]
       );
     },
-    [managedStoreCode, statusMutation, t]
+    [resolveUserStoreCode, statusMutation, t]
   );
 
   const openResetPasswordDialog = useCallback((user: StoreUserListItem) => {
@@ -316,7 +360,12 @@ export default function UsersScreen() {
   }, []);
 
   const handleResetPassword = useCallback(async () => {
-    if (!managedStoreCode || !passwordUser) {
+    if (!passwordUser) {
+      return;
+    }
+
+    const targetStoreCode = resolveUserStoreCode(passwordUser);
+    if (!targetStoreCode) {
       setSnackbarMessage(t("messages.selectStoreFirst"));
       return;
     }
@@ -330,7 +379,7 @@ export default function UsersScreen() {
     try {
       await passwordMutation.mutateAsync({
         userGuid: passwordUser.userGUID,
-        storeCode: managedStoreCode,
+        storeCode: targetStoreCode,
         newPassword: resetPasswordValue.trim(),
       });
       setSnackbarMessage(t("messages.passwordReset"));
@@ -341,9 +390,9 @@ export default function UsersScreen() {
     }
   }, [
     closeResetPasswordDialog,
-    managedStoreCode,
     passwordMutation,
     passwordUser,
+    resolveUserStoreCode,
     resetPasswordValue,
     t,
   ]);
@@ -366,6 +415,10 @@ export default function UsersScreen() {
   }, [statusFilter, usersQuery.data]);
 
   const storeCaption = useMemo(() => {
+    if (!managedStoreCode) {
+      return t("currentStore.allRelated");
+    }
+
     if (!managedStore) {
       return t("currentStore.empty");
     }
@@ -374,7 +427,7 @@ export default function UsersScreen() {
       code: managedStore.storeCode,
       name: managedStore.storeName || managedStore.storeCode,
     });
-  }, [managedStore, t]);
+  }, [managedStore, managedStoreCode, t]);
 
   const renderUserCard = useCallback(
     ({ item }: { item: StoreUserListItem }) => {
@@ -462,7 +515,7 @@ export default function UsersScreen() {
 
   if (!canManageUsers) {
     return (
-      <View style={styles.screen}>
+      <SafeAreaView style={styles.screen} edges={["top", "left", "right"]}>
         <EmptyState
           title={t("messages.noAccessTitle")}
           description={t("messages.noAccessDescription")}
@@ -472,12 +525,12 @@ export default function UsersScreen() {
             onPress: () => router.replace("/(tabs)/settings"),
           }}
         />
-      </View>
+      </SafeAreaView>
     );
   }
 
   return (
-    <View style={styles.screen}>
+    <SafeAreaView style={styles.screen} edges={["top", "left", "right"]}>
       <FlatList
         data={filteredUsers}
         keyExtractor={(item) => item.userGUID}
@@ -501,31 +554,14 @@ export default function UsersScreen() {
             </View>
 
             <View style={styles.filterPanel}>
-              <Menu
-                visible={storeMenuVisible}
-                onDismiss={() => setStoreMenuVisible(false)}
-                anchor={
-                  <Button
-                    mode="outlined"
-                    icon="store-outline"
-                    onPress={() => setStoreMenuVisible(true)}
-                    disabled={manageableStores.length <= 1}
-                  >
-                    {managedStore?.storeName || t("currentStore.select")}
-                  </Button>
-                }
+              <Button
+                mode="outlined"
+                icon="store-outline"
+                onPress={() => setStorePickerVisible(true)}
+                contentStyle={styles.storePickerButtonContent}
               >
-                {manageableStores.map((store) => (
-                  <Menu.Item
-                    key={store.storeCode}
-                    title={store.storeName || store.storeCode}
-                    onPress={() => {
-                      setManagedStoreCode(store.storeCode);
-                      setStoreMenuVisible(false);
-                    }}
-                  />
-                ))}
-              </Menu>
+                {managedStore?.storeName || t("currentStore.allRelated")}
+              </Button>
               <Searchbar
                 placeholder={t("searchPlaceholder")}
                 value={keywordInput}
@@ -538,7 +574,7 @@ export default function UsersScreen() {
                 <Chip icon="sort-alphabetical-ascending" compact>
                   {t("filters.sortByName")}
                 </Chip>
-                <Button mode="outlined" icon="refresh" onPress={handleRefresh} disabled={!managedStoreCode}>
+                <Button mode="outlined" icon="refresh" onPress={handleRefresh} disabled={usersQuery.isFetching}>
                   {t("actions.refresh")}
                 </Button>
               </View>
@@ -553,14 +589,7 @@ export default function UsersScreen() {
               />
             </View>
 
-            {!managedStoreCode && !isHydratingSelection && !storesLoading ? (
-              <EmptyState
-                title={t("messages.selectStoreTitle")}
-                description={t("messages.selectStoreDescription")}
-              />
-            ) : null}
-
-            {managedStoreCode && usersQuery.isError ? (
+            {usersQuery.isError ? (
               <EmptyState
                 title={t("messages.loadFailedTitle")}
                 description={
@@ -576,7 +605,7 @@ export default function UsersScreen() {
               />
             ) : null}
 
-            {managedStoreCode && !usersQuery.isLoading && !usersQuery.isError && filteredUsers.length === 0 ? (
+            {!usersQuery.isLoading && !usersQuery.isError && filteredUsers.length === 0 ? (
               <EmptyState
                 title={keyword ? t("messages.emptySearchTitle") : t("messages.emptyTitle")}
                 description={
@@ -708,10 +737,22 @@ export default function UsersScreen() {
         </Dialog>
       </Portal>
 
+      <StorePickerModal
+        visible={storePickerVisible}
+        stores={manageableStores}
+        selectedStoreCode={managedStoreCode}
+        title={t("common:labels.selectStore")}
+        cancelLabel={t("common:actions.cancel")}
+        includeAllOption
+        allLabel={t("currentStore.allRelated")}
+        onDismiss={() => setStorePickerVisible(false)}
+        onSelectStore={handleSelectManagedStore}
+      />
+
       <Snackbar visible={Boolean(snackbarMessage)} onDismiss={() => setSnackbarMessage("")} duration={2500}>
         {snackbarMessage}
       </Snackbar>
-    </View>
+    </SafeAreaView>
   );
 }
 
@@ -793,6 +834,9 @@ const styles = StyleSheet.create({
   },
   secondaryText: {
     color: "#6B7280",
+  },
+  storePickerButtonContent: {
+    justifyContent: "flex-start",
   },
   switchRow: {
     alignItems: "center",
