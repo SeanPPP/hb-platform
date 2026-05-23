@@ -31,6 +31,17 @@ namespace BlazorApp.Shared.DTOs
 
     public class StoreUserDetailDto : StoreUserListDto
     {
+        public DateTime? Birthday { get; set; }
+        public string? Gender { get; set; }
+        public string? EmploymentType { get; set; }
+        public string? AvatarUrl { get; set; }
+        public string? IdentityId { get; set; }
+        public string? Address { get; set; }
+        public string? BankBsb { get; set; }
+        public string? BankAccountNumber { get; set; }
+        public string? SuperannuationCompanyName { get; set; }
+        public string? SuperannuationCompanyCode { get; set; }
+        public string? SuperannuationAccountNumber { get; set; }
         public string? Remarks { get; set; }
     }
 

@@ -483,6 +483,7 @@ namespace BlazorApp.Api.Services.React
                 .InnerJoin<Role>((u, ur, r) => ur.RoleGUID == r.RoleGUID)
                 .InnerJoin<UserStore>((u, ur, r, us) => u.UserGUID == us.UserGUID)
                 .InnerJoin<Store>((u, ur, r, us, s) => us.StoreGUID == s.StoreGUID)
+                .LeftJoin<EmployeeProfile>((u, ur, r, us, s, profile) => u.UserGUID == profile.UserGUID)
                 .Where((u, ur, r, us, s) =>
                     !u.IsDeleted
                     && !ur.IsDeleted
@@ -494,13 +495,13 @@ namespace BlazorApp.Api.Services.React
                 )
                 .WhereIF(
                     !scope.IsAdmin,
-                    (u, ur, r, us, s) => scope.StoreGuids.Contains(s.StoreGUID)
+                    (u, ur, r, us, s, profile) => scope.StoreGuids.Contains(s.StoreGUID)
                 )
                 .WhereIF(
                     !string.IsNullOrWhiteSpace(normalizedStoreCode),
-                    (u, ur, r, us, s) => s.StoreCode == normalizedStoreCode
+                    (u, ur, r, us, s, profile) => s.StoreCode == normalizedStoreCode
                 )
-                .Select((u, ur, r, us, s) => new
+                .Select((u, ur, r, us, s, profile) => new
                 {
                     u.UserGUID,
                     u.Username,
@@ -514,6 +515,17 @@ namespace BlazorApp.Api.Services.React
                     LastLoginTime = u.LastLoginAt,
                     u.CreatedAt,
                     u.UpdatedAt,
+                    Birthday = profile.Birthday,
+                    profile.Gender,
+                    EmployeeType = profile.EmployeeType,
+                    profile.AvatarUrl,
+                    profile.IdentityId,
+                    profile.Address,
+                    BankBsb = profile.BankBSB,
+                    BankAccountNumber = profile.BankACC,
+                    profile.SuperannuationCompanyName,
+                    profile.SuperannuationCompanyCode,
+                    SuperannuationAccountNumber = profile.SuperannuationAccount,
                 })
                 .ToListAsync();
 
@@ -538,6 +550,17 @@ namespace BlazorApp.Api.Services.React
                             .Distinct(StringComparer.OrdinalIgnoreCase)
                             .ToList(),
                         LastLoginTime = first.LastLoginTime,
+                        Birthday = first.Birthday,
+                        Gender = FormatGender(first.Gender),
+                        EmploymentType = FormatEmploymentType(first.EmployeeType),
+                        AvatarUrl = first.AvatarUrl,
+                        IdentityId = first.IdentityId,
+                        Address = first.Address,
+                        BankBsb = first.BankBsb,
+                        BankAccountNumber = first.BankAccountNumber,
+                        SuperannuationCompanyName = first.SuperannuationCompanyName,
+                        SuperannuationCompanyCode = first.SuperannuationCompanyCode,
+                        SuperannuationAccountNumber = first.SuperannuationAccountNumber,
                         CreatedAt = first.CreatedAt,
                         UpdatedAt = first.UpdatedAt,
                     };
@@ -629,6 +652,29 @@ namespace BlazorApp.Api.Services.React
                 "parttime" or "part_time" or "part-time" => EmployeeType.PartTime,
                 "temporary" or "casual" => EmployeeType.Temporary,
                 _ => EmployeeType.Temporary,
+            };
+        }
+
+        private static string? FormatGender(EmployeeGender? value)
+        {
+            return value switch
+            {
+                EmployeeGender.Unknown => "unknown",
+                EmployeeGender.Male => "male",
+                EmployeeGender.Female => "female",
+                EmployeeGender.Other => "other",
+                _ => null,
+            };
+        }
+
+        private static string? FormatEmploymentType(EmployeeType? value)
+        {
+            return value switch
+            {
+                EmployeeType.FullTime => "fullTime",
+                EmployeeType.PartTime => "partTime",
+                EmployeeType.Temporary => "casual",
+                _ => null,
             };
         }
     }

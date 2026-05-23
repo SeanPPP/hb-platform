@@ -175,6 +175,47 @@ namespace BlazorApp.Api.Tests
         }
 
         [Fact]
+        public async Task GetByUserGuidAsync_WhenStoreManagerTargetsManagedStore_ReturnsProfileDetails()
+        {
+            await SeedStoreUserDataAsync();
+            var service = CreateService("manager-1", "StoreManager");
+
+            var result = await service.GetByUserGuidAsync("staff-1", "S001");
+
+            Assert.True(result.Success);
+            Assert.NotNull(result.Data);
+
+            var detail = result.Data!;
+            Assert.Equal("staff-1", detail.UserGuid);
+            Assert.Equal("staff_1", detail.Username);
+            Assert.Equal("Store 1", detail.StoreName);
+            Assert.Contains("StoreStaff", detail.RoleNames);
+            Assert.Equal(new DateTime(1992, 7, 15), detail.Birthday);
+            Assert.Equal("female", detail.Gender);
+            Assert.Equal("partTime", detail.EmploymentType);
+            Assert.Equal("https://example.com/avatar/staff-1.png", detail.AvatarUrl);
+            Assert.Equal("ID-STAFF-1", detail.IdentityId);
+            Assert.Equal("123 Queen St", detail.Address);
+            Assert.Equal("062000", detail.BankBsb);
+            Assert.Equal("12345678", detail.BankAccountNumber);
+            Assert.Equal("Aware Super", detail.SuperannuationCompanyName);
+            Assert.Equal("AWARE", detail.SuperannuationCompanyCode);
+            Assert.Equal("SUPER-001", detail.SuperannuationAccountNumber);
+        }
+
+        [Fact]
+        public async Task GetByUserGuidAsync_WhenStoreManagerTargetsUnmanagedStore_ReturnsForbidden()
+        {
+            await SeedStoreUserDataAsync();
+            var service = CreateService("manager-1", "StoreManager");
+
+            var result = await service.GetByUserGuidAsync("staff-2", "S002");
+
+            Assert.False(result.Success);
+            Assert.Equal("FORBIDDEN", result.Code);
+        }
+
+        [Fact]
         public async Task UpdatePasswordAsync_WhenStoreManagerTargetsForeignStore_ReturnsScopeError()
         {
             await SeedStoreUserDataAsync();
@@ -301,6 +342,38 @@ namespace BlazorApp.Api.Tests
                     CreateUserStore("staff-1", "store-1", false),
                     CreateUserStore("staff-2", "store-2", false),
                     CreateUserStore("admin-1", "store-2", true),
+                }
+            ).ExecuteCommandAsync();
+
+            await _db.Insertable(
+                new[]
+                {
+                    new EmployeeProfile
+                    {
+                        UserGUID = "staff-1",
+                        Birthday = new DateTime(1992, 7, 15),
+                        Gender = EmployeeGender.Female,
+                        EmployeeType = EmployeeType.PartTime,
+                        AvatarUrl = "https://example.com/avatar/staff-1.png",
+                        IdentityId = "ID-STAFF-1",
+                        Address = "123 Queen St",
+                        BankBSB = "062000",
+                        BankACC = "12345678",
+                        SuperannuationCompanyName = "Aware Super",
+                        SuperannuationCompanyCode = "AWARE",
+                        SuperannuationAccount = "SUPER-001",
+                        CreatedAt = DateTime.UtcNow,
+                        UpdatedAt = DateTime.UtcNow,
+                    },
+                    new EmployeeProfile
+                    {
+                        UserGUID = "staff-2",
+                        Birthday = new DateTime(1990, 1, 1),
+                        Gender = EmployeeGender.Male,
+                        EmployeeType = EmployeeType.FullTime,
+                        CreatedAt = DateTime.UtcNow,
+                        UpdatedAt = DateTime.UtcNow,
+                    },
                 }
             ).ExecuteCommandAsync();
         }

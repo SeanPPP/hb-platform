@@ -53,6 +53,14 @@ namespace BlazorApp.Api.Controllers.React
             return Ok(result);
         }
 
+        [HttpGet("{userGuid}/profile")]
+        [Authorize(Policy = Permissions.Users.View)]
+        public async Task<IActionResult> GetProfile(string userGuid, [FromQuery] string? storeCode)
+        {
+            var result = await _service.GetByUserGuidAsync(userGuid, storeCode);
+            return Ok(result);
+        }
+
         [HttpPost]
         [Authorize(Policy = Permissions.Users.Create)]
         public async Task<IActionResult> Create([FromBody] CreateStoreUserDto dto)
