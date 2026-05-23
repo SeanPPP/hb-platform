@@ -69,7 +69,7 @@ namespace BlazorApp.Api.Interfaces
         Task<ApiResponse<bool>> RemoveUserFromStoreAsync(string storeGuid, string userGuid);
 
         /// <summary>
-        /// 设置主要用户
+        /// 设置用户是否可管理该分店
         /// </summary>
         Task<ApiResponse<bool>> SetPrimaryUserAsync(string storeGuid, string userGuid, bool isPrimary);
 

@@ -73,7 +73,9 @@ namespace BlazorApp.Api.Services
 
             var stores = await _context.Db.Queryable<UserStore>()
                 .InnerJoin<Store>((us, s) => us.StoreGUID == s.StoreGUID)
-                .Where((us, s) => us.UserGUID == userGuid && !us.IsDeleted && !s.IsDeleted)
+                .Where((us, s) =>
+                    us.UserGUID == userGuid && !us.IsDeleted && us.IsPrimary && !s.IsDeleted
+                )
                 .Select((us, s) => new { us.StoreGUID, s.StoreCode })
                 .ToListAsync();
 

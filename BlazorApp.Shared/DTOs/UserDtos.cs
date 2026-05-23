@@ -447,7 +447,7 @@ namespace BlazorApp.Shared.DTOs
         public string AccessLevel { get; set; } = "ReadOnly";
 
         /// <summary>
-        /// 是否为主分店
+        /// 是否允许该用户管理此分店
         /// </summary>
         public bool IsPrimary { get; set; } = false;
     }

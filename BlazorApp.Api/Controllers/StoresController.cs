@@ -335,7 +335,7 @@ namespace BlazorApp.Api.Controllers
         }
 
         /// <summary>
-        /// 设置主要用户
+        /// 设置用户是否可管理该分店
         /// </summary>
         [HttpPut("guid/{guid}/users/{userGuid}/primary")]
         [Authorize(Policy = Permissions.Stores.Edit)]
@@ -354,7 +354,7 @@ namespace BlazorApp.Api.Controllers
             {
                 _logger.LogError(
                     ex,
-                    "设置主要用户失败，StoreGUID: {StoreGUID}, UserGUID: {UserGUID}",
+                    "设置分店管理关系失败，StoreGUID: {StoreGUID}, UserGUID: {UserGUID}",
                     guid,
                     userGuid
                 );

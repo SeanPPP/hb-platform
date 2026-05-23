@@ -243,9 +243,20 @@ namespace BlazorApp.Api.Services.React
                             UserStoreGUID = Guid.NewGuid().ToString(),
                             UserGUID = userGuid,
                             StoreGUID = targetStore.StoreGUID,
-                            IsPrimary = true,
+                            IsPrimary = false,
                             AssignedAt = now,
                             AssignedByGUID = scope.UserGuid,
+                            CreatedAt = now,
+                            UpdatedAt = now,
+                            CreatedBy = createdBy,
+                            UpdatedBy = createdBy,
+                        }
+                    ).ExecuteCommandAsync();
+                    await _db.Insertable(
+                        new EmployeeProfile
+                        {
+                            UserGUID = userGuid,
+                            EmployeeType = ParseEmployeeTypeOrDefault(dto.EmploymentType),
                             CreatedAt = now,
                             UpdatedAt = now,
                             CreatedBy = createdBy,
@@ -351,7 +362,7 @@ namespace BlazorApp.Api.Services.React
                             UserStoreGUID = Guid.NewGuid().ToString(),
                             UserGUID = userGuid,
                             StoreGUID = targetStore.StoreGUID,
-                            IsPrimary = true,
+                            IsPrimary = false,
                             AssignedAt = now,
                             AssignedByGUID = scope.UserGuid,
                             CreatedAt = now,
@@ -609,6 +620,17 @@ namespace BlazorApp.Api.Services.React
             }
 
             return $"{username}@{storeCode.ToLowerInvariant()}.store.local";
+        }
+
+        private static EmployeeType ParseEmployeeTypeOrDefault(string? value)
+        {
+            return value?.Trim().ToLowerInvariant() switch
+            {
+                "fulltime" or "full_time" or "full-time" => EmployeeType.FullTime,
+                "parttime" or "part_time" or "part-time" => EmployeeType.PartTime,
+                "temporary" or "casual" => EmployeeType.Temporary,
+                _ => EmployeeType.Temporary,
+            };
         }
     }
 }

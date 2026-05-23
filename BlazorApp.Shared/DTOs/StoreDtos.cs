@@ -393,7 +393,7 @@ namespace BlazorApp.Shared.DTOs
         public List<string> Roles { get; set; } = new();
 
         /// <summary>
-        /// 是否为分店主要用户
+        /// 是否允许该用户管理此分店
         /// </summary>
         public bool IsPrimary { get; set; }
 
@@ -420,7 +420,7 @@ namespace BlazorApp.Shared.DTOs
         public string UserGUID { get; set; } = string.Empty;
 
         /// <summary>
-        /// 是否为分店主要用户
+        /// 是否允许该用户管理此分店
         /// </summary>
         public bool IsPrimary { get; set; } = false;
     }

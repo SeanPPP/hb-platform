@@ -680,7 +680,7 @@ namespace BlazorApp.Api.Services
                                 UserStoreGUID = Guid.NewGuid().ToString(),
                                 UserGUID = user.UserGUID,
                                 StoreGUID = storeGuid,
-                                IsPrimary = false, // 默认不是主要分店
+                                IsPrimary = false, // 默认只是普通分店关联
                                 CreatedAt = DateTime.UtcNow,
                                 UpdatedAt = DateTime.UtcNow,
                             })
@@ -1174,7 +1174,7 @@ namespace BlazorApp.Api.Services
                                         UserStoreGUID = Guid.NewGuid().ToString(), // ✅ 必须设置主键
                                         UserGUID = userGuid,
                                         StoreGUID = assignment.StoreGUID,
-                                        IsPrimary = assignment.IsPrimary || index == 0, // 使用指定的或第一个设为主要分店
+                                        IsPrimary = assignment.IsPrimary,
                                         CreatedAt = DateTime.UtcNow,
                                         UpdatedAt = DateTime.UtcNow,
                                     }

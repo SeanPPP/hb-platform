@@ -481,6 +481,7 @@ namespace BlazorApp.Api.Tests
                         UserStoreGUID = "manager-store-bri",
                         UserGUID = "manager-user",
                         StoreGUID = "store-bri",
+                        IsPrimary = true,
                         CreatedAt = DateTime.UtcNow,
                     },
                     new UserStore

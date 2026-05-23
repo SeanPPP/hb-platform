@@ -102,6 +102,7 @@ namespace BlazorApp.Api.Controllers
         }
 
         [HttpGet("me")]
+        [Authorize(Policy = Permissions.EmployeeProfiles.View)]
         public async Task<IActionResult> GetSelf()
         {
             try
@@ -122,6 +123,7 @@ namespace BlazorApp.Api.Controllers
         }
 
         [HttpPut("me")]
+        [Authorize(Policy = Permissions.EmployeeProfiles.Edit)]
         public async Task<IActionResult> UpsertSelf([FromBody] EmployeeProfileUpsertDto dto)
         {
             try

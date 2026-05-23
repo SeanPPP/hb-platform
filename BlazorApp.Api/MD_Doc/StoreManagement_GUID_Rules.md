@@ -87,7 +87,7 @@ PUT /api/stores/guid/{storeGUID}/status             // 更新分店状态
 GET /api/stores/guid/{storeGUID}/users              // 获取分店用户列表
 POST /api/stores/guid/{storeGUID}/users             // 添加用户到分店
 DELETE /api/stores/guid/{storeGUID}/users/{userGUID} // 从分店移除用户
-PUT /api/stores/guid/{storeGUID}/users/{userGUID}/primary // 设置主要用户
+PUT /api/stores/guid/{storeGUID}/users/{userGUID}/primary // 设置分店管理关系
 POST /api/stores/guid/{storeGUID}/users/batch       // 批量管理用户
 ```
 
@@ -424,4 +424,4 @@ _logger.LogWarning("用户已关联到分店，UserGUID: {UserGUID}, StoreGUID: 
 
 **文档版本**: v1.0.0
 **最后更新**: 2024-01-01
-**状态**: ✅ 已完成，正在使用 
+**状态**: ✅ 已完成，正在使用

@@ -58,6 +58,8 @@ namespace BlazorApp.Shared.DTOs
         public int Status { get; set; } = 1;
 
         public List<string>? RoleNames { get; set; }
+
+        public string? EmploymentType { get; set; }
     }
 
     public class UpdateStoreUserDto

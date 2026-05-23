@@ -185,7 +185,7 @@
 - **权限**: Admin
 - **注意**: 不能移除最后一个用户
 
-#### 3.3.4 设置主要用户
+#### 3.3.4 设置分店管理关系
 - **URL**: `PUT /api/stores/guid/{guid}/users/{userGuid}/primary`
 - **权限**: Admin
 
@@ -300,7 +300,7 @@ public class UpdateStoreDto : CreateStoreDto
 - ✅ 数据验证
 - ✅ 分页查询
 - ✅ 搜索和筛选
-- ⚠️ 主要用户功能（需要数据库字段支持）
+- ✅ 分店管理关系功能
 
 ### 5.2 技术特点
 
@@ -381,7 +381,7 @@ public class UpdateStoreDto : CreateStoreDto
 - ✅ 激活/停用分店
 - ✅ 添加用户到分店
 - ✅ 从分店移除用户
-- ⚠️ 设置主要用户（需要数据库字段支持）
+- ✅ 设置分店管理关系
 - ✅ 批量操作用户
 
 ### 9.2 权限测试
@@ -440,4 +440,4 @@ Authorization: Bearer {token}
 **项目状态**: ✅ 已完成，可投入使用
 **最后更新**: 2024-01-01
 **版本**: v1.0.0
-**开发人员**: AI Assistant 
+**开发人员**: AI Assistant

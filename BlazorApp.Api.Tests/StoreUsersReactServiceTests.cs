@@ -39,11 +39,18 @@ namespace BlazorApp.Api.Tests
                 InitKeyType = InitKeyType.Attribute,
             });
 
-            _db.CodeFirst.InitTables<User, Role, UserRole, Store, UserStore>();
+            _db.CodeFirst.InitTables(
+                typeof(User),
+                typeof(Role),
+                typeof(UserRole),
+                typeof(Store),
+                typeof(UserStore),
+                typeof(EmployeeProfile)
+            );
         }
 
         [Fact]
-        public async Task CreateAsync_WhenStoreManagerTargetsForeignStore_ReturnsScopeError()
+        public async Task CreateAsync_WhenStoreManagerTargetsNonPrimaryStore_ReturnsScopeError()
         {
             await SeedStoreUserDataAsync();
             var service = CreateService("manager-1", "StoreManager");
@@ -88,12 +95,22 @@ namespace BlazorApp.Api.Tests
             Assert.NotNull(result.Data);
             Assert.Equal("store-1", result.Data!.StoreGuid);
 
+            var createdUserStore = await _db.Queryable<UserStore>()
+                .FirstAsync(item => item.UserGUID == result.Data.UserGuid);
+            Assert.NotNull(createdUserStore);
+            Assert.False(createdUserStore!.IsPrimary);
+
             var createdRoleNames = await _db.Queryable<UserRole>()
                 .InnerJoin<Role>((ur, r) => ur.RoleGUID == r.RoleGUID)
                 .Where((ur, r) => ur.UserGUID == result.Data.UserGuid)
                 .Select((ur, r) => r.RoleName)
                 .ToListAsync();
             Assert.Equal(new[] { "StoreStaff" }, createdRoleNames);
+
+            var createdProfile = await _db.Queryable<EmployeeProfile>()
+                .FirstAsync(item => item.UserGUID == result.Data.UserGuid);
+            Assert.NotNull(createdProfile);
+            Assert.Equal(EmployeeType.Temporary, createdProfile!.EmployeeType);
         }
 
         [Fact]
@@ -111,6 +128,21 @@ namespace BlazorApp.Api.Tests
             Assert.Single(result.Items!);
             Assert.All(result.Items!, item => Assert.Equal("store-1", item.StoreGuid));
             Assert.All(result.Items!, item => Assert.Contains("StoreStaff", item.RoleNames));
+        }
+
+        [Fact]
+        public async Task GetGridDataAsync_WhenStoreManagerTargetsNonPrimaryStore_ReturnsScopeError()
+        {
+            await SeedStoreUserDataAsync();
+            var service = CreateService("manager-1", "StoreManager");
+
+            var result = await service.GetGridDataAsync(new StoreUserGridRequestDto
+            {
+                StoreCode = "S002",
+            });
+
+            Assert.False(result.Success);
+            Assert.Contains("权限", result.Message ?? string.Empty);
         }
 
         [Fact]
@@ -236,8 +268,9 @@ namespace BlazorApp.Api.Tests
                 new[]
                 {
                     CreateUserStore("manager-1", "store-1", true),
-                    CreateUserStore("staff-1", "store-1", true),
-                    CreateUserStore("staff-2", "store-2", true),
+                    CreateUserStore("manager-1", "store-2", false),
+                    CreateUserStore("staff-1", "store-1", false),
+                    CreateUserStore("staff-2", "store-2", false),
                     CreateUserStore("admin-1", "store-2", true),
                 }
             ).ExecuteCommandAsync();

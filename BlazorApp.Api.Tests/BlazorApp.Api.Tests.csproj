@@ -29,7 +29,10 @@
     <Compile Include="DeviceRegistrationControllerTests.cs" />
     <Compile Include="DomesticProductCreationControllerTests.cs" />
     <Compile Include="EmployeeProfileServiceTests.cs" />
+    <Compile Include="StoreUsersReactServiceTests.cs" />
+    <Compile Include="UserStoreManagementRelationTests.cs" />
     <Compile Include="AttendanceReactServiceTests.cs" />
     <Compile Include="SeedDataServiceTests.cs" />
+    <Compile Include="NavigationServiceTests.cs" />
   </ItemGroup>
 </Project>

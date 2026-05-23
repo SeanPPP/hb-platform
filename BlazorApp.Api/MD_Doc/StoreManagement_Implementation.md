@@ -36,7 +36,7 @@
   - 获取分店用户列表
   - 添加用户到分店
   - 从分店移除用户
-  - 设置主要用户
+  - 设置分店管理关系
   - 批量管理用户
 
 #### 1.4 API控制器
@@ -51,7 +51,7 @@
   - `GET /api/stores/guid/{guid}/users` - 获取分店用户列表
   - `POST /api/stores/guid/{guid}/users` - 添加用户到分店
   - `DELETE /api/stores/guid/{guid}/users/{userGuid}` - 从分店移除用户
-  - `PUT /api/stores/guid/{guid}/users/{userGuid}/primary` - 设置主要用户
+  - `PUT /api/stores/guid/{guid}/users/{userGuid}/primary` - 设置分店管理关系
   - `POST /api/stores/guid/{guid}/users/batch` - 批量管理用户
 
 ### 2. 数据模型设计
@@ -182,7 +182,7 @@ CREATE TABLE [UserStore] (
 - ✅ 分店管理逻辑
 - ✅ 用户关联逻辑
 - ✅ 数据验证逻辑
-- ⚠️ 主要用户功能（需要数据库字段支持）
+- ✅ 分店管理关系功能
 
 ### 7. 使用说明
 
@@ -265,4 +265,4 @@ Content-Type: application/json
 **实现完成时间**: 2024-01-01
 **开发人员**: AI Assistant
 **版本**: v1.0.0
-**状态**: ✅ 已完成，可投入使用 
+**状态**: ✅ 已完成，可投入使用

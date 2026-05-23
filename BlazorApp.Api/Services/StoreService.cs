@@ -540,7 +540,7 @@ namespace BlazorApp.Api.Services
                         Username = us.User.Username,
                         Email = us.User.Email,
                         Phone = string.Empty, // User模型中没有Phone字段
-                        IsPrimary = false, // UserStore模型中没有IsPrimary字段
+                        IsPrimary = us.IsPrimary,
                         AssignedAt = us.AssignedAt,
                     })
                     .ToListAsync();
@@ -618,6 +618,7 @@ namespace BlazorApp.Api.Services
                     UserGUID = dto.UserGUID, // 用户GUID
                     StoreGUID = storeGuid, // 分店GUID
                     UserStoreGUID = Guid.NewGuid().ToString(), // 关联记录GUID
+                    IsPrimary = dto.IsPrimary,
                     AssignedAt = DateTime.UtcNow, // 分配时间
                 };
 
@@ -705,7 +706,7 @@ namespace BlazorApp.Api.Services
         }
 
         /// <summary>
-        /// 设置主要用户
+        /// 设置用户是否可管理该分店
         /// </summary>
         public async Task<ApiResponse<bool>> SetPrimaryUserAsync(
             string storeGuid,
@@ -737,20 +738,24 @@ namespace BlazorApp.Api.Services
                     return ApiResponse<bool>.Error("用户未关联到该分店", "USER_NOT_ASSIGNED");
                 }
 
-                // 注意：UserStore模型中没有IsPrimary字段，这里只是示例
-                // 实际实现需要根据具体的业务需求来设计
+                userStore.IsPrimary = isPrimary;
+                userStore.UpdatedAt = DateTime.UtcNow;
 
-                return ApiResponse<bool>.OK(true, $"{(isPrimary ? "设置" : "取消")}主要用户成功");
+                await db.Updateable(userStore)
+                    .UpdateColumns(us => new { us.IsPrimary, us.UpdatedAt })
+                    .ExecuteCommandAsync();
+
+                return ApiResponse<bool>.OK(true, $"{(isPrimary ? "设置" : "取消")}分店管理关系成功");
             }
             catch (Exception ex)
             {
                 _logger.LogError(
                     ex,
-                    "设置主要用户失败，StoreGUID: {StoreGUID}, UserGUID: {UserGUID}",
+                    "设置分店管理关系失败，StoreGUID: {StoreGUID}, UserGUID: {UserGUID}",
                     storeGuid,
                     userGuid
                 );
-                return ApiResponse<bool>.Error("设置主要用户失败", "SET_PRIMARY_USER_ERROR");
+                return ApiResponse<bool>.Error("设置分店管理关系失败", "SET_PRIMARY_USER_ERROR");
             }
         }
 
@@ -882,7 +887,7 @@ namespace BlazorApp.Api.Services
                                 Username = u.Username,
                                 Email = u.Email,
                                 Phone = string.Empty,
-                                IsPrimary = false,
+                                IsPrimary = us.IsPrimary,
                                 AssignedAt = us.AssignedAt,
                             }
                     )

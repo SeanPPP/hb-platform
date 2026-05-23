@@ -1,4 +1,5 @@
 using BlazorApp.Api.Interfaces.React;
+using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.DTOs;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -18,6 +19,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPost("grid")]
+        [Authorize(Policy = Permissions.Users.View)]
         public async Task<IActionResult> Grid([FromBody] StoreUserGridRequestDto request)
         {
             var result = await _service.GetGridDataAsync(request);
@@ -44,6 +46,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpGet("{userGuid}")]
+        [Authorize(Policy = Permissions.Users.View)]
         public async Task<IActionResult> GetByUserGuid(string userGuid, [FromQuery] string? storeCode)
         {
             var result = await _service.GetByUserGuidAsync(userGuid, storeCode);
@@ -51,6 +54,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPost]
+        [Authorize(Policy = Permissions.Users.Create)]
         public async Task<IActionResult> Create([FromBody] CreateStoreUserDto dto)
         {
             if (!ModelState.IsValid)
@@ -69,6 +73,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPut("{userGuid}")]
+        [Authorize(Policy = Permissions.Users.Edit)]
         public async Task<IActionResult> Update(string userGuid, [FromBody] UpdateStoreUserDto dto)
         {
             if (!ModelState.IsValid)
@@ -87,6 +92,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPut("{userGuid}/status")]
+        [Authorize(Policy = Permissions.Users.Edit)]
         public async Task<IActionResult> UpdateStatus(
             string userGuid,
             [FromBody] UpdateStoreUserStatusDto dto
@@ -101,6 +107,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPut("{userGuid}/password")]
+        [Authorize(Policy = Permissions.Users.ResetPassword)]
         public async Task<IActionResult> UpdatePassword(
             string userGuid,
             [FromBody] UpdateStoreUserPasswordDto dto

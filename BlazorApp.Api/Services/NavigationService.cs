@@ -175,6 +175,7 @@ namespace BlazorApp.Api.Services
                 TitleKey = "tabs.users",
                 Icon = "account-group-outline",
                 Roles = new[] { "Admin", "管理员", "StoreManager" },
+                Permission = Permissions.Users.View,
                 Order = 56,
             },
             new()
@@ -182,6 +183,7 @@ namespace BlazorApp.Api.Services
                 RouteName = "employee-profile",
                 TitleKey = "tabs.employeeProfile",
                 Icon = "card-account-details-outline",
+                Permission = Permissions.EmployeeProfiles.View,
                 Order = 57,
             },
             new()
@@ -318,22 +320,24 @@ namespace BlazorApp.Api.Services
 
         private static bool CanAccess(AppNavigationDefinition node, ClaimsPrincipal user)
         {
-            if (node.RequireAdmin && !user.IsInRole("Admin") && !user.IsInRole("管理员"))
+            var isAdmin = user.IsInRole("Admin") || user.IsInRole("管理员");
+
+            if (node.RequireAdmin && !isAdmin)
             {
                 return false;
             }
 
-            if (node.Roles.Any(user.IsInRole))
-            {
-                return true;
-            }
-
-            if (node.Roles.Length > 0 && string.IsNullOrEmpty(node.Permission))
+            if (node.Roles.Length > 0 && !node.Roles.Any(user.IsInRole))
             {
                 return false;
             }
 
             if (string.IsNullOrEmpty(node.Permission))
+            {
+                return true;
+            }
+
+            if (isAdmin)
             {
                 return true;
             }
@@ -346,9 +350,7 @@ namespace BlazorApp.Api.Services
                 return true;
             }
 
-            return user.HasClaim("permission", node.Permission)
-                || user.HasClaim(ClaimTypes.Role, "Admin")
-                || user.HasClaim(ClaimTypes.Role, "管理员");
+            return user.HasClaim("permission", node.Permission);
         }
 
         private static bool IsWarehouseDevice(string? deviceType)
