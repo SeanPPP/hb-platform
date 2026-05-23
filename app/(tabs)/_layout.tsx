@@ -141,7 +141,7 @@ export default function TabsLayout() {
     }
 
     hasAppliedDefaultRoute.current = true;
-    router.replace(nextPath as Parameters<typeof router.replace>[0]);
+    router.navigate(nextPath as Parameters<typeof router.navigate>[0]);
   }, [isDeviceMode, orderedVisibleRouteNames, pathname, router, shouldWaitForNavigation, visibleRouteNames]);
 
   if (

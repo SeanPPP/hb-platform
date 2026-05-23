@@ -15,7 +15,7 @@
   },
   "device": {
     "title": "Device registration",
-    "description": "Only order accounts can submit device registrations. After submission, an admin must enable the device before this device can enter the app directly on the next launch.",
+    "description": "Only store manager accounts can submit device registrations. After submission, an admin must enable the device before this device can enter the app directly on the next launch.",
     "status": "Status: {{status}}",
     "store": "Store: {{store}}",
     "deviceNumber": "Device no.: {{value}}",

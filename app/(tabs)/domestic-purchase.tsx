@@ -335,7 +335,7 @@ export default function DomesticPurchaseScreen() {
           primaryAction={{
             label: t("common:actions.goToSettings"),
             icon: "cog-outline",
-            onPress: () => router.replace("/(tabs)/settings"),
+            onPress: () => router.navigate("/(tabs)/settings"),
           }}
         />
       </SafeAreaView>

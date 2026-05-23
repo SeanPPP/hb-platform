@@ -131,7 +131,7 @@ export default function EmployeeProfileScreen() {
       return;
     }
 
-    router.replace("/(tabs)/settings");
+    router.navigate("/(tabs)/settings");
   }, [router]);
 
   const showMessage = (message: string) => {
@@ -145,7 +145,7 @@ export default function EmployeeProfileScreen() {
     }
 
     showMessage(t("messages.loginRequired"));
-    router.replace("/(tabs)/settings");
+    router.navigate("/(tabs)/settings");
   }, [isAuthenticated, router, t, user]);
 
   const profileQuery = useQuery({

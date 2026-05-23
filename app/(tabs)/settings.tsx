@@ -70,7 +70,7 @@ export default function Settings() {
   const [printerBusy, setPrinterBusy] = useState(false);
   const [filterXPOnly, setFilterXPOnly] = useState(true);
 
-  const canRegisterDevice = access.hasRole("Order") || access.hasRole("订货员");
+  const canRegisterDevice = access.isStoreManager || access.hasRole("店长");
   const settingsAuthMode = resolveSettingsAuthMode({
     hasUser: Boolean(user),
     hasDeviceSession: Boolean(deviceSession),

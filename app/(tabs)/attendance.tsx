@@ -210,7 +210,7 @@ export default function AttendanceScreen() {
       return;
     }
     showMessage(t("messages.loginRequired"));
-    router.replace("/(tabs)/settings");
+    router.navigate("/(tabs)/settings");
   }, [isAuthenticated, router, showMessage, t, user]);
 
   const todayQuery = useQuery({
@@ -547,7 +547,7 @@ export default function AttendanceScreen() {
       return;
     }
 
-    router.replace("/(tabs)/settings");
+    router.navigate("/(tabs)/settings");
   }, [router]);
 
   const refresh = useCallback(async () => {
@@ -787,7 +787,7 @@ export default function AttendanceScreen() {
             primaryAction={{
               label: t("common:actions.goToSettings"),
               icon: "cog-outline",
-              onPress: () => router.replace("/(tabs)/settings"),
+              onPress: () => router.navigate("/(tabs)/settings"),
             }}
           />
         ) : null}
