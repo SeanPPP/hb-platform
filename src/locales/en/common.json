@@ -49,9 +49,12 @@
   },
   "labels": {
     "itemNumber": "Item",
+    "importPrice": "Import price",
     "recentOrder": "Last order",
     "minOrder": "Min",
     "addToCart": "Add to cart",
+    "autoAddShort": "Auto add",
+    "scanResults": "Scan results",
     "currentStore": "Current store",
     "selectStore": "Select store"
   },

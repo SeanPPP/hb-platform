@@ -49,9 +49,12 @@
   },
   "labels": {
     "itemNumber": "货号",
+    "importPrice": "进货价",
     "recentOrder": "最近订货",
     "minOrder": "起订",
     "addToCart": "加入购物车",
+    "autoAddShort": "自动加购",
+    "scanResults": "扫码结果",
     "currentStore": "当前门店",
     "selectStore": "选择门店"
   },

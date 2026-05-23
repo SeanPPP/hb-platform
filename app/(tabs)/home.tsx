@@ -80,7 +80,6 @@ export default function Home() {
   const [filtersVisible, setFiltersVisible] = useState(false);
   const [searchInput, setSearchInput] = useState("");
   const [autoAddWhenSingle, setAutoAddWhenSingle] = useState(true);
-  const [isSearchExpanded, setIsSearchExpanded] = useState(false);
   const [keyword, setKeyword] = useState("");
   const [scannedProducts, setScannedProducts] = useState<StoreOrderProductItem[] | null>(null);
   const [selectedCategoryGUID, setSelectedCategoryGUID] = useState<string | undefined>();
@@ -94,7 +93,6 @@ export default function Home() {
   useCartSummary(selectedStoreCode);
   const handleScanLookupProduct = useCallback(
     async (product: StoreOrderProductItem) => {
-      setIsSearchExpanded(false);
       setSearchInput("");
       setKeyword("");
       setScannedProducts([product]);
@@ -165,7 +163,7 @@ export default function Home() {
     itemNumber: keyword || undefined,
     categoryGUID: selectedCategoryGUID,
     pageNumber,
-    pageSize: 20,
+    pageSize: 18,
     sortBy: "Default",
   });
 
@@ -210,7 +208,7 @@ export default function Home() {
 
   const canGoNextPage = useMemo(() => {
     const total = productsQuery.data?.total ?? 0;
-    return pageNumber * 20 < total;
+    return pageNumber * 18 < total;
   }, [pageNumber, productsQuery.data?.total]);
   const isCompactLayout = windowHeight < 780;
   const productListContentStyle = useMemo(
@@ -246,6 +244,15 @@ export default function Home() {
 
     return mergedMap;
   }, [cartSummary?.items, productsQuery.dynamicDataMap, scannedProducts]);
+  const handleApplySearch = useCallback(() => {
+    setScannedProducts(null);
+    setKeyword(searchInput.trim());
+  }, [searchInput]);
+  const handleClearSearchAndScan = useCallback(() => {
+    setScannedProducts(null);
+    setSearchInput("");
+    setKeyword("");
+  }, []);
 
   const toggleCategoryExpanded = useCallback((categoryGUID: string) => {
     setExpandedCategoryGUIDs((currentValue) =>
@@ -313,7 +320,7 @@ export default function Home() {
   }
 
   function getCurrentCartQuantity(productCode: string) {
-    return productsQuery.dynamicDataMap[productCode]?.cartQuantity ?? 0;
+    return displayDynamicDataMap[productCode]?.cartQuantity ?? 0;
   }
 
   async function handleIncreaseCartQuantity(product: StoreOrderProductItem) {
@@ -353,23 +360,40 @@ export default function Home() {
   const fixedHeaderContent = (
     <View style={[styles.header, isCompactLayout ? styles.headerCompact : null]}>
       <View style={[styles.headerTopRow, isCompactLayout ? styles.headerTopRowCompact : null]}>
-        <View style={styles.headerSelectorsRow}>
+        <View style={styles.headerTitleWrap}>
           <Text variant="titleLarge" style={styles.headerTitle}>{t("title")}</Text>
-          <IconButton
-            icon="filter-variant"
-            mode="contained-tonal"
-            accessibilityLabel={t("common:actions.openFilters")}
-            onPress={() => setFiltersVisible(true)}
-            style={styles.filterToggleButton}
-          />
+          <Text variant="bodySmall" style={styles.headerSubtitle}>
+            {selectedStore?.storeName || t("common:labels.selectStore")}
+          </Text>
         </View>
         <View style={styles.cartBox}>
-          <IconButton icon="cart-outline" onPress={() => router.push("/(tabs)/cart")} />
+          <IconButton
+            icon="cart-outline"
+            size={18}
+            onPress={() => router.push("/(tabs)/cart")}
+            style={styles.cartButton}
+          />
           {cartSummary?.totalQuantity ? <Badge style={styles.badge}>{cartSummary.totalQuantity}</Badge> : null}
-          <Text variant="bodySmall">{t("cartSummary.total")} {cartSummary?.totalQuantity ?? 0}</Text>
+          <Text variant="labelMedium" style={styles.cartText}>
+            {t("cartSummary.total")} {cartSummary?.totalQuantity ?? 0}
+          </Text>
         </View>
       </View>
       <View style={[styles.searchRow, isCompactLayout ? styles.searchRowCompact : null]}>
+        <View style={styles.searchInputWrap}>
+          <Searchbar
+            placeholder={t("searchPlaceholder")}
+            value={searchInput}
+            onChangeText={(value) => {
+              setSearchInput(value);
+              setScannedProducts(null);
+            }}
+            onSubmitEditing={handleApplySearch}
+            onIconPress={handleApplySearch}
+            style={styles.searchInput}
+            inputStyle={styles.searchInputText}
+          />
+        </View>
         <IconButton
           icon="camera-outline"
           mode="contained-tonal"
@@ -378,75 +402,95 @@ export default function Home() {
           style={styles.cameraQueryButton}
         />
         <IconButton
-          icon={autoAddWhenSingle ? "cart-check" : "cart-off"}
-          mode={autoAddWhenSingle ? "contained-tonal" : "outlined"}
-          accessibilityLabel={
-            autoAddWhenSingle
-              ? t("autoAddOn")
-              : t("autoAddOff")
-          }
-          onPress={() => setAutoAddWhenSingle((currentValue) => !currentValue)}
-          style={styles.autoAddToggleButton}
+          icon="filter-variant"
+          mode="outlined"
+          accessibilityLabel={t("common:actions.openFilters")}
+          onPress={() => setFiltersVisible(true)}
+          style={styles.filterToggleButton}
         />
+      </View>
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={styles.utilityRow}
+      >
+        <Chip
+          compact
+          mode="outlined"
+          icon="storefront-outline"
+          onPress={() => setFiltersVisible(true)}
+          style={styles.utilityChip}
+          textStyle={styles.utilityChipText}
+        >
+          {selectedStore?.storeName || t("common:labels.selectStore")}
+        </Chip>
+        <Chip
+          compact
+          mode={autoAddWhenSingle ? "flat" : "outlined"}
+          selected={autoAddWhenSingle}
+          icon={autoAddWhenSingle ? "cart-check" : "cart-off"}
+          onPress={() => setAutoAddWhenSingle((currentValue) => !currentValue)}
+          accessibilityLabel={autoAddWhenSingle ? t("autoAddOn") : t("autoAddOff")}
+          style={[styles.utilityChip, autoAddWhenSingle ? styles.utilityChipActive : null]}
+          textStyle={[styles.utilityChipText, autoAddWhenSingle ? styles.utilityChipTextActive : null]}
+        >
+          {t("common:labels.autoAddShort")}
+        </Chip>
+        {scannedProducts?.length ? (
+          <Chip
+            compact
+            mode="outlined"
+            icon="barcode-scan"
+            onClose={handleClearSearchAndScan}
+            style={styles.utilityChip}
+            textStyle={styles.utilityChipText}
+          >
+            {t("common:labels.scanResults")}
+          </Chip>
+        ) : null}
         {hidScanner.mode === "textInput" ? (
           <IconButton
             icon="barcode-scan"
-            mode="contained-tonal"
+            mode="outlined"
             accessibilityLabel={t("resetScanFocus")}
             onPress={() => hidScanner.focusHiddenInput?.()}
             style={styles.scanFocusButton}
           />
         ) : null}
-        <IconButton
-          icon={isSearchExpanded ? "close" : "magnify"}
-          mode="outlined"
-          accessibilityLabel={
-            isSearchExpanded
-              ? t("searchToggleClose")
-              : t("searchToggleOpen")
-          }
-          onPress={() => {
-            if (isSearchExpanded) {
-              setIsSearchExpanded(false);
-            } else {
-              setIsSearchExpanded(true);
-            }
-          }}
-          style={styles.searchToggleButton}
-        />
-        <IconButton
-          icon="filter-remove-outline"
-          mode="outlined"
-          accessibilityLabel={t("clearScanFilter")}
-          onPress={() => {
-            setScannedProducts(null);
-            setSearchInput("");
-            setKeyword("");
-          }}
-          style={styles.searchClearFilterButton}
-        />
-        {isSearchExpanded ? (
-          <View style={styles.searchInputWrap}>
-            <Searchbar
-              placeholder={t("searchPlaceholder")}
-              value={searchInput}
-              onChangeText={(value) => {
-                setSearchInput(value);
-                setScannedProducts(null);
-              }}
-              onSubmitEditing={() => {
-                setScannedProducts(null);
-                setKeyword(searchInput.trim());
-              }}
-              onIconPress={() => {
-                setScannedProducts(null);
-                setKeyword(searchInput.trim());
-              }}
-              style={styles.searchInput}
-            />
-          </View>
-        ) : null}
-      </View>
+      </ScrollView>
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={styles.categoryRow}
+      >
+        <Chip
+          compact
+          mode={!selectedCategoryGUID ? "flat" : "outlined"}
+          selected={!selectedCategoryGUID}
+          onPress={() => setSelectedCategoryGUID(undefined)}
+          style={[styles.categoryChip, !selectedCategoryGUID ? styles.categoryChipActive : null]}
+          textStyle={[styles.categoryChipText, !selectedCategoryGUID ? styles.categoryChipTextActive : null]}
+        >
+          {t("filters.all")}
+        </Chip>
+        {categoryOptions.map((item) => {
+          const isSelected = selectedCategoryGUID === item.categoryGUID;
+
+          return (
+            <Chip
+              key={item.categoryGUID}
+              compact
+              mode={isSelected ? "flat" : "outlined"}
+              selected={isSelected}
+              onPress={() => setSelectedCategoryGUID(item.categoryGUID)}
+              style={[styles.categoryChip, isSelected ? styles.categoryChipActive : null]}
+              textStyle={[styles.categoryChipText, isSelected ? styles.categoryChipTextActive : null]}
+            >
+              {item.categoryName}
+            </Chip>
+          );
+        })}
+      </ScrollView>
       {scannedProducts?.length ? (
         <View style={styles.scanHintBanner}>
           <Text variant="bodySmall" style={styles.scanHintText}>
@@ -463,7 +507,7 @@ export default function Home() {
         style={styles.content}
         data={displayProducts}
         keyExtractor={(item) => item.productCode}
-        numColumns={2}
+        numColumns={3}
         columnWrapperStyle={styles.columnWrapper}
         contentContainerStyle={productListContentStyle}
         keyboardShouldPersistTaps="handled"
@@ -661,16 +705,16 @@ export default function Home() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: "#fff",
+    backgroundColor: "#F6FAFE",
   },
   header: {
     paddingHorizontal: 16,
-    paddingTop: 0,
-    gap: 12,
+    paddingTop: 2,
+    paddingBottom: 8,
+    gap: 10,
   },
   headerCompact: {
     gap: 8,
-    paddingTop: 0,
   },
   headerTopRow: {
     flexDirection: "row",
@@ -681,28 +725,42 @@ const styles = StyleSheet.create({
   headerTopRowCompact: {
     gap: 8,
   },
-  headerSelectorsRow: {
+  headerTitleWrap: {
     flex: 1,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: 8,
+    gap: 2,
   },
   headerTitle: {
     color: "#0F172A",
     fontWeight: "700",
+    fontSize: 18,
+  },
+  headerSubtitle: {
+    color: "#5B6474",
   },
   filterToggleButton: {
     margin: 0,
   },
   cartBox: {
+    minWidth: 82,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 8,
+    backgroundColor: "#FFFFFF",
+    borderWidth: 1,
+    borderColor: "#DFE3E7",
     alignItems: "center",
     justifyContent: "center",
   },
+  cartButton: {
+    margin: 0,
+  },
   badge: {
     position: "absolute",
-    top: 6,
-    right: 6,
+    top: 3,
+    right: 8,
+  },
+  cartText: {
+    color: "#2C3134",
   },
   categoryCardContent: {
     gap: 10,
@@ -805,12 +863,60 @@ const styles = StyleSheet.create({
   },
   searchInput: {
     width: "100%",
+    backgroundColor: "#FFFFFF",
+    borderWidth: 1,
+    borderColor: "#DFE3E7",
+    elevation: 0,
+  },
+  searchInputText: {
+    minHeight: 0,
+    fontSize: 14,
+  },
+  utilityRow: {
+    gap: 8,
+    paddingRight: 4,
+  },
+  utilityChip: {
+    backgroundColor: "#FFFFFF",
+    borderColor: "#DFE3E7",
+  },
+  utilityChipActive: {
+    backgroundColor: "#E8F3EC",
+    borderColor: "#9AF1C7",
+  },
+  utilityChipText: {
+    color: "#45474C",
+    fontSize: 12,
+  },
+  utilityChipTextActive: {
+    color: "#0B704F",
+    fontWeight: "700",
+  },
+  categoryRow: {
+    gap: 8,
+    paddingRight: 4,
+  },
+  categoryChip: {
+    backgroundColor: "#FFFFFF",
+    borderColor: "#C5C6CD",
+  },
+  categoryChipActive: {
+    backgroundColor: "#111C2E",
+    borderColor: "#111C2E",
+  },
+  categoryChipText: {
+    fontSize: 12,
+    color: "#45474C",
+  },
+  categoryChipTextActive: {
+    color: "#FFFFFF",
+    fontWeight: "700",
   },
   scanHintBanner: {
-    borderRadius: 10,
+    borderRadius: 8,
     backgroundColor: "#EEF4FF",
     paddingHorizontal: 12,
-    paddingVertical: 8,
+    paddingVertical: 6,
   },
   scanHintText: {
     color: "#1677FF",
@@ -820,9 +926,9 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   listContent: {
-    paddingHorizontal: 10,
-    paddingBottom: 6,
-    paddingTop: 8,
+    paddingHorizontal: 6,
+    paddingBottom: 10,
+    paddingTop: 4,
     flexGrow: 1,
   },
   listContentCompact: {
@@ -830,13 +936,18 @@ const styles = StyleSheet.create({
   },
   columnWrapper: {
     justifyContent: "space-between",
+    gap: 0,
   },
   paginationRow: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    paddingHorizontal: 8,
-    paddingTop: 12,
+    marginHorizontal: 8,
+    marginTop: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 10,
+    backgroundColor: "#FFFFFF",
   },
   filtersModal: {
     margin: 16,

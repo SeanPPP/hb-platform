@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { MaterialCommunityIcons } from "@expo/vector-icons";
 import {
   Alert,
   Animated,
@@ -54,7 +55,6 @@ function clamp(value: number, min: number, max: number) {
 
 interface CartListItemCardProps {
   clearCartPending: boolean;
-  index: number;
   isDeleting: boolean;
   isUpdating: boolean;
   item: StoreOrderCartItem;
@@ -67,7 +67,6 @@ interface CartListItemCardProps {
 
 function CartListItemCard({
   clearCartPending,
-  index,
   isDeleting,
   isUpdating,
   item,
@@ -86,6 +85,7 @@ function CartListItemCard({
   const importPrice = Number(item.importPrice ?? 0);
   const importAmount = Number(item.importAmount ?? importPrice * item.quantity);
   const hasZeroImportPrice = importPrice <= 0;
+  const skuValue = item.itemNumber || item.productCode || "--";
 
   const animateTo = useCallback(
     (toValue: number) => {
@@ -188,33 +188,45 @@ function CartListItemCard({
       >
         <Card mode="outlined" style={styles.itemCard}>
           <Card.Content style={styles.itemContent}>
+            <View style={styles.itemAccentBar} />
             <View style={styles.itemMainRow}>
-              {item.productImage ? (
-                <Image source={{ uri: item.productImage }} style={styles.itemImage} />
-              ) : (
-                <View style={styles.itemImagePlaceholder} />
-              )}
+              <View style={styles.itemImageWrap}>
+                {item.productImage ? (
+                  <Image source={{ uri: item.productImage }} style={styles.itemImage} />
+                ) : (
+                  <View style={styles.itemImagePlaceholder}>
+                    <MaterialCommunityIcons name="package-variant-closed" size={24} color="#8A919F" />
+                  </View>
+                )}
+              </View>
 
               <View style={styles.itemBody}>
                 <View style={styles.itemHeader}>
                   <View style={styles.itemTitleWrap}>
-                    {grade ? (
-                      <View style={[styles.gradeBadge, { backgroundColor: gradeColor }]}>
-                        <Text style={styles.gradeBadgeText}>Grade {grade}</Text>
-                      </View>
-                    ) : null}
-                    <View style={styles.itemTopRow}>
-                      <View style={styles.rowNumberBadge}>
-                        <Text variant="labelSmall" style={styles.rowNumberText}>
-                          {index + 1}
-                        </Text>
-                      </View>
-                      <Text variant="titleSmall" numberOfLines={2} style={styles.itemTitle}>
-                        {item.productName || item.productCode}
-                      </Text>
-                    </View>
+                    <Text variant="titleSmall" numberOfLines={2} style={styles.itemTitle}>
+                      {item.productName || item.productCode}
+                    </Text>
                     <Text variant="bodySmall" style={styles.itemNumberText}>
-                      {item.itemNumber || "--"}
+                      {t("item.sku", { value: skuValue })}
+                    </Text>
+                    <View style={styles.itemTagRow}>
+                      {grade ? (
+                        <View style={[styles.gradeBadge, { backgroundColor: gradeColor }]}>
+                          <Text style={styles.gradeBadgeText}>{t("item.grade", { grade })}</Text>
+                        </View>
+                      ) : null}
+                      {item.productCode ? (
+                        <Text variant="labelSmall" numberOfLines={1} style={styles.itemCodeText}>
+                          {item.productCode}
+                        </Text>
+                      ) : null}
+                    </View>
+                    <Text
+                      variant="labelSmall"
+                      numberOfLines={1}
+                      style={[styles.itemUnitPriceText, hasZeroImportPrice ? styles.zeroImportText : null]}
+                    >
+                      {t("item.unitPrice", { amount: importPrice.toFixed(2) })}
                     </Text>
                   </View>
                   <View style={styles.itemRightColumn}>
@@ -222,7 +234,7 @@ function CartListItemCard({
                       <IconButton
                         icon="minus"
                         mode="contained-tonal"
-                        size={18}
+                        size={16}
                         disabled={isBusy}
                         loading={isUpdating}
                         onPress={() => void onUpdateQuantity(item, Math.max(0, item.quantity - step))}
@@ -236,7 +248,7 @@ function CartListItemCard({
                       <IconButton
                         icon="plus"
                         mode="contained"
-                        size={18}
+                        size={16}
                         disabled={isBusy}
                         loading={isUpdating}
                         onPress={() => void onUpdateQuantity(item, item.quantity + step)}
@@ -250,17 +262,9 @@ function CartListItemCard({
                     >
                       {t("item.subtotal", {
                         amount: importAmount.toFixed(2),
-                        price: importPrice.toFixed(2),
-                        quantity: item.quantity,
                       })}
                     </Text>
                   </View>
-                </View>
-
-                <View style={styles.itemMetaRow}>
-                  <Text variant="bodySmall" style={styles.secondaryText}>
-                    ${Number(item.price ?? 0).toFixed(2)}
-                  </Text>
                 </View>
               </View>
             </View>
@@ -312,6 +316,7 @@ export default function Cart() {
   }, [cartQuery.items, keyword]);
 
   const canGoNextPage = page * pageSize < cartQuery.total;
+  const totalAmount = t("summary.money", { amount: cartQuery.stats.totalImportAmount.toFixed(2) });
 
   const scanResult = useScanResult({
     onAddedToCart: async (product) => {
@@ -457,11 +462,10 @@ export default function Cart() {
     ]);
   }
 
-  function renderCartItem({ item, index }: { item: StoreOrderCartItem; index: number }) {
+  function renderCartItem({ item }: { item: StoreOrderCartItem }) {
     return (
       <CartListItemCard
         clearCartPending={clearCart.isPending}
-        index={index}
         isDeleting={activeDeleteDetailGUID === item.detailGUID}
         isUpdating={activeCartItemCode === item.productCode}
         item={item}
@@ -478,9 +482,12 @@ export default function Cart() {
     <SafeAreaView edges={["top", "left", "right"]} style={styles.container}>
       <View style={styles.header}>
         <View style={styles.headerRow}>
-          <Text variant="titleLarge" style={styles.headerTitle}>
-            {t("title")}
-          </Text>
+          <View style={styles.headerTitleRow}>
+            <IconButton icon="cart-outline" size={22} style={styles.headerCartIcon} />
+            <Text variant="titleLarge" style={styles.headerTitle}>
+              {t("title")}
+            </Text>
+          </View>
           <View style={styles.headerActions}>
             <IconButton
               icon="filter-variant"
@@ -488,26 +495,6 @@ export default function Cart() {
               onPress={() => setFiltersVisible(true)}
               style={styles.headerIconButton}
             />
-            <Button
-              compact
-              mode="contained"
-              icon="check-circle-outline"
-              disabled={!selectedStoreCode || !cartQuery.total || clearCart.isPending || submitPending}
-              loading={submitPending}
-              onPress={confirmSubmitCart}
-            >
-              {t("actions.submit")}
-            </Button>
-            <Button
-              compact
-              mode="outlined"
-              icon="delete-sweep-outline"
-              disabled={!selectedStoreCode || !cartQuery.total || clearCart.isPending || submitPending}
-              loading={clearCart.isPending}
-              onPress={confirmClearCart}
-            >
-              {t("actions.clear")}
-            </Button>
           </View>
         </View>
       </View>
@@ -544,7 +531,7 @@ export default function Cart() {
                   {t("summary.orderTotal")}
                 </Text>
                 <Text variant="titleSmall" style={styles.cartStatAmount}>
-                  {t("summary.money", { amount: cartQuery.stats.totalImportAmount.toFixed(2) })}
+                  {totalAmount}
                 </Text>
               </View>
             </View>
@@ -572,6 +559,57 @@ export default function Cart() {
           ) : null
         }
       />
+
+      {cartQuery.total ? (
+        <View style={styles.checkoutBar}>
+          <View style={styles.checkoutMetricRow}>
+            <Text variant="bodySmall" style={styles.checkoutLabel}>
+              {t("checkout.totalItems")}
+            </Text>
+            <Text variant="bodySmall" style={styles.checkoutValue}>
+              {cartQuery.stats.totalQuantity}
+            </Text>
+          </View>
+          <View style={styles.checkoutMetricRow}>
+            <Text variant="bodySmall" style={styles.checkoutLabel}>
+              {t("checkout.subtotal")}
+            </Text>
+            <Text variant="bodySmall" style={styles.checkoutValue}>
+              {totalAmount}
+            </Text>
+          </View>
+          <View style={styles.checkoutMetricRow}>
+            <Text variant="titleMedium" style={styles.checkoutTotalLabel}>
+              {t("checkout.totalAmount")}
+            </Text>
+            <Text variant="titleMedium" style={styles.checkoutTotalValue}>
+              {totalAmount}
+            </Text>
+          </View>
+          <Button
+            mode="contained"
+            icon="arrow-right"
+            contentStyle={styles.checkoutButtonContent}
+            disabled={!selectedStoreCode || !cartQuery.total || clearCart.isPending || submitPending}
+            loading={submitPending}
+            onPress={confirmSubmitCart}
+            style={styles.checkoutButton}
+          >
+            {t("checkout.submit")}
+          </Button>
+          <Button
+            compact
+            mode="text"
+            icon="delete-sweep-outline"
+            disabled={!selectedStoreCode || !cartQuery.total || clearCart.isPending || submitPending}
+            loading={clearCart.isPending}
+            onPress={confirmClearCart}
+            labelStyle={styles.clearCartLabel}
+          >
+            {t("checkout.clear")}
+          </Button>
+        </View>
+      ) : null}
 
       {cartQuery.isLoading ? <LoadingOverlay /> : null}
 
@@ -698,7 +736,10 @@ const styles = StyleSheet.create({
   header: {
     paddingHorizontal: 16,
     paddingTop: 0,
-    paddingBottom: 2,
+    paddingBottom: 6,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: "#C5C6CD",
+    backgroundColor: "#FFFFFF",
   },
   headerRow: {
     flexDirection: "row",
@@ -710,6 +751,14 @@ const styles = StyleSheet.create({
     color: "#0F172A",
     fontWeight: "700",
   },
+  headerTitleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 0,
+  },
+  headerCartIcon: {
+    margin: 0,
+  },
   headerActions: {
     flexDirection: "row",
     alignItems: "center",
@@ -720,20 +769,20 @@ const styles = StyleSheet.create({
   },
   listContent: {
     flexGrow: 1,
-    paddingHorizontal: 10,
-    paddingTop: 2,
-    paddingBottom: 0,
+    paddingHorizontal: 12,
+    paddingTop: 10,
+    paddingBottom: 20,
   },
   cartStatsBar: {
     flexDirection: "row",
     alignItems: "center",
-    marginBottom: 8,
+    marginBottom: 10,
     paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 14,
-    backgroundColor: "#F7FAFF",
+    paddingVertical: 10,
+    borderRadius: 10,
+    backgroundColor: "#F8FAFC",
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "#DCEBFF",
+    borderColor: "#D9E0E8",
   },
   cartStatItem: {
     flex: 1,
@@ -743,22 +792,22 @@ const styles = StyleSheet.create({
     flex: 1.35,
   },
   cartStatLabel: {
-    color: "#64748B",
+    color: "#6B7280",
     fontWeight: "600",
   },
   cartStatValue: {
-    color: "#0F172A",
+    color: "#111827",
     fontWeight: "800",
   },
   cartStatAmount: {
-    color: "#D46B08",
+    color: "#111827",
     fontWeight: "800",
   },
   cartStatDivider: {
     width: StyleSheet.hairlineWidth,
-    height: 28,
+    height: 30,
     marginHorizontal: 8,
-    backgroundColor: "#C9DDF5",
+    backgroundColor: "#D9E0E8",
   },
   filtersModal: {
     margin: 16,
@@ -808,7 +857,7 @@ const styles = StyleSheet.create({
     backgroundColor: "#F6F8FB",
   },
   swipeRow: {
-    marginBottom: 10,
+    marginBottom: 8,
     position: "relative",
   },
   deleteActionWrap: {
@@ -821,104 +870,131 @@ const styles = StyleSheet.create({
   },
   itemCard: {
     marginBottom: 0,
+    overflow: "hidden",
+    borderColor: "#D7DCE2",
+    backgroundColor: "#FFFFFF",
   },
   itemContent: {
-    gap: 10,
+    paddingVertical: 10,
+    paddingLeft: 12,
+    paddingRight: 10,
+  },
+  itemAccentBar: {
+    position: "absolute",
+    left: 0,
+    top: 0,
+    bottom: 0,
+    width: 4,
+    borderTopLeftRadius: 12,
+    borderBottomLeftRadius: 12,
+    backgroundColor: "#9ADBC3",
   },
   itemMainRow: {
     flexDirection: "row",
+    alignItems: "flex-start",
     gap: 12,
   },
+  itemImageWrap: {
+    width: 60,
+    height: 60,
+  },
   itemImage: {
-    width: 76,
-    height: 76,
-    borderRadius: 10,
-    backgroundColor: "#f5f5f5",
+    width: "100%",
+    height: "100%",
+    borderRadius: 8,
+    backgroundColor: "#E9EDF2",
   },
   itemImagePlaceholder: {
-    width: 76,
-    height: 76,
-    borderRadius: 10,
-    backgroundColor: "#f0f0f0",
+    width: "100%",
+    height: "100%",
+    borderRadius: 8,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#EEF2F6",
   },
   itemBody: {
     flex: 1,
-    gap: 8,
+    minWidth: 0,
   },
   itemHeader: {
     flexDirection: "row",
-    alignItems: "flex-start",
+    alignItems: "center",
     justifyContent: "space-between",
-    gap: 8,
+    gap: 10,
   },
   itemTitleWrap: {
     flex: 1,
-    gap: 4,
+    minWidth: 0,
+    gap: 3,
   },
   gradeBadge: {
     alignSelf: "flex-start",
     borderRadius: 999,
-    paddingHorizontal: 8,
+    paddingHorizontal: 7,
     paddingVertical: 2,
   },
   gradeBadgeText: {
     color: "#fff",
-    fontSize: 12,
-    fontWeight: "700",
-  },
-  itemTopRow: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-    gap: 8,
-  },
-  rowNumberBadge: {
-    minWidth: 28,
-    height: 28,
-    borderRadius: 14,
-    backgroundColor: "#E8F3FF",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  rowNumberText: {
-    color: "#1677FF",
+    fontSize: 11,
     fontWeight: "700",
   },
   itemTitle: {
     flex: 1,
+    color: "#111827",
+    fontSize: 14,
+    lineHeight: 18,
+    fontWeight: "800",
   },
   itemNumberText: {
-    color: "#1F1F1F",
+    color: "#6B7280",
     fontWeight: "600",
   },
+  itemTagRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    flexWrap: "wrap",
+    gap: 6,
+  },
+  itemCodeText: {
+    flexShrink: 1,
+    color: "#8A919F",
+    fontWeight: "600",
+  },
+  itemUnitPriceText: {
+    color: "#111827",
+    fontWeight: "700",
+  },
   itemRightColumn: {
+    width: 104,
     alignItems: "flex-end",
-    gap: 2,
+    gap: 6,
   },
   quantityStepper: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 2,
+    gap: 0,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "#CDD4DC",
+    borderRadius: 8,
+    backgroundColor: "#F7F8FA",
   },
   quantityButton: {
     margin: 0,
+    width: 28,
+    height: 28,
   },
   quantityValueWrap: {
-    minWidth: 48,
+    minWidth: 36,
     alignItems: "center",
     justifyContent: "center",
-    gap: 2,
+    paddingHorizontal: 2,
   },
   quantityValue: {
-    color: "#1677FF",
+    color: "#171C1F",
     fontWeight: "700",
   },
-  itemMetaRow: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 8,
-  },
   importPriceText: {
-    color: "#D46B08",
+    color: "#111827",
     fontWeight: "700",
     textAlign: "right",
   },
@@ -947,7 +1023,54 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    paddingTop: 6,
+    paddingTop: 8,
+    paddingBottom: 4,
+  },
+  checkoutBar: {
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: "#D7DCE2",
+    backgroundColor: "#FFFFFF",
+    paddingHorizontal: 16,
+    paddingTop: 14,
+    paddingBottom: 18,
+    shadowColor: "#0F172A",
+    shadowOpacity: 0.08,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: -4 },
+    elevation: 8,
+  },
+  checkoutMetricRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 8,
+  },
+  checkoutLabel: {
+    color: "#6B7280",
+  },
+  checkoutValue: {
+    color: "#374151",
+    fontWeight: "600",
+  },
+  checkoutTotalLabel: {
+    color: "#111827",
+    fontWeight: "700",
+  },
+  checkoutTotalValue: {
+    color: "#111827",
+    fontWeight: "800",
+  },
+  checkoutButton: {
+    marginTop: 6,
+    borderRadius: 8,
+    backgroundColor: "#111111",
+  },
+  checkoutButtonContent: {
+    minHeight: 48,
+    flexDirection: "row-reverse",
+  },
+  clearCartLabel: {
+    color: "#6B7280",
   },
   hiddenInput: {
     position: "absolute",

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Image, ScrollView, StyleSheet, TextInput as NativeTextInput, View } from "react-native";
+import { Image, Pressable, ScrollView, StyleSheet, TextInput as NativeTextInput, View } from "react-native";
 import { useFocusEffect } from "@react-navigation/native";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import { useRouter } from "expo-router";
@@ -35,6 +35,9 @@ import { printWarehouseLocationLabel, printWarehouseProductLabel } from "@/modul
 
 type SegmentValue = "product" | "location";
 type LocationCodePart = "letter" | "section" | "shelf" | "slot";
+type ScannerTarget = "product" | "location" | "bindProduct";
+type LocationVisualState = "bound" | "empty" | "lowStock";
+type ProductStockState = "inStock" | "lowStock" | "outOfStock";
 type NumericProductFieldKey =
   | "purchasePrice"
   | "retailPrice"
@@ -59,6 +62,31 @@ const PRODUCT_GRADE_CONFIG: Record<string, { color: string }> = {
   B: { color: "#1890FF" },
   C: { color: "#FA8C16" },
   D: { color: "#F5222D" },
+};
+const LOCATION_VISUALS: Record<LocationVisualState, { stripe: string; badgeBackground: string; badgeText: string; badgeBorder: string }> = {
+  bound: {
+    stripe: "#10B981",
+    badgeBackground: "#DCFCE7",
+    badgeText: "#166534",
+    badgeBorder: "#BBF7D0",
+  },
+  empty: {
+    stripe: "#CBD5E1",
+    badgeBackground: "#F1F5F9",
+    badgeText: "#475569",
+    badgeBorder: "#E2E8F0",
+  },
+  lowStock: {
+    stripe: "#EF4444",
+    badgeBackground: "#FEE2E2",
+    badgeText: "#B91C1C",
+    badgeBorder: "#FECACA",
+  },
+};
+const PRODUCT_STOCK_COLORS: Record<ProductStockState, { background: string; text: string; border: string }> = {
+  inStock: { background: "#DCFCE7", text: "#166534", border: "#BBF7D0" },
+  lowStock: { background: "#FEF3C7", text: "#B45309", border: "#FDE68A" },
+  outOfStock: { background: "#FEE2E2", text: "#B91C1C", border: "#FECACA" },
 };
 
 function buildLocationCode(parts: Record<LocationCodePart, string>) {
@@ -87,6 +115,43 @@ function formatNumber(value?: number | null, digits = 2) {
   return value.toFixed(digits);
 }
 
+function formatDisplayValue(value?: string | number | null) {
+  if (value == null || value === "") {
+    return "--";
+  }
+  return String(value);
+}
+
+function formatPrice(value?: number | null) {
+  if (value == null || Number.isNaN(value)) {
+    return "--";
+  }
+  return value.toFixed(2);
+}
+
+function getLocationVisualState(productCount: number) {
+  if (productCount <= 0) {
+    return "empty";
+  }
+  if (productCount === 1) {
+    return "lowStock";
+  }
+  return "bound";
+}
+
+function getProductStockState(stockQuantity?: number | null) {
+  if (stockQuantity == null) {
+    return "inStock";
+  }
+  if (stockQuantity <= 0) {
+    return "outOfStock";
+  }
+  if (stockQuantity <= 5) {
+    return "lowStock";
+  }
+  return "inStock";
+}
+
 function ProductNumericField({
   label,
   value,
@@ -103,6 +168,27 @@ function ProductNumericField({
         <Text variant="bodyMedium" style={styles.numericFieldValue} numberOfLines={1}>{value || "--"}</Text>
       </View>
     </Button>
+  );
+}
+
+function InfoTile({
+  label,
+  value,
+  emphasize = false,
+}: {
+  label: string;
+  value: string;
+  emphasize?: boolean;
+}) {
+  return (
+    <View style={styles.infoTile}>
+      <Text variant="labelSmall" style={styles.infoTileLabel}>
+        {label}
+      </Text>
+      <Text variant={emphasize ? "titleMedium" : "bodyMedium"} style={styles.infoTileValue} numberOfLines={2}>
+        {value}
+      </Text>
+    </View>
   );
 }
 
@@ -163,12 +249,14 @@ export default function WarehouseScreen() {
   const photoCameraRef = useRef<CameraView | null>(null);
   const [photoPermission, requestPhotoPermission] = useCameraPermissions();
   const [segment, setSegment] = useState<SegmentValue>("product");
+  const [scannerTarget, setScannerTarget] = useState<ScannerTarget>("product");
   const [snackbar, setSnackbar] = useState("");
   const [busy, setBusy] = useState(false);
 
   const [productKeyword, setProductKeyword] = useState("");
   const [productMatches, setProductMatches] = useState<WarehouseProduct[]>([]);
   const [product, setProduct] = useState<WarehouseProduct | null>(null);
+  const [hasProductLookup, setHasProductLookup] = useState(false);
   const [productForm, setProductForm] = useState({
     purchasePrice: "",
     retailPrice: "",
@@ -187,7 +275,12 @@ export default function WarehouseScreen() {
   const [locationKeyword, setLocationKeyword] = useState("");
   const [locationResults, setLocationResults] = useState<WarehouseLocation[]>([]);
   const [selectedLocation, setSelectedLocation] = useState<WarehouseLocationDetail | null>(null);
-  const [bindProductCode, setBindProductCode] = useState("");
+  const [hasLocationLookup, setHasLocationLookup] = useState(false);
+  const [bindModalVisible, setBindModalVisible] = useState(false);
+  const [bindProductKeyword, setBindProductKeyword] = useState("");
+  const [bindProductMatches, setBindProductMatches] = useState<WarehouseProduct[]>([]);
+  const [selectedBindProduct, setSelectedBindProduct] = useState<WarehouseProduct | null>(null);
+  const [hasBindProductLookup, setHasBindProductLookup] = useState(false);
   const [locationModalVisible, setLocationModalVisible] = useState(false);
   const [locationModalState, setLocationModalState] = useState<WarehouseLocationMutation>({
     locationCode: "",
@@ -228,6 +321,18 @@ export default function WarehouseScreen() {
   const cameraScan = useCameraScan({
     onBarcode: async (barcode) => {
       setScannerVisible(false);
+      if (scannerTarget === "location") {
+        setLocationKeyword(barcode);
+        await handleLookupLocationsByKeyword(barcode);
+        return;
+      }
+
+      if (scannerTarget === "bindProduct") {
+        setBindProductKeyword(barcode);
+        await handleLookupBindProducts(barcode);
+        return;
+      }
+
       setProductKeyword(barcode);
       await handleLookupProduct(barcode);
     },
@@ -277,6 +382,26 @@ export default function WarehouseScreen() {
     syncFormFromProduct(item);
   }, [syncFormFromProduct]);
 
+  const applyLocationDetail = useCallback((detail: WarehouseLocationDetail | null) => {
+    setSelectedLocation(detail);
+    if (!detail) {
+      return;
+    }
+
+    setLocationResults((current) => current.map((item) => (
+      item.locationGuid === detail.locationGuid
+        ? {
+            ...item,
+            locationCode: detail.locationCode,
+            locationBarcode: detail.locationBarcode,
+            locationType: detail.locationType,
+            status: detail.status,
+            productCount: detail.products.length,
+          }
+        : item
+    )));
+  }, []);
+
   const handleLookupProduct = useCallback(async (value?: string) => {
     const keyword = (value ?? productKeyword).trim();
     if (!keyword) {
@@ -285,6 +410,7 @@ export default function WarehouseScreen() {
     }
 
     setBusy(true);
+    setHasProductLookup(true);
     try {
       const items = await lookupWarehouseProducts(keyword);
       setProductMatches(items);
@@ -461,19 +587,22 @@ export default function WarehouseScreen() {
     }
 
     setBusy(true);
+    setHasLocationLookup(true);
     try {
       const items = await lookupLocations(keyword);
       setLocationResults(items);
       if (items.length === 1) {
         const detail = await getLocationDetail(items[0].locationGuid);
-        setSelectedLocation(detail);
+        applyLocationDetail(detail);
+      } else {
+        applyLocationDetail(null);
       }
     } catch (error) {
       setSnackbar(error instanceof Error ? error.message : t("messages.locationLookupFailed"));
     } finally {
       setBusy(false);
     }
-  }, [locationKeyword, t]);
+  }, [applyLocationDetail, locationKeyword, t]);
 
   const handleLookupLocations = useCallback(async () => {
     await handleLookupLocationsByKeyword();
@@ -481,6 +610,12 @@ export default function WarehouseScreen() {
 
   const hidScanner = useHidBarcodeScanner({
     onScan: async (barcode) => {
+      if (bindModalVisible) {
+        setBindProductKeyword(barcode);
+        await handleLookupBindProducts(barcode);
+        return;
+      }
+
       if (segment === "location") {
         setLocationKeyword(barcode);
         await handleLookupLocationsByKeyword(barcode);
@@ -506,13 +641,13 @@ export default function WarehouseScreen() {
     setBusy(true);
     try {
       const detail = await getLocationDetail(locationGuid);
-      setSelectedLocation(detail);
+      applyLocationDetail(detail);
     } catch (error) {
       setSnackbar(error instanceof Error ? error.message : t("messages.locationLookupFailed"));
     } finally {
       setBusy(false);
     }
-  }, [t]);
+  }, [applyLocationDetail, t]);
 
   const openCreateLocation = useCallback(() => {
     const initialParts = splitLocationCode(null);
@@ -551,7 +686,7 @@ export default function WarehouseScreen() {
       const detail = editingLocationGuid
         ? await updateLocation(editingLocationGuid, payload)
         : await createLocation(payload);
-      setSelectedLocation(detail);
+      applyLocationDetail(detail);
       setLocationModalVisible(false);
       setSnackbar(t("messages.saved"));
       await handleLookupLocations();
@@ -560,7 +695,7 @@ export default function WarehouseScreen() {
     } finally {
       setBusy(false);
     }
-  }, [editingLocationGuid, handleLookupLocations, locationCodeParts, locationModalState, t]);
+  }, [applyLocationDetail, editingLocationGuid, handleLookupLocations, locationCodeParts, locationModalState, t]);
 
   const handleDeleteLocation = useCallback(async () => {
     if (!selectedLocation) {
@@ -569,33 +704,72 @@ export default function WarehouseScreen() {
     setBusy(true);
     try {
       await deleteLocation(selectedLocation.locationGuid);
-      setSelectedLocation(null);
-      setLocationResults([]);
+      applyLocationDetail(null);
+      setLocationResults((current) => current.filter((item) => item.locationGuid !== selectedLocation.locationGuid));
+      setBindModalVisible(false);
       setSnackbar(t("messages.saved"));
     } catch (error) {
       setSnackbar(error instanceof Error ? error.message : t("messages.locationDeleteFailed"));
     } finally {
       setBusy(false);
     }
-  }, [selectedLocation, t]);
+  }, [applyLocationDetail, selectedLocation, t]);
+
+  const openBindProductModal = useCallback(() => {
+    setBindProductKeyword("");
+    setBindProductMatches([]);
+    setSelectedBindProduct(null);
+    setHasBindProductLookup(false);
+    setBindModalVisible(true);
+  }, []);
+
+  const handleLookupBindProducts = useCallback(async (value?: string) => {
+    const keyword = (value ?? bindProductKeyword).trim();
+    if (!keyword) {
+      setSnackbar(t("messages.keywordRequired"));
+      return;
+    }
+
+    setBusy(true);
+    setHasBindProductLookup(true);
+    try {
+      const items = await lookupWarehouseProducts(keyword);
+      setBindProductMatches(items);
+      if (items.length === 1) {
+        setSelectedBindProduct(items[0]);
+      } else {
+        setSelectedBindProduct(null);
+      }
+    } catch (error) {
+      setSnackbar(error instanceof Error ? error.message : t("messages.lookupFailed"));
+    } finally {
+      setBusy(false);
+    }
+  }, [bindProductKeyword, t]);
 
   const handleBindProductToLocation = useCallback(async () => {
-    if (!selectedLocation || !bindProductCode.trim()) {
+    const productIdentifier = selectedBindProduct?.productCode ?? bindProductKeyword.trim();
+    if (!selectedLocation || !productIdentifier) {
+      setSnackbar(t("location.bindModalSelectRequired"));
       return;
     }
 
     setBusy(true);
     try {
-      const detail = await bindProductToLocation(selectedLocation.locationGuid, bindProductCode.trim());
-      setSelectedLocation(detail);
-      setBindProductCode("");
+      const detail = await bindProductToLocation(selectedLocation.locationGuid, productIdentifier);
+      applyLocationDetail(detail);
+      setBindModalVisible(false);
+      setBindProductKeyword("");
+      setBindProductMatches([]);
+      setSelectedBindProduct(null);
+      setHasBindProductLookup(false);
       setSnackbar(t("messages.locationBound"));
     } catch (error) {
       setSnackbar(error instanceof Error ? error.message : t("messages.saveFailed"));
     } finally {
       setBusy(false);
     }
-  }, [bindProductCode, selectedLocation, t]);
+  }, [applyLocationDetail, bindProductKeyword, selectedBindProduct, selectedLocation, t]);
 
   const handleUnbindProduct = useCallback(async (productCode: string) => {
     if (!selectedLocation) {
@@ -605,14 +779,14 @@ export default function WarehouseScreen() {
     setBusy(true);
     try {
       const detail = await unbindProductFromLocation(selectedLocation.locationGuid, productCode);
-      setSelectedLocation(detail);
+      applyLocationDetail(detail);
       setSnackbar(t("messages.locationUnbound"));
     } catch (error) {
       setSnackbar(error instanceof Error ? error.message : t("messages.saveFailed"));
     } finally {
       setBusy(false);
     }
-  }, [selectedLocation, t]);
+  }, [applyLocationDetail, selectedLocation, t]);
 
   const productTypeText = useMemo(() => {
     if (!product) {
@@ -625,6 +799,11 @@ export default function WarehouseScreen() {
   const productGradeColor = normalizedProductGrade
     ? PRODUCT_GRADE_CONFIG[normalizedProductGrade]?.color ?? "#98A2B3"
     : "#98A2B3";
+  const productStockState = getProductStockState(product?.stockQuantity);
+  const selectedLocationProductCount = selectedLocation?.products.length ?? 0;
+  const selectedLocationVisualState = getLocationVisualState(selectedLocationProductCount);
+  const selectedLocationVisualColors = LOCATION_VISUALS[selectedLocationVisualState];
+  const productStockColors = PRODUCT_STOCK_COLORS[productStockState];
 
   const setLocationPart = useCallback((part: LocationCodePart, value: string) => {
     setLocationCodeParts((current) => {
@@ -637,6 +816,30 @@ export default function WarehouseScreen() {
   const setLocationPartMenuVisible = useCallback((part: LocationCodePart, visible: boolean) => {
     setLocationPartMenus((current) => ({ ...current, [part]: visible }));
   }, []);
+
+  const getLocationTypeLabel = useCallback((locationType?: number | null) => (
+    locationType === 2 ? t("location.typeStorage") : t("location.typePick")
+  ), [t]);
+
+  const getLocationStatusLabel = useCallback((state: LocationVisualState) => {
+    if (state === "empty") {
+      return t("location.statusEmpty");
+    }
+    if (state === "lowStock") {
+      return t("location.statusLowStock");
+    }
+    return t("location.statusBound");
+  }, [t]);
+
+  const getProductStockLabel = useCallback((state: ProductStockState) => {
+    if (state === "outOfStock") {
+      return t("product.stockStates.outOfStock");
+    }
+    if (state === "lowStock") {
+      return t("product.stockStates.lowStock");
+    }
+    return t("product.stockStates.inStock");
+  }, [t]);
 
   if (!hasWarehouseAccess) {
     return (
@@ -681,46 +884,112 @@ export default function WarehouseScreen() {
                 onSubmitEditing={() => void handleLookupProduct()}
                 style={styles.search}
               />
-              <IconButton icon="barcode-scan" onPress={() => setScannerVisible(true)} />
+              <IconButton
+                icon="barcode-scan"
+                mode="contained-tonal"
+                onPress={() => {
+                  setScannerTarget("product");
+                  setScannerVisible(true);
+                }}
+              />
             </View>
 
             {!product && productMatches.length === 0 ? (
               <EmptyState
-                title={t("product.emptyTitle")}
-                description={t("product.emptyDescription")}
+                title={hasProductLookup ? t("product.noResultsTitle") : t("product.emptyTitle")}
+                description={hasProductLookup ? t("product.noResultsDescription") : t("product.emptyDescription")}
               />
             ) : null}
 
             {!product && productMatches.length > 1 ? (
-              <Card mode="contained" style={styles.card}>
-                <Card.Title title={t("product.multipleTitle")} />
-                <Card.Content style={styles.cardContent}>
-                  {productMatches.map((item) => (
-                    <Button key={item.productCode} mode="outlined" onPress={() => void handleSelectProduct(item.productCode)}>
-                      {item.itemNumber || item.productCode} {item.productName}
-                    </Button>
-                  ))}
-                </Card.Content>
-              </Card>
+              <View style={styles.sectionBlock}>
+                <Text variant="titleSmall" style={styles.sectionTitle}>
+                  {t("product.multipleTitle")}
+                </Text>
+                <View style={styles.compactCardList}>
+                  {productMatches.map((item) => {
+                    const stockState = getProductStockState(item.stockQuantity);
+                    const stockColors = PRODUCT_STOCK_COLORS[stockState];
+                    return (
+                      <Pressable
+                        key={item.productCode}
+                        onPress={() => void handleSelectProduct(item.productCode)}
+                        style={styles.compactProductCard}
+                      >
+                        {item.productImage ? (
+                          <Image source={{ uri: item.productImage }} style={styles.compactProductImage} resizeMode="cover" />
+                        ) : (
+                          <View style={[styles.compactProductImage, styles.productImagePlaceholder]}>
+                            <Text variant="labelSmall" numberOfLines={2}>
+                              {item.productCode}
+                            </Text>
+                          </View>
+                        )}
+                        <View style={styles.compactProductMeta}>
+                          <Text variant="titleSmall" numberOfLines={2}>
+                            {item.productName || item.productCode}
+                          </Text>
+                          <Text variant="bodyMedium" style={styles.mutedText}>
+                            {t("product.fields.itemNumber")}: {formatDisplayValue(item.itemNumber || item.productCode)}
+                          </Text>
+                          <Text variant="bodySmall" style={styles.mutedText} numberOfLines={1}>
+                            {t("product.fields.barcode")}: {formatDisplayValue(item.barcode)}
+                          </Text>
+                        </View>
+                        <View style={styles.compactProductAside}>
+                          <View style={[styles.statusPill, { backgroundColor: stockColors.background, borderColor: stockColors.border }]}>
+                            <Text variant="labelSmall" style={[styles.statusPillText, { color: stockColors.text }]}>
+                              {getProductStockLabel(stockState)}
+                            </Text>
+                          </View>
+                          <Text variant="titleSmall" style={styles.priceText}>
+                            {formatPrice(item.retailPrice ?? item.oemPrice ?? item.domesticPrice)}
+                          </Text>
+                        </View>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+              </View>
             ) : null}
 
             {product ? (
               <>
                 <Card mode="contained" style={styles.card}>
-                  <Card.Content style={styles.heroCard}>
+                  <Card.Content style={styles.productHeroCard}>
                     {product.productImage ? (
                       <Image source={{ uri: product.productImage }} style={styles.productImage} resizeMode="cover" />
                     ) : (
                       <View style={[styles.productImage, styles.productImagePlaceholder]}>
-                        <Text variant="bodySmall">{product.productCode}</Text>
+                        <Text variant="bodyMedium" numberOfLines={3}>
+                          {product.productCode}
+                        </Text>
                       </View>
                     )}
                     <View style={styles.heroMeta}>
-                      <Text variant="titleMedium">{product.productName}</Text>
-                      <Text variant="bodyMedium">{product.itemNumber || product.productCode}</Text>
-                      <Text variant="bodySmall">{product.barcode || notAvailableText}</Text>
+                      <Text variant="headlineSmall" style={styles.heroTitle}>
+                        {product.productName || product.productCode}
+                      </Text>
+                      <Text variant="titleMedium" style={styles.heroIdentifier}>
+                        {formatDisplayValue(product.itemNumber || product.productCode)}
+                      </Text>
+                      <Text variant="bodyMedium" style={styles.mutedText}>
+                        {t("product.fields.barcode")}: {formatDisplayValue(product.barcode)}
+                      </Text>
+                      <Text variant="bodyMedium" style={styles.mutedText}>
+                        {t("product.fields.supplier")}: {formatDisplayValue(product.supplierName || product.localSupplierCode)}
+                      </Text>
                       <View style={styles.heroBadgeRow}>
-                        <Text variant="bodySmall" style={styles.heroTypeText}>{productTypeText || notAvailableText}</Text>
+                        <View style={[styles.statusPill, { backgroundColor: productForm.isActive ? "#DCFCE7" : "#F1F5F9", borderColor: productForm.isActive ? "#BBF7D0" : "#E2E8F0" }]}>
+                          <Text variant="labelSmall" style={[styles.statusPillText, { color: productForm.isActive ? "#166534" : "#475569" }]}>
+                            {productForm.isActive ? t("product.active") : t("product.inactive")}
+                          </Text>
+                        </View>
+                        <View style={[styles.statusPill, { backgroundColor: productStockColors.background, borderColor: productStockColors.border }]}>
+                          <Text variant="labelSmall" style={[styles.statusPillText, { color: productStockColors.text }]}>
+                            {getProductStockLabel(productStockState)}
+                          </Text>
+                        </View>
                         {normalizedProductGrade ? (
                           <View style={[styles.gradeBadge, { backgroundColor: productGradeColor }]}>
                             <Text variant="labelSmall" style={styles.gradeBadgeText}>
@@ -729,17 +998,85 @@ export default function WarehouseScreen() {
                           </View>
                         ) : null}
                       </View>
-                      <Text variant="bodySmall">{product.supplierName || product.localSupplierCode || notAvailableText}</Text>
+                      {productTypeText ? (
+                        <Text variant="bodySmall" style={styles.mutedText}>
+                          {productTypeText}
+                        </Text>
+                      ) : null}
+                    </View>
+                  </Card.Content>
+                  <Card.Content style={styles.infoGrid}>
+                    <InfoTile label={t("product.fields.itemNumber")} value={formatDisplayValue(product.itemNumber || product.productCode)} />
+                    <InfoTile label={t("product.fields.barcode")} value={formatDisplayValue(product.barcode)} />
+                    <InfoTile label={t("product.fields.stockQuantity")} value={formatDisplayValue(product.stockQuantity)} emphasize />
+                    <InfoTile label={t("product.fields.location")} value={formatDisplayValue(product.locationCode || t("product.noLocation"))} emphasize />
+                    <InfoTile label={t("product.fields.purchaseImportPrice")} value={formatPrice(product.purchasePrice ?? product.importPrice)} />
+                    <InfoTile label={t("product.fields.retailOemPrice")} value={formatPrice(product.retailPrice ?? product.oemPrice)} />
+                    <InfoTile label={t("product.fields.domesticPrice")} value={formatPrice(product.domesticPrice)} />
+                    <View style={styles.infoTile}>
                       <View style={styles.switchRow}>
-                        <Text variant="bodyMedium">{t("product.fields.isActive")}</Text>
-                        <Switch value={productForm.isActive} onValueChange={(value) => setProductForm((current) => ({ ...current, isActive: value }))} />
+                        <Text variant="labelSmall" style={styles.infoTileLabel}>
+                          {t("product.fields.isActive")}
+                        </Text>
+                        <Switch
+                          value={productForm.isActive}
+                          onValueChange={(value) => setProductForm((current) => ({ ...current, isActive: value }))}
+                        />
                       </View>
                     </View>
                   </Card.Content>
                 </Card>
 
                 <Card mode="contained" style={styles.card}>
-                  <Card.Title title={t("segments.product")} />
+                  <Card.Title
+                    title={t("product.currentLocation")}
+                    subtitle={product.locationCode || t("product.noLocation")}
+                    right={() => (
+                      <Button compact onPress={() => void handleBindLocation(null)}>
+                        {t("product.clearLocation")}
+                      </Button>
+                    )}
+                  />
+                  <Card.Content style={styles.cardContent}>
+                    <View style={styles.searchRow}>
+                      <Searchbar
+                        placeholder={t("location.searchPlaceholder")}
+                        value={locationLookupKeyword}
+                        onChangeText={setLocationLookupKeyword}
+                        onSubmitEditing={() => void handleLookupLocationsForProduct()}
+                        style={styles.search}
+                      />
+                    </View>
+                    {locationMatches.length ? (
+                      <View style={styles.compactCardList}>
+                        {locationMatches.map((item) => (
+                          <Pressable
+                            key={item.locationGuid}
+                            onPress={() => void handleBindLocation(item.locationGuid)}
+                            style={styles.locationCandidateCard}
+                          >
+                            <View style={styles.locationCandidateMeta}>
+                              <Text variant="titleSmall">{item.locationCode || item.locationGuid}</Text>
+                              <Text variant="bodySmall" style={styles.mutedText}>
+                                {item.locationBarcode || notAvailableText}
+                              </Text>
+                            </View>
+                            <Text variant="bodySmall" style={styles.mutedText}>
+                              {t("location.productCountValue", { count: item.productCount })}
+                            </Text>
+                          </Pressable>
+                        ))}
+                      </View>
+                    ) : (
+                      <Text variant="bodySmall" style={styles.secondaryText}>
+                        {t("product.locationLookupHint")}
+                      </Text>
+                    )}
+                  </Card.Content>
+                </Card>
+
+                <Card mode="contained" style={styles.card}>
+                  <Card.Title title={t("product.editorTitle")} />
                   <Card.Content>
                     <View style={styles.fieldGrid}>
                       <View style={styles.fieldRow}>
@@ -787,31 +1124,16 @@ export default function WarehouseScreen() {
                   </Card.Content>
                 </Card>
 
-                <Card mode="contained" style={styles.card}>
-                  <Card.Title title={t("product.currentLocation")} subtitle={product.locationCode || t("product.noLocation")} />
-                  <Card.Content style={styles.cardContent}>
-                    <View style={styles.searchRow}>
-                      <Searchbar
-                        placeholder={t("location.searchPlaceholder")}
-                        value={locationLookupKeyword}
-                        onChangeText={setLocationLookupKeyword}
-                        onSubmitEditing={() => void handleLookupLocationsForProduct()}
-                        style={styles.search}
-                      />
-                      <Button onPress={() => void handleBindLocation(null)}>{t("product.clearLocation")}</Button>
-                    </View>
-                    {locationMatches.map((item) => (
-                      <Button key={item.locationGuid} mode="outlined" onPress={() => void handleBindLocation(item.locationGuid)}>
-                        {item.locationCode || item.locationBarcode || item.locationGuid}
-                      </Button>
-                    ))}
-                  </Card.Content>
-                </Card>
-
                 <View style={styles.actionRow}>
-                  <Button mode="outlined" onPress={() => setPhotoVisible(true)}>{t("product.takePhoto")}</Button>
-                  <Button mode="outlined" onPress={() => void handlePrintProduct()}>{t("product.printProduct")}</Button>
-                  <Button mode="outlined" onPress={() => void handlePrintLocation()}>{t("product.printLocation")}</Button>
+                  <Button mode="outlined" icon="camera-outline" onPress={() => setPhotoVisible(true)}>
+                    {t("product.takePhoto")}
+                  </Button>
+                  <Button mode="outlined" icon="printer-outline" onPress={() => void handlePrintProduct()}>
+                    {t("product.printProduct")}
+                  </Button>
+                  <Button mode="outlined" icon="map-marker-outline" onPress={() => void handlePrintLocation()}>
+                    {t("product.printLocation")}
+                  </Button>
                 </View>
               </>
             ) : null}
@@ -826,60 +1148,144 @@ export default function WarehouseScreen() {
                 onSubmitEditing={() => void handleLookupLocations()}
                 style={styles.search}
               />
-              <Button onPress={openCreateLocation}>{t("location.newLocation")}</Button>
+              <Button mode="contained" icon="plus" onPress={openCreateLocation}>
+                {t("location.newLocation")}
+              </Button>
             </View>
 
             {!selectedLocation && locationResults.length === 0 ? (
-              <EmptyState title={t("location.emptyTitle")} description={t("location.emptyDescription")} />
+              <EmptyState
+                title={hasLocationLookup ? t("location.noResultsTitle") : t("location.emptyTitle")}
+                description={hasLocationLookup ? t("location.noResultsDescription") : t("location.emptyDescription")}
+              />
             ) : null}
 
-            {locationResults.map((item) => (
-              <Card key={item.locationGuid} mode="contained" style={styles.card}>
-                <Card.Title
-                  title={item.locationCode || item.locationGuid}
-                  subtitle={item.locationBarcode || notAvailableText}
-                  right={() => <Button onPress={() => void handleSelectLocation(item.locationGuid)}>{t("common:actions.viewDetail")}</Button>}
-                />
-              </Card>
-            ))}
+            {locationResults.length ? (
+              <View style={styles.sectionBlock}>
+                <Text variant="titleSmall" style={styles.sectionTitle}>
+                  {t("location.searchResultsTitle")}
+                </Text>
+                <View style={styles.binCardList}>
+                  {locationResults.map((item) => {
+                    const visualState = getLocationVisualState(item.productCount);
+                    const visualColors = LOCATION_VISUALS[visualState];
+                    return (
+                      <Pressable
+                        key={item.locationGuid}
+                        onPress={() => void handleSelectLocation(item.locationGuid)}
+                        style={styles.binCard}
+                      >
+                        <View style={[styles.binStripe, { backgroundColor: visualColors.stripe }]} />
+                        <View style={styles.binCardBody}>
+                          <View style={styles.binCardHeader}>
+                            <View style={styles.binTitleBlock}>
+                              <Text variant="titleLarge">{item.locationCode || item.locationGuid}</Text>
+                              <Text variant="bodySmall" style={styles.mutedText}>
+                                {getLocationTypeLabel(item.locationType)}
+                              </Text>
+                            </View>
+                            <View style={[styles.statusPill, { backgroundColor: visualColors.badgeBackground, borderColor: visualColors.badgeBorder }]}>
+                              <Text variant="labelSmall" style={[styles.statusPillText, { color: visualColors.badgeText }]}>
+                                {getLocationStatusLabel(visualState)}
+                              </Text>
+                            </View>
+                          </View>
+                          <View style={styles.binInfoRow}>
+                            <InfoTile label={t("location.fields.locationBarcode")} value={formatDisplayValue(item.locationBarcode)} />
+                            <InfoTile label={t("location.productsLabel")} value={t("location.productCountValue", { count: item.productCount })} emphasize />
+                          </View>
+                          <View style={styles.binFooter}>
+                            <Button compact icon="eye-outline" onPress={() => void handleSelectLocation(item.locationGuid)}>
+                              {t("common:actions.viewDetail")}
+                            </Button>
+                          </View>
+                        </View>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+              </View>
+            ) : null}
 
             {selectedLocation ? (
-              <Card mode="contained" style={styles.card}>
-                <Card.Title
-                  title={selectedLocation.locationCode || selectedLocation.locationGuid}
-                  subtitle={selectedLocation.locationBarcode || notAvailableText}
-                  right={() => (
-                    <View style={styles.inlineActions}>
-                      <IconButton icon="printer-outline" onPress={() => void handlePrintSelectedLocation()} />
-                      <IconButton icon="pencil-outline" onPress={() => openEditLocation(selectedLocation)} />
-                      <IconButton icon="delete-outline" onPress={() => void handleDeleteLocation()} />
-                    </View>
-                  )}
-                />
-                <Card.Content style={styles.cardContent}>
-                  <TextInput
-                    mode="outlined"
-                    label={t("location.bindProduct")}
-                    placeholder={t("location.lookupProductPlaceholder")}
-                    value={bindProductCode}
-                    onChangeText={setBindProductCode}
-                  />
-                  <Button mode="contained" onPress={() => void handleBindProductToLocation()}>
-                    {t("location.bindProduct")}
-                  </Button>
-                  {selectedLocation.products.map((item) => (
-                    <View key={`${selectedLocation.locationGuid}-${item.productCode}`} style={styles.locationProductRow}>
-                      <View style={styles.locationProductMeta}>
-                        <Text variant="bodyMedium">{item.productName || item.productCode || notAvailableText}</Text>
-                        <Text variant="bodySmall">{item.itemNumber || item.productCode || notAvailableText}</Text>
+              <View style={styles.sectionBlock}>
+                <Text variant="titleSmall" style={styles.sectionTitle}>
+                  {t("location.selectedTitle")}
+                </Text>
+                <View style={styles.binCard}>
+                  <View style={[styles.binStripe, { backgroundColor: selectedLocationVisualColors.stripe }]} />
+                  <View style={styles.binCardBody}>
+                    <View style={styles.binCardHeader}>
+                      <View style={styles.binTitleBlock}>
+                        <Text variant="headlineSmall">{selectedLocation.locationCode || selectedLocation.locationGuid}</Text>
+                        <Text variant="bodySmall" style={styles.mutedText}>
+                          {getLocationTypeLabel(selectedLocation.locationType)}
+                        </Text>
                       </View>
-                      <Button compact mode="text" onPress={() => item.productCode && void handleUnbindProduct(item.productCode)}>
-                        {t("location.unbindProduct")}
-                      </Button>
+                      <View style={styles.inlineActions}>
+                        <View style={[styles.statusPill, { backgroundColor: selectedLocationVisualColors.badgeBackground, borderColor: selectedLocationVisualColors.badgeBorder }]}>
+                          <Text variant="labelSmall" style={[styles.statusPillText, { color: selectedLocationVisualColors.badgeText }]}>
+                            {getLocationStatusLabel(selectedLocationVisualState)}
+                          </Text>
+                        </View>
+                        <IconButton icon="printer-outline" size={20} onPress={() => void handlePrintSelectedLocation()} />
+                        <IconButton icon="pencil-outline" size={20} onPress={() => openEditLocation(selectedLocation)} />
+                        <IconButton icon="delete-outline" size={20} onPress={() => void handleDeleteLocation()} />
+                      </View>
                     </View>
-                  ))}
-                </Card.Content>
-              </Card>
+
+                    <View style={styles.binInfoRow}>
+                      <InfoTile label={t("location.fields.locationBarcode")} value={formatDisplayValue(selectedLocation.locationBarcode)} />
+                      <InfoTile label={t("location.productsLabel")} value={t("location.productCountValue", { count: selectedLocationProductCount })} emphasize />
+                    </View>
+
+                    <View style={styles.locationProductsSection}>
+                      <View style={styles.sectionHeaderRow}>
+                        <Text variant="titleSmall">{t("location.productListTitle")}</Text>
+                        <Button compact icon="link-variant" mode="contained" onPress={openBindProductModal}>
+                          {t("location.bindProduct")}
+                        </Button>
+                      </View>
+
+                      {selectedLocation.products.length ? (
+                        <View style={styles.locationProductList}>
+                          {selectedLocation.products.map((item) => (
+                            <View key={`${selectedLocation.locationGuid}-${item.productCode}`} style={styles.locationProductRow}>
+                              {item.productImage ? (
+                                <Image source={{ uri: item.productImage }} style={styles.locationProductImage} resizeMode="cover" />
+                              ) : (
+                                <View style={[styles.locationProductImage, styles.productImagePlaceholder]}>
+                                  <Text variant="labelSmall">{item.productCode || "--"}</Text>
+                                </View>
+                              )}
+                              <View style={styles.locationProductMeta}>
+                                <Text variant="bodyMedium" numberOfLines={1}>
+                                  {item.productName || item.productCode || notAvailableText}
+                                </Text>
+                                <Text variant="bodySmall" style={styles.mutedText} numberOfLines={1}>
+                                  {item.itemNumber || item.productCode || notAvailableText}
+                                </Text>
+                              </View>
+                              <Button compact mode="text" onPress={() => item.productCode && void handleUnbindProduct(item.productCode)}>
+                                {t("location.unbindProduct")}
+                              </Button>
+                            </View>
+                          ))}
+                        </View>
+                      ) : (
+                        <View style={styles.emptyBinState}>
+                          <Text variant="bodyMedium" style={styles.secondaryText}>
+                            {t("location.productListEmpty")}
+                          </Text>
+                          <Button mode="contained" onPress={openBindProductModal}>
+                            {t("location.bindProduct")}
+                          </Button>
+                        </View>
+                      )}
+                    </View>
+                  </View>
+                </View>
+              </View>
             ) : null}
           </>
         )}
@@ -887,7 +1293,9 @@ export default function WarehouseScreen() {
 
       <Portal>
         <Modal visible={scannerVisible} onDismiss={() => setScannerVisible(false)} contentContainerStyle={styles.modal}>
-          <Text variant="titleMedium" style={styles.modalTitle}>{t("camera.scanTitle")}</Text>
+          <Text variant="titleMedium" style={styles.modalTitle}>
+            {scannerTarget === "bindProduct" ? t("location.bindModalScanTitle") : t("camera.scanTitle")}
+          </Text>
           {cameraScan.permission?.granted ? (
             <CameraView style={styles.cameraView} {...cameraScan.cameraProps} />
           ) : (
@@ -915,6 +1323,114 @@ export default function WarehouseScreen() {
               <Button mode="contained" onPress={() => void requestPhotoPermission()}>{t("camera.grantPermission")}</Button>
             </View>
           )}
+        </Modal>
+
+        <Modal
+          visible={bindModalVisible}
+          onDismiss={() => setBindModalVisible(false)}
+          style={styles.bottomSheetModal}
+          contentContainerStyle={styles.bottomSheetContainer}
+        >
+          <View style={styles.bottomSheetHandle} />
+          <View style={styles.sheetHeader}>
+            <View style={styles.sheetHeaderMeta}>
+              <Text variant="titleLarge">{t("location.bindModalTitle")}</Text>
+              <Text variant="bodySmall" style={styles.secondaryText}>
+                {t("location.bindModalCurrentLocation")}: {selectedLocation?.locationCode || selectedLocation?.locationGuid || notAvailableText}
+              </Text>
+            </View>
+            <IconButton icon="close" size={20} onPress={() => setBindModalVisible(false)} />
+          </View>
+
+          <ScrollView contentContainerStyle={styles.sheetContent}>
+            <View style={styles.searchRow}>
+              <Searchbar
+                placeholder={t("location.bindModalSearchPlaceholder")}
+                value={bindProductKeyword}
+                onChangeText={setBindProductKeyword}
+                onSubmitEditing={() => void handleLookupBindProducts()}
+                style={styles.search}
+              />
+              <IconButton
+                icon="barcode-scan"
+                mode="contained-tonal"
+                onPress={() => {
+                  setScannerTarget("bindProduct");
+                  setScannerVisible(true);
+                }}
+              />
+            </View>
+
+            <View style={styles.bindHintCard}>
+              <Text variant="labelSmall" style={styles.infoTileLabel}>
+                {t("location.bindModalQuantityTitle")}
+              </Text>
+              <Text variant="bodySmall" style={styles.secondaryText}>
+                {t("location.bindModalQuantityUnsupported")}
+              </Text>
+            </View>
+
+            <View style={styles.sectionHeaderRow}>
+              <Text variant="titleSmall">{t("location.bindModalSearchResults")}</Text>
+            </View>
+
+            {bindProductMatches.length ? (
+              <View style={styles.compactCardList}>
+                {bindProductMatches.map((item) => {
+                  const isSelected = selectedBindProduct?.productCode === item.productCode;
+                  return (
+                    <Pressable
+                      key={item.productCode}
+                      onPress={() => setSelectedBindProduct(item)}
+                      style={[
+                        styles.bindResultCard,
+                        isSelected ? styles.bindResultCardSelected : null,
+                      ]}
+                    >
+                      {item.productImage ? (
+                        <Image source={{ uri: item.productImage }} style={styles.bindResultImage} resizeMode="cover" />
+                      ) : (
+                        <View style={[styles.bindResultImage, styles.productImagePlaceholder]}>
+                          <Text variant="labelSmall">{item.productCode}</Text>
+                        </View>
+                      )}
+                      <View style={styles.bindResultMeta}>
+                        <Text variant="titleSmall" numberOfLines={1}>
+                          {item.productName || item.productCode}
+                        </Text>
+                        <Text variant="bodySmall" style={styles.mutedText} numberOfLines={1}>
+                          {t("product.fields.itemNumber")}: {formatDisplayValue(item.itemNumber || item.productCode)}
+                        </Text>
+                        <Text variant="bodySmall" style={styles.mutedText} numberOfLines={1}>
+                          {t("product.fields.barcode")}: {formatDisplayValue(item.barcode)}
+                        </Text>
+                      </View>
+                      {isSelected ? (
+                        <View style={styles.bindResultCheck}>
+                          <Text variant="labelSmall" style={styles.bindResultCheckText}>✓</Text>
+                        </View>
+                      ) : null}
+                    </Pressable>
+                  );
+                })}
+              </View>
+            ) : hasBindProductLookup ? (
+              <Text variant="bodySmall" style={styles.secondaryText}>
+                {t("location.bindModalNoResults")}
+              </Text>
+            ) : (
+              <Text variant="bodySmall" style={styles.secondaryText}>
+                {t("location.bindModalSearchHint")}
+              </Text>
+            )}
+          </ScrollView>
+
+          <View style={styles.sheetFooter}>
+            <Button onPress={() => setBindModalVisible(false)}>{t("common:actions.cancel")}</Button>
+            <Button mode="contained" icon="link-variant" onPress={() => void handleBindProductToLocation()}>
+              {t("location.bindModalConfirm")}
+            </Button>
+          </View>
         </Modal>
 
         <Modal visible={locationModalVisible} onDismiss={() => setLocationModalVisible(false)} contentContainerStyle={styles.modal}>
@@ -1023,7 +1539,7 @@ export default function WarehouseScreen() {
 const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
-    backgroundColor: "#fff",
+    backgroundColor: "#F8FAFC",
   },
   header: {
     paddingHorizontal: 16,
@@ -1037,7 +1553,7 @@ const styles = StyleSheet.create({
   content: {
     padding: 16,
     gap: 12,
-    paddingBottom: 40,
+    paddingBottom: 56,
   },
   searchRow: {
     flexDirection: "row",
@@ -1049,36 +1565,44 @@ const styles = StyleSheet.create({
   },
   card: {
     backgroundColor: "#fff",
+    borderRadius: 18,
   },
   cardContent: {
     gap: 10,
   },
-  heroCard: {
+  productHeroCard: {
     flexDirection: "row",
-    gap: 12,
+    gap: 14,
   },
   productImage: {
-    width: 110,
-    height: 110,
-    borderRadius: 12,
+    width: 112,
+    height: 112,
+    borderRadius: 16,
     backgroundColor: "#F1F5F9",
   },
   productImagePlaceholder: {
     alignItems: "center",
     justifyContent: "center",
     padding: 12,
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
   },
   heroMeta: {
     flex: 1,
-    gap: 4,
+    gap: 6,
+    minWidth: 0,
+  },
+  heroTitle: {
+    flexShrink: 1,
+  },
+  heroIdentifier: {
+    color: "#0F172A",
   },
   heroBadgeRow: {
     flexDirection: "row",
     alignItems: "center",
     gap: 6,
-  },
-  heroTypeText: {
-    flexShrink: 1,
+    flexWrap: "wrap",
   },
   gradeBadge: {
     borderRadius: 999,
@@ -1093,43 +1617,64 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    marginTop: 6,
+  },
+  infoGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 10,
+    paddingTop: 14,
+  },
+  infoTile: {
+    width: "48%",
+    minWidth: 150,
+    backgroundColor: "#F8FAFC",
+    borderRadius: 14,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    gap: 4,
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+  },
+  infoTileLabel: {
+    color: "#64748B",
+  },
+  infoTileValue: {
+    color: "#0F172A",
+    fontWeight: "600",
   },
   fieldGrid: {
     gap: 10,
   },
   fieldRow: {
     flexDirection: "row",
-    gap: 8,
+    gap: 10,
   },
   fieldCell: {
     flex: 1,
     minWidth: 0,
   },
-  input: {
-    backgroundColor: "#fff",
-  },
   numericField: {
-    borderRadius: 8,
+    borderRadius: 12,
   },
   numericFieldContent: {
-    minHeight: 42,
+    minHeight: 54,
     justifyContent: "flex-start",
   },
   numericFieldInner: {
     width: "100%",
     alignItems: "flex-start",
+    gap: 4,
   },
   numericFieldLabel: {
     color: "#64748B",
   },
   numericFieldValue: {
-    color: "#111827",
+    color: "#0F172A",
     fontWeight: "700",
   },
   gradeCell: {
     flex: 2,
-    gap: 4,
+    gap: 6,
   },
   gradeFieldLabel: {
     color: "#64748B",
@@ -1142,6 +1687,7 @@ const styles = StyleSheet.create({
   },
   primaryButton: {
     marginTop: 8,
+    borderRadius: 12,
   },
   actionRow: {
     flexDirection: "row",
@@ -1151,13 +1697,25 @@ const styles = StyleSheet.create({
   inlineActions: {
     flexDirection: "row",
     alignItems: "center",
+    gap: 2,
   },
   locationProductRow: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
     gap: 12,
-    paddingVertical: 6,
+    paddingVertical: 10,
+    paddingHorizontal: 10,
+    borderRadius: 14,
+    backgroundColor: "#FFFFFF",
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+  },
+  locationProductImage: {
+    width: 44,
+    height: 44,
+    borderRadius: 10,
+    backgroundColor: "#F8FAFC",
   },
   locationProductMeta: {
     flex: 1,
@@ -1189,7 +1747,7 @@ const styles = StyleSheet.create({
   modal: {
     backgroundColor: "#fff",
     margin: 16,
-    borderRadius: 16,
+    borderRadius: 20,
     padding: 16,
     gap: 12,
   },
@@ -1205,6 +1763,219 @@ const styles = StyleSheet.create({
   permissionBlock: {
     gap: 10,
     alignItems: "center",
+  },
+  sectionBlock: {
+    gap: 10,
+  },
+  sectionTitle: {
+    color: "#0F172A",
+  },
+  sectionHeaderRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+  },
+  compactCardList: {
+    gap: 10,
+  },
+  compactProductCard: {
+    backgroundColor: "#FFFFFF",
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+    padding: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+  },
+  compactProductImage: {
+    width: 72,
+    height: 72,
+    borderRadius: 12,
+    backgroundColor: "#F8FAFC",
+  },
+  compactProductMeta: {
+    flex: 1,
+    gap: 4,
+    minWidth: 0,
+  },
+  compactProductAside: {
+    alignItems: "flex-end",
+    gap: 8,
+  },
+  mutedText: {
+    color: "#64748B",
+  },
+  statusPill: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 999,
+    borderWidth: 1,
+  },
+  statusPillText: {
+    fontWeight: "700",
+  },
+  priceText: {
+    color: "#0F172A",
+    fontWeight: "700",
+  },
+  locationCandidateCard: {
+    backgroundColor: "#F8FAFC",
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+  locationCandidateMeta: {
+    flex: 1,
+    gap: 2,
+  },
+  binCardList: {
+    gap: 12,
+  },
+  binCard: {
+    flexDirection: "row",
+    backgroundColor: "#FFFFFF",
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+    overflow: "hidden",
+  },
+  binStripe: {
+    width: 4,
+  },
+  binCardBody: {
+    flex: 1,
+    paddingHorizontal: 14,
+    paddingVertical: 14,
+    gap: 12,
+  },
+  binCardHeader: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: 10,
+  },
+  binTitleBlock: {
+    flex: 1,
+    gap: 2,
+    minWidth: 0,
+  },
+  binInfoRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 10,
+  },
+  binFooter: {
+    flexDirection: "row",
+    justifyContent: "flex-start",
+  },
+  locationProductsSection: {
+    gap: 12,
+  },
+  locationProductList: {
+    gap: 10,
+  },
+  emptyBinState: {
+    gap: 12,
+    alignItems: "flex-start",
+    paddingVertical: 4,
+  },
+  bottomSheetModal: {
+    justifyContent: "flex-end",
+    margin: 0,
+  },
+  bottomSheetContainer: {
+    backgroundColor: "#FFFFFF",
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    paddingHorizontal: 16,
+    paddingTop: 8,
+    paddingBottom: 20,
+    maxHeight: "82%",
+  },
+  bottomSheetHandle: {
+    alignSelf: "center",
+    width: 44,
+    height: 5,
+    borderRadius: 999,
+    backgroundColor: "#CBD5E1",
+    marginBottom: 10,
+  },
+  sheetHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+  },
+  sheetHeaderMeta: {
+    flex: 1,
+    gap: 2,
+  },
+  sheetContent: {
+    gap: 12,
+    paddingBottom: 12,
+  },
+  bindHintCard: {
+    backgroundColor: "#F8FAFC",
+    borderRadius: 14,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+    gap: 4,
+  },
+  bindResultCard: {
+    backgroundColor: "#FFFFFF",
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "#CBD5E1",
+    padding: 10,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  bindResultCardSelected: {
+    borderColor: "#34D399",
+    backgroundColor: "#ECFDF5",
+  },
+  bindResultImage: {
+    width: 52,
+    height: 52,
+    borderRadius: 10,
+    backgroundColor: "#F8FAFC",
+  },
+  bindResultMeta: {
+    flex: 1,
+    gap: 2,
+    minWidth: 0,
+  },
+  bindResultCheck: {
+    minWidth: 28,
+    height: 28,
+    borderRadius: 14,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#34D399",
+  },
+  bindResultCheckText: {
+    color: "#FFFFFF",
+    fontWeight: "700",
+  },
+  sheetFooter: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "flex-end",
+    gap: 8,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: "#E2E8F0",
   },
   hiddenInput: {
     position: "absolute",

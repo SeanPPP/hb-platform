@@ -52,9 +52,19 @@
   "item": {
     "deleting": "Deleting",
     "delete": "Delete",
-    "subtotal": "Import ${{price}} × {{quantity}} = ${{amount}}",
+    "sku": "SKU: {{value}}",
+    "grade": "Grade {{grade}}",
+    "unitPrice": "${{amount}} / unit",
+    "subtotal": "Subtotal ${{amount}}",
     "import": "Import ${{amount}}",
     "inCart": "In cart"
+  },
+  "checkout": {
+    "totalItems": "Total Items",
+    "subtotal": "Subtotal",
+    "totalAmount": "Total Order Amount",
+    "submit": "Submit Order",
+    "clear": "Clear Cart"
   },
   "actions": {
     "submit": "Submit",

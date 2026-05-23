@@ -52,9 +52,19 @@
   "item": {
     "deleting": "删除中",
     "delete": "删除",
-    "subtotal": "进货 ${{price}} × {{quantity}} = ${{amount}}",
+    "sku": "SKU: {{value}}",
+    "grade": "等级 {{grade}}",
+    "unitPrice": "${{amount}} / 件",
+    "subtotal": "小计 ${{amount}}",
     "import": "进口 ${{amount}}",
     "inCart": "购物车"
+  },
+  "checkout": {
+    "totalItems": "商品总数",
+    "subtotal": "小计",
+    "totalAmount": "订单总额",
+    "submit": "提交订单",
+    "clear": "清空购物车"
   },
   "actions": {
     "submit": "提交",

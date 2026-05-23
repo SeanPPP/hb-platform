@@ -1,5 +1,5 @@
 import { Image, StyleSheet, View } from "react-native";
-import { Badge, Button, Card, IconButton, Text } from "react-native-paper";
+import { Badge, Card, IconButton, Text } from "react-native-paper";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 import type { ProductDynamicDataMap, StoreOrderProductItem } from "@/modules/shop/types";
 
@@ -37,10 +37,10 @@ export function ProductCard({
   const gradeColor = grade ? PRODUCT_GRADE_CONFIG[grade]?.color ?? "#999" : undefined;
 
   return (
-    <Card style={styles.card} mode="elevated">
+    <Card style={styles.card} mode="outlined">
       {grade ? (
         <View style={[styles.gradeBadge, { backgroundColor: gradeColor }]}>
-          <Text style={styles.gradeBadgeText}>Grade {grade}</Text>
+          <Text style={styles.gradeBadgeText}>{t("grade", { grade })}</Text>
         </View>
       ) : null}
       {hasCartQuantity ? <Badge style={styles.cartBadge}>{cartQuantity}</Badge> : null}
@@ -50,57 +50,45 @@ export function ProductCard({
         <View style={styles.imagePlaceholder} />
       )}
       <Card.Content style={styles.content}>
-        <Text variant="titleSmall" numberOfLines={2}>
+        <Text variant="labelLarge" numberOfLines={2} style={styles.titleText}>
           {product.productName || product.productCode}
         </Text>
-        <Text variant="bodySmall" style={styles.secondaryText}>
+        <Text variant="labelSmall" numberOfLines={1} style={styles.secondaryText}>
           {t("labels.itemNumber")}: {product.itemNumber || t("na")}
         </Text>
-        <Text variant="titleMedium" style={styles.priceText}>
+        <Text variant="labelSmall" style={styles.priceLabel}>
+          {t("labels.importPrice")}
+        </Text>
+        <Text variant="labelLarge" style={styles.priceText}>
           ${Number(product.oemPrice ?? 0).toFixed(2)}
         </Text>
-        <Text variant="bodySmall" style={hasCartQuantity ? styles.cartQuantityHighlight : styles.secondaryText}>
-          {t("cart:item.inCart")}: {cartQuantity}
-        </Text>
-        {dynamicData?.lastOrderDate ? (
-          <Text variant="bodySmall" style={styles.secondaryText}>
-            {t("labels.recentOrder")}: {dynamicData.lastOrderDate}
-          </Text>
-        ) : null}
       </Card.Content>
-      <Card.Actions>
-        {hasCartQuantity ? (
-          <View style={styles.stepperRow}>
-            <IconButton
-              icon="minus"
-              mode="contained-tonal"
-              size={18}
-              disabled={disabled || isUpdatingCart}
-              loading={isUpdatingCart}
-              onPress={() => onDecreaseCartQuantity(product, cartQuantity)}
-            />
-            <View style={styles.stepperQuantityWrap}>
-              <Text variant="labelSmall" style={styles.secondaryText}>
-                {t("cart:item.inCart")}
-              </Text>
-              <Text variant="titleMedium" style={styles.stepperQuantityText}>
-                {cartQuantity}
-              </Text>
-            </View>
-            <IconButton
-              icon="plus"
-              mode="contained"
-              size={18}
-              disabled={disabled || isUpdatingCart}
-              loading={isUpdatingCart}
-              onPress={() => onIncreaseCartQuantity(product)}
-            />
+      <Card.Actions style={styles.actions}>
+        <View style={styles.stepperRow}>
+          <IconButton
+            icon="minus"
+            mode="outlined"
+            size={16}
+            disabled={disabled || isUpdatingCart || !hasCartQuantity}
+            loading={isUpdatingCart && hasCartQuantity}
+            onPress={() => onDecreaseCartQuantity(product, cartQuantity)}
+            style={styles.quantityButton}
+          />
+          <View style={styles.stepperQuantityWrap}>
+            <Text variant="labelMedium" style={styles.stepperQuantityText}>
+              {cartQuantity}
+            </Text>
           </View>
-        ) : (
-          <Button mode="contained" disabled={disabled} loading={isUpdatingCart} onPress={() => onAddToCart(product)}>
-            {t("labels.addToCart")}
-          </Button>
-        )}
+          <IconButton
+            icon="plus"
+            mode="contained-tonal"
+            size={16}
+            disabled={disabled || isUpdatingCart}
+            loading={isUpdatingCart && !hasCartQuantity}
+            onPress={() => (hasCartQuantity ? onIncreaseCartQuantity(product) : onAddToCart(product))}
+            style={styles.quantityButton}
+          />
+        </View>
       </Card.Actions>
     </Card>
   );
@@ -109,23 +97,27 @@ export function ProductCard({
 const styles = StyleSheet.create({
   card: {
     flex: 1,
-    margin: 6,
+    margin: 4,
     overflow: "hidden",
+    borderRadius: 8,
+    borderColor: "#C5C6CD",
+    backgroundColor: "#FFFFFF",
   },
   cartBadge: {
     position: "absolute",
-    top: 10,
-    left: 10,
+    top: 6,
+    right: 6,
     zIndex: 2,
+    backgroundColor: "#BA1A1A",
   },
   gradeBadge: {
     position: "absolute",
     top: 0,
     right: 0,
     zIndex: 3,
-    paddingHorizontal: 8,
+    paddingHorizontal: 6,
     paddingVertical: 2,
-    borderBottomLeftRadius: 8,
+    borderBottomLeftRadius: 6,
     shadowColor: "#000",
     shadowOpacity: 0.15,
     shadowRadius: 4,
@@ -134,32 +126,50 @@ const styles = StyleSheet.create({
   },
   gradeBadgeText: {
     color: "#fff",
-    fontSize: 12,
+    fontSize: 10,
     fontWeight: "700",
   },
   image: {
     width: "100%",
-    height: 140,
-    backgroundColor: "#f5f5f5",
+    height: 86,
+    backgroundColor: "#EAEFF3",
   },
   imagePlaceholder: {
     width: "100%",
-    height: 140,
-    backgroundColor: "#f0f0f0",
+    height: 86,
+    backgroundColor: "#EAEFF3",
   },
   content: {
-    gap: 6,
+    gap: 2,
+    minHeight: 70,
+    paddingHorizontal: 8,
+    paddingTop: 8,
+    paddingBottom: 4,
+  },
+  titleText: {
+    color: "#171C1F",
+    fontSize: 12,
+    lineHeight: 16,
+    fontWeight: "800",
+  },
+  priceLabel: {
+    color: "#75777D",
+    fontSize: 9,
+    marginTop: 2,
   },
   priceText: {
-    color: "#1677FF",
-    fontWeight: "700",
-  },
-  cartQuantityHighlight: {
-    color: "#1677FF",
-    fontWeight: "700",
+    color: "#000000",
+    fontWeight: "800",
+    fontSize: 14,
   },
   secondaryText: {
-    color: "#666",
+    color: "#45474C",
+    fontSize: 10,
+  },
+  actions: {
+    paddingHorizontal: 8,
+    paddingBottom: 8,
+    paddingTop: 0,
   },
   stepperRow: {
     flex: 1,
@@ -167,15 +177,23 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "space-between",
     width: "100%",
+    minHeight: 30,
+    borderRadius: 6,
+    backgroundColor: "#F0F4F8",
   },
   stepperQuantityWrap: {
     flex: 1,
     alignItems: "center",
     justifyContent: "center",
-    gap: 2,
   },
   stepperQuantityText: {
-    color: "#1677FF",
-    fontWeight: "700",
+    color: "#171C1F",
+    fontWeight: "800",
+  },
+  quantityButton: {
+    width: 30,
+    height: 30,
+    margin: 0,
+    borderRadius: 4,
   },
 });
