@@ -4,6 +4,7 @@ import { apiClient } from "@/shared/api/client";
 import type {
   DeviceProfile,
   DeviceRegistrationRequest,
+  DeviceUnbindRequest,
   DeviceValidationRequest,
   DeviceValidationResult,
 } from "@/modules/device/types";
@@ -160,6 +161,10 @@ export async function validateDeviceAuthApi(
       (typeof data.NewAuthCode === "string" && data.NewAuthCode) ||
       null,
   };
+}
+
+export async function unbindDeviceApi(payload: DeviceUnbindRequest): Promise<void> {
+  await apiClient.post("/unbind-device", payload);
 }
 
 export async function getDeviceProfileApi(hardwareId: string): Promise<DeviceProfile> {

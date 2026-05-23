@@ -20,6 +20,7 @@ import type { AppLanguage } from "@/shared/i18n/types";
 import { useAuthStore } from "@/store/auth-store";
 import { useDeviceStore } from "@/store/device-store";
 import { useStores } from "@/modules/shop/use-stores";
+import { resolveSettingsAuthMode, shouldShowProfileAction } from "@/modules/device/settings-mode";
 
 function resolveDeviceStatusText(
   status: number | undefined,
@@ -56,6 +57,7 @@ export default function Settings() {
   const deviceSession = useDeviceStore((state) => state.session);
   const registerDevice = useDeviceStore((state) => state.register);
   const validateDevice = useDeviceStore((state) => state.validate);
+  const unbindDevice = useDeviceStore((state) => state.unbind);
   const deviceLoading = useDeviceStore((state) => state.isLoading);
   const { stores, selectedStore, selectStore } = useStores();
   const savedPrinter = usePrinterStore((state) => state.savedPrinter);
@@ -69,6 +71,12 @@ export default function Settings() {
   const [filterXPOnly, setFilterXPOnly] = useState(true);
 
   const canRegisterDevice = access.hasRole("Order") || access.hasRole("订货员");
+  const settingsAuthMode = resolveSettingsAuthMode({
+    hasUser: Boolean(user),
+    hasDeviceSession: Boolean(deviceSession),
+  });
+  const isDeviceMode = settingsAuthMode === "device";
+  const showProfileAction = shouldShowProfileAction(settingsAuthMode);
   const canViewDeviceCard = canRegisterDevice || Boolean(deviceSession);
 
   const effectiveStore = selectedStore
@@ -173,6 +181,34 @@ export default function Settings() {
         },
       },
     ]);
+  };
+
+  const handleDeviceUnbind = (mode: "unbind" | "rebind") => {
+    Alert.alert(
+      mode === "rebind" ? t("dialogs.rebindDeviceTitle") : t("dialogs.unbindDeviceTitle"),
+      mode === "rebind" ? t("dialogs.rebindDeviceMessage") : t("dialogs.unbindDeviceMessage"),
+      [
+        { text: t("common:actions.cancel"), style: "cancel" },
+        {
+          text: mode === "rebind" ? t("device.rebind") : t("device.unbind"),
+          style: "destructive",
+          onPress: async () => {
+            setIsSubmitting(true);
+            try {
+              await unbindDevice();
+              router.replace("/(auth)/login");
+            } catch (error) {
+              Alert.alert(
+                t("dialogs.unbindDeviceFailedTitle"),
+                error instanceof Error ? error.message : t("dialogs.unbindDeviceFailedMessage")
+              );
+            } finally {
+              setIsSubmitting(false);
+            }
+          },
+        },
+      ]
+    );
   };
 
   const handleLanguageChange = async (nextLanguage: AppLanguage) => {
@@ -341,24 +377,27 @@ export default function Settings() {
               ? t("account.roles", { roles: user.roleNames.join(" / ") })
               : t("account.deviceMode")}
           </Text>
-          <Text variant="bodyMedium" style={styles.meta}>
-            {t("account.profileHelper")}
-          </Text>
-          <Button
-            mode="outlined"
-            icon="account-circle-outline"
-            onPress={() => {
-              if (!user) {
-                Alert.alert(t("title"), t("messages.profileLoginRequired"));
-                return;
-              }
-
-              router.push("/(tabs)/employee-profile");
-            }}
-            style={styles.secondaryButton}
-          >
-            {t("account.profileButton")}
-          </Button>
+          {showProfileAction ? (
+            <>
+              <Text variant="bodyMedium" style={styles.meta}>
+                {t("account.profileHelper")}
+              </Text>
+              <Button
+                mode="outlined"
+                icon="account-circle-outline"
+                onPress={() => {
+                  router.push("/(tabs)/employee-profile");
+                }}
+                style={styles.secondaryButton}
+              >
+                {t("account.profileButton")}
+              </Button>
+            </>
+          ) : (
+            <Text variant="bodyMedium" style={styles.meta}>
+              {t("account.deviceModeHelper")}
+            </Text>
+          )}
         </Surface>
 
         <Surface style={styles.card} elevation={1}>
@@ -473,6 +512,33 @@ export default function Settings() {
               >
                 {t("device.refreshStatus")}
               </Button>
+            ) : null}
+
+            {deviceSession && isDeviceMode ? (
+              <View style={styles.deviceDangerActions}>
+                <Button
+                  mode="outlined"
+                  icon="link-off"
+                  textColor="#A8071A"
+                  onPress={() => handleDeviceUnbind("unbind")}
+                  loading={isSubmitting || deviceLoading}
+                  disabled={isSubmitting || deviceLoading}
+                  style={styles.deviceDangerButton}
+                >
+                  {t("device.unbind")}
+                </Button>
+                <Button
+                  mode="contained"
+                  buttonColor="#A8071A"
+                  icon="refresh"
+                  onPress={() => handleDeviceUnbind("rebind")}
+                  loading={isSubmitting || deviceLoading}
+                  disabled={isSubmitting || deviceLoading}
+                  style={styles.deviceDangerButton}
+                >
+                  {t("device.rebind")}
+                </Button>
+              </View>
             ) : null}
 
             {deviceReady ? (
@@ -602,7 +668,7 @@ export default function Settings() {
             disabled={isSubmitting}
             style={styles.logoutButton}
           >
-            {t("common:actions.logout")}
+            {t("account.logoutToLogin")}
           </Button>
         ) : null}
       </ScrollView>
@@ -671,6 +737,13 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     gap: 10,
     marginTop: 4,
+  },
+  deviceDangerActions: {
+    gap: 10,
+    marginTop: 4,
+  },
+  deviceDangerButton: {
+    alignSelf: "stretch",
   },
   secondaryButton: { marginTop: 8 },
   logoutButton: { marginTop: 2, marginBottom: 6 },

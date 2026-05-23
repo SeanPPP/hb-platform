@@ -6,7 +6,9 @@
     "roles": "角色：{{roles}}",
     "deviceMode": "角色：设备模式",
     "profileButton": "个人信息",
-    "profileHelper": "查看并维护你自己的个人资料。"
+    "profileHelper": "查看并维护你自己的个人资料。",
+    "deviceModeHelper": "当前使用设备授权进入 App，不显示个人资料入口。",
+    "logoutToLogin": "退出并回登录页"
   },
   "language": {
     "description": "切换 App 显示语言，立即生效。"
@@ -23,6 +25,8 @@
     "register": "注册当前设备",
     "registerAgain": "重新提交设备注册",
     "refreshStatus": "刷新设备状态",
+    "unbind": "解绑本机设备",
+    "rebind": "重新绑定",
     "ready": "当前设备已启用，后续重新打开 App 时无需再次登录。"
   },
   "printer": {
@@ -73,6 +77,12 @@
     "refreshPendingMessage": "当前设备还不能直接进入 App，请等待后台确认或检查设备状态。",
     "refreshFailedTitle": "刷新失败",
     "refreshFailedMessage": "设备状态刷新失败，请稍后重试。",
+    "unbindDeviceTitle": "解绑本机设备",
+    "unbindDeviceMessage": "解绑后会清除本机设备会话，并将后台设备记录更新为未注册。确定继续吗？",
+    "rebindDeviceTitle": "重新绑定设备",
+    "rebindDeviceMessage": "重新绑定会先解绑当前设备，然后回到登录页重新走设备注册流程。确定继续吗？",
+    "unbindDeviceFailedTitle": "解绑失败",
+    "unbindDeviceFailedMessage": "设备解绑失败，请稍后重试。",
     "printerScanFailedTitle": "扫描失败",
     "printerConnectFailedTitle": "连接失败",
     "printerTestFailedTitle": "测试打印失败",

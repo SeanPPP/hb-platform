@@ -3,6 +3,7 @@ import { Platform } from "react-native";
 import {
   getDeviceProfileApi,
   registerDeviceApi,
+  unbindDeviceApi,
   validateDeviceAuthApi,
 } from "@/modules/device/api";
 import { DeviceStorage } from "@/modules/device/storage";
@@ -17,6 +18,7 @@ interface DeviceState {
   register: (payload: { storeCode: string; storeName?: string | null }) => Promise<PersistedDeviceSession>;
   syncFromProfile: (profile: DeviceProfile, options?: { storeName?: string | null }) => Promise<PersistedDeviceSession>;
   validate: () => Promise<boolean>;
+  unbind: () => Promise<void>;
   clear: () => Promise<void>;
 }
 
@@ -163,6 +165,27 @@ export const useDeviceStore = create<DeviceState>((set, get) => ({
       }
 
       return profile.status === 1 && Boolean(nextSession.storeCode);
+    } catch (error) {
+      set({ isLoading: false, isReady: true });
+      throw error;
+    }
+  },
+
+  async unbind() {
+    const currentSession = get().session ?? (await DeviceStorage.getSession());
+    if (!currentSession?.hardwareId || !currentSession.authCode) {
+      await get().clear();
+      return;
+    }
+
+    set({ isLoading: true });
+
+    try {
+      await unbindDeviceApi({
+        hardwareId: currentSession.hardwareId,
+        authCode: currentSession.authCode,
+      });
+      await get().clear();
     } catch (error) {
       set({ isLoading: false, isReady: true });
       throw error;

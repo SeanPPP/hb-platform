@@ -6,7 +6,9 @@
     "roles": "Roles: {{roles}}",
     "deviceMode": "Roles: Device mode",
     "profileButton": "My profile",
-    "profileHelper": "View and update your own personal details."
+    "profileHelper": "View and update your own personal details.",
+    "deviceModeHelper": "The app is using device authorization, so personal profile is hidden.",
+    "logoutToLogin": "Logout and return to login"
   },
   "language": {
     "description": "Change the app display language and apply it immediately."
@@ -23,6 +25,8 @@
     "register": "Register this device",
     "registerAgain": "Submit registration again",
     "refreshStatus": "Refresh device status",
+    "unbind": "Unbind this device",
+    "rebind": "Rebind device",
     "ready": "This device is enabled. Next time the app opens, it can enter directly."
   },
   "printer": {
@@ -73,6 +77,12 @@
     "refreshPendingMessage": "This device cannot enter the app directly yet. Please wait for backend approval or check its status.",
     "refreshFailedTitle": "Refresh failed",
     "refreshFailedMessage": "Failed to refresh the device status. Please try again later.",
+    "unbindDeviceTitle": "Unbind this device",
+    "unbindDeviceMessage": "This clears the local device session and marks the backend device record as unregistered. Continue?",
+    "rebindDeviceTitle": "Rebind device",
+    "rebindDeviceMessage": "Rebinding first unbinds the current device, then returns to login so you can register it again. Continue?",
+    "unbindDeviceFailedTitle": "Unbind failed",
+    "unbindDeviceFailedMessage": "Failed to unbind the device. Please try again later.",
     "printerScanFailedTitle": "Scan failed",
     "printerConnectFailedTitle": "Connection failed",
     "printerTestFailedTitle": "Test print failed",

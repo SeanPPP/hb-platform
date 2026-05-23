@@ -10,6 +10,11 @@ export interface DeviceValidationRequest {
   authCode: string
 }
 
+export interface DeviceUnbindRequest {
+  hardwareId: string
+  authCode: string
+}
+
 export interface DeviceValidationResult {
   isValid: boolean
   newAuthCode?: string | null
