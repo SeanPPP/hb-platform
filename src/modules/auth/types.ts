@@ -18,8 +18,11 @@ export interface RefreshTokenRequest {
 }
 
 export interface UserStoreDto {
+  storeGUID?: string;
   storeCode: string;
   storeName: string;
+  isPrimary?: boolean;
+  assignedAt?: string;
 }
 
 export interface CurrentUser {

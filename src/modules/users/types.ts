@@ -36,6 +36,7 @@ export interface StoreUserMutationInput {
 export interface StoreUserCreatePayload extends StoreUserMutationInput {
   storeCode: string;
   roleNames?: string[];
+  employmentType?: "casual";
 }
 
 export interface StoreUserUpdatePayload extends StoreUserMutationInput {
@@ -64,4 +65,3 @@ export interface StoreUserFormValues {
   password: string;
   status: boolean;
 }
-

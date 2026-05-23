@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Alert, Pressable, ScrollView, StyleSheet, View } from "react-native";
 import { Button, Card, Chip, Dialog, Portal, Text, TextInput } from "react-native-paper";
 import type {
@@ -12,9 +12,17 @@ import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 
 const CELL_WIDTH = 132;
 const ROW_HEADER_WIDTH = 132;
+const TIME_OPTION_HEIGHT = 36;
+const TIME_HOURS = Array.from({ length: 24 }, (_, index) => String(index).padStart(2, "0"));
+const TIME_MINUTES = Array.from({ length: 60 }, (_, index) => String(index).padStart(2, "0"));
+const QUICK_SHIFTS = [
+  { key: "nineToFiveThirty", startTime: "09:00", endTime: "17:30" },
+  { key: "tenToFour", startTime: "10:00", endTime: "16:00" },
+  { key: "nineToSeven", startTime: "09:00", endTime: "19:00" },
+];
 const EMPTY_FORM = {
   startTime: "09:00",
-  endTime: "17:00",
+  endTime: "17:30",
   status: "Draft" as AttendanceScheduleStatus,
   remark: "",
 };
@@ -55,8 +63,99 @@ function formatTime(value: string) {
   return value.includes("T") ? value.split("T").pop()?.slice(0, 5) || value : value.slice(0, 5);
 }
 
+function splitTimeValue(value: string) {
+  const [rawHour, rawMinute] = formatTime(value).split(":");
+  const hour = TIME_HOURS.includes(rawHour) ? rawHour : "09";
+  const minute = TIME_MINUTES.includes(rawMinute) ? rawMinute : "00";
+  return { hour, minute };
+}
+
+function setTimePart(value: string, part: "hour" | "minute", nextValue: string) {
+  const current = splitTimeValue(value);
+  return part === "hour" ? `${nextValue}:${current.minute}` : `${current.hour}:${nextValue}`;
+}
+
 function getUserDisplayName(user: StoreUserListItem) {
   return user.fullName || user.username || user.userGUID;
+}
+
+function TimeScrollPicker({
+  label,
+  hourLabel,
+  minuteLabel,
+  value,
+  onChange,
+}: {
+  label: string;
+  hourLabel: string;
+  minuteLabel: string;
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  const { hour, minute } = splitTimeValue(value);
+  const hourScrollRef = useRef<ScrollView>(null);
+  const minuteScrollRef = useRef<ScrollView>(null);
+
+  useEffect(() => {
+    hourScrollRef.current?.scrollTo({
+      y: TIME_HOURS.indexOf(hour) * TIME_OPTION_HEIGHT,
+      animated: false,
+    });
+    minuteScrollRef.current?.scrollTo({
+      y: TIME_MINUTES.indexOf(minute) * TIME_OPTION_HEIGHT,
+      animated: false,
+    });
+  }, [hour, minute]);
+
+  return (
+    <View style={styles.timePicker}>
+      <Text variant="labelMedium">{label}</Text>
+      <Text variant="titleMedium" style={styles.timePickerValue}>
+        {hour}:{minute}
+      </Text>
+      <View style={styles.timePickerHeader}>
+        <Text variant="labelSmall" style={styles.timePickerHeaderText}>
+          {hourLabel}
+        </Text>
+        <Text variant="labelSmall" style={styles.timePickerHeaderText}>
+          {minuteLabel}
+        </Text>
+      </View>
+      <View style={styles.timePickerColumns}>
+        <ScrollView ref={hourScrollRef} style={styles.timeColumn} showsVerticalScrollIndicator nestedScrollEnabled>
+          {TIME_HOURS.map((item) => (
+            <Pressable
+              key={item}
+              accessibilityRole="button"
+              style={[styles.timeOption, hour === item ? styles.timeOptionSelected : null]}
+              onPress={() => onChange(setTimePart(value, "hour", item))}
+            >
+              <Text variant="labelLarge" style={hour === item ? styles.timeOptionTextSelected : null}>
+                {item}
+              </Text>
+            </Pressable>
+          ))}
+        </ScrollView>
+        <Text variant="titleMedium" style={styles.timeSeparator}>
+          :
+        </Text>
+        <ScrollView ref={minuteScrollRef} style={styles.timeColumn} showsVerticalScrollIndicator nestedScrollEnabled>
+          {TIME_MINUTES.map((item) => (
+            <Pressable
+              key={item}
+              accessibilityRole="button"
+              style={[styles.timeOption, minute === item ? styles.timeOptionSelected : null]}
+              onPress={() => onChange(setTimePart(value, "minute", item))}
+            >
+              <Text variant="labelLarge" style={minute === item ? styles.timeOptionTextSelected : null}>
+                {item}
+              </Text>
+            </Pressable>
+          ))}
+        </ScrollView>
+      </View>
+    </View>
+  );
 }
 
 export function ScheduleManagementCard({
@@ -135,6 +234,15 @@ export function ScheduleManagementCard({
     setForm(EMPTY_FORM);
   };
 
+  const openDefaultCreate = () => {
+    const firstRow = rows[0];
+    const firstDay = days[0];
+    if (!storeCode || !firstRow || !firstDay) {
+      return;
+    }
+    openCreate(firstRow, firstDay);
+  };
+
   const openEdit = (schedule: AttendanceSchedule, row: ScheduleRow) => {
     setEditingTarget({
       schedule,
@@ -204,6 +312,7 @@ export function ScheduleManagementCard({
   };
 
   const canSubmit = Boolean(form.startTime.trim() && form.endTime.trim());
+  const canCreateDefault = Boolean(storeCode && rows.length && days[0]);
 
   return (
     <Card mode="elevated" style={styles.card}>
@@ -227,9 +336,39 @@ export function ScheduleManagementCard({
           </Button>
         </View>
 
-        <Button mode="contained" icon="send-clock-outline" onPress={onPublishWeek} loading={isBusy} disabled={isBusy}>
-          {t("actions.publishWeek")}
-        </Button>
+        <View style={styles.actionRow}>
+          <Button
+            mode="contained"
+            icon="plus"
+            onPress={openDefaultCreate}
+            disabled={isBusy || !canCreateDefault}
+            style={styles.createButton}
+          >
+            {t("actions.createSchedule")}
+          </Button>
+        </View>
+
+        <View style={styles.publishPanel}>
+          <View style={styles.publishText}>
+            <Text variant="titleSmall" style={styles.publishTitle}>
+              {t("scheduleManagement.publishTitle")}
+            </Text>
+            <Text variant="bodySmall" style={styles.publishSubtitle}>
+              {t("scheduleManagement.publishSubtitle")}
+            </Text>
+          </View>
+          <Button
+            mode="contained"
+            icon="send-clock-outline"
+            onPress={onPublishWeek}
+            loading={isBusy}
+            disabled={isBusy}
+            buttonColor="#EA580C"
+            textColor="#FFFFFF"
+          >
+            {t("actions.publishWeek")}
+          </Button>
+        </View>
 
         {!storeCode ? (
           <Text variant="bodyMedium" style={styles.muted}>
@@ -314,22 +453,39 @@ export function ScheduleManagementCard({
             <Text variant="bodySmall" style={styles.muted}>
               {editingTarget?.employeeName || editingTarget?.userGuid} · {editingTarget?.workDate}
             </Text>
+            <View style={styles.quickShiftRow}>
+              <Text variant="labelMedium" style={styles.quickShiftTitle}>
+                {t("scheduleManagement.quickShiftTitle")}
+              </Text>
+              {QUICK_SHIFTS.map((shift) => {
+                const selected = form.startTime === shift.startTime && form.endTime === shift.endTime;
+                const label = t(`scheduleManagement.quickShifts.${shift.key}`);
+                return (
+                  <Chip
+                    key={shift.key}
+                    compact
+                    selected={selected}
+                    onPress={() => setForm((current) => ({ ...current, startTime: shift.startTime, endTime: shift.endTime }))}
+                  >
+                    {label}
+                  </Chip>
+                );
+              })}
+            </View>
             <View style={styles.timeRow}>
-              <TextInput
-                mode="outlined"
+              <TimeScrollPicker
                 label={t("fields.startTime")}
+                hourLabel={t("scheduleManagement.timePicker.hour")}
+                minuteLabel={t("scheduleManagement.timePicker.minute")}
                 value={form.startTime}
-                placeholder="09:00"
-                style={styles.timeInput}
-                onChangeText={(value) => setForm((current) => ({ ...current, startTime: value }))}
+                onChange={(value) => setForm((current) => ({ ...current, startTime: value }))}
               />
-              <TextInput
-                mode="outlined"
+              <TimeScrollPicker
                 label={t("fields.endTime")}
+                hourLabel={t("scheduleManagement.timePicker.hour")}
+                minuteLabel={t("scheduleManagement.timePicker.minute")}
                 value={form.endTime}
-                placeholder="17:00"
-                style={styles.timeInput}
-                onChangeText={(value) => setForm((current) => ({ ...current, endTime: value }))}
+                onChange={(value) => setForm((current) => ({ ...current, endTime: value }))}
               />
             </View>
             <TextInput
@@ -376,6 +532,9 @@ const styles = StyleSheet.create({
     backgroundColor: "#E8F5E9",
     borderColor: "#81C784",
   },
+  actionRow: {
+    alignItems: "flex-end",
+  },
   bodyCell: {
     borderColor: "#E5E7EB",
     borderRightWidth: StyleSheet.hairlineWidth,
@@ -390,6 +549,9 @@ const styles = StyleSheet.create({
   },
   content: {
     gap: 12,
+  },
+  createButton: {
+    alignSelf: "flex-end",
   },
   dialogContent: {
     gap: 12,
@@ -412,6 +574,36 @@ const styles = StyleSheet.create({
   muted: {
     color: "#6B7280",
   },
+  publishPanel: {
+    alignItems: "center",
+    backgroundColor: "#FFF7ED",
+    borderColor: "#FDBA74",
+    borderRadius: 8,
+    borderWidth: StyleSheet.hairlineWidth,
+    flexDirection: "row",
+    gap: 12,
+    justifyContent: "space-between",
+    padding: 12,
+  },
+  publishSubtitle: {
+    color: "#9A3412",
+  },
+  publishText: {
+    flex: 1,
+    gap: 2,
+  },
+  publishTitle: {
+    color: "#C2410C",
+  },
+  quickShiftRow: {
+    alignItems: "center",
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  quickShiftTitle: {
+    color: "#374151",
+  },
   rowHeader: {
     width: ROW_HEADER_WIDTH,
   },
@@ -433,8 +625,52 @@ const styles = StyleSheet.create({
   tableScroll: {
     paddingBottom: 4,
   },
-  timeInput: {
+  timeColumn: {
+    maxHeight: 160,
+    width: 64,
+  },
+  timeOption: {
+    alignItems: "center",
+    borderRadius: 6,
+    minHeight: TIME_OPTION_HEIGHT,
+    justifyContent: "center",
+    paddingVertical: 8,
+  },
+  timeOptionSelected: {
+    backgroundColor: "#FFEDD5",
+  },
+  timeOptionTextSelected: {
+    color: "#C2410C",
+  },
+  timePicker: {
     flex: 1,
+    gap: 6,
+  },
+  timePickerColumns: {
+    alignItems: "center",
+    backgroundColor: "#F9FAFB",
+    borderColor: "#E5E7EB",
+    borderRadius: 8,
+    borderWidth: StyleSheet.hairlineWidth,
+    flexDirection: "row",
+    justifyContent: "center",
+    padding: 8,
+  },
+  timePickerHeader: {
+    flexDirection: "row",
+    justifyContent: "space-around",
+  },
+  timePickerHeaderText: {
+    color: "#6B7280",
+    width: 64,
+    textAlign: "center",
+  },
+  timePickerValue: {
+    color: "#111827",
+  },
+  timeSeparator: {
+    color: "#6B7280",
+    paddingHorizontal: 4,
   },
   timeRow: {
     flexDirection: "row",

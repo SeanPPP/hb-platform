@@ -5,18 +5,19 @@
     "label": "当前分店",
     "value": "{{name}} ({{code}})",
     "empty": "尚未选择分店",
-    "helper": "所有店员账号都会固定绑定到当前分店，默认角色为 StoreStaff。"
+    "select": "选择分店",
+    "helper": "请选择要管理的分店；只有一个可管理分店时会自动选中。"
   },
   "actions": {
     "refresh": "刷新",
-    "create": "新建店员",
+    "create": "新增店员",
     "edit": "编辑",
     "save": "保存",
     "cancel": "取消",
     "enable": "启用",
     "disable": "停用",
     "resetPassword": "重置密码",
-    "confirmReset": "确认重置"
+    "confirmReset": "重置密码"
   },
   "statuses": {
     "active": "启用中",
@@ -30,8 +31,8 @@
     "enabled": "启用状态",
     "initialPassword": "初始密码",
     "newPassword": "新密码",
-    "fixedRoleHint": "角色固定为 {{role}}，不支持在此页面修改角色或跨店分配。",
-    "roleValue": "角色：{{role}}",
+    "fixedRoleHint": "此页面创建的账号固定为店员，绑定到所选管理分店，员工类型默认为临时。",
+    "roleValue": "角色：店员",
     "emailValue": "邮箱：{{value}}",
     "phoneValue": "电话：{{value}}",
     "lastLoginValue": "最近登录：{{value}}",
@@ -41,26 +42,30 @@
     "createTitle": "新建店员账号",
     "editTitle": "编辑店员账号",
     "resetPasswordTitle": "重置店员密码",
-    "resetPasswordDescription": "为 {{username}} 设置一个新密码。",
-    "statusConfirmMessage": "确认{{action}}{{username}}吗？"
+    "resetPasswordDescription": "为 {{username}} 设置新密码。保存后请通知该店员使用新密码登录。",
+    "statusConfirmMessage": "确认要{{action}} {{username}} 吗？"
   },
   "messages": {
     "noAccessTitle": "暂无店员管理权限",
-    "noAccessDescription": "当前账号不是 StoreManager，或没有可用的用户管理权限。",
+    "noAccessDescription": "当前账号没有维护分店店员的权限。",
     "selectStoreTitle": "请先选择当前分店",
     "selectStoreDescription": "选择分店后，才能查看和维护该分店的店员账号。",
     "selectStoreFirst": "请先选择当前分店",
     "loadFailedTitle": "加载店员列表失败",
-    "loadFailedDescription": "请稍后重试，或下拉刷新重新加载。",
+    "loadFailedDescription": "请稍后重试，或下拉刷新。",
     "refreshFailed": "刷新店员列表失败",
     "emptyTitle": "还没有店员账号",
-    "emptyDescription": "可通过右下角按钮为当前分店创建新的店员账号。",
+    "emptyDescription": "点击新增店员，为当前分店创建第一个店员账号。",
     "emptySearchTitle": "未找到匹配的店员",
     "emptySearchDescription": "没有找到与“{{keyword}}”匹配的店员账号。",
     "usernameRequired": "请输入账号",
+    "usernameLength": "账号长度需为 3-50 个字符",
+    "emailInvalid": "请输入正确的邮箱地址",
     "passwordRequired": "请输入密码",
-    "saveFailed": "保存店员失败",
-    "statusFailed": "更新店员状态失败",
+    "passwordTooShort": "密码至少需要 6 位",
+    "passwordTooLong": "密码不能超过 100 位",
+    "saveFailed": "店员账号保存失败",
+    "statusFailed": "店员状态更新失败",
     "passwordResetFailed": "重置密码失败",
     "userCreated": "店员账号已创建",
     "userUpdated": "店员账号已更新",
@@ -69,4 +74,3 @@
     "passwordReset": "密码已重置"
   }
 }
-

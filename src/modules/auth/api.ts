@@ -13,18 +13,36 @@ function normalizeUserStores(payload: unknown): UserStoreDto[] {
 
   return payload
     .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object")
-    .map((item) => ({
-      storeCode:
+    .map((item) => {
+      const storeCode =
         (typeof item.storeCode === "string" && item.storeCode) ||
         (typeof item.StoreCode === "string" && item.StoreCode) ||
-        "",
-      storeName:
-        (typeof item.storeName === "string" && item.storeName) ||
-        (typeof item.StoreName === "string" && item.StoreName) ||
-        (typeof item.storeCode === "string" && item.storeCode) ||
-        (typeof item.StoreCode === "string" && item.StoreCode) ||
-        "",
-    }))
+        "";
+
+      return {
+        storeGUID:
+          (typeof item.storeGUID === "string" && item.storeGUID) ||
+          (typeof item.storeGuid === "string" && item.storeGuid) ||
+          (typeof item.StoreGUID === "string" && item.StoreGUID) ||
+          (typeof item.StoreGuid === "string" && item.StoreGuid) ||
+          undefined,
+        storeCode,
+        storeName:
+          (typeof item.storeName === "string" && item.storeName) ||
+          (typeof item.StoreName === "string" && item.StoreName) ||
+          storeCode,
+        isPrimary:
+          typeof item.isPrimary === "boolean"
+            ? item.isPrimary
+            : typeof item.IsPrimary === "boolean"
+              ? item.IsPrimary
+              : undefined,
+        assignedAt:
+          (typeof item.assignedAt === "string" && item.assignedAt) ||
+          (typeof item.AssignedAt === "string" && item.AssignedAt) ||
+          undefined,
+      };
+    })
     .filter((item) => Boolean(item.storeCode));
 }
 
@@ -93,7 +111,7 @@ export async function getCurrentUserApi(): Promise<CurrentUser> {
 
 export async function getUserStoresApi(userGuid: string): Promise<UserStoreDto[]> {
   const res = await apiClient.get(`/Users/guid/${encodeURIComponent(userGuid)}/stores`);
-  return Array.isArray(res.data) ? (res.data as UserStoreDto[]) : [];
+  return normalizeUserStores(res.data);
 }
 
 export async function logoutApi(refreshToken: string): Promise<void> {

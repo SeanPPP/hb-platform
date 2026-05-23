@@ -31,6 +31,7 @@
   },
   "tabs": {
     "home": "Home",
+    "store": "Store",
     "orders": "Orders",
     "cart": "Cart",
     "warehouse": "Warehouse",

@@ -8,6 +8,7 @@ import {
   Chip,
   Dialog,
   FAB,
+  Menu,
   Portal,
   Searchbar,
   Snackbar,
@@ -25,10 +26,10 @@ import {
   type StoreUserFormValues,
   type StoreUserListItem,
 } from "@/modules/users";
+import { validatePasswordValue, validateStoreUserForm, type UserDialogMode } from "@/modules/users/validation";
+import { extractApiErrorMessage } from "@/shared/api/error-message";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 import { useAuthStore } from "@/store/auth-store";
-
-type UserDialogMode = "create" | "edit";
 
 const EMPTY_FORM: StoreUserFormValues = {
   username: "",
@@ -59,7 +60,9 @@ export default function UsersScreen() {
   const router = useRouter();
   const { t, language } = useAppTranslation(["userManagement", "common"]);
   const access = useAuthStore((state) => state.access);
-  const { selectedStore, selectedStoreCode, isHydratingSelection } = useStores();
+  const { stores, selectedStoreCode, isHydratingSelection, isLoading: storesLoading } = useStores();
+  const [managedStoreCode, setManagedStoreCode] = useState<string | null>(null);
+  const [storeMenuVisible, setStoreMenuVisible] = useState(false);
   const [keywordInput, setKeywordInput] = useState("");
   const [keyword, setKeyword] = useState("");
   const [snackbarMessage, setSnackbarMessage] = useState("");
@@ -73,17 +76,46 @@ export default function UsersScreen() {
 
   const canManageUsers =
     access.isAdmin ||
-    access.isStoreManager ||
-    access.isStoreLevelManager ||
     (access.canReadUser && access.canWriteUser);
 
-  const usersQuery = useStoreUsers(selectedStoreCode, keyword);
+  const manageableStores = useMemo(
+    () => (access.isAdmin ? stores : stores.filter((store) => store.isPrimary === true)),
+    [access.isAdmin, stores]
+  );
+
+  useEffect(() => {
+    if (isHydratingSelection || storesLoading) {
+      return;
+    }
+
+    setManagedStoreCode((current) => {
+      if (current && manageableStores.some((store) => store.storeCode === current)) {
+        return current;
+      }
+
+      const selectedManageableStore = selectedStoreCode
+        ? manageableStores.find((store) => store.storeCode === selectedStoreCode)
+        : null;
+      if (selectedManageableStore) {
+        return selectedManageableStore.storeCode;
+      }
+
+      return manageableStores.length === 1 ? manageableStores[0].storeCode : null;
+    });
+  }, [isHydratingSelection, manageableStores, selectedStoreCode, storesLoading]);
+
+  const managedStore = useMemo(
+    () => manageableStores.find((store) => store.storeCode === managedStoreCode) ?? null,
+    [manageableStores, managedStoreCode]
+  );
+
+  const usersQuery = useStoreUsers(managedStoreCode, keyword);
   const detailQuery = useStoreUserDetail(
     dialogMode === "edit" ? editingUserGuid : null,
-    dialogMode === "edit" ? selectedStoreCode : null
+    dialogMode === "edit" ? managedStoreCode : null
   );
   const { createMutation, updateMutation, statusMutation, passwordMutation } =
-    useStoreUserMutations(selectedStoreCode, keyword);
+    useStoreUserMutations(managedStoreCode, keyword);
 
   const activeMutationCount =
     (createMutation.isPending ? 1 : 0) +
@@ -149,27 +181,23 @@ export default function UsersScreen() {
     try {
       await usersQuery.refetch();
     } catch (error) {
-      console.error("[store-users] refresh failed", error);
-      setSnackbarMessage(error instanceof Error ? error.message : t("messages.refreshFailed"));
+      console.warn("[store-users] refresh failed", error);
+      setSnackbarMessage(extractApiErrorMessage(error, t("messages.refreshFailed")));
     }
   }, [t, usersQuery]);
 
   const validateForm = useCallback(() => {
-    if (!formValues.username.trim()) {
-      setSnackbarMessage(t("messages.usernameRequired"));
-      return false;
-    }
-
-    if (dialogMode === "create" && !formValues.password.trim()) {
-      setSnackbarMessage(t("messages.passwordRequired"));
+    const validationMessage = validateStoreUserForm(formValues, dialogMode, t);
+    if (validationMessage) {
+      setSnackbarMessage(validationMessage);
       return false;
     }
 
     return true;
-  }, [dialogMode, formValues.password, formValues.username, t]);
+  }, [dialogMode, formValues, t]);
 
   const handleSubmit = useCallback(async () => {
-    if (!selectedStoreCode) {
+    if (!managedStoreCode) {
       setSnackbarMessage(t("messages.selectStoreFirst"));
       return;
     }
@@ -185,7 +213,7 @@ export default function UsersScreen() {
       phone: formValues.phone.trim() || undefined,
       password: formValues.password.trim() || undefined,
       status: formValues.status ? 1 : 0,
-      storeCode: selectedStoreCode,
+      storeCode: managedStoreCode,
       roleNames: [STORE_STAFF_ROLE],
     };
 
@@ -197,14 +225,17 @@ export default function UsersScreen() {
         });
         setSnackbarMessage(t("messages.userUpdated"));
       } else {
-        await createMutation.mutateAsync(payload);
+        await createMutation.mutateAsync({
+          ...payload,
+          employmentType: "casual",
+        });
         setSnackbarMessage(t("messages.userCreated"));
       }
 
       resetDialogState();
     } catch (error) {
-      console.error("[store-users] save failed", error);
-      setSnackbarMessage(error instanceof Error ? error.message : t("messages.saveFailed"));
+      console.warn("[store-users] save failed", error);
+      setSnackbarMessage(extractApiErrorMessage(error, t("messages.saveFailed")));
     }
   }, [
     createMutation,
@@ -216,8 +247,8 @@ export default function UsersScreen() {
     formValues.phone,
     formValues.status,
     formValues.username,
+    managedStoreCode,
     resetDialogState,
-    selectedStoreCode,
     t,
     updateMutation,
     validateForm,
@@ -225,7 +256,7 @@ export default function UsersScreen() {
 
   const handleToggleStatus = useCallback(
     (user: StoreUserListItem) => {
-      if (!selectedStoreCode) {
+      if (!managedStoreCode) {
         setSnackbarMessage(t("messages.selectStoreFirst"));
         return;
       }
@@ -247,24 +278,22 @@ export default function UsersScreen() {
               try {
                 await statusMutation.mutateAsync({
                   userGuid: user.userGUID,
-                  storeCode: selectedStoreCode,
+                  storeCode: managedStoreCode,
                   status: nextEnabled ? 1 : 0,
                 });
                 setSnackbarMessage(
                   nextEnabled ? t("messages.userEnabled") : t("messages.userDisabled")
                 );
               } catch (error) {
-                console.error("[store-users] status failed", error);
-                setSnackbarMessage(
-                  error instanceof Error ? error.message : t("messages.statusFailed")
-                );
+                console.warn("[store-users] status failed", error);
+                setSnackbarMessage(extractApiErrorMessage(error, t("messages.statusFailed")));
               }
             },
           },
         ]
       );
     },
-    [selectedStoreCode, statusMutation, t]
+    [managedStoreCode, statusMutation, t]
   );
 
   const openResetPasswordDialog = useCallback((user: StoreUserListItem) => {
@@ -274,48 +303,49 @@ export default function UsersScreen() {
   }, []);
 
   const handleResetPassword = useCallback(async () => {
-    if (!selectedStoreCode || !passwordUser) {
+    if (!managedStoreCode || !passwordUser) {
       setSnackbarMessage(t("messages.selectStoreFirst"));
       return;
     }
 
-    if (!resetPasswordValue.trim()) {
-      setSnackbarMessage(t("messages.passwordRequired"));
+    const validationMessage = validatePasswordValue(resetPasswordValue, t);
+    if (validationMessage) {
+      setSnackbarMessage(validationMessage);
       return;
     }
 
     try {
       await passwordMutation.mutateAsync({
         userGuid: passwordUser.userGUID,
-        storeCode: selectedStoreCode,
+        storeCode: managedStoreCode,
         newPassword: resetPasswordValue.trim(),
       });
       setSnackbarMessage(t("messages.passwordReset"));
       closeResetPasswordDialog();
     } catch (error) {
-      console.error("[store-users] password reset failed", error);
-      setSnackbarMessage(error instanceof Error ? error.message : t("messages.passwordResetFailed"));
+      console.warn("[store-users] password reset failed", error);
+      setSnackbarMessage(extractApiErrorMessage(error, t("messages.passwordResetFailed")));
     }
   }, [
     closeResetPasswordDialog,
+    managedStoreCode,
     passwordMutation,
     passwordUser,
     resetPasswordValue,
-    selectedStoreCode,
     t,
   ]);
 
   const renderedUsers = usersQuery.data ?? [];
   const storeCaption = useMemo(() => {
-    if (!selectedStore) {
+    if (!managedStore) {
       return t("currentStore.empty");
     }
 
     return t("currentStore.value", {
-      code: selectedStore.storeCode,
-      name: selectedStore.storeName || selectedStore.storeCode,
+      code: managedStore.storeCode,
+      name: managedStore.storeName || managedStore.storeCode,
     });
-  }, [selectedStore, t]);
+  }, [managedStore, t]);
 
   const renderUserCard = useCallback(
     ({ item }: { item: StoreUserListItem }) => {
@@ -337,7 +367,7 @@ export default function UsersScreen() {
             </View>
 
             <View style={styles.metaWrap}>
-              <Text variant="bodyMedium">{t("fields.roleValue", { role: STORE_STAFF_ROLE })}</Text>
+              <Text variant="bodyMedium">{t("fields.roleValue")}</Text>
               {item.email ? <Text variant="bodyMedium">{t("fields.emailValue", { value: item.email })}</Text> : null}
               {item.phone ? <Text variant="bodyMedium">{t("fields.phoneValue", { value: item.phone })}</Text> : null}
               {lastLogin ? <Text variant="bodySmall" style={styles.secondaryText}>{t("fields.lastLoginValue", { value: lastLogin })}</Text> : null}
@@ -405,6 +435,33 @@ export default function UsersScreen() {
                 <Text variant="bodyMedium" style={styles.currentStoreValue}>
                   {storeCaption}
                 </Text>
+                {manageableStores.length > 1 ? (
+                  <Menu
+                    visible={storeMenuVisible}
+                    onDismiss={() => setStoreMenuVisible(false)}
+                    anchor={
+                      <Button
+                        mode="outlined"
+                        icon="store-outline"
+                        onPress={() => setStoreMenuVisible(true)}
+                        style={styles.storeSelectButton}
+                      >
+                        {managedStore?.storeName || t("currentStore.select")}
+                      </Button>
+                    }
+                  >
+                    {manageableStores.map((store) => (
+                      <Menu.Item
+                        key={store.storeCode}
+                        title={store.storeName || store.storeCode}
+                        onPress={() => {
+                          setManagedStoreCode(store.storeCode);
+                          setStoreMenuVisible(false);
+                        }}
+                      />
+                    ))}
+                  </Menu>
+                ) : null}
                 <Text variant="bodySmall" style={styles.secondaryText}>
                   {t("currentStore.helper")}
                 </Text>
@@ -422,24 +479,24 @@ export default function UsersScreen() {
                   style={styles.searchbar}
                 />
                 <View style={styles.toolbarActions}>
-                  <Button mode="outlined" icon="refresh" onPress={handleRefresh} disabled={!selectedStoreCode}>
+                  <Button mode="outlined" icon="refresh" onPress={handleRefresh} disabled={!managedStoreCode}>
                     {t("actions.refresh")}
                   </Button>
-                  <Button mode="contained" icon="account-plus-outline" onPress={openCreateDialog} disabled={!selectedStoreCode}>
+                  <Button mode="contained" icon="account-plus-outline" onPress={openCreateDialog} disabled={!managedStoreCode}>
                     {t("actions.create")}
                   </Button>
                 </View>
               </Card.Content>
             </Card>
 
-            {!selectedStoreCode && !isHydratingSelection ? (
+            {!managedStoreCode && !isHydratingSelection && !storesLoading ? (
               <EmptyState
                 title={t("messages.selectStoreTitle")}
                 description={t("messages.selectStoreDescription")}
               />
             ) : null}
 
-            {selectedStoreCode && usersQuery.isError ? (
+            {managedStoreCode && usersQuery.isError ? (
               <EmptyState
                 title={t("messages.loadFailedTitle")}
                 description={
@@ -455,7 +512,7 @@ export default function UsersScreen() {
               />
             ) : null}
 
-            {selectedStoreCode &&
+            {managedStoreCode &&
             !usersQuery.isLoading &&
             !usersQuery.isError &&
             renderedUsers.length === 0 ? (
@@ -484,7 +541,7 @@ export default function UsersScreen() {
         label={t("actions.create")}
         style={styles.fab}
         onPress={openCreateDialog}
-        disabled={!selectedStoreCode || isBusy}
+        disabled={!managedStoreCode || isBusy}
       />
 
       <Portal>
@@ -546,7 +603,7 @@ export default function UsersScreen() {
                 />
               </View>
               <Text variant="bodySmall" style={styles.secondaryText}>
-                {t("fields.fixedRoleHint", { role: STORE_STAFF_ROLE })}
+                {t("fields.fixedRoleHint")}
               </Text>
               {dialogMode === "edit" && detailQuery.isFetching ? (
                 <View style={styles.inlineLoading}>
@@ -621,6 +678,9 @@ const styles = StyleSheet.create({
   currentStoreValue: {
     color: "#1f2937",
   },
+  storeSelectButton: {
+    alignSelf: "flex-start",
+  },
   toolbarCard: {
     gap: 12,
   },
@@ -688,4 +748,3 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
 });
-

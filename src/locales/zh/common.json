@@ -31,6 +31,7 @@
   },
   "tabs": {
     "home": "商品",
+    "store": "门店",
     "orders": "订单",
     "cart": "购物车",
     "warehouse": "仓库",

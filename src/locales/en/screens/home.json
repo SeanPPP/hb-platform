@@ -21,6 +21,8 @@
   "empty": {
     "noProductsTitle": "No products yet",
     "noProductsDescription": "Try another keyword, rescan, or switch the category.",
+    "productsLoadFailedTitle": "Products failed to load",
+    "productsLoadFailedDescription": "The backend is slow or the network is unstable. Please retry.",
     "selectStoreTitle": "Select a store first",
     "selectStoreDescription": "Choose a store to view its products."
   },
@@ -38,6 +40,7 @@
   },
   "messages": {
     "storesLoadFailed": "Failed to load stores. Please try again later.",
+    "productsLoadFailed": "Failed to load products. Please retry.",
     "scanAddFailed": "Failed to add the scanned product to the cart.",
     "addFailed": "Failed to add the product to the cart.",
     "updateQtyFailed": "Failed to update the cart quantity.",

@@ -21,6 +21,8 @@
   "empty": {
     "noProductsTitle": "暂无商品",
     "noProductsDescription": "可以换个关键词、重新扫码或切换分类试试",
+    "productsLoadFailedTitle": "商品加载失败",
+    "productsLoadFailedDescription": "后端响应较慢或网络不稳定，请重试。",
     "selectStoreTitle": "先选择门店",
     "selectStoreDescription": "选中门店后可查看商品动态"
   },
@@ -38,6 +40,7 @@
   },
   "messages": {
     "storesLoadFailed": "门店加载失败，请稍后重试",
+    "productsLoadFailed": "商品加载失败，请重试",
     "scanAddFailed": "扫码加入购物车失败",
     "addFailed": "加入购物车失败",
     "updateQtyFailed": "更新购物车数量失败",

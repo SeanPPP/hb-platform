@@ -10,6 +10,7 @@ import loginEn from "@/locales/en/screens/login.json";
 import ordersEn from "@/locales/en/screens/orders.json";
 import productQueryEn from "@/locales/en/screens/productQuery.json";
 import settingsEn from "@/locales/en/screens/settings.json";
+import userManagementEn from "@/locales/en/screens/userManagement.json";
 import warehouseEn from "@/locales/en/screens/warehouse.json";
 import commonZh from "@/locales/zh/common.json";
 import attendanceZh from "@/locales/zh/screens/attendance.json";
@@ -21,6 +22,7 @@ import loginZh from "@/locales/zh/screens/login.json";
 import ordersZh from "@/locales/zh/screens/orders.json";
 import productQueryZh from "@/locales/zh/screens/productQuery.json";
 import settingsZh from "@/locales/zh/screens/settings.json";
+import userManagementZh from "@/locales/zh/screens/userManagement.json";
 import warehouseZh from "@/locales/zh/screens/warehouse.json";
 import { getStoredLanguage, setStoredLanguage } from "@/shared/i18n/storage";
 import {
@@ -41,6 +43,7 @@ const resources = {
     orders: ordersZh,
     settings: settingsZh,
     productQuery: productQueryZh,
+    userManagement: userManagementZh,
     warehouse: warehouseZh,
   },
   en: {
@@ -54,6 +57,7 @@ const resources = {
     orders: ordersEn,
     settings: settingsEn,
     productQuery: productQueryEn,
+    userManagement: userManagementEn,
     warehouse: warehouseEn,
   },
 } as const;
@@ -80,7 +84,7 @@ if (!i18n.isInitialized) {
     lng: DEFAULT_APP_LANGUAGE,
     fallbackLng: DEFAULT_APP_LANGUAGE,
     defaultNS: "common",
-    ns: ["common", "attendance", "login", "home", "cart", "domesticPurchase", "employeeProfile", "orders", "settings", "productQuery", "warehouse"],
+    ns: ["common", "attendance", "login", "home", "cart", "domesticPurchase", "employeeProfile", "orders", "settings", "productQuery", "userManagement", "warehouse"],
     interpolation: {
       escapeValue: false,
     },

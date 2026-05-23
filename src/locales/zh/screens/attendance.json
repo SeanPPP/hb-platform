@@ -64,7 +64,19 @@
     "deleteMessage": "确定删除这个班次吗？",
     "deleteConfirm": "删除",
     "noStore": "请先选择分店",
-    "noEmployees": "当前分店暂无员工"
+    "noEmployees": "当前分店暂无员工",
+    "publishTitle": "发布排班",
+    "publishSubtitle": "发布后员工可查看本周正式排班",
+    "quickShiftTitle": "常用班次",
+    "quickShifts": {
+      "nineToFiveThirty": "09:00 - 17:30",
+      "tenToFour": "10:00 - 16:00",
+      "nineToSeven": "09:00 - 19:00"
+    },
+    "timePicker": {
+      "hour": "小时",
+      "minute": "分钟"
+    }
   },
   "fields": {
     "workDate": "日期",
@@ -83,6 +95,7 @@
     "submitLeave": "提交申请",
     "approve": "通过",
     "reject": "拒绝",
+    "createSchedule": "创建排班",
     "publishWeek": "发布本周"
   },
   "punchTypes": {

@@ -196,6 +196,18 @@ export default function Home() {
     );
   }, [storesError, storesLoadFailed, t]);
 
+  useEffect(() => {
+    if (!productsQuery.isError) {
+      return;
+    }
+
+    setSnackbarMessage(
+      productsQuery.error instanceof Error
+        ? productsQuery.error.message
+        : t("messages.productsLoadFailed")
+    );
+  }, [productsQuery.error, productsQuery.isError, t]);
+
   const canGoNextPage = useMemo(() => {
     const total = productsQuery.data?.total ?? 0;
     return pageNumber * 20 < total;
@@ -457,12 +469,22 @@ export default function Home() {
         keyboardShouldPersistTaps="handled"
         ListEmptyComponent={
           <EmptyState
-            title={selectedStoreCode ? t("empty.noProductsTitle") : t("empty.selectStoreTitle")}
-            description={
-              selectedStoreCode
-                ? t("empty.noProductsDescription")
-                : t("empty.selectStoreDescription")
+            title={
+              productsQuery.isError
+                ? t("empty.productsLoadFailedTitle")
+                : selectedStoreCode
+                  ? t("empty.noProductsTitle")
+                  : t("empty.selectStoreTitle")
             }
+            description={
+              productsQuery.isError
+                ? t("empty.productsLoadFailedDescription")
+                : selectedStoreCode
+                  ? t("empty.noProductsDescription")
+                  : t("empty.selectStoreDescription")
+            }
+            actionLabel={productsQuery.isError ? t("common:actions.retry") : undefined}
+            onAction={productsQuery.isError ? () => void productsQuery.refetch() : undefined}
           />
         }
         ListFooterComponent={

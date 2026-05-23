@@ -8,13 +8,16 @@ import { AppAsyncStorage } from "@/shared/storage/async-storage";
 import { STORE_SELECTION_STORAGE_KEY, type Store } from "@/modules/shop/types";
 
 function normalizeStores(
-  stores: Array<{ storeCode?: string; storeName?: string }> | null | undefined
+  stores: Array<{ storeGUID?: string; storeCode?: string; storeName?: string; isPrimary?: boolean; assignedAt?: string }> | null | undefined
 ): Store[] {
   return (stores ?? [])
-    .filter((item): item is { storeCode: string; storeName?: string } => Boolean(item?.storeCode))
+    .filter((item): item is { storeGUID?: string; storeCode: string; storeName?: string; isPrimary?: boolean; assignedAt?: string } => Boolean(item?.storeCode))
     .map((item) => ({
+      storeGUID: item.storeGUID,
       storeCode: item.storeCode,
       storeName: item.storeName || item.storeCode,
+      isPrimary: item.isPrimary,
+      assignedAt: item.assignedAt,
     }));
 }
 

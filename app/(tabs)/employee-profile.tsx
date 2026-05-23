@@ -19,7 +19,6 @@ import {
   updateMyEmployeeProfileApi,
 } from "@/modules/employee-profile/api";
 import {
-  EMPLOYMENT_TYPES,
   GENDERS,
   type EmployeeProfile,
   type UpdateEmployeeProfilePayload,
@@ -339,17 +338,6 @@ export default function EmployeeProfileScreen() {
               buttons={GENDERS.map((value) => ({
                 value,
                 label: t(`genderOptions.${value}`),
-              }))}
-            />
-          </View>
-          <View style={styles.segmentBlock}>
-            <Text variant="labelLarge">{t("fields.employmentType")}</Text>
-            <SegmentedButtons
-              value={formValues.employmentType}
-              onValueChange={(value) => setFieldValue("employmentType", value)}
-              buttons={EMPLOYMENT_TYPES.map((value) => ({
-                value,
-                label: t(`employmentTypeOptions.${value}`),
               }))}
             />
           </View>

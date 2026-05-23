@@ -7,7 +7,6 @@ import {
   StyleSheet,
   View,
 } from "react-native";
-import { useFocusEffect } from "@react-navigation/native";
 import { useQuery } from "@tanstack/react-query";
 import {
   ActivityIndicator,
@@ -294,6 +293,7 @@ export default function Orders() {
   const [selectedOrderGuid, setSelectedOrderGuid] = useState<string | null>(null);
   const [filtersVisible, setFiltersVisible] = useState(false);
   const [storeMenuVisible, setStoreMenuVisible] = useState(false);
+  const [ordersRefreshing, setOrdersRefreshing] = useState(false);
 
   const statusLabel = useCallback(
     (status?: StoreOrderFlowStatus) => {
@@ -340,13 +340,19 @@ export default function Orders() {
     queryFn: () => fetchOrderDetail(selectedOrderGuid!),
   });
 
-  useFocusEffect(
-    useCallback(() => {
-      if (selectedStoreCode) {
-        void ordersQuery.refetch();
-      }
-    }, [ordersQuery, selectedStoreCode])
-  );
+  const refetchOrders = ordersQuery.refetch;
+  const handleRefreshOrders = useCallback(async () => {
+    if (!selectedStoreCode) {
+      return;
+    }
+
+    setOrdersRefreshing(true);
+    try {
+      await refetchOrders();
+    } finally {
+      setOrdersRefreshing(false);
+    }
+  }, [refetchOrders, selectedStoreCode]);
 
   const orderItems = ordersQuery.data?.items ?? [];
   const total = ordersQuery.data?.total ?? 0;
@@ -414,7 +420,7 @@ export default function Orders() {
           renderItem={renderOrderCard}
           contentContainerStyle={styles.listContent}
           refreshControl={
-            <RefreshControl refreshing={ordersQuery.isRefetching} onRefresh={() => void ordersQuery.refetch()} />
+            <RefreshControl refreshing={ordersRefreshing} onRefresh={() => void handleRefreshOrders()} />
           }
           ListHeaderComponent={
             <View style={styles.listHeader}>
@@ -438,7 +444,7 @@ export default function Orders() {
                 primaryAction={{
                   label: t("common:actions.retry"),
                   icon: "refresh",
-                  onPress: () => void ordersQuery.refetch(),
+                  onPress: () => void handleRefreshOrders(),
                 }}
               />
             ) : (
@@ -549,7 +555,7 @@ export default function Orders() {
         >
           <OrderDetailContent
             detail={detailQuery.data}
-            loading={detailQuery.isLoading || detailQuery.isFetching}
+            loading={!detailQuery.data && (detailQuery.isLoading || detailQuery.isFetching)}
             errorMessage={detailQuery.error instanceof Error ? detailQuery.error.message : undefined}
             localeTag={localeTag}
             onClose={() => setSelectedOrderGuid(null)}

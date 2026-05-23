@@ -226,8 +226,11 @@ export async function getStoresByUserGuid(userGuid: string): Promise<Store[]> {
   return stores
     .filter((item) => item.storeCode)
     .map((item) => ({
+      storeGUID: item.storeGUID,
       storeCode: item.storeCode,
       storeName: item.storeName || item.storeCode,
+      isPrimary: item.isPrimary,
+      assignedAt: item.assignedAt,
     }));
 }
 

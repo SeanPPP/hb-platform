@@ -6,7 +6,7 @@ import {
   validateDeviceAuthApi,
 } from "@/modules/device/api";
 import { DeviceStorage } from "@/modules/device/storage";
-import type { PersistedDeviceSession } from "@/modules/device/types";
+import type { DeviceProfile, PersistedDeviceSession } from "@/modules/device/types";
 import { useAppNavigationStore } from "@/modules/navigation/store";
 
 interface DeviceState {
@@ -15,6 +15,7 @@ interface DeviceState {
   isLoading: boolean;
   hydrate: () => Promise<PersistedDeviceSession | null>;
   register: (payload: { storeCode: string; storeName?: string | null }) => Promise<PersistedDeviceSession>;
+  syncFromProfile: (profile: DeviceProfile, options?: { storeName?: string | null }) => Promise<PersistedDeviceSession>;
   validate: () => Promise<boolean>;
   clear: () => Promise<void>;
 }
@@ -69,6 +70,23 @@ export const useDeviceStore = create<DeviceState>((set, get) => ({
       set({ isLoading: false });
       throw error;
     }
+  },
+
+  async syncFromProfile(profile, options) {
+    const session: PersistedDeviceSession = {
+      hardwareId: profile.hardwareId,
+      authCode: profile.authCode,
+      storeCode: profile.storeCode ?? "",
+      storeName: options?.storeName ?? null,
+      systemDeviceNumber: profile.systemDeviceNumber || null,
+      status: profile.status,
+      statusDescription: profile.statusDescription,
+      resolvedFromExisting: profile.resolvedFromExisting ?? true,
+    };
+
+    await DeviceStorage.setSession(session);
+    set({ session, isReady: true, isLoading: false });
+    return session;
   },
 
   async validate() {

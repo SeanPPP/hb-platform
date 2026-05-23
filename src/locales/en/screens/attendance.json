@@ -64,7 +64,19 @@
     "deleteMessage": "Delete this shift?",
     "deleteConfirm": "Delete",
     "noStore": "Select a store first",
-    "noEmployees": "No employees in this store"
+    "noEmployees": "No employees in this store",
+    "publishTitle": "Publish schedule",
+    "publishSubtitle": "Employees can see this week's official schedule after publishing.",
+    "quickShiftTitle": "Common shifts",
+    "quickShifts": {
+      "nineToFiveThirty": "09:00 - 17:30",
+      "tenToFour": "10:00 - 16:00",
+      "nineToSeven": "09:00 - 19:00"
+    },
+    "timePicker": {
+      "hour": "HH",
+      "minute": "MM"
+    }
   },
   "fields": {
     "workDate": "Date",
@@ -83,6 +95,7 @@
     "submitLeave": "Submit request",
     "approve": "Approve",
     "reject": "Reject",
+    "createSchedule": "Create schedule",
     "publishWeek": "Publish week"
   },
   "punchTypes": {

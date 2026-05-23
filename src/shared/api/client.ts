@@ -3,6 +3,7 @@ import { router } from "expo-router";
 import { SecureStorage } from "@/shared/storage/secure";
 import { DeviceStorage } from "@/modules/device/storage";
 import { buildApiBaseUrl, DEFAULT_API_BASE_URL, getStoredApiHost } from "@/shared/api/config";
+import { extractApiErrorMessage } from "@/shared/api/error-message";
 
 function unwrapEnvelope<T>(payload: unknown): T {
   let current = payload;
@@ -16,10 +17,7 @@ function unwrapEnvelope<T>(payload: unknown): T {
     const envelope = current as Record<string, unknown>;
     const success = envelope.success ?? envelope.isSuccess;
     if (success === false) {
-      const message = typeof envelope.message === "string" && envelope.message.trim()
-        ? envelope.message
-        : "Request failed";
-      throw new Error(message);
+      throw new Error(extractApiErrorMessage(envelope, "Request failed"));
     }
     current = envelope.data;
   }
@@ -28,7 +26,7 @@ function unwrapEnvelope<T>(payload: unknown): T {
 
 export const apiClient = axios.create({
   baseURL: DEFAULT_API_BASE_URL,
-  timeout: 15000,
+  timeout: 30000,
   headers: { "Content-Type": "application/json" },
 });
 
@@ -109,6 +107,6 @@ apiClient.interceptors.response.use(
         isRefreshing = false;
       }
     }
-    return Promise.reject(error);
+    return Promise.reject(new Error(extractApiErrorMessage(error, error.message)));
   }
 );
