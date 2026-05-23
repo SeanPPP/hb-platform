@@ -13,10 +13,16 @@
   "filters": {
     "currentStore": "Store: {{store}}",
     "currentCategory": "Category: {{category}}",
+    "currentGrade": "Grade: {{grade}}",
     "store": "Store",
     "category": "Category",
+    "grade": "Grade",
     "all": "All",
-    "noStores": "No stores are available for this account."
+    "allCategories": "All categories",
+    "allGrades": "All grades",
+    "noStores": "No stores are available for this account.",
+    "noGrades": "No grade options are available.",
+    "gradesLoadFailed": "Failed to load product grades. Please try again later."
   },
   "empty": {
     "noProductsTitle": "No products yet",

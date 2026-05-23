@@ -23,6 +23,7 @@ import { ProductCard } from "@/components/ui/ProductCard";
 import { getCategoryTree } from "@/modules/shop/api";
 import { resolveMinimumOrderQuantity, useAddToCart } from "@/modules/shop/use-add-to-cart";
 import { useCartSummary } from "@/modules/shop/use-cart-summary";
+import { useProductGrades } from "@/modules/shop/use-product-grades";
 import { useProducts } from "@/modules/shop/use-products";
 import { useStores } from "@/modules/shop/use-stores";
 import { useUpdateCartQuantity } from "@/modules/shop/use-update-cart-quantity";
@@ -61,6 +62,10 @@ function findCategoryName(
   return undefined;
 }
 
+function normalizeGradeValue(value: string | null | undefined) {
+  return value?.trim().toUpperCase() || "";
+}
+
 export default function Home() {
   const { t } = useAppTranslation(["home", "common"]);
   const { height: windowHeight } = useWindowDimensions();
@@ -77,12 +82,14 @@ export default function Home() {
   } = useStores();
   const cartSummary = useCartStore((state) => state.cartSummary);
   const [cameraVisible, setCameraVisible] = useState(false);
+  const [storePickerVisible, setStorePickerVisible] = useState(false);
   const [filtersVisible, setFiltersVisible] = useState(false);
   const [searchInput, setSearchInput] = useState("");
   const [autoAddWhenSingle, setAutoAddWhenSingle] = useState(true);
   const [keyword, setKeyword] = useState("");
   const [scannedProducts, setScannedProducts] = useState<StoreOrderProductItem[] | null>(null);
   const [selectedCategoryGUID, setSelectedCategoryGUID] = useState<string | undefined>();
+  const [selectedGrade, setSelectedGrade] = useState<string | undefined>();
   const [expandedCategoryGUIDs, setExpandedCategoryGUIDs] = useState<string[]>([]);
   const [pageNumber, setPageNumber] = useState(1);
   const [snackbarMessage, setSnackbarMessage] = useState("");
@@ -97,6 +104,7 @@ export default function Home() {
       setKeyword("");
       setScannedProducts([product]);
       setSelectedCategoryGUID(undefined);
+      setSelectedGrade(undefined);
 
       if (!autoAddWhenSingle) {
         return;
@@ -157,11 +165,23 @@ export default function Home() {
     () => findCategoryName(categoryOptions, selectedCategoryGUID) ?? t("filters.all"),
     [categoryOptions, selectedCategoryGUID, t]
   );
+  const productGradesQuery = useProductGrades();
+  const gradeOptions = useMemo(() => productGradesQuery.data ?? [], [productGradesQuery.data]);
+  const selectedGradeLabel = useMemo(() => {
+    if (!selectedGrade) {
+      return t("filters.all");
+    }
 
+    return (
+      gradeOptions.find((item) => normalizeGradeValue(item.value) === selectedGrade)?.label ??
+      selectedGrade
+    );
+  }, [gradeOptions, selectedGrade, t]);
   const productsQuery = useProducts({
     storeCode: selectedStoreCode ?? undefined,
     itemNumber: keyword || undefined,
     categoryGUID: selectedCategoryGUID,
+    grade: selectedGrade,
     pageNumber,
     pageSize: 18,
     sortBy: "Default",
@@ -169,7 +189,7 @@ export default function Home() {
 
   useEffect(() => {
     setPageNumber(1);
-  }, [keyword, selectedCategoryGUID, selectedStoreCode]);
+  }, [keyword, selectedCategoryGUID, selectedGrade, selectedStoreCode]);
 
   useEffect(() => {
     if (
@@ -217,11 +237,13 @@ export default function Home() {
   );
   const displayProducts = useMemo(() => {
     if (scannedProducts?.length) {
-      return scannedProducts;
+      return selectedGrade
+        ? scannedProducts.filter((product) => normalizeGradeValue(product.grade) === selectedGrade)
+        : scannedProducts;
     }
 
     return productsQuery.data?.items ?? [];
-  }, [productsQuery.data?.items, scannedProducts]);
+  }, [productsQuery.data?.items, scannedProducts, selectedGrade]);
   const displayDynamicDataMap = useMemo(() => {
     const mergedMap = { ...productsQuery.dynamicDataMap };
 
@@ -249,9 +271,10 @@ export default function Home() {
     setKeyword(searchInput.trim());
   }, [searchInput]);
   const handleClearSearchAndScan = useCallback(() => {
-    setScannedProducts(null);
-    setSearchInput("");
-    setKeyword("");
+      setScannedProducts(null);
+      setSearchInput("");
+      setKeyword("");
+      setSelectedGrade(undefined);
   }, []);
 
   const toggleCategoryExpanded = useCallback((categoryGUID: string) => {
@@ -418,11 +441,31 @@ export default function Home() {
           compact
           mode="outlined"
           icon="storefront-outline"
-          onPress={() => setFiltersVisible(true)}
+          onPress={() => setStorePickerVisible(true)}
           style={styles.utilityChip}
           textStyle={styles.utilityChipText}
         >
           {selectedStore?.storeName || t("common:labels.selectStore")}
+        </Chip>
+        <Chip
+          compact
+          mode={selectedCategoryGUID ? "flat" : "outlined"}
+          icon="shape-outline"
+          onPress={() => setFiltersVisible(true)}
+          style={[styles.utilityChip, selectedCategoryGUID ? styles.utilityChipActive : null]}
+          textStyle={[styles.utilityChipText, selectedCategoryGUID ? styles.utilityChipTextActive : null]}
+        >
+          {selectedCategoryName}
+        </Chip>
+        <Chip
+          compact
+          mode={selectedGrade ? "flat" : "outlined"}
+          icon="label-outline"
+          onPress={() => setFiltersVisible(true)}
+          style={[styles.utilityChip, selectedGrade ? styles.utilityChipActive : null]}
+          textStyle={[styles.utilityChipText, selectedGrade ? styles.utilityChipTextActive : null]}
+        >
+          {selectedGrade ? t("common:grade", { grade: selectedGrade }) : t("filters.grade")}
         </Chip>
         <Chip
           compact
@@ -457,39 +500,6 @@ export default function Home() {
             style={styles.scanFocusButton}
           />
         ) : null}
-      </ScrollView>
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        contentContainerStyle={styles.categoryRow}
-      >
-        <Chip
-          compact
-          mode={!selectedCategoryGUID ? "flat" : "outlined"}
-          selected={!selectedCategoryGUID}
-          onPress={() => setSelectedCategoryGUID(undefined)}
-          style={[styles.categoryChip, !selectedCategoryGUID ? styles.categoryChipActive : null]}
-          textStyle={[styles.categoryChipText, !selectedCategoryGUID ? styles.categoryChipTextActive : null]}
-        >
-          {t("filters.all")}
-        </Chip>
-        {categoryOptions.map((item) => {
-          const isSelected = selectedCategoryGUID === item.categoryGUID;
-
-          return (
-            <Chip
-              key={item.categoryGUID}
-              compact
-              mode={isSelected ? "flat" : "outlined"}
-              selected={isSelected}
-              onPress={() => setSelectedCategoryGUID(item.categoryGUID)}
-              style={[styles.categoryChip, isSelected ? styles.categoryChipActive : null]}
-              textStyle={[styles.categoryChipText, isSelected ? styles.categoryChipTextActive : null]}
-            >
-              {item.categoryName}
-            </Chip>
-          );
-        })}
       </ScrollView>
       {scannedProducts?.length ? (
         <View style={styles.scanHintBanner}>
@@ -559,22 +569,19 @@ export default function Home() {
 
       <Portal>
         <Modal
-          visible={filtersVisible}
-          onDismiss={() => setFiltersVisible(false)}
+          visible={storePickerVisible}
+          onDismiss={() => setStorePickerVisible(false)}
           contentContainerStyle={styles.filtersModal}
         >
           <ScrollView contentContainerStyle={styles.filtersModalContent}>
             <View style={styles.filtersModalHeader}>
               <View style={styles.filtersModalTitleWrap}>
-                <Text variant="titleMedium">{t("filterTitle")}</Text>
+                <Text variant="titleMedium">{t("filters.store")}</Text>
                 <Text variant="bodySmall" style={styles.secondaryText}>
                   {t("filters.currentStore", { store: selectedStore?.storeName || t("common:na") })}
                 </Text>
-                <Text variant="bodySmall" style={styles.secondaryText}>
-                  {t("filters.currentCategory", { category: selectedCategoryName })}
-                </Text>
               </View>
-              <Button mode="text" onPress={() => setFiltersVisible(false)}>
+              <Button mode="text" onPress={() => setStorePickerVisible(false)}>
                 {t("common:actions.close")}
               </Button>
             </View>
@@ -605,6 +612,7 @@ export default function Home() {
                       style={styles.storeButton}
                       onPress={() => {
                         void selectStore(item);
+                        setStorePickerVisible(false);
                       }}
                     >
                       {item.storeName}
@@ -615,18 +623,97 @@ export default function Home() {
                 <Text variant="bodyMedium">{t("filters.noStores")}</Text>
               )}
             </View>
+          </ScrollView>
+        </Modal>
+      </Portal>
+
+      <Portal>
+        <Modal
+          visible={filtersVisible}
+          onDismiss={() => setFiltersVisible(false)}
+          contentContainerStyle={styles.filtersModal}
+        >
+          <ScrollView contentContainerStyle={styles.filtersModalContent}>
+            <View style={styles.filtersModalHeader}>
+              <View style={styles.filtersModalTitleWrap}>
+                <Text variant="titleMedium">{t("filterTitle")}</Text>
+                <Text variant="bodySmall" style={styles.secondaryText}>
+                  {t("filters.currentCategory", { category: selectedCategoryName })}
+                </Text>
+                <Text variant="bodySmall" style={styles.secondaryText}>
+                  {t("filters.currentGrade", { grade: selectedGradeLabel })}
+                </Text>
+              </View>
+              <Button mode="text" onPress={() => setFiltersVisible(false)}>
+                {t("common:actions.close")}
+              </Button>
+            </View>
             <View style={styles.filtersSection}>
               <View style={styles.filtersSectionHeader}>
                 <Text variant="labelLarge">{t("filters.category")}</Text>
+                <Button compact onPress={() => setSelectedCategoryGUID(undefined)}>
+                  {t("filters.allCategories")}
+                </Button>
+              </View>
+              <View style={styles.categoryTreeWrap}>
                 <Button
                   compact
                   mode={!selectedCategoryGUID ? "contained-tonal" : "text"}
                   onPress={() => setSelectedCategoryGUID(undefined)}
+                  contentStyle={styles.resetFilterButtonContent}
                 >
                   {t("filters.all")}
                 </Button>
+                {renderCategoryTree(categoryOptions)}
               </View>
-              <View style={styles.categoryTreeWrap}>{renderCategoryTree(categoryOptions)}</View>
+            </View>
+            <View style={styles.filtersSection}>
+              <View style={styles.filtersSectionHeader}>
+                <Text variant="labelLarge">{t("filters.grade")}</Text>
+                <Button compact onPress={() => setSelectedGrade(undefined)}>
+                  {t("filters.allGrades")}
+                </Button>
+              </View>
+              <View style={styles.gradeOptionsWrap}>
+                <Chip
+                  compact
+                  mode={!selectedGrade ? "flat" : "outlined"}
+                  selected={!selectedGrade}
+                  onPress={() => setSelectedGrade(undefined)}
+                  style={[styles.filterChip, !selectedGrade ? styles.filterChipActive : null]}
+                  textStyle={[styles.filterChipText, !selectedGrade ? styles.filterChipTextActive : null]}
+                >
+                  {t("filters.all")}
+                </Chip>
+                {gradeOptions.map((option) => {
+                  const grade = normalizeGradeValue(option.value);
+                  const isSelected = selectedGrade === grade;
+
+                  return (
+                    <Chip
+                      key={option.value}
+                      compact
+                      mode={isSelected ? "flat" : "outlined"}
+                      selected={isSelected}
+                      onPress={() => setSelectedGrade(isSelected ? undefined : grade)}
+                      style={[styles.filterChip, isSelected ? styles.filterChipActive : null]}
+                      textStyle={[styles.filterChipText, isSelected ? styles.filterChipTextActive : null]}
+                    >
+                      {t("common:grade", { grade: option.label })}
+                    </Chip>
+                  );
+                })}
+              </View>
+              {productGradesQuery.isError ? (
+                <Text variant="bodySmall" style={styles.secondaryText}>
+                  {t("filters.gradesLoadFailed")}
+                </Text>
+              ) : null}
+              {!gradeOptions.length ? (
+                <Text variant="bodySmall" style={styles.secondaryText}>
+                  {productGradesQuery.isLoading ? t("common:loading") : t("filters.noGrades")}
+                </Text>
+              ) : null}
             </View>
           </ScrollView>
         </Modal>
@@ -892,25 +979,29 @@ const styles = StyleSheet.create({
     color: "#0B704F",
     fontWeight: "700",
   },
-  categoryRow: {
-    gap: 8,
-    paddingRight: 4,
-  },
-  categoryChip: {
+  filterChip: {
     backgroundColor: "#FFFFFF",
     borderColor: "#C5C6CD",
   },
-  categoryChipActive: {
+  filterChipActive: {
     backgroundColor: "#111C2E",
     borderColor: "#111C2E",
   },
-  categoryChipText: {
+  filterChipText: {
     fontSize: 12,
     color: "#45474C",
   },
-  categoryChipTextActive: {
+  filterChipTextActive: {
     color: "#FFFFFF",
     fontWeight: "700",
+  },
+  gradeOptionsWrap: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  resetFilterButtonContent: {
+    justifyContent: "flex-start",
   },
   scanHintBanner: {
     borderRadius: 8,

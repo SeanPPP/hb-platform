@@ -20,6 +20,14 @@ interface ProductCardProps {
   onIncreaseCartQuantity: (product: StoreOrderProductItem) => void;
 }
 
+function formatPrice(value: number | null | undefined): string {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return "--";
+  }
+
+  return `$${value.toFixed(2)}`;
+}
+
 export function ProductCard({
   product,
   dynamicDataMap,
@@ -56,12 +64,24 @@ export function ProductCard({
         <Text variant="labelSmall" numberOfLines={1} style={styles.secondaryText}>
           {t("labels.itemNumber")}: {product.itemNumber || t("na")}
         </Text>
-        <Text variant="labelSmall" style={styles.priceLabel}>
-          {t("labels.importPrice")}
-        </Text>
-        <Text variant="labelLarge" style={styles.priceText}>
-          ${Number(product.oemPrice ?? 0).toFixed(2)}
-        </Text>
+        <View style={styles.priceRow}>
+          <View style={styles.priceColumn}>
+            <Text variant="labelSmall" numberOfLines={1} style={styles.priceLabel}>
+              {t("labels.importPrice")}
+            </Text>
+            <Text numberOfLines={1} adjustsFontSizeToFit style={styles.priceText}>
+              {formatPrice(product.importPrice)}
+            </Text>
+          </View>
+          <View style={styles.priceColumn}>
+            <Text variant="labelSmall" numberOfLines={1} style={styles.priceLabel}>
+              {t("labels.retailPrice")}
+            </Text>
+            <Text numberOfLines={1} adjustsFontSizeToFit style={styles.priceText}>
+              {formatPrice(product.oemPrice)}
+            </Text>
+          </View>
+        </View>
       </Card.Content>
       <Card.Actions style={styles.actions}>
         <View style={styles.stepperRow}>
@@ -157,10 +177,21 @@ const styles = StyleSheet.create({
     fontSize: 9,
     marginTop: 2,
   },
+  priceRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 8,
+    marginTop: 2,
+  },
+  priceColumn: {
+    flex: 1,
+    minWidth: 0,
+  },
   priceText: {
     color: "#000000",
     fontWeight: "800",
-    fontSize: 14,
+    fontSize: 13,
+    lineHeight: 16,
   },
   secondaryText: {
     color: "#45474C",

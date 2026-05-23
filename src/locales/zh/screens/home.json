@@ -13,10 +13,16 @@
   "filters": {
     "currentStore": "当前门店: {{store}}",
     "currentCategory": "当前分类: {{category}}",
+    "currentGrade": "当前等级: {{grade}}",
     "store": "分店",
     "category": "分类",
+    "grade": "等级",
     "all": "全部",
-    "noStores": "当前账号没有可用门店。"
+    "allCategories": "全部分类",
+    "allGrades": "全部等级",
+    "noStores": "当前账号没有可用门店。",
+    "noGrades": "暂无可选等级。",
+    "gradesLoadFailed": "商品等级加载失败，请稍后重试。"
   },
   "empty": {
     "noProductsTitle": "暂无商品",

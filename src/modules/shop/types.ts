@@ -32,9 +32,16 @@ export interface StoreOrderProductQuery {
   itemNumber?: string;
   productName?: string;
   categoryGUID?: string;
+  grade?: string;
   pageNumber: number;
   pageSize: number;
   sortBy?: "Default" | "PriceAsc" | "PriceDesc" | "Name";
+}
+
+export interface StoreOrderProductGradeOption {
+  grade: string;
+  label: string;
+  value: string;
 }
 
 export interface StoreOrderDynamicData {

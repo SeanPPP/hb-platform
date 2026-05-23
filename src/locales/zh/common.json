@@ -50,6 +50,7 @@
   "labels": {
     "itemNumber": "货号",
     "importPrice": "进货价",
+    "retailPrice": "零售价",
     "recentOrder": "最近订货",
     "minOrder": "起订",
     "addToCart": "加入购物车",

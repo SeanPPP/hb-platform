@@ -4,6 +4,7 @@ import type {
   StoreOrderCategoryNode,
   StoreOrderDynamicData,
   StoreOrderDynamicDataRequest,
+  StoreOrderProductGradeOption,
   StoreOrderProductItem,
   StoreOrderProductQuery,
   StoreOrderProductListResult,
@@ -15,6 +16,27 @@ import type {
 import { apiClient } from "@/shared/api/client";
 
 type ApiItem = Record<string, unknown>;
+
+function getStringValue(...values: unknown[]) {
+  for (const value of values) {
+    if (typeof value === "string") {
+      const trimmed = value.trim();
+      if (trimmed) {
+        return trimmed;
+      }
+      continue;
+    }
+
+    if (value != null) {
+      const normalized = String(value).trim();
+      if (normalized) {
+        return normalized;
+      }
+    }
+  }
+
+  return undefined;
+}
 
 function getFiniteNumber(...values: unknown[]) {
   for (const value of values) {
@@ -29,6 +51,33 @@ function getFiniteNumber(...values: unknown[]) {
   }
 
   return undefined;
+}
+
+function normalizeProductGradeOption(raw: unknown): StoreOrderProductGradeOption | null {
+  if (typeof raw !== "object" || raw === null) {
+    const gradeValue = getStringValue(raw);
+
+    return gradeValue
+      ? {
+          grade: gradeValue,
+          label: gradeValue,
+          value: gradeValue,
+        }
+      : null;
+  }
+
+  const item = raw as ApiItem;
+  const grade = getStringValue(item.grade, item.Grade, item.label, item.Label, item.value, item.Value);
+
+  if (!grade) {
+    return null;
+  }
+
+  return {
+    grade,
+    label: grade,
+    value: grade,
+  };
 }
 
 function transformProductItem(raw: ApiItem): StoreOrderProductItem {
@@ -252,8 +301,61 @@ export async function getCategoryTree(): Promise<StoreOrderCategoryNode[]> {
   return Array.isArray(response.data) ? (response.data as StoreOrderCategoryNode[]) : [];
 }
 
+export async function getProductGradeOptions(): Promise<StoreOrderProductGradeOption[]> {
+  const response = await apiClient.get("/react/v1/product-grades/options", {
+    params: {
+      page: 1,
+      pageSize: 1000,
+      sortField: "grade",
+      sortDirection: "asc",
+    },
+  });
+  const payload = response.data as
+    | { items?: unknown[]; Items?: unknown[] }
+    | unknown[]
+    | null
+    | undefined;
+  const items = Array.isArray(payload)
+    ? payload
+    : Array.isArray(payload?.items)
+      ? payload.items
+      : Array.isArray(payload?.Items)
+        ? payload.Items
+        : [];
+  const seen = new Set<string>();
+
+  return items.reduce<StoreOrderProductGradeOption[]>((accumulator, item) => {
+    const option = normalizeProductGradeOption(item);
+
+    if (!option) {
+      return accumulator;
+    }
+
+    const key = option.grade.toUpperCase();
+    if (seen.has(key)) {
+      return accumulator;
+    }
+
+    seen.add(key);
+    accumulator.push(option);
+    return accumulator;
+  }, []);
+}
+
 export async function getProducts(query: StoreOrderProductQuery): Promise<StoreOrderProductListResult> {
-  const response = await apiClient.post("/react/v1/store-order/products", query);
+  const grade = getStringValue(query.grade);
+  const response = await apiClient.post(
+    "/react/v1/store-order/products",
+    {
+      ...query,
+      grade,
+    },
+    {
+      params: {
+        grade,
+      },
+    }
+  );
   return normalizeProductPagedList(response.data as Partial<StoreOrderProductListResult>);
 }
 

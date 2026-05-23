@@ -50,6 +50,7 @@
   "labels": {
     "itemNumber": "Item",
     "importPrice": "Import price",
+    "retailPrice": "Retail price",
     "recentOrder": "Last order",
     "minOrder": "Min",
     "addToCart": "Add to cart",
