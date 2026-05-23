@@ -31,6 +31,7 @@ import {
   type StoreUserFormValues,
   type StoreUserListItem,
 } from "@/modules/users";
+import { calculateAge } from "@/modules/users/profile-display";
 import { validatePasswordValue, validateStoreUserForm, type UserDialogMode } from "@/modules/users/validation";
 import { extractApiErrorMessage } from "@/shared/api/error-message";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
@@ -434,6 +435,14 @@ export default function UsersScreen() {
       const lastLogin = formatDateTime(item.lastLoginTime, language);
       const updatedAt = formatDateTime(item.updatedAt, language);
       const storeName = item.storeName || managedStore?.storeName || item.storeCode || managedStoreCode;
+      const emptyValue = t("common:na");
+      const age = calculateAge(item.birthday);
+      const gender = item.gender
+        ? t(`detail.genders.${item.gender}`, item.gender)
+        : emptyValue;
+      const employmentType = item.employmentType
+        ? t(`detail.employmentTypes.${item.employmentType}`, item.employmentType)
+        : emptyValue;
 
       return (
         <Card style={styles.userCard} mode="elevated" onPress={() => openStaffDetail(item)}>
@@ -464,8 +473,11 @@ export default function UsersScreen() {
             <View style={styles.metaWrap}>
               <Text variant="bodyMedium">{t("fields.positionValue")}</Text>
               {storeName ? <Text variant="bodyMedium">{t("fields.storeValue", { value: storeName })}</Text> : null}
+              <Text variant="bodyMedium">{t("fields.ageValue", { value: age ?? emptyValue })}</Text>
+              <Text variant="bodyMedium">{t("fields.genderValue", { value: gender })}</Text>
+              <Text variant="bodyMedium">{t("fields.employmentTypeValue", { value: employmentType })}</Text>
+              <Text variant="bodyMedium">{t("fields.phoneValue", { value: item.phone || emptyValue })}</Text>
               {item.email ? <Text variant="bodyMedium">{t("fields.emailValue", { value: item.email })}</Text> : null}
-              {item.phone ? <Text variant="bodyMedium">{t("fields.phoneValue", { value: item.phone })}</Text> : null}
               {lastLogin ? (
                 <Text variant="bodySmall" style={styles.secondaryText}>
                   {t("fields.lastLoginValue", { value: lastLogin })}
