@@ -58,6 +58,7 @@ namespace BlazorApp.Api.Services.React
                     .InnerJoin<Role>((u, ur, r) => ur.RoleGUID == r.RoleGUID)
                     .InnerJoin<UserStore>((u, ur, r, us) => u.UserGUID == us.UserGUID)
                     .InnerJoin<Store>((u, ur, r, us, s) => us.StoreGUID == s.StoreGUID)
+                    .LeftJoin<EmployeeProfile>((u, ur, r, us, s, profile) => u.UserGUID == profile.UserGUID)
                     .Where((u, ur, r, us, s) =>
                         !u.IsDeleted
                         && !ur.IsDeleted
@@ -68,29 +69,30 @@ namespace BlazorApp.Api.Services.React
                     )
                     .WhereIF(
                         !scope.IsAdmin && string.IsNullOrWhiteSpace(normalizedStoreCode),
-                        (u, ur, r, us, s) => scope.StoreGuids.Contains(s.StoreGUID)
+                        (u, ur, r, us, s, profile) => scope.StoreGuids.Contains(s.StoreGUID)
                     )
                     .WhereIF(
                         !string.IsNullOrWhiteSpace(normalizedStoreCode),
-                        (u, ur, r, us, s) => s.StoreCode == normalizedStoreCode
+                        (u, ur, r, us, s, profile) => s.StoreCode == normalizedStoreCode
                     )
                     .WhereIF(
                         !string.IsNullOrWhiteSpace(keyword),
-                        (u, ur, r, us, s) =>
+                        (u, ur, r, us, s, profile) =>
                             u.Username.Contains(keyword!)
                             || (u.FullName != null && u.FullName.Contains(keyword!))
                             || (u.Email != null && u.Email.Contains(keyword!))
                     )
-                    .WhereIF(statusFilter == 0, (u, ur, r, us, s) => !u.IsActive)
-                    .WhereIF(statusFilter == 1, (u, ur, r, us, s) => u.IsActive)
-                    .OrderBy((u, ur, r, us, s) => u.FullName)
-                    .OrderBy((u, ur, r, us, s) => u.Username)
-                    .Select((u, ur, r, us, s) => new
+                    .WhereIF(statusFilter == 0, (u, ur, r, us, s, profile) => !u.IsActive)
+                    .WhereIF(statusFilter == 1, (u, ur, r, us, s, profile) => u.IsActive)
+                    .OrderBy((u, ur, r, us, s, profile) => u.FullName)
+                    .OrderBy((u, ur, r, us, s, profile) => u.Username)
+                    .Select((u, ur, r, us, s, profile) => new
                     {
                         u.UserGUID,
                         u.Username,
                         u.FullName,
                         u.Email,
+                        u.Phone,
                         Status = u.IsActive ? 1 : 0,
                         StoreGuid = s.StoreGUID,
                         StoreCode = s.StoreCode,
@@ -99,6 +101,9 @@ namespace BlazorApp.Api.Services.React
                         LastLoginTime = u.LastLoginAt,
                         u.CreatedAt,
                         u.UpdatedAt,
+                        Birthday = profile.Birthday,
+                        profile.Gender,
+                        EmployeeType = profile.EmployeeType,
                     })
                     .ToListAsync();
 
@@ -113,7 +118,7 @@ namespace BlazorApp.Api.Services.React
                             Username = first.Username,
                             FullName = first.FullName,
                             Email = first.Email,
-                            Phone = null,
+                            Phone = first.Phone,
                             Status = first.Status,
                             StoreGuid = first.StoreGuid,
                             StoreCode = first.StoreCode,
@@ -122,6 +127,9 @@ namespace BlazorApp.Api.Services.React
                             .Select(item => item.RoleName)
                             .Distinct(StringComparer.OrdinalIgnoreCase)
                             .ToList(),
+                            Birthday = first.Birthday,
+                            Gender = FormatGender(first.Gender),
+                            EmploymentType = FormatEmploymentType(first.EmployeeType),
                             LastLoginTime = first.LastLoginTime,
                             CreatedAt = first.CreatedAt,
                             UpdatedAt = first.UpdatedAt,
@@ -220,6 +228,7 @@ namespace BlazorApp.Api.Services.React
                     Email = email,
                     PasswordHash = PasswordHasher.HashPassword(dto.Password),
                     FullName = dto.FullName?.Trim(),
+                    Phone = Normalize(dto.Phone),
                     IsActive = dto.Status == 1,
                     CreatedAt = now,
                     UpdatedAt = now,
@@ -354,6 +363,7 @@ namespace BlazorApp.Api.Services.React
                     user.Username = nextUsername;
                     user.Email = nextEmail;
                     user.FullName = dto.FullName?.Trim();
+                    user.Phone = Normalize(dto.Phone);
                     user.IsActive = dto.Status == 1;
                     user.UpdatedAt = now;
                     user.UpdatedBy = updatedBy;
@@ -513,6 +523,7 @@ namespace BlazorApp.Api.Services.React
                     u.Username,
                     u.FullName,
                     u.Email,
+                    u.Phone,
                     Status = u.IsActive ? 1 : 0,
                     StoreGuid = s.StoreGUID,
                     StoreCode = s.StoreCode,
@@ -546,7 +557,7 @@ namespace BlazorApp.Api.Services.React
                         Username = first.Username,
                         FullName = first.FullName,
                         Email = first.Email,
-                        Phone = null,
+                        Phone = first.Phone,
                         Status = first.Status,
                         StoreGuid = first.StoreGuid,
                         StoreCode = first.StoreCode,
@@ -648,6 +659,12 @@ namespace BlazorApp.Api.Services.React
             }
 
             return $"{username}@{storeCode.ToLowerInvariant()}.store.local";
+        }
+
+        private static string? Normalize(string? value)
+        {
+            var normalized = value?.Trim();
+            return string.IsNullOrWhiteSpace(normalized) ? null : normalized;
         }
 
         private static EmployeeType ParseEmployeeTypeOrDefault(string? value)

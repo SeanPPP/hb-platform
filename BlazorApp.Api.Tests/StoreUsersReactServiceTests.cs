@@ -85,6 +85,7 @@ namespace BlazorApp.Api.Tests
                     Email = "staff_created@example.com",
                     Password = "Secret123",
                     FullName = "Created Staff",
+                    Phone = "0412000111",
                     StoreCode = "S001",
                     Status = 1,
                 },
@@ -94,6 +95,15 @@ namespace BlazorApp.Api.Tests
             Assert.True(result.Success);
             Assert.NotNull(result.Data);
             Assert.Equal("store-1", result.Data!.StoreGuid);
+            Assert.Equal("0412000111", result.Data.Phone);
+
+            var gridResult = await service.GetGridDataAsync(new StoreUserGridRequestDto
+            {
+                StoreCode = "S001",
+            });
+            Assert.Contains(gridResult.Items!, item =>
+                item.UserGuid == result.Data.UserGuid && item.Phone == "0412000111"
+            );
 
             var createdUserStore = await _db.Queryable<UserStore>()
                 .FirstAsync(item => item.UserGUID == result.Data.UserGuid);
@@ -143,6 +153,9 @@ namespace BlazorApp.Api.Tests
             Assert.Equal("staff-1", staff.UserGuid);
             Assert.Equal("S001", staff.StoreCode);
             Assert.Equal("store-1", staff.StoreGuid);
+            Assert.Equal(new DateTime(1992, 7, 15), staff.Birthday);
+            Assert.Equal("female", staff.Gender);
+            Assert.Equal("partTime", staff.EmploymentType);
         }
 
         [Fact]

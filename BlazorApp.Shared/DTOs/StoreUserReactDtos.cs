@@ -23,6 +23,9 @@ namespace BlazorApp.Shared.DTOs
         public string StoreCode { get; set; } = string.Empty;
         public string StoreName { get; set; } = string.Empty;
         public List<string> RoleNames { get; set; } = new();
+        public DateTime? Birthday { get; set; }
+        public string? Gender { get; set; }
+        public string? EmploymentType { get; set; }
         public DateTime? LastLoginTime { get; set; }
         public DateTime CreatedAt { get; set; }
         public DateTime? UpdatedAt { get; set; }
@@ -30,9 +33,6 @@ namespace BlazorApp.Shared.DTOs
 
     public class StoreUserDetailDto : StoreUserListDto
     {
-        public DateTime? Birthday { get; set; }
-        public string? Gender { get; set; }
-        public string? EmploymentType { get; set; }
         public string? AvatarUrl { get; set; }
         public string? IdentityId { get; set; }
         public string? Address { get; set; }

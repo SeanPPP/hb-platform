@@ -38,6 +38,12 @@ namespace BlazorApp.Shared.Models
         public string? FullName { get; set; }
 
         /// <summary>
+        /// 联系电话
+        /// </summary>
+        [SugarColumn(IsNullable = true, Length = 50)]
+        public string? Phone { get; set; }
+
+        /// <summary>
         /// 最后登录时间
         /// </summary>
         [SugarColumn(IsNullable = true)]
