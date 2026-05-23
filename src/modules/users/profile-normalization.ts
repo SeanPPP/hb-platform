@@ -48,6 +48,9 @@ export function normalizeStoreUser(raw: ApiRecord): StoreUserListItem {
     roleNames: asStringArray(raw.roleNames ?? raw.RoleNames).length
       ? asStringArray(raw.roleNames ?? raw.RoleNames)
       : [STORE_STAFF_ROLE],
+    birthday: asString(raw.birthday ?? raw.Birthday),
+    gender: asString(raw.gender ?? raw.Gender),
+    employmentType: asString(raw.employmentType ?? raw.EmploymentType),
     lastLoginTime: asString(raw.lastLoginTime ?? raw.LastLoginTime),
     createdAt: asString(raw.createdAt ?? raw.CreatedAt),
     updatedAt: asString(raw.updatedAt ?? raw.UpdatedAt),
@@ -72,10 +75,7 @@ export function normalizeStoreUserProfile(payload: unknown): StoreUserProfile {
 
   return {
     ...normalized,
-    employmentType: asString(data.employmentType ?? data.EmploymentType),
     identityId: asString(data.identityId ?? data.IdentityId ?? data.employeeId ?? data.EmployeeId),
-    birthday: asString(data.birthday ?? data.Birthday),
-    gender: asString(data.gender ?? data.Gender),
     avatarUrl: asString(data.avatarUrl ?? data.AvatarUrl),
     address: asString(data.address ?? data.Address),
     bankBsb: asString(data.bankBsb ?? data.BankBsb),

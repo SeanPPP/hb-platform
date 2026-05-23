@@ -2,6 +2,8 @@ import axios, { AxiosError, InternalAxiosRequestConfig } from "axios";
 import { router } from "expo-router";
 import { SecureStorage } from "@/shared/storage/secure";
 import { DeviceStorage } from "@/modules/device/storage";
+import { emitUnauthenticatedSession } from "@/modules/auth/auth-session-events";
+import { isUnauthenticatedApiPayload } from "@/shared/api/auth-error";
 import { buildApiBaseUrl, DEFAULT_API_BASE_URL, getStoredApiHost } from "@/shared/api/config";
 import { extractApiErrorMessage } from "@/shared/api/error-message";
 
@@ -38,10 +40,30 @@ async function syncApiBaseUrl() {
 }
 
 let isRefreshing = false;
+let isRedirectingToLogin = false;
 let refreshQueue: Array<{
   resolve: (t: string) => void;
   reject: (e: Error) => void;
 }> = [];
+
+function isLoginRequest(config?: InternalAxiosRequestConfig | null) {
+  return Boolean(config?.url?.includes("/auth/login"));
+}
+
+async function redirectToLoginAfterUnauthenticated(message?: string) {
+  if (isRedirectingToLogin) {
+    return;
+  }
+
+  isRedirectingToLogin = true;
+  try {
+    await SecureStorage.clearAll();
+    emitUnauthenticatedSession({ message });
+    router.replace("/(auth)/login");
+  } finally {
+    isRedirectingToLogin = false;
+  }
+}
 
 apiClient.interceptors.request.use(
   async (config: InternalAxiosRequestConfig) => {
@@ -64,12 +86,27 @@ apiClient.interceptors.request.use(
 
 apiClient.interceptors.response.use(
   (response) => {
+    if (
+      isUnauthenticatedApiPayload(response.data) &&
+      !isLoginRequest(response.config as InternalAxiosRequestConfig)
+    ) {
+      const message = extractApiErrorMessage(response.data, "Unauthorized");
+      void redirectToLoginAfterUnauthenticated(message);
+      throw new Error(message);
+    }
+
     response.data = unwrapEnvelope(response.data);
     return response;
   },
   async (error: AxiosError) => {
     const original = error.config as InternalAxiosRequestConfig & { _retry?: boolean };
-    if (error.response?.status === 401 && !original?._retry) {
+    if (error.response?.status === 401 && original?._retry && !isLoginRequest(original)) {
+      const message = extractApiErrorMessage(error, error.message);
+      await redirectToLoginAfterUnauthenticated(message);
+      return Promise.reject(new Error(message));
+    }
+
+    if (error.response?.status === 401 && !original?._retry && !isLoginRequest(original)) {
       if (isRefreshing) {
         return new Promise((resolve, reject) => {
           refreshQueue.push({
@@ -100,8 +137,9 @@ apiClient.interceptors.response.use(
       } catch (refreshErr) {
         refreshQueue.forEach((cb) => cb.reject(refreshErr as Error));
         refreshQueue = [];
-        await SecureStorage.clearAll();
-        router.replace("/(auth)/login");
+        await redirectToLoginAfterUnauthenticated(
+          refreshErr instanceof Error ? refreshErr.message : undefined
+        );
         return Promise.reject(refreshErr);
       } finally {
         isRefreshing = false;

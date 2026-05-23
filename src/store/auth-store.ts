@@ -4,6 +4,7 @@ import { buildAccess } from "@/shared/utils/access";
 import { AppAsyncStorage } from "@/shared/storage/async-storage";
 import { SecureStorage } from "@/shared/storage/secure";
 import { hashPassword } from "@/shared/utils/password";
+import { subscribeUnauthenticatedSession } from "@/modules/auth/auth-session-events";
 import {
   loginApi,
   getCurrentUserApi,
@@ -109,3 +110,15 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     }
   },
 }));
+
+subscribeUnauthenticatedSession(() => {
+  void AppAsyncStorage.removeItem(STORE_SELECTION_STORAGE_KEY);
+  useCartStore.getState().reset();
+  useAppNavigationStore.getState().reset();
+  useAuthStore.setState({
+    user: null,
+    access: buildAccess(null),
+    isAuthenticated: false,
+    isLoading: false,
+  });
+});

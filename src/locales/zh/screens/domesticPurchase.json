@@ -7,7 +7,8 @@
     "export": "导出",
     "loadMore": "加载更多",
     "cancel": "取消",
-    "confirmCreate": "确认创建"
+    "confirmCreate": "确认创建",
+    "saveChanges": "保存更改"
   },
   "empty": {
     "noAccessTitle": "无国内采购权限",
@@ -21,12 +22,15 @@
     "selectPrefix": "选择前缀码",
     "noPrefix": "不使用前缀码",
     "count": "创建数量",
-    "privateLabelPrice": "统一贴牌价格"
+    "privateLabelPrice": "统一贴牌价",
+    "privateLabelPriceHelp": "可留空；如果多个商品价格不同，创建后在明细中单独修改。"
   },
   "fields": {
+    "productName": "商品名称",
     "normalCount": "普通 {{value}}",
     "setCount": "套装 {{value}}",
     "barcode": "条码 {{value}}",
+    "privateLabelPriceLabel": "贴牌价",
     "privateLabelPrice": "贴牌 {{value}}",
     "parent": "父货号 {{value}}",
     "emptyName": "--"
@@ -46,6 +50,8 @@
     "invalidPrice": "贴牌价格格式不正确",
     "createSuccess": "创建成功",
     "createFailed": "创建失败",
+    "saveSuccess": "保存成功",
+    "saveFailed": "保存失败",
     "exportSuccess": "导出成功",
     "exportFailed": "导出失败"
   }

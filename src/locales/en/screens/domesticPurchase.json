@@ -7,7 +7,8 @@
     "export": "Export",
     "loadMore": "Load more",
     "cancel": "Cancel",
-    "confirmCreate": "Create"
+    "confirmCreate": "Create",
+    "saveChanges": "Save changes"
   },
   "empty": {
     "noAccessTitle": "No domestic purchase access",
@@ -21,13 +22,16 @@
     "selectPrefix": "Select prefix",
     "noPrefix": "No prefix",
     "count": "Quantity",
-    "privateLabelPrice": "Private label price"
+    "privateLabelPrice": "Uniform OEM price",
+    "privateLabelPriceHelp": "Optional. Leave blank when prices differ, then edit each item in the detail dialog."
   },
   "fields": {
+    "productName": "Product name",
     "normalCount": "Normal {{value}}",
     "setCount": "Set {{value}}",
     "barcode": "Barcode {{value}}",
-    "privateLabelPrice": "Private label {{value}}",
+    "privateLabelPriceLabel": "OEM price",
+    "privateLabelPrice": "OEM {{value}}",
     "parent": "Parent {{value}}",
     "emptyName": "--"
   },
@@ -46,6 +50,8 @@
     "invalidPrice": "Invalid private label price",
     "createSuccess": "Created",
     "createFailed": "Create failed",
+    "saveSuccess": "Saved",
+    "saveFailed": "Save failed",
     "exportSuccess": "Exported",
     "exportFailed": "Export failed"
   }

@@ -28,6 +28,7 @@ export interface DomesticProductBatch {
 }
 
 export interface DomesticProductBatchItem {
+  productCode: string;
   itemNumber: string;
   hbProductNo: string;
   barcode: string;
@@ -50,6 +51,14 @@ export interface CreateDomesticProductBatchRequest {
   items: Array<{
     productName?: string;
     productType: ProductCreationType;
+    privateLabelPrice?: number | null;
+  }>;
+}
+
+export interface UpdateDomesticProductBatchItemsRequest {
+  items: Array<{
+    productCode: string;
+    productName?: string | null;
     privateLabelPrice?: number | null;
   }>;
 }

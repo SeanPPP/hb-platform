@@ -10,6 +10,9 @@ export interface StoreUserListItem {
   storeCode?: string;
   storeName?: string;
   roleNames: string[];
+  birthday?: string;
+  gender?: string;
+  employmentType?: string;
   lastLoginTime?: string;
   createdAt?: string;
   updatedAt?: string;
@@ -20,10 +23,7 @@ export interface StoreUserDetail extends StoreUserListItem {
 }
 
 export interface StoreUserProfile extends StoreUserDetail {
-  employmentType?: string;
   identityId?: string;
-  birthday?: string;
-  gender?: string;
   avatarUrl?: string;
   address?: string;
   bankBsb?: string;

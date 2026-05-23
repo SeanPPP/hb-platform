@@ -9,6 +9,7 @@ import type {
   DomesticProductBatchItem,
   DomesticSupplierOption,
   ProductPrefixOption,
+  UpdateDomesticProductBatchItemsRequest,
 } from "@/modules/domestic-purchase/types";
 import { ProductCreationType } from "@/modules/domestic-purchase/types";
 
@@ -42,8 +43,10 @@ function normalizeBatch(raw: unknown): DomesticProductBatch {
 
 function normalizeBatchItem(raw: unknown): DomesticProductBatchItem {
   const item = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
-  const itemNumber = String(item.productCode ?? item.itemNumber ?? item.hbProductNo ?? item.HBProductNo ?? "");
+  const productCode = String(item.productCode ?? item.ProductCode ?? "");
+  const itemNumber = String(item.itemNumber ?? item.ItemNumber ?? item.hbProductNo ?? item.HBProductNo ?? productCode);
   return {
+    productCode: productCode || itemNumber,
     itemNumber,
     hbProductNo: String(item.hbProductNo ?? item.HBProductNo ?? itemNumber),
     barcode: String(item.barcode ?? item.Barcode ?? ""),
@@ -125,6 +128,14 @@ export async function fetchDomesticProductBatchDetail(batchNumber: string): Prom
 
 export async function createDomesticProductBatch(payload: CreateDomesticProductBatchRequest) {
   const response = await apiClient.post(`${CREATION_BASE_PATH}/batch`, payload);
+  return response.data;
+}
+
+export async function updateDomesticProductBatchItems(
+  batchNumber: string,
+  payload: UpdateDomesticProductBatchItemsRequest
+) {
+  const response = await apiClient.put(`${CREATION_BASE_PATH}/batch/${encodeURIComponent(batchNumber)}/items`, payload);
   return response.data;
 }
 

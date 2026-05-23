@@ -26,16 +26,23 @@ import {
   fetchDomesticProductBatches,
   fetchDomesticSuppliers,
   fetchProductPrefixes,
+  updateDomesticProductBatchItems,
 } from "@/modules/domestic-purchase/api";
 import type {
   DomesticProductBatch,
   DomesticProductBatchDetail,
+  DomesticProductBatchItem,
   DomesticSupplierOption,
   ProductPrefixOption,
 } from "@/modules/domestic-purchase/types";
 import { ProductCreationType } from "@/modules/domestic-purchase/types";
 
 const PAGE_SIZE = 20;
+
+interface DetailEditState {
+  productName: string;
+  privateLabelPrice: string;
+}
 
 function formatDateTime(value: string | undefined, localeTag: string) {
   if (!value) {
@@ -50,11 +57,22 @@ function formatDateTime(value: string | undefined, localeTag: string) {
   return date.toLocaleString(localeTag, { hour12: false });
 }
 
-function formatMoney(value?: number | null) {
+function formatPriceInput(value?: number | null) {
   if (value == null || !Number.isFinite(value)) {
-    return "--";
+    return "";
   }
-  return `$${value.toFixed(2)}`;
+  return String(value);
+}
+
+function buildDetailEdits(items: DomesticProductBatchItem[]) {
+  return items.reduce<Record<string, DetailEditState>>((current, item) => {
+    const key = item.productCode || item.itemNumber;
+    current[key] = {
+      productName: item.productName || "",
+      privateLabelPrice: formatPriceInput(item.privateLabelPrice),
+    };
+    return current;
+  }, {});
 }
 
 function typeLabel(type: ProductCreationType, t: (key: string) => string) {
@@ -89,6 +107,8 @@ export default function DomesticPurchaseScreen() {
   const [detailErrorMessage, setDetailErrorMessage] = useState("");
   const [selectedBatch, setSelectedBatch] = useState<DomesticProductBatch | null>(null);
   const [detail, setDetail] = useState<DomesticProductBatchDetail | null>(null);
+  const [detailEdits, setDetailEdits] = useState<Record<string, DetailEditState>>({});
+  const [detailSaving, setDetailSaving] = useState(false);
 
   const [createVisible, setCreateVisible] = useState(false);
   const [suppliers, setSuppliers] = useState<DomesticSupplierOption[]>([]);
@@ -153,9 +173,12 @@ export default function DomesticPurchaseScreen() {
       setDetailVisible(true);
       setDetailLoading(true);
       setDetail(null);
+      setDetailEdits({});
       setDetailErrorMessage("");
       try {
-        setDetail(await fetchDomesticProductBatchDetail(batch.batchNumber));
+        const nextDetail = await fetchDomesticProductBatchDetail(batch.batchNumber);
+        setDetail(nextDetail);
+        setDetailEdits(buildDetailEdits(nextDetail.items));
       } catch (error) {
         const message = error instanceof Error ? error.message : t("messages.loadDetailFailed");
         setDetailErrorMessage(message);
@@ -246,6 +269,57 @@ export default function DomesticPurchaseScreen() {
     },
     [t]
   );
+
+  const updateDetailEdit = useCallback((key: string, patch: Partial<DetailEditState>) => {
+    setDetailEdits((current) => ({
+      ...current,
+      [key]: {
+        productName: current[key]?.productName ?? "",
+        privateLabelPrice: current[key]?.privateLabelPrice ?? "",
+        ...patch,
+      },
+    }));
+  }, []);
+
+  const handleSaveDetailChanges = useCallback(async () => {
+    if (!selectedBatch || !detail) {
+      return;
+    }
+
+    const items = detail.items.map((item) => {
+      const key = item.productCode || item.itemNumber;
+      const edit = detailEdits[key] ?? {
+        productName: item.productName || "",
+        privateLabelPrice: formatPriceInput(item.privateLabelPrice),
+      };
+      const rawPrice = edit.privateLabelPrice.trim();
+      const privateLabelPrice = rawPrice ? Number(rawPrice) : null;
+
+      return {
+        productCode: key,
+        productName: edit.productName,
+        privateLabelPrice,
+      };
+    });
+
+    if (items.some((item) => item.privateLabelPrice != null && (!Number.isFinite(item.privateLabelPrice) || item.privateLabelPrice < 0))) {
+      setSnackbar(t("messages.invalidPrice"));
+      return;
+    }
+
+    setDetailSaving(true);
+    try {
+      await updateDomesticProductBatchItems(selectedBatch.batchNumber, { items });
+      const nextDetail = await fetchDomesticProductBatchDetail(selectedBatch.batchNumber);
+      setDetail(nextDetail);
+      setDetailEdits(buildDetailEdits(nextDetail.items));
+      setSnackbar(t("messages.saveSuccess"));
+    } catch (error) {
+      setSnackbar(error instanceof Error ? error.message : t("messages.saveFailed"));
+    } finally {
+      setDetailSaving(false);
+    }
+  }, [detail, detailEdits, selectedBatch, t]);
 
   const summaryText = useMemo(
     () => t("summary", { total, shown: batches.length }),
@@ -450,6 +524,9 @@ export default function DomesticPurchaseScreen() {
             onChangeText={setPrivateLabelPrice}
             style={styles.input}
           />
+          <Text variant="bodySmall" style={styles.inputHelpText}>
+            {t("create.privateLabelPriceHelp")}
+          </Text>
           <View style={styles.modalActions}>
             <Button onPress={() => setCreateVisible(false)}>{t("actions.cancel")}</Button>
             <Button mode="contained" loading={busy} disabled={busy} onPress={handleCreate}>
@@ -460,7 +537,10 @@ export default function DomesticPurchaseScreen() {
 
         <Modal
           visible={detailVisible}
-          onDismiss={() => setDetailVisible(false)}
+          onDismiss={() => {
+            setDetailVisible(false);
+            setDetailEdits({});
+          }}
           contentContainerStyle={styles.detailModal}
         >
           <View style={styles.detailHeader}>
@@ -470,15 +550,27 @@ export default function DomesticPurchaseScreen() {
                 {detail?.supplierName || selectedBatch?.supplierName || selectedBatch?.supplierCode}
               </Text>
             </View>
-            <Button
-              compact
-              icon="download"
-              loading={busy}
-              disabled={!selectedBatch || busy}
-              onPress={() => selectedBatch && handleExport(selectedBatch.batchNumber)}
-            >
-              {t("actions.export")}
-            </Button>
+            <View style={styles.detailHeaderActions}>
+              <Button
+                compact
+                mode="contained"
+                icon="content-save"
+                loading={detailSaving}
+                disabled={!detail || detailLoading || detailSaving}
+                onPress={handleSaveDetailChanges}
+              >
+                {t("actions.saveChanges")}
+              </Button>
+              <Button
+                compact
+                icon="download"
+                loading={busy}
+                disabled={!selectedBatch || busy || detailSaving}
+                onPress={() => selectedBatch && handleExport(selectedBatch.batchNumber)}
+              >
+                {t("actions.export")}
+              </Button>
+            </View>
           </View>
           <Divider style={styles.divider} />
           {detailLoading ? (
@@ -510,16 +602,27 @@ export default function DomesticPurchaseScreen() {
                       {typeLabel(item.productType, t)}
                     </Text>
                   </View>
-                  <Text variant="bodyMedium" numberOfLines={1}>
-                    {item.productName || t("fields.emptyName")}
-                  </Text>
+                  <TextInput
+                    mode="outlined"
+                    dense
+                    label={t("fields.productName")}
+                    value={detailEdits[item.productCode || item.itemNumber]?.productName ?? item.productName ?? ""}
+                    onChangeText={(value) => updateDetailEdit(item.productCode || item.itemNumber, { productName: value })}
+                    style={styles.detailInput}
+                  />
                   <Text variant="bodySmall" style={styles.mutedText}>
                     {t("fields.barcode", { value: item.barcode || "--" })}
                   </Text>
                   <View style={styles.detailMetaRow}>
-                    <Text variant="bodySmall" style={styles.mutedText}>
-                      {t("fields.privateLabelPrice", { value: formatMoney(item.privateLabelPrice) })}
-                    </Text>
+                    <TextInput
+                      mode="outlined"
+                      dense
+                      label={t("fields.privateLabelPriceLabel")}
+                      value={detailEdits[item.productCode || item.itemNumber]?.privateLabelPrice ?? formatPriceInput(item.privateLabelPrice)}
+                      keyboardType="decimal-pad"
+                      onChangeText={(value) => updateDetailEdit(item.productCode || item.itemNumber, { privateLabelPrice: value })}
+                      style={styles.detailPriceInput}
+                    />
                     {item.parentItemNumber ? (
                       <Text variant="bodySmall" style={styles.mutedText}>
                         {t("fields.parent", { value: item.parentItemNumber })}
@@ -645,6 +748,10 @@ const styles = StyleSheet.create({
   input: {
     marginTop: 10,
   },
+  inputHelpText: {
+    marginTop: 4,
+    color: "#667085",
+  },
   modalActions: {
     marginTop: 14,
     flexDirection: "row",
@@ -653,9 +760,15 @@ const styles = StyleSheet.create({
   },
   detailHeader: {
     flexDirection: "row",
-    alignItems: "center",
+    alignItems: "flex-start",
     justifyContent: "space-between",
     gap: 10,
+  },
+  detailHeaderActions: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    justifyContent: "flex-end",
+    gap: 8,
   },
   divider: {
     marginVertical: 10,
@@ -670,7 +783,7 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: "#EAECF0",
-    gap: 4,
+    gap: 8,
   },
   detailItemHeader: {
     flexDirection: "row",
@@ -692,6 +805,14 @@ const styles = StyleSheet.create({
   detailMetaRow: {
     flexDirection: "row",
     flexWrap: "wrap",
+    alignItems: "center",
     gap: 12,
+  },
+  detailInput: {
+    backgroundColor: "#FFFFFF",
+  },
+  detailPriceInput: {
+    width: 160,
+    backgroundColor: "#FFFFFF",
   },
 });
