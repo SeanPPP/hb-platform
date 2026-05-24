@@ -1585,6 +1585,7 @@
       "actions": {
         "createSchedule": "New Schedule",
         "createHoliday": "New Holiday",
+        "batchHoliday": "Batch Set",
         "addShift": "Add Shift",
         "publishWeek": "Publish This Week",
         "approve": "Approve",
@@ -1595,11 +1596,13 @@
         "editSchedule": "Edit Schedule",
         "createHoliday": "New Public Holiday",
         "editHoliday": "Edit Public Holiday",
+        "batchHoliday": "Batch Set Public Holidays",
         "approve": "Approve Review",
         "reject": "Reject Review"
       },
       "fields": {
         "store": "Store",
+        "stores": "Stores",
         "employee": "Employee",
         "employeeGuid": "Employee GUID",
         "workDate": "Work Date",
@@ -1665,7 +1668,8 @@
       },
       "validation": {
         "userGuidRequired": "Please enter employee GUID",
-        "holidayNameRequired": "Please enter holiday name"
+        "holidayNameRequired": "Please enter holiday name",
+        "storeCodesRequired": "Please select at least one store"
       },
       "weekdays": {
         "0": "Mon",
@@ -1675,6 +1679,11 @@
         "4": "Fri",
         "5": "Sat",
         "6": "Sun"
+      },
+      "weekTable": {
+        "yearWeek": "{{year}}-W{{week}}",
+        "selectWeek": "Select Week",
+        "holidayColumn": "Public Holiday"
       },
       "confirm": {
         "deleteSchedule": "Delete this schedule?",
@@ -1695,6 +1704,8 @@
         "saveScheduleFailed": "Failed to save schedule",
         "saveHolidayFailed": "Failed to save public holiday",
         "saveSettingsFailed": "Failed to save attendance settings",
+        "batchHolidaySuccess": "Batch setting completed: {{created}} created, {{updated}} updated",
+        "batchHolidayOverwriteHint": "Existing records for the same store and date will be updated",
         "selectStoreBeforePublish": "Please select a store first",
         "publishWeekSuccess": "This week's schedule has been published",
         "publishWeekFailed": "Failed to publish this week's schedule",

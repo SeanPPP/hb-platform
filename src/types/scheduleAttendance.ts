@@ -134,6 +134,23 @@ export interface SaveAttendanceHolidayPayload {
   remark?: string
 }
 
+export interface BatchUpsertAttendanceHolidayPayload {
+  storeCodes: string[]
+  holidayDate: string
+  holidayName: string
+  businessStatus: AttendanceHolidayBusinessStatus
+  openTime?: string
+  closeTime?: string
+  isPaidHoliday?: boolean
+  remark?: string
+}
+
+export interface BatchUpsertAttendanceHolidayResult {
+  createdCount: number
+  updatedCount: number
+  items: AttendanceStoreHolidayDto[]
+}
+
 export interface AttendanceSettingsDto {
   lateGraceMinutes: number
   earlyLeaveGraceMinutes: number

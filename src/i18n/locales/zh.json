@@ -1585,6 +1585,7 @@
       "actions": {
         "createSchedule": "新建排班",
         "createHoliday": "新建假期",
+        "batchHoliday": "批量设置",
         "addShift": "添加班次",
         "publishWeek": "发布本周",
         "approve": "通过",
@@ -1595,11 +1596,13 @@
         "editSchedule": "编辑排班",
         "createHoliday": "新建公共假期",
         "editHoliday": "编辑公共假期",
+        "batchHoliday": "批量设置公共假期",
         "approve": "通过审核",
         "reject": "拒绝审核"
       },
       "fields": {
         "store": "分店",
+        "stores": "分店",
         "employee": "员工",
         "employeeGuid": "员工 GUID",
         "workDate": "工作日期",
@@ -1665,7 +1668,8 @@
       },
       "validation": {
         "userGuidRequired": "请输入员工 GUID",
-        "holidayNameRequired": "请输入假期名称"
+        "holidayNameRequired": "请输入假期名称",
+        "storeCodesRequired": "请选择至少一个分店"
       },
       "weekdays": {
         "0": "周一",
@@ -1675,6 +1679,11 @@
         "4": "周五",
         "5": "周六",
         "6": "周日"
+      },
+      "weekTable": {
+        "yearWeek": "{{year}}年第{{week}}周",
+        "selectWeek": "选择周",
+        "holidayColumn": "公共假期"
       },
       "confirm": {
         "deleteSchedule": "确认删除该排班吗？",
@@ -1695,6 +1704,8 @@
         "saveScheduleFailed": "保存排班失败",
         "saveHolidayFailed": "保存公共假期失败",
         "saveSettingsFailed": "保存考勤设置失败",
+        "batchHolidaySuccess": "批量设置完成：新增 {{created}} 条，更新 {{updated}} 条",
+        "batchHolidayOverwriteHint": "同一分店同一天已有记录会更新",
         "selectStoreBeforePublish": "请先选择分店",
         "publishWeekSuccess": "本周排班已发布",
         "publishWeekFailed": "发布本周排班失败",

@@ -2,6 +2,7 @@ import {
   CalendarOutlined,
   CheckOutlined,
   CloseOutlined,
+  CopyOutlined,
   DeleteOutlined,
   EditOutlined,
   PlusOutlined,
@@ -31,10 +32,12 @@ import {
 import type { ColumnsType } from 'antd/es/table'
 import type { Dayjs } from 'dayjs'
 import dayjs from 'dayjs'
+import isoWeek from 'dayjs/plugin/isoWeek'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
   approveAttendanceApproval,
+  batchUpsertAttendanceHolidays,
   createAttendanceHoliday,
   createAttendanceSchedule,
   deleteAttendanceHoliday,
@@ -66,10 +69,13 @@ import type {
   AttendanceScheduleStatus,
   AttendanceSettingsDto,
   AttendanceStoreHolidayDto,
+  BatchUpsertAttendanceHolidayPayload,
   SaveAttendanceHolidayPayload,
   SaveAttendanceSchedulePayload,
   SaveAttendanceSettingsPayload,
 } from '../../../types/scheduleAttendance'
+
+dayjs.extend(isoWeek)
 
 type TabKey = 'schedules' | 'availability' | 'punches' | 'approvals' | 'holidays' | 'settings'
 type ReviewAction = 'approve' | 'reject'
@@ -94,6 +100,16 @@ interface ScheduleFormValues {
 
 interface HolidayFormValues {
   storeCode: string
+  holidayDate: Dayjs
+  holidayName: string
+  businessStatus: AttendanceHolidayBusinessStatus
+  businessTime?: [Dayjs, Dayjs]
+  isPaidHoliday?: boolean
+  remark?: string
+}
+
+interface BatchHolidayFormValues {
+  storeCodes: string[]
   holidayDate: Dayjs
   holidayName: string
   businessStatus: AttendanceHolidayBusinessStatus
@@ -138,6 +154,14 @@ function toDayjsTime(value?: string) {
   return parsed.isValid() ? parsed : undefined
 }
 
+function getIsoWeekStart(value: Dayjs) {
+  return value.isoWeekday(1).startOf('day')
+}
+
+function getIsoWeekEnd(value: Dayjs) {
+  return getIsoWeekStart(value).add(6, 'day')
+}
+
 export default function ScheduleAttendancePage() {
   const { t } = useTranslation()
   const access = useAuthStore((state) => state.access)
@@ -145,10 +169,13 @@ export default function ScheduleAttendancePage() {
   const [storeOptions, setStoreOptions] = useState<{ label: string; value: string }[]>([])
   const [storeCode, setStoreCode] = useState<string | undefined>()
   const [userGuid, setUserGuid] = useState<string | undefined>()
-  const [dateRange, setDateRange] = useState<[Dayjs, Dayjs] | null>([dayjs().startOf('week').add(1, 'day'), dayjs().startOf('week').add(7, 'day')])
+  const [selectedWeek, setSelectedWeek] = useState<Dayjs>(dayjs())
+  const [dateRange, setDateRange] = useState<[Dayjs, Dayjs] | null>([getIsoWeekStart(dayjs()), getIsoWeekEnd(dayjs())])
   const [schedules, setSchedules] = useState<ListState<AttendanceScheduleDto>>(initialListState)
   const [storeUsers, setStoreUsers] = useState<StoreUserListDto[]>([])
   const [storeUsersLoading, setStoreUsersLoading] = useState(false)
+  const [scheduleHolidays, setScheduleHolidays] = useState<AttendanceStoreHolidayDto[]>([])
+  const [scheduleHolidaysLoading, setScheduleHolidaysLoading] = useState(false)
   const [availability, setAvailability] = useState<ListState<AttendanceAvailabilityDto>>(initialListState)
   const [punches, setPunches] = useState<ListState<AttendancePunchDto>>(initialListState)
   const [approvals, setApprovals] = useState<ListState<AttendanceApprovalDto>>(initialListState)
@@ -159,6 +186,7 @@ export default function ScheduleAttendancePage() {
   const [editingSchedule, setEditingSchedule] = useState<AttendanceScheduleDto | null>(null)
   const [holidayDrawerOpen, setHolidayDrawerOpen] = useState(false)
   const [editingHoliday, setEditingHoliday] = useState<AttendanceStoreHolidayDto | null>(null)
+  const [batchHolidayDrawerOpen, setBatchHolidayDrawerOpen] = useState(false)
   const [reviewModalOpen, setReviewModalOpen] = useState(false)
   const [reviewTarget, setReviewTarget] = useState<AttendanceApprovalDto | null>(null)
   const [reviewAction, setReviewAction] = useState<ReviewAction>('approve')
@@ -166,12 +194,29 @@ export default function ScheduleAttendancePage() {
   const [publishing, setPublishing] = useState(false)
   const [scheduleForm] = Form.useForm<ScheduleFormValues>()
   const [holidayForm] = Form.useForm<HolidayFormValues>()
+  const [batchHolidayForm] = Form.useForm<BatchHolidayFormValues>()
   const [reviewForm] = Form.useForm<{ reviewRemark?: string }>()
   const [settingsForm] = Form.useForm<SaveAttendanceSettingsPayload>()
 
   const storeNameMap = useMemo(() => new Map(storeOptions.map((item) => [item.value, item.label])), [storeOptions])
-  const weekStart = useMemo(() => (dateRange?.[0] ?? dayjs()).startOf('day'), [dateRange])
+  const editableHolidayStoreOptions = useMemo(() => {
+    const managedStoreCodes = access.managedStoreCodes?.()
+    if (!managedStoreCodes?.length) return storeOptions
+
+    const managedSet = new Set(managedStoreCodes.map((item) => item.toLowerCase()))
+    return storeOptions.filter((item) => managedSet.has(item.value.toLowerCase()))
+  }, [access, storeOptions])
+  const weekStart = useMemo(() => getIsoWeekStart(selectedWeek), [selectedWeek])
+  const weekEnd = useMemo(() => getIsoWeekEnd(selectedWeek), [selectedWeek])
   const weekDays = useMemo(() => Array.from({ length: 7 }, (_, index) => weekStart.add(index, 'day')), [weekStart])
+  const formatWeekLabel = useCallback((value: Dayjs) => {
+    const start = getIsoWeekStart(value)
+    return t('posAdmin.scheduleAttendance.weekTable.yearWeek', {
+      year: start.isoWeekYear(),
+      week: String(start.isoWeek()).padStart(2, '0'),
+    })
+  }, [t])
+  const selectedWeekLabel = useMemo(() => formatWeekLabel(weekStart), [formatWeekLabel, weekStart])
 
   const queryParams = useCallback((page: number, pageSize: number) => ({
     page,
@@ -183,17 +228,27 @@ export default function ScheduleAttendancePage() {
     toDate: dateRange?.[1]?.format('YYYY-MM-DD'),
   }), [dateRange, storeCode, userGuid])
 
+  const scheduleQueryParams = useCallback((page: number, pageSize: number) => ({
+    page,
+    pageSize,
+    storeCode,
+    userGuid: userGuid?.trim() || undefined,
+    weekStartDate: weekStart.format('YYYY-MM-DD'),
+    fromDate: weekStart.format('YYYY-MM-DD'),
+    toDate: weekEnd.format('YYYY-MM-DD'),
+  }), [storeCode, userGuid, weekEnd, weekStart])
+
   const loadSchedules = useCallback(async (page = schedules.page, pageSize = schedules.pageSize) => {
     setSchedules((prev) => ({ ...prev, loading: true, page, pageSize }))
     try {
-      const result = await getAttendanceScheduleWeek(queryParams(page, pageSize))
+      const result = await getAttendanceScheduleWeek(scheduleQueryParams(page, pageSize))
       setSchedules({ loading: false, items: result, total: result.length, page, pageSize })
     } catch (error) {
       console.error(error)
       message.error(t('posAdmin.scheduleAttendance.messages.loadSchedulesFailed'))
       setSchedules((prev) => ({ ...prev, loading: false }))
     }
-  }, [queryParams, schedules.page, schedules.pageSize, t])
+  }, [scheduleQueryParams, schedules.page, schedules.pageSize, t])
 
   const loadStoreUsers = useCallback(async () => {
     if (!storeCode) {
@@ -217,6 +272,29 @@ export default function ScheduleAttendancePage() {
       setStoreUsersLoading(false)
     }
   }, [storeCode, t, userGuid])
+
+  const loadScheduleHolidays = useCallback(async () => {
+    if (!storeCode) {
+      setScheduleHolidays([])
+      return
+    }
+
+    setScheduleHolidaysLoading(true)
+    try {
+      const result = await getAttendanceHolidays({
+        storeCode,
+        fromDate: weekStart.format('YYYY-MM-DD'),
+        toDate: weekEnd.format('YYYY-MM-DD'),
+      })
+      setScheduleHolidays(result.items)
+    } catch (error) {
+      console.error(error)
+      message.error(t('posAdmin.scheduleAttendance.messages.loadHolidaysFailed'))
+      setScheduleHolidays([])
+    } finally {
+      setScheduleHolidaysLoading(false)
+    }
+  }, [storeCode, t, weekEnd, weekStart])
 
   const loadAvailability = useCallback(async (page = availability.page, pageSize = availability.pageSize) => {
     setAvailability((prev) => ({ ...prev, loading: true, page, pageSize }))
@@ -284,13 +362,14 @@ export default function ScheduleAttendancePage() {
     if (activeTab === 'schedules') {
       void loadSchedules(page)
       void loadStoreUsers()
+      void loadScheduleHolidays()
     }
     if (activeTab === 'availability') void loadAvailability(page)
     if (activeTab === 'punches') void loadPunches(page)
     if (activeTab === 'approvals') void loadApprovals(page)
     if (activeTab === 'holidays') void loadHolidays(page)
     if (activeTab === 'settings') void loadSettings()
-  }, [activeTab, loadApprovals, loadAvailability, loadHolidays, loadPunches, loadSchedules, loadSettings, loadStoreUsers])
+  }, [activeTab, loadApprovals, loadAvailability, loadHolidays, loadPunches, loadScheduleHolidays, loadSchedules, loadSettings, loadStoreUsers])
 
   useEffect(() => {
     void getActiveStores().then(setStoreOptions).catch((error) => {
@@ -301,7 +380,7 @@ export default function ScheduleAttendancePage() {
 
   useEffect(() => {
     loadActiveTab(1)
-  }, [activeTab, storeCode, dateRange])
+  }, [activeTab, storeCode, dateRange, selectedWeek])
 
   const statusLabel = useCallback((type: 'schedule' | 'punch' | 'review', value?: string) => {
     if (!value) return '--'
@@ -449,6 +528,47 @@ export default function ScheduleAttendancePage() {
     }
   }
 
+  const openBatchHolidayDrawer = () => {
+    batchHolidayForm.resetFields()
+    batchHolidayForm.setFieldsValue({
+      storeCodes: storeCode ? [storeCode] : [],
+      businessStatus: 'Open',
+      isPaidHoliday: true,
+    })
+    setBatchHolidayDrawerOpen(true)
+  }
+
+  const saveBatchHoliday = async () => {
+    try {
+      const values = await batchHolidayForm.validateFields()
+      const payload: BatchUpsertAttendanceHolidayPayload = {
+        storeCodes: values.storeCodes,
+        holidayDate: values.holidayDate.format('YYYY-MM-DD'),
+        holidayName: values.holidayName.trim(),
+        businessStatus: values.businessStatus,
+        openTime: values.businessTime?.[0]?.format('HH:mm'),
+        closeTime: values.businessTime?.[1]?.format('HH:mm'),
+        isPaidHoliday: values.isPaidHoliday ?? true,
+        remark: values.remark?.trim() || undefined,
+      }
+      setSaving(true)
+      const result = await batchUpsertAttendanceHolidays(payload)
+      message.success(t('posAdmin.scheduleAttendance.messages.batchHolidaySuccess', {
+        created: result.createdCount,
+        updated: result.updatedCount,
+      }))
+      setBatchHolidayDrawerOpen(false)
+      void loadHolidays()
+      void loadScheduleHolidays()
+    } catch (error) {
+      if (typeof error === 'object' && error !== null && 'errorFields' in error) return
+      console.error(error)
+      message.error(t('posAdmin.scheduleAttendance.messages.saveHolidayFailed'))
+    } finally {
+      setSaving(false)
+    }
+  }
+
   const confirmDeleteHoliday = (record: AttendanceStoreHolidayDto) => {
     Modal.confirm({
       title: t('posAdmin.scheduleAttendance.confirm.deleteHoliday'),
@@ -539,6 +659,15 @@ export default function ScheduleAttendancePage() {
   }
 
   const displayStoreUserName = (user: StoreUserListDto) => user.fullName || user.username || user.userGuid
+
+  const holidaysByDate = useMemo(() => {
+    const map = new Map<string, AttendanceStoreHolidayDto[]>()
+    scheduleHolidays.forEach((holiday) => {
+      const dateKey = dayjs(holiday.holidayDate).format('YYYY-MM-DD')
+      map.set(dateKey, [...(map.get(dateKey) ?? []), holiday])
+    })
+    return map
+  }, [scheduleHolidays])
 
   const scheduleRows = useMemo<ScheduleRow[]>(() => {
     const rows = new Map<string, ScheduleRow>()
@@ -637,6 +766,37 @@ export default function ScheduleAttendancePage() {
     )
   }
 
+  const renderHolidayHeaderTag = (holiday: AttendanceStoreHolidayDto) => {
+    const color = holiday.businessStatus === 'Closed' ? 'red' : holiday.businessStatus === 'Partial' ? 'orange' : 'green'
+    const status = t(`posAdmin.scheduleAttendance.status.holiday.${holiday.businessStatus}`, holiday.businessStatus)
+    return (
+      <Tooltip
+        key={holiday.holidayGuid}
+        title={`${t('posAdmin.scheduleAttendance.weekTable.holidayColumn')}: ${holiday.holidayName} (${status})`}
+      >
+        <Tag color={color} style={{ marginInlineEnd: 0, maxWidth: 130, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+          {holiday.holidayName}
+        </Tag>
+      </Tooltip>
+    )
+  }
+
+  const renderWeekDayHeader = (day: Dayjs, index: number) => {
+    const dateKey = day.format('YYYY-MM-DD')
+    const dayHolidays = holidaysByDate.get(dateKey) ?? []
+    return (
+      <Space direction="vertical" size={2} style={{ width: '100%' }}>
+        <Typography.Text strong>{day.format('MM-DD')}</Typography.Text>
+        <Typography.Text type="secondary">{t(`posAdmin.scheduleAttendance.weekdays.${index}`)}</Typography.Text>
+        {dayHolidays.length ? (
+          <Space size={[4, 2]} wrap>
+            {dayHolidays.map(renderHolidayHeaderTag)}
+          </Space>
+        ) : null}
+      </Space>
+    )
+  }
+
   const scheduleColumns: ColumnsType<ScheduleRow> = [
     {
       title: t('posAdmin.scheduleAttendance.fields.employee'),
@@ -644,20 +804,13 @@ export default function ScheduleAttendancePage() {
       fixed: 'left',
       width: 240,
       render: (_, record) => (
-        <Space direction="vertical" size={0}>
+        <Space direction="vertical" size={0} style={{ width: '100%' }}>
           <Typography.Text strong>{record.userName || '--'}</Typography.Text>
-          <Typography.Text type="secondary" style={{ fontSize: 12 }}>{record.userGuid}</Typography.Text>
-          <Typography.Text type="secondary" style={{ fontSize: 12 }}>{record.storeName || storeNameMap.get(record.storeCode) || record.storeCode}</Typography.Text>
         </Space>
       ),
     },
     ...weekDays.map((day, index): ColumnsType<ScheduleRow>[number] => ({
-      title: (
-        <Space direction="vertical" size={0}>
-          <Typography.Text>{day.format('MM-DD')}</Typography.Text>
-          <Typography.Text type="secondary">{t(`posAdmin.scheduleAttendance.weekdays.${index}`)}</Typography.Text>
-        </Space>
-      ),
+      title: renderWeekDayHeader(day, index),
       key: day.format('YYYY-MM-DD'),
       width: 170,
       render: (_, record) => renderScheduleCell(record, day),
@@ -754,10 +907,23 @@ export default function ScheduleAttendancePage() {
         value={userGuid}
         onChange={(event) => setUserGuid(event.target.value)}
       />
-      <DatePicker.RangePicker
-        value={dateRange}
-        onChange={(value) => setDateRange(value as [Dayjs, Dayjs] | null)}
-      />
+      {activeTab === 'schedules' ? (
+        <>
+          <DatePicker
+            picker="week"
+            allowClear={false}
+            placeholder={t('posAdmin.scheduleAttendance.weekTable.selectWeek')}
+            value={selectedWeek}
+            onChange={(value) => setSelectedWeek(value ?? dayjs())}
+          />
+          <Tag color="blue" style={{ lineHeight: '30px', paddingInline: 12 }}>{selectedWeekLabel}</Tag>
+        </>
+      ) : (
+        <DatePicker.RangePicker
+          value={dateRange}
+          onChange={(value) => setDateRange(value as [Dayjs, Dayjs] | null)}
+        />
+      )}
       <Button icon={<ReloadOutlined />} onClick={() => loadActiveTab(1)}>{t('common.search')}</Button>
     </Space>
   )
@@ -769,7 +935,7 @@ export default function ScheduleAttendancePage() {
       children: (
         <Table
           rowKey="rowKey"
-          loading={schedules.loading || storeUsersLoading}
+          loading={schedules.loading || storeUsersLoading || scheduleHolidaysLoading}
           columns={scheduleColumns}
           dataSource={storeCode ? scheduleRows : []}
           pagination={false}
@@ -891,7 +1057,18 @@ export default function ScheduleAttendancePage() {
             </>
           ) : null}
           {activeTab === 'holidays' && access.canEditAttendanceHoliday ? (
-            <Button type="primary" icon={<PlusOutlined />} onClick={() => openHolidayDrawer()}>{t('posAdmin.scheduleAttendance.actions.createHoliday')}</Button>
+            <>
+              <Tooltip title={t('posAdmin.scheduleAttendance.messages.batchHolidayOverwriteHint')}>
+                <Button
+                  icon={<CopyOutlined />}
+                  disabled={!editableHolidayStoreOptions.length}
+                  onClick={() => openBatchHolidayDrawer()}
+                >
+                  {t('posAdmin.scheduleAttendance.actions.batchHoliday')}
+                </Button>
+              </Tooltip>
+              <Button type="primary" icon={<PlusOutlined />} onClick={() => openHolidayDrawer()}>{t('posAdmin.scheduleAttendance.actions.createHoliday')}</Button>
+            </>
           ) : null}
         </Space>
       }
@@ -957,6 +1134,52 @@ export default function ScheduleAttendancePage() {
         <Form form={holidayForm} layout="vertical">
           <Form.Item name="storeCode" label={t('posAdmin.scheduleAttendance.fields.store')} rules={[{ required: true, message: t('form.pleaseSelectStore') }]}>
             <Select showSearch optionFilterProp="label" options={storeOptions} />
+          </Form.Item>
+          <Form.Item name="holidayDate" label={t('posAdmin.scheduleAttendance.fields.holidayDate')} rules={[{ required: true }]}>
+            <DatePicker style={{ width: '100%' }} />
+          </Form.Item>
+          <Form.Item name="holidayName" label={t('posAdmin.scheduleAttendance.fields.holidayName')} rules={[{ required: true, message: t('posAdmin.scheduleAttendance.validation.holidayNameRequired') }]}>
+            <Input />
+          </Form.Item>
+          <Form.Item name="businessStatus" label={t('posAdmin.scheduleAttendance.fields.businessStatus')} rules={[{ required: true }]}>
+            <Select options={[
+              { value: 'Open', label: t('posAdmin.scheduleAttendance.status.holiday.Open') },
+              { value: 'Closed', label: t('posAdmin.scheduleAttendance.status.holiday.Closed') },
+              { value: 'Partial', label: t('posAdmin.scheduleAttendance.status.holiday.Partial') },
+            ]} />
+          </Form.Item>
+          <Form.Item name="businessTime" label={t('posAdmin.scheduleAttendance.fields.businessTime')}>
+            <TimePicker.RangePicker format="HH:mm" style={{ width: '100%' }} />
+          </Form.Item>
+          <Form.Item name="isPaidHoliday" label={t('posAdmin.scheduleAttendance.fields.paidHoliday')} valuePropName="checked">
+            <Switch />
+          </Form.Item>
+          <Form.Item name="remark" label={t('column.remarks')}>
+            <Input.TextArea rows={3} />
+          </Form.Item>
+        </Form>
+      </Drawer>
+
+      <Drawer
+        title={t('posAdmin.scheduleAttendance.drawer.batchHoliday')}
+        width={560}
+        open={batchHolidayDrawerOpen}
+        onClose={() => setBatchHolidayDrawerOpen(false)}
+        extra={<Button type="primary" loading={saving} onClick={() => void saveBatchHoliday()}>{t('common.save')}</Button>}
+      >
+        <Form form={batchHolidayForm} layout="vertical">
+          <Form.Item
+            name="storeCodes"
+            label={t('posAdmin.scheduleAttendance.fields.stores')}
+            rules={[{ required: true, message: t('posAdmin.scheduleAttendance.validation.storeCodesRequired') }]}
+          >
+            <Select
+              mode="multiple"
+              showSearch
+              optionFilterProp="label"
+              maxTagCount="responsive"
+              options={editableHolidayStoreOptions}
+            />
           </Form.Item>
           <Form.Item name="holidayDate" label={t('posAdmin.scheduleAttendance.fields.holidayDate')} rules={[{ required: true }]}>
             <DatePicker style={{ width: '100%' }} />
