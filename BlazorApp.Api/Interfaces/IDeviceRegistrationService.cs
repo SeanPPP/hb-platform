@@ -122,6 +122,15 @@ namespace BlazorApp.Api.Interfaces
         Task<(bool IsValid, string? NewAuthCode)> ValidateAndUpdateDeviceAuthCodeAsync(string hardwareId, string authCode);
 
         /// <summary>
+        /// 解绑设备：校验授权码后将设备标记为未注册并清空授权码
+        /// </summary>
+        /// <param name="hardwareId">设备硬件识别码</param>
+        /// <param name="authCode">当前授权码</param>
+        /// <param name="updatedBy">更新人</param>
+        /// <returns>解绑是否成功</returns>
+        Task<bool> UnbindDeviceAsync(string hardwareId, string authCode, string updatedBy);
+
+        /// <summary>
         /// 生成新的设备授权码
         /// </summary>
         /// <param name="id">设备ID</param>

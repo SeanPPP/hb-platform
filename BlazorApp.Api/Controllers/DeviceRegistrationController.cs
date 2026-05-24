@@ -17,16 +17,19 @@ namespace BlazorApp.Api.Controllers
         private readonly IDeviceRegistrationService _deviceService;
         private readonly ILogger<DeviceRegistrationController> _logger;
         private readonly IMapper _mapper;
+        private readonly IStoreService _storeService;
 
         public DeviceRegistrationController(
             IDeviceRegistrationService deviceService,
             ILogger<DeviceRegistrationController> logger,
-            IMapper mapper
+            IMapper mapper,
+            IStoreService storeService
         )
         {
             _deviceService = deviceService;
             _logger = logger;
             _mapper = mapper;
+            _storeService = storeService;
         }
 
         /// <summary>
@@ -141,6 +144,7 @@ namespace BlazorApp.Api.Controllers
 
                 // 使用AutoMapper转换为前端期望的格式
                 var deviceData = _mapper.Map<DeviceDataDto>(device);
+                await PopulateStoreNameAsync(deviceData);
 
                 return Ok(new { success = true, data = deviceData });
             }
@@ -148,6 +152,31 @@ namespace BlazorApp.Api.Controllers
             {
                 _logger.LogError(ex, "根据硬件识别码获取设备信息失败: {HardwareId}", hardwareId);
                 return StatusCode(500, new { success = false, message = "获取设备信息失败" });
+            }
+        }
+
+        private async Task PopulateStoreNameAsync(DeviceDataDto deviceData)
+        {
+            if (string.IsNullOrWhiteSpace(deviceData.StoreCode))
+            {
+                return;
+            }
+
+            try
+            {
+                var storeResult = await _storeService.GetStoreByCodeAsync(deviceData.StoreCode);
+                if (storeResult.Success && storeResult.Data != null)
+                {
+                    deviceData.StoreName = storeResult.Data.StoreName;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(
+                    ex,
+                    "获取设备绑定分店名称失败: {StoreCode}",
+                    deviceData.StoreCode
+                );
             }
         }
 
@@ -408,6 +437,47 @@ namespace BlazorApp.Api.Controllers
             {
                 _logger.LogError(ex, "锁定设备失败: {DeviceId}", id);
                 return StatusCode(500, new { success = false, message = "锁定设备失败" });
+            }
+        }
+
+        /// <summary>
+        /// 解绑设备
+        /// </summary>
+        [HttpPost("unbind-device")]
+        [AllowAnonymous]
+        public async Task<IActionResult> UnbindDevice([FromBody] DeviceUnbindRequestDto request)
+        {
+            try
+            {
+                if (
+                    string.IsNullOrEmpty(request.HardwareId)
+                    || string.IsNullOrEmpty(request.AuthCode)
+                )
+                {
+                    return BadRequest(
+                        new { success = false, message = "硬件识别码和授权码不能为空" }
+                    );
+                }
+
+                var result = await _deviceService.UnbindDeviceAsync(
+                    request.HardwareId,
+                    request.AuthCode,
+                    "DeviceSelfService"
+                );
+
+                if (!result)
+                {
+                    return BadRequest(
+                        new { success = false, message = "设备不存在或授权码不匹配" }
+                    );
+                }
+
+                return Ok(new { success = true, message = "设备已解绑" });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "设备解绑失败: {HardwareId}", request.HardwareId);
+                return StatusCode(500, new { success = false, message = "设备解绑失败" });
             }
         }
 

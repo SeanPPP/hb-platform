@@ -520,6 +520,11 @@ namespace BlazorApp.Api.Services.React
                 StoreCode = order.StoreCode,
                 TotalAmount = order.OEMTotalAmount ?? 0,
                 TotalQuantity = (int)details.Sum(x => x.Quantity),
+                TotalSKU = details
+                    .Select(x => x.ProductCode)
+                    .Where(productCode => !string.IsNullOrWhiteSpace(productCode))
+                    .Distinct()
+                    .Count(),
                 TotalImportAmount = details.Sum(x => x.ImportAmount),
                 TotalVolume = details.Sum(x => x.TotalVolume ?? 0),
                 TotalOrderVolume = details.Sum(x => x.OrderVolume ?? 0),

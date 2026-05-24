@@ -249,7 +249,10 @@ namespace BlazorApp.Api.Services
                     if (existingDevice.设备状态 == (int)DeviceStatus.未注册)
                     {
                         existingDevice.设备状态 = (int)DeviceStatus.待确认;
-                        existingDevice.最后修改时间 = DateTime.Now;
+                        existingDevice.设备类型 = deviceType;
+                        existingDevice.设备系统 = deviceSystem;
+                        existingDevice.分店代码 = storeCode;
+                        existingDevice.设备授权码 = GenerateAuthCode();
                         await UpdateDeviceAsync(existingDevice, "System");
                         return existingDevice;
                     }
@@ -434,6 +437,41 @@ namespace BlazorApp.Api.Services
             catch (Exception ex)
             {
                 _logger.LogError(ex, "验证和更新设备授权码失败: {HardwareId}", hardwareId);
+                throw;
+            }
+        }
+
+        /// <summary>
+        /// 解绑设备
+        /// </summary>
+        public async Task<bool> UnbindDeviceAsync(
+            string hardwareId,
+            string authCode,
+            string updatedBy
+        )
+        {
+            try
+            {
+                var device = await GetDeviceByHardwareIdAsync(hardwareId);
+                if (device == null)
+                {
+                    _logger.LogWarning("设备解绑失败，设备不存在: {HardwareId}", hardwareId);
+                    return false;
+                }
+
+                if (device.设备授权码 != authCode)
+                {
+                    _logger.LogWarning("设备解绑失败，授权码不匹配: {HardwareId}", hardwareId);
+                    return false;
+                }
+
+                device.设备状态 = (int)DeviceStatus.未注册;
+                device.设备授权码 = string.Empty;
+                return await UpdateDeviceAsync(device, updatedBy);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "设备解绑失败: {HardwareId}", hardwareId);
                 throw;
             }
         }

@@ -48,6 +48,11 @@ namespace BlazorApp.Shared.DTOs
         public string? StoreCode { get; set; }
 
         /// <summary>
+        /// 分店名称
+        /// </summary>
+        public string? StoreName { get; set; }
+
+        /// <summary>
         /// 创建时间
         /// </summary>
         public DateTime CreatedAt { get; set; }
@@ -192,6 +197,24 @@ namespace BlazorApp.Shared.DTOs
     /// 设备授权验证请求DTO
     /// </summary>
     public class DeviceAuthValidationRequestDto
+    {
+        /// <summary>
+        /// 设备硬件识别码
+        /// </summary>
+        [Required(ErrorMessage = "设备硬件识别码不能为空")]
+        public string HardwareId { get; set; } = string.Empty;
+
+        /// <summary>
+        /// 授权码
+        /// </summary>
+        [Required(ErrorMessage = "授权码不能为空")]
+        public string AuthCode { get; set; } = string.Empty;
+    }
+
+    /// <summary>
+    /// 设备解绑请求DTO
+    /// </summary>
+    public class DeviceUnbindRequestDto
     {
         /// <summary>
         /// 设备硬件识别码

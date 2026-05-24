@@ -23,6 +23,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpGet("tree")]
+        [AllowAnonymous]
         public async Task<IActionResult> GetTree()
         {
             try

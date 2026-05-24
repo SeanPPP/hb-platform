@@ -125,6 +125,16 @@ public class NavigationServiceTests
         Assert.Equal(Permissions.Users.ResetPassword, authorizeAttribute.Policy);
     }
 
+    [Fact]
+    public void WarehouseCategoryTree_AllowsAnonymousReadForDeviceHome()
+    {
+        var method = typeof(ReactWarehouseCategoriesController).GetMethod(
+            nameof(ReactWarehouseCategoriesController.GetTree)
+        ) ?? throw new InvalidOperationException("GetTree was not found.");
+
+        Assert.NotEmpty(method.GetCustomAttributes(typeof(AllowAnonymousAttribute), inherit: false));
+    }
+
     private static ClaimsPrincipal CreateUser(params Claim[] claims)
     {
         return new ClaimsPrincipal(new ClaimsIdentity(claims, "TestAuth"));
