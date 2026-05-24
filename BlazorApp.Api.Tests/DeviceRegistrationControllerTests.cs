@@ -296,6 +296,86 @@ namespace BlazorApp.Api.Tests
             Assert.Null(device.最后修改人);
         }
 
+        [Fact]
+        public async Task RegisterDeviceAsync_GeneratesPdaStoreTimeNumber_ForNewDevice()
+        {
+            var service = CreateService(new DateTime(2026, 1, 1, 14, 30, 0));
+
+            var device = await service.RegisterDeviceAsync(
+                "hbmobile-new",
+                "Mobile",
+                "Android",
+                "1004"
+            );
+
+            Assert.Equal("PDA_1004_1430", device.系统设备编号);
+        }
+
+        [Fact]
+        public async Task RegisterDeviceAsync_UsesNextMinute_WhenSameStoreTimeAlreadyExists()
+        {
+            await InsertDeviceAsync("hbmobile-existing", "PDA_1004_1430", "1004");
+            var service = CreateService(new DateTime(2026, 1, 1, 14, 30, 0));
+
+            var device = await service.RegisterDeviceAsync(
+                "hbmobile-new",
+                "Mobile",
+                "Android",
+                "1004"
+            );
+
+            Assert.Equal("PDA_1004_1431", device.系统设备编号);
+        }
+
+        [Fact]
+        public async Task RegisterDeviceAsync_AllowsSameMinute_ForDifferentStores()
+        {
+            await InsertDeviceAsync("hbmobile-existing", "PDA_1005_1430", "1005");
+            var service = CreateService(new DateTime(2026, 1, 1, 14, 30, 0));
+
+            var device = await service.RegisterDeviceAsync(
+                "hbmobile-new",
+                "Mobile",
+                "Android",
+                "1004"
+            );
+
+            Assert.Equal("PDA_1004_1430", device.系统设备编号);
+        }
+
+        [Fact]
+        public async Task RegisterDeviceAsync_Throws_WhenAllStoreMinutesAreUsed()
+        {
+            var rows = Enumerable.Range(0, 1440)
+                .Select(offset =>
+                {
+                    var hhmm = new DateTime(2026, 1, 1).AddMinutes(offset).ToString("HHmm");
+                    return CreateDevice($"hbmobile-existing-{hhmm}", $"PDA_1004_{hhmm}", "1004");
+                })
+                .ToList();
+            await _db.Insertable(rows).ExecuteCommandAsync();
+            var service = CreateService(new DateTime(2026, 1, 1, 14, 30, 0));
+
+            var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+                () => service.RegisterDeviceAsync("hbmobile-new", "Mobile", "Android", "1004")
+            );
+
+            Assert.Contains("HHMM", ex.Message);
+            Assert.Contains("1004", ex.Message);
+        }
+
+        [Fact]
+        public async Task RegisterDeviceAsync_Throws_WhenStoreCodeIsMissing()
+        {
+            var service = CreateService(new DateTime(2026, 1, 1, 14, 30, 0));
+
+            var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+                () => service.RegisterDeviceAsync("hbmobile-new", "Mobile", "Android", " ")
+            );
+
+            Assert.Contains("分店代码", ex.Message);
+        }
+
         public void Dispose()
         {
             _db.Dispose();
@@ -307,7 +387,36 @@ namespace BlazorApp.Api.Tests
             }
         }
 
-        private DeviceRegistrationService CreateService()
+        private async Task InsertDeviceAsync(
+            string hardwareId,
+            string systemDeviceNumber,
+            string storeCode
+        )
+        {
+            await _db.Insertable(CreateDevice(hardwareId, systemDeviceNumber, storeCode))
+                .ExecuteCommandAsync();
+        }
+
+        private static POSM_设备注册信息表 CreateDevice(
+            string hardwareId,
+            string systemDeviceNumber,
+            string storeCode
+        )
+        {
+            return new POSM_设备注册信息表
+            {
+                设备硬件识别码 = hardwareId,
+                系统设备编号 = systemDeviceNumber,
+                设备授权码 = "AUTH-001",
+                设备状态 = (int)DeviceStatus.启用,
+                设备类型 = "Mobile",
+                设备系统 = "Android",
+                分店代码 = storeCode,
+                创建时间 = DateTime.UtcNow,
+            };
+        }
+
+        private DeviceRegistrationService CreateService(DateTime? now = null)
         {
             var context = (POSMSqlSugarContext)RuntimeHelpers.GetUninitializedObject(
                 typeof(POSMSqlSugarContext)
@@ -320,7 +429,8 @@ namespace BlazorApp.Api.Tests
 
             return new DeviceRegistrationService(
                 context,
-                NullLogger<DeviceRegistrationService>.Instance
+                NullLogger<DeviceRegistrationService>.Instance,
+                now.HasValue ? () => now.Value : null
             );
         }
     }

@@ -14,14 +14,17 @@ namespace BlazorApp.Api.Services
     {
         private readonly POSMSqlSugarContext _posmContext;
         private readonly ILogger<DeviceRegistrationService> _logger;
+        private readonly Func<DateTime> _now;
 
         public DeviceRegistrationService(
             POSMSqlSugarContext posmContext,
-            ILogger<DeviceRegistrationService> logger
+            ILogger<DeviceRegistrationService> logger,
+            Func<DateTime>? nowProvider = null
         )
         {
             _posmContext = posmContext;
             _logger = logger;
+            _now = nowProvider ?? (() => DateTime.Now);
         }
 
         /// <summary>
@@ -248,10 +251,11 @@ namespace BlazorApp.Api.Services
                     // 如果设备已存在但状态为未注册，则更新状态
                     if (existingDevice.设备状态 == (int)DeviceStatus.未注册)
                     {
+                        var normalizedStoreCode = NormalizeBindingStoreCode(storeCode);
                         existingDevice.设备状态 = (int)DeviceStatus.待确认;
                         existingDevice.设备类型 = deviceType;
                         existingDevice.设备系统 = deviceSystem;
-                        existingDevice.分店代码 = storeCode;
+                        existingDevice.分店代码 = normalizedStoreCode;
                         existingDevice.设备授权码 = GenerateAuthCode();
                         await UpdateDeviceAsync(existingDevice, "System");
                         return existingDevice;
@@ -266,15 +270,17 @@ namespace BlazorApp.Api.Services
                     return existingDevice;
                 }
 
+                var newDeviceStoreCode = NormalizeBindingStoreCode(storeCode);
+
                 // 创建新设备
                 var newDevice = new POSM_设备注册信息表
                 {
                     设备硬件识别码 = hardwareId,
                     设备类型 = deviceType,
                     设备系统 = deviceSystem,
-                    分店代码 = storeCode,
+                    分店代码 = newDeviceStoreCode,
                     设备状态 = (int)DeviceStatus.待确认,
-                    系统设备编号 = await GenerateSystemDeviceNumberAsync(),
+                    系统设备编号 = await GeneratePdaSystemDeviceNumberAsync(newDeviceStoreCode),
                     设备授权码 = GenerateAuthCode(),
                 };
 
@@ -619,6 +625,56 @@ namespace BlazorApp.Api.Services
             var sequence = (todayCount + 1).ToString("D4");
 
             return $"{prefix}{timestamp}{sequence}";
+        }
+
+        private static string NormalizeBindingStoreCode(string? storeCode)
+        {
+            var normalizedStoreCode = storeCode?.Trim();
+            if (string.IsNullOrWhiteSpace(normalizedStoreCode))
+            {
+                throw new InvalidOperationException("设备绑定必须提供分店代码");
+            }
+
+            return normalizedStoreCode;
+        }
+
+        /// <summary>
+        /// 为设备绑定流程生成同分店 HHMM 不重复的 PDA 编号
+        /// </summary>
+        private async Task<string> GeneratePdaSystemDeviceNumberAsync(string storeCode)
+        {
+            const int systemDeviceNumberMaxLength = 50;
+            const int minutesPerDay = 1440;
+
+            var prefix = $"PDA_{storeCode}_";
+            if (prefix.Length + 4 > systemDeviceNumberMaxLength)
+            {
+                throw new InvalidOperationException("分店代码过长，无法生成设备编号");
+            }
+
+            var existingNumbers = await _posmContext
+                .Db.Queryable<POSM_设备注册信息表>()
+                .Where(d => d.系统设备编号.StartsWith(prefix))
+                .Select(d => d.系统设备编号)
+                .ToListAsync();
+
+            var usedMinutes = existingNumbers
+                .Where(number => number.Length == prefix.Length + 4)
+                .Select(number => number.Substring(prefix.Length, 4))
+                .Where(value => value.All(char.IsDigit))
+                .ToHashSet();
+
+            var startTime = _now();
+            for (var offset = 0; offset < minutesPerDay; offset++)
+            {
+                var hhmm = startTime.AddMinutes(offset).ToString("HHmm");
+                if (!usedMinutes.Contains(hhmm))
+                {
+                    return $"{prefix}{hhmm}";
+                }
+            }
+
+            throw new InvalidOperationException($"分店 {storeCode} 的设备编号 HHMM 已用尽");
         }
 
         /// <summary>
