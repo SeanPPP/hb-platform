@@ -58,6 +58,92 @@ public sealed class LocalCatalogRepositoryTests
     }
 
     [Fact]
+    public async Task UpsertSellableItemsAsync_persists_special_flag_and_changes_compare_hash()
+    {
+        var databasePath = CreateTempDatabasePath();
+
+        try
+        {
+            var repository = await CreateRepositoryAsync(databasePath);
+            await repository.UpsertSellableItemsAsync(
+            [
+                CreateItem("S001", "SKU-001", "abc", "Original name", 1.25m, isSpecialProduct: false)
+            ]);
+            var before = Assert.Single(await repository.LoadSellableItemComparePageAsync("S001", null, 10));
+
+            await repository.UpsertSellableItemsAsync(
+            [
+                CreateItem("S001", "SKU-001", "abc", "Original name", 1.25m, isSpecialProduct: true)
+            ]);
+
+            var saved = Assert.Single(await repository.LoadSellableItemsAsync());
+            var after = Assert.Single(await repository.LoadSellableItemComparePageAsync("S001", null, 10));
+            Assert.True(saved.IsSpecialProduct);
+            Assert.NotEqual(before.ContentHash, after.ContentHash);
+        }
+        finally
+        {
+            DeleteTempDatabase(databasePath);
+        }
+    }
+
+    [Fact]
+    public async Task LoadSpecialProductItemsAsync_uses_local_sort_and_keeps_images()
+    {
+        var databasePath = CreateTempDatabasePath();
+
+        try
+        {
+            var repository = await CreateRepositoryAsync(databasePath);
+            await repository.UpsertSellableItemsAsync(
+            [
+                CreateItem("S001", "SKU-001", "abc", "Alpha", 1m, "https://images.example/alpha.jpg", isSpecialProduct: true),
+                CreateItem("S001", "SKU-002", "def", "Beta", 2m, "https://images.example/beta.jpg", isSpecialProduct: true),
+                CreateItem("S001", "SKU-003", "ghi", "Gamma", 3m, isSpecialProduct: false)
+            ]);
+            await repository.SaveSpecialProductOrderAsync("S001", ["SKU-002", "SKU-001"]);
+
+            var specialItems = await repository.LoadSpecialProductItemsAsync("S001");
+
+            Assert.Equal(["SKU-002", "SKU-001"], specialItems.Select(x => x.ProductCode).ToArray());
+            Assert.All(specialItems, item => Assert.True(item.IsSpecialProduct));
+            Assert.Equal("https://images.example/beta.jpg", specialItems[0].ProductImage);
+        }
+        finally
+        {
+            DeleteTempDatabase(databasePath);
+        }
+    }
+
+    [Fact]
+    public async Task UpdateSpecialProductFlagAsync_removes_item_from_special_list_and_sort_order()
+    {
+        var databasePath = CreateTempDatabasePath();
+
+        try
+        {
+            var repository = await CreateRepositoryAsync(databasePath);
+            await repository.UpsertSellableItemsAsync(
+            [
+                CreateItem("S001", "SKU-001", "abc", "Alpha", 1m, isSpecialProduct: true),
+                CreateItem("S001", "SKU-002", "def", "Beta", 2m, isSpecialProduct: true)
+            ]);
+            await repository.SaveSpecialProductOrderAsync("S001", ["SKU-002", "SKU-001"]);
+
+            var updated = await repository.UpdateSpecialProductFlagAsync("S001", "SKU-002", false);
+            var specialItems = await repository.LoadSpecialProductItemsAsync("S001");
+
+            Assert.Equal(1, updated);
+            var item = Assert.Single(specialItems);
+            Assert.Equal("SKU-001", item.ProductCode);
+        }
+        finally
+        {
+            DeleteTempDatabase(databasePath);
+        }
+    }
+
+    [Fact]
     public async Task DeleteByLookupCodesAsync_deletes_only_matching_store_and_normalized_lookup_codes()
     {
         var databasePath = CreateTempDatabasePath();
@@ -162,7 +248,8 @@ public sealed class LocalCatalogRepositoryTests
         decimal retailPrice,
         string? productImage = null,
         string? referenceCode = null,
-        decimal? discountRate = null)
+        decimal? discountRate = null,
+        bool isSpecialProduct = false)
     {
         return new SellableItemDto(
             StoreCode: storeCode,
@@ -178,7 +265,8 @@ public sealed class LocalCatalogRepositoryTests
             QuantityFactor: 1m,
             UpdatedAt: DateTimeOffset.UtcNow,
             ProductImage: productImage,
-            DiscountRate: discountRate);
+            DiscountRate: discountRate,
+            IsSpecialProduct: isSpecialProduct);
     }
 
     private static string CreateTempDatabasePath()

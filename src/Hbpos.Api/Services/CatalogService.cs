@@ -531,9 +531,11 @@ public sealed class CatalogSellableIndex
                 item.PriceSourceLabel.Trim(),
                 item.QuantityFactor,
                 item.ProductImage ?? string.Empty,
-                item.DiscountRate),
+                item.DiscountRate,
+                item.IsSpecialProduct),
             item.ProductImage,
-            item.DiscountRate);
+            item.DiscountRate,
+            item.IsSpecialProduct);
     }
 
     private static string CreateRowVersion(
@@ -549,7 +551,8 @@ public sealed class CatalogSellableIndex
         string priceSourceLabel,
         decimal quantityFactor,
         string productImage,
-        decimal? discountRate)
+        decimal? discountRate,
+        bool isSpecialProduct)
     {
         var builder = new StringBuilder();
         AppendCanonical(builder, storeCode);
@@ -565,6 +568,7 @@ public sealed class CatalogSellableIndex
         AppendCanonical(builder, quantityFactor.ToString("0.#############################", CultureInfo.InvariantCulture));
         AppendCanonical(builder, productImage);
         AppendCanonical(builder, FormatNullableDecimal(discountRate));
+        AppendCanonical(builder, isSpecialProduct ? "1" : "0");
 
         var hashBytes = SHA256.HashData(Encoding.UTF8.GetBytes(builder.ToString()));
         return Convert.ToHexString(hashBytes);

@@ -128,6 +128,32 @@ public sealed class CatalogSellableIndexTests
     }
 
     [Fact]
+    public void IsSpecialProduct_is_returned_and_changes_row_version()
+    {
+        var firstIndex = CreateIndex(CreateItem(
+            "P01",
+            "SPECIAL-CODE",
+            "Special item",
+            1m,
+            isSpecialProduct: false));
+        var secondIndex = CreateIndex(CreateItem(
+            "P01",
+            "SPECIAL-CODE",
+            "Special item",
+            1m,
+            isSpecialProduct: true));
+
+        var pageItem = Assert.Single(firstIndex.GetPage(cursor: null, pageSize: 10).Items);
+        var lookup = secondIndex.Lookup("special-code", lookupCodeNormalized: null);
+        var changedItem = Assert.Single(secondIndex.Items);
+
+        Assert.False(pageItem.IsSpecialProduct);
+        Assert.True(lookup.Found);
+        Assert.True(lookup.Item?.IsSpecialProduct);
+        Assert.NotEqual(pageItem.RowVersion, changedItem.RowVersion);
+    }
+
+    [Fact]
     public void GetPage_uses_normalized_cursor_and_reports_next_cursor()
     {
         var index = CreateIndex(
@@ -160,7 +186,8 @@ public sealed class CatalogSellableIndexTests
         string displayName,
         decimal retailPrice,
         string? productImage = null,
-        decimal? discountRate = null)
+        decimal? discountRate = null,
+        bool isSpecialProduct = false)
     {
         return new SellableItemDto(
             "S01",
@@ -176,6 +203,7 @@ public sealed class CatalogSellableIndexTests
             1m,
             UpdatedAt,
             productImage,
-            discountRate);
+            discountRate,
+            isSpecialProduct);
     }
 }

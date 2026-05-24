@@ -92,6 +92,20 @@ public sealed class PriceIndexBuilderTests
     }
 
     [Fact]
+    public void Build_CarriesSpecialProductFlagFromStoreRetailPrice()
+    {
+        var items = _builder.Build("S01", new PriceIndexInput(
+            null,
+            [new ProductPriceRecord("P01", "Apple", "ITEM01", "BAR01", 10m, null)],
+            [new StoreRetailPriceRecord("P01", 8.5m, null, IsSpecialProduct: true)],
+            [],
+            [],
+            []));
+
+        Assert.All(items, item => Assert.True(item.IsSpecialProduct));
+    }
+
+    [Fact]
     public void Build_FallsBackToProductBasePriceWhenStoreRetailPriceMissing()
     {
         var items = _builder.Build("S01", new PriceIndexInput(
