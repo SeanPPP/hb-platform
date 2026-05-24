@@ -70,6 +70,22 @@ public sealed class CatalogSyncServiceTests
     }
 
     [Fact]
+    public async Task RefreshLookupAsync_WhenRemoteLookupIsCanceled_DoesNotDeleteLocalCatalog()
+    {
+        var repository = new FakeLocalCatalogRepository();
+        var apiClient = new FakeCatalogApiClient
+        {
+            LookupException = new OperationCanceledException("lookup timed out")
+        };
+        var service = new RemoteLookupRefreshService(repository, apiClient);
+
+        await Assert.ThrowsAsync<OperationCanceledException>(() => service.RefreshLookupAsync("S01", "abc"));
+
+        Assert.Empty(repository.UpsertedBatches);
+        Assert.Empty(repository.DeleteCalls);
+    }
+
+    [Fact]
     public async Task FullSyncAsync_AppliesCompareAndRemotePageUpsertsAndDeletes()
     {
         var repository = new FakeLocalCatalogRepository();
@@ -107,9 +123,11 @@ public sealed class CatalogSyncServiceTests
         Assert.Equal("CMP-001", compareUpsert.ProductCode);
         Assert.Equal("CMP-REF-001", compareUpsert.ReferenceCode);
         Assert.Equal("https://images.example/CMP-001.jpg", compareUpsert.ProductImage);
+        Assert.Equal(0.2m, compareUpsert.DiscountRate);
         Assert.Equal("PAGE-001", pageUpsert.ProductCode);
         Assert.Equal("PAGE-REF-001", pageUpsert.ReferenceCode);
         Assert.Equal("https://images.example/PAGE-001.jpg", pageUpsert.ProductImage);
+        Assert.Equal(0.2m, pageUpsert.DiscountRate);
         Assert.Equal(["OLD-CODE"], repository.DeleteCalls[0].LookupCodes);
         Assert.Equal(["GONE-CODE"], repository.DeleteCalls[1].LookupCodes);
         Assert.NotNull(apiClient.LastCompareRequest);
@@ -287,6 +305,25 @@ public sealed class CatalogSyncServiceTests
     }
 
     [Fact]
+    public async Task CatalogApiClient_LookupSellableItemAsync_PropagatesCancellation()
+    {
+        var handler = new StubHttpMessageHandler((_, cancellationToken) =>
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return JsonResponse(ApiResult<CatalogLookupResponse>.Ok(new CatalogLookupResponse("S01", "abc", "ABC", true, null)));
+        });
+        var client = new CatalogApiClient(new HttpClient(handler)
+        {
+            BaseAddress = new Uri("http://localhost:5000/")
+        });
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            client.LookupSellableItemAsync("S01", "abc", cts.Token));
+    }
+
+    [Fact]
     public async Task ConnectivityApiClient_CheckOnlineAsync_ReturnsTrueWhenHealthEndpointSucceeds()
     {
         HttpRequestMessage? capturedRequest = null;
@@ -341,7 +378,8 @@ public sealed class CatalogSyncServiceTests
             QuantityFactor: 1m,
             UpdatedAt: Timestamp,
             RowVersion: $"row-{productCode}",
-            ProductImage: $"https://images.example/{productCode}.jpg");
+            ProductImage: $"https://images.example/{productCode}.jpg",
+            DiscountRate: 0.2m);
     }
 
     private static DeletedLookupDto CreateDeletedLookup(string lookupCode)

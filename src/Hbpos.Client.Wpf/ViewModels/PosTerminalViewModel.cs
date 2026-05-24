@@ -12,6 +12,7 @@ namespace Hbpos.Client.Wpf.ViewModels;
 public sealed partial class PosTerminalViewModel : ObservableObject, IDisposable
 {
     public const string PageId = "PosTerminal";
+    private static readonly TimeSpan RemoteLookupTimeout = TimeSpan.FromSeconds(2);
 
     private readonly LocalSellableItemIndex _priceIndex;
     private readonly PosCartService _cart;
@@ -528,7 +529,7 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IDisposable
         SelectCartLine(line);
         IsTouchKeyboardOpen = false;
         SetStatus("pos.status.added", item.DisplayName);
-        BeginRemoteLookup(item);
+        BeginRemoteLookup(line, item);
     }
 
     private void SelectCartLine(CartLine line)
@@ -573,40 +574,99 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IDisposable
         _onOpenPayment?.Invoke();
     }
 
-    private void BeginRemoteLookup(SellableItemDto item)
+    private void BeginRemoteLookup(CartLine line, SellableItemDto item)
     {
         if (!Session.IsOnline || _remoteLookupRefreshAsync is null)
         {
             return;
         }
 
-        _ = RefreshRemoteLookupAsync(Session.StoreCode, item.LookupCode);
+        var snapshot = new RemoteLookupCartSnapshot(
+            line,
+            Session.StoreCode,
+            item.LookupCode,
+            item.ProductCode,
+            item.ReferenceCode);
+        _ = RefreshRemoteLookupAsync(snapshot);
     }
 
-    private async Task RefreshRemoteLookupAsync(string storeCode, string lookupCode)
+    private async Task RefreshRemoteLookupAsync(RemoteLookupCartSnapshot snapshot)
     {
+        using var timeoutCts = new CancellationTokenSource(RemoteLookupTimeout);
+        var stopwatch = Stopwatch.StartNew();
         try
         {
-            var result = await _remoteLookupRefreshAsync!(storeCode, lookupCode, CancellationToken.None);
+            var result = await _remoteLookupRefreshAsync!(
+                snapshot.StoreCode,
+                snapshot.LookupCode,
+                timeoutCts.Token);
+            stopwatch.Stop();
+
             if (result.Updated && result.Item is not null)
             {
-                _cart.UpdateLineFromRemote(result.Item);
-                SetStatusText($"Remote lookup refreshed: {result.Item.DisplayName}");
+                if (CanApplyRemoteItemToCartLine(snapshot, result.Item))
+                {
+                    var updated = _cart.UpdateLineFromRemote(snapshot.Line, result.Item);
+                    ConsoleLog.Write(
+                        "PosScan",
+                        $"remote lookup cart update storeCode={snapshot.StoreCode} lookupCode={snapshot.LookupCode} productCode={snapshot.ProductCode} referenceCode={snapshot.ReferenceCode ?? "<null>"} updated={updated} elapsedMs={stopwatch.ElapsedMilliseconds}");
+                }
+                else
+                {
+                    ConsoleLog.Write(
+                        "PosScan",
+                        $"remote lookup ignored for cart storeCode={snapshot.StoreCode} lookupCode={snapshot.LookupCode} localProductCode={snapshot.ProductCode} localReferenceCode={snapshot.ReferenceCode ?? "<null>"} remoteProductCode={result.Item.ProductCode} remoteReferenceCode={result.Item.ReferenceCode ?? "<null>"} elapsedMs={stopwatch.ElapsedMilliseconds}");
+                }
             }
             else if (result.Deleted)
             {
-                _cart.RemoveLineByLookupCode(result.StoreCode, result.LookupCode);
-                SetStatusText($"Remote lookup removed: {result.LookupCode}");
+                ConsoleLog.Write(
+                    "PosScan",
+                    $"remote lookup deleted local cache only storeCode={result.StoreCode} lookupCode={result.LookupCode} deletedCount={result.DeletedCount} elapsedMs={stopwatch.ElapsedMilliseconds}");
             }
 
             var catalogItems = await ReloadCatalogAsync(CancellationToken.None);
             RefreshMatches(catalogItems);
         }
+        catch (OperationCanceledException ex) when (timeoutCts.IsCancellationRequested)
+        {
+            stopwatch.Stop();
+            ConsoleLog.Write(
+                "PosScan",
+                $"remote lookup timeout storeCode={snapshot.StoreCode} lookupCode={snapshot.LookupCode} timeoutMs={RemoteLookupTimeout.TotalMilliseconds:0} elapsedMs={stopwatch.ElapsedMilliseconds} error={ex.Message}");
+        }
         catch (Exception ex)
         {
-            SetStatusText($"Remote lookup failed: {ex.Message}");
+            stopwatch.Stop();
+            ConsoleLog.Write(
+                "PosScan",
+                $"remote lookup failed storeCode={snapshot.StoreCode} lookupCode={snapshot.LookupCode} elapsedMs={stopwatch.ElapsedMilliseconds} error={ex.Message}");
         }
     }
+
+    private static bool CanApplyRemoteItemToCartLine(RemoteLookupCartSnapshot snapshot, SellableItemDto item)
+    {
+        return EqualsIdentity(snapshot.StoreCode, item.StoreCode) &&
+            EqualsIdentity(snapshot.ProductCode, item.ProductCode) &&
+            EqualsIdentity(snapshot.ReferenceCode, item.ReferenceCode);
+    }
+
+    private static bool EqualsIdentity(string? left, string? right)
+    {
+        return string.Equals(NormalizeIdentity(left), NormalizeIdentity(right), StringComparison.Ordinal);
+    }
+
+    private static string NormalizeIdentity(string? value)
+    {
+        return (value ?? string.Empty).Trim().ToUpperInvariant();
+    }
+
+    private sealed record RemoteLookupCartSnapshot(
+        CartLine Line,
+        string StoreCode,
+        string LookupCode,
+        string ProductCode,
+        string? ReferenceCode);
 
     private async Task SyncAsync()
     {

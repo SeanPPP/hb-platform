@@ -34,6 +34,30 @@ public sealed class LocalCatalogRepositoryTests
     }
 
     [Fact]
+    public async Task UpsertSellableItemsAsync_inserts_and_updates_discount_rate()
+    {
+        var databasePath = CreateTempDatabasePath();
+
+        try
+        {
+            var repository = await CreateRepositoryAsync(databasePath);
+            var original = CreateItem("S001", "SKU-001", " abc ", "Original name", 1.25m, discountRate: 0.2m);
+            var updated = CreateItem("S001", "SKU-001B", "ABC", "Updated name", 2.50m, discountRate: 0.35m);
+
+            await repository.UpsertSellableItemsAsync([original]);
+            await repository.UpsertSellableItemsAsync([updated]);
+
+            var items = await repository.LoadSellableItemsAsync();
+            var saved = Assert.Single(items);
+            Assert.Equal(0.35m, saved.DiscountRate);
+        }
+        finally
+        {
+            DeleteTempDatabase(databasePath);
+        }
+    }
+
+    [Fact]
     public async Task DeleteByLookupCodesAsync_deletes_only_matching_store_and_normalized_lookup_codes()
     {
         var databasePath = CreateTempDatabasePath();
@@ -137,7 +161,8 @@ public sealed class LocalCatalogRepositoryTests
         string displayName,
         decimal retailPrice,
         string? productImage = null,
-        string? referenceCode = null)
+        string? referenceCode = null,
+        decimal? discountRate = null)
     {
         return new SellableItemDto(
             StoreCode: storeCode,
@@ -152,7 +177,8 @@ public sealed class LocalCatalogRepositoryTests
             PriceSourceLabel: PriceSourceKind.StoreRetailPrice.ToString(),
             QuantityFactor: 1m,
             UpdatedAt: DateTimeOffset.UtcNow,
-            ProductImage: productImage);
+            ProductImage: productImage,
+            DiscountRate: discountRate);
     }
 
     private static string CreateTempDatabasePath()

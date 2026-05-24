@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Hbpos.Contracts.Catalog;
 
 namespace Hbpos.Client.Wpf.Services;
@@ -34,28 +35,49 @@ public sealed class RemoteLookupRefreshService(
         ArgumentException.ThrowIfNullOrWhiteSpace(storeCode);
         ArgumentException.ThrowIfNullOrWhiteSpace(lookupCode);
 
-        var response = await catalogApiClient.LookupSellableItemAsync(storeCode, lookupCode, cancellationToken);
-        if (response is { Found: true })
+        var stopwatch = Stopwatch.StartNew();
+        Log($"refresh start storeCode={storeCode} lookupCode={lookupCode}");
+        try
         {
-            if (response.Item is null)
+            var response = await catalogApiClient.LookupSellableItemAsync(storeCode, lookupCode, cancellationToken);
+            if (response is { Found: true })
             {
-                throw new CatalogApiException("Catalog lookup response was found but did not include an item.");
+                if (response.Item is null)
+                {
+                    throw new CatalogApiException("Catalog lookup response was found but did not include an item.");
+                }
+
+                var item = response.Item.ToSellableItemDto();
+                await localCatalogRepository.UpsertSellableItemsAsync([item], cancellationToken);
+                stopwatch.Stop();
+                Log($"refresh completed storeCode={storeCode} lookupCode={lookupCode} found=True upserted=1 deleted=0 elapsedMs={stopwatch.ElapsedMilliseconds}");
+                return new RemoteLookupRefreshResult(storeCode, lookupCode, true, item, 0);
             }
 
-            var item = response.Item.ToSellableItemDto();
-            await localCatalogRepository.UpsertSellableItemsAsync([item], cancellationToken);
-            return new RemoteLookupRefreshResult(storeCode, lookupCode, true, item, 0);
+            var deleteLookupCode = response is null
+                ? lookupCode
+                : GetDeleteLookupCode(response);
+            var deletedCount = await localCatalogRepository.DeleteByLookupCodesAsync(
+                storeCode,
+                [deleteLookupCode],
+                cancellationToken);
+
+            stopwatch.Stop();
+            Log($"refresh completed storeCode={storeCode} lookupCode={lookupCode} found=False upserted=0 deleted={deletedCount} elapsedMs={stopwatch.ElapsedMilliseconds}");
+            return new RemoteLookupRefreshResult(storeCode, lookupCode, false, null, deletedCount);
         }
-
-        var deleteLookupCode = response is null
-            ? lookupCode
-            : GetDeleteLookupCode(response);
-        var deletedCount = await localCatalogRepository.DeleteByLookupCodesAsync(
-            storeCode,
-            [deleteLookupCode],
-            cancellationToken);
-
-        return new RemoteLookupRefreshResult(storeCode, lookupCode, false, null, deletedCount);
+        catch (OperationCanceledException ex)
+        {
+            stopwatch.Stop();
+            Log($"refresh canceled storeCode={storeCode} lookupCode={lookupCode} elapsedMs={stopwatch.ElapsedMilliseconds} error={ex.Message}");
+            throw;
+        }
+        catch (Exception ex)
+        {
+            stopwatch.Stop();
+            Log($"refresh failed storeCode={storeCode} lookupCode={lookupCode} elapsedMs={stopwatch.ElapsedMilliseconds} error={ex.Message}");
+            throw;
+        }
     }
 
     private static string GetDeleteLookupCode(CatalogLookupResponse response)
@@ -66,5 +88,10 @@ public sealed class RemoteLookupRefreshService(
         }
 
         return response.LookupCode;
+    }
+
+    private static void Log(string message)
+    {
+        ConsoleLog.Write("RemoteLookupRefresh", message);
     }
 }

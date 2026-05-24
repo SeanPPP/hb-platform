@@ -102,6 +102,32 @@ public sealed class CatalogSellableIndexTests
     }
 
     [Fact]
+    public void DiscountRate_is_returned_and_changes_row_version()
+    {
+        var firstIndex = CreateIndex(CreateItem(
+            "P01",
+            "DISCOUNT-CODE",
+            "Discount item",
+            1m,
+            discountRate: 0.2m));
+        var secondIndex = CreateIndex(CreateItem(
+            "P01",
+            "DISCOUNT-CODE",
+            "Discount item",
+            1m,
+            discountRate: 0.3m));
+
+        var pageItem = Assert.Single(firstIndex.GetPage(cursor: null, pageSize: 10).Items);
+        var lookup = firstIndex.Lookup("discount-code", lookupCodeNormalized: null);
+        var changedItem = Assert.Single(secondIndex.Items);
+
+        Assert.Equal(0.2m, pageItem.DiscountRate);
+        Assert.True(lookup.Found);
+        Assert.Equal(0.2m, lookup.Item?.DiscountRate);
+        Assert.NotEqual(pageItem.RowVersion, changedItem.RowVersion);
+    }
+
+    [Fact]
     public void GetPage_uses_normalized_cursor_and_reports_next_cursor()
     {
         var index = CreateIndex(
@@ -133,7 +159,8 @@ public sealed class CatalogSellableIndexTests
         string lookupCode,
         string displayName,
         decimal retailPrice,
-        string? productImage = null)
+        string? productImage = null,
+        decimal? discountRate = null)
     {
         return new SellableItemDto(
             "S01",
@@ -148,6 +175,7 @@ public sealed class CatalogSellableIndexTests
             "product",
             1m,
             UpdatedAt,
-            productImage);
+            productImage,
+            discountRate);
     }
 }

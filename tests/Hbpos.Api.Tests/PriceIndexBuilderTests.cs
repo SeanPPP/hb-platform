@@ -24,6 +24,58 @@ public sealed class PriceIndexBuilderTests
         Assert.Equal("SRP-UUID-01", barcodeItem.ReferenceCode);
     }
 
+    [Theory]
+    [InlineData(20, 0.2)]
+    [InlineData(0.2, 0.2)]
+    [InlineData(100, 1)]
+    public void Build_NormalizesStoreRetailDiscountRate(decimal sourceDiscountRate, decimal expectedDiscountRate)
+    {
+        var items = _builder.Build("S01", new PriceIndexInput(
+            null,
+            [new ProductPriceRecord("P01", "Apple", "ITEM01", "BAR01", 10m, null)],
+            [new StoreRetailPriceRecord("P01", 8.5m, null, ReferenceCode: "SRP-UUID-01", DiscountRate: sourceDiscountRate)],
+            [],
+            [],
+            []));
+
+        var barcodeItem = Assert.Single(items, x => x.LookupCode == "BAR01");
+        Assert.Equal(expectedDiscountRate, barcodeItem.DiscountRate);
+    }
+
+    [Theory]
+    [InlineData(-1)]
+    [InlineData(101)]
+    public void Build_IgnoresInvalidStoreRetailDiscountRate(decimal sourceDiscountRate)
+    {
+        var items = _builder.Build("S01", new PriceIndexInput(
+            null,
+            [new ProductPriceRecord("P01", "Apple", "ITEM01", "BAR01", 10m, null)],
+            [new StoreRetailPriceRecord("P01", 8.5m, null, ReferenceCode: "SRP-UUID-01", DiscountRate: sourceDiscountRate)],
+            [],
+            [],
+            []));
+
+        var barcodeItem = Assert.Single(items, x => x.LookupCode == "BAR01");
+        Assert.Null(barcodeItem.DiscountRate);
+    }
+
+    [Theory]
+    [InlineData(20, 0.2)]
+    [InlineData(0.2, 0.2)]
+    public void Build_NormalizesStoreMultiCodeDiscountRate(decimal sourceDiscountRate, decimal expectedDiscountRate)
+    {
+        var items = _builder.Build("S01", new PriceIndexInput(
+            null,
+            [new ProductPriceRecord("P01", "Apple", null, null, 10m, null)],
+            [],
+            [new StoreMultiCodeProductRecord("P01", "M01", "MULTI01", 6m, null, ReferenceCode: "SMCP-UUID-01", DiscountRate: sourceDiscountRate)],
+            [],
+            []));
+
+        var item = Assert.Single(items);
+        Assert.Equal(expectedDiscountRate, item.DiscountRate);
+    }
+
     [Fact]
     public void Build_CarriesProductImageFromProductRecord()
     {

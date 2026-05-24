@@ -40,7 +40,8 @@ public sealed class PriceIndexBuilder : IPriceIndexBuilder
                 PriceSourceKind.StoreClearancePrice,
                 "clearance",
                 clearance.UpdatedAt,
-                clearance.ReferenceCode));
+                clearance.ReferenceCode,
+                discountRate: null));
         }
 
         foreach (var multi in input.StoreMultiCodeProducts.Where(x => HasText(x.MultiBarcode) && x.MultiCodeRetailPrice.HasValue))
@@ -55,7 +56,8 @@ public sealed class PriceIndexBuilder : IPriceIndexBuilder
                 PriceSourceKind.StoreMultiCodeProduct,
                 "multi-code",
                 multi.UpdatedAt,
-                multi.ReferenceCode));
+                multi.ReferenceCode,
+                multi.DiscountRate));
         }
 
         foreach (var set in input.ProductSetCodes.Where(x => HasText(x.SetBarcode)))
@@ -72,6 +74,9 @@ public sealed class PriceIndexBuilder : IPriceIndexBuilder
             var referenceCode = hasStoreMultiPrice
                 ? storeMultiPrice?.ReferenceCode
                 : set.ReferenceCode;
+            var discountRate = hasStoreMultiPrice
+                ? storeMultiPrice?.DiscountRate
+                : null;
 
             items.Add(CreateItem(
                 storeCode,
@@ -82,7 +87,8 @@ public sealed class PriceIndexBuilder : IPriceIndexBuilder
                 source,
                 hasStoreMultiPrice ? "set-store-multi-code" : "set",
                 updatedAt,
-                referenceCode));
+                referenceCode,
+                discountRate));
         }
 
         foreach (var product in input.Products.Where(x => HasText(x.ProductCode)))
@@ -96,11 +102,14 @@ public sealed class PriceIndexBuilder : IPriceIndexBuilder
             var referenceCode = source == PriceSourceKind.StoreRetailPrice
                 ? storePrice?.ReferenceCode
                 : product.ReferenceCode;
+            var discountRate = source == PriceSourceKind.StoreRetailPrice
+                ? storePrice?.DiscountRate
+                : null;
 
-            AddProductLookup(items, storeCode, product, product.Barcode, price, source, updatedAt, referenceCode);
+            AddProductLookup(items, storeCode, product, product.Barcode, price, source, updatedAt, referenceCode, discountRate);
             if (!StringComparer.OrdinalIgnoreCase.Equals(product.Barcode, product.ItemNumber))
             {
-                AddProductLookup(items, storeCode, product, product.ItemNumber, price, source, updatedAt, referenceCode);
+                AddProductLookup(items, storeCode, product, product.ItemNumber, price, source, updatedAt, referenceCode, discountRate);
             }
         }
 
@@ -123,7 +132,8 @@ public sealed class PriceIndexBuilder : IPriceIndexBuilder
         decimal price,
         PriceSourceKind source,
         DateTimeOffset? updatedAt,
-        string? referenceCode)
+        string? referenceCode,
+        decimal? discountRate)
     {
         if (!HasText(lookupCode))
         {
@@ -139,7 +149,8 @@ public sealed class PriceIndexBuilder : IPriceIndexBuilder
             source,
             source == PriceSourceKind.StoreRetailPrice ? "store-retail" : "product",
             updatedAt,
-            referenceCode));
+            referenceCode,
+            discountRate));
     }
 
     private static SellableItemDto CreateItem(
@@ -151,7 +162,8 @@ public sealed class PriceIndexBuilder : IPriceIndexBuilder
         PriceSourceKind source,
         string label,
         DateTimeOffset? updatedAt,
-        string? referenceCode)
+        string? referenceCode,
+        decimal? discountRate)
     {
         var trimmedLookupCode = lookupCode.Trim();
 
@@ -168,7 +180,8 @@ public sealed class PriceIndexBuilder : IPriceIndexBuilder
             label,
             1m,
             updatedAt,
-            product?.ProductImage);
+            product?.ProductImage,
+            NormalizeDiscountRate(discountRate));
     }
 
     private static bool HasText(string? value) => !string.IsNullOrWhiteSpace(value);
@@ -178,6 +191,18 @@ public sealed class PriceIndexBuilder : IPriceIndexBuilder
     private static string? NormalizeReferenceCode(string? value)
     {
         return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+    }
+
+    private static decimal? NormalizeDiscountRate(decimal? value)
+    {
+        if (value is null || value < 0m || value > 100m)
+        {
+            return null;
+        }
+
+        return value <= 1m
+            ? value.Value
+            : value.Value / 100m;
     }
 
     private static DateTimeOffset? Latest(DateTimeOffset? left, DateTimeOffset? right)
@@ -218,7 +243,8 @@ public sealed record StoreRetailPriceRecord(
     string? ProductCode,
     decimal? StoreRetailPriceValue,
     DateTimeOffset? UpdatedAt,
-    string? ReferenceCode = null);
+    string? ReferenceCode = null,
+    decimal? DiscountRate = null);
 
 public sealed record StoreMultiCodeProductRecord(
     string? ProductCode,
@@ -226,7 +252,8 @@ public sealed record StoreMultiCodeProductRecord(
     string? MultiBarcode,
     decimal? MultiCodeRetailPrice,
     DateTimeOffset? UpdatedAt,
-    string? ReferenceCode = null);
+    string? ReferenceCode = null,
+    decimal? DiscountRate = null);
 
 public sealed record StoreClearancePriceRecord(
     string? ProductCode,

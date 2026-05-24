@@ -79,6 +79,7 @@ public sealed class LocalCatalogRepository(LocalSqliteStore store) : ILocalCatal
                     ItemNumber,
                     Barcode,
                     ProductImage,
+                    DiscountRate,
                     RetailPrice,
                     PriceSource,
                     PriceSourceLabel,
@@ -98,6 +99,7 @@ public sealed class LocalCatalogRepository(LocalSqliteStore store) : ILocalCatal
                     $ItemNumber,
                     $Barcode,
                     $ProductImage,
+                    $DiscountRate,
                     $RetailPrice,
                     $PriceSource,
                     $PriceSourceLabel,
@@ -114,6 +116,7 @@ public sealed class LocalCatalogRepository(LocalSqliteStore store) : ILocalCatal
                     ItemNumber = excluded.ItemNumber,
                     Barcode = excluded.Barcode,
                     ProductImage = excluded.ProductImage,
+                    DiscountRate = excluded.DiscountRate,
                     RetailPrice = excluded.RetailPrice,
                     PriceSource = excluded.PriceSource,
                     PriceSourceLabel = excluded.PriceSourceLabel,
@@ -264,7 +267,7 @@ public sealed class LocalCatalogRepository(LocalSqliteStore store) : ILocalCatal
     }
 
     private const string SelectSellableItemSql = """
-        SELECT StoreCode, ProductCode, ReferenceCode, DisplayName, LookupCode, ItemNumber, Barcode, ProductImage, RetailPrice, PriceSource, PriceSourceLabel, QuantityFactor, UpdatedAt
+        SELECT StoreCode, ProductCode, ReferenceCode, DisplayName, LookupCode, ItemNumber, Barcode, ProductImage, DiscountRate, RetailPrice, PriceSource, PriceSourceLabel, QuantityFactor, UpdatedAt
         FROM LocalSellableItemIndex
         """;
 
@@ -285,6 +288,7 @@ public sealed class LocalCatalogRepository(LocalSqliteStore store) : ILocalCatal
         command.Parameters.AddWithValue("$ItemNumber", (object?)item.ItemNumber ?? DBNull.Value);
         command.Parameters.AddWithValue("$Barcode", (object?)item.Barcode ?? DBNull.Value);
         command.Parameters.AddWithValue("$ProductImage", (object?)item.ProductImage ?? DBNull.Value);
+        command.Parameters.AddWithValue("$DiscountRate", (object?)item.DiscountRate ?? DBNull.Value);
         command.Parameters.AddWithValue("$RetailPrice", item.RetailPrice);
         command.Parameters.AddWithValue("$PriceSource", (int)item.PriceSource);
         command.Parameters.AddWithValue("$PriceSourceLabel", item.PriceSourceLabel);
@@ -309,7 +313,8 @@ public sealed class LocalCatalogRepository(LocalSqliteStore store) : ILocalCatal
             ReadString(reader, "PriceSourceLabel"),
             ReadDecimal(reader, "QuantityFactor"),
             ReadNullableDateTimeOffset(reader, "UpdatedAt"),
-            ReadNullableString(reader, "ProductImage"));
+            ReadNullableString(reader, "ProductImage"),
+            ReadNullableDecimal(reader, "DiscountRate"));
     }
 
     private static string CreateContentHash(SellableItemDto item, string storeCode, string lookupCodeNormalized)
@@ -327,6 +332,7 @@ public sealed class LocalCatalogRepository(LocalSqliteStore store) : ILocalCatal
         AppendCanonical(builder, item.PriceSourceLabel.Trim());
         AppendCanonical(builder, item.QuantityFactor.ToString("0.#############################", CultureInfo.InvariantCulture));
         AppendCanonical(builder, item.ProductImage ?? string.Empty);
+        AppendCanonical(builder, FormatNullableDecimal(item.DiscountRate));
 
         var hashBytes = SHA256.HashData(Encoding.UTF8.GetBytes(builder.ToString()));
         return Convert.ToHexString(hashBytes);
@@ -386,6 +392,32 @@ public sealed class LocalCatalogRepository(LocalSqliteStore store) : ILocalCatal
             string stringValue => decimal.Parse(stringValue, CultureInfo.InvariantCulture),
             _ => Convert.ToDecimal(value, CultureInfo.InvariantCulture)
         };
+    }
+
+    private static decimal? ReadNullableDecimal(SqliteDataReader reader, string name)
+    {
+        var ordinal = reader.GetOrdinal(name);
+        if (reader.IsDBNull(ordinal))
+        {
+            return null;
+        }
+
+        var value = reader.GetValue(ordinal);
+        return value switch
+        {
+            decimal decimalValue => decimalValue,
+            double doubleValue => Convert.ToDecimal(doubleValue, CultureInfo.InvariantCulture),
+            long longValue => longValue,
+            int intValue => intValue,
+            string stringValue when string.IsNullOrWhiteSpace(stringValue) => null,
+            string stringValue => decimal.Parse(stringValue, CultureInfo.InvariantCulture),
+            _ => Convert.ToDecimal(value, CultureInfo.InvariantCulture)
+        };
+    }
+
+    private static string FormatNullableDecimal(decimal? value)
+    {
+        return value?.ToString("0.#############################", CultureInfo.InvariantCulture) ?? string.Empty;
     }
 
     private static DateTimeOffset? ReadNullableDateTimeOffset(SqliteDataReader reader, string name)

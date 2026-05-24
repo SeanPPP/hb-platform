@@ -100,7 +100,7 @@ public sealed class CatalogApiClient(HttpClient httpClient) : ICatalogApiClient
             ("lookupCode", lookupCode));
 
         var stopwatch = Stopwatch.StartNew();
-        Log($"GET {requestUri} start base={httpClient.BaseAddress}");
+        Log($"GET {requestUri} start base={httpClient.BaseAddress} storeCode={storeCode} lookupCode={lookupCode}");
         try
         {
             using var response = await httpClient.GetAsync(requestUri, cancellationToken);
@@ -115,13 +115,19 @@ public sealed class CatalogApiClient(HttpClient httpClient) : ICatalogApiClient
             }
 
             stopwatch.Stop();
-            Log($"GET {requestUri} completed status={(int)response.StatusCode} found={result?.Found.ToString() ?? "<null>"} elapsedMs={stopwatch.ElapsedMilliseconds}");
+            Log($"GET {requestUri} completed storeCode={storeCode} lookupCode={lookupCode} status={(int)response.StatusCode} found={result?.Found.ToString() ?? "<null>"} elapsedMs={stopwatch.ElapsedMilliseconds}");
             return result;
+        }
+        catch (OperationCanceledException ex)
+        {
+            stopwatch.Stop();
+            Log($"GET {requestUri} canceled storeCode={storeCode} lookupCode={lookupCode} elapsedMs={stopwatch.ElapsedMilliseconds} error={ex.Message}");
+            throw;
         }
         catch (Exception ex)
         {
             stopwatch.Stop();
-            Log($"GET {requestUri} failed elapsedMs={stopwatch.ElapsedMilliseconds} error={ex.Message}");
+            Log($"GET {requestUri} failed storeCode={storeCode} lookupCode={lookupCode} elapsedMs={stopwatch.ElapsedMilliseconds} error={ex.Message}");
             throw;
         }
     }

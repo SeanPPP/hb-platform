@@ -156,7 +156,8 @@ public sealed class CatalogService(
                 x.ProductCode,
                 x.StoreRetailPriceValue,
                 ToOffset(x.UpdatedAt ?? x.CreatedAt),
-                x.UUID))
+                x.UUID,
+                x.DiscountRate))
             .ToList();
 
         stepStopwatch.Restart();
@@ -172,7 +173,8 @@ public sealed class CatalogService(
                 x.MultiBarcode,
                 x.MultiCodeRetailPrice,
                 ToOffset(x.UpdatedAt ?? x.CreatedAt),
-                x.UUID))
+                x.UUID,
+                x.DiscountRate))
             .ToList();
 
         stepStopwatch.Restart();
@@ -406,8 +408,10 @@ public sealed class CatalogSellableIndex
                 item.PriceSource,
                 item.PriceSourceLabel.Trim(),
                 item.QuantityFactor,
-                item.ProductImage ?? string.Empty),
-            item.ProductImage);
+                item.ProductImage ?? string.Empty,
+                item.DiscountRate),
+            item.ProductImage,
+            item.DiscountRate);
     }
 
     private static string CreateRowVersion(
@@ -422,7 +426,8 @@ public sealed class CatalogSellableIndex
         PriceSourceKind priceSource,
         string priceSourceLabel,
         decimal quantityFactor,
-        string productImage)
+        string productImage,
+        decimal? discountRate)
     {
         var builder = new StringBuilder();
         AppendCanonical(builder, storeCode);
@@ -437,6 +442,7 @@ public sealed class CatalogSellableIndex
         AppendCanonical(builder, priceSourceLabel);
         AppendCanonical(builder, quantityFactor.ToString("0.#############################", CultureInfo.InvariantCulture));
         AppendCanonical(builder, productImage);
+        AppendCanonical(builder, FormatNullableDecimal(discountRate));
 
         var hashBytes = SHA256.HashData(Encoding.UTF8.GetBytes(builder.ToString()));
         return Convert.ToHexString(hashBytes);
@@ -485,6 +491,11 @@ public sealed class CatalogSellableIndex
             .Append(':')
             .Append(value)
             .Append('|');
+    }
+
+    private static string FormatNullableDecimal(decimal? value)
+    {
+        return value?.ToString("0.#############################", CultureInfo.InvariantCulture) ?? string.Empty;
     }
 
     private static string NormalizeStoreCode(string? value)

@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using Hbpos.Client.Wpf.Models;
 using Hbpos.Client.Wpf.Services;
 using Hbpos.Client.Wpf.ViewModels;
@@ -469,6 +470,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
         var index = new LocalSellableItemIndex();
         var item = CreateItem("SKU-104", "Local Coffee", "930104", PriceSourceKind.StoreRetailPrice, 6.5m);
         var remoteLookup = new TaskCompletionSource<RemoteLookupRefreshResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var logs = new ConcurrentQueue<string>();
         index.ReplaceAll([item]);
         var viewModel = new PosTerminalViewModel(
             index,
@@ -476,6 +478,8 @@ public sealed class PosTerminalCashPaymentViewModelTests
             Session,
             onOpenPayment: null,
             remoteLookupRefreshAsync: (_, _, _) => remoteLookup.Task);
+
+        using var logCapture = CaptureClientLog(logs);
 
         viewModel.ScanText = "930104";
         viewModel.ScanCommand.Execute(null);
@@ -485,20 +489,22 @@ public sealed class PosTerminalCashPaymentViewModelTests
         Assert.Equal(6.5m, viewModel.ActualAmount);
 
         remoteLookup.SetException(new InvalidOperationException("remote unavailable"));
-        await WaitUntilAsync(() => viewModel.StatusMessage.Contains("Remote lookup failed", StringComparison.Ordinal));
+        await WaitUntilAsync(() => HasLog(logs, "remote lookup failed"));
 
         line = Assert.Single(viewModel.CartLines);
         Assert.Equal("Local Coffee", line.DisplayName);
         Assert.Equal(6.5m, viewModel.ActualAmount);
+        Assert.DoesNotContain("Remote lookup failed", viewModel.StatusMessage, StringComparison.Ordinal);
     }
 
     [Fact]
-    public async Task Pos_terminal_remote_deleted_removes_matching_cart_line()
+    public async Task Pos_terminal_remote_deleted_does_not_remove_matching_cart_line()
     {
         var cart = new PosCartService();
         var index = new LocalSellableItemIndex();
         var item = CreateItem("SKU-105", "Retired Snack", "930105", PriceSourceKind.StoreRetailPrice, 4.2m);
         var remoteLookup = new TaskCompletionSource<RemoteLookupRefreshResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var logs = new ConcurrentQueue<string>();
         index.ReplaceAll([item]);
         var viewModel = new PosTerminalViewModel(
             index,
@@ -512,16 +518,144 @@ public sealed class PosTerminalCashPaymentViewModelTests
                 return Task.FromResult<IReadOnlyList<SellableItemDto>>([]);
             });
 
+        using var logCapture = CaptureClientLog(logs);
+
         viewModel.ScanText = "930105";
         viewModel.ScanCommand.Execute(null);
 
         Assert.Single(viewModel.CartLines);
 
         remoteLookup.SetResult(new RemoteLookupRefreshResult("S001", "930105", Found: false, Item: null, DeletedCount: 1));
-        await WaitUntilAsync(() => viewModel.CartLines.Count == 0);
+        await WaitUntilAsync(() => HasLog(logs, "remote lookup deleted local cache only"));
 
-        Assert.Empty(cart.Lines);
+        var line = Assert.Single(viewModel.CartLines);
+        Assert.Equal("Retired Snack", line.DisplayName);
+        Assert.Single(cart.Lines);
         Assert.Empty(viewModel.Matches);
+    }
+
+    [Fact]
+    public async Task Pos_terminal_remote_lookup_updates_cart_only_when_identity_matches()
+    {
+        var cart = new PosCartService();
+        var index = new LocalSellableItemIndex();
+        var localItem = CreateItem(
+            "SKU-126",
+            "Local Juice",
+            "930126",
+            PriceSourceKind.ProductBase,
+            3m,
+            referenceCode: "REF-126");
+        var remoteItem = CreateItem(
+            "SKU-126",
+            "Remote Juice",
+            "930126",
+            PriceSourceKind.StoreRetailPrice,
+            3.8m,
+            referenceCode: "REF-126",
+            productImage: "https://images.example/juice.jpg");
+        var remoteLookup = new TaskCompletionSource<RemoteLookupRefreshResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        index.ReplaceAll([localItem]);
+        var viewModel = new PosTerminalViewModel(
+            index,
+            cart,
+            Session,
+            onOpenPayment: null,
+            remoteLookupRefreshAsync: (_, _, _) => remoteLookup.Task);
+
+        viewModel.ScanText = "930126";
+        viewModel.ScanCommand.Execute(null);
+        viewModel.ScanText = "930126";
+        viewModel.ScanCommand.Execute(null);
+        var line = Assert.Single(viewModel.CartLines);
+        Assert.Equal(2m, line.Quantity);
+
+        remoteLookup.SetResult(new RemoteLookupRefreshResult("S001", "930126", Found: true, Item: remoteItem, DeletedCount: 0));
+        await WaitUntilAsync(() => viewModel.CartLines.Single().DisplayName == "Remote Juice");
+
+        line = Assert.Single(viewModel.CartLines);
+        Assert.Equal("Remote Juice", line.DisplayName);
+        Assert.Equal(3.8m, line.UnitPrice);
+        Assert.Equal(2m, line.Quantity);
+        Assert.Equal("https://images.example/juice.jpg", line.ProductImage);
+    }
+
+    [Fact]
+    public async Task Pos_terminal_remote_lookup_ignores_cart_update_when_identity_differs()
+    {
+        var cart = new PosCartService();
+        var index = new LocalSellableItemIndex();
+        var localItem = CreateItem(
+            "SKU-127",
+            "Local Snack",
+            "930127",
+            PriceSourceKind.ProductBase,
+            2.5m,
+            referenceCode: "REF-127");
+        var remoteItem = CreateItem(
+            "SKU-OTHER",
+            "Remote Snack",
+            "930127",
+            PriceSourceKind.StoreRetailPrice,
+            3.2m,
+            referenceCode: "REF-127");
+        var remoteLookup = new TaskCompletionSource<RemoteLookupRefreshResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var logs = new ConcurrentQueue<string>();
+        index.ReplaceAll([localItem]);
+        var viewModel = new PosTerminalViewModel(
+            index,
+            cart,
+            Session,
+            onOpenPayment: null,
+            remoteLookupRefreshAsync: (_, _, _) => remoteLookup.Task);
+
+        using var logCapture = CaptureClientLog(logs);
+
+        viewModel.ScanText = "930127";
+        viewModel.ScanCommand.Execute(null);
+
+        remoteLookup.SetResult(new RemoteLookupRefreshResult("S001", "930127", Found: true, Item: remoteItem, DeletedCount: 0));
+        await WaitUntilAsync(() => HasLog(logs, "remote lookup ignored for cart"));
+
+        var line = Assert.Single(viewModel.CartLines);
+        Assert.Equal("Local Snack", line.DisplayName);
+        Assert.Equal("SKU-127", line.ProductCode);
+        Assert.Equal(2.5m, line.UnitPrice);
+    }
+
+    [Fact]
+    public async Task Pos_terminal_remote_lookup_timeout_keeps_cart_unchanged()
+    {
+        var cart = new PosCartService();
+        var index = new LocalSellableItemIndex();
+        var item = CreateItem("SKU-128", "Timeout Tea", "930128", PriceSourceKind.StoreRetailPrice, 5.5m);
+        var logs = new ConcurrentQueue<string>();
+        index.ReplaceAll([item]);
+        var viewModel = new PosTerminalViewModel(
+            index,
+            cart,
+            Session,
+            onOpenPayment: null,
+            remoteLookupRefreshAsync: async (_, _, cancellationToken) =>
+            {
+                await Task.Delay(TimeSpan.FromSeconds(10), cancellationToken);
+                return new RemoteLookupRefreshResult("S001", "930128", Found: false, Item: null, DeletedCount: 1);
+            });
+
+        using var logCapture = CaptureClientLog(logs);
+
+        viewModel.ScanText = "930128";
+        viewModel.ScanCommand.Execute(null);
+
+        var line = Assert.Single(viewModel.CartLines);
+        Assert.Equal("Timeout Tea", line.DisplayName);
+
+        await WaitUntilAsync(() => HasLog(logs, "remote lookup timeout"));
+
+        line = Assert.Single(viewModel.CartLines);
+        Assert.Equal("Timeout Tea", line.DisplayName);
+        Assert.Equal(5.5m, viewModel.ActualAmount);
+        Assert.DoesNotContain("timeout", viewModel.StatusMessage, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -636,6 +770,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
         string barcode,
         PriceSourceKind priceSource,
         decimal price,
+        string? referenceCode = null,
         string? itemNumber = null,
         string? productBarcode = null,
         string? productImage = null)
@@ -643,7 +778,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
         return new SellableItemDto(
             StoreCode: "S001",
             ProductCode: productCode,
-            ReferenceCode: null,
+            ReferenceCode: referenceCode,
             DisplayName: name,
             LookupCode: barcode,
             ItemNumber: itemNumber ?? productCode,
@@ -670,6 +805,30 @@ public sealed class PosTerminalCashPaymentViewModelTests
         }
 
         Assert.True(condition());
+    }
+
+    private static IDisposable CaptureClientLog(ConcurrentQueue<string> lines)
+    {
+        void Capture(string line)
+        {
+            lines.Enqueue(line);
+        }
+
+        ConsoleLog.LineWritten += Capture;
+        return new DisposableAction(() => ConsoleLog.LineWritten -= Capture);
+    }
+
+    private static bool HasLog(ConcurrentQueue<string> lines, string text)
+    {
+        return lines.Any(line => line.Contains(text, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private sealed class DisposableAction(Action dispose) : IDisposable
+    {
+        public void Dispose()
+        {
+            dispose();
+        }
     }
 
     private sealed class InMemoryOrderRepository : ILocalOrderRepository

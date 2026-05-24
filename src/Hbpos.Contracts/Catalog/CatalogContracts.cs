@@ -27,7 +27,8 @@ public sealed record SellableItemDto(
     string PriceSourceLabel,
     decimal QuantityFactor,
     DateTimeOffset? UpdatedAt,
-    string? ProductImage = null);
+    string? ProductImage = null,
+    decimal? DiscountRate = null);
 
 public sealed record SellableItemsResponse(
     string StoreCode,
@@ -54,7 +55,8 @@ public sealed record CatalogLookupItemDto(
     decimal QuantityFactor,
     DateTimeOffset? UpdatedAt,
     string? RowVersion,
-    string? ProductImage = null);
+    string? ProductImage = null,
+    decimal? DiscountRate = null);
 
 public sealed record CatalogLocalLookupVersionDto(
     string StoreCode,

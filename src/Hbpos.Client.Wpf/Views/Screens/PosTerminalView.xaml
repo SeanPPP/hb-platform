@@ -187,8 +187,8 @@
 
     <Grid>
         <Grid.ColumnDefinitions>
-            <ColumnDefinition Width="48*" MinWidth="520" />
-            <ColumnDefinition Width="30*" MinWidth="360" />
+            <ColumnDefinition Width="56*" MinWidth="640" />
+            <ColumnDefinition Width="22*" MinWidth="300" />
             <ColumnDefinition Width="22*" MinWidth="250" />
         </Grid.ColumnDefinitions>
 
@@ -477,27 +477,32 @@
                                 </DataTemplate>
                             </DataGridTemplateColumn.CellTemplate>
                         </DataGridTemplateColumn>
-                        <DataGridTemplateColumn Header="{loc:Loc Item}" Width="2.1*" HeaderStyle="{StaticResource CartColumnHeaderLeftStyle}">
+                        <DataGridTemplateColumn Header="{loc:Loc Item}" Width="2.45*" HeaderStyle="{StaticResource CartColumnHeaderLeftStyle}">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
                                     <Grid Margin="0,6,8,6">
                                         <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="54" />
+                                            <ColumnDefinition Width="64" />
                                             <ColumnDefinition Width="*" />
                                         </Grid.ColumnDefinitions>
-                                        <Border Width="48"
-                                                Height="48"
+                                        <Border Width="52"
+                                                Height="52"
                                                 Background="#FFE8F0FE"
                                                 CornerRadius="9"
-                                                Margin="0,0,10,0"
+                                                Margin="0,0,12,0"
                                                 ClipToBounds="True">
                                             <Grid>
-                                                <Image Source="{Binding ProductImage}"
-                                                       Stretch="Uniform"
-                                                       Margin="3"
-                                                       SnapsToDevicePixels="True"
-                                                       RenderOptions.BitmapScalingMode="HighQuality"
-                                                       Visibility="{Binding ProductImage, Converter={StaticResource StringHasValueToVis}}" />
+                                                <Rectangle RadiusX="7"
+                                                           RadiusY="7"
+                                                           Margin="3"
+                                                           SnapsToDevicePixels="True"
+                                                           RenderOptions.BitmapScalingMode="HighQuality"
+                                                           Visibility="{Binding ProductImage, Converter={StaticResource StringHasValueToVis}}">
+                                                    <Rectangle.Fill>
+                                                        <ImageBrush ImageSource="{Binding ProductImage}"
+                                                                    Stretch="Uniform" />
+                                                    </Rectangle.Fill>
+                                                </Rectangle>
                                                 <materialDesign:PackIcon Kind="Shopping"
                                                                          Width="22"
                                                                          Height="22"
@@ -516,7 +521,7 @@
                                 </DataTemplate>
                             </DataGridTemplateColumn.CellTemplate>
                         </DataGridTemplateColumn>
-                        <DataGridTemplateColumn Header="{loc:Loc UnitPrice}" Width="0.9*" HeaderStyle="{StaticResource CartColumnHeaderRightStyle}">
+                        <DataGridTemplateColumn Header="{loc:Loc UnitPrice}" Width="0.8*" HeaderStyle="{StaticResource CartColumnHeaderRightStyle}">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
                                     <StackPanel VerticalAlignment="Center" HorizontalAlignment="Stretch" Margin="0,6,10,6">
@@ -532,7 +537,7 @@
                                 </DataTemplate>
                             </DataGridTemplateColumn.CellTemplate>
                         </DataGridTemplateColumn>
-                        <DataGridTemplateColumn Header="{loc:Loc Quantity}" Width="1.1*" HeaderStyle="{StaticResource CartColumnHeaderCenterStyle}">
+                        <DataGridTemplateColumn Header="{loc:Loc Quantity}" Width="1.35*" HeaderStyle="{StaticResource CartColumnHeaderCenterStyle}">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
                                     <Grid HorizontalAlignment="Center" VerticalAlignment="Center">
@@ -566,7 +571,7 @@
                                 </DataTemplate>
                             </DataGridTemplateColumn.CellTemplate>
                         </DataGridTemplateColumn>
-                        <DataGridTemplateColumn Header="{loc:Loc Total}" Width="0.95*" HeaderStyle="{StaticResource CartColumnHeaderRightStyle}">
+                        <DataGridTemplateColumn Header="{loc:Loc Total}" Width="0.9*" HeaderStyle="{StaticResource CartColumnHeaderRightStyle}">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
                                     <StackPanel VerticalAlignment="Center" HorizontalAlignment="Stretch" Margin="0,6,10,6">

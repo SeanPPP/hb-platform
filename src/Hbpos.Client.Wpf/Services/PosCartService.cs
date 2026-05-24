@@ -63,6 +63,18 @@ public sealed class PosCartService
         return true;
     }
 
+    public bool UpdateLineFromRemote(CartLine line, SellableItemDto item)
+    {
+        if (!_lines.Contains(line))
+        {
+            return false;
+        }
+
+        line.UpdateFrom(item);
+        OnCartChanged();
+        return true;
+    }
+
     public bool RemoveLineByLookupCode(string storeCode, string lookupCode)
     {
         var line = FindLineByLookupCode(storeCode, lookupCode);
