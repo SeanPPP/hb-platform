@@ -550,6 +550,7 @@ namespace BlazorApp.Api.Services
             int pageSize = 20,
             string? storeCode = null,
             string? deviceType = null,
+            string? deviceSystem = null,
             int? status = null,
             string? keyword = null
         )
@@ -567,6 +568,11 @@ namespace BlazorApp.Api.Services
                 if (!string.IsNullOrEmpty(deviceType))
                 {
                     query = query.Where(d => d.设备类型 == deviceType);
+                }
+
+                if (!string.IsNullOrEmpty(deviceSystem))
+                {
+                    query = query.Where(d => d.设备系统 == deviceSystem);
                 }
 
                 if (status.HasValue)

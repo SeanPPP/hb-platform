@@ -297,6 +297,29 @@ namespace BlazorApp.Api.Tests
         }
 
         [Fact]
+        public async Task GetDevicesPagedAsync_FiltersByDeviceSystem()
+        {
+            await _db.Insertable(new[]
+            {
+                CreateDevice("hbmobile-android", "PDA_1004_1430", "1004", "Android"),
+                CreateDevice("hbmobile-ios", "PDA_1004_1431", "1004", "iOS"),
+                CreateDevice("hbmobile-windows", "PDA_1004_1432", "1004", "Windows"),
+            }).ExecuteCommandAsync();
+            var service = CreateService();
+
+            var (devices, total) = await service.GetDevicesPagedAsync(
+                page: 1,
+                pageSize: 20,
+                deviceSystem: "iOS"
+            );
+
+            var device = Assert.Single(devices);
+            Assert.Equal(1, total);
+            Assert.Equal("hbmobile-ios", device.设备硬件识别码);
+            Assert.Equal("iOS", device.设备系统);
+        }
+
+        [Fact]
         public async Task RegisterDeviceAsync_GeneratesPdaStoreTimeNumber_ForNewDevice()
         {
             var service = CreateService(new DateTime(2026, 1, 1, 14, 30, 0));
@@ -400,7 +423,8 @@ namespace BlazorApp.Api.Tests
         private static POSM_设备注册信息表 CreateDevice(
             string hardwareId,
             string systemDeviceNumber,
-            string storeCode
+            string storeCode,
+            string deviceSystem = "Android"
         )
         {
             return new POSM_设备注册信息表
@@ -410,7 +434,7 @@ namespace BlazorApp.Api.Tests
                 设备授权码 = "AUTH-001",
                 设备状态 = (int)DeviceStatus.启用,
                 设备类型 = "Mobile",
-                设备系统 = "Android",
+                设备系统 = deviceSystem,
                 分店代码 = storeCode,
                 创建时间 = DateTime.UtcNow,
             };

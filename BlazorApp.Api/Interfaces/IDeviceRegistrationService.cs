@@ -151,6 +151,7 @@ namespace BlazorApp.Api.Interfaces
         /// <param name="pageSize">每页数量</param>
         /// <param name="storeCode">分店代码过滤</param>
         /// <param name="deviceType">设备类型过滤</param>
+        /// <param name="deviceSystem">设备系统过滤</param>
         /// <param name="status">状态过滤</param>
         /// <param name="keyword">关键词搜索</param>
         /// <returns></returns>
@@ -159,6 +160,7 @@ namespace BlazorApp.Api.Interfaces
             int pageSize = 20,
             string? storeCode = null,
             string? deviceType = null,
+            string? deviceSystem = null,
             int? status = null,
             string? keyword = null);
     }

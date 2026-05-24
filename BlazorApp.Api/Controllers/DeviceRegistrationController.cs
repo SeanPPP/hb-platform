@@ -63,6 +63,7 @@ namespace BlazorApp.Api.Controllers
             [FromQuery] int pageSize = 20,
             [FromQuery] string? storeCode = null,
             [FromQuery] string? deviceType = null,
+            [FromQuery] string? deviceSystem = null,
             [FromQuery] int? status = null,
             [FromQuery] string? keyword = null
         )
@@ -74,6 +75,7 @@ namespace BlazorApp.Api.Controllers
                     pageSize,
                     storeCode,
                     deviceType,
+                    deviceSystem,
                     status,
                     keyword
                 );
