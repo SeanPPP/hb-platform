@@ -1714,6 +1714,8 @@
       "deviceSystem": "System",
       "lastModified": "Last Updated",
       "filterByStore": "Filter by Store",
+      "filterByDeviceType": "Filter by Type",
+      "filterByDeviceSystem": "Filter by System",
       "loadFailed": "Failed to load devices",
       "loadStoresFailed": "Failed to load stores"
     },

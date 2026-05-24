@@ -52,6 +52,8 @@ export async function getDeviceRegistrations(params?: {
   page?: number
   pageSize?: number
   storeCode?: string
+  deviceType?: string
+  deviceSystem?: string
 }): Promise<DeviceRegistrationPagedResult> {
   const response = await request.get<
     ApiResponse<{
@@ -68,6 +70,8 @@ export async function getDeviceRegistrations(params?: {
       page: params?.page ?? 1,
       pageSize: params?.pageSize ?? 50,
       storeCode: params?.storeCode,
+      deviceType: params?.deviceType,
+      deviceSystem: params?.deviceSystem,
     },
   })
 

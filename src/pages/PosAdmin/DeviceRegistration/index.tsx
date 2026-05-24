@@ -22,6 +22,23 @@ const STATUS_COLOR_MAP: Record<number, string> = {
   3: 'blue',
 }
 
+const DEVICE_TYPE_OPTIONS = ['Mobile', 'PDA', 'POS', 'Admin']
+const DEVICE_SYSTEM_OPTIONS = ['Android', 'iOS', 'Windows', 'Mac']
+
+const DEVICE_TYPE_COLOR_MAP: Record<string, string> = {
+  mobile: 'blue',
+  pda: 'purple',
+  pos: 'volcano',
+  admin: 'gold',
+}
+
+const DEVICE_SYSTEM_COLOR_MAP: Record<string, string> = {
+  android: 'green',
+  ios: 'magenta',
+  windows: 'geekblue',
+  mac: 'cyan',
+}
+
 function formatDateTime(value?: string | null) {
   if (!value) {
     return '--'
@@ -35,12 +52,26 @@ function formatDateTime(value?: string | null) {
   return new Date(timestamp).toLocaleString()
 }
 
+function getTagColor(value: string, colorMap: Record<string, string>) {
+  return colorMap[value.trim().toLowerCase()] ?? 'default'
+}
+
+function renderDeviceTypeTag(value?: string | null) {
+  return value ? <Tag color={getTagColor(value, DEVICE_TYPE_COLOR_MAP)}>{value}</Tag> : '--'
+}
+
+function renderDeviceSystemTag(value?: string | null) {
+  return value ? <Tag color={getTagColor(value, DEVICE_SYSTEM_COLOR_MAP)}>{value}</Tag> : '--'
+}
+
 export default function DeviceRegistrationPage() {
   const { t } = useTranslation()
   const [items, setItems] = useState<DeviceRegistrationItem[]>([])
   const [stores, setStores] = useState<StoreOption[]>([])
   const [loading, setLoading] = useState(false)
   const [selectedStoreCode, setSelectedStoreCode] = useState<string>()
+  const [selectedDeviceType, setSelectedDeviceType] = useState<string>()
+  const [selectedDeviceSystem, setSelectedDeviceSystem] = useState<string>()
   const [actionDeviceId, setActionDeviceId] = useState<number | null>(null)
 
   async function loadStores() {
@@ -53,13 +84,15 @@ export default function DeviceRegistrationPage() {
     }
   }
 
-  async function loadDevices(storeCode?: string) {
+  async function loadDevices() {
     setLoading(true)
     try {
       const result = await getDeviceRegistrations({
         page: 1,
         pageSize: 200,
-        storeCode,
+        storeCode: selectedStoreCode,
+        deviceType: selectedDeviceType,
+        deviceSystem: selectedDeviceSystem,
       })
       setItems(result.devices)
     } catch (error) {
@@ -75,8 +108,8 @@ export default function DeviceRegistrationPage() {
   }, [])
 
   useEffect(() => {
-    void loadDevices(selectedStoreCode)
-  }, [selectedStoreCode])
+    void loadDevices()
+  }, [selectedStoreCode, selectedDeviceType, selectedDeviceSystem])
 
   async function runAction(
     item: DeviceRegistrationItem,
@@ -95,7 +128,7 @@ export default function DeviceRegistrationPage() {
         message.success(t('message.deviceLocked', { deviceNo: item.systemDeviceNumber }))
       }
 
-      await loadDevices(selectedStoreCode)
+      await loadDevices()
     } catch (error) {
       console.error(t('message.deviceStatusFailed'), error)
       message.error(t('message.deviceStatusFailed'))
@@ -136,11 +169,13 @@ export default function DeviceRegistrationPage() {
         title: t('posAdmin.devices.deviceType'),
         dataIndex: 'deviceType',
         width: 120,
+        render: (value: string | null | undefined) => renderDeviceTypeTag(value),
       },
       {
         title: t('posAdmin.devices.deviceSystem'),
         dataIndex: 'deviceSystem',
         width: 120,
+        render: (value: string | null | undefined) => renderDeviceSystemTag(value),
       },
       {
         title: t('column.status'),
@@ -217,7 +252,29 @@ export default function DeviceRegistrationPage() {
               value: store.storeCode,
             }))}
           />
-          <Button onClick={() => void loadDevices(selectedStoreCode)}>{t('common.refresh')}</Button>
+          <Select
+            allowClear
+            placeholder={t('posAdmin.devices.filterByDeviceType')}
+            style={{ width: 160 }}
+            value={selectedDeviceType}
+            onChange={(value) => setSelectedDeviceType(value)}
+            options={DEVICE_TYPE_OPTIONS.map((deviceType) => ({
+              label: renderDeviceTypeTag(deviceType),
+              value: deviceType,
+            }))}
+          />
+          <Select
+            allowClear
+            placeholder={t('posAdmin.devices.filterByDeviceSystem')}
+            style={{ width: 160 }}
+            value={selectedDeviceSystem}
+            onChange={(value) => setSelectedDeviceSystem(value)}
+            options={DEVICE_SYSTEM_OPTIONS.map((deviceSystem) => ({
+              label: renderDeviceSystemTag(deviceSystem),
+              value: deviceSystem,
+            }))}
+          />
+          <Button onClick={() => void loadDevices()}>{t('common.refresh')}</Button>
         </Space>
       }
     >
@@ -230,7 +287,7 @@ export default function DeviceRegistrationPage() {
           loading={loading}
           columns={columns}
           dataSource={items}
-          scroll={{ x: 1180 }}
+          scroll={{ x: 1260 }}
           pagination={false}
         />
       </Space>

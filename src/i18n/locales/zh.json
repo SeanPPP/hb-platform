@@ -1714,6 +1714,8 @@
       "deviceSystem": "系统",
       "lastModified": "最后更新",
       "filterByStore": "按分店筛选",
+      "filterByDeviceType": "按类型筛选",
+      "filterByDeviceSystem": "按系统筛选",
       "loadFailed": "加载设备失败",
       "loadStoresFailed": "加载分店失败"
     },
