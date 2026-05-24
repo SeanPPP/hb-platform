@@ -20,7 +20,7 @@
       "supportsTablet": false,
       "bundleIdentifier": "com.hbweb.expo",
       "infoPlist": {
-        "NSCameraUsageDescription": "Used for scanning product barcodes",
+        "NSCameraUsageDescription": "Used for scanning barcodes and taking profile photos",
         "NSMicrophoneUsageDescription": "Used for audio feedback",
         "ITSAppUsesNonExemptEncryption": false
       }
@@ -50,7 +50,7 @@
       [
         "expo-camera",
         {
-          "cameraPermission": "Used for scanning product barcodes"
+          "cameraPermission": "Used for scanning barcodes and taking profile photos"
         }
       ],
       "expo-audio",

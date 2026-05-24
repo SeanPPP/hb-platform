@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Pressable, StyleSheet, View } from "react-native";
 import { Card, Chip, Text } from "react-native-paper";
 import type {
+  AttendancePunchVerificationState,
   AttendancePunchType,
   AttendanceToday,
 } from "@/modules/attendance/types";
@@ -46,7 +47,9 @@ export function TodayPunchCard({
   storeName,
   allowPunch = true,
   isLoading,
+  isVerificationRefreshing,
   isPunching,
+  verification,
   onPunch,
 }: {
   today?: AttendanceToday;
@@ -56,7 +59,9 @@ export function TodayPunchCard({
   storeName?: string;
   allowPunch?: boolean;
   isLoading: boolean;
+  isVerificationRefreshing?: boolean;
   isPunching: boolean;
+  verification: AttendancePunchVerificationState;
   onPunch: (punchType: AttendancePunchType) => void;
 }) {
   const { t } = useAppTranslation(["attendance", "common"]);
@@ -93,14 +98,50 @@ export function TodayPunchCard({
     return t("today.status.readyToClockIn");
   }, [allowPunch, clockOutPunch, nextPunchType, t, today?.holidayName]);
 
-  const locationValue =
-    today?.schedules[0]?.storeName ||
-    storeName ||
-    today?.schedules[0]?.storeCode ||
-    t("today.info.locationPlaceholder");
-  const networkValue = today?.storeTimeZone
-    ? t("today.info.timeZoneValue", { timeZone: today.storeTimeZone })
-    : t("today.info.networkPlaceholder");
+  const locationValue = useMemo(() => {
+    if (verification.location.latitude !== undefined) {
+      return `${verification.location.latitude.toFixed(6)}, ${verification.location.longitude?.toFixed(6) ?? "--"}`;
+    }
+
+    if (verification.location.reason === "dependencyMissing") {
+      return t("today.info.locationDependencyMissing");
+    }
+
+    if (verification.location.status === "permissionDenied") {
+      return t("today.info.locationPermissionDenied");
+    }
+
+    return t("today.info.locationUnavailable");
+  }, [
+    t,
+    verification.location.latitude,
+    verification.location.longitude,
+    verification.location.reason,
+    verification.location.status,
+  ]);
+
+  const networkValue = useMemo(() => {
+    if (verification.network.status === "available") {
+      return today?.storeTimeZone
+        ? t("today.info.networkAvailableWithTimeZone", {
+            timeZone: today.storeTimeZone,
+          })
+        : t("today.info.networkAvailable");
+    }
+
+    if (verification.network.reason === "networkUnreachable") {
+      return t("today.info.networkUnavailable");
+    }
+
+    return t("today.info.networkUnknown");
+  }, [t, today?.storeTimeZone, verification.network.reason, verification.network.status]);
+
+  const locationChipLabel = t(
+    `today.verification.statuses.${verification.location.status}`,
+  );
+  const networkChipLabel = t(
+    `today.verification.statuses.${verification.network.status}`,
+  );
 
   const records = [
     {
@@ -149,8 +190,11 @@ export function TodayPunchCard({
     ? t("today.dailyRecords.alertSelectedDate")
     : today?.holidayName
       ? t("today.dailyRecords.alertHoliday", { holidayName: today.holidayName })
-      : today?.schedules.length
-        ? t("today.dailyRecords.alertNetworkFallback")
+      : verification.location.status === "available" &&
+          verification.network.status === "available"
+        ? t("today.dailyRecords.alertVerificationCaptured")
+        : today?.schedules.length
+          ? t("today.dailyRecords.alertVerificationSentForReview")
         : t("today.dailyRecords.alertNoSchedule");
 
   return (
@@ -231,15 +275,27 @@ export function TodayPunchCard({
 
         <View style={styles.metaRow}>
           <View style={styles.metaCard}>
-            <Text variant="labelMedium" style={styles.muted}>
-              {t("today.info.location")}
-            </Text>
+            <View style={styles.metaHeader}>
+              <Text variant="labelMedium" style={styles.muted}>
+                {t("today.info.location")}
+              </Text>
+              <Chip compact style={styles.metaChip} textStyle={styles.metaChipText}>
+                {locationChipLabel}
+              </Chip>
+            </View>
             <Text variant="bodyMedium">{locationValue}</Text>
           </View>
           <View style={styles.metaCard}>
-            <Text variant="labelMedium" style={styles.muted}>
-              {t("today.info.network")}
-            </Text>
+            <View style={styles.metaHeader}>
+              <Text variant="labelMedium" style={styles.muted}>
+                {t("today.info.network")}
+              </Text>
+              <Chip compact style={styles.metaChip} textStyle={styles.metaChipText}>
+                {isVerificationRefreshing
+                  ? t("today.verification.refreshing")
+                  : networkChipLabel}
+              </Chip>
+            </View>
             <Text variant="bodyMedium">{networkValue}</Text>
           </View>
         </View>
@@ -374,6 +430,17 @@ const styles = StyleSheet.create({
     gap: 4,
     paddingHorizontal: 12,
     paddingVertical: 12,
+  },
+  metaChip: {
+    backgroundColor: "#FFFFFF",
+  },
+  metaChipText: {
+    color: "#4B5563",
+  },
+  metaHeader: {
+    alignItems: "center",
+    flexDirection: "row",
+    justifyContent: "space-between",
   },
   metaRow: {
     gap: 10,

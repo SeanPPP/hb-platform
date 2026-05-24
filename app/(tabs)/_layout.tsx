@@ -8,6 +8,7 @@ import { useAuthStore } from "@/store/auth-store";
 import { useDeviceStore } from "@/store/device-store";
 import { useAppNavigationStore } from "@/modules/navigation/store";
 import { resolveTabRouteCorrection } from "@/modules/navigation/default-route";
+import { prepareStoredDeviceSession } from "@/modules/auth/device-login-session";
 
 export default function TabsLayout() {
   const router = useRouter();
@@ -17,6 +18,7 @@ export default function TabsLayout() {
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated);
   const isLoading = useAuthStore((state) => state.isLoading);
   const restoreSession = useAuthStore((state) => state.restoreSession);
+  const clearLocalAuthSession = useAuthStore((state) => state.clearLocalSession);
   const deviceSession = useDeviceStore((state) => state.session);
   const deviceHydrated = useDeviceStore((state) => state.isReady);
   const validateDevice = useDeviceStore((state) => state.validate);
@@ -57,7 +59,10 @@ export default function TabsLayout() {
             storeCode: currentDeviceSession.storeCode,
             status: currentDeviceSession.status ?? null,
           });
-          const isReady = await validateDevice();
+          const isReady = await prepareStoredDeviceSession({
+            clearAccountSession: clearLocalAuthSession,
+            validateDevice,
+          });
           if (!isReady && !cancelled) {
             console.warn("[startup-auth] device session not ready, attempting account session restore", {
               hardwareId: currentDeviceSession.hardwareId,
@@ -106,7 +111,16 @@ export default function TabsLayout() {
     return () => {
       cancelled = true;
     };
-  }, [deviceHydrated, deviceSession, hasStoredDeviceSession, hasUserSession, restoreSession, router, validateDevice]);
+  }, [
+    clearLocalAuthSession,
+    deviceHydrated,
+    deviceSession,
+    hasStoredDeviceSession,
+    hasUserSession,
+    restoreSession,
+    router,
+    validateDevice,
+  ]);
 
   const isDeviceMode = Boolean(hasStoredDeviceSession && !hasUserSession);
   const visibleRouteNames = useMemo(

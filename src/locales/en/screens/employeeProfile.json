@@ -16,15 +16,13 @@
     "birthday": "Birthday",
     "gender": "Gender",
     "employmentType": "Employment type",
-    "avatarUrl": "Avatar URL",
+    "avatarUrl": "Avatar",
     "identityId": "Identity ID",
-    "identityPhotoUrl": "Identity photo URL",
+    "identityPhotoUrl": "Identity photo",
     "address": "Address"
   },
   "placeholders": {
     "birthday": "YYYY-MM-DD",
-    "avatarUrl": "https://example.com/avatar.jpg",
-    "identityPhotoUrl": "https://example.com/id-photo.jpg",
     "address": "Street, suburb, state, postcode"
   },
   "sections": {
@@ -45,17 +43,33 @@
     "casual": "Casual"
   },
   "actions": {
-    "save": "Save profile"
+    "save": "Save profile",
+    "takePhoto": "Take photo",
+    "retakePhoto": "Retake photo",
+    "removeImage": "Remove image",
+    "grantCameraPermission": "Allow camera",
+    "capture": "Capture"
   },
   "messages": {
     "loadFailed": "Failed to load your profile.",
     "saveSuccess": "Your profile has been saved.",
     "saveFailed": "Failed to save your profile.",
-    "loginRequired": "Please sign in before opening your profile."
+    "loginRequired": "Please sign in before opening your profile.",
+    "uploadSuccess": "Image uploaded. Save your profile to keep it.",
+    "uploadFailed": "Failed to upload image.",
+    "uploadNotAvailable": "This server does not support employee profile image uploads yet.",
+    "imageRemoved": "Image removed. Save your profile to keep the change.",
+    "permissionRequired": "Camera permission is required to take a photo.",
+    "cameraReady": "Take a clear photo and upload it."
   },
   "preview": {
     "avatar": "Avatar preview",
     "identityPhoto": "Identity photo preview",
-    "empty": "Paste an image URL to preview it here."
+    "empty": "No image uploaded yet."
+  },
+  "camera": {
+    "title": "Take photo",
+    "permissionTitle": "Camera access required",
+    "permissionDescription": "Allow camera access to take and upload your profile images."
   }
 }

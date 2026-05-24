@@ -42,11 +42,13 @@ import {
 } from "@/modules/attendance/api";
 import type {
   AttendanceAvailabilityPayload,
+  AttendancePunchPayload,
   AttendancePunchType,
   AttendanceSchedulePayload,
   AttendanceScheduleUpdatePayload,
   AttendanceStoreHolidayPayload,
 } from "@/modules/attendance/types";
+import { usePunchVerification } from "@/modules/attendance/use-punch-verification";
 import type { Store } from "@/modules/shop/types";
 import { useStores } from "@/modules/shop/use-stores";
 import { useStoreUsers } from "@/modules/users";
@@ -159,6 +161,11 @@ export default function AttendanceScreen() {
     useState(getWeekStartDate);
   const [snackbarMessage, setSnackbarMessage] = useState("");
   const [snackbarVisible, setSnackbarVisible] = useState(false);
+  const {
+    verification,
+    isRefreshing: isRefreshingVerification,
+    refreshVerification,
+  } = usePunchVerification();
 
   const managerStores = useMemo(
     () => (access.isAdmin ? stores : stores.filter(isPrimaryStore)),
@@ -594,8 +601,19 @@ export default function AttendanceScreen() {
     storeCode: payload.storeCode || selectedStoreCode,
   });
 
-  const handlePunch = (punchType: AttendancePunchType) => {
-    punchMutation.mutate({ punchType, storeCode: selectedStoreCode });
+  const handlePunch = async (punchType: AttendancePunchType) => {
+    const nextVerification = await refreshVerification();
+    const payload: AttendancePunchPayload = {
+      punchType,
+      storeCode: selectedStoreCode,
+      ...nextVerification.payload,
+    };
+
+    if (nextVerification.location.status !== "available") {
+      showMessage(t("messages.punchVerificationSentForReview"));
+    }
+
+    punchMutation.mutate(payload);
   };
 
   const handleCreateSchedule = (payload: AttendanceSchedulePayload) => {
@@ -750,7 +768,9 @@ export default function AttendanceScreen() {
               allowPunch={selectedDate === todayDate}
               today={todayQuery.data}
               isLoading={todayQuery.isFetching}
+              isVerificationRefreshing={isRefreshingVerification}
               isPunching={punchMutation.isPending}
+              verification={verification}
               onPunch={handlePunch}
             />
             <MonthDatePickerCard

@@ -16,15 +16,13 @@
     "birthday": "生日",
     "gender": "性别",
     "employmentType": "员工类型",
-    "avatarUrl": "头像 URL",
+    "avatarUrl": "头像",
     "identityId": "证件号",
-    "identityPhotoUrl": "证件照片 URL",
+    "identityPhotoUrl": "证件照片",
     "address": "地址"
   },
   "placeholders": {
     "birthday": "YYYY-MM-DD",
-    "avatarUrl": "https://example.com/avatar.jpg",
-    "identityPhotoUrl": "https://example.com/id-photo.jpg",
     "address": "街道、城市、州、省、邮编"
   },
   "sections": {
@@ -45,17 +43,33 @@
     "casual": "临时工"
   },
   "actions": {
-    "save": "保存资料"
+    "save": "保存资料",
+    "takePhoto": "拍照上传",
+    "retakePhoto": "重新拍照",
+    "removeImage": "移除图片",
+    "grantCameraPermission": "允许相机权限",
+    "capture": "拍照"
   },
   "messages": {
     "loadFailed": "加载个人信息失败。",
     "saveSuccess": "个人信息已保存。",
     "saveFailed": "保存个人信息失败。",
-    "loginRequired": "请先登录后再打开个人信息。"
+    "loginRequired": "请先登录后再打开个人信息。",
+    "uploadSuccess": "图片已上传，请保存资料。",
+    "uploadFailed": "图片上传失败。",
+    "uploadNotAvailable": "当前服务器暂未开放个人资料图片上传。",
+    "imageRemoved": "图片已移除，请保存资料。",
+    "permissionRequired": "需要相机权限才能拍照上传。",
+    "cameraReady": "拍摄清晰照片后上传。"
   },
   "preview": {
     "avatar": "头像预览",
     "identityPhoto": "证件照片预览",
-    "empty": "粘贴图片 URL 后可在这里预览。"
+    "empty": "暂未上传图片。"
+  },
+  "camera": {
+    "title": "拍照上传",
+    "permissionTitle": "需要相机权限",
+    "permissionDescription": "允许相机权限后即可拍照上传个人资料图片。"
   }
 }

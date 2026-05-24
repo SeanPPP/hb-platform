@@ -19,10 +19,14 @@
     "unavailable": "This device cannot log in yet. Wait for backend approval or check that a store is bound.",
     "notReadyMessage": "This device cannot log in yet. Wait for backend approval or check device status.",
     "loginFailed": "Device login failed. Please try again later.",
+    "loginUnauthorized": "Device authorization has expired. Rebind this device or ask an administrator to enable it.",
+    "loginUnavailable": "This device is unavailable. Ask an administrator to confirm its status and bound store.",
+    "loginTimeout": "Device login timed out. Check the server address and network connection.\nServer: {{origin}}",
+    "loginNetwork": "Cannot reach the server for device login. Check the server address, network connection, and backend service.\nServer: {{origin}}",
     "lookupFailed": "Device detection failed. Please use user login.",
-    "lookupTimeout": "Device detection timed out. Check the backend connection.\nEndpoint: {{origin}}",
-    "lookupNetwork": "Cannot reach the backend to detect this device. Check the network.\nEndpoint: {{origin}}",
-    "lookupHttp": "Device detection failed. HTTP {{status}}",
+    "lookupTimeout": "Device detection timed out. Check the server address and network connection.\nServer: {{origin}}",
+    "lookupNetwork": "Cannot reach the server to detect this device. Check the server address, network connection, and backend service.\nServer: {{origin}}",
+    "lookupHttp": "Device detection failed. Try again later or ask an administrator. Error code: {{status}}",
     "status": {
       "pending": "Pending",
       "disabled": "Disabled",
@@ -45,10 +49,11 @@
   },
   "errors": {
     "invalidCredentials": "The username or password is incorrect.",
-    "timeout": "Login timed out before the backend responded.\nEndpoint: {{origin}}",
-    "network": "Cannot reach the backend. Check the phone/computer network, backend port, and API address.\nEndpoint: {{origin}}",
+    "accountUnavailable": "This account is unavailable. Ask an administrator to confirm the account status.",
+    "timeout": "Login timed out before the backend responded. Check the server address and network connection.\nServer: {{origin}}",
+    "network": "Cannot reach the server. Check the server address, network connection, and backend service.\nServer: {{origin}}",
     "server": "The server is temporarily unavailable. Please try again later.",
-    "http": "Login failed. Please try again later. HTTP {{status}}",
+    "http": "Login failed. Try again later or ask an administrator. Error code: {{status}}",
     "default": "Login failed. Please try again later."
   }
 }

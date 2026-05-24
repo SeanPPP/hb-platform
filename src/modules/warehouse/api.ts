@@ -3,6 +3,7 @@ import { apiClient } from "@/shared/api/client";
 import { useDeviceStore } from "@/store/device-store";
 import type {
   DirectUploadSignature,
+  WarehouseLocationBindRequest,
   WarehouseLocation,
   WarehouseLocationDetail,
   WarehouseLocationMutation,
@@ -207,10 +208,11 @@ export async function deleteLocation(locationGuid: string) {
   return true;
 }
 
-export async function bindProductToLocation(locationGuid: string, productIdentifier: string) {
-  const response = await apiClient.post(`${LOCATION_BASE_PATH}/${encodeURIComponent(locationGuid)}/products/bind`, {
-    productIdentifier,
-  });
+export async function bindProductToLocation(locationGuid: string, payload: WarehouseLocationBindRequest) {
+  const response = await apiClient.post(
+    `${LOCATION_BASE_PATH}/${encodeURIComponent(locationGuid)}/products/bind`,
+    payload
+  );
   return normalizeWarehouseLocationDetail(response.data);
 }
 

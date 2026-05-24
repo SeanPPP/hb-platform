@@ -19,10 +19,14 @@
     "unavailable": "当前设备还不能登录，请等待后台启用，或检查是否已绑定分店。",
     "notReadyMessage": "当前设备还不能登录，请等待后台启用或检查设备状态。",
     "loginFailed": "设备登录失败，请稍后重试。",
+    "loginUnauthorized": "设备授权已失效，请重新绑定设备，或联系管理员确认设备已启用。",
+    "loginUnavailable": "当前设备不可用，请联系管理员确认设备状态和绑定分店。",
+    "loginTimeout": "设备登录超时，请确认服务器地址和网络连接。\n当前服务器: {{origin}}",
+    "loginNetwork": "无法连接服务器完成设备登录，请确认服务器地址、网络连接和后端服务已启动。\n当前服务器: {{origin}}",
     "lookupFailed": "设备识别失败，请使用用户登录。",
-    "lookupTimeout": "设备识别超时，请检查后端连接。\n当前接口: {{origin}}",
-    "lookupNetwork": "无法连接后端识别设备，请检查网络。\n当前接口: {{origin}}",
-    "lookupHttp": "设备识别失败。HTTP {{status}}",
+    "lookupTimeout": "设备识别超时，请确认服务器地址和网络连接。\n当前服务器: {{origin}}",
+    "lookupNetwork": "无法连接服务器识别设备，请确认服务器地址、网络连接和后端服务已启动。\n当前服务器: {{origin}}",
+    "lookupHttp": "设备识别失败，请稍后重试或联系管理员。错误码：{{status}}",
     "status": {
       "pending": "待确认",
       "disabled": "禁用",
@@ -45,10 +49,11 @@
   },
   "errors": {
     "invalidCredentials": "用户名或密码不正确，请重新输入。",
-    "timeout": "登录超时，后端未及时响应。\n当前接口: {{origin}}",
-    "network": "无法连接后端地址，请检查手机与电脑网络、后端端口和接口地址。\n当前接口: {{origin}}",
+    "accountUnavailable": "当前账号不可用，请联系管理员确认账号状态。",
+    "timeout": "登录超时，后端未及时响应。请确认服务器地址和网络连接。\n当前服务器: {{origin}}",
+    "network": "无法连接服务器，请确认服务器地址、网络连接和后端服务已启动。\n当前服务器: {{origin}}",
     "server": "服务器暂时不可用，请稍后再试。",
-    "http": "登录失败，请稍后重试。HTTP {{status}}",
+    "http": "登录失败，请稍后重试或联系管理员。错误码：{{status}}",
     "default": "登录失败，请稍后重试。"
   }
 }

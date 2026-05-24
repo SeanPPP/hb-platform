@@ -22,6 +22,7 @@ interface AuthState {
   login: (payload: { username: string; password: string }) => Promise<void>;
   logout: () => Promise<void>;
   restoreSession: () => Promise<boolean>;
+  clearLocalSession: () => Promise<void>;
 }
 
 export const useAuthStore = create<AuthState>((set, get) => ({
@@ -63,15 +64,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         await logoutApi(rt);
       }
     } finally {
-      await SecureStorage.clearAll();
-      await AppAsyncStorage.removeItem(STORE_SELECTION_STORAGE_KEY);
-      useCartStore.getState().reset();
-      useAppNavigationStore.getState().reset();
-      set({
-        user: null,
-        access: buildAccess(null),
-        isAuthenticated: false,
-      });
+      await get().clearLocalSession();
     }
   },
 
@@ -108,6 +101,19 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       });
       return false;
     }
+  },
+
+  async clearLocalSession() {
+    await SecureStorage.clearAll();
+    await AppAsyncStorage.removeItem(STORE_SELECTION_STORAGE_KEY);
+    useCartStore.getState().reset();
+    useAppNavigationStore.getState().reset();
+    set({
+      user: null,
+      access: buildAccess(null),
+      isAuthenticated: false,
+      isLoading: false,
+    });
   },
 }));
 

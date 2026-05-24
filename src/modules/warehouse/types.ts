@@ -73,6 +73,11 @@ export interface WarehouseLocationMutation {
   status?: number | null;
 }
 
+export interface WarehouseLocationBindRequest {
+  productIdentifier: string;
+  initialQuantity?: number | null;
+}
+
 export interface DirectUploadSignature {
   url: string;
   objectKey: string;

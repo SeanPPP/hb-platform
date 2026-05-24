@@ -29,9 +29,22 @@
     "info": {
       "location": "位置",
       "network": "网络",
-      "locationPlaceholder": "暂无定位校验信息",
-      "networkPlaceholder": "暂无网络校验信息",
-      "timeZoneValue": "时区 {{timeZone}}"
+      "locationDependencyMissing": "当前版本未接入 GPS 采集能力，需审批新增定位依赖",
+      "locationPermissionDenied": "定位权限被拒绝，本次将按人工复核信息提交",
+      "locationUnavailable": "暂未采集到定位信息，本次将按人工复核信息提交",
+      "networkAvailable": "已完成后端连通性校验",
+      "networkAvailableWithTimeZone": "已完成后端连通性校验，门店时区 {{timeZone}}",
+      "networkUnavailable": "未能完成网络连通性校验，本次将按人工复核信息提交",
+      "networkUnknown": "网络校验状态暂不可用"
+    },
+    "verification": {
+      "refreshing": "检查中",
+      "statuses": {
+        "available": "已采集",
+        "permissionDenied": "权限被拒绝",
+        "unavailable": "不可用",
+        "unknown": "待补充"
+      }
     },
     "dailyRecords": {
       "title": "每日记录",
@@ -48,7 +61,8 @@
       "awaitingShift": "等待排班后才能生成下班记录。",
       "alertSelectedDate": "当前查看的是所选日期记录，只有当天才能执行打卡。",
       "alertHoliday": "今日标记为 {{holidayName}}，请按门店安排确认是否需要打卡。",
-      "alertNetworkFallback": "定位与网络校验信息暂未接入，当前仅展示占位状态。",
+      "alertVerificationCaptured": "本次打卡将携带当前采集到的校验信息提交。",
+      "alertVerificationSentForReview": "本次打卡仍可提交，但会附带当前校验状态供后端复核。",
       "alertNoSchedule": "当前日期没有排班，若需上班请先联系店长安排。"
     }
   },
@@ -191,6 +205,7 @@
     "cancelFailed": "取消失败",
     "punchSuccess": "打卡已提交",
     "punchFailed": "打卡失败",
+    "punchVerificationSentForReview": "定位或网络校验未完成，已按复核信息一并提交。",
     "availabilitySaved": "可上班时间已保存",
     "availabilityCancelled": "可上班时间已取消",
     "leaveSubmitted": "请假申请已提交",

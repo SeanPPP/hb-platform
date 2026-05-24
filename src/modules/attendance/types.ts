@@ -1,5 +1,29 @@
 export type AttendancePunchType = "ClockIn" | "ClockOut";
 
+export type AttendanceVerificationDisplayStatus =
+  | "available"
+  | "permissionDenied"
+  | "unavailable"
+  | "unknown";
+
+export type AttendanceLocationPermissionStatus =
+  | "granted"
+  | "denied"
+  | "unavailable"
+  | "unknown";
+
+export type AttendanceNetworkVerificationStatus =
+  | "online"
+  | "offline"
+  | "unknown";
+
+export type AttendanceVerificationReason =
+  | "captured"
+  | "dependencyMissing"
+  | "permissionDenied"
+  | "networkUnreachable"
+  | "unknown";
+
 export type AttendancePunchStatus =
   | "Normal"
   | "Late"
@@ -48,6 +72,45 @@ export interface AttendancePunch {
   punchTimeLocal?: string;
   status: AttendancePunchStatus;
   statusReason?: string;
+}
+
+export interface AttendancePunchVerificationPayload {
+  locationLatitude?: number;
+  locationLongitude?: number;
+  locationAccuracy?: number;
+  locationPermissionStatus?: AttendanceLocationPermissionStatus | string;
+  networkVerificationStatus?: AttendanceNetworkVerificationStatus | string;
+}
+
+export interface AttendancePunchPayload
+  extends AttendancePunchVerificationPayload {
+  punchType: AttendancePunchType;
+  storeCode?: string;
+}
+
+export interface AttendanceVerificationFieldState {
+  status: AttendanceVerificationDisplayStatus;
+  reason: AttendanceVerificationReason;
+}
+
+export interface AttendanceLocationVerificationState
+  extends AttendanceVerificationFieldState {
+  permissionStatus: AttendanceLocationPermissionStatus;
+  latitude?: number;
+  longitude?: number;
+  accuracy?: number;
+}
+
+export interface AttendanceNetworkVerificationState
+  extends AttendanceVerificationFieldState {
+  verificationStatus: AttendanceNetworkVerificationStatus;
+}
+
+export interface AttendancePunchVerificationState {
+  checkedAt?: string;
+  location: AttendanceLocationVerificationState;
+  network: AttendanceNetworkVerificationState;
+  payload: AttendancePunchVerificationPayload;
 }
 
 export interface AttendanceToday {

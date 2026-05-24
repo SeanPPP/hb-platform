@@ -9,6 +9,7 @@ import type {
   AttendanceLeaveRequestPayload,
   AttendancePublishWeekPayload,
   AttendancePunch,
+  AttendancePunchPayload,
   AttendancePunchType,
   AttendanceSchedule,
   AttendanceSchedulePayload,
@@ -398,8 +399,13 @@ export async function cancelAvailability(availabilityGuid: string): Promise<void
   await apiClient.post(`${ATTENDANCE_BASE}/my/availability/${encodeURIComponent(availabilityGuid)}/cancel`);
 }
 
-export async function punchAttendance(payload: { punchType: AttendancePunchType; storeCode?: string }): Promise<AttendancePunch> {
-  const response = await apiClient.post(`${ATTENDANCE_BASE}/punch`, payload);
+export async function punchAttendance(
+  payload: AttendancePunchPayload,
+): Promise<AttendancePunch> {
+  const response = await apiClient.post(
+    `${ATTENDANCE_BASE}/punch`,
+    sanitizePayload({ ...payload }),
+  );
   return normalizePunch(isRecord(response.data) ? response.data : {});
 }
 

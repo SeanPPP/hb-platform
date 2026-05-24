@@ -43,6 +43,10 @@ function normalizeDeviceProfile(payload: unknown): DeviceProfile {
       (typeof data.storeCode === "string" && data.storeCode) ||
       (typeof data.StoreCode === "string" && data.StoreCode) ||
       null,
+    storeName:
+      (typeof data.storeName === "string" && data.storeName) ||
+      (typeof data.StoreName === "string" && data.StoreName) ||
+      null,
   };
 }
 

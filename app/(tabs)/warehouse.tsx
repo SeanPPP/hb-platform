@@ -129,6 +129,13 @@ function formatPrice(value?: number | null) {
   return value.toFixed(2);
 }
 
+function getBindInitialQuantityValue(item?: WarehouseProduct | null) {
+  if (item?.stockQuantity != null && Number.isFinite(item.stockQuantity) && item.stockQuantity >= 0) {
+    return item.stockQuantity.toString();
+  }
+  return "0";
+}
+
 function getLocationVisualState(productCount: number) {
   if (productCount <= 0) {
     return "empty";
@@ -280,6 +287,7 @@ export default function WarehouseScreen() {
   const [bindProductKeyword, setBindProductKeyword] = useState("");
   const [bindProductMatches, setBindProductMatches] = useState<WarehouseProduct[]>([]);
   const [selectedBindProduct, setSelectedBindProduct] = useState<WarehouseProduct | null>(null);
+  const [bindInitialQuantity, setBindInitialQuantity] = useState("0");
   const [hasBindProductLookup, setHasBindProductLookup] = useState(false);
   const [locationModalVisible, setLocationModalVisible] = useState(false);
   const [locationModalState, setLocationModalState] = useState<WarehouseLocationMutation>({
@@ -315,6 +323,20 @@ export default function WarehouseScreen() {
     if (!Number.isFinite(parsed)) {
       throw new Error(t("messages.invalidNumber"));
     }
+    return parsed;
+  }, [t]);
+
+  const parseInitialQuantity = useCallback((value: string) => {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      throw new Error(t("messages.invalidQuantity"));
+    }
+
+    const parsed = Number(trimmed);
+    if (!Number.isFinite(parsed) || parsed < 0) {
+      throw new Error(t("messages.invalidQuantity"));
+    }
+
     return parsed;
   }, [t]);
 
@@ -719,6 +741,7 @@ export default function WarehouseScreen() {
     setBindProductKeyword("");
     setBindProductMatches([]);
     setSelectedBindProduct(null);
+    setBindInitialQuantity("0");
     setHasBindProductLookup(false);
     setBindModalVisible(true);
   }, []);
@@ -737,8 +760,10 @@ export default function WarehouseScreen() {
       setBindProductMatches(items);
       if (items.length === 1) {
         setSelectedBindProduct(items[0]);
+        setBindInitialQuantity(getBindInitialQuantityValue(items[0]));
       } else {
         setSelectedBindProduct(null);
+        setBindInitialQuantity("0");
       }
     } catch (error) {
       setSnackbar(error instanceof Error ? error.message : t("messages.lookupFailed"));
@@ -754,22 +779,50 @@ export default function WarehouseScreen() {
       return;
     }
 
+    let initialQuantity: number;
+    try {
+      initialQuantity = parseInitialQuantity(bindInitialQuantity);
+    } catch (error) {
+      setSnackbar(error instanceof Error ? error.message : t("messages.invalidQuantity"));
+      return;
+    }
+
     setBusy(true);
     try {
-      const detail = await bindProductToLocation(selectedLocation.locationGuid, productIdentifier);
+      const detail = await bindProductToLocation(selectedLocation.locationGuid, {
+        productIdentifier,
+        initialQuantity,
+      });
       applyLocationDetail(detail);
       setBindModalVisible(false);
       setBindProductKeyword("");
       setBindProductMatches([]);
       setSelectedBindProduct(null);
+      setBindInitialQuantity("0");
       setHasBindProductLookup(false);
       setSnackbar(t("messages.locationBound"));
     } catch (error) {
-      setSnackbar(error instanceof Error ? error.message : t("messages.saveFailed"));
+      const responseData = (error as { response?: { data?: unknown } } | undefined)?.response?.data;
+      const rawMessage = typeof responseData === "string"
+        ? responseData
+        : responseData && typeof responseData === "object" && "message" in responseData
+          ? String((responseData as { message?: unknown }).message ?? "")
+          : error instanceof Error
+            ? error.message
+            : "";
+      const normalizedMessage = rawMessage.trim().toLowerCase();
+      const looksLikeQuantityContractIssue = normalizedMessage.includes("initialquantity")
+        || normalizedMessage.includes("initial quantity")
+        || normalizedMessage.includes("quantity")
+        || normalizedMessage.includes("json")
+        || normalizedMessage.includes("convert")
+        || normalizedMessage.includes("deserialize")
+        || normalizedMessage.includes("validation");
+      setSnackbar(looksLikeQuantityContractIssue ? t("messages.quantityBackendRequired") : rawMessage || t("messages.saveFailed"));
     } finally {
       setBusy(false);
     }
-  }, [applyLocationDetail, bindProductKeyword, selectedBindProduct, selectedLocation, t]);
+  }, [applyLocationDetail, bindInitialQuantity, bindProductKeyword, parseInitialQuantity, selectedBindProduct, selectedLocation, t]);
 
   const handleUnbindProduct = useCallback(async (productCode: string) => {
     if (!selectedLocation) {
@@ -1365,8 +1418,17 @@ export default function WarehouseScreen() {
               <Text variant="labelSmall" style={styles.infoTileLabel}>
                 {t("location.bindModalQuantityTitle")}
               </Text>
+              <TextInput
+                mode="outlined"
+                value={bindInitialQuantity}
+                onChangeText={setBindInitialQuantity}
+                keyboardType="decimal-pad"
+                autoCapitalize="none"
+                placeholder={t("location.bindModalQuantityPlaceholder")}
+                style={styles.bindQuantityInput}
+              />
               <Text variant="bodySmall" style={styles.secondaryText}>
-                {t("location.bindModalQuantityUnsupported")}
+                {t("location.bindModalQuantityHint")}
               </Text>
             </View>
 
@@ -1381,7 +1443,10 @@ export default function WarehouseScreen() {
                   return (
                     <Pressable
                       key={item.productCode}
-                      onPress={() => setSelectedBindProduct(item)}
+                      onPress={() => {
+                        setSelectedBindProduct(item);
+                        setBindInitialQuantity(getBindInitialQuantityValue(item));
+                      }}
                       style={[
                         styles.bindResultCard,
                         isSelected ? styles.bindResultCardSelected : null,
@@ -1930,6 +1995,9 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "#E2E8F0",
     gap: 4,
+  },
+  bindQuantityInput: {
+    backgroundColor: "#FFFFFF",
   },
   bindResultCard: {
     backgroundColor: "#FFFFFF",

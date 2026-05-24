@@ -13,6 +13,7 @@ import type {
   UpdateCartQuantityPayload,
   StoreOrderCart,
 } from "@/modules/shop/types";
+import { resolveCartSkuCount } from "@/modules/shop/cart-summary-density";
 import { apiClient } from "@/shared/api/client";
 
 type ApiItem = Record<string, unknown>;
@@ -230,7 +231,15 @@ function normalizeCart(payload: Partial<StoreOrderCart> | null | undefined): Sto
     0
   );
   const fallbackTotalQuantity = cartItems.reduce((sum, item) => sum + item.quantity, 0);
-  const fallbackTotalSku = new Set(cartItems.map((item) => item.productCode).filter(Boolean)).size;
+  const reportedTotalSku = getFiniteNumber(
+    normalizedPayload?.totalSku,
+    normalizedPayload?.totalSKU,
+    normalizedPayload?.TotalSku,
+    normalizedPayload?.TotalSKU,
+    normalizedPayload?.skuCount,
+    normalizedPayload?.SkuCount,
+    normalizedPayload?.SKUCount
+  );
 
   return {
     orderGUID: payload.orderGUID ?? "",
@@ -249,16 +258,10 @@ function normalizeCart(payload: Partial<StoreOrderCart> | null | undefined): Sto
         normalizedPayload?.importTotal,
         normalizedPayload?.ImportTotal
       ) ?? fallbackImportAmount,
-    totalSku:
-      getFiniteNumber(
-        normalizedPayload?.totalSku,
-        normalizedPayload?.totalSKU,
-        normalizedPayload?.TotalSku,
-        normalizedPayload?.TotalSKU,
-        normalizedPayload?.skuCount,
-        normalizedPayload?.SkuCount,
-        normalizedPayload?.SKUCount
-      ) ?? fallbackTotalSku,
+    totalSku: resolveCartSkuCount({
+      productCodes: cartItems.map((item) => item.productCode),
+      reportedSkuCount: reportedTotalSku,
+    }),
     totalVolume: getFiniteNumber(normalizedPayload?.totalVolume, normalizedPayload?.TotalVolume) ?? 0,
     remarks: payload.remarks,
     shippingFee: payload.shippingFee,

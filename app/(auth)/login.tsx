@@ -10,7 +10,7 @@ import {
   Platform,
   TouchableOpacity,
 } from "react-native";
-import { isAxiosError, type AxiosError } from "axios";
+import { isAxiosError } from "axios";
 import {
   TextInput,
   Button,
@@ -26,6 +26,12 @@ import { useDeviceStore } from "@/store/device-store";
 import { getDeviceProfileApi } from "@/modules/device/api";
 import { DeviceStorage } from "@/modules/device/storage";
 import type { DeviceProfile } from "@/modules/device/types";
+import {
+  getFriendlyDeviceLoginErrorDescriptor,
+  getFriendlyLoginErrorDescriptor,
+  type LoginErrorDescriptor,
+} from "@/modules/auth/login-errors";
+import { prepareDeviceLoginSession } from "@/modules/auth/device-login-session";
 import { resolveDefaultTabRoute } from "@/modules/navigation/default-route";
 import { useAppNavigationStore } from "@/modules/navigation/store";
 import { i18n, setAppLanguage } from "@/shared/i18n/i18n";
@@ -45,38 +51,8 @@ function getApiOriginLabel() {
   return getCurrentApiHost();
 }
 
-function getFriendlyLoginErrorMessage(error: unknown): string {
-  const axiosError = error as AxiosError<{
-    message?: string;
-    error?: string;
-  }>;
-  const status = axiosError.response?.status;
-  const serverMessage =
-    axiosError.response?.data?.message || axiosError.response?.data?.error;
-  const normalizedMessage = serverMessage?.toLowerCase() || "";
-
-  if (
-    status === 401 || status === 403 ||
-    normalizedMessage.includes("invalid") ||
-    normalizedMessage.includes("unauthorized") ||
-    normalizedMessage.includes("password") ||
-    normalizedMessage.includes("credential")
-  ) {
-    return i18n.t("login:errors.invalidCredentials");
-  }
-  if (axiosError.code === "ECONNABORTED") {
-    return i18n.t("login:errors.timeout", { origin: getApiOriginLabel() });
-  }
-  if (axiosError.message === "Network Error") {
-    return i18n.t("login:errors.network", { origin: getApiOriginLabel() });
-  }
-  if (status && status >= 500) {
-    return i18n.t("login:errors.server");
-  }
-  if (status) {
-    return i18n.t("login:errors.http", { status });
-  }
-  return i18n.t("login:errors.default");
+function translateLoginError(descriptor: LoginErrorDescriptor): string {
+  return i18n.t(`login:${descriptor.key}`, descriptor.values);
 }
 
 function getFriendlyDeviceLookupErrorMessage(error: unknown): string {
@@ -123,6 +99,7 @@ export default function Login() {
   const router = useRouter();
   const { t } = useAppTranslation(["login", "common"]);
   const loginFn = useAuthStore((s) => s.login);
+  const clearLocalAuthSession = useAuthStore((s) => s.clearLocalSession);
   const syncDeviceFromProfile = useDeviceStore((s) => s.syncFromProfile);
   const validateDevice = useDeviceStore((s) => s.validate);
   const [username, setUsername] = useState("");
@@ -273,7 +250,7 @@ export default function Login() {
         }) as Parameters<typeof router.replace>[0]
       );
     } catch (err) {
-      setError(getFriendlyLoginErrorMessage(err));
+      setError(translateLoginError(getFriendlyLoginErrorDescriptor(err)));
       setSnackbarVisible(true);
     } finally {
       setLoading(false);
@@ -288,8 +265,11 @@ export default function Login() {
     setError("");
     setDeviceLoginLoading(true);
     try {
-      await syncDeviceFromProfile(registeredDevice);
-      const isReady = await validateDevice();
+      const isReady = await prepareDeviceLoginSession(registeredDevice, {
+        clearAccountSession: clearLocalAuthSession,
+        syncDeviceFromProfile,
+        validateDevice,
+      });
       if (isReady) {
         router.replace(
           resolveDefaultTabRoute({
@@ -303,9 +283,7 @@ export default function Login() {
       setError(t("device.notReadyMessage"));
       setSnackbarVisible(true);
     } catch (err) {
-      setError(
-        err instanceof Error ? err.message : t("device.loginFailed")
-      );
+      setError(translateLoginError(getFriendlyDeviceLoginErrorDescriptor(err)));
       setSnackbarVisible(true);
     } finally {
       setDeviceLoginLoading(false);

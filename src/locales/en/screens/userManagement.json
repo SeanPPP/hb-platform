@@ -88,6 +88,33 @@
     "actions": {
       "viewFullSchedule": "View Full Schedule"
     },
+    "schedule": {
+      "title": "This Week's Schedule",
+      "description": "View this staff member's weekly schedule in the detail page instead of leaving for the shared attendance screen.",
+      "loading": "Loading staff schedule...",
+      "loadFailedTitle": "Failed to load schedule",
+      "loadFailedDescription": "The staff schedule could not be loaded right now. Please try again.",
+      "endpointUnavailable": "The backend employee schedule endpoint is not available yet. Add the endpoint and try again."
+    },
+    "records": {
+      "title": "Recent Records",
+      "description": "Review this staff member's recent punches, leave requests, and approval records.",
+      "loading": "Loading staff records...",
+      "loadFailedTitle": "Failed to load records",
+      "loadFailedDescription": "The staff records could not be loaded right now. Please try again.",
+      "endpointUnavailable": "The backend employee records endpoint is not available yet. Add the endpoint and try again.",
+      "emptyTitle": "No records yet",
+      "emptyDescription": "There are no punches, leave requests, or approvals to show yet.",
+      "submittedAt": "Submitted",
+      "workDate": "Work date",
+      "dateRange": "Date range",
+      "store": "Store",
+      "types": {
+        "punch": "Punch",
+        "leave": "Leave",
+        "approval": "Approval"
+      }
+    },
     "employmentTypes": {
       "fullTime": "Full-time",
       "partTime": "Part-time",

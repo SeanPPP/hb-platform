@@ -30,6 +30,7 @@ export interface DeviceProfile {
   deviceType: string
   deviceSystem: string
   storeCode?: string | null
+  storeName?: string | null
   resolvedFromExisting?: boolean
 }
 

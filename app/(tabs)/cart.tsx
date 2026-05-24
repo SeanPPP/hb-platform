@@ -9,6 +9,7 @@ import {
   Pressable,
   StyleSheet,
   TextInput,
+  useWindowDimensions,
   View,
 } from "react-native";
 import {
@@ -36,6 +37,10 @@ import { useCartPage } from "@/modules/shop/use-cart-page";
 import { useRemoveCartLine } from "@/modules/shop/use-remove-cart-line";
 import { useStores } from "@/modules/shop/use-stores";
 import { useUpdateCartQuantity } from "@/modules/shop/use-update-cart-quantity";
+import {
+  resolveCartSummaryScale,
+  resolveCheckoutBarMaxHeight,
+} from "@/modules/shop/cart-summary-density";
 import { useHidBarcodeScanner } from "@/modules/scanner/use-hid-barcode-scanner";
 import { useScanResult } from "@/modules/scanner/use-scan-result";
 import type { StoreOrderCartItem } from "@/modules/shop/types";
@@ -277,6 +282,7 @@ function CartListItemCard({
 
 export default function Cart() {
   const router = useRouter();
+  const viewport = useWindowDimensions();
   const { t } = useAppTranslation(["cart", "common"]);
   const queryClient = useQueryClient();
   const { selectedStore, selectedStoreCode } = useStores();
@@ -317,6 +323,10 @@ export default function Cart() {
 
   const canGoNextPage = page * pageSize < cartQuery.total;
   const totalAmount = t("summary.money", { amount: cartQuery.stats.totalImportAmount.toFixed(2) });
+  const cartSummaryScale = resolveCartSummaryScale(viewport);
+  const useCompactSummary = cartSummaryScale < 0.95;
+  const checkoutBarMaxHeight = resolveCheckoutBarMaxHeight(viewport);
+  const checkoutButtonHeight = Math.max(36, Math.min(40, Math.round(checkoutBarMaxHeight * 0.42)));
 
   const scanResult = useScanResult({
     onAddedToCart: async (product) => {
@@ -507,8 +517,8 @@ export default function Cart() {
         keyboardShouldPersistTaps="handled"
         ListHeaderComponent={
           cartQuery.total ? (
-            <View style={styles.cartStatsBar}>
-              <View style={styles.cartStatItem}>
+            <View style={[styles.cartStatsBar, useCompactSummary ? styles.cartStatsBarCompact : null]}>
+              <View style={[styles.cartStatItem, useCompactSummary ? styles.cartStatItemCompact : null]}>
                 <Text variant="labelSmall" style={styles.cartStatLabel}>
                   {t("summary.quantity")}
                 </Text>
@@ -516,8 +526,8 @@ export default function Cart() {
                   {cartQuery.stats.totalQuantity}
                 </Text>
               </View>
-              <View style={styles.cartStatDivider} />
-              <View style={styles.cartStatItem}>
+              <View style={[styles.cartStatDivider, useCompactSummary ? styles.cartStatDividerCompact : null]} />
+              <View style={[styles.cartStatItem, useCompactSummary ? styles.cartStatItemCompact : null]}>
                 <Text variant="labelSmall" style={styles.cartStatLabel}>
                   {t("summary.sku")}
                 </Text>
@@ -525,8 +535,14 @@ export default function Cart() {
                   {cartQuery.stats.skuCount}
                 </Text>
               </View>
-              <View style={styles.cartStatDivider} />
-              <View style={[styles.cartStatItem, styles.cartStatAmountItem]}>
+              <View style={[styles.cartStatDivider, useCompactSummary ? styles.cartStatDividerCompact : null]} />
+              <View
+                style={[
+                  styles.cartStatItem,
+                  styles.cartStatAmountItem,
+                  useCompactSummary ? styles.cartStatItemCompact : null,
+                ]}
+              >
                 <Text variant="labelSmall" style={styles.cartStatLabel}>
                   {t("summary.orderTotal")}
                 </Text>
@@ -561,53 +577,61 @@ export default function Cart() {
       />
 
       {cartQuery.total ? (
-        <View style={styles.checkoutBar}>
-          <View style={styles.checkoutMetricRow}>
-            <Text variant="bodySmall" style={styles.checkoutLabel}>
-              {t("checkout.totalItems")}
-            </Text>
-            <Text variant="bodySmall" style={styles.checkoutValue}>
-              {cartQuery.stats.totalQuantity}
-            </Text>
+        <View
+          style={[
+            styles.checkoutBar,
+            { maxHeight: checkoutBarMaxHeight },
+            useCompactSummary ? styles.checkoutBarCompact : null,
+          ]}
+        >
+          <View style={styles.checkoutSummaryRow}>
+            <View style={styles.checkoutSummaryGroup}>
+              <Text variant="bodySmall" style={styles.checkoutLabel}>
+                {t("checkout.totalItems")}
+              </Text>
+              <Text variant="bodySmall" style={styles.checkoutValue}>
+                {cartQuery.stats.totalQuantity}
+              </Text>
+            </View>
+            <View style={[styles.checkoutSummaryGroup, styles.checkoutSummaryAmount]}>
+              <Text variant="bodySmall" style={styles.checkoutTotalLabel}>
+                {t("checkout.totalAmount")}
+              </Text>
+              <Text variant="bodySmall" numberOfLines={1} style={styles.checkoutTotalValue}>
+                {totalAmount}
+              </Text>
+            </View>
           </View>
-          <View style={styles.checkoutMetricRow}>
-            <Text variant="bodySmall" style={styles.checkoutLabel}>
-              {t("checkout.subtotal")}
-            </Text>
-            <Text variant="bodySmall" style={styles.checkoutValue}>
-              {totalAmount}
-            </Text>
+          <View style={styles.checkoutActionsRow}>
+            <Button
+              mode="contained"
+              icon="arrow-right"
+              contentStyle={[styles.checkoutButtonContent, { minHeight: checkoutButtonHeight }]}
+              disabled={!selectedStoreCode || !cartQuery.total || clearCart.isPending || submitPending}
+              loading={submitPending}
+              onPress={confirmSubmitCart}
+              style={[styles.checkoutButton, styles.checkoutSubmitButton]}
+              labelStyle={useCompactSummary ? styles.checkoutButtonLabelCompact : undefined}
+            >
+              {t("checkout.submit")}
+            </Button>
+            <Button
+              compact
+              mode="outlined"
+              icon="delete-sweep-outline"
+              contentStyle={styles.clearCartButtonContent}
+              disabled={!selectedStoreCode || !cartQuery.total || clearCart.isPending || submitPending}
+              loading={clearCart.isPending}
+              onPress={confirmClearCart}
+              style={styles.checkoutClearButton}
+              labelStyle={[
+                styles.clearCartLabel,
+                useCompactSummary ? styles.clearCartLabelCompact : null,
+              ]}
+            >
+              {t("checkout.clear")}
+            </Button>
           </View>
-          <View style={styles.checkoutMetricRow}>
-            <Text variant="titleMedium" style={styles.checkoutTotalLabel}>
-              {t("checkout.totalAmount")}
-            </Text>
-            <Text variant="titleMedium" style={styles.checkoutTotalValue}>
-              {totalAmount}
-            </Text>
-          </View>
-          <Button
-            mode="contained"
-            icon="arrow-right"
-            contentStyle={styles.checkoutButtonContent}
-            disabled={!selectedStoreCode || !cartQuery.total || clearCart.isPending || submitPending}
-            loading={submitPending}
-            onPress={confirmSubmitCart}
-            style={styles.checkoutButton}
-          >
-            {t("checkout.submit")}
-          </Button>
-          <Button
-            compact
-            mode="text"
-            icon="delete-sweep-outline"
-            disabled={!selectedStoreCode || !cartQuery.total || clearCart.isPending || submitPending}
-            loading={clearCart.isPending}
-            onPress={confirmClearCart}
-            labelStyle={styles.clearCartLabel}
-          >
-            {t("checkout.clear")}
-          </Button>
         </View>
       ) : null}
 
@@ -784,9 +808,18 @@ const styles = StyleSheet.create({
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: "#D9E0E8",
   },
+  cartStatsBarCompact: {
+    marginBottom: 6,
+    paddingHorizontal: 9,
+    paddingVertical: 7,
+    borderRadius: 8,
+  },
   cartStatItem: {
     flex: 1,
     gap: 2,
+  },
+  cartStatItemCompact: {
+    gap: 0,
   },
   cartStatAmountItem: {
     flex: 1.35,
@@ -808,6 +841,10 @@ const styles = StyleSheet.create({
     height: 30,
     marginHorizontal: 8,
     backgroundColor: "#D9E0E8",
+  },
+  cartStatDividerCompact: {
+    height: 22,
+    marginHorizontal: 6,
   },
   filtersModal: {
     margin: 16,
@@ -1030,20 +1067,43 @@ const styles = StyleSheet.create({
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: "#D7DCE2",
     backgroundColor: "#FFFFFF",
-    paddingHorizontal: 16,
-    paddingTop: 14,
-    paddingBottom: 18,
+    paddingHorizontal: 12,
+    paddingTop: 8,
+    paddingBottom: 8,
+    gap: 6,
+    overflow: "hidden",
     shadowColor: "#0F172A",
     shadowOpacity: 0.08,
     shadowRadius: 10,
     shadowOffset: { width: 0, height: -4 },
     elevation: 8,
   },
-  checkoutMetricRow: {
+  checkoutBarCompact: {
+    paddingHorizontal: 10,
+    paddingTop: 6,
+    paddingBottom: 6,
+    gap: 5,
+  },
+  checkoutSummaryRow: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    marginBottom: 8,
+    gap: 12,
+  },
+  checkoutSummaryGroup: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    minWidth: 0,
+  },
+  checkoutSummaryAmount: {
+    flex: 1,
+    justifyContent: "flex-end",
+  },
+  checkoutActionsRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
   },
   checkoutLabel: {
     color: "#6B7280",
@@ -1061,16 +1121,30 @@ const styles = StyleSheet.create({
     fontWeight: "800",
   },
   checkoutButton: {
-    marginTop: 6,
     borderRadius: 8,
     backgroundColor: "#111111",
   },
+  checkoutSubmitButton: {
+    flex: 1,
+  },
   checkoutButtonContent: {
-    minHeight: 48,
     flexDirection: "row-reverse",
+  },
+  checkoutButtonLabelCompact: {
+    fontSize: 13,
+  },
+  checkoutClearButton: {
+    borderRadius: 8,
+    borderColor: "#D1D5DB",
+  },
+  clearCartButtonContent: {
+    minHeight: 36,
   },
   clearCartLabel: {
     color: "#6B7280",
+  },
+  clearCartLabelCompact: {
+    fontSize: 12,
   },
   hiddenInput: {
     position: "absolute",

@@ -6,6 +6,10 @@ export const GENDERS = ["male", "female", "other"] as const;
 
 export type Gender = (typeof GENDERS)[number];
 
+export const EMPLOYEE_PROFILE_IMAGE_KINDS = ["avatar", "identityPhoto"] as const;
+
+export type EmployeeProfileImageKind = (typeof EMPLOYEE_PROFILE_IMAGE_KINDS)[number];
+
 export interface EmployeeProfile {
   username: string;
   displayName?: string;
@@ -40,3 +44,20 @@ export interface UpdateEmployeeProfilePayload {
   address: string;
 }
 
+export interface DirectUploadRequest {
+  fileName: string;
+  contentType: string;
+  fileSize: number;
+  objectKey?: string | null;
+}
+
+export interface DirectUploadSignature {
+  url: string;
+  objectKey: string;
+  headers: Record<string, string>;
+}
+
+export interface EmployeeProfileImageUploadResult {
+  objectKey: string;
+  downloadUrl: string;
+}

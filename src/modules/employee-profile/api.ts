@@ -1,5 +1,11 @@
 import { apiClient } from "@/shared/api/client";
-import type { EmployeeProfile, UpdateEmployeeProfilePayload } from "@/modules/employee-profile/types";
+import type {
+  DirectUploadRequest,
+  DirectUploadSignature,
+  EmployeeProfile,
+  EmployeeProfileImageKind,
+  UpdateEmployeeProfilePayload,
+} from "@/modules/employee-profile/types";
 
 type ApiRecord = Record<string, unknown>;
 
@@ -36,6 +42,26 @@ function normalizeEmployeeProfile(payload: unknown): EmployeeProfile {
   };
 }
 
+function normalizeDirectUploadSignature(payload: unknown): DirectUploadSignature {
+  const data = (payload && typeof payload === "object" ? payload : {}) as ApiRecord;
+  const headersValue = data.headers ?? data.Headers;
+  const headers =
+    headersValue && typeof headersValue === "object"
+      ? Object.fromEntries(
+          Object.entries(headersValue as Record<string, unknown>).map(([key, value]) => [
+            key,
+            typeof value === "string" ? value : String(value ?? ""),
+          ])
+        )
+      : {};
+
+  return {
+    url: asString(data.url ?? data.Url),
+    objectKey: asString(data.objectKey ?? data.ObjectKey),
+    headers,
+  };
+}
+
 export async function getMyEmployeeProfileApi(): Promise<EmployeeProfile> {
   const response = await apiClient.get("/EmployeeProfiles/me");
   return normalizeEmployeeProfile(response.data);
@@ -46,4 +72,32 @@ export async function updateMyEmployeeProfileApi(
 ): Promise<EmployeeProfile> {
   const response = await apiClient.put("/EmployeeProfiles/me", payload);
   return normalizeEmployeeProfile(response.data);
+}
+
+export async function getEmployeeProfileImageUploadSignature(
+  kind: EmployeeProfileImageKind,
+  request: DirectUploadRequest
+): Promise<DirectUploadSignature> {
+  const response = await apiClient.post("/EmployeeProfiles/me/image-upload-signature", {
+    ...request,
+    kind,
+  });
+  return normalizeDirectUploadSignature(response.data);
+}
+
+export async function uploadEmployeeProfileImageBlobToSignedUrl(
+  blob: Blob,
+  signature: DirectUploadSignature
+) {
+  const response = await fetch(signature.url, {
+    method: "PUT",
+    headers: signature.headers,
+    body: blob,
+  });
+
+  if (!response.ok) {
+    throw new Error(`Upload failed with status ${response.status}`);
+  }
+
+  return signature.objectKey;
 }

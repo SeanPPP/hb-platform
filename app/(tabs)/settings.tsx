@@ -21,6 +21,7 @@ import { useAuthStore } from "@/store/auth-store";
 import { useDeviceStore } from "@/store/device-store";
 import { useStores } from "@/modules/shop/use-stores";
 import { resolveSettingsAuthMode, shouldShowProfileAction } from "@/modules/device/settings-mode";
+import { resolveDeviceStoreDisplayName } from "@/modules/device/store-display";
 
 function resolveDeviceStatusText(
   status: number | undefined,
@@ -107,6 +108,12 @@ export default function Settings() {
       ),
     [stores]
   );
+  const deviceStoreDisplayName = resolveDeviceStoreDisplayName({
+    deviceStoreCode: deviceSession?.storeCode ?? effectiveStore?.storeCode,
+    deviceStoreName: deviceSession?.storeName ?? effectiveStore?.storeName,
+    stores: sortedStores,
+    fallback: t("device.selectStore"),
+  });
 
   const visiblePrinters = useMemo(() => {
     if (!filterXPOnly) {
@@ -436,12 +443,7 @@ export default function Settings() {
               <Text variant="bodyMedium">{t("device.status", { status: deviceStatusText })}</Text>
               <Text variant="bodyMedium">
                 {t("device.store", {
-                  store:
-                    deviceSession?.storeName ||
-                    deviceSession?.storeCode ||
-                    effectiveStore?.storeName ||
-                    effectiveStore?.storeCode ||
-                    t("device.selectStore"),
+                  store: deviceStoreDisplayName,
                 })}
               </Text>
               <Text variant="bodySmall" style={styles.meta}>

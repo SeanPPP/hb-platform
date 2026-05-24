@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { getCart } from "@/modules/shop/api";
+import { resolveCartSkuCount } from "@/modules/shop/cart-summary-density";
 import type { StoreOrderCartItem } from "@/modules/shop/types";
 
 interface UseCartPageOptions {
@@ -63,11 +64,12 @@ export function useCartPage({ page, pageSize, priorityProductCode, storeCode }: 
       (sum, item) => sum + (getFiniteNumber(item.importAmount) ?? item.importPrice * item.quantity),
       0
     );
-    const fallbackSkuCount = new Set(sortedItems.map((item) => item.productCode).filter(Boolean)).size;
-
     return {
       itemCount: sortedItems.length,
-      skuCount: getFiniteNumber(cart?.totalSku) ?? fallbackSkuCount,
+      skuCount: resolveCartSkuCount({
+        productCodes: sortedItems.map((item) => item.productCode),
+        reportedSkuCount: cart?.totalSku,
+      }),
       totalImportAmount: getFiniteNumber(cart?.totalImportAmount) ?? fallbackImportAmount,
       totalQuantity: getFiniteNumber(cart?.totalQuantity) ?? fallbackTotalQuantity,
     };

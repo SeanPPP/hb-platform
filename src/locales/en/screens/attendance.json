@@ -29,9 +29,22 @@
     "info": {
       "location": "Location",
       "network": "Network",
-      "locationPlaceholder": "Location verification unavailable",
-      "networkPlaceholder": "Network verification unavailable",
-      "timeZoneValue": "Timezone {{timeZone}}"
+      "locationDependencyMissing": "GPS capture is not enabled in this build and needs approved location dependencies",
+      "locationPermissionDenied": "Location permission was denied. This punch will be sent for manual review",
+      "locationUnavailable": "Location data is unavailable. This punch will be sent for manual review",
+      "networkAvailable": "Backend reachability check completed",
+      "networkAvailableWithTimeZone": "Backend reachability check completed, store timezone {{timeZone}}",
+      "networkUnavailable": "Network reachability check failed. This punch will be sent for manual review",
+      "networkUnknown": "Network verification status is unavailable"
+    },
+    "verification": {
+      "refreshing": "Checking",
+      "statuses": {
+        "available": "Captured",
+        "permissionDenied": "Denied",
+        "unavailable": "Unavailable",
+        "unknown": "Unknown"
+      }
     },
     "dailyRecords": {
       "title": "Daily Records",
@@ -48,7 +61,8 @@
       "awaitingShift": "Clock-out record will appear after a shift is scheduled.",
       "alertSelectedDate": "You are viewing a selected date. Punch actions are only available for today.",
       "alertHoliday": "This day is marked as {{holidayName}}. Confirm with the store before punching.",
-      "alertNetworkFallback": "Location and network verification are not connected yet, so placeholders are shown.",
+      "alertVerificationCaptured": "This punch will include the current verification data.",
+      "alertVerificationSentForReview": "This punch can still be submitted and will include the current verification state for review.",
       "alertNoSchedule": "There is no shift for this date. Contact the manager if work needs to be arranged."
     }
   },
@@ -191,6 +205,7 @@
     "cancelFailed": "Cancel failed.",
     "punchSuccess": "Punch submitted.",
     "punchFailed": "Punch failed.",
+    "punchVerificationSentForReview": "Location or network verification is incomplete. The punch was prepared with review metadata.",
     "availabilitySaved": "Availability saved.",
     "availabilityCancelled": "Availability cancelled.",
     "leaveSubmitted": "Leave request submitted.",
