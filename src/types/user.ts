@@ -15,7 +15,7 @@ export interface UserStoreDto {
   storeGUID: string
   storeName: string
   storeCode: string
-  isPrimary: boolean
+  isManageable: boolean
   assignedAt: string
 }
 
@@ -52,7 +52,7 @@ export interface UserRoleAssignmentDto {
 export interface UserStoreAssignmentDto {
   storeGUID: string
   accessLevel?: string
-  isPrimary?: boolean
+  isManageable?: boolean
 }
 
 export interface CreateUserDto {

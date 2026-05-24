@@ -44,7 +44,7 @@ export interface StoreUserDto {
   realName?: string
   email: string
   roles: string[]
-  isPrimary: boolean
+  isManageable: boolean
   isActive: boolean
   assignedAt: string
 }
@@ -55,7 +55,7 @@ export interface StoreDetailDto extends StoreDto {
 
 export interface AddUserToStoreDto {
   userGUID: string
-  isPrimary?: boolean
+  isManageable?: boolean
 }
 
 export interface StoreUserQueryDto {

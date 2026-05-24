@@ -13,6 +13,19 @@ import type {
 } from '../types/user'
 import request, { unwrapApiData, unwrapPagedResult } from '../utils/request'
 
+type UserStoreApiDto = Omit<UserStoreDto, 'isManageable'> & {
+  isManageable?: boolean
+  isPrimary?: boolean
+}
+
+const mapUserStore = (store: UserStoreApiDto): UserStoreDto => {
+  const { isPrimary, isManageable, ...rest } = store
+  return {
+    ...rest,
+    isManageable: isManageable ?? isPrimary ?? false,
+  }
+}
+
 export async function getUsers(params: UserQueryDto): Promise<PagedResult<UserDto>> {
   const response = await request.get<ApiResponse<PagedResult<UserDto>>>('/api/Users/optimized', {
     params: params as Record<string, unknown>,
@@ -39,8 +52,8 @@ export async function getUserByGuid(guid: string): Promise<UserDetailDto> {
 }
 
 export async function getUserStores(guid: string): Promise<UserStoreDto[]> {
-  const response = await request.get<ApiResponse<UserStoreDto[]>>(`/api/Users/guid/${guid}/stores`)
-  return unwrapApiData(response) ?? []
+  const response = await request.get<ApiResponse<UserStoreApiDto[]>>(`/api/Users/guid/${guid}/stores`)
+  return (unwrapApiData(response) ?? []).map(mapUserStore)
 }
 
 export async function updateUser(guid: string, payload: UpdateUserDto): Promise<UserDetailDto> {
@@ -66,7 +79,7 @@ export async function assignStoresToUser(guid: string, payload: UserStoreAssignm
     payload.map((item) => ({
       StoreGUID: item.storeGUID,
       AccessLevel: item.accessLevel ?? 'ReadWrite',
-      IsPrimary: item.isPrimary ?? false,
+      IsPrimary: item.isManageable ?? false,
     })),
   )
   return unwrapApiData(response)

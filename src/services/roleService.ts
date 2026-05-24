@@ -1,5 +1,7 @@
 import type { ApiResponse, PagedResult } from '../types/api'
 import type {
+  CreateRoleDto,
+  CreateSysPermissionDto,
   PermissionCategoryDto,
   RoleDetailDto,
   RoleDto,
@@ -8,7 +10,6 @@ import type {
   RoleQueryDto,
   RoleUserDto,
   SysPermissionDto,
-  CreateSysPermissionDto,
   UpdateRoleDto,
 } from '../types/role'
 import request, { unwrapApiData, unwrapPagedResult } from '../utils/request'
@@ -22,6 +23,11 @@ export async function getRoles(params: RoleQueryDto): Promise<PagedResult<RoleDt
 
 export async function getRoleByGuid(guid: string): Promise<RoleDetailDto> {
   const response = await request.get<ApiResponse<RoleDetailDto>>(`/api/Roles/guid/${guid}`)
+  return unwrapApiData(response)
+}
+
+export async function createRole(payload: CreateRoleDto): Promise<RoleDto> {
+  const response = await request.post<ApiResponse<RoleDto>>('/api/Roles', payload)
   return unwrapApiData(response)
 }
 

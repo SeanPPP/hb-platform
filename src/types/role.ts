@@ -38,6 +38,12 @@ export interface UpdateRoleDto {
   isActive?: boolean
 }
 
+export interface CreateRoleDto {
+  roleName: string
+  description?: string
+  isActive?: boolean
+}
+
 export interface RoleOptionDto {
   roleGUID: string
   roleName: string

@@ -77,7 +77,7 @@ export default function UserDetailPage() {
               <Space>
                 <Typography.Text strong>{item.storeName}</Typography.Text>
                 <Tag>{item.storeCode}</Tag>
-                {item.isPrimary ? <Tag color="processing">{t('system.users.primaryStore')}</Tag> : null}
+                {item.isManageable ? <Tag color="processing">{t('system.users.manageableStore')}</Tag> : null}
               </Space>
             </List.Item>
           )}

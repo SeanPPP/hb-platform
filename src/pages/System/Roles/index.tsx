@@ -1,4 +1,4 @@
-import { EditOutlined, EyeOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons'
+import { EditOutlined, EyeOutlined, PlusOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons'
 import {
   Button,
   Card,
@@ -18,11 +18,11 @@ import {
 import type { ColumnsType } from 'antd/es/table'
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { HasPermission } from '../../../components/Access'
+import { HasPermission, usePermission } from '../../../components/Access'
 import PageContainer from '../../../components/PageContainer'
 import { P } from '../../../types/permissions'
-import { getRoleByGuid, getRoles, updateRole } from '../../../services/roleService'
-import type { RoleDetailDto, RoleDto, UpdateRoleDto } from '../../../types/role'
+import { createRole, getRoleByGuid, getRoles, updateRole } from '../../../services/roleService'
+import type { CreateRoleDto, RoleDetailDto, RoleDto, UpdateRoleDto } from '../../../types/role'
 import RolePermissionManager from './RolePermissionManager'
 import RoleUserManagement from './RoleUserManagement'
 
@@ -38,6 +38,11 @@ export default function SystemRolesPage() {
   const [detailOpen, setDetailOpen] = useState(false)
   const [detailLoading, setDetailLoading] = useState(false)
   const [detailRole, setDetailRole] = useState<RoleDetailDto | null>(null)
+  const canManageRolePermissions = usePermission(P.Roles.ManagePermissions)
+
+  const [createOpen, setCreateOpen] = useState(false)
+  const [createLoading, setCreateLoading] = useState(false)
+  const [createForm] = Form.useForm<CreateRoleDto>()
 
   const [editOpen, setEditOpen] = useState(false)
   const [editLoading, setEditLoading] = useState(false)
@@ -75,6 +80,39 @@ export default function SystemRolesPage() {
     const detail = await getRoleByGuid(roleGuid)
     setDetailRole(detail)
     return detail
+  }
+
+  const handleCreateOpen = () => {
+    createForm.setFieldsValue({
+      isActive: true,
+    })
+    setCreateOpen(true)
+  }
+
+  const handleCreateSubmit = async () => {
+    try {
+      const values = await createForm.validateFields()
+      setCreateLoading(true)
+      const created = await createRole({
+        ...values,
+        description: values.description?.trim() || undefined,
+        roleName: values.roleName.trim(),
+        isActive: values.isActive ?? true,
+      })
+      message.success(t('system.roles.createSuccess'))
+      setCreateOpen(false)
+      createForm.resetFields()
+      await loadData(1, pageSize)
+      if (canManageRolePermissions) {
+        void handleEdit(created)
+      }
+    } catch (error) {
+      if (typeof error === 'object' && error !== null && 'errorFields' in error) return
+      console.error(error)
+      message.error(t('system.roles.createFailed'))
+    } finally {
+      setCreateLoading(false)
+    }
   }
 
   const handleViewDetail = async (record: RoleDto) => {
@@ -188,6 +226,11 @@ export default function SystemRolesPage() {
           <Button icon={<ReloadOutlined />} onClick={() => void loadData(page, pageSize)}>
             {t('common.refresh')}
           </Button>
+          <HasPermission code={P.Roles.Create}>
+            <Button type="primary" icon={<PlusOutlined />} onClick={handleCreateOpen}>
+              {t('system.roles.createRole')}
+            </Button>
+          </HasPermission>
         </Space>
 
         <Table
@@ -271,6 +314,43 @@ export default function SystemRolesPage() {
           </Space>
         )}
       </Drawer>
+
+      <Modal
+        title={t('system.roles.createTitle')}
+        open={createOpen}
+        onCancel={() => {
+          setCreateOpen(false)
+          createForm.resetFields()
+        }}
+        onOk={() => void handleCreateSubmit()}
+        confirmLoading={createLoading}
+        width={620}
+        destroyOnHidden
+      >
+        <Form form={createForm} layout="vertical" initialValues={{ isActive: true }}>
+          <Form.Item
+            label={t('system.roles.roleName')}
+            name="roleName"
+            rules={[
+              { required: true, message: t('system.roles.roleNameRequired') },
+              { whitespace: true, message: t('system.roles.roleNameRequired') },
+              { min: 2, max: 50, message: t('system.roles.roleNameLength') },
+            ]}
+          >
+            <Input maxLength={50} />
+          </Form.Item>
+          <Form.Item
+            label={t('column.description')}
+            name="description"
+            rules={[{ max: 200, message: t('system.roles.descriptionLength') }]}
+          >
+            <Input.TextArea rows={4} maxLength={200} showCount />
+          </Form.Item>
+          <Form.Item label={t('column.status')} name="isActive" valuePropName="checked">
+            <Switch checkedChildren={t('common.active')} unCheckedChildren={t('common.inactive')} />
+          </Form.Item>
+        </Form>
+      </Modal>
 
       <Modal
         title={editingRole ? t('system.roles.editTitle', { name: editingRole.roleName }) : t('system.roles.editTitleShort')}

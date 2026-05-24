@@ -22,7 +22,7 @@ import {
 } from 'antd'
 import type { TransferDirection } from 'antd/es/transfer'
 import type { ColumnsType } from 'antd/es/table'
-import type { Key } from 'react'
+import type { Dispatch, Key, SetStateAction } from 'react'
 import { useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { HasPermission } from '../../../components/Access'
@@ -84,6 +84,7 @@ export default function SystemUsersPage() {
 
   const [allStores, setAllStores] = useState<StoreDto[]>([])
   const [storeTargetKeys, setStoreTargetKeys] = useState<string[]>([])
+  const [storeManageableKeys, setStoreManageableKeys] = useState<string[]>([])
   const [storeLoading, setStoreLoading] = useState(false)
   const [storeSaving, setStoreSaving] = useState(false)
 
@@ -104,12 +105,91 @@ export default function SystemUsersPage() {
   const [createRoleLoading, setCreateRoleLoading] = useState(false)
 
   const [createStoreTargetKeys, setCreateStoreTargetKeys] = useState<string[]>([])
+  const [createStoreManageableKeys, setCreateStoreManageableKeys] = useState<string[]>([])
   const [createStoreLoading, setCreateStoreLoading] = useState(false)
 
   const sortedStores = useMemo(
     () => [...allStores].sort((a, b) => a.storeName.localeCompare(b.storeName)),
     [allStores],
   )
+
+  const sortStoreGuids = (keys: string[]) =>
+    [...keys].sort((a, b) => {
+      const storeA = sortedStores.find((item) => item.storeGUID === a)
+      const storeB = sortedStores.find((item) => item.storeGUID === b)
+      if (!storeA || !storeB) return 0
+      return storeA.storeName.localeCompare(storeB.storeName)
+    })
+
+  const handleStoreTargetChange = (nextTargetKeys: Key[]) => {
+    const next = sortStoreGuids(nextTargetKeys.map(String))
+    setStoreTargetKeys(next)
+    setStoreManageableKeys((current) => current.filter((storeGUID) => next.includes(storeGUID)))
+  }
+
+  const handleCreateStoreTargetChange = (nextTargetKeys: Key[]) => {
+    const next = sortStoreGuids(nextTargetKeys.map(String))
+    setCreateStoreTargetKeys(next)
+    setCreateStoreManageableKeys((current) => current.filter((storeGUID) => next.includes(storeGUID)))
+  }
+
+  const toggleStoreManageable = (
+    storeGUID: string,
+    checked: boolean,
+    setter: Dispatch<SetStateAction<string[]>>,
+  ) => {
+    setter((current) => {
+      const next = new Set(current)
+      if (checked) {
+        next.add(storeGUID)
+      } else {
+        next.delete(storeGUID)
+      }
+      return sortStoreGuids(Array.from(next))
+    })
+  }
+
+  const renderManageableStoreControls = (
+    targetKeys: string[],
+    manageableKeys: string[],
+    setter: Dispatch<SetStateAction<string[]>>,
+  ) => {
+    const selectedStores = targetKeys
+      .map((storeGUID) => sortedStores.find((item) => item.storeGUID === storeGUID))
+      .filter((item): item is StoreDto => Boolean(item))
+
+    if (!selectedStores.length) {
+      return null
+    }
+
+    return (
+      <List
+        size="small"
+        style={{ marginTop: 12 }}
+        dataSource={selectedStores}
+        renderItem={(store) => (
+          <List.Item
+            actions={[
+              <Switch
+                key="manageable"
+                checked={manageableKeys.includes(store.storeGUID)}
+                onChange={(checked) => toggleStoreManageable(store.storeGUID, checked, setter)}
+              />,
+            ]}
+          >
+            <Space>
+              <Typography.Text>{`${store.storeName} (${store.storeCode})`}</Typography.Text>
+              {manageableKeys.includes(store.storeGUID) ? (
+                <Tag color="processing">{t('system.users.manageableStore', '可管理')}</Tag>
+              ) : (
+                <Tag>{t('system.users.linkedOnlyStore', '普通关联')}</Tag>
+              )}
+            </Space>
+          </List.Item>
+        )}
+      />
+    )
+  }
 
   const loadData = async (nextPage = page, nextPageSize = pageSize, currentSortBy?: string, currentSortOrder?: 'ascend' | 'descend' | null) => {
     setLoading(true)
@@ -207,7 +287,8 @@ export default function SystemUsersPage() {
         getUserStores(userGuid),
       ])
       setAllStores(stores.items)
-      setStoreTargetKeys(userStores.map((item) => item.storeGUID))
+      setStoreTargetKeys(sortStoreGuids(userStores.map((item) => item.storeGUID)))
+      setStoreManageableKeys(sortStoreGuids(userStores.filter((item) => item.isManageable).map((item) => item.storeGUID)))
     } catch (error) {
       console.error(error)
       message.error(t('system.users.loadStoresFailed', '加载分店数据失败'))
@@ -317,7 +398,7 @@ export default function SystemUsersPage() {
         storeTargetKeys.map((storeGUID) => ({
           storeGUID,
           accessLevel: 'ReadWrite',
-          isPrimary: false,
+          isManageable: storeManageableKeys.includes(storeGUID),
         })),
       )
       message.success(t('system.users.storeAssignSuccess', '分店分配成功'))
@@ -359,6 +440,7 @@ export default function SystemUsersPage() {
     createForm.resetFields()
     setCreateRoleTargetKeys([])
     setCreateStoreTargetKeys([])
+    setCreateStoreManageableKeys([])
     setCreateRoleLoading(true)
     setCreateStoreLoading(true)
     try {
@@ -389,12 +471,23 @@ export default function SystemUsersPage() {
         roleGuids: createRoleTargetKeys,
         storeGuids: createStoreTargetKeys,
       }
-      await createUser(payload)
+      const created = await createUser(payload)
+      if (createStoreTargetKeys.length > 0) {
+        await assignStoresToUser(
+          created.userGUID,
+          createStoreTargetKeys.map((storeGUID) => ({
+            storeGUID,
+            accessLevel: 'ReadWrite',
+            isManageable: createStoreManageableKeys.includes(storeGUID),
+          })),
+        )
+      }
       message.success(t('system.users.createUserSuccess', '用户创建成功'))
       setCreateOpen(false)
       createForm.resetFields()
       setCreateRoleTargetKeys([])
       setCreateStoreTargetKeys([])
+      setCreateStoreManageableKeys([])
       void loadData(1, pageSize, sortBy, sortOrder)
     } catch (error) {
       if (typeof error === 'object' && error !== null && 'errorFields' in error) return
@@ -610,13 +703,14 @@ export default function SystemUsersPage() {
               }))}
               targetKeys={storeTargetKeys}
               onChange={(nextTargetKeys: Key[], _direction: TransferDirection, _moveKeys: Key[]) => {
-                setStoreTargetKeys(nextTargetKeys.map(String))
+                handleStoreTargetChange(nextTargetKeys)
               }}
               render={(item) => item.title}
               titles={[t('system.users.availableStores', '可选分店'), t('system.users.assignedStoresLabel', '已分配分店')]}
               listStyle={{ width: 320, height: 400 }}
               showSearch
             />
+            {renderManageableStoreControls(storeTargetKeys, storeManageableKeys, setStoreManageableKeys)}
             <div style={{ marginTop: 16, textAlign: 'right' }}>
               <Button type="primary" loading={storeSaving} onClick={() => void handleSaveStores()}>
                 {t('system.users.saveStoreAssign', '保存分店分配')}
@@ -782,7 +876,7 @@ export default function SystemUsersPage() {
                     <Space>
                       <Typography.Text strong>{item.storeName}</Typography.Text>
                       <Tag>{item.storeCode}</Tag>
-                      {item.isPrimary ? <Tag color="processing">{t('system.users.primaryStore', '主分店')}</Tag> : null}
+                      {item.isManageable ? <Tag color="processing">{t('system.users.manageableStore', '可管理')}</Tag> : null}
                     </Space>
                   </List.Item>
                 )}
@@ -841,6 +935,7 @@ export default function SystemUsersPage() {
           createForm.resetFields()
           setCreateRoleTargetKeys([])
           setCreateStoreTargetKeys([])
+          setCreateStoreManageableKeys([])
         }}
         footer={createTab === 'info' ? [
           <Button key="cancel" onClick={() => {
@@ -848,6 +943,7 @@ export default function SystemUsersPage() {
             createForm.resetFields()
             setCreateRoleTargetKeys([])
             setCreateStoreTargetKeys([])
+            setCreateStoreManageableKeys([])
           }}>
             {t('common.cancel', '取消')}
           </Button>,
@@ -967,13 +1063,14 @@ export default function SystemUsersPage() {
                     }))}
                     targetKeys={createStoreTargetKeys}
                     onChange={(nextTargetKeys: Key[]) => {
-                      setCreateStoreTargetKeys(nextTargetKeys.map(String))
+                      handleCreateStoreTargetChange(nextTargetKeys)
                     }}
                     render={(item) => item.title}
                     titles={[t('system.users.availableStores', '可选分店'), t('system.users.assignedStoresLabel', '已分配分店')]}
                     listStyle={{ width: 320, height: 400 }}
                     showSearch
                   />
+                  {renderManageableStoreControls(createStoreTargetKeys, createStoreManageableKeys, setCreateStoreManageableKeys)}
                 </Spin>
               ),
             },

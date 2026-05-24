@@ -8,7 +8,7 @@ import {
   addUserToStore,
   getStoreUsers,
   removeUserFromStore,
-  setPrimaryUser,
+  setStoreUserManageable,
 } from '../../../services/storeService'
 import type { StoreDto, StoreUserDto } from '../../../types/store'
 import type { UserDto } from '../../../types/user'
@@ -28,7 +28,7 @@ export default function StoreUserManagement({ open, store, onClose, onChanged }:
   const [submitting, setSubmitting] = useState(false)
   const [allUsers, setAllUsers] = useState<UserDto[]>([])
   const [selectedUserGuid, setSelectedUserGuid] = useState<string>()
-  const [isPrimary, setIsPrimary] = useState(false)
+  const [isManageable, setIsManageable] = useState(false)
 
   const loadUsers = async () => {
     if (!store) {
@@ -78,7 +78,7 @@ export default function StoreUserManagement({ open, store, onClose, onChanged }:
 
   const handleOpenAdd = async () => {
     setSelectedUserGuid(undefined)
-    setIsPrimary(false)
+    setIsManageable(false)
     setAddOpen(true)
     if (!allUsers.length) {
       await loadAvailableUsers()
@@ -95,7 +95,7 @@ export default function StoreUserManagement({ open, store, onClose, onChanged }:
     try {
       await addUserToStore(store.storeGUID, {
         userGUID: selectedUserGuid,
-        isPrimary,
+        isManageable,
       })
       message.success(t('system.stores.addUserSuccess'))
       setAddOpen(false)
@@ -125,19 +125,19 @@ export default function StoreUserManagement({ open, store, onClose, onChanged }:
     }
   }
 
-  const handleTogglePrimary = async (record: StoreUserDto) => {
+  const handleToggleManageable = async (record: StoreUserDto) => {
     if (!store) {
       return
     }
 
     try {
-      await setPrimaryUser(store.storeGUID, record.userGUID, !record.isPrimary)
-      message.success(record.isPrimary ? t('system.stores.cancelPrimarySuccess') : t('system.stores.setPrimarySuccess'))
+      await setStoreUserManageable(store.storeGUID, record.userGUID, !record.isManageable)
+      message.success(record.isManageable ? t('system.stores.cancelManageableSuccess') : t('system.stores.setManageableSuccess'))
       await loadUsers()
       onChanged?.()
     } catch (error) {
       console.error(error)
-      message.error(t('system.stores.updatePrimaryFailed'))
+      message.error(t('system.stores.updateManageableFailed'))
     }
   }
 
@@ -156,16 +156,16 @@ export default function StoreUserManagement({ open, store, onClose, onChanged }:
       render: (roles: string[]) => (roles?.length ? roles.map((item) => <Tag key={item}>{item}</Tag>) : '--'),
     },
     {
-      title: t('system.stores.primaryUser'),
-      dataIndex: 'isPrimary',
+      title: t('system.stores.managementRelation'),
+      dataIndex: 'isManageable',
       width: 100,
       render: (value: boolean) =>
         value ? (
           <Tag icon={<StarFilled />} color="gold">
-            {t('system.stores.primary')}
+            {t('system.stores.manageable')}
           </Tag>
         ) : (
-          <Tag>{t('system.stores.normal')}</Tag>
+          <Tag>{t('system.stores.linkedOnly')}</Tag>
         ),
     },
     {
@@ -182,8 +182,8 @@ export default function StoreUserManagement({ open, store, onClose, onChanged }:
       width: 200,
       render: (_, record) => (
         <Space size={0}>
-          <Button type="link" icon={record.isPrimary ? <StarFilled /> : <StarOutlined />} onClick={() => void handleTogglePrimary(record)}>
-            {record.isPrimary ? t('system.stores.cancelPrimary') : t('system.stores.setPrimary')}
+          <Button type="link" icon={record.isManageable ? <StarFilled /> : <StarOutlined />} onClick={() => void handleToggleManageable(record)}>
+            {record.isManageable ? t('system.stores.cancelManageable') : t('system.stores.setManageable')}
           </Button>
           <Popconfirm
             title={t('system.stores.confirmRemoveUser')}
@@ -245,8 +245,8 @@ export default function StoreUserManagement({ open, store, onClose, onChanged }:
             }))}
           />
           <Space>
-            <span>{t('system.stores.setAsPrimary')}</span>
-            <Switch checked={isPrimary} onChange={setIsPrimary} />
+            <span>{t('system.stores.allowManageStore')}</span>
+            <Switch checked={isManageable} onChange={setIsManageable} />
           </Space>
         </Space>
       </Modal>
