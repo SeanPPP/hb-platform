@@ -8,6 +8,8 @@ import type {
   AttendanceScheduleDto,
   AttendanceSettingsDto,
   AttendanceStoreHolidayDto,
+  BatchUpsertAttendanceHolidayPayload,
+  BatchUpsertAttendanceHolidayResult,
   ReviewAttendanceApprovalPayload,
   SaveAttendanceHolidayPayload,
   SaveAttendanceSchedulePayload,
@@ -126,6 +128,13 @@ export async function getAttendanceHolidays(params: AttendanceQuery): Promise<At
 
 export async function createAttendanceHoliday(payload: SaveAttendanceHolidayPayload): Promise<AttendanceStoreHolidayDto> {
   const response = await request.post<ApiResponse<AttendanceStoreHolidayDto>>(`${API_BASE}/holidays`, payload)
+  return unwrapApiData(response)
+}
+
+export async function batchUpsertAttendanceHolidays(
+  payload: BatchUpsertAttendanceHolidayPayload,
+): Promise<BatchUpsertAttendanceHolidayResult> {
+  const response = await request.post<ApiResponse<BatchUpsertAttendanceHolidayResult>>(`${API_BASE}/holidays/batch-upsert`, payload)
   return unwrapApiData(response)
 }
 
