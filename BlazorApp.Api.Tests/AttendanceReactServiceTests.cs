@@ -390,6 +390,138 @@ namespace BlazorApp.Api.Tests
             Assert.True(result.Success);
         }
 
+        [Fact]
+        public async Task BatchUpsertHolidaysAsync_WhenStoresAreManaged_CreatesHolidayForEachStore()
+        {
+            await SeedStoreScopeAsync();
+            await SeedManagerStoreAccessAsync("manager-user", "store-other");
+            var service = CreateService("manager-user", "manager", "StoreManager");
+
+            var result = await service.BatchUpsertHolidaysAsync(new BatchUpsertAttendanceStoreHolidayDto
+            {
+                StoreCodes = new List<string> { "BRI", "OTHER" },
+                HolidayDate = new DateTime(2026, 12, 25),
+                HolidayName = "Christmas Day",
+                BusinessStatus = "Closed",
+                IsPaidHoliday = true,
+                Remark = "Batch created",
+            });
+
+            Assert.True(result.Success);
+            Assert.Equal(2, result.Data!.CreatedCount);
+            Assert.Equal(0, result.Data.UpdatedCount);
+            Assert.Equal(2, result.Data.Items.Count);
+            Assert.Equal(2, await CountActiveHolidaysAsync(new DateTime(2026, 12, 25)));
+        }
+
+        [Fact]
+        public async Task BatchUpsertHolidaysAsync_WhenHolidayAlreadyExists_UpdatesExistingRow()
+        {
+            await SeedStoreScopeAsync();
+            await _db.Insertable(new AttendanceStoreHoliday
+            {
+                HolidayGuid = "existing-holiday",
+                StoreCode = "BRI",
+                HolidayDate = new DateTime(2026, 12, 25),
+                HolidayName = "Old Christmas",
+                BusinessStatus = "Open",
+                IsPaidHoliday = false,
+                CreatedAt = DateTime.UtcNow,
+            }).ExecuteCommandAsync();
+            var service = CreateService("manager-user", "manager", "StoreManager");
+
+            var result = await service.BatchUpsertHolidaysAsync(new BatchUpsertAttendanceStoreHolidayDto
+            {
+                StoreCodes = new List<string> { "BRI" },
+                HolidayDate = new DateTime(2026, 12, 25),
+                HolidayName = "Christmas Day",
+                BusinessStatus = "Partial",
+                OpenTime = new TimeSpan(10, 0, 0),
+                CloseTime = new TimeSpan(16, 0, 0),
+                IsPaidHoliday = true,
+                Remark = "Updated",
+            });
+
+            Assert.True(result.Success);
+            Assert.Equal(0, result.Data!.CreatedCount);
+            Assert.Equal(1, result.Data.UpdatedCount);
+            var row = await _db.Queryable<AttendanceStoreHoliday>()
+                .FirstAsync(item => item.HolidayGuid == "existing-holiday");
+            Assert.Equal("Christmas Day", row.HolidayName);
+            Assert.Equal("Partial", row.BusinessStatus);
+            Assert.True(row.IsPaidHoliday);
+            Assert.Equal(1, await CountActiveHolidaysAsync(new DateTime(2026, 12, 25)));
+        }
+
+        [Fact]
+        public async Task BatchUpsertHolidaysAsync_WhenAnyStoreIsForbidden_RollsBackEntireBatch()
+        {
+            await SeedStoreScopeAsync();
+            var service = CreateService("manager-user", "manager", "StoreManager");
+
+            var result = await service.BatchUpsertHolidaysAsync(new BatchUpsertAttendanceStoreHolidayDto
+            {
+                StoreCodes = new List<string> { "BRI", "OTHER" },
+                HolidayDate = new DateTime(2026, 12, 25),
+                HolidayName = "Christmas Day",
+                BusinessStatus = "Closed",
+                IsPaidHoliday = true,
+            });
+
+            Assert.False(result.Success);
+            Assert.Equal("FORBIDDEN_STORE", result.ErrorCode);
+            Assert.Equal(0, await CountActiveHolidaysAsync(new DateTime(2026, 12, 25)));
+        }
+
+        [Fact]
+        public async Task BatchUpsertHolidaysAsync_WhenDuplicateActiveRowsExist_UpdatesOneAndSoftDeletesExtras()
+        {
+            await SeedStoreScopeAsync();
+            await _db.Insertable(new[]
+            {
+                new AttendanceStoreHoliday
+                {
+                    HolidayGuid = "duplicate-a",
+                    StoreCode = "BRI",
+                    HolidayDate = new DateTime(2026, 12, 25),
+                    HolidayName = "Duplicate A",
+                    BusinessStatus = "Open",
+                    CreatedAt = DateTime.UtcNow.AddMinutes(-2),
+                },
+                new AttendanceStoreHoliday
+                {
+                    HolidayGuid = "duplicate-b",
+                    StoreCode = "BRI",
+                    HolidayDate = new DateTime(2026, 12, 25),
+                    HolidayName = "Duplicate B",
+                    BusinessStatus = "Open",
+                    CreatedAt = DateTime.UtcNow.AddMinutes(-1),
+                },
+            }).ExecuteCommandAsync();
+            var service = CreateService("manager-user", "manager", "StoreManager");
+
+            var result = await service.BatchUpsertHolidaysAsync(new BatchUpsertAttendanceStoreHolidayDto
+            {
+                StoreCodes = new List<string> { "BRI" },
+                HolidayDate = new DateTime(2026, 12, 25),
+                HolidayName = "Christmas Day",
+                BusinessStatus = "Closed",
+                IsPaidHoliday = true,
+            });
+
+            Assert.True(result.Success);
+            Assert.Equal(0, result.Data!.CreatedCount);
+            Assert.Equal(1, result.Data.UpdatedCount);
+            Assert.Equal(1, await CountActiveHolidaysAsync(new DateTime(2026, 12, 25)));
+            Assert.Equal(1, await _db.Queryable<AttendanceStoreHoliday>()
+                .Where(item =>
+                    item.HolidayDate >= new DateTime(2026, 12, 25)
+                    && item.HolidayDate < new DateTime(2026, 12, 26)
+                    && item.IsDeleted
+                )
+                .CountAsync());
+        }
+
         public void Dispose()
         {
             _db.Dispose();
@@ -493,6 +625,29 @@ namespace BlazorApp.Api.Tests
                     },
                 }
             ).ExecuteCommandAsync();
+        }
+
+        private async Task SeedManagerStoreAccessAsync(string userGuid, string storeGuid)
+        {
+            await _db.Insertable(new UserStore
+            {
+                UserStoreGUID = $"{userGuid}-{storeGuid}",
+                UserGUID = userGuid,
+                StoreGUID = storeGuid,
+                IsPrimary = true,
+                CreatedAt = DateTime.UtcNow,
+            }).ExecuteCommandAsync();
+        }
+
+        private async Task<int> CountActiveHolidaysAsync(DateTime holidayDate)
+        {
+            return await _db.Queryable<AttendanceStoreHoliday>()
+                .Where(item =>
+                    item.HolidayDate >= holidayDate.Date
+                    && item.HolidayDate < holidayDate.Date.AddDays(1)
+                    && !item.IsDeleted
+                )
+                .CountAsync();
         }
 
         private async Task SeedScheduleAsync()

@@ -154,6 +154,12 @@ namespace BlazorApp.Api.Controllers.React
         public async Task<IActionResult> CreateHoliday([FromBody] CreateAttendanceStoreHolidayDto request) =>
             Ok(await _service.CreateHolidayAsync(request));
 
+        [HttpPost("holidays/batch-upsert")]
+        [Authorize(Policy = Permissions.Attendance.Holiday.EditManagedStore)]
+        public async Task<IActionResult> BatchUpsertHolidays(
+            [FromBody] BatchUpsertAttendanceStoreHolidayDto request
+        ) => Ok(await _service.BatchUpsertHolidaysAsync(request));
+
         [HttpPut("holidays/{holidayGuid}")]
         [Authorize(Policy = Permissions.Attendance.Holiday.EditManagedStore)]
         public async Task<IActionResult> UpdateHoliday(

@@ -28,6 +28,7 @@ namespace BlazorApp.Api.Interfaces.React
         Task<ApiResponse<AttendanceApprovalDto>> RejectAsync(string approvalGuid, ReviewAttendanceApprovalDto request);
         Task<ApiResponse<List<AttendanceStoreHolidayDto>>> GetHolidaysAsync(AttendanceStoreHolidayQueryDto query);
         Task<ApiResponse<AttendanceStoreHolidayDto>> CreateHolidayAsync(CreateAttendanceStoreHolidayDto request);
+        Task<ApiResponse<BatchUpsertAttendanceStoreHolidayResultDto>> BatchUpsertHolidaysAsync(BatchUpsertAttendanceStoreHolidayDto request);
         Task<ApiResponse<AttendanceStoreHolidayDto>> UpdateHolidayAsync(string holidayGuid, UpdateAttendanceStoreHolidayDto request);
         Task<ApiResponse<bool>> DeleteHolidayAsync(string holidayGuid);
         Task<ApiResponse<AttendanceSettingsDto>> GetSettingsAsync();

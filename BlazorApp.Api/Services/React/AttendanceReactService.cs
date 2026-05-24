@@ -652,31 +652,136 @@ namespace BlazorApp.Api.Services.React
             CreateAttendanceStoreHolidayDto request
         )
         {
-            var storeAccess = await ResolveManagedStoreAccessAsync(request.StoreCode);
-            if (!storeAccess.Success)
+            var result = await BatchUpsertHolidaysAsync(new BatchUpsertAttendanceStoreHolidayDto
             {
-                return ApiResponse<AttendanceStoreHolidayDto>.Error(storeAccess.Message, storeAccess.ErrorCode);
-            }
-
-            var now = DateTime.UtcNow;
-            var model = new AttendanceStoreHoliday
-            {
-                HolidayGuid = Guid.NewGuid().ToString(),
-                StoreCode = request.StoreCode.Trim(),
-                HolidayDate = request.HolidayDate.Date,
-                HolidayName = request.HolidayName.Trim(),
-                BusinessStatus = NormalizeBusinessStatus(request.BusinessStatus),
+                StoreCodes = new List<string> { request.StoreCode },
+                HolidayDate = request.HolidayDate,
+                HolidayName = request.HolidayName,
+                BusinessStatus = request.BusinessStatus,
                 OpenTime = request.OpenTime,
                 CloseTime = request.CloseTime,
                 IsPaidHoliday = request.IsPaidHoliday,
                 Remark = request.Remark,
-                CreatedAt = now,
-                CreatedBy = _currentUserService.GetCurrentUsername(),
-                UpdatedAt = now,
-                UpdatedBy = _currentUserService.GetCurrentUsername(),
-            };
-            await _db.Insertable(model).ExecuteCommandAsync();
-            return ApiResponse<AttendanceStoreHolidayDto>.OK(ToDto(model), "公共假期已创建");
+            });
+
+            if (!result.Success)
+            {
+                return ApiResponse<AttendanceStoreHolidayDto>.Error(result.Message, result.ErrorCode, result.Details);
+            }
+
+            var item = result.Data?.Items.FirstOrDefault();
+            return item == null
+                ? ApiResponse<AttendanceStoreHolidayDto>.Error("公共假期保存失败", "HOLIDAY_SAVE_FAILED")
+                : ApiResponse<AttendanceStoreHolidayDto>.OK(item, "公共假期已创建");
+        }
+
+        public async Task<ApiResponse<BatchUpsertAttendanceStoreHolidayResultDto>> BatchUpsertHolidaysAsync(
+            BatchUpsertAttendanceStoreHolidayDto request
+        )
+        {
+            var storeCodes = NormalizeStoreCodes(request.StoreCodes);
+            var validation = ValidateHolidayBatchPayload(storeCodes, request.HolidayDate, request.HolidayName);
+            if (!validation.Success)
+            {
+                return ApiResponse<BatchUpsertAttendanceStoreHolidayResultDto>.Error(validation.Message, validation.ErrorCode);
+            }
+
+            foreach (var storeCode in storeCodes)
+            {
+                var storeAccess = await ResolveManagedStoreAccessAsync(storeCode);
+                if (!storeAccess.Success)
+                {
+                    return ApiResponse<BatchUpsertAttendanceStoreHolidayResultDto>.Error(storeAccess.Message, storeAccess.ErrorCode);
+                }
+            }
+
+            var result = new BatchUpsertAttendanceStoreHolidayResultDto();
+            var now = DateTime.UtcNow;
+            var username = _currentUserService.GetCurrentUsername();
+            var holidayDate = request.HolidayDate.Date;
+            var holidayName = request.HolidayName.Trim();
+            var businessStatus = NormalizeBusinessStatus(request.BusinessStatus);
+
+            await _db.Ado.BeginTranAsync();
+            try
+            {
+                foreach (var storeCode in storeCodes)
+                {
+                    var existingRows = await _db.Queryable<AttendanceStoreHoliday>()
+                        .Where(item => !item.IsDeleted)
+                        .Where(item =>
+                            item.StoreCode == storeCode
+                            && item.HolidayDate >= holidayDate
+                            && item.HolidayDate < holidayDate.AddDays(1)
+                        )
+                        .OrderBy(item => item.CreatedAt)
+                        .OrderBy(item => item.Id)
+                        .ToListAsync();
+
+                    AttendanceStoreHoliday model;
+                    if (existingRows.Count > 0)
+                    {
+                        model = existingRows[0];
+                        ApplyHolidayValues(
+                            model,
+                            holidayName,
+                            businessStatus,
+                            request.OpenTime,
+                            request.CloseTime,
+                            request.IsPaidHoliday,
+                            request.Remark,
+                            now,
+                            username
+                        );
+                        await _db.Updateable(model).ExecuteCommandAsync();
+                        result.UpdatedCount++;
+
+                        foreach (var duplicate in existingRows.Skip(1))
+                        {
+                            duplicate.IsDeleted = true;
+                            duplicate.UpdatedAt = now;
+                            duplicate.UpdatedBy = username;
+                            await _db.Updateable(duplicate).ExecuteCommandAsync();
+                        }
+                    }
+                    else
+                    {
+                        model = new AttendanceStoreHoliday
+                        {
+                            HolidayGuid = Guid.NewGuid().ToString(),
+                            StoreCode = storeCode,
+                            HolidayDate = holidayDate,
+                            HolidayName = holidayName,
+                            BusinessStatus = businessStatus,
+                            OpenTime = request.OpenTime,
+                            CloseTime = request.CloseTime,
+                            IsPaidHoliday = request.IsPaidHoliday,
+                            Remark = request.Remark,
+                            CreatedAt = now,
+                            CreatedBy = username,
+                            UpdatedAt = now,
+                            UpdatedBy = username,
+                        };
+                        await _db.Insertable(model).ExecuteCommandAsync();
+                        result.CreatedCount++;
+                    }
+
+                    result.Items.Add(ToDto(model));
+                }
+
+                await _db.Ado.CommitTranAsync();
+            }
+            catch (Exception ex)
+            {
+                await _db.Ado.RollbackTranAsync();
+                _logger.LogError(ex, "批量保存公共假期失败");
+                return ApiResponse<BatchUpsertAttendanceStoreHolidayResultDto>.Error(
+                    "批量保存公共假期失败",
+                    "HOLIDAY_BATCH_SAVE_FAILED"
+                );
+            }
+
+            return ApiResponse<BatchUpsertAttendanceStoreHolidayResultDto>.OK(result, "公共假期已批量保存");
         }
 
         public async Task<ApiResponse<AttendanceStoreHolidayDto>> UpdateHolidayAsync(
@@ -1167,6 +1272,61 @@ namespace BlazorApp.Api.Services.React
             }
 
             return ValidationResult.OK();
+        }
+
+        private static ValidationResult ValidateHolidayBatchPayload(
+            List<string> storeCodes,
+            DateTime holidayDate,
+            string holidayName
+        )
+        {
+            if (storeCodes.Count == 0)
+            {
+                return ValidationResult.Error("请选择至少一个分店", "STORE_REQUIRED");
+            }
+
+            if (holidayDate == default)
+            {
+                return ValidationResult.Error("假期日期不能为空", "HOLIDAY_DATE_REQUIRED");
+            }
+
+            if (string.IsNullOrWhiteSpace(holidayName))
+            {
+                return ValidationResult.Error("假期名称不能为空", "HOLIDAY_NAME_REQUIRED");
+            }
+
+            return ValidationResult.OK();
+        }
+
+        private static List<string> NormalizeStoreCodes(IEnumerable<string>? storeCodes)
+        {
+            return (storeCodes ?? Enumerable.Empty<string>())
+                .Select(item => item.Trim())
+                .Where(item => !string.IsNullOrWhiteSpace(item))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
+
+        private static void ApplyHolidayValues(
+            AttendanceStoreHoliday model,
+            string holidayName,
+            string businessStatus,
+            TimeSpan? openTime,
+            TimeSpan? closeTime,
+            bool isPaidHoliday,
+            string? remark,
+            DateTime updatedAt,
+            string? updatedBy
+        )
+        {
+            model.HolidayName = holidayName;
+            model.BusinessStatus = businessStatus;
+            model.OpenTime = openTime;
+            model.CloseTime = closeTime;
+            model.IsPaidHoliday = isPaidHoliday;
+            model.Remark = remark;
+            model.UpdatedAt = updatedAt;
+            model.UpdatedBy = updatedBy;
         }
 
         private static string NormalizeStoreTimeZone(string? storeTimeZone)

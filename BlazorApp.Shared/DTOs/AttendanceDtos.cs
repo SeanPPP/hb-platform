@@ -189,6 +189,25 @@ namespace BlazorApp.Shared.DTOs
 
     public class UpdateAttendanceStoreHolidayDto : CreateAttendanceStoreHolidayDto { }
 
+    public class BatchUpsertAttendanceStoreHolidayDto
+    {
+        public List<string> StoreCodes { get; set; } = new();
+        public DateTime HolidayDate { get; set; }
+        public string HolidayName { get; set; } = string.Empty;
+        public string BusinessStatus { get; set; } = "Open";
+        public TimeSpan? OpenTime { get; set; }
+        public TimeSpan? CloseTime { get; set; }
+        public bool IsPaidHoliday { get; set; }
+        public string? Remark { get; set; }
+    }
+
+    public class BatchUpsertAttendanceStoreHolidayResultDto
+    {
+        public int CreatedCount { get; set; }
+        public int UpdatedCount { get; set; }
+        public List<AttendanceStoreHolidayDto> Items { get; set; } = new();
+    }
+
     public class AttendanceStoreHolidayDto
     {
         public string HolidayGuid { get; set; } = string.Empty;
