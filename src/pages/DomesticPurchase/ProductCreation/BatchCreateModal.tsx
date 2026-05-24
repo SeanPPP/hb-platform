@@ -243,7 +243,7 @@ export default function BatchCreateModal({ visible, onClose, onSuccess }: BatchC
         prefixCode: form.getFieldValue('prefixCode'),
         prefixName: form.getFieldValue('prefixCode'),
         items: products.map((p) => ({
-          productName: p.productName,
+          productName: p.productName.trim() || undefined,
           productType: p.productType,
           privateLabelPrice: p.privateLabelPrice,
           setQuantity: p.setQuantity,
