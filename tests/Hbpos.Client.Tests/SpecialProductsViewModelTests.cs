@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using Hbpos.Client.Wpf.Localization;
 using Hbpos.Client.Wpf.Models;
 using Hbpos.Client.Wpf.Services;
@@ -28,9 +29,10 @@ public sealed class SpecialProductsViewModelTests
     public async Task AddToCartCommand_adds_tapped_special_product()
     {
         var cart = new PosCartService();
+        var backCallCount = 0;
         var item = CreateItem("SKU-001", "Alpha", "930001", isSpecialProduct: true);
         var repository = new FakeCatalogRepository { SpecialItems = [item] };
-        var viewModel = CreateViewModel(cart: cart, repository: repository);
+        var viewModel = CreateViewModel(cart: cart, repository: repository, onBack: () => backCallCount++);
         await viewModel.LoadAsync();
 
         viewModel.AddToCartCommand.Execute(item);
@@ -38,6 +40,126 @@ public sealed class SpecialProductsViewModelTests
         var line = Assert.Single(cart.Lines);
         Assert.Equal("SKU-001", line.ProductCode);
         Assert.Equal(1m, line.Quantity);
+        Assert.Equal(1, backCallCount);
+        Assert.Equal(1, repository.LoadSpecialProductItemsCallCount);
+    }
+
+    [Fact]
+    public async Task AddToCartCommand_writes_diagnostic_log()
+    {
+        var cart = new PosCartService();
+        var item = CreateItem("SKU-001", "Alpha", "930001", isSpecialProduct: true);
+        var repository = new FakeCatalogRepository { SpecialItems = [item] };
+        var viewModel = CreateViewModel(cart: cart, repository: repository);
+        var logs = new ConcurrentQueue<string>();
+        await viewModel.LoadAsync();
+
+        using var logCapture = CaptureClientLog(logs);
+        viewModel.AddToCartCommand.Execute(item);
+
+        Assert.True(HasLog(logs, "operation=add-to-cart"));
+        Assert.True(HasLog(logs, "productCode=SKU-001"));
+        Assert.True(HasLog(logs, "cartLines=1"));
+        Assert.True(HasLog(logs, "totalElapsedMs="));
+    }
+
+    [Fact]
+    public async Task AddToCartCommand_reports_added_cart_line_for_reveal()
+    {
+        var cart = new PosCartService();
+        CartLine? revealedLine = null;
+        var item = CreateItem("SKU-001", "Alpha", "930001", isSpecialProduct: true);
+        var repository = new FakeCatalogRepository { SpecialItems = [item] };
+        var viewModel = CreateViewModel(
+            cart: cart,
+            repository: repository,
+            onCartLineAdded: line => revealedLine = line);
+        await viewModel.LoadAsync();
+
+        viewModel.AddToCartCommand.Execute(item);
+
+        var line = Assert.Single(cart.Lines);
+        Assert.Same(line, revealedLine);
+    }
+
+    [Fact]
+    public async Task AddToCartCommand_reports_existing_cart_line_when_quantity_increases()
+    {
+        var cart = new PosCartService();
+        var revealedLines = new List<CartLine>();
+        var item = CreateItem("SKU-001", "Alpha", "930001", isSpecialProduct: true);
+        var repository = new FakeCatalogRepository { SpecialItems = [item] };
+        var viewModel = CreateViewModel(
+            cart: cart,
+            repository: repository,
+            onCartLineAdded: revealedLines.Add);
+        await viewModel.LoadAsync();
+
+        viewModel.AddToCartCommand.Execute(item);
+        viewModel.AddToCartCommand.Execute(item);
+
+        var line = Assert.Single(cart.Lines);
+        Assert.Equal(2m, line.Quantity);
+        Assert.Equal(2, revealedLines.Count);
+        Assert.All(revealedLines, revealedLine => Assert.Same(line, revealedLine));
+    }
+
+    [Fact]
+    public async Task PreloadAsync_loads_special_products_and_pages_first_twenty()
+    {
+        var repository = new FakeCatalogRepository { SpecialItems = CreateSpecialItems(21) };
+        var viewModel = CreateViewModel(repository: repository);
+
+        await viewModel.PreloadAsync();
+
+        Assert.Equal(1, repository.LoadSpecialProductItemsCallCount);
+        Assert.Equal(20, viewModel.PagedSpecialItems.Count);
+        Assert.Equal(2, viewModel.TotalPages);
+    }
+
+    [Fact]
+    public async Task EnsureLoadedAsync_after_preload_does_not_reload_local_cache()
+    {
+        var repository = new FakeCatalogRepository { SpecialItems = CreateSpecialItems(1) };
+        var viewModel = CreateViewModel(repository: repository);
+
+        await viewModel.PreloadAsync();
+        await viewModel.EnsureLoadedAsync();
+
+        Assert.Equal(1, repository.LoadSpecialProductItemsCallCount);
+    }
+
+    [Fact]
+    public async Task EnsureLoadedAsync_reuses_inflight_preload()
+    {
+        var releaseLoad = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var repository = new FakeCatalogRepository
+        {
+            SpecialItems = CreateSpecialItems(1),
+            BeforeLoadSpecialProductItemsAsync = () => releaseLoad.Task
+        };
+        var viewModel = CreateViewModel(repository: repository);
+
+        var preloadTask = viewModel.PreloadAsync();
+        var ensureTask = viewModel.EnsureLoadedAsync();
+        releaseLoad.SetResult();
+        await Task.WhenAll(preloadTask, ensureTask);
+
+        Assert.Equal(1, repository.LoadSpecialProductItemsCallCount);
+        Assert.Single(viewModel.PagedSpecialItems);
+    }
+
+    [Fact]
+    public async Task RefreshCommand_forces_reload_after_preload()
+    {
+        var repository = new FakeCatalogRepository { SpecialItems = CreateSpecialItems(1) };
+        var viewModel = CreateViewModel(repository: repository);
+
+        await viewModel.PreloadAsync();
+        await viewModel.EnsureLoadedAsync();
+        await viewModel.RefreshCommand.ExecuteAsync(null);
+
+        Assert.Equal(2, repository.LoadSpecialProductItemsCallCount);
     }
 
     [Fact]
@@ -162,6 +284,30 @@ public sealed class SpecialProductsViewModelTests
     }
 
     [Fact]
+    public async Task Online_add_writes_mark_diagnostic_log()
+    {
+        var item = CreateItem("SKU-001", "Alpha", "930001");
+        var index = new LocalSellableItemIndex();
+        var logs = new ConcurrentQueue<string>();
+        index.ReplaceAll([item]);
+        var repository = new FakeCatalogRepository
+        {
+            SellableItems = [item with { IsSpecialProduct = true }],
+            SpecialItems = [item with { IsSpecialProduct = true }]
+        };
+        var viewModel = CreateViewModel(index, repository: repository);
+        viewModel.ToggleEditModeCommand.Execute(null);
+
+        using var logCapture = CaptureClientLog(logs);
+        await viewModel.AddSpecialProductCommand.ExecuteAsync(item);
+
+        Assert.True(HasLog(logs, "operation=mark"));
+        Assert.True(HasLog(logs, "productCode=SKU-001"));
+        Assert.True(HasLog(logs, "serviceElapsedMs="));
+        Assert.True(HasLog(logs, "pageRefreshElapsedMs="));
+    }
+
+    [Fact]
     public async Task Remove_last_item_on_last_page_returns_to_previous_page()
     {
         var initialItems = CreateSpecialItems(21);
@@ -259,7 +405,9 @@ public sealed class SpecialProductsViewModelTests
         PosCartService? cart = null,
         FakeCatalogRepository? repository = null,
         FakeSpecialProductService? service = null,
-        PosSessionState? session = null)
+        PosSessionState? session = null,
+        Action? onBack = null,
+        Action<CartLine>? onCartLineAdded = null)
     {
         return new SpecialProductsViewModel(
             index ?? new LocalSellableItemIndex(),
@@ -268,7 +416,8 @@ public sealed class SpecialProductsViewModelTests
             service ?? new FakeSpecialProductService(),
             session ?? Session,
             new LocalizationService(),
-            () => { });
+            onBack ?? (() => { }),
+            onCartLineAdded);
     }
 
     private static PosSessionState Session => new("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0);
@@ -318,6 +467,10 @@ public sealed class SpecialProductsViewModelTests
 
         public int LoadSellableItemsCallCount { get; private set; }
 
+        public int LoadSpecialProductItemsCallCount { get; private set; }
+
+        public Func<Task>? BeforeLoadSpecialProductItemsAsync { get; init; }
+
         public Task ReplaceSellableItemsAsync(IEnumerable<SellableItemDto> items, CancellationToken cancellationToken = default)
         {
             return Task.CompletedTask;
@@ -342,7 +495,19 @@ public sealed class SpecialProductsViewModelTests
             string storeCode,
             CancellationToken cancellationToken = default)
         {
+            LoadSpecialProductItemsCallCount++;
+            if (BeforeLoadSpecialProductItemsAsync is not null)
+            {
+                return LoadSpecialProductItemsCoreAsync();
+            }
+
             return Task.FromResult(SpecialItems);
+
+            async Task<IReadOnlyList<SellableItemDto>> LoadSpecialProductItemsCoreAsync()
+            {
+                await BeforeLoadSpecialProductItemsAsync();
+                return SpecialItems;
+            }
         }
 
         public Task SaveSpecialProductOrderAsync(
@@ -446,6 +611,30 @@ public sealed class SpecialProductsViewModelTests
                 DownloadResult.UnmarkedCount,
                 20));
             return Task.FromResult(DownloadResult);
+        }
+    }
+
+    private static IDisposable CaptureClientLog(ConcurrentQueue<string> lines)
+    {
+        void Capture(string line)
+        {
+            lines.Enqueue(line);
+        }
+
+        ConsoleLog.LineWritten += Capture;
+        return new DisposableAction(() => ConsoleLog.LineWritten -= Capture);
+    }
+
+    private static bool HasLog(ConcurrentQueue<string> lines, string text)
+    {
+        return lines.Any(line => line.Contains(text, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private sealed class DisposableAction(Action dispose) : IDisposable
+    {
+        public void Dispose()
+        {
+            dispose();
         }
     }
 }

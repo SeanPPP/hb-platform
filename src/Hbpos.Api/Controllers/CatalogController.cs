@@ -15,7 +15,7 @@ namespace Hbpos.Api.Controllers;
 [Authorize]
 public sealed class CatalogController(ICatalogService catalogService) : ControllerBase
 {
-    private const int MaxPageSize = 1000;
+    private const int MaxPageSize = 5000;
 
     [AllowAnonymous]
     [HttpGet("stores")]
@@ -160,6 +160,45 @@ public sealed class CatalogController(ICatalogService catalogService) : Controll
             : Ok(ApiResult<CatalogLookupResponse>.Ok(response));
     }
 
+    [HttpGet("special-products/page")]
+    public async Task<ActionResult<ApiResult<CatalogSpecialProductsPageResponse>>> GetSpecialProductsPage(
+        [FromQuery] string storeCode,
+        [FromQuery] string? cursor,
+        [FromQuery] int pageSize = 500,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(storeCode))
+        {
+            return BadRequest(ApiResult<CatalogSpecialProductsPageResponse>.Fail("STORE_CODE_REQUIRED", "storeCode is required"));
+        }
+
+        if (pageSize <= 0 || pageSize > MaxPageSize)
+        {
+            return BadRequest(ApiResult<CatalogSpecialProductsPageResponse>.Fail("PAGE_SIZE_INVALID", $"pageSize must be between 1 and {MaxPageSize}"));
+        }
+
+        if (!this.IsDeviceScopeAllowed(storeCode))
+        {
+            return DeviceAuthorizationExtensions.DeviceScopeForbidden<CatalogSpecialProductsPageResponse>("Device is not authorized for this store.");
+        }
+
+        var stopwatch = Stopwatch.StartNew();
+        Log($"special products page request store={storeCode} cursor={cursor ?? "<start>"} pageSize={pageSize}");
+        var response = await catalogService.GetSpecialProductsPageAsync(
+            storeCode,
+            cursor,
+            pageSize,
+            cancellationToken);
+        stopwatch.Stop();
+        Log(response is null
+            ? $"special products page response store={storeCode} status=404 elapsedMs={stopwatch.ElapsedMilliseconds}"
+            : $"special products page response store={response.StoreCode} status=200 items={response.Items.Count} hasMore={response.HasMore} next={response.NextCursor ?? "<end>"} elapsedMs={stopwatch.ElapsedMilliseconds}");
+
+        return response is null
+            ? NotFound(ApiResult<CatalogSpecialProductsPageResponse>.Fail("STORE_NOT_FOUND", "store was not found or inactive"))
+            : Ok(ApiResult<CatalogSpecialProductsPageResponse>.Ok(response));
+    }
+
     [HttpPost("special-products/mark")]
     public async Task<ActionResult<ApiResult<CatalogSpecialProductMarkResponse>>> MarkSpecialProduct(
         [FromBody] CatalogSpecialProductMarkRequest? request,
@@ -188,7 +227,13 @@ public sealed class CatalogController(ICatalogService catalogService) : Controll
         var updatedBy = User.FindFirstValue(DeviceAuthConstants.DeviceCodeClaim)
             ?? User.Identity?.Name
             ?? "pos-device";
+        var stopwatch = Stopwatch.StartNew();
+        Log($"special product mark request store={request.StoreCode} product={request.ProductCode} isSpecialProduct={request.IsSpecialProduct}");
         var response = await catalogService.MarkSpecialProductAsync(request, updatedBy, cancellationToken);
+        stopwatch.Stop();
+        Log(response.Success && response.Response is not null
+            ? $"special product mark response store={response.Response.StoreCode} product={response.Response.ProductCode} status=200 isSpecialProduct={response.Response.IsSpecialProduct} items={response.Response.Items.Count} elapsedMs={stopwatch.ElapsedMilliseconds}"
+            : $"special product mark response store={request.StoreCode} product={request.ProductCode} status=failed errorCode={response.ErrorCode ?? "<null>"} elapsedMs={stopwatch.ElapsedMilliseconds}");
         if (response.Success && response.Response is not null)
         {
             return Ok(ApiResult<CatalogSpecialProductMarkResponse>.Ok(response.Response));

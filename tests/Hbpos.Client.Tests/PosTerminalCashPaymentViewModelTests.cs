@@ -62,6 +62,23 @@ public sealed class PosTerminalCashPaymentViewModelTests
     }
 
     [Fact]
+    public void Pos_terminal_reveals_cart_line_added_outside_pos_view_model()
+    {
+        var cart = new PosCartService();
+        var line = cart.AddItem(CreateItem("SKU-131", "Special Item", "930131", PriceSourceKind.StoreRetailPrice, 3.5m));
+        var viewModel = new PosTerminalViewModel(
+            new LocalSellableItemIndex(),
+            cart,
+            Session,
+            onOpenPayment: null);
+
+        viewModel.RevealCartLine(line);
+
+        Assert.Contains(line, viewModel.CartLines);
+        Assert.Same(line, viewModel.SelectedCartLine);
+    }
+
+    [Fact]
     public void Pos_terminal_keeps_touch_keyboard_and_main_keypad_buffers_separate()
     {
         var cart = new PosCartService();
@@ -771,6 +788,38 @@ public sealed class PosTerminalCashPaymentViewModelTests
     }
 
     [Fact]
+    public void Pos_terminal_cart_operations_write_diagnostic_logs()
+    {
+        var cart = new PosCartService();
+        var index = new LocalSellableItemIndex();
+        var logs = new ConcurrentQueue<string>();
+        var paymentOpenCount = 0;
+        index.ReplaceAll([CreateItem("SKU-129", "Logged Apples", "930129", PriceSourceKind.StoreRetailPrice, 2m)]);
+        var viewModel = new PosTerminalViewModel(
+            index,
+            cart,
+            Session,
+            onOpenPayment: () => paymentOpenCount++);
+
+        using var logCapture = CaptureClientLog(logs);
+        viewModel.ScanText = "930129";
+        viewModel.ScanCommand.Execute(null);
+        var line = Assert.Single(viewModel.CartLines);
+        viewModel.IncreaseLineCommand.Execute(line);
+        viewModel.OpenPaymentCommand.Execute(null);
+
+        Assert.Equal(1, paymentOpenCount);
+        Assert.True(HasLog(logs, "[CartPerf]"));
+        Assert.True(HasLog(logs, "operation=cart-changed"));
+        Assert.True(HasLog(logs, "operation=scan-auto-add"));
+        Assert.True(HasLog(logs, "operation=increase-line"));
+        Assert.True(HasLog(logs, "operation=open-payment"));
+        Assert.True(HasLog(logs, "syncCartElapsedMs="));
+        Assert.True(HasLog(logs, "stateRefreshElapsedMs="));
+        Assert.True(HasLog(logs, "totalElapsedMs="));
+    }
+
+    [Fact]
     public void Pos_terminal_counts_quantity_and_sku_lines_separately()
     {
         var cart = new PosCartService();
@@ -1042,6 +1091,45 @@ public sealed class PosTerminalCashPaymentViewModelTests
         var match = Assert.Single(viewModel.Matches);
         Assert.Equal("Synced Tea", match.DisplayName);
         Assert.Contains("completed", viewModel.StatusMessage, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Pos_terminal_reset_catalog_command_uses_reset_callback()
+    {
+        var cart = new PosCartService();
+        var index = new LocalSellableItemIndex();
+        var oldItem = CreateItem("SKU-108", "Old Reset Tea", "930108", PriceSourceKind.ProductBase, 3m);
+        var resetItem = CreateItem("SKU-109", "Reset Tea", "930109", PriceSourceKind.StoreRetailPrice, 4.5m);
+        var syncCalled = false;
+        var resetCalled = false;
+        index.ReplaceAll([oldItem]);
+        var viewModel = new PosTerminalViewModel(
+            index,
+            cart,
+            Session,
+            onOpenPayment: null,
+            syncCatalogAsync: _ =>
+            {
+                syncCalled = true;
+                return Task.FromResult<IReadOnlyList<SellableItemDto>>([oldItem]);
+            },
+            resetCatalogAsync: _ =>
+            {
+                resetCalled = true;
+                index.ReplaceAll([resetItem]);
+                return Task.FromResult<IReadOnlyList<SellableItemDto>>([resetItem]);
+            });
+        viewModel.LoadMatches([oldItem]);
+
+        await viewModel.ResetCatalogCommand.ExecuteAsync(null);
+
+        Assert.False(syncCalled);
+        Assert.True(resetCalled);
+        var indexedItem = Assert.Single(index.Search("930109"));
+        Assert.Equal("Reset Tea", indexedItem.DisplayName);
+        var match = Assert.Single(viewModel.Matches);
+        Assert.Equal("Reset Tea", match.DisplayName);
+        Assert.Contains("reset completed", viewModel.StatusMessage, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

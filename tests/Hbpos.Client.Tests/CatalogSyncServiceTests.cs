@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Net;
 using System.Text;
 using System.Text.Json;
@@ -130,10 +131,106 @@ public sealed class CatalogSyncServiceTests
         Assert.Equal(0.2m, pageUpsert.DiscountRate);
         Assert.Equal(["OLD-CODE"], repository.DeleteCalls[0].LookupCodes);
         Assert.Equal(["GONE-CODE"], repository.DeleteCalls[1].LookupCodes);
+        Assert.Equal(
+            [("S01", null, 2000), ("S01", "LOCAL-CODE", 2000)],
+            repository.ComparePageRequests);
         Assert.NotNull(apiClient.LastCompareRequest);
         var localVersion = Assert.Single(apiClient.LastCompareRequest.LocalLookups);
         Assert.Equal("LOCAL-CODE", localVersion.LookupCodeNormalized);
         Assert.Equal("local-hash", localVersion.RowVersion);
+    }
+
+    [Fact]
+    public async Task FullSyncAsync_WhenLocalMatchesRemoteAndCompareHasNoChanges_SkipsFullDownload()
+    {
+        var repository = new FakeLocalCatalogRepository();
+        repository.ComparePages.Enqueue(
+        [
+            new LocalSellableItemCompareRow("S01", "LOCAL-CODE-1", "hash-1", Timestamp),
+            new LocalSellableItemCompareRow("S01", "LOCAL-CODE-2", "hash-2", Timestamp)
+        ]);
+        repository.ComparePages.Enqueue([]);
+
+        var apiClient = new FakeCatalogApiClient();
+        apiClient.CompareResponses.Enqueue(new CatalogCompareResponse(
+            "S01",
+            Timestamp,
+            [],
+            [],
+            NextCursor: null,
+            HasMore: false));
+        apiClient.PageResponses.Enqueue(new CatalogSyncPageResponse(
+            "S01",
+            Timestamp,
+            Cursor: null,
+            [CreateLookupItem("PAGE-001", "page-code-1")],
+            [],
+            NextCursor: "PAGE-CODE-1",
+            HasMore: true,
+            TotalCount: 2));
+        var logs = new ConcurrentQueue<string>();
+        var service = new LocalCatalogSyncService(repository, apiClient);
+
+        using var logCapture = CaptureClientLog(logs);
+        var result = await service.FullSyncAsync("S01");
+
+        Assert.Equal(new LocalCatalogSyncResult("S01", ComparePages: 1, RemotePages: 1, UpsertedCount: 0, DeletedCount: 0), result);
+        Assert.Empty(repository.UpsertedBatches);
+        Assert.Empty(repository.DeleteCalls);
+        var pageRequest = Assert.Single(apiClient.PageRequests);
+        Assert.Equal(("S01", null, 5000), pageRequest);
+        Assert.True(HasLog(logs, "download skipped store=S01 reason=no-changes"));
+    }
+
+    [Fact]
+    public async Task FullSyncAsync_WhenForcedAndLocalMatchesRemote_DownloadsAllPages()
+    {
+        var repository = new FakeLocalCatalogRepository();
+        repository.ComparePages.Enqueue(
+        [
+            new LocalSellableItemCompareRow("S01", "LOCAL-CODE-1", "hash-1", Timestamp),
+            new LocalSellableItemCompareRow("S01", "LOCAL-CODE-2", "hash-2", Timestamp)
+        ]);
+        repository.ComparePages.Enqueue([]);
+
+        var apiClient = new FakeCatalogApiClient();
+        apiClient.CompareResponses.Enqueue(new CatalogCompareResponse(
+            "S01",
+            Timestamp,
+            [],
+            [],
+            NextCursor: null,
+            HasMore: false));
+        apiClient.PageResponses.Enqueue(new CatalogSyncPageResponse(
+            "S01",
+            Timestamp,
+            Cursor: null,
+            [CreateLookupItem("PAGE-001", "page-code-1")],
+            [],
+            NextCursor: "PAGE-CODE-1",
+            HasMore: true,
+            TotalCount: 2));
+        apiClient.PageResponses.Enqueue(new CatalogSyncPageResponse(
+            "S01",
+            Timestamp,
+            Cursor: "PAGE-CODE-1",
+            [CreateLookupItem("PAGE-002", "page-code-2")],
+            [],
+            NextCursor: null,
+            HasMore: false,
+            TotalCount: 2));
+        var logs = new ConcurrentQueue<string>();
+        var service = new LocalCatalogSyncService(repository, apiClient);
+
+        using var logCapture = CaptureClientLog(logs);
+        var result = await service.FullSyncAsync("S01", forceFullDownload: true);
+
+        Assert.Equal(new LocalCatalogSyncResult("S01", ComparePages: 1, RemotePages: 2, UpsertedCount: 2, DeletedCount: 0), result);
+        Assert.Equal(2, repository.UpsertedBatches.Count);
+        Assert.Equal(
+            [("S01", null, 5000), ("S01", "PAGE-CODE-1", 5000)],
+            apiClient.PageRequests);
+        Assert.False(HasLog(logs, "download skipped store=S01 reason=no-changes"));
     }
 
     [Fact]
@@ -201,6 +298,8 @@ public sealed class CatalogSyncServiceTests
 
         var pageRequest = Assert.Single(apiClient.PageRequests);
         Assert.Equal(("S01", null, 5000), pageRequest);
+        var comparePageRequest = Assert.Single(repository.ComparePageRequests);
+        Assert.Equal(("S01", null, 2000), comparePageRequest);
     }
 
     [Fact]
@@ -222,6 +321,32 @@ public sealed class CatalogSyncServiceTests
 
         var pageRequest = Assert.Single(apiClient.PageRequests);
         Assert.Equal(("S01", null, 5000), pageRequest);
+    }
+
+    [Fact]
+    public async Task DownloadSpecialProductsAsync_WritesDiagnosticLogs()
+    {
+        var repository = new FakeLocalCatalogRepository();
+        var apiClient = new FakeCatalogApiClient();
+        var logs = new ConcurrentQueue<string>();
+        apiClient.SpecialProductsPageResponses.Enqueue(new CatalogSpecialProductsPageResponse(
+            "S01",
+            Timestamp,
+            Cursor: null,
+            [CreateLookupItem("P01", "p01-code")],
+            NextCursor: null,
+            HasMore: false,
+            TotalCount: 1));
+        var service = new SpecialProductService(repository, apiClient);
+
+        using var logCapture = CaptureClientLog(logs);
+        await service.DownloadSpecialProductsAsync("S01");
+
+        Assert.True(HasLog(logs, "[SpecialProducts]"));
+        Assert.True(HasLog(logs, "download page response store=S01 page=1"));
+        Assert.True(HasLog(logs, "apiElapsedMs="));
+        Assert.True(HasLog(logs, "upsertElapsedMs="));
+        Assert.True(HasLog(logs, "download completed store=S01"));
     }
 
     [Fact]
@@ -486,6 +611,8 @@ public sealed class CatalogSyncServiceTests
     {
         public Queue<IReadOnlyList<LocalSellableItemCompareRow>> ComparePages { get; } = new();
 
+        public List<(string StoreCode, string? AfterLookupCodeNormalized, int PageSize)> ComparePageRequests { get; } = [];
+
         public List<IReadOnlyList<SellableItemDto>> UpsertedBatches { get; } = [];
 
         public List<(string StoreCode, string[] LookupCodes)> DeleteCalls { get; } = [];
@@ -557,6 +684,7 @@ public sealed class CatalogSyncServiceTests
             int pageSize,
             CancellationToken cancellationToken = default)
         {
+            ComparePageRequests.Add((storeCode, afterLookupCodeNormalized, pageSize));
             return Task.FromResult(ComparePages.Count == 0 ? [] : ComparePages.Dequeue());
         }
 
@@ -647,6 +775,30 @@ public sealed class CatalogSyncServiceTests
         public void Report(T value)
         {
             reports.Add(value);
+        }
+    }
+
+    private static IDisposable CaptureClientLog(ConcurrentQueue<string> lines)
+    {
+        void Capture(string line)
+        {
+            lines.Enqueue(line);
+        }
+
+        ConsoleLog.LineWritten += Capture;
+        return new DisposableAction(() => ConsoleLog.LineWritten -= Capture);
+    }
+
+    private static bool HasLog(ConcurrentQueue<string> lines, string text)
+    {
+        return lines.Any(line => line.Contains(text, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private sealed class DisposableAction(Action dispose) : IDisposable
+    {
+        public void Dispose()
+        {
+            dispose();
         }
     }
 

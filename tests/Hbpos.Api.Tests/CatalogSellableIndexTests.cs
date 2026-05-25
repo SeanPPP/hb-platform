@@ -175,6 +175,34 @@ public sealed class CatalogSellableIndexTests
         Assert.Equal(3, secondPage.TotalCount);
     }
 
+    [Fact]
+    public void GetSpecialProductsPage_returns_only_special_items()
+    {
+        var index = CreateIndex(
+            CreateItem("P01", "a-code", "A item", 1m, isSpecialProduct: true),
+            CreateItem("P02", "b-code", "B item", 2m, isSpecialProduct: false),
+            CreateItem("P03", "c-code", "C item", 3m, isSpecialProduct: true));
+
+        var page = index.GetSpecialProductsPage(cursor: null, pageSize: 10);
+
+        Assert.Equal(["A-CODE", "C-CODE"], page.Items.Select(x => x.LookupCodeNormalized).ToArray());
+        Assert.Equal(2, page.TotalCount);
+    }
+
+    [Fact]
+    public void GetPage_allows_download_batch_larger_than_one_thousand()
+    {
+        var items = Enumerable.Range(1, 1001)
+            .Select(number => CreateItem($"P{number}", $"code-{number:0000}", $"Item {number}", number))
+            .ToArray();
+        var index = CreateIndex(items);
+
+        var page = index.GetPage(cursor: null, pageSize: 5000);
+
+        Assert.Equal(1001, page.Items.Count);
+        Assert.False(page.HasMore);
+    }
+
     private static CatalogSellableIndex CreateIndex(params SellableItemDto[] items)
     {
         return new CatalogSellableIndex("S01", GeneratedAt, items);

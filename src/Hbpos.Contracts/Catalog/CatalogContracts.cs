@@ -116,3 +116,12 @@ public sealed record CatalogSpecialProductMarkResponse(
     bool IsSpecialProduct,
     DateTimeOffset GeneratedAt,
     IReadOnlyList<CatalogLookupItemDto> Items);
+
+public sealed record CatalogSpecialProductsPageResponse(
+    string StoreCode,
+    DateTimeOffset GeneratedAt,
+    string? Cursor,
+    IReadOnlyList<CatalogLookupItemDto> Items,
+    string? NextCursor,
+    bool HasMore,
+    int TotalCount);

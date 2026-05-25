@@ -8,7 +8,8 @@ public interface ILocalCatalogSyncService
     Task<LocalCatalogSyncResult> FullSyncAsync(
         string storeCode,
         CancellationToken cancellationToken = default,
-        IProgress<CatalogSyncProgress>? progress = null);
+        IProgress<CatalogSyncProgress>? progress = null,
+        bool forceFullDownload = false);
 }
 
 public sealed record LocalCatalogSyncResult(
@@ -44,16 +45,18 @@ public sealed class LocalCatalogSyncService(
     ILocalCatalogRepository localCatalogRepository,
     ICatalogApiClient catalogApiClient) : ILocalCatalogSyncService
 {
-    private const int PageSize = 1000;
+    private const int ComparePageSize = 2000;
+    private const int DownloadPageSize = 5000;
 
     public async Task<LocalCatalogSyncResult> FullSyncAsync(
         string storeCode,
         CancellationToken cancellationToken = default,
-        IProgress<CatalogSyncProgress>? progress = null)
+        IProgress<CatalogSyncProgress>? progress = null,
+        bool forceFullDownload = false)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(storeCode);
         var totalStopwatch = Stopwatch.StartNew();
-        Log($"full sync start store={storeCode} pageSize={PageSize}");
+        Log($"full sync start store={storeCode} comparePageSize={ComparePageSize} pageSize={DownloadPageSize} forceFullDownload={forceFullDownload}");
 
         var comparePages = 0;
         var remotePages = 0;
@@ -61,6 +64,8 @@ public sealed class LocalCatalogSyncService(
         var deletedCount = 0;
         var totalCount = 0;
         var downloadedCount = 0;
+        var localItemCount = 0;
+        var hasCompareChanges = false;
         string? afterLookupCodeNormalized = null;
 
         try
@@ -82,7 +87,7 @@ public sealed class LocalCatalogSyncService(
                 var localPage = await localCatalogRepository.LoadSellableItemComparePageAsync(
                     storeCode,
                     afterLookupCodeNormalized,
-                    PageSize,
+                    ComparePageSize,
                     cancellationToken);
 
                 if (localPage.Count == 0)
@@ -91,6 +96,7 @@ public sealed class LocalCatalogSyncService(
                     break;
                 }
 
+                localItemCount += localPage.Count;
                 afterLookupCodeNormalized = localPage[^1].LookupCodeNormalized;
                 Log($"local compare page store={storeCode} page={comparePages + 1} rows={localPage.Count} after={afterLookupCodeNormalized}");
                 var request = new CatalogCompareRequest(
@@ -99,20 +105,19 @@ public sealed class LocalCatalogSyncService(
                 var compareStopwatch = Stopwatch.StartNew();
                 var response = await catalogApiClient.CompareSellableItemsAsync(request, cancellationToken);
                 compareStopwatch.Stop();
-                Log($"compare response store={storeCode} page={comparePages + 1} upsertedLookups={response.UpsertedLookups.Count} deletedLookups={response.DeletedLookups.Count} elapsedMs={compareStopwatch.ElapsedMilliseconds}");
+                Log($"compare response store={storeCode} page={comparePages + 1} upsertedLookups={response.UpsertedLookups.Count} deletedLookups={response.DeletedLookups.Count} apiElapsedMs={compareStopwatch.ElapsedMilliseconds}");
+                hasCompareChanges |= response.UpsertedLookups.Count > 0 || response.DeletedLookups.Count > 0;
 
-                var applyStopwatch = Stopwatch.StartNew();
                 var applied = await ApplyChangesAsync(
                     storeCode,
                     response.UpsertedLookups,
                     response.DeletedLookups,
                     cancellationToken);
-                applyStopwatch.Stop();
 
                 comparePages++;
                 upsertedCount += applied.UpsertedCount;
                 deletedCount += applied.DeletedCount;
-                Log($"compare applied store={storeCode} page={comparePages} upserted={applied.UpsertedCount} deleted={applied.DeletedCount} elapsedMs={applyStopwatch.ElapsedMilliseconds}");
+                Log($"compare applied store={storeCode} page={comparePages} upserted={applied.UpsertedCount} deleted={applied.DeletedCount} upsertElapsedMs={applied.UpsertElapsedMs} deleteElapsedMs={applied.DeleteElapsedMs} applyElapsedMs={applied.ApplyElapsedMs}");
                 ReportProgress(
                     progress,
                     storeCode,
@@ -134,25 +139,31 @@ public sealed class LocalCatalogSyncService(
                 var response = await catalogApiClient.GetSellableItemsPageAsync(
                     storeCode,
                     cursor,
-                    PageSize,
+                    DownloadPageSize,
                     cancellationToken);
                 downloadStopwatch.Stop();
                 totalCount = Math.Max(totalCount, response.TotalCount);
-                Log($"download page response store={storeCode} page={remotePages + 1} items={response.Items.Count} total={response.TotalCount} deletedLookups={response.DeletedLookups.Count} hasMore={response.HasMore} next={response.NextCursor ?? "<end>"} elapsedMs={downloadStopwatch.ElapsedMilliseconds}");
+                Log($"download page response store={storeCode} page={remotePages + 1} items={response.Items.Count} total={response.TotalCount} deletedLookups={response.DeletedLookups.Count} hasMore={response.HasMore} next={response.NextCursor ?? "<end>"} apiElapsedMs={downloadStopwatch.ElapsedMilliseconds}");
 
-                var applyStopwatch = Stopwatch.StartNew();
+                if (remotePages == 0 && !forceFullDownload && !hasCompareChanges && localItemCount == response.TotalCount)
+                {
+                    remotePages++;
+                    downloadedCount = response.TotalCount;
+                    Log($"download skipped store={storeCode} reason=no-changes localCount={localItemCount} total={response.TotalCount} comparePages={comparePages} remotePages={remotePages} elapsedMs={totalStopwatch.ElapsedMilliseconds}");
+                    break;
+                }
+
                 var applied = await ApplyChangesAsync(
                     storeCode,
                     response.Items,
                     response.DeletedLookups,
                     cancellationToken);
-                applyStopwatch.Stop();
 
                 remotePages++;
                 downloadedCount += response.Items.Count;
                 upsertedCount += applied.UpsertedCount;
                 deletedCount += applied.DeletedCount;
-                Log($"download page applied store={storeCode} page={remotePages} upserted={applied.UpsertedCount} deleted={applied.DeletedCount} elapsedMs={applyStopwatch.ElapsedMilliseconds}");
+                Log($"download page applied store={storeCode} page={remotePages} upserted={applied.UpsertedCount} deleted={applied.DeletedCount} upsertElapsedMs={applied.UpsertElapsedMs} deleteElapsedMs={applied.DeleteElapsedMs} applyElapsedMs={applied.ApplyElapsedMs}");
                 ReportProgress(
                     progress,
                     storeCode,
@@ -219,18 +230,23 @@ public sealed class LocalCatalogSyncService(
         }
     }
 
-    private async Task<(int UpsertedCount, int DeletedCount)> ApplyChangesAsync(
+    private async Task<(int UpsertedCount, int DeletedCount, long UpsertElapsedMs, long DeleteElapsedMs, long ApplyElapsedMs)> ApplyChangesAsync(
         string storeCode,
         IReadOnlyList<CatalogLookupItemDto> upsertedLookups,
         IReadOnlyList<DeletedLookupDto> deletedLookups,
         CancellationToken cancellationToken)
     {
+        var applyStopwatch = Stopwatch.StartNew();
         var upsertItems = upsertedLookups
             .Select(item => item.ToSellableItemDto())
             .ToArray();
+        var upsertElapsedMs = 0L;
         if (upsertItems.Length > 0)
         {
+            var upsertStopwatch = Stopwatch.StartNew();
             await localCatalogRepository.UpsertSellableItemsAsync(upsertItems, cancellationToken);
+            upsertStopwatch.Stop();
+            upsertElapsedMs = upsertStopwatch.ElapsedMilliseconds;
         }
 
         var deletedCodes = deletedLookups
@@ -238,11 +254,28 @@ public sealed class LocalCatalogSyncService(
             .Where(code => !string.IsNullOrWhiteSpace(code))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToArray();
+        var deleteElapsedMs = 0L;
         var deletedCount = deletedCodes.Length == 0
             ? 0
-            : await localCatalogRepository.DeleteByLookupCodesAsync(storeCode, deletedCodes, cancellationToken);
+            : await DeleteByLookupCodesWithTimingAsync(storeCode, deletedCodes, cancellationToken);
 
-        return (upsertItems.Length, deletedCount);
+        applyStopwatch.Stop();
+        return (upsertItems.Length, deletedCount, upsertElapsedMs, deleteElapsedMs, applyStopwatch.ElapsedMilliseconds);
+
+        async Task<int> DeleteByLookupCodesWithTimingAsync(
+            string deleteStoreCode,
+            IReadOnlyList<string> lookupCodes,
+            CancellationToken deleteCancellationToken)
+        {
+            var deleteStopwatch = Stopwatch.StartNew();
+            var count = await localCatalogRepository.DeleteByLookupCodesAsync(
+                deleteStoreCode,
+                lookupCodes,
+                deleteCancellationToken);
+            deleteStopwatch.Stop();
+            deleteElapsedMs = deleteStopwatch.ElapsedMilliseconds;
+            return count;
+        }
     }
 
     private static string GetDeleteLookupCode(DeletedLookupDto deletedLookup)

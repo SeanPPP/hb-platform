@@ -25,6 +25,7 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IDisposable
     private readonly Func<string, string, CancellationToken, Task<RemoteLookupRefreshResult>>? _remoteLookupRefreshAsync;
     private readonly Func<CancellationToken, Task<IReadOnlyList<SellableItemDto>>>? _reloadCatalogAsync;
     private readonly Func<CancellationToken, Task<IReadOnlyList<SellableItemDto>>>? _syncCatalogAsync;
+    private readonly Func<CancellationToken, Task<IReadOnlyList<SellableItemDto>>>? _resetCatalogAsync;
     private readonly Func<CancellationToken, Task<bool>>? _refreshOnlineAsync;
     private string _statusKey = "pos.status.ready";
     private object[] _statusArgs = [];
@@ -64,6 +65,7 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IDisposable
         Func<string, string, CancellationToken, Task<RemoteLookupRefreshResult>>? remoteLookupRefreshAsync = null,
         Func<CancellationToken, Task<IReadOnlyList<SellableItemDto>>>? reloadCatalogAsync = null,
         Func<CancellationToken, Task<IReadOnlyList<SellableItemDto>>>? syncCatalogAsync = null,
+        Func<CancellationToken, Task<IReadOnlyList<SellableItemDto>>>? resetCatalogAsync = null,
         Func<CancellationToken, Task<bool>>? refreshOnlineAsync = null,
         IRawScannerService? rawScannerService = null,
         Func<Task>? onReregisterDeviceAsync = null)
@@ -78,6 +80,7 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IDisposable
         _remoteLookupRefreshAsync = remoteLookupRefreshAsync;
         _reloadCatalogAsync = reloadCatalogAsync;
         _syncCatalogAsync = syncCatalogAsync;
+        _resetCatalogAsync = resetCatalogAsync;
         _refreshOnlineAsync = refreshOnlineAsync;
         _rawScannerService = rawScannerService;
         if (_localization is not null)
@@ -107,6 +110,7 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IDisposable
         OpenPaymentCommand = new RelayCommand(OpenPayment, () => !_cart.IsEmpty);
         OpenSpecialProductsCommand = new AsyncRelayCommand(OpenSpecialProductsAsync);
         SyncCommand = new AsyncRelayCommand(SyncAsync);
+        ResetCatalogCommand = new AsyncRelayCommand(ResetCatalogAsync);
         ReregisterDeviceCommand = new AsyncRelayCommand(ReregisterDeviceAsync);
     }
 
@@ -152,6 +156,8 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IDisposable
 
     public IAsyncRelayCommand SyncCommand { get; }
 
+    public IAsyncRelayCommand ResetCatalogCommand { get; }
+
     public IAsyncRelayCommand ReregisterDeviceCommand { get; }
 
     public event EventHandler? PaymentRequested;
@@ -179,6 +185,8 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IDisposable
     public string MemberText => T("pos.terminal.actions.member");
 
     public string SyncText => T("pos.terminal.actions.sync");
+
+    public string CatalogResetText => T("pos.terminal.actions.catalogReset");
 
     public string ReregisterDeviceText => T("pos.terminal.actions.reregisterDevice");
 
@@ -227,8 +235,44 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IDisposable
 
     public void RefreshCart()
     {
-        SyncCartLines(_cart.Lines);
+        RefreshCartCore("manual-refresh");
+    }
+
+    internal void RevealCartLine(CartLine line)
+    {
+        var stopwatch = Stopwatch.StartNew();
+        if (!_cart.Lines.Contains(line))
+        {
+            stopwatch.Stop();
+            LogCartOperation("reveal-cart-line", line, success: false, stopwatch.ElapsedMilliseconds, "line-not-in-cart");
+            return;
+        }
+
+        if (!CartLines.Contains(line))
+        {
+            SyncCartLines(_cart.Lines);
+        }
+
+        SelectCartLine(line);
         RefreshCartState();
+        stopwatch.Stop();
+        LogCartOperation("reveal-cart-line", line, success: true, stopwatch.ElapsedMilliseconds);
+    }
+
+    private void RefreshCartCore(string operation)
+    {
+        var totalStopwatch = Stopwatch.StartNew();
+        var syncCartStopwatch = Stopwatch.StartNew();
+        SyncCartLines(_cart.Lines);
+        syncCartStopwatch.Stop();
+
+        var stateRefreshStopwatch = Stopwatch.StartNew();
+        RefreshCartState();
+        stateRefreshStopwatch.Stop();
+        totalStopwatch.Stop();
+
+        LogCartPerf(
+            $"operation={operation} storeCode={Session.StoreCode} cartLines={_cart.Lines.Count} syncCartElapsedMs={syncCartStopwatch.ElapsedMilliseconds} stateRefreshElapsedMs={stateRefreshStopwatch.ElapsedMilliseconds} totalElapsedMs={totalStopwatch.ElapsedMilliseconds}");
     }
 
     private void RefreshCartState()
@@ -276,7 +320,7 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IDisposable
 
     private void OnCartChanged(object? sender, EventArgs e)
     {
-        RefreshCart();
+        RefreshCartCore("cart-changed");
     }
 
     private void AppendScanText(string? value)
@@ -480,7 +524,7 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IDisposable
         {
             IsMatchesPopupOpen = false;
             var cartUpdateStopwatch = Stopwatch.StartNew();
-            autoAdded = AddItem(SelectedItem);
+            autoAdded = AddItem(SelectedItem, "scan-auto-add");
             cartUpdateStopwatch.Stop();
             cartUpdateElapsedMs = cartUpdateStopwatch.ElapsedMilliseconds;
             if (autoAdded)
@@ -505,7 +549,7 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IDisposable
             return;
         }
 
-        AddItem(SelectedItem);
+        AddItem(SelectedItem, "manual-add-selected");
     }
 
     private void SelectMatch(SellableItemDto? item)
@@ -516,7 +560,7 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IDisposable
         }
 
         SelectedItem = item;
-        if (AddItem(item))
+        if (AddItem(item, "manual-select-match"))
         {
             ScanText = string.Empty;
             IsMatchesPopupOpen = false;
@@ -526,39 +570,65 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IDisposable
 
     private void RemoveLine(CartLine? line)
     {
-        if (line is null || !_cart.RemoveLine(line))
+        var stopwatch = Stopwatch.StartNew();
+        if (line is null)
         {
+            stopwatch.Stop();
+            LogCartOperation("remove-line", line, success: false, stopwatch.ElapsedMilliseconds, "null-line");
+            return;
+        }
+
+        if (!_cart.RemoveLine(line))
+        {
+            stopwatch.Stop();
+            LogCartOperation("remove-line", line, success: false, stopwatch.ElapsedMilliseconds, "not-found");
             return;
         }
 
         SetStatus("pos.status.ready");
+        stopwatch.Stop();
+        LogCartOperation("remove-line", line, success: true, stopwatch.ElapsedMilliseconds);
     }
 
     private void IncreaseLine(CartLine? line)
     {
-        if (line is null || !_cart.IncreaseLine(line))
+        var stopwatch = Stopwatch.StartNew();
+        if (line is null)
         {
-            if (line is not null)
-            {
-                SetStatus("cart.status.quantityMustBeInteger");
-            }
+            stopwatch.Stop();
+            LogCartOperation("increase-line", line, success: false, stopwatch.ElapsedMilliseconds, "null-line");
+            return;
+        }
 
+        if (!_cart.IncreaseLine(line))
+        {
+            SetStatus("cart.status.quantityMustBeInteger");
+            stopwatch.Stop();
+            LogCartOperation("increase-line", line, success: false, stopwatch.ElapsedMilliseconds, "quantity-not-integer-or-not-found");
             return;
         }
 
         SelectCartLine(line);
         SetStatus("pos.status.ready");
+        stopwatch.Stop();
+        LogCartOperation("increase-line", line, success: true, stopwatch.ElapsedMilliseconds);
     }
 
     private void DecreaseLine(CartLine? line)
     {
-        if (line is null || !_cart.DecreaseLine(line))
+        var stopwatch = Stopwatch.StartNew();
+        if (line is null)
         {
-            if (line is not null)
-            {
-                SetStatus("cart.status.quantityMustBeInteger");
-            }
+            stopwatch.Stop();
+            LogCartOperation("decrease-line", line, success: false, stopwatch.ElapsedMilliseconds, "null-line");
+            return;
+        }
 
+        if (!_cart.DecreaseLine(line))
+        {
+            SetStatus("cart.status.quantityMustBeInteger");
+            stopwatch.Stop();
+            LogCartOperation("decrease-line", line, success: false, stopwatch.ElapsedMilliseconds, "quantity-not-integer-or-not-found");
             return;
         }
 
@@ -568,48 +638,72 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IDisposable
         }
 
         SetStatus("pos.status.ready");
+        stopwatch.Stop();
+        LogCartOperation("decrease-line", line, success: true, stopwatch.ElapsedMilliseconds);
     }
 
     private void ModifySelectedLineQuantity()
     {
+        var stopwatch = Stopwatch.StartNew();
         if (!TryGetSelectedLineKeypadValue(out var line, out var value))
         {
+            stopwatch.Stop();
+            LogCartOperation("set-line-quantity", SelectedCartLine, success: false, stopwatch.ElapsedMilliseconds, "invalid-keypad-or-no-selection");
             return;
         }
 
         if (value <= 0m)
         {
             SetStatus("pos.status.quantityMustBePositive");
+            stopwatch.Stop();
+            LogCartOperation("set-line-quantity", line, success: false, stopwatch.ElapsedMilliseconds, "quantity-not-positive");
             return;
         }
 
         if (!PosCartService.IsPositiveIntegerQuantity(value))
         {
             SetStatus("cart.status.quantityMustBeInteger");
+            stopwatch.Stop();
+            LogCartOperation("set-line-quantity", line, success: false, stopwatch.ElapsedMilliseconds, "quantity-not-integer");
             return;
         }
 
         if (!_cart.SetLineQuantity(line, value))
         {
+            stopwatch.Stop();
+            LogCartOperation("set-line-quantity", line, success: false, stopwatch.ElapsedMilliseconds, "not-found");
             return;
         }
 
         SelectCartLine(line);
         KeypadBuffer = string.Empty;
         SetStatus("pos.status.lineQuantityUpdated");
+        stopwatch.Stop();
+        LogCartOperation("set-line-quantity", line, success: true, stopwatch.ElapsedMilliseconds);
     }
 
     private void ModifySelectedLinePrice()
     {
-        if (!TryGetSelectedLineKeypadValue(out var line, out var value) ||
-            !_cart.SetLineUnitPrice(line, value))
+        var stopwatch = Stopwatch.StartNew();
+        if (!TryGetSelectedLineKeypadValue(out var line, out var value))
         {
+            stopwatch.Stop();
+            LogCartOperation("set-line-price", SelectedCartLine, success: false, stopwatch.ElapsedMilliseconds, "invalid-keypad-or-no-selection");
+            return;
+        }
+
+        if (!_cart.SetLineUnitPrice(line, value))
+        {
+            stopwatch.Stop();
+            LogCartOperation("set-line-price", line, success: false, stopwatch.ElapsedMilliseconds, "not-found");
             return;
         }
 
         SelectCartLine(line);
         KeypadBuffer = string.Empty;
         SetStatus("pos.status.linePriceUpdated");
+        stopwatch.Stop();
+        LogCartOperation("set-line-price", line, success: true, stopwatch.ElapsedMilliseconds);
     }
 
     private void ApplySelectedLineDiscountAmount()
@@ -620,25 +714,34 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IDisposable
             return;
         }
 
+        var stopwatch = Stopwatch.StartNew();
         if (!TryGetSelectedLineKeypadValue(out var line, out var value))
         {
+            stopwatch.Stop();
+            LogCartOperation("set-line-discount-amount", SelectedCartLine, success: false, stopwatch.ElapsedMilliseconds, "invalid-keypad-or-no-selection");
             return;
         }
 
         if (value > line.GrossAmount)
         {
             SetStatus("pos.status.discountAmountTooHigh");
+            stopwatch.Stop();
+            LogCartOperation("set-line-discount-amount", line, success: false, stopwatch.ElapsedMilliseconds, "discount-too-high");
             return;
         }
 
         if (!_cart.SetLineDiscountAmount(line, value))
         {
+            stopwatch.Stop();
+            LogCartOperation("set-line-discount-amount", line, success: false, stopwatch.ElapsedMilliseconds, "not-found");
             return;
         }
 
         SelectCartLine(line);
         KeypadBuffer = string.Empty;
         SetStatus("pos.status.lineDiscountUpdated");
+        stopwatch.Stop();
+        LogCartOperation("set-line-discount-amount", line, success: true, stopwatch.ElapsedMilliseconds);
     }
 
     private void ApplySelectedLineDiscountPercent()
@@ -649,25 +752,34 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IDisposable
             return;
         }
 
+        var stopwatch = Stopwatch.StartNew();
         if (!TryGetSelectedLineKeypadValue(out var line, out var value))
         {
+            stopwatch.Stop();
+            LogCartOperation("set-line-discount-percent", SelectedCartLine, success: false, stopwatch.ElapsedMilliseconds, "invalid-keypad-or-no-selection");
             return;
         }
 
         if (value > 100m)
         {
             SetStatus("pos.status.discountPercentOutOfRange");
+            stopwatch.Stop();
+            LogCartOperation("set-line-discount-percent", line, success: false, stopwatch.ElapsedMilliseconds, "discount-percent-out-of-range");
             return;
         }
 
         if (!_cart.SetLineDiscountPercent(line, value))
         {
+            stopwatch.Stop();
+            LogCartOperation("set-line-discount-percent", line, success: false, stopwatch.ElapsedMilliseconds, "not-found");
             return;
         }
 
         SelectCartLine(line);
         KeypadBuffer = string.Empty;
         SetStatus("pos.status.lineDiscountUpdated");
+        stopwatch.Stop();
+        LogCartOperation("set-line-discount-percent", line, success: true, stopwatch.ElapsedMilliseconds);
     }
 
     private void ApplyQuickDiscountPercent(string? value)
@@ -696,25 +808,34 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IDisposable
 
     private void ApplyWholeOrderDiscountAmount()
     {
+        var stopwatch = Stopwatch.StartNew();
         if (!TryGetOrderDiscountKeypadValue(out var value))
         {
+            stopwatch.Stop();
+            LogCartOperation("set-order-discount-amount", (CartLine?)null, success: false, stopwatch.ElapsedMilliseconds, "invalid-keypad-or-empty-cart");
             return;
         }
 
         if (value > _cart.TotalAmount)
         {
             SetStatus("pos.status.discountAmountTooHigh");
+            stopwatch.Stop();
+            LogCartOperation("set-order-discount-amount", (CartLine?)null, success: false, stopwatch.ElapsedMilliseconds, "discount-too-high");
             return;
         }
 
         if (!_cart.SetOrderDiscountAmount(value))
         {
+            stopwatch.Stop();
+            LogCartOperation("set-order-discount-amount", (CartLine?)null, success: false, stopwatch.ElapsedMilliseconds, "not-applied");
             return;
         }
 
         IsWholeOrderOperation = false;
         KeypadBuffer = string.Empty;
         SetStatus("pos.status.orderDiscountUpdated");
+        stopwatch.Stop();
+        LogCartOperation("set-order-discount-amount", (CartLine?)null, success: true, stopwatch.ElapsedMilliseconds);
     }
 
     private void ApplyWholeOrderDiscountPercent()
@@ -729,58 +850,79 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IDisposable
 
     private void ApplyWholeOrderDiscountPercent(decimal value)
     {
+        var stopwatch = Stopwatch.StartNew();
         if (_cart.IsEmpty)
         {
             SetStatus("pos.status.selectCartLine");
+            stopwatch.Stop();
+            LogCartOperation("set-order-discount-percent", (CartLine?)null, success: false, stopwatch.ElapsedMilliseconds, "empty-cart");
             return;
         }
 
         if (value > 100m)
         {
             SetStatus("pos.status.discountPercentOutOfRange");
+            stopwatch.Stop();
+            LogCartOperation("set-order-discount-percent", (CartLine?)null, success: false, stopwatch.ElapsedMilliseconds, "discount-percent-out-of-range");
             return;
         }
 
         if (!_cart.SetOrderDiscountPercent(value))
         {
+            stopwatch.Stop();
+            LogCartOperation("set-order-discount-percent", (CartLine?)null, success: false, stopwatch.ElapsedMilliseconds, "not-applied");
             return;
         }
 
         IsWholeOrderOperation = false;
         KeypadBuffer = string.Empty;
         SetStatus("pos.status.orderDiscountUpdated");
+        stopwatch.Stop();
+        LogCartOperation("set-order-discount-percent", (CartLine?)null, success: true, stopwatch.ElapsedMilliseconds);
     }
 
     private void ApplySelectedLineDiscountPercent(decimal value)
     {
+        var stopwatch = Stopwatch.StartNew();
         if (SelectedCartLine is null)
         {
             SetStatus("pos.status.selectCartLine");
+            stopwatch.Stop();
+            LogCartOperation("quick-line-discount-percent", (CartLine?)null, success: false, stopwatch.ElapsedMilliseconds, "no-selection");
             return;
         }
 
         if (value > 100m)
         {
             SetStatus("pos.status.discountPercentOutOfRange");
+            stopwatch.Stop();
+            LogCartOperation("quick-line-discount-percent", SelectedCartLine, success: false, stopwatch.ElapsedMilliseconds, "discount-percent-out-of-range");
             return;
         }
 
         var line = SelectedCartLine;
         if (!_cart.SetLineDiscountPercent(line, value))
         {
+            stopwatch.Stop();
+            LogCartOperation("quick-line-discount-percent", line, success: false, stopwatch.ElapsedMilliseconds, "not-found");
             return;
         }
 
         SelectCartLine(line);
         KeypadBuffer = string.Empty;
         SetStatus("pos.status.lineDiscountUpdated");
+        stopwatch.Stop();
+        LogCartOperation("quick-line-discount-percent", line, success: true, stopwatch.ElapsedMilliseconds);
     }
 
-    private bool AddItem(SellableItemDto item)
+    private bool AddItem(SellableItemDto item, string operation)
     {
+        var stopwatch = Stopwatch.StartNew();
         if (!PosCartService.IsPositiveIntegerQuantity(item.QuantityFactor))
         {
             SetStatus("cart.status.quantityMustBeInteger");
+            stopwatch.Stop();
+            LogCartOperation(operation, item, success: false, stopwatch.ElapsedMilliseconds, "quantity-factor-not-integer");
             return false;
         }
 
@@ -792,6 +934,8 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IDisposable
         catch (InvalidOperationException)
         {
             SetStatus("cart.status.quantityMustBeInteger");
+            stopwatch.Stop();
+            LogCartOperation(operation, item, success: false, stopwatch.ElapsedMilliseconds, "cart-quantity-not-integer");
             return false;
         }
 
@@ -799,6 +943,8 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IDisposable
         IsTouchKeyboardOpen = false;
         SetStatus("pos.status.added", item.DisplayName);
         BeginRemoteLookup(line, item);
+        stopwatch.Stop();
+        LogCartOperation(operation, line, success: true, stopwatch.ElapsedMilliseconds);
         return true;
     }
 
@@ -810,6 +956,53 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IDisposable
         }
 
         SelectedCartLine = line;
+    }
+
+    private void LogCartOperation(
+        string operation,
+        SellableItemDto item,
+        bool success,
+        long totalElapsedMs,
+        string? reason = null)
+    {
+        LogCartPerf(
+            $"operation={operation} storeCode={Session.StoreCode} productCode={LogValue(item.ProductCode)} lookupCode={LogValue(item.LookupCode)} success={FormatBool(success)} cartLines={_cart.Lines.Count} totalAmount={FormatAmount(_cart.TotalAmount)} actualAmount={FormatAmount(_cart.ActualAmount)} totalElapsedMs={totalElapsedMs}{FormatReason(reason)}");
+    }
+
+    private void LogCartOperation(
+        string operation,
+        CartLine? line,
+        bool success,
+        long totalElapsedMs,
+        string? reason = null)
+    {
+        LogCartPerf(
+            $"operation={operation} storeCode={Session.StoreCode} productCode={LogValue(line?.ProductCode)} lookupCode={LogValue(line?.LookupCode)} success={FormatBool(success)} cartLines={_cart.Lines.Count} totalAmount={FormatAmount(_cart.TotalAmount)} actualAmount={FormatAmount(_cart.ActualAmount)} totalElapsedMs={totalElapsedMs}{FormatReason(reason)}");
+    }
+
+    private static void LogCartPerf(string message)
+    {
+        ConsoleLog.Write("CartPerf", message);
+    }
+
+    private static string FormatBool(bool value)
+    {
+        return value ? "true" : "false";
+    }
+
+    private static string FormatAmount(decimal value)
+    {
+        return value.ToString("0.##", CultureInfo.InvariantCulture);
+    }
+
+    private static string FormatReason(string? reason)
+    {
+        return string.IsNullOrWhiteSpace(reason) ? string.Empty : $" reason={reason.Trim()}";
+    }
+
+    private static string LogValue(string? value)
+    {
+        return string.IsNullOrWhiteSpace(value) ? "<null>" : value.Trim();
     }
 
     private bool TryGetSelectedLineKeypadValue(out CartLine line, out decimal value)
@@ -874,26 +1067,36 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IDisposable
 
     private void ClearCart()
     {
+        var stopwatch = Stopwatch.StartNew();
         _cart.Clear();
         SetStatus("pos.status.cartCleared");
+        stopwatch.Stop();
+        LogCartOperation("clear-cart", (CartLine?)null, success: true, stopwatch.ElapsedMilliseconds);
     }
 
     private void OpenPayment()
     {
+        var stopwatch = Stopwatch.StartNew();
         if (_cart.HasNonIntegerQuantity)
         {
             SetStatus("cart.status.quantityMustBeInteger");
+            stopwatch.Stop();
+            LogCartOperation("open-payment", (CartLine?)null, success: false, stopwatch.ElapsedMilliseconds, "quantity-not-integer");
             return;
         }
 
         if (_cart.HasZeroPriceLine)
         {
             SetStatus("cart.status.zeroPriceItem");
+            stopwatch.Stop();
+            LogCartOperation("open-payment", (CartLine?)null, success: false, stopwatch.ElapsedMilliseconds, "zero-price-line");
             return;
         }
 
         PaymentRequested?.Invoke(this, EventArgs.Empty);
         _onOpenPayment?.Invoke();
+        stopwatch.Stop();
+        LogCartOperation("open-payment", (CartLine?)null, success: true, stopwatch.ElapsedMilliseconds);
     }
 
     private async Task OpenSpecialProductsAsync()
@@ -1008,6 +1211,28 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IDisposable
 
     private async Task SyncAsync()
     {
+        await RunCatalogDownloadAsync(
+            _syncCatalogAsync,
+            "Syncing catalog...",
+            "Catalog sync completed.",
+            "Catalog sync failed");
+    }
+
+    private async Task ResetCatalogAsync()
+    {
+        await RunCatalogDownloadAsync(
+            _resetCatalogAsync,
+            "Resetting catalog...",
+            "Catalog reset completed.",
+            "Catalog reset failed");
+    }
+
+    private async Task RunCatalogDownloadAsync(
+        Func<CancellationToken, Task<IReadOnlyList<SellableItemDto>>>? downloadCatalogAsync,
+        string startingMessage,
+        string completedMessage,
+        string failedPrefix)
+    {
         if (_refreshOnlineAsync is not null)
         {
             var isOnline = await _refreshOnlineAsync(CancellationToken.None);
@@ -1020,7 +1245,7 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IDisposable
             return;
         }
 
-        if (_syncCatalogAsync is null)
+        if (downloadCatalogAsync is null)
         {
             SetStatus("pos.status.ready");
             return;
@@ -1028,14 +1253,14 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IDisposable
 
         try
         {
-            SetStatusText("Syncing catalog...");
-            var catalogItems = await _syncCatalogAsync(CancellationToken.None);
+            SetStatusText(startingMessage);
+            var catalogItems = await downloadCatalogAsync(CancellationToken.None);
             RefreshMatches(catalogItems);
-            SetStatusText("Catalog sync completed.");
+            SetStatusText(completedMessage);
         }
         catch (Exception ex)
         {
-            SetStatusText($"Catalog sync failed: {ex.Message}");
+            SetStatusText($"{failedPrefix}: {ex.Message}");
         }
     }
 
@@ -1104,6 +1329,7 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IDisposable
         OnPropertyChanged(nameof(RecallOrderText));
         OnPropertyChanged(nameof(MemberText));
         OnPropertyChanged(nameof(SyncText));
+        OnPropertyChanged(nameof(CatalogResetText));
         OnPropertyChanged(nameof(ReregisterDeviceText));
         OnPropertyChanged(nameof(OnlineText));
         OnPropertyChanged(nameof(PendingSyncText));

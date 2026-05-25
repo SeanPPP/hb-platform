@@ -351,6 +351,7 @@ public sealed partial class MainViewModel : ObservableObject
             RefreshRemoteLookupAsync,
             ReloadCatalogIndexAsync,
             SyncCatalogAndReloadAsync,
+            ResetCatalogAndReloadAsync,
             RefreshOnlineStateAsync,
             _rawScannerService,
             BeginDeviceReregistrationAsync);
@@ -361,7 +362,8 @@ public sealed partial class MainViewModel : ObservableObject
             _specialProductService,
             Session,
             _localization,
-            ShowPos);
+            ShowPos,
+            line => PosTerminal?.RevealCartLine(line));
         if (cachedItems.Count > 0)
         {
             PosTerminal.LoadMatches(cachedItems);
@@ -381,6 +383,7 @@ public sealed partial class MainViewModel : ObservableObject
         _clockTimer.Start();
         ApplySessionToScreens();
         NavigateFromStartup(startupOptions.InitialScreen);
+        BeginSpecialProductsPreload();
 
     }
 
@@ -594,6 +597,31 @@ public sealed partial class MainViewModel : ObservableObject
         _ = TryInitialCatalogSyncAsync();
     }
 
+    private void BeginSpecialProductsPreload()
+    {
+        if (SpecialProducts is null)
+        {
+            return;
+        }
+
+        _ = TryPreloadSpecialProductsAsync();
+    }
+
+    private async Task TryPreloadSpecialProductsAsync()
+    {
+        try
+        {
+            if (SpecialProducts is not null)
+            {
+                await SpecialProducts.PreloadAsync(CancellationToken.None);
+            }
+        }
+        catch (Exception ex)
+        {
+            ConsoleLog.Write("SpecialProducts", $"startup preload failed store={Session.StoreCode} error={ex.Message}");
+        }
+    }
+
     private async Task<bool> RefreshOnlineStateAsync(CancellationToken cancellationToken)
     {
         if (_isRefreshingConnectivity)
@@ -641,11 +669,27 @@ public sealed partial class MainViewModel : ObservableObject
         return _remoteLookupRefresh.RefreshLookupAsync(storeCode, lookupCode, cancellationToken);
     }
 
-    private async Task<IReadOnlyList<SellableItemDto>> SyncCatalogAndReloadAsync(CancellationToken cancellationToken)
+    private Task<IReadOnlyList<SellableItemDto>> SyncCatalogAndReloadAsync(CancellationToken cancellationToken)
+    {
+        return SyncCatalogAndReloadAsync(forceFullDownload: false, cancellationToken);
+    }
+
+    private Task<IReadOnlyList<SellableItemDto>> ResetCatalogAndReloadAsync(CancellationToken cancellationToken)
+    {
+        return SyncCatalogAndReloadAsync(forceFullDownload: true, cancellationToken);
+    }
+
+    private async Task<IReadOnlyList<SellableItemDto>> SyncCatalogAndReloadAsync(
+        bool forceFullDownload,
+        CancellationToken cancellationToken)
     {
         var progress = new Progress<CatalogSyncProgress>(ApplyCatalogDownloadProgress);
-        await _catalogSync.FullSyncAsync(Session.StoreCode, cancellationToken, progress);
-        return await ReloadCatalogIndexAsync(cancellationToken);
+        var storeCode = Session.StoreCode;
+        return await Task.Run(async () =>
+        {
+            await _catalogSync.FullSyncAsync(storeCode, cancellationToken, progress, forceFullDownload);
+            return await ReloadCatalogIndexAsync(storeCode, cancellationToken);
+        }, cancellationToken);
     }
 
     private void ApplyCatalogDownloadProgress(CatalogSyncProgress progress)
@@ -705,7 +749,12 @@ public sealed partial class MainViewModel : ObservableObject
 
     private async Task<IReadOnlyList<SellableItemDto>> ReloadCatalogIndexAsync(CancellationToken cancellationToken = default)
     {
-        var cachedItems = await _catalogRepository.LoadSellableItemsAsync(Session.StoreCode, cancellationToken);
+        return await ReloadCatalogIndexAsync(Session.StoreCode, cancellationToken);
+    }
+
+    private async Task<IReadOnlyList<SellableItemDto>> ReloadCatalogIndexAsync(string storeCode, CancellationToken cancellationToken)
+    {
+        var cachedItems = await _catalogRepository.LoadSellableItemsAsync(storeCode, cancellationToken);
         _priceIndex.ReplaceAll(cachedItems);
         return cachedItems;
     }
@@ -784,20 +833,32 @@ public sealed partial class MainViewModel : ObservableObject
             return;
         }
 
-        PosTerminal.RefreshCart();
         CurrentScreen = PosTerminal;
     }
 
-    private async Task ShowSpecialProductsAsync()
+    private Task ShowSpecialProductsAsync()
     {
         if (SpecialProducts is null)
         {
-            return;
+            return Task.CompletedTask;
         }
 
         SpecialProducts.Session = Session;
         CurrentScreen = SpecialProducts;
-        await SpecialProducts.LoadAsync(CancellationToken.None);
+        _ = EnsureSpecialProductsLoadedAsync(SpecialProducts);
+        return Task.CompletedTask;
+    }
+
+    private static async Task EnsureSpecialProductsLoadedAsync(SpecialProductsViewModel specialProducts)
+    {
+        try
+        {
+            await specialProducts.EnsureLoadedAsync(CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            ConsoleLog.Write("SpecialProducts", $"background load failed error={ex.Message}");
+        }
     }
 
     private void ShowCashPayment()

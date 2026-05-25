@@ -33,6 +33,12 @@ internal static class ConsoleLog
 
         try
         {
+            var logDirectory = Path.GetDirectoryName(logPath);
+            if (!string.IsNullOrWhiteSpace(logDirectory))
+            {
+                Directory.CreateDirectory(logDirectory);
+            }
+
             File.AppendAllText(logPath, line + Environment.NewLine);
         }
         catch (Exception)

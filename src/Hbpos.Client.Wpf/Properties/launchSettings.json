@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json.schemastore.org/launchsettings.json",
+  "profiles": {
+    "Hbpos.Client.Wpf": {
+      "commandName": "Project",
+      "environmentVariables": {
+        "HBPOS_CLIENT_LOG_FILE": "logs\\hbpos-client.log"
+      }
+    }
+  }
+}

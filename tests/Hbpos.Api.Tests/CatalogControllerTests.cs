@@ -18,6 +18,7 @@ public sealed class CatalogControllerTests
     {
         Assert.Equal("sellable-items/page", GetHttpGetTemplate(nameof(CatalogController.GetSellableItemsPage)));
         Assert.Equal("sellable-items/lookup", GetHttpGetTemplate(nameof(CatalogController.LookupSellableItem)));
+        Assert.Equal("special-products/page", GetHttpGetTemplate(nameof(CatalogController.GetSpecialProductsPage)));
         Assert.Equal("sellable-items/compare", GetHttpPostTemplate(nameof(CatalogController.CompareSellableItems)));
         Assert.Equal("special-products/mark", GetHttpPostTemplate(nameof(CatalogController.MarkSpecialProduct)));
         Assert.Equal("sellable-items", GetHttpGetTemplate(nameof(CatalogController.GetSellableItems)));
@@ -138,6 +139,45 @@ public sealed class CatalogControllerTests
     }
 
     [Fact]
+    public async Task GetSpecialProductsPage_ReturnsWrappedServiceResponse()
+    {
+        var expected = new CatalogSpecialProductsPageResponse("S01", DateTimeOffset.UnixEpoch, null, [], null, false, 0);
+        var service = new FakeCatalogService { SpecialProductsPageResponse = expected };
+        var controller = new CatalogController(service);
+
+        var result = await controller.GetSpecialProductsPage(
+            "S01",
+            "cursor-1",
+            5000,
+            CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(result.Result);
+        var apiResult = Assert.IsType<ApiResult<CatalogSpecialProductsPageResponse>>(ok.Value);
+        Assert.True(apiResult.Success);
+        Assert.Same(expected, apiResult.Data);
+        Assert.Equal(("S01", "cursor-1", 5000), service.LastSpecialProductsPageRequest);
+    }
+
+    [Fact]
+    public async Task GetSpecialProductsPage_ReturnsForbiddenWhenDeviceStoreDoesNotMatch()
+    {
+        var controller = new CatalogController(new FakeCatalogService());
+        SetAuthenticatedDevice(controller, storeCode: "S02", deviceCode: "POS-02");
+
+        var result = await controller.GetSpecialProductsPage(
+            "S01",
+            cursor: null,
+            pageSize: 100,
+            CancellationToken.None);
+
+        var forbidden = Assert.IsType<ObjectResult>(result.Result);
+        Assert.Equal(StatusCodes.Status403Forbidden, forbidden.StatusCode);
+        var apiResult = Assert.IsType<ApiResult<CatalogSpecialProductsPageResponse>>(forbidden.Value);
+        Assert.False(apiResult.Success);
+        Assert.Equal("DEVICE_SCOPE_FORBIDDEN", apiResult.ErrorCode);
+    }
+
+    [Fact]
     public async Task MarkSpecialProduct_ReturnsBadRequestWhenProductCodeMissing()
     {
         var controller = new CatalogController(new FakeCatalogService());
@@ -241,11 +281,15 @@ public sealed class CatalogControllerTests
 
         public CatalogLookupResponse? LookupResponse { get; init; }
 
+        public CatalogSpecialProductsPageResponse? SpecialProductsPageResponse { get; init; }
+
         public (string StoreCode, DateTimeOffset? Since, string? Cursor, int PageSize)? LastPageRequest { get; private set; }
 
         public CatalogCompareRequest? LastCompareRequest { get; private set; }
 
         public (string StoreCode, string? LookupCode, string? LookupCodeNormalized)? LastLookupRequest { get; private set; }
+
+        public (string StoreCode, string? Cursor, int PageSize)? LastSpecialProductsPageRequest { get; private set; }
 
         public CatalogSpecialProductMarkRequest? LastSpecialProductRequest { get; private set; }
 
@@ -291,6 +335,16 @@ public sealed class CatalogControllerTests
         {
             LastLookupRequest = (storeCode, lookupCode, lookupCodeNormalized);
             return Task.FromResult(LookupResponse);
+        }
+
+        public Task<CatalogSpecialProductsPageResponse?> GetSpecialProductsPageAsync(
+            string storeCode,
+            string? cursor,
+            int pageSize,
+            CancellationToken cancellationToken)
+        {
+            LastSpecialProductsPageRequest = (storeCode, cursor, pageSize);
+            return Task.FromResult(SpecialProductsPageResponse);
         }
 
         public Task<CatalogSpecialProductMarkServiceResult> MarkSpecialProductAsync(

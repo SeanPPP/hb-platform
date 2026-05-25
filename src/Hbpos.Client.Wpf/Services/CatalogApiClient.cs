@@ -21,6 +21,12 @@ public interface ICatalogApiClient
         CatalogCompareRequest request,
         CancellationToken cancellationToken = default);
 
+    Task<CatalogSpecialProductsPageResponse> GetSpecialProductsPageAsync(
+        string storeCode,
+        string? cursor,
+        int pageSize,
+        CancellationToken cancellationToken = default);
+
     Task<CatalogLookupResponse?> LookupSellableItemAsync(
         string storeCode,
         string lookupCode,
@@ -89,6 +95,36 @@ public sealed class CatalogApiClient(HttpClient httpClient) : ICatalogApiClient
         {
             stopwatch.Stop();
             Log($"POST {requestUri} failed elapsedMs={stopwatch.ElapsedMilliseconds} error={ex.Message}");
+            throw;
+        }
+    }
+
+    public async Task<CatalogSpecialProductsPageResponse> GetSpecialProductsPageAsync(
+        string storeCode,
+        string? cursor,
+        int pageSize,
+        CancellationToken cancellationToken = default)
+    {
+        var requestUri = BuildUri(
+            "api/v1/catalog/special-products/page",
+            ("storeCode", storeCode),
+            ("cursor", cursor),
+            ("pageSize", pageSize.ToString(CultureInfo.InvariantCulture)));
+
+        var stopwatch = Stopwatch.StartNew();
+        Log($"GET {requestUri} start base={httpClient.BaseAddress}");
+        try
+        {
+            using var response = await httpClient.GetAsync(requestUri, cancellationToken);
+            var result = await ReadApiResultAsync<CatalogSpecialProductsPageResponse>(response, cancellationToken);
+            stopwatch.Stop();
+            Log($"GET {requestUri} completed status={(int)response.StatusCode} items={result.Items.Count} total={result.TotalCount} elapsedMs={stopwatch.ElapsedMilliseconds}");
+            return result;
+        }
+        catch (Exception ex)
+        {
+            stopwatch.Stop();
+            Log($"GET {requestUri} failed elapsedMs={stopwatch.ElapsedMilliseconds} error={ex.Message}");
             throw;
         }
     }

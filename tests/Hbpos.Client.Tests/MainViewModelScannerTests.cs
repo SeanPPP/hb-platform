@@ -118,6 +118,86 @@ public sealed class MainViewModelScannerTests
     }
 
     [Fact]
+    public async Task InitializeAsync_StartsSpecialProductsPreloadWithoutBlockingPos()
+    {
+        var catalog = new FakeCatalogRepository
+        {
+            SpecialItems = [CreateItem("1042", "SKU-SP", "9528502522399")],
+            BeforeLoadSpecialProductItemsAsync = async () => await Task.Delay(25)
+        };
+        var viewModel = new MainViewModel(
+            new LocalSellableItemIndex(),
+            new PosCartService(),
+            new CashCheckoutService(),
+            new FakeLocalSchemaService(),
+            new FakeSettingsRepository(),
+            catalog,
+            new FakeCatalogSyncService(),
+            new FakeRemoteLookupRefreshService(),
+            new FakeSpecialProductService(),
+            new FakeConnectivityApiClient(),
+            new FakeLocalDeviceRepository { Latest = CreateAllowedDevice("1042") },
+            new FakeDeviceApiClient(),
+            new FakeDeviceFingerprintService(),
+            new DeviceAuthorizationState(),
+            new FakeLocalOrderRepository(),
+            new FakeSyncQueueRepository(),
+            new LocalizationService(),
+            new FakeCustomerDisplayWindowService(),
+            new FakeRawScannerService());
+
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+
+        Assert.Same(viewModel.PosTerminal, viewModel.CurrentScreen);
+        Assert.True(catalog.LoadSpecialProductItemsCallCount > 0);
+    }
+
+    [Fact]
+    public async Task OpenSpecialProductsCommand_SwitchesScreenWithoutWaitingForLocalLoad()
+    {
+        var releaseLoad = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var catalog = new FakeCatalogRepository
+        {
+            SpecialItems = [CreateItem("1042", "SKU-SP", "9528502522399")],
+            BeforeLoadSpecialProductItemsAsync = () => releaseLoad.Task
+        };
+        var viewModel = new MainViewModel(
+            new LocalSellableItemIndex(),
+            new PosCartService(),
+            new CashCheckoutService(),
+            new FakeLocalSchemaService(),
+            new FakeSettingsRepository(),
+            catalog,
+            new FakeCatalogSyncService(),
+            new FakeRemoteLookupRefreshService(),
+            new FakeSpecialProductService(),
+            new FakeConnectivityApiClient(),
+            new FakeLocalDeviceRepository { Latest = CreateAllowedDevice("1042") },
+            new FakeDeviceApiClient(),
+            new FakeDeviceFingerprintService(),
+            new DeviceAuthorizationState(),
+            new FakeLocalOrderRepository(),
+            new FakeSyncQueueRepository(),
+            new LocalizationService(),
+            new FakeCustomerDisplayWindowService(),
+            new FakeRawScannerService());
+
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+
+        var openTask = viewModel.PosTerminal!.OpenSpecialProductsCommand.ExecuteAsync(null);
+
+        Assert.Same(viewModel.SpecialProducts, viewModel.CurrentScreen);
+        Assert.True(openTask.IsCompleted);
+        Assert.Equal(1, catalog.LoadSpecialProductItemsCallCount);
+
+        releaseLoad.SetResult();
+        await viewModel.SpecialProducts!.EnsureLoadedAsync();
+
+        Assert.Single(viewModel.SpecialProducts.PagedSpecialItems);
+        Assert.Equal(1, catalog.LoadSpecialProductItemsCallCount);
+    }
+
+    [Fact]
     public async Task InitializeAsync_WhenLocalCatalogLoadFails_StillShowsPosWithStatusMessage()
     {
         var catalog = new FakeCatalogRepository
@@ -473,9 +553,15 @@ public sealed class MainViewModelScannerTests
     {
         public IReadOnlyList<SellableItemDto> Items { get; init; } = [];
 
+        public IReadOnlyList<SellableItemDto> SpecialItems { get; init; } = [];
+
         public Exception? LoadSellableItemsException { get; init; }
 
         public int LoadSellableItemsCallCount { get; private set; }
+
+        public int LoadSpecialProductItemsCallCount { get; private set; }
+
+        public Func<Task>? BeforeLoadSpecialProductItemsAsync { get; init; }
 
         public Task ReplaceSellableItemsAsync(IEnumerable<SellableItemDto> items, CancellationToken cancellationToken = default)
         {
@@ -501,7 +587,19 @@ public sealed class MainViewModelScannerTests
             string storeCode,
             CancellationToken cancellationToken = default)
         {
-            return Task.FromResult<IReadOnlyList<SellableItemDto>>([]);
+            LoadSpecialProductItemsCallCount++;
+            if (BeforeLoadSpecialProductItemsAsync is not null)
+            {
+                return LoadSpecialProductItemsCoreAsync();
+            }
+
+            return Task.FromResult<IReadOnlyList<SellableItemDto>>(SpecialItems);
+
+            async Task<IReadOnlyList<SellableItemDto>> LoadSpecialProductItemsCoreAsync()
+            {
+                await BeforeLoadSpecialProductItemsAsync();
+                return SpecialItems;
+            }
         }
 
         public Task SaveSpecialProductOrderAsync(
@@ -560,7 +658,8 @@ public sealed class MainViewModelScannerTests
         public Task<LocalCatalogSyncResult> FullSyncAsync(
             string storeCode,
             CancellationToken cancellationToken = default,
-            IProgress<CatalogSyncProgress>? progress = null)
+            IProgress<CatalogSyncProgress>? progress = null,
+            bool forceFullDownload = false)
         {
             return Task.FromResult(new LocalCatalogSyncResult(storeCode, 0, 0, 0, 0));
         }

@@ -35,6 +35,12 @@ public interface ICatalogService
         string? lookupCodeNormalized,
         CancellationToken cancellationToken);
 
+    Task<CatalogSpecialProductsPageResponse?> GetSpecialProductsPageAsync(
+        string storeCode,
+        string? cursor,
+        int pageSize,
+        CancellationToken cancellationToken);
+
     Task<CatalogSpecialProductMarkServiceResult> MarkSpecialProductAsync(
         CatalogSpecialProductMarkRequest request,
         string updatedBy,
@@ -112,52 +118,86 @@ public sealed class CatalogService(
         return index?.CatalogIndex.Lookup(lookupCode, lookupCodeNormalized);
     }
 
+    public async Task<CatalogSpecialProductsPageResponse?> GetSpecialProductsPageAsync(
+        string storeCode,
+        string? cursor,
+        int pageSize,
+        CancellationToken cancellationToken)
+    {
+        var index = await BuildSellableIndexAsync(storeCode, since: null, cancellationToken);
+        return index?.CatalogIndex.GetSpecialProductsPage(cursor, pageSize);
+    }
+
     public async Task<CatalogSpecialProductMarkServiceResult> MarkSpecialProductAsync(
         CatalogSpecialProductMarkRequest request,
         string updatedBy,
         CancellationToken cancellationToken)
     {
+        var totalStopwatch = Stopwatch.StartNew();
         var normalizedStoreCode = NormalizeStoreCode(request.StoreCode);
         var normalizedProductCode = NormalizeProductCode(request.ProductCode);
+        Log($"mark special product start store={normalizedStoreCode} product={normalizedProductCode} isSpecialProduct={request.IsSpecialProduct}");
         if (string.IsNullOrEmpty(normalizedStoreCode))
         {
+            totalStopwatch.Stop();
+            Log($"mark special product failed store={normalizedStoreCode} product={normalizedProductCode} reason=store-code-required totalElapsedMs={totalStopwatch.ElapsedMilliseconds}");
             return CatalogSpecialProductMarkServiceResult.Fail("STORE_CODE_REQUIRED", "storeCode is required");
         }
 
         if (string.IsNullOrEmpty(normalizedProductCode))
         {
+            totalStopwatch.Stop();
+            Log($"mark special product failed store={normalizedStoreCode} product={normalizedProductCode} reason=product-code-required totalElapsedMs={totalStopwatch.ElapsedMilliseconds}");
             return CatalogSpecialProductMarkServiceResult.Fail("PRODUCT_CODE_REQUIRED", "productCode is required");
         }
 
+        var storeStopwatch = Stopwatch.StartNew();
         var store = await dbContext.MainDb.Queryable<Store>()
             .FirstAsync(x => x.StoreCode == normalizedStoreCode && x.IsActive && !x.IsDeleted, cancellationToken);
+        storeStopwatch.Stop();
+        Log($"mark special product store query store={normalizedStoreCode} found={store is not null} elapsedMs={storeStopwatch.ElapsedMilliseconds}");
         if (store is null)
         {
+            totalStopwatch.Stop();
+            Log($"mark special product failed store={normalizedStoreCode} product={normalizedProductCode} reason=store-not-found totalElapsedMs={totalStopwatch.ElapsedMilliseconds}");
             return CatalogSpecialProductMarkServiceResult.Fail("STORE_NOT_FOUND", "store was not found or inactive");
         }
 
+        var productStopwatch = Stopwatch.StartNew();
         var product = await dbContext.MainDb.Queryable<Product>()
             .FirstAsync(x => x.ProductCode == normalizedProductCode && x.IsActive && !x.IsDeleted, cancellationToken);
+        productStopwatch.Stop();
+        Log($"mark special product product query store={normalizedStoreCode} product={normalizedProductCode} found={product is not null} elapsedMs={productStopwatch.ElapsedMilliseconds}");
         if (product is null)
         {
+            totalStopwatch.Stop();
+            Log($"mark special product failed store={normalizedStoreCode} product={normalizedProductCode} reason=product-not-found totalElapsedMs={totalStopwatch.ElapsedMilliseconds}");
             return CatalogSpecialProductMarkServiceResult.Fail("PRODUCT_NOT_FOUND", "product was not found or inactive");
         }
 
         var now = DateTime.UtcNow;
         var actor = string.IsNullOrWhiteSpace(updatedBy) ? "pos-device" : updatedBy.Trim();
 
+        var transactionStopwatch = Stopwatch.StartNew();
+        var retailQueryElapsedMs = 0L;
+        var writeElapsedMs = 0L;
+        var writeAction = "unknown";
         await dbContext.MainDb.Ado.BeginTranAsync();
         try
         {
+            var retailQueryStopwatch = Stopwatch.StartNew();
             var storeRetailPrice = await dbContext.MainDb.Queryable<StoreRetailPrice>()
                 .FirstAsync(x =>
                     x.StoreCode == normalizedStoreCode &&
                     x.ProductCode == normalizedProductCode &&
                     !x.IsDeleted,
                     cancellationToken);
+            retailQueryStopwatch.Stop();
+            retailQueryElapsedMs = retailQueryStopwatch.ElapsedMilliseconds;
 
             if (storeRetailPrice is null)
             {
+                writeAction = "insert";
                 storeRetailPrice = new StoreRetailPrice
                 {
                     UUID = UuidHelper.GenerateUuid7(),
@@ -177,29 +217,50 @@ public sealed class CatalogService(
                     IsDeleted = false
                 };
 
+                var writeStopwatch = Stopwatch.StartNew();
                 await dbContext.MainDb.Insertable(storeRetailPrice).ExecuteCommandAsync();
+                writeStopwatch.Stop();
+                writeElapsedMs = writeStopwatch.ElapsedMilliseconds;
             }
             else
             {
+                writeAction = "update";
                 storeRetailPrice.IsSpecialProduct = request.IsSpecialProduct;
                 storeRetailPrice.UpdatedAt = now;
                 storeRetailPrice.UpdatedBy = actor;
+                var writeStopwatch = Stopwatch.StartNew();
                 await dbContext.MainDb.Updateable(storeRetailPrice).ExecuteCommandAsync();
+                writeStopwatch.Stop();
+                writeElapsedMs = writeStopwatch.ElapsedMilliseconds;
             }
 
             await dbContext.MainDb.Ado.CommitTranAsync();
+            transactionStopwatch.Stop();
+            Log($"mark special product transaction store={normalizedStoreCode} product={normalizedProductCode} action={writeAction} retailQueryElapsedMs={retailQueryElapsedMs} writeElapsedMs={writeElapsedMs} transactionElapsedMs={transactionStopwatch.ElapsedMilliseconds}");
         }
-        catch
+        catch (Exception ex)
         {
+            transactionStopwatch.Stop();
             await dbContext.MainDb.Ado.RollbackTranAsync();
+            Log($"mark special product transaction failed store={normalizedStoreCode} product={normalizedProductCode} action={writeAction} retailQueryElapsedMs={retailQueryElapsedMs} writeElapsedMs={writeElapsedMs} transactionElapsedMs={transactionStopwatch.ElapsedMilliseconds} error={ex.Message}");
             throw;
         }
 
+        var invalidateStopwatch = Stopwatch.StartNew();
         catalogIndexCache.InvalidateStore(normalizedStoreCode);
+        invalidateStopwatch.Stop();
+
+        var indexStopwatch = Stopwatch.StartNew();
         var index = await BuildSellableIndexAsync(normalizedStoreCode, since: null, cancellationToken);
+        indexStopwatch.Stop();
+
+        var itemFilterStopwatch = Stopwatch.StartNew();
         var items = index?.CatalogIndex.Items
             .Where(x => string.Equals(x.ProductCode, normalizedProductCode, StringComparison.OrdinalIgnoreCase))
             .ToArray() ?? [];
+        itemFilterStopwatch.Stop();
+        totalStopwatch.Stop();
+        Log($"mark special product completed store={normalizedStoreCode} product={normalizedProductCode} isSpecialProduct={request.IsSpecialProduct} items={items.Length} storeQueryElapsedMs={storeStopwatch.ElapsedMilliseconds} productQueryElapsedMs={productStopwatch.ElapsedMilliseconds} retailQueryElapsedMs={retailQueryElapsedMs} writeElapsedMs={writeElapsedMs} transactionElapsedMs={transactionStopwatch.ElapsedMilliseconds} cacheInvalidateElapsedMs={invalidateStopwatch.ElapsedMilliseconds} indexElapsedMs={indexStopwatch.ElapsedMilliseconds} itemFilterElapsedMs={itemFilterStopwatch.ElapsedMilliseconds} totalElapsedMs={totalStopwatch.ElapsedMilliseconds}");
 
         return CatalogSpecialProductMarkServiceResult.Ok(new CatalogSpecialProductMarkResponse(
             normalizedStoreCode,
@@ -372,7 +433,7 @@ public sealed class CatalogService(
 
 public sealed class CatalogSellableIndex
 {
-    private const int MaxPageSize = 1000;
+    private const int MaxPageSize = 5000;
     private readonly IReadOnlyDictionary<string, CatalogLookupItemDto> _itemsByNormalizedLookup;
 
     public CatalogSellableIndex(
@@ -491,6 +552,35 @@ public sealed class CatalogSellableIndex
             normalizedLookup,
             item is not null,
             item);
+    }
+
+    public CatalogSpecialProductsPageResponse GetSpecialProductsPage(string? cursor, int pageSize)
+    {
+        var normalizedCursor = NormalizeLookupCode(cursor);
+        var take = Math.Clamp(pageSize, 1, MaxPageSize);
+        var specialItems = Items
+            .Where(x => x.IsSpecialProduct)
+            .ToArray();
+        var pageCandidates = specialItems
+            .Where(x => string.IsNullOrEmpty(normalizedCursor)
+                || string.Compare(x.LookupCodeNormalized, normalizedCursor, StringComparison.Ordinal) > 0)
+            .Take(take + 1)
+            .ToArray();
+
+        var pageItems = pageCandidates.Take(take).ToArray();
+        var hasMore = pageCandidates.Length > take;
+        var nextCursor = hasMore && pageItems.Length > 0
+            ? pageItems[^1].LookupCodeNormalized
+            : null;
+
+        return new CatalogSpecialProductsPageResponse(
+            StoreCode,
+            GeneratedAt,
+            string.IsNullOrEmpty(normalizedCursor) ? null : normalizedCursor,
+            pageItems,
+            nextCursor,
+            hasMore,
+            specialItems.Length);
     }
 
     public static string NormalizeLookupCode(string? value)
