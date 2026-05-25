@@ -25,6 +25,70 @@ public sealed class LocalSellableItemIndex
         var orderedItems = items
             .OrderBy(item => item.DisplayName, StringComparer.CurrentCultureIgnoreCase)
             .ToList();
+        var (exactLookupIndex, metadataLookupIndex) = BuildIndexes(orderedItems);
+
+        lock (_gate)
+        {
+            ReplaceLocked(orderedItems, exactLookupIndex, metadataLookupIndex);
+        }
+    }
+
+    public void Upsert(SellableItemDto item)
+    {
+        var normalizedStoreCode = Normalize(item.StoreCode);
+        var normalizedLookupCode = Normalize(item.LookupCode);
+        if (normalizedStoreCode.Length == 0 || normalizedLookupCode.Length == 0)
+        {
+            return;
+        }
+
+        lock (_gate)
+        {
+            var items = _items
+                .Where(existing =>
+                    Normalize(existing.StoreCode) != normalizedStoreCode ||
+                    Normalize(existing.LookupCode) != normalizedLookupCode)
+                .Append(item)
+                .OrderBy(existing => existing.DisplayName, StringComparer.CurrentCultureIgnoreCase)
+                .ToList();
+            var (exactLookupIndex, metadataLookupIndex) = BuildIndexes(items);
+            ReplaceLocked(items, exactLookupIndex, metadataLookupIndex);
+        }
+    }
+
+    public bool RemoveLookup(string storeCode, string lookupCode)
+    {
+        var normalizedStoreCode = Normalize(storeCode);
+        var normalizedLookupCode = Normalize(lookupCode);
+        if (normalizedStoreCode.Length == 0 || normalizedLookupCode.Length == 0)
+        {
+            return false;
+        }
+
+        lock (_gate)
+        {
+            var items = _items
+                .Where(existing =>
+                    Normalize(existing.StoreCode) != normalizedStoreCode ||
+                    Normalize(existing.LookupCode) != normalizedLookupCode)
+                .OrderBy(existing => existing.DisplayName, StringComparer.CurrentCultureIgnoreCase)
+                .ToList();
+            if (items.Count == _items.Count)
+            {
+                return false;
+            }
+
+            var (exactLookupIndex, metadataLookupIndex) = BuildIndexes(items);
+            ReplaceLocked(items, exactLookupIndex, metadataLookupIndex);
+            return true;
+        }
+    }
+
+    private static (
+        Dictionary<ExactLookupKey, List<SellableItemDto>> ExactLookupIndex,
+        Dictionary<ExactLookupKey, List<SellableItemDto>> MetadataLookupIndex) BuildIndexes(
+        IReadOnlyList<SellableItemDto> orderedItems)
+    {
         var exactLookupIndex = new Dictionary<ExactLookupKey, List<SellableItemDto>>();
         var metadataLookupIndex = new Dictionary<ExactLookupKey, List<SellableItemDto>>();
 
@@ -36,21 +100,26 @@ public sealed class LocalSellableItemIndex
             AddLookup(metadataLookupIndex, item, item.ProductCode);
         }
 
-        lock (_gate)
-        {
-            _items.Clear();
-            _items.AddRange(orderedItems);
-            _exactLookupIndex.Clear();
-            foreach (var pair in exactLookupIndex)
-            {
-                _exactLookupIndex[pair.Key] = pair.Value;
-            }
+        return (exactLookupIndex, metadataLookupIndex);
+    }
 
-            _metadataLookupIndex.Clear();
-            foreach (var pair in metadataLookupIndex)
-            {
-                _metadataLookupIndex[pair.Key] = pair.Value;
-            }
+    private void ReplaceLocked(
+        IEnumerable<SellableItemDto> orderedItems,
+        Dictionary<ExactLookupKey, List<SellableItemDto>> exactLookupIndex,
+        Dictionary<ExactLookupKey, List<SellableItemDto>> metadataLookupIndex)
+    {
+        _items.Clear();
+        _items.AddRange(orderedItems);
+        _exactLookupIndex.Clear();
+        foreach (var pair in exactLookupIndex)
+        {
+            _exactLookupIndex[pair.Key] = pair.Value;
+        }
+
+        _metadataLookupIndex.Clear();
+        foreach (var pair in metadataLookupIndex)
+        {
+            _metadataLookupIndex[pair.Key] = pair.Value;
         }
     }
 

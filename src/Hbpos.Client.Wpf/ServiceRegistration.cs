@@ -51,6 +51,7 @@ public static class ServiceRegistration
             client.Timeout = TimeSpan.FromSeconds(3);
         });
         services.AddSingleton<IDeviceFingerprintService, DeviceFingerprintService>();
+        services.AddSingleton<IUiPriorityCoordinator, UiPriorityCoordinator>();
         services.AddSingleton<ILocalCatalogSyncService, LocalCatalogSyncService>();
         services.AddSingleton<IRemoteLookupRefreshService, RemoteLookupRefreshService>();
         services.AddSingleton<ISpecialProductService, SpecialProductService>();
@@ -63,13 +64,19 @@ public static class ServiceRegistration
         services.AddSingleton<IDeviceRegistrationWorkflowService, DeviceRegistrationWorkflowService>();
         services.AddSingleton<ISpecialProductsWorkflowService, SpecialProductsWorkflowService>();
         services.AddSingleton<ICustomerDisplayOrchestrator, CustomerDisplayOrchestrator>();
-        services.AddTransient<IPosTerminalWorkflowService, PosTerminalWorkflowService>();
+        services.AddTransient<IPosTerminalWorkflowService>(sp => new PosTerminalWorkflowService(
+            sp.GetRequiredService<LocalSellableItemIndex>(),
+            sp.GetRequiredService<PosCartService>(),
+            uiPriorityCoordinator: sp.GetRequiredService<IUiPriorityCoordinator>(),
+            isCatalogSyncActive: () => sp.GetRequiredService<IShellCatalogService>().IsCatalogSyncActive));
         services.AddTransient<PosTerminalWorkflowFactory>(sp => (remoteLookupRefreshAsync, reloadCatalogAsync) =>
             new PosTerminalWorkflowService(
                 sp.GetRequiredService<LocalSellableItemIndex>(),
                 sp.GetRequiredService<PosCartService>(),
                 remoteLookupRefreshAsync,
-                reloadCatalogAsync));
+                reloadCatalogAsync,
+                sp.GetRequiredService<IUiPriorityCoordinator>(),
+                () => sp.GetRequiredService<IShellCatalogService>().IsCatalogSyncActive));
         services.AddSingleton<IDisplayTopologyService, DisplayTopologyService>();
         services.AddSingleton<ICustomerDisplayWindowService, CustomerDisplayWindowService>();
         services.AddSingleton<RawScannerInputProcessor>();

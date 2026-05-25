@@ -660,6 +660,9 @@ public sealed partial class MainViewModel : ObservableObject
             PosTerminal?.RefreshCart();
             CashPayment?.RefreshCart();
         }
+        catch (OperationCanceledException)
+        {
+        }
         catch (Exception ex)
         {
             StatusMessage = $"Catalog sync failed: {ex.Message}";

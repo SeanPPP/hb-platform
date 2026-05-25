@@ -66,6 +66,11 @@ public sealed class LocalCatalogRepository(LocalSqliteStore store) : ILocalCatal
         await using var connection = await store.OpenConnectionAsync(cancellationToken);
         using var transaction = connection.BeginTransaction();
         var syncedAt = DateTimeOffset.UtcNow;
+        await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = UpsertSellableItemSql;
+        AddUpsertParameters(command);
+        command.Prepare();
 
         foreach (var item in materializedItems)
         {
@@ -82,71 +87,7 @@ public sealed class LocalCatalogRepository(LocalSqliteStore store) : ILocalCatal
             }
 
             var contentHash = CreateContentHash(item, storeCode, lookupCodeNormalized);
-            await using var command = connection.CreateCommand();
-            command.Transaction = transaction;
-            command.CommandText = """
-                INSERT INTO LocalSellableItemIndex
-                (
-                    StoreCode,
-                    ProductCode,
-                    ReferenceCode,
-                    DisplayName,
-                    LookupCode,
-                    LookupCodeNormalized,
-                    ItemNumber,
-                    Barcode,
-                    ProductImage,
-                    DiscountRate,
-                    IsSpecialProduct,
-                    RetailPrice,
-                    PriceSource,
-                    PriceSourceLabel,
-                    QuantityFactor,
-                    UpdatedAt,
-                    ContentHash,
-                    SyncedAt
-                )
-                VALUES
-                (
-                    $StoreCode,
-                    $ProductCode,
-                    $ReferenceCode,
-                    $DisplayName,
-                    $LookupCode,
-                    $LookupCodeNormalized,
-                    $ItemNumber,
-                    $Barcode,
-                    $ProductImage,
-                    $DiscountRate,
-                    $IsSpecialProduct,
-                    $RetailPrice,
-                    $PriceSource,
-                    $PriceSourceLabel,
-                    $QuantityFactor,
-                    $UpdatedAt,
-                    $ContentHash,
-                    $SyncedAt
-                )
-                ON CONFLICT(StoreCode, LookupCodeNormalized) DO UPDATE SET
-                    ProductCode = excluded.ProductCode,
-                    ReferenceCode = excluded.ReferenceCode,
-                    DisplayName = excluded.DisplayName,
-                    LookupCode = excluded.LookupCode,
-                    ItemNumber = excluded.ItemNumber,
-                    Barcode = excluded.Barcode,
-                    ProductImage = excluded.ProductImage,
-                    DiscountRate = excluded.DiscountRate,
-                    IsSpecialProduct = excluded.IsSpecialProduct,
-                    RetailPrice = excluded.RetailPrice,
-                    PriceSource = excluded.PriceSource,
-                    PriceSourceLabel = excluded.PriceSourceLabel,
-                    QuantityFactor = excluded.QuantityFactor,
-                    UpdatedAt = excluded.UpdatedAt,
-                    ContentHash = excluded.ContentHash,
-                    SyncedAt = excluded.SyncedAt;
-                """;
-
-            AddItemParameters(command, item, storeCode, lookupCodeNormalized, contentHash, syncedAt);
+            SetItemParameters(command, item, storeCode, lookupCodeNormalized, contentHash, syncedAt);
             await command.ExecuteNonQueryAsync(cancellationToken);
         }
 
@@ -471,7 +412,7 @@ public sealed class LocalCatalogRepository(LocalSqliteStore store) : ILocalCatal
             """;
         command.Parameters.AddWithValue("$StoreCode", normalizedStoreCode);
         command.Parameters.AddWithValue("$AfterLookupCodeNormalized", (object?)cursor ?? DBNull.Value);
-        command.Parameters.AddWithValue("$PageSize", Math.Clamp(pageSize, 1, 1000));
+        command.Parameters.AddWithValue("$PageSize", Math.Clamp(pageSize, 1, 2000));
 
         var rows = new List<LocalSellableItemCompareRow>();
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
@@ -538,7 +479,91 @@ public sealed class LocalCatalogRepository(LocalSqliteStore store) : ILocalCatal
         FROM LocalSellableItemIndex
         """;
 
-    private static void AddItemParameters(
+    private const string UpsertSellableItemSql = """
+        INSERT INTO LocalSellableItemIndex
+        (
+            StoreCode,
+            ProductCode,
+            ReferenceCode,
+            DisplayName,
+            LookupCode,
+            LookupCodeNormalized,
+            ItemNumber,
+            Barcode,
+            ProductImage,
+            DiscountRate,
+            IsSpecialProduct,
+            RetailPrice,
+            PriceSource,
+            PriceSourceLabel,
+            QuantityFactor,
+            UpdatedAt,
+            ContentHash,
+            SyncedAt
+        )
+        VALUES
+        (
+            $StoreCode,
+            $ProductCode,
+            $ReferenceCode,
+            $DisplayName,
+            $LookupCode,
+            $LookupCodeNormalized,
+            $ItemNumber,
+            $Barcode,
+            $ProductImage,
+            $DiscountRate,
+            $IsSpecialProduct,
+            $RetailPrice,
+            $PriceSource,
+            $PriceSourceLabel,
+            $QuantityFactor,
+            $UpdatedAt,
+            $ContentHash,
+            $SyncedAt
+        )
+        ON CONFLICT(StoreCode, LookupCodeNormalized) DO UPDATE SET
+            ProductCode = excluded.ProductCode,
+            ReferenceCode = excluded.ReferenceCode,
+            DisplayName = excluded.DisplayName,
+            LookupCode = excluded.LookupCode,
+            ItemNumber = excluded.ItemNumber,
+            Barcode = excluded.Barcode,
+            ProductImage = excluded.ProductImage,
+            DiscountRate = excluded.DiscountRate,
+            IsSpecialProduct = excluded.IsSpecialProduct,
+            RetailPrice = excluded.RetailPrice,
+            PriceSource = excluded.PriceSource,
+            PriceSourceLabel = excluded.PriceSourceLabel,
+            QuantityFactor = excluded.QuantityFactor,
+            UpdatedAt = excluded.UpdatedAt,
+            ContentHash = excluded.ContentHash,
+            SyncedAt = excluded.SyncedAt;
+        """;
+
+    private static void AddUpsertParameters(SqliteCommand command)
+    {
+        command.Parameters.AddWithValue("$StoreCode", string.Empty);
+        command.Parameters.AddWithValue("$ProductCode", string.Empty);
+        command.Parameters.AddWithValue("$ReferenceCode", DBNull.Value);
+        command.Parameters.AddWithValue("$DisplayName", string.Empty);
+        command.Parameters.AddWithValue("$LookupCode", string.Empty);
+        command.Parameters.AddWithValue("$LookupCodeNormalized", string.Empty);
+        command.Parameters.AddWithValue("$ItemNumber", DBNull.Value);
+        command.Parameters.AddWithValue("$Barcode", DBNull.Value);
+        command.Parameters.AddWithValue("$ProductImage", DBNull.Value);
+        command.Parameters.AddWithValue("$DiscountRate", DBNull.Value);
+        command.Parameters.AddWithValue("$IsSpecialProduct", 0);
+        command.Parameters.AddWithValue("$RetailPrice", 0m);
+        command.Parameters.AddWithValue("$PriceSource", 0);
+        command.Parameters.AddWithValue("$PriceSourceLabel", string.Empty);
+        command.Parameters.AddWithValue("$QuantityFactor", 1m);
+        command.Parameters.AddWithValue("$UpdatedAt", DBNull.Value);
+        command.Parameters.AddWithValue("$ContentHash", string.Empty);
+        command.Parameters.AddWithValue("$SyncedAt", string.Empty);
+    }
+
+    private static void SetItemParameters(
         SqliteCommand command,
         SellableItemDto item,
         string storeCode,
@@ -546,24 +571,24 @@ public sealed class LocalCatalogRepository(LocalSqliteStore store) : ILocalCatal
         string contentHash,
         DateTimeOffset syncedAt)
     {
-        command.Parameters.AddWithValue("$StoreCode", storeCode);
-        command.Parameters.AddWithValue("$ProductCode", item.ProductCode);
-        command.Parameters.AddWithValue("$ReferenceCode", (object?)item.ReferenceCode ?? DBNull.Value);
-        command.Parameters.AddWithValue("$DisplayName", item.DisplayName);
-        command.Parameters.AddWithValue("$LookupCode", item.LookupCode);
-        command.Parameters.AddWithValue("$LookupCodeNormalized", lookupCodeNormalized);
-        command.Parameters.AddWithValue("$ItemNumber", (object?)item.ItemNumber ?? DBNull.Value);
-        command.Parameters.AddWithValue("$Barcode", (object?)item.Barcode ?? DBNull.Value);
-        command.Parameters.AddWithValue("$ProductImage", (object?)item.ProductImage ?? DBNull.Value);
-        command.Parameters.AddWithValue("$DiscountRate", (object?)item.DiscountRate ?? DBNull.Value);
-        command.Parameters.AddWithValue("$IsSpecialProduct", item.IsSpecialProduct ? 1 : 0);
-        command.Parameters.AddWithValue("$RetailPrice", item.RetailPrice);
-        command.Parameters.AddWithValue("$PriceSource", (int)item.PriceSource);
-        command.Parameters.AddWithValue("$PriceSourceLabel", item.PriceSourceLabel);
-        command.Parameters.AddWithValue("$QuantityFactor", item.QuantityFactor);
-        command.Parameters.AddWithValue("$UpdatedAt", (object?)item.UpdatedAt?.ToString("O") ?? DBNull.Value);
-        command.Parameters.AddWithValue("$ContentHash", contentHash);
-        command.Parameters.AddWithValue("$SyncedAt", syncedAt.ToString("O"));
+        command.Parameters["$StoreCode"].Value = storeCode;
+        command.Parameters["$ProductCode"].Value = item.ProductCode;
+        command.Parameters["$ReferenceCode"].Value = (object?)item.ReferenceCode ?? DBNull.Value;
+        command.Parameters["$DisplayName"].Value = item.DisplayName;
+        command.Parameters["$LookupCode"].Value = item.LookupCode;
+        command.Parameters["$LookupCodeNormalized"].Value = lookupCodeNormalized;
+        command.Parameters["$ItemNumber"].Value = (object?)item.ItemNumber ?? DBNull.Value;
+        command.Parameters["$Barcode"].Value = (object?)item.Barcode ?? DBNull.Value;
+        command.Parameters["$ProductImage"].Value = (object?)item.ProductImage ?? DBNull.Value;
+        command.Parameters["$DiscountRate"].Value = (object?)item.DiscountRate ?? DBNull.Value;
+        command.Parameters["$IsSpecialProduct"].Value = item.IsSpecialProduct ? 1 : 0;
+        command.Parameters["$RetailPrice"].Value = item.RetailPrice;
+        command.Parameters["$PriceSource"].Value = (int)item.PriceSource;
+        command.Parameters["$PriceSourceLabel"].Value = item.PriceSourceLabel;
+        command.Parameters["$QuantityFactor"].Value = item.QuantityFactor;
+        command.Parameters["$UpdatedAt"].Value = (object?)item.UpdatedAt?.ToString("O") ?? DBNull.Value;
+        command.Parameters["$ContentHash"].Value = contentHash;
+        command.Parameters["$SyncedAt"].Value = syncedAt.ToString("O");
     }
 
     private static SellableItemDto ReadSellableItem(SqliteDataReader reader)

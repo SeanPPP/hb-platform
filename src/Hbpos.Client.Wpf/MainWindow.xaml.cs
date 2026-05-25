@@ -15,6 +15,7 @@ public partial class MainWindow : Window
     private readonly AppStartupOptions _startupOptions;
     private readonly IRawScannerService _rawScannerService;
     private readonly IDisplayTopologyService _displayTopologyService;
+    private readonly IUiPriorityCoordinator _uiPriorityCoordinator;
     private HwndSource? _hwndSource;
     private Task? _startupInitializationTask;
     private readonly KeyboardScannerFallbackBuffer _keyboardScannerFallback = new();
@@ -26,17 +27,23 @@ public partial class MainWindow : Window
         MainViewModel viewModel,
         AppStartupOptions startupOptions,
         IRawScannerService rawScannerService,
-        IDisplayTopologyService displayTopologyService)
+        IDisplayTopologyService displayTopologyService,
+        IUiPriorityCoordinator uiPriorityCoordinator)
     {
         _viewModel = viewModel;
         _startupOptions = startupOptions;
         _rawScannerService = rawScannerService;
         _displayTopologyService = displayTopologyService;
+        _uiPriorityCoordinator = uiPriorityCoordinator;
         DataContext = _viewModel;
         InitializeComponent();
         SourceInitialized += MainWindowSourceInitialized;
         Loaded += MainWindowLoaded;
         PreviewKeyDown += MainWindowPreviewKeyDown;
+        PreviewMouseDown += MainWindowUserInput;
+        PreviewMouseMove += MainWindowUserInput;
+        PreviewMouseWheel += MainWindowUserInput;
+        PreviewTouchDown += MainWindowUserInput;
         Closed += MainWindowClosed;
     }
 
@@ -96,12 +103,17 @@ public partial class MainWindow : Window
     private void MainWindowClosed(object? sender, EventArgs e)
     {
         PreviewKeyDown -= MainWindowPreviewKeyDown;
+        PreviewMouseDown -= MainWindowUserInput;
+        PreviewMouseMove -= MainWindowUserInput;
+        PreviewMouseWheel -= MainWindowUserInput;
+        PreviewTouchDown -= MainWindowUserInput;
         _hwndSource?.RemoveHook(_rawScannerService.ProcessWindowMessage);
         _rawScannerService.Stop();
     }
 
     private void MainWindowPreviewKeyDown(object sender, KeyEventArgs e)
     {
+        _uiPriorityCoordinator.NotifyUserInput();
         if (IsTextInputFocused())
         {
             _keyboardScannerFallback.Clear();
@@ -118,6 +130,11 @@ public partial class MainWindow : Window
         {
             e.Handled = true;
         }
+    }
+
+    private void MainWindowUserInput(object? sender, InputEventArgs e)
+    {
+        _uiPriorityCoordinator.NotifyUserInput();
     }
 
     private static bool IsTextInputFocused()

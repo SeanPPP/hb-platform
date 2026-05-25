@@ -77,23 +77,32 @@ public sealed class PosTerminalWorkflowService : IPosTerminalWorkflowService
     private readonly PosCartService _cart;
     private readonly Func<string, string, CancellationToken, Task<RemoteLookupRefreshResult>>? _remoteLookupRefreshAsync;
     private readonly Func<CancellationToken, Task<IReadOnlyList<SellableItemDto>>>? _reloadCatalogAsync;
+    private readonly IUiPriorityCoordinator _uiPriorityCoordinator;
+    private readonly Func<bool> _isCatalogSyncActive;
+    private readonly object _remoteLookupGate = new();
+    private readonly HashSet<RemoteLookupKey> _pendingRemoteLookups = [];
 
     public PosTerminalWorkflowService(
         LocalSellableItemIndex priceIndex,
         PosCartService cart,
         Func<string, string, CancellationToken, Task<RemoteLookupRefreshResult>>? remoteLookupRefreshAsync = null,
-        Func<CancellationToken, Task<IReadOnlyList<SellableItemDto>>>? reloadCatalogAsync = null)
+        Func<CancellationToken, Task<IReadOnlyList<SellableItemDto>>>? reloadCatalogAsync = null,
+        IUiPriorityCoordinator? uiPriorityCoordinator = null,
+        Func<bool>? isCatalogSyncActive = null)
     {
         _priceIndex = priceIndex;
         _cart = cart;
         _remoteLookupRefreshAsync = remoteLookupRefreshAsync;
         _reloadCatalogAsync = reloadCatalogAsync;
+        _uiPriorityCoordinator = uiPriorityCoordinator ?? UiPriorityCoordinator.Noop;
+        _isCatalogSyncActive = isCatalogSyncActive ?? (() => false);
     }
 
     public event EventHandler<PosTerminalCatalogReloadedEventArgs>? CatalogReloaded;
 
     public PosTerminalWorkflowResult ProcessScan(PosSessionState session, string scanText, bool preferExactLookup, string source)
     {
+        using var uiOperation = _uiPriorityCoordinator.BeginUiOperation("process-scan");
         var submittedScanText = scanText;
         var totalStopwatch = Stopwatch.StartNew();
         var exactLookupElapsedMs = 0L;
@@ -169,6 +178,7 @@ public sealed class PosTerminalWorkflowService : IPosTerminalWorkflowService
         bool closeMatchesPopup,
         string operation)
     {
+        using var uiOperation = _uiPriorityCoordinator.BeginUiOperation(operation);
         return AddItem(session, item, clearScanText, closeMatchesPopup, operation);
     }
 
@@ -565,15 +575,37 @@ public sealed class PosTerminalWorkflowService : IPosTerminalWorkflowService
             item.LookupCode,
             item.ProductCode,
             item.ReferenceCode);
-        _ = RefreshRemoteLookupAsync(snapshot);
+        var key = RemoteLookupKey.FromSnapshot(snapshot);
+        lock (_remoteLookupGate)
+        {
+            if (!_pendingRemoteLookups.Add(key))
+            {
+                ConsoleLog.Write(
+                    "PosScan",
+                    $"remote lookup duplicate skipped storeCode={snapshot.StoreCode} lookupCode={snapshot.LookupCode}");
+                return;
+            }
+        }
+
+        _ = RefreshRemoteLookupAsync(snapshot, key);
     }
 
-    private async Task RefreshRemoteLookupAsync(RemoteLookupCartSnapshot snapshot)
+    private async Task RefreshRemoteLookupAsync(RemoteLookupCartSnapshot snapshot, RemoteLookupKey key)
     {
-        using var timeoutCts = new CancellationTokenSource(RemoteLookupTimeout);
         var stopwatch = Stopwatch.StartNew();
         try
         {
+            await _uiPriorityCoordinator.WaitForUiIdleAsync();
+            if (_isCatalogSyncActive())
+            {
+                stopwatch.Stop();
+                ConsoleLog.Write(
+                    "PosScan",
+                    $"remote lookup deferred storeCode={snapshot.StoreCode} lookupCode={snapshot.LookupCode} reason=catalog-sync-active elapsedMs={stopwatch.ElapsedMilliseconds}");
+                return;
+            }
+
+            using var timeoutCts = new CancellationTokenSource(RemoteLookupTimeout);
             var result = await _remoteLookupRefreshAsync!(
                 snapshot.StoreCode,
                 snapshot.LookupCode,
@@ -582,6 +614,7 @@ public sealed class PosTerminalWorkflowService : IPosTerminalWorkflowService
 
             if (result.Updated && result.Item is not null)
             {
+                _priceIndex.Upsert(result.Item);
                 if (CanApplyRemoteItemToCartLine(snapshot, result.Item))
                 {
                     var updated = _cart.UpdateLineFromRemote(snapshot.Line, result.Item);
@@ -598,15 +631,15 @@ public sealed class PosTerminalWorkflowService : IPosTerminalWorkflowService
             }
             else if (result.Deleted)
             {
+                _priceIndex.RemoveLookup(result.StoreCode, result.LookupCode);
                 ConsoleLog.Write(
                     "PosScan",
                     $"remote lookup deleted local cache only storeCode={result.StoreCode} lookupCode={result.LookupCode} deletedCount={result.DeletedCount} elapsedMs={stopwatch.ElapsedMilliseconds}");
             }
 
-            var catalogItems = await ReloadCatalogAsync(CancellationToken.None);
-            CatalogReloaded?.Invoke(this, new PosTerminalCatalogReloadedEventArgs(catalogItems));
+            CatalogReloaded?.Invoke(this, new PosTerminalCatalogReloadedEventArgs(_priceIndex.Items));
         }
-        catch (OperationCanceledException ex) when (timeoutCts.IsCancellationRequested)
+        catch (OperationCanceledException ex)
         {
             stopwatch.Stop();
             ConsoleLog.Write(
@@ -619,6 +652,13 @@ public sealed class PosTerminalWorkflowService : IPosTerminalWorkflowService
             ConsoleLog.Write(
                 "PosScan",
                 $"remote lookup failed storeCode={snapshot.StoreCode} lookupCode={snapshot.LookupCode} elapsedMs={stopwatch.ElapsedMilliseconds} error={ex.Message}");
+        }
+        finally
+        {
+            lock (_remoteLookupGate)
+            {
+                _pendingRemoteLookups.Remove(key);
+            }
         }
     }
 
@@ -674,4 +714,14 @@ public sealed class PosTerminalWorkflowService : IPosTerminalWorkflowService
         string LookupCode,
         string ProductCode,
         string? ReferenceCode);
+
+    private sealed record RemoteLookupKey(string StoreCode, string LookupCode)
+    {
+        public static RemoteLookupKey FromSnapshot(RemoteLookupCartSnapshot snapshot)
+        {
+            return new RemoteLookupKey(
+                NormalizeIdentity(snapshot.StoreCode),
+                NormalizeIdentity(snapshot.LookupCode));
+        }
+    }
 }

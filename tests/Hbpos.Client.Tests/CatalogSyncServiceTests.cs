@@ -186,21 +186,8 @@ public sealed class CatalogSyncServiceTests
     public async Task FullSyncAsync_WhenForcedAndLocalMatchesRemote_DownloadsAllPages()
     {
         var repository = new FakeLocalCatalogRepository();
-        repository.ComparePages.Enqueue(
-        [
-            new LocalSellableItemCompareRow("S01", "LOCAL-CODE-1", "hash-1", Timestamp),
-            new LocalSellableItemCompareRow("S01", "LOCAL-CODE-2", "hash-2", Timestamp)
-        ]);
-        repository.ComparePages.Enqueue([]);
 
         var apiClient = new FakeCatalogApiClient();
-        apiClient.CompareResponses.Enqueue(new CatalogCompareResponse(
-            "S01",
-            Timestamp,
-            [],
-            [],
-            NextCursor: null,
-            HasMore: false));
         apiClient.PageResponses.Enqueue(new CatalogSyncPageResponse(
             "S01",
             Timestamp,
@@ -225,12 +212,89 @@ public sealed class CatalogSyncServiceTests
         using var logCapture = CaptureClientLog(logs);
         var result = await service.FullSyncAsync("S01", forceFullDownload: true);
 
-        Assert.Equal(new LocalCatalogSyncResult("S01", ComparePages: 1, RemotePages: 2, UpsertedCount: 2, DeletedCount: 0), result);
+        Assert.Equal(new LocalCatalogSyncResult("S01", ComparePages: 0, RemotePages: 2, UpsertedCount: 2, DeletedCount: 0), result);
+        Assert.Empty(repository.ComparePageRequests);
+        Assert.Null(apiClient.LastCompareRequest);
         Assert.Equal(2, repository.UpsertedBatches.Count);
         Assert.Equal(
             [("S01", null, 5000), ("S01", "PAGE-CODE-1", 5000)],
             apiClient.PageRequests);
+        Assert.True(HasLog(logs, "compare skipped store=S01 reason=force-full-download"));
         Assert.False(HasLog(logs, "download skipped store=S01 reason=no-changes"));
+    }
+
+    [Fact]
+    public async Task FullSyncAsync_WhenCanceled_DoesNotReportFailedProgress()
+    {
+        var repository = new FakeLocalCatalogRepository();
+        repository.ComparePages.Enqueue([]);
+        var apiClient = new FakeCatalogApiClient
+        {
+            PageException = new OperationCanceledException("sync canceled")
+        };
+        var service = new LocalCatalogSyncService(repository, apiClient);
+        var progressReports = new List<CatalogSyncProgress>();
+        var progress = new CapturingProgress<CatalogSyncProgress>(progressReports);
+
+        await Assert.ThrowsAsync<OperationCanceledException>(() => service.FullSyncAsync("S01", progress: progress));
+
+        Assert.DoesNotContain(progressReports, report => report.Stage == CatalogSyncProgressStage.Failed);
+    }
+
+    [Fact]
+    public async Task FullSyncAsync_WaitsForUiIdleBeforeRemoteDownload()
+    {
+        var repository = new FakeLocalCatalogRepository();
+        repository.ComparePages.Enqueue([]);
+        var apiClient = new FakeCatalogApiClient();
+        apiClient.PageResponses.Enqueue(new CatalogSyncPageResponse(
+            "S01",
+            Timestamp,
+            Cursor: null,
+            [CreateLookupItem("PAGE-001", "page-code", "PAGE-REF-001")],
+            [],
+            NextCursor: null,
+            HasMore: false,
+            TotalCount: 1));
+        var uiPriority = new GatedUiPriorityCoordinator();
+        var service = new LocalCatalogSyncService(repository, apiClient, uiPriority);
+
+        var syncTask = service.FullSyncAsync("S01");
+        await uiPriority.FirstWaitStarted.Task.WaitAsync(TimeSpan.FromSeconds(3));
+
+        Assert.Empty(apiClient.PageRequests);
+
+        uiPriority.ReleaseFirstWait();
+        await syncTask.WaitAsync(TimeSpan.FromSeconds(3));
+
+        Assert.Single(apiClient.PageRequests);
+    }
+
+    [Fact]
+    public async Task FullSyncAsync_SplitsLargeDownloadApplyIntoUiFriendlyBatches()
+    {
+        var repository = new FakeLocalCatalogRepository();
+        repository.ComparePages.Enqueue([]);
+        var apiClient = new FakeCatalogApiClient();
+        apiClient.PageResponses.Enqueue(new CatalogSyncPageResponse(
+            "S01",
+            Timestamp,
+            Cursor: null,
+            Enumerable.Range(1, 501)
+                .Select(index => CreateLookupItem($"PAGE-{index:000}", $"page-code-{index:000}", $"PAGE-REF-{index:000}"))
+                .ToArray(),
+            [],
+            NextCursor: null,
+            HasMore: false,
+            TotalCount: 501));
+        var uiPriority = new CountingUiPriorityCoordinator();
+        var service = new LocalCatalogSyncService(repository, apiClient, uiPriority);
+
+        var result = await service.FullSyncAsync("S01");
+
+        Assert.Equal(501, result.UpsertedCount);
+        Assert.True(repository.UpsertedBatches.Count > 1);
+        Assert.True(uiPriority.WaitCount >= repository.UpsertedBatches.Count);
     }
 
     [Fact]
@@ -711,6 +775,8 @@ public sealed class CatalogSyncServiceTests
 
         public Exception? CompareException { get; init; }
 
+        public Exception? PageException { get; init; }
+
         public Exception? LookupException { get; init; }
 
         public CatalogLookupResponse? LookupResponse { get; init; }
@@ -724,7 +790,9 @@ public sealed class CatalogSyncServiceTests
             CancellationToken cancellationToken = default)
         {
             PageRequests.Add((storeCode, cursor, pageSize));
-            return Task.FromResult(PageResponses.Dequeue());
+            return PageException is not null
+                ? Task.FromException<CatalogSyncPageResponse>(PageException)
+                : Task.FromResult(PageResponses.Dequeue());
         }
 
         public Task<CatalogCompareResponse> CompareSellableItemsAsync(
@@ -775,6 +843,70 @@ public sealed class CatalogSyncServiceTests
         public void Report(T value)
         {
             reports.Add(value);
+        }
+    }
+
+    private sealed class CountingUiPriorityCoordinator : IUiPriorityCoordinator
+    {
+        public int WaitCount { get; private set; }
+
+        public bool IsUiActive => false;
+
+        public void NotifyUserInput()
+        {
+        }
+
+        public IDisposable BeginUiOperation(string name)
+        {
+            return NoopDisposable.Instance;
+        }
+
+        public Task WaitForUiIdleAsync(CancellationToken cancellationToken = default)
+        {
+            WaitCount++;
+            return Task.CompletedTask;
+        }
+    }
+
+    private sealed class GatedUiPriorityCoordinator : IUiPriorityCoordinator
+    {
+        private readonly TaskCompletionSource _releaseFirstWait = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _waitCount;
+
+        public TaskCompletionSource FirstWaitStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public bool IsUiActive => false;
+
+        public void NotifyUserInput()
+        {
+        }
+
+        public IDisposable BeginUiOperation(string name)
+        {
+            return NoopDisposable.Instance;
+        }
+
+        public async Task WaitForUiIdleAsync(CancellationToken cancellationToken = default)
+        {
+            if (Interlocked.Increment(ref _waitCount) == 1)
+            {
+                FirstWaitStarted.SetResult();
+                await _releaseFirstWait.Task.WaitAsync(cancellationToken);
+            }
+        }
+
+        public void ReleaseFirstWait()
+        {
+            _releaseFirstWait.SetResult();
+        }
+    }
+
+    private sealed class NoopDisposable : IDisposable
+    {
+        public static readonly NoopDisposable Instance = new();
+
+        public void Dispose()
+        {
         }
     }
 

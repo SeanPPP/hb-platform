@@ -43,10 +43,13 @@ public sealed record CatalogSyncProgress(
 
 public sealed class LocalCatalogSyncService(
     ILocalCatalogRepository localCatalogRepository,
-    ICatalogApiClient catalogApiClient) : ILocalCatalogSyncService
+    ICatalogApiClient catalogApiClient,
+    IUiPriorityCoordinator? uiPriorityCoordinator = null) : ILocalCatalogSyncService
 {
     private const int ComparePageSize = 2000;
     private const int DownloadPageSize = 5000;
+    private const int ApplyBatchSize = 500;
+    private readonly IUiPriorityCoordinator _uiPriorityCoordinator = uiPriorityCoordinator ?? UiPriorityCoordinator.Noop;
 
     public async Task<LocalCatalogSyncResult> FullSyncAsync(
         string storeCode,
@@ -82,53 +85,62 @@ public sealed class LocalCatalogSyncService(
                 deletedCount,
                 totalStopwatch);
 
-            while (true)
+            if (forceFullDownload)
             {
-                var localPage = await localCatalogRepository.LoadSellableItemComparePageAsync(
-                    storeCode,
-                    afterLookupCodeNormalized,
-                    ComparePageSize,
-                    cancellationToken);
-
-                if (localPage.Count == 0)
+                Log($"compare skipped store={storeCode} reason=force-full-download");
+            }
+            else
+            {
+                while (true)
                 {
-                    Log($"local compare finished store={storeCode} pages={comparePages}");
-                    break;
+                    await _uiPriorityCoordinator.WaitForUiIdleAsync(cancellationToken);
+                    var localPage = await localCatalogRepository.LoadSellableItemComparePageAsync(
+                        storeCode,
+                        afterLookupCodeNormalized,
+                        ComparePageSize,
+                        cancellationToken);
+
+                    if (localPage.Count == 0)
+                    {
+                        Log($"local compare finished store={storeCode} pages={comparePages}");
+                        break;
+                    }
+
+                    localItemCount += localPage.Count;
+                    afterLookupCodeNormalized = localPage[^1].LookupCodeNormalized;
+                    Log($"local compare page store={storeCode} page={comparePages + 1} rows={localPage.Count} after={afterLookupCodeNormalized}");
+                    var request = new CatalogCompareRequest(
+                        storeCode,
+                        localPage.Select(row => row.ToCompareVersion()).ToArray());
+                    var compareStopwatch = Stopwatch.StartNew();
+                    await _uiPriorityCoordinator.WaitForUiIdleAsync(cancellationToken);
+                    var response = await catalogApiClient.CompareSellableItemsAsync(request, cancellationToken);
+                    compareStopwatch.Stop();
+                    Log($"compare response store={storeCode} page={comparePages + 1} upsertedLookups={response.UpsertedLookups.Count} deletedLookups={response.DeletedLookups.Count} apiElapsedMs={compareStopwatch.ElapsedMilliseconds}");
+                    hasCompareChanges |= response.UpsertedLookups.Count > 0 || response.DeletedLookups.Count > 0;
+
+                    var applied = await ApplyChangesAsync(
+                        storeCode,
+                        response.UpsertedLookups,
+                        response.DeletedLookups,
+                        cancellationToken);
+
+                    comparePages++;
+                    upsertedCount += applied.UpsertedCount;
+                    deletedCount += applied.DeletedCount;
+                    Log($"compare applied store={storeCode} page={comparePages} upserted={applied.UpsertedCount} deleted={applied.DeletedCount} upsertElapsedMs={applied.UpsertElapsedMs} deleteElapsedMs={applied.DeleteElapsedMs} applyElapsedMs={applied.ApplyElapsedMs}");
+                    ReportProgress(
+                        progress,
+                        storeCode,
+                        CatalogSyncProgressStage.Comparing,
+                        totalCount,
+                        downloadedCount,
+                        comparePages,
+                        remotePages,
+                        upsertedCount,
+                        deletedCount,
+                        totalStopwatch);
                 }
-
-                localItemCount += localPage.Count;
-                afterLookupCodeNormalized = localPage[^1].LookupCodeNormalized;
-                Log($"local compare page store={storeCode} page={comparePages + 1} rows={localPage.Count} after={afterLookupCodeNormalized}");
-                var request = new CatalogCompareRequest(
-                    storeCode,
-                    localPage.Select(row => row.ToCompareVersion()).ToArray());
-                var compareStopwatch = Stopwatch.StartNew();
-                var response = await catalogApiClient.CompareSellableItemsAsync(request, cancellationToken);
-                compareStopwatch.Stop();
-                Log($"compare response store={storeCode} page={comparePages + 1} upsertedLookups={response.UpsertedLookups.Count} deletedLookups={response.DeletedLookups.Count} apiElapsedMs={compareStopwatch.ElapsedMilliseconds}");
-                hasCompareChanges |= response.UpsertedLookups.Count > 0 || response.DeletedLookups.Count > 0;
-
-                var applied = await ApplyChangesAsync(
-                    storeCode,
-                    response.UpsertedLookups,
-                    response.DeletedLookups,
-                    cancellationToken);
-
-                comparePages++;
-                upsertedCount += applied.UpsertedCount;
-                deletedCount += applied.DeletedCount;
-                Log($"compare applied store={storeCode} page={comparePages} upserted={applied.UpsertedCount} deleted={applied.DeletedCount} upsertElapsedMs={applied.UpsertElapsedMs} deleteElapsedMs={applied.DeleteElapsedMs} applyElapsedMs={applied.ApplyElapsedMs}");
-                ReportProgress(
-                    progress,
-                    storeCode,
-                    CatalogSyncProgressStage.Comparing,
-                    totalCount,
-                    downloadedCount,
-                    comparePages,
-                    remotePages,
-                    upsertedCount,
-                    deletedCount,
-                    totalStopwatch);
             }
 
             string? cursor = null;
@@ -136,6 +148,7 @@ public sealed class LocalCatalogSyncService(
             {
                 Log($"download page request store={storeCode} page={remotePages + 1} cursor={cursor ?? "<start>"}");
                 var downloadStopwatch = Stopwatch.StartNew();
+                await _uiPriorityCoordinator.WaitForUiIdleAsync(cancellationToken);
                 var response = await catalogApiClient.GetSellableItemsPageAsync(
                     storeCode,
                     cursor,
@@ -211,6 +224,12 @@ public sealed class LocalCatalogSyncService(
                 upsertedCount,
                 deletedCount);
         }
+        catch (OperationCanceledException)
+        {
+            totalStopwatch.Stop();
+            Log($"full sync canceled store={storeCode} comparePages={comparePages} remotePages={remotePages} upserted={upsertedCount} deleted={deletedCount} elapsedMs={totalStopwatch.ElapsedMilliseconds}");
+            throw;
+        }
         catch (Exception ex)
         {
             totalStopwatch.Stop();
@@ -244,7 +263,12 @@ public sealed class LocalCatalogSyncService(
         if (upsertItems.Length > 0)
         {
             var upsertStopwatch = Stopwatch.StartNew();
-            await localCatalogRepository.UpsertSellableItemsAsync(upsertItems, cancellationToken);
+            foreach (var batch in upsertItems.Chunk(ApplyBatchSize))
+            {
+                await _uiPriorityCoordinator.WaitForUiIdleAsync(cancellationToken);
+                await localCatalogRepository.UpsertSellableItemsAsync(batch, cancellationToken);
+            }
+
             upsertStopwatch.Stop();
             upsertElapsedMs = upsertStopwatch.ElapsedMilliseconds;
         }
@@ -268,6 +292,7 @@ public sealed class LocalCatalogSyncService(
             CancellationToken deleteCancellationToken)
         {
             var deleteStopwatch = Stopwatch.StartNew();
+            await _uiPriorityCoordinator.WaitForUiIdleAsync(deleteCancellationToken);
             var count = await localCatalogRepository.DeleteByLookupCodesAsync(
                 deleteStoreCode,
                 lookupCodes,

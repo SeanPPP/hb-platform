@@ -1,5 +1,6 @@
 using Hbpos.Client.Wpf.Services;
 using Hbpos.Contracts.Catalog;
+using Microsoft.Data.Sqlite;
 
 namespace Hbpos.Client.Tests;
 
@@ -287,6 +288,25 @@ public sealed class LocalCatalogRepositoryTests
         }
     }
 
+    [Fact]
+    public async Task LocalSqliteStore_OpenConnectionAsync_EnablesWalAndBusyTimeout()
+    {
+        var databasePath = CreateTempDatabasePath();
+
+        try
+        {
+            var store = new LocalSqliteStore(databasePath);
+            await using var connection = await store.OpenConnectionAsync();
+
+            Assert.Equal("wal", await ReadScalarStringAsync(connection, "PRAGMA journal_mode;"));
+            Assert.True(await ReadScalarIntAsync(connection, "PRAGMA busy_timeout;") >= 5000);
+        }
+        finally
+        {
+            DeleteTempDatabase(databasePath);
+        }
+    }
+
     private static async Task<LocalCatalogRepository> CreateRepositoryAsync(string databasePath)
     {
         var store = new LocalSqliteStore(databasePath);
@@ -331,9 +351,26 @@ public sealed class LocalCatalogRepositoryTests
 
     private static void DeleteTempDatabase(string databasePath)
     {
-        if (File.Exists(databasePath))
+        foreach (var path in new[] { databasePath, $"{databasePath}-wal", $"{databasePath}-shm" })
         {
-            File.Delete(databasePath);
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
         }
+    }
+
+    private static async Task<string> ReadScalarStringAsync(SqliteConnection connection, string sql)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        return (await command.ExecuteScalarAsync())?.ToString() ?? string.Empty;
+    }
+
+    private static async Task<int> ReadScalarIntAsync(SqliteConnection connection, string sql)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        return Convert.ToInt32(await command.ExecuteScalarAsync());
     }
 }

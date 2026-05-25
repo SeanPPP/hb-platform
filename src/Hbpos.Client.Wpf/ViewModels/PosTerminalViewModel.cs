@@ -691,6 +691,9 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IDisposable
             RefreshMatches(catalogItems);
             SetStatusText(completedMessage);
         }
+        catch (OperationCanceledException)
+        {
+        }
         catch (Exception ex)
         {
             SetStatusText($"{failedPrefix}: {ex.Message}");

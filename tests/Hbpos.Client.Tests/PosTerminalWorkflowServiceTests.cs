@@ -143,6 +143,67 @@ public sealed class PosTerminalWorkflowServiceTests
         Assert.Equal(5.5m, line.UnitPrice);
     }
 
+    [Fact]
+    public async Task Add_selected_item_DeduplicatesRemoteLookupForSameLookupCode()
+    {
+        var cart = new PosCartService();
+        var index = new LocalSellableItemIndex();
+        var item = CreateItem("SKU-261", "Workflow Soda", "930261", PriceSourceKind.StoreRetailPrice, 3.5m);
+        var remoteItem = CreateItem("SKU-261", "Workflow Soda Remote", "930261", PriceSourceKind.StoreRetailPrice, 4.5m);
+        var remoteLookup = new TaskCompletionSource<RemoteLookupRefreshResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var lookupCalls = 0;
+        index.ReplaceAll([item]);
+        var service = new PosTerminalWorkflowService(
+            index,
+            cart,
+            remoteLookupRefreshAsync: (_, _, _) =>
+            {
+                Interlocked.Increment(ref lookupCalls);
+                return remoteLookup.Task;
+            },
+            reloadCatalogAsync: _ => throw new InvalidOperationException("Full catalog reload should not run after lookup refresh."));
+
+        service.AddSelectedItem(Session, item, clearScanText: true, closeMatchesPopup: false, operation: "manual-add-selected");
+        service.AddSelectedItem(Session, item, clearScanText: true, closeMatchesPopup: false, operation: "manual-add-selected");
+
+        await WaitUntilAsync(() => Volatile.Read(ref lookupCalls) == 1);
+
+        remoteLookup.SetResult(new RemoteLookupRefreshResult("S001", "930261", Found: true, Item: remoteItem, DeletedCount: 0));
+        await WaitUntilAsync(() => cart.Lines.Single().DisplayName == "Workflow Soda Remote");
+
+        Assert.Equal(1, Volatile.Read(ref lookupCalls));
+        Assert.Single(index.FindExactMatches("S001", "930261"));
+    }
+
+    [Fact]
+    public async Task Add_selected_item_SkipsRemoteLookupWhileCatalogSyncIsActive()
+    {
+        var cart = new PosCartService();
+        var index = new LocalSellableItemIndex();
+        var logs = new ConcurrentQueue<string>();
+        var item = CreateItem("SKU-271", "Workflow Busy Item", "930271", PriceSourceKind.StoreRetailPrice, 2.5m);
+        var lookupCalls = 0;
+        index.ReplaceAll([item]);
+        var service = new PosTerminalWorkflowService(
+            index,
+            cart,
+            remoteLookupRefreshAsync: (_, _, _) =>
+            {
+                Interlocked.Increment(ref lookupCalls);
+                return Task.FromResult(new RemoteLookupRefreshResult("S001", "930271", Found: false, Item: null, DeletedCount: 1));
+            },
+            isCatalogSyncActive: () => true);
+
+        using var logCapture = CaptureClientLog(logs);
+
+        service.AddSelectedItem(Session, item, clearScanText: true, closeMatchesPopup: false, operation: "manual-add-selected");
+
+        await WaitUntilAsync(() => HasLog(logs, "remote lookup deferred"));
+
+        Assert.Equal(0, Volatile.Read(ref lookupCalls));
+        Assert.Single(cart.Lines);
+    }
+
     private static PosSessionState Session => new("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0);
 
     private static SellableItemDto CreateItem(

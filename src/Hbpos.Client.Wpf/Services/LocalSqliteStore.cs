@@ -29,6 +29,25 @@ public sealed class LocalSqliteStore
     {
         var connection = new SqliteConnection(_connectionString);
         await connection.OpenAsync(cancellationToken);
+        await ConfigureConnectionAsync(connection, cancellationToken);
         return connection;
+    }
+
+    private static async Task ConfigureConnectionAsync(
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+        await ExecutePragmaAsync(connection, "PRAGMA busy_timeout = 5000;", cancellationToken);
+        await ExecutePragmaAsync(connection, "PRAGMA journal_mode = WAL;", cancellationToken);
+    }
+
+    private static async Task ExecutePragmaAsync(
+        SqliteConnection connection,
+        string sql,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        await command.ExecuteNonQueryAsync(cancellationToken);
     }
 }
