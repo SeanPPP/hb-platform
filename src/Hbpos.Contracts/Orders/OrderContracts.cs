@@ -6,7 +6,7 @@ public enum PaymentMethodKind
 {
     Cash = 1,
     Card = 2,
-    QrCode = 3
+    Voucher = 3
 }
 
 public sealed record OrderSyncRequest(
@@ -39,7 +39,8 @@ public sealed record PaymentSyncDto(
     Guid PaymentGuid,
     PaymentMethodKind Method,
     decimal Amount,
-    string? Reference);
+    string? Reference,
+    string? ReservationToken = null);
 
 public sealed record OrderSyncResponse(
     Guid OrderGuid,

@@ -33,6 +33,7 @@ public static class ServiceRegistration
         services.AddSingleton<ILocalDeviceRepository, LocalDeviceRepository>();
         services.AddSingleton<ILocalCatalogRepository, LocalCatalogRepository>();
         services.AddSingleton<ILocalOrderRepository, LocalOrderRepository>();
+        services.AddSingleton<ILocalOrderUploadRepository, LocalOrderUploadRepository>();
         services.AddSingleton<ISuspendedOrderRepository, SuspendedOrderRepository>();
         services.AddSingleton<ISyncQueueRepository, SyncQueueRepository>();
         services.AddHttpClient<ICatalogApiClient, CatalogApiClient>(client =>
@@ -57,6 +58,18 @@ public static class ServiceRegistration
             client.Timeout = TimeSpan.FromSeconds(10);
         })
         .AddHttpMessageHandler<DeviceAuthorizationMessageHandler>();
+        services.AddHttpClient<IOrderSyncApiClient, OrderSyncApiClient>(client =>
+        {
+            client.BaseAddress = GetApiBaseAddress();
+            client.Timeout = TimeSpan.FromSeconds(15);
+        })
+        .AddHttpMessageHandler<DeviceAuthorizationMessageHandler>();
+        services.AddHttpClient<IVoucherApiClient, VoucherApiClient>(client =>
+        {
+            client.BaseAddress = GetApiBaseAddress();
+            client.Timeout = TimeSpan.FromSeconds(10);
+        })
+        .AddHttpMessageHandler<DeviceAuthorizationMessageHandler>();
         services.AddSingleton<IDeviceFingerprintService, DeviceFingerprintService>();
         services.AddSingleton<IUiPriorityCoordinator, UiPriorityCoordinator>();
         services.AddSingleton<ILocalCatalogSyncService, LocalCatalogSyncService>();
@@ -70,6 +83,11 @@ public static class ServiceRegistration
         services.AddSingleton<ISuspendedOrderService, SuspendedOrderService>();
         services.AddSingleton<IRemoteOrderHistoryService, RemoteOrderHistoryService>();
         services.AddSingleton<IReceiptQueryService, ReceiptQueryService>();
+        services.AddSingleton<IOrderUploadService, OrderUploadService>();
+        services.AddSingleton<IOrderUploadExecutionService, OrderUploadExecutionService>();
+        services.AddSingleton(CardTerminalSettings.FromEnvironment());
+        services.AddSingleton<ICardTerminalClient, ConfiguredCardTerminalClient>();
+        services.AddSingleton<IVoucherTenderClient>(sp => sp.GetRequiredService<IVoucherApiClient>());
         services.AddSingleton<IDeviceRegistrationWorkflowService, DeviceRegistrationWorkflowService>();
         services.AddSingleton<ISpecialProductsWorkflowService, SpecialProductsWorkflowService>();
         services.AddSingleton<IReceiptReturnsWorkflowService, ReceiptReturnsWorkflowService>();
@@ -120,7 +138,9 @@ public static class ServiceRegistration
             sp.GetRequiredService<ISuspendedOrderService>(),
             sp.GetRequiredService<IRemoteOrderHistoryService>(),
             userFeedbackService: sp.GetRequiredService<IUserFeedbackService>(),
-            receiptReturnsWorkflowService: sp.GetRequiredService<IReceiptReturnsWorkflowService>()));
+            receiptReturnsWorkflowService: sp.GetRequiredService<IReceiptReturnsWorkflowService>(),
+            voucherApiClient: sp.GetRequiredService<IVoucherApiClient>(),
+            cardTerminalClient: sp.GetRequiredService<ICardTerminalClient>()));
         services.AddSingleton<MainWindow>();
 
         return services;

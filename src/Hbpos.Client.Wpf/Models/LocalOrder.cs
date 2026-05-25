@@ -41,4 +41,15 @@ public sealed record LocalPayment(
     decimal Amount,
     string? Reference);
 
+public sealed record PaymentTender(
+    PaymentMethodKind Method,
+    decimal Amount,
+    string? Reference = null,
+    string? DisplayLabel = null)
+{
+    public string? DisplayReference => PaymentReferenceDisplay.Format(Method, Reference);
+}
+
 public sealed record CashCheckoutResult(LocalOrder Order, decimal TenderedAmount, decimal ChangeAmount);
+
+public sealed record PaymentCheckoutResult(LocalOrder Order, decimal TenderedAmount, decimal ChangeAmount);

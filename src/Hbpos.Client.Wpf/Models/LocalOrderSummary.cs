@@ -38,5 +38,38 @@ public sealed record ReceiptPaymentLine(
     decimal Amount,
     string? Reference)
 {
-    public string MethodLabel => Method.ToString();
+    public string? DisplayReference => PaymentReferenceDisplay.Format(Method, Reference);
+
+    public string MethodLabel => Method switch
+    {
+        PaymentMethodKind.Cash => "Cash",
+        PaymentMethodKind.Card => Reference?.StartsWith("SQ:", StringComparison.OrdinalIgnoreCase) == true
+            ? "Square"
+            : Reference?.StartsWith("ANZ:", StringComparison.OrdinalIgnoreCase) == true
+                ? "ANZ Linkly"
+                : "Card",
+        PaymentMethodKind.Voucher => "Voucher",
+        _ => Method.ToString()
+    };
+}
+
+public static class PaymentReferenceDisplay
+{
+    public static string? Format(PaymentMethodKind method, string? reference)
+    {
+        if (string.IsNullOrWhiteSpace(reference))
+        {
+            return null;
+        }
+
+        if (method == PaymentMethodKind.Voucher)
+        {
+            var parts = reference.Split(':', StringSplitOptions.TrimEntries);
+            return parts.Length >= 2 && parts[0].Equals("VOUCHER", StringComparison.OrdinalIgnoreCase)
+                ? parts[1]
+                : reference;
+        }
+
+        return reference;
+    }
 }

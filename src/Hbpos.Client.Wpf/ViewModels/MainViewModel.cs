@@ -37,6 +37,8 @@ public sealed partial class MainViewModel : ObservableObject
     private readonly ISuspendedOrderService? _suspendedOrderService;
     private readonly IRemoteOrderHistoryService? _remoteOrderHistoryService;
     private readonly ICashPaymentWorkflowService _cashPaymentWorkflowService;
+    private readonly IVoucherApiClient? _voucherApiClient;
+    private readonly ICardTerminalClient? _cardTerminalClient;
     private readonly IDeviceRegistrationWorkflowService _deviceRegistrationWorkflowService;
     private readonly ISpecialProductsWorkflowService _specialProductsWorkflowService;
     private readonly IReceiptReturnsWorkflowService _receiptReturnsWorkflowService;
@@ -212,7 +214,9 @@ public sealed partial class MainViewModel : ObservableObject
         ISuspendedOrderService? suspendedOrderService = null,
         IRemoteOrderHistoryService? remoteOrderHistoryService = null,
         IUserFeedbackService? userFeedbackService = null,
-        IReceiptReturnsWorkflowService? receiptReturnsWorkflowService = null)
+        IReceiptReturnsWorkflowService? receiptReturnsWorkflowService = null,
+        IVoucherApiClient? voucherApiClient = null,
+        ICardTerminalClient? cardTerminalClient = null)
     {
         _priceIndex = priceIndex;
         _cart = cart;
@@ -235,6 +239,8 @@ public sealed partial class MainViewModel : ObservableObject
         _suspendedOrderService = suspendedOrderService;
         _remoteOrderHistoryService = remoteOrderHistoryService;
         _cashPaymentWorkflowService = cashPaymentWorkflowService;
+        _voucherApiClient = voucherApiClient;
+        _cardTerminalClient = cardTerminalClient;
         _deviceRegistrationWorkflowService = deviceRegistrationWorkflowService;
         _specialProductsWorkflowService = specialProductsWorkflowService;
         _receiptReturnsWorkflowService = receiptReturnsWorkflowService ?? new ReceiptReturnsWorkflowService(
@@ -278,7 +284,7 @@ public sealed partial class MainViewModel : ObservableObject
 
     public SpecialProductsViewModel? SpecialProducts { get; private set; }
 
-    public CashPaymentViewModel? CashPayment { get; private set; }
+    public PaymentViewModel? CashPayment { get; private set; }
 
     public ReceiptReturnsViewModel? ReceiptReturns { get; private set; }
 
@@ -952,7 +958,7 @@ public sealed partial class MainViewModel : ObservableObject
             return;
         }
 
-        CashPayment = new CashPaymentViewModel(
+        CashPayment = new PaymentViewModel(
             _cart,
             _cashPaymentWorkflowService,
             Session,

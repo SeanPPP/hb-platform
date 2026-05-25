@@ -18,9 +18,12 @@ public static class ServiceRegistration
         services.AddScoped<IOrderHistoryService, OrderHistoryService>();
         services.AddScoped<IOrderReturnRepository, SqlSugarOrderReturnRepository>();
         services.AddScoped<IOrderReturnService, OrderReturnService>();
+        services.AddScoped<IStoreVoucherRepository, SqlSugarStoreVoucherRepository>();
+        services.AddScoped<IStoreVoucherService, StoreVoucherService>();
         services.AddSingleton<ICatalogIndexCache, CatalogIndexCache>();
         services.AddSingleton<IPriceIndexBuilder, PriceIndexBuilder>();
         services.AddSingleton<IOrderSyncPlanner, OrderSyncPlanner>();
+        services.AddSingleton<IStoreVoucherReservationService>(new InMemoryStoreVoucherReservationService(TimeProvider.System));
 
         return services;
     }

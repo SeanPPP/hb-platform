@@ -49,7 +49,7 @@
                         </Grid.ColumnDefinitions>
 
                         <StackPanel Grid.Column="0" Margin="0,0,12,0">
-                            <TextBlock Text="来源" Style="{StaticResource HistoryFilterLabel}" />
+                            <TextBlock Text="{loc:Loc Source}" Style="{StaticResource HistoryFilterLabel}" />
                             <ComboBox ItemsSource="{Binding SourceOptions}"
                                       SelectedItem="{Binding SelectedSourceOption, Mode=TwoWay}"
                                       DisplayMemberPath="Label"
@@ -191,6 +191,23 @@
                                 </ItemsControl.ItemTemplate>
                             </ItemsControl>
 
+                            <ItemsControl ItemsSource="{Binding Payments}" Margin="0,8,0,0">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <DockPanel Margin="0,0,0,6">
+                                            <TextBlock FontSize="10" Foreground="{StaticResource PosMutedForegroundBrush}">
+                                                <Run Text="{Binding MethodLabel, Mode=OneWay}" />
+                                                <Run Text="{Binding DisplayReference, StringFormat={}  {0}}" />
+                                            </TextBlock>
+                                            <TextBlock DockPanel.Dock="Right"
+                                                       Text="{Binding Amount, StringFormat={}{0:C2}}"
+                                                       FontSize="10"
+                                                       FontWeight="Bold" />
+                                        </DockPanel>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+
                             <Rectangle Height="1" Fill="{StaticResource PosBorderBrush}" Margin="0,8" StrokeDashArray="4,3" Stroke="{StaticResource PosBorderBrush}" StrokeThickness="1" />
 
                             <DockPanel Margin="0,0,0,4">
@@ -223,7 +240,7 @@
                     <Button Grid.Column="1" Command="{Binding RecallSelectedCommand}" Margin="6,0,0,0" Style="{StaticResource PosPrimaryButtonStyle}">
                         <StackPanel Orientation="Horizontal">
                             <materialDesign:PackIcon Kind="ClipboardTextClock" Width="16" Height="16" Foreground="White" Margin="0,0,6,0" />
-                            <TextBlock Text="取回挂单" Foreground="White" />
+                            <TextBlock Text="{loc:Loc suspended.recall}" Foreground="White" />
                         </StackPanel>
                     </Button>
                 </Grid>

@@ -261,6 +261,7 @@ public sealed class PosCoreTests
             Assert.Equal(order.OrderGuid, viewModel.SelectedOrder?.OrderGuid);
             Assert.Equal(order.ActualAmount, viewModel.PreviewTotal);
             Assert.Equal(2, viewModel.ReceiptLines.Count);
+            Assert.Single(viewModel.Payments);
         }
         finally
         {
@@ -398,6 +399,7 @@ public sealed class PosCoreTests
         Assert.Equal(order.ActualAmount, viewModel.TotalAmountPaid);
         Assert.Equal(order.Lines.Sum(line => line.ActualAmount), viewModel.Subtotal);
         Assert.Equal(2, viewModel.ReceiptLines.Count);
+        Assert.Single(viewModel.Payments);
         Assert.Equal(order.OrderGuid, viewModel.TransactionId);
     }
 

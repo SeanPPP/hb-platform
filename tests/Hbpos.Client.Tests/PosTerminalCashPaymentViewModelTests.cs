@@ -1463,35 +1463,37 @@ public sealed class PosTerminalCashPaymentViewModelTests
     }
 
     [Fact]
-    public void Cash_payment_recalculates_change_from_amount_tendered()
+    public async Task Payment_page_recalculates_change_from_cash_tenders()
     {
         var cart = new PosCartService();
         cart.AddItem(CreateItem("SKU-102", "Orange Juice", "930102", PriceSourceKind.ProductBase, 7.8m));
-        var viewModel = new CashPaymentViewModel(
+        var viewModel = new PaymentViewModel(
             cart,
             new CashCheckoutService(),
             new InMemoryOrderRepository(),
             new InMemorySyncQueueRepository(),
             Session);
 
-        viewModel.AmountTenderedText = "10";
+        viewModel.TenderAmountText = "10";
+        await viewModel.AddTenderCommand.ExecuteAsync(null);
 
         Assert.Equal(2.2m, viewModel.ChangeDue);
         Assert.True(viewModel.ConfirmPaymentCommand.CanExecute(null));
     }
 
     [Fact]
-    public void Cash_payment_refresh_cart_recalculates_change_after_cart_update()
+    public async Task Payment_page_refresh_cart_recalculates_change_after_cart_update()
     {
         var cart = new PosCartService();
         cart.AddItem(CreateItem("SKU-108", "Rice", "930108", PriceSourceKind.ProductBase, 7m));
-        var viewModel = new CashPaymentViewModel(
+        var viewModel = new PaymentViewModel(
             cart,
             new CashCheckoutService(),
             new InMemoryOrderRepository(),
             new InMemorySyncQueueRepository(),
             Session);
-        viewModel.AmountTenderedText = "10";
+        viewModel.TenderAmountText = "10";
+        await viewModel.AddTenderCommand.ExecuteAsync(null);
 
         cart.UpdateLineFromRemote(CreateItem("SKU-108", "Rice", "930108", PriceSourceKind.StoreRetailPrice, 8m));
         viewModel.RefreshCart();
@@ -1506,14 +1508,14 @@ public sealed class PosTerminalCashPaymentViewModelTests
         var cart = new PosCartService();
         cart.AddItem(CreateItem("SKU-141", "Zero Payment Tea", "930141", PriceSourceKind.StoreRetailPrice, 0m));
         var orders = new InMemoryOrderRepository();
-        var viewModel = new CashPaymentViewModel(
+        var viewModel = new PaymentViewModel(
             cart,
             new CashCheckoutService(),
             orders,
             new InMemorySyncQueueRepository(),
             Session)
         {
-            AmountTenderedText = "0"
+            TenderAmountText = "0"
         };
 
         Assert.False(viewModel.ConfirmPaymentCommand.CanExecute(null));
@@ -1533,14 +1535,14 @@ public sealed class PosTerminalCashPaymentViewModelTests
         var line = cart.AddItem(CreateItem("SKU-142", "Fractional Tea", "930142", PriceSourceKind.StoreRetailPrice, 5m));
         SetUnsafeQuantity(line, 1.5m);
         var orders = new InMemoryOrderRepository();
-        var viewModel = new CashPaymentViewModel(
+        var viewModel = new PaymentViewModel(
             cart,
             new CashCheckoutService(),
             orders,
             new InMemorySyncQueueRepository(),
             Session)
         {
-            AmountTenderedText = "10"
+            TenderAmountText = "10"
         };
 
         Assert.False(viewModel.ConfirmPaymentCommand.CanExecute(null));
@@ -1567,12 +1569,13 @@ public sealed class PosTerminalCashPaymentViewModelTests
             var syncQueue = new SyncQueueRepository(store);
             var cart = new PosCartService();
             cart.AddItem(CreateItem("SKU-103", "Whole Milk", "930103", PriceSourceKind.StoreClearancePrice, 4.4m));
-            var viewModel = new CashPaymentViewModel(cart, new CashCheckoutService(), orders, syncQueue, Session);
+            var viewModel = new PaymentViewModel(cart, new CashCheckoutService(), orders, syncQueue, Session);
             PaymentCompletedEventArgs? completed = null;
             viewModel.PaymentCompleted += (_, args) => completed = args;
 
             await schema.InitializeAsync();
-            viewModel.AmountTenderedText = "5";
+            viewModel.TenderAmountText = "5";
+            await viewModel.AddTenderCommand.ExecuteAsync(null);
             await viewModel.ConfirmPaymentCommand.ExecuteAsync(null);
 
             Assert.NotNull(completed);
@@ -1589,6 +1592,55 @@ public sealed class PosTerminalCashPaymentViewModelTests
                 File.Delete(databasePath);
             }
         }
+    }
+
+    [Fact]
+    public async Task Payment_page_blocks_card_overpay_but_allows_cash_change()
+    {
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("SKU-143", "Card And Cash Tea", "930143", PriceSourceKind.StoreRetailPrice, 7.8m));
+        var workflow = new CashPaymentWorkflowService(
+            new CashCheckoutService(),
+            new InMemoryOrderRepository(),
+            new InMemorySyncQueueRepository(),
+            cardTerminalClient: new ApprovedCardTerminalClient("CARD-143"));
+        var viewModel = new PaymentViewModel(cart, workflow, Session);
+
+        viewModel.SelectCardCommand.Execute(null);
+        viewModel.TenderAmountText = "10";
+
+        Assert.False(viewModel.AddTenderCommand.CanExecute(null));
+
+        viewModel.TenderAmountText = "5";
+        await viewModel.AddTenderCommand.ExecuteAsync(null);
+        viewModel.SelectCashCommand.Execute(null);
+        viewModel.TenderAmountText = "5";
+        await viewModel.AddTenderCommand.ExecuteAsync(null);
+
+        Assert.Equal(2.2m, viewModel.ChangeDue);
+        Assert.True(viewModel.ConfirmPaymentCommand.CanExecute(null));
+    }
+
+    [Fact]
+    public void Payment_page_requires_voucher_code_before_adding_voucher()
+    {
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("SKU-144", "Voucher Tea", "930144", PriceSourceKind.StoreRetailPrice, 5m));
+        var viewModel = new PaymentViewModel(
+            cart,
+            new CashCheckoutService(),
+            new InMemoryOrderRepository(),
+            new InMemorySyncQueueRepository(),
+            Session);
+
+        viewModel.SelectVoucherCommand.Execute(null);
+        viewModel.TenderAmountText = "5";
+
+        Assert.False(viewModel.AddTenderCommand.CanExecute(null));
+
+        viewModel.VoucherCodeText = "ABC123";
+
+        Assert.True(viewModel.AddTenderCommand.CanExecute(null));
     }
 
     private static PosSessionState Session => new("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0);
@@ -1888,6 +1940,17 @@ public sealed class PosTerminalCashPaymentViewModelTests
         public void Play(UserFeedbackCue cue)
         {
             Cues.Add(cue);
+        }
+    }
+
+    private sealed class ApprovedCardTerminalClient(string reference) : ICardTerminalClient
+    {
+        public Task<PaymentAuthorizationResult> AuthorizeAsync(
+            decimal amount,
+            PosSessionState session,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(new PaymentAuthorizationResult(true, reference));
         }
     }
 }

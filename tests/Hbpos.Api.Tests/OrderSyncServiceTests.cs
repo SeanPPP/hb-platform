@@ -11,7 +11,7 @@ public sealed class OrderSyncServiceTests
     {
         var orderGuid = Guid.NewGuid();
         var repository = new FakeOrderRepository(exists: true);
-        var service = new OrderSyncService(repository, new OrderSyncPlanner());
+        var service = new OrderSyncService(repository, new OrderSyncPlanner(), new FakeReservationService());
 
         var response = await service.SyncAsync(CreateRequest(orderGuid), CancellationToken.None);
 
@@ -26,7 +26,7 @@ public sealed class OrderSyncServiceTests
     {
         var orderGuid = Guid.NewGuid();
         var repository = new FakeOrderRepository(exists: false);
-        var service = new OrderSyncService(repository, new OrderSyncPlanner());
+        var service = new OrderSyncService(repository, new OrderSyncPlanner(), new FakeReservationService());
 
         var response = await service.SyncAsync(CreateRequest(orderGuid), CancellationToken.None);
 
@@ -34,9 +34,56 @@ public sealed class OrderSyncServiceTests
         Assert.False(response.AlreadySynced);
         Assert.True(repository.InsertCalled);
         Assert.Equal(orderGuid.ToString("D"), repository.LastPlan?.Order.OrderGuid);
+        Assert.Empty(repository.LastVoucherRedemptions);
         Assert.Equal(9.99m, repository.LastPlan?.Lines.Single().Price);
         Assert.Equal("SOURCE-GUID-01", repository.LastPlan?.Lines.Single().ReferenceGUID);
         Assert.Equal("priceSource=1", repository.LastPlan?.Lines.Single().Remark);
+    }
+
+    [Fact]
+    public async Task SyncAsync_RequiresReservationTokenForVoucherPayments()
+    {
+        var repository = new FakeOrderRepository(exists: false);
+        var service = new OrderSyncService(repository, new OrderSyncPlanner(), new FakeReservationService());
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => service.SyncAsync(
+            CreateRequest(
+                Guid.NewGuid(),
+                payments:
+                [
+                    new PaymentSyncDto(Guid.NewGuid(), PaymentMethodKind.Voucher, 5m, "V001")
+                ]),
+            CancellationToken.None));
+
+        Assert.Equal("Voucher reservation token is required.", ex.Message);
+        Assert.False(repository.InsertCalled);
+    }
+
+    [Fact]
+    public async Task SyncAsync_ForwardsVoucherRedemptionAndConsumesReservation()
+    {
+        var orderGuid = Guid.NewGuid();
+        var repository = new FakeOrderRepository(exists: false);
+        var reservationService = new FakeReservationService();
+        reservationService.Add(new StoreVoucherReservation("token-1", "S01", "V001", 5m, DateTimeOffset.UtcNow.AddMinutes(5)));
+        var service = new OrderSyncService(repository, new OrderSyncPlanner(), reservationService);
+
+        var response = await service.SyncAsync(
+            CreateRequest(
+                orderGuid,
+                payments:
+                [
+                    new PaymentSyncDto(Guid.NewGuid(), PaymentMethodKind.Voucher, 5m, "V001", "token-1")
+                ]),
+            CancellationToken.None);
+
+        Assert.True(response.Accepted);
+        Assert.Single(repository.LastVoucherRedemptions);
+        var redemption = repository.LastVoucherRedemptions.Single();
+        Assert.Equal("V001", redemption.VoucherCode);
+        Assert.Equal("token-1", redemption.ReservationToken);
+        Assert.Equal(5m, redemption.Amount);
+        Assert.Equal(["token-1"], reservationService.ConsumedTokens);
     }
 
     [Fact]
@@ -51,7 +98,10 @@ public sealed class OrderSyncServiceTests
         Assert.Contains("itemNo=ITEM-1001", line.Remark);
     }
 
-    private static OrderSyncRequest CreateRequest(Guid orderGuid, string? itemNumber = null)
+    private static OrderSyncRequest CreateRequest(
+        Guid orderGuid,
+        string? itemNumber = null,
+        IReadOnlyList<PaymentSyncDto>? payments = null)
     {
         return new OrderSyncRequest(
             orderGuid,
@@ -77,6 +127,7 @@ public sealed class OrderSyncServiceTests
                     PriceSourceKind.StoreRetailPrice,
                     itemNumber)
             ],
+            payments ??
             [
                 new PaymentSyncDto(
                     Guid.NewGuid(),
@@ -92,15 +143,56 @@ public sealed class OrderSyncServiceTests
 
         public OrderSyncPlan? LastPlan { get; private set; }
 
+        public IReadOnlyList<StoreVoucherRedemptionCommit> LastVoucherRedemptions { get; private set; } = [];
+
         public Task<bool> ExistsAsync(Guid orderGuid, CancellationToken cancellationToken)
         {
             return Task.FromResult(exists);
         }
 
-        public Task InsertAsync(OrderSyncPlan plan, CancellationToken cancellationToken)
+        public Task InsertAsync(
+            OrderSyncPlan plan,
+            IReadOnlyList<StoreVoucherRedemptionCommit> voucherRedemptions,
+            CancellationToken cancellationToken)
         {
             InsertCalled = true;
             LastPlan = plan;
+            LastVoucherRedemptions = voucherRedemptions;
+            return Task.CompletedTask;
+        }
+    }
+
+    private sealed class FakeReservationService : IStoreVoucherReservationService
+    {
+        private readonly Dictionary<string, StoreVoucherReservation> reservations = new(StringComparer.OrdinalIgnoreCase);
+
+        public List<string> ConsumedTokens { get; } = [];
+
+        public void Add(StoreVoucherReservation reservation)
+        {
+            reservations[reservation.Token] = reservation;
+        }
+
+        public Task<StoreVoucherReservation?> GetAsync(string token, CancellationToken cancellationToken)
+        {
+            reservations.TryGetValue(token, out var reservation);
+            return Task.FromResult(reservation);
+        }
+
+        public Task<StoreVoucherReservation> ReserveAsync(
+            string storeCode,
+            string voucherCode,
+            decimal requestedAmount,
+            decimal currentRemainingAmount,
+            CancellationToken cancellationToken)
+        {
+            throw new NotSupportedException();
+        }
+
+        public Task ConsumeAsync(string token, CancellationToken cancellationToken)
+        {
+            ConsumedTokens.Add(token);
+            reservations.Remove(token);
             return Task.CompletedTask;
         }
     }

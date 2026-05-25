@@ -35,8 +35,15 @@ public sealed class OrdersController(
             return BadRequest(ApiResult<OrderSyncResponse>.Fail("ORDER_PAYMENTS_REQUIRED", "订单付款不能为空"));
         }
 
-        var response = await orderSyncService.SyncAsync(request, cancellationToken);
-        return Ok(ApiResult<OrderSyncResponse>.Ok(response));
+        try
+        {
+            var response = await orderSyncService.SyncAsync(request, cancellationToken);
+            return Ok(ApiResult<OrderSyncResponse>.Ok(response));
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(ApiResult<OrderSyncResponse>.Fail("ORDER_SYNC_INVALID", ex.Message));
+        }
     }
 
     [Authorize]

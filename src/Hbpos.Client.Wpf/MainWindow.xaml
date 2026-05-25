@@ -83,8 +83,8 @@
         <DataTemplate DataType="{x:Type vm:ReceiptReturnsViewModel}">
             <views:ReceiptReturnsView />
         </DataTemplate>
-        <DataTemplate DataType="{x:Type vm:CashPaymentViewModel}">
-            <views:CashPaymentView />
+        <DataTemplate DataType="{x:Type vm:PaymentViewModel}">
+            <views:PaymentView />
         </DataTemplate>
         <DataTemplate DataType="{x:Type vm:PaymentSuccessViewModel}">
             <views:PaymentSuccessView />

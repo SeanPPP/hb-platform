@@ -22,7 +22,7 @@
   <data name="Barcode" xml:space="preserve"><value>Barcode</value></data>
   <data name="Cancel" xml:space="preserve"><value>Cancel</value></data>
   <data name="CardPayment" xml:space="preserve"><value>Card Payment</value></data>
-  <data name="CashPayment" xml:space="preserve"><value>Cash Payment</value></data>
+  <data name="CashPayment" xml:space="preserve"><value>Payment</value></data>
   <data name="Cashier" xml:space="preserve"><value>Cashier</value></data>
   <data name="Change" xml:space="preserve"><value>Change</value></data>
   <data name="Clear" xml:space="preserve"><value>Clear</value></data>
@@ -150,7 +150,8 @@
   <data name="pos.status.lineDiscountUpdated" xml:space="preserve"><value>Line discount updated.</value></data>
   <data name="pos.status.orderDiscountUpdated" xml:space="preserve"><value>Order discount applied.</value></data>
 
-  <data name="payment.cash.title" xml:space="preserve"><value>Cash Payment</value></data>
+  <data name="payment.title" xml:space="preserve"><value>Payment</value></data>
+  <data name="payment.cash.title" xml:space="preserve"><value>Payment</value></data>
   <data name="payment.cash.orderSummary" xml:space="preserve"><value>Current order</value></data>
   <data name="payment.cash.amountTendered" xml:space="preserve"><value>Amount Tendered</value></data>
   <data name="payment.cash.changeDue" xml:space="preserve"><value>Change Due</value></data>
@@ -162,8 +163,20 @@
   <data name="payment.cash.status.completed" xml:space="preserve"><value>Cash payment completed.</value></data>
   <data name="payment.method.cash" xml:space="preserve"><value>Cash</value></data>
   <data name="payment.method.card" xml:space="preserve"><value>Credit/Debit Card</value></data>
+  <data name="payment.method.voucher" xml:space="preserve"><value>Voucher</value></data>
   <data name="payment.method.account" xml:space="preserve"><value>Credit Account</value></data>
   <data name="payment.method.installment" xml:space="preserve"><value>Installment</value></data>
+  <data name="payment.action.addCash" xml:space="preserve"><value>Add Cash Tender</value></data>
+  <data name="payment.voucher.code" xml:space="preserve"><value>Voucher code</value></data>
+  <data name="payment.remaining" xml:space="preserve"><value>Remaining</value></data>
+  <data name="payment.status.tenderAdded" xml:space="preserve"><value>Payment tender added.</value></data>
+  <data name="payment.status.nonCashAlreadyCoversOrder" xml:space="preserve"><value>Non-cash payments already cover this order.</value></data>
+  <data name="payment.voucher.status.notConfigured" xml:space="preserve"><value>Voucher service is not configured.</value></data>
+  <data name="payment.voucher.status.unavailable" xml:space="preserve"><value>Voucher is not available.</value></data>
+  <data name="payment.voucher.status.failed" xml:space="preserve"><value>Voucher payment failed.</value></data>
+  <data name="payment.card.notConfigured" xml:space="preserve"><value>Card terminal not configured</value></data>
+  <data name="payment.card.status.notConfigured" xml:space="preserve"><value>Card terminal is not configured.</value></data>
+  <data name="payment.card.status.failed" xml:space="preserve"><value>Card payment failed.</value></data>
 
   <data name="success.subtitle" xml:space="preserve"><value>The transaction has been processed successfully.</value></data>
   <data name="success.totalPaid" xml:space="preserve"><value>Total Amount Paid</value></data>
@@ -287,4 +300,32 @@
   <data name="returns.totalRefund" xml:space="preserve"><value>Total Refund</value></data>
   <data name="returns.addToCart" xml:space="preserve"><value>Add to Cart</value></data>
   <data name="payment.cash.status.returnCheckoutNotReady" xml:space="preserve"><value>Refund checkout is not implemented yet. Remove return lines or use the refund payment page later.</value></data>
+  <data name="payment.currentTender" xml:space="preserve"><value>Current Tender</value></data>
+  <data name="payment.changeDue" xml:space="preserve"><value>Change Due</value></data>
+  <data name="payment.quickCash" xml:space="preserve"><value>Quick Cash</value></data>
+  <data name="payment.method" xml:space="preserve"><value>Payment Method</value></data>
+  <data name="payment.appliedTenders" xml:space="preserve"><value>Applied Tenders</value></data>
+  <data name="payment.addTender" xml:space="preserve"><value>Add Tender</value></data>
+  <data name="payment.confirm" xml:space="preserve"><value>Complete Payment</value></data>
+  <data name="payment.noTenders" xml:space="preserve"><value>No tenders added yet.</value></data>
+  <data name="payment.orderSummary" xml:space="preserve"><value>Current order</value></data>
+  <data name="payment.status.ready" xml:space="preserve"><value>Add payment tenders until the order is fully paid.</value></data>
+  <data name="payment.status.invalidAmount" xml:space="preserve"><value>Enter a valid payment amount.</value></data>
+  <data name="payment.status.alreadyFullyPaid" xml:space="preserve"><value>The order is already fully paid.</value></data>
+  <data name="payment.status.cashTenderAdded" xml:space="preserve"><value>Cash tender added.</value></data>
+  <data name="payment.status.cardTenderAdded" xml:space="preserve"><value>Card tender approved.</value></data>
+  <data name="payment.status.voucherTenderAdded" xml:space="preserve"><value>Voucher tender added.</value></data>
+  <data name="payment.status.tenderRemoved" xml:space="preserve"><value>Tender removed.</value></data>
+  <data name="payment.status.cardExceedsRemaining" xml:space="preserve"><value>Card tender cannot exceed the remaining amount.</value></data>
+  <data name="payment.status.voucherExceedsRemaining" xml:space="preserve"><value>Voucher tender cannot exceed the remaining amount.</value></data>
+  <data name="payment.status.cardDeclined" xml:space="preserve"><value>Card tender was not approved.</value></data>
+  <data name="payment.status.voucherDeclined" xml:space="preserve"><value>Voucher tender was not approved.</value></data>
+  <data name="payment.status.unsupportedMethod" xml:space="preserve"><value>This payment method is not supported.</value></data>
+  <data name="payment.status.noTendersAdded" xml:space="preserve"><value>Add at least one tender before completing payment.</value></data>
+  <data name="payment.status.remainingBalance" xml:space="preserve"><value>The order must be fully paid before completion.</value></data>
+  <data name="payment.status.duplicateVoucher" xml:space="preserve"><value>This voucher has already been added.</value></data>
+  <data name="payment.status.retryVoucherUpload" xml:space="preserve"><value>Retry the voucher order upload before changing tenders.</value></data>
+  <data name="payment.status.uploadFailed" xml:space="preserve"><value>Voucher order upload failed. Press Complete Payment to retry.</value></data>
+  <data name="payment.status.completed" xml:space="preserve"><value>Payment completed.</value></data>
+  <data name="suspended.recall" xml:space="preserve"><value>Recall Suspended</value></data>
 </root>
