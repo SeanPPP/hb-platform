@@ -858,13 +858,13 @@ public sealed class MainViewModelScannerTests
 
     private sealed class FakeSpecialProductService : ISpecialProductService
     {
-        public Task<IReadOnlyList<SellableItemDto>> MarkSpecialProductAsync(
+        public Task<SpecialProductMarkResult> MarkSpecialProductAsync(
             string storeCode,
             string productCode,
             bool isSpecialProduct,
             CancellationToken cancellationToken = default)
         {
-            return Task.FromResult<IReadOnlyList<SellableItemDto>>([]);
+            return Task.FromResult(new SpecialProductMarkResult([], []));
         }
 
         public Task<SpecialProductDownloadResult> DownloadSpecialProductsAsync(

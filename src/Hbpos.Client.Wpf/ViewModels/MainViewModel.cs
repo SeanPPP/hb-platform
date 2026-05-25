@@ -879,6 +879,7 @@ public sealed partial class MainViewModel : ObservableObject
         }
 
         SpecialProducts.Session = Session;
+        SpecialProducts.ActivateForEntry();
         CurrentScreen = SpecialProducts;
         _ = EnsureSpecialProductsLoadedAsync(SpecialProducts);
         return Task.CompletedTask;

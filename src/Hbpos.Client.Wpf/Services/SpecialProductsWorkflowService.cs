@@ -196,14 +196,28 @@ public sealed class SpecialProductsWorkflowService(
         var normalizedStoreCode = NormalizeStoreCode(storeCode);
         var normalizedProductCode = NormalizeProductCode(productCode);
 
-        await specialProductService.MarkSpecialProductAsync(
+        var result = await specialProductService.MarkSpecialProductAsync(
             normalizedStoreCode,
             normalizedProductCode,
             isSpecialProduct,
             cancellationToken);
 
-        await RefreshIndexAsync(normalizedStoreCode, cancellationToken);
-        var specialItems = await catalogRepository.LoadSpecialProductItemsAsync(normalizedStoreCode, cancellationToken);
+        IReadOnlyList<SellableItemDto> specialItems;
+        if (result.ChangedItems.Count > 0)
+        {
+            foreach (var item in result.ChangedItems)
+            {
+                priceIndex.Upsert(item);
+            }
+
+            specialItems = result.SpecialItems;
+        }
+        else
+        {
+            await RefreshIndexAsync(normalizedStoreCode, cancellationToken);
+            specialItems = await catalogRepository.LoadSpecialProductItemsAsync(normalizedStoreCode, cancellationToken);
+        }
+
         UpdateLoadedResult(normalizedStoreCode, specialItems);
         return new SpecialProductsMutationWorkflowResult(
             normalizedStoreCode,

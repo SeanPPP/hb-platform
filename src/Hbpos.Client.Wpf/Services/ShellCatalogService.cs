@@ -53,9 +53,7 @@ public sealed class ShellCatalogService(
         string storeCode,
         CancellationToken cancellationToken = default)
     {
-        var cachedItems = await catalogRepository.LoadSellableItemsAsync(storeCode, cancellationToken);
-        priceIndex.ReplaceAll(cachedItems);
-        return cachedItems;
+        return await LoadAndReplaceLocalCatalogOnBackgroundAsync(storeCode, cancellationToken);
     }
 
     public async Task<IReadOnlyList<SellableItemDto>> SyncCatalogAndReloadAsync(
@@ -172,19 +170,36 @@ public sealed class ShellCatalogService(
             {
                 await catalogSync.FullSyncAsync(storeCode, cancellationToken, progress, forceFullDownload)
                     .ConfigureAwait(false);
-                await _uiPriorityCoordinator.WaitForUiIdleAsync(cancellationToken)
+                return await LoadAndReplaceLocalCatalogAsync(storeCode, cancellationToken)
                     .ConfigureAwait(false);
-                var cachedItems = await catalogRepository.LoadSellableItemsAsync(storeCode, cancellationToken)
-                    .ConfigureAwait(false);
-                await _uiPriorityCoordinator.WaitForUiIdleAsync(cancellationToken)
-                    .ConfigureAwait(false);
-                priceIndex.ReplaceAll(cachedItems);
-                return cachedItems;
             }
             finally
             {
                 Interlocked.Decrement(ref _activeSyncCount);
             }
         }, cancellationToken);
+    }
+
+    private Task<IReadOnlyList<SellableItemDto>> LoadAndReplaceLocalCatalogOnBackgroundAsync(
+        string storeCode,
+        CancellationToken cancellationToken)
+    {
+        return Task.Run(
+            () => LoadAndReplaceLocalCatalogAsync(storeCode, cancellationToken),
+            cancellationToken);
+    }
+
+    private async Task<IReadOnlyList<SellableItemDto>> LoadAndReplaceLocalCatalogAsync(
+        string storeCode,
+        CancellationToken cancellationToken)
+    {
+        await _uiPriorityCoordinator.WaitForUiIdleAsync(cancellationToken)
+            .ConfigureAwait(false);
+        var cachedItems = await catalogRepository.LoadSellableItemsAsync(storeCode, cancellationToken)
+            .ConfigureAwait(false);
+        await _uiPriorityCoordinator.WaitForUiIdleAsync(cancellationToken)
+            .ConfigureAwait(false);
+        priceIndex.ReplaceAll(cachedItems);
+        return cachedItems;
     }
 }

@@ -233,6 +233,14 @@ public sealed partial class SpecialProductsViewModel : ObservableObject, IDispos
         return LoadAsyncCore(cancellationToken);
     }
 
+    public void ActivateForEntry()
+    {
+        IsEditMode = false;
+        ClearSearch();
+        SelectedSpecialItem = null;
+        RefreshPagedSpecialItems(resetToFirstPage: true);
+    }
+
     private async Task PreloadCoreAsync(CancellationToken cancellationToken)
     {
         try

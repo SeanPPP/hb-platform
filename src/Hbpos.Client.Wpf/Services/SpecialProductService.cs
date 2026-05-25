@@ -5,7 +5,7 @@ namespace Hbpos.Client.Wpf.Services;
 
 public interface ISpecialProductService
 {
-    Task<IReadOnlyList<SellableItemDto>> MarkSpecialProductAsync(
+    Task<SpecialProductMarkResult> MarkSpecialProductAsync(
         string storeCode,
         string productCode,
         bool isSpecialProduct,
@@ -24,6 +24,10 @@ public sealed record SpecialProductDownloadResult(
     int DownloadedCount,
     int UpsertedCount,
     int UnmarkedCount);
+
+public sealed record SpecialProductMarkResult(
+    IReadOnlyList<SellableItemDto> ChangedItems,
+    IReadOnlyList<SellableItemDto> SpecialItems);
 
 public enum SpecialProductDownloadProgressStage
 {
@@ -51,7 +55,7 @@ public sealed class SpecialProductService(
 {
     private const int PageSize = 5000;
 
-    public async Task<IReadOnlyList<SellableItemDto>> MarkSpecialProductAsync(
+    public async Task<SpecialProductMarkResult> MarkSpecialProductAsync(
         string storeCode,
         string productCode,
         bool isSpecialProduct,
@@ -96,7 +100,7 @@ public sealed class SpecialProductService(
             loadStopwatch.Stop();
             totalStopwatch.Stop();
             Log($"mark completed store={response.StoreCode} productCode={response.ProductCode} isSpecialProduct={response.IsSpecialProduct} items={specialItems.Count} upserted={upsertItems.Length} apiElapsedMs={apiStopwatch.ElapsedMilliseconds} upsertElapsedMs={upsertElapsedMs} flagElapsedMs={flagStopwatch.ElapsedMilliseconds} loadElapsedMs={loadStopwatch.ElapsedMilliseconds} totalElapsedMs={totalStopwatch.ElapsedMilliseconds}");
-            return specialItems;
+            return new SpecialProductMarkResult(upsertItems, specialItems);
         }
         catch (Exception ex)
         {

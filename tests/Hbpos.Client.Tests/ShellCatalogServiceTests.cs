@@ -52,6 +52,52 @@ public sealed class ShellCatalogServiceTests
         Assert.False(service.IsCatalogSyncActive);
     }
 
+    [Fact]
+    public async Task LoadLocalCatalogAsync_LoadsAndRebuildsIndexOnBackgroundThread()
+    {
+        var priceIndex = new LocalSellableItemIndex();
+        var repository = new ThreadTrackingLocalCatalogRepository();
+        var service = new ShellCatalogService(priceIndex, repository, new CoordinatedCatalogSyncService());
+
+        var callerThreadId = -1;
+        var completion = new TaskCompletionSource<IReadOnlyList<SellableItemDto>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var thread = new Thread(() =>
+        {
+            callerThreadId = Environment.CurrentManagedThreadId;
+            try
+            {
+                _ = service.LoadLocalCatalogAsync("S01").ContinueWith(loadTask =>
+                {
+                    if (loadTask.IsFaulted)
+                    {
+                        completion.TrySetException(loadTask.Exception.InnerExceptions);
+                        return;
+                    }
+
+                    if (loadTask.IsCanceled)
+                    {
+                        completion.TrySetCanceled();
+                        return;
+                    }
+
+                    completion.TrySetResult(loadTask.Result);
+                }, TaskScheduler.Default);
+            }
+            catch (Exception ex)
+            {
+                completion.TrySetException(ex);
+            }
+        });
+
+        thread.Start();
+        var loadedItems = await completion.Task.WaitAsync(TimeSpan.FromSeconds(3));
+
+        Assert.Single(loadedItems);
+        Assert.Equal("RESET-ITEM", loadedItems[0].ProductCode);
+        Assert.NotEqual(callerThreadId, repository.LoadThreadId);
+        Assert.Equal("RESET-ITEM", Assert.Single(priceIndex.Items).ProductCode);
+    }
+
     private static SellableItemDto CreateItem(string productCode)
     {
         return new SellableItemDto(
@@ -126,7 +172,7 @@ public sealed class ShellCatalogServiceTests
         }
     }
 
-    private sealed class FakeLocalCatalogRepository : ILocalCatalogRepository
+    private class FakeLocalCatalogRepository : ILocalCatalogRepository
     {
         public Task ReplaceSellableItemsAsync(IEnumerable<SellableItemDto> items, CancellationToken cancellationToken = default)
         {
@@ -195,16 +241,29 @@ public sealed class ShellCatalogServiceTests
             return Task.FromResult<IReadOnlyList<LocalSellableItemCompareRow>>([]);
         }
 
-        public Task<IReadOnlyList<SellableItemDto>> LoadSellableItemsAsync(CancellationToken cancellationToken = default)
+        public virtual Task<IReadOnlyList<SellableItemDto>> LoadSellableItemsAsync(CancellationToken cancellationToken = default)
         {
             return LoadSellableItemsAsync("S01", cancellationToken);
         }
 
-        public Task<IReadOnlyList<SellableItemDto>> LoadSellableItemsAsync(
+        public virtual Task<IReadOnlyList<SellableItemDto>> LoadSellableItemsAsync(
             string storeCode,
             CancellationToken cancellationToken = default)
         {
             return Task.FromResult<IReadOnlyList<SellableItemDto>>([CreateItem("RESET-ITEM")]);
+        }
+    }
+
+    private sealed class ThreadTrackingLocalCatalogRepository : FakeLocalCatalogRepository
+    {
+        public int LoadThreadId { get; private set; }
+
+        public override Task<IReadOnlyList<SellableItemDto>> LoadSellableItemsAsync(
+            string storeCode,
+            CancellationToken cancellationToken = default)
+        {
+            LoadThreadId = Environment.CurrentManagedThreadId;
+            return base.LoadSellableItemsAsync(storeCode, cancellationToken);
         }
     }
 }

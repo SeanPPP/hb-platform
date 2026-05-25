@@ -84,6 +84,57 @@ public sealed class SpecialProductsWorkflowServiceTests
     }
 
     [Fact]
+    public async Task MarkSpecialProductAsync_upserts_changed_items_without_full_refresh()
+    {
+        var original = CreateItem("SKU-001", "Alpha", "930001");
+        var updated = original with { IsSpecialProduct = true };
+        var repository = new FakeCatalogRepository
+        {
+            SpecialItems = [updated]
+        };
+        var specialProductService = new FakeSpecialProductService
+        {
+            MarkResult = new SpecialProductMarkResult([updated], [updated])
+        };
+        var index = new LocalSellableItemIndex();
+        index.ReplaceAll([original]);
+        var service = CreateWorkflowService(index, repository, specialProductService);
+
+        var result = await service.MarkSpecialProductAsync("S001", "SKU-001", true);
+
+        Assert.Equal(1, specialProductService.MarkCallCount);
+        Assert.Equal(0, repository.LoadSellableItemsCallCount);
+        Assert.Equal(0, repository.LoadSpecialProductItemsCallCount);
+        Assert.Single(result.SpecialItems);
+        Assert.Contains(index.Search("S001", "930001"), item => item.ProductCode == "SKU-001" && item.IsSpecialProduct);
+    }
+
+    [Fact]
+    public async Task MarkSpecialProductAsync_falls_back_to_full_refresh_when_changed_items_are_empty()
+    {
+        var updated = CreateItem("SKU-001", "Alpha", "930001", isSpecialProduct: true);
+        var repository = new FakeCatalogRepository
+        {
+            SellableItems = [updated],
+            SpecialItems = [updated]
+        };
+        var specialProductService = new FakeSpecialProductService
+        {
+            MarkResult = new SpecialProductMarkResult([], [updated])
+        };
+        var index = new LocalSellableItemIndex();
+        var service = CreateWorkflowService(index, repository, specialProductService);
+
+        var result = await service.MarkSpecialProductAsync("S001", "SKU-001", true);
+
+        Assert.Equal(1, specialProductService.MarkCallCount);
+        Assert.Equal(1, repository.LoadSellableItemsCallCount);
+        Assert.Equal(1, repository.LoadSpecialProductItemsCallCount);
+        Assert.Single(result.SpecialItems);
+        Assert.Contains(index.Search("S001", "930001"), item => item.ProductCode == "SKU-001" && item.IsSpecialProduct);
+    }
+
+    [Fact]
     public async Task ReorderAsync_saves_updated_special_product_order()
     {
         var first = CreateItem("SKU-001", "Alpha", "930001", isSpecialProduct: true);
@@ -158,6 +209,8 @@ public sealed class SpecialProductsWorkflowServiceTests
 
         public int LoadSpecialProductItemsCallCount { get; private set; }
 
+        public int LoadSellableItemsCallCount { get; private set; }
+
         public Func<Task>? BeforeLoadSpecialProductItemsAsync { get; init; }
 
         public Task ReplaceSellableItemsAsync(IEnumerable<SellableItemDto> items, CancellationToken cancellationToken = default)
@@ -227,11 +280,13 @@ public sealed class SpecialProductsWorkflowServiceTests
 
         public Task<IReadOnlyList<SellableItemDto>> LoadSellableItemsAsync(CancellationToken cancellationToken = default)
         {
+            LoadSellableItemsCallCount++;
             return Task.FromResult(SellableItems);
         }
 
         public Task<IReadOnlyList<SellableItemDto>> LoadSellableItemsAsync(string storeCode, CancellationToken cancellationToken = default)
         {
+            LoadSellableItemsCallCount++;
             return Task.FromResult<IReadOnlyList<SellableItemDto>>(
                 SellableItems.Where(item => string.Equals(item.StoreCode, storeCode, StringComparison.OrdinalIgnoreCase)).ToArray());
         }
@@ -239,18 +294,23 @@ public sealed class SpecialProductsWorkflowServiceTests
 
     private sealed class FakeSpecialProductService : ISpecialProductService
     {
+        public int MarkCallCount { get; private set; }
+
         public int DownloadCallCount { get; private set; }
+
+        public SpecialProductMarkResult MarkResult { get; init; } = new([], []);
 
         public SpecialProductDownloadResult DownloadResult { get; init; } =
             new("S001", 0, 0, 0, 0, 0);
 
-        public Task<IReadOnlyList<SellableItemDto>> MarkSpecialProductAsync(
+        public Task<SpecialProductMarkResult> MarkSpecialProductAsync(
             string storeCode,
             string productCode,
             bool isSpecialProduct,
             CancellationToken cancellationToken = default)
         {
-            return Task.FromResult<IReadOnlyList<SellableItemDto>>([]);
+            MarkCallCount++;
+            return Task.FromResult(MarkResult);
         }
 
         public Task<SpecialProductDownloadResult> DownloadSpecialProductsAsync(

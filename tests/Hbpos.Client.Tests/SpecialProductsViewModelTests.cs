@@ -325,6 +325,64 @@ public sealed class SpecialProductsViewModelTests
     }
 
     [Fact]
+    public async Task ActivateForEntry_resets_page_edit_search_and_selection()
+    {
+        var repository = new FakeCatalogRepository { SpecialItems = CreateSpecialItems(21) };
+        var searchItem = CreateItem("SKU-999", "Search Item", "930999");
+        var workflow = new FakeSpecialProductsWorkflowService
+        {
+            SearchItems = [searchItem],
+            LoadResult = new SpecialProductsLoadResult("S001", repository.SpecialItems)
+        };
+        var viewModel = CreateViewModel(workflow: workflow);
+        await viewModel.LoadAsync();
+        viewModel.NextPageCommand.Execute(null);
+        viewModel.ToggleEditModeCommand.Execute(null);
+        viewModel.SearchText = "930999";
+        viewModel.SearchCommand.Execute(null);
+        viewModel.SpecialItemCardCommand.Execute(viewModel.PagedSpecialItems.Single());
+
+        viewModel.ActivateForEntry();
+
+        Assert.Equal(1, viewModel.CurrentPage);
+        Assert.False(viewModel.IsEditMode);
+        Assert.Empty(viewModel.SearchText);
+        Assert.Empty(viewModel.SearchResults);
+        Assert.Null(viewModel.SelectedSearchResult);
+        Assert.Null(viewModel.SelectedSpecialItem);
+        Assert.Equal("SKU-001", viewModel.PagedSpecialItems.First().ProductCode);
+    }
+
+    [Fact]
+    public async Task ActivateForEntry_after_edit_add_returns_to_first_page_normal_mode()
+    {
+        var initialItems = CreateSpecialItems(20);
+        var addedItem = CreateItem("SKU-021", "Item 021", "930021");
+        var repository = new FakeCatalogRepository { SpecialItems = initialItems };
+        var service = new FakeSpecialProductService
+        {
+            OnMark = (productCode, isSpecialProduct) =>
+            {
+                if (isSpecialProduct && productCode == addedItem.ProductCode)
+                {
+                    repository.SpecialItems = [.. initialItems, addedItem with { IsSpecialProduct = true }];
+                }
+            }
+        };
+        var viewModel = CreateViewModel(repository: repository, service: service);
+        await viewModel.LoadAsync();
+        viewModel.ToggleEditModeCommand.Execute(null);
+
+        await viewModel.AddSpecialProductCommand.ExecuteAsync(addedItem);
+        viewModel.ActivateForEntry();
+
+        Assert.Equal(1, viewModel.CurrentPage);
+        Assert.False(viewModel.IsEditMode);
+        Assert.Equal(2, viewModel.TotalPages);
+        Assert.Equal("SKU-001", viewModel.PagedSpecialItems.First().ProductCode);
+    }
+
+    [Fact]
     public void ScannerBarcode_when_edit_mode_is_off_is_consumed_without_searching()
     {
         var item = CreateItem("SKU-001", "Alpha", "930001");
@@ -395,7 +453,11 @@ public sealed class SpecialProductsViewModelTests
             SellableItems = [item with { IsSpecialProduct = true }],
             SpecialItems = [item with { IsSpecialProduct = true }]
         };
-        var service = new FakeSpecialProductService();
+        var markedItem = item with { IsSpecialProduct = true };
+        var service = new FakeSpecialProductService
+        {
+            MarkResultFactory = (_, _) => new SpecialProductMarkResult([markedItem], [markedItem])
+        };
         var viewModel = CreateViewModel(index, repository: repository, service: service);
         viewModel.ToggleEditModeCommand.Execute(null);
 
@@ -403,7 +465,7 @@ public sealed class SpecialProductsViewModelTests
 
         Assert.Equal(1, service.CallCount);
         Assert.Equal(("S001", "SKU-001", true), service.LastCall);
-        Assert.True(repository.LoadSellableItemsCallCount > 0);
+        Assert.Equal(0, repository.LoadSellableItemsCallCount);
         Assert.Contains(viewModel.SpecialItems, x => x.ProductCode == "SKU-001" && x.IsSpecialProduct);
     }
 
@@ -720,7 +782,9 @@ public sealed class SpecialProductsViewModelTests
 
         public Action<string, bool>? OnMark { get; init; }
 
-        public Task<IReadOnlyList<SellableItemDto>> MarkSpecialProductAsync(
+        public Func<string, bool, SpecialProductMarkResult>? MarkResultFactory { get; init; }
+
+        public Task<SpecialProductMarkResult> MarkSpecialProductAsync(
             string storeCode,
             string productCode,
             bool isSpecialProduct,
@@ -729,7 +793,7 @@ public sealed class SpecialProductsViewModelTests
             CallCount++;
             LastCall = (storeCode, productCode, isSpecialProduct);
             OnMark?.Invoke(productCode, isSpecialProduct);
-            return Task.FromResult<IReadOnlyList<SellableItemDto>>([]);
+            return Task.FromResult(MarkResultFactory?.Invoke(productCode, isSpecialProduct) ?? new SpecialProductMarkResult([], []));
         }
 
         public Task<SpecialProductDownloadResult> DownloadSpecialProductsAsync(
