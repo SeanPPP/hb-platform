@@ -122,6 +122,7 @@
       "productNo": "Product code / HB product no.",
       "sortBy": "Sort by",
       "sortDirection": "Sort direction",
+      "supplierTitle": "Select domestic supplier",
       "allSuppliers": "All suppliers",
       "clear": "Clear"
     },

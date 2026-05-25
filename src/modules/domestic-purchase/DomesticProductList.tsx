@@ -7,7 +7,6 @@ import {
   Card,
   Chip,
   Divider,
-  Menu,
   Modal,
   Portal,
   SegmentedButtons,
@@ -122,7 +121,7 @@ export function DomesticProductList() {
   const [refreshing, setRefreshing] = useState(false);
   const [loadErrorMessage, setLoadErrorMessage] = useState("");
   const [suppliers, setSuppliers] = useState<DomesticSupplierOption[]>([]);
-  const [supplierMenuVisible, setSupplierMenuVisible] = useState(false);
+  const [supplierModalVisible, setSupplierModalVisible] = useState(false);
   const [selectedSupplier, setSelectedSupplier] = useState<DomesticSupplierOption | null>(null);
   const [productNoKeyword, setProductNoKeyword] = useState("");
   const [appliedProductNo, setAppliedProductNo] = useState("");
@@ -211,7 +210,7 @@ export function DomesticProductList() {
   const handleSupplierSelect = useCallback(
     (supplier: DomesticSupplierOption | null) => {
       setSelectedSupplier(supplier);
-      setSupplierMenuVisible(false);
+      setSupplierModalVisible(false);
       void loadProducts(1, { supplier });
     },
     [loadProducts]
@@ -414,28 +413,11 @@ export function DomesticProductList() {
           </Button>
         </View>
 
-        <Menu
-          visible={supplierMenuVisible}
-          onDismiss={() => setSupplierMenuVisible(false)}
-          anchor={
-            <Button mode="outlined" onPress={() => setSupplierMenuVisible(true)} style={styles.fullButton}>
-              {selectedSupplier
-                ? `${selectedSupplier.supplierCode} - ${selectedSupplier.supplierName}`
-                : t("productList.filters.allSuppliers")}
-            </Button>
-          }
-        >
-          <ScrollView style={styles.menuScroll}>
-            <Menu.Item title={t("productList.filters.allSuppliers")} onPress={() => handleSupplierSelect(null)} />
-            {suppliers.map((supplier) => (
-              <Menu.Item
-                key={supplier.supplierCode}
-                title={`${supplier.supplierCode} - ${supplier.supplierName}`}
-                onPress={() => handleSupplierSelect(supplier)}
-              />
-            ))}
-          </ScrollView>
-        </Menu>
+        <Button mode="outlined" onPress={() => setSupplierModalVisible(true)} style={styles.fullButton}>
+          {selectedSupplier
+            ? `${selectedSupplier.supplierCode} - ${selectedSupplier.supplierName}`
+            : t("productList.filters.allSuppliers")}
+        </Button>
 
         <View style={styles.searchRow}>
           <TextInput
@@ -524,6 +506,55 @@ export function DomesticProductList() {
       />
 
       <Portal>
+        <Modal
+          visible={supplierModalVisible}
+          onDismiss={() => setSupplierModalVisible(false)}
+          contentContainerStyle={styles.supplierModal}
+        >
+          <View style={styles.supplierModalHeader}>
+            <View style={styles.supplierModalTitleWrap}>
+              <Text variant="titleMedium" style={styles.modalTitle}>
+                {t("productList.filters.supplierTitle")}
+              </Text>
+              <Text variant="bodySmall" style={styles.mutedText}>
+                {selectedSupplier
+                  ? `${selectedSupplier.supplierCode} - ${selectedSupplier.supplierName}`
+                  : t("productList.filters.allSuppliers")}
+              </Text>
+            </View>
+            <Button compact onPress={() => setSupplierModalVisible(false)}>
+              {t("common:actions.close")}
+            </Button>
+          </View>
+          <Divider style={styles.divider} />
+          <ScrollView style={styles.supplierList}>
+            <Button
+              mode={selectedSupplier ? "text" : "contained-tonal"}
+              icon={selectedSupplier ? undefined : "check"}
+              onPress={() => handleSupplierSelect(null)}
+              style={styles.supplierOption}
+              contentStyle={styles.supplierOptionContent}
+            >
+              {t("productList.filters.allSuppliers")}
+            </Button>
+            {suppliers.map((supplier) => {
+              const selected = selectedSupplier?.supplierCode === supplier.supplierCode;
+              return (
+                <Button
+                  key={supplier.supplierCode}
+                  mode={selected ? "contained-tonal" : "text"}
+                  icon={selected ? "check" : undefined}
+                  onPress={() => handleSupplierSelect(supplier)}
+                  style={styles.supplierOption}
+                  contentStyle={styles.supplierOptionContent}
+                >
+                  {supplier.supplierCode} - {supplier.supplierName}
+                </Button>
+              );
+            })}
+          </ScrollView>
+        </Modal>
+
         <Modal
           visible={Boolean(editingProduct && editState)}
           onDismiss={() => {
@@ -717,9 +748,6 @@ const styles = StyleSheet.create({
   fullButton: {
     alignItems: "stretch",
   },
-  menuScroll: {
-    maxHeight: 300,
-  },
   searchRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -833,6 +861,32 @@ const styles = StyleSheet.create({
   },
   paginationText: {
     color: "#344054",
+  },
+  supplierModal: {
+    margin: 14,
+    padding: 14,
+    borderRadius: 8,
+    backgroundColor: "#FFFFFF",
+    maxHeight: "82%",
+  },
+  supplierModalHeader: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: 10,
+  },
+  supplierModalTitleWrap: {
+    flex: 1,
+  },
+  supplierList: {
+    maxHeight: 520,
+  },
+  supplierOption: {
+    marginVertical: 2,
+    alignItems: "stretch",
+  },
+  supplierOptionContent: {
+    justifyContent: "flex-start",
   },
   editModal: {
     margin: 14,

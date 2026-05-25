@@ -44,6 +44,7 @@ export type AttendanceApprovalStatus = "Pending" | "Approved" | "Rejected" | str
 export type AttendanceScheduleStatus = "Draft" | "Active" | "Cancelled" | string;
 
 export type AttendanceHolidayBusinessStatus = "Open" | "Closed" | "Partial" | string;
+export type AttendanceHolidayJurisdiction = "NSW" | "QLD";
 
 export interface AttendanceSchedule {
   scheduleGuid: string;
@@ -187,6 +188,30 @@ export interface AttendanceHolidayQueryParams {
   storeCode?: string;
   fromDate?: string;
   toDate?: string;
+}
+
+export interface AttendanceHolidaySyncPayload {
+  storeCode?: string;
+  postcode?: string;
+  jurisdiction?: AttendanceHolidayJurisdiction;
+  stateCode?: AttendanceHolidayJurisdiction;
+  fromDate?: string;
+  toDate?: string;
+  daysAhead?: number;
+}
+
+export interface AttendanceHolidaySyncResult {
+  storeCode?: string;
+  jurisdiction?: AttendanceHolidayJurisdiction;
+  fromDate: string;
+  toDate: string;
+  syncedCount: number;
+  createdCount: number;
+  updatedCount: number;
+  skippedCount: number;
+  holidays: AttendanceStoreHoliday[];
+  skippedStores?: string[];
+  syncedAt?: string;
 }
 
 export interface AttendanceLeaveRequest {

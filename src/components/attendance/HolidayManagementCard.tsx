@@ -40,10 +40,14 @@ interface HolidayManagementCardProps {
   storeCode?: string;
   storeName?: string;
   isBusy: boolean;
+  isSyncBusy?: boolean;
+  canSync?: boolean;
+  syncDisabledReason?: string;
   selectedDate?: string;
   onCreate: (payload: AttendanceStoreHolidayPayload) => void;
   onUpdate: (holidayGuid: string, payload: AttendanceStoreHolidayPayload) => void;
   onDelete: (holidayGuid: string) => void;
+  onSync?: () => void;
 }
 
 function createEmptyDraft(storeCode?: string, selectedDate?: string): HolidayDraft {
@@ -93,10 +97,14 @@ export function HolidayManagementCard({
   storeCode,
   storeName,
   isBusy,
+  isSyncBusy = false,
+  canSync = false,
+  syncDisabledReason,
   selectedDate,
   onCreate,
   onUpdate,
   onDelete,
+  onSync,
 }: HolidayManagementCardProps) {
   const { t } = useAppTranslation(["attendance", "common"]);
   const [editingGuid, setEditingGuid] = useState<string | null>(null);
@@ -274,6 +282,19 @@ export function HolidayManagementCard({
         </View>
 
         <View style={styles.actions}>
+          {onSync ? (
+            <Button
+              mode="outlined"
+              icon="refresh"
+              onPress={onSync}
+              disabled={!canSync || isBusy || isSyncBusy}
+              loading={isSyncBusy}
+            >
+              {t("holidayManagement.syncAction", {
+                defaultValue: "Sync next 30 days",
+              })}
+            </Button>
+          ) : null}
           {editingGuid ? (
             <Button mode="outlined" onPress={resetForm} disabled={isBusy}>
               {t("common:actions.cancel")}
@@ -291,6 +312,9 @@ export function HolidayManagementCard({
               : t("holidayManagement.addAction", { defaultValue: "Add holiday" })}
           </Button>
         </View>
+        <HelperText type="info" visible={Boolean(syncDisabledReason)}>
+          {syncDisabledReason || " "}
+        </HelperText>
 
         <View style={styles.list}>
           {sortedHolidays.length ? (

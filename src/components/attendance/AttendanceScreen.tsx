@@ -38,10 +38,16 @@ import {
   punchAttendance,
   publishAttendanceSchedulesWeek,
   rejectAttendanceApproval,
+  syncAttendanceHolidays,
   updateAttendanceHoliday,
   updateAttendanceSchedule,
   updateAvailability,
 } from "@/modules/attendance/api";
+import {
+  PUBLIC_HOLIDAY_SYNC_DAYS_AHEAD,
+  normalizeAustralianHolidayJurisdiction,
+  resolveAustralianHolidayJurisdiction,
+} from "@/modules/attendance/public-holiday-sync";
 import type {
   AttendanceAvailabilityPayload,
   AttendancePunchPayload,
@@ -186,6 +192,8 @@ export function AttendanceScreen({ mode = "combined" }: AttendanceScreenProps) {
     [access.isAdmin, stores],
   );
   const canReview = access.isAdmin || access.isStoreManager;
+  const canEditAttendanceHoliday =
+    access.isAdmin || access.hasPermission("Attendance.Holiday.EditManagedStore");
   const canSwitchMainTabs = mode === "combined" && canReview;
   const isManagementMode =
     mode === "management" ||
@@ -516,6 +524,22 @@ export function AttendanceScreen({ mode = "combined" }: AttendanceScreenProps) {
         error instanceof Error ? error.message : t("messages.cancelFailed"),
       ),
   });
+  const syncHolidayMutation = useMutation({
+    mutationFn: syncAttendanceHolidays,
+    onSuccess: async (result) => {
+      await invalidateHolidayManagementData();
+      showMessage(
+        t("messages.holidaySyncSuccess", {
+          count: result.syncedCount,
+          defaultValue: `Synced ${result.syncedCount} public holidays.`,
+        }),
+      );
+    },
+    onError: (error) =>
+      showMessage(
+        error instanceof Error ? error.message : t("messages.saveFailed"),
+      ),
+  });
 
   const createManagedLeaveMutation = useMutation({
     mutationFn: createManagedLeaveRequest,
@@ -557,7 +581,8 @@ export function AttendanceScreen({ mode = "combined" }: AttendanceScreenProps) {
   const isHolidayBusy =
     createHolidayMutation.isPending ||
     updateHolidayMutation.isPending ||
-    deleteHolidayMutation.isPending;
+    deleteHolidayMutation.isPending ||
+    syncHolidayMutation.isPending;
   const isLeaveBusy = createManagedLeaveMutation.isPending;
 
   const employeeInitialLoading =
@@ -587,10 +612,33 @@ export function AttendanceScreen({ mode = "combined" }: AttendanceScreenProps) {
     [approvalsQuery.data],
   );
 
-  const selectedStoreName = useMemo(
-    () => findStoreByCode(stores, selectedStoreCode)?.storeName,
-    [selectedStoreCode, stores],
+  const selectedStore = useMemo(
+    () =>
+      findStoreByCode(sectionStores, selectedStoreCode) ??
+      findStoreByCode(stores, selectedStoreCode),
+    [sectionStores, selectedStoreCode, stores],
   );
+  const selectedStoreName = useMemo(
+    () => selectedStore?.storeName,
+    [selectedStore],
+  );
+  const selectedHolidayJurisdiction = useMemo(
+    () =>
+      normalizeAustralianHolidayJurisdiction(selectedStore?.stateCode) ??
+      resolveAustralianHolidayJurisdiction(selectedStore?.postcode) ??
+      null,
+    [selectedStore?.postcode, selectedStore?.stateCode],
+  );
+  const canSyncHolidayManagement = Boolean(
+    canEditAttendanceHoliday && selectedStoreCode,
+  );
+  const holidaySyncDisabledReason = useMemo(() => {
+    if (!selectedStoreCode) {
+      return t("holidayManagement.noStore");
+    }
+
+    return undefined;
+  }, [selectedStoreCode, t]);
   const screenTitle =
     mode === "personal"
       ? t("tabs.personalAttendance")
@@ -724,6 +772,21 @@ export function AttendanceScreen({ mode = "combined" }: AttendanceScreenProps) {
     }
 
     updateHolidayMutation.mutate({ holidayGuid, payload: payloadWithStore });
+  };
+
+  const handleSyncHolidays = () => {
+    if (!selectedStoreCode) {
+      showMessage(t("messages.selectStoreFirst"));
+      return;
+    }
+
+    syncHolidayMutation.mutate({
+      storeCode: selectedStoreCode,
+      postcode: selectedStore?.postcode,
+      jurisdiction: selectedHolidayJurisdiction ?? undefined,
+      stateCode: selectedHolidayJurisdiction ?? undefined,
+      daysAhead: PUBLIC_HOLIDAY_SYNC_DAYS_AHEAD,
+    });
   };
 
   if (
@@ -1001,12 +1064,16 @@ export function AttendanceScreen({ mode = "combined" }: AttendanceScreenProps) {
                 storeCode={selectedStoreCode}
                 storeName={selectedStoreName}
                 isBusy={isHolidayBusy}
+                isSyncBusy={syncHolidayMutation.isPending}
+                canSync={canSyncHolidayManagement}
+                syncDisabledReason={holidaySyncDisabledReason}
                 selectedDate={selectedDate}
                 onCreate={handleCreateHoliday}
                 onUpdate={handleUpdateHoliday}
                 onDelete={(holidayGuid) =>
                   deleteHolidayMutation.mutate(holidayGuid)
                 }
+                onSync={handleSyncHolidays}
               />
             ) : null}
             {isLeaveManagementTab && !isManagementContentLoading ? (

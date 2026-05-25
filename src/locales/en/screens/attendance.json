@@ -94,6 +94,8 @@
     "noStore": "Select a store first",
     "empty": "No public holidays for this store.",
     "addAction": "Add holiday",
+    "syncAction": "Sync next 30 days",
+    "syncUnsupportedJurisdiction": "This store must have an NSW or QLD postcode/state before syncing public holidays.",
     "deleteTitle": "Delete holiday",
     "deleteMessage": "Delete this public holiday?",
     "deleteConfirm": "Delete",
@@ -267,6 +269,7 @@
     "weekPublished": "This week's schedule was published.",
     "publishFailed": "Publish failed.",
     "holidaySaved": "Public holiday saved.",
-    "holidayDeleted": "Public holiday deleted."
+    "holidayDeleted": "Public holiday deleted.",
+    "holidaySyncSuccess": "Synced {{count}} public holidays."
   }
 }

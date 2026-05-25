@@ -31,6 +31,18 @@ function normalizeUserStores(payload: unknown): UserStoreDto[] {
           (typeof item.storeName === "string" && item.storeName) ||
           (typeof item.StoreName === "string" && item.StoreName) ||
           storeCode,
+        postcode:
+          (typeof item.postcode === "string" && item.postcode) ||
+          (typeof item.postCode === "string" && item.postCode) ||
+          (typeof item.Postcode === "string" && item.Postcode) ||
+          (typeof item.PostCode === "string" && item.PostCode) ||
+          undefined,
+        stateCode:
+          (typeof item.stateCode === "string" && item.stateCode) ||
+          (typeof item.StateCode === "string" && item.StateCode) ||
+          (typeof item.state === "string" && item.state) ||
+          (typeof item.State === "string" && item.State) ||
+          undefined,
         isPrimary:
           typeof item.isPrimary === "boolean"
             ? item.isPrimary

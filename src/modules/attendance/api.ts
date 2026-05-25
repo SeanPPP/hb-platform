@@ -7,6 +7,8 @@ import type {
   AttendanceAvailability,
   AttendanceAvailabilityPayload,
   AttendanceHolidayQueryParams,
+  AttendanceHolidaySyncPayload,
+  AttendanceHolidaySyncResult,
   AttendanceLeaveRequest,
   AttendanceLeaveRequestPayload,
   AttendancePublishWeekPayload,
@@ -23,6 +25,11 @@ import type {
   AttendanceWeek,
   AttendanceWeekDay,
 } from "@/modules/attendance/types";
+import {
+  buildPublicHolidaySyncWindow,
+  normalizeAustralianHolidayJurisdiction,
+  resolveAustralianHolidayJurisdiction,
+} from "@/modules/attendance/public-holiday-sync";
 
 type ApiRecord = Record<string, unknown>;
 
@@ -162,6 +169,48 @@ export function normalizeHoliday(payload: unknown): AttendanceStoreHoliday {
     closeTime: asOptionalString(pick(raw, "closeTime", "CloseTime")),
     isPaidHoliday: asBoolean(pick(raw, "isPaidHoliday", "IsPaidHoliday")),
     remark: asOptionalString(pick(raw, "remark", "Remark", "note", "Note")),
+  };
+}
+
+function normalizeStringArray(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+
+  const items = value.map((item) => asString(item).trim()).filter(Boolean);
+  return items.length ? items : undefined;
+}
+
+function normalizeHolidaySyncResult(
+  payload: unknown,
+  fallback: AttendanceHolidaySyncPayload,
+): AttendanceHolidaySyncResult {
+  const raw = isRecord(payload) ? payload : {};
+  const fallbackWindow = buildPublicHolidaySyncWindow(new Date(), fallback.daysAhead);
+  const holidays = (
+    Array.isArray(payload)
+      ? getArray(payload)
+      : getArray(pick(raw, "holidays", "Holidays", "items", "Items", "created", "Created"))
+  ).map(normalizeHoliday);
+  const syncedCount =
+    asNumber(pick(raw, "syncedCount", "SyncedCount", "totalCount", "TotalCount"), holidays.length) ||
+    holidays.length;
+
+  return {
+    storeCode: asOptionalString(pick(raw, "storeCode", "StoreCode")) ?? fallback.storeCode,
+    jurisdiction:
+      normalizeAustralianHolidayJurisdiction(
+        asOptionalString(pick(raw, "jurisdiction", "Jurisdiction", "state", "State", "stateCode", "StateCode")),
+      ) ?? fallback.jurisdiction,
+    fromDate: asDateString(pick(raw, "fromDate", "FromDate")) || fallback.fromDate || fallbackWindow.fromDate,
+    toDate: asDateString(pick(raw, "toDate", "ToDate")) || fallback.toDate || fallbackWindow.toDate,
+    syncedCount,
+    createdCount: asNumber(pick(raw, "createdCount", "CreatedCount"), syncedCount),
+    updatedCount: asNumber(pick(raw, "updatedCount", "UpdatedCount"), 0),
+    skippedCount: asNumber(pick(raw, "skippedCount", "SkippedCount"), 0),
+    holidays,
+    skippedStores: normalizeStringArray(pick(raw, "skippedStores", "SkippedStores")),
+    syncedAt: asOptionalString(pick(raw, "syncedAt", "SyncedAt")),
   };
 }
 
@@ -377,6 +426,37 @@ function toHolidayPayload(payload: AttendanceStoreHolidayPayload) {
   });
 }
 
+function toHolidaySyncPayload(payload: AttendanceHolidaySyncPayload) {
+  const storeCode = payload.storeCode?.trim();
+  const jurisdiction =
+    normalizeAustralianHolidayJurisdiction(payload.jurisdiction) ??
+    resolveAustralianHolidayJurisdiction(payload.postcode) ??
+    undefined;
+
+  if (!storeCode) {
+    throw new Error("Store code is required to sync public holidays.");
+  }
+
+  const range =
+    payload.fromDate && payload.toDate
+      ? {
+          fromDate: payload.fromDate,
+          toDate: payload.toDate,
+          daysAhead: payload.daysAhead,
+        }
+      : buildPublicHolidaySyncWindow(new Date(), payload.daysAhead);
+
+  return sanitizePayload({
+    storeCode,
+    postcode: payload.postcode,
+    jurisdiction,
+    stateCode: jurisdiction,
+    fromDate: range.fromDate,
+    toDate: range.toDate,
+    daysAhead: range.daysAhead,
+  });
+}
+
 function toLeaveRequestPayload(payload: AttendanceLeaveRequestPayload) {
   return sanitizePayload({
     userGuid: payload.userGuid,
@@ -510,6 +590,12 @@ export async function getAttendanceHolidays(params: AttendanceHolidayQueryParams
     },
   });
   return getArray(response.data).map(normalizeHoliday);
+}
+
+export async function syncAttendanceHolidays(payload: AttendanceHolidaySyncPayload): Promise<AttendanceHolidaySyncResult> {
+  const requestPayload = toHolidaySyncPayload(payload);
+  const response = await apiClient.post(`${ATTENDANCE_BASE}/holidays/sync`, requestPayload);
+  return normalizeHolidaySyncResult(response.data, requestPayload);
 }
 
 export async function createAttendanceHoliday(payload: AttendanceStoreHolidayPayload): Promise<AttendanceStoreHoliday> {

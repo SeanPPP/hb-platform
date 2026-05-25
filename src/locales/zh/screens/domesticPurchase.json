@@ -122,6 +122,7 @@
       "productNo": "商品编码 / HB 货号",
       "sortBy": "排序字段",
       "sortDirection": "排序方向",
+      "supplierTitle": "选择国内供应商",
       "allSuppliers": "全部供应商",
       "clear": "清空"
     },

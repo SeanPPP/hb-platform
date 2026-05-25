@@ -94,6 +94,8 @@
     "noStore": "请先选择分店",
     "empty": "当前分店暂无公共假期",
     "addAction": "新增假期",
+    "syncAction": "同步未来 30 天",
+    "syncUnsupportedJurisdiction": "当前分店需要可识别的 NSW 或 QLD 邮编/州信息后才能同步公共假期。",
     "deleteTitle": "删除公共假期",
     "deleteMessage": "确定删除这个公共假期吗？",
     "deleteConfirm": "删除",
@@ -267,6 +269,7 @@
     "weekPublished": "本周排班已发布",
     "publishFailed": "发布失败",
     "holidaySaved": "公共假期已保存",
-    "holidayDeleted": "公共假期已删除"
+    "holidayDeleted": "公共假期已删除",
+    "holidaySyncSuccess": "已同步 {{count}} 条公共假期"
   }
 }

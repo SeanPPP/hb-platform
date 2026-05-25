@@ -21,6 +21,8 @@ export interface UserStoreDto {
   storeGUID?: string;
   storeCode: string;
   storeName: string;
+  postcode?: string;
+  stateCode?: string;
   isPrimary?: boolean;
   assignedAt?: string;
 }
