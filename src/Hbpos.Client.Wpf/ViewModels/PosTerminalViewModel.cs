@@ -10,6 +10,14 @@ using Hbpos.Contracts.Catalog;
 
 namespace Hbpos.Client.Wpf.ViewModels;
 
+public enum StatusFeedbackKind
+{
+    Neutral,
+    Success,
+    Warning,
+    Error
+}
+
 public sealed partial class PosTerminalViewModel : ObservableObject, IDisposable
 {
     public const string PageId = "PosTerminal";
@@ -23,6 +31,7 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IDisposable
     private readonly Func<Task>? _onRecallOrderAsync;
     private readonly Func<Task>? _onReregisterDeviceAsync;
     private readonly ILocalizationService? _localization;
+    private readonly IUserFeedbackService _userFeedbackService;
     private readonly IRawScannerService? _rawScannerService;
     private readonly Func<CancellationToken, Task<IReadOnlyList<SellableItemDto>>>? _syncCatalogAsync;
     private readonly Func<CancellationToken, Task<IReadOnlyList<SellableItemDto>>>? _resetCatalogAsync;
@@ -58,6 +67,12 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IDisposable
     [ObservableProperty]
     private bool _isWholeOrderOperation;
 
+    [ObservableProperty]
+    private StatusFeedbackKind _statusFeedbackKind = StatusFeedbackKind.Neutral;
+
+    [ObservableProperty]
+    private int _statusPulseToken;
+
     public PosTerminalViewModel(
         LocalSellableItemIndex priceIndex,
         PosCartService cart,
@@ -65,6 +80,7 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IDisposable
         Action? onOpenPayment,
         Func<Task>? onOpenSpecialProductsAsync = null,
         ILocalizationService? localization = null,
+        IUserFeedbackService? userFeedbackService = null,
         Func<string, string, CancellationToken, Task<RemoteLookupRefreshResult>>? remoteLookupRefreshAsync = null,
         Func<CancellationToken, Task<IReadOnlyList<SellableItemDto>>>? reloadCatalogAsync = null,
         Func<CancellationToken, Task<IReadOnlyList<SellableItemDto>>>? syncCatalogAsync = null,
@@ -86,6 +102,7 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IDisposable
         _onRecallOrderAsync = onRecallOrderAsync;
         _onReregisterDeviceAsync = onReregisterDeviceAsync;
         _localization = localization;
+        _userFeedbackService = userFeedbackService ?? NoopUserFeedbackService.Instance;
         _syncCatalogAsync = syncCatalogAsync;
         _resetCatalogAsync = resetCatalogAsync;
         _refreshOnlineAsync = refreshOnlineAsync;
@@ -679,8 +696,7 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IDisposable
             result = _workflowService.ProcessScan(Session, barcode, preferExactLookup: true, source, traceId);
             workflowStopwatch.Stop();
             applyStopwatch.Start();
-            ApplyWorkflowResult(result);
-            SetStatusText(FormatScannerResultStatus(barcode, result));
+            ApplyWorkflowResult(result, statusTextOverride: FormatScannerResultStatus(barcode, result));
             applyStopwatch.Stop();
         }
         finally
@@ -815,7 +831,7 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IDisposable
         }
         catch (Exception ex)
         {
-            SetStatusText($"{failedPrefix}: {ex.Message}");
+            SetStatusText($"{failedPrefix}: {ex.Message}", StatusFeedbackKind.Error, UserFeedbackCue.OperationError);
         }
     }
 
@@ -828,7 +844,7 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IDisposable
         SelectedItem = Matches.FirstOrDefault();
     }
 
-    private void ApplyWorkflowResult(PosTerminalWorkflowResult result)
+    private void ApplyWorkflowResult(PosTerminalWorkflowResult result, string? statusTextOverride = null)
     {
         if (result.Matches is not null)
         {
@@ -868,7 +884,19 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IDisposable
 
         if (!string.IsNullOrWhiteSpace(result.StatusKey))
         {
-            SetStatus(result.StatusKey!, result.StatusArgs);
+            var (feedbackKind, cue) = ClassifyStatusFeedback(result.StatusKey!);
+            if (!string.IsNullOrWhiteSpace(statusTextOverride))
+            {
+                SetStatusText(statusTextOverride!, feedbackKind, cue);
+            }
+            else
+            {
+                SetStatusCore(result.StatusKey!, result.StatusArgs, feedbackKind, cue);
+            }
+        }
+        else if (!string.IsNullOrWhiteSpace(statusTextOverride))
+        {
+            SetStatusText(statusTextOverride!, StatusFeedbackKind.Neutral);
         }
     }
 
@@ -893,16 +921,58 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IDisposable
 
     private void SetStatus(string key, params object[] args)
     {
+        SetStatusCore(key, args, StatusFeedbackKind.Neutral);
+    }
+
+    private void SetStatusCore(
+        string key,
+        object[] args,
+        StatusFeedbackKind feedbackKind = StatusFeedbackKind.Neutral,
+        UserFeedbackCue? cue = null)
+    {
         _statusText = null;
         _statusKey = key;
         _statusArgs = args;
+        ApplyStatusFeedback(feedbackKind, cue);
         OnPropertyChanged(nameof(StatusMessage));
     }
 
-    private void SetStatusText(string message)
+    private void SetStatusText(
+        string message,
+        StatusFeedbackKind feedbackKind = StatusFeedbackKind.Neutral,
+        UserFeedbackCue? cue = null)
     {
         _statusText = message;
+        ApplyStatusFeedback(feedbackKind, cue);
         OnPropertyChanged(nameof(StatusMessage));
+    }
+
+    private void ApplyStatusFeedback(StatusFeedbackKind feedbackKind, UserFeedbackCue? cue)
+    {
+        StatusFeedbackKind = feedbackKind;
+        StatusPulseToken++;
+        if (cue is UserFeedbackCue feedbackCue)
+        {
+            _userFeedbackService.Play(feedbackCue);
+        }
+    }
+
+    private static (StatusFeedbackKind Kind, UserFeedbackCue? Cue) ClassifyStatusFeedback(string statusKey)
+    {
+        return statusKey switch
+        {
+            "pos.status.added" => (StatusFeedbackKind.Success, UserFeedbackCue.ScanAdded),
+            "pos.status.multipleMatches" => (StatusFeedbackKind.Warning, UserFeedbackCue.ScanMultipleMatches),
+            "pos.status.noLocalMatch" => (StatusFeedbackKind.Error, UserFeedbackCue.ScanNoMatch),
+            "cart.status.zeroPriceItem" => (StatusFeedbackKind.Error, UserFeedbackCue.OperationError),
+            "cart.status.quantityMustBeInteger" => (StatusFeedbackKind.Error, UserFeedbackCue.OperationError),
+            "pos.status.invalidKeypadValue" => (StatusFeedbackKind.Error, UserFeedbackCue.OperationError),
+            "pos.status.selectCartLine" => (StatusFeedbackKind.Error, UserFeedbackCue.OperationError),
+            "pos.status.discountAmountTooHigh" => (StatusFeedbackKind.Error, UserFeedbackCue.OperationError),
+            "pos.status.discountPercentOutOfRange" => (StatusFeedbackKind.Error, UserFeedbackCue.OperationError),
+            "pos.status.quantityMustBePositive" => (StatusFeedbackKind.Error, UserFeedbackCue.OperationError),
+            _ => (StatusFeedbackKind.Neutral, null)
+        };
     }
 
     private string T(string key)

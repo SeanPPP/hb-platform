@@ -2,7 +2,7 @@ using System.Runtime.InteropServices;
 
 namespace Hbpos.Client.Wpf.Services;
 
-public sealed partial class WindowsMessageBeepUserFeedbackService : IUserFeedbackService
+public sealed class WindowsMessageBeepUserFeedbackService : IUserFeedbackService
 {
     private const uint OkType = 0x00000000;
     private const uint IconExclamationType = 0x00000030;
@@ -20,7 +20,7 @@ public sealed partial class WindowsMessageBeepUserFeedbackService : IUserFeedbac
         });
     }
 
-    [LibraryImport("user32.dll")]
+    [DllImport("user32.dll", SetLastError = false)]
     [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool MessageBeep(uint type);
+    private static extern bool MessageBeep(uint type);
 }

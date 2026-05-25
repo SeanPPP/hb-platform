@@ -320,23 +320,82 @@ public sealed class PosTerminalCashPaymentViewModelTests
     }
 
     [Fact]
-    public void Pos_terminal_keyboard_fallback_scanner_shows_barcode_and_no_match_result()
+    public void Pos_terminal_scan_success_plays_success_feedback_and_marks_success_status()
     {
         var cart = new PosCartService();
         var index = new LocalSellableItemIndex();
-        var localization = new LocalizationService();
+        var feedback = new FakeUserFeedbackService();
+        index.ReplaceAll([CreateItem("SKU-114A", "Feedback Apple", "930114A", PriceSourceKind.StoreRetailPrice, 1.8m)]);
         var viewModel = new PosTerminalViewModel(
             index,
             cart,
             Session,
             onOpenPayment: null,
-            localization: localization);
+            userFeedbackService: feedback)
+        {
+            ScanText = "930114A"
+        };
+
+        viewModel.ScanCommand.Execute(null);
+
+        Assert.Equal(StatusFeedbackKind.Success, viewModel.StatusFeedbackKind);
+        Assert.Equal(1, viewModel.StatusPulseToken);
+        Assert.Equal([UserFeedbackCue.ScanAdded], feedback.Cues);
+    }
+
+    [Fact]
+    public void Pos_terminal_keyboard_fallback_scanner_shows_barcode_and_no_match_result()
+    {
+        var cart = new PosCartService();
+        var index = new LocalSellableItemIndex();
+        var localization = new LocalizationService();
+        var feedback = new FakeUserFeedbackService();
+        var viewModel = new PosTerminalViewModel(
+            index,
+            cart,
+            Session,
+            onOpenPayment: null,
+            localization: localization,
+            userFeedbackService: feedback);
 
         viewModel.ProcessScannerBarcode("930999", "keyboard-focus-fallback", "keyboard-fallback");
 
         Assert.Empty(viewModel.CartLines);
         Assert.Equal("930999", viewModel.ScanText);
         Assert.Equal("Scan 930999: No local item found. Checkout can continue offline.", viewModel.StatusMessage);
+        Assert.Equal(StatusFeedbackKind.Error, viewModel.StatusFeedbackKind);
+        Assert.Equal(1, viewModel.StatusPulseToken);
+        Assert.Equal([UserFeedbackCue.ScanNoMatch], feedback.Cues);
+    }
+
+    [Fact]
+    public void Pos_terminal_raw_scanner_multiple_match_plays_warning_feedback_once()
+    {
+        var cart = new PosCartService();
+        var index = new LocalSellableItemIndex();
+        var scanner = new FakeRawScannerService();
+        var localization = new LocalizationService();
+        var feedback = new FakeUserFeedbackService();
+        index.ReplaceAll(
+        [
+            CreateItem("SKU-114B", "Feedback Apple Small", "930114B", PriceSourceKind.StoreRetailPrice, 1.8m),
+            CreateItem("SKU-114C", "Feedback Apple Large", "930114B", PriceSourceKind.StoreRetailPrice, 2.8m)
+        ]);
+        var viewModel = new PosTerminalViewModel(
+            index,
+            cart,
+            Session,
+            onOpenPayment: null,
+            localization: localization,
+            userFeedbackService: feedback,
+            rawScannerService: scanner);
+        scanner.SetActivePage(PosTerminalViewModel.PageId);
+
+        scanner.Emit("930114B");
+
+        Assert.Equal(StatusFeedbackKind.Warning, viewModel.StatusFeedbackKind);
+        Assert.Equal(1, viewModel.StatusPulseToken);
+        Assert.Equal([UserFeedbackCue.ScanMultipleMatches], feedback.Cues);
     }
 
     [Fact]
@@ -568,12 +627,14 @@ public sealed class PosTerminalCashPaymentViewModelTests
     {
         var cart = new PosCartService();
         var index = new LocalSellableItemIndex();
+        var feedback = new FakeUserFeedbackService();
         index.ReplaceAll([CreateItem("SKU-131", "Guarded Tea", "930131", PriceSourceKind.StoreRetailPrice, 5m)]);
         var viewModel = new PosTerminalViewModel(
             index,
             cart,
             Session,
-            onOpenPayment: null);
+            onOpenPayment: null,
+            userFeedbackService: feedback);
 
         viewModel.KeypadInputCommand.Execute("2");
         viewModel.ModifySelectedLineQuantityCommand.Execute(null);
@@ -592,6 +653,56 @@ public sealed class PosTerminalCashPaymentViewModelTests
         Assert.Equal(0m, line.DiscountAmount);
         Assert.Equal(5m, viewModel.ActualAmount);
         Assert.Equal("pos.status.invalidKeypadValue", viewModel.StatusMessage);
+        Assert.Equal(
+            [UserFeedbackCue.OperationError, UserFeedbackCue.ScanAdded, UserFeedbackCue.OperationError],
+            feedback.Cues);
+    }
+
+    [Fact]
+    public void Pos_terminal_repeated_same_error_still_pulses_and_replays_feedback()
+    {
+        var feedback = new FakeUserFeedbackService();
+        var viewModel = new PosTerminalViewModel(
+            new LocalSellableItemIndex(),
+            new PosCartService(),
+            Session,
+            onOpenPayment: null,
+            userFeedbackService: feedback);
+
+        viewModel.KeypadInputCommand.Execute("2");
+        viewModel.ModifySelectedLineQuantityCommand.Execute(null);
+        viewModel.ModifySelectedLineQuantityCommand.Execute(null);
+
+        Assert.Equal(StatusFeedbackKind.Error, viewModel.StatusFeedbackKind);
+        Assert.Equal(2, viewModel.StatusPulseToken);
+        Assert.Equal([UserFeedbackCue.OperationError, UserFeedbackCue.OperationError], feedback.Cues);
+    }
+
+    [Fact]
+    public void Pos_terminal_non_error_line_update_does_not_play_extra_feedback()
+    {
+        var cart = new PosCartService();
+        var index = new LocalSellableItemIndex();
+        var feedback = new FakeUserFeedbackService();
+        index.ReplaceAll([CreateItem("SKU-129A", "Quiet Tea", "930129A", PriceSourceKind.StoreRetailPrice, 2m)]);
+        var viewModel = new PosTerminalViewModel(
+            index,
+            cart,
+            Session,
+            onOpenPayment: null,
+            userFeedbackService: feedback)
+        {
+            ScanText = "930129A"
+        };
+
+        viewModel.ScanCommand.Execute(null);
+        feedback.Cues.Clear();
+
+        viewModel.KeypadInputCommand.Execute("3");
+        viewModel.ModifySelectedLineQuantityCommand.Execute(null);
+
+        Assert.Empty(feedback.Cues);
+        Assert.Equal(StatusFeedbackKind.Neutral, viewModel.StatusFeedbackKind);
     }
 
     [Fact]
@@ -716,13 +827,15 @@ public sealed class PosTerminalCashPaymentViewModelTests
     {
         var cart = new PosCartService();
         var index = new LocalSellableItemIndex();
+        var feedback = new FakeUserFeedbackService();
         var openedPayment = false;
         index.ReplaceAll([CreateItem("SKU-140", "Zero Price Tea", "930140", PriceSourceKind.StoreRetailPrice, 0m)]);
         var viewModel = new PosTerminalViewModel(
             index,
             cart,
             Session,
-            onOpenPayment: () => openedPayment = true);
+            onOpenPayment: () => openedPayment = true,
+            userFeedbackService: feedback);
 
         viewModel.ScanText = "930140";
         viewModel.ScanCommand.Execute(null);
@@ -733,6 +846,9 @@ public sealed class PosTerminalCashPaymentViewModelTests
         Assert.False(openedPayment);
         Assert.True(line.HasZeroUnitPrice);
         Assert.Equal("cart.status.zeroPriceItem", viewModel.StatusMessage);
+        Assert.Equal(StatusFeedbackKind.Error, viewModel.StatusFeedbackKind);
+        Assert.Equal(2, viewModel.StatusPulseToken);
+        Assert.Equal([UserFeedbackCue.ScanAdded, UserFeedbackCue.OperationError], feedback.Cues);
 
         viewModel.KeypadInputCommand.Execute("2");
         viewModel.ModifySelectedLinePriceCommand.Execute(null);
@@ -1658,6 +1774,16 @@ public sealed class PosTerminalCashPaymentViewModelTests
 
         public void Dispose()
         {
+        }
+    }
+
+    private sealed class FakeUserFeedbackService : IUserFeedbackService
+    {
+        public List<UserFeedbackCue> Cues { get; } = [];
+
+        public void Play(UserFeedbackCue cue)
+        {
+            Cues.Add(cue);
         }
     }
 }

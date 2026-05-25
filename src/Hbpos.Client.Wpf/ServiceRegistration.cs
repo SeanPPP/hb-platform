@@ -111,14 +111,14 @@ public static class ServiceRegistration
             sp.GetRequiredService<ILocalizationService>(),
             sp.GetRequiredService<ICustomerDisplayOrchestrator>(),
             sp.GetRequiredService<IRawScannerService>(),
-            sp.GetRequiredService<IUserFeedbackService>(),
             sp.GetRequiredService<IReceiptQueryService>(),
             sp.GetRequiredService<ICashPaymentWorkflowService>(),
             sp.GetRequiredService<IDeviceRegistrationWorkflowService>(),
             sp.GetRequiredService<ISpecialProductsWorkflowService>(),
             sp.GetRequiredService<PosTerminalWorkflowFactory>(),
             sp.GetRequiredService<ISuspendedOrderService>(),
-            sp.GetRequiredService<IRemoteOrderHistoryService>()));
+            sp.GetRequiredService<IRemoteOrderHistoryService>(),
+            userFeedbackService: sp.GetRequiredService<IUserFeedbackService>()));
         services.AddSingleton<MainWindow>();
 
         return services;
