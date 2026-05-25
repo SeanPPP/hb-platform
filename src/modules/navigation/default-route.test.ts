@@ -9,7 +9,7 @@ function assertEqual(actual: unknown, expected: unknown, label: string) {
 assertEqual(
   resolveDefaultTabRoute({
     isDeviceMode: true,
-    routeNames: ["home", "orders", "product-query", "settings"],
+    routeNames: ["home", "orders", "product-query", "device-management", "settings"],
   }),
   "/(tabs)/product-query",
   "device-bound login defaults to product query"
@@ -31,6 +31,35 @@ assertEqual(
   }),
   "/(tabs)/home",
   "missing preferred route falls back to first visible tab"
+);
+
+assertEqual(
+  resolveDefaultTabRoute({
+    isDeviceMode: true,
+    routeNames: ["device-management", "settings"],
+  }),
+  "/(tabs)/settings",
+  "device mode never defaults to device management"
+);
+
+assertEqual(
+  resolveDefaultTabRoute({
+    isDeviceMode: false,
+    routeNames: ["device-management", "settings"],
+  }),
+  "/(tabs)/device-management",
+  "account sessions can fall back to device management"
+);
+
+assertEqual(
+  resolveTabRouteCorrection({
+    currentRouteName: "device-management",
+    hasAppliedDefaultRoute: false,
+    isDeviceMode: true,
+    routeNames: ["device-management", "settings"],
+  }),
+  "/(tabs)/settings",
+  "device mode redirects away from device management"
 );
 
 assertEqual(

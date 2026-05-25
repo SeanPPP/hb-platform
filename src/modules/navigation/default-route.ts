@@ -8,6 +8,7 @@ export type AppTabPath =
   | "/(tabs)/product-query"
   | "/(tabs)/users"
   | "/(tabs)/employee-profile"
+  | "/(tabs)/device-management"
   | "/(tabs)/settings";
 
 export const TAB_PATHS: Record<string, AppTabPath> = {
@@ -20,8 +21,18 @@ export const TAB_PATHS: Record<string, AppTabPath> = {
   "product-query": "/(tabs)/product-query",
   users: "/(tabs)/users",
   "employee-profile": "/(tabs)/employee-profile",
+  "device-management": "/(tabs)/device-management",
   settings: "/(tabs)/settings",
 };
+
+const DEVICE_MODE_BLOCKED_ROUTE_NAMES = new Set(["device-management"]);
+
+function normalizeVisibleRouteNames(routeNames: Iterable<string>, isDeviceMode: boolean) {
+  const orderedRouteNames = Array.from(routeNames);
+  return isDeviceMode
+    ? orderedRouteNames.filter((routeName) => !DEVICE_MODE_BLOCKED_ROUTE_NAMES.has(routeName))
+    : orderedRouteNames;
+}
 
 interface ResolveDefaultTabRouteOptions {
   isDeviceMode: boolean;
@@ -37,7 +48,7 @@ export function resolveDefaultTabRoute({
   isDeviceMode,
   routeNames,
 }: ResolveDefaultTabRouteOptions): AppTabPath {
-  const orderedRouteNames = Array.from(routeNames);
+  const orderedRouteNames = normalizeVisibleRouteNames(routeNames, isDeviceMode);
   const preferredRouteName = isDeviceMode ? "product-query" : "attendance";
 
   if (orderedRouteNames.includes(preferredRouteName)) {
@@ -58,7 +69,7 @@ export function resolveTabRouteCorrection({
     return null;
   }
 
-  const orderedRouteNames = Array.from(routeNames);
+  const orderedRouteNames = normalizeVisibleRouteNames(routeNames, isDeviceMode);
   const visibleRouteNames = new Set(orderedRouteNames);
   const defaultRoute = resolveDefaultTabRoute({ isDeviceMode, routeNames: orderedRouteNames });
   const currentRoute = TAB_PATHS[currentRouteName];

@@ -124,12 +124,20 @@ export default function TabsLayout() {
 
   const isDeviceMode = Boolean(hasStoredDeviceSession && !hasUserSession);
   const visibleRouteNames = useMemo(
-    () => new Set(navigationItems.map((item) => item.routeName)),
-    [navigationItems]
+    () =>
+      new Set(
+        navigationItems
+          .map((item) => item.routeName)
+          .filter((routeName) => !(isDeviceMode && routeName === "device-management"))
+      ),
+    [isDeviceMode, navigationItems]
   );
   const orderedVisibleRouteNames = useMemo(
-    () => navigationItems.map((item) => item.routeName),
-    [navigationItems]
+    () =>
+      navigationItems
+        .map((item) => item.routeName)
+        .filter((routeName) => !(isDeviceMode && routeName === "device-management")),
+    [isDeviceMode, navigationItems]
   );
   const shouldWaitForNavigation =
     (hasUserSession || isDeviceMode) && (!navigationReady || navigationLoading);
@@ -270,6 +278,16 @@ export default function TabsLayout() {
           title: t("tabs.employeeProfile"),
           tabBarIcon: ({ color, size }) => (
             <MaterialCommunityIcons name="card-account-details-outline" color={color} size={size} />
+          ),
+        }}
+      />
+      <Tabs.Screen
+        name="device-management"
+        options={{
+          href: isRouteVisible("device-management") ? undefined : null,
+          title: t("tabs.deviceManagement"),
+          tabBarIcon: ({ color, size }) => (
+            <MaterialCommunityIcons name="cellphone-cog" color={color} size={size} />
           ),
         }}
       />

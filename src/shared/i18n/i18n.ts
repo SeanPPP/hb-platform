@@ -4,6 +4,7 @@ import commonEn from "@/locales/en/common.json";
 import attendanceEn from "@/locales/en/screens/attendance.json";
 import cartEn from "@/locales/en/screens/cart.json";
 import domesticPurchaseEn from "@/locales/en/screens/domesticPurchase.json";
+import deviceManagementEn from "@/locales/en/screens/deviceManagement.json";
 import employeeProfileEn from "@/locales/en/screens/employeeProfile.json";
 import homeEn from "@/locales/en/screens/home.json";
 import loginEn from "@/locales/en/screens/login.json";
@@ -16,6 +17,7 @@ import commonZh from "@/locales/zh/common.json";
 import attendanceZh from "@/locales/zh/screens/attendance.json";
 import cartZh from "@/locales/zh/screens/cart.json";
 import domesticPurchaseZh from "@/locales/zh/screens/domesticPurchase.json";
+import deviceManagementZh from "@/locales/zh/screens/deviceManagement.json";
 import employeeProfileZh from "@/locales/zh/screens/employeeProfile.json";
 import homeZh from "@/locales/zh/screens/home.json";
 import loginZh from "@/locales/zh/screens/login.json";
@@ -39,6 +41,7 @@ const resources = {
     home: homeZh,
     cart: cartZh,
     domesticPurchase: domesticPurchaseZh,
+    deviceManagement: deviceManagementZh,
     employeeProfile: employeeProfileZh,
     orders: ordersZh,
     settings: settingsZh,
@@ -53,6 +56,7 @@ const resources = {
     home: homeEn,
     cart: cartEn,
     domesticPurchase: domesticPurchaseEn,
+    deviceManagement: deviceManagementEn,
     employeeProfile: employeeProfileEn,
     orders: ordersEn,
     settings: settingsEn,
@@ -84,7 +88,7 @@ if (!i18n.isInitialized) {
     lng: DEFAULT_APP_LANGUAGE,
     fallbackLng: DEFAULT_APP_LANGUAGE,
     defaultNS: "common",
-    ns: ["common", "attendance", "login", "home", "cart", "domesticPurchase", "employeeProfile", "orders", "settings", "productQuery", "userManagement", "warehouse"],
+    ns: ["common", "attendance", "login", "home", "cart", "domesticPurchase", "deviceManagement", "employeeProfile", "orders", "settings", "productQuery", "userManagement", "warehouse"],
     interpolation: {
       escapeValue: false,
     },

@@ -1,0 +1,71 @@
+{
+  "title": "Device Management",
+  "subtitle": "{{count}} devices",
+  "searchPlaceholder": "Search device number, hardware ID, or system",
+  "actions": {
+    "activate": "Enable",
+    "cancel": "Cancel",
+    "disable": "Disable",
+    "lock": "Lock",
+    "refresh": "Refresh"
+  },
+  "currentStore": {
+    "allStores": "All stores"
+  },
+  "dialogs": {
+    "confirmTitle": "Confirm {{action}}",
+    "confirmMessage": "{{action}} \"{{device}}\"?"
+  },
+  "fields": {
+    "createdAtValue": "Created: {{value}}",
+    "deviceSystemValue": "System: {{value}}",
+    "deviceTypeValue": "Type: {{value}}",
+    "hardwareValue": "Hardware ID: {{value}}",
+    "noStore": "No store assigned",
+    "storeValue": "Store: {{value}}",
+    "unnamedDevice": "Unnamed device",
+    "updatedAtValue": "Updated: {{value}}"
+  },
+  "filters": {
+    "all": "All",
+    "active": "Enabled",
+    "apply": "Apply filters",
+    "button": "Filters",
+    "buttonWithCount": "Filters ({{count}})",
+    "clear": "Clear",
+    "current": "{{store}} · {{status}}",
+    "disabled": "Disabled",
+    "keyword": "Keyword",
+    "locked": "Locked",
+    "pendingConfirmation": "Pending",
+    "status": "Status",
+    "store": "Store",
+    "title": "Filter devices",
+    "unregistered": "Unregistered"
+  },
+  "messages": {
+    "activateFailed": "Failed to enable device",
+    "activateSuccess": "Device enabled",
+    "disableFailed": "Failed to disable device",
+    "disableSuccess": "Device disabled",
+    "emptyDescription": "No registered devices yet.",
+    "emptySearchDescription": "Try another keyword, status, or store.",
+    "emptySearchTitle": "No matching devices",
+    "emptyTitle": "No devices",
+    "loadFailedDescription": "Please try again later.",
+    "loadFailedTitle": "Failed to load devices",
+    "lockFailed": "Failed to lock device",
+    "lockSuccess": "Device locked",
+    "noAccessDescription": "Only admins can view and manage mobile devices.",
+    "noAccessTitle": "No device management access",
+    "refreshFailed": "Failed to refresh devices"
+  },
+  "statuses": {
+    "active": "Enabled",
+    "disabled": "Disabled",
+    "locked": "Locked",
+    "pendingConfirmation": "Pending",
+    "unregistered": "Unregistered",
+    "unknown": "Unknown"
+  }
+}
