@@ -9,6 +9,59 @@ export interface DomesticSupplierOption {
   supplierName: string;
 }
 
+export interface DomesticProductListItem {
+  productCode: string;
+  supplierCode: string;
+  supplierName: string;
+  productName: string | null;
+  englishProductName: string | null;
+  hbProductNo: string | null;
+  barcode: string | null;
+  productSpecification: string | null;
+  productType: number | null;
+  domesticPrice: number | null;
+  oemPrice: number | null;
+  importPrice: number | null;
+  packingQuantity: number | null;
+  unitVolume: number | null;
+  middlePackQuantity: number | null;
+  productImage: string | null;
+  isActive: boolean;
+}
+
+export interface DomesticProductListQuery {
+  page?: number;
+  pageSize?: number;
+  supplierCode?: string | null;
+  productNo?: string | null;
+}
+
+export interface DomesticProductListResult {
+  items: DomesticProductListItem[];
+  total: number;
+  page: number;
+  pageSize: number;
+}
+
+export interface UpdateDomesticProductRequest {
+  productName?: string | null;
+  englishProductName?: string | null;
+  productSpecification?: string | null;
+  productType?: number;
+  domesticPrice?: number | null;
+  oemPrice?: number | null;
+  importPrice?: number | null;
+  packingQuantity?: number | null;
+  unitVolume?: number | null;
+  middlePackQuantity?: number | null;
+  productImage?: string | null;
+  isActive?: boolean;
+}
+
+export interface DomesticProductEditDraft extends Omit<DomesticProductListItem, "isActive"> {
+  isActive: boolean;
+}
+
 export interface ProductPrefixOption {
   prefixCode: string;
   prefixName: string;
