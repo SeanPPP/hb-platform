@@ -196,17 +196,42 @@ export interface AttendanceLeaveRequest {
   leaveType: AttendanceLeaveType;
   startDate: string;
   endDate: string;
+  startTime?: string;
+  endTime?: string;
   reason?: string;
+  attachmentUrl?: string;
   status: AttendanceApprovalStatus;
   submittedAt?: string;
 }
 
 export interface AttendanceLeaveRequestPayload {
+  userGuid?: string;
   storeCode?: string;
   leaveType: AttendanceLeaveType;
   startDate: string;
   endDate: string;
+  startTime?: string;
+  endTime?: string;
   reason?: string;
+  attachmentUrl?: string;
+}
+
+export interface AttendanceDirectUploadRequest {
+  fileName: string;
+  contentType: string;
+  fileSize: number;
+  objectKey?: string | null;
+}
+
+export interface AttendanceDirectUploadSignature {
+  url: string;
+  objectKey: string;
+  headers: Record<string, string>;
+}
+
+export interface AttendanceLeaveAttachmentUploadResult {
+  objectKey: string;
+  downloadUrl: string;
 }
 
 export interface AttendanceApproval {

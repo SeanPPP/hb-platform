@@ -12,6 +12,7 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import { AvailabilityForm } from "@/components/attendance/AvailabilityForm";
 import { HolidayManagementCard } from "@/components/attendance/HolidayManagementCard";
+import { LeaveManagementCard } from "@/components/attendance/LeaveManagementCard";
 import { ManagerApprovalList } from "@/components/attendance/ManagerApprovalList";
 import { MonthDatePickerField } from "@/components/attendance/MonthDatePicker";
 import { ScheduleManagementCard } from "@/components/attendance/ScheduleManagementCard";
@@ -25,6 +26,7 @@ import {
   createAttendanceHoliday,
   createAttendanceSchedule,
   createAvailability,
+  createManagedLeaveRequest,
   deleteAttendanceHoliday,
   deleteAttendanceSchedule,
   getAttendanceHolidays,
@@ -281,7 +283,9 @@ export function AttendanceScreen({ mode = "combined" }: AttendanceScreenProps) {
     enabled: Boolean(isAuthenticated && user && isLeaveManagementTab),
   });
   const storeUsersQuery = useStoreUsers(
-    isScheduleManagementTab && selectedStoreCode ? selectedStoreCode : undefined,
+    (isScheduleManagementTab || isLeaveManagementTab) && selectedStoreCode
+      ? selectedStoreCode
+      : undefined,
   );
   const managerSchedulesQuery = useQuery({
     queryKey: attendanceKeys.schedulesWeek(
@@ -513,6 +517,20 @@ export function AttendanceScreen({ mode = "combined" }: AttendanceScreenProps) {
       ),
   });
 
+  const createManagedLeaveMutation = useMutation({
+    mutationFn: createManagedLeaveRequest,
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({
+        queryKey: ["attendance", "approvals", "pending"],
+      });
+      showMessage(t("messages.leaveSubmitted"));
+    },
+    onError: (error) =>
+      showMessage(
+        error instanceof Error ? error.message : t("messages.saveFailed"),
+      ),
+  });
+
   const isPersonalRefreshing = isPunchRecordsTab
     ? todayQuery.isRefetching
     : weekQuery.isRefetching || availabilityQuery.isRefetching;
@@ -520,7 +538,8 @@ export function AttendanceScreen({ mode = "combined" }: AttendanceScreenProps) {
     (isScheduleManagementTab &&
       (managerSchedulesQuery.isRefetching || storeUsersQuery.isRefetching)) ||
     (isHolidayManagementTab && holidaysQuery.isRefetching) ||
-    (isLeaveManagementTab && approvalsQuery.isRefetching);
+    (isLeaveManagementTab &&
+      (approvalsQuery.isRefetching || storeUsersQuery.isRefetching));
   const isRefreshing = isPersonalTab
     ? isPersonalRefreshing
     : isManagementRefreshing;
@@ -539,6 +558,7 @@ export function AttendanceScreen({ mode = "combined" }: AttendanceScreenProps) {
     createHolidayMutation.isPending ||
     updateHolidayMutation.isPending ||
     deleteHolidayMutation.isPending;
+  const isLeaveBusy = createManagedLeaveMutation.isPending;
 
   const employeeInitialLoading =
     (isPunchRecordsTab && todayQuery.isLoading) ||
@@ -551,12 +571,13 @@ export function AttendanceScreen({ mode = "combined" }: AttendanceScreenProps) {
       : null;
   const isManagementContentLoading =
     (isHolidayManagementTab && holidaysQuery.isLoading) ||
-    (isLeaveManagementTab && approvalsQuery.isLoading);
+    (isLeaveManagementTab &&
+      (approvalsQuery.isLoading || storeUsersQuery.isLoading));
   const managerLoadError =
     (isScheduleManagementTab &&
       (storeUsersQuery.error || managerSchedulesQuery.error)) ||
     (isHolidayManagementTab && holidaysQuery.error) ||
-    (isLeaveManagementTab && approvalsQuery.error);
+    (isLeaveManagementTab && (approvalsQuery.error || storeUsersQuery.error));
 
   const leaveApprovals = useMemo(
     () =>
@@ -611,7 +632,7 @@ export function AttendanceScreen({ mode = "combined" }: AttendanceScreenProps) {
         isAvailabilityWeekTab ? weekQuery.refetch() : Promise.resolve(),
         isAvailabilityWeekTab ? availabilityQuery.refetch() : Promise.resolve(),
         isLeaveManagementTab ? approvalsQuery.refetch() : Promise.resolve(),
-        isScheduleManagementTab && selectedStoreCode
+        (isScheduleManagementTab || isLeaveManagementTab) && selectedStoreCode
           ? storeUsersQuery.refetch()
           : Promise.resolve(),
         isScheduleManagementTab && selectedStoreCode
@@ -819,11 +840,11 @@ export function AttendanceScreen({ mode = "combined" }: AttendanceScreenProps) {
               buttons={[
                 {
                   value: "punchRecords",
-                  label: `${t("tabs.personalPunch")}+${t("tabs.punchRecords")}`,
+                  label: t("tabs.punchRecords"),
                 },
                 {
                   value: "availabilityWeek",
-                  label: `${t("tabs.personalAvailability")}+${t("tabs.weeklySchedule")}`,
+                  label: t("tabs.personalAvailability"),
                 },
               ]}
               style={styles.sectionTabs}
@@ -989,18 +1010,32 @@ export function AttendanceScreen({ mode = "combined" }: AttendanceScreenProps) {
               />
             ) : null}
             {isLeaveManagementTab && !isManagementContentLoading ? (
-              <ManagerApprovalList
-                title={t("tabs.leaveManagement")}
-                emptyMessage={t("leaveManagement.empty")}
-                approvals={leaveApprovals}
-                isBusy={isApprovalBusy}
-                onApprove={(approvalGuid, remark) =>
-                  approveMutation.mutate({ approvalGuid, remark })
-                }
-                onReject={(approvalGuid, remark) =>
-                  rejectMutation.mutate({ approvalGuid, remark })
-                }
-              />
+              <>
+                <LeaveManagementCard
+                  storeCode={selectedStoreCode}
+                  storeName={selectedStoreName}
+                  users={storeUsersQuery.data ?? []}
+                  isBusy={isLeaveBusy}
+                  onSubmit={async (payload) =>
+                    createManagedLeaveMutation.mutateAsync(
+                      withSelectedStore(payload),
+                    ).then(() => undefined)
+                  }
+                  onShowMessage={showMessage}
+                />
+                <ManagerApprovalList
+                  title={t("sections.approvals")}
+                  emptyMessage={t("leaveManagement.empty")}
+                  approvals={leaveApprovals}
+                  isBusy={isApprovalBusy}
+                  onApprove={(approvalGuid, remark) =>
+                    approveMutation.mutate({ approvalGuid, remark })
+                  }
+                  onReject={(approvalGuid, remark) =>
+                    rejectMutation.mutate({ approvalGuid, remark })
+                  }
+                />
+              </>
             ) : null}
           </>
         ) : null}

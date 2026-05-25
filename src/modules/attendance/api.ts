@@ -2,6 +2,8 @@ import { apiClient } from "@/shared/api/client";
 import type {
   AttendanceApproval,
   AttendanceApprovalPayload,
+  AttendanceDirectUploadRequest,
+  AttendanceDirectUploadSignature,
   AttendanceAvailability,
   AttendanceAvailabilityPayload,
   AttendanceHolidayQueryParams,
@@ -250,9 +252,32 @@ function normalizeLeaveRequest(raw: ApiRecord): AttendanceLeaveRequest {
     leaveType: asString(pick(raw, "leaveType", "LeaveType"), "AnnualLeave"),
     startDate: asDateString(pick(raw, "startDate", "StartDate")),
     endDate: asDateString(pick(raw, "endDate", "EndDate")),
+    startTime: asOptionalString(pick(raw, "startTime", "StartTime")),
+    endTime: asOptionalString(pick(raw, "endTime", "EndTime")),
     reason: asOptionalString(pick(raw, "reason", "Reason")),
+    attachmentUrl: asOptionalString(pick(raw, "attachmentUrl", "AttachmentUrl")),
     status: asString(pick(raw, "status", "Status"), "Pending"),
     submittedAt: asOptionalString(pick(raw, "submittedAt", "SubmittedAt", "createdAt", "CreatedAt")),
+  };
+}
+
+function normalizeDirectUploadSignature(payload: unknown): AttendanceDirectUploadSignature {
+  const data = isRecord(payload) ? payload : {};
+  const headersValue = pick(data, "headers", "Headers");
+  const headers =
+    headersValue && typeof headersValue === "object"
+      ? Object.fromEntries(
+          Object.entries(headersValue as Record<string, unknown>).map(([key, value]) => [
+            key,
+            typeof value === "string" ? value : String(value ?? ""),
+          ])
+        )
+      : {};
+
+  return {
+    url: asString(pick(data, "url", "Url")),
+    objectKey: asString(pick(data, "objectKey", "ObjectKey")),
+    headers,
   };
 }
 
@@ -352,6 +377,20 @@ function toHolidayPayload(payload: AttendanceStoreHolidayPayload) {
   });
 }
 
+function toLeaveRequestPayload(payload: AttendanceLeaveRequestPayload) {
+  return sanitizePayload({
+    userGuid: payload.userGuid,
+    storeCode: payload.storeCode,
+    leaveType: payload.leaveType,
+    startDate: payload.startDate,
+    endDate: payload.endDate,
+    startTime: payload.startTime,
+    endTime: payload.endTime,
+    reason: payload.reason,
+    attachmentUrl: payload.attachmentUrl,
+  });
+}
+
 export async function getMyAttendanceToday(storeCode?: string, workDate?: string): Promise<AttendanceToday> {
   const response = await apiClient.get(`${ATTENDANCE_BASE}/my/today`, { params: { storeCode, workDate } });
   const today = normalizeToday(response.data);
@@ -415,12 +454,24 @@ export async function getMyLeaveRequests(): Promise<AttendanceLeaveRequest[]> {
 }
 
 export async function createLeaveRequest(payload: AttendanceLeaveRequestPayload): Promise<AttendanceLeaveRequest> {
-  const response = await apiClient.post(`${ATTENDANCE_BASE}/my/leave-requests`, sanitizePayload({ ...payload }));
+  const response = await apiClient.post(`${ATTENDANCE_BASE}/my/leave-requests`, toLeaveRequestPayload(payload));
+  return normalizeLeaveRequest(isRecord(response.data) ? response.data : {});
+}
+
+export async function createManagedLeaveRequest(payload: AttendanceLeaveRequestPayload): Promise<AttendanceLeaveRequest> {
+  const response = await apiClient.post(`${ATTENDANCE_BASE}/managed/leave-requests`, toLeaveRequestPayload(payload));
   return normalizeLeaveRequest(isRecord(response.data) ? response.data : {});
 }
 
 export async function cancelLeaveRequest(leaveGuid: string): Promise<void> {
   await apiClient.post(`${ATTENDANCE_BASE}/my/leave-requests/${encodeURIComponent(leaveGuid)}/cancel`);
+}
+
+export async function getAttendanceLeaveAttachmentUploadSignature(
+  request: AttendanceDirectUploadRequest
+): Promise<AttendanceDirectUploadSignature> {
+  const response = await apiClient.post(`${ATTENDANCE_BASE}/leave-attachments/upload-signature`, sanitizePayload({ ...request }));
+  return normalizeDirectUploadSignature(response.data);
 }
 
 export async function getPendingApprovals(storeCode?: string): Promise<AttendanceApproval[]> {

@@ -19,7 +19,7 @@
     "attendanceManagement": "考勤管理",
     "personalPunch": "个人打卡",
     "punchRecords": "打卡记录",
-    "personalAvailability": "个人有效时间",
+    "personalAvailability": "可上班时间",
     "weeklySchedule": "周表",
     "scheduleManagement": "排班管理",
     "holidayManagement": "公共假期管理",
@@ -110,7 +110,33 @@
     }
   },
   "leaveManagement": {
-    "empty": "暂无病假年假待审核事项"
+    "empty": "暂无病假年假待审核事项",
+    "noStore": "请先选择分店",
+    "noEligibleEmployees": "当前分店没有可提交年假或病假的全职/兼职员工。",
+    "attachmentRequired": "病假必须上传医嘱照片。",
+    "fields": {
+      "employee": "员工",
+      "attachment": "病假医嘱照片"
+    },
+    "actions": {
+      "takePhoto": "拍照上传",
+      "retakePhoto": "重新拍照",
+      "grantCameraPermission": "允许相机权限",
+      "capture": "拍照"
+    },
+    "messages": {
+      "permissionRequired": "需要相机权限才能拍照上传。",
+      "captureFailed": "拍照失败，请重试。",
+      "uploadFailed": "上传照片失败。",
+      "attachmentUploaded": "医嘱照片已上传。",
+      "attachmentRequired": "请先上传病假医嘱照片。",
+      "cameraReady": "请拍摄清晰的医嘱照片后上传。"
+    },
+    "camera": {
+      "title": "拍照上传医嘱",
+      "permissionTitle": "需要相机权限",
+      "permissionDescription": "允许相机权限后即可拍照并上传病假医嘱照片。"
+    }
   },
   "scheduleManagement": {
     "employeeColumn": "分店/员工",
@@ -161,6 +187,8 @@
     "workDate": "日期",
     "startTime": "开始时间",
     "endTime": "结束时间",
+    "startTimeOptional": "开始时间（可选）",
+    "endTimeOptional": "结束时间（可选）",
     "note": "备注",
     "startDate": "开始日期",
     "endDate": "结束日期",

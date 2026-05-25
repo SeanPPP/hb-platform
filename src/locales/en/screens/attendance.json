@@ -19,7 +19,7 @@
     "attendanceManagement": "Attendance Admin",
     "personalPunch": "Personal punch",
     "punchRecords": "Punch records",
-    "personalAvailability": "Personal availability",
+    "personalAvailability": "Availability",
     "weeklySchedule": "Weekly schedule",
     "scheduleManagement": "Schedule",
     "holidayManagement": "Holidays",
@@ -110,7 +110,33 @@
     }
   },
   "leaveManagement": {
-    "empty": "No sick or annual leave approvals pending"
+    "empty": "No sick or annual leave approvals pending",
+    "noStore": "Select a store first",
+    "noEligibleEmployees": "There are no full-time or part-time employees in this store who can submit annual or sick leave.",
+    "attachmentRequired": "Sick leave requires a medical certificate photo.",
+    "fields": {
+      "employee": "Employee",
+      "attachment": "Medical certificate photo"
+    },
+    "actions": {
+      "takePhoto": "Take photo",
+      "retakePhoto": "Retake photo",
+      "grantCameraPermission": "Allow camera",
+      "capture": "Capture"
+    },
+    "messages": {
+      "permissionRequired": "Camera permission is required to take a photo.",
+      "captureFailed": "Failed to take a photo. Please try again.",
+      "uploadFailed": "Failed to upload the photo.",
+      "attachmentUploaded": "Medical certificate photo uploaded.",
+      "attachmentRequired": "Please upload a medical certificate photo first.",
+      "cameraReady": "Take a clear photo of the medical certificate and upload it."
+    },
+    "camera": {
+      "title": "Take medical certificate photo",
+      "permissionTitle": "Camera access required",
+      "permissionDescription": "Allow camera access to take and upload a medical certificate photo for sick leave."
+    }
   },
   "scheduleManagement": {
     "employeeColumn": "Store / employee",
@@ -161,6 +187,8 @@
     "workDate": "Date",
     "startTime": "Start time",
     "endTime": "End time",
+    "startTimeOptional": "Start time (optional)",
+    "endTimeOptional": "End time (optional)",
     "note": "Note",
     "startDate": "Start date",
     "endDate": "End date",
