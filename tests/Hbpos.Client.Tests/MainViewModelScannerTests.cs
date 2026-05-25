@@ -233,6 +233,51 @@ public sealed class MainViewModelScannerTests
     }
 
     [Fact]
+    public async Task LeavingReceiptReturnsScreen_resets_unconfirmed_return_state()
+    {
+        var scanner = new FakeRawScannerService();
+        var index = new LocalSellableItemIndex();
+        var viewModel = new MainViewModel(
+            index,
+            new PosCartService(),
+            new CashCheckoutService(),
+            new FakeLocalSchemaService(),
+            new FakeSettingsRepository(),
+            new FakeCatalogRepository(),
+            new FakeCatalogSyncService(),
+            new FakeRemoteLookupRefreshService(),
+            new FakeSpecialProductService(),
+            new FakeConnectivityApiClient(),
+            new FakeLocalDeviceRepository { Latest = CreateAllowedDevice("S001") },
+            new FakeDeviceApiClient(),
+            new FakeDeviceFingerprintService(),
+            new DeviceAuthorizationState(),
+            new FakeLocalOrderRepository(),
+            new FakeSyncQueueRepository(),
+            new LocalizationService(),
+            new FakeCustomerDisplayWindowService(),
+            scanner);
+
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+        index.ReplaceAll([CreateItem("S001", "SKU-RETURN", "690RET")]);
+        viewModel.PosTerminal!.OpenReturnsCommand.Execute(null);
+        var returns = viewModel.ReceiptReturns!;
+        returns.IsNoReceiptMode = true;
+        returns.ScanText = "690RET";
+        await returns.LookupCommand.ExecuteAsync(null);
+        Assert.Single(returns.PendingLines);
+
+        viewModel.ShowPosCommand.Execute(null);
+
+        Assert.Empty(returns.ScanText);
+        Assert.False(returns.IsNoReceiptMode);
+        Assert.Empty(returns.PendingLines);
+        Assert.Empty(returns.OrderLines);
+        Assert.False(returns.ReturnRecordsMayBeStale);
+        Assert.Equal("No receipt loaded", returns.OrderSummaryText);
+    }
+
+    [Fact]
     public async Task KeyboardScannerInput_FromSpecialProductsNormalModeIsConsumedWithoutAddingCart()
     {
         var index = new LocalSellableItemIndex();

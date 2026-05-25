@@ -521,6 +521,11 @@ public sealed partial class MainViewModel : ObservableObject
 
     partial void OnCurrentScreenChanged(object? value)
     {
+        if (!ReferenceEquals(value, ReceiptReturns))
+        {
+            ReceiptReturns?.ResetToDefault();
+        }
+
         _rawScannerService.SetActivePage((value as IScannerInputTarget)?.ScannerPageId);
     }
 

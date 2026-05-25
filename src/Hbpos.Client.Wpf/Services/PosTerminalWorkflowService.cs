@@ -48,6 +48,8 @@ public interface IPosTerminalWorkflowService
 
     PosTerminalWorkflowResult AddSelectedItem(PosSessionState session, SellableItemDto item, bool clearScanText, bool closeMatchesPopup, string operation);
 
+    PosTerminalWorkflowResult AddOpenItem(PosSessionState session, string keypadBuffer);
+
     PosTerminalWorkflowResult RemoveLine(CartLine? line);
 
     PosTerminalWorkflowResult IncreaseLine(CartLine? line);
@@ -72,6 +74,7 @@ public interface IPosTerminalWorkflowService
 public sealed class PosTerminalWorkflowService : IPosTerminalWorkflowService
 {
     private static readonly TimeSpan RemoteLookupTimeout = TimeSpan.FromSeconds(2);
+    private const string OpenItemLookupCode = "OPENITEM";
 
     private readonly LocalSellableItemIndex _priceIndex;
     private readonly PosCartService _cart;
@@ -180,6 +183,58 @@ public sealed class PosTerminalWorkflowService : IPosTerminalWorkflowService
     {
         using var uiOperation = _uiPriorityCoordinator.BeginUiOperation(operation);
         return AddItem(session, item, clearScanText, closeMatchesPopup, operation);
+    }
+
+    public PosTerminalWorkflowResult AddOpenItem(PosSessionState session, string keypadBuffer)
+    {
+        using var uiOperation = _uiPriorityCoordinator.BeginUiOperation("manual-add-open-item");
+        if (!TryGetKeypadValue(keypadBuffer, out var unitPrice) || unitPrice <= 0m)
+        {
+            return Status("pos.status.invalidKeypadValue");
+        }
+
+        var matches = _priceIndex.FindExactMatches(session.StoreCode, OpenItemLookupCode);
+        if (matches.Count == 0)
+        {
+            return Status("pos.status.noLocalMatch") with
+            {
+                Matches = matches,
+                MatchesPopupOpen = false
+            };
+        }
+
+        if (matches.Count > 1)
+        {
+            return Status("pos.status.multipleMatches", matches.Count) with
+            {
+                Matches = matches,
+                SelectedItem = matches[0],
+                MatchesPopupOpen = true
+            };
+        }
+
+        var item = matches[0];
+        CartLine line;
+        try
+        {
+            line = _cart.AddOpenItem(item, unitPrice);
+        }
+        catch (InvalidOperationException)
+        {
+            return Status("cart.status.quantityMustBeInteger");
+        }
+
+        ConsoleLog.Write(
+            "CartPerf",
+            $"operation=manual-add-open-item storeCode={session.StoreCode} productCode={LogValue(item.ProductCode)} lookupCode={LogValue(item.LookupCode)} unitPrice={FormatAmount(unitPrice)} cartLines={_cart.Lines.Count}");
+        return Status("pos.status.added", item.DisplayName) with
+        {
+            SelectedItem = item,
+            SelectedCartLine = line,
+            ClearKeypadBuffer = true,
+            MatchesPopupOpen = false,
+            TouchKeyboardOpen = false
+        };
     }
 
     public PosTerminalWorkflowResult RemoveLine(CartLine? line)

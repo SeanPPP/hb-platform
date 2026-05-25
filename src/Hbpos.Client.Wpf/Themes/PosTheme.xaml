@@ -684,6 +684,13 @@
 
     <Style x:Key="PosNoBarcodeButtonStyle" TargetType="Button" BasedOn="{StaticResource PosBlueGradientButtonStyle}">
         <Setter Property="Padding" Value="12,6" />
+        <Style.Triggers>
+            <Trigger Property="IsEnabled" Value="False">
+                <Setter Property="Background" Value="#FF9CA3AF" />
+                <Setter Property="BorderBrush" Value="#FF6B7280" />
+                <Setter Property="Foreground" Value="White" />
+            </Trigger>
+        </Style.Triggers>
     </Style>
 
     <Style x:Key="PosStitchActionButtonStyle" TargetType="Button" BasedOn="{StaticResource PosSecondaryButtonStyle}">

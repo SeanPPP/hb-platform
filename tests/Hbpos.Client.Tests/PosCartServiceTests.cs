@@ -118,6 +118,44 @@ public sealed class PosCartServiceTests
     }
 
     [Fact]
+    public void AddOpenItem_always_creates_independent_editable_lines()
+    {
+        var cart = new PosCartService();
+        var openItem = CreateItem(productCode: "OPEN-SKU", lookupCode: "OPENITEM", price: 0m);
+
+        var first = cart.AddOpenItem(openItem, 12.34m);
+        var second = cart.AddOpenItem(openItem, 12.34m);
+
+        Assert.NotSame(first, second);
+        Assert.Equal(2, cart.Lines.Count);
+        Assert.All(cart.Lines, line =>
+        {
+            Assert.Equal(CartLineKind.OpenItem, line.Kind);
+            Assert.False(line.IsReturnLine);
+            Assert.False(line.IsLocked);
+            Assert.Equal("OPENITEM", line.LookupCodeNormalized);
+            Assert.Equal(1m, line.Quantity);
+            Assert.Equal(12.34m, line.UnitPrice);
+        });
+    }
+
+    [Fact]
+    public void Snapshot_and_restore_preserve_open_item_kind()
+    {
+        var cart = new PosCartService();
+        var openItem = CreateItem(productCode: "OPEN-SKU", lookupCode: "OPENITEM", price: 0m);
+        cart.AddOpenItem(openItem, 7.89m);
+        var snapshot = cart.CreateSnapshot();
+        cart.Clear();
+
+        cart.RestoreSnapshot(snapshot);
+        cart.AddOpenItem(openItem, 7.89m);
+
+        Assert.Equal(2, cart.Lines.Count);
+        Assert.All(cart.Lines, line => Assert.Equal(CartLineKind.OpenItem, line.Kind));
+    }
+
+    [Fact]
     public void IncreaseLine_adds_one_unit_and_recalculates_totals()
     {
         var cart = new PosCartService();

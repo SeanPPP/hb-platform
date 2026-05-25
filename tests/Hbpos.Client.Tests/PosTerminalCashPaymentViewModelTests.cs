@@ -196,6 +196,103 @@ public sealed class PosTerminalCashPaymentViewModelTests
     }
 
     [Fact]
+    public void Pos_terminal_open_item_command_requires_positive_keypad_amount()
+    {
+        var cart = new PosCartService();
+        var index = new LocalSellableItemIndex();
+        index.ReplaceAll([CreateItem("OPEN-SKU", "Open Item", "OPENITEM", PriceSourceKind.StoreRetailPrice, 0m)]);
+        var viewModel = new PosTerminalViewModel(
+            index,
+            cart,
+            Session,
+            onOpenPayment: null);
+
+        Assert.False(viewModel.AddOpenItemCommand.CanExecute(null));
+
+        viewModel.KeypadInputCommand.Execute("0");
+
+        Assert.False(viewModel.AddOpenItemCommand.CanExecute(null));
+
+        viewModel.KeypadInputCommand.Execute("Clear");
+        viewModel.KeypadInputCommand.Execute("1");
+        viewModel.KeypadInputCommand.Execute("2");
+        viewModel.KeypadInputCommand.Execute(".");
+        viewModel.KeypadInputCommand.Execute("3");
+        viewModel.KeypadInputCommand.Execute("4");
+
+        Assert.True(viewModel.AddOpenItemCommand.CanExecute(null));
+    }
+
+    [Fact]
+    public void Pos_terminal_open_item_adds_openitem_with_keypad_price_without_merging()
+    {
+        var cart = new PosCartService();
+        var index = new LocalSellableItemIndex();
+        index.ReplaceAll([CreateItem("OPEN-SKU", "Open Item", "OPENITEM", PriceSourceKind.StoreRetailPrice, 0m)]);
+        var viewModel = new PosTerminalViewModel(
+            index,
+            cart,
+            Session,
+            onOpenPayment: null);
+
+        viewModel.KeypadInputCommand.Execute("1");
+        viewModel.KeypadInputCommand.Execute("2");
+        viewModel.KeypadInputCommand.Execute(".");
+        viewModel.KeypadInputCommand.Execute("3");
+        viewModel.KeypadInputCommand.Execute("4");
+        viewModel.AddOpenItemCommand.Execute(null);
+        viewModel.KeypadInputCommand.Execute("5");
+        viewModel.AddOpenItemCommand.Execute(null);
+
+        Assert.Empty(viewModel.KeypadBuffer);
+        Assert.Equal(2, viewModel.CartLines.Count);
+        Assert.All(viewModel.CartLines, line =>
+        {
+            Assert.Equal(CartLineKind.OpenItem, line.Kind);
+            Assert.Equal("OPENITEM", line.LookupCodeNormalized);
+            Assert.Equal(1m, line.Quantity);
+        });
+        Assert.Equal(12.34m, viewModel.CartLines[0].UnitPrice);
+        Assert.Equal(5m, viewModel.CartLines[1].UnitPrice);
+        Assert.Same(viewModel.CartLines[1], viewModel.SelectedCartLine);
+    }
+
+    [Fact]
+    public void Pos_terminal_open_item_does_not_add_when_openitem_lookup_is_missing_or_duplicated()
+    {
+        var cart = new PosCartService();
+        var missingIndex = new LocalSellableItemIndex();
+        var missingViewModel = new PosTerminalViewModel(
+            missingIndex,
+            cart,
+            Session,
+            onOpenPayment: null);
+        missingViewModel.KeypadInputCommand.Execute("1");
+
+        missingViewModel.AddOpenItemCommand.Execute(null);
+
+        Assert.Empty(cart.Lines);
+        Assert.Equal("pos.status.noLocalMatch", missingViewModel.StatusMessage);
+
+        var duplicateIndex = new LocalSellableItemIndex();
+        duplicateIndex.ReplaceAll([
+            CreateItem("OPEN-SKU-1", "Open Item 1", "OPENITEM", PriceSourceKind.StoreRetailPrice, 0m),
+            CreateItem("OPEN-SKU-2", "Open Item 2", "OPENITEM", PriceSourceKind.StoreRetailPrice, 0m)
+        ]);
+        var duplicateViewModel = new PosTerminalViewModel(
+            duplicateIndex,
+            cart,
+            Session,
+            onOpenPayment: null);
+        duplicateViewModel.KeypadInputCommand.Execute("1");
+
+        duplicateViewModel.AddOpenItemCommand.Execute(null);
+
+        Assert.Empty(cart.Lines);
+        Assert.Equal("pos.status.multipleMatches", duplicateViewModel.StatusMessage);
+    }
+
+    [Fact]
     public void Pos_terminal_touch_keyboard_enter_closes_keyboard_after_search()
     {
         var cart = new PosCartService();
@@ -1625,6 +1722,8 @@ public sealed class PosTerminalCashPaymentViewModelTests
 
         public PosTerminalWorkflowResult AddSelectedItemResult { get; set; } = new();
 
+        public PosTerminalWorkflowResult AddOpenItemResult { get; set; } = new();
+
         public PosTerminalWorkflowResult RemoveLineResult { get; set; } = new();
 
         public PosTerminalWorkflowResult IncreaseLineResult { get; set; } = new();
@@ -1659,6 +1758,11 @@ public sealed class PosTerminalCashPaymentViewModelTests
         public PosTerminalWorkflowResult AddSelectedItem(PosSessionState session, SellableItemDto item, bool clearScanText, bool closeMatchesPopup, string operation)
         {
             return AddSelectedItemResult;
+        }
+
+        public PosTerminalWorkflowResult AddOpenItem(PosSessionState session, string keypadBuffer)
+        {
+            return AddOpenItemResult;
         }
 
         public PosTerminalWorkflowResult RemoveLine(CartLine? line)

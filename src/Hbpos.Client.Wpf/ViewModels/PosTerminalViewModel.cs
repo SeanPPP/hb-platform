@@ -125,6 +125,7 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
         NumberInputCommand = new RelayCommand<string>(AppendScanText);
         KeypadInputCommand = new RelayCommand<string>(AppendKeypadBuffer);
         ToggleTouchKeyboardCommand = new RelayCommand(ToggleTouchKeyboard);
+        AddOpenItemCommand = new RelayCommand(AddOpenItem, CanAddOpenItem);
         AddSelectedCommand = new RelayCommand(AddSelected, () => SelectedItem is not null);
         SelectMatchCommand = new RelayCommand<SellableItemDto>(SelectMatch);
         RemoveLineCommand = new RelayCommand<CartLine>(RemoveLine);
@@ -158,6 +159,8 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
     public IRelayCommand<string> KeypadInputCommand { get; }
 
     public IRelayCommand ToggleTouchKeyboardCommand { get; }
+
+    public IRelayCommand AddOpenItemCommand { get; }
 
     public IRelayCommand AddSelectedCommand { get; }
 
@@ -260,6 +263,11 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
     partial void OnScanTextChanged(string value)
     {
         ClearSearchCommand.NotifyCanExecuteChanged();
+    }
+
+    partial void OnKeypadBufferChanged(string value)
+    {
+        AddOpenItemCommand.NotifyCanExecuteChanged();
     }
 
     partial void OnSessionChanged(PosSessionState value)
@@ -510,6 +518,17 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
         ConsoleLog.Write(
             "PosScan",
             $"traceId={traceId} manual scan flow end barcode={submittedScanText} statusKey={result.StatusKey ?? "<null>"} autoAdded={FormatBool(result.SelectedCartLine is not null)} cartLinesBefore={cartLinesBefore} cartLinesAfter={_cart.Lines.Count} workflowElapsedMs={workflowStopwatch.ElapsedMilliseconds} applyResultElapsedMs={applyStopwatch.ElapsedMilliseconds} totalElapsedMs={stopwatch.ElapsedMilliseconds}");
+    }
+
+    private bool CanAddOpenItem()
+    {
+        return decimal.TryParse(KeypadBuffer, NumberStyles.Number, CultureInfo.InvariantCulture, out var value) &&
+            value > 0m;
+    }
+
+    private void AddOpenItem()
+    {
+        ApplyWorkflowResult(_workflowService.AddOpenItem(Session, KeypadBuffer));
     }
 
     private void AddSelected()

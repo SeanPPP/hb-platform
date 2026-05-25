@@ -6,7 +6,8 @@ namespace Hbpos.Client.Wpf.Models;
 public enum CartLineKind
 {
     Sale = 0,
-    Return = 1
+    Return = 1,
+    OpenItem = 2
 }
 
 public sealed record ReturnCartLineRequest(
@@ -47,14 +48,26 @@ public sealed class CartLine : ObservableObject
     private Guid? _originalOrderLineGuid;
 
     public CartLine(SellableItemDto item)
+        : this(item, CartLineKind.Sale, item.RetailPrice)
     {
+    }
+
+    public CartLine(SellableItemDto item, CartLineKind kind, decimal unitPrice)
+    {
+        if (kind == CartLineKind.Return)
+        {
+            throw new InvalidOperationException("Return cart lines must be created from a return request.");
+        }
+
         if (!IsPositiveIntegerQuantity(item.QuantityFactor))
         {
             throw new InvalidOperationException("Cart line quantity must be a positive integer.");
         }
 
+        Kind = kind;
         Quantity = item.QuantityFactor;
         UpdateFrom(item);
+        UnitPrice = unitPrice;
     }
 
     public CartLine(ReturnCartLineRequest request)
@@ -212,6 +225,7 @@ public sealed class CartLine : ObservableObject
             if (SetProperty(ref _kind, value))
             {
                 OnPropertyChanged(nameof(IsReturnLine));
+                OnPropertyChanged(nameof(IsOpenItem));
                 OnPropertyChanged(nameof(IsLocked));
                 OnAmountPropertiesChanged();
             }
@@ -219,6 +233,8 @@ public sealed class CartLine : ObservableObject
     }
 
     public bool IsReturnLine => Kind == CartLineKind.Return;
+
+    public bool IsOpenItem => Kind == CartLineKind.OpenItem;
 
     public bool IsLocked => IsReturnLine;
 

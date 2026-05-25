@@ -10,6 +10,8 @@ namespace Hbpos.Client.Wpf.ViewModels;
 public sealed partial class ReceiptReturnsViewModel : ObservableObject, IScannerInputTarget, IDisposable
 {
     public const string PageId = "ReceiptReturns";
+    private const string DefaultStatusMessage = "Scan an order number to start a receipt return.";
+    private const string DefaultOrderSummaryText = "No receipt loaded";
 
     private readonly IReceiptReturnsWorkflowService _workflowService;
     private readonly IRawScannerService? _rawScannerService;
@@ -29,10 +31,10 @@ public sealed partial class ReceiptReturnsViewModel : ObservableObject, IScanner
     private bool _isBusy;
 
     [ObservableProperty]
-    private string _statusMessage = "Scan an order number to start a receipt return.";
+    private string _statusMessage = DefaultStatusMessage;
 
     [ObservableProperty]
-    private string _orderSummaryText = "No receipt loaded";
+    private string _orderSummaryText = DefaultOrderSummaryText;
 
     [ObservableProperty]
     private bool _returnRecordsMayBeStale;
@@ -54,7 +56,7 @@ public sealed partial class ReceiptReturnsViewModel : ObservableObject, IScanner
         AddReceiptLineCommand = new RelayCommand<ReceiptReturnOrderLineViewModel>(AddReceiptLine, CanAddReceiptLine);
         RemovePendingLineCommand = new RelayCommand<PendingReturnLineViewModel>(RemovePendingLine);
         ConfirmToCartCommand = new RelayCommand(ConfirmToCart, () => PendingLines.Count > 0 && !IsBusy);
-        BackCommand = new RelayCommand(_onBack);
+        BackCommand = new RelayCommand(Back);
         ClearCommand = new RelayCommand(ClearSelection);
 
         _rawScannerService?.Subscribe(PageId, OnRawBarcodeScanned);
@@ -85,6 +87,14 @@ public sealed partial class ReceiptReturnsViewModel : ObservableObject, IScanner
     public void Dispose()
     {
         _rawScannerService?.Unsubscribe(PageId);
+    }
+
+    public void ResetToDefault()
+    {
+        ScanText = string.Empty;
+        IsNoReceiptMode = false;
+        ClearSelection();
+        StatusMessage = DefaultStatusMessage;
     }
 
     public bool ProcessScannerBarcode(string barcode, string devicePath, string source)
@@ -155,7 +165,7 @@ public sealed partial class ReceiptReturnsViewModel : ObservableObject, IScanner
 
         if (result.Order is null)
         {
-            OrderSummaryText = "No receipt loaded";
+            OrderSummaryText = DefaultOrderSummaryText;
             OnPendingLinesChanged();
             return;
         }
@@ -273,8 +283,7 @@ public sealed partial class ReceiptReturnsViewModel : ObservableObject, IScanner
 
         var added = _workflowService.AddReturnLinesToCart(PendingLines.Select(line => line.ToPendingReturnLine()));
         var lastAdded = added.LastOrDefault();
-        ClearSelection();
-        StatusMessage = "Return items were added to the cart.";
+        ResetToDefault();
         if (lastAdded is not null)
         {
             _onReturnLineAdded?.Invoke(lastAdded);
@@ -283,12 +292,18 @@ public sealed partial class ReceiptReturnsViewModel : ObservableObject, IScanner
         _onBack();
     }
 
+    private void Back()
+    {
+        ResetToDefault();
+        _onBack();
+    }
+
     private void ClearSelection()
     {
         OrderLines.Clear();
         PendingLines.Clear();
         ReturnRecordsMayBeStale = false;
-        OrderSummaryText = "No receipt loaded";
+        OrderSummaryText = DefaultOrderSummaryText;
         OnPendingLinesChanged();
         RefreshCommandStates();
     }

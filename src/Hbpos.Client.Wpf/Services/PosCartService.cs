@@ -52,6 +52,24 @@ public sealed class PosCartService
         return line;
     }
 
+    public CartLine AddOpenItem(SellableItemDto item, decimal unitPrice)
+    {
+        if (!IsPositiveIntegerQuantity(item.QuantityFactor))
+        {
+            throw new InvalidOperationException("Cart item quantity must be a positive integer.");
+        }
+
+        if (unitPrice < 0m)
+        {
+            throw new InvalidOperationException("Open item price must be zero or greater.");
+        }
+
+        var line = new CartLine(item, CartLineKind.OpenItem, unitPrice);
+        _lines.Add(line);
+        OnCartChanged();
+        return line;
+    }
+
     public CartLine AddReturnLine(ReturnCartLineRequest request)
     {
         if (!IsPositiveIntegerQuantity(request.Quantity))
@@ -78,6 +96,7 @@ public sealed class PosCartService
         var normalizedLookupCode = CartLine.NormalizeLookupCode(lookupCode);
         return _lines.FirstOrDefault(line =>
             !line.IsReturnLine &&
+            !line.IsOpenItem &&
             string.Equals(line.StoreCode, storeCode, StringComparison.OrdinalIgnoreCase) &&
             line.LookupCodeNormalized == normalizedLookupCode);
     }
@@ -310,22 +329,23 @@ public sealed class PosCartService
                     snapshotLine.OriginalOrderGuid,
                     snapshotLine.OriginalOrderLineGuid));
             }
+            else if (snapshotLine.Kind == CartLineKind.OpenItem)
+            {
+                var item = CreateSnapshotItem(snapshotLine);
+                line = new CartLine(item, CartLineKind.OpenItem, snapshotLine.UnitPrice);
+                line.SetQuantity(snapshotLine.Quantity);
+                if (snapshotLine.DiscountPercent is decimal discountPercent)
+                {
+                    line.SetDiscountPercent(discountPercent);
+                }
+                else
+                {
+                    line.SetDiscountAmount(snapshotLine.DiscountAmount);
+                }
+            }
             else
             {
-                var item = new SellableItemDto(
-                    snapshotLine.StoreCode,
-                    snapshotLine.ProductCode,
-                    snapshotLine.ReferenceCode,
-                    snapshotLine.DisplayName,
-                    snapshotLine.LookupCode,
-                    snapshotLine.ItemNumber,
-                    snapshotLine.LookupCode,
-                    snapshotLine.UnitPrice,
-                    snapshotLine.PriceSource,
-                    snapshotLine.PriceSourceLabel,
-                    1m,
-                    null,
-                    snapshotLine.ProductImage);
+                var item = CreateSnapshotItem(snapshotLine);
                 line = new CartLine(item);
                 line.SetQuantity(snapshotLine.Quantity);
                 line.SetUnitPrice(snapshotLine.UnitPrice);
@@ -343,6 +363,24 @@ public sealed class PosCartService
         }
 
         OnCartChanged();
+    }
+
+    private static SellableItemDto CreateSnapshotItem(PosCartLineSnapshot snapshotLine)
+    {
+        return new SellableItemDto(
+            snapshotLine.StoreCode,
+            snapshotLine.ProductCode,
+            snapshotLine.ReferenceCode,
+            snapshotLine.DisplayName,
+            snapshotLine.LookupCode,
+            snapshotLine.ItemNumber,
+            snapshotLine.LookupCode,
+            snapshotLine.UnitPrice,
+            snapshotLine.PriceSource,
+            snapshotLine.PriceSourceLabel,
+            1m,
+            null,
+            snapshotLine.ProductImage);
     }
 
     private void OnCartChanged()
