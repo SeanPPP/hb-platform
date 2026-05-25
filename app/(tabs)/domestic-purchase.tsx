@@ -82,16 +82,20 @@ function formatCopyValue(value?: string | null) {
 }
 
 function buildBatchDetailCopyText(items: DomesticProductBatchItem[]) {
-  return items
-    .map((item) => {
-      const productNo = formatCopyValue(item.hbProductNo || item.itemNumber || item.productCode);
-      const barcode = formatCopyValue(item.barcode);
-      const privateLabelPrice =
-        item.privateLabelPrice == null || !Number.isFinite(item.privateLabelPrice) ? "--" : String(item.privateLabelPrice);
+  if (items.length === 0) {
+    return "";
+  }
 
-      return `${productNo} ${barcode} ${privateLabelPrice}`;
-    })
-    .join("\n");
+  const rows = items.map((item) => {
+    const productNo = formatCopyValue(item.hbProductNo || item.itemNumber || item.productCode);
+    const barcode = formatCopyValue(item.barcode);
+    const privateLabelPrice =
+      item.privateLabelPrice == null || !Number.isFinite(item.privateLabelPrice) ? "--" : String(item.privateLabelPrice);
+
+    return `${productNo} ${barcode} ${privateLabelPrice}`;
+  });
+
+  return ["货号 条码 贴牌价格", ...rows].join("\n");
 }
 
 function typeLabel(type: ProductCreationType, t: (key: string) => string) {
