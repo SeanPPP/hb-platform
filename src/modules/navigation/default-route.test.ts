@@ -1,4 +1,8 @@
-import { resolveDefaultTabRoute, resolveTabRouteCorrection } from "./default-route";
+import {
+  expandAttendanceRouteNames,
+  resolveDefaultTabRoute,
+  resolveTabRouteCorrection,
+} from "./default-route";
 
 function assertEqual(actual: unknown, expected: unknown, label: string) {
   if (actual !== expected) {
@@ -20,8 +24,29 @@ assertEqual(
     isDeviceMode: false,
     routeNames: ["home", "attendance", "settings"],
   }),
-  "/(tabs)/attendance",
-  "user login defaults to attendance"
+  "/(tabs)/attendance-personal",
+  "user login defaults to personal attendance"
+);
+
+assertEqual(
+  resolveDefaultTabRoute({
+    isDeviceMode: false,
+    routeNames: ["home", "attendance-personal", "attendance-management", "settings"],
+  }),
+  "/(tabs)/attendance-personal",
+  "split attendance menu defaults to personal attendance"
+);
+
+assertEqual(
+  expandAttendanceRouteNames(["home", "attendance", "settings"], false).join(","),
+  "home,attendance-personal,settings",
+  "legacy attendance expands to personal attendance for normal users"
+);
+
+assertEqual(
+  expandAttendanceRouteNames(["home", "attendance", "settings"], true).join(","),
+  "home,attendance-personal,attendance-management,settings",
+  "legacy attendance expands to personal and management attendance for managers"
 );
 
 assertEqual(
@@ -78,8 +103,19 @@ assertEqual(
     isDeviceMode: false,
     routeNames: ["home", "attendance", "settings"],
   }),
-  "/(tabs)/attendance",
-  "startup home route redirects user sessions to attendance"
+  "/(tabs)/attendance-personal",
+  "startup home route redirects user sessions to personal attendance"
+);
+
+assertEqual(
+  resolveTabRouteCorrection({
+    currentRouteName: "attendance",
+    hasAppliedDefaultRoute: true,
+    isDeviceMode: false,
+    routeNames: ["home", "attendance", "settings"],
+  }),
+  "/(tabs)/attendance-personal",
+  "legacy attendance route redirects to personal attendance"
 );
 
 assertEqual(

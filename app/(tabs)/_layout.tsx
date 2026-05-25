@@ -7,7 +7,10 @@ import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 import { useAuthStore } from "@/store/auth-store";
 import { useDeviceStore } from "@/store/device-store";
 import { useAppNavigationStore } from "@/modules/navigation/store";
-import { resolveTabRouteCorrection } from "@/modules/navigation/default-route";
+import {
+  expandAttendanceRouteNames,
+  resolveTabRouteCorrection,
+} from "@/modules/navigation/default-route";
 import { prepareStoredDeviceSession } from "@/modules/auth/device-login-session";
 
 export default function TabsLayout() {
@@ -16,6 +19,7 @@ export default function TabsLayout() {
   const { t } = useAppTranslation("common");
   const userGuid = useAuthStore((state) => state.user?.userGUID);
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated);
+  const access = useAuthStore((state) => state.access);
   const isLoading = useAuthStore((state) => state.isLoading);
   const restoreSession = useAuthStore((state) => state.restoreSession);
   const clearLocalAuthSession = useAuthStore((state) => state.clearLocalSession);
@@ -123,21 +127,24 @@ export default function TabsLayout() {
   ]);
 
   const isDeviceMode = Boolean(hasStoredDeviceSession && !hasUserSession);
+  const canReviewAttendance = access.isAdmin || access.isStoreManager;
   const visibleRouteNames = useMemo(
     () =>
       new Set(
-        navigationItems
-          .map((item) => item.routeName)
-          .filter((routeName) => !(isDeviceMode && routeName === "device-management"))
+        expandAttendanceRouteNames(
+          navigationItems.map((item) => item.routeName),
+          canReviewAttendance,
+        ).filter((routeName) => !(isDeviceMode && routeName === "device-management"))
       ),
-    [isDeviceMode, navigationItems]
+    [canReviewAttendance, isDeviceMode, navigationItems]
   );
   const orderedVisibleRouteNames = useMemo(
     () =>
-      navigationItems
-        .map((item) => item.routeName)
-        .filter((routeName) => !(isDeviceMode && routeName === "device-management")),
-    [isDeviceMode, navigationItems]
+      expandAttendanceRouteNames(
+        navigationItems.map((item) => item.routeName),
+        canReviewAttendance,
+      ).filter((routeName) => !(isDeviceMode && routeName === "device-management")),
+    [canReviewAttendance, isDeviceMode, navigationItems]
   );
   const shouldWaitForNavigation =
     (hasUserSession || isDeviceMode) && (!navigationReady || navigationLoading);
@@ -244,10 +251,30 @@ export default function TabsLayout() {
       <Tabs.Screen
         name="attendance"
         options={{
-          href: isRouteVisible("attendance") ? undefined : null,
+          href: null,
           title: t("tabs.attendance"),
           tabBarIcon: ({ color, size }) => (
             <MaterialCommunityIcons name="calendar-clock" color={color} size={size} />
+          ),
+        }}
+      />
+      <Tabs.Screen
+        name="attendance-personal"
+        options={{
+          href: isRouteVisible("attendance-personal") ? undefined : null,
+          title: t("tabs.attendancePersonal"),
+          tabBarIcon: ({ color, size }) => (
+            <MaterialCommunityIcons name="account-clock-outline" color={color} size={size} />
+          ),
+        }}
+      />
+      <Tabs.Screen
+        name="attendance-management"
+        options={{
+          href: isRouteVisible("attendance-management") ? undefined : null,
+          title: t("tabs.attendanceManagement"),
+          tabBarIcon: ({ color, size }) => (
+            <MaterialCommunityIcons name="calendar-edit" color={color} size={size} />
           ),
         }}
       />

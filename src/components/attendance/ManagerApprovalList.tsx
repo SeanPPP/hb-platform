@@ -5,11 +5,15 @@ import type { AttendanceApproval } from "@/modules/attendance/types";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 
 export function ManagerApprovalList({
+  title,
+  emptyMessage,
   approvals,
   isBusy,
   onApprove,
   onReject,
 }: {
+  title?: string;
+  emptyMessage?: string;
   approvals: AttendanceApproval[];
   isBusy: boolean;
   onApprove: (approvalGuid: string, remark?: string) => void;
@@ -24,7 +28,7 @@ export function ManagerApprovalList({
 
   return (
     <Card mode="elevated" style={styles.card}>
-      <Card.Title title={t("sections.approvals")} />
+      <Card.Title title={title ?? t("sections.approvals")} />
       <Card.Content style={styles.content}>
         {approvals.length ? (
           approvals.map((item) => (
@@ -33,10 +37,13 @@ export function ManagerApprovalList({
                 <Text variant="titleSmall" style={styles.flexText}>
                   {item.employeeName || item.title}
                 </Text>
-                <Chip compact>{t(`sourceTypes.${item.sourceType}`, item.sourceType)}</Chip>
+                <Chip compact>
+                  {t(`sourceTypes.${item.sourceType}`, item.sourceType)}
+                </Chip>
               </View>
               <Text variant="bodyMedium">
-                {item.storeName || item.storeCode || t("common:na")} · {item.workDate || t("common:na")}
+                {item.storeName || item.storeCode || t("common:na")} ·{" "}
+                {item.workDate || t("common:na")}
               </Text>
               {item.detail ? (
                 <Text variant="bodySmall" style={styles.muted}>
@@ -54,7 +61,9 @@ export function ManagerApprovalList({
                 <Button
                   mode="outlined"
                   icon="close-circle-outline"
-                  onPress={() => onReject(item.approvalGuid, remarks[item.approvalGuid])}
+                  onPress={() =>
+                    onReject(item.approvalGuid, remarks[item.approvalGuid])
+                  }
                   disabled={isBusy}
                 >
                   {t("actions.reject")}
@@ -62,7 +71,9 @@ export function ManagerApprovalList({
                 <Button
                   mode="contained"
                   icon="check-circle-outline"
-                  onPress={() => onApprove(item.approvalGuid, remarks[item.approvalGuid])}
+                  onPress={() =>
+                    onApprove(item.approvalGuid, remarks[item.approvalGuid])
+                  }
                   disabled={isBusy}
                 >
                   {t("actions.approve")}
@@ -72,7 +83,7 @@ export function ManagerApprovalList({
           ))
         ) : (
           <Text variant="bodyMedium" style={styles.muted}>
-            {t("approvals.empty")}
+            {emptyMessage ?? t("approvals.empty")}
           </Text>
         )}
       </Card.Content>

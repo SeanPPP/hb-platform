@@ -37,6 +37,8 @@
     "warehouse": "仓库",
     "domesticPurchase": "国内采购",
     "attendance": "考勤",
+    "attendancePersonal": "考勤",
+    "attendanceManagement": "考勤管理",
     "productQuery": "商品维护",
     "users": "用户",
     "employeeProfile": "员工",

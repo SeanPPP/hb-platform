@@ -10,8 +10,10 @@ import {
 import type { BottomTabBarProps } from "@react-navigation/bottom-tabs";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { expandAttendanceRouteNames } from "@/modules/navigation/default-route";
 import { useAppNavigationStore } from "@/modules/navigation/store";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
+import { useAuthStore } from "@/store/auth-store";
 import {
   buildNavigationDisplayTabs,
   isNavigationDisplayTabFocused,
@@ -51,9 +53,17 @@ export function ScrollableTabBar({
   const [isStoreMenuOpen, setIsStoreMenuOpen] = useState(false);
   const [scrollOffset, setScrollOffset] = useState(0);
   const navigationItems = useAppNavigationStore((store) => store.items);
+  const access = useAuthStore((store) => store.access);
+  const canReviewAttendance = access.isAdmin || access.isStoreManager;
   const visibleRouteNames = useMemo(
-    () => new Set(navigationItems.map((item) => item.routeName)),
-    [navigationItems]
+    () =>
+      new Set(
+        expandAttendanceRouteNames(
+          navigationItems.map((item) => item.routeName),
+          canReviewAttendance,
+        ),
+      ),
+    [canReviewAttendance, navigationItems]
   );
   const visibleRoutes: VisibleRoute[] = state.routes
     .map((route, index) => ({ ...route, index }))
@@ -208,7 +218,7 @@ export function ScrollableTabBar({
                   })}
                 </View>
                 <Text
-                  numberOfLines={1}
+                  numberOfLines={2}
                   style={[
                     styles.label,
                     isFocused ? styles.labelActive : null,
@@ -230,7 +240,7 @@ export function ScrollableTabBar({
             {
               left: storeBubbleLeft,
               width: storeBubbleWidth,
-              bottom: insets.bottom + 62,
+              bottom: insets.bottom + 70,
             },
           ]}
         >
@@ -306,7 +316,7 @@ const styles = StyleSheet.create({
   tab: {
     alignItems: "center",
     justifyContent: "center",
-    minHeight: 58,
+    minHeight: 66,
     paddingHorizontal: 8,
     paddingTop: 8,
     paddingBottom: 6,
@@ -319,6 +329,9 @@ const styles = StyleSheet.create({
     marginTop: 4,
     fontSize: 11,
     fontWeight: "500",
+    lineHeight: 13,
+    minHeight: 26,
+    textAlign: "center",
   },
   labelActive: {
     fontWeight: "700",

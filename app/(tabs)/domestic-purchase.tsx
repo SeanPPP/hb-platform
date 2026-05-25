@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { FlatList, RefreshControl, ScrollView, StyleSheet, View } from "react-native";
 import { useFocusEffect } from "@react-navigation/native";
+import * as Clipboard from "expo-clipboard";
 import { useRouter } from "expo-router";
 import {
   ActivityIndicator,
@@ -75,6 +76,24 @@ function buildDetailEdits(items: DomesticProductBatchItem[]) {
   }, {});
 }
 
+function formatCopyValue(value?: string | null) {
+  const nextValue = value?.trim();
+  return nextValue ? nextValue : "--";
+}
+
+function buildBatchDetailCopyText(items: DomesticProductBatchItem[]) {
+  return items
+    .map((item) => {
+      const productNo = formatCopyValue(item.hbProductNo || item.itemNumber || item.productCode);
+      const barcode = formatCopyValue(item.barcode);
+      const privateLabelPrice =
+        item.privateLabelPrice == null || !Number.isFinite(item.privateLabelPrice) ? "--" : String(item.privateLabelPrice);
+
+      return `${productNo} ${barcode} ${privateLabelPrice}`;
+    })
+    .join("\n");
+}
+
 function typeLabel(type: ProductCreationType, t: (key: string) => string) {
   if (type === ProductCreationType.Set) {
     return t("types.set");
@@ -99,6 +118,7 @@ export default function DomesticPurchaseScreen() {
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [copyingBatchNumber, setCopyingBatchNumber] = useState("");
   const [loadErrorMessage, setLoadErrorMessage] = useState("");
   const [snackbar, setSnackbar] = useState("");
 
@@ -270,6 +290,29 @@ export default function DomesticPurchaseScreen() {
     [t]
   );
 
+  const handleCopyBatch = useCallback(
+    async (batchNumber: string) => {
+      setCopyingBatchNumber(batchNumber);
+      try {
+        const nextDetail = await fetchDomesticProductBatchDetail(batchNumber);
+        const copyText = buildBatchDetailCopyText(nextDetail.items);
+
+        if (!copyText) {
+          setSnackbar(t("messages.copyEmpty"));
+          return;
+        }
+
+        await Clipboard.setStringAsync(copyText);
+        setSnackbar(t("messages.copySuccess"));
+      } catch (error) {
+        setSnackbar(error instanceof Error ? error.message : t("messages.copyFailed"));
+      } finally {
+        setCopyingBatchNumber("");
+      }
+    },
+    [t]
+  );
+
   const updateDetailEdit = useCallback((key: string, patch: Partial<DetailEditState>) => {
     setDetailEdits((current) => ({
       ...current,
@@ -418,6 +461,15 @@ export default function DomesticPurchaseScreen() {
               <View style={styles.cardActions}>
                 <Button compact mode="outlined" onPress={() => openDetail(item)}>
                   {t("actions.detail")}
+                </Button>
+                <Button
+                  compact
+                  icon="content-copy"
+                  onPress={() => handleCopyBatch(item.batchNumber)}
+                  loading={copyingBatchNumber === item.batchNumber}
+                  disabled={copyingBatchNumber === item.batchNumber || busy}
+                >
+                  {t("actions.copy")}
                 </Button>
                 <Button compact icon="download" onPress={() => handleExport(item.batchNumber)} disabled={busy}>
                   {t("actions.export")}

@@ -14,6 +14,17 @@
     "managerSchedule": "Manager schedule",
     "holidayManagement": "Public holidays"
   },
+  "tabs": {
+    "personalAttendance": "Attendance",
+    "attendanceManagement": "Attendance Admin",
+    "personalPunch": "Personal punch",
+    "punchRecords": "Punch records",
+    "personalAvailability": "Personal availability",
+    "weeklySchedule": "Weekly schedule",
+    "scheduleManagement": "Schedule",
+    "holidayManagement": "Holidays",
+    "leaveManagement": "Leave"
+  },
   "today": {
     "schedules": "Today's shifts",
     "punches": "Punches",
@@ -98,6 +109,9 @@
       "Partial": "Partial"
     }
   },
+  "leaveManagement": {
+    "empty": "No sick or annual leave approvals pending"
+  },
   "scheduleManagement": {
     "employeeColumn": "Store / employee",
     "previousWeek": "Previous",
@@ -136,6 +150,12 @@
       "hour": "HH",
       "minute": "MM"
     }
+  },
+  "datePicker": {
+    "selectDate": "Select date",
+    "openDatePicker": "Open date picker",
+    "close": "Close",
+    "done": "Done"
   },
   "fields": {
     "workDate": "Date",

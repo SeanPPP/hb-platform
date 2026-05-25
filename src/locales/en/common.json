@@ -37,6 +37,8 @@
     "warehouse": "Warehouse",
     "domesticPurchase": "Purchase",
     "attendance": "Attendance",
+    "attendancePersonal": "Attendance",
+    "attendanceManagement": "Attendance Admin",
     "productQuery": "Products",
     "users": "Users",
     "employeeProfile": "Employee",

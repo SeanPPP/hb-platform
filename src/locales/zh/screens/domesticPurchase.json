@@ -4,6 +4,7 @@
   "actions": {
     "create": "创建",
     "detail": "明细",
+    "copy": "复制",
     "export": "导出",
     "loadMore": "加载更多",
     "cancel": "取消",
@@ -52,6 +53,9 @@
     "createFailed": "创建失败",
     "saveSuccess": "保存成功",
     "saveFailed": "保存失败",
+    "copySuccess": "已复制明细",
+    "copyFailed": "复制失败",
+    "copyEmpty": "没有可复制的明细",
     "exportSuccess": "导出成功",
     "exportFailed": "导出失败"
   }

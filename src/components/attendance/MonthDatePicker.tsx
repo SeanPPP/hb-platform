@@ -1,6 +1,20 @@
 import { useEffect, useMemo, useState } from "react";
-import { Pressable, StyleSheet, View, type StyleProp, type ViewStyle } from "react-native";
-import { Card, IconButton, Text } from "react-native-paper";
+import {
+  Pressable,
+  StyleSheet,
+  View,
+  type StyleProp,
+  type ViewStyle,
+} from "react-native";
+import {
+  Button,
+  Card,
+  IconButton,
+  Modal,
+  Portal,
+  Surface,
+  Text,
+} from "react-native-paper";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 
 const GRID_DAYS = 42;
@@ -17,6 +31,11 @@ interface MonthDatePickerProps {
 interface MonthDatePickerCardProps extends MonthDatePickerProps {
   title?: string;
   subtitle?: string;
+}
+
+interface MonthDatePickerFieldProps extends MonthDatePickerProps {
+  label?: string;
+  placeholder?: string;
 }
 
 function pad2(value: number) {
@@ -188,7 +207,11 @@ export function MonthDatePicker({
   );
 }
 
-export function MonthDatePickerCard({ title, subtitle, ...pickerProps }: MonthDatePickerCardProps) {
+export function MonthDatePickerCard({
+  title,
+  subtitle,
+  ...pickerProps
+}: MonthDatePickerCardProps) {
   const { t } = useAppTranslation(["attendance", "common"]);
 
   return (
@@ -198,6 +221,102 @@ export function MonthDatePickerCard({ title, subtitle, ...pickerProps }: MonthDa
         <MonthDatePicker {...pickerProps} />
       </Card.Content>
     </Card>
+  );
+}
+
+export function MonthDatePickerField({
+  value,
+  defaultValue,
+  disabled = false,
+  label,
+  placeholder,
+  onChange,
+  style,
+}: MonthDatePickerFieldProps) {
+  const { t } = useAppTranslation(["attendance", "common"]);
+  const isControlled = value !== undefined;
+  const [internalValue, setInternalValue] = useState(() =>
+    normalizeMonthDate(defaultValue),
+  );
+  const [visible, setVisible] = useState(false);
+  const selectedValue = isControlled ? normalizeMonthDate(value) : internalValue;
+
+  const openModal = () => {
+    if (disabled) {
+      return;
+    }
+    setVisible(true);
+  };
+
+  const closeModal = () => setVisible(false);
+
+  const handleChange = (nextValue: string) => {
+    if (!isControlled) {
+      setInternalValue(nextValue);
+    }
+    onChange?.(nextValue);
+    closeModal();
+  };
+
+  return (
+    <>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityState={{ disabled, expanded: visible }}
+        disabled={disabled}
+        onPress={openModal}
+        style={({ pressed }) => [
+          styles.fieldPressable,
+          style,
+          pressed && !disabled ? styles.fieldPressed : null,
+        ]}
+      >
+        <Surface
+          style={[
+            styles.fieldSurface,
+            disabled ? styles.fieldSurfaceDisabled : null,
+          ]}
+          elevation={0}
+        >
+          <View style={styles.fieldTextBlock}>
+            <Text variant="labelMedium" style={styles.fieldLabel}>
+              {label ?? t("fields.workDate")}
+            </Text>
+            <Text
+              variant="bodyLarge"
+              style={selectedValue ? styles.fieldValue : styles.fieldPlaceholder}
+            >
+              {selectedValue || placeholder || t("fields.workDate")}
+            </Text>
+          </View>
+          <IconButton
+            icon="calendar-month-outline"
+            size={20}
+            disabled={disabled}
+          />
+        </Surface>
+      </Pressable>
+
+      <Portal>
+        <Modal
+          visible={visible}
+          onDismiss={closeModal}
+          contentContainerStyle={styles.modalContainer}
+        >
+          <Surface style={styles.modalSurface} elevation={1}>
+            <View style={styles.modalHeader}>
+              <Text variant="titleMedium">{label ?? t("fields.workDate")}</Text>
+              <Button onPress={closeModal}>{t("common:actions.cancel")}</Button>
+            </View>
+            <MonthDatePicker
+              value={selectedValue}
+              onChange={handleChange}
+              disabled={disabled}
+            />
+          </Surface>
+        </Modal>
+      </Portal>
+    </>
   );
 }
 
@@ -225,6 +344,40 @@ const styles = StyleSheet.create({
   dateText: {
     color: "#111827",
   },
+  fieldLabel: {
+    color: "#6B7280",
+  },
+  fieldPlaceholder: {
+    color: "#9CA3AF",
+  },
+  fieldPressed: {
+    opacity: 0.9,
+  },
+  fieldPressable: {
+    borderRadius: 8,
+  },
+  fieldSurface: {
+    alignItems: "center",
+    borderColor: "#D1D5DB",
+    borderRadius: 8,
+    borderWidth: 1,
+    flexDirection: "row",
+    justifyContent: "space-between",
+    minHeight: 56,
+    paddingLeft: 16,
+  },
+  fieldSurfaceDisabled: {
+    backgroundColor: "#F3F4F6",
+    opacity: 0.7,
+  },
+  fieldTextBlock: {
+    flex: 1,
+    gap: 2,
+    paddingVertical: 10,
+  },
+  fieldValue: {
+    color: "#111827",
+  },
   disabledDateCell: {
     opacity: 0.5,
   },
@@ -239,6 +392,20 @@ const styles = StyleSheet.create({
   monthTitle: {
     flex: 1,
     textAlign: "center",
+  },
+  modalContainer: {
+    margin: 20,
+  },
+  modalHeader: {
+    alignItems: "center",
+    flexDirection: "row",
+    justifyContent: "space-between",
+  },
+  modalSurface: {
+    backgroundColor: "#FFFFFF",
+    borderRadius: 12,
+    gap: 12,
+    padding: 16,
   },
   outsideDateCell: {
     backgroundColor: "#F9FAFB",

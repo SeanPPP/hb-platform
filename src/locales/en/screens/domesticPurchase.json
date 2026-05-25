@@ -4,6 +4,7 @@
   "actions": {
     "create": "Create",
     "detail": "Detail",
+    "copy": "Copy",
     "export": "Export",
     "loadMore": "Load more",
     "cancel": "Cancel",
@@ -52,6 +53,9 @@
     "createFailed": "Create failed",
     "saveSuccess": "Saved",
     "saveFailed": "Save failed",
+    "copySuccess": "Copied",
+    "copyFailed": "Copy failed",
+    "copyEmpty": "No detail available to copy",
     "exportSuccess": "Exported",
     "exportFailed": "Export failed"
   }

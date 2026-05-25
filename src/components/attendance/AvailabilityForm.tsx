@@ -1,8 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
 import { StyleSheet, View } from "react-native";
 import { Button, Card, IconButton, Text, TextInput } from "react-native-paper";
-import { MonthDatePicker, normalizeMonthDate } from "@/components/attendance/MonthDatePicker";
-import type { AttendanceAvailability, AttendanceAvailabilityPayload } from "@/modules/attendance/types";
+import {
+  MonthDatePickerField,
+  normalizeMonthDate,
+} from "@/components/attendance/MonthDatePicker";
+import type {
+  AttendanceAvailability,
+  AttendanceAvailabilityPayload,
+} from "@/modules/attendance/types";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 
 function createEmptyForm(defaultDate?: string): AttendanceAvailabilityPayload {
@@ -31,11 +37,14 @@ export function AvailabilityForm({
 }) {
   const { t } = useAppTranslation(["attendance", "common"]);
   const [editingGuid, setEditingGuid] = useState<string | null>(null);
-  const [form, setForm] = useState<AttendanceAvailabilityPayload>(() => createEmptyForm(defaultDate));
+  const [form, setForm] = useState<AttendanceAvailabilityPayload>(() =>
+    createEmptyForm(defaultDate),
+  );
 
   const activeItems = useMemo(
-    () => availability.filter((item) => item.status.toLowerCase() !== "cancelled"),
-    [availability]
+    () =>
+      availability.filter((item) => item.status.toLowerCase() !== "cancelled"),
+    [availability],
   );
 
   useEffect(() => {
@@ -44,10 +53,17 @@ export function AvailabilityForm({
     }
 
     const nextDate = normalizeMonthDate(defaultDate);
-    setForm((current) => (current.workDate === nextDate ? current : { ...current, workDate: nextDate }));
+    setForm((current) =>
+      current.workDate === nextDate
+        ? current
+        : { ...current, workDate: nextDate },
+    );
   }, [defaultDate, editingGuid]);
 
-  const setField = (key: keyof AttendanceAvailabilityPayload, value: string) => {
+  const setField = (
+    key: keyof AttendanceAvailabilityPayload,
+    value: string,
+  ) => {
     setForm((current) => ({ ...current, [key]: value }));
   };
 
@@ -83,17 +99,21 @@ export function AvailabilityForm({
     });
   };
 
-  const canSubmit = Boolean(form.workDate.trim() && form.startTime.trim() && form.endTime.trim());
+  const canSubmit = Boolean(
+    form.workDate.trim() && form.startTime.trim() && form.endTime.trim(),
+  );
 
   return (
     <Card mode="elevated" style={styles.card}>
       <Card.Title title={t("sections.availability")} />
       <Card.Content style={styles.content}>
         <View style={styles.formGrid}>
-          <View style={styles.datePickerBlock}>
-            <Text variant="labelLarge">{t("fields.workDate")}</Text>
-            <MonthDatePicker value={form.workDate} onChange={(value) => setField("workDate", value)} disabled={isBusy} />
-          </View>
+          <MonthDatePickerField
+            value={form.workDate}
+            onChange={(value) => setField("workDate", value)}
+            disabled={isBusy}
+            label={t("fields.workDate")}
+          />
           <View style={styles.timeRow}>
             <TextInput
               mode="outlined"
@@ -125,8 +145,16 @@ export function AvailabilityForm({
               {t("common:actions.cancel")}
             </Button>
           ) : null}
-          <Button mode="contained" icon={editingGuid ? "content-save-outline" : "plus"} onPress={submit} disabled={!canSubmit || isBusy} loading={isBusy}>
-            {editingGuid ? t("common:actions.save") : t("actions.addAvailability")}
+          <Button
+            mode="contained"
+            icon={editingGuid ? "content-save-outline" : "plus"}
+            onPress={submit}
+            disabled={!canSubmit || isBusy}
+            loading={isBusy}
+          >
+            {editingGuid
+              ? t("common:actions.save")
+              : t("actions.addAvailability")}
           </Button>
         </View>
 
@@ -168,9 +196,6 @@ const styles = StyleSheet.create({
   },
   content: {
     gap: 12,
-  },
-  datePickerBlock: {
-    gap: 8,
   },
   formGrid: {
     gap: 8,

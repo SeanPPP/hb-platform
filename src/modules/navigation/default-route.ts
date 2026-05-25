@@ -4,7 +4,8 @@ export type AppTabPath =
   | "/(tabs)/cart"
   | "/(tabs)/warehouse"
   | "/(tabs)/domestic-purchase"
-  | "/(tabs)/attendance"
+  | "/(tabs)/attendance-personal"
+  | "/(tabs)/attendance-management"
   | "/(tabs)/product-query"
   | "/(tabs)/users"
   | "/(tabs)/employee-profile"
@@ -17,7 +18,8 @@ export const TAB_PATHS: Record<string, AppTabPath> = {
   cart: "/(tabs)/cart",
   warehouse: "/(tabs)/warehouse",
   "domestic-purchase": "/(tabs)/domestic-purchase",
-  attendance: "/(tabs)/attendance",
+  "attendance-personal": "/(tabs)/attendance-personal",
+  "attendance-management": "/(tabs)/attendance-management",
   "product-query": "/(tabs)/product-query",
   users: "/(tabs)/users",
   "employee-profile": "/(tabs)/employee-profile",
@@ -26,9 +28,40 @@ export const TAB_PATHS: Record<string, AppTabPath> = {
 };
 
 const DEVICE_MODE_BLOCKED_ROUTE_NAMES = new Set(["device-management"]);
+const LEGACY_ATTENDANCE_ROUTE_NAME = "attendance";
+
+export function expandAttendanceRouteNames(
+  routeNames: Iterable<string>,
+  canReviewAttendance: boolean
+) {
+  const expandedRouteNames: string[] = [];
+  const pushUnique = (routeName: string) => {
+    if (!expandedRouteNames.includes(routeName)) {
+      expandedRouteNames.push(routeName);
+    }
+  };
+
+  Array.from(routeNames).forEach((routeName) => {
+    if (routeName === LEGACY_ATTENDANCE_ROUTE_NAME) {
+      pushUnique("attendance-personal");
+      if (canReviewAttendance) {
+        pushUnique("attendance-management");
+      }
+      return;
+    }
+
+    if (routeName === "attendance-management" && !canReviewAttendance) {
+      return;
+    }
+
+    pushUnique(routeName);
+  });
+
+  return expandedRouteNames;
+}
 
 function normalizeVisibleRouteNames(routeNames: Iterable<string>, isDeviceMode: boolean) {
-  const orderedRouteNames = Array.from(routeNames);
+  const orderedRouteNames = expandAttendanceRouteNames(routeNames, true);
   return isDeviceMode
     ? orderedRouteNames.filter((routeName) => !DEVICE_MODE_BLOCKED_ROUTE_NAMES.has(routeName))
     : orderedRouteNames;
@@ -49,7 +82,7 @@ export function resolveDefaultTabRoute({
   routeNames,
 }: ResolveDefaultTabRouteOptions): AppTabPath {
   const orderedRouteNames = normalizeVisibleRouteNames(routeNames, isDeviceMode);
-  const preferredRouteName = isDeviceMode ? "product-query" : "attendance";
+  const preferredRouteName = isDeviceMode ? "product-query" : "attendance-personal";
 
   if (orderedRouteNames.includes(preferredRouteName)) {
     return TAB_PATHS[preferredRouteName];
