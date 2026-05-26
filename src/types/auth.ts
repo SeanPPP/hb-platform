@@ -95,6 +95,7 @@ export interface AccessControl {
   canEditAttendanceHoliday: boolean
   canEditAttendanceSettings: boolean
   canAccessDashboard: boolean
+  canAccessOrderFront: boolean
   hasPermission: (permission: string) => boolean
   hasRole: (role: string) => boolean
   onlyRole: (role: string) => boolean

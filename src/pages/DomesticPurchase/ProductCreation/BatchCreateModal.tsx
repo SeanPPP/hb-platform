@@ -24,7 +24,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react'
 import { getActiveChinaSuppliers } from '../../../services/chinaSupplierService'
 import { createBatch, getActivePrefixes } from '../../../services/domesticProductCreationService'
 import { ProductCreationType } from '../../../types/domesticProductCreation'
-import type { CreateBatchRequest } from '../../../types/domesticProductCreation'
+import type { BatchInfo, CreateBatchRequest } from '../../../types/domesticProductCreation'
 import PrefixCodeManageModal from './PrefixCodeManageModal'
 
 interface ProductItem {
@@ -40,7 +40,7 @@ interface ProductItem {
 interface BatchCreateModalProps {
   visible: boolean
   onClose: () => void
-  onSuccess: () => void
+  onSuccess: (createdBatch?: BatchInfo) => void
 }
 
 export default function BatchCreateModal({ visible, onClose, onSuccess }: BatchCreateModalProps) {
@@ -255,7 +255,22 @@ export default function BatchCreateModal({ visible, onClose, onSuccess }: BatchC
       setSubmitting(false)
       if (response.success) {
         message.success(t('productCreation.createSuccess', '创建成功'))
-        onSuccess()
+        if (!response.data?.batchNumber) {
+          message.warning(t('productCreation.createSuccessNoBatchNumber', '创建成功，但未返回批次号，请从列表查看'))
+          onSuccess()
+          return
+        }
+        const createdBatch: BatchInfo = {
+          batchNumber: response.data.batchNumber,
+          supplierCode,
+          supplierName: selectedSupplier?.name || supplierCode,
+          prefixCode: form.getFieldValue('prefixCode') || undefined,
+          normalCount: response.data.normalProductCount,
+          setCount: response.data.setProductCount,
+          totalCount: response.data.totalCreated,
+          createdAt: new Date().toISOString(),
+        }
+        onSuccess(createdBatch)
       } else {
         message.error(response.message || t('productCreation.createFailed', '创建失败'))
       }

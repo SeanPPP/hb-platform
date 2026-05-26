@@ -1,14 +1,14 @@
-import { DownloadOutlined } from '@ant-design/icons'
+import { CopyOutlined, DownloadOutlined } from '@ant-design/icons'
 import { Button, InputNumber, message, Modal, Space, Table, Tabs } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
-import ExcelJS from 'exceljs'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import BarcodePreview from '../../../components/BarcodePreview'
 import { getBatchDetail, updatePrivateLabelPrice } from '../../../services/domesticProductCreationService'
 import { ProductCreationType } from '../../../types/domesticProductCreation'
 import type { BatchDetail, BatchInfo, BatchProductItem, UpdatePriceItem } from '../../../types/domesticProductCreation'
-import { generateBarcodeImages } from '../../../utils/barcode'
+import { copyTextToClipboard } from '../../../utils/clipboard'
+import { exportProductCreationBatchToExcel, getExportableBatchItems } from './exportBatchDetail'
 
 interface BatchDetailModalProps {
   visible: boolean
@@ -74,78 +74,75 @@ export default function BatchDetailModal({ visible, batch, onClose }: BatchDetai
 
   const handleExportExcel = useCallback(async () => {
     if (!detail?.items || !batch?.batchNumber) { message.warning(t('productCreation.noDataToExport', '无数据可导出')); return }
-    message.loading({ content: t('productCreation.exporting', '导出中...'), key: 'export' })
+    if (getExportableBatchItems(detail.items).length === 0) { message.warning(t('productCreation.noDataToExport', '无数据可导出')); return }
+    const messageKey = `product-creation-export-${batch.batchNumber}`
+    message.loading({ content: t('productCreation.exporting', '导出中...'), key: messageKey })
     try {
-      const workbook = new ExcelJS.Workbook()
-      const worksheet = workbook.addWorksheet(t('productCreation.batchDetail', '批次明细'))
-      worksheet.columns = [
-        { header: t('productImport.hbProductNoCol', '货号'), key: 'itemNumber', width: 20 },
-        { header: t('domesticProducts.barcode', '条码'), key: 'barcode', width: 18 },
-        { header: t('domesticProducts.productName', '商品名称'), key: 'productName', width: 30 },
-        { header: t('productCreation.privateLabelPrice', '贴牌价格'), key: 'privateLabelPrice', width: 12 },
-        { header: t('productCreation.setQuantity', '套装数量'), key: 'setQuantity', width: 10 },
-        { header: t('productCreation.setPrice', '套装价格'), key: 'setPrice', width: 12 },
-        { header: t('productCreation.barcodeImage', '条码图片'), key: 'barcodeImage', width: 25 },
-      ]
-      const headerRow = worksheet.getRow(1)
-      headerRow.height = 25
-      headerRow.eachCell((cell: any) => {
-        cell.font = { bold: true, color: { argb: 'FFFFFFFF' } }
-        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF4472C4' } }
-        cell.alignment = { horizontal: 'center', vertical: 'middle' }
-      })
-      const allItems: Array<{ itemNumber: string; barcode: string; productName: string; privateLabelPrice: number | string; setQuantity: number | string; setPrice: number | string }> = []
-      detail.items.forEach((item: BatchProductItem) => {
-        if (item.productType === ProductCreationType.SET || item.productType === ProductCreationType.NORMAL) {
-          allItems.push({
-            itemNumber: item.hbProductNo,
-            barcode: item.barcode,
-            productName: item.productName,
-            privateLabelPrice: item.privateLabelPrice ?? '',
-            setQuantity: item.setQuantity ?? '',
-            setPrice: item.setPrice ?? '',
-          })
-        }
-      })
-      const barcodes = allItems.map((item) => item.barcode).filter(Boolean)
-      const barcodeMap = await generateBarcodeImages(barcodes, { width: 1, height: 40, displayValue: true })
-      allItems.forEach((item, index) => {
-        const currentRow = worksheet.getRow(index + 2)
-        currentRow.values = [item.itemNumber, item.barcode, item.productName, item.privateLabelPrice, item.setQuantity, item.setPrice, '']
-        currentRow.height = 50
-        if (index % 2 === 0) {
-          currentRow.eachCell((cell: any) => { cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF9F9F9' } } })
-        }
-        if (item.barcode) {
-          const barcodeData = barcodeMap.get(item.barcode)
-          if (barcodeData) {
-            const base64Image = barcodeData.split(',')[1]
-            const imageId = workbook.addImage({ base64: base64Image, extension: 'png' })
-            worksheet.addImage(imageId, { tl: { col: 6, row: index + 1 }, br: { col: 7, row: index + 2 }, editAs: 'oneCell' } as any)
-          }
-        }
-      })
-      worksheet.eachRow((row, rowNumber) => {
-        if (rowNumber > 1) row.eachCell({ includeEmpty: false }, (cell) => { cell.alignment = { vertical: 'middle' } })
-      })
-      const buffer = await workbook.xlsx.writeBuffer()
-      const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
-      const url = URL.createObjectURL(blob)
-      const link = document.createElement('a')
-      link.href = url
-      const today = new Date()
-      const dateStr = `${today.getFullYear()}${String(today.getMonth() + 1).padStart(2, '0')}${String(today.getDate()).padStart(2, '0')}`
-      link.download = t('productCreation.batchDetailFile', '批次明细_{{batchNumber}}_{{date}}.xlsx', { batchNumber: batch.batchNumber, date: dateStr })
-      document.body.appendChild(link)
-      link.click()
-      document.body.removeChild(link)
-      URL.revokeObjectURL(url)
-      message.success({ content: t('productCreation.exportSuccess', '导出成功'), key: 'export' })
+      await exportProductCreationBatchToExcel(detail, { batchNumber: batch.batchNumber, t })
+      message.success({ content: t('productCreation.exportSuccess', '导出成功'), key: messageKey })
     } catch (error) {
       console.error('导出失败:', error)
-      message.error({ content: t('productCreation.exportFailed', '导出失败'), key: 'export' })
+      message.error({ content: t('productCreation.exportFailed', '导出失败'), key: messageKey })
     }
   }, [detail, batch])
+
+  const getCopyPrice = useCallback(
+    (item: BatchProductItem) => {
+      if (Object.prototype.hasOwnProperty.call(editingPrices, item.itemNumber)) {
+        return editingPrices[item.itemNumber]
+      }
+      return item.privateLabelPrice
+    },
+    [editingPrices],
+  )
+
+  const hasCopyValue = (value: unknown) => value !== undefined && value !== null && value !== ''
+
+  const formatCopyLine = useCallback(
+    (item: BatchProductItem) => {
+      const price = getCopyPrice(item)
+      return [item.hbProductNo, item.barcode, hasCopyValue(price) ? String(price) : '']
+        .filter(hasCopyValue)
+        .join(' ')
+    },
+    [getCopyPrice],
+  )
+
+  const getCopyHeaderLine = useCallback(
+    () => [
+      t('productImport.hbProductNoCol', '货号'),
+      t('domesticProducts.barcode', '条码'),
+      t('productCreation.retailPrice', '零售价'),
+    ].join(' '),
+    [t],
+  )
+
+  const handleCopyRow = useCallback(
+    (item: BatchProductItem) => {
+      const text = formatCopyLine(item)
+      if (!text) {
+        message.warning(t('productCreation.noCopyData', '无可复制数据'))
+        return
+      }
+      void copyTextToClipboard(text, {
+        successMessage: t('productCreation.copyItemBarcodeSuccess', '已复制：{{value}}', { value: text }),
+        failureMessage: t('productCreation.copyFailed', '复制失败，请手动复制'),
+      })
+    },
+    [formatCopyLine, t],
+  )
+
+  const handleCopyAll = useCallback(() => {
+    const lines = (detail?.items || []).map(formatCopyLine).filter(Boolean)
+    if (!lines.length) {
+      message.warning(t('productCreation.noCopyData', '无可复制数据'))
+      return
+    }
+    void copyTextToClipboard([getCopyHeaderLine(), ...lines].join('\n'), {
+      successMessage: t('productCreation.copyAllItemBarcodesSuccess', '已复制 {{count}} 行', { count: lines.length }),
+      failureMessage: t('productCreation.copyFailed', '复制失败，请手动复制'),
+    })
+  }, [detail, formatCopyLine, getCopyHeaderLine, t])
 
   const filteredItems = useMemo(() => {
     if (!detail?.items) return []
@@ -159,7 +156,7 @@ export default function BatchDetailModal({ visible, batch, onClose }: BatchDetai
   }, [detail, activeTab])
 
   const columns: ColumnsType<any> = [
-    { title: t('productImport.hbProductNoCol', '货号'), dataIndex: 'hbProductNo', key: 'hbProductNo', width: 100, fixed: 'left', render: (text) => <span style={{ fontFamily: 'monospace' }}>{text}</span> },
+    { title: t('productImport.hbProductNoCol', '货号'), dataIndex: 'hbProductNo', key: 'hbProductNo', width: 130, fixed: 'left', render: (text) => <span style={{ fontFamily: 'monospace' }}>{text}</span> },
     { title: t('domesticProducts.barcode', '条码'), dataIndex: 'barcode', key: 'barcode', width: 120, render: (text) => <span style={{ fontFamily: 'monospace' }}>{text}</span> },
     { title: t('domesticProducts.productName', '商品名称'), dataIndex: 'productName', key: 'productName', width: 180 },
     {
@@ -181,6 +178,21 @@ export default function BatchDetailModal({ visible, batch, onClose }: BatchDetai
         return <BarcodePreview value={record.barcode} options={{ width: 1, height: 40, displayValue: true, fontSize: 10, margin: 4 }} showCopy={false} />
       },
     },
+    {
+      title: (
+        <Button type="link" size="small" icon={<CopyOutlined />} onClick={handleCopyAll}>
+          {t('productCreation.copyAllItemBarcodes', '复制全部')}
+        </Button>
+      ),
+      key: 'actions',
+      width: 130,
+      fixed: 'right',
+      render: (_, record) => (
+        <Button type="link" size="small" icon={<CopyOutlined />} onClick={() => handleCopyRow(record)}>
+          {t('productCreation.copyItemBarcode', '复制')}
+        </Button>
+      ),
+    },
   ]
 
   const tabItems = [
@@ -196,7 +208,7 @@ export default function BatchDetailModal({ visible, batch, onClose }: BatchDetai
       title={t('productCreation.batchDetailTitle', '批次明细 - {{batchNumber}}', { batchNumber: batch.batchNumber })}
       open={visible}
       onCancel={onClose}
-      width={1100}
+      width={1200}
       footer={
         <Space>
           <Button onClick={onClose}>{t('common.close', '关闭')}</Button>
@@ -214,7 +226,7 @@ export default function BatchDetailModal({ visible, batch, onClose }: BatchDetai
         </Space>
       </div>
       <Tabs activeKey={activeTab} onChange={setActiveTab} items={tabItems} style={{ marginBottom: 16 }} />
-      <Table columns={columns} dataSource={filteredItems} rowKey="itemNumber" loading={loading} pagination={{ defaultPageSize: 20, showSizeChanger: true, showTotal: (total) => t('common.totalCount', '共 {{count}} 条', { count: total }) }} scroll={{ x: 1000, y: 400 }} size="small" />
+      <Table columns={columns} dataSource={filteredItems} rowKey="itemNumber" loading={loading} pagination={{ defaultPageSize: 20, showSizeChanger: true, showTotal: (total) => t('common.totalCount', '共 {{count}} 条', { count: total }) }} scroll={{ x: 1200, y: 400 }} size="small" />
     </Modal>
   )
 }

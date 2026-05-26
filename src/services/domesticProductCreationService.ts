@@ -1,17 +1,38 @@
-import type { BatchDetail, BatchInfo, BatchListParams, BatchProductItem, CreateBatchRequest, PrefixCodeListParams, PrefixCodeResponse, UpdatePriceItem } from '../types/domesticProductCreation'
+import type { BatchDetail, BatchInfo, BatchListParams, BatchProductItem, CreateBatchRequest, CreateBatchResponse, PrefixCodeListParams, PrefixCodeResponse, UpdatePriceItem } from '../types/domesticProductCreation'
 import request from '../utils/request'
 
 const API_BASE = '/api/v1/domestic-product-creation'
 
-export async function createBatch(data: CreateBatchRequest): Promise<{ success: boolean; data?: BatchInfo; message?: string }> {
+function transformCreateBatchResponse(raw: Record<string, unknown>): CreateBatchResponse {
+  return {
+    batchNumber: String(raw.batchNumber ?? ''),
+    totalCreated: Number(raw.totalCreated ?? raw.totalCount ?? 0),
+    normalProductCount: Number(raw.normalProductCount ?? raw.normalCount ?? 0),
+    setProductCount: Number(raw.setProductCount ?? raw.setCount ?? 0),
+  }
+}
+
+export async function createBatch(data: CreateBatchRequest): Promise<{ success: boolean; data?: CreateBatchResponse; message?: string }> {
   const response: any = await request(`${API_BASE}/batch`, {
     method: 'POST',
     data,
   })
   const res = response?.data ?? response
-  if (res?.success !== undefined) return res
-  if (response?.success !== undefined) return response
-  return { success: true, data: res }
+  if (res?.success !== undefined) {
+    return {
+      success: Boolean(res.success),
+      data: res.data ? transformCreateBatchResponse(res.data) : undefined,
+      message: res.message,
+    }
+  }
+  if (response?.success !== undefined) {
+    return {
+      success: Boolean(response.success),
+      data: response.data ? transformCreateBatchResponse(response.data) : undefined,
+      message: response.message,
+    }
+  }
+  return { success: true, data: res ? transformCreateBatchResponse(res) : undefined }
 }
 
 function transformBatchInfo(raw: Record<string, unknown>): BatchInfo {

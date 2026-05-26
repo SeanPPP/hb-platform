@@ -72,6 +72,9 @@ export const P = {
   Dashboard: {
     View: 'Dashboard',
   },
+  OrderFront: {
+    View: 'OrderFront',
+  },
   Attendance: {
     ScheduleViewSelf: 'Attendance.Schedule.ViewSelf',
     ScheduleViewStore: 'Attendance.Schedule.ViewStore',

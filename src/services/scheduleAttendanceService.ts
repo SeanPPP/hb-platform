@@ -14,6 +14,8 @@ import type {
   SaveAttendanceHolidayPayload,
   SaveAttendanceSchedulePayload,
   SaveAttendanceSettingsPayload,
+  SyncAttendanceHolidayPayload,
+  SyncAttendanceHolidayResult,
 } from '../types/scheduleAttendance'
 import request, { unwrapApiData, unwrapPagedResult } from '../utils/request'
 
@@ -135,6 +137,13 @@ export async function batchUpsertAttendanceHolidays(
   payload: BatchUpsertAttendanceHolidayPayload,
 ): Promise<BatchUpsertAttendanceHolidayResult> {
   const response = await request.post<ApiResponse<BatchUpsertAttendanceHolidayResult>>(`${API_BASE}/holidays/batch-upsert`, payload)
+  return unwrapApiData(response)
+}
+
+export async function syncAttendanceHolidays(
+  payload: SyncAttendanceHolidayPayload,
+): Promise<SyncAttendanceHolidayResult> {
+  const response = await request.post<ApiResponse<SyncAttendanceHolidayResult>>(`${API_BASE}/holidays/sync`, payload)
   return unwrapApiData(response)
 }
 

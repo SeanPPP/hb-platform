@@ -50,6 +50,7 @@ import {
   getPendingAttendanceApprovals,
   publishAttendanceScheduleWeek,
   rejectAttendanceApproval,
+  syncAttendanceHolidays,
   updateAttendanceHoliday,
   updateAttendanceSchedule,
   updateAttendanceSettings,
@@ -193,6 +194,7 @@ export default function ScheduleAttendancePage() {
   const [reviewAction, setReviewAction] = useState<ReviewAction>('approve')
   const [saving, setSaving] = useState(false)
   const [publishing, setPublishing] = useState(false)
+  const [syncingHolidays, setSyncingHolidays] = useState(false)
   const [scheduleForm] = Form.useForm<ScheduleFormValues>()
   const [holidayForm] = Form.useForm<HolidayFormValues>()
   const [batchHolidayForm] = Form.useForm<BatchHolidayFormValues>()
@@ -590,6 +592,34 @@ export default function ScheduleAttendancePage() {
       message.error(t('posAdmin.scheduleAttendance.messages.saveHolidayFailed'))
     } finally {
       setSaving(false)
+    }
+  }
+
+  const syncFutureHolidays = async () => {
+    if (!storeCode) {
+      message.warning(t('posAdmin.scheduleAttendance.messages.selectStoreBeforeHolidaySync'))
+      return
+    }
+
+    setSyncingHolidays(true)
+    try {
+      const result = await syncAttendanceHolidays({
+        storeCode,
+        daysAhead: 30,
+      })
+      message.success(t('posAdmin.scheduleAttendance.messages.holidaySyncSuccess', {
+        synced: result.syncedCount,
+        created: result.createdCount,
+        updated: result.updatedCount,
+        skipped: result.skippedCount,
+      }))
+      void loadHolidays()
+      void loadScheduleHolidays()
+    } catch (error) {
+      console.error(error)
+      message.error(t('posAdmin.scheduleAttendance.messages.holidaySyncFailed'))
+    } finally {
+      setSyncingHolidays(false)
     }
   }
 
@@ -1082,6 +1112,16 @@ export default function ScheduleAttendancePage() {
           ) : null}
           {activeTab === 'holidays' && access.canEditAttendanceHoliday ? (
             <>
+              <Tooltip title={!storeCode ? t('posAdmin.scheduleAttendance.messages.selectStoreBeforeHolidaySync') : undefined}>
+                <Button
+                  icon={<ReloadOutlined />}
+                  disabled={!storeCode}
+                  loading={syncingHolidays}
+                  onClick={() => void syncFutureHolidays()}
+                >
+                  {t('posAdmin.scheduleAttendance.actions.syncFutureHolidays')}
+                </Button>
+              </Tooltip>
               <Tooltip title={t('posAdmin.scheduleAttendance.messages.batchHolidayOverwriteHint')}>
                 <Button
                   icon={<CopyOutlined />}

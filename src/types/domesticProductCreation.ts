@@ -56,6 +56,13 @@ export interface CreateBatchRequest {
   }>
 }
 
+export interface CreateBatchResponse {
+  batchNumber: string
+  totalCreated: number
+  normalProductCount: number
+  setProductCount: number
+}
+
 export interface UpdatePriceItem {
   itemNumber: string
   privateLabelPrice?: number
