@@ -103,6 +103,8 @@ namespace BlazorApp.Shared.Constants
                 new(Permissions.Orders.Create, "创建订单", "订单管理", "订单管理 - 创建订单"),
                 new(Permissions.Orders.Edit, "编辑订单", "订单管理", "订单管理 - 编辑订单"),
                 new(Permissions.Orders.Delete, "删除订单", "订单管理", "订单管理 - 删除订单"),
+                new(Permissions.InstallmentOrders.View, "查看分期付款订单", "分店财务", "分店财务 - 查看分店分期付款订单与支付记录"),
+                new(Permissions.StoreVouchers.View, "查看分店代金券", "分店财务", "分店财务 - 查看分店代金券使用情况与关联订单"),
                 new(Permissions.Container.View, "查看货柜", "货柜管理", "货柜管理 - 查看货柜"),
                 new(Permissions.Container.Create, "创建货柜", "货柜管理", "货柜管理 - 创建货柜"),
                 new(Permissions.Container.Edit, "编辑货柜", "货柜管理", "货柜管理 - 编辑货柜"),
