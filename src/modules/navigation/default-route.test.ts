@@ -2,6 +2,7 @@ import {
   expandAttendanceRouteNames,
   resolveDefaultTabRoute,
   resolveTabRouteCorrection,
+  TAB_PATHS,
 } from "./default-route";
 
 function assertEqual(actual: unknown, expected: unknown, label: string) {
@@ -127,4 +128,21 @@ assertEqual(
   }),
   null,
   "manual home navigation is allowed after startup default was applied"
+);
+
+assertEqual(
+  TAB_PATHS["local-supplier-invoices"],
+  "/(tabs)/local-supplier-invoices",
+  "local supplier invoices route is registered as a valid tab path"
+);
+
+assertEqual(
+  resolveTabRouteCorrection({
+    currentRouteName: "local-supplier-invoices",
+    hasAppliedDefaultRoute: true,
+    isDeviceMode: false,
+    routeNames: ["home", "local-supplier-invoices", "settings"],
+  }),
+  null,
+  "local supplier invoices route is allowed when app menu exposes it"
 );

@@ -7,6 +7,7 @@ import domesticPurchaseEn from "@/locales/en/screens/domesticPurchase.json";
 import deviceManagementEn from "@/locales/en/screens/deviceManagement.json";
 import employeeProfileEn from "@/locales/en/screens/employeeProfile.json";
 import homeEn from "@/locales/en/screens/home.json";
+import localSupplierInvoicesEn from "@/locales/en/screens/localSupplierInvoices.json";
 import loginEn from "@/locales/en/screens/login.json";
 import ordersEn from "@/locales/en/screens/orders.json";
 import productQueryEn from "@/locales/en/screens/productQuery.json";
@@ -20,6 +21,7 @@ import domesticPurchaseZh from "@/locales/zh/screens/domesticPurchase.json";
 import deviceManagementZh from "@/locales/zh/screens/deviceManagement.json";
 import employeeProfileZh from "@/locales/zh/screens/employeeProfile.json";
 import homeZh from "@/locales/zh/screens/home.json";
+import localSupplierInvoicesZh from "@/locales/zh/screens/localSupplierInvoices.json";
 import loginZh from "@/locales/zh/screens/login.json";
 import ordersZh from "@/locales/zh/screens/orders.json";
 import productQueryZh from "@/locales/zh/screens/productQuery.json";
@@ -39,6 +41,7 @@ const resources = {
     attendance: attendanceZh,
     login: loginZh,
     home: homeZh,
+    localSupplierInvoices: localSupplierInvoicesZh,
     cart: cartZh,
     domesticPurchase: domesticPurchaseZh,
     deviceManagement: deviceManagementZh,
@@ -54,6 +57,7 @@ const resources = {
     attendance: attendanceEn,
     login: loginEn,
     home: homeEn,
+    localSupplierInvoices: localSupplierInvoicesEn,
     cart: cartEn,
     domesticPurchase: domesticPurchaseEn,
     deviceManagement: deviceManagementEn,
@@ -88,7 +92,7 @@ if (!i18n.isInitialized) {
     lng: DEFAULT_APP_LANGUAGE,
     fallbackLng: DEFAULT_APP_LANGUAGE,
     defaultNS: "common",
-    ns: ["common", "attendance", "login", "home", "cart", "domesticPurchase", "deviceManagement", "employeeProfile", "orders", "settings", "productQuery", "userManagement", "warehouse"],
+    ns: ["common", "attendance", "login", "home", "cart", "domesticPurchase", "deviceManagement", "employeeProfile", "localSupplierInvoices", "orders", "settings", "productQuery", "userManagement", "warehouse"],
     interpolation: {
       escapeValue: false,
     },

@@ -36,6 +36,7 @@
     "cart": "Cart",
     "warehouse": "Warehouse",
     "domesticPurchase": "China Purchase",
+    "localSupplierInvoices": "AU Invoices",
     "attendance": "Attendance",
     "attendancePersonal": "Attendance",
     "attendanceManagement": "Attendance Admin",

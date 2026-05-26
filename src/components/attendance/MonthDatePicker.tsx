@@ -24,6 +24,7 @@ interface MonthDatePickerProps {
   value?: string;
   defaultValue?: string;
   disabled?: boolean;
+  allowEmpty?: boolean;
   onChange?: (date: string) => void;
   style?: StyleProp<ViewStyle>;
 }
@@ -103,13 +104,18 @@ export function MonthDatePicker({
   value,
   defaultValue,
   disabled = false,
+  allowEmpty = false,
   onChange,
   style,
 }: MonthDatePickerProps) {
   const { t } = useAppTranslation(["attendance", "common"]);
   const isControlled = value !== undefined;
   const [internalValue, setInternalValue] = useState(() => normalizeMonthDate(defaultValue));
-  const selectedDateString = isControlled ? normalizeMonthDate(value) : internalValue;
+  const selectedDateString = isControlled && allowEmpty && !value
+    ? ""
+    : isControlled
+      ? normalizeMonthDate(value)
+      : internalValue;
   const selectedDate = parseMonthDate(selectedDateString) ?? new Date();
   const [displayMonth, setDisplayMonth] = useState(() => getMonthStart(selectedDate));
 

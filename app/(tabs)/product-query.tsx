@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ScrollView, StyleSheet, TextInput, View } from "react-native";
 import { CameraView } from "expo-camera";
+import { useLocalSearchParams, useRouter } from "expo-router";
 import { useFocusEffect, useIsFocused } from "@react-navigation/native";
 import { Button, Card, Modal, Portal, Snackbar, Text } from "react-native-paper";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -36,6 +37,7 @@ import {
   updateStorePrice,
   upsertClearancePrice,
 } from "@/modules/product-maintenance/api";
+import { resolveExternalQueryStore } from "@/modules/product-maintenance/external-query-store";
 import type {
   EvaluateAutoPricingResult,
   MultiCodeEditableItem,
@@ -49,6 +51,10 @@ import { useHidBarcodeScanner } from "@/modules/scanner/use-hid-barcode-scanner"
 import { playScanFeedbackSound, preloadScanFeedbackSounds } from "@/modules/scanner/scan-sound";
 import type { ScanSource } from "@/modules/scanner/types";
 import { useStores } from "@/modules/shop/use-stores";
+import {
+  buildLocalSupplierInvoicesRestoreHref,
+  decodeLocalSupplierInvoicesReturnParams,
+} from "@/modules/local-supplier-invoices/navigation";
 
 type LookupTrigger = "manual" | "scan";
 
@@ -137,6 +143,12 @@ function formatPercentValue(value?: number | null) {
 
   const percent = value * 100;
   return Number.isInteger(percent) ? String(percent) : percent.toFixed(2).replace(/\.?0+$/, "");
+}
+
+function firstParam(value: string | string[] | undefined) {
+  const raw = Array.isArray(value) ? value[0] : value;
+  const trimmed = raw?.trim();
+  return trimmed || undefined;
 }
 
 function toFixedDecimalInput(value: string) {
@@ -234,7 +246,33 @@ const DEFAULT_LOOKUP_FLOW_RESULT: LookupFlowResult = {
 
 function ProductQueryContent() {
   const { t } = useAppTranslation(["productQuery", "common"]);
-  const { selectedStore, selectedStoreCode, isLoading: storesLoading } = useStores();
+  const router = useRouter();
+  const queryParams = useLocalSearchParams<{
+    productCode?: string | string[];
+    keyword?: string | string[];
+    storeCode?: string | string[];
+    source?: string | string[];
+    returnInvoiceGuid?: string | string[];
+    returnDetailsPage?: string | string[];
+    returnDetailsPageSize?: string | string[];
+    returnListPage?: string | string[];
+    returnListPageSize?: string | string[];
+    returnFilterStoreCode?: string | string[];
+    returnFilterSupplierCode?: string | string[];
+    returnFilterInvoiceNo?: string | string[];
+    returnFilterOrderDateFrom?: string | string[];
+    returnFilterOrderDateTo?: string | string[];
+    returnSortColId?: string | string[];
+    returnSortDirection?: string | string[];
+  }>();
+  const {
+    stores,
+    selectedStore,
+    selectedStoreCode,
+    selectStore,
+    isLoading: storesLoading,
+    isHydratingSelection,
+  } = useStores();
   const printerAutoReconnectPaused = usePrinterStore((state) => state.autoReconnectPaused);
   const [keyword, setKeyword] = useState("");
   const [lookupItems, setLookupItems] = useState<ProductLookupItem[]>([]);
@@ -275,7 +313,26 @@ function ProductQueryContent() {
   const autoPricingDialogResolverRef = useRef<((result: AutoPricingDialogResolution) => void) | null>(null);
   const numericInputConfirmRef = useRef<((value: string) => void) | null>(null);
   const saveClearanceRef = useRef<() => Promise<void>>(async () => {});
+  const handledExternalQueryRef = useRef<string | null>(null);
   const [numericInputModal, setNumericInputModal] = useState<NumericInputModalState | null>(null);
+  const invoiceReturnState = useMemo(
+    () => decodeLocalSupplierInvoicesReturnParams(queryParams),
+    [
+      queryParams.returnDetailsPage,
+      queryParams.returnDetailsPageSize,
+      queryParams.returnFilterInvoiceNo,
+      queryParams.returnFilterOrderDateFrom,
+      queryParams.returnFilterOrderDateTo,
+      queryParams.returnFilterStoreCode,
+      queryParams.returnFilterSupplierCode,
+      queryParams.returnInvoiceGuid,
+      queryParams.returnListPage,
+      queryParams.returnListPageSize,
+      queryParams.returnSortColId,
+      queryParams.returnSortDirection,
+      queryParams.source,
+    ]
+  );
 
   useEffect(() => {
     setStorePurchaseInput(formatFixedDecimal(detail?.storePrice?.purchasePrice));
@@ -828,6 +885,89 @@ function ProductQueryContent() {
       t,
     ]
   );
+
+  useEffect(() => {
+    const productCodeParam = firstParam(queryParams.productCode);
+    const keywordParam = firstParam(queryParams.keyword);
+    const storeCodeParam = firstParam(queryParams.storeCode);
+    const sourceParam = firstParam(queryParams.source);
+    const nextKeyword = keywordParam || productCodeParam;
+
+    if (!nextKeyword && !storeCodeParam) {
+      return;
+    }
+
+    const requestKey = `${productCodeParam ?? ""}|${keywordParam ?? ""}|${storeCodeParam ?? ""}|${sourceParam ?? ""}`;
+    if (handledExternalQueryRef.current === requestKey || storesLoading) {
+      return;
+    }
+
+    let cancelled = false;
+
+    async function applyExternalQuery() {
+      const storeResolution = resolveExternalQueryStore({
+        targetStoreCode: storeCodeParam,
+        selectedStoreCode,
+        stores,
+        storesLoading: storesLoading || isHydratingSelection,
+      });
+
+      if (storeResolution.type === "wait") {
+        return;
+      }
+
+      if (storeResolution.type === "select-store") {
+        await selectStore(storeResolution.store);
+        return;
+      }
+
+      if (storeResolution.type === "store-not-found") {
+        handledExternalQueryRef.current = requestKey;
+        setSnackbarMessage(
+          t("messages.targetStoreUnavailable", { storeCode: storeResolution.storeCode })
+        );
+        playQueryFeedback("error");
+        return;
+      }
+
+      handledExternalQueryRef.current = requestKey;
+      if (!nextKeyword || cancelled) {
+        return;
+      }
+
+      setKeyword(nextKeyword);
+      try {
+        if (productCodeParam) {
+          await loadDetail(productCodeParam);
+          return;
+        }
+        await handleLookup(nextKeyword, "manual");
+      } catch (error) {
+        setSnackbarMessage(error instanceof Error ? error.message : t("messages.lookupFailed"));
+        playQueryFeedback("error");
+      }
+    }
+
+    void applyExternalQuery();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    handleLookup,
+    isHydratingSelection,
+    loadDetail,
+    playQueryFeedback,
+    queryParams.keyword,
+    queryParams.productCode,
+    queryParams.source,
+    queryParams.storeCode,
+    selectStore,
+    selectedStoreCode,
+    stores,
+    storesLoading,
+    t,
+  ]);
 
   const cameraScan = useCameraScan({
     onBarcode: async (barcode) => {
@@ -1563,6 +1703,16 @@ function ProductQueryContent() {
     [detail, printQuantity, quantitySingleUse, sendProductLabel, smallLabel, t]
   );
 
+  const handleReturnToInvoices = useCallback(() => {
+    if (!invoiceReturnState) {
+      return;
+    }
+
+    router.replace(
+      buildLocalSupplierInvoicesRestoreHref(invoiceReturnState) as Parameters<typeof router.replace>[0]
+    );
+  }, [invoiceReturnState, router]);
+
   const storePrice = detail?.storePrice;
   const clearancePrice = detail?.clearancePrice;
   const normalizedStoreDiscountRate = normalizeDiscountRateValue(storePrice?.discountRate);
@@ -1593,6 +1743,13 @@ function ProductQueryContent() {
       />
 
       <ScrollView contentContainerStyle={styles.content}>
+        {invoiceReturnState ? (
+          <View style={styles.returnBar}>
+            <Button icon="arrow-left" mode="contained-tonal" onPress={handleReturnToInvoices}>
+              {t("actions.returnToInvoiceDetails")}
+            </Button>
+          </View>
+        ) : null}
         {detail ? (
           <>
             <View style={styles.firstScreenSection}>
@@ -2068,6 +2225,10 @@ const styles = StyleSheet.create({
     paddingTop: 0,
     paddingBottom: 16,
     gap: 6,
+  },
+  returnBar: {
+    alignItems: "flex-start",
+    paddingTop: 8,
   },
   hiddenInput: {
     position: "absolute",

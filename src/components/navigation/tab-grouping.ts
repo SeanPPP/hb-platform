@@ -1,5 +1,11 @@
 export const MAX_VISIBLE_TABS = 4;
-export const STORE_ROUTE_NAMES = new Set(["home", "orders", "cart", "product-query"]);
+export const STORE_ROUTE_NAMES = new Set([
+  "home",
+  "orders",
+  "cart",
+  "product-query",
+  "local-supplier-invoices",
+]);
 
 export type NavigationGroupRoute = {
   key: string;

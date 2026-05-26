@@ -1,0 +1,60 @@
+{
+  "title": "澳洲进货单",
+  "subtitle": "按分店、供应商、订单日期和单号查看本地供应商 invoice",
+  "filters": {
+    "storeCode": "分店",
+    "supplierCode": "供应商",
+    "invoiceNo": "单号",
+    "dateFrom": "开始日期",
+    "dateTo": "结束日期",
+    "emptyDate": "未选择",
+    "allStores": "全部分店",
+    "allSuppliers": "全部供应商",
+    "storePickerTitle": "选择分店",
+    "supplierPickerTitle": "选择供应商",
+    "pageSize": "每页",
+    "sort": "排序",
+    "orderDateDesc": "订单时间 ↓",
+    "orderDateAsc": "订单时间 ↑",
+    "invoiceNoAsc": "单号 ↑",
+    "storeNameAsc": "分店 ↑",
+    "supplierNameAsc": "供应商 ↑"
+  },
+  "labels": {
+    "orderDate": "订单时间",
+    "inboundDate": "入库时间",
+    "amount": "金额",
+    "receivedAmount": "收货金额",
+    "status": "状态",
+    "detailPageSize": "明细每页",
+    "itemNumber": "货号",
+    "barcode": "条码",
+    "purchasePrice": "进货价",
+    "quantity": "数量",
+    "detailsCount": "{{count}} 条明细"
+  },
+  "actions": {
+    "copyItemNumber": "复制货号",
+    "copyBarcode": "复制条码",
+    "printLabel": "打印标签",
+    "openProduct": "商品编辑",
+    "loadMore": "加载更多"
+  },
+  "messages": {
+    "empty": "没有找到进货单",
+    "detailsEmpty": "这个单据没有明细",
+    "loadFailed": "加载进货单失败",
+    "detailsLoadFailed": "加载明细失败",
+    "suppliersLoading": "正在加载供应商",
+    "suppliersEmpty": "暂无可选供应商",
+    "suppliersLoadFailed": "加载供应商失败",
+    "suppliersSourceUnavailable": "供应商筛选数据源尚未接入",
+    "copied": "已复制 {{label}}",
+    "copyFailed": "复制失败",
+    "printSuccess": "标签已发送到打印机",
+    "printFailed": "打印标签失败",
+    "productOpenFailed": "无法打开商品查询",
+    "missingProductKeyword": "这个明细没有可查询的商品信息",
+    "restoreInvoiceMissing": "未能恢复原订单，当前页里没有找到该单据"
+  }
+}

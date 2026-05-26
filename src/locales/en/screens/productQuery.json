@@ -5,10 +5,14 @@
     "placeholder": "Barcode / item / code",
     "lastHit": "Last hit: {{value}}"
   },
+  "actions": {
+    "returnToInvoiceDetails": "Back to invoice details"
+  },
   "messages": {
     "selectStoreFirst": "Please select a store first.",
     "keywordRequired": "Enter a barcode, item number, or product code.",
     "storeUnavailable": "No store is currently available.",
+    "targetStoreUnavailable": "You cannot access store {{storeCode}}, so the automatic lookup was stopped.",
     "notFound": "No matching product was found.",
     "noResultTitle": "No matching product",
     "noResultDescription": "No result matched \"{{value}}\". Check the barcode, item number, product code, or try another store.",
@@ -129,7 +133,8 @@
     "editRetailTitle": "Edit multi retail price",
     "followMain": "Retail follows the main barcode",
     "loading": "Loading multi barcodes...",
-    "loadMore": "Load more"
+    "loadMore": "Load more",
+    "dirtyCount": "{{count}} unsaved changes"
   },
   "camera": {
     "title": "Scan a product",

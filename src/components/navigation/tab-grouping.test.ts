@@ -23,20 +23,21 @@ const overflowTabs = buildNavigationDisplayTabs([
   route("orders", 1),
   route("cart", 2),
   route("product-query", 3),
-  route("settings", 4),
+  route("local-supplier-invoices", 4),
+  route("settings", 5),
 ]);
 const overflowStoreTab = overflowTabs.find((item) => item.type === "store");
 
 assertEqual(overflowTabs.length, 2, "overflow routes collapse into a store tab plus settings");
 assertArrayEqual(
   overflowStoreTab?.type === "store" ? overflowStoreTab.children.map((item) => item.name) : [],
-  ["home", "orders", "cart", "product-query"],
-  "store group includes product query when tabs overflow"
+  ["home", "orders", "cart", "product-query", "local-supplier-invoices"],
+  "store group includes product query and local supplier invoices when tabs overflow"
 );
 assertEqual(
-  overflowStoreTab ? isNavigationDisplayTabFocused(overflowStoreTab, 3) : false,
+  overflowStoreTab ? isNavigationDisplayTabFocused(overflowStoreTab, 4) : false,
   true,
-  "store group is focused when product query is selected"
+  "store group is focused when local supplier invoices is selected"
 );
 
 const compactTabs = buildNavigationDisplayTabs([

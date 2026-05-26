@@ -5,10 +5,14 @@
     "placeholder": "条码 / 货号 / 编码",
     "lastHit": "最近命中：{{value}}"
   },
+  "actions": {
+    "returnToInvoiceDetails": "返回订单明细"
+  },
   "messages": {
     "selectStoreFirst": "请先选择分店",
     "keywordRequired": "请输入条码、货号或商品编码",
     "storeUnavailable": "当前没有可用分店",
+    "targetStoreUnavailable": "没有权限访问分店 {{storeCode}}，已停止自动查询",
     "notFound": "未找到匹配商品",
     "noResultTitle": "没有找到匹配商品",
     "noResultDescription": "查询值「{{value}}」没有匹配结果，请检查条码、货号、编码或切换分店后重试。",
@@ -129,7 +133,8 @@
     "editRetailTitle": "编辑多码零售价",
     "followMain": "零售价跟随主条码",
     "loading": "正在加载多码条码...",
-    "loadMore": "加载更多"
+    "loadMore": "加载更多",
+    "dirtyCount": "{{count}} 处未保存"
   },
   "camera": {
     "title": "扫码查询商品",

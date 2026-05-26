@@ -249,6 +249,16 @@ export default function TabsLayout() {
         }}
       />
       <Tabs.Screen
+        name="local-supplier-invoices"
+        options={{
+          href: isRouteVisible("local-supplier-invoices") ? undefined : null,
+          title: t("tabs.localSupplierInvoices"),
+          tabBarIcon: ({ color, size }) => (
+            <MaterialCommunityIcons name="receipt-text-outline" color={color} size={size} />
+          ),
+        }}
+      />
+      <Tabs.Screen
         name="attendance"
         options={{
           href: null,
