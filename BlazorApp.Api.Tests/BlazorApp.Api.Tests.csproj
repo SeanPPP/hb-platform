@@ -41,5 +41,6 @@
     <Compile Include="ProductWarehouseReactServiceTests.cs" />
     <Compile Include="AuthServiceTests.cs" />
     <Compile Include="StoreVoucherReactRouteTests.cs" />
+    <Compile Include="ReactStoreOrderAuthorizationTests.cs" />
   </ItemGroup>
 </Project>

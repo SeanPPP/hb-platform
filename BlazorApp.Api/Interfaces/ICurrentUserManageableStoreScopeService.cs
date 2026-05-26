@@ -27,6 +27,9 @@ namespace BlazorApp.Api.Interfaces
     public interface ICurrentUserManageableStoreScopeService
     {
         Task<CurrentUserManageableStoreScope> GetScopeAsync();
+        Task<IReadOnlyList<string>> GetAccessibleStoreCodesAsync();
+        Task<bool> CanAccessStoreCodeAsync(string storeCode);
+        Task<bool> CanAccessOrderAsync(string orderGuid);
         Task<bool> CanManageStoreAsync(string storeGuid);
         Task<bool> CanManageUserAsync(string userGuid);
     }

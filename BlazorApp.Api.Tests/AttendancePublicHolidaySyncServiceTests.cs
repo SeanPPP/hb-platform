@@ -186,6 +186,13 @@ namespace BlazorApp.Api.Tests
 
             public Task<bool> CanManageStoreAsync(string storeGuid) => Task.FromResult(true);
 
+            public Task<IReadOnlyList<string>> GetAccessibleStoreCodesAsync() =>
+                Task.FromResult<IReadOnlyList<string>>(Array.Empty<string>());
+
+            public Task<bool> CanAccessStoreCodeAsync(string storeCode) => Task.FromResult(true);
+
+            public Task<bool> CanAccessOrderAsync(string orderGuid) => Task.FromResult(true);
+
             public Task<bool> CanManageUserAsync(string userGuid) => Task.FromResult(true);
         }
     }
