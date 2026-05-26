@@ -1585,6 +1585,7 @@
       "actions": {
         "createSchedule": "新建排班",
         "createHoliday": "新建假期",
+        "syncFutureHolidays": "同步未来 30 天",
         "batchHoliday": "批量设置",
         "addShift": "添加班次",
         "publishWeek": "发布本周",
@@ -1705,7 +1706,10 @@
         "saveHolidayFailed": "保存公共假期失败",
         "saveSettingsFailed": "保存考勤设置失败",
         "batchHolidaySuccess": "批量设置完成：新增 {{created}} 条，更新 {{updated}} 条",
+        "holidaySyncSuccess": "同步完成：同步 {{synced}} 条，新增 {{created}} 条，更新 {{updated}} 条，跳过 {{skipped}} 条",
+        "holidaySyncFailed": "同步公共假期失败",
         "batchHolidayOverwriteHint": "同一分店同一天已有记录会更新",
+        "selectStoreBeforeHolidaySync": "请先选择分店再同步公共假期",
         "selectStoreBeforePublish": "请先选择分店",
         "publishWeekSuccess": "本周排班已发布",
         "publishWeekFailed": "发布本周排班失败",
@@ -1953,7 +1957,13 @@
   },
   "forbidden": {
     "subTitle": "你当前没有权限访问这个页面。",
-    "backToDashboard": "返回工作台"
+    "backToDashboard": "返回工作台",
+    "backToShop": "返回订货前台"
+  },
+  "webAccessDenied": {
+    "title": "无 Web 访问权限",
+    "subTitle": "你的账号当前没有订货前台或后台管理的访问权限。",
+    "logout": "退出登录"
   },
   "notFound": {
     "subTitle": "当前页面不存在，请返回工作台。",
@@ -2584,6 +2594,7 @@
     "privateLabelPrice": "贴牌价",
     "setQuantity": "套装数量",
     "setPrice": "套装价格",
+    "retailPrice": "零售价",
     "basicInfo": "基本信息",
     "productDetail": "商品明细",
     "previewConfirm": "预览并确认",
@@ -2616,6 +2627,15 @@
     "batchDetailFile": "批次明细_{{batchNumber}}_{{date}}.xlsx",
     "exportSuccess": "导出成功",
     "exportFailed": "导出失败",
+    "exportBatch": "导出",
+    "exportBatchFailed": "导出批次失败",
+    "copyItemBarcode": "复制",
+    "copyAllItemBarcodes": "复制全部",
+    "copyItemBarcodeSuccess": "已复制：{{value}}",
+    "copyAllItemBarcodesSuccess": "已复制 {{count}} 行",
+    "copyFailed": "复制失败，请手动复制",
+    "noCopyData": "无可复制数据",
+    "createSuccessNoBatchNumber": "创建成功，但未返回批次号，请从列表查看",
     "allTab": "全部 ({{count}})",
     "normalTab": "普通 ({{count}})",
     "setTab": "套装 ({{count}})",

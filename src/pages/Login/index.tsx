@@ -14,6 +14,7 @@ import { useAuthStore } from '../../store/auth'
 import type { LoginRequest } from '../../types/auth'
 import { hashPassword } from '../../utils/password'
 import type { RequestError } from '../../utils/request'
+import { getDefaultWebPath, resolveAuthorizedWebTarget } from '../../utils/webPortalAccess'
 
 const REMEMBERED_USERNAME_KEY = 'remembered_username'
 
@@ -51,10 +52,10 @@ export default function LoginPage() {
       message.success(t('login.success'))
       const redirect = searchParams.get('redirect')
       const target = (location.state as { from?: { pathname?: string } } | undefined)?.from?.pathname
-      // 无Dashboard权限或仅订货员角色的用户默认进入前台
       const access = useAuthStore.getState().access
-      const defaultPage = (access.onlyOrder || !access.canAccessDashboard) ? '/shop' : '/dashboard'
-      navigate(redirect || target || defaultPage, { replace: true })
+      const defaultPage = getDefaultWebPath(access)
+      const requestedTarget = redirect || target
+      navigate(resolveAuthorizedWebTarget(requestedTarget, access) || defaultPage, { replace: true })
     } catch (error) {
       const requestError = error as RequestError
       setErrorMessage(requestError.message || t('login.failed'))

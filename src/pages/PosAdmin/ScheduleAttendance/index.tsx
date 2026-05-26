@@ -50,6 +50,7 @@ import {
   getPendingAttendanceApprovals,
   publishAttendanceScheduleWeek,
   rejectAttendanceApproval,
+  syncAttendanceHolidays,
   updateAttendanceHoliday,
   updateAttendanceSchedule,
   updateAttendanceSettings,
@@ -99,7 +100,8 @@ interface ScheduleFormValues {
 }
 
 interface HolidayFormValues {
-  storeCode: string
+  storeCode?: string
+  storeCodes?: string[]
   holidayDate: Dayjs
   holidayName: string
   businessStatus: AttendanceHolidayBusinessStatus
@@ -192,6 +194,7 @@ export default function ScheduleAttendancePage() {
   const [reviewAction, setReviewAction] = useState<ReviewAction>('approve')
   const [saving, setSaving] = useState(false)
   const [publishing, setPublishing] = useState(false)
+  const [syncingHolidays, setSyncingHolidays] = useState(false)
   const [scheduleForm] = Form.useForm<ScheduleFormValues>()
   const [holidayForm] = Form.useForm<HolidayFormValues>()
   const [batchHolidayForm] = Form.useForm<BatchHolidayFormValues>()
@@ -491,7 +494,11 @@ export default function ScheduleAttendancePage() {
         remark: record.remark,
       })
     } else {
-      holidayForm.setFieldsValue({ storeCode, businessStatus: 'Open', isPaidHoliday: true })
+      holidayForm.setFieldsValue({
+        storeCodes: storeCode ? [storeCode] : [],
+        businessStatus: 'Open',
+        isPaidHoliday: true,
+      })
     }
     setHolidayDrawerOpen(true)
   }
@@ -499,8 +506,9 @@ export default function ScheduleAttendancePage() {
   const saveHoliday = async () => {
     try {
       const values = await holidayForm.validateFields()
+      const targetStoreCodes = values.storeCodes?.filter(Boolean) ?? []
       const payload: SaveAttendanceHolidayPayload = {
-        storeCode: values.storeCode,
+        storeCode: values.storeCode ?? targetStoreCodes[0],
         holidayDate: values.holidayDate.format('YYYY-MM-DD'),
         holidayName: values.holidayName.trim(),
         businessStatus: values.businessStatus,
@@ -514,11 +522,29 @@ export default function ScheduleAttendancePage() {
         await updateAttendanceHoliday(editingHoliday.holidayGuid, payload)
         message.success(t('message.updateSuccess'))
       } else {
-        await createAttendanceHoliday(payload)
-        message.success(t('message.createSuccess'))
+        if (targetStoreCodes.length > 1) {
+          const result = await batchUpsertAttendanceHolidays({
+            storeCodes: targetStoreCodes,
+            holidayDate: payload.holidayDate,
+            holidayName: payload.holidayName,
+            businessStatus: payload.businessStatus,
+            openTime: payload.openTime,
+            closeTime: payload.closeTime,
+            isPaidHoliday: payload.isPaidHoliday,
+            remark: payload.remark,
+          })
+          message.success(t('posAdmin.scheduleAttendance.messages.batchHolidaySuccess', {
+            created: result.createdCount,
+            updated: result.updatedCount,
+          }))
+        } else {
+          await createAttendanceHoliday(payload)
+          message.success(t('message.createSuccess'))
+        }
       }
       setHolidayDrawerOpen(false)
       void loadHolidays()
+      void loadScheduleHolidays()
     } catch (error) {
       if (typeof error === 'object' && error !== null && 'errorFields' in error) return
       console.error(error)
@@ -566,6 +592,34 @@ export default function ScheduleAttendancePage() {
       message.error(t('posAdmin.scheduleAttendance.messages.saveHolidayFailed'))
     } finally {
       setSaving(false)
+    }
+  }
+
+  const syncFutureHolidays = async () => {
+    if (!storeCode) {
+      message.warning(t('posAdmin.scheduleAttendance.messages.selectStoreBeforeHolidaySync'))
+      return
+    }
+
+    setSyncingHolidays(true)
+    try {
+      const result = await syncAttendanceHolidays({
+        storeCode,
+        daysAhead: 30,
+      })
+      message.success(t('posAdmin.scheduleAttendance.messages.holidaySyncSuccess', {
+        synced: result.syncedCount,
+        created: result.createdCount,
+        updated: result.updatedCount,
+        skipped: result.skippedCount,
+      }))
+      void loadHolidays()
+      void loadScheduleHolidays()
+    } catch (error) {
+      console.error(error)
+      message.error(t('posAdmin.scheduleAttendance.messages.holidaySyncFailed'))
+    } finally {
+      setSyncingHolidays(false)
     }
   }
 
@@ -1058,6 +1112,16 @@ export default function ScheduleAttendancePage() {
           ) : null}
           {activeTab === 'holidays' && access.canEditAttendanceHoliday ? (
             <>
+              <Tooltip title={!storeCode ? t('posAdmin.scheduleAttendance.messages.selectStoreBeforeHolidaySync') : undefined}>
+                <Button
+                  icon={<ReloadOutlined />}
+                  disabled={!storeCode}
+                  loading={syncingHolidays}
+                  onClick={() => void syncFutureHolidays()}
+                >
+                  {t('posAdmin.scheduleAttendance.actions.syncFutureHolidays')}
+                </Button>
+              </Tooltip>
               <Tooltip title={t('posAdmin.scheduleAttendance.messages.batchHolidayOverwriteHint')}>
                 <Button
                   icon={<CopyOutlined />}
@@ -1132,9 +1196,25 @@ export default function ScheduleAttendancePage() {
         extra={<Button type="primary" loading={saving} onClick={() => void saveHoliday()}>{t('common.save')}</Button>}
       >
         <Form form={holidayForm} layout="vertical">
-          <Form.Item name="storeCode" label={t('posAdmin.scheduleAttendance.fields.store')} rules={[{ required: true, message: t('form.pleaseSelectStore') }]}>
-            <Select showSearch optionFilterProp="label" options={storeOptions} />
-          </Form.Item>
+          {editingHoliday ? (
+            <Form.Item name="storeCode" label={t('posAdmin.scheduleAttendance.fields.store')} rules={[{ required: true, message: t('form.pleaseSelectStore') }]}>
+              <Select showSearch optionFilterProp="label" options={storeOptions} />
+            </Form.Item>
+          ) : (
+            <Form.Item
+              name="storeCodes"
+              label={t('posAdmin.scheduleAttendance.fields.stores')}
+              rules={[{ required: true, message: t('posAdmin.scheduleAttendance.validation.storeCodesRequired') }]}
+            >
+              <Select
+                mode="multiple"
+                showSearch
+                optionFilterProp="label"
+                maxTagCount="responsive"
+                options={editableHolidayStoreOptions}
+              />
+            </Form.Item>
+          )}
           <Form.Item name="holidayDate" label={t('posAdmin.scheduleAttendance.fields.holidayDate')} rules={[{ required: true }]}>
             <DatePicker style={{ width: '100%' }} />
           </Form.Item>

@@ -10,7 +10,10 @@ import ShopComingSoonPage from './pages/ShopComingSoon'
 import ShopHomePage from './pages/ShopHome'
 import ShopOrderDetailPage from './pages/ShopOrderDetail'
 import ShopOrdersPage from './pages/ShopOrders'
+import ForbiddenPage from './pages/Forbidden'
+import WebAccessDeniedPage from './pages/WebAccessDenied'
 import { useAuthStore } from './store/auth'
+import { getDefaultWebPath, WEB_NO_ACCESS_PATH } from './utils/webPortalAccess'
 
 function AppBootstrap() {
   const { t } = useTranslation()
@@ -24,9 +27,10 @@ function AppBootstrap() {
     }
   }, [fetchCurrentUser, initialized, isLoginPath, loading])
 
-  // 无Dashboard权限或仅订货员角色的用户默认进入前台
-  const isOnlyOrder = access.onlyOrder || !access.canAccessDashboard
-  const homePage = isOnlyOrder ? '/shop' : '/dashboard'
+  const homePage = getDefaultWebPath(access)
+  const portalDeniedPage = homePage === WEB_NO_ACCESS_PATH
+    ? <Navigate to={WEB_NO_ACCESS_PATH} replace />
+    : <ForbiddenPage />
 
   if ((!initialized || loading) && !isLoginPath) {
     return (
@@ -44,8 +48,20 @@ function AppBootstrap() {
         element={currentUser ? <Navigate to={homePage} replace /> : <LoginPage />}
       />
       <Route
+        path={WEB_NO_ACCESS_PATH}
+        element={
+          currentUser
+            ? (homePage === WEB_NO_ACCESS_PATH ? <WebAccessDeniedPage /> : <Navigate to={homePage} replace />)
+            : <Navigate to="/login" replace />
+        }
+      />
+      <Route
         path="/shop"
-        element={currentUser ? <ShopLayout /> : <Navigate to="/login" replace />}
+        element={
+          currentUser
+            ? (access.canAccessOrderFront ? <ShopLayout /> : portalDeniedPage)
+            : <Navigate to="/login" replace />
+        }
       >
         <Route index element={<ShopHomePage />} />
         <Route path="best-sellers" element={<ShopBestSellersPage />} />
@@ -55,7 +71,11 @@ function AppBootstrap() {
       </Route>
       <Route
         path="/*"
-        element={currentUser ? <AdminLayout /> : <Navigate to="/login" replace />}
+        element={
+          currentUser
+            ? (access.canAccessDashboard ? <AdminLayout /> : portalDeniedPage)
+            : <Navigate to="/login" replace />
+        }
       />
       <Route
         path="*"

@@ -151,6 +151,25 @@ export interface BatchUpsertAttendanceHolidayResult {
   items: AttendanceStoreHolidayDto[]
 }
 
+export interface SyncAttendanceHolidayPayload {
+  storeCode: string
+  daysAhead?: number
+}
+
+export interface SyncAttendanceHolidayResult {
+  storeCode?: string
+  jurisdiction?: 'NSW' | 'QLD'
+  fromDate: string
+  toDate: string
+  syncedCount: number
+  createdCount: number
+  updatedCount: number
+  skippedCount: number
+  holidays: AttendanceStoreHolidayDto[]
+  skippedStores?: string[]
+  syncedAt?: string
+}
+
 export interface AttendanceSettingsDto {
   lateGraceMinutes: number
   earlyLeaveGraceMinutes: number

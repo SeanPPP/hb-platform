@@ -1,14 +1,15 @@
-import { PlusOutlined, EyeOutlined } from '@ant-design/icons'
+import { DownloadOutlined, EyeOutlined, PlusOutlined } from '@ant-design/icons'
 import { Button, DatePicker, message, Select, Space, Table } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { useCallback, useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import PageContainer from '../../../components/PageContainer'
 import { getActiveChinaSuppliers } from '../../../services/chinaSupplierService'
-import { getBatchList } from '../../../services/domesticProductCreationService'
+import { getBatchDetail, getBatchList } from '../../../services/domesticProductCreationService'
 import type { BatchInfo } from '../../../types/domesticProductCreation'
 import BatchCreateModal from './BatchCreateModal'
 import BatchDetailModal from './BatchDetailModal'
+import { exportProductCreationBatchToExcel, getExportableBatchItems } from './exportBatchDetail'
 
 const { RangePicker } = DatePicker
 
@@ -25,6 +26,7 @@ export default function ProductCreationPage() {
   const [createModalVisible, setCreateModalVisible] = useState(false)
   const [detailModalVisible, setDetailModalVisible] = useState(false)
   const [selectedBatch, setSelectedBatch] = useState<BatchInfo | null>(null)
+  const [exportingBatchNumber, setExportingBatchNumber] = useState<string | null>(null)
 
   const loadData = useCallback(async () => {
     setLoading(true)
@@ -67,14 +69,45 @@ export default function ProductCreationPage() {
     loadData()
   }, [loadData])
 
-  const handleCreateSuccess = () => {
+  const handleCreateSuccess = (createdBatch?: BatchInfo) => {
     setCreateModalVisible(false)
-    loadData()
+    if (createdBatch?.batchNumber) {
+      setSelectedBatch(createdBatch)
+      setDetailModalVisible(true)
+    }
+    void loadData()
   }
 
   const handleViewDetail = (record: BatchInfo) => {
     setSelectedBatch(record)
     setDetailModalVisible(true)
+  }
+
+  const handleExportBatch = async (record: BatchInfo) => {
+    const messageKey = `product-creation-export-${record.batchNumber}`
+    setExportingBatchNumber(record.batchNumber)
+    message.loading({ content: t('productCreation.exporting', '导出中...'), key: messageKey })
+    try {
+      const response = await getBatchDetail(record.batchNumber)
+      if (!response.success || !response.data) {
+        message.error({
+          content: response.message || t('productCreation.loadDetailFailed', '加载明细失败'),
+          key: messageKey,
+        })
+        return
+      }
+      if (getExportableBatchItems(response.data.items).length === 0) {
+        message.warning({ content: t('productCreation.noDataToExport', '无数据可导出'), key: messageKey })
+        return
+      }
+      await exportProductCreationBatchToExcel(response.data, { batchNumber: record.batchNumber, t })
+      message.success({ content: t('productCreation.exportSuccess', '导出成功'), key: messageKey })
+    } catch (error) {
+      console.error('导出失败:', error)
+      message.error({ content: t('productCreation.exportBatchFailed', '导出批次失败'), key: messageKey })
+    } finally {
+      setExportingBatchNumber(null)
+    }
   }
 
   const columns: ColumnsType<BatchInfo> = [
@@ -144,12 +177,29 @@ export default function ProductCreationPage() {
     {
       title: t('common.action', '操作'),
       key: 'actions',
-      width: 100,
+      width: 170,
       fixed: 'right',
       render: (_, record) => (
-        <Button type="link" size="small" icon={<EyeOutlined />} onClick={() => handleViewDetail(record)}>
-          {t('productCreation.detail', '明细')}
-        </Button>
+        <Space size={0}>
+          <Button
+            type="link"
+            size="small"
+            icon={<EyeOutlined />}
+            disabled={exportingBatchNumber === record.batchNumber}
+            onClick={() => handleViewDetail(record)}
+          >
+            {t('productCreation.detail', '明细')}
+          </Button>
+          <Button
+            type="link"
+            size="small"
+            icon={<DownloadOutlined />}
+            loading={exportingBatchNumber === record.batchNumber}
+            onClick={() => void handleExportBatch(record)}
+          >
+            {t('productCreation.exportBatch', '导出')}
+          </Button>
+        </Space>
       ),
     },
   ]

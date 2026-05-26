@@ -193,7 +193,7 @@ export default function ShopLayout() {
           ) : (
             <Link to="/login">{t('login.submit', 'Login')}</Link>
           )}
-          {!access.onlyOrder && (
+          {access.canAccessDashboard && (
             <span onClick={() => window.open('/dashboard', '_blank')}>{t('menu.dashboard', 'Dashboard')}</span>
           )}
           <span onClick={() => navigate('/shop/best-sellers')}>{t('shop.bestSellers', 'Best Sellers')}</span>
@@ -322,7 +322,7 @@ export default function ShopLayout() {
             <UserOutlined className="icon" />
             <span>{t('layout.logout', 'Logout')}</span>
           </div>
-          {!access.onlyOrder && (
+          {access.canAccessDashboard && (
             <div className="shop-mobile-grid-item" onClick={() => window.open('/dashboard', '_blank')}>
               <AppstoreOutlined className="icon" />
               <span>{t('menu.dashboard', 'Dashboard')}</span>

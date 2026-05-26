@@ -69,6 +69,7 @@ function createEmptyAccess(): AccessControl {
     canEditAttendanceHoliday: false,
     canEditAttendanceSettings: false,
     canAccessDashboard: false,
+    canAccessOrderFront: false,
     hasPermission: alwaysFalse,
     hasRole: alwaysFalse,
     onlyRole: alwaysFalse,
@@ -221,7 +222,8 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
     hasPermission(P.Attendance.HolidayEditManagedStore)
   const canEditAttendanceSettings = isAdmin || hasPermission(P.Attendance.SettingsEdit)
 
-  const canAccessDashboard = isAdmin || hasPermission('Dashboard')
+  const canAccessDashboard = isAdmin || hasPermission(P.Dashboard.View)
+  const canAccessOrderFront = isAdmin || hasPermission(P.OrderFront.View)
 
   return {
     isAdmin,
@@ -286,6 +288,7 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
     canEditAttendanceHoliday,
     canEditAttendanceSettings,
     canAccessDashboard,
+    canAccessOrderFront,
     hasPermission,
     hasRole,
     onlyRole,
