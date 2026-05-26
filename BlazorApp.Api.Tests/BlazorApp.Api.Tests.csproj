@@ -36,6 +36,7 @@
     <Compile Include="AttendancePublicHolidaySyncServiceTests.cs" />
     <Compile Include="SeedDataServiceTests.cs" />
     <Compile Include="NavigationServiceTests.cs" />
+    <Compile Include="ControllerAuthorizationMetadataTests.cs" />
     <Compile Include="PermissionAuthorizationHandlerTests.cs" />
     <Compile Include="RoleServicePermissionTests.cs" />
     <Compile Include="LocalSupplierInvoicesReactServiceTests.cs" />

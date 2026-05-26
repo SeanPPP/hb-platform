@@ -93,6 +93,44 @@ public class NavigationServiceTests
     }
 
     [Fact]
+    public void BuildMenu_ShowsEmployeeProfilesWithEmployeeProfileViewPermission()
+    {
+        var user = CreateUser(
+            new Claim("permission", Permissions.Dashboard.View),
+            new Claim("permission", Permissions.EmployeeProfiles.View)
+        );
+
+        var menu = _service.BuildMenu(user);
+
+        var systemMenu = Assert.Single(menu, item => item.Path == "/system");
+        Assert.Contains(
+            systemMenu.Children!,
+            item =>
+                item.Path == "/system/employee-profiles"
+                && item.Permission == Permissions.EmployeeProfiles.View
+        );
+    }
+
+    [Fact]
+    public void BuildMenu_ShowsPosProductsWithPosProductsViewPermission()
+    {
+        var user = CreateUser(
+            new Claim("permission", Permissions.Dashboard.View),
+            new Claim("permission", Permissions.PosProducts.View)
+        );
+
+        var menu = _service.BuildMenu(user);
+
+        var posAdminMenu = Assert.Single(menu, item => item.Path == "/pos-admin");
+        Assert.Contains(
+            posAdminMenu.Children!,
+            item =>
+                item.Path == "/pos-admin/products"
+                && item.Permission == Permissions.PosProducts.View
+        );
+    }
+
+    [Fact]
     public void BuildMenu_HidesDeviceRegistrationWithStoreManageOperationsPermissionOnly()
     {
         var user = CreateUser(
@@ -262,13 +300,13 @@ public class NavigationServiceTests
     }
 
     [Fact]
-    public void BuildAppMenu_HidesUsersForNonStoreManagerWithUsersViewPermission()
+    public void BuildAppMenu_ShowsUsersWithUsersViewPermissionWithoutRoleGate()
     {
         var user = CreateUser(new Claim("permission", Permissions.Users.View));
 
         var menu = _service.BuildAppMenu(user);
 
-        Assert.DoesNotContain(menu, item => item.RouteName == "users");
+        Assert.Contains(menu, item => item.RouteName == "users");
     }
 
     [Fact]
@@ -282,7 +320,18 @@ public class NavigationServiceTests
         Assert.Equal("tabs.deviceManagement", item.TitleKey);
         Assert.Equal("cellphone-cog", item.Icon);
         Assert.Equal(58, item.Order);
-        Assert.Null(item.Permission);
+        Assert.Equal(Permissions.DeviceRegistration.View, item.Permission);
+    }
+
+    [Fact]
+    public void BuildAppMenu_ShowsDeviceManagementWithDeviceRegistrationViewPermission()
+    {
+        var user = CreateUser(new Claim("permission", Permissions.DeviceRegistration.View));
+
+        var menu = _service.BuildAppMenu(user);
+
+        var item = Assert.Single(menu, item => item.RouteName == "device-management");
+        Assert.Equal(Permissions.DeviceRegistration.View, item.Permission);
     }
 
     [Fact]

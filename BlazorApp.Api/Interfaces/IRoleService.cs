@@ -133,11 +133,24 @@ namespace BlazorApp.Api.Interfaces
         Task<ApiResponse<List<PermissionCategoryDto>>> GetPermissionsAsync();
 
         /// <summary>
+        /// 获取权限目录元数据
+        /// </summary>
+        /// <returns>权限分组、别名、角色模板与超级管理员角色名</returns>
+        Task<ApiResponse<PermissionCatalogDto>> GetPermissionCatalogAsync();
+
+        /// <summary>
         /// 获取角色的权限列表
         /// </summary>
         /// <param name="roleGuid">角色GUID</param>
         /// <returns>权限列表</returns>
         Task<ApiResponse<List<string>>> GetRolePermissionsAsync(string roleGuid);
+
+        /// <summary>
+        /// 获取角色权限状态
+        /// </summary>
+        /// <param name="roleGuid">角色GUID</param>
+        /// <returns>显式权限、有效权限和超级管理员状态</returns>
+        Task<ApiResponse<RolePermissionStateDto>> GetRolePermissionStateAsync(string roleGuid);
 
         /// <summary>
         /// 为角色分配权限

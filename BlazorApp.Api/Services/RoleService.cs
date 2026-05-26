@@ -1362,6 +1362,43 @@ namespace BlazorApp.Api.Services
             }
         }
 
+        public async Task<ApiResponse<PermissionCatalogDto>> GetPermissionCatalogAsync()
+        {
+            try
+            {
+                var permissions = await GetPermissionsAsync();
+                var catalog = new PermissionCatalogDto
+                {
+                    Categories = permissions.Data ?? new List<PermissionCategoryDto>(),
+                    PermissionAliases = Permissions.GetPermissionAliases()
+                        .Select(item => new PermissionAliasDto
+                        {
+                            CanonicalCode = item.Key,
+                            AliasCodes = item.Value.ToList(),
+                        })
+                        .ToList(),
+                    RoleTemplates = PermissionSeedData.RolePermissionTemplates
+                        .Select(item => new RolePermissionTemplateDto
+                        {
+                            RoleName = item.RoleName,
+                            PermissionCodes = item.PermissionCodes.ToList(),
+                        })
+                        .ToList(),
+                    SuperAdminRoleNames = Permissions.SuperAdminRoleNames.ToList(),
+                };
+
+                return ApiResponse<PermissionCatalogDto>.OK(catalog, "获取权限目录成功");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "获取权限目录失败");
+                return ApiResponse<PermissionCatalogDto>.Error(
+                    "获取权限目录失败",
+                    "GET_PERMISSION_CATALOG_FAILED"
+                );
+            }
+        }
+
         /// <summary>
         /// 获取角色的权限列表
         /// </summary>
@@ -1405,6 +1442,59 @@ namespace BlazorApp.Api.Services
                 return ApiResponse<List<string>>.Error(
                     "获取角色权限失败",
                     "GET_ROLE_PERMISSIONS_FAILED"
+                );
+            }
+        }
+
+        public async Task<ApiResponse<RolePermissionStateDto>> GetRolePermissionStateAsync(
+            string roleGuid
+        )
+        {
+            try
+            {
+                var db = _context.Db;
+                var role = await db.Queryable<Role>()
+                    .Where(item => item.RoleGUID == roleGuid && !item.IsDeleted)
+                    .FirstAsync();
+
+                if (role == null)
+                {
+                    return ApiResponse<RolePermissionStateDto>.Error(
+                        "角色不存在",
+                        "ROLE_NOT_FOUND"
+                    );
+                }
+
+                var explicitCodes = await db.Queryable<SysRolePermission>()
+                    .Where(item => item.RoleGuid == roleGuid && !item.IsDeleted)
+                    .Select(item => item.PermissionCode)
+                    .ToListAsync();
+
+                var effectivePermissions = await GetRolePermissionsAsync(roleGuid);
+                var isSuperAdmin = IsSuperAdminRoleName(role.RoleName);
+
+                return ApiResponse<RolePermissionStateDto>.OK(
+                    new RolePermissionStateDto
+                    {
+                        RoleGuid = role.RoleGUID,
+                        RoleName = role.RoleName,
+                        IsSuperAdmin = isSuperAdmin,
+                        ImplicitAllPermissions = isSuperAdmin,
+                        ExplicitPermissionCodes = explicitCodes
+                            .Distinct(StringComparer.OrdinalIgnoreCase)
+                            .ToList(),
+                        EffectivePermissionCodes =
+                            effectivePermissions.Data ?? new List<string>(),
+                    },
+                    "获取角色权限状态成功"
+                );
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "获取角色权限状态失败，RoleGUID: {RoleGUID}", roleGuid);
+                return ApiResponse<RolePermissionStateDto>.Error(
+                    "获取角色权限状态失败",
+                    "GET_ROLE_PERMISSION_STATE_FAILED"
                 );
             }
         }

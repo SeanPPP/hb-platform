@@ -145,6 +145,7 @@ namespace BlazorApp.Shared.Constants
         {
             public const string View = "LocalPurchase.View";
             public const string Edit = "LocalPurchase.Edit";
+            public const string PushToHq = "LocalPurchase.PushToHq";
         }
 
         private static readonly IReadOnlyDictionary<string, string[]> PermissionAliases =
@@ -237,6 +238,11 @@ namespace BlazorApp.Shared.Constants
         {
             return !string.IsNullOrWhiteSpace(roleName)
                 && SuperAdminRoleNames.Contains(roleName, StringComparer.OrdinalIgnoreCase);
+        }
+
+        public static IReadOnlyDictionary<string, string[]> GetPermissionAliases()
+        {
+            return PermissionAliases;
         }
 
         public static IReadOnlyCollection<string> GetEquivalentPermissionCodes(string? permission)

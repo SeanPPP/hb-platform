@@ -122,6 +122,54 @@ public sealed class RoleServicePermissionTests : IDisposable
         Assert.Equal("role-user", link.RoleGuid);
     }
 
+    [Fact]
+    public async Task GetPermissionCatalogAsync_ReturnsAliasesTemplatesAndSuperAdminRoles()
+    {
+        var result = await CreateService().GetPermissionCatalogAsync();
+
+        Assert.NotNull(result.Data);
+        Assert.Contains("Admin", result.Data.SuperAdminRoleNames);
+        Assert.Contains("管理员", result.Data.SuperAdminRoleNames);
+        Assert.Contains(
+            result.Data.PermissionAliases,
+            item =>
+                item.CanonicalCode == Permissions.LocalPurchase.View
+                && item.AliasCodes.Contains("LocalInvocie.View")
+        );
+        Assert.Contains(result.Data.RoleTemplates, item => item.RoleName == "WarehouseManager");
+        Assert.Contains(result.Data.RoleTemplates, item => item.RoleName == "StoreManager");
+    }
+
+    [Fact]
+    public async Task GetRolePermissionStateAsync_AdminReportsImplicitAllWithoutExplicitLinks()
+    {
+        await InsertRoleAsync("role-admin", "Admin");
+        await InsertPermissionAsync(Permissions.Users.View);
+
+        var result = await CreateService().GetRolePermissionStateAsync("role-admin");
+
+        Assert.NotNull(result.Data);
+        Assert.True(result.Data.IsSuperAdmin);
+        Assert.True(result.Data.ImplicitAllPermissions);
+        Assert.Empty(result.Data.ExplicitPermissionCodes);
+        Assert.Contains(Permissions.Users.View, result.Data.EffectivePermissionCodes);
+    }
+
+    [Fact]
+    public async Task GetRolePermissionStateAsync_NormalRoleSeparatesExplicitAndEffective()
+    {
+        await InsertRoleAsync("role-user", "User");
+        await InsertRolePermissionAsync("role-user", Permissions.Attendance.Punch.Self);
+
+        var result = await CreateService().GetRolePermissionStateAsync("role-user");
+
+        Assert.NotNull(result.Data);
+        Assert.False(result.Data.IsSuperAdmin);
+        Assert.False(result.Data.ImplicitAllPermissions);
+        Assert.Contains(Permissions.Attendance.Punch.Self, result.Data.ExplicitPermissionCodes);
+        Assert.Contains(Permissions.Attendance.Punch.Self, result.Data.EffectivePermissionCodes);
+    }
+
     public void Dispose()
     {
         _db.Dispose();

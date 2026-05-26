@@ -151,6 +151,7 @@ namespace BlazorApp.Shared.Constants
                 new(Permissions.DeviceRegistration.Manage, "管理设备注册", "系统管理", "页面 /system/device-registration - 审核、维护或管理设备注册"),
                 new(Permissions.LocalPurchase.View, "查看本地进货", "本地进货管理", "页面 /pos-admin/local-supplier-invoices - 查看分店进货单列表与详情"),
                 new(Permissions.LocalPurchase.Edit, "编辑本地进货", "本地进货管理", "页面 /pos-admin/local-supplier-invoices - 新增、编辑、提交和维护分店进货单"),
+                new(Permissions.LocalPurchase.PushToHq, "推送本地进货到 HQ", "本地进货管理", "页面 /pos-admin/local-supplier-invoices - 推送本地进货单到 HQ"),
                 new(Permissions.AustralianSuppliers.View, "查看澳洲供应商", "澳洲供应商", "页面 /pos-admin/suppliers - 查看供应商列表与详情"),
                 new(Permissions.AustralianSuppliers.Edit, "编辑澳洲供应商", "澳洲供应商", "页面 /pos-admin/suppliers - 编辑供应商资料"),
                 new(Permissions.Store.ManageOperations, "管理分店运营", "分店运营", "页面 /pos-admin/cash-register-users - 管理收银用户条码"),

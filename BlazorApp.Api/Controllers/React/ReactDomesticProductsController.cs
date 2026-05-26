@@ -1,5 +1,6 @@
 using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Interfaces.React;
+using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
 using Microsoft.AspNetCore.Authorization;
@@ -34,7 +35,7 @@ namespace BlazorApp.Api.Controllers.React
         /// <param name="request">Grid 请求</param>
         /// <returns>国内商品数据</returns>
         [HttpPost("grid")]
-        [Authorize(Roles = "Admin,WarehouseManager")]
+        [Authorize(Policy = Permissions.Products.View)]
         public async Task<IActionResult> GetGridData([FromBody] GridRequestDto request)
         {
             try
@@ -76,7 +77,7 @@ namespace BlazorApp.Api.Controllers.React
         /// <param name="dto">批量创建DTO</param>
         /// <returns>创建结果</returns>
         [HttpPost("batch-create")]
-        [Authorize(Roles = "Admin,WarehouseManager")]
+        [Authorize(Policy = Permissions.DomesticPurchase.ManageProducts)]
         public async Task<IActionResult> BatchCreateProducts(
             [FromBody] BatchCreateDomesticProductDto dto
         )
@@ -150,7 +151,7 @@ namespace BlazorApp.Api.Controllers.React
         /// <param name="dto">批量创建DTO</param>
         /// <returns>验证结果</returns>
         [HttpPost("batch-validate")]
-        [Authorize(Roles = "Admin,WarehouseManager")]
+        [Authorize(Policy = Permissions.DomesticPurchase.ManageProducts)]
         public async Task<IActionResult> BatchValidateProducts(
             [FromBody] BatchCreateDomesticProductDto dto
         )
@@ -214,7 +215,7 @@ namespace BlazorApp.Api.Controllers.React
         /// <param name="dto">批量检测DTO</param>
         /// <returns>检测结果，包含匹配的商品信息和差异字段</returns>
         [HttpPost("batch-detect")]
-        [Authorize(Roles = "Admin,WarehouseManager")]
+        [Authorize(Policy = Permissions.DomesticPurchase.ManageProducts)]
         public async Task<IActionResult> BatchDetectProducts(
             [FromBody] BatchProductDetectionDto dto
         )
@@ -277,7 +278,7 @@ namespace BlazorApp.Api.Controllers.React
         /// <param name="dto">批量操作DTO（包含 NewProducts 与 UpdateProducts）</param>
         /// <returns>导入（创建/更新）结果</returns>
         [HttpPost("batch-import/confirm")]
-        [Authorize(Roles = "Admin,WarehouseManager")]
+        [Authorize(Policy = Permissions.DomesticPurchase.ManageProducts)]
         public async Task<IActionResult> BatchImportConfirm([FromBody] BatchProductOperationDto dto)
         {
             try
@@ -361,7 +362,7 @@ namespace BlazorApp.Api.Controllers.React
         /// <param name="dto">更新DTO</param>
         /// <returns>更新结果</returns>
         [HttpPut("{productCode}")]
-        [Authorize(Roles = "Admin,WarehouseManager")]
+        [Authorize(Policy = Permissions.Products.Edit)]
         public async Task<IActionResult> UpdateProduct(
             string productCode,
             [FromBody] UpdateDomesticProductDto dto
@@ -406,7 +407,7 @@ namespace BlazorApp.Api.Controllers.React
         /// <param name="dto">批量更新DTO</param>
         /// <returns>更新结果</returns>
         [HttpPut("batch-update")]
-        [Authorize(Roles = "Admin,WarehouseManager")]
+        [Authorize(Policy = Permissions.DomesticPurchase.ManageProducts)]
         public async Task<IActionResult> BatchUpdate([FromBody] BatchUpdateDomesticProductsDto dto)
         {
             try
@@ -473,7 +474,7 @@ namespace BlazorApp.Api.Controllers.React
         /// <param name="request">批量删除请求</param>
         /// <returns>删除结果</returns>
         [HttpDelete("batch-delete")]
-        [Authorize(Roles = "Admin,WarehouseManager")]
+        [Authorize(Policy = Permissions.Products.Delete)]
         public async Task<IActionResult> BatchDelete([FromBody] BatchDeleteRequestDto request)
         {
             try
@@ -511,7 +512,7 @@ namespace BlazorApp.Api.Controllers.React
         /// <param name="request">同步请求</param>
         /// <returns>同步结果</returns>
         [HttpPost("sync-to-hbsales")]
-        [Authorize(Roles = "Admin,WarehouseManager")]
+        [Authorize(Policy = Permissions.DomesticPurchase.ManageProducts)]
         public async Task<IActionResult> SyncToHBSales([FromBody] SyncToHBSalesRequestDto request)
         {
             try
@@ -554,7 +555,7 @@ namespace BlazorApp.Api.Controllers.React
         /// <param name="productCode">商品编码</param>
         /// <returns>套装信息列表</returns>
         [HttpGet("{productCode}/set-items")]
-        [Authorize(Roles = "Admin,WarehouseManager")]
+        [Authorize(Policy = Permissions.Products.View)]
         public async Task<IActionResult> GetSetItems(string productCode)
         {
             try
@@ -584,7 +585,7 @@ namespace BlazorApp.Api.Controllers.React
         /// <param name="request">更新请求</param>
         /// <returns>更新结果</returns>
         [HttpPut("{productCode}/set-items")]
-        [Authorize(Roles = "Admin,WarehouseManager")]
+        [Authorize(Policy = Permissions.Products.Edit)]
         public async Task<IActionResult> UpdateSetItems(
             string productCode,
             [FromBody] UpdateSetItemsRequestDto request
@@ -624,7 +625,7 @@ namespace BlazorApp.Api.Controllers.React
         /// <param name="dto">批量创建套装商品DTO</param>
         /// <returns>创建结果</returns>
         [HttpPost("batch-create-set-products")]
-        [Authorize(Roles = "Admin,WarehouseManager")]
+        [Authorize(Policy = Permissions.DomesticPurchase.ManageProducts)]
         public async Task<IActionResult> BatchCreateSetProducts(
             [FromBody] BatchCreateSetProductsDto dto
         )
@@ -694,6 +695,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPost("send-to-hq")]
+        [Authorize(Policy = Permissions.DomesticPurchase.ManageProducts)]
         public async Task<IActionResult> SendToHq([FromBody] SyncToHBSalesRequestDto request)
         {
             try

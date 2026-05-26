@@ -19,8 +19,6 @@ namespace BlazorApp.Api.Services
             public string TitleKey { get; init; } = string.Empty;
             public string Icon { get; init; } = string.Empty;
             public string? Permission { get; init; }
-            public string[] Roles { get; init; } = Array.Empty<string>();
-            public bool RequireAdmin { get; init; }
             public int Order { get; init; }
         }
 
@@ -46,7 +44,7 @@ namespace BlazorApp.Api.Services
                 {
                     new() { Path = "/system/stores",   TitleKey = "menu.systemStores",      Icon = "ShopOutlined",    Permission = Permissions.Stores.View },
                     new() { Path = "/system/users",    TitleKey = "menu.systemUsers",       Icon = "UserOutlined",     Permission = Permissions.Users.View },
-                    new() { Path = "/system/employee-profiles", TitleKey = "menu.employeeProfiles", Icon = "IdcardOutlined", Permission = Permissions.EmployeeProfiles.View, RequireAdmin = true },
+                    new() { Path = "/system/employee-profiles", TitleKey = "menu.employeeProfiles", Icon = "IdcardOutlined", Permission = Permissions.EmployeeProfiles.View },
                     new() { Path = "/system/roles",    TitleKey = "menu.systemRoles",       Icon = "TeamOutlined",     Permission = Permissions.Roles.View },
                     new() { Path = "/system/permissions", TitleKey = "menu.systemPermissions", Icon = "KeyOutlined", Permission = Permissions.Roles.View },
                     new() { Path = "/system/device-registration", TitleKey = "menu.deviceRegistration", Icon = "BuildOutlined", Permission = Permissions.DeviceRegistration.View },
@@ -100,7 +98,7 @@ namespace BlazorApp.Api.Services
                 Children = new List<NavigationMenuDto>
                 {
                     new() { Path = "/pos-admin/suppliers",              TitleKey = "menu.suppliers",              Icon = "ShopOutlined",               Permission = Permissions.AustralianSuppliers.View },
-                    new() { Path = "/pos-admin/products",              TitleKey = "menu.productManagement",      Icon = "AppstoreOutlined",           RequireAdmin = true },
+                    new() { Path = "/pos-admin/products",              TitleKey = "menu.productManagement",      Icon = "AppstoreOutlined",           Permission = Permissions.PosProducts.View },
                     new() { Path = "/pos-admin/store-product-price",   TitleKey = "menu.storeProductPrice",      Icon = "DollarOutlined",             Permission = Permissions.StoreProducts.View },
                     new() { Path = "/pos-admin/pricing-strategies",    TitleKey = "menu.pricingStrategies",      Icon = "FileTextOutlined",           Permission = Permissions.PricingStrategy.View },
                     new() { Path = "/pos-admin/promotions",            TitleKey = "menu.promotions",             Icon = "GiftOutlined",               Permission = Permissions.Promotions.View },
@@ -199,7 +197,6 @@ namespace BlazorApp.Api.Services
                 RouteName = "users",
                 TitleKey = "tabs.users",
                 Icon = "account-group-outline",
-                Roles = new[] { "Admin", "管理员", "StoreManager" },
                 Permission = Permissions.Users.View,
                 Order = 56,
             },
@@ -216,7 +213,7 @@ namespace BlazorApp.Api.Services
                 RouteName = "device-management",
                 TitleKey = "tabs.deviceManagement",
                 Icon = "cellphone-cog",
-                RequireAdmin = true,
+                Permission = Permissions.DeviceRegistration.View,
                 Order = 58,
             },
             new()
@@ -324,11 +321,6 @@ namespace BlazorApp.Api.Services
 
         private static bool CanAccess(NavigationMenuDto node, ClaimsPrincipal user)
         {
-            if (node.RequireAdmin && !user.IsInRole("Admin") && !user.IsInRole("管理员"))
-            {
-                return false;
-            }
-
             if (string.IsNullOrEmpty(node.Permission))
             {
                 return true;
@@ -349,16 +341,6 @@ namespace BlazorApp.Api.Services
         private static bool CanAccess(AppNavigationDefinition node, ClaimsPrincipal user)
         {
             var isAdmin = user.IsInRole("Admin") || user.IsInRole("管理员");
-
-            if (node.RequireAdmin && !isAdmin)
-            {
-                return false;
-            }
-
-            if (node.Roles.Length > 0 && !node.Roles.Any(user.IsInRole))
-            {
-                return false;
-            }
 
             if (string.IsNullOrEmpty(node.Permission))
             {

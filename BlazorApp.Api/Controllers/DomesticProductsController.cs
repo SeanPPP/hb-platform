@@ -1,5 +1,6 @@
 using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Utils;
+using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
 using Microsoft.AspNetCore.Authorization;
@@ -44,7 +45,7 @@ namespace BlazorApp.Api.Controllers
         /// <param name="sortDirection">排序方向</param>
         /// <returns>国内商品分页列表</returns>
         [HttpGet]
-        [Authorize(Roles = "Admin,WarehouseManager")]
+        [Authorize(Policy = Permissions.Products.View)]
         public async Task<IActionResult> GetDomesticProducts(
             [FromQuery] string? search = null,
             [FromQuery] string? supplierCode = null,
@@ -101,7 +102,7 @@ namespace BlazorApp.Api.Controllers
         /// <param name="query">高级查询条件</param>
         /// <returns>国内商品分页列表</returns>
         [HttpPost("advanced-search")]
-        [Authorize(Roles = "Admin,WarehouseManager")]
+        [Authorize(Policy = Permissions.Products.View)]
         public async Task<IActionResult> GetDomesticProductsAdvanced([FromBody] DomesticProductAdvancedQueryDto query)
         {
             try
@@ -127,7 +128,7 @@ namespace BlazorApp.Api.Controllers
         /// </summary>
         /// <returns>字段信息列表</returns>
         [HttpGet("field-info")]
-        [Authorize(Roles = "Admin,WarehouseManager")]
+        [Authorize(Policy = Permissions.Products.View)]
         public async Task<IActionResult> GetFieldInfo()
         {
             try
@@ -154,7 +155,7 @@ namespace BlazorApp.Api.Controllers
         /// <param name="productCode">商品编码</param>
         /// <returns>国内商品详情</returns>
         [HttpGet("{productCode}")]
-        [Authorize(Roles = "Admin,WarehouseManager")]
+        [Authorize(Policy = Permissions.Products.View)]
         public async Task<IActionResult> GetDomesticProductByCode(string productCode)
         {
             try
@@ -186,7 +187,7 @@ namespace BlazorApp.Api.Controllers
         /// <param name="supplierCode">供应商编码</param>
         /// <returns>商品列表</returns>
         [HttpGet("supplier/{supplierCode}")]
-        [Authorize(Roles = "Admin,WarehouseManager")]
+        [Authorize(Policy = Permissions.Products.View)]
         public async Task<IActionResult> GetProductsBySupplierCode(string supplierCode)
         {
             try
@@ -214,7 +215,7 @@ namespace BlazorApp.Api.Controllers
         /// <param name="productType">商品类型（可选）</param>
         /// <returns>启用的商品列表</returns>
         [HttpGet("active")]
-        [Authorize(Roles = "Admin,WarehouseManager")]
+        [Authorize(Policy = Permissions.Products.View)]
         public async Task<IActionResult> GetActiveProducts(
             [FromQuery] string? supplierCode = null,
             [FromQuery] int? productType = null)
@@ -243,7 +244,7 @@ namespace BlazorApp.Api.Controllers
         /// <param name="dto">创建国内商品DTO</param>
         /// <returns>创建的国内商品</returns>
         [HttpPost]
-        [Authorize(Roles = "Admin,WarehouseManager")]
+        [Authorize(Policy = Permissions.Products.Create)]
         public async Task<IActionResult> CreateDomesticProduct([FromBody] CreateDomesticProductDto dto)
         {
             try
@@ -287,7 +288,7 @@ namespace BlazorApp.Api.Controllers
         /// <param name="dto">更新国内商品DTO</param>
         /// <returns>更新的国内商品</returns>
         [HttpPut("{productCode}")]
-        [Authorize(Roles = "Admin,WarehouseManager")]
+        [Authorize(Policy = Permissions.Products.Edit)]
         public async Task<IActionResult> UpdateDomesticProduct(string productCode, [FromBody] UpdateDomesticProductDto dto)
         {
             try
@@ -324,7 +325,7 @@ namespace BlazorApp.Api.Controllers
         /// <param name="productCode">商品编码</param>
         /// <returns>删除结果</returns>
         [HttpDelete("{productCode}")]
-        [Authorize(Roles = "Admin,WarehouseManager")]
+        [Authorize(Policy = Permissions.Products.Delete)]
         public async Task<IActionResult> DeleteDomesticProduct(string productCode)
         {
             try
@@ -362,7 +363,7 @@ namespace BlazorApp.Api.Controllers
         /// <param name="isActive">是否启用</param>
         /// <returns>更新的国内商品</returns>
         [HttpPatch("{productCode}/status/{isActive}")]
-        [Authorize(Roles = "Admin,WarehouseManager")]
+        [Authorize(Policy = Permissions.Products.Edit)]
         public async Task<IActionResult> ToggleProductStatus(string productCode, bool isActive)
         {
             try
@@ -395,7 +396,7 @@ namespace BlazorApp.Api.Controllers
         /// <param name="excludeProductCode">排除的商品编码</param>
         /// <returns>是否存在</returns>
         [HttpGet("check-hb-product-no")]
-        [Authorize(Roles = "Admin,WarehouseManager")]
+        [Authorize(Policy = Permissions.DomesticPurchase.ManageProducts)]
         public async Task<IActionResult> CheckHBProductNoExists(
             [FromQuery] string hbProductNo,
             [FromQuery] string? excludeProductCode = null)
@@ -425,7 +426,7 @@ namespace BlazorApp.Api.Controllers
         /// <param name="excludeProductCode">排除的商品编码</param>
         /// <returns>是否存在</returns>
         [HttpGet("check-barcode")]
-        [Authorize(Roles = "Admin,WarehouseManager")]
+        [Authorize(Policy = Permissions.DomesticPurchase.ManageProducts)]
         public async Task<IActionResult> CheckBarcodeExists(
             [FromQuery] string barcode,
             [FromQuery] string? excludeProductCode = null)
@@ -455,7 +456,7 @@ namespace BlazorApp.Api.Controllers
         /// <param name="prefixCode">前缀代码</param>
         /// <returns>生成的商品货号</returns>
         [HttpGet("generate-product-no")]
-        [Authorize(Roles = "Admin,WarehouseManager")]
+        [Authorize(Policy = Permissions.DomesticPurchase.ManageProducts)]
         public async Task<IActionResult> GenerateNextProductNo(
             [FromQuery] string supplierCode,
             [FromQuery] string? prefixCode = null)
@@ -486,7 +487,7 @@ namespace BlazorApp.Api.Controllers
         /// <param name="productType">商品类型</param>
         /// <returns>生成的条形码</returns>
         [HttpGet("generate-barcode")]
-        [Authorize(Roles = "Admin,WarehouseManager")]
+        [Authorize(Policy = Permissions.DomesticPurchase.ManageProducts)]
         public async Task<IActionResult> GenerateProductBarcode(
             [FromQuery] string supplierCode,
             [FromQuery] int productType)
@@ -516,7 +517,7 @@ namespace BlazorApp.Api.Controllers
         /// <param name="dto">批量创建DTO</param>
         /// <returns>创建结果</returns>
         [HttpPost("batch")]
-        [Authorize(Roles = "Admin,WarehouseManager")]
+        [Authorize(Policy = Permissions.DomesticPurchase.ManageProducts)]
         public async Task<IActionResult> BatchCreateDomesticProducts([FromBody] BatchCreateDomesticProductDto dto)
         {
             try
@@ -553,7 +554,7 @@ namespace BlazorApp.Api.Controllers
         /// <param name="productCodes">商品编码列表</param>
         /// <returns>删除结果</returns>
         [HttpDelete("batch")]
-        [Authorize(Roles = "Admin,WarehouseManager")]
+        [Authorize(Policy = Permissions.Products.Delete)]
         public async Task<IActionResult> BatchDeleteDomesticProducts([FromBody] List<string> productCodes)
         {
             try
@@ -595,7 +596,7 @@ namespace BlazorApp.Api.Controllers
         /// <param name="request">批量状态更新请求</param>
         /// <returns>更新结果</returns>
         [HttpPut("batch-status")]
-        [Authorize(Roles = "Admin,WarehouseManager")]
+        [Authorize(Policy = Permissions.Products.Edit)]
         public async Task<IActionResult> BatchUpdateProductStatus([FromBody] BatchUpdateStatusRequest request)
         {
             try
@@ -632,7 +633,7 @@ namespace BlazorApp.Api.Controllers
         /// <param name="supplierCode">供应商编码（可选）</param>
         /// <returns>统计信息</returns>
         [HttpGet("statistics/product-types")]
-        [Authorize(Roles = "Admin,WarehouseManager")]
+        [Authorize(Policy = Permissions.Products.View)]
         public async Task<IActionResult> GetProductTypeStatistics([FromQuery] string? supplierCode = null)
         {
             try
@@ -660,7 +661,7 @@ namespace BlazorApp.Api.Controllers
         /// <param name="productType">商品类型（可选）</param>
         /// <returns>价格统计</returns>
         [HttpGet("statistics/prices")]
-        [Authorize(Roles = "Admin,WarehouseManager")]
+        [Authorize(Policy = Permissions.Products.View)]
         public async Task<IActionResult> GetProductPriceStatistics(
             [FromQuery] string? supplierCode = null,
             [FromQuery] int? productType = null)
@@ -690,7 +691,7 @@ namespace BlazorApp.Api.Controllers
         /// <param name="dto">批量检测DTO</param>
         /// <returns>检测结果</returns>
         [HttpPost("batch-detect")]
-        [Authorize(Roles = "Admin,WarehouseManager")]
+        [Authorize(Policy = Permissions.DomesticPurchase.ManageProducts)]
         public async Task<IActionResult> BatchDetectProducts([FromBody] BatchProductDetectionDto dto)
         {
             try
@@ -722,7 +723,7 @@ namespace BlazorApp.Api.Controllers
         /// <param name="dto">批量操作DTO</param>
         /// <returns>操作结果</returns>
         [HttpPost("batch-create-update")]
-        [Authorize(Roles = "Admin,WarehouseManager")]
+        [Authorize(Policy = Permissions.DomesticPurchase.ManageProducts)]
         public async Task<IActionResult> BatchCreateAndUpdateProducts([FromBody] BatchProductOperationDto dto)
         {
             try
@@ -756,7 +757,7 @@ namespace BlazorApp.Api.Controllers
         /// <param name="dryRun">是否仅模拟运行（不实际修改数据库）</param>
         /// <returns>修复结果统计</returns>
         [HttpPost("fix-duplicate-image-urls")]
-        [Authorize(Roles = "Admin,WarehouseManager")]
+        [Authorize(Policy = Permissions.Products.Edit)]
         public async Task<IActionResult> FixDuplicateImageUrls([FromQuery] bool dryRun = true)
         {
             try
@@ -787,7 +788,7 @@ namespace BlazorApp.Api.Controllers
         /// <param name="request">AG Grid 请求</param>
         /// <returns>国内商品数据</returns>
         [HttpPost("grid")]
-        [Authorize(Roles = "Admin,WarehouseManager")]
+        [Authorize(Policy = Permissions.Products.View)]
         public async Task<IActionResult> GetGridData([FromBody] GridRequestDto request)
         {
             try
@@ -823,7 +824,7 @@ namespace BlazorApp.Api.Controllers
         /// <param name="request">批量删除请求</param>
         /// <returns>删除结果</returns>
         [HttpDelete("batch-delete")]
-        [Authorize(Roles = "Admin,WarehouseManager")]
+        [Authorize(Policy = Permissions.Products.Delete)]
         public async Task<IActionResult> BatchDelete([FromBody] BatchDeleteRequestDto request)
         {
             try
@@ -852,7 +853,7 @@ namespace BlazorApp.Api.Controllers
         /// <param name="productCode">商品编码</param>
         /// <returns>套装信息列表</returns>
         [HttpGet("{productCode}/set-items")]
-        [Authorize(Roles = "Admin,WarehouseManager")]
+        [Authorize(Policy = Permissions.Products.View)]
         public async Task<IActionResult> GetSetItems(string productCode)
         {
             try
@@ -882,7 +883,7 @@ namespace BlazorApp.Api.Controllers
         /// <param name="request">更新请求</param>
         /// <returns>更新结果</returns>
         [HttpPut("{productCode}/set-items")]
-        [Authorize(Roles = "Admin,WarehouseManager")]
+        [Authorize(Policy = Permissions.Products.Edit)]
         public async Task<IActionResult> UpdateSetItems(string productCode, [FromBody] UpdateSetItemsRequestDto request)
         {
             try

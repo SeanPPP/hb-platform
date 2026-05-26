@@ -212,6 +212,36 @@ namespace BlazorApp.Shared.DTOs
         public List<PermissionDto> Permissions { get; set; } = new();
     }
 
+    public class PermissionAliasDto
+    {
+        public string CanonicalCode { get; set; } = string.Empty;
+        public List<string> AliasCodes { get; set; } = new();
+    }
+
+    public class RolePermissionTemplateDto
+    {
+        public string RoleName { get; set; } = string.Empty;
+        public List<string> PermissionCodes { get; set; } = new();
+    }
+
+    public class PermissionCatalogDto
+    {
+        public List<PermissionCategoryDto> Categories { get; set; } = new();
+        public List<PermissionAliasDto> PermissionAliases { get; set; } = new();
+        public List<RolePermissionTemplateDto> RoleTemplates { get; set; } = new();
+        public List<string> SuperAdminRoleNames { get; set; } = new();
+    }
+
+    public class RolePermissionStateDto
+    {
+        public string RoleGuid { get; set; } = string.Empty;
+        public string RoleName { get; set; } = string.Empty;
+        public bool IsSuperAdmin { get; set; }
+        public bool ImplicitAllPermissions { get; set; }
+        public List<string> ExplicitPermissionCodes { get; set; } = new();
+        public List<string> EffectivePermissionCodes { get; set; } = new();
+    }
+
     /// <summary>
     /// 创建系统权限DTO
     /// </summary>

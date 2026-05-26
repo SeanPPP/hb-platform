@@ -473,6 +473,31 @@ namespace BlazorApp.Api.Controllers
         }
 
         /// <summary>
+        /// 获取权限目录元数据
+        /// </summary>
+        [HttpGet("permissions/catalog")]
+        [Authorize(Policy = Permissions.Roles.View)]
+        public async Task<IActionResult> GetPermissionCatalog()
+        {
+            try
+            {
+                var result = await _roleService.GetPermissionCatalogAsync();
+                return Ok(result);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "获取权限目录失败");
+                return StatusCode(
+                    500,
+                    ApiResponse<PermissionCatalogDto>.Error(
+                        "服务器内部错误",
+                        "INTERNAL_SERVER_ERROR"
+                    )
+                );
+            }
+        }
+
+        /// <summary>
         /// 获取所有系统权限（扁平列表）
         /// 📋 用于权限管理页面展示
         /// </summary>
@@ -623,6 +648,31 @@ namespace BlazorApp.Api.Controllers
                 return StatusCode(
                     500,
                     ApiResponse<List<string>>.Error("服务器内部错误", "INTERNAL_SERVER_ERROR")
+                );
+            }
+        }
+
+        /// <summary>
+        /// 获取角色权限状态
+        /// </summary>
+        [HttpGet("guid/{guid}/permissions/state")]
+        [Authorize(Policy = Permissions.Roles.View)]
+        public async Task<IActionResult> GetRolePermissionState(string guid)
+        {
+            try
+            {
+                var result = await _roleService.GetRolePermissionStateAsync(guid);
+                return Ok(result);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "获取角色权限状态失败，RoleGUID: {RoleGUID}", guid);
+                return StatusCode(
+                    500,
+                    ApiResponse<RolePermissionStateDto>.Error(
+                        "服务器内部错误",
+                        "INTERNAL_SERVER_ERROR"
+                    )
                 );
             }
         }

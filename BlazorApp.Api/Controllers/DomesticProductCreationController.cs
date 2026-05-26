@@ -1,4 +1,5 @@
 using BlazorApp.Api.Services;
+using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.DTOs;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -30,7 +31,7 @@ namespace BlazorApp.Api.Controllers
         /// <param name="request">批量创建请求</param>
         /// <returns>批量创建结果</returns>
         [HttpPost("batch")]
-        [Authorize(Roles = "Admin,WarehouseManager")]
+        [Authorize(Policy = Permissions.DomesticPurchase.ManageProducts)]
         public async Task<IActionResult> CreateBatch([FromBody] CreateDomesticProductBatchRequest request)
         {
             try
@@ -71,7 +72,7 @@ namespace BlazorApp.Api.Controllers
         /// <param name="endDate">结束日期（可选）</param>
         /// <returns>批次列表</returns>
         [HttpGet("batches")]
-        [Authorize(Roles = "Admin,WarehouseManager")]
+        [Authorize(Policy = Permissions.DomesticPurchase.ManageProducts)]
         public async Task<IActionResult> GetBatchList(
             [FromQuery] int page = 1,
             [FromQuery] int pageSize = 20,
@@ -103,7 +104,7 @@ namespace BlazorApp.Api.Controllers
         /// <param name="batchNumber">批次号</param>
         /// <returns>批次详情</returns>
         [HttpGet("batch/{batchNumber}")]
-        [Authorize(Roles = "Admin,WarehouseManager")]
+        [Authorize(Policy = Permissions.DomesticPurchase.ManageProducts)]
         public async Task<IActionResult> GetBatchDetail(string batchNumber)
         {
             try
@@ -140,7 +141,7 @@ namespace BlazorApp.Api.Controllers
         /// <param name="batchNumber">批次号</param>
         /// <returns>Excel文件</returns>
         [HttpGet("batch/{batchNumber}/export")]
-        [Authorize(Roles = "Admin,WarehouseManager")]
+        [Authorize(Policy = Permissions.DomesticPurchase.ManageProducts)]
         public async Task<IActionResult> ExportBatch(string batchNumber)
         {
             try
@@ -178,7 +179,7 @@ namespace BlazorApp.Api.Controllers
         /// <param name="request">更新请求</param>
         /// <returns>更新结果</returns>
         [HttpPut("batch/{batchNumber}/prices")]
-        [Authorize(Roles = "Admin,WarehouseManager")]
+        [Authorize(Policy = Permissions.DomesticPurchase.ManageProducts)]
         public async Task<IActionResult> UpdatePrivateLabelPrice(
             string batchNumber,
             [FromBody] UpdatePrivateLabelPriceRequest request)
@@ -223,7 +224,7 @@ namespace BlazorApp.Api.Controllers
         /// <param name="request">更新请求</param>
         /// <returns>更新结果</returns>
         [HttpPut("batch/{batchNumber}/items")]
-        [Authorize(Roles = "Admin,WarehouseManager")]
+        [Authorize(Policy = Permissions.DomesticPurchase.ManageProducts)]
         public async Task<IActionResult> UpdateBatchItems(
             string batchNumber,
             [FromBody] UpdateBatchItemsRequest request)

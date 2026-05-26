@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using BlazorApp.Api.Interfaces.React;
+using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.DTOs;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -20,6 +21,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPost("grid")]
+        [Authorize(Policy = Permissions.Store.ManageOperations)]
         public async Task<IActionResult> Grid([FromBody] GridRequestDto request)
         {
             var result = await _service.GetGridDataAsync(request);
@@ -47,6 +49,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpGet("{hGuid}")]
+        [Authorize(Policy = Permissions.Store.ManageOperations)]
         public async Task<IActionResult> GetByHGuid(string hGuid)
         {
             var result = await _service.GetByHGuidAsync(hGuid);
@@ -63,6 +66,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPost]
+        [Authorize(Policy = Permissions.Store.ManageOperations)]
         public async Task<IActionResult> Create([FromBody] CreateCashRegisterUserDto dto)
         {
             var user = User.Identity?.Name ?? "system";
@@ -80,6 +84,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPut("{hGuid}")]
+        [Authorize(Policy = Permissions.Store.ManageOperations)]
         public async Task<IActionResult> Update(
             string hGuid,
             [FromBody] UpdateCashRegisterUserDto dto
@@ -100,7 +105,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpDelete("{hGuid}")]
-        [Authorize(Roles = "Admin,StoreManager")]
+        [Authorize(Policy = Permissions.Store.ManageOperations)]
         public async Task<IActionResult> Delete(string hGuid)
         {
             var user = User.Identity?.Name ?? "system";
@@ -118,7 +123,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPost("batch-delete")]
-        [Authorize(Roles = "Admin,StoreManager")]
+        [Authorize(Policy = Permissions.Store.ManageOperations)]
         public async Task<IActionResult> BatchDelete([FromBody] List<string> hGuids)
         {
             var user = User.Identity?.Name ?? "system";
