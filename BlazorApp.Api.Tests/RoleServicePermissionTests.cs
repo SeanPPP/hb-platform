@@ -64,6 +64,37 @@ public sealed class RoleServicePermissionTests : IDisposable
     }
 
     [Fact]
+    public async Task GetUserPermissionSnapshotAsync_AdminRoleReturnsImplicitAllPermissions()
+    {
+        await SeedUserWithRoleAsync("user-1", "role-admin", "Admin");
+        await InsertPermissionAsync(Permissions.Users.View);
+        await InsertPermissionAsync(Permissions.Users.Edit);
+
+        var result = await CreateService().GetUserPermissionSnapshotAsync("user-1");
+
+        Assert.NotNull(result.Data);
+        Assert.True(result.Data.IsSuperAdmin);
+        Assert.Contains("Admin", result.Data.RoleNames);
+        Assert.Contains(Permissions.Users.View, result.Data.PermissionCodes);
+        Assert.Contains(Permissions.Users.Edit, result.Data.PermissionCodes);
+    }
+
+    [Fact]
+    public async Task GetUserPermissionSnapshotAsync_ExpandsLegacyAliasesToCanonicalPermissions()
+    {
+        await SeedUserWithRoleAsync("user-1", "role-user", "User");
+        await InsertRolePermissionAsync("role-user", "LocalInvocie.View");
+
+        var result = await CreateService().GetUserPermissionSnapshotAsync("user-1");
+
+        Assert.NotNull(result.Data);
+        Assert.False(result.Data.IsSuperAdmin);
+        Assert.Contains("User", result.Data.RoleNames);
+        Assert.Contains("LocalInvocie.View", result.Data.PermissionCodes);
+        Assert.Contains(Permissions.LocalPurchase.View, result.Data.PermissionCodes);
+    }
+
+    [Fact]
     public async Task GetRolePermissionsAsync_AdminReturnsAllActivePermissionsWithoutExplicitLinks()
     {
         await InsertRoleAsync("role-admin", "管理员");

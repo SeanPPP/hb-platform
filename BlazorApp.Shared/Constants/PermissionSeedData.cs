@@ -44,46 +44,23 @@ namespace BlazorApp.Shared.Constants
                 Permissions.Attendance.Leave.ApplySelf,
             };
 
-        private static IReadOnlyList<PermissionSeedDefinition> ExistingDatabasePermissions { get; } =
-            new List<PermissionSeedDefinition>
+        public static IReadOnlySet<string> DeprecatedPermissionCodes { get; } =
+            new HashSet<string>(StringComparer.OrdinalIgnoreCase)
             {
-                new(Permissions.Dashboard.View, "访问后台", "后台管理", "后台管理 - 访问后台"),
-                new("Container.Delete", "货柜管理 - 删除", "货柜管理", "货柜管理 - 删除"),
-                new("Container.Create", "货柜管理 - 创建", "货柜管理", "货柜管理 - 创建"),
-                new("AustralianSuppliers", "澳洲供应商", "澳洲供应商管理", "澳洲供应商管理 - 澳洲供应商"),
-                new("LocalInvocie", "澳洲进货单的管理", "澳洲进货单的管理", "澳洲进货单的管理 - 澳洲进货单的管理"),
-                new("Users.View", "查看用户", "用户管理", "用户管理 - 查看用户"),
-                new("StoreProducts.Create", "分店商品价格管理 - 创建", "分店商品价格管理", "分店商品价格管理 - 创建"),
-                new("LocalPurchase", "澳洲本地进货", "澳洲本地进货管理", "澳洲本地进货管理 - 澳洲本地进货"),
-                new("Orders.Edit", "编辑订单", "订单管理", "订单管理 - 编辑订单"),
-                new("Orders.Delete", "删除订单", "订单管理", "订单管理 - 删除订单"),
-                new("Users.Delete", "删除用户", "用户管理", "用户管理 - 删除用户"),
-                new("StoreProducts.Edit", "分店商品价格管理 - 编辑", "分店商品价格管理", "分店商品价格管理 - 编辑"),
-                new("ChinaProduct.Edit", "国内订货 - 编辑", "国内订货", "国内订货 - 编辑"),
-                new("LocalInvocie.Delete", "澳洲进货单的管理 - 删除", "澳洲进货单的管理", "澳洲进货单的管理 - 删除"),
-                new("Products.Create", "创建商品", "商品管理", "商品管理 - 创建商品"),
-                new("Roles.Delete", "删除角色", "角色管理", "角色管理 - 删除角色"),
-                new("Container.View", "货柜管理 - 查看", "货柜管理", "货柜管理 - 查看"),
-                new("ChinaProduct.Create", "国内订货 - 创建", "国内订货", "国内订货 - 创建"),
-                new(Permissions.OrderFront.View, "前台订货", "前台订货", "前台订货 - 前台订货"),
-                new("ChinaProduct.Delete", "国内订货 - 删除", "国内订货", "国内订货 - 删除"),
-                new("Orders.Create", "创建订单", "订单管理", "订单管理 - 创建订单"),
-                new("LocalInvocie.Create", "澳洲进货单的管理 - 创建", "澳洲进货单的管理", "澳洲进货单的管理 - 创建"),
-                new("Roles.Create", "创建角色", "角色管理", "角色管理 - 创建角色"),
-                new("Products.Edit", "编辑商品", "商品管理", "商品管理 - 编辑商品"),
-                new("Roles.View", "查看角色", "角色管理", "角色管理 - 查看角色"),
-                new("StoreProducts.View", "分店商品价格管理 - 查看", "分店商品价格管理", "分店商品价格管理 - 查看"),
-                new("Orders.View", "查看订单", "订单管理", "订单管理 - 查看订单"),
-                new("LocalInvocie.View", "澳洲进货单的管理 - 查看", "澳洲进货单的管理", "澳洲进货单的管理 - 查看"),
-                new("ChinaProduct.View", "国内订货 - 查看", "国内订货", "国内订货 - 查看"),
-                new("Promotions", "促销", "促销管理", "促销管理 - 促销"),
-                new("Products.Delete", "删除商品", "商品管理", "商品管理 - 删除商品"),
-                new("LocalInvocie.Edit", "澳洲进货单的管理 - 编辑", "澳洲进货单的管理", "澳洲进货单的管理 - 编辑"),
-                new("Roles.Edit", "编辑角色", "角色管理", "角色管理 - 编辑角色"),
-                new("StoreProducts", "分店商品", "分店商品管理", "分店商品管理 - 分店商品管理页面"),
-                new("Users.Edit", "编辑用户", "用户管理", "用户管理 - 编辑用户"),
-                new("Products.View", "查看商品", "商品管理", "商品管理 - 查看商品"),
-                new("Users.Create", "创建用户", "用户管理", "用户管理 - 创建用户"),
+                "AustralianSuppliers",
+                "LocalInvocie",
+                "LocalInvocie.View",
+                "LocalInvocie.Create",
+                "LocalInvocie.Edit",
+                "LocalInvocie.Delete",
+                "LocalPurchase",
+                "StoreProducts",
+                "Promotions",
+                "PricingStrategy",
+                "ChinaProduct.View",
+                "ChinaProduct.Create",
+                "ChinaProduct.Edit",
+                "ChinaProduct.Delete",
             };
 
         private static IReadOnlyList<PermissionSeedDefinition> SharedPermissionSeeds { get; } =
@@ -159,6 +136,7 @@ namespace BlazorApp.Shared.Constants
                 new(Permissions.System.ViewLogs, "查看日志", "系统管理", "系统管理 - 查看日志"),
                 new(Permissions.System.ManageSettings, "管理设置", "系统管理", "系统管理 - 管理设置"),
                 new(Permissions.Dashboard.View, "访问后台", "后台管理", "页面 /dashboard - 访问后台工作台"),
+                new(Permissions.OrderFront.View, "前台订货", "前台订货", "前台订货 - 前台订货"),
             };
 
         public static IReadOnlyList<RolePermissionTemplateDefinition> RolePermissionTemplates { get; } =
@@ -230,8 +208,7 @@ namespace BlazorApp.Shared.Constants
             };
 
         public static IReadOnlyList<PermissionSeedDefinition> AllPermissions { get; } =
-            ExistingDatabasePermissions
-            .Concat(SharedPermissionSeeds)
+            SharedPermissionSeeds
             .Concat(AttendancePermissions)
             .GroupBy(seed => seed.Code, StringComparer.OrdinalIgnoreCase)
             .Select(group => group.Last())

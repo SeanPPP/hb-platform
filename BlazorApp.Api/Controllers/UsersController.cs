@@ -454,8 +454,17 @@ namespace BlazorApp.Api.Controllers
         {
             var currentUserGuid = currentUser.GetCurrentUserGuid();
             var isSelf = string.Equals(currentUserGuid, guid, StringComparison.OrdinalIgnoreCase);
+            var canViewOtherUserStores =
+                CurrentUserManageableStoreScopeService.HasAnyRole(
+                    User,
+                    CurrentUserManageableStoreScopeService.AdminRoleAliases
+                )
+                || CurrentUserManageableStoreScopeService.HasAnyRole(
+                    User,
+                    CurrentUserManageableStoreScopeService.WarehouseManagerRoleAliases
+                );
 
-            if (!isSelf && !User.IsInRole("Admin"))
+            if (!isSelf && !canViewOtherUserStores)
             {
                 return Forbid();
             }

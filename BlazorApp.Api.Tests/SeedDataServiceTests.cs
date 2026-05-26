@@ -85,18 +85,61 @@ namespace BlazorApp.Api.Tests
         }
 
         [Fact]
-        public void AllPermissionSeeds_IncludeExistingDatabasePermissionCodes()
+        public void AllPermissionSeeds_OnlyIncludeCanonicalPermissionCodes()
         {
             var seeds = PermissionSeedData.AllPermissions.ToList();
+            var seedCodes = seeds.Select(seed => seed.Code).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var permissionConstants = GetPermissionConstantCodes();
 
-            Assert.Contains(seeds, seed => seed.Code == "AustralianSuppliers" && seed.Category == "澳洲供应商管理");
-            Assert.Contains(seeds, seed => seed.Code == "ChinaProduct.View" && seed.Category == "国内订货");
-            Assert.Contains(seeds, seed => seed.Code == "LocalInvocie.Edit" && seed.Category == "澳洲进货单的管理");
-            Assert.Contains(seeds, seed => seed.Code == "LocalPurchase" && seed.Category == "澳洲本地进货管理");
+            Assert.Subset(permissionConstants, seedCodes);
+            Assert.Subset(seedCodes, permissionConstants);
             Assert.Contains(seeds, seed => seed.Code == Permissions.OrderFront.View && seed.Category == "前台订货");
-            Assert.Contains(seeds, seed => seed.Code == "Promotions" && seed.Category == "促销管理");
-            Assert.Contains(seeds, seed => seed.Code == "StoreProducts" && seed.Category == "分店商品管理");
             Assert.Equal(seeds.Count, seeds.Select(seed => seed.Code.ToLowerInvariant()).Distinct().Count());
+        }
+
+        [Fact]
+        public void DeprecatedPermissionCodes_AreNotActiveSeeds()
+        {
+            var activeSeedCodes = PermissionSeedData.AllPermissions
+                .Select(seed => seed.Code)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var deprecatedCodes = PermissionSeedData.DeprecatedPermissionCodes;
+            var expectedDeprecatedCodes = new[]
+            {
+                "AustralianSuppliers",
+                "LocalInvocie",
+                "LocalInvocie.View",
+                "LocalInvocie.Create",
+                "LocalInvocie.Edit",
+                "LocalInvocie.Delete",
+                "LocalPurchase",
+                "StoreProducts",
+                "Promotions",
+                "PricingStrategy",
+                "ChinaProduct.View",
+                "ChinaProduct.Create",
+                "ChinaProduct.Edit",
+                "ChinaProduct.Delete",
+            };
+
+            Assert.All(expectedDeprecatedCodes, code =>
+            {
+                Assert.Contains(code, deprecatedCodes, StringComparer.OrdinalIgnoreCase);
+                Assert.DoesNotContain(code, activeSeedCodes, StringComparer.OrdinalIgnoreCase);
+            });
+        }
+
+        [Fact]
+        public void LocalPurchasePushToHqPermission_IsCanonicalSeed()
+        {
+            var seed = Assert.Single(
+                PermissionSeedData.AllPermissions,
+                item => item.Code == Permissions.LocalPurchase.PushToHq
+            );
+
+            Assert.Equal("推送本地进货到 HQ", seed.Name);
+            Assert.Equal("本地进货管理", seed.Category);
+            Assert.Equal("页面 /pos-admin/local-supplier-invoices - 推送本地进货单到 HQ", seed.Description);
         }
 
         [Fact]
@@ -330,6 +373,136 @@ namespace BlazorApp.Api.Tests
         }
 
         [Fact]
+        public async Task InitializePermissionSeedsAsync_NormalizesPermissionsWithoutDeletingCustomPermissions()
+        {
+            var role = CreateRole("role-store", "StoreStaff", "Store staff");
+            await _db.Insertable(role).ExecuteCommandAsync();
+            await _db.Insertable(
+                new[]
+                {
+                    new SysPermission
+                    {
+                        Id = "soft-deleted-push-to-hq",
+                        Code = Permissions.LocalPurchase.PushToHq,
+                        Name = "旧名称",
+                        Category = "旧分类",
+                        Description = "旧说明",
+                        IsDeleted = true,
+                    },
+                    new SysPermission
+                    {
+                        Id = "deprecated-pricing-root",
+                        Code = "PricingStrategy",
+                        Name = "定价策略",
+                        Category = "定价策略管理",
+                        Description = string.Empty,
+                    },
+                    new SysPermission
+                    {
+                        Id = "deprecated-local-invoice-view",
+                        Code = "LocalInvocie.View",
+                        Name = "澳洲进货单的管理 - 查看",
+                        Category = "澳洲进货单的管理",
+                        Description = "澳洲进货单的管理 - 查看",
+                    },
+                    new SysPermission
+                    {
+                        Id = "custom-permission",
+                        Code = "Custom.Report.View",
+                        Name = "自定义报表",
+                        Category = "自定义",
+                        Description = "后台手工创建的自定义权限",
+                    },
+                }
+            ).ExecuteCommandAsync();
+            await _db.Insertable(new SysRolePermission
+            {
+                Id = "legacy-role-permission",
+                RoleGuid = role.RoleGUID,
+                PermissionCode = "LocalInvocie.View",
+            }).ExecuteCommandAsync();
+
+            await CreateService().InitializePermissionSeedsAsync();
+
+            var rows = await _db.Queryable<SysPermission>().ToListAsync();
+            var pushToHq = Assert.Single(rows, item => item.Code == Permissions.LocalPurchase.PushToHq);
+            var pushToHqSeed = Assert.Single(
+                PermissionSeedData.AllPermissions,
+                item => item.Code == Permissions.LocalPurchase.PushToHq
+            );
+            var rolePermission = await _db.Queryable<SysRolePermission>()
+                .SingleAsync(item => item.Id == "legacy-role-permission");
+
+            Assert.False(pushToHq.IsDeleted);
+            Assert.Equal(pushToHqSeed.Name, pushToHq.Name);
+            Assert.Equal(pushToHqSeed.Category, pushToHq.Category);
+            Assert.Equal(pushToHqSeed.Description, pushToHq.Description);
+            Assert.True(Assert.Single(rows, item => item.Code == "PricingStrategy").IsDeleted);
+            Assert.True(Assert.Single(rows, item => item.Code == "LocalInvocie.View").IsDeleted);
+            Assert.False(Assert.Single(rows, item => item.Code == "Custom.Report.View").IsDeleted);
+            Assert.Equal("LocalInvocie.View", rolePermission.PermissionCode);
+        }
+
+        [Fact]
+        public async Task InitializePermissionSeedsAsync_CollapsesDuplicatePermissionRowsIdempotently()
+        {
+            await _db.Insertable(
+                new[]
+                {
+                    new SysPermission
+                    {
+                        Id = "dashboard-active",
+                        Code = Permissions.Dashboard.View,
+                        Name = "旧后台",
+                        Category = "旧分类",
+                        Description = "旧说明",
+                    },
+                    new SysPermission
+                    {
+                        Id = "dashboard-active-duplicate",
+                        Code = Permissions.Dashboard.View,
+                        Name = "重复后台",
+                        Category = "重复分类",
+                        Description = "重复说明",
+                    },
+                    new SysPermission
+                    {
+                        Id = "dashboard-deleted",
+                        Code = Permissions.Dashboard.View,
+                        Name = "后台管理",
+                        Category = "后台管理",
+                        Description = string.Empty,
+                        IsDeleted = true,
+                    },
+                }
+            ).ExecuteCommandAsync();
+
+            await CreateService().InitializePermissionSeedsAsync();
+            var dashboardRowsAfterFirstRun = await _db.Queryable<SysPermission>()
+                .Where(item => item.Code == Permissions.Dashboard.View)
+                .ToListAsync();
+            Assert.Equal(2, dashboardRowsAfterFirstRun.Count);
+            Assert.Single(dashboardRowsAfterFirstRun, item => !item.IsDeleted);
+            Assert.Single(dashboardRowsAfterFirstRun, item => item.IsDeleted);
+
+            await CreateService().InitializePermissionSeedsAsync();
+
+            var dashboardRowsAfterSecondRun = await _db.Queryable<SysPermission>()
+                .Where(item => item.Code == Permissions.Dashboard.View)
+                .ToListAsync();
+            var seed = Assert.Single(
+                PermissionSeedData.AllPermissions,
+                item => item.Code == Permissions.Dashboard.View
+            );
+            var dashboard = Assert.Single(dashboardRowsAfterSecondRun);
+
+            Assert.False(dashboard.IsDeleted);
+            Assert.Equal(seed.Name, dashboard.Name);
+            Assert.Equal(seed.Category, dashboard.Category);
+            Assert.Equal(seed.Description, dashboard.Description);
+        }
+
+        [Fact]
         public async Task CreateRoleSeedDataAsync_CreatesWarehouseManager_WithoutOverwritingExistingRoles()
         {
             await _db.Insertable(
@@ -424,6 +597,31 @@ namespace BlazorApp.Api.Tests
             );
 
             Assert.Equal(expectedPermissions, actualPermissions);
+        }
+
+        private static HashSet<string> GetPermissionConstantCodes()
+        {
+            return GetPermissionConstantCodes(typeof(Permissions))
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        }
+
+        private static IEnumerable<string> GetPermissionConstantCodes(Type type)
+        {
+            foreach (var field in type.GetFields(BindingFlags.Public | BindingFlags.Static))
+            {
+                if (field.FieldType == typeof(string) && field.IsLiteral && !field.IsInitOnly)
+                {
+                    yield return (string)field.GetRawConstantValue()!;
+                }
+            }
+
+            foreach (var nestedType in type.GetNestedTypes(BindingFlags.Public))
+            {
+                foreach (var code in GetPermissionConstantCodes(nestedType))
+                {
+                    yield return code;
+                }
+            }
         }
 
         private async Task InvokePrivateAsync(string methodName)

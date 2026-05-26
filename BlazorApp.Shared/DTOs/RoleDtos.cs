@@ -242,6 +242,14 @@ namespace BlazorApp.Shared.DTOs
         public List<string> EffectivePermissionCodes { get; set; } = new();
     }
 
+    public class UserPermissionSnapshotDto
+    {
+        public string UserGuid { get; set; } = string.Empty;
+        public bool IsSuperAdmin { get; set; }
+        public List<string> RoleNames { get; set; } = new();
+        public List<string> PermissionCodes { get; set; } = new();
+    }
+
     /// <summary>
     /// 创建系统权限DTO
     /// </summary>

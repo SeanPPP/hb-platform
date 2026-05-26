@@ -177,6 +177,13 @@ namespace BlazorApp.Api.Interfaces
         Task<ApiResponse<bool>> UserHasPermissionAsync(string userGuid, string permission);
 
         /// <summary>
+        /// 获取用户当前激活角色聚合后的权限快照
+        /// </summary>
+        /// <param name="userGuid">用户GUID</param>
+        /// <returns>超级管理员状态、角色名和有效权限</returns>
+        Task<ApiResponse<UserPermissionSnapshotDto>> GetUserPermissionSnapshotAsync(string userGuid);
+
+        /// <summary>
         /// 复制角色
         /// </summary>
         /// <param name="sourceRoleGuid">源角色GUID</param>

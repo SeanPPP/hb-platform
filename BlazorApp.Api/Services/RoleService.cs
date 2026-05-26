@@ -1693,6 +1693,90 @@ namespace BlazorApp.Api.Services
             }
         }
 
+        public async Task<ApiResponse<UserPermissionSnapshotDto>> GetUserPermissionSnapshotAsync(
+            string userGuid
+        )
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(userGuid))
+                {
+                    return ApiResponse<UserPermissionSnapshotDto>.OK(
+                        new UserPermissionSnapshotDto(),
+                        "用户权限快照为空"
+                    );
+                }
+
+                var db = _context.Db;
+                var roleEntries = await db.Queryable<UserRole>()
+                    .InnerJoin<User>((ur, u) => ur.UserGUID == u.UserGUID)
+                    .InnerJoin<Role>((ur, u, r) => ur.RoleGUID == r.RoleGUID)
+                    .Where(
+                        (ur, u, r) =>
+                            ur.UserGUID == userGuid
+                            && !ur.IsDeleted
+                            && u.IsActive
+                            && !u.IsDeleted
+                            && r.IsActive
+                            && !r.IsDeleted
+                    )
+                    .Select((ur, u, r) => new { r.RoleGUID, r.RoleName })
+                    .ToListAsync();
+
+                var roleNames = roleEntries
+                    .Select(item => item.RoleName)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                var isSuperAdmin = roleNames.Any(IsSuperAdminRoleName);
+
+                List<string> permissionCodes;
+                if (isSuperAdmin)
+                {
+                    permissionCodes = await db.Queryable<SysPermission>()
+                        .Where(item => !item.IsDeleted)
+                        .Select(item => item.Code)
+                        .ToListAsync();
+                }
+                else
+                {
+                    var roleGuids = roleEntries
+                        .Select(item => item.RoleGUID)
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .ToList();
+
+                    var explicitCodes = roleGuids.Count == 0
+                        ? new List<string>()
+                        : await db.Queryable<SysRolePermission>()
+                            .Where(item => roleGuids.Contains(item.RoleGuid) && !item.IsDeleted)
+                            .Select(item => item.PermissionCode)
+                            .ToListAsync();
+
+                    permissionCodes = Permissions.ExpandPermissionCodes(explicitCodes).ToList();
+                }
+
+                return ApiResponse<UserPermissionSnapshotDto>.OK(
+                    new UserPermissionSnapshotDto
+                    {
+                        UserGuid = userGuid,
+                        IsSuperAdmin = isSuperAdmin,
+                        RoleNames = roleNames,
+                        PermissionCodes = permissionCodes
+                            .Distinct(StringComparer.OrdinalIgnoreCase)
+                            .ToList(),
+                    },
+                    isSuperAdmin ? "Admin 默认拥有所有权限" : "获取用户权限快照成功"
+                );
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "获取用户权限快照失败，UserGUID: {UserGUID}", userGuid);
+                return ApiResponse<UserPermissionSnapshotDto>.Error(
+                    "获取用户权限快照失败",
+                    "GET_USER_PERMISSION_SNAPSHOT_FAILED"
+                );
+            }
+        }
+
         /// <summary>
         /// 复制角色
         /// </summary>

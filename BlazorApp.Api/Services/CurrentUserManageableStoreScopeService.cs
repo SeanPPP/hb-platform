@@ -8,6 +8,25 @@ namespace BlazorApp.Api.Services
 {
     public class CurrentUserManageableStoreScopeService : ICurrentUserManageableStoreScopeService
     {
+        internal static IReadOnlyList<string> AdminRoleAliases { get; } = new[]
+        {
+            "Admin",
+            "管理员",
+        };
+
+        internal static IReadOnlyList<string> StoreManagerRoleAliases { get; } = new[]
+        {
+            "StoreManager",
+            "店长",
+            "经理",
+        };
+
+        internal static IReadOnlyList<string> WarehouseManagerRoleAliases { get; } = new[]
+        {
+            "WarehouseManager",
+            "仓库经理",
+        };
+
         private readonly SqlSugarContext _context;
         private readonly ICurrentUserService _currentUserService;
         private readonly IHttpContextAccessor _httpContextAccessor;
@@ -38,7 +57,7 @@ namespace BlazorApp.Api.Services
                 };
             }
 
-            if (HasRole(user, "Admin"))
+            if (HasAnyRole(user, AdminRoleAliases) || HasAnyRole(user, WarehouseManagerRoleAliases))
             {
                 return new CurrentUserManageableStoreScope
                 {
@@ -50,7 +69,7 @@ namespace BlazorApp.Api.Services
                 };
             }
 
-            if (!HasRole(user, "StoreManager"))
+            if (!HasAnyRole(user, StoreManagerRoleAliases))
             {
                 return new CurrentUserManageableStoreScope
                 {
@@ -183,11 +202,11 @@ namespace BlazorApp.Api.Services
                 ?? user?.FindFirst(ClaimTypes.NameIdentifier)?.Value;
         }
 
-        private static bool HasRole(ClaimsPrincipal? user, string role)
+        internal static bool HasAnyRole(ClaimsPrincipal? user, IReadOnlyCollection<string> roles)
         {
             return user?.Claims.Any(claim =>
                 claim.Type == ClaimTypes.Role
-                && claim.Value.Equals(role, StringComparison.OrdinalIgnoreCase)
+                && roles.Any(role => claim.Value.Equals(role, StringComparison.OrdinalIgnoreCase))
             ) == true;
         }
     }

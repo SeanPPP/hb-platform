@@ -375,18 +375,32 @@ namespace BlazorApp.Api.Services
         {
             var db = _dbContext.Db;
 
-            // 1. 同步权限定义
+            // 1. 同步规范权限定义，并清理已知废弃/重复权限码
             var allPermissions = PermissionSeedData.AllPermissions.ToList();
+            var deprecatedPermissionCodes = PermissionSeedData.DeprecatedPermissionCodes;
             var existingPermissions = await db.Queryable<SysPermission>().ToListAsync();
-            var existingPermissionByCode = existingPermissions
+            var existingPermissionsByCode = existingPermissions
                 .GroupBy(permission => permission.Code, StringComparer.OrdinalIgnoreCase)
-                .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
+                .ToDictionary(
+                    group => group.Key,
+                    group => group
+                        .OrderBy(permission => permission.IsDeleted)
+                        .ThenBy(permission => permission.CreatedAt)
+                        .ThenBy(permission => permission.Id, StringComparer.OrdinalIgnoreCase)
+                        .ToList(),
+                    StringComparer.OrdinalIgnoreCase
+                );
 
             var newPermissions = new List<SysPermission>();
-            var updatedPermissions = new List<SysPermission>();
+            var updatedPermissionsById = new Dictionary<string, SysPermission>(StringComparer.OrdinalIgnoreCase);
+            var duplicatePermissionIdsToDelete = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var now = DateTime.UtcNow;
             foreach (var seed in allPermissions)
             {
-                if (!existingPermissionByCode.TryGetValue(seed.Code, out var existingPermission))
+                if (
+                    !existingPermissionsByCode.TryGetValue(seed.Code, out var matchingPermissions)
+                    || matchingPermissions.Count == 0
+                )
                 {
                     newPermissions.Add(
                         new SysPermission
@@ -396,22 +410,70 @@ namespace BlazorApp.Api.Services
                             Name = seed.Name,
                             Category = seed.Category,
                             Description = seed.Description,
+                            IsDeleted = false,
+                            CreatedAt = now,
+                            CreatedBy = "System",
+                            UpdatedAt = now,
+                            UpdatedBy = "System",
                         }
                     );
                     continue;
                 }
 
-                if (
+                var existingPermission = matchingPermissions[0];
+                var shouldUpdate =
                     existingPermission.Name != seed.Name
                     || existingPermission.Category != seed.Category
                     || existingPermission.Description != seed.Description
+                    || existingPermission.IsDeleted;
+
+                existingPermission.Name = seed.Name;
+                existingPermission.Category = seed.Category;
+                existingPermission.Description = seed.Description;
+                existingPermission.IsDeleted = false;
+
+                if (shouldUpdate)
+                {
+                    MarkPermissionUpdated(existingPermission, now, updatedPermissionsById);
+                }
+
+                foreach (var duplicatePermission in matchingPermissions.Skip(1))
+                {
+                    if (duplicatePermission.IsDeleted)
+                    {
+                        duplicatePermissionIdsToDelete.Add(duplicatePermission.Id);
+                        continue;
+                    }
+
+                    duplicatePermission.IsDeleted = true;
+                    MarkPermissionUpdated(duplicatePermission, now, updatedPermissionsById);
+                }
+            }
+
+            foreach (var deprecatedCode in deprecatedPermissionCodes)
+            {
+                if (
+                    !existingPermissionsByCode.TryGetValue(deprecatedCode, out var matchingPermissions)
+                    || matchingPermissions.Count == 0
                 )
                 {
-                    existingPermission.Name = seed.Name;
-                    existingPermission.Category = seed.Category;
-                    existingPermission.Description = seed.Description;
-                    updatedPermissions.Add(existingPermission);
+                    continue;
                 }
+
+                foreach (var permission in matchingPermissions.Where(permission => !permission.IsDeleted))
+                {
+                    permission.IsDeleted = true;
+                    MarkPermissionUpdated(permission, now, updatedPermissionsById);
+                }
+            }
+
+            if (duplicatePermissionIdsToDelete.Any())
+            {
+                var duplicateIds = duplicatePermissionIdsToDelete.ToList();
+                var removedDuplicates = await db.Deleteable<SysPermission>()
+                    .Where(permission => duplicateIds.Contains(permission.Id))
+                    .ExecuteCommandAsync();
+                _logger.LogInformation("已物理删除 {Count} 条软删除的重复权限定义", removedDuplicates);
             }
 
             if (newPermissions.Any())
@@ -420,6 +482,7 @@ namespace BlazorApp.Api.Services
                 _logger.LogInformation($"已新增 {newPermissions.Count} 个权限定义");
             }
 
+            var updatedPermissions = updatedPermissionsById.Values.ToList();
             if (updatedPermissions.Any())
             {
                 await db.Updateable(updatedPermissions)
@@ -428,6 +491,9 @@ namespace BlazorApp.Api.Services
                         permission.Name,
                         permission.Category,
                         permission.Description,
+                        permission.IsDeleted,
+                        permission.UpdatedAt,
+                        permission.UpdatedBy,
                     })
                     .ExecuteCommandAsync();
                 _logger.LogInformation($"已更新 {updatedPermissions.Count} 个权限定义");
@@ -486,6 +552,17 @@ namespace BlazorApp.Api.Services
                     CreatedAt = DateTime.UtcNow,
                 }
             );
+        }
+
+        private static void MarkPermissionUpdated(
+            SysPermission permission,
+            DateTime updatedAt,
+            IDictionary<string, SysPermission> updatedPermissionsById
+        )
+        {
+            permission.UpdatedAt = updatedAt;
+            permission.UpdatedBy = "System";
+            updatedPermissionsById[permission.Id] = permission;
         }
 
         private async Task SeedRolePermissionTemplatesAsync()
