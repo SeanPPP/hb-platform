@@ -219,6 +219,7 @@ namespace BlazorApp.Api.Services
                 new Claim(JwtRegisteredClaimNames.Email, user.Email), // 邮箱：用户邮箱地址
                 // 🏷️ 标准.NET声明（ASP.NET Core识别的声明）
                 new Claim(ClaimTypes.Name, user.Username), // 用户名：用于HttpContext.User.Identity.Name
+                new Claim(ClaimTypes.NameIdentifier, user.UserGUID.ToString()),
                 // 🔧 自定义声明（项目特定的声明）
                 new Claim("uid", user.UserGUID.ToString()), // 用户GUID：用于前端识别
                 new Claim("userId", user.UserGUID.ToString()), // 用户GUID：统一标识符
@@ -404,6 +405,7 @@ namespace BlazorApp.Api.Services
                 }
                 else
                 {
+                    await TryRevokeRefreshTokenAsync(storedRefreshToken);
                     return null; // RefreshToken无效或已过期
                 }
             }
@@ -414,6 +416,7 @@ namespace BlazorApp.Api.Services
                 || !Guid.TryParse(userGuidString, out var userGuid)
             )
             {
+                await TryRevokeRefreshTokenAsync(storedRefreshToken);
                 return null; // 用户标识无效
             }
 
@@ -424,6 +427,7 @@ namespace BlazorApp.Api.Services
                 || storedRefreshToken.ExpiresAt < DateTime.UtcNow
             )
             {
+                await TryRevokeRefreshTokenAsync(storedRefreshToken);
                 return null; // RefreshToken无效、不匹配或已过期
             }
 
@@ -436,7 +440,7 @@ namespace BlazorApp.Api.Services
             var user = await _dbContext
                 .Db.Queryable<User>()
                 .Includes(u => u.Roles) // 📋 预加载用户角色信息，确保刷新token时也有角色声明
-                .FirstAsync(u => u.UserGUID == userGuidString && !u.IsDeleted);
+                .FirstAsync(u => u.UserGUID == userGuidString && u.IsActive && !u.IsDeleted);
             if (user == null)
             {
                 return null; // 用户不存在或已被删除
@@ -563,6 +567,7 @@ namespace BlazorApp.Api.Services
                 new Claim(JwtRegisteredClaimNames.UniqueName, user.Username), // 唯一名称：用户名
                 new Claim(JwtRegisteredClaimNames.Email, user.Email), // 邮箱：用户邮箱
                 new Claim(ClaimTypes.Name, user.Username), // 用户名：用于身份识别
+                new Claim(ClaimTypes.NameIdentifier, user.UserGUID.ToString()),
                 new Claim("userGuid", user.UserGUID.ToString()), // 用户GUID：用于刷新令牌
                 new Claim("userId", user.UserGUID.ToString()), // 用户GUID：统一标识符
                 new Claim("fullName", user.FullName ?? user.Username), // 用户全名：用于显示
@@ -615,6 +620,22 @@ namespace BlazorApp.Api.Services
 
             // 📄 序列化为字符串
             return new JwtSecurityTokenHandler().WriteToken(token);
+        }
+
+        private async Task TryRevokeRefreshTokenAsync(RefreshToken? refreshToken)
+        {
+            if (refreshToken == null || refreshToken.IsRevoked)
+            {
+                return;
+            }
+
+            refreshToken.IsRevoked = true;
+            refreshToken.UpdatedAt = DateTime.UtcNow;
+
+            await _dbContext
+                .Db.Updateable(refreshToken)
+                .UpdateColumns(rt => new { rt.IsRevoked, rt.UpdatedAt })
+                .ExecuteCommandAsync();
         }
 
         /// <summary>

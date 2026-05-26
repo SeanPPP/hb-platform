@@ -1453,9 +1453,17 @@ namespace BlazorApp.Api.Services
                 var db = _context.Db;
 
                 var hasRole = await db.Queryable<UserRole>()
-                    .InnerJoin<Role>((ur, r) => ur.RoleGUID == r.RoleGUID)
+                    .InnerJoin<User>((ur, u) => ur.UserGUID == u.UserGUID)
+                    .InnerJoin<Role>((ur, u, r) => ur.RoleGUID == r.RoleGUID)
                     .Where(
-                        (ur, r) => ur.UserGUID == userGuid && r.RoleName == roleName && r.IsActive
+                        (ur, u, r) =>
+                            ur.UserGUID == userGuid
+                            && !ur.IsDeleted
+                            && u.IsActive
+                            && !u.IsDeleted
+                            && r.RoleName == roleName
+                            && r.IsActive
+                            && !r.IsDeleted
                     )
                     .AnyAsync();
 
@@ -1488,8 +1496,20 @@ namespace BlazorApp.Api.Services
                 // 链路: User -> UserRole -> Role -> SysRolePermission
                 // 只要有一个角色拥有该权限即可
                 var hasPermission = await db.Queryable<UserRole>()
-                    .InnerJoin<SysRolePermission>((ur, rp) => ur.RoleGUID == rp.RoleGuid)
-                    .Where((ur, rp) => ur.UserGUID == userGuid && rp.PermissionCode == permission)
+                    .InnerJoin<User>((ur, u) => ur.UserGUID == u.UserGUID)
+                    .InnerJoin<Role>((ur, u, r) => ur.RoleGUID == r.RoleGUID)
+                    .InnerJoin<SysRolePermission>((ur, u, r, rp) => ur.RoleGUID == rp.RoleGuid)
+                    .Where(
+                        (ur, u, r, rp) =>
+                            ur.UserGUID == userGuid
+                            && !ur.IsDeleted
+                            && u.IsActive
+                            && !u.IsDeleted
+                            && r.IsActive
+                            && !r.IsDeleted
+                            && !rp.IsDeleted
+                            && rp.PermissionCode == permission
+                    )
                     .AnyAsync();
 
                 return ApiResponse<bool>.OK(

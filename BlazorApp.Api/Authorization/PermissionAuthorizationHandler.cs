@@ -9,7 +9,6 @@ namespace BlazorApp.Api.Authorization
     public class PermissionAuthorizationHandler : AuthorizationHandler<PermissionRequirement>
     {
         private readonly IServiceScopeFactory _serviceScopeFactory;
-        private readonly IMemoryCache _cache;
         private readonly ILogger<PermissionAuthorizationHandler> _logger;
 
         public PermissionAuthorizationHandler(
@@ -19,7 +18,6 @@ namespace BlazorApp.Api.Authorization
         )
         {
             _serviceScopeFactory = serviceScopeFactory;
-            _cache = cache;
             _logger = logger;
         }
 
@@ -28,16 +26,15 @@ namespace BlazorApp.Api.Authorization
             PermissionRequirement requirement
         )
         {
-            var userId = context.User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            var userId =
+                context.User.FindFirst(ClaimTypes.NameIdentifier)?.Value
+                ?? context.User.FindFirst("userId")?.Value
+                ?? context.User.FindFirst("userGuid")?.Value
+                ?? context.User.FindFirst(ClaimTypes.Name)?.Value
+                ?? context.User.FindFirst("sub")?.Value;
 
             if (string.IsNullOrEmpty(userId))
             {
-                return;
-            }
-
-            if (context.User.IsInRole("Admin") || context.User.IsInRole("管理员"))
-            {
-                context.Succeed(requirement);
                 return;
             }
 
@@ -47,78 +44,72 @@ namespace BlazorApp.Api.Authorization
                 return;
             }
 
-            if (
-                context.User.IsInRole("StoreManager")
-                && Permissions.IsStoreManagerGranted(requirement.Permission)
-            )
+            try
             {
-                context.Succeed(requirement);
-                return;
-            }
+                using var scope = _serviceScopeFactory.CreateScope();
+                var roleService = scope.ServiceProvider.GetRequiredService<IRoleService>();
 
-            if (
-                context.User.IsInRole("WarehouseManager")
-                && Permissions.IsWarehouseManagerGranted(requirement.Permission)
-            )
-            {
-                context.Succeed(requirement);
-                return;
-            }
+                if (await UserHasAnyRoleAsync(roleService, userId, "Admin", "管理员"))
+                {
+                    context.Succeed(requirement);
+                    return;
+                }
 
-            var equivalentPermissions = Permissions.GetEquivalentPermissionCodes(
-                requirement.Permission
-            );
-
-            if (
-                equivalentPermissions.Any(permission =>
-                    context.User.HasClaim("permission", permission)
+                if (
+                    Permissions.IsStoreManagerGranted(requirement.Permission)
+                    && await UserHasAnyRoleAsync(roleService, userId, "StoreManager")
                 )
-            )
-            {
-                context.Succeed(requirement);
-                return;
-            }
-
-            // 缓存键: user_permission_{userId}_{permission}
-            var cacheKey = $"user_permission_{userId}_{requirement.Permission}";
-
-            if (!_cache.TryGetValue(cacheKey, out bool hasPermission))
-            {
-                try
                 {
-                    // 创建新的 Scope 以解析 Scoped Service (IRoleService)
-                    using var scope = _serviceScopeFactory.CreateScope();
-                    var roleService = scope.ServiceProvider.GetRequiredService<IRoleService>();
+                    context.Succeed(requirement);
+                    return;
+                }
 
-                    foreach (var permission in equivalentPermissions)
+                if (
+                    Permissions.IsWarehouseManagerGranted(requirement.Permission)
+                    && await UserHasAnyRoleAsync(roleService, userId, "WarehouseManager")
+                )
+                {
+                    context.Succeed(requirement);
+                    return;
+                }
+
+                foreach (var permission in Permissions.GetEquivalentPermissionCodes(requirement.Permission))
+                {
+                    var result = await roleService.UserHasPermissionAsync(userId, permission);
+                    if (result.Data)
                     {
-                        var result = await roleService.UserHasPermissionAsync(userId, permission);
-                        if (result.Data)
-                        {
-                            hasPermission = true;
-                            break;
-                        }
+                        context.Succeed(requirement);
+                        return;
                     }
-
-                    // 缓存结果 5 分钟
-                    _cache.Set(cacheKey, hasPermission, TimeSpan.FromMinutes(5));
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError(
-                        ex,
-                        "权限验证失败: User={UserId}, Permission={Permission}",
-                        userId,
-                        requirement.Permission
-                    );
-                    hasPermission = false;
                 }
             }
-
-            if (hasPermission)
+            catch (Exception ex)
             {
-                context.Succeed(requirement);
+                _logger.LogError(
+                    ex,
+                    "权限验证失败: User={UserId}, Permission={Permission}",
+                    userId,
+                    requirement.Permission
+                );
             }
+        }
+
+        private static async Task<bool> UserHasAnyRoleAsync(
+            IRoleService roleService,
+            string userId,
+            params string[] roleNames
+        )
+        {
+            foreach (var roleName in roleNames)
+            {
+                var roleResult = await roleService.UserHasRoleAsync(userId, roleName);
+                if (roleResult.Data)
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
     }
 }

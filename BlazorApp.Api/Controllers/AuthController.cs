@@ -44,7 +44,7 @@ namespace BlazorApp.Api.Controllers
         }
 
         /// <summary>
-        /// 用户登录接口
+        /// Bearer 用户登录接口
         /// </summary>
         /// <param name="request">登录请求参数，包含用户名和密码</param>
         /// <returns>登录结果，包含访问令牌和刷新令牌</returns>
@@ -67,60 +67,44 @@ namespace BlazorApp.Api.Controllers
         [AllowAnonymous] // 🔓 允许匿名访问，登录不需要认证
         public async Task<ApiResponse<TokenResponse>> Login([FromBody] LoginRequest request)
         {
-            // 验证请求模型状态
             if (!ModelState.IsValid)
             {
                 return ApiResponse<TokenResponse>.Error("请求数据格式无效");
             }
 
-            // 调用认证服务进行登录验证
-            var loginResponse = await _authService.LoginAsync(request);
-            if (!loginResponse.Success)
+            var tokenResponse = await AuthenticateAndIssueTokensAsync(request);
+            if (tokenResponse == null)
             {
                 return ApiResponse<TokenResponse>.Error("用户名或密码错误");
             }
-
-            // 获取客户端IP地址和用户代理信息（用于安全审计）
-            var ipAddress =
-                Request.HttpContext.Connection.RemoteIpAddress?.ToString() ?? "127.0.0.1";
-            var userAgent = Request.Headers["User-Agent"].ToString();
-
-            // 根据用户名获取完整用户对象（包含角色信息，用户名大小写不敏感）
-            var usernameLower = (request.Username ?? string.Empty).Trim().ToLower();
-            var userList = await _dbContext
-                .Db.Queryable<User>()
-                .Includes(u => u.Roles)
-                .Where(u => u.Username.ToLower() == usernameLower)
-                .Take(1)
-                .ToListAsync();
-            var user = userList.FirstOrDefault();
-
-            if (user == null)
-            {
-                return ApiResponse<TokenResponse>.Error("用户名或密码错误");
-            }
-
-            // 生成JWT访问令牌和刷新令牌
-            var tokenResponse = await _authService.GenerateTokensAsync(user, ipAddress, userAgent);
-
-            // 🍪 将令牌存储到 Cookie 中
-            Response.Cookies.Append(
-                "access_token",
-                tokenResponse.AccessToken,
-                CookieOptionsHelper.CreateAccessTokenCookieOptions()
-            );
-
-            Response.Cookies.Append(
-                "refresh_token",
-                tokenResponse.RefreshToken,
-                CookieOptionsHelper.CreateRefreshTokenCookieOptions()
-            );
 
             return ApiResponse<TokenResponse>.OK(tokenResponse, "登录成功");
         }
 
         /// <summary>
-        /// 刷新访问令牌接口
+        /// 浏览器 Cookie 会话登录接口
+        /// </summary>
+        [HttpPost("session/login")]
+        [AllowAnonymous]
+        public async Task<ApiResponse<SessionResponse>> SessionLogin([FromBody] LoginRequest request)
+        {
+            if (!ModelState.IsValid)
+            {
+                return ApiResponse<SessionResponse>.Error("请求数据格式无效");
+            }
+
+            var tokenResponse = await AuthenticateAndIssueTokensAsync(request);
+            if (tokenResponse == null)
+            {
+                return ApiResponse<SessionResponse>.Error("用户名或密码错误");
+            }
+
+            CookieHelper.SetTokens(Response, tokenResponse.AccessToken, tokenResponse.RefreshToken);
+            return ApiResponse<SessionResponse>.OK(CreateSessionResponse(tokenResponse), "登录成功");
+        }
+
+        /// <summary>
+        /// Bearer 刷新访问令牌接口
         /// </summary>
         /// <param name="request">刷新令牌请求，包含当前访问令牌和刷新令牌（可选，向后兼容）</param>
         /// <returns>新的访问令牌和刷新令牌</returns>
@@ -144,47 +128,12 @@ namespace BlazorApp.Api.Controllers
             [FromBody] RefreshTokenRequest request
         )
         {
-            // 获取客户端IP地址和用户代理信息（用于安全审计）
+            var accessToken = request?.AccessToken ?? string.Empty;
+            var refreshToken = request?.RefreshToken ?? string.Empty;
             var ipAddress =
                 Request.HttpContext.Connection.RemoteIpAddress?.ToString() ?? "127.0.0.1";
             var userAgent = Request.Headers["User-Agent"].ToString();
 
-            // 🍪 优先从 Cookie 中读取令牌（支持 Cookie 认证方案）
-            var cookieAccessToken = CookieHelper.GetAccessToken(Request.HttpContext);
-            var cookieRefreshToken = CookieHelper.GetRefreshToken(Request.HttpContext);
-
-            // 📦 如果 Cookie 中存在令牌，使用 Cookie 中的令牌
-            if (
-                !string.IsNullOrEmpty(cookieAccessToken)
-                || !string.IsNullOrEmpty(cookieRefreshToken)
-            )
-            {
-                var tokenResponse = await _authService.RefreshTokensAsync(
-                    Request.HttpContext,
-                    ipAddress,
-                    userAgent
-                );
-
-                if (tokenResponse == null)
-                {
-                    return ApiResponse<TokenResponse>.Error("刷新令牌无效或已过期");
-                }
-
-                // 🍪 更新 Cookie 中的令牌
-                CookieHelper.SetTokens(
-                    Response,
-                    tokenResponse.AccessToken,
-                    tokenResponse.RefreshToken
-                );
-
-                return ApiResponse<TokenResponse>.OK(tokenResponse, "令牌刷新成功");
-            }
-
-            // 🔙 向后兼容：如果 Cookie 中没有令牌，从请求体读取（支持传统的请求体认证方案）
-            var accessToken = request?.AccessToken ?? string.Empty;
-            var refreshToken = request?.RefreshToken ?? string.Empty;
-
-            // 调用认证服务刷新令牌
             var tokenResponseFromBody = await _authService.RefreshTokensAsync(
                 accessToken,
                 refreshToken,
@@ -197,14 +146,34 @@ namespace BlazorApp.Api.Controllers
                 return ApiResponse<TokenResponse>.Error("刷新令牌无效或已过期");
             }
 
-            // 🍪 更新 Cookie 中的令牌
-            CookieHelper.SetTokens(
-                Response,
-                tokenResponseFromBody.AccessToken,
-                tokenResponseFromBody.RefreshToken
+            return ApiResponse<TokenResponse>.OK(tokenResponseFromBody, "令牌刷新成功");
+        }
+
+        /// <summary>
+        /// 浏览器 Cookie 会话刷新接口
+        /// </summary>
+        [HttpPost("session/refresh")]
+        [AllowAnonymous]
+        public async Task<ApiResponse<SessionResponse>> SessionRefresh()
+        {
+            var ipAddress =
+                Request.HttpContext.Connection.RemoteIpAddress?.ToString() ?? "127.0.0.1";
+            var userAgent = Request.Headers["User-Agent"].ToString();
+
+            var tokenResponse = await _authService.RefreshTokensAsync(
+                Request.HttpContext,
+                ipAddress,
+                userAgent
             );
 
-            return ApiResponse<TokenResponse>.OK(tokenResponseFromBody, "令牌刷新成功");
+            if (tokenResponse == null)
+            {
+                CookieHelper.ClearAuthCookies(Response);
+                return ApiResponse<SessionResponse>.Error("刷新令牌无效或已过期");
+            }
+
+            CookieHelper.SetTokens(Response, tokenResponse.AccessToken, tokenResponse.RefreshToken);
+            return ApiResponse<SessionResponse>.OK(CreateSessionResponse(tokenResponse), "令牌刷新成功");
         }
 
         /// <summary>
@@ -300,7 +269,7 @@ namespace BlazorApp.Api.Controllers
         }
 
         /// <summary>
-        /// 用户登出接口
+        /// Bearer 用户登出接口
         /// </summary>
         /// <param name="request">登出请求，包含要撤销的刷新令牌</param>
         /// <returns>登出操作结果</returns>
@@ -317,24 +286,28 @@ namespace BlazorApp.Api.Controllers
         public async Task<ApiResponse<object>> Logout([FromBody] RefreshTokenRequest request)
         {
             // 如果提供了刷新令牌，则撤销该令牌
-            if (!string.IsNullOrEmpty(request.RefreshToken))
+            if (!string.IsNullOrEmpty(request?.RefreshToken))
             {
                 await _authService.RevokeRefreshTokenAsync(request.RefreshToken);
             }
 
-            // 🍪 清除 Cookie 中的令牌
-            Response.Cookies.Append(
-                "access_token",
-                "",
-                CookieOptionsHelper.CreateExpiredCookieOptions()
-            );
+            return ApiResponse<object>.CreateSuccess("登出成功");
+        }
 
-            Response.Cookies.Append(
-                "refresh_token",
-                "",
-                CookieOptionsHelper.CreateExpiredCookieOptions()
-            );
+        /// <summary>
+        /// 浏览器 Cookie 会话登出接口
+        /// </summary>
+        [HttpPost("session/logout")]
+        [AllowAnonymous]
+        public async Task<ApiResponse<object>> SessionLogout()
+        {
+            var refreshToken = CookieHelper.GetRefreshToken(Request.HttpContext);
+            if (!string.IsNullOrEmpty(refreshToken))
+            {
+                await _authService.RevokeRefreshTokenAsync(refreshToken);
+            }
 
+            CookieHelper.ClearAuthCookies(Response);
             return ApiResponse<object>.CreateSuccess("登出成功");
         }
 
@@ -432,6 +405,44 @@ namespace BlazorApp.Api.Controllers
             {
                 return ApiResponse<bool>.Error(ex.Message);
             }
+        }
+
+        private async Task<TokenResponse?> AuthenticateAndIssueTokensAsync(LoginRequest request)
+        {
+            var loginResponse = await _authService.LoginAsync(request);
+            if (!loginResponse.Success)
+            {
+                return null;
+            }
+
+            var ipAddress =
+                Request.HttpContext.Connection.RemoteIpAddress?.ToString() ?? "127.0.0.1";
+            var userAgent = Request.Headers["User-Agent"].ToString();
+
+            var usernameLower = (request.Username ?? string.Empty).Trim().ToLower();
+            var userList = await _dbContext
+                .Db.Queryable<User>()
+                .Includes(u => u.Roles)
+                .Where(u => u.Username.ToLower() == usernameLower && u.IsActive && !u.IsDeleted)
+                .Take(1)
+                .ToListAsync();
+            var user = userList.FirstOrDefault();
+
+            if (user == null)
+            {
+                return null;
+            }
+
+            return await _authService.GenerateTokensAsync(user, ipAddress, userAgent);
+        }
+
+        private static SessionResponse CreateSessionResponse(TokenResponse tokenResponse)
+        {
+            return new SessionResponse
+            {
+                AccessTokenExpiry = tokenResponse.AccessTokenExpiry,
+                RefreshTokenExpiry = tokenResponse.RefreshTokenExpiry,
+            };
         }
     }
 }
