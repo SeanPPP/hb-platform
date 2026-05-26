@@ -1,4 +1,5 @@
-import { ScrollView, StyleSheet, useWindowDimensions, View } from "react-native";
+import type { ReactNode } from "react";
+import { Pressable, ScrollView, StyleSheet, useWindowDimensions, View } from "react-native";
 import { Button, Modal, Portal, RadioButton, Text } from "react-native-paper";
 import type { Store } from "@/modules/shop/types";
 
@@ -10,6 +11,8 @@ interface StorePickerModalProps {
   cancelLabel: string;
   includeAllOption?: boolean;
   allLabel?: string;
+  renderAllLabel?: (label: string) => ReactNode;
+  renderStoreLabel?: (store: Store) => ReactNode;
   onDismiss: () => void;
   onSelectStore: (store: Store | null) => void | Promise<void>;
 }
@@ -22,6 +25,8 @@ export function StorePickerModal({
   cancelLabel,
   includeAllOption = false,
   allLabel,
+  renderAllLabel,
+  renderStoreLabel,
   onDismiss,
   onSelectStore,
 }: StorePickerModalProps) {
@@ -53,6 +58,7 @@ export function StorePickerModal({
           {includeAllOption ? (
             <PickerRow
               label={allLabel ?? title}
+              content={renderAllLabel?.(allLabel ?? title)}
               selected={!selectedStoreCode}
               onPress={() => void onSelectStore(null)}
             />
@@ -61,6 +67,7 @@ export function StorePickerModal({
             <PickerRow
               key={store.storeCode}
               label={store.storeName || store.storeCode}
+              content={renderStoreLabel?.(store)}
               selected={store.storeCode === selectedStoreCode}
               onPress={() => void onSelectStore(store)}
             />
@@ -76,10 +83,12 @@ export function StorePickerModal({
 
 function PickerRow({
   label,
+  content,
   selected,
   onPress,
 }: {
   label: string;
+  content?: ReactNode;
   selected: boolean;
   onPress: () => void;
 }) {
@@ -90,14 +99,25 @@ function PickerRow({
         status={selected ? "checked" : "unchecked"}
         onPress={onPress}
       />
-      <Button
-        mode="text"
-        onPress={onPress}
-        style={styles.itemButton}
-        contentStyle={styles.itemButtonContent}
-      >
-        {label}
-      </Button>
+      {content ? (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={label}
+          onPress={onPress}
+          style={styles.itemButton}
+        >
+          {content}
+        </Pressable>
+      ) : (
+        <Button
+          mode="text"
+          onPress={onPress}
+          style={styles.itemButton}
+          contentStyle={styles.itemButtonContent}
+        >
+          {label}
+        </Button>
+      )}
     </View>
   );
 }
@@ -123,6 +143,7 @@ const styles = StyleSheet.create({
   },
   itemButton: {
     flex: 1,
+    minWidth: 0,
   },
   itemButtonContent: {
     justifyContent: "flex-start",

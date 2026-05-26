@@ -16,7 +16,6 @@ import {
   Text,
   TextInput,
 } from "react-native-paper";
-import { MonthDatePicker } from "@/components/attendance/MonthDatePicker";
 import { StorePickerModal } from "@/components/ui/StorePickerModal";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { EmptyState } from "@/components/ui/EmptyState";
@@ -28,6 +27,13 @@ import {
   buildLocalSupplierInvoicesReturnParams,
   decodeLocalSupplierInvoicesReturnParams,
 } from "@/modules/local-supplier-invoices/navigation";
+import {
+  clearInvoiceDateRange,
+  formatInvoiceDateRangeDisplay,
+  selectInvoiceDateRange,
+  toInvoiceOrderDateFilters,
+  type InvoiceDateRangeValue,
+} from "@/modules/local-supplier-invoices/date-range";
 import type {
   InvoiceDetailPageSize,
   InvoiceGridFilters,
@@ -42,11 +48,14 @@ import { useStores } from "@/modules/shop/use-stores";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 
 type SortOption = InvoiceGridSort & { labelKey: string };
-type DateFilterKey = "orderDateFrom" | "orderDateTo";
 type SupplierOption = { supplierCode: string; supplierName: string };
+type CalendarCell = { date: Date; dateString: string; isCurrentMonth: boolean };
+type EntityTagTone = "store" | "supplier" | "neutral";
 
 const LIST_PAGE_SIZES: InvoiceListPageSize[] = [20, 50, 100];
 const DETAIL_PAGE_SIZES: InvoiceDetailPageSize[] = [50, 100, 200];
+const DATE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
+const GRID_DAYS = 42;
 const SORT_OPTIONS: SortOption[] = [
   { colId: "OrderDate", direction: "desc", labelKey: "filters.orderDateDesc" },
   { colId: "OrderDate", direction: "asc", labelKey: "filters.orderDateAsc" },
@@ -74,12 +83,108 @@ function formatNumber(value?: number | null) {
   return value == null || Number.isNaN(value) ? "--" : String(value);
 }
 
+function EntityTag({
+  label,
+  tone,
+}: {
+  label: string;
+  tone: EntityTagTone;
+}) {
+  const toneStyles = ENTITY_TAG_STYLES[tone];
+
+  return (
+    <View style={[styles.entityTag, toneStyles.tag]}>
+      <Text
+        variant="labelMedium"
+        numberOfLines={1}
+        style={[styles.entityTagText, toneStyles.text]}
+      >
+        {label}
+      </Text>
+    </View>
+  );
+}
+
 function getPageCount(total: number, pageSize: number) {
   return Math.max(1, Math.ceil(total / pageSize));
 }
 
-function getFilterLabel(value?: string | null, placeholder?: string) {
-  return value?.trim() || placeholder || "--";
+function pad2(value: number) {
+  return value.toString().padStart(2, "0");
+}
+
+function formatMonthDate(date: Date) {
+  return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`;
+}
+
+function parseMonthDate(value?: string) {
+  const match = value?.match(DATE_PATTERN);
+  if (!match) {
+    return undefined;
+  }
+
+  const year = Number(match[1]);
+  const monthIndex = Number(match[2]) - 1;
+  const day = Number(match[3]);
+  const parsed = new Date(year, monthIndex, day);
+
+  if (
+    parsed.getFullYear() !== year
+    || parsed.getMonth() !== monthIndex
+    || parsed.getDate() !== day
+  ) {
+    return undefined;
+  }
+
+  return parsed;
+}
+
+function normalizeMonthDate(value?: string | null) {
+  const parsed = parseMonthDate(value ?? undefined);
+  return parsed ? formatMonthDate(parsed) : undefined;
+}
+
+function getMonthStart(date: Date) {
+  return new Date(date.getFullYear(), date.getMonth(), 1);
+}
+
+function addMonths(date: Date, count: number) {
+  return new Date(date.getFullYear(), date.getMonth() + count, 1);
+}
+
+function buildMonthGrid(displayMonth: Date): CalendarCell[] {
+  const monthStart = getMonthStart(displayMonth);
+  const mondayOffset = (monthStart.getDay() + 6) % 7;
+  const gridStart = new Date(monthStart.getFullYear(), monthStart.getMonth(), 1 - mondayOffset);
+
+  return Array.from({ length: GRID_DAYS }, (_, index) => {
+    const date = new Date(gridStart.getFullYear(), gridStart.getMonth(), gridStart.getDate() + index);
+    return {
+      date,
+      dateString: formatMonthDate(date),
+      isCurrentMonth: date.getMonth() === monthStart.getMonth(),
+    };
+  });
+}
+
+function chunkWeeks<T>(items: T[]) {
+  return Array.from({ length: Math.ceil(items.length / 7) }, (_, index) =>
+    items.slice(index * 7, index * 7 + 7)
+  );
+}
+
+function compareMonthDate(left?: string, right?: string) {
+  if (!left || !right) {
+    return 0;
+  }
+  return left.localeCompare(right);
+}
+
+function isDateInRange(date: string, from?: string, to?: string) {
+  if (!from || !to) {
+    return false;
+  }
+  return compareMonthDate(date, from) >= 0 && compareMonthDate(date, to) <= 0;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -179,7 +284,7 @@ function PageSizeMenu<T extends number>({
 }
 
 export default function LocalSupplierInvoicesScreen() {
-  const { t } = useAppTranslation(["localSupplierInvoices", "common"]);
+  const { t, language } = useAppTranslation(["localSupplierInvoices", "common", "attendance"]);
   const router = useRouter();
   const { stores, isLoading: storesLoading } = useStores();
   const searchParams = useLocalSearchParams<{
@@ -203,7 +308,9 @@ export default function LocalSupplierInvoicesScreen() {
   const [sortMenuVisible, setSortMenuVisible] = useState(false);
   const [storePickerVisible, setStorePickerVisible] = useState(false);
   const [supplierPickerVisible, setSupplierPickerVisible] = useState(false);
-  const [datePickerTarget, setDatePickerTarget] = useState<DateFilterKey | null>(null);
+  const [dateRangeModalVisible, setDateRangeModalVisible] = useState(false);
+  const [dateRangeSnapshot, setDateRangeSnapshot] = useState<InvoiceDateRangeValue | null>(null);
+  const [dateRangeDisplayMonth, setDateRangeDisplayMonth] = useState(() => getMonthStart(new Date()));
   const [suppliers, setSuppliers] = useState<SupplierOption[]>([]);
   const [suppliersLoading, setSuppliersLoading] = useState(false);
   const [suppliersLoaded, setSuppliersLoaded] = useState(false);
@@ -262,6 +369,36 @@ export default function LocalSupplierInvoicesScreen() {
       null,
     [draftFilters.supplierCode, suppliers]
   );
+  const monthCells = useMemo(() => buildMonthGrid(dateRangeDisplayMonth), [dateRangeDisplayMonth]);
+  const calendarWeeks = useMemo(() => chunkWeeks(monthCells), [monthCells]);
+  const today = useMemo(() => formatMonthDate(new Date()), []);
+  const weekdayLabels = useMemo(
+    () =>
+      Array.from({ length: 7 }, (_, index) =>
+        t(`attendance:weekdays.${index}`, ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"][index])
+      ),
+    [t]
+  );
+  const monthTitle = useMemo(() => {
+    const locale = language === "zh" ? "zh-CN" : "en-AU";
+    return new Intl.DateTimeFormat(locale, {
+      year: "numeric",
+      month: "long",
+    }).format(dateRangeDisplayMonth);
+  }, [dateRangeDisplayMonth, language]);
+  const orderDateRangeLabel = useMemo(() => {
+    const from = normalizeMonthDate(draftFilters.orderDateFrom);
+    const to = normalizeMonthDate(draftFilters.orderDateTo);
+
+    return formatInvoiceDateRangeDisplay(
+      { from, to },
+      {
+        allDatesLabel: t("filters.allDates"),
+        formatFrom: (date) => t("filters.dateRangeFrom", { date }),
+        formatTo: (date) => t("filters.dateRangeTo", { date }),
+      }
+    ).text;
+  }, [draftFilters.orderDateFrom, draftFilters.orderDateTo, t]);
 
   const loadInvoices = useCallback(
     async (refresh = false) => {
@@ -465,7 +602,7 @@ export default function LocalSupplierInvoicesScreen() {
       }
 
       try {
-        router.push({
+        const pushParams = {
           pathname: "/(tabs)/product-query",
           params: {
             productCode: detail.productCode,
@@ -481,7 +618,19 @@ export default function LocalSupplierInvoicesScreen() {
               sort,
             }),
           },
-        } as Parameters<typeof router.push>[0]);
+        } as Parameters<typeof router.push>[0];
+
+        setSelectedInvoice(null);
+
+        const navigate = () => {
+          router.push(pushParams);
+        };
+
+        if (typeof requestAnimationFrame === "function") {
+          requestAnimationFrame(navigate);
+        } else {
+          setTimeout(navigate, 0);
+        }
       } catch (error) {
         setSnackbar(error instanceof Error ? error.message : t("messages.productOpenFailed"));
       }
@@ -512,14 +661,53 @@ export default function LocalSupplierInvoicesScreen() {
     setSupplierPickerVisible(false);
   }, []);
 
-  const updateDateFilter = useCallback((key: DateFilterKey, value?: string) => {
+  const updateOrderDateRange = useCallback((nextRange: InvoiceDateRangeValue) => {
+    const nextFilters = toInvoiceOrderDateFilters(nextRange);
     setDraftFilters((current) => ({
       ...current,
-      [key]: value || undefined,
+      orderDateFrom: nextFilters.orderDateFrom,
+      orderDateTo: nextFilters.orderDateTo,
     }));
   }, []);
 
-  const currentDateFilterValue = datePickerTarget ? draftFilters[datePickerTarget] : undefined;
+  const openDateRangeModal = useCallback(() => {
+    const from = normalizeMonthDate(draftFilters.orderDateFrom);
+    const to = normalizeMonthDate(draftFilters.orderDateTo);
+    setDateRangeSnapshot({ from, to });
+    setDateRangeDisplayMonth(getMonthStart(parseMonthDate(from || to) ?? new Date()));
+    setDateRangeModalVisible(true);
+  }, [draftFilters.orderDateFrom, draftFilters.orderDateTo]);
+
+  const closeDateRangeModal = useCallback(() => {
+    setDateRangeModalVisible(false);
+    setDateRangeSnapshot(null);
+  }, []);
+
+  const cancelDateRangeModal = useCallback(() => {
+    if (dateRangeSnapshot) {
+      updateOrderDateRange(dateRangeSnapshot);
+    }
+    closeDateRangeModal();
+  }, [closeDateRangeModal, dateRangeSnapshot, updateOrderDateRange]);
+
+  const applyDateRangeModal = useCallback(() => {
+    closeDateRangeModal();
+  }, [closeDateRangeModal]);
+
+  const clearDateRange = useCallback(() => {
+    updateOrderDateRange(clearInvoiceDateRange());
+  }, [updateOrderDateRange]);
+
+  const selectRangeDate = useCallback(
+    (dateString: string) => {
+      const from = normalizeMonthDate(draftFilters.orderDateFrom);
+      const to = normalizeMonthDate(draftFilters.orderDateTo);
+      updateOrderDateRange(selectInvoiceDateRange({ from, to }, dateString));
+
+      setDateRangeDisplayMonth(getMonthStart(parseMonthDate(dateString) ?? new Date()));
+    },
+    [draftFilters.orderDateFrom, draftFilters.orderDateTo, updateOrderDateRange]
+  );
 
   const renderPagination = (
     currentPage: number,
@@ -577,9 +765,12 @@ export default function LocalSupplierInvoicesScreen() {
                   <Text variant="labelMedium" style={styles.pickerFieldLabel}>
                     {t("filters.storeCode")}
                   </Text>
-                  <Text variant="bodyLarge" numberOfLines={1}>
-                    {selectedStore?.storeName || draftFilters.storeCode || t("filters.allStores")}
-                  </Text>
+                  <View style={styles.pickerTagRow}>
+                    <EntityTag
+                      label={selectedStore?.storeName || draftFilters.storeCode || t("filters.allStores")}
+                      tone={draftFilters.storeCode ? "store" : "neutral"}
+                    />
+                  </View>
                 </View>
                 {storesLoading ? (
                   <ActivityIndicator size="small" />
@@ -594,9 +785,12 @@ export default function LocalSupplierInvoicesScreen() {
                   <Text variant="labelMedium" style={styles.pickerFieldLabel}>
                     {t("filters.supplierCode")}
                   </Text>
-                  <Text variant="bodyLarge" numberOfLines={1}>
-                    {selectedSupplier?.supplierName || draftFilters.supplierCode || t("filters.allSuppliers")}
-                  </Text>
+                  <View style={styles.pickerTagRow}>
+                    <EntityTag
+                      label={selectedSupplier?.supplierName || draftFilters.supplierCode || t("filters.allSuppliers")}
+                      tone={draftFilters.supplierCode ? "supplier" : "neutral"}
+                    />
+                  </View>
                 </View>
                 {suppliersLoading ? (
                   <ActivityIndicator size="small" />
@@ -613,41 +807,22 @@ export default function LocalSupplierInvoicesScreen() {
               onChangeText={(value) => setDraftFilters((current) => ({ ...current, invoiceNo: value }))}
               style={styles.filterInput}
             />
-            <Pressable
-              onPress={() => setDatePickerTarget("orderDateFrom")}
-              style={styles.filterInput}
-            >
+            <Pressable onPress={openDateRangeModal} style={styles.filterInput}>
               <Surface style={styles.pickerField} elevation={0}>
                 <View style={styles.pickerFieldText}>
                   <Text variant="labelMedium" style={styles.pickerFieldLabel}>
-                    {t("filters.dateFrom")}
+                    {t("filters.orderDateRange")}
                   </Text>
                   <Text
                     variant="bodyLarge"
                     numberOfLines={1}
-                    style={draftFilters.orderDateFrom ? undefined : styles.pickerPlaceholder}
+                    style={
+                      draftFilters.orderDateFrom || draftFilters.orderDateTo
+                        ? undefined
+                        : styles.pickerPlaceholder
+                    }
                   >
-                    {getFilterLabel(draftFilters.orderDateFrom, t("filters.emptyDate"))}
-                  </Text>
-                </View>
-                <IconButton icon="calendar-month-outline" size={20} />
-              </Surface>
-            </Pressable>
-            <Pressable
-              onPress={() => setDatePickerTarget("orderDateTo")}
-              style={styles.filterInput}
-            >
-              <Surface style={styles.pickerField} elevation={0}>
-                <View style={styles.pickerFieldText}>
-                  <Text variant="labelMedium" style={styles.pickerFieldLabel}>
-                    {t("filters.dateTo")}
-                  </Text>
-                  <Text
-                    variant="bodyLarge"
-                    numberOfLines={1}
-                    style={draftFilters.orderDateTo ? undefined : styles.pickerPlaceholder}
-                  >
-                    {getFilterLabel(draftFilters.orderDateTo, t("filters.emptyDate"))}
+                    {orderDateRangeLabel}
                   </Text>
                 </View>
                 <IconButton icon="calendar-month-outline" size={20} />
@@ -706,7 +881,6 @@ export default function LocalSupplierInvoicesScreen() {
               <Card key={invoice.invoiceGuid} mode="outlined" style={styles.invoiceCard}>
                 <Card.Title
                   title={invoice.invoiceNo || invoice.invoiceGuid}
-                  subtitle={`${invoice.storeName || invoice.storeCode || "--"} · ${invoice.supplierName || invoice.supplierCode || "--"}`}
                   right={(props) => (
                     <IconButton
                       {...props}
@@ -716,10 +890,16 @@ export default function LocalSupplierInvoicesScreen() {
                     />
                   )}
                 />
-                <Card.Content style={styles.invoiceMeta}>
-                  <Text variant="bodyMedium">{t("labels.orderDate")}: {formatDate(invoice.orderDate)}</Text>
-                  <Text variant="bodyMedium">{t("labels.amount")}: {formatMoney(invoice.totalAmount)}</Text>
-                  <Text variant="bodyMedium">{t("labels.receivedAmount")}: {formatMoney(invoice.receivedTotalAmount)}</Text>
+                <Card.Content style={styles.invoiceContent}>
+                  <View style={styles.entityTagRow}>
+                    <EntityTag label={invoice.storeName || invoice.storeCode || "--"} tone="store" />
+                    <EntityTag label={invoice.supplierName || invoice.supplierCode || "--"} tone="supplier" />
+                  </View>
+                  <View style={styles.invoiceMeta}>
+                    <Text variant="bodyMedium">{t("labels.orderDate")}: {formatDate(invoice.orderDate)}</Text>
+                    <Text variant="bodyMedium">{t("labels.amount")}: {formatMoney(invoice.totalAmount)}</Text>
+                    <Text variant="bodyMedium">{t("labels.receivedAmount")}: {formatMoney(invoice.receivedTotalAmount)}</Text>
+                  </View>
                 </Card.Content>
                 <Card.Actions>
                   <Button compact mode="contained-tonal" onPress={() => openDetails(invoice)}>
@@ -748,9 +928,10 @@ export default function LocalSupplierInvoicesScreen() {
           <View style={styles.modalHeader}>
             <View style={styles.modalTitleGroup}>
               <Text variant="titleMedium">{selectedInvoice?.invoiceNo || "--"}</Text>
-              <Text variant="bodySmall" style={styles.subtitle}>
-                {selectedInvoice?.storeName || selectedInvoice?.storeCode || "--"} · {selectedInvoice?.supplierName || selectedInvoice?.supplierCode || "--"}
-              </Text>
+              <View style={styles.entityTagRow}>
+                <EntityTag label={selectedInvoice?.storeName || selectedInvoice?.storeCode || "--"} tone="store" />
+                <EntityTag label={selectedInvoice?.supplierName || selectedInvoice?.supplierCode || "--"} tone="supplier" />
+              </View>
             </View>
             <IconButton
               accessibilityLabel={t("common:actions.close")}
@@ -853,6 +1034,10 @@ export default function LocalSupplierInvoicesScreen() {
         cancelLabel={t("common:actions.cancel")}
         includeAllOption
         allLabel={t("filters.allStores")}
+        renderAllLabel={(label) => <EntityTag label={label} tone="neutral" />}
+        renderStoreLabel={(store) => (
+          <EntityTag label={store.storeName || store.storeCode} tone="store" />
+        )}
         onDismiss={() => setStorePickerVisible(false)}
         onSelectStore={handleSelectStore}
       />
@@ -880,14 +1065,13 @@ export default function LocalSupplierInvoicesScreen() {
                 status={!draftFilters.supplierCode ? "checked" : "unchecked"}
                 onPress={() => handleSelectSupplier()}
               />
-              <Button
-                mode="text"
+              <Pressable
+                accessibilityRole="button"
                 onPress={() => handleSelectSupplier()}
                 style={styles.pickerRowButton}
-                contentStyle={styles.pickerRowButtonContent}
               >
-                {t("filters.allSuppliers")}
-              </Button>
+                <EntityTag label={t("filters.allSuppliers")} tone="neutral" />
+              </Pressable>
             </View>
 
             {suppliersLoading ? (
@@ -907,14 +1091,13 @@ export default function LocalSupplierInvoicesScreen() {
                     }
                     onPress={() => handleSelectSupplier(supplier.supplierCode)}
                   />
-                  <Button
-                    mode="text"
+                  <Pressable
+                    accessibilityRole="button"
                     onPress={() => handleSelectSupplier(supplier.supplierCode)}
                     style={styles.pickerRowButton}
-                    contentStyle={styles.pickerRowButtonContent}
                   >
-                    {supplier.supplierName}
-                  </Button>
+                    <EntityTag label={supplier.supplierName} tone="supplier" />
+                  </Pressable>
                 </View>
               ))
             ) : (
@@ -931,44 +1114,92 @@ export default function LocalSupplierInvoicesScreen() {
 
       <Portal>
         <Modal
-          visible={Boolean(datePickerTarget)}
-          onDismiss={() => setDatePickerTarget(null)}
+          visible={dateRangeModalVisible}
+          onDismiss={cancelDateRangeModal}
           contentContainerStyle={styles.dateModal}
         >
           <View style={styles.pickerModalHeader}>
-            <Text variant="titleMedium">
-              {datePickerTarget === "orderDateFrom"
-                ? t("filters.dateFrom")
-                : t("filters.dateTo")}
-            </Text>
-            <Button onPress={() => setDatePickerTarget(null)}>
+            <Text variant="titleMedium">{t("filters.dateRangeTitle")}</Text>
+            <Button onPress={cancelDateRangeModal}>
               {t("common:actions.cancel")}
             </Button>
           </View>
-          <MonthDatePicker
-            key={`${datePickerTarget ?? "none"}-${currentDateFilterValue ?? "empty"}`}
-            allowEmpty
-            value={currentDateFilterValue || ""}
-            onChange={(value) => {
-              if (!datePickerTarget) {
-                return;
-              }
-              updateDateFilter(datePickerTarget, value);
-              setDatePickerTarget(null);
-            }}
-          />
+          <View style={styles.calendarHeader}>
+            <IconButton
+              icon="chevron-left"
+              size={22}
+              onPress={() => setDateRangeDisplayMonth((current) => addMonths(current, -1))}
+            />
+            <Text variant="titleMedium" style={styles.calendarMonthTitle}>
+              {monthTitle}
+            </Text>
+            <IconButton
+              icon="chevron-right"
+              size={22}
+              onPress={() => setDateRangeDisplayMonth((current) => addMonths(current, 1))}
+            />
+          </View>
+          <View style={styles.weekdayRow}>
+            {weekdayLabels.map((label, index) => (
+              <Text key={`${label}-${index}`} variant="labelSmall" style={styles.weekdayText}>
+                {label}
+              </Text>
+            ))}
+          </View>
+          <View style={styles.calendarGrid}>
+            {calendarWeeks.map((week, weekIndex) => (
+              <View key={weekIndex} style={styles.calendarWeekRow}>
+                {week.map((cell) => {
+                  const from = normalizeMonthDate(draftFilters.orderDateFrom);
+                  const to = normalizeMonthDate(draftFilters.orderDateTo);
+                  const isSelectedStart = Boolean(from && cell.dateString === from);
+                  const isSelectedEnd = Boolean(to && cell.dateString === to);
+                  const isSingleSelected = isSelectedStart && !to;
+                  const isInRange = isDateInRange(cell.dateString, from, to);
+                  const isToday = cell.dateString === today;
+
+                  return (
+                    <Pressable
+                      key={cell.dateString}
+                      accessibilityRole="button"
+                      accessibilityState={{ selected: isSelectedStart || isSelectedEnd || isInRange }}
+                      onPress={() => selectRangeDate(cell.dateString)}
+                      style={({ pressed }) => [
+                        styles.calendarDateCell,
+                        !cell.isCurrentMonth ? styles.calendarDateCellOutside : null,
+                        isInRange ? styles.calendarDateCellInRange : null,
+                        isToday ? styles.calendarDateCellToday : null,
+                        isSelectedStart || isSelectedEnd ? styles.calendarDateCellSelected : null,
+                        isSingleSelected ? styles.calendarDateCellSingleSelected : null,
+                        pressed ? styles.calendarDateCellPressed : null,
+                      ]}
+                    >
+                      <Text
+                        variant="labelLarge"
+                        style={[
+                          styles.calendarDateText,
+                          !cell.isCurrentMonth ? styles.calendarDateTextOutside : null,
+                          isSelectedStart || isSelectedEnd ? styles.calendarDateTextSelected : null,
+                        ]}
+                      >
+                        {cell.date.getDate()}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            ))}
+          </View>
           <View style={styles.dateModalActions}>
             <Button
               icon="close-circle-outline"
               mode="text"
-              onPress={() => {
-                if (datePickerTarget) {
-                  updateDateFilter(datePickerTarget, undefined);
-                }
-                setDatePickerTarget(null);
-              }}
+              onPress={clearDateRange}
             >
               {t("common:actions.clear")}
+            </Button>
+            <Button icon="check" mode="contained" onPress={applyDateRangeModal}>
+              {t("filters.applyDateRange")}
             </Button>
           </View>
         </Modal>
@@ -1042,6 +1273,10 @@ const styles = StyleSheet.create({
     minWidth: 0,
     paddingVertical: 8,
   },
+  pickerTagRow: {
+    alignItems: "flex-start",
+    minWidth: 0,
+  },
   pickerPlaceholder: {
     color: "#9CA3AF",
   },
@@ -1058,8 +1293,49 @@ const styles = StyleSheet.create({
     backgroundColor: "#FFFFFF",
     borderRadius: 8,
   },
+  invoiceContent: {
+    gap: 8,
+  },
   invoiceMeta: {
     gap: 4,
+  },
+  entityTagRow: {
+    alignItems: "center",
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 6,
+  },
+  entityTag: {
+    alignSelf: "flex-start",
+    borderRadius: 999,
+    borderWidth: 1,
+    maxWidth: "100%",
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+  },
+  entityTagText: {
+    fontWeight: "700",
+  },
+  storeTag: {
+    backgroundColor: "#EAF2FF",
+    borderColor: "#B8D4FF",
+  },
+  storeTagText: {
+    color: "#175CD3",
+  },
+  supplierTag: {
+    backgroundColor: "#E9F8EF",
+    borderColor: "#ABEFC6",
+  },
+  supplierTagText: {
+    color: "#067647",
+  },
+  neutralTag: {
+    backgroundColor: "#F2F4F7",
+    borderColor: "#D0D5DD",
+  },
+  neutralTagText: {
+    color: "#475467",
   },
   pagination: {
     alignItems: "center",
@@ -1188,7 +1464,90 @@ const styles = StyleSheet.create({
     width: "92%",
   },
   dateModalActions: {
-    alignItems: "flex-end",
+    flexDirection: "row",
+    justifyContent: "space-between",
     marginTop: 8,
   },
+  calendarHeader: {
+    alignItems: "center",
+    flexDirection: "row",
+    justifyContent: "space-between",
+    marginBottom: 4,
+  },
+  calendarMonthTitle: {
+    flex: 1,
+    textAlign: "center",
+  },
+  weekdayRow: {
+    flexDirection: "row",
+    marginBottom: 8,
+  },
+  weekdayText: {
+    color: "#667085",
+    flex: 1,
+    textAlign: "center",
+  },
+  calendarGrid: {
+    gap: 6,
+  },
+  calendarWeekRow: {
+    flexDirection: "row",
+    gap: 6,
+  },
+  calendarDateCell: {
+    alignItems: "center",
+    aspectRatio: 1,
+    backgroundColor: "#FFFFFF",
+    borderColor: "#D0D5DD",
+    borderRadius: 8,
+    borderWidth: 1,
+    flex: 1,
+    justifyContent: "center",
+  },
+  calendarDateCellOutside: {
+    backgroundColor: "#F8FAFC",
+    borderColor: "#EAECF0",
+  },
+  calendarDateCellInRange: {
+    backgroundColor: "#E8F1FF",
+    borderColor: "#B2CCFF",
+  },
+  calendarDateCellToday: {
+    borderColor: "#2563EB",
+  },
+  calendarDateCellSelected: {
+    backgroundColor: "#2563EB",
+    borderColor: "#2563EB",
+  },
+  calendarDateCellSingleSelected: {
+    backgroundColor: "#2563EB",
+  },
+  calendarDateCellPressed: {
+    opacity: 0.8,
+  },
+  calendarDateText: {
+    color: "#101828",
+  },
+  calendarDateTextOutside: {
+    color: "#98A2B3",
+  },
+  calendarDateTextSelected: {
+    color: "#FFFFFF",
+    fontWeight: "700",
+  },
 });
+
+const ENTITY_TAG_STYLES = {
+  neutral: {
+    tag: styles.neutralTag,
+    text: styles.neutralTagText,
+  },
+  store: {
+    tag: styles.storeTag,
+    text: styles.storeTagText,
+  },
+  supplier: {
+    tag: styles.supplierTag,
+    text: styles.supplierTagText,
+  },
+};
