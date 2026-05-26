@@ -1,8 +1,9 @@
-import { PlusOutlined, ReloadOutlined, TeamOutlined, DeleteOutlined } from '@ant-design/icons'
+import { DeleteOutlined, PlusOutlined, ReloadOutlined, SearchOutlined, TeamOutlined } from '@ant-design/icons'
 import {
   Button,
   Card,
   Checkbox,
+  Empty,
   Form,
   Input,
   Modal,
@@ -10,13 +11,15 @@ import {
   Space,
   Table,
   Tag,
+  Typography,
+  Tree,
   Transfer,
   message,
 } from 'antd'
 import type { TransferDirection } from 'antd/es/transfer'
 import type { ColumnsType } from 'antd/es/table'
 import type { Key } from 'react'
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import PageContainer from '../../../components/PageContainer'
 import {
@@ -24,10 +27,11 @@ import {
   createPermission,
   deletePermission,
   getActiveRoles,
+  getPermissions,
   getPermissionRoles,
   getSysPermissions,
 } from '../../../services/roleService'
-import type { CreateSysPermissionDto, RoleOptionDto, SysPermissionDto } from '../../../types/role'
+import type { CreateSysPermissionDto, PermissionCategoryDto, RoleOptionDto, SysPermissionDto } from '../../../types/role'
 
 const CATEGORY_COLORS: Record<string, string> = {
   Users: 'blue',
@@ -41,11 +45,57 @@ const CATEGORY_COLORS: Record<string, string> = {
   Shop: 'volcano',
 }
 
+interface PermissionTableItem {
+  id: string
+  code: string
+  name: string
+  category: string
+  description?: string
+  deletable: boolean
+}
+
+function buildPermissionTableItems(
+  permissionCategories: PermissionCategoryDto[],
+  sysPermissions: SysPermissionDto[],
+): PermissionTableItem[] {
+  const sysPermissionMap = new Map(sysPermissions.map((item) => [item.code, item]))
+  const items = new Map<string, PermissionTableItem>()
+
+  permissionCategories.forEach((category) => {
+    category.permissions.forEach((permission) => {
+      const sysPermission = sysPermissionMap.get(permission.name)
+      items.set(permission.name, {
+        id: sysPermission?.id ?? permission.name,
+        code: permission.name,
+        name: permission.displayName || sysPermission?.name || permission.name,
+        category: category.displayName || permission.category || category.category,
+        description: permission.description || sysPermission?.description,
+        deletable: Boolean(sysPermission),
+      })
+    })
+  })
+
+  sysPermissions.forEach((permission) => {
+    if (items.has(permission.code)) return
+    items.set(permission.code, {
+      id: permission.id,
+      code: permission.code,
+      name: permission.name,
+      category: permission.category,
+      description: permission.description,
+      deletable: true,
+    })
+  })
+
+  return Array.from(items.values())
+}
+
 export default function SystemPermissionsPage() {
   const { t } = useTranslation()
   const [loading, setLoading] = useState(false)
-  const [data, setData] = useState<SysPermissionDto[]>([])
+  const [data, setData] = useState<PermissionTableItem[]>([])
   const [categoryFilter, setCategoryFilter] = useState<string | null>(null)
+  const [keyword, setKeyword] = useState('')
 
   const [createOpen, setCreateOpen] = useState(false)
   const [createLoading, setCreateLoading] = useState(false)
@@ -61,8 +111,8 @@ export default function SystemPermissionsPage() {
   const loadData = async () => {
     setLoading(true)
     try {
-      const result = await getSysPermissions()
-      setData(result)
+      const [permissionCategories, sysPermissions] = await Promise.all([getPermissions(), getSysPermissions()])
+      setData(buildPermissionTableItems(permissionCategories, sysPermissions))
     } catch (error) {
       console.error(error)
       message.error(t('system.permissions.loadListFailed'))
@@ -75,9 +125,42 @@ export default function SystemPermissionsPage() {
     void loadData()
   }, [])
 
-  const categories = [...new Set(data.map((item) => item.category))].sort()
+  const categories = useMemo(() => [...new Set(data.map((item) => item.category))].sort(), [data])
 
-  const filteredData = categoryFilter ? data.filter((item) => item.category === categoryFilter) : data
+  useEffect(() => {
+    if (categoryFilter && !categories.includes(categoryFilter)) {
+      setCategoryFilter(null)
+    }
+  }, [categories, categoryFilter])
+
+  const treeData = useMemo(
+    () => [
+      {
+        key: 'all',
+        title: `${t('system.permissions.allCategories')} (${data.length})`,
+      },
+      ...categories.map((category) => ({
+        key: category,
+        title: `${category} (${data.filter((item) => item.category === category).length})`,
+      })),
+    ],
+    [categories, data, t],
+  )
+
+  const normalizedKeyword = keyword.trim().toLowerCase()
+
+  const filteredData = useMemo(() => {
+    const byCategory = categoryFilter ? data.filter((item) => item.category === categoryFilter) : data
+    const byKeyword = normalizedKeyword
+      ? byCategory.filter((item) => {
+          const code = item.code.toLowerCase()
+          const name = item.name.toLowerCase()
+          return code.includes(normalizedKeyword) || name.includes(normalizedKeyword)
+        })
+      : byCategory
+
+    return [...byKeyword].sort((a, b) => a.name.localeCompare(b.name))
+  }, [categoryFilter, data, normalizedKeyword])
 
   const handleCreate = async () => {
     try {
@@ -104,7 +187,7 @@ export default function SystemPermissionsPage() {
     }
   }
 
-  const handleAssignRoles = async (record: SysPermissionDto) => {
+  const handleAssignRoles = async (record: PermissionTableItem) => {
     setCurrentPermission(record)
     setAssignOpen(true)
     setAssignLoading(true)
@@ -135,7 +218,7 @@ export default function SystemPermissionsPage() {
     }
   }
 
-  const handleDelete = async (record: SysPermissionDto) => {
+  const handleDelete = async (record: PermissionTableItem) => {
     try {
       await deletePermission(record.code)
       message.success(t('common.deleteSuccess'))
@@ -146,7 +229,7 @@ export default function SystemPermissionsPage() {
     }
   }
 
-  const columns: ColumnsType<SysPermissionDto> = [
+  const columns: ColumnsType<PermissionTableItem> = [
     {
       title: '#',
       width: 48,
@@ -158,7 +241,13 @@ export default function SystemPermissionsPage() {
       width: 220,
       render: (value) => <Tag>{value}</Tag>,
     },
-    { title: t('system.permissions.permissionName'), dataIndex: 'name', width: 150 },
+    {
+      title: t('system.permissions.permissionName'),
+      dataIndex: 'name',
+      width: 180,
+      sorter: (a, b) => a.name.localeCompare(b.name),
+      defaultSortOrder: 'ascend',
+    },
     {
       title: t('system.permissions.category'),
       dataIndex: 'category',
@@ -180,17 +269,21 @@ export default function SystemPermissionsPage() {
           <Button type="link" icon={<TeamOutlined />} onClick={() => void handleAssignRoles(record)}>
             {t('system.permissions.assignRoles')}
           </Button>
-          <Popconfirm
-            title={t('common.delete')}
-            description={t('common.deleteIrreversible', '删除后不可恢复')}
-            onConfirm={() => void handleDelete(record)}
-            okText={t('common.delete')}
-            cancelText={t('common.cancel')}
-          >
-            <Button type="link" danger icon={<DeleteOutlined />}>
-              {t('common.delete')}
-            </Button>
-          </Popconfirm>
+          {record.deletable ? (
+            <Popconfirm
+              title={t('common.delete')}
+              description={t('common.deleteIrreversible', '删除后不可恢复')}
+              onConfirm={() => void handleDelete(record)}
+              okText={t('common.delete')}
+              cancelText={t('common.cancel')}
+            >
+              <Button type="link" danger icon={<DeleteOutlined />}>
+                {t('common.delete')}
+              </Button>
+            </Popconfirm>
+          ) : (
+            <Typography.Text type="secondary">--</Typography.Text>
+          )}
         </Space>
       ),
     },
@@ -200,41 +293,59 @@ export default function SystemPermissionsPage() {
 
   return (
     <PageContainer title={t('system.permissions.pageTitle')} subtitle={t('system.permissions.pageSubtitle')}>
-      <Card>
-        <Space wrap style={{ marginBottom: 16 }}>
-          <span style={{ marginRight: 4 }}>{t('system.permissions.categoryFilter')}</span>
-          <Checkbox
-            checked={categoryFilter === null}
-            onChange={() => setCategoryFilter(null)}
-          >
-            {t('system.permissions.allCategories')}
-          </Checkbox>
-          {categories.map((cat) => (
-            <Checkbox
-              key={cat}
-              checked={categoryFilter === cat}
-              onChange={() => setCategoryFilter(categoryFilter === cat ? null : cat)}
+      <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
+        <Card title={t('system.permissions.categoryFilter')} style={{ width: 260, flexShrink: 0 }}>
+          {treeData.length ? (
+            <div
+              style={{
+                maxHeight: 'calc(100vh - 280px)',
+                overflowY: 'auto',
+                overflowX: 'hidden',
+                paddingRight: 4,
+              }}
             >
-              <Tag color={CATEGORY_COLORS[cat] || 'default'}>{cat}</Tag>
-            </Checkbox>
-          ))}
-          <span style={{ marginLeft: 16 }} />
-          <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>
-            {t('system.permissions.newPermission')}
-          </Button>
-          <Button icon={<ReloadOutlined />} onClick={() => void loadData()}>
-            {t('common.refresh')}
-          </Button>
-        </Space>
+              <Tree
+                blockNode
+                selectedKeys={[categoryFilter ?? 'all']}
+                onSelect={(keys) => {
+                  const selectedKey = typeof keys[0] === 'string' ? keys[0] : 'all'
+                  setCategoryFilter(selectedKey === 'all' ? null : selectedKey)
+                }}
+                treeData={treeData}
+              />
+            </div>
+          ) : (
+            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('common.noData', '暂无数据')} />
+          )}
+        </Card>
 
-        <Table
-          rowKey="id"
-          loading={loading}
-          columns={columns}
-          dataSource={filteredData}
-          pagination={{ pageSize: 20, showSizeChanger: true, pageSizeOptions: ['20', '50', '100'] }}
-        />
-      </Card>
+        <Card style={{ flex: 1, minWidth: 0 }}>
+          <Space wrap style={{ marginBottom: 16 }}>
+            <Input
+              value={keyword}
+              onChange={(event) => setKeyword(event.target.value)}
+              placeholder={t('system.permissions.searchPlaceholder')}
+              prefix={<SearchOutlined />}
+              style={{ width: 280 }}
+              allowClear
+            />
+            <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>
+              {t('system.permissions.newPermission')}
+            </Button>
+            <Button icon={<ReloadOutlined />} onClick={() => void loadData()}>
+              {t('common.refresh')}
+            </Button>
+          </Space>
+
+          <Table
+            rowKey="id"
+            loading={loading}
+            columns={columns}
+            dataSource={filteredData}
+            pagination={{ pageSize: 20, showSizeChanger: true, pageSizeOptions: ['20', '50', '100'] }}
+          />
+        </Card>
+      </div>
 
       <Modal
         title={t('system.permissions.newPermission')}
