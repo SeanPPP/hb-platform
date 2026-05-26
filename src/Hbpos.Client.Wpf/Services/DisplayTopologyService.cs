@@ -4,7 +4,16 @@ using System.Runtime.InteropServices;
 
 namespace Hbpos.Client.Wpf.Services;
 
-public sealed record DisplayBounds(IntPtr Handle, int Left, int Top, int Width, int Height);
+public sealed record DisplayBounds(
+    IntPtr Handle,
+    int MonitorLeft,
+    int MonitorTop,
+    int MonitorWidth,
+    int MonitorHeight,
+    int WorkAreaLeft,
+    int WorkAreaTop,
+    int WorkAreaWidth,
+    int WorkAreaHeight);
 
 public interface IDisplayTopologyService
 {
@@ -14,7 +23,9 @@ public interface IDisplayTopologyService
 
     void AttachWorkAreaConstraint(Window window);
 
-    void FitToDisplayWorkArea(Window window, Window coordinateSource, DisplayBounds display);
+    void FitToDisplayWorkArea(Window window, DisplayBounds display);
+
+    void FitToDisplayBounds(Window window, DisplayBounds display);
 }
 
 public sealed class DisplayTopologyService : IDisplayTopologyService
@@ -53,17 +64,14 @@ public sealed class DisplayTopologyService : IDisplayTopologyService
         };
     }
 
-    public void FitToDisplayWorkArea(Window window, Window coordinateSource, DisplayBounds display)
+    public void FitToDisplayWorkArea(Window window, DisplayBounds display)
     {
-        var topLeft = FromDevice(coordinateSource, display.Left, display.Top);
-        var bottomRight = FromDevice(coordinateSource, display.Left + display.Width, display.Top + display.Height);
+        ApplyBounds(window, display.WorkAreaLeft, display.WorkAreaTop, display.WorkAreaWidth, display.WorkAreaHeight);
+    }
 
-        window.Left = topLeft.X;
-        window.Top = topLeft.Y;
-        window.Width = Math.Max(window.MinWidth, bottomRight.X - topLeft.X);
-        window.Height = Math.Max(window.MinHeight, bottomRight.Y - topLeft.Y);
-        window.MaxWidth = window.Width;
-        window.MaxHeight = window.Height;
+    public void FitToDisplayBounds(Window window, DisplayBounds display)
+    {
+        ApplyBounds(window, display.MonitorLeft, display.MonitorTop, display.MonitorWidth, display.MonitorHeight);
     }
 
     private static IReadOnlyList<DisplayBounds> EnumerateDisplays()
@@ -78,8 +86,13 @@ public sealed class DisplayTopologyService : IDisplayTopologyService
                 if (GetMonitorInfo(monitor, ref monitorInfo))
                 {
                     var workArea = monitorInfo.WorkArea;
+                    var monitorArea = monitorInfo.Monitor;
                     displays.Add(new DisplayBounds(
                         monitor,
+                        monitorArea.Left,
+                        monitorArea.Top,
+                        monitorArea.Right - monitorArea.Left,
+                        monitorArea.Bottom - monitorArea.Top,
                         workArea.Left,
                         workArea.Top,
                         workArea.Right - workArea.Left,
@@ -167,6 +180,19 @@ public sealed class DisplayTopologyService : IDisplayTopologyService
     {
         var transform = PresentationSource.FromVisual(source)?.CompositionTarget?.TransformFromDevice;
         return transform?.Transform(new Point(x, y)) ?? new Point(x, y);
+    }
+
+    private static void ApplyBounds(Window window, int left, int top, int width, int height)
+    {
+        var topLeft = FromDevice(window, left, top);
+        var bottomRight = FromDevice(window, left + width, top + height);
+
+        window.Left = topLeft.X;
+        window.Top = topLeft.Y;
+        window.Width = Math.Max(window.MinWidth, bottomRight.X - topLeft.X);
+        window.Height = Math.Max(window.MinHeight, bottomRight.Y - topLeft.Y);
+        window.MaxWidth = window.Width;
+        window.MaxHeight = window.Height;
     }
 
     private delegate bool MonitorEnumProc(IntPtr monitor, IntPtr hdc, IntPtr rect, IntPtr data);

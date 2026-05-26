@@ -642,8 +642,19 @@ public sealed class PosTerminalWorkflowService : IPosTerminalWorkflowService
 
     private void BeginRemoteLookup(PosSessionState session, CartLine line, SellableItemDto item)
     {
-        if (!session.IsOnline || _remoteLookupRefreshAsync is null)
+        if (!session.IsOnline)
         {
+            ConsoleLog.Write(
+                "PosScan",
+                $"remote lookup skipped storeCode={session.StoreCode} lookupCode={LogValue(item.LookupCode)} productCode={LogValue(item.ProductCode)} reason=offline");
+            return;
+        }
+
+        if (_remoteLookupRefreshAsync is null)
+        {
+            ConsoleLog.Write(
+                "PosScan",
+                $"remote lookup skipped storeCode={session.StoreCode} lookupCode={LogValue(item.LookupCode)} productCode={LogValue(item.ProductCode)} reason=refresh-handler-missing");
             return;
         }
 
@@ -665,7 +676,10 @@ public sealed class PosTerminalWorkflowService : IPosTerminalWorkflowService
             }
         }
 
-        _ = RefreshRemoteLookupAsync(snapshot, key);
+        ConsoleLog.Write(
+            "PosScan",
+            $"remote lookup queued storeCode={snapshot.StoreCode} lookupCode={snapshot.LookupCode} productCode={snapshot.ProductCode} referenceCode={snapshot.ReferenceCode ?? "<null>"} cartLines={_cart.Lines.Count}");
+        _ = Task.Run(() => RefreshRemoteLookupAsync(snapshot, key));
     }
 
     private async Task RefreshRemoteLookupAsync(RemoteLookupCartSnapshot snapshot, RemoteLookupKey key)
@@ -674,14 +688,10 @@ public sealed class PosTerminalWorkflowService : IPosTerminalWorkflowService
         try
         {
             await _uiPriorityCoordinator.WaitForUiIdleAsync();
-            if (_isCatalogSyncActive())
-            {
-                stopwatch.Stop();
-                ConsoleLog.Write(
-                    "PosScan",
-                    $"remote lookup deferred storeCode={snapshot.StoreCode} lookupCode={snapshot.LookupCode} reason=catalog-sync-active elapsedMs={stopwatch.ElapsedMilliseconds}");
-                return;
-            }
+            var catalogSyncActive = _isCatalogSyncActive();
+            ConsoleLog.Write(
+                "PosScan",
+                $"remote lookup dispatch storeCode={snapshot.StoreCode} lookupCode={snapshot.LookupCode} productCode={snapshot.ProductCode} catalogSyncActive={FormatBool(catalogSyncActive)} elapsedMs={stopwatch.ElapsedMilliseconds}");
 
             using var timeoutCts = new CancellationTokenSource(RemoteLookupTimeout);
             var result = await _remoteLookupRefreshAsync!(

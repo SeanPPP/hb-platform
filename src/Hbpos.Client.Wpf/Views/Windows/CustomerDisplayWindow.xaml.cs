@@ -34,6 +34,7 @@ public partial class CustomerDisplayWindow : Window
         TitleBar.Visibility = isVisible ? Visibility.Visible : Visibility.Collapsed;
         TitleBarRow.Height = isVisible ? new GridLength(44) : new GridLength(0);
         ResizeMode = isVisible ? ResizeMode.CanResize : ResizeMode.NoResize;
+        RefreshContentLayout();
     }
 
     private void ToggleWindowState()
@@ -41,5 +42,15 @@ public partial class CustomerDisplayWindow : Window
         WindowState = WindowState == WindowState.Maximized
             ? WindowState.Normal
             : WindowState.Maximized;
+        RefreshContentLayout();
+    }
+
+    public void RefreshContentLayout()
+    {
+        Dispatcher.BeginInvoke(() =>
+        {
+            UpdateLayout();
+            CustomerDisplayContent.RefreshPromotionLayout();
+        }, System.Windows.Threading.DispatcherPriority.Loaded);
     }
 }

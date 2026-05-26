@@ -114,8 +114,20 @@ public sealed class CatalogService(
         string? lookupCodeNormalized,
         CancellationToken cancellationToken)
     {
+        var stopwatch = Stopwatch.StartNew();
+        Log($"lookup service start store={storeCode} lookupCode={lookupCode ?? "<null>"} lookupCodeNormalized={lookupCodeNormalized ?? "<null>"}");
         var index = await BuildSellableIndexAsync(storeCode, since: null, cancellationToken);
-        return index?.CatalogIndex.Lookup(lookupCode, lookupCodeNormalized);
+        if (index is null)
+        {
+            stopwatch.Stop();
+            Log($"lookup service completed store={storeCode} status=store-not-found elapsedMs={stopwatch.ElapsedMilliseconds}");
+            return null;
+        }
+
+        var response = index.CatalogIndex.Lookup(lookupCode, lookupCodeNormalized);
+        stopwatch.Stop();
+        Log($"lookup service completed store={storeCode} status=ok found={response.Found} lookupCodeNormalized={response.LookupCodeNormalized} productCode={response.Item?.ProductCode ?? "<null>"} elapsedMs={stopwatch.ElapsedMilliseconds}");
+        return response;
     }
 
     public async Task<CatalogSpecialProductsPageResponse?> GetSpecialProductsPageAsync(

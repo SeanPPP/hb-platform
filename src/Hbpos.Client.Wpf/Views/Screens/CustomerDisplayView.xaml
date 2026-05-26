@@ -47,13 +47,17 @@
             <RowDefinition Height="132" />
         </Grid.RowDefinitions>
 
-        <Grid Grid.Row="0">
+        <Grid x:Name="ContentGrid" Grid.Row="0" SizeChanged="ContentGrid_SizeChanged">
+            <Grid.RowDefinitions>
+                <RowDefinition x:Name="PromotionBannerRow" Height="0" />
+                <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="66*" MinWidth="0" />
-                <ColumnDefinition Width="34*" MinWidth="0" />
+                <ColumnDefinition Width="60*" MinWidth="0" />
+                <ColumnDefinition Width="40*" MinWidth="0" />
             </Grid.ColumnDefinitions>
 
-            <Border Background="White" CornerRadius="12" Padding="20">
+            <Border x:Name="CartPanel" Grid.Row="1" Grid.Column="0" Background="White" CornerRadius="12" Padding="20">
                 <DataGrid x:Name="LineDataGrid"
                           ItemsSource="{Binding Lines}"
                           AutoGenerateColumns="False"
@@ -121,7 +125,7 @@
                 </DataGrid>
             </Border>
 
-            <Border Grid.Column="1" Margin="18,0,0,0" CornerRadius="18" Background="#243B2E" ClipToBounds="True">
+            <Border x:Name="PromotionPanel" Grid.Row="1" Grid.Column="1" Margin="18,0,0,0" CornerRadius="18" Background="#243B2E" ClipToBounds="True">
                 <Grid>
                     <Rectangle>
                         <Rectangle.Fill>
@@ -132,12 +136,12 @@
                         </Rectangle.Fill>
                     </Rectangle>
                     <Rectangle Opacity="0.18" Fill="#FF000000" />
-                    <StackPanel Margin="48,44">
+                    <StackPanel x:Name="PromotionTextPanel" Margin="48,44">
                         <Border Background="{StaticResource PosWarningBrush}" CornerRadius="6" Padding="10,5" HorizontalAlignment="Left">
                             <TextBlock Text="{loc:Loc customer.promotionTitle}" Foreground="#3A2400" FontSize="12" FontWeight="Black" />
                         </Border>
-                        <TextBlock Text="{loc:Loc customer.promotionSubtitle}" Margin="0,18,0,8" Foreground="White" FontSize="34" FontWeight="Black" TextWrapping="Wrap" />
-                        <TextBlock Text="{loc:Loc customer.promotionBody}" Foreground="#FFF2F4F7" FontSize="16" TextWrapping="Wrap" />
+                        <TextBlock x:Name="PromotionSubtitleText" Text="{loc:Loc customer.promotionSubtitle}" Margin="0,18,0,8" Foreground="White" FontSize="34" FontWeight="Black" TextWrapping="Wrap" />
+                        <TextBlock x:Name="PromotionBodyText" Text="{loc:Loc customer.promotionBody}" Foreground="#FFF2F4F7" FontSize="16" TextWrapping="Wrap" />
                     </StackPanel>
                     <Border HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="0,0,28,28" Background="#33000000" CornerRadius="16" Padding="16,12">
                         <StackPanel Orientation="Horizontal">

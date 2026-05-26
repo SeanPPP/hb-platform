@@ -1,5 +1,6 @@
 using Hbpos.Client.Wpf.Models;
 using Hbpos.Client.Wpf.ViewModels;
+using Hbpos.Client.Wpf.Views.Screens;
 
 namespace Hbpos.Client.Tests;
 
@@ -22,5 +23,17 @@ public sealed class CustomerDisplayViewModelTests
         Assert.Equal(3.5m, viewModel.TotalItemQuantity);
         Assert.Equal(2, viewModel.SkuCount);
         Assert.Equal(11m, viewModel.TotalToPay);
+    }
+
+    [Theory]
+    [InlineData(1024, true)]
+    [InlineData(1279, true)]
+    [InlineData(1280, false)]
+    [InlineData(1920, false)]
+    public void CustomerDisplayView_uses_banner_promotion_layout_on_narrow_fullscreen_widths(
+        double width,
+        bool expectedCompact)
+    {
+        Assert.Equal(expectedCompact, CustomerDisplayView.UsesCompactPromotionLayout(width));
     }
 }

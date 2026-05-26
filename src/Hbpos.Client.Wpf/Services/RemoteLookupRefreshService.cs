@@ -39,6 +39,7 @@ public sealed class RemoteLookupRefreshService(
         Log($"refresh start storeCode={storeCode} lookupCode={lookupCode}");
         try
         {
+            Log($"catalog api lookup dispatch storeCode={storeCode} lookupCode={lookupCode}");
             var response = await catalogApiClient.LookupSellableItemAsync(storeCode, lookupCode, cancellationToken);
             if (response is { Found: true })
             {
@@ -50,7 +51,7 @@ public sealed class RemoteLookupRefreshService(
                 var item = response.Item.ToSellableItemDto();
                 await localCatalogRepository.UpsertSellableItemsAsync([item], cancellationToken);
                 stopwatch.Stop();
-                Log($"refresh completed storeCode={storeCode} lookupCode={lookupCode} found=True upserted=1 deleted=0 elapsedMs={stopwatch.ElapsedMilliseconds}");
+                Log($"refresh completed storeCode={storeCode} lookupCode={lookupCode} found=True upserted=1 deleted=0 productCode={item.ProductCode} referenceCode={item.ReferenceCode ?? "<null>"} elapsedMs={stopwatch.ElapsedMilliseconds}");
                 return new RemoteLookupRefreshResult(storeCode, lookupCode, true, item, 0);
             }
 
@@ -63,7 +64,7 @@ public sealed class RemoteLookupRefreshService(
                 cancellationToken);
 
             stopwatch.Stop();
-            Log($"refresh completed storeCode={storeCode} lookupCode={lookupCode} found=False upserted=0 deleted={deletedCount} elapsedMs={stopwatch.ElapsedMilliseconds}");
+            Log($"refresh completed storeCode={storeCode} lookupCode={lookupCode} found=False upserted=0 deleted={deletedCount} deleteLookupCode={deleteLookupCode} elapsedMs={stopwatch.ElapsedMilliseconds}");
             return new RemoteLookupRefreshResult(storeCode, lookupCode, false, null, deletedCount);
         }
         catch (OperationCanceledException ex)

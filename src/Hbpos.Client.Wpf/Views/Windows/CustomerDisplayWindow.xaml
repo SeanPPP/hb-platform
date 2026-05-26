@@ -56,6 +56,6 @@
             </Grid>
         </Border>
 
-        <views:CustomerDisplayView Grid.Row="1" />
+        <views:CustomerDisplayView x:Name="CustomerDisplayContent" Grid.Row="1" />
     </Grid>
 </Window>

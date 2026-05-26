@@ -60,6 +60,13 @@ public sealed class CustomerDisplayWindowService : ICustomerDisplayWindowService
 
     public event EventHandler? Closed;
 
+    internal sealed record CustomerDisplayLayoutPlan(
+        bool TitleBarVisibleDuringPlacement,
+        bool CenterAfterPlacement,
+        bool UseFullDisplayBoundsForPlacement,
+        WindowState FinalWindowState,
+        bool TitleBarVisibleAfterStateChange);
+
     public CustomerDisplayWindowResult Open(CustomerDisplayViewModel viewModel, Window? owner)
     {
         return SetMode(CustomerDisplayWindowMode.Fullscreen, viewModel, owner);
@@ -121,26 +128,58 @@ public sealed class CustomerDisplayWindowService : ICustomerDisplayWindowService
 
     private void ApplyMode(CustomerDisplayWindow window, Window owner, DisplayBounds targetDisplay, CustomerDisplayWindowMode mode)
     {
+        var plan = GetLayoutPlan(mode);
         window.WindowState = WindowState.Normal;
-        window.SetTitleBarVisible(mode == CustomerDisplayWindowMode.Normal);
-        _displayTopology.FitToDisplayWorkArea(window, owner, targetDisplay);
-
-        if (mode == CustomerDisplayWindowMode.Normal)
-        {
-            CenterNormalWindow(window);
-        }
+        window.SetTitleBarVisible(plan.TitleBarVisibleDuringPlacement);
 
         if (!window.IsVisible)
         {
             window.Show();
         }
 
-        if (mode == CustomerDisplayWindowMode.Fullscreen)
+        if (plan.UseFullDisplayBoundsForPlacement)
         {
-            window.WindowState = WindowState.Maximized;
+            _displayTopology.FitToDisplayBounds(window, targetDisplay);
+        }
+        else
+        {
+            _displayTopology.FitToDisplayWorkArea(window, targetDisplay);
         }
 
+        if (plan.CenterAfterPlacement)
+        {
+            CenterNormalWindow(window);
+        }
+
+        window.WindowState = plan.FinalWindowState;
+        window.SetTitleBarVisible(plan.TitleBarVisibleAfterStateChange);
+        window.RefreshContentLayout();
         RestoreOwnerActivation(owner);
+    }
+
+    internal static CustomerDisplayLayoutPlan GetLayoutPlan(CustomerDisplayWindowMode mode)
+    {
+        return mode switch
+        {
+            CustomerDisplayWindowMode.Normal => new CustomerDisplayLayoutPlan(
+                TitleBarVisibleDuringPlacement: true,
+                CenterAfterPlacement: true,
+                UseFullDisplayBoundsForPlacement: false,
+                FinalWindowState: WindowState.Normal,
+                TitleBarVisibleAfterStateChange: true),
+            CustomerDisplayWindowMode.Fullscreen => new CustomerDisplayLayoutPlan(
+                TitleBarVisibleDuringPlacement: true,
+                CenterAfterPlacement: false,
+                UseFullDisplayBoundsForPlacement: true,
+                FinalWindowState: WindowState.Maximized,
+                TitleBarVisibleAfterStateChange: false),
+            _ => new CustomerDisplayLayoutPlan(
+                TitleBarVisibleDuringPlacement: false,
+                CenterAfterPlacement: false,
+                UseFullDisplayBoundsForPlacement: false,
+                FinalWindowState: WindowState.Normal,
+                TitleBarVisibleAfterStateChange: false)
+        };
     }
 
     private static void RestoreOwnerActivation(Window owner)

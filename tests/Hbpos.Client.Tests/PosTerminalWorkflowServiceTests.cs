@@ -144,6 +144,33 @@ public sealed class PosTerminalWorkflowServiceTests
     }
 
     [Fact]
+    public async Task Add_selected_item_logs_remote_lookup_skipped_when_session_is_offline()
+    {
+        var cart = new PosCartService();
+        var index = new LocalSellableItemIndex();
+        var logs = new ConcurrentQueue<string>();
+        var item = CreateItem("SKU-255", "Offline Workflow Tea", "930255", PriceSourceKind.StoreRetailPrice, 5.5m);
+        index.ReplaceAll([item]);
+        var service = new PosTerminalWorkflowService(
+            index,
+            cart,
+            remoteLookupRefreshAsync: (_, _, _) => throw new InvalidOperationException("Remote lookup should not run while offline."));
+
+        using var logCapture = CaptureClientLog(logs);
+
+        service.AddSelectedItem(
+            Session with { IsOnline = false },
+            item,
+            clearScanText: true,
+            closeMatchesPopup: false,
+            operation: "manual-add-selected");
+
+        await WaitUntilAsync(() => HasLog(logs, "remote lookup skipped") && HasLog(logs, "reason=offline"));
+
+        Assert.Single(cart.Lines);
+    }
+
+    [Fact]
     public async Task Add_selected_item_DeduplicatesRemoteLookupForSameLookupCode()
     {
         var cart = new PosCartService();
@@ -176,7 +203,31 @@ public sealed class PosTerminalWorkflowServiceTests
     }
 
     [Fact]
-    public async Task Add_selected_item_SkipsRemoteLookupWhileCatalogSyncIsActive()
+    public async Task Add_selected_item_logs_remote_lookup_queue_and_dispatch()
+    {
+        var cart = new PosCartService();
+        var index = new LocalSellableItemIndex();
+        var logs = new ConcurrentQueue<string>();
+        var item = CreateItem("SKU-266", "Queued Workflow Tea", "930266", PriceSourceKind.StoreRetailPrice, 3.5m);
+        var remoteLookup = new TaskCompletionSource<RemoteLookupRefreshResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        index.ReplaceAll([item]);
+        var service = new PosTerminalWorkflowService(
+            index,
+            cart,
+            remoteLookupRefreshAsync: (_, _, _) => remoteLookup.Task);
+
+        using var logCapture = CaptureClientLog(logs);
+
+        service.AddSelectedItem(Session, item, clearScanText: true, closeMatchesPopup: false, operation: "manual-add-selected");
+
+        await WaitUntilAsync(() => HasLog(logs, "remote lookup queued") && HasLog(logs, "remote lookup dispatch"));
+        remoteLookup.SetResult(new RemoteLookupRefreshResult("S001", "930266", Found: false, Item: null, DeletedCount: 1));
+
+        Assert.Single(cart.Lines);
+    }
+
+    [Fact]
+    public async Task Add_selected_item_StillRunsRemoteLookupWhileCatalogSyncIsActive()
     {
         var cart = new PosCartService();
         var index = new LocalSellableItemIndex();
@@ -198,10 +249,54 @@ public sealed class PosTerminalWorkflowServiceTests
 
         service.AddSelectedItem(Session, item, clearScanText: true, closeMatchesPopup: false, operation: "manual-add-selected");
 
-        await WaitUntilAsync(() => HasLog(logs, "remote lookup deferred"));
+        await WaitUntilAsync(() => Volatile.Read(ref lookupCalls) == 1);
 
-        Assert.Equal(0, Volatile.Read(ref lookupCalls));
+        Assert.Equal(1, Volatile.Read(ref lookupCalls));
         Assert.Single(cart.Lines);
+        Assert.True(HasLog(logs, "remote lookup queued"));
+        Assert.True(HasLog(logs, "remote lookup dispatch"));
+        Assert.False(HasLog(logs, "remote lookup deferred"));
+    }
+
+    [Fact]
+    public async Task Add_selected_item_finishes_mainline_before_remote_lookup_dispatch()
+    {
+        var cart = new PosCartService();
+        var index = new LocalSellableItemIndex();
+        var logs = new ConcurrentQueue<string>();
+        var item = CreateItem("SKU-281", "Workflow Async Item", "930281", PriceSourceKind.StoreRetailPrice, 2.5m);
+        var remoteLookupStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var uiPriority = new BlockingUiPriorityCoordinator();
+        index.ReplaceAll([item]);
+        var service = new PosTerminalWorkflowService(
+            index,
+            cart,
+            remoteLookupRefreshAsync: (_, _, _) =>
+            {
+                remoteLookupStarted.TrySetResult();
+                return Task.FromResult(new RemoteLookupRefreshResult("S001", "930281", Found: false, Item: null, DeletedCount: 1));
+            },
+            uiPriorityCoordinator: uiPriority);
+
+        using var logCapture = CaptureClientLog(logs);
+
+        var result = service.AddSelectedItem(Session, item, clearScanText: true, closeMatchesPopup: false, operation: "manual-add-selected");
+
+        Assert.Equal("pos.status.added", result.StatusKey);
+        Assert.Single(cart.Lines);
+        Assert.False(remoteLookupStarted.Task.IsCompleted);
+        Assert.False(HasLog(logs, "remote lookup dispatch"));
+        Assert.True(HasLog(logs, "cart add completed"));
+
+        uiPriority.Release();
+        await remoteLookupStarted.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        await WaitUntilAsync(() => HasLog(logs, "remote lookup dispatch"));
+
+        var orderedLogs = logs.ToArray();
+        var cartAddIndex = Array.FindIndex(orderedLogs, line => line.Contains("cart add completed", StringComparison.OrdinalIgnoreCase));
+        var dispatchIndex = Array.FindIndex(orderedLogs, line => line.Contains("remote lookup dispatch", StringComparison.OrdinalIgnoreCase));
+        Assert.True(cartAddIndex >= 0);
+        Assert.True(dispatchIndex > cartAddIndex);
     }
 
     private static PosSessionState Session => new("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0);
@@ -277,6 +372,34 @@ public sealed class PosTerminalWorkflowServiceTests
         public void Dispose()
         {
             dispose();
+        }
+    }
+
+    private sealed class BlockingUiPriorityCoordinator : IUiPriorityCoordinator
+    {
+        private readonly TaskCompletionSource _released = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public bool IsUiActive => !_released.Task.IsCompleted;
+
+        public void NotifyUserInput()
+        {
+        }
+
+        public IDisposable BeginUiOperation(string name)
+        {
+            return new DisposableAction(() => { });
+        }
+
+        public Task WaitForUiIdleAsync(CancellationToken cancellationToken = default)
+        {
+            return cancellationToken.CanBeCanceled
+                ? _released.Task.WaitAsync(cancellationToken)
+                : _released.Task;
+        }
+
+        public void Release()
+        {
+            _released.TrySetResult();
         }
     }
 }
