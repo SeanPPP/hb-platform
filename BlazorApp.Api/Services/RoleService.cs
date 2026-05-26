@@ -1,5 +1,6 @@
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces;
+using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Helper;
 using BlazorApp.Shared.Models;
@@ -303,6 +304,11 @@ namespace BlazorApp.Api.Services
         private string GetCurrentUsername()
         {
             return _httpContextAccessor.HttpContext?.User?.Identity?.Name ?? "System";
+        }
+
+        private static bool IsSuperAdminRoleName(string? roleName)
+        {
+            return Permissions.IsSuperAdminRole(roleName);
         }
 
         /// <summary>
@@ -1364,6 +1370,28 @@ namespace BlazorApp.Api.Services
             try
             {
                 var db = _context.Db;
+                var role = await db.Queryable<Role>()
+                    .Where(r => r.RoleGUID == roleGuid && !r.IsDeleted)
+                    .FirstAsync();
+
+                if (role == null)
+                {
+                    return ApiResponse<List<string>>.OK(new List<string>(), "获取角色权限成功");
+                }
+
+                if (IsSuperAdminRoleName(role.RoleName))
+                {
+                    var allPermissions = await db.Queryable<SysPermission>()
+                        .Where(p => !p.IsDeleted)
+                        .Select(p => p.Code)
+                        .ToListAsync();
+
+                    return ApiResponse<List<string>>.OK(
+                        allPermissions.Distinct(StringComparer.OrdinalIgnoreCase).ToList(),
+                        "Admin 默认拥有所有权限"
+                    );
+                }
+
                 var permissions = await db.Queryable<SysRolePermission>()
                     .Where(rp => rp.RoleGuid == roleGuid && rp.IsDeleted == false)
                     .Select(rp => rp.PermissionCode)
@@ -1392,10 +1420,28 @@ namespace BlazorApp.Api.Services
             try
             {
                 var db = _context.Db;
+                var role = await db.Queryable<Role>()
+                    .Where(r => r.RoleGUID == roleGuid && !r.IsDeleted)
+                    .FirstAsync();
 
                 await db.Ado.BeginTranAsync();
                 try
                 {
+                    if (role != null && IsSuperAdminRoleName(role.RoleName))
+                    {
+                        await db.Deleteable<SysRolePermission>()
+                            .Where(rp => rp.RoleGuid == roleGuid)
+                            .ExecuteCommandAsync();
+
+                        await db.Ado.CommitTranAsync();
+
+                        _logger.LogInformation(
+                            "跳过 Admin 显式权限写入，RoleGUID: {RoleGUID}",
+                            roleGuid
+                        );
+                        return ApiResponse<bool>.OK(true, "Admin 默认拥有所有权限，无需分配");
+                    }
+
                     // 1. 删除旧权限
                     await db.Deleteable<SysRolePermission>()
                         .Where(rp => rp.RoleGuid == roleGuid)
@@ -1493,6 +1539,34 @@ namespace BlazorApp.Api.Services
             {
                 var db = _context.Db;
 
+                var superAdminRoleNames = Permissions.SuperAdminRoleNames.ToList();
+                var hasSuperAdminRole = await db.Queryable<UserRole>()
+                    .InnerJoin<User>((ur, u) => ur.UserGUID == u.UserGUID)
+                    .InnerJoin<Role>((ur, u, r) => ur.RoleGUID == r.RoleGUID)
+                    .Where(
+                        (ur, u, r) =>
+                            ur.UserGUID == userGuid
+                            && !ur.IsDeleted
+                            && u.IsActive
+                            && !u.IsDeleted
+                            && r.IsActive
+                            && !r.IsDeleted
+                            && superAdminRoleNames.Contains(r.RoleName)
+                    )
+                    .AnyAsync();
+
+                if (hasSuperAdminRole)
+                {
+                    return ApiResponse<bool>.OK(true, "Admin 默认拥有所有权限");
+                }
+
+                var equivalentPermissionCodes = Permissions.GetEquivalentPermissionCodes(permission)
+                    .ToList();
+                if (!equivalentPermissionCodes.Any())
+                {
+                    return ApiResponse<bool>.OK(false, "用户没有该权限");
+                }
+
                 // 链路: User -> UserRole -> Role -> SysRolePermission
                 // 只要有一个角色拥有该权限即可
                 var hasPermission = await db.Queryable<UserRole>()
@@ -1508,7 +1582,7 @@ namespace BlazorApp.Api.Services
                             && r.IsActive
                             && !r.IsDeleted
                             && !rp.IsDeleted
-                            && rp.PermissionCode == permission
+                            && equivalentPermissionCodes.Contains(rp.PermissionCode)
                     )
                     .AnyAsync();
 
@@ -1691,7 +1765,17 @@ namespace BlazorApp.Api.Services
                     // 2. 添加新的角色关联
                     if (roleGuids != null && roleGuids.Any())
                     {
-                        var newPermissions = roleGuids
+                        var superAdminRoleNames = Permissions.SuperAdminRoleNames.ToList();
+                        var assignableRoleGuids = await db.Queryable<Role>()
+                            .Where(r =>
+                                roleGuids.Contains(r.RoleGUID)
+                                && !r.IsDeleted
+                                && !superAdminRoleNames.Contains(r.RoleName)
+                            )
+                            .Select(r => r.RoleGUID)
+                            .ToListAsync();
+
+                        var newPermissions = assignableRoleGuids
                             .Select(roleGuid => new SysRolePermission
                             {
                                 Id = UuidHelper.GenerateUuid7(),

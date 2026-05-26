@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Reflection;
@@ -145,15 +146,52 @@ namespace BlazorApp.Api.Tests
         }
 
         [Fact]
-        public async Task InitializePermissionSeedsAsync_InsertsMissingPermissionsAndAdminLinksWithoutDuplicates()
+        public async Task InitializePermissionSeedsAsync_SyncsPermissions_ClearsAdminLinks_AndSeedsRoleTemplatesIdempotently()
         {
-            await _db.Insertable(new Role
-            {
-                RoleGUID = "role-admin",
-                RoleName = "Admin",
-                Description = "System Administrator",
-                IsActive = true,
-            }).ExecuteCommandAsync();
+            var adminRole = CreateRole("role-admin", "Admin", "System Administrator");
+            var warehouseManagerRole = CreateRole("role-warehouse-manager", "WarehouseManager", "Warehouse manager");
+            var storeManagerRole = CreateRole("role-store-manager", "StoreManager", "Store manager");
+            var managerRole = CreateRole("role-manager", "Manager", "Manager");
+            var userRole = CreateRole("role-user", "User", "User");
+            var storeStaffRole = CreateRole("role-store-staff", "StoreStaff", "Store staff");
+            var orderRole = CreateRole("role-order", "Order", "Order");
+
+            await _db.Insertable(
+                new[]
+                {
+                    adminRole,
+                    warehouseManagerRole,
+                    storeManagerRole,
+                    managerRole,
+                    userRole,
+                    storeStaffRole,
+                    orderRole,
+                }
+            ).ExecuteCommandAsync();
+
+            await _db.Insertable(
+                new[]
+                {
+                    new SysRolePermission
+                    {
+                        Id = "admin-legacy-dashboard",
+                        RoleGuid = adminRole.RoleGUID,
+                        PermissionCode = Permissions.Dashboard.View,
+                    },
+                    new SysRolePermission
+                    {
+                        Id = "store-manager-existing-extra",
+                        RoleGuid = storeManagerRole.RoleGUID,
+                        PermissionCode = Permissions.Users.Delete,
+                    },
+                    new SysRolePermission
+                    {
+                        Id = "store-manager-existing-template",
+                        RoleGuid = storeManagerRole.RoleGUID,
+                        PermissionCode = Permissions.Attendance.Schedule.ViewSelf,
+                    },
+                }
+            ).ExecuteCommandAsync();
 
             var service = CreateService();
 
@@ -164,27 +202,73 @@ namespace BlazorApp.Api.Tests
             var attendanceRows = allPermissionRows
                 .Where(item => PermissionSeedData.AttendancePermissions.Any(seed => seed.Code == item.Code))
                 .ToList();
-            var adminPermissionCodes = await _db.Queryable<SysRolePermission>()
-                .Where(item => item.RoleGuid == "role-admin")
+            var allRolePermissions = await _db.Queryable<SysRolePermission>().ToListAsync();
+            var adminPermissionCodes = allRolePermissions
+                .Where(item => item.RoleGuid == adminRole.RoleGUID)
                 .Select(item => item.PermissionCode)
-                .ToListAsync();
+                .ToList();
 
             Assert.Equal(PermissionSeedData.AllPermissions.Count(), allPermissionRows.Count);
             Assert.Equal(allPermissionRows.Count, allPermissionRows.Select(item => item.Code).Distinct().Count());
             Assert.Equal(16, attendanceRows.Count);
+            Assert.Empty(adminPermissionCodes);
             Assert.All(PermissionSeedData.AttendancePermissions, seed =>
             {
                 var row = Assert.Single(attendanceRows, item => item.Code == seed.Code);
                 Assert.Equal(seed.Name, row.Name);
                 Assert.Equal(seed.Category, row.Category);
                 Assert.Equal(seed.Description, row.Description);
-                Assert.Contains(seed.Code, adminPermissionCodes);
             });
-            Assert.Equal(adminPermissionCodes.Count, adminPermissionCodes.Distinct().Count());
+
+            AssertRolePermissionsMatchTemplate(
+                allRolePermissions,
+                warehouseManagerRole.RoleGUID,
+                "WarehouseManager"
+            );
+            AssertRolePermissionsMatchTemplate(
+                allRolePermissions,
+                managerRole.RoleGUID,
+                "Manager"
+            );
+            AssertRolePermissionsMatchTemplate(
+                allRolePermissions,
+                userRole.RoleGUID,
+                "User"
+            );
+            AssertRolePermissionsMatchTemplate(
+                allRolePermissions,
+                storeStaffRole.RoleGUID,
+                "StoreStaff"
+            );
+            AssertRolePermissionsMatchTemplate(
+                allRolePermissions,
+                orderRole.RoleGUID,
+                "Order"
+            );
+
+            var expectedStoreManagerPermissions = PermissionSeedData
+                .RolePermissionTemplates.Single(template => template.RoleName == "StoreManager")
+                .PermissionCodes
+                .Append(Permissions.Users.Delete)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(code => code);
+            var actualStoreManagerPermissions = GetRolePermissionCodes(
+                allRolePermissions,
+                storeManagerRole.RoleGUID
+            ).OrderBy(code => code);
+
+            Assert.Equal(expectedStoreManagerPermissions, actualStoreManagerPermissions);
+            Assert.Equal(
+                allRolePermissions.Count,
+                allRolePermissions
+                    .Select(item => $"{item.RoleGuid}:{item.PermissionCode}".ToLowerInvariant())
+                    .Distinct()
+                    .Count()
+            );
         }
 
         [Fact]
-        public async Task InitializePermissionSeedsAsync_AddsStoreFinancePermissionsToAdmin()
+        public async Task InitializePermissionSeedsAsync_PersistsStoreFinancePermissionsWithoutAdminLinks()
         {
             await _db.Insertable(new Role
             {
@@ -207,8 +291,7 @@ namespace BlazorApp.Api.Tests
 
             Assert.Contains(InstallmentOrdersPermission, permissionCodes);
             Assert.Contains(StoreVouchersPermission, permissionCodes);
-            Assert.Contains(InstallmentOrdersPermission, adminPermissionCodes);
-            Assert.Contains(StoreVouchersPermission, adminPermissionCodes);
+            Assert.Empty(adminPermissionCodes);
         }
 
         [Fact]
@@ -246,6 +329,39 @@ namespace BlazorApp.Api.Tests
             Assert.Equal(seed.Description, row.Description);
         }
 
+        [Fact]
+        public async Task CreateRoleSeedDataAsync_CreatesWarehouseManager_WithoutOverwritingExistingRoles()
+        {
+            await _db.Insertable(
+                new[]
+                {
+                    CreateRole("existing-admin", "Admin", "custom admin", isActive: false),
+                    CreateRole("existing-manager", "Manager", "custom manager", isActive: false),
+                }
+            ).ExecuteCommandAsync();
+
+            await InvokePrivateAsync("CreateRoleSeedDataAsync");
+
+            var roles = await _db.Queryable<Role>().ToListAsync();
+            var roleNames = roles.Select(role => role.RoleName).ToList();
+            var adminRole = Assert.Single(roles, role => role.RoleName == "Admin");
+            var managerRole = Assert.Single(roles, role => role.RoleName == "Manager");
+            var warehouseManagerRole = Assert.Single(
+                roles,
+                role => role.RoleName == "WarehouseManager"
+            );
+
+            Assert.Contains("User", roleNames);
+            Assert.Contains("Order", roleNames);
+            Assert.Contains("StoreManager", roleNames);
+            Assert.Contains("StoreStaff", roleNames);
+            Assert.Equal("custom admin", adminRole.Description);
+            Assert.False(adminRole.IsActive);
+            Assert.Equal("custom manager", managerRole.Description);
+            Assert.False(managerRole.IsActive);
+            Assert.True(warehouseManagerRole.IsActive);
+        }
+
         public void Dispose()
         {
             _db.Dispose();
@@ -263,6 +379,66 @@ namespace BlazorApp.Api.Tests
                 CreateSqlSugarContext(_db),
                 NullLogger<SeedDataService>.Instance
             );
+        }
+
+        private static Role CreateRole(
+            string roleGuid,
+            string roleName,
+            string? description,
+            bool isActive = true
+        )
+        {
+            return new Role
+            {
+                RoleGUID = roleGuid,
+                RoleName = roleName,
+                Description = description,
+                IsActive = isActive,
+            };
+        }
+
+        private static List<string> GetRolePermissionCodes(
+            IEnumerable<SysRolePermission> allRolePermissions,
+            string roleGuid
+        )
+        {
+            return allRolePermissions
+                .Where(item => item.RoleGuid == roleGuid)
+                .Select(item => item.PermissionCode)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
+
+        private static void AssertRolePermissionsMatchTemplate(
+            IEnumerable<SysRolePermission> allRolePermissions,
+            string roleGuid,
+            string roleName
+        )
+        {
+            var expectedPermissions = PermissionSeedData
+                .RolePermissionTemplates.Single(template => template.RoleName == roleName)
+                .PermissionCodes
+                .OrderBy(code => code);
+            var actualPermissions = GetRolePermissionCodes(allRolePermissions, roleGuid).OrderBy(
+                code => code
+            );
+
+            Assert.Equal(expectedPermissions, actualPermissions);
+        }
+
+        private async Task InvokePrivateAsync(string methodName)
+        {
+            var service = CreateService();
+            var method = typeof(SeedDataService).GetMethod(
+                methodName,
+                BindingFlags.Instance | BindingFlags.NonPublic
+            );
+
+            Assert.NotNull(method);
+
+            var task = method!.Invoke(service, null) as Task;
+            Assert.NotNull(task);
+            await task!;
         }
 
         private static SqlSugarContext CreateSqlSugarContext(ISqlSugarClient db)

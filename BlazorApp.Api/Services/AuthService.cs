@@ -4,6 +4,7 @@ using System.Security.Cryptography;
 using System.Text;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Utils;
+using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
 using Microsoft.AspNetCore.Http;
@@ -257,7 +258,7 @@ namespace BlazorApp.Api.Services
 
             if (permissions != null && permissions.Any())
             {
-                foreach (var perm in permissions.Distinct())
+                foreach (var perm in Permissions.ExpandPermissionCodes(permissions))
                 {
                     claims.Add(new Claim("permission", perm));
                 }
@@ -603,7 +604,7 @@ namespace BlazorApp.Api.Services
 
             if (permissions != null && permissions.Any())
             {
-                foreach (var perm in permissions.Distinct())
+                foreach (var perm in Permissions.ExpandPermissionCodes(permissions))
                 {
                     claims.Add(new Claim("permission", perm));
                 }

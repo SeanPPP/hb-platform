@@ -7,6 +7,11 @@ namespace BlazorApp.Shared.Constants
         string Description
     );
 
+    public sealed record RolePermissionTemplateDefinition(
+        string RoleName,
+        IReadOnlyList<string> PermissionCodes
+    );
+
     public static class PermissionSeedData
     {
         public static IReadOnlyList<PermissionSeedDefinition> AttendancePermissions { get; } =
@@ -28,6 +33,15 @@ namespace BlazorApp.Shared.Constants
                 new(Permissions.Attendance.Leave.ReviewManagedStore, "审核管理分店请假申请", "排班考勤", "页面 /pos-admin/schedule-attendance - 审核管理分店请假申请"),
                 new(Permissions.Attendance.Settings.Edit, "编辑考勤设置", "排班考勤", "页面 /pos-admin/schedule-attendance - 编辑考勤设置"),
                 new(Permissions.Attendance.Admin.View, "查看全部考勤管理", "排班考勤", "页面 /pos-admin/schedule-attendance - 查看全部考勤管理"),
+            };
+
+        private static IReadOnlyList<string> AttendanceSelfServicePermissionCodes { get; } =
+            new[]
+            {
+                Permissions.Attendance.Schedule.ViewSelf,
+                Permissions.Attendance.Availability.SubmitSelf,
+                Permissions.Attendance.Punch.Self,
+                Permissions.Attendance.Leave.ApplySelf,
             };
 
         private static IReadOnlyList<PermissionSeedDefinition> ExistingDatabasePermissions { get; } =
@@ -144,6 +158,74 @@ namespace BlazorApp.Shared.Constants
                 new(Permissions.System.ViewLogs, "查看日志", "系统管理", "系统管理 - 查看日志"),
                 new(Permissions.System.ManageSettings, "管理设置", "系统管理", "系统管理 - 管理设置"),
                 new(Permissions.Dashboard.View, "访问后台", "后台管理", "页面 /dashboard - 访问后台工作台"),
+            };
+
+        public static IReadOnlyList<RolePermissionTemplateDefinition> RolePermissionTemplates { get; } =
+            new List<RolePermissionTemplateDefinition>
+            {
+                new("Admin", Array.Empty<string>()),
+                new(
+                    "WarehouseManager",
+                    new[]
+                    {
+                        Permissions.Stores.View,
+                        Permissions.Stores.Create,
+                        Permissions.Stores.Edit,
+                        Permissions.Stores.Delete,
+                        Permissions.Stores.Sync,
+                        Permissions.Products.View,
+                        Permissions.Products.Create,
+                        Permissions.Products.Edit,
+                        Permissions.Products.Delete,
+                        Permissions.Orders.View,
+                        Permissions.Orders.Create,
+                        Permissions.Orders.Edit,
+                        Permissions.Orders.Delete,
+                        Permissions.Container.View,
+                        Permissions.Container.Create,
+                        Permissions.Container.Edit,
+                        Permissions.Container.Delete,
+                        Permissions.Warehouse.View,
+                        Permissions.Warehouse.Manage,
+                        Permissions.Warehouse.ManageProducts,
+                        Permissions.Warehouse.ManageCategories,
+                        Permissions.Warehouse.ManageLocations,
+                        Permissions.Warehouse.ManageOrders,
+                        Permissions.DomesticPurchase.View,
+                        Permissions.DomesticPurchase.ManageSuppliers,
+                        Permissions.DomesticPurchase.ManageProducts,
+                        Permissions.DomesticPurchase.ManagePrefixCodes,
+                        Permissions.Reports.View,
+                        Permissions.Reports.Export,
+                        Permissions.Dashboard.View,
+                    }
+                ),
+                new(
+                    "StoreManager",
+                    new[]
+                    {
+                        Permissions.Attendance.Schedule.ViewSelf,
+                        Permissions.Attendance.Schedule.ViewStore,
+                        Permissions.Attendance.Schedule.EditManagedStore,
+                        Permissions.Attendance.Availability.SubmitSelf,
+                        Permissions.Attendance.Availability.ViewManagedStore,
+                        Permissions.Attendance.Punch.Self,
+                        Permissions.Attendance.Punch.ViewManagedStore,
+                        Permissions.Attendance.Approval.ViewManagedStore,
+                        Permissions.Attendance.Approval.ReviewManagedStore,
+                        Permissions.Attendance.Holiday.ViewStore,
+                        Permissions.Attendance.Holiday.EditManagedStore,
+                        Permissions.Attendance.Leave.ApplySelf,
+                        Permissions.Attendance.Leave.ViewManagedStore,
+                        Permissions.Attendance.Leave.ReviewManagedStore,
+                        Permissions.DeviceRegistration.View,
+                        Permissions.DeviceRegistration.Manage,
+                    }
+                ),
+                new("Manager", AttendanceSelfServicePermissionCodes),
+                new("User", AttendanceSelfServicePermissionCodes),
+                new("StoreStaff", AttendanceSelfServicePermissionCodes),
+                new("Order", AttendanceSelfServicePermissionCodes),
             };
 
         public static IReadOnlyList<PermissionSeedDefinition> AllPermissions { get; } =

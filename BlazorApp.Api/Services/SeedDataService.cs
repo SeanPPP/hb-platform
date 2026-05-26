@@ -13,6 +13,7 @@ namespace BlazorApp.Api.Services
     {
         private readonly SqlSugarContext _dbContext;
         private readonly ILogger<SeedDataService> _logger;
+        private static readonly string[] AdminRoleNames = Permissions.SuperAdminRoleNames;
 
         public SeedDataService(SqlSugarContext dbContext, ILogger<SeedDataService> logger)
         {
@@ -69,89 +70,43 @@ namespace BlazorApp.Api.Services
 
             var rolesToCreate = new List<Role>();
 
-            if (!existingRoles.Any(r => r.RoleName == "Admin"))
-            {
-                rolesToCreate.Add(
-                    new Role
-                    {
-                        RoleGUID = Guid.NewGuid().ToString(),
-                        RoleName = "Admin",
-                        Description = "System Administrator with full permissions",
-                        IsActive = true,
-                        CreatedAt = DateTime.UtcNow,
-                    }
-                );
-            }
-
-            if (!existingRoles.Any(r => r.RoleName == "Manager"))
-            {
-                rolesToCreate.Add(
-                    new Role
-                    {
-                        RoleGUID = Guid.NewGuid().ToString(),
-                        RoleName = "Manager",
-                        Description = "Manager role with business management permissions",
-                        IsActive = true,
-                        CreatedAt = DateTime.UtcNow,
-                    }
-                );
-            }
-
-            if (!existingRoles.Any(r => r.RoleName == "User"))
-            {
-                rolesToCreate.Add(
-                    new Role
-                    {
-                        RoleGUID = Guid.NewGuid().ToString(),
-                        RoleName = "User",
-                        Description = "Regular user with basic viewing permissions",
-                        IsActive = true,
-                        CreatedAt = DateTime.UtcNow,
-                    }
-                );
-            }
-
-            if (!existingRoles.Any(r => r.RoleName == "Order"))
-            {
-                rolesToCreate.Add(
-                    new Role
-                    {
-                        RoleGUID = Guid.NewGuid().ToString(),
-                        RoleName = "Order",
-                        Description = "订货员",
-                        IsActive = true,
-                        CreatedAt = DateTime.UtcNow,
-                    }
-                );
-            }
-
-            if (!existingRoles.Any(r => r.RoleName == "StoreManager"))
-            {
-                rolesToCreate.Add(
-                    new Role
-                    {
-                        RoleGUID = Guid.NewGuid().ToString(),
-                        RoleName = "StoreManager",
-                        Description = "Store manager role for branch staff maintenance",
-                        IsActive = true,
-                        CreatedAt = DateTime.UtcNow,
-                    }
-                );
-            }
-
-            if (!existingRoles.Any(r => r.RoleName == "StoreStaff"))
-            {
-                rolesToCreate.Add(
-                    new Role
-                    {
-                        RoleGUID = Guid.NewGuid().ToString(),
-                        RoleName = "StoreStaff",
-                        Description = "Store staff role for branch employees",
-                        IsActive = true,
-                        CreatedAt = DateTime.UtcNow,
-                    }
-                );
-            }
+            AddRoleIfMissing(
+                existingRoles,
+                rolesToCreate,
+                "Admin",
+                "System Administrator with full permissions"
+            );
+            AddRoleIfMissing(
+                existingRoles,
+                rolesToCreate,
+                "Manager",
+                "Manager role with business management permissions"
+            );
+            AddRoleIfMissing(
+                existingRoles,
+                rolesToCreate,
+                "User",
+                "Regular user with basic viewing permissions"
+            );
+            AddRoleIfMissing(existingRoles, rolesToCreate, "Order", "订货员");
+            AddRoleIfMissing(
+                existingRoles,
+                rolesToCreate,
+                "WarehouseManager",
+                "Warehouse manager role for inventory and replenishment operations"
+            );
+            AddRoleIfMissing(
+                existingRoles,
+                rolesToCreate,
+                "StoreManager",
+                "Store manager role for branch staff maintenance"
+            );
+            AddRoleIfMissing(
+                existingRoles,
+                rolesToCreate,
+                "StoreStaff",
+                "Store staff role for branch employees"
+            );
 
             if (rolesToCreate.Any())
             {
@@ -478,42 +433,132 @@ namespace BlazorApp.Api.Services
                 _logger.LogInformation($"已更新 {updatedPermissions.Count} 个权限定义");
             }
 
-            // 2. 为 Admin 角色分配所有权限
-            var adminRole = await db.Queryable<Role>().FirstAsync(r => r.RoleName == "Admin");
-            if (adminRole != null)
+            // 2. 清理 Admin / 管理员 的显式权限关联
+            var adminRoleNames = AdminRoleNames.ToArray();
+            var adminRoles = await db.Queryable<Role>()
+                .Where(role => adminRoleNames.Contains(role.RoleName))
+                .ToListAsync();
+            var adminRoleGuids = adminRoles
+                .Select(role => role.RoleGUID)
+                .Where(roleGuid => !string.IsNullOrWhiteSpace(roleGuid))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            if (adminRoleGuids.Any())
             {
-                // 获取Admin已有的权限
-                var currentRolePermissions = await db.Queryable<SysRolePermission>()
-                    .Where(rp => rp.RoleGuid == adminRole.RoleGUID)
-                    .Select(rp => rp.PermissionCode)
-                    .ToListAsync();
-                var currentRolePermissionCodes = currentRolePermissions.ToHashSet(
+                var adminRoleGuidList = adminRoleGuids.ToList();
+                var removedAdminLinks = await db.Deleteable<SysRolePermission>()
+                    .Where(permission => adminRoleGuidList.Contains(permission.RoleGuid))
+                    .ExecuteCommandAsync();
+
+                if (removedAdminLinks > 0)
+                {
+                    _logger.LogInformation(
+                        "已清理 Admin/管理员 角色的 {Count} 条显式权限关联",
+                        removedAdminLinks
+                    );
+                }
+            }
+
+            // 3. 为普通角色按模板补齐缺失权限，不覆盖额外权限
+            await SeedRolePermissionTemplatesAsync();
+        }
+
+        private static void AddRoleIfMissing(
+            IEnumerable<Role> existingRoles,
+            ICollection<Role> rolesToCreate,
+            string roleName,
+            string description
+        )
+        {
+            if (existingRoles.Any(role => role.RoleName == roleName))
+            {
+                return;
+            }
+
+            rolesToCreate.Add(
+                new Role
+                {
+                    RoleGUID = Guid.NewGuid().ToString(),
+                    RoleName = roleName,
+                    Description = description,
+                    IsActive = true,
+                    CreatedAt = DateTime.UtcNow,
+                }
+            );
+        }
+
+        private async Task SeedRolePermissionTemplatesAsync()
+        {
+            var db = _dbContext.Db;
+            var adminRoleNames = AdminRoleNames.ToArray();
+            var roleTemplates = PermissionSeedData.RolePermissionTemplates
+                .Where(template => !adminRoleNames.Contains(template.RoleName))
+                .ToList();
+
+            if (!roleTemplates.Any())
+            {
+                return;
+            }
+
+            var roleNames = roleTemplates.Select(template => template.RoleName).ToList();
+            var roles = await db.Queryable<Role>().Where(role => roleNames.Contains(role.RoleName)).ToListAsync();
+            if (!roles.Any())
+            {
+                return;
+            }
+
+            var roleByName = roles.ToDictionary(role => role.RoleName, StringComparer.OrdinalIgnoreCase);
+            var roleGuids = roles.Select(role => role.RoleGUID).ToList();
+            var existingRolePermissions = await db.Queryable<SysRolePermission>()
+                .Where(permission => roleGuids.Contains(permission.RoleGuid))
+                .ToListAsync();
+            var currentPermissionCodesByRole = existingRolePermissions
+                .GroupBy(permission => permission.RoleGuid, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(
+                    group => group.Key,
+                    group => group
+                        .Select(permission => permission.PermissionCode)
+                        .ToHashSet(StringComparer.OrdinalIgnoreCase),
                     StringComparer.OrdinalIgnoreCase
                 );
 
-                // 找出需要新增的关联
-                var missingCodes = allPermissions
-                    .Select(permission => permission.Code)
-                    .Where(code => !currentRolePermissionCodes.Contains(code))
-                    .Distinct(StringComparer.OrdinalIgnoreCase)
-                    .ToList();
-
-                if (missingCodes.Any())
+            var newRolePermissions = new List<SysRolePermission>();
+            foreach (var template in roleTemplates)
+            {
+                if (!roleByName.TryGetValue(template.RoleName, out var role))
                 {
-                    var newRolePermissions = missingCodes
-                        .Select(code => new SysRolePermission
+                    continue;
+                }
+
+                if (!currentPermissionCodesByRole.TryGetValue(role.RoleGUID, out var currentPermissionCodes))
+                {
+                    currentPermissionCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    currentPermissionCodesByRole[role.RoleGUID] = currentPermissionCodes;
+                }
+
+                foreach (var permissionCode in template.PermissionCodes.Distinct(StringComparer.OrdinalIgnoreCase))
+                {
+                    if (!currentPermissionCodes.Add(permissionCode))
+                    {
+                        continue;
+                    }
+
+                    newRolePermissions.Add(
+                        new SysRolePermission
                         {
                             Id = UuidHelper.GenerateUuid7(),
-                            RoleGuid = adminRole.RoleGUID,
-                            PermissionCode = code,
-                        })
-                        .ToList();
-
-                    await db.Insertable(newRolePermissions).ExecuteCommandAsync();
-                    _logger.LogInformation(
-                        $"已为 Admin 角色自动分配 {newRolePermissions.Count} 个新权限"
+                            RoleGuid = role.RoleGUID,
+                            PermissionCode = permissionCode,
+                        }
                     );
                 }
+            }
+
+            if (newRolePermissions.Any())
+            {
+                await db.Insertable(newRolePermissions).ExecuteCommandAsync();
+                _logger.LogInformation("已补齐 {Count} 条普通角色模板权限", newRolePermissions.Count);
             }
         }
     }

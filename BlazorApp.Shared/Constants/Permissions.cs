@@ -7,6 +7,8 @@ namespace BlazorApp.Shared.Constants
     /// </summary>
     public static class Permissions
     {
+        public static readonly string[] SuperAdminRoleNames = ["Admin", "管理员"];
+
         public static class Users
         {
             public const string View = "Users.View";
@@ -231,94 +233,10 @@ namespace BlazorApp.Shared.Constants
             public const string View = "OrderFront";
         }
 
-        private static readonly HashSet<string> WarehouseManagerGrantedPermissions = new(
-            StringComparer.OrdinalIgnoreCase
-        )
+        public static bool IsSuperAdminRole(string? roleName)
         {
-            Stores.View,
-            Stores.Create,
-            Stores.Edit,
-            Stores.Delete,
-            Stores.Sync,
-            Products.View,
-            Products.Create,
-            Products.Edit,
-            Products.Delete,
-            Orders.View,
-            Orders.Create,
-            Orders.Edit,
-            Orders.Delete,
-            Container.View,
-            Container.Create,
-            Container.Edit,
-            Container.Delete,
-            Warehouse.View,
-            Warehouse.Manage,
-            Warehouse.ManageProducts,
-            Warehouse.ManageCategories,
-            Warehouse.ManageLocations,
-            Warehouse.ManageOrders,
-            DomesticPurchase.View,
-            DomesticPurchase.ManageSuppliers,
-            DomesticPurchase.ManageProducts,
-            DomesticPurchase.ManagePrefixCodes,
-            Reports.View,
-            Reports.Export,
-            Dashboard.View,
-        };
-
-        private static readonly HashSet<string> AttendanceSelfServicePermissions = new(
-            StringComparer.OrdinalIgnoreCase
-        )
-        {
-            Attendance.Schedule.ViewSelf,
-            Attendance.Availability.SubmitSelf,
-            Attendance.Punch.Self,
-            Attendance.Leave.ApplySelf,
-        };
-
-        private static readonly HashSet<string> StoreManagerGrantedPermissions = new(
-            StringComparer.OrdinalIgnoreCase
-        )
-        {
-            Attendance.Schedule.ViewSelf,
-            Attendance.Schedule.ViewStore,
-            Attendance.Schedule.EditManagedStore,
-            Attendance.Availability.SubmitSelf,
-            Attendance.Availability.ViewManagedStore,
-            Attendance.Punch.Self,
-            Attendance.Punch.ViewManagedStore,
-            Attendance.Approval.ViewManagedStore,
-            Attendance.Approval.ReviewManagedStore,
-            Attendance.Holiday.ViewStore,
-            Attendance.Holiday.EditManagedStore,
-            Attendance.Leave.ApplySelf,
-            Attendance.Leave.ViewManagedStore,
-            Attendance.Leave.ReviewManagedStore,
-            DeviceRegistration.View,
-            DeviceRegistration.Manage,
-        };
-
-        /// <summary>
-        /// WarehouseManager role-level permission grants.
-        /// Keep this list in sync with hbweb_rv/src/types/permissions.ts.
-        /// </summary>
-        public static bool IsWarehouseManagerGranted(string? permission)
-        {
-            return !string.IsNullOrWhiteSpace(permission)
-                && WarehouseManagerGrantedPermissions.Contains(permission);
-        }
-
-        public static bool IsAttendanceSelfServiceGranted(string? permission)
-        {
-            return !string.IsNullOrWhiteSpace(permission)
-                && AttendanceSelfServicePermissions.Contains(permission);
-        }
-
-        public static bool IsStoreManagerGranted(string? permission)
-        {
-            return !string.IsNullOrWhiteSpace(permission)
-                && StoreManagerGrantedPermissions.Contains(permission);
+            return !string.IsNullOrWhiteSpace(roleName)
+                && SuperAdminRoleNames.Contains(roleName, StringComparer.OrdinalIgnoreCase);
         }
 
         public static IReadOnlyCollection<string> GetEquivalentPermissionCodes(string? permission)
@@ -335,6 +253,32 @@ namespace BlazorApp.Shared.Constants
             }
 
             return codes;
+        }
+
+        public static IReadOnlyCollection<string> ExpandPermissionCodes(
+            IEnumerable<string>? permissions
+        )
+        {
+            if (permissions == null)
+            {
+                return Array.Empty<string>();
+            }
+
+            var codes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var permission in permissions.Where(permission => !string.IsNullOrWhiteSpace(permission)))
+            {
+                codes.Add(permission);
+
+                foreach (var alias in PermissionAliases)
+                {
+                    if (alias.Value.Contains(permission, StringComparer.OrdinalIgnoreCase))
+                    {
+                        codes.Add(alias.Key);
+                    }
+                }
+            }
+
+            return codes.ToList();
         }
 
         public static IEnumerable<(string Code, string Name, string Category)> GetAllPermissions() =>

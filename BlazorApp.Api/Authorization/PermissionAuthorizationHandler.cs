@@ -38,49 +38,22 @@ namespace BlazorApp.Api.Authorization
                 return;
             }
 
-            if (Permissions.IsAttendanceSelfServiceGranted(requirement.Permission))
-            {
-                context.Succeed(requirement);
-                return;
-            }
-
             try
             {
                 using var scope = _serviceScopeFactory.CreateScope();
                 var roleService = scope.ServiceProvider.GetRequiredService<IRoleService>();
 
-                if (await UserHasAnyRoleAsync(roleService, userId, "Admin", "管理员"))
+                if (await UserHasAnyRoleAsync(roleService, userId, Permissions.SuperAdminRoleNames))
                 {
                     context.Succeed(requirement);
                     return;
                 }
 
-                if (
-                    Permissions.IsStoreManagerGranted(requirement.Permission)
-                    && await UserHasAnyRoleAsync(roleService, userId, "StoreManager")
-                )
+                var result = await roleService.UserHasPermissionAsync(userId, requirement.Permission);
+                if (result.Data)
                 {
                     context.Succeed(requirement);
                     return;
-                }
-
-                if (
-                    Permissions.IsWarehouseManagerGranted(requirement.Permission)
-                    && await UserHasAnyRoleAsync(roleService, userId, "WarehouseManager")
-                )
-                {
-                    context.Succeed(requirement);
-                    return;
-                }
-
-                foreach (var permission in Permissions.GetEquivalentPermissionCodes(requirement.Permission))
-                {
-                    var result = await roleService.UserHasPermissionAsync(userId, permission);
-                    if (result.Data)
-                    {
-                        context.Succeed(requirement);
-                        return;
-                    }
                 }
             }
             catch (Exception ex)

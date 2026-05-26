@@ -2,6 +2,7 @@ using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Services;
 using BlazorApp.Api.Utils;
+using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
 using Microsoft.AspNetCore.Authorization;
@@ -255,7 +256,7 @@ namespace BlazorApp.Api.Controllers
                             })
                             .ToList() ?? new List<RoleDto>(),
                     RoleNames = user.Roles?.Select(r => r.RoleName).ToList() ?? new List<string>(),
-                    Permissions = allPermissions.Distinct().ToList(), // 🔐 添加权限列表（去重）
+                    Permissions = Permissions.ExpandPermissionCodes(allPermissions).ToList(), // 🔐 添加权限列表（去重并补齐兼容权限）
                     StoreNames = userStores.Select(s => s.StoreName).ToList(),
                     Stores = userStores,
                 };

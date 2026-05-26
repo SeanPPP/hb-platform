@@ -1,12 +1,15 @@
 using System;
 using System.Collections.Generic;
+using System.IdentityModel.Tokens.Jwt;
 using System.IO;
+using System.Linq;
 using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Threading.Tasks;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Services;
 using BlazorApp.Api.Utils;
+using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
 using Microsoft.AspNetCore.Http;
@@ -116,6 +119,31 @@ namespace BlazorApp.Api.Tests
                 .FirstAsync(token => token.Token == refreshToken);
             Assert.NotNull(storedToken);
             Assert.True(storedToken!.IsRevoked);
+        }
+
+        [Fact]
+        public void GenerateJwtToken_WithLegacyLocalInvociePermission_AddsCanonicalLocalPurchaseClaim()
+        {
+            var service = new AuthService(
+                CreateSqlSugarContext(_db),
+                CreateJwtConfiguration(),
+                new HttpContextAccessor()
+            );
+            var user = new User
+            {
+                UserGUID = "user-legacy",
+                Username = "legacy-user",
+                Email = "legacy@example.test",
+                Roles = new List<Role> { new() { RoleName = "User" } },
+            };
+
+            var token = service.GenerateJwtToken(user, new List<string> { "LocalInvocie.View" });
+            var claims = new JwtSecurityTokenHandler().ReadJwtToken(token).Claims.ToList();
+
+            Assert.Contains(claims, claim => claim.Type == "permission" && claim.Value == "LocalInvocie.View");
+            Assert.Contains(claims, claim =>
+                claim.Type == "permission" && claim.Value == Permissions.LocalPurchase.View
+            );
         }
 
         public void Dispose()

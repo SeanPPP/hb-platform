@@ -26,6 +26,29 @@ public class NavigationServiceTests
     }
 
     [Fact]
+    public void BuildMenu_ShowsFullMenuForAdmin()
+    {
+        var user = CreateUser(new Claim(ClaimTypes.Role, "Admin"));
+
+        var menu = _service.BuildMenu(user);
+
+        Assert.Equal(6, menu.Count);
+        Assert.Contains(menu, item => item.Path == "/dashboard");
+        Assert.Contains(menu, item => item.Path == "/system");
+        Assert.Contains(menu, item => item.Path == "/warehouse");
+        Assert.Contains(menu, item => item.Path == "/domestic-purchase");
+        Assert.Contains(menu, item => item.Path == "/executive-sales-intelligence");
+        Assert.Contains(menu, item => item.Path == "/pos-admin");
+
+        var systemMenu = Assert.Single(menu, item => item.Path == "/system");
+        Assert.Contains(systemMenu.Children!, item => item.Path == "/system/employee-profiles");
+
+        var posAdminMenu = Assert.Single(menu, item => item.Path == "/pos-admin");
+        Assert.Contains(posAdminMenu.Children!, item => item.Path == "/pos-admin/products");
+        Assert.Contains(posAdminMenu.Children!, item => item.Path == "/pos-admin/local-supplier-invoices");
+    }
+
+    [Fact]
     public void BuildMenu_ShowsDashboardAndAuthorizedModuleWithDashboardPermission()
     {
         var user = CreateUser(
@@ -39,6 +62,16 @@ public class NavigationServiceTests
         var posAdmin = Assert.Single(menu, item => item.Path == "/pos-admin");
         Assert.Contains(posAdmin.Children!, item => item.Path == "/pos-admin/schedule-attendance");
         Assert.DoesNotContain(posAdmin.Children!, item => item.Path == "/pos-admin/sales-orders");
+    }
+
+    [Fact]
+    public void BuildMenu_DoesNotUnlockNavigationForWarehouseManagerRoleWithoutPermissionClaims()
+    {
+        var user = CreateUser(new Claim(ClaimTypes.Role, "WarehouseManager"));
+
+        var menu = _service.BuildMenu(user);
+
+        Assert.Empty(menu);
     }
 
     [Fact]
@@ -95,6 +128,21 @@ public class NavigationServiceTests
         var menu = _service.BuildAppMenu(user);
 
         Assert.DoesNotContain(menu, item => item.RouteName == "employee-profile");
+    }
+
+    [Fact]
+    public void BuildAppMenu_ShowsFullMenuForAdmin()
+    {
+        var user = CreateUser(new Claim(ClaimTypes.Role, "Admin"));
+
+        var menu = _service.BuildAppMenu(user);
+
+        Assert.Equal(14, menu.Count);
+        Assert.Contains(menu, item => item.RouteName == "users");
+        Assert.Contains(menu, item => item.RouteName == "employee-profile");
+        Assert.Contains(menu, item => item.RouteName == "device-management");
+        Assert.Contains(menu, item => item.RouteName == "local-supplier-invoices");
+        Assert.Contains(menu, item => item.RouteName == "warehouse");
     }
 
     [Fact]
@@ -188,6 +236,16 @@ public class NavigationServiceTests
         var menu = _service.BuildAppMenu(user);
 
         Assert.DoesNotContain(menu, item => item.RouteName == "users");
+    }
+
+    [Fact]
+    public void BuildAppMenu_DoesNotUnlockWarehouseForWarehouseManagerRoleWithoutPermissionClaims()
+    {
+        var user = CreateUser(new Claim(ClaimTypes.Role, "WarehouseManager"));
+
+        var menu = _service.BuildAppMenu(user);
+
+        Assert.DoesNotContain(menu, item => item.RouteName == "warehouse");
     }
 
     [Fact]

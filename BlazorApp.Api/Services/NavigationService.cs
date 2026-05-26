@@ -246,12 +246,7 @@ namespace BlazorApp.Api.Services
                 return FullMenu;
             }
 
-            var hasDashboardAccess =
-                user.HasClaim("permission", Permissions.Dashboard.View)
-                || (
-                    user.HasClaim(ClaimTypes.Role, "WarehouseManager")
-                    && Permissions.IsWarehouseManagerGranted(Permissions.Dashboard.View)
-                );
+            var hasDashboardAccess = HasPermissionClaim(user, Permissions.Dashboard.View);
             if (!hasDashboardAccess)
             {
                 return new List<NavigationMenuDto>();
@@ -340,24 +335,13 @@ namespace BlazorApp.Api.Services
             }
 
             if (
-                user.HasClaim(ClaimTypes.Role, "WarehouseManager")
-                && Permissions.IsWarehouseManagerGranted(node.Permission)
+                user.HasClaim(ClaimTypes.Role, "Admin")
+                || user.HasClaim(ClaimTypes.Role, "管理员")
+                || HasPermissionClaim(user, node.Permission)
             )
             {
                 return true;
             }
-
-            if (user.HasClaim("permission", node.Permission)
-                || user.HasClaim(ClaimTypes.Role, "Admin")
-                || user.HasClaim(ClaimTypes.Role, "管理员"))
-            {
-                return true;
-            }
-
-            if (node.Permission == "LocalPurchase.View" && user.HasClaim("permission", "LocalInvocie.View"))
-                return true;
-            if (node.Permission == "LocalPurchase.Edit" && user.HasClaim("permission", "LocalInvocie.Edit"))
-                return true;
 
             return false;
         }
@@ -386,32 +370,18 @@ namespace BlazorApp.Api.Services
                 return true;
             }
 
-            if (
-                user.HasClaim(ClaimTypes.Role, "WarehouseManager")
-                && Permissions.IsWarehouseManagerGranted(node.Permission)
-            )
-            {
-                return true;
-            }
-
-            if (user.HasClaim("permission", node.Permission))
-            {
-                return true;
-            }
-
-            if (node.Permission == Permissions.LocalPurchase.View
-                && user.HasClaim("permission", "LocalInvocie.View"))
-            {
-                return true;
-            }
-
-            if (node.Permission == Permissions.LocalPurchase.Edit
-                && user.HasClaim("permission", "LocalInvocie.Edit"))
+            if (HasPermissionClaim(user, node.Permission))
             {
                 return true;
             }
 
             return false;
+        }
+
+        private static bool HasPermissionClaim(ClaimsPrincipal user, string? permission)
+        {
+            return Permissions.GetEquivalentPermissionCodes(permission)
+                .Any(code => user.HasClaim("permission", code));
         }
 
         private static bool IsWarehouseDevice(string? deviceType)
