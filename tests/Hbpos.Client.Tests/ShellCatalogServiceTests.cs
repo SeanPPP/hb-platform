@@ -174,6 +174,13 @@ public sealed class ShellCatalogServiceTests
 
     private class FakeLocalCatalogRepository : ILocalCatalogRepository
     {
+        public Task<ILocalCatalogStoreReplaceSession> BeginStoreReplaceSessionAsync(
+            string storeCode,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult<ILocalCatalogStoreReplaceSession>(new FakeLocalCatalogStoreReplaceSession());
+        }
+
         public Task ReplaceSellableItemsAsync(IEnumerable<SellableItemDto> items, CancellationToken cancellationToken = default)
         {
             return Task.CompletedTask;
@@ -251,6 +258,24 @@ public sealed class ShellCatalogServiceTests
             CancellationToken cancellationToken = default)
         {
             return Task.FromResult<IReadOnlyList<SellableItemDto>>([CreateItem("RESET-ITEM")]);
+        }
+
+        private sealed class FakeLocalCatalogStoreReplaceSession : ILocalCatalogStoreReplaceSession
+        {
+            public Task StageAsync(IEnumerable<SellableItemDto> items, CancellationToken cancellationToken = default)
+            {
+                return Task.CompletedTask;
+            }
+
+            public Task<LocalCatalogStoreReplaceCommitResult> CommitAsync(CancellationToken cancellationToken = default)
+            {
+                return Task.FromResult(new LocalCatalogStoreReplaceCommitResult(0, 0));
+            }
+
+            public ValueTask DisposeAsync()
+            {
+                return ValueTask.CompletedTask;
+            }
         }
     }
 

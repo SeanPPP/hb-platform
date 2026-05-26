@@ -215,12 +215,88 @@ public sealed class CatalogSyncServiceTests
         Assert.Equal(new LocalCatalogSyncResult("S01", ComparePages: 0, RemotePages: 2, UpsertedCount: 2, DeletedCount: 0), result);
         Assert.Empty(repository.ComparePageRequests);
         Assert.Null(apiClient.LastCompareRequest);
-        Assert.Equal(2, repository.UpsertedBatches.Count);
+        Assert.Empty(repository.UpsertedBatches);
+        Assert.Equal("S01", Assert.Single(repository.StoreReplaceSessionRequests));
+        Assert.Equal(2, repository.StagedBatches.Count);
+        Assert.Equal(1, repository.StoreReplaceCommitCount);
+        Assert.All(
+            repository.StagedBatches.SelectMany(batch => batch),
+            item => Assert.Equal("S01", item.StoreCode));
         Assert.Equal(
             [("S01", null, 5000), ("S01", "PAGE-CODE-1", 5000)],
             apiClient.PageRequests);
         Assert.True(HasLog(logs, "compare skipped store=S01 reason=force-full-download"));
         Assert.False(HasLog(logs, "download skipped store=S01 reason=no-changes"));
+    }
+
+    [Fact]
+    public async Task FullSyncAsync_WhenForcedAndLaterPageFails_DoesNotCommitOrClearLocalState()
+    {
+        var repository = new FakeLocalCatalogRepository();
+        repository.SeedStore(
+            "S01",
+            [
+                CreateSellableItem("S01", "LOCAL-001", "local-code-1"),
+                CreateSellableItem("S01", "LOCAL-002", "local-code-2")
+            ]);
+        var apiClient = new FakeCatalogApiClient();
+        apiClient.PageResponses.Enqueue(new CatalogSyncPageResponse(
+            "S01",
+            Timestamp,
+            Cursor: null,
+            [CreateLookupItem("PAGE-001", "page-code-1")],
+            [],
+            NextCursor: "PAGE-CODE-1",
+            HasMore: true,
+            TotalCount: 2));
+        apiClient.PageExceptionSequence.Enqueue(new CatalogApiException("page 2 failed"));
+        var service = new LocalCatalogSyncService(repository, apiClient);
+
+        await Assert.ThrowsAsync<CatalogApiException>(() => service.FullSyncAsync("S01", forceFullDownload: true));
+
+        Assert.Equal("S01", Assert.Single(repository.StoreReplaceSessionRequests));
+        Assert.Single(repository.StagedBatches);
+        Assert.Equal(0, repository.StoreReplaceCommitCount);
+        Assert.Equal(["LOCAL-001", "LOCAL-002"], repository.LoadSellableItems("S01").Select(item => item.ProductCode).ToArray());
+        Assert.Equal(
+            [("S01", null, 5000), ("S01", "PAGE-CODE-1", 5000)],
+            apiClient.PageRequests);
+    }
+
+    [Fact]
+    public async Task FullSyncAsync_WhenForced_SplitsLargeDownloadStageIntoUiFriendlyBatches()
+    {
+        var repository = new FakeLocalCatalogRepository();
+        var events = new List<string>();
+        repository.StageStarted = () => events.Add("stage");
+        var apiClient = new FakeCatalogApiClient();
+        apiClient.PageResponses.Enqueue(new CatalogSyncPageResponse(
+            "S01",
+            Timestamp,
+            Cursor: null,
+            Enumerable.Range(1, 2001)
+                .Select(index => CreateLookupItem($"PAGE-{index:000}", $"page-code-{index:000}", $"PAGE-REF-{index:000}"))
+                .ToArray(),
+            [],
+            NextCursor: null,
+            HasMore: false,
+            TotalCount: 2001));
+        var uiPriority = new RecordingUiPriorityCoordinator(events);
+        var service = new LocalCatalogSyncService(repository, apiClient, uiPriority);
+
+        var result = await service.FullSyncAsync("S01", forceFullDownload: true);
+
+        Assert.Equal(2001, result.UpsertedCount);
+        Assert.Empty(repository.UpsertedBatches);
+        Assert.True(repository.StagedBatches.Count > 1);
+        Assert.Equal(1, repository.StoreReplaceCommitCount);
+        var stageIndexes = events
+            .Select((name, index) => (name, index))
+            .Where(entry => entry.name == "stage")
+            .Select(entry => entry.index)
+            .ToArray();
+        Assert.Equal(repository.StagedBatches.Count, stageIndexes.Length);
+        Assert.All(stageIndexes, index => Assert.True(index > 0 && events[index - 1] == "wait"));
     }
 
     [Fact]
@@ -280,19 +356,19 @@ public sealed class CatalogSyncServiceTests
             "S01",
             Timestamp,
             Cursor: null,
-            Enumerable.Range(1, 501)
+            Enumerable.Range(1, 2001)
                 .Select(index => CreateLookupItem($"PAGE-{index:000}", $"page-code-{index:000}", $"PAGE-REF-{index:000}"))
                 .ToArray(),
             [],
             NextCursor: null,
             HasMore: false,
-            TotalCount: 501));
+            TotalCount: 2001));
         var uiPriority = new CountingUiPriorityCoordinator();
         var service = new LocalCatalogSyncService(repository, apiClient, uiPriority);
 
         var result = await service.FullSyncAsync("S01");
 
-        Assert.Equal(501, result.UpsertedCount);
+        Assert.Equal(2001, result.UpsertedCount);
         Assert.True(repository.UpsertedBatches.Count > 1);
         Assert.True(uiPriority.WaitCount >= repository.UpsertedBatches.Count);
     }
@@ -660,6 +736,23 @@ public sealed class CatalogSyncServiceTests
             Timestamp);
     }
 
+    private static SellableItemDto CreateSellableItem(string storeCode, string productCode, string lookupCode)
+    {
+        return new SellableItemDto(
+            storeCode,
+            productCode,
+            ReferenceCode: null,
+            DisplayName: $"{productCode} item",
+            LookupCode: lookupCode,
+            ItemNumber: productCode,
+            Barcode: lookupCode,
+            RetailPrice: 12.34m,
+            PriceSourceKind.StoreRetailPrice,
+            "store-retail",
+            QuantityFactor: 1m,
+            UpdatedAt: Timestamp);
+    }
+
     private static HttpResponseMessage JsonResponse<T>(T value, HttpStatusCode statusCode = HttpStatusCode.OK)
     {
         return new HttpResponseMessage(statusCode)
@@ -673,6 +766,8 @@ public sealed class CatalogSyncServiceTests
 
     private sealed class FakeLocalCatalogRepository : ILocalCatalogRepository
     {
+        private readonly Dictionary<string, List<SellableItemDto>> _itemsByStore = new(StringComparer.OrdinalIgnoreCase);
+
         public Queue<IReadOnlyList<LocalSellableItemCompareRow>> ComparePages { get; } = new();
 
         public List<(string StoreCode, string? AfterLookupCodeNormalized, int PageSize)> ComparePageRequests { get; } = [];
@@ -681,6 +776,14 @@ public sealed class CatalogSyncServiceTests
 
         public List<(string StoreCode, string[] LookupCodes)> DeleteCalls { get; } = [];
 
+        public List<string> StoreReplaceSessionRequests { get; } = [];
+
+        public List<IReadOnlyList<SellableItemDto>> StagedBatches { get; } = [];
+
+        public int StoreReplaceCommitCount { get; private set; }
+
+        public Action? StageStarted { get; set; }
+
         public Task ReplaceSellableItemsAsync(IEnumerable<SellableItemDto> items, CancellationToken cancellationToken = default)
         {
             return UpsertSellableItemsAsync(items, cancellationToken);
@@ -688,7 +791,22 @@ public sealed class CatalogSyncServiceTests
 
         public Task UpsertSellableItemsAsync(IEnumerable<SellableItemDto> items, CancellationToken cancellationToken = default)
         {
-            UpsertedBatches.Add(items.ToArray());
+            var batch = items.ToArray();
+            UpsertedBatches.Add(batch);
+            foreach (var item in batch)
+            {
+                var storeItems = GetStoreItems(item.StoreCode);
+                var existingIndex = storeItems.FindIndex(existing =>
+                    string.Equals(existing.LookupCode.Trim(), item.LookupCode.Trim(), StringComparison.OrdinalIgnoreCase));
+                if (existingIndex >= 0)
+                {
+                    storeItems[existingIndex] = item;
+                }
+                else
+                {
+                    storeItems.Add(item);
+                }
+            }
             return Task.CompletedTask;
         }
 
@@ -754,12 +872,93 @@ public sealed class CatalogSyncServiceTests
 
         public Task<IReadOnlyList<SellableItemDto>> LoadSellableItemsAsync(CancellationToken cancellationToken = default)
         {
-            return Task.FromResult<IReadOnlyList<SellableItemDto>>([]);
+            return Task.FromResult<IReadOnlyList<SellableItemDto>>(
+                _itemsByStore
+                    .OrderBy(entry => entry.Key, StringComparer.OrdinalIgnoreCase)
+                    .SelectMany(entry => entry.Value)
+                    .ToArray());
         }
 
         public Task<IReadOnlyList<SellableItemDto>> LoadSellableItemsAsync(string storeCode, CancellationToken cancellationToken = default)
         {
-            return Task.FromResult<IReadOnlyList<SellableItemDto>>([]);
+            return Task.FromResult<IReadOnlyList<SellableItemDto>>(LoadSellableItems(storeCode));
+        }
+
+        public Task<ILocalCatalogStoreReplaceSession> BeginStoreReplaceSessionAsync(
+            string storeCode,
+            CancellationToken cancellationToken = default)
+        {
+            StoreReplaceSessionRequests.Add(storeCode);
+            var session = new FakeLocalCatalogStoreReplaceSession(this, storeCode);
+            return Task.FromResult<ILocalCatalogStoreReplaceSession>(session);
+        }
+
+        public void SeedStore(string storeCode, IEnumerable<SellableItemDto> items)
+        {
+            _itemsByStore[storeCode] = items.ToList();
+        }
+
+        public IReadOnlyList<SellableItemDto> LoadSellableItems(string storeCode)
+        {
+            return _itemsByStore.TryGetValue(storeCode, out var items) ? items.ToArray() : [];
+        }
+
+        private List<SellableItemDto> GetStoreItems(string storeCode)
+        {
+            if (!_itemsByStore.TryGetValue(storeCode, out var storeItems))
+            {
+                storeItems = [];
+                _itemsByStore[storeCode] = storeItems;
+            }
+
+            return storeItems;
+        }
+
+        private sealed class FakeLocalCatalogStoreReplaceSession(
+            FakeLocalCatalogRepository repository,
+            string storeCode) : ILocalCatalogStoreReplaceSession
+        {
+            private readonly List<SellableItemDto> _stagedItems = [];
+
+            public List<IReadOnlyList<SellableItemDto>> StageItems { get; } = [];
+
+            public Task StageAsync(IEnumerable<SellableItemDto> items, CancellationToken cancellationToken = default)
+            {
+                var batch = items.ToArray();
+                repository.StageStarted?.Invoke();
+                StageItems.Add(batch);
+                repository.StagedBatches.Add(batch);
+                _stagedItems.AddRange(batch);
+                return Task.CompletedTask;
+            }
+
+            public Task<LocalCatalogStoreReplaceCommitResult> CommitAsync(CancellationToken cancellationToken = default)
+            {
+                var previousItems = repository.LoadSellableItems(storeCode);
+                var stagedItems = _stagedItems
+                    .GroupBy(item => NormalizeLookupCode(item.LookupCode), StringComparer.Ordinal)
+                    .Select(group => group.Last())
+                    .ToList();
+                var deletedCount = previousItems.Count(previous =>
+                    stagedItems.All(staged =>
+                        !string.Equals(
+                            NormalizeLookupCode(staged.LookupCode),
+                            NormalizeLookupCode(previous.LookupCode),
+                            StringComparison.Ordinal)));
+                repository._itemsByStore[storeCode] = stagedItems;
+                repository.StoreReplaceCommitCount++;
+                return Task.FromResult(new LocalCatalogStoreReplaceCommitResult(stagedItems.Count, deletedCount));
+            }
+
+            public ValueTask DisposeAsync()
+            {
+                return ValueTask.CompletedTask;
+            }
+
+            private static string NormalizeLookupCode(string? value)
+            {
+                return (value ?? string.Empty).Trim().ToUpperInvariant();
+            }
         }
     }
 
@@ -777,6 +976,8 @@ public sealed class CatalogSyncServiceTests
 
         public Exception? PageException { get; init; }
 
+        public Queue<Exception> PageExceptionSequence { get; } = new();
+
         public Exception? LookupException { get; init; }
 
         public CatalogLookupResponse? LookupResponse { get; init; }
@@ -790,9 +991,19 @@ public sealed class CatalogSyncServiceTests
             CancellationToken cancellationToken = default)
         {
             PageRequests.Add((storeCode, cursor, pageSize));
+            if (PageResponses.Count > 0)
+            {
+                return Task.FromResult(PageResponses.Dequeue());
+            }
+
+            if (PageExceptionSequence.Count > 0)
+            {
+                return Task.FromException<CatalogSyncPageResponse>(PageExceptionSequence.Dequeue());
+            }
+
             return PageException is not null
                 ? Task.FromException<CatalogSyncPageResponse>(PageException)
-                : Task.FromResult(PageResponses.Dequeue());
+                : Task.FromException<CatalogSyncPageResponse>(new InvalidOperationException("No catalog page response was queued."));
         }
 
         public Task<CatalogCompareResponse> CompareSellableItemsAsync(
@@ -864,6 +1075,26 @@ public sealed class CatalogSyncServiceTests
         public Task WaitForUiIdleAsync(CancellationToken cancellationToken = default)
         {
             WaitCount++;
+            return Task.CompletedTask;
+        }
+    }
+
+    private sealed class RecordingUiPriorityCoordinator(List<string> events) : IUiPriorityCoordinator
+    {
+        public bool IsUiActive => false;
+
+        public void NotifyUserInput()
+        {
+        }
+
+        public IDisposable BeginUiOperation(string name)
+        {
+            return NoopDisposable.Instance;
+        }
+
+        public Task WaitForUiIdleAsync(CancellationToken cancellationToken = default)
+        {
+            events.Add("wait");
             return Task.CompletedTask;
         }
     }

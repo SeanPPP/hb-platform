@@ -48,7 +48,7 @@ public sealed class LocalCatalogSyncService(
 {
     private const int ComparePageSize = 2000;
     private const int DownloadPageSize = 5000;
-    private const int ApplyBatchSize = 500;
+    private const int ApplyBatchSize = 2000;
     private readonly IUiPriorityCoordinator _uiPriorityCoordinator = uiPriorityCoordinator ?? UiPriorityCoordinator.Noop;
 
     public async Task<LocalCatalogSyncResult> FullSyncAsync(
@@ -143,64 +143,137 @@ public sealed class LocalCatalogSyncService(
                 }
             }
 
-            string? cursor = null;
-            while (true)
+            if (forceFullDownload)
             {
-                Log($"download page request store={storeCode} page={remotePages + 1} cursor={cursor ?? "<start>"}");
-                var downloadStopwatch = Stopwatch.StartNew();
-                await _uiPriorityCoordinator.WaitForUiIdleAsync(cancellationToken);
-                var response = await catalogApiClient.GetSellableItemsPageAsync(
+                await using var replaceSession = await localCatalogRepository.BeginStoreReplaceSessionAsync(
                     storeCode,
-                    cursor,
-                    DownloadPageSize,
                     cancellationToken);
-                downloadStopwatch.Stop();
-                totalCount = Math.Max(totalCount, response.TotalCount);
-                Log($"download page response store={storeCode} page={remotePages + 1} items={response.Items.Count} total={response.TotalCount} deletedLookups={response.DeletedLookups.Count} hasMore={response.HasMore} next={response.NextCursor ?? "<end>"} apiElapsedMs={downloadStopwatch.ElapsedMilliseconds}");
-
-                if (remotePages == 0 && !forceFullDownload && !hasCompareChanges && localItemCount == response.TotalCount)
+                string? cursor = null;
+                while (true)
                 {
+                    Log($"download page request store={storeCode} page={remotePages + 1} cursor={cursor ?? "<start>"} mode=snapshot");
+                    var downloadStopwatch = Stopwatch.StartNew();
+                    await _uiPriorityCoordinator.WaitForUiIdleAsync(cancellationToken);
+                    var response = await catalogApiClient.GetSellableItemsPageAsync(
+                        storeCode,
+                        cursor,
+                        DownloadPageSize,
+                        cancellationToken);
+                    downloadStopwatch.Stop();
+                    totalCount = Math.Max(totalCount, response.TotalCount);
+                    Log($"download page response store={storeCode} page={remotePages + 1} items={response.Items.Count} total={response.TotalCount} deletedLookups={response.DeletedLookups.Count} hasMore={response.HasMore} next={response.NextCursor ?? "<end>"} apiElapsedMs={downloadStopwatch.ElapsedMilliseconds} mode=snapshot");
+
+                    var stageStopwatch = Stopwatch.StartNew();
+                    var stagedItems = response.Items
+                        .Select(item => item.ToSellableItemDto())
+                        .ToArray();
+                    foreach (var batch in stagedItems.Chunk(ApplyBatchSize))
+                    {
+                        await _uiPriorityCoordinator.WaitForUiIdleAsync(cancellationToken);
+                        await replaceSession.StageAsync(batch, cancellationToken);
+                    }
+
+                    stageStopwatch.Stop();
+
                     remotePages++;
-                    downloadedCount = response.TotalCount;
-                    Log($"download skipped store={storeCode} reason=no-changes localCount={localItemCount} total={response.TotalCount} comparePages={comparePages} remotePages={remotePages} elapsedMs={totalStopwatch.ElapsedMilliseconds}");
-                    break;
+                    downloadedCount += response.Items.Count;
+                    upsertedCount += stagedItems.Length;
+                    Log($"download page staged store={storeCode} page={remotePages} staged={stagedItems.Length} stageElapsedMs={stageStopwatch.ElapsedMilliseconds}");
+                    ReportProgress(
+                        progress,
+                        storeCode,
+                        CatalogSyncProgressStage.Downloading,
+                        totalCount,
+                        downloadedCount,
+                        comparePages,
+                        remotePages,
+                        upsertedCount,
+                        deletedCount,
+                        totalStopwatch,
+                        forceComplete: false);
+
+                    if (!response.HasMore)
+                    {
+                        break;
+                    }
+
+                    if (string.IsNullOrWhiteSpace(response.NextCursor))
+                    {
+                        throw new CatalogApiException("Catalog API indicated more pages but did not return a next cursor.");
+                    }
+
+                    cursor = response.NextCursor;
                 }
 
-                var applied = await ApplyChangesAsync(
-                    storeCode,
-                    response.Items,
-                    response.DeletedLookups,
-                    cancellationToken);
-
-                remotePages++;
-                downloadedCount += response.Items.Count;
-                upsertedCount += applied.UpsertedCount;
-                deletedCount += applied.DeletedCount;
-                Log($"download page applied store={storeCode} page={remotePages} upserted={applied.UpsertedCount} deleted={applied.DeletedCount} upsertElapsedMs={applied.UpsertElapsedMs} deleteElapsedMs={applied.DeleteElapsedMs} applyElapsedMs={applied.ApplyElapsedMs}");
-                ReportProgress(
-                    progress,
-                    storeCode,
-                    CatalogSyncProgressStage.Downloading,
-                    totalCount,
-                    downloadedCount,
-                    comparePages,
-                    remotePages,
-                    upsertedCount,
-                    deletedCount,
-                    totalStopwatch,
-                    forceComplete: !response.HasMore);
-
-                if (!response.HasMore)
+                var commitStopwatch = Stopwatch.StartNew();
+                await _uiPriorityCoordinator.WaitForUiIdleAsync(cancellationToken);
+                var commitResult = await replaceSession.CommitAsync(cancellationToken);
+                commitStopwatch.Stop();
+                upsertedCount = commitResult.InsertedCount;
+                deletedCount = commitResult.DeletedCount;
+                Log($"snapshot committed store={storeCode} inserted={commitResult.InsertedCount} deleted={commitResult.DeletedCount} commitElapsedMs={commitStopwatch.ElapsedMilliseconds}");
+            }
+            else
+            {
+                string? cursor = null;
+                while (true)
                 {
-                    break;
-                }
+                    Log($"download page request store={storeCode} page={remotePages + 1} cursor={cursor ?? "<start>"}");
+                    var downloadStopwatch = Stopwatch.StartNew();
+                    await _uiPriorityCoordinator.WaitForUiIdleAsync(cancellationToken);
+                    var response = await catalogApiClient.GetSellableItemsPageAsync(
+                        storeCode,
+                        cursor,
+                        DownloadPageSize,
+                        cancellationToken);
+                    downloadStopwatch.Stop();
+                    totalCount = Math.Max(totalCount, response.TotalCount);
+                    Log($"download page response store={storeCode} page={remotePages + 1} items={response.Items.Count} total={response.TotalCount} deletedLookups={response.DeletedLookups.Count} hasMore={response.HasMore} next={response.NextCursor ?? "<end>"} apiElapsedMs={downloadStopwatch.ElapsedMilliseconds}");
 
-                if (string.IsNullOrWhiteSpace(response.NextCursor))
-                {
-                    throw new CatalogApiException("Catalog API indicated more pages but did not return a next cursor.");
-                }
+                    if (remotePages == 0 && !hasCompareChanges && localItemCount == response.TotalCount)
+                    {
+                        remotePages++;
+                        downloadedCount = response.TotalCount;
+                        Log($"download skipped store={storeCode} reason=no-changes localCount={localItemCount} total={response.TotalCount} comparePages={comparePages} remotePages={remotePages} elapsedMs={totalStopwatch.ElapsedMilliseconds}");
+                        break;
+                    }
 
-                cursor = response.NextCursor;
+                    var applied = await ApplyChangesAsync(
+                        storeCode,
+                        response.Items,
+                        response.DeletedLookups,
+                        cancellationToken);
+
+                    remotePages++;
+                    downloadedCount += response.Items.Count;
+                    upsertedCount += applied.UpsertedCount;
+                    deletedCount += applied.DeletedCount;
+                    Log($"download page applied store={storeCode} page={remotePages} upserted={applied.UpsertedCount} deleted={applied.DeletedCount} upsertElapsedMs={applied.UpsertElapsedMs} deleteElapsedMs={applied.DeleteElapsedMs} applyElapsedMs={applied.ApplyElapsedMs}");
+                    ReportProgress(
+                        progress,
+                        storeCode,
+                        CatalogSyncProgressStage.Downloading,
+                        totalCount,
+                        downloadedCount,
+                        comparePages,
+                        remotePages,
+                        upsertedCount,
+                        deletedCount,
+                        totalStopwatch,
+                        forceComplete: !response.HasMore);
+
+                    if (!response.HasMore)
+                    {
+                        break;
+                    }
+
+                    if (string.IsNullOrWhiteSpace(response.NextCursor))
+                    {
+                        throw new CatalogApiException("Catalog API indicated more pages but did not return a next cursor.");
+                    }
+
+                    cursor = response.NextCursor;
+                }
             }
 
             totalStopwatch.Stop();

@@ -202,6 +202,124 @@ public sealed class LocalCatalogRepositoryTests
     }
 
     [Fact]
+    public async Task BeginStoreReplaceSessionAsync_commit_replaces_only_selected_store_snapshot_and_preserves_other_stores()
+    {
+        var databasePath = CreateTempDatabasePath();
+
+        try
+        {
+            var repository = await CreateRepositoryAsync(databasePath);
+            await repository.UpsertSellableItemsAsync(
+            [
+                CreateItem("S001", "OLD-001", "lookup-001", "Old one", 1m),
+                CreateItem("S001", "OLD-002", "lookup-002", "Old two", 2m),
+                CreateItem("S002", "KEEP-001", "lookup-keep", "Keep me", 3m)
+            ]);
+
+            await using var session = await repository.BeginStoreReplaceSessionAsync("S001");
+            await session.StageAsync(
+            [
+                CreateItem("S001", "NEW-001", "lookup-101", "New one", 10m),
+                CreateItem("S001", "NEW-002", "lookup-102", "New two", 20m)
+            ]);
+
+            var result = await session.CommitAsync();
+
+            Assert.Equal(2, result.InsertedCount);
+            Assert.Equal(2, result.DeletedCount);
+
+            var s001Items = await repository.LoadSellableItemsAsync("S001");
+            Assert.Equal(["NEW-001", "NEW-002"], s001Items.Select(item => item.ProductCode).ToArray());
+            Assert.Null(await repository.FindByLookupCodeAsync("S001", "lookup-001"));
+            Assert.Null(await repository.FindByLookupCodeAsync("S001", "lookup-002"));
+
+            var s002Items = await repository.LoadSellableItemsAsync("S002");
+            var preserved = Assert.Single(s002Items);
+            Assert.Equal("KEEP-001", preserved.ProductCode);
+            Assert.Equal("Keep me", preserved.DisplayName);
+        }
+        finally
+        {
+            DeleteTempDatabase(databasePath);
+        }
+    }
+
+    [Fact]
+    public async Task BeginStoreReplaceSessionAsync_dispose_without_commit_leaves_existing_rows_unchanged()
+    {
+        var databasePath = CreateTempDatabasePath();
+
+        try
+        {
+            var repository = await CreateRepositoryAsync(databasePath);
+            await repository.UpsertSellableItemsAsync(
+            [
+                CreateItem("S001", "OLD-001", "lookup-001", "Old one", 1m),
+                CreateItem("S002", "KEEP-001", "lookup-keep", "Keep me", 3m)
+            ]);
+
+            await using (var session = await repository.BeginStoreReplaceSessionAsync("S001"))
+            {
+                await session.StageAsync(
+                [
+                    CreateItem("S001", "NEW-001", "lookup-101", "New one", 10m)
+                ]);
+            }
+
+            var s001Items = await repository.LoadSellableItemsAsync("S001");
+            var unchanged = Assert.Single(s001Items);
+            Assert.Equal("OLD-001", unchanged.ProductCode);
+            Assert.Equal("Old one", unchanged.DisplayName);
+            Assert.NotNull(await repository.FindByLookupCodeAsync("S001", "lookup-001"));
+            Assert.Null(await repository.FindByLookupCodeAsync("S001", "lookup-101"));
+
+            var s002Items = await repository.LoadSellableItemsAsync("S002");
+            Assert.Equal("KEEP-001", Assert.Single(s002Items).ProductCode);
+        }
+        finally
+        {
+            DeleteTempDatabase(databasePath);
+        }
+    }
+
+    [Fact]
+    public async Task BeginStoreReplaceSessionAsync_commit_uses_existing_upsert_semantics_for_duplicate_lookup_codes()
+    {
+        var databasePath = CreateTempDatabasePath();
+
+        try
+        {
+            var repository = await CreateRepositoryAsync(databasePath);
+            await repository.UpsertSellableItemsAsync(
+            [
+                CreateItem("S001", "OLD-001", "dup-code", "Old item", 1m)
+            ]);
+
+            await using var session = await repository.BeginStoreReplaceSessionAsync("S001");
+            await session.StageAsync(
+            [
+                CreateItem("S001", "NEW-001", " dup-code ", "First duplicate", 10m, "https://images.example/first.jpg", "REF-001"),
+                CreateItem("S001", "NEW-002", "DUP-CODE", "Second duplicate", 20m, "https://images.example/second.jpg", "REF-002")
+            ]);
+
+            var result = await session.CommitAsync();
+
+            Assert.Equal(1, result.InsertedCount);
+
+            var stored = Assert.Single(await repository.LoadSellableItemsAsync("S001"));
+            Assert.Equal("NEW-002", stored.ProductCode);
+            Assert.Equal("Second duplicate", stored.DisplayName);
+            Assert.Equal("REF-002", stored.ReferenceCode);
+            Assert.Equal(20m, stored.RetailPrice);
+            Assert.Equal("https://images.example/second.jpg", stored.ProductImage);
+        }
+        finally
+        {
+            DeleteTempDatabase(databasePath);
+        }
+    }
+
+    [Fact]
     public async Task LoadSellableItemsAsync_WithStoreCode_ReturnsOnlyThatStore()
     {
         var databasePath = CreateTempDatabasePath();

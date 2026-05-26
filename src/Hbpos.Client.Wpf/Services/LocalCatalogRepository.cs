@@ -12,6 +12,17 @@ public sealed record LocalSellableItemCompareRow(
     string ContentHash,
     DateTimeOffset? SyncedAt);
 
+public sealed record LocalCatalogStoreReplaceCommitResult(
+    int InsertedCount,
+    int DeletedCount);
+
+public interface ILocalCatalogStoreReplaceSession : IAsyncDisposable
+{
+    Task StageAsync(IEnumerable<SellableItemDto> items, CancellationToken cancellationToken = default);
+
+    Task<LocalCatalogStoreReplaceCommitResult> CommitAsync(CancellationToken cancellationToken = default);
+}
+
 public interface ILocalCatalogRepository
 {
     Task ReplaceSellableItemsAsync(IEnumerable<SellableItemDto> items, CancellationToken cancellationToken = default);
@@ -46,6 +57,13 @@ public interface ILocalCatalogRepository
     Task<IReadOnlyList<SellableItemDto>> LoadSellableItemsAsync(CancellationToken cancellationToken = default);
 
     Task<IReadOnlyList<SellableItemDto>> LoadSellableItemsAsync(string storeCode, CancellationToken cancellationToken = default);
+
+    Task<ILocalCatalogStoreReplaceSession> BeginStoreReplaceSessionAsync(
+        string storeCode,
+        CancellationToken cancellationToken = default)
+    {
+        throw new NotSupportedException("Store replace sessions are not supported by this repository.");
+    }
 }
 
 public sealed class LocalCatalogRepository(LocalSqliteStore store) : ILocalCatalogRepository
@@ -474,6 +492,30 @@ public sealed class LocalCatalogRepository(LocalSqliteStore store) : ILocalCatal
         return items;
     }
 
+    public async Task<ILocalCatalogStoreReplaceSession> BeginStoreReplaceSessionAsync(
+        string storeCode,
+        CancellationToken cancellationToken = default)
+    {
+        var normalizedStoreCode = NormalizeStoreCode(storeCode);
+        if (string.IsNullOrEmpty(normalizedStoreCode))
+        {
+            throw new ArgumentException("Store code is required.", nameof(storeCode));
+        }
+
+        var connection = await store.OpenConnectionAsync(cancellationToken);
+        try
+        {
+            var session = new LocalCatalogStoreReplaceSession(connection, normalizedStoreCode);
+            await session.InitializeAsync(cancellationToken);
+            return session;
+        }
+        catch
+        {
+            await connection.DisposeAsync();
+            throw;
+        }
+    }
+
     private const string SelectSellableItemSql = """
         SELECT StoreCode, ProductCode, ReferenceCode, DisplayName, LookupCode, ItemNumber, Barcode, ProductImage, DiscountRate, IsSpecialProduct, RetailPrice, PriceSource, PriceSourceLabel, QuantityFactor, UpdatedAt
         FROM LocalSellableItemIndex
@@ -481,6 +523,68 @@ public sealed class LocalCatalogRepository(LocalSqliteStore store) : ILocalCatal
 
     private const string UpsertSellableItemSql = """
         INSERT INTO LocalSellableItemIndex
+        (
+            StoreCode,
+            ProductCode,
+            ReferenceCode,
+            DisplayName,
+            LookupCode,
+            LookupCodeNormalized,
+            ItemNumber,
+            Barcode,
+            ProductImage,
+            DiscountRate,
+            IsSpecialProduct,
+            RetailPrice,
+            PriceSource,
+            PriceSourceLabel,
+            QuantityFactor,
+            UpdatedAt,
+            ContentHash,
+            SyncedAt
+        )
+        VALUES
+        (
+            $StoreCode,
+            $ProductCode,
+            $ReferenceCode,
+            $DisplayName,
+            $LookupCode,
+            $LookupCodeNormalized,
+            $ItemNumber,
+            $Barcode,
+            $ProductImage,
+            $DiscountRate,
+            $IsSpecialProduct,
+            $RetailPrice,
+            $PriceSource,
+            $PriceSourceLabel,
+            $QuantityFactor,
+            $UpdatedAt,
+            $ContentHash,
+            $SyncedAt
+        )
+        ON CONFLICT(StoreCode, LookupCodeNormalized) DO UPDATE SET
+            ProductCode = excluded.ProductCode,
+            ReferenceCode = excluded.ReferenceCode,
+            DisplayName = excluded.DisplayName,
+            LookupCode = excluded.LookupCode,
+            ItemNumber = excluded.ItemNumber,
+            Barcode = excluded.Barcode,
+            ProductImage = excluded.ProductImage,
+            DiscountRate = excluded.DiscountRate,
+            IsSpecialProduct = excluded.IsSpecialProduct,
+            RetailPrice = excluded.RetailPrice,
+            PriceSource = excluded.PriceSource,
+            PriceSourceLabel = excluded.PriceSourceLabel,
+            QuantityFactor = excluded.QuantityFactor,
+            UpdatedAt = excluded.UpdatedAt,
+            ContentHash = excluded.ContentHash,
+            SyncedAt = excluded.SyncedAt;
+        """;
+
+    private const string StageSellableItemSql = """
+        INSERT INTO TempLocalSellableItemIndexReplace
         (
             StoreCode,
             ProductCode,
@@ -776,5 +880,231 @@ public sealed class LocalCatalogRepository(LocalSqliteStore store) : ILocalCatal
         }
 
         return 2;
+    }
+
+    private sealed class LocalCatalogStoreReplaceSession(
+        SqliteConnection connection,
+        string storeCode) : ILocalCatalogStoreReplaceSession
+    {
+        private bool _committed;
+        private bool _disposed;
+
+        public async Task InitializeAsync(CancellationToken cancellationToken)
+        {
+            await using var command = connection.CreateCommand();
+            command.CommandText = """
+                CREATE TEMP TABLE TempLocalSellableItemIndexReplace (
+                    StoreCode TEXT NOT NULL,
+                    ProductCode TEXT NOT NULL,
+                    ReferenceCode TEXT NULL,
+                    DisplayName TEXT NOT NULL,
+                    LookupCode TEXT NOT NULL,
+                    LookupCodeNormalized TEXT NOT NULL,
+                    ItemNumber TEXT NULL,
+                    Barcode TEXT NULL,
+                    ProductImage TEXT NULL,
+                    DiscountRate TEXT NULL,
+                    IsSpecialProduct INTEGER NOT NULL DEFAULT 0,
+                    RetailPrice TEXT NOT NULL,
+                    PriceSource INTEGER NOT NULL,
+                    PriceSourceLabel TEXT NOT NULL,
+                    QuantityFactor TEXT NOT NULL,
+                    UpdatedAt TEXT NULL,
+                    ContentHash TEXT NOT NULL,
+                    SyncedAt TEXT NOT NULL,
+                    PRIMARY KEY (StoreCode, LookupCodeNormalized)
+                );
+                """;
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        public async Task StageAsync(IEnumerable<SellableItemDto> items, CancellationToken cancellationToken = default)
+        {
+            ThrowIfDisposed();
+            if (_committed)
+            {
+                throw new InvalidOperationException("The store replace session has already been committed.");
+            }
+
+            var materializedItems = items.ToList();
+            if (materializedItems.Count == 0)
+            {
+                return;
+            }
+
+            using var transaction = connection.BeginTransaction();
+            var syncedAt = DateTimeOffset.UtcNow;
+            await using var command = connection.CreateCommand();
+            command.Transaction = transaction;
+            command.CommandText = StageSellableItemSql;
+            AddUpsertParameters(command);
+            command.Prepare();
+
+            foreach (var item in materializedItems)
+            {
+                var itemStoreCode = NormalizeStoreCode(item.StoreCode);
+                var lookupCodeNormalized = NormalizeLookupCode(item.LookupCode);
+                if (!string.Equals(itemStoreCode, storeCode, StringComparison.Ordinal))
+                {
+                    throw new ArgumentException("Staged sellable item store code must match the replace session store.", nameof(items));
+                }
+
+                if (string.IsNullOrEmpty(lookupCodeNormalized))
+                {
+                    throw new ArgumentException("Sellable item lookup code is required.", nameof(items));
+                }
+
+                var contentHash = CreateContentHash(item, itemStoreCode, lookupCodeNormalized);
+                SetItemParameters(command, item, itemStoreCode, lookupCodeNormalized, contentHash, syncedAt);
+                await command.ExecuteNonQueryAsync(cancellationToken);
+            }
+
+            await transaction.CommitAsync(cancellationToken);
+        }
+
+        public async Task<LocalCatalogStoreReplaceCommitResult> CommitAsync(CancellationToken cancellationToken = default)
+        {
+            ThrowIfDisposed();
+            if (_committed)
+            {
+                throw new InvalidOperationException("The store replace session has already been committed.");
+            }
+
+            using var transaction = connection.BeginTransaction();
+            var deletedCount = await CountDeletedLookupsAsync(transaction, cancellationToken);
+            var insertedCount = await CountStagedItemsAsync(transaction, cancellationToken);
+
+            await using (var deleteCommand = connection.CreateCommand())
+            {
+                deleteCommand.Transaction = transaction;
+                deleteCommand.CommandText = """
+                    DELETE FROM LocalSellableItemIndex
+                    WHERE StoreCode = $StoreCode;
+                    """;
+                deleteCommand.Parameters.AddWithValue("$StoreCode", storeCode);
+                await deleteCommand.ExecuteNonQueryAsync(cancellationToken);
+            }
+
+            await using (var insertCommand = connection.CreateCommand())
+            {
+                insertCommand.Transaction = transaction;
+                insertCommand.CommandText = """
+                    INSERT INTO LocalSellableItemIndex
+                    (
+                        StoreCode,
+                        ProductCode,
+                        ReferenceCode,
+                        DisplayName,
+                        LookupCode,
+                        LookupCodeNormalized,
+                        ItemNumber,
+                        Barcode,
+                        ProductImage,
+                        DiscountRate,
+                        IsSpecialProduct,
+                        RetailPrice,
+                        PriceSource,
+                        PriceSourceLabel,
+                        QuantityFactor,
+                        UpdatedAt,
+                        ContentHash,
+                        SyncedAt
+                    )
+                    SELECT
+                        StoreCode,
+                        ProductCode,
+                        ReferenceCode,
+                        DisplayName,
+                        LookupCode,
+                        LookupCodeNormalized,
+                        ItemNumber,
+                        Barcode,
+                        ProductImage,
+                        DiscountRate,
+                        IsSpecialProduct,
+                        RetailPrice,
+                        PriceSource,
+                        PriceSourceLabel,
+                        QuantityFactor,
+                        UpdatedAt,
+                        ContentHash,
+                        SyncedAt
+                    FROM TempLocalSellableItemIndexReplace
+                    WHERE StoreCode = $StoreCode;
+                    """;
+                insertCommand.Parameters.AddWithValue("$StoreCode", storeCode);
+                await insertCommand.ExecuteNonQueryAsync(cancellationToken);
+            }
+
+            await transaction.CommitAsync(cancellationToken);
+            _committed = true;
+            return new LocalCatalogStoreReplaceCommitResult(insertedCount, deletedCount);
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            if (_disposed)
+            {
+                return;
+            }
+
+            _disposed = true;
+            await connection.DisposeAsync();
+        }
+
+        private async Task<int> CountDeletedLookupsAsync(
+            SqliteTransaction transaction,
+            CancellationToken cancellationToken)
+        {
+            await using var command = connection.CreateCommand();
+            command.Transaction = transaction;
+            command.CommandText = """
+                SELECT COUNT(*)
+                FROM LocalSellableItemIndex l
+                WHERE l.StoreCode = $StoreCode
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM TempLocalSellableItemIndexReplace s
+                      WHERE s.StoreCode = l.StoreCode
+                        AND s.LookupCodeNormalized = l.LookupCodeNormalized
+                  );
+                """;
+            command.Parameters.AddWithValue("$StoreCode", storeCode);
+            return await ExecuteScalarInt32Async(command, cancellationToken);
+        }
+
+        private async Task<int> CountStagedItemsAsync(
+            SqliteTransaction transaction,
+            CancellationToken cancellationToken)
+        {
+            await using var command = connection.CreateCommand();
+            command.Transaction = transaction;
+            command.CommandText = """
+                SELECT COUNT(*)
+                FROM TempLocalSellableItemIndexReplace
+                WHERE StoreCode = $StoreCode;
+                """;
+            command.Parameters.AddWithValue("$StoreCode", storeCode);
+            return await ExecuteScalarInt32Async(command, cancellationToken);
+        }
+
+        private void ThrowIfDisposed()
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+        }
+
+        private static async Task<int> ExecuteScalarInt32Async(
+            SqliteCommand command,
+            CancellationToken cancellationToken)
+        {
+            var value = await command.ExecuteScalarAsync(cancellationToken);
+            return value switch
+            {
+                int intValue => intValue,
+                long longValue => (int)longValue,
+                null or DBNull => 0,
+                _ => Convert.ToInt32(value, CultureInfo.InvariantCulture)
+            };
+        }
     }
 }
