@@ -19,6 +19,10 @@ namespace BlazorApp.Api.Tests
     {
         private const string InstallmentOrdersPermission = "InstallmentOrders.View";
         private const string StoreVouchersPermission = "StoreVouchers.View";
+        private const string DeviceRegistrationViewPermission = "DeviceRegistration.View";
+        private const string DeviceRegistrationManagePermission = "DeviceRegistration.Manage";
+        private const string PosProductsViewPermission = "PosProducts.View";
+        private const string PosProductsManagePermission = "PosProducts.Manage";
 
         private readonly string _dbPath;
         private readonly SqliteConnection _sqliteConnection;
@@ -111,6 +115,36 @@ namespace BlazorApp.Api.Tests
         }
 
         [Fact]
+        public void PagePermissionSeeds_IncludeDeviceRegistrationAndPosProductPages()
+        {
+            var seeds = PermissionSeedData.AllPermissions.ToList();
+
+            var deviceRegistrationView = Assert.Single(seeds, seed => seed.Code == DeviceRegistrationViewPermission);
+            Assert.Equal("查看设备注册", deviceRegistrationView.Name);
+            Assert.Equal("系统管理", deviceRegistrationView.Category);
+            Assert.Contains("/system/device-registration", deviceRegistrationView.Description);
+            Assert.Contains("查看 POS 设备注册列表与状态", deviceRegistrationView.Description);
+
+            var deviceRegistrationManage = Assert.Single(seeds, seed => seed.Code == DeviceRegistrationManagePermission);
+            Assert.Equal("管理设备注册", deviceRegistrationManage.Name);
+            Assert.Equal("系统管理", deviceRegistrationManage.Category);
+            Assert.Contains("/system/device-registration", deviceRegistrationManage.Description);
+            Assert.Contains("审核、维护或管理设备注册", deviceRegistrationManage.Description);
+
+            var posProductsView = Assert.Single(seeds, seed => seed.Code == PosProductsViewPermission);
+            Assert.Equal("查看 POS 商品管理", posProductsView.Name);
+            Assert.Equal("POS 管理", posProductsView.Category);
+            Assert.Contains("/pos-admin/products", posProductsView.Description);
+            Assert.Contains("查看 POS 商品、分类、套装码、同步和完整性检查入口", posProductsView.Description);
+
+            var posProductsManage = Assert.Single(seeds, seed => seed.Code == PosProductsManagePermission);
+            Assert.Equal("管理 POS 商品", posProductsManage.Name);
+            Assert.Equal("POS 管理", posProductsManage.Category);
+            Assert.Contains("/pos-admin/products", posProductsManage.Description);
+            Assert.Contains("编辑 POS 商品、批量改价、同步总部/分店、维护分类/套装码、执行完整性修复", posProductsManage.Description);
+        }
+
+        [Fact]
         public async Task InitializePermissionSeedsAsync_InsertsMissingPermissionsAndAdminLinksWithoutDuplicates()
         {
             await _db.Insertable(new Role
@@ -178,7 +212,7 @@ namespace BlazorApp.Api.Tests
         }
 
         [Fact]
-        public async Task InitializePermissionSeedsAsync_WhenPermissionExists_DoesNotOverwriteMetadata()
+        public async Task InitializePermissionSeedsAsync_WhenPermissionExists_OverwritesMetadataFromSeed()
         {
             await _db.Insertable(new Role
             {
@@ -203,9 +237,13 @@ namespace BlazorApp.Api.Tests
                 .ToListAsync();
 
             var row = Assert.Single(rows);
-            Assert.Equal("已有名称", row.Name);
-            Assert.Equal("已有分类", row.Category);
-            Assert.Equal("已有说明", row.Description);
+            var seed = Assert.Single(
+                PermissionSeedData.AllPermissions,
+                item => item.Code == Permissions.Attendance.Punch.Self
+            );
+            Assert.Equal(seed.Name, row.Name);
+            Assert.Equal(seed.Category, row.Category);
+            Assert.Equal(seed.Description, row.Description);
         }
 
         public void Dispose()

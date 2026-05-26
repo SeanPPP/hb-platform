@@ -51,6 +51,12 @@ namespace BlazorApp.Shared.Constants
             public const string Delete = "Products.Delete";
         }
 
+        public static class PosProducts
+        {
+            public const string View = "PosProducts.View";
+            public const string Manage = "PosProducts.Manage";
+        }
+
         public static class Orders
         {
             public const string View = "Orders.View";

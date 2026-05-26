@@ -423,14 +423,15 @@ namespace BlazorApp.Api.Services
             // 1. 同步权限定义
             var allPermissions = PermissionSeedData.AllPermissions.ToList();
             var existingPermissions = await db.Queryable<SysPermission>().ToListAsync();
-            var existingPermissionCodes = existingPermissions
-                .Select(permission => permission.Code)
-                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var existingPermissionByCode = existingPermissions
+                .GroupBy(permission => permission.Code, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
 
             var newPermissions = new List<SysPermission>();
+            var updatedPermissions = new List<SysPermission>();
             foreach (var seed in allPermissions)
             {
-                if (!existingPermissionCodes.Contains(seed.Code))
+                if (!existingPermissionByCode.TryGetValue(seed.Code, out var existingPermission))
                 {
                     newPermissions.Add(
                         new SysPermission
@@ -442,6 +443,19 @@ namespace BlazorApp.Api.Services
                             Description = seed.Description,
                         }
                     );
+                    continue;
+                }
+
+                if (
+                    existingPermission.Name != seed.Name
+                    || existingPermission.Category != seed.Category
+                    || existingPermission.Description != seed.Description
+                )
+                {
+                    existingPermission.Name = seed.Name;
+                    existingPermission.Category = seed.Category;
+                    existingPermission.Description = seed.Description;
+                    updatedPermissions.Add(existingPermission);
                 }
             }
 
@@ -449,6 +463,19 @@ namespace BlazorApp.Api.Services
             {
                 await db.Insertable(newPermissions).ExecuteCommandAsync();
                 _logger.LogInformation($"已新增 {newPermissions.Count} 个权限定义");
+            }
+
+            if (updatedPermissions.Any())
+            {
+                await db.Updateable(updatedPermissions)
+                    .UpdateColumns(permission => new
+                    {
+                        permission.Name,
+                        permission.Category,
+                        permission.Description,
+                    })
+                    .ExecuteCommandAsync();
+                _logger.LogInformation($"已更新 {updatedPermissions.Count} 个权限定义");
             }
 
             // 2. 为 Admin 角色分配所有权限
