@@ -115,6 +115,49 @@ namespace BlazorApp.Api.Services
             return scope.IsAllowed && scope.CanAccessStoreGuid(storeGuid);
         }
 
+        public async Task<IReadOnlyList<string>> GetAccessibleStoreCodesAsync()
+        {
+            var scope = await GetScopeAsync();
+            return scope.IsAllowed ? scope.StoreCodes : Array.Empty<string>();
+        }
+
+        public async Task<bool> CanAccessStoreCodeAsync(string storeCode)
+        {
+            if (string.IsNullOrWhiteSpace(storeCode))
+            {
+                return false;
+            }
+
+            var scope = await GetScopeAsync();
+            return scope.IsAllowed && scope.CanAccessStoreCode(storeCode.Trim());
+        }
+
+        public async Task<bool> CanAccessOrderAsync(string orderGuid)
+        {
+            if (string.IsNullOrWhiteSpace(orderGuid))
+            {
+                return false;
+            }
+
+            var scope = await GetScopeAsync();
+            if (!scope.IsAllowed)
+            {
+                return false;
+            }
+
+            if (scope.IsAdmin)
+            {
+                return true;
+            }
+
+            var storeCode = await _context.Db.Queryable<WareHouseOrder>()
+                .Where(item => item.OrderGUID == orderGuid && !item.IsDeleted)
+                .Select(item => item.StoreCode)
+                .FirstAsync();
+
+            return !string.IsNullOrWhiteSpace(storeCode) && scope.CanAccessStoreCode(storeCode);
+        }
+
         public async Task<bool> CanManageUserAsync(string userGuid)
         {
             var scope = await GetScopeAsync();
