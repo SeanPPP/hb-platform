@@ -1,13 +1,13 @@
 import type { ApiResponse } from '../types/api'
-import type { CurrentUser, LoginRequest, TokenResponse } from '../types/auth'
+import type { CurrentUser, LoginRequest, SessionResponse } from '../types/auth'
 import request, { unwrapApiData } from '../utils/request'
 
 export async function login(payload: LoginRequest) {
-  return request.post<ApiResponse<TokenResponse>>('/api/Auth/login', payload)
+  return request.post<ApiResponse<SessionResponse>>('/api/Auth/session/login', payload)
 }
 
 export async function logout() {
-  return request.post<ApiResponse<object>>('/api/Auth/logout', {}, { skipAuthRedirect: true })
+  return request.post<ApiResponse<object>>('/api/Auth/session/logout', {}, { skipAuthRedirect: true })
 }
 
 export async function getCurrentUser(): Promise<CurrentUser> {

@@ -51,7 +51,11 @@ function buildQueryString(params?: Record<string, unknown>) {
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').trim()
 const LOGIN_PATH = '/login'
-const AUTH_WHITELIST = new Set(['/api/Auth/login', '/api/Auth/logout', '/api/Auth/refresh'])
+const AUTH_WHITELIST = new Set([
+  '/api/Auth/session/login',
+  '/api/Auth/session/logout',
+  '/api/Auth/session/refresh',
+])
 
 let authRedirecting = false
 
@@ -72,7 +76,7 @@ async function tryRefreshToken(): Promise<boolean> {
 
   refreshPromise = (async () => {
     try {
-      const refreshUrl = buildRequestUrl('/api/Auth/refresh')
+      const refreshUrl = buildRequestUrl('/api/Auth/session/refresh')
       const response = await fetch(refreshUrl, {
         method: 'POST',
         credentials: 'include',
