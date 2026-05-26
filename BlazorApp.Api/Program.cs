@@ -432,6 +432,7 @@ builder.Services.AddScoped<IAttendanceReactService, AttendanceReactService>();
 builder.Services.AddScoped<IPDACartToOrderService, PDACartToOrderService>();
 builder.Services.AddScoped<IPDAWarehouseOrderService, PDAWarehouseOrderService>();
 builder.Services.AddScoped<IPosmSalesOrderReactService, PosmSalesOrderReactService>();
+builder.Services.AddScoped<IStoreVoucherReactService, StoreVoucherReactService>();
 builder.Services.AddScoped<IDeviceRegistrationReactService, DeviceRegistrationReactService>();
 builder.Services.AddScoped<ITaxInvoiceService, TaxInvoiceService>();
 builder.Services.AddScoped<ISalesDashboardReactService, SalesDashboardReactService>();
