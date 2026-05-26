@@ -16,6 +16,7 @@ public sealed partial class SpecialProductsViewModel : ObservableObject, IScanne
     public string ScannerPageId => PageId;
 
     private const int PageSize = 20;
+    private static readonly TimeSpan DownloadProgressAutoHideDelay = TimeSpan.FromSeconds(5);
 
     private readonly ISpecialProductsWorkflowService _workflowService;
     private readonly ILocalizationService _localization;
@@ -23,6 +24,8 @@ public sealed partial class SpecialProductsViewModel : ObservableObject, IScanne
     private readonly Action<CartLine>? _onCartLineAdded;
     private readonly IRawScannerService? _rawScannerService;
     private readonly object _specialItemsGate = new();
+    private readonly Func<TimeSpan, CancellationToken, Task> _delayAsync;
+    private CancellationTokenSource? _downloadProgressHideCts;
 
     [ObservableProperty]
     private PosSessionState _session;
@@ -73,7 +76,8 @@ public sealed partial class SpecialProductsViewModel : ObservableObject, IScanne
         Action onBack,
         Action<CartLine>? onCartLineAdded = null,
         ISpecialProductsWorkflowService? workflowService = null,
-        IRawScannerService? rawScannerService = null)
+        IRawScannerService? rawScannerService = null,
+        Func<TimeSpan, CancellationToken, Task>? delayAsync = null)
     {
         _workflowService = workflowService ?? new SpecialProductsWorkflowService(
             priceIndex,
@@ -85,6 +89,7 @@ public sealed partial class SpecialProductsViewModel : ObservableObject, IScanne
         _onBack = onBack;
         _onCartLineAdded = onCartLineAdded;
         _rawScannerService = rawScannerService;
+        _delayAsync = delayAsync ?? Task.Delay;
 
         BackCommand = new RelayCommand(_onBack);
         SearchCommand = new RelayCommand(SearchCatalog);
@@ -783,12 +788,14 @@ public sealed partial class SpecialProductsViewModel : ObservableObject, IScanne
 
     public void Dispose()
     {
+        CancelDownloadProgressAutoHide();
         _rawScannerService?.Unsubscribe(PageId);
     }
 
     private void ApplyDownloadProgress(SpecialProductDownloadProgress progress)
     {
         Log($"operation=download-progress store={progress.StoreCode} stage={progress.Stage} percent={progress.Percent} downloaded={progress.DownloadedCount} total={progress.TotalCount} pages={progress.PageCount} elapsedMs={progress.ElapsedMilliseconds}");
+        CancelDownloadProgressAutoHide();
         IsDownloadProgressVisible = true;
         IsDownloadProgressFailed = progress.Stage == SpecialProductDownloadProgressStage.Failed;
         DownloadProgressValue = progress.Percent;
@@ -815,6 +822,11 @@ public sealed partial class SpecialProductsViewModel : ObservableObject, IScanne
                 progress.UpsertedCount,
                 progress.UnmarkedCount,
                 FormatElapsed(progress.ElapsedMilliseconds));
+
+        if (progress.Stage == SpecialProductDownloadProgressStage.Completed)
+        {
+            StartDownloadProgressAutoHide();
+        }
     }
 
     private string FormatElapsed(long elapsedMilliseconds)
@@ -828,5 +840,49 @@ public sealed partial class SpecialProductsViewModel : ObservableObject, IScanne
     private static string NormalizeProductCode(string? value)
     {
         return (value ?? string.Empty).Trim();
+    }
+
+    private void StartDownloadProgressAutoHide()
+    {
+        CancelDownloadProgressAutoHide();
+        var cts = new CancellationTokenSource();
+        _downloadProgressHideCts = cts;
+        _ = HideDownloadProgressAfterDelayAsync(cts);
+    }
+
+    private async Task HideDownloadProgressAfterDelayAsync(CancellationTokenSource cts)
+    {
+        try
+        {
+            await _delayAsync(DownloadProgressAutoHideDelay, cts.Token);
+            if (!cts.IsCancellationRequested && ReferenceEquals(_downloadProgressHideCts, cts))
+            {
+                IsDownloadProgressVisible = false;
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        finally
+        {
+            if (ReferenceEquals(_downloadProgressHideCts, cts))
+            {
+                _downloadProgressHideCts = null;
+            }
+
+            cts.Dispose();
+        }
+    }
+
+    private void CancelDownloadProgressAutoHide()
+    {
+        var cts = Interlocked.Exchange(ref _downloadProgressHideCts, null);
+        if (cts is null)
+        {
+            return;
+        }
+
+        cts.Cancel();
+        cts.Dispose();
     }
 }

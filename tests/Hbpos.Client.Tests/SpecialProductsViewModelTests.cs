@@ -608,6 +608,33 @@ public sealed class SpecialProductsViewModelTests
         Assert.Contains("Downloaded", viewModel.StatusMessage, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Fact]
+    public async Task Online_download_hides_progress_after_completion_delay()
+    {
+        var item = CreateItem("SKU-001", "Alpha", "930001", isSpecialProduct: true);
+        var repository = new FakeCatalogRepository
+        {
+            SellableItems = [item],
+            SpecialItems = [item]
+        };
+        var hideDelay = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var service = new FakeSpecialProductService
+        {
+            DownloadResult = new SpecialProductDownloadResult("S001", 1, 1, 1, 1, 0)
+        };
+        var viewModel = CreateViewModel(
+            repository: repository,
+            service: service,
+            delayAsync: (_, cancellationToken) => hideDelay.Task.WaitAsync(cancellationToken));
+
+        await viewModel.DownloadCommand.ExecuteAsync(null);
+
+        Assert.True(viewModel.IsDownloadProgressVisible);
+        hideDelay.SetResult();
+        await WaitUntilAsync(() => !viewModel.IsDownloadProgressVisible);
+        Assert.False(viewModel.IsDownloadProgressVisible);
+    }
+
     private static SpecialProductsViewModel CreateViewModel(
         LocalSellableItemIndex? index = null,
         PosCartService? cart = null,
@@ -616,7 +643,8 @@ public sealed class SpecialProductsViewModelTests
         FakeSpecialProductsWorkflowService? workflow = null,
         PosSessionState? session = null,
         Action? onBack = null,
-        Action<CartLine>? onCartLineAdded = null)
+        Action<CartLine>? onCartLineAdded = null,
+        Func<TimeSpan, CancellationToken, Task>? delayAsync = null)
     {
         return new SpecialProductsViewModel(
             index ?? new LocalSellableItemIndex(),
@@ -627,7 +655,8 @@ public sealed class SpecialProductsViewModelTests
             new LocalizationService(),
             onBack ?? (() => { }),
             onCartLineAdded,
-            workflow);
+            workflow,
+            delayAsync: delayAsync);
     }
 
     private static PosSessionState Session => new("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0);
@@ -937,6 +966,22 @@ public sealed class SpecialProductsViewModelTests
     private static bool HasLog(ConcurrentQueue<string> lines, string text)
     {
         return lines.Any(line => line.Contains(text, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static async Task WaitUntilAsync(Func<bool> condition)
+    {
+        var timeoutAt = DateTimeOffset.UtcNow.AddSeconds(3);
+        while (DateTimeOffset.UtcNow < timeoutAt)
+        {
+            if (condition())
+            {
+                return;
+            }
+
+            await Task.Delay(10);
+        }
+
+        Assert.True(condition());
     }
 
     private sealed class DisposableAction(Action dispose) : IDisposable
