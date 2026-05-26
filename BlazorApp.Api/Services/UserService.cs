@@ -18,11 +18,17 @@ namespace BlazorApp.Api.Services
     {
         private readonly SqlSugarContext _context;
         private readonly ILogger<UserService> _logger;
+        private readonly ICurrentUserManageableStoreScopeService? _manageableStoreScopeService;
 
-        public UserService(SqlSugarContext context, ILogger<UserService> logger)
+        public UserService(
+            SqlSugarContext context,
+            ILogger<UserService> logger,
+            ICurrentUserManageableStoreScopeService? manageableStoreScopeService = null
+        )
         {
             _context = context;
             _logger = logger;
+            _manageableStoreScopeService = manageableStoreScopeService;
         }
 
         /// <summary>
@@ -33,8 +39,37 @@ namespace BlazorApp.Api.Services
             try
             {
                 var db = _context.Db;
+                var storeScope = await ResolveUserListStoreScopeAsync(db);
+                if (storeScope.ReturnEmptyPage)
+                {
+                    return ApiResponse<PagedResult<UserDto>>.OK(
+                        CreateEmptyPagedResult(query),
+                        "获取用户列表成功"
+                    );
+                }
+
                 //使用多对多导航查询
                 var userQuery = db.Queryable<User>().Includes(u => u.Roles).Includes(u => u.Stores);
+
+                if (storeScope.StoreGuids.Count > 0)
+                {
+                    var scopedStoreGuids = storeScope.StoreGuids.ToArray();
+                    var scopedUserGuids = await db.Queryable<UserStore>()
+                        .Where(us => !us.IsDeleted && scopedStoreGuids.Contains(us.StoreGUID))
+                        .Select(us => us.UserGUID)
+                        .Distinct()
+                        .ToListAsync();
+
+                    if (scopedUserGuids.Count == 0)
+                    {
+                        return ApiResponse<PagedResult<UserDto>>.OK(
+                            CreateEmptyPagedResult(query),
+                            "获取用户列表成功"
+                        );
+                    }
+
+                    userQuery = userQuery.Where(u => scopedUserGuids.Contains(u.UserGUID));
+                }
 
                 // 搜索条件
                 if (!string.IsNullOrEmpty(query.SearchKeyword))
@@ -134,6 +169,10 @@ namespace BlazorApp.Api.Services
                             .Select(r => r.RoleName)
                             .ToList(),
                         StoreNames = (user.Stores ?? new List<Store>())
+                            .Where(s =>
+                                storeScope.StoreGuids.Count == 0
+                                || storeScope.StoreGuids.Contains(s.StoreGUID)
+                            )
                             .Select(s => s.StoreName)
                             .ToList(),
                         Roles = (user.Roles ?? new List<Role>())
@@ -148,6 +187,10 @@ namespace BlazorApp.Api.Services
                             })
                             .ToList(),
                         Stores = (user.Stores ?? new List<Store>())
+                            .Where(s =>
+                                storeScope.StoreGuids.Count == 0
+                                || storeScope.StoreGuids.Contains(s.StoreGUID)
+                            )
                             .Select(s => new UserStoreDto
                             {
                                 StoreGUID = s.StoreGUID,
@@ -191,6 +234,14 @@ namespace BlazorApp.Api.Services
             try
             {
                 var db = _context.Db;
+                var storeScope = await ResolveUserListStoreScopeAsync(db);
+                if (storeScope.ReturnEmptyPage)
+                {
+                    return ApiResponse<PagedResult<UserDto>>.OK(
+                        CreateEmptyPagedResult(query),
+                        "获取用户列表成功"
+                    );
+                }
 
                 // 构建复合查询，一次性获取所有需要的数据
                 var baseQuery = db.Queryable<User>()
@@ -200,6 +251,15 @@ namespace BlazorApp.Api.Services
                     .LeftJoin<Store>(
                         (u, ur, r, us, s) => us.StoreGUID == s.StoreGUID && s.IsActive
                     );
+
+                if (storeScope.StoreGuids.Count > 0)
+                {
+                    var scopedStoreGuids = storeScope.StoreGuids.ToArray();
+                    baseQuery = baseQuery.Where(
+                        (u, ur, r, us, s) =>
+                            !us.IsDeleted && scopedStoreGuids.Contains(us.StoreGUID)
+                    );
+                }
 
                 // 搜索条件
                 if (!string.IsNullOrEmpty(query.SearchKeyword))
@@ -363,6 +423,71 @@ namespace BlazorApp.Api.Services
                     "GET_USERS_FAILED"
                 );
             }
+        }
+
+        private async Task<UserListStoreScope> ResolveUserListStoreScopeAsync(ISqlSugarClient db)
+        {
+            if (_manageableStoreScopeService == null)
+            {
+                return UserListStoreScope.Unrestricted;
+            }
+
+            var scope = await _manageableStoreScopeService.GetScopeAsync();
+            if (scope.IsAdmin)
+            {
+                return UserListStoreScope.Unrestricted;
+            }
+
+            if (scope.IsAllowed)
+            {
+                return new UserListStoreScope(
+                    scope.StoreGuids
+                        .Where(item => !string.IsNullOrWhiteSpace(item))
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .ToList(),
+                    false
+                );
+            }
+
+            if (!scope.IsAuthenticated || string.IsNullOrWhiteSpace(scope.UserGuid))
+            {
+                return UserListStoreScope.Unrestricted;
+            }
+
+            var storeManagerRoleGuids = await db.Queryable<Role>()
+                .Where(role => !role.IsDeleted && role.RoleName == "StoreManager")
+                .Select(role => role.RoleGUID)
+                .ToListAsync();
+
+            var isStoreManager =
+                storeManagerRoleGuids.Count > 0
+                && await db.Queryable<UserRole>()
+                    .AnyAsync(userRole =>
+                        userRole.UserGUID == scope.UserGuid
+                        && !userRole.IsDeleted
+                        && storeManagerRoleGuids.Contains(userRole.RoleGUID)
+                    );
+
+            return isStoreManager
+                ? new UserListStoreScope(Array.Empty<string>(), true)
+                : UserListStoreScope.Unrestricted;
+        }
+
+        private static PagedResult<UserDto> CreateEmptyPagedResult(UserQueryDto query)
+        {
+            return new PagedResult<UserDto>
+            {
+                Items = new List<UserDto>(),
+                Total = 0,
+                Page = query.Page,
+                PageSize = query.PageSize,
+            };
+        }
+
+        private sealed record UserListStoreScope(IReadOnlyCollection<string> StoreGuids, bool ReturnEmptyPage)
+        {
+            public static UserListStoreScope Unrestricted { get; } =
+                new(Array.Empty<string>(), false);
         }
 
         /// <summary>

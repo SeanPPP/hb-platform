@@ -131,6 +131,8 @@ namespace BlazorApp.Shared.Constants
                 new(Permissions.Promotions.Edit, "编辑促销", "促销管理", "促销管理 - 编辑促销"),
                 new(Permissions.PricingStrategy.View, "查看定价策略", "定价策略", "定价策略 - 查看定价策略"),
                 new(Permissions.PricingStrategy.Edit, "编辑定价策略", "定价策略", "定价策略 - 编辑定价策略"),
+                new(Permissions.DeviceRegistration.View, "查看设备管理", "设备管理", "设备管理 - 查看设备管理"),
+                new(Permissions.DeviceRegistration.Manage, "管理设备状态", "设备管理", "设备管理 - 管理设备状态"),
                 new(Permissions.LocalPurchase.View, "查看本地进货", "本地进货管理", "本地进货管理 - 查看本地进货"),
                 new(Permissions.LocalPurchase.Edit, "编辑本地进货", "本地进货管理", "本地进货管理 - 编辑本地进货"),
                 new(Permissions.AustralianSuppliers.View, "查看澳洲供应商", "澳洲供应商", "澳洲供应商 - 查看澳洲供应商"),

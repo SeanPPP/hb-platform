@@ -42,6 +42,42 @@ public class NavigationServiceTests
     }
 
     [Fact]
+    public void BuildMenu_ShowsDeviceRegistrationWithDeviceRegistrationViewPermission()
+    {
+        var user = CreateUser(
+            new Claim("permission", Permissions.Dashboard.View),
+            new Claim("permission", Permissions.DeviceRegistration.View)
+        );
+
+        var menu = _service.BuildMenu(user);
+
+        var systemMenu = Assert.Single(menu, item => item.Path == "/system");
+        var item = Assert.Single(
+            systemMenu.Children!,
+            child => child.Path == "/system/device-registration"
+        );
+        Assert.Equal(Permissions.DeviceRegistration.View, item.Permission);
+    }
+
+    [Fact]
+    public void BuildMenu_HidesDeviceRegistrationWithStoreManageOperationsPermissionOnly()
+    {
+        var user = CreateUser(
+            new Claim("permission", Permissions.Dashboard.View),
+            new Claim("permission", Permissions.Store.ManageOperations)
+        );
+
+        var menu = _service.BuildMenu(user);
+
+        var systemMenu = menu.SingleOrDefault(item => item.Path == "/system");
+        Assert.True(
+            systemMenu is null
+                || systemMenu.Children is null
+                || !systemMenu.Children.Any(child => child.Path == "/system/device-registration")
+        );
+    }
+
+    [Fact]
     public void BuildMenu_HidesBackendNavigationForOrderFrontOnlyUser()
     {
         var user = CreateUser(new Claim("permission", Permissions.OrderFront.View));
@@ -359,18 +395,25 @@ public class NavigationServiceTests
     }
 
     [Theory]
-    [InlineData(nameof(DeviceRegistrationController.GetMobileAdminDevicesPaged))]
-    [InlineData(nameof(DeviceRegistrationController.ActivateMobileAdminDevice))]
-    [InlineData(nameof(DeviceRegistrationController.DisableMobileAdminDevice))]
-    [InlineData(nameof(DeviceRegistrationController.LockMobileAdminDevice))]
-    public void MobileDeviceManagementEndpoints_RequireAdminRole(string methodName)
+    [InlineData(nameof(DeviceRegistrationController.GetDevicesPaged), Permissions.DeviceRegistration.View)]
+    [InlineData(nameof(DeviceRegistrationController.GetMobileAdminDevicesPaged), Permissions.DeviceRegistration.View)]
+    [InlineData(nameof(DeviceRegistrationController.ActivateDevice), Permissions.DeviceRegistration.Manage)]
+    [InlineData(nameof(DeviceRegistrationController.ActivateMobileAdminDevice), Permissions.DeviceRegistration.Manage)]
+    [InlineData(nameof(DeviceRegistrationController.DisableDevice), Permissions.DeviceRegistration.Manage)]
+    [InlineData(nameof(DeviceRegistrationController.DisableMobileAdminDevice), Permissions.DeviceRegistration.Manage)]
+    [InlineData(nameof(DeviceRegistrationController.LockDevice), Permissions.DeviceRegistration.Manage)]
+    [InlineData(nameof(DeviceRegistrationController.LockMobileAdminDevice), Permissions.DeviceRegistration.Manage)]
+    public void DeviceManagementEndpoints_RequireExpectedPermissionPolicy(
+        string methodName,
+        string expectedPolicy
+    )
     {
-        var authorizeAttribute = GetRoleAuthorizeAttribute(
+        var authorizeAttribute = GetMethodAuthorizeAttribute(
             typeof(DeviceRegistrationController),
             methodName
         );
 
-        Assert.Equal("Admin,管理员", authorizeAttribute.Roles);
+        Assert.Equal(expectedPolicy, authorizeAttribute.Policy);
     }
 
     private static ClaimsPrincipal CreateUser(params Claim[] claims)
@@ -393,13 +436,4 @@ public class NavigationServiceTests
             .Single(item => !string.IsNullOrWhiteSpace(item.Policy));
     }
 
-    private static AuthorizeAttribute GetRoleAuthorizeAttribute(Type controllerType, string methodName)
-    {
-        var method = controllerType.GetMethod(methodName)
-            ?? throw new InvalidOperationException($"Method {methodName} was not found.");
-        return method
-            .GetCustomAttributes(typeof(AuthorizeAttribute), inherit: false)
-            .OfType<AuthorizeAttribute>()
-            .Single(item => !string.IsNullOrWhiteSpace(item.Roles));
-    }
 }

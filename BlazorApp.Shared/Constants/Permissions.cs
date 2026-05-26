@@ -127,6 +127,12 @@ namespace BlazorApp.Shared.Constants
             public const string Edit = "PricingStrategy.Edit";
         }
 
+        public static class DeviceRegistration
+        {
+            public const string View = "DeviceRegistration.View";
+            public const string Manage = "DeviceRegistration.Manage";
+        }
+
         public static class LocalPurchase
         {
             public const string View = "LocalPurchase.View";
@@ -283,6 +289,8 @@ namespace BlazorApp.Shared.Constants
             Attendance.Leave.ApplySelf,
             Attendance.Leave.ViewManagedStore,
             Attendance.Leave.ReviewManagedStore,
+            DeviceRegistration.View,
+            DeviceRegistration.Manage,
         };
 
         /// <summary>
@@ -324,6 +332,9 @@ namespace BlazorApp.Shared.Constants
         }
 
         public static IEnumerable<(string Code, string Name, string Category)> GetAllPermissions() =>
-            PermissionSeedData.AllPermissions.Select(seed => (seed.Code, seed.Name, seed.Category));
+            PermissionSeedData.AllPermissions
+                .Select(seed => (seed.Code, seed.Name, seed.Category))
+                .GroupBy(item => item.Code, StringComparer.OrdinalIgnoreCase)
+                .Select(group => group.First());
     }
 }

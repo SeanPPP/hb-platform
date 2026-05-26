@@ -158,6 +158,54 @@ public class PermissionAuthorizationHandlerTests
         roleService.Verify(service => service.UserHasRoleAsync("user-1", "StoreManager"), Times.Once);
     }
 
+    [Theory]
+    [InlineData(Permissions.DeviceRegistration.View)]
+    [InlineData(Permissions.DeviceRegistration.Manage)]
+    public async Task StoreManagerShortcut_AllowsDeviceRegistrationPermissions(string permission)
+    {
+        var roleService = new Mock<IRoleService>();
+        var handler = CreateHandler(roleService);
+        roleService
+            .Setup(service => service.UserHasRoleAsync("user-1", "StoreManager"))
+            .ReturnsAsync(ApiResponse<bool>.OK(true));
+
+        var requirement = new PermissionRequirement(permission);
+        var context = new AuthorizationHandlerContext(
+            new[] { requirement },
+            CreateUser(new Claim(ClaimTypes.Role, "StoreManager")),
+            resource: null
+        );
+
+        await handler.HandleAsync(context);
+
+        Assert.True(context.HasSucceeded);
+        roleService.Verify(service => service.UserHasRoleAsync("user-1", "StoreManager"), Times.Once);
+        roleService.Verify(
+            service => service.UserHasPermissionAsync("user-1", It.IsAny<string>()),
+            Times.Never
+        );
+    }
+
+    [Fact]
+    public void GetAllPermissions_IncludesDeviceRegistrationPermissions()
+    {
+        var permissionCodes = Permissions.GetAllPermissions().Select(item => item.Code).ToHashSet();
+
+        Assert.Contains(Permissions.DeviceRegistration.View, permissionCodes);
+        Assert.Contains(Permissions.DeviceRegistration.Manage, permissionCodes);
+    }
+
+    [Fact]
+    public void PermissionSeedData_IncludesDeviceRegistrationPermissions()
+    {
+        var permissionCodes = PermissionSeedData.AllPermissions
+            .Select(item => item.Code)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        Assert.Contains(Permissions.DeviceRegistration.View, permissionCodes);
+        Assert.Contains(Permissions.DeviceRegistration.Manage, permissionCodes);
+    }
+
     private static PermissionAuthorizationHandler CreateHandler(Mock<IRoleService> roleService)
     {
         roleService
