@@ -5,6 +5,8 @@ export const STORE_ROUTE_NAMES = new Set([
   "cart",
   "product-query",
   "local-supplier-invoices",
+  "installment-orders",
+  "store-vouchers",
 ]);
 
 export type NavigationGroupRoute = {

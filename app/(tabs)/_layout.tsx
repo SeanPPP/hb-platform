@@ -259,6 +259,26 @@ export default function TabsLayout() {
         }}
       />
       <Tabs.Screen
+        name="installment-orders"
+        options={{
+          href: isRouteVisible("installment-orders") ? undefined : null,
+          title: t("tabs.installmentOrders"),
+          tabBarIcon: ({ color, size }) => (
+            <MaterialCommunityIcons name="cash-clock" color={color} size={size} />
+          ),
+        }}
+      />
+      <Tabs.Screen
+        name="store-vouchers"
+        options={{
+          href: isRouteVisible("store-vouchers") ? undefined : null,
+          title: t("tabs.storeVouchers"),
+          tabBarIcon: ({ color, size }) => (
+            <MaterialCommunityIcons name="ticket-percent-outline" color={color} size={size} />
+          ),
+        }}
+      />
+      <Tabs.Screen
         name="attendance"
         options={{
           href: null,

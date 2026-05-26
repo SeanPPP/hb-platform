@@ -1,0 +1,66 @@
+{
+  "title": "Store Vouchers",
+  "subtitle": "View vouchers, usage ledger, and related orders by store, status, and date range",
+  "filters": {
+    "storeCode": "Store",
+    "supplierCode": "Supplier",
+    "status": "Status",
+    "dateFrom": "From date",
+    "dateTo": "To date",
+    "emptyDate": "Not selected",
+    "allStores": "All stores",
+    "allSuppliers": "All suppliers",
+    "allStatuses": "All statuses",
+    "storePickerTitle": "Select store",
+    "supplierPickerTitle": "Select supplier",
+    "statusPickerTitle": "Select status"
+  },
+  "statuses": {
+    "available": "Available",
+    "used": "Used",
+    "expired": "Expired",
+    "voided": "Voided",
+    "unknown": "Unknown status"
+  },
+  "ledgerActions": {
+    "issued": "Issued",
+    "used": "Used"
+  },
+  "labels": {
+    "voucherCode": "Voucher code",
+    "store": "Store",
+    "status": "Status",
+    "amount": "Amount",
+    "remainingAmount": "Remaining",
+    "issuedAt": "Issued at",
+    "updatedAt": "Updated at",
+    "expiredAt": "Expires at",
+    "supplier": "Supplier",
+    "ledger": "Issue / usage ledger",
+    "relatedOrders": "Related orders",
+    "action": "Action",
+    "actionTime": "Action time",
+    "orderTime": "Order time",
+    "orderNo": "Order no.",
+    "orderAmount": "Order amount",
+    "remainingAfter": "Remaining after",
+    "operator": "Operator",
+    "reference": "Reference",
+    "customer": "Customer",
+    "remark": "Remark"
+  },
+  "actions": {
+    "viewDetail": "View details",
+    "loadMore": "Load more"
+  },
+  "messages": {
+    "empty": "No vouchers found",
+    "loadFailed": "Failed to load vouchers",
+    "detailsLoadFailed": "Failed to load voucher details",
+    "ledgerEmpty": "No ledger records",
+    "relatedOrdersEmpty": "No related orders",
+    "suppliersLoading": "Loading suppliers",
+    "suppliersEmpty": "No suppliers",
+    "suppliersLoadFailed": "Failed to load suppliers"
+  }
+}
