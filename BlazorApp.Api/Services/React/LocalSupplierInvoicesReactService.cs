@@ -71,13 +71,13 @@ namespace BlazorApp.Api.Services.React
                 {
                     foreach (var kv in request.FilterModel)
                     {
-                        var col = kv.Key;
+                        var col = NormalizeGridColumnId(kv.Key);
                         var f = kv.Value;
                         if (f == null || f.FilterType == null)
                             continue;
                         var type = f.FilterType.ToLower();
 
-                        if (col == "productKeyword" && f.Filter != null)
+                        if (col == "ProductKeyword" && f.Filter != null)
                         {
                             productKeyword = f.Filter?.ToString()?.Trim();
                             continue;
@@ -91,25 +91,25 @@ namespace BlazorApp.Api.Services.React
                             var op = (f.Type ?? "contains").ToLower();
                             switch (col)
                             {
-                                case "storeCode":
+                                case "StoreCode":
                                     query = ApplyText(query, op, v, x => x.StoreCode);
                                     break;
-                                case "supplierCode":
+                                case "SupplierCode":
                                     query = ApplyText(query, op, v, x => x.SupplierCode);
                                     break;
-                                case "invoiceNo":
+                                case "InvoiceNo":
                                     query = ApplyText(query, op, v, x => x.InvoiceNo);
                                     break;
-                                case "storeName":
+                                case "StoreName":
                                     query = query.Where((h, st, sup) => st.StoreName.Contains(v));
                                     break;
-                                case "supplierName":
+                                case "SupplierName":
                                     query = query.Where((h, st, sup) => sup.Name.Contains(v));
                                     break;
-                                case "remarks":
+                                case "Remarks":
                                     query = ApplyText(query, op, v, x => x.Remarks);
                                     break;
-                                case "createdBy":
+                                case "CreatedBy":
                                     query = ApplyText(query, op, v, x => x.CreatedBy);
                                     break;
                             }
@@ -121,7 +121,7 @@ namespace BlazorApp.Api.Services.React
                                 var op = (f.Type ?? "equals").ToLower();
                                 switch (col)
                                 {
-                                    case "totalAmount":
+                                    case "TotalAmount":
                                         query = ApplyNumber(
                                             query,
                                             op,
@@ -130,7 +130,7 @@ namespace BlazorApp.Api.Services.React
                                             f.FilterTo
                                         );
                                         break;
-                                    case "receivedTotalAmount":
+                                    case "ReceivedTotalAmount":
                                         query = ApplyNumber(
                                             query,
                                             op,
@@ -140,6 +140,25 @@ namespace BlazorApp.Api.Services.React
                                         );
                                         break;
                                 }
+                            }
+                        }
+                        else if (type == "date" && f.Filter != null)
+                        {
+                            var op = (f.Type ?? "equals").ToLower();
+                            switch (col)
+                            {
+                                case "OrderDate":
+                                    query = ApplyDate(query, op, f.Filter, f.FilterTo, x => x.OrderDate);
+                                    break;
+                                case "InboundDate":
+                                    query = ApplyDate(
+                                        query,
+                                        op,
+                                        f.Filter,
+                                        f.FilterTo,
+                                        x => x.InboundDate
+                                    );
+                                    break;
                             }
                         }
                     }
@@ -180,8 +199,8 @@ namespace BlazorApp.Api.Services.React
                 if (request.SortModel != null && request.SortModel.Any())
                 {
                     var s = request.SortModel.First();
-                    var asc = s.Sort.ToLower() == "asc";
-                    query = s.ColId switch
+                    var asc = s.Sort?.ToLower() == "asc";
+                    query = NormalizeGridColumnId(s.ColId) switch
                     {
                         "StoreName" => query.OrderBy(
                             (h, st, sup) => st.StoreName,
@@ -219,16 +238,16 @@ namespace BlazorApp.Api.Services.React
                             (h, st, sup) => h.UpdatedAt,
                             asc ? OrderByType.Asc : OrderByType.Desc
                         ),
-                        _ => query.OrderBy((h, st, sup) => h.CreatedAt, OrderByType.Desc),
+                        _ => query.OrderBy((h, st, sup) => h.OrderDate, OrderByType.Desc),
                     };
                 }
                 else
                 {
-                    query = query.OrderBy((h, st, sup) => h.CreatedAt, OrderByType.Desc);
+                    query = query.OrderBy((h, st, sup) => h.OrderDate, OrderByType.Desc);
                 }
 
                 var total = await query.CountAsync();
-                var pageSize = request.PageSize > 0 ? request.PageSize : 20;
+                var pageSize = ClampGridPageSize(request.PageSize, 20, 20, 50, 100);
                 var startRow = request.StartRow >= 0 ? request.StartRow : 0;
                 var list = await query
                     .Select(
@@ -379,6 +398,73 @@ namespace BlazorApp.Api.Services.React
                     "获取失败",
                     "GET_ERROR"
                 );
+            }
+        }
+
+        public async Task<GridResponseDto<LocalSupplierInvoiceItemDto>> GetDetailsGridAsync(
+            string invoiceGuid,
+            GridRequestDto request
+        )
+        {
+            try
+            {
+                var db = _context.Db;
+                var query = db.Queryable<StoreLocalSupplierInvoiceDetails>()
+                    .LeftJoin<Product>((d, p) => d.ProductCode == p.ProductCode)
+                    .Where((d, p) => d.InvoiceGUID == invoiceGuid && d.IsDeleted == false)
+                    .OrderBy((d, p) => d.CreatedAt, OrderByType.Desc)
+                    .OrderBy((d, p) => d.DetailGUID, OrderByType.Asc);
+
+                var total = await query.CountAsync();
+                var pageSize = ClampGridPageSize(request.PageSize, 50, 50, 100, 200);
+                var startRow = request.StartRow >= 0 ? request.StartRow : 0;
+
+                var list = await query
+                    .Select(
+                        (d, p) =>
+                            new LocalSupplierInvoiceItemDto
+                            {
+                                DetailGUID = d.DetailGUID,
+                                InvoiceGUID = d.InvoiceGUID,
+                                StoreCode = d.StoreCode,
+                                SupplierCode = d.SupplierCode,
+                                ProductTagGUID = d.ProductTagGUID,
+                                ProductCategoryGUID = d.ProductCategoryGUID,
+                                StoreProductCode = d.StoreProductCode,
+                                ProductCode = d.ProductCode,
+                                ItemNumber = d.ItemNumber,
+                                Barcode = d.Barcode,
+                                ProductName = d.ProductName,
+                                Specification = d.Specification,
+                                Unit = d.Unit,
+                                Quantity = d.Quantity,
+                                LastPurchasePrice = d.LastPurchasePrice,
+                                PurchasePrice = d.PurchasePrice,
+                                RetailPrice = d.RetailPrice,
+                                Amount = d.Amount,
+                                ExistingProductCount = d.ExistingProductCount,
+                                BarcodeStatus = d.BarcodeStatus,
+                                BarcodeMatchCount = d.BarcodeMatchCount,
+                                ProductImage = p.ProductImage,
+                                ActivityType = d.ActivityType,
+                                DiscountRate = d.DiscountRate,
+                                AutoPricing = d.AutoPricing,
+                                PricingFloatRate = d.PricingFloatRate,
+                                NewAutoRetailPrice = d.NewAutoRetailPrice,
+                                IsSpecialProduct = d.IsSpecialProduct,
+                                OldStoreProductCode = d.OldStoreProductCode,
+                            }
+                    )
+                    .Skip(startRow)
+                    .Take(pageSize)
+                    .ToListAsync();
+
+                return GridResponseDto<LocalSupplierInvoiceItemDto>.OK(list, total);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "获取进货单分页明细失败");
+                return GridResponseDto<LocalSupplierInvoiceItemDto>.Error("获取失败");
             }
         }
 
@@ -1496,6 +1582,127 @@ namespace BlazorApp.Api.Services.React
             }
 
             return query;
+        }
+
+        private ISugarQueryable<StoreLocalSupplierInvoice, Store, HBLocalSupplier> ApplyDate(
+            ISugarQueryable<StoreLocalSupplierInvoice, Store, HBLocalSupplier> query,
+            string? operation,
+            string? filter,
+            string? filterTo,
+            System.Linq.Expressions.Expression<System.Func<
+                StoreLocalSupplierInvoice,
+                DateTime?
+            >> selector
+        )
+        {
+            if (!TryParseGridDate(filter, out var value))
+            {
+                return query;
+            }
+
+            var oldParam = selector.Parameters[0];
+            var newParam = System.Linq.Expressions.Expression.Parameter(
+                typeof(StoreLocalSupplierInvoice),
+                "h"
+            );
+            var member = new ParamReplaceVisitor(oldParam, newParam).Visit(selector.Body);
+            var startValue = System.Linq.Expressions.Expression.Convert(
+                System.Linq.Expressions.Expression.Constant(value.Date),
+                typeof(DateTime?)
+            );
+            var endValue = System.Linq.Expressions.Expression.Convert(
+                System.Linq.Expressions.Expression.Constant(ToInclusiveEndOfDay(value)),
+                typeof(DateTime?)
+            );
+
+            System.Linq.Expressions.Expression? condition = operation switch
+            {
+                "equals" => System.Linq.Expressions.Expression.AndAlso(
+                    System.Linq.Expressions.Expression.GreaterThanOrEqual(member, startValue),
+                    System.Linq.Expressions.Expression.LessThanOrEqual(member, endValue)
+                ),
+                "notequal" => System.Linq.Expressions.Expression.OrElse(
+                    System.Linq.Expressions.Expression.LessThan(member, startValue),
+                    System.Linq.Expressions.Expression.GreaterThan(member, endValue)
+                ),
+                "lessthan" => System.Linq.Expressions.Expression.LessThan(member, startValue),
+                "lessthanorequal" => System.Linq.Expressions.Expression.LessThanOrEqual(
+                    member,
+                    endValue
+                ),
+                "greaterthan" => System.Linq.Expressions.Expression.GreaterThan(member, endValue),
+                "greaterthanorequal" => System.Linq.Expressions.Expression.GreaterThanOrEqual(
+                    member,
+                    startValue
+                ),
+                "inrange" when TryParseGridDate(filterTo, out var toValue) =>
+                    System.Linq.Expressions.Expression.AndAlso(
+                        System.Linq.Expressions.Expression.GreaterThanOrEqual(member, startValue),
+                        System.Linq.Expressions.Expression.LessThanOrEqual(
+                            member,
+                            System.Linq.Expressions.Expression.Convert(
+                                System.Linq.Expressions.Expression.Constant(
+                                    ToInclusiveEndOfDay(toValue)
+                                ),
+                                typeof(DateTime?)
+                            )
+                        )
+                    ),
+                _ => null,
+            };
+
+            if (condition == null)
+            {
+                return query;
+            }
+
+            var lambda = System.Linq.Expressions.Expression.Lambda<System.Func<
+                StoreLocalSupplierInvoice,
+                bool
+            >>(condition, newParam);
+            return query.Where(lambda);
+        }
+
+        private static int ClampGridPageSize(int requested, int fallback, params int[] allowed)
+        {
+            return allowed.Contains(requested) ? requested : fallback;
+        }
+
+        private static string NormalizeGridColumnId(string? columnId)
+        {
+            return columnId?.Trim().ToLowerInvariant() switch
+            {
+                "storecode" => "StoreCode",
+                "suppliercode" => "SupplierCode",
+                "invoiceno" => "InvoiceNo",
+                "storename" => "StoreName",
+                "suppliername" => "SupplierName",
+                "remarks" => "Remarks",
+                "createdby" => "CreatedBy",
+                "productkeyword" => "ProductKeyword",
+                "totalamount" => "TotalAmount",
+                "receivedtotalamount" => "ReceivedTotalAmount",
+                "orderdate" => "OrderDate",
+                "inbounddate" => "InboundDate",
+                "createdat" => "CreatedAt",
+                "updatedat" => "UpdatedAt",
+                _ => columnId?.Trim() ?? string.Empty,
+            };
+        }
+
+        private static bool TryParseGridDate(string? value, out DateTime date)
+        {
+            return DateTime.TryParse(
+                value,
+                System.Globalization.CultureInfo.InvariantCulture,
+                System.Globalization.DateTimeStyles.AssumeLocal,
+                out date
+            );
+        }
+
+        private static DateTime ToInclusiveEndOfDay(DateTime value)
+        {
+            return value.Date.AddDays(1).AddTicks(-1);
         }
 
         private sealed class ParamReplaceVisitor : System.Linq.Expressions.ExpressionVisitor

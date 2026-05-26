@@ -2,6 +2,7 @@ using System.Security.Claims;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Interfaces.React;
+using BlazorApp.Api.Services;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
 using Microsoft.AspNetCore.Http;
@@ -23,13 +24,15 @@ namespace BlazorApp.Api.Services.React
         private readonly ICurrentUserManageableStoreScopeService _scopeService;
         private readonly IHttpContextAccessor _httpContextAccessor;
         private readonly ILogger<AttendanceReactService> _logger;
+        private readonly TencentCloudUploadService _uploadService;
 
         public AttendanceReactService(
             SqlSugarContext context,
             ICurrentUserService currentUserService,
             ICurrentUserManageableStoreScopeService scopeService,
             IHttpContextAccessor httpContextAccessor,
-            ILogger<AttendanceReactService> logger
+            ILogger<AttendanceReactService> logger,
+            TencentCloudUploadService uploadService
         )
         {
             _db = context.Db;
@@ -37,6 +40,7 @@ namespace BlazorApp.Api.Services.React
             _scopeService = scopeService;
             _httpContextAccessor = httpContextAccessor;
             _logger = logger;
+            _uploadService = uploadService;
         }
 
         public async Task<ApiResponse<List<AttendanceScheduleDto>>> GetSchedulesAsync(
@@ -519,6 +523,73 @@ namespace BlazorApp.Api.Services.React
             return ApiResponse<AttendanceLeaveRequestDto>.OK(ToDto(model), "请假申请已提交");
         }
 
+        public async Task<ApiResponse<AttendanceLeaveRequestDto>> CreateManagedLeaveRequestAsync(
+            CreateManagedAttendanceLeaveRequestDto request
+        )
+        {
+            var validation = ValidateManagedLeaveRequest(request);
+            if (!validation.Success)
+            {
+                return ApiResponse<AttendanceLeaveRequestDto>.Error(validation.Message, validation.ErrorCode);
+            }
+
+            var storeCode = request.StoreCode.Trim();
+            var userGuid = request.UserGuid.Trim();
+            var storeAccess = await ResolveManagedStoreAccessAsync(storeCode);
+            if (!storeAccess.Success)
+            {
+                return ApiResponse<AttendanceLeaveRequestDto>.Error(storeAccess.Message, storeAccess.ErrorCode);
+            }
+
+            var isEmployeeInStore = await _db.Queryable<UserStore>()
+                .InnerJoin<Store>((us, s) => us.StoreGUID == s.StoreGUID)
+                .Where((us, s) =>
+                    us.UserGUID == userGuid
+                    && !us.IsDeleted
+                    && !s.IsDeleted
+                    && s.StoreCode == storeCode
+                )
+                .AnyAsync();
+            if (!isEmployeeInStore)
+            {
+                return ApiResponse<AttendanceLeaveRequestDto>.Error("员工不属于该分店", "FORBIDDEN_STORE");
+            }
+
+            var employeeType = await _db.Queryable<EmployeeProfile>()
+                .Where(item => !item.IsDeleted && item.UserGUID == userGuid)
+                .Select(item => item.EmployeeType)
+                .FirstAsync();
+            if (employeeType is not EmployeeType.FullTime and not EmployeeType.PartTime)
+            {
+                return ApiResponse<AttendanceLeaveRequestDto>.Error(
+                    "仅全职或兼职员工可由管理端创建请假",
+                    "INVALID_EMPLOYMENT_TYPE"
+                );
+            }
+
+            var now = DateTime.UtcNow;
+            var model = new AttendanceLeaveRequest
+            {
+                LeaveGuid = Guid.NewGuid().ToString(),
+                StoreCode = storeCode,
+                UserGuid = userGuid,
+                LeaveType = NormalizeManagedLeaveType(request.LeaveType),
+                StartDate = request.StartDate.Date,
+                EndDate = request.EndDate.Date,
+                StartTime = request.StartTime,
+                EndTime = request.EndTime,
+                Reason = request.Reason,
+                AttachmentUrl = request.AttachmentUrl,
+                Status = "Pending",
+                CreatedAt = now,
+                CreatedBy = _currentUserService.GetCurrentUsername(),
+            };
+
+            await _db.Insertable(model).ExecuteCommandAsync();
+            await CreatePendingApprovalAsync("Leave", model.LeaveGuid, model.StoreCode, userGuid);
+            return ApiResponse<AttendanceLeaveRequestDto>.OK(ToDto(model), "请假申请已提交");
+        }
+
         public async Task<ApiResponse<bool>> CancelMyLeaveRequestAsync(string leaveGuid)
         {
             var userGuid = ResolveCurrentUserGuid();
@@ -539,6 +610,29 @@ namespace BlazorApp.Api.Services.React
                 .Where(item => item.SourceType == "Leave" && item.SourceGuid == leaveGuid && item.ReviewStatus == "Pending")
                 .ExecuteCommandAsync();
             return ApiResponse<bool>.OK(true, "请假申请已取消");
+        }
+
+        public Task<ApiResponse<DirectUploadSignature>> GetLeaveAttachmentUploadSignatureAsync(
+            DirectUploadRequest request
+        )
+        {
+            if (request == null || string.IsNullOrWhiteSpace(request.FileName))
+            {
+                return Task.FromResult(
+                    ApiResponse<DirectUploadSignature>.Error("文件名不能为空", "INVALID_REQUEST")
+                );
+            }
+
+            var objectKey = request.ObjectKey;
+            if (string.IsNullOrWhiteSpace(objectKey))
+            {
+                var safeFileName = SanitizeFileName(request.FileName);
+                objectKey = $"attendance/leave-attachments/{DateTime.Now:yyyyMMddHHmmss}-{safeFileName}";
+            }
+
+            var signature = _uploadService.GetDirectUploadSignature(objectKey, request.ContentType);
+
+            return Task.FromResult(ApiResponse<DirectUploadSignature>.OK(signature, "签名生成成功"));
         }
 
         public async Task<ApiResponse<List<AttendanceAvailabilityDto>>> GetAvailabilityAsync(
@@ -652,31 +746,136 @@ namespace BlazorApp.Api.Services.React
             CreateAttendanceStoreHolidayDto request
         )
         {
-            var storeAccess = await ResolveManagedStoreAccessAsync(request.StoreCode);
-            if (!storeAccess.Success)
+            var result = await BatchUpsertHolidaysAsync(new BatchUpsertAttendanceStoreHolidayDto
             {
-                return ApiResponse<AttendanceStoreHolidayDto>.Error(storeAccess.Message, storeAccess.ErrorCode);
-            }
-
-            var now = DateTime.UtcNow;
-            var model = new AttendanceStoreHoliday
-            {
-                HolidayGuid = Guid.NewGuid().ToString(),
-                StoreCode = request.StoreCode.Trim(),
-                HolidayDate = request.HolidayDate.Date,
-                HolidayName = request.HolidayName.Trim(),
-                BusinessStatus = NormalizeBusinessStatus(request.BusinessStatus),
+                StoreCodes = new List<string> { request.StoreCode },
+                HolidayDate = request.HolidayDate,
+                HolidayName = request.HolidayName,
+                BusinessStatus = request.BusinessStatus,
                 OpenTime = request.OpenTime,
                 CloseTime = request.CloseTime,
                 IsPaidHoliday = request.IsPaidHoliday,
                 Remark = request.Remark,
-                CreatedAt = now,
-                CreatedBy = _currentUserService.GetCurrentUsername(),
-                UpdatedAt = now,
-                UpdatedBy = _currentUserService.GetCurrentUsername(),
-            };
-            await _db.Insertable(model).ExecuteCommandAsync();
-            return ApiResponse<AttendanceStoreHolidayDto>.OK(ToDto(model), "公共假期已创建");
+            });
+
+            if (!result.Success)
+            {
+                return ApiResponse<AttendanceStoreHolidayDto>.Error(result.Message, result.ErrorCode, result.Details);
+            }
+
+            var item = result.Data?.Items.FirstOrDefault();
+            return item == null
+                ? ApiResponse<AttendanceStoreHolidayDto>.Error("公共假期保存失败", "HOLIDAY_SAVE_FAILED")
+                : ApiResponse<AttendanceStoreHolidayDto>.OK(item, "公共假期已创建");
+        }
+
+        public async Task<ApiResponse<BatchUpsertAttendanceStoreHolidayResultDto>> BatchUpsertHolidaysAsync(
+            BatchUpsertAttendanceStoreHolidayDto request
+        )
+        {
+            var storeCodes = NormalizeStoreCodes(request.StoreCodes);
+            var validation = ValidateHolidayBatchPayload(storeCodes, request.HolidayDate, request.HolidayName);
+            if (!validation.Success)
+            {
+                return ApiResponse<BatchUpsertAttendanceStoreHolidayResultDto>.Error(validation.Message, validation.ErrorCode);
+            }
+
+            foreach (var storeCode in storeCodes)
+            {
+                var storeAccess = await ResolveManagedStoreAccessAsync(storeCode);
+                if (!storeAccess.Success)
+                {
+                    return ApiResponse<BatchUpsertAttendanceStoreHolidayResultDto>.Error(storeAccess.Message, storeAccess.ErrorCode);
+                }
+            }
+
+            var result = new BatchUpsertAttendanceStoreHolidayResultDto();
+            var now = DateTime.UtcNow;
+            var username = _currentUserService.GetCurrentUsername();
+            var holidayDate = request.HolidayDate.Date;
+            var holidayName = request.HolidayName.Trim();
+            var businessStatus = NormalizeBusinessStatus(request.BusinessStatus);
+
+            await _db.Ado.BeginTranAsync();
+            try
+            {
+                foreach (var storeCode in storeCodes)
+                {
+                    var existingRows = await _db.Queryable<AttendanceStoreHoliday>()
+                        .Where(item => !item.IsDeleted)
+                        .Where(item =>
+                            item.StoreCode == storeCode
+                            && item.HolidayDate >= holidayDate
+                            && item.HolidayDate < holidayDate.AddDays(1)
+                        )
+                        .OrderBy(item => item.CreatedAt)
+                        .OrderBy(item => item.Id)
+                        .ToListAsync();
+
+                    AttendanceStoreHoliday model;
+                    if (existingRows.Count > 0)
+                    {
+                        model = existingRows[0];
+                        ApplyHolidayValues(
+                            model,
+                            holidayName,
+                            businessStatus,
+                            request.OpenTime,
+                            request.CloseTime,
+                            request.IsPaidHoliday,
+                            request.Remark,
+                            now,
+                            username
+                        );
+                        await _db.Updateable(model).ExecuteCommandAsync();
+                        result.UpdatedCount++;
+
+                        foreach (var duplicate in existingRows.Skip(1))
+                        {
+                            duplicate.IsDeleted = true;
+                            duplicate.UpdatedAt = now;
+                            duplicate.UpdatedBy = username;
+                            await _db.Updateable(duplicate).ExecuteCommandAsync();
+                        }
+                    }
+                    else
+                    {
+                        model = new AttendanceStoreHoliday
+                        {
+                            HolidayGuid = Guid.NewGuid().ToString(),
+                            StoreCode = storeCode,
+                            HolidayDate = holidayDate,
+                            HolidayName = holidayName,
+                            BusinessStatus = businessStatus,
+                            OpenTime = request.OpenTime,
+                            CloseTime = request.CloseTime,
+                            IsPaidHoliday = request.IsPaidHoliday,
+                            Remark = request.Remark,
+                            CreatedAt = now,
+                            CreatedBy = username,
+                            UpdatedAt = now,
+                            UpdatedBy = username,
+                        };
+                        await _db.Insertable(model).ExecuteCommandAsync();
+                        result.CreatedCount++;
+                    }
+
+                    result.Items.Add(ToDto(model));
+                }
+
+                await _db.Ado.CommitTranAsync();
+            }
+            catch (Exception ex)
+            {
+                await _db.Ado.RollbackTranAsync();
+                _logger.LogError(ex, "批量保存公共假期失败");
+                return ApiResponse<BatchUpsertAttendanceStoreHolidayResultDto>.Error(
+                    "批量保存公共假期失败",
+                    "HOLIDAY_BATCH_SAVE_FAILED"
+                );
+            }
+
+            return ApiResponse<BatchUpsertAttendanceStoreHolidayResultDto>.OK(result, "公共假期已批量保存");
         }
 
         public async Task<ApiResponse<AttendanceStoreHolidayDto>> UpdateHolidayAsync(
@@ -1169,6 +1368,109 @@ namespace BlazorApp.Api.Services.React
             return ValidationResult.OK();
         }
 
+        private static ValidationResult ValidateHolidayBatchPayload(
+            List<string> storeCodes,
+            DateTime holidayDate,
+            string holidayName
+        )
+        {
+            if (storeCodes.Count == 0)
+            {
+                return ValidationResult.Error("请选择至少一个分店", "STORE_REQUIRED");
+            }
+
+            if (holidayDate == default)
+            {
+                return ValidationResult.Error("假期日期不能为空", "HOLIDAY_DATE_REQUIRED");
+            }
+
+            if (string.IsNullOrWhiteSpace(holidayName))
+            {
+                return ValidationResult.Error("假期名称不能为空", "HOLIDAY_NAME_REQUIRED");
+            }
+
+            return ValidationResult.OK();
+        }
+
+        private static ValidationResult ValidateManagedLeaveRequest(
+            CreateManagedAttendanceLeaveRequestDto request
+        )
+        {
+            if (string.IsNullOrWhiteSpace(request.StoreCode))
+            {
+                return ValidationResult.Error("分店代码不能为空", "STORE_REQUIRED");
+            }
+
+            if (string.IsNullOrWhiteSpace(request.UserGuid))
+            {
+                return ValidationResult.Error("员工不能为空", "USER_REQUIRED");
+            }
+
+            if (request.StartDate == default || request.EndDate == default)
+            {
+                return ValidationResult.Error("请假日期不能为空", "DATE_REQUIRED");
+            }
+
+            if (request.StartDate.Date > request.EndDate.Date)
+            {
+                return ValidationResult.Error("结束日期不能早于开始日期", "INVALID_DATE_RANGE");
+            }
+
+            if (request.StartTime.HasValue && request.EndTime.HasValue && request.StartTime >= request.EndTime)
+            {
+                return ValidationResult.Error("请假结束时间必须晚于开始时间", "INVALID_TIME_RANGE");
+            }
+
+            var leaveType = NormalizeManagedLeaveType(request.LeaveType);
+            if (leaveType is not "AnnualLeave" and not "SickLeave")
+            {
+                return ValidationResult.Error("管理端仅支持创建年假或病假", "INVALID_LEAVE_TYPE");
+            }
+
+            if (leaveType == "SickLeave" && string.IsNullOrWhiteSpace(request.AttachmentUrl))
+            {
+                return ValidationResult.Error("病假必须上传附件", "ATTACHMENT_REQUIRED");
+            }
+
+            if (leaveType == "SickLeave" && !IsManagedLeaveAttachmentUrl(request.AttachmentUrl))
+            {
+                return ValidationResult.Error("病假附件地址无效", "INVALID_ATTACHMENT_URL");
+            }
+
+            return ValidationResult.OK();
+        }
+
+        private static List<string> NormalizeStoreCodes(IEnumerable<string>? storeCodes)
+        {
+            return (storeCodes ?? Enumerable.Empty<string>())
+                .Select(item => item.Trim())
+                .Where(item => !string.IsNullOrWhiteSpace(item))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
+
+        private static void ApplyHolidayValues(
+            AttendanceStoreHoliday model,
+            string holidayName,
+            string businessStatus,
+            TimeSpan? openTime,
+            TimeSpan? closeTime,
+            bool isPaidHoliday,
+            string? remark,
+            DateTime updatedAt,
+            string? updatedBy
+        )
+        {
+            model.HolidayName = holidayName;
+            model.BusinessStatus = businessStatus;
+            model.OpenTime = openTime;
+            model.CloseTime = closeTime;
+            model.IsPaidHoliday = isPaidHoliday;
+            model.Remark = remark;
+            model.UpdatedAt = updatedAt;
+            model.UpdatedBy = updatedBy;
+        }
+
         private static string NormalizeStoreTimeZone(string? storeTimeZone)
         {
             var normalized = storeTimeZone?.Trim();
@@ -1210,6 +1512,57 @@ namespace BlazorApp.Api.Services.React
         {
             var normalized = status?.Trim();
             return normalized is "Closed" or "Partial" ? normalized : "Open";
+        }
+
+        private static string NormalizeManagedLeaveType(string? leaveType)
+        {
+            var normalized = leaveType?.Trim();
+            return normalized switch
+            {
+                "AnnualLeave" => "AnnualLeave",
+                "SickLeave" => "SickLeave",
+                _ => normalized ?? string.Empty,
+            };
+        }
+
+        private static bool IsManagedLeaveAttachmentUrl(string? attachmentUrl)
+        {
+            if (!Uri.TryCreate(attachmentUrl?.Trim(), UriKind.Absolute, out var uri))
+            {
+                return false;
+            }
+
+            return uri.AbsolutePath.Contains(
+                "/attendance/leave-attachments/",
+                StringComparison.OrdinalIgnoreCase
+            );
+        }
+
+        private static string SanitizeFileName(string fileName)
+        {
+            var extension = Path.GetExtension(fileName);
+            var extensionChars = extension
+                .Where(ch => char.IsLetterOrDigit(ch) || ch == '.')
+                .ToArray();
+            var safeExtension = new string(extensionChars);
+            var safeBaseName = new string(
+                Path.GetFileNameWithoutExtension(fileName)
+                    .Select(ch => char.IsLetterOrDigit(ch) ? ch : '-')
+                    .ToArray()
+            );
+
+            while (safeBaseName.Contains("--", StringComparison.Ordinal))
+            {
+                safeBaseName = safeBaseName.Replace("--", "-", StringComparison.Ordinal);
+            }
+
+            safeBaseName = safeBaseName.Trim('-');
+            if (string.IsNullOrWhiteSpace(safeBaseName))
+            {
+                safeBaseName = "attachment";
+            }
+
+            return $"{safeBaseName}{safeExtension}";
         }
 
         private static DateTime GetWeekStart(DateTime date)

@@ -33,7 +33,7 @@ namespace BlazorApp.Shared.Constants
         private static IReadOnlyList<PermissionSeedDefinition> ExistingDatabasePermissions { get; } =
             new List<PermissionSeedDefinition>
             {
-                new("Dashboard", "访问后台", "后台管理", "后台管理 - 访问后台"),
+                new(Permissions.Dashboard.View, "访问后台", "后台管理", "后台管理 - 访问后台"),
                 new("Container.Delete", "货柜管理 - 删除", "货柜管理", "货柜管理 - 删除"),
                 new("Container.Create", "货柜管理 - 创建", "货柜管理", "货柜管理 - 创建"),
                 new("AustralianSuppliers", "澳洲供应商", "澳洲供应商管理", "澳洲供应商管理 - 澳洲供应商"),
@@ -51,7 +51,7 @@ namespace BlazorApp.Shared.Constants
                 new("Roles.Delete", "删除角色", "角色管理", "角色管理 - 删除角色"),
                 new("Container.View", "货柜管理 - 查看", "货柜管理", "货柜管理 - 查看"),
                 new("ChinaProduct.Create", "国内订货 - 创建", "国内订货", "国内订货 - 创建"),
-                new("OrderFront", "前台订货", "前台订货", "前台订货 - 前台订货"),
+                new(Permissions.OrderFront.View, "前台订货", "前台订货", "前台订货 - 前台订货"),
                 new("ChinaProduct.Delete", "国内订货 - 删除", "国内订货", "国内订货 - 删除"),
                 new("Orders.Create", "创建订单", "订单管理", "订单管理 - 创建订单"),
                 new("LocalInvocie.Create", "澳洲进货单的管理 - 创建", "澳洲进货单的管理", "澳洲进货单的管理 - 创建"),
@@ -103,6 +103,8 @@ namespace BlazorApp.Shared.Constants
                 new(Permissions.Orders.Create, "创建订单", "订单管理", "订单管理 - 创建订单"),
                 new(Permissions.Orders.Edit, "编辑订单", "订单管理", "订单管理 - 编辑订单"),
                 new(Permissions.Orders.Delete, "删除订单", "订单管理", "订单管理 - 删除订单"),
+                new(Permissions.InstallmentOrders.View, "查看分期付款订单", "分店财务", "分店财务 - 查看分店分期付款订单与支付记录"),
+                new(Permissions.StoreVouchers.View, "查看分店代金券", "分店财务", "分店财务 - 查看分店代金券使用情况与关联订单"),
                 new(Permissions.Container.View, "查看货柜", "货柜管理", "货柜管理 - 查看货柜"),
                 new(Permissions.Container.Create, "创建货柜", "货柜管理", "货柜管理 - 创建货柜"),
                 new(Permissions.Container.Edit, "编辑货柜", "货柜管理", "货柜管理 - 编辑货柜"),

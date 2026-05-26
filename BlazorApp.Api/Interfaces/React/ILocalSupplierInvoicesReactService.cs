@@ -12,6 +12,10 @@ namespace BlazorApp.Api.Interfaces.React
         );
         Task<ApiResponse<LocalSupplierInvoiceDetailDto>> GetInvoiceAsync(string invoiceGuid);
         Task<ApiResponse<List<LocalSupplierInvoiceItemDto>>> GetDetailsAsync(string invoiceGuid);
+        Task<GridResponseDto<LocalSupplierInvoiceItemDto>> GetDetailsGridAsync(
+            string invoiceGuid,
+            GridRequestDto request
+        );
         Task<ApiResponse<string>> CreateAsync(CreateInvoiceRequest dto);
         Task<ApiResponse<bool>> DeleteAsync(string invoiceGuid, string updatedBy);
         Task<ApiResponse<List<SupplierItemDetectResult>>> DetectSupplierItemAsync(

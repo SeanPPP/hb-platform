@@ -107,6 +107,24 @@ namespace BlazorApp.Api.Controllers
         }
 
         /// <summary>
+        /// 移动端管理员分页获取设备列表
+        /// </summary>
+        [HttpGet("mobile/device-management/paged")]
+        [Authorize(Roles = "Admin,管理员")]
+        public Task<IActionResult> GetMobileAdminDevicesPaged(
+            [FromQuery] int page = 1,
+            [FromQuery] int pageSize = 20,
+            [FromQuery] string? storeCode = null,
+            [FromQuery] string? deviceType = null,
+            [FromQuery] string? deviceSystem = null,
+            [FromQuery] int? status = null,
+            [FromQuery] string? keyword = null
+        )
+        {
+            return GetDevicesPaged(page, pageSize, storeCode, deviceType, deviceSystem, status, keyword);
+        }
+
+        /// <summary>
         /// 根据ID获取设备信息
         /// </summary>
         [HttpGet("{id:int}")]
@@ -379,6 +397,16 @@ namespace BlazorApp.Api.Controllers
         }
 
         /// <summary>
+        /// 移动端管理员激活设备
+        /// </summary>
+        [HttpPost("mobile/device-management/{id}/activate")]
+        [Authorize(Roles = "Admin,管理员")]
+        public Task<IActionResult> ActivateMobileAdminDevice(int id)
+        {
+            return ActivateDevice(id);
+        }
+
+        /// <summary>
         /// 禁用设备
         /// </summary>
         [HttpPost("{id}/disable")]
@@ -411,6 +439,16 @@ namespace BlazorApp.Api.Controllers
         }
 
         /// <summary>
+        /// 移动端管理员禁用设备
+        /// </summary>
+        [HttpPost("mobile/device-management/{id}/disable")]
+        [Authorize(Roles = "Admin,管理员")]
+        public Task<IActionResult> DisableMobileAdminDevice(int id)
+        {
+            return DisableDevice(id);
+        }
+
+        /// <summary>
         /// 锁定设备
         /// </summary>
         [HttpPost("{id}/lock")]
@@ -440,6 +478,16 @@ namespace BlazorApp.Api.Controllers
                 _logger.LogError(ex, "锁定设备失败: {DeviceId}", id);
                 return StatusCode(500, new { success = false, message = "锁定设备失败" });
             }
+        }
+
+        /// <summary>
+        /// 移动端管理员锁定设备
+        /// </summary>
+        [HttpPost("mobile/device-management/{id}/lock")]
+        [Authorize(Roles = "Admin,管理员")]
+        public Task<IActionResult> LockMobileAdminDevice(int id)
+        {
+            return LockDevice(id);
         }
 
         /// <summary>

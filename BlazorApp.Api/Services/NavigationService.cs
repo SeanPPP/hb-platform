@@ -35,6 +35,7 @@ namespace BlazorApp.Api.Services
                 Path = "/dashboard",
                 TitleKey = "menu.dashboard",
                 Icon = "DashboardOutlined",
+                Permission = Permissions.Dashboard.View,
             },
             new()
             {
@@ -155,11 +156,35 @@ namespace BlazorApp.Api.Services
             },
             new()
             {
+                RouteName = "local-supplier-invoices",
+                TitleKey = "tabs.localSupplierInvoices",
+                Icon = "receipt-text-outline",
+                Permission = Permissions.LocalPurchase.View,
+                Order = 46,
+            },
+            new()
+            {
                 RouteName = "product-query",
                 TitleKey = "tabs.productQuery",
                 Icon = "barcode-scan",
                 Permission = Permissions.StoreProducts.View,
                 Order = 50,
+            },
+            new()
+            {
+                RouteName = "installment-orders",
+                TitleKey = "tabs.installmentOrders",
+                Icon = "cash-clock",
+                Permission = Permissions.InstallmentOrders.View,
+                Order = 51,
+            },
+            new()
+            {
+                RouteName = "store-vouchers",
+                TitleKey = "tabs.storeVouchers",
+                Icon = "ticket-percent-outline",
+                Permission = Permissions.StoreVouchers.View,
+                Order = 52,
             },
             new()
             {
@@ -188,6 +213,14 @@ namespace BlazorApp.Api.Services
             },
             new()
             {
+                RouteName = "device-management",
+                TitleKey = "tabs.deviceManagement",
+                Icon = "cellphone-cog",
+                RequireAdmin = true,
+                Order = 58,
+            },
+            new()
+            {
                 RouteName = "settings",
                 TitleKey = "tabs.settings",
                 Icon = "account-circle-outline",
@@ -211,6 +244,17 @@ namespace BlazorApp.Api.Services
             if (isAdmin)
             {
                 return FullMenu;
+            }
+
+            var hasDashboardAccess =
+                user.HasClaim("permission", Permissions.Dashboard.View)
+                || (
+                    user.HasClaim(ClaimTypes.Role, "WarehouseManager")
+                    && Permissions.IsWarehouseManagerGranted(Permissions.Dashboard.View)
+                );
+            if (!hasDashboardAccess)
+            {
+                return new List<NavigationMenuDto>();
             }
 
             return FilterMenu(FullMenu, user);
@@ -350,7 +394,24 @@ namespace BlazorApp.Api.Services
                 return true;
             }
 
-            return user.HasClaim("permission", node.Permission);
+            if (user.HasClaim("permission", node.Permission))
+            {
+                return true;
+            }
+
+            if (node.Permission == Permissions.LocalPurchase.View
+                && user.HasClaim("permission", "LocalInvocie.View"))
+            {
+                return true;
+            }
+
+            if (node.Permission == Permissions.LocalPurchase.Edit
+                && user.HasClaim("permission", "LocalInvocie.Edit"))
+            {
+                return true;
+            }
+
+            return false;
         }
 
         private static bool IsWarehouseDevice(string? deviceType)
