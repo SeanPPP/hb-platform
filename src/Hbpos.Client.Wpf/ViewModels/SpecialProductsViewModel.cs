@@ -297,8 +297,12 @@ public sealed partial class SpecialProductsViewModel : ObservableObject, IScanne
         IsEditMode = false;
         ClearSearch();
         SelectedSpecialItem = null;
-        DeferThumbnailLoading();
-        RefreshPagedSpecialItems(resetToFirstPage: true);
+        if (PagedSpecialItems.Count == 0)
+        {
+            DeferThumbnailLoading();
+        }
+
+        ResetFirstPageForEntry();
     }
 
     private async Task PreloadCoreAsync(CancellationToken cancellationToken)
@@ -709,6 +713,46 @@ public sealed partial class SpecialProductsViewModel : ObservableObject, IScanne
         OnPropertyChanged(nameof(TotalPages));
         OnPropertyChanged(nameof(PageStatusText));
         RefreshCommandStates();
+    }
+
+    private void ResetFirstPageForEntry()
+    {
+        CurrentPage = 1;
+        if (PagedSpecialItemsMatchCurrentPage())
+        {
+            OnPropertyChanged(nameof(IsSpecialListEmpty));
+            OnPropertyChanged(nameof(TotalPages));
+            OnPropertyChanged(nameof(PageStatusText));
+            RefreshCommandStates();
+            return;
+        }
+
+        RefreshPagedSpecialItems(resetToFirstPage: false);
+    }
+
+    private bool PagedSpecialItemsMatchCurrentPage()
+    {
+        var expectedItems = SpecialItems
+            .Take(PageSize)
+            .ToArray();
+        if (PagedSpecialItems.Count != expectedItems.Length)
+        {
+            return false;
+        }
+
+        for (var index = 0; index < expectedItems.Length; index++)
+        {
+            if (!ReferenceEquals(PagedSpecialItems[index], expectedItems[index]) &&
+                !string.Equals(
+                    NormalizeProductCode(PagedSpecialItems[index].ProductCode),
+                    NormalizeProductCode(expectedItems[index].ProductCode),
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private bool EnsureOnlineMutationAllowed()

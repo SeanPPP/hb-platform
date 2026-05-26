@@ -462,13 +462,12 @@ public sealed class SpecialProductsViewModelTests
     }
 
     [Fact]
-    public async Task ActivateForEntry_disables_thumbnails_immediately_and_reenables_after_delay()
+    public async Task ActivateForEntry_disables_thumbnails_immediately_and_reenables_after_delay_when_page_is_cold()
     {
         var thumbnailDelay = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var viewModel = CreateViewModel(
             repository: new FakeCatalogRepository { SpecialItems = CreateSpecialItems(1) },
             delayAsync: (_, cancellationToken) => thumbnailDelay.Task.WaitAsync(cancellationToken));
-        await viewModel.LoadAsync();
 
         Assert.True(viewModel.AreThumbnailsEnabled);
 
@@ -481,7 +480,7 @@ public sealed class SpecialProductsViewModelTests
     }
 
     [Fact]
-    public async Task ActivateForEntry_latest_delay_controls_when_thumbnails_are_reenabled()
+    public async Task ActivateForEntry_latest_delay_controls_when_thumbnails_are_reenabled_for_cold_page()
     {
         var thumbnailDelays = new List<TaskCompletionSource>();
         var viewModel = CreateViewModel(
@@ -492,7 +491,6 @@ public sealed class SpecialProductsViewModelTests
                 thumbnailDelays.Add(delay);
                 return delay.Task.WaitAsync(cancellationToken);
             });
-        await viewModel.LoadAsync();
 
         viewModel.ActivateForEntry();
         var firstDelay = Assert.Single(thumbnailDelays);
@@ -511,6 +509,30 @@ public sealed class SpecialProductsViewModelTests
         secondDelay.SetResult();
         await WaitUntilAsync(() => viewModel.AreThumbnailsEnabled);
         Assert.True(viewModel.AreThumbnailsEnabled);
+    }
+
+    [Fact]
+    public async Task ActivateForEntry_keeps_ready_first_page_and_thumbnails_warm()
+    {
+        var delayCallCount = 0;
+        var viewModel = CreateViewModel(
+            repository: new FakeCatalogRepository { SpecialItems = CreateSpecialItems(20) },
+            delayAsync: (_, _) =>
+            {
+                delayCallCount++;
+                return Task.CompletedTask;
+            });
+        await viewModel.LoadAsync();
+        var collectionChangeCount = 0;
+        viewModel.PagedSpecialItems.CollectionChanged += (_, _) => collectionChangeCount++;
+
+        viewModel.ActivateForEntry();
+
+        Assert.Equal(0, delayCallCount);
+        Assert.True(viewModel.AreThumbnailsEnabled);
+        Assert.Equal(0, collectionChangeCount);
+        Assert.Equal(20, viewModel.PagedSpecialItems.Count);
+        Assert.Equal("SKU-001", viewModel.PagedSpecialItems.First().ProductCode);
     }
 
     [Fact]

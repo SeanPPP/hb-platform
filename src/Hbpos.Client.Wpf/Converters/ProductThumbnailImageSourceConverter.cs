@@ -17,6 +17,7 @@ namespace Hbpos.Client.Wpf.Converters;
 public sealed class ProductThumbnailImageSourceConverter : IValueConverter
 {
     private static readonly ConcurrentDictionary<string, ImageSource> Cache = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly ConcurrentDictionary<string, DateTimeOffset> FailedCache = new(StringComparer.OrdinalIgnoreCase);
     private static readonly ConcurrentDictionary<string, byte> LoggedDiagnostics = new(StringComparer.Ordinal);
     private static readonly HttpClient RemoteImageHttpClient = CreateRemoteImageHttpClient();
     private static readonly object RemoteImageLoaderLock = new();
@@ -26,6 +27,7 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
     private const string DataImagePrefix = "data:image/";
     private const int MaxLoggedValueLength = 300;
     private static readonly TimeSpan RemoteImageDownloadTimeout = TimeSpan.FromSeconds(4);
+    private static readonly TimeSpan FailedCacheDuration = TimeSpan.FromMinutes(10);
 
     public int DecodePixelWidth { get; set; } = 72;
 
@@ -109,6 +111,11 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
         }
 
         var cacheKey = CreateCacheKey(DecodePixelWidth, imageRequest);
+        if (imageRequest.CanCache && IsFailureCached(cacheKey))
+        {
+            return null;
+        }
+
         if (imageRequest.CanCache && Cache.TryGetValue(cacheKey, out var cached))
         {
             return cached;
@@ -118,6 +125,10 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
         if (imageRequest.CanCache && imageSource is not null)
         {
             Cache.TryAdd(cacheKey, imageSource);
+        }
+        else if (imageRequest.CanCache && imageRequest.IsRemoteUri)
+        {
+            MarkFailedCache(cacheKey);
         }
 
         return imageSource;
@@ -226,7 +237,7 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
         }
 
         var cacheKey = CreateCacheKey(decodePixelWidth, imageRequest);
-        if (Cache.ContainsKey(cacheKey))
+        if (Cache.ContainsKey(cacheKey) || IsFailureCached(cacheKey))
         {
             return false;
         }
@@ -259,12 +270,43 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
                 .ConfigureAwait(false);
         }
 
-        return imageSource is not null && Cache.TryAdd(cacheKey, imageSource);
+        if (imageSource is not null)
+        {
+            return Cache.TryAdd(cacheKey, imageSource);
+        }
+
+        if (imageRequest.IsRemoteUri)
+        {
+            MarkFailedCache(cacheKey);
+        }
+
+        return false;
     }
 
     private static string CreateCacheKey(int decodePixelWidth, ImageRequest imageRequest)
     {
         return $"{Math.Max(1, decodePixelWidth)}|{imageRequest.CacheKey}";
+    }
+
+    private static bool IsFailureCached(string cacheKey)
+    {
+        if (!FailedCache.TryGetValue(cacheKey, out var failedAt))
+        {
+            return false;
+        }
+
+        if (DateTimeOffset.UtcNow - failedAt <= FailedCacheDuration)
+        {
+            return true;
+        }
+
+        FailedCache.TryRemove(cacheKey, out _);
+        return false;
+    }
+
+    private static void MarkFailedCache(string cacheKey)
+    {
+        FailedCache[cacheKey] = DateTimeOffset.UtcNow;
     }
 
     private static void OnAsyncSourceTextChanged(DependencyObject target, DependencyPropertyChangedEventArgs e)
@@ -333,6 +375,11 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
 
         var decodePixelWidth = Math.Max(1, GetAsyncDecodePixelWidth(target));
         var cacheKey = CreateCacheKey(decodePixelWidth, imageRequest);
+        if (imageRequest.CanCache && IsFailureCached(cacheKey))
+        {
+            return;
+        }
+
         if (imageRequest.CanCache && Cache.TryGetValue(cacheKey, out var cached))
         {
             SetTargetImageSource(target, cached);
@@ -424,6 +471,10 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
             if (!cts.IsCancellationRequested && imageRequest.CanCache && imageSource is not null)
             {
                 Cache.TryAdd(cacheKey, imageSource);
+            }
+            else if (!cts.IsCancellationRequested && imageRequest.CanCache && imageRequest.IsRemoteUri)
+            {
+                MarkFailedCache(cacheKey);
             }
         }
         catch (OperationCanceledException) when (cts.IsCancellationRequested)

@@ -1130,6 +1130,7 @@ public sealed class MainViewModelScannerTests
     private static void ClearImageCacheForTests()
     {
         ClearConcurrentDictionaryField("Cache");
+        ClearConcurrentDictionaryField("FailedCache");
         ClearConcurrentDictionaryField("LoggedDiagnostics");
     }
 

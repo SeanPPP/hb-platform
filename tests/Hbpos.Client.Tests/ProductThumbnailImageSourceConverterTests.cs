@@ -460,6 +460,50 @@ public sealed class ProductThumbnailImageSourceConverterTests
         Assert.Equal(0, preloadedCount);
     }
 
+    [Fact]
+    public async Task PreloadAsync_remembers_failed_remote_image_and_does_not_retry_convert_or_async_load()
+    {
+        ClearImageCacheForTests();
+        var failedUrl = $"https://cdn.example.test/images/{Guid.NewGuid():N}/missing.png";
+        var loadCount = 0;
+        using var remoteImages = ProductThumbnailImageSourceConverter.UseRemoteImageBytesLoaderForTests((_, _) =>
+        {
+            loadCount++;
+            throw new IOException("download failed");
+        });
+
+        var preloadedCount = await ProductThumbnailImageSourceConverter.PreloadAsync([failedUrl]);
+
+        Assert.Equal(0, preloadedCount);
+        Assert.Equal(1, loadCount);
+
+        var converter = new ProductThumbnailImageSourceConverter();
+        Assert.Null(converter.Convert(failedUrl, typeof(BitmapSource), null, CultureInfo.InvariantCulture));
+        Assert.Equal(1, loadCount);
+
+        ProductThumbnailImageSourceConverter.SetAsyncSourceText(new ImageBrush(), failedUrl);
+        Assert.Equal(1, loadCount);
+    }
+
+    [Fact]
+    public async Task PreloadAsync_retries_failed_remote_image_after_failure_cache_expires()
+    {
+        ClearImageCacheForTests();
+        var failedUrl = $"https://cdn.example.test/images/{Guid.NewGuid():N}/missing.png";
+        var loadCount = 0;
+        using var remoteImages = ProductThumbnailImageSourceConverter.UseRemoteImageBytesLoaderForTests((_, _) =>
+        {
+            loadCount++;
+            return Task.FromResult(OnePixelPngBytes());
+        });
+        SetFailedCacheForTests(failedUrl, DateTimeOffset.UtcNow.AddMinutes(-11));
+
+        var preloadedCount = await ProductThumbnailImageSourceConverter.PreloadAsync([failedUrl]);
+
+        Assert.Equal(1, preloadedCount);
+        Assert.Equal(1, loadCount);
+    }
+
     private static string CreateTempImageFile()
     {
         var filePath = Path.Combine(Path.GetTempPath(), $"hbpos-thumbnail-{Guid.NewGuid():N}.png");
@@ -475,6 +519,7 @@ public sealed class ProductThumbnailImageSourceConverterTests
     private static void ClearImageCacheForTests()
     {
         ClearConcurrentDictionaryField("Cache");
+        ClearConcurrentDictionaryField("FailedCache");
         ClearConcurrentDictionaryField("LoggedDiagnostics");
     }
 
@@ -486,6 +531,16 @@ public sealed class ProductThumbnailImageSourceConverterTests
         var clearMethod = field!.FieldType.GetMethod("Clear", BindingFlags.Instance | BindingFlags.Public);
         Assert.NotNull(clearMethod);
         clearMethod!.Invoke(field.GetValue(null), null);
+    }
+
+    private static void SetFailedCacheForTests(string sourceText, DateTimeOffset failedAt)
+    {
+        var field = typeof(ProductThumbnailImageSourceConverter).GetField("FailedCache", BindingFlags.Static | BindingFlags.NonPublic);
+        Assert.NotNull(field);
+
+        var indexerProperty = field!.FieldType.GetProperty("Item");
+        Assert.NotNull(indexerProperty);
+        indexerProperty!.SetValue(field.GetValue(null), failedAt, [$"72|{sourceText}"]);
     }
 
     private static List<string> CaptureProductImageLogs(Action action)
