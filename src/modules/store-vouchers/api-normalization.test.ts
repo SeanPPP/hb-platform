@@ -23,7 +23,6 @@ assertDeepEqual(
   defaultPayload,
   {
     storeCode: undefined,
-    supplierCode: undefined,
     status: undefined,
     startDate: undefined,
     endDate: undefined,
@@ -38,7 +37,6 @@ const filteredPayload = buildStoreVoucherListPayload({
   pageSize: 50,
   filters: {
     branchCode: " STO01 ",
-    supplierCode: " SUP01 ",
     status: "1",
     startDate: " 2026-05-01 ",
     endDate: "2026-05-31",
@@ -48,7 +46,6 @@ assertDeepEqual(
   filteredPayload,
   {
     storeCode: "STO01",
-    supplierCode: "SUP01",
     status: "1",
     startDate: "2026-05-01",
     endDate: "2026-05-31",

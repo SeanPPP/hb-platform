@@ -3,16 +3,13 @@
   "subtitle": "View vouchers, usage ledger, and related orders by store, status, and date range",
   "filters": {
     "storeCode": "Store",
-    "supplierCode": "Supplier",
     "status": "Status",
     "dateFrom": "From date",
     "dateTo": "To date",
     "emptyDate": "Not selected",
     "allStores": "All stores",
-    "allSuppliers": "All suppliers",
     "allStatuses": "All statuses",
     "storePickerTitle": "Select store",
-    "supplierPickerTitle": "Select supplier",
     "statusPickerTitle": "Select status"
   },
   "statuses": {
@@ -58,9 +55,6 @@
     "loadFailed": "Failed to load vouchers",
     "detailsLoadFailed": "Failed to load voucher details",
     "ledgerEmpty": "No ledger records",
-    "relatedOrdersEmpty": "No related orders",
-    "suppliersLoading": "Loading suppliers",
-    "suppliersEmpty": "No suppliers",
-    "suppliersLoadFailed": "Failed to load suppliers"
+    "relatedOrdersEmpty": "No related orders"
   }
 }

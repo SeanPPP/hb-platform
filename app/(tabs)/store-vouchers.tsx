@@ -20,8 +20,6 @@ import {
   type SelectionListItem,
 } from "@/components/ui/SelectionListModal";
 import { StorePickerModal } from "@/components/ui/StorePickerModal";
-import { fetchActiveLocalSuppliers } from "@/modules/local-supplier-invoices/api";
-import type { LocalSupplierOption } from "@/modules/local-supplier-invoices/types";
 import {
   fetchStoreVoucherDetail,
   fetchStoreVouchers,
@@ -102,18 +100,6 @@ function normalizeStatusKey(status?: StoreVoucherStatus) {
 
 function getStatusLabelKey(status?: StoreVoucherStatus) {
   return VOUCHER_STATUS_LABEL_KEYS[normalizeStatusKey(status)] ?? "statuses.unknown";
-}
-
-function sortSuppliers(suppliers: LocalSupplierOption[]) {
-  return suppliers
-    .slice()
-    .sort((left, right) =>
-      (left.supplierName || left.supplierCode).localeCompare(
-        right.supplierName || right.supplierCode,
-        undefined,
-        { sensitivity: "base" }
-      )
-    );
 }
 
 function StatusBadge({
@@ -218,12 +204,8 @@ export default function StoreVouchersScreen() {
   const [draftFilters, setDraftFilters] = useState<StoreVoucherFilters>({});
   const [filters, setFilters] = useState<StoreVoucherFilters>({});
   const [storePickerVisible, setStorePickerVisible] = useState(false);
-  const [supplierPickerVisible, setSupplierPickerVisible] = useState(false);
   const [statusPickerVisible, setStatusPickerVisible] = useState(false);
   const [datePickerTarget, setDatePickerTarget] = useState<DateFilterKey | null>(null);
-  const [suppliers, setSuppliers] = useState<LocalSupplierOption[]>([]);
-  const [suppliersLoading, setSuppliersLoading] = useState(false);
-  const [suppliersLoaded, setSuppliersLoaded] = useState(false);
   const [page, setPage] = useState(1);
   const [items, setItems] = useState<StoreVoucher[]>([]);
   const [total, setTotal] = useState(0);
@@ -238,30 +220,12 @@ export default function StoreVouchersScreen() {
     () => stores.find((store) => store.storeCode === (draftFilters.storeCode ?? "")) ?? null,
     [draftFilters.storeCode, stores]
   );
-  const selectedSupplier = useMemo(
-    () =>
-      suppliers.find((supplier) => supplier.supplierCode === (draftFilters.supplierCode ?? "")) ??
-      null,
-    [draftFilters.supplierCode, suppliers]
-  );
   const selectedStatus = useMemo(
     () =>
       VOUCHER_STATUS_OPTIONS.find(
         (option) => option.value === String(draftFilters.status ?? "")
       ) ?? null,
     [draftFilters.status]
-  );
-  const supplierItems = useMemo<SelectionListItem[]>(
-    () =>
-      suppliers.map((supplier) => ({
-        key: supplier.supplierCode,
-        label: supplier.supplierName || supplier.supplierCode,
-        description:
-          supplier.supplierName && supplier.supplierName !== supplier.supplierCode
-            ? supplier.supplierCode
-            : undefined,
-      })),
-    [suppliers]
   );
   const statusItems = useMemo<SelectionListItem[]>(
     () =>
@@ -300,23 +264,6 @@ export default function StoreVouchersScreen() {
     [filters, page, t]
   );
 
-  const loadSuppliers = useCallback(async () => {
-    if (suppliersLoading) {
-      return;
-    }
-
-    setSuppliersLoading(true);
-    try {
-      const result = await fetchActiveLocalSuppliers();
-      setSuppliers(sortSuppliers(result));
-      setSuppliersLoaded(true);
-    } catch (error) {
-      setSnackbar(error instanceof Error ? error.message : t("messages.suppliersLoadFailed"));
-    } finally {
-      setSuppliersLoading(false);
-    }
-  }, [suppliersLoading, t]);
-
   useEffect(() => {
     void loadVouchers();
   }, [loadVouchers]);
@@ -352,13 +299,6 @@ export default function StoreVouchersScreen() {
     };
   }, [detailTarget, t]);
 
-  const openSupplierPicker = useCallback(() => {
-    setSupplierPickerVisible(true);
-    if (!suppliersLoaded) {
-      void loadSuppliers();
-    }
-  }, [loadSuppliers, suppliersLoaded]);
-
   const applyFilters = useCallback(() => {
     setPage(1);
     setFilters(draftFilters);
@@ -377,14 +317,6 @@ export default function StoreVouchersScreen() {
       storeCode: store?.storeCode || undefined,
     }));
     setStorePickerVisible(false);
-  }, []);
-
-  const handleSelectSupplier = useCallback((item: SelectionListItem | null) => {
-    setDraftFilters((current) => ({
-      ...current,
-      supplierCode: item?.key || undefined,
-    }));
-    setSupplierPickerVisible(false);
   }, []);
 
   const handleSelectStatus = useCallback((item: SelectionListItem | null) => {
@@ -503,20 +435,6 @@ export default function StoreVouchersScreen() {
                   </Text>
                 </View>
                 {storesLoading ? <ActivityIndicator size="small" /> : <IconButton icon="store-outline" size={20} />}
-              </Surface>
-            </Pressable>
-
-            <Pressable onPress={openSupplierPicker} style={styles.filterInput}>
-              <Surface style={styles.pickerField} elevation={0}>
-                <View style={styles.pickerFieldText}>
-                  <Text variant="labelMedium" style={styles.pickerFieldLabel}>
-                    {t("filters.supplierCode")}
-                  </Text>
-                  <Text variant="bodyLarge" numberOfLines={1}>
-                    {selectedSupplier?.supplierName || draftFilters.supplierCode || t("filters.allSuppliers")}
-                  </Text>
-                </View>
-                {suppliersLoading ? <ActivityIndicator size="small" /> : <IconButton icon="truck-outline" size={20} />}
               </Surface>
             </Pressable>
 
@@ -718,20 +636,6 @@ export default function StoreVouchersScreen() {
         allLabel={t("filters.allStores")}
         onDismiss={() => setStorePickerVisible(false)}
         onSelectStore={handleSelectStore}
-      />
-
-      <SelectionListModal
-        visible={supplierPickerVisible}
-        title={t("filters.supplierPickerTitle")}
-        cancelLabel={t("common:actions.cancel")}
-        items={supplierItems}
-        selectedKey={draftFilters.supplierCode}
-        includeAllOption
-        allLabel={t("filters.allSuppliers")}
-        loading={suppliersLoading}
-        emptyLabel={t("messages.suppliersEmpty")}
-        onDismiss={() => setSupplierPickerVisible(false)}
-        onSelect={handleSelectSupplier}
       />
 
       <SelectionListModal

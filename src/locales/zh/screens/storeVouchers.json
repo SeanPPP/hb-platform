@@ -3,16 +3,13 @@
   "subtitle": "按分店、状态和日期范围查看代金券、使用流水及关联订单",
   "filters": {
     "storeCode": "分店",
-    "supplierCode": "供应商",
     "status": "状态",
     "dateFrom": "开始日期",
     "dateTo": "结束日期",
     "emptyDate": "未选择",
     "allStores": "全部分店",
-    "allSuppliers": "全部供应商",
     "allStatuses": "全部状态",
     "storePickerTitle": "选择分店",
-    "supplierPickerTitle": "选择供应商",
     "statusPickerTitle": "选择状态"
   },
   "statuses": {
@@ -58,9 +55,6 @@
     "loadFailed": "加载代金券失败",
     "detailsLoadFailed": "加载代金券详情失败",
     "ledgerEmpty": "暂无流水记录",
-    "relatedOrdersEmpty": "暂无关联订单",
-    "suppliersLoading": "正在加载供应商",
-    "suppliersEmpty": "暂无供应商",
-    "suppliersLoadFailed": "加载供应商失败"
+    "relatedOrdersEmpty": "暂无关联订单"
   }
 }

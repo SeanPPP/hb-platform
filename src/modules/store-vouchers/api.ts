@@ -128,7 +128,6 @@ export function buildStoreVoucherListPayload(query: {
 }) {
   return {
     storeCode: trimText(query.filters?.storeCode ?? query.filters?.branchCode),
-    supplierCode: trimText(query.filters?.supplierCode),
     status: query.filters?.status ?? undefined,
     startDate: trimText(query.filters?.startDate),
     endDate: trimText(query.filters?.endDate),
