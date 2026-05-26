@@ -17,11 +17,17 @@ public class PermissionAuthorizationHandlerTests
     [Theory]
     [InlineData(Permissions.LocalPurchase.View)]
     [InlineData("LocalInvocie.View")]
-    public async Task LocalPurchaseViewPolicy_AllowsCanonicalAndLegacyPermissionClaims(
+    public async Task LocalPurchaseViewPolicy_DoesNotTrustCanonicalOrLegacyPermissionClaims(
         string permissionClaim
     )
     {
-        var roleService = new Mock<IRoleService>(MockBehavior.Strict);
+        var roleService = new Mock<IRoleService>();
+        roleService
+            .Setup(service => service.UserHasPermissionAsync("user-1", Permissions.LocalPurchase.View))
+            .ReturnsAsync(ApiResponse<bool>.OK(false));
+        roleService
+            .Setup(service => service.UserHasPermissionAsync("user-1", "LocalInvocie.View"))
+            .ReturnsAsync(ApiResponse<bool>.OK(false));
         var handler = CreateHandler(roleService);
         var requirement = new PermissionRequirement(Permissions.LocalPurchase.View);
         var context = new AuthorizationHandlerContext(
@@ -32,8 +38,7 @@ public class PermissionAuthorizationHandlerTests
 
         await handler.HandleAsync(context);
 
-        Assert.True(context.HasSucceeded);
-        roleService.VerifyNoOtherCalls();
+        Assert.False(context.HasSucceeded);
     }
 
     [Fact]
@@ -87,8 +92,78 @@ public class PermissionAuthorizationHandlerTests
         Assert.False(context.HasSucceeded);
     }
 
+    [Fact]
+    public async Task LocalPurchaseViewPolicy_RequeriesDatabaseInsteadOfCachingPermissionResult()
+    {
+        var roleService = new Mock<IRoleService>();
+        roleService
+            .SetupSequence(service =>
+                service.UserHasPermissionAsync("user-1", Permissions.LocalPurchase.View)
+            )
+            .ReturnsAsync(ApiResponse<bool>.OK(true))
+            .ReturnsAsync(ApiResponse<bool>.OK(false));
+        roleService
+            .Setup(service => service.UserHasPermissionAsync("user-1", "LocalInvocie.View"))
+            .ReturnsAsync(ApiResponse<bool>.OK(false));
+
+        var handler = CreateHandler(roleService);
+        var requirement = new PermissionRequirement(Permissions.LocalPurchase.View);
+
+        var firstContext = new AuthorizationHandlerContext(
+            new[] { requirement },
+            CreateUser(),
+            resource: null
+        );
+        await handler.HandleAsync(firstContext);
+
+        var secondContext = new AuthorizationHandlerContext(
+            new[] { requirement },
+            CreateUser(),
+            resource: null
+        );
+        await handler.HandleAsync(secondContext);
+
+        Assert.True(firstContext.HasSucceeded);
+        Assert.False(secondContext.HasSucceeded);
+        roleService.Verify(
+            service => service.UserHasPermissionAsync("user-1", Permissions.LocalPurchase.View),
+            Times.Exactly(2)
+        );
+    }
+
+    [Fact]
+    public async Task StoreManagerShortcut_RequiresCurrentDatabaseRole()
+    {
+        var roleService = new Mock<IRoleService>();
+        roleService
+            .Setup(service => service.UserHasRoleAsync("user-1", "StoreManager"))
+            .ReturnsAsync(ApiResponse<bool>.OK(false));
+        roleService
+            .Setup(service =>
+                service.UserHasPermissionAsync("user-1", Permissions.Attendance.Schedule.ViewStore)
+            )
+            .ReturnsAsync(ApiResponse<bool>.OK(false));
+
+        var handler = CreateHandler(roleService);
+        var requirement = new PermissionRequirement(Permissions.Attendance.Schedule.ViewStore);
+        var context = new AuthorizationHandlerContext(
+            new[] { requirement },
+            CreateUser(new Claim(ClaimTypes.Role, "StoreManager")),
+            resource: null
+        );
+
+        await handler.HandleAsync(context);
+
+        Assert.False(context.HasSucceeded);
+        roleService.Verify(service => service.UserHasRoleAsync("user-1", "StoreManager"), Times.Once);
+    }
+
     private static PermissionAuthorizationHandler CreateHandler(Mock<IRoleService> roleService)
     {
+        roleService
+            .Setup(service => service.UserHasRoleAsync("user-1", It.IsAny<string>()))
+            .ReturnsAsync(ApiResponse<bool>.OK(false));
+
         var serviceProvider = new Mock<IServiceProvider>();
         serviceProvider
             .Setup(provider => provider.GetService(typeof(IRoleService)))

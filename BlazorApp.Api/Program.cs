@@ -1,5 +1,6 @@
 // ===================== 引用和命名空间 =====================
 using System.Linq;
+using System.Security.Claims;
 using System.Text; // 字符串编码
 using AutoMapper; // AutoMapper映射服务
 using BlazorApp.Api.Data; // 数据访问层
@@ -16,6 +17,7 @@ using BlazorApp.Api.Services.Background; // 后台定时服务
 using BlazorApp.Api.Services.Pricing; // 自动定价服务
 using BlazorApp.Api.Services.React; // React 专用服务层
 using BlazorApp.Api.Utils; // Cookie 配置辅助类
+using BlazorApp.Shared.Models;
 using Microsoft.AspNetCore.Authentication.JwtBearer; // JWT Bearer认证
 using Microsoft.IdentityModel.Tokens; // JWT令牌验证
 
@@ -273,6 +275,69 @@ builder
                 }
 
                 return Task.CompletedTask;
+            },
+            OnTokenValidated = async context =>
+            {
+                var principal = context.Principal;
+                var identity = principal?.Identities.FirstOrDefault(identity => identity.IsAuthenticated);
+                if (principal == null || identity == null)
+                {
+                    context.Fail("无效的认证主体");
+                    return;
+                }
+
+                var userGuid =
+                    principal.FindFirst(ClaimTypes.NameIdentifier)?.Value
+                    ?? principal.FindFirst("userId")?.Value
+                    ?? principal.FindFirst("userGuid")?.Value
+                    ?? principal.FindFirst("uid")?.Value
+                    ?? principal.FindFirst(ClaimTypes.Name)?.Value
+                    ?? principal.FindFirst(System.IdentityModel.Tokens.Jwt.JwtRegisteredClaimNames.Sub)?.Value;
+
+                if (string.IsNullOrWhiteSpace(userGuid))
+                {
+                    context.Fail("令牌缺少用户标识");
+                    return;
+                }
+
+                var dbContext = context.HttpContext.RequestServices.GetRequiredService<SqlSugarContext>();
+                var user = await dbContext.Db.Queryable<User>()
+                    .FirstAsync(item => item.UserGUID == userGuid && item.IsActive && !item.IsDeleted);
+
+                if (user == null)
+                {
+                    context.Fail("用户已失效");
+                    return;
+                }
+
+                var activeRoleNames = await dbContext.Db.Queryable<UserRole>()
+                    .InnerJoin<Role>((userRole, role) => userRole.RoleGUID == role.RoleGUID)
+                    .Where((userRole, role) =>
+                        userRole.UserGUID == userGuid
+                        && !userRole.IsDeleted
+                        && role.IsActive
+                        && !role.IsDeleted
+                    )
+                    .Select((userRole, role) => role.RoleName)
+                    .Distinct()
+                    .ToListAsync();
+
+                var staleClaims = identity.Claims
+                    .Where(claim =>
+                        claim.Type == ClaimTypes.Role
+                        || claim.Type == "permission"
+                    )
+                    .ToList();
+
+                foreach (var staleClaim in staleClaims)
+                {
+                    identity.RemoveClaim(staleClaim);
+                }
+
+                foreach (var roleName in activeRoleNames)
+                {
+                    identity.AddClaim(new System.Security.Claims.Claim(ClaimTypes.Role, roleName));
+                }
             },
         };
     });
