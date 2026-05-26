@@ -172,6 +172,22 @@ namespace BlazorApp.Api.Services
             },
             new()
             {
+                RouteName = "installment-orders",
+                TitleKey = "tabs.installmentOrders",
+                Icon = "cash-clock",
+                Permission = Permissions.InstallmentOrders.View,
+                Order = 51,
+            },
+            new()
+            {
+                RouteName = "store-vouchers",
+                TitleKey = "tabs.storeVouchers",
+                Icon = "ticket-percent-outline",
+                Permission = Permissions.StoreVouchers.View,
+                Order = 52,
+            },
+            new()
+            {
                 RouteName = "attendance",
                 TitleKey = "tabs.attendance",
                 Icon = "calendar-clock",

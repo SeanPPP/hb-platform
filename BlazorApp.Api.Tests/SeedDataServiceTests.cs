@@ -17,6 +17,9 @@ namespace BlazorApp.Api.Tests
 {
     public sealed class SeedDataServiceTests : IDisposable
     {
+        private const string InstallmentOrdersPermission = "InstallmentOrders.View";
+        private const string StoreVouchersPermission = "StoreVouchers.View";
+
         private readonly string _dbPath;
         private readonly SqliteConnection _sqliteConnection;
         private readonly SqlSugarClient _db;
@@ -92,6 +95,22 @@ namespace BlazorApp.Api.Tests
         }
 
         [Fact]
+        public void StoreFinancePermissionSeeds_UseEnglishCodesAndChineseMetadata()
+        {
+            var seeds = PermissionSeedData.AllPermissions.ToList();
+
+            var installmentOrders = Assert.Single(seeds, seed => seed.Code == InstallmentOrdersPermission);
+            Assert.Equal("查看分期付款订单", installmentOrders.Name);
+            Assert.Equal("分店财务", installmentOrders.Category);
+            Assert.Equal("分店财务 - 查看分店分期付款订单与支付记录", installmentOrders.Description);
+
+            var storeVouchers = Assert.Single(seeds, seed => seed.Code == StoreVouchersPermission);
+            Assert.Equal("查看分店代金券", storeVouchers.Name);
+            Assert.Equal("分店财务", storeVouchers.Category);
+            Assert.Equal("分店财务 - 查看分店代金券使用情况与关联订单", storeVouchers.Description);
+        }
+
+        [Fact]
         public async Task InitializePermissionSeedsAsync_InsertsMissingPermissionsAndAdminLinksWithoutDuplicates()
         {
             await _db.Insertable(new Role
@@ -128,6 +147,34 @@ namespace BlazorApp.Api.Tests
                 Assert.Contains(seed.Code, adminPermissionCodes);
             });
             Assert.Equal(adminPermissionCodes.Count, adminPermissionCodes.Distinct().Count());
+        }
+
+        [Fact]
+        public async Task InitializePermissionSeedsAsync_AddsStoreFinancePermissionsToAdmin()
+        {
+            await _db.Insertable(new Role
+            {
+                RoleGUID = "role-admin",
+                RoleName = "Admin",
+                Description = "System Administrator",
+                IsActive = true,
+            }).ExecuteCommandAsync();
+
+            await CreateService().InitializePermissionSeedsAsync();
+
+            var permissionCodes = await _db.Queryable<SysPermission>()
+                .Where(item => item.Code == InstallmentOrdersPermission || item.Code == StoreVouchersPermission)
+                .Select(item => item.Code)
+                .ToListAsync();
+            var adminPermissionCodes = await _db.Queryable<SysRolePermission>()
+                .Where(item => item.RoleGuid == "role-admin")
+                .Select(item => item.PermissionCode)
+                .ToListAsync();
+
+            Assert.Contains(InstallmentOrdersPermission, permissionCodes);
+            Assert.Contains(StoreVouchersPermission, permissionCodes);
+            Assert.Contains(InstallmentOrdersPermission, adminPermissionCodes);
+            Assert.Contains(StoreVouchersPermission, adminPermissionCodes);
         }
 
         [Fact]

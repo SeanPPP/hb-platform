@@ -10,6 +10,9 @@ namespace BlazorApp.Api.Tests;
 
 public class NavigationServiceTests
 {
+    private const string InstallmentOrdersPermission = "InstallmentOrders.View";
+    private const string StoreVouchersPermission = "StoreVouchers.View";
+
     private readonly NavigationService _service = new();
 
     [Fact]
@@ -107,6 +110,38 @@ public class NavigationServiceTests
         var menu = _service.BuildDeviceAppMenu("Mobile");
 
         Assert.DoesNotContain(menu, item => item.RouteName == "local-supplier-invoices");
+    }
+
+    [Fact]
+    public void BuildAppMenu_HidesStoreFinanceRoutesWithoutDedicatedPermissions()
+    {
+        var user = CreateUser(new Claim("permission", Permissions.Orders.View));
+
+        var menu = _service.BuildAppMenu(user);
+
+        Assert.DoesNotContain(menu, item => item.RouteName == "installment-orders");
+        Assert.DoesNotContain(menu, item => item.RouteName == "store-vouchers");
+    }
+
+    [Fact]
+    public void BuildAppMenu_ShowsStoreFinanceRoutesWithDedicatedPermissions()
+    {
+        var user = CreateUser(
+            new Claim("permission", InstallmentOrdersPermission),
+            new Claim("permission", StoreVouchersPermission)
+        );
+
+        var menu = _service.BuildAppMenu(user);
+
+        var installmentOrders = Assert.Single(menu, item => item.RouteName == "installment-orders");
+        Assert.Equal("tabs.installmentOrders", installmentOrders.TitleKey);
+        Assert.Equal("cash-clock", installmentOrders.Icon);
+        Assert.Equal(InstallmentOrdersPermission, installmentOrders.Permission);
+
+        var storeVouchers = Assert.Single(menu, item => item.RouteName == "store-vouchers");
+        Assert.Equal("tabs.storeVouchers", storeVouchers.TitleKey);
+        Assert.Equal("ticket-percent-outline", storeVouchers.Icon);
+        Assert.Equal(StoreVouchersPermission, storeVouchers.Permission);
     }
 
     [Fact]
