@@ -47,9 +47,12 @@ import type { RoleOptionDto, PermissionCategoryDto } from '../../../types/role'
 import type { StoreDto } from '../../../types/store'
 import { getRoleColor, getStoreColor } from '../../../utils/userTableColors'
 import { hashPassword } from '../../../utils/password'
+import { useAuthStore } from '../../../store/auth'
 
 export default function SystemUsersPage() {
   const { t } = useTranslation()
+  const currentUser = useAuthStore((state) => state.currentUser)
+  const access = useAuthStore((state) => state.access)
   const [loading, setLoading] = useState(false)
   const [keyword, setKeyword] = useState('')
   const [data, setData] = useState<UserDto[]>([])
@@ -112,6 +115,27 @@ export default function SystemUsersPage() {
     () => [...allStores].sort((a, b) => a.storeName.localeCompare(b.storeName)),
     [allStores],
   )
+
+  const visibleStoreOptions = useMemo(() => {
+    if (!access.isStoreLevelManager || !currentUser?.stores?.length) {
+      return storeOptions
+    }
+
+    const allowedStoreGuids = new Set(
+      currentUser.stores
+        .map((item) => item.storeGUID)
+        .filter(Boolean),
+    )
+    const allowedStoreCodes = new Set(
+      currentUser.stores
+        .map((item) => item.storeCode)
+        .filter(Boolean),
+    )
+
+    return storeOptions.filter(
+      (option) => allowedStoreGuids.has(option.value) || allowedStoreCodes.has(option.value),
+    )
+  }, [access.isStoreLevelManager, currentUser?.stores, storeOptions])
 
   const sortStoreGuids = (keys: string[]) =>
     [...keys].sort((a, b) => {
@@ -236,6 +260,12 @@ export default function SystemUsersPage() {
       }
     })()
   }, [])
+
+  useEffect(() => {
+    if (selectedStoreGuid && !visibleStoreOptions.some((option) => option.value === selectedStoreGuid)) {
+      setSelectedStoreGuid(undefined)
+    }
+  }, [selectedStoreGuid, visibleStoreOptions])
 
   const reloadUserDetail = async (userGuid: string) => {
     const [detail, stores] = await Promise.all([getUserByGuid(userGuid), getUserStores(userGuid).catch(() => [])])
@@ -767,7 +797,7 @@ export default function SystemUsersPage() {
             style={{ width: 220 }}
             value={selectedStoreGuid}
             onChange={(value) => setSelectedStoreGuid(value)}
-            options={storeOptions}
+            options={visibleStoreOptions}
           />
           <Select
             allowClear

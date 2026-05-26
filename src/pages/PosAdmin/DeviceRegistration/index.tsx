@@ -13,6 +13,7 @@ import type {
   DeviceRegistrationItem,
   StoreOption,
 } from '../../../types/deviceRegistration'
+import { useAuthStore } from '../../../store/auth'
 
 const STATUS_COLOR_MAP: Record<number, string> = {
   [-1]: 'gold',
@@ -66,6 +67,7 @@ function renderDeviceSystemTag(value?: string | null) {
 
 export default function DeviceRegistrationPage() {
   const { t } = useTranslation()
+  const access = useAuthStore((state) => state.access)
   const [items, setItems] = useState<DeviceRegistrationItem[]>([])
   const [stores, setStores] = useState<StoreOption[]>([])
   const [loading, setLoading] = useState(false)
@@ -115,6 +117,9 @@ export default function DeviceRegistrationPage() {
     item: DeviceRegistrationItem,
     action: 'activate' | 'disable' | 'lock'
   ) {
+    if (!access.canManageDeviceRegistration) {
+      return
+    }
     setActionDeviceId(item.id)
     try {
       if (action === 'activate') {
@@ -146,8 +151,8 @@ export default function DeviceRegistrationPage() {
     [stores]
   )
 
-  const columns = useMemo<ColumnsType<DeviceRegistrationItem>>(
-    () => [
+  const columns = useMemo<ColumnsType<DeviceRegistrationItem>>(() => {
+    const baseColumns: ColumnsType<DeviceRegistrationItem> = [
       {
         title: t('posAdmin.devices.deviceNo'),
         dataIndex: 'systemDeviceNumber',
@@ -199,6 +204,14 @@ export default function DeviceRegistrationPage() {
         width: 180,
         render: (value: string | null | undefined) => formatDateTime(value),
       },
+    ]
+
+    if (!access.canManageDeviceRegistration) {
+      return baseColumns
+    }
+
+    return [
+      ...baseColumns,
       {
         title: t('column.action'),
         key: 'actions',
@@ -232,9 +245,8 @@ export default function DeviceRegistrationPage() {
           </Space>
         ),
       },
-    ],
-    [actionDeviceId, storeNameMap, t]
-  )
+    ]
+  }, [access.canManageDeviceRegistration, actionDeviceId, storeNameMap, t])
 
   return (
     <Card
@@ -287,7 +299,7 @@ export default function DeviceRegistrationPage() {
           loading={loading}
           columns={columns}
           dataSource={items}
-          scroll={{ x: 1260 }}
+          scroll={{ x: access.canManageDeviceRegistration ? 1260 : 1020 }}
           pagination={false}
         />
       </Space>

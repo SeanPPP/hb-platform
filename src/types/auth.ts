@@ -85,6 +85,8 @@ export interface AccessControl {
   canReviewAttendance: boolean
   canEditAttendanceHoliday: boolean
   canEditAttendanceSettings: boolean
+  canViewDeviceRegistration: boolean
+  canManageDeviceRegistration: boolean
   canAccessDashboard: boolean
   canAccessOrderFront: boolean
   hasPermission: (permission: string) => boolean

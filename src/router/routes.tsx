@@ -187,7 +187,7 @@ export const appRoutes: AppRouteItem[] = [
           title: 'menu.deviceRegistration',
           icon: 'BuildOutlined',
           keepAlive: true,
-          accessKey: 'canManageStoreOps',
+          accessKey: 'canViewDeviceRegistration',
         },
         element: <PosAdminDeviceRegistrationPage />,
       },

@@ -69,6 +69,10 @@ export const P = {
     ViewLogs: 'System.ViewLogs',
     ManageSettings: 'System.ManageSettings',
   },
+  DeviceRegistration: {
+    View: 'DeviceRegistration.View',
+    Manage: 'DeviceRegistration.Manage',
+  },
   Dashboard: {
     View: 'Dashboard',
   },
