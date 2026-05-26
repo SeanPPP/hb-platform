@@ -15,13 +15,15 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { MonthDatePicker } from "@/components/attendance/MonthDatePicker";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { EntityTag } from "@/components/ui/EntityTag";
+import { QrCodePanel } from "@/components/ui/QrCodePanel";
 import {
   SelectionListModal,
   type SelectionListItem,
 } from "@/components/ui/SelectionListModal";
 import { StorePickerModal } from "@/components/ui/StorePickerModal";
 import {
-  fetchStoreVoucherDetail,
+  buildStoreVoucherDetailTargets,
+  fetchStoreVoucherDetailByTargets,
   fetchStoreVouchers,
 } from "@/modules/store-vouchers/api";
 import type {
@@ -36,6 +38,7 @@ import type { Store } from "@/modules/shop/types";
 import { useStores } from "@/modules/shop/use-stores";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 import { resolveLocaleTag } from "@/shared/i18n/types";
+import { resolveQrDisplayValue } from "@/shared/utils/qr-display";
 
 type DateFilterKey = "startDate" | "endDate";
 type StatusOption = {
@@ -238,9 +241,17 @@ export default function StoreVouchersScreen() {
   const pageCount = getPageCount(total, PAGE_SIZE);
   const currentDateFilterValue = datePickerTarget ? draftFilters[datePickerTarget] : undefined;
   const detailVoucher = detail?.voucher ?? selectedVoucher;
+  const detailVoucherQrValue = resolveQrDisplayValue(detailVoucher?.voucherCode, detailVoucher?.id);
   const ledgerItems = detail?.ledger ?? [];
   const relatedOrders = detail?.relatedOrders ?? [];
-  const detailTarget = selectedVoucher?.id || selectedVoucher?.voucherCode || "";
+  const detailTargets = useMemo(
+    () =>
+      buildStoreVoucherDetailTargets({
+        voucherCode: selectedVoucher?.voucherCode,
+        id: selectedVoucher?.id,
+      }),
+    [selectedVoucher?.id, selectedVoucher?.voucherCode]
+  );
 
   const loadVouchers = useCallback(
     async (refresh = false) => {
@@ -269,7 +280,7 @@ export default function StoreVouchersScreen() {
   }, [loadVouchers]);
 
   useEffect(() => {
-    if (!detailTarget) {
+    if (!detailTargets.length) {
       return;
     }
 
@@ -277,7 +288,7 @@ export default function StoreVouchersScreen() {
     setDetail(null);
     setDetailLoading(true);
 
-    fetchStoreVoucherDetail(detailTarget)
+    fetchStoreVoucherDetailByTargets(detailTargets)
       .then((result) => {
         if (active) {
           setDetail(result);
@@ -297,7 +308,7 @@ export default function StoreVouchersScreen() {
     return () => {
       active = false;
     };
-  }, [detailTarget, t]);
+  }, [detailTargets, t]);
 
   const applyFilters = useCallback(() => {
     setPage(1);
@@ -580,6 +591,7 @@ export default function StoreVouchersScreen() {
             </View>
           ) : (
             <ScrollView contentContainerStyle={styles.detailContent}>
+              <QrCodePanel label={t("labels.voucherQrCode")} value={detailVoucherQrValue} />
               <View style={styles.detailSummary}>
                 <View style={styles.tagRow}>
                   <EntityTag

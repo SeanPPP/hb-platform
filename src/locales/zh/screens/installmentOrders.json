@@ -24,6 +24,7 @@
   },
   "labels": {
     "orderNo": "订单号",
+    "orderQrCode": "订单二维码",
     "orderTime": "订单时间",
     "store": "分店",
     "status": "状态",

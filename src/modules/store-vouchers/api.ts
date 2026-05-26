@@ -211,17 +211,20 @@ export function normalizeStoreVouchersResponse(payload: unknown): PagedResult<St
 
 export function normalizeStoreVoucherDetail(payload: unknown): StoreVoucherDetail {
   const root = asRecord(payload) ?? {};
+  const data = asRecord(pick(root, "data", "Data"));
+  const detailRoot = data ?? root;
   const voucherPayload = asRecord(
-    pick(root, "voucher", "Voucher", "item", "Item", "storeVoucher", "StoreVoucher")
+    pick(detailRoot, "voucher", "Voucher", "item", "Item", "storeVoucher", "StoreVoucher")
   );
-  const voucherRecord = voucherPayload ?? root;
+  const voucherRecord = voucherPayload ?? detailRoot;
   return {
     voucher:
-      voucherPayload || pick(root, "voucher", "Voucher", "item", "Item", "storeVoucher", "StoreVoucher")
+      voucherPayload ||
+      pick(detailRoot, "voucher", "Voucher", "item", "Item", "storeVoucher", "StoreVoucher")
         ? normalizeStoreVoucher(voucherRecord)
         : null,
     ledger: getArray(
-      root,
+      detailRoot,
       "ledger",
       "Ledger",
       "ledgerItems",
@@ -232,7 +235,7 @@ export function normalizeStoreVoucherDetail(payload: unknown): StoreVoucherDetai
       "UseHistory"
     ).map(normalizeStoreVoucherLedgerItem),
     relatedOrders: getArray(
-      root,
+      detailRoot,
       "relatedOrders",
       "RelatedOrders",
       "orders",
@@ -241,6 +244,19 @@ export function normalizeStoreVoucherDetail(payload: unknown): StoreVoucherDetai
       "OrderList"
     ).map(normalizeStoreVoucherRelatedOrder),
   };
+}
+
+function normalizeIdentifier(value?: string | null) {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : "";
+}
+
+export function buildStoreVoucherDetailTargets(input: {
+  voucherCode?: string | null;
+  id?: string | null;
+}) {
+  const targets = [normalizeIdentifier(input.voucherCode), normalizeIdentifier(input.id)].filter(Boolean);
+  return Array.from(new Set(targets));
 }
 
 export async function fetchStoreVouchers(query: {
@@ -257,4 +273,17 @@ export async function fetchStoreVoucherDetail(idOrCode: string) {
   const client = await getApiClient();
   const response = await client.get(`${BASE_PATH}/${encodeURIComponent(idOrCode)}`);
   return normalizeStoreVoucherDetail(response.data);
+}
+
+export async function fetchStoreVoucherDetailByTargets(targets: string[]) {
+  let lastError: unknown;
+  for (const target of targets) {
+    try {
+      return await fetchStoreVoucherDetail(target);
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  throw lastError ?? new Error("Missing store voucher detail target");
 }

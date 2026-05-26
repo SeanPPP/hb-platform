@@ -24,6 +24,7 @@
   },
   "labels": {
     "orderNo": "Order no.",
+    "orderQrCode": "Order QR code",
     "orderTime": "Order time",
     "store": "Store",
     "status": "Status",

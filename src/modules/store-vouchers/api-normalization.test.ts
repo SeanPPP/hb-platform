@@ -1,4 +1,5 @@
 import {
+  buildStoreVoucherDetailTargets,
   buildStoreVoucherListPayload,
   normalizeStoreVoucherDetail,
   normalizeStoreVouchersResponse,
@@ -63,6 +64,24 @@ const invalidPayload = buildStoreVoucherListPayload({
 assertEqual(invalidPayload.pageNumber, 1, "invalid voucher page falls back to first page");
 assertEqual(invalidPayload.pageSize, 20, "invalid voucher page size falls back to 20");
 assertEqual(invalidPayload.storeCode, undefined, "blank store code is omitted");
+
+assertDeepEqual(
+  buildStoreVoucherDetailTargets({
+    voucherCode: " VC-001 ",
+    id: " internal-1 ",
+  }),
+  ["VC-001", "internal-1"],
+  "detail targets prefer voucher code before internal id",
+);
+
+assertDeepEqual(
+  buildStoreVoucherDetailTargets({
+    voucherCode: " SAME ",
+    id: "SAME",
+  }),
+  ["SAME"],
+  "detail targets should deduplicate equivalent voucher code and id",
+);
 
 const listResult = normalizeStoreVouchersResponse({
   Items: [
@@ -143,3 +162,20 @@ assertEqual(detail.ledger[1]?.action, "used", "ledger keeps explicit used action
 assertEqual(detail.ledger[1]?.remainingAmount, 20, "ledger normalizes balance field");
 assertEqual(detail.relatedOrders[0]?.orderGuid, "order-9", "related orders normalize order guid");
 assertEqual(detail.relatedOrders[0]?.amount, 60, "related orders normalize actual amount fallback");
+
+const wrappedDetail = normalizeStoreVoucherDetail({
+  success: true,
+  data: {
+    voucher: {
+      ID: 1429,
+      VoucherCode: "V20260525161428",
+    },
+    ledger: [],
+    relatedOrders: [],
+  },
+});
+assertEqual(
+  wrappedDetail.voucher?.voucherCode,
+  "V20260525161428",
+  "voucher detail unwraps standard API response data",
+);

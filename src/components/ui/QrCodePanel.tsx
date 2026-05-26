@@ -1,0 +1,78 @@
+import { StyleSheet, View } from "react-native";
+import QRCode from "react-native-qrcode-svg";
+import { Surface, Text } from "react-native-paper";
+
+interface QrCodePanelProps {
+  label: string;
+  value: string;
+  size?: number;
+}
+
+export function QrCodePanel({ label, value, size = 168 }: QrCodePanelProps) {
+  const normalizedValue = value.trim();
+
+  return (
+    <Surface style={styles.panel} elevation={0}>
+      <Text variant="labelLarge" style={styles.label}>
+        {label}
+      </Text>
+      <View style={styles.codeWrap}>
+        {normalizedValue ? (
+          <QRCode
+            value={normalizedValue}
+            size={size}
+            backgroundColor="#FFFFFF"
+            color="#111111"
+          />
+        ) : (
+          <View style={[styles.placeholder, { height: size, width: size }]}>
+            <Text variant="headlineMedium" style={styles.placeholderText}>
+              --
+            </Text>
+          </View>
+        )}
+      </View>
+      <Text selectable variant="bodyMedium" style={styles.value}>
+        {normalizedValue || "--"}
+      </Text>
+    </Surface>
+  );
+}
+
+const styles = StyleSheet.create({
+  panel: {
+    alignItems: "center",
+    backgroundColor: "#FFFFFF",
+    borderColor: "#E4E7EC",
+    borderRadius: 12,
+    borderWidth: 1,
+    gap: 12,
+    padding: 16,
+  },
+  label: {
+    color: "#344054",
+    fontWeight: "700",
+  },
+  codeWrap: {
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  placeholder: {
+    alignItems: "center",
+    backgroundColor: "#F8FAFC",
+    borderColor: "#D0D5DD",
+    borderRadius: 12,
+    borderStyle: "dashed",
+    borderWidth: 1,
+    justifyContent: "center",
+  },
+  placeholderText: {
+    color: "#98A2B3",
+    fontWeight: "700",
+  },
+  value: {
+    color: "#475467",
+    fontVariant: ["tabular-nums"],
+    textAlign: "center",
+  },
+});

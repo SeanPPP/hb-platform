@@ -25,6 +25,7 @@
   },
   "labels": {
     "voucherCode": "代金券号",
+    "voucherQrCode": "代金券二维码",
     "store": "分店",
     "status": "状态",
     "amount": "面值",

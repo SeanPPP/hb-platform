@@ -25,6 +25,7 @@
   },
   "labels": {
     "voucherCode": "Voucher code",
+    "voucherQrCode": "Voucher QR code",
     "store": "Store",
     "status": "Status",
     "amount": "Amount",

@@ -16,6 +16,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { MonthDatePicker } from "@/components/attendance/MonthDatePicker";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { EntityTag } from "@/components/ui/EntityTag";
+import { QrCodePanel } from "@/components/ui/QrCodePanel";
 import {
   SelectionListModal,
   type SelectionListItem,
@@ -37,6 +38,7 @@ import type { Store } from "@/modules/shop/types";
 import { useStores } from "@/modules/shop/use-stores";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 import { resolveLocaleTag } from "@/shared/i18n/types";
+import { resolveQrDisplayValue } from "@/shared/utils/qr-display";
 
 type DateFilterKey = "startDate" | "endDate";
 type StatusOption = {
@@ -200,6 +202,7 @@ export default function InstallmentOrdersScreen() {
   const pageCount = getPageCount(total, PAGE_SIZE);
   const currentDateFilterValue = datePickerTarget ? draftFilters[datePickerTarget] : undefined;
   const detailOrder = detail?.order ?? selectedOrder;
+  const detailOrderQrValue = resolveQrDisplayValue(detailOrder?.orderNo, detailOrder?.orderGuid);
   const paymentRecords = detail?.paymentDetails ?? [];
   const orderLines = detail?.orderDetails ?? [];
 
@@ -556,6 +559,7 @@ export default function InstallmentOrdersScreen() {
             </View>
           ) : (
             <ScrollView contentContainerStyle={styles.detailContent}>
+              <QrCodePanel label={t("labels.orderQrCode")} value={detailOrderQrValue} />
               <View style={styles.detailSummary}>
                 <View style={styles.tagRow}>
                   <EntityTag
