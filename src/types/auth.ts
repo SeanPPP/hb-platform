@@ -5,18 +5,9 @@ export interface LoginRequest {
   password: string
 }
 
-export interface TokenResponse {
-  accessToken: string
-  refreshToken: string
+export interface SessionResponse {
   accessTokenExpiry: string
   refreshTokenExpiry: string
-  success: boolean
-  message: string
-}
-
-export interface RefreshTokenRequest {
-  accessToken: string
-  refreshToken: string
 }
 
 export interface CurrentUser {
