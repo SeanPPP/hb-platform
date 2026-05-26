@@ -20,6 +20,8 @@ namespace BlazorApp.Api.Interfaces.React
         Task<ApiResponse<List<AttendanceLeaveRequestDto>>> GetMyLeaveRequestsAsync();
         Task<ApiResponse<AttendanceLeaveRequestDto>> CreateMyLeaveRequestAsync(CreateAttendanceLeaveRequestDto request);
         Task<ApiResponse<bool>> CancelMyLeaveRequestAsync(string leaveGuid);
+        Task<ApiResponse<AttendanceLeaveRequestDto>> CreateManagedLeaveRequestAsync(CreateManagedAttendanceLeaveRequestDto request);
+        Task<ApiResponse<DirectUploadSignature>> GetLeaveAttachmentUploadSignatureAsync(DirectUploadRequest request);
         Task<ApiResponse<List<AttendanceAvailabilityDto>>> GetAvailabilityAsync(AttendanceAvailabilityQueryDto query);
         Task<ApiResponse<List<AttendancePunchDto>>> GetPunchesAsync(AttendancePunchQueryDto query);
         Task<ApiResponse<List<AttendanceApprovalDto>>> GetApprovalsAsync(AttendanceApprovalQueryDto query);
@@ -28,6 +30,7 @@ namespace BlazorApp.Api.Interfaces.React
         Task<ApiResponse<AttendanceApprovalDto>> RejectAsync(string approvalGuid, ReviewAttendanceApprovalDto request);
         Task<ApiResponse<List<AttendanceStoreHolidayDto>>> GetHolidaysAsync(AttendanceStoreHolidayQueryDto query);
         Task<ApiResponse<AttendanceStoreHolidayDto>> CreateHolidayAsync(CreateAttendanceStoreHolidayDto request);
+        Task<ApiResponse<BatchUpsertAttendanceStoreHolidayResultDto>> BatchUpsertHolidaysAsync(BatchUpsertAttendanceStoreHolidayDto request);
         Task<ApiResponse<AttendanceStoreHolidayDto>> UpdateHolidayAsync(string holidayGuid, UpdateAttendanceStoreHolidayDto request);
         Task<ApiResponse<bool>> DeleteHolidayAsync(string holidayGuid);
         Task<ApiResponse<AttendanceSettingsDto>> GetSettingsAsync();

@@ -689,6 +689,7 @@ namespace BlazorApp.Api.Services
                                 .SetColumns(x => x.H商户门头照片 == supplier.StorefrontPhoto)
                                 .SetColumns(x => x.备注 == supplier.Remarks)
                                 .SetColumns(x => x.状态 == supplier.Status)
+                                .SetColumns(x => x.H供应商类型 == 1)
                                 .SetColumns(x => x.FGC_LastModifier == supplier.FGC_LastModifier)
                                 .SetColumns(x => x.FGC_LastModifyDate == now)
                                 .Where(x => x.ID == existing.ID)
@@ -710,6 +711,7 @@ namespace BlazorApp.Api.Services
                                 H商户门头照片 = supplier.StorefrontPhoto,
                                 备注 = supplier.Remarks,
                                 状态 = supplier.Status,
+                                H供应商类型 = 1,
                                 FGC_Creator = supplier.FGC_Creator ?? "System",
                                 FGC_CreateDate = now,
                                 FGC_LastModifier = supplier.FGC_LastModifier ?? "System",

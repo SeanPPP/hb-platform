@@ -123,6 +123,13 @@ namespace BlazorApp.Shared.Constants
             public const string Edit = "LocalPurchase.Edit";
         }
 
+        private static readonly IReadOnlyDictionary<string, string[]> PermissionAliases =
+            new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
+            {
+                [LocalPurchase.View] = ["LocalInvocie.View"],
+                [LocalPurchase.Edit] = ["LocalInvocie.Edit"],
+            };
+
         public static class AustralianSuppliers
         {
             public const string View = "AustralianSuppliers.View";
@@ -195,6 +202,11 @@ namespace BlazorApp.Shared.Constants
         public static class Dashboard
         {
             public const string View = "Dashboard";
+        }
+
+        public static class OrderFront
+        {
+            public const string View = "OrderFront";
         }
 
         private static readonly HashSet<string> WarehouseManagerGrantedPermissions = new(
@@ -283,6 +295,22 @@ namespace BlazorApp.Shared.Constants
         {
             return !string.IsNullOrWhiteSpace(permission)
                 && StoreManagerGrantedPermissions.Contains(permission);
+        }
+
+        public static IReadOnlyCollection<string> GetEquivalentPermissionCodes(string? permission)
+        {
+            if (string.IsNullOrWhiteSpace(permission))
+            {
+                return Array.Empty<string>();
+            }
+
+            var codes = new List<string> { permission };
+            if (PermissionAliases.TryGetValue(permission, out var aliases))
+            {
+                codes.AddRange(aliases);
+            }
+
+            return codes;
         }
 
         public static IEnumerable<(string Code, string Name, string Category)> GetAllPermissions() =>

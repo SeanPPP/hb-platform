@@ -1,3 +1,4 @@
+using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.DTOs;
@@ -12,10 +13,15 @@ namespace BlazorApp.Api.Controllers.React
     public class ReactAttendanceController : ControllerBase
     {
         private readonly IAttendanceReactService _service;
+        private readonly IAttendancePublicHolidaySyncService _holidaySyncService;
 
-        public ReactAttendanceController(IAttendanceReactService service)
+        public ReactAttendanceController(
+            IAttendanceReactService service,
+            IAttendancePublicHolidaySyncService holidaySyncService
+        )
         {
             _service = service;
+            _holidaySyncService = holidaySyncService;
         }
 
         [HttpGet("schedules")]
@@ -110,6 +116,18 @@ namespace BlazorApp.Api.Controllers.React
         public async Task<IActionResult> CancelMyLeaveRequest(string leaveGuid) =>
             Ok(await _service.CancelMyLeaveRequestAsync(leaveGuid));
 
+        [HttpPost("managed/leave-requests")]
+        [Authorize(Policy = Permissions.Attendance.Leave.ReviewManagedStore)]
+        public async Task<IActionResult> CreateManagedLeaveRequest(
+            [FromBody] CreateManagedAttendanceLeaveRequestDto request
+        ) => Ok(await _service.CreateManagedLeaveRequestAsync(request));
+
+        [HttpPost("leave-attachments/upload-signature")]
+        [Authorize(Policy = Permissions.Attendance.Leave.ReviewManagedStore)]
+        public async Task<IActionResult> GetLeaveAttachmentUploadSignature(
+            [FromBody] DirectUploadRequest request
+        ) => Ok(await _service.GetLeaveAttachmentUploadSignatureAsync(request));
+
         [HttpGet("availability")]
         [Authorize(Policy = Permissions.Attendance.Availability.ViewManagedStore)]
         public async Task<IActionResult> GetAvailability([FromQuery] AttendanceAvailabilityQueryDto query) =>
@@ -153,6 +171,18 @@ namespace BlazorApp.Api.Controllers.React
         [Authorize(Policy = Permissions.Attendance.Holiday.EditManagedStore)]
         public async Task<IActionResult> CreateHoliday([FromBody] CreateAttendanceStoreHolidayDto request) =>
             Ok(await _service.CreateHolidayAsync(request));
+
+        [HttpPost("holidays/batch-upsert")]
+        [Authorize(Policy = Permissions.Attendance.Holiday.EditManagedStore)]
+        public async Task<IActionResult> BatchUpsertHolidays(
+            [FromBody] BatchUpsertAttendanceStoreHolidayDto request
+        ) => Ok(await _service.BatchUpsertHolidaysAsync(request));
+
+        [HttpPost("holidays/sync")]
+        [Authorize(Policy = Permissions.Attendance.Holiday.EditManagedStore)]
+        public async Task<IActionResult> SyncHolidays(
+            [FromBody] SyncAttendanceStoreHolidayDto request
+        ) => Ok(await _holidaySyncService.SyncStoreAsync(request, HttpContext.RequestAborted));
 
         [HttpPut("holidays/{holidayGuid}")]
         [Authorize(Policy = Permissions.Attendance.Holiday.EditManagedStore)]

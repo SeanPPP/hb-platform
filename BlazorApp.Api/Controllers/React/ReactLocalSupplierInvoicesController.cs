@@ -1,5 +1,6 @@
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces.React;
+using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
 using Microsoft.AspNetCore.Authorization;
@@ -95,6 +96,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPost("grid")]
+        [Authorize(Policy = Permissions.LocalPurchase.View)]
         //  [Authorize(Roles = "Admin,WarehouseManager,Manager")]
         public async Task<IActionResult> Grid([FromBody] GridRequestDto request)
         {
@@ -126,6 +128,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpGet("{invoiceGuid}")]
+        [Authorize(Policy = Permissions.LocalPurchase.View)]
         // [Authorize(Roles = "Admin,WarehouseManager,Manager")]
         public async Task<IActionResult> GetInvoice(string invoiceGuid)
         {
@@ -146,6 +149,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpGet("{invoiceGuid}/details")]
+        [Authorize(Policy = Permissions.LocalPurchase.View)]
         public async Task<IActionResult> GetDetails(string invoiceGuid)
         {
             if (!await CanAccessInvoiceAsync(invoiceGuid))
@@ -164,7 +168,42 @@ namespace BlazorApp.Api.Controllers.React
             return BadRequest(new { success = false, message = result.Message });
         }
 
+        [HttpPost("{invoiceGuid}/details/grid")]
+        [Authorize(Policy = Permissions.LocalPurchase.View)]
+        public async Task<IActionResult> GetDetailsGrid(
+            string invoiceGuid,
+            [FromBody] GridRequestDto request
+        )
+        {
+            if (!await CanAccessInvoiceAsync(invoiceGuid))
+                return Forbid();
+
+            var result = await _service.GetDetailsGridAsync(invoiceGuid, request);
+            if (result.Success)
+                return Ok(
+                    new
+                    {
+                        success = true,
+                        data = new { Items = result.Items, Total = result.Total },
+                        message = result.Message,
+                    }
+                );
+            return Ok(
+                new
+                {
+                    success = false,
+                    data = new
+                    {
+                        Items = result.Items ?? new List<LocalSupplierInvoiceItemDto>(),
+                        Total = result.Total,
+                    },
+                    message = result.Message,
+                }
+            );
+        }
+
         [HttpPost]
+        [Authorize(Policy = Permissions.LocalPurchase.Edit)]
         public async Task<IActionResult> Create([FromBody] CreateInvoiceRequest dto)
         {
             if (!await CanAccessStoreAsync(dto.StoreCode))
@@ -184,6 +223,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPut("{invoiceGuid}")]
+        [Authorize(Policy = Permissions.LocalPurchase.Edit)]
         public async Task<IActionResult> Update(
             string invoiceGuid,
             [FromBody] UpdateInvoiceRequest dto
@@ -206,6 +246,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPost("{invoiceGuid}/details/batch-upsert")]
+        [Authorize(Policy = Permissions.LocalPurchase.Edit)]
         public async Task<IActionResult> BatchUpsertDetails(
             string invoiceGuid,
             [FromBody] List<InvoiceDetailUpsertItemDto> items
@@ -229,6 +270,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpDelete("{invoiceGuid}")]
+        [Authorize(Policy = Permissions.LocalPurchase.Edit)]
         public async Task<IActionResult> Delete(string invoiceGuid)
         {
             if (!await CanAccessInvoiceAsync(invoiceGuid))
@@ -249,6 +291,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPost("detect/supplier-item")]
+        [Authorize(Policy = Permissions.LocalPurchase.Edit)]
         public async Task<IActionResult> DetectSupplierItem(
             [FromBody] DetectSupplierItemRequest dto
         )
@@ -270,6 +313,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPost("detect/barcode")]
+        [Authorize(Policy = Permissions.LocalPurchase.Edit)]
         public async Task<IActionResult> DetectBarcode([FromBody] DetectBarcodeRequest dto)
         {
             if (!await CanAccessStoreAsync(dto.StoreCode))
@@ -289,6 +333,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPost("update-to-store-prices")]
+        [Authorize(Policy = Permissions.LocalPurchase.Edit)]
         public async Task<IActionResult> UpdateToStorePrices(
             [FromBody] UpdateToStorePricesRequest dto
         )
@@ -311,6 +356,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPost("check-products")]
+        [Authorize(Policy = Permissions.LocalPurchase.View)]
         public async Task<IActionResult> CheckProducts([FromBody] CheckProductsRequest dto)
         {
             if (!await CanAccessInvoiceAsync(dto.InvoiceGuid))
@@ -330,6 +376,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPost("{invoiceGuid}/details/paste")]
+        [Authorize(Policy = Permissions.LocalPurchase.Edit)]
         public async Task<IActionResult> PasteDetails(
             [FromRoute] string invoiceGuid,
             [FromBody] PasteDetailsRequest dto
@@ -354,6 +401,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPut("{invoiceGuid}/details/{detailGuid}/action")]
+        [Authorize(Policy = Permissions.LocalPurchase.Edit)]
         public async Task<IActionResult> UpdateDetailAction(
             [FromRoute] string invoiceGuid,
             [FromRoute] string detailGuid,
@@ -381,6 +429,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPut("{invoiceGuid}/details/batch-action")]
+        [Authorize(Policy = Permissions.LocalPurchase.Edit)]
         public async Task<IActionResult> BatchUpdateDetailAction(
             [FromRoute] string invoiceGuid,
             [FromBody] BatchUpdateDetailActionRequest dto
@@ -396,6 +445,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpDelete("{invoiceGuid}/details")]
+        [Authorize(Policy = Permissions.LocalPurchase.Edit)]
         public async Task<IActionResult> DeleteDetails(
             [FromRoute] string invoiceGuid,
             [FromBody] List<string> detailGuids
@@ -419,6 +469,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpGet("{invoiceGuid}/barcode-abnormal-details")]
+        [Authorize(Policy = Permissions.LocalPurchase.View)]
         public async Task<IActionResult> GetBarcodeAbnormalDetails([FromRoute] string invoiceGuid)
         {
             if (!await CanAccessInvoiceAsync(invoiceGuid))
@@ -438,6 +489,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpGet("{invoiceGuid}/products-by-barcode")]
+        [Authorize(Policy = Permissions.LocalPurchase.View)]
         public async Task<IActionResult> GetProductsByBarcode(
             [FromRoute] string invoiceGuid,
             [FromQuery] string barcode
@@ -460,6 +512,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpGet("{invoiceGuid}/products-by-product-code")]
+        [Authorize(Policy = Permissions.LocalPurchase.View)]
         public async Task<IActionResult> GetProductsByProductCode(
             [FromRoute] string invoiceGuid,
             [FromQuery] string productCode
@@ -482,6 +535,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPost("check-invoice-no")]
+        [Authorize(Policy = Permissions.LocalPurchase.Edit)]
         public async Task<IActionResult> CheckInvoiceNoExists([FromBody] CheckInvoiceNoExistsRequest dto)
         {
             var result = await _service.CheckInvoiceNoExistsAsync(dto.SupplierCode, dto.InvoiceNo);
@@ -498,6 +552,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPost("{invoiceGuid}/details/batch-execute")]
+        [Authorize(Policy = Permissions.LocalPurchase.Edit)]
         [Authorize(Roles = "Admin,WarehouseManager,Manager")]
         public async Task<IActionResult> BatchExecuteActions(
             [FromRoute] string invoiceGuid,

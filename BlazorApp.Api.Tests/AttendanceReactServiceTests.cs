@@ -4,8 +4,10 @@ using System.IO;
 using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Security.Claims;
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using BlazorApp.Api.Data;
+using BlazorApp.Api.Models;
 using BlazorApp.Api.Services;
 using BlazorApp.Api.Services.React;
 using BlazorApp.Shared.DTOs;
@@ -13,6 +15,7 @@ using BlazorApp.Shared.Models;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using SqlSugar;
 using Xunit;
 
@@ -48,7 +51,8 @@ namespace BlazorApp.Api.Tests
                 typeof(AttendanceApproval),
                 typeof(AttendanceStoreHoliday),
                 typeof(AttendanceLeaveRequest),
-                typeof(AttendanceSettings)
+                typeof(AttendanceSettings),
+                typeof(EmployeeProfile)
             );
         }
 
@@ -362,6 +366,146 @@ namespace BlazorApp.Api.Tests
         }
 
         [Fact]
+        public async Task CreateManagedLeaveRequestAsync_WhenValidAnnualLeave_CreatesPendingLeaveAndApproval()
+        {
+            await SeedStoreScopeAsync();
+            await SeedEmployeeProfileAsync("staff-user", EmployeeType.FullTime);
+            var service = CreateService("manager-user", "manager", "StoreManager");
+
+            var result = await service.CreateManagedLeaveRequestAsync(new CreateManagedAttendanceLeaveRequestDto
+            {
+                StoreCode = "BRI",
+                UserGuid = "staff-user",
+                LeaveType = "AnnualLeave",
+                StartDate = new DateTime(2026, 5, 18),
+                EndDate = new DateTime(2026, 5, 19),
+                Reason = "Family trip",
+            });
+
+            Assert.True(result.Success);
+            Assert.Equal("Pending", result.Data!.Status);
+            Assert.Equal("staff-user", result.Data.UserGuid);
+
+            var leave = await _db.Queryable<AttendanceLeaveRequest>()
+                .FirstAsync(item => item.LeaveGuid == result.Data.LeaveGuid);
+            Assert.NotNull(leave);
+            Assert.Equal("Pending", leave.Status);
+
+            var approval = await _db.Queryable<AttendanceApproval>()
+                .FirstAsync(item => item.SourceType == "Leave" && item.SourceGuid == result.Data.LeaveGuid);
+            Assert.NotNull(approval);
+            Assert.Equal("Pending", approval.ReviewStatus);
+            Assert.Equal("staff-user", approval.ApplicantUserGuid);
+        }
+
+        [Fact]
+        public async Task CreateManagedLeaveRequestAsync_WhenEmployeeEmploymentTypeIsCasual_ReturnsValidationError()
+        {
+            await SeedStoreScopeAsync();
+            await SeedEmployeeProfileAsync("staff-user", EmployeeType.Temporary);
+            var service = CreateService("manager-user", "manager", "StoreManager");
+
+            var result = await service.CreateManagedLeaveRequestAsync(new CreateManagedAttendanceLeaveRequestDto
+            {
+                StoreCode = "BRI",
+                UserGuid = "staff-user",
+                LeaveType = "AnnualLeave",
+                StartDate = new DateTime(2026, 5, 18),
+                EndDate = new DateTime(2026, 5, 18),
+            });
+
+            Assert.False(result.Success);
+            Assert.Equal("INVALID_EMPLOYMENT_TYPE", result.ErrorCode);
+        }
+
+        [Fact]
+        public async Task CreateManagedLeaveRequestAsync_WhenSickLeaveHasNoAttachment_ReturnsValidationError()
+        {
+            await SeedStoreScopeAsync();
+            await SeedEmployeeProfileAsync("staff-user", EmployeeType.PartTime);
+            var service = CreateService("manager-user", "manager", "StoreManager");
+
+            var result = await service.CreateManagedLeaveRequestAsync(new CreateManagedAttendanceLeaveRequestDto
+            {
+                StoreCode = "BRI",
+                UserGuid = "staff-user",
+                LeaveType = "SickLeave",
+                StartDate = new DateTime(2026, 5, 18),
+                EndDate = new DateTime(2026, 5, 18),
+            });
+
+            Assert.False(result.Success);
+            Assert.Equal("ATTACHMENT_REQUIRED", result.ErrorCode);
+        }
+
+        [Fact]
+        public async Task CreateManagedLeaveRequestAsync_WhenEmployeeNotInRequestedStore_ReturnsForbidden()
+        {
+            await SeedStoreScopeAsync();
+            await SeedEmployeeProfileAsync("staff-user", EmployeeType.FullTime);
+            var service = CreateService("manager-user", "manager", "StoreManager");
+
+            var result = await service.CreateManagedLeaveRequestAsync(new CreateManagedAttendanceLeaveRequestDto
+            {
+                StoreCode = "OTHER",
+                UserGuid = "staff-user",
+                LeaveType = "AnnualLeave",
+                StartDate = new DateTime(2026, 5, 18),
+                EndDate = new DateTime(2026, 5, 18),
+            });
+
+            Assert.False(result.Success);
+            Assert.Equal("FORBIDDEN_STORE", result.ErrorCode);
+        }
+
+        [Fact]
+        public async Task GetLeaveAttachmentUploadSignatureAsync_WhenFileNameProvided_ReturnsAttendanceObjectKey()
+        {
+            await SeedStoreScopeAsync();
+            var service = CreateService("manager-user", "manager", "StoreManager");
+
+            var result = await service.GetLeaveAttachmentUploadSignatureAsync(new DirectUploadRequest
+            {
+                FileName = "medical certificate (May).pdf",
+                ContentType = "application/pdf",
+                FileSize = 2048,
+            });
+
+            Assert.True(result.Success);
+            Assert.NotNull(result.Data);
+            Assert.StartsWith("attendance/leave-attachments/", result.Data!.ObjectKey);
+            Assert.EndsWith("-medical-certificate-May.pdf", result.Data.ObjectKey);
+            Assert.Equal("application/pdf", result.Data.Headers["Content-Type"]);
+            Assert.Contains(result.Data.ObjectKey, result.Data.Url);
+            var signTimeMatch = Regex.Match(Uri.UnescapeDataString(result.Data.Url), @"q-sign-time=(\d+);(\d+)");
+            Assert.True(signTimeMatch.Success);
+            Assert.True(
+                long.Parse(signTimeMatch.Groups[2].Value) - long.Parse(signTimeMatch.Groups[1].Value) <= 3600
+            );
+        }
+
+        [Fact]
+        public async Task CreateManagedLeaveRequestAsync_WhenSickLeaveAttachmentIsExternal_ReturnsValidationError()
+        {
+            await SeedStoreScopeAsync();
+            await SeedEmployeeProfileAsync("staff-user", EmployeeType.PartTime);
+            var service = CreateService("manager-user", "manager", "StoreManager");
+
+            var result = await service.CreateManagedLeaveRequestAsync(new CreateManagedAttendanceLeaveRequestDto
+            {
+                StoreCode = "BRI",
+                UserGuid = "staff-user",
+                LeaveType = "SickLeave",
+                StartDate = new DateTime(2026, 5, 18),
+                EndDate = new DateTime(2026, 5, 18),
+                AttachmentUrl = "https://example.com/medical.jpg",
+            });
+
+            Assert.False(result.Success);
+            Assert.Equal("INVALID_ATTACHMENT_URL", result.ErrorCode);
+        }
+
+        [Fact]
         public async Task CreateScheduleAsync_WhenPartialHolidayExists_DoesNotBlockSchedule()
         {
             await SeedStoreScopeAsync();
@@ -388,6 +532,138 @@ namespace BlazorApp.Api.Tests
             });
 
             Assert.True(result.Success);
+        }
+
+        [Fact]
+        public async Task BatchUpsertHolidaysAsync_WhenStoresAreManaged_CreatesHolidayForEachStore()
+        {
+            await SeedStoreScopeAsync();
+            await SeedManagerStoreAccessAsync("manager-user", "store-other");
+            var service = CreateService("manager-user", "manager", "StoreManager");
+
+            var result = await service.BatchUpsertHolidaysAsync(new BatchUpsertAttendanceStoreHolidayDto
+            {
+                StoreCodes = new List<string> { "BRI", "OTHER" },
+                HolidayDate = new DateTime(2026, 12, 25),
+                HolidayName = "Christmas Day",
+                BusinessStatus = "Closed",
+                IsPaidHoliday = true,
+                Remark = "Batch created",
+            });
+
+            Assert.True(result.Success);
+            Assert.Equal(2, result.Data!.CreatedCount);
+            Assert.Equal(0, result.Data.UpdatedCount);
+            Assert.Equal(2, result.Data.Items.Count);
+            Assert.Equal(2, await CountActiveHolidaysAsync(new DateTime(2026, 12, 25)));
+        }
+
+        [Fact]
+        public async Task BatchUpsertHolidaysAsync_WhenHolidayAlreadyExists_UpdatesExistingRow()
+        {
+            await SeedStoreScopeAsync();
+            await _db.Insertable(new AttendanceStoreHoliday
+            {
+                HolidayGuid = "existing-holiday",
+                StoreCode = "BRI",
+                HolidayDate = new DateTime(2026, 12, 25),
+                HolidayName = "Old Christmas",
+                BusinessStatus = "Open",
+                IsPaidHoliday = false,
+                CreatedAt = DateTime.UtcNow,
+            }).ExecuteCommandAsync();
+            var service = CreateService("manager-user", "manager", "StoreManager");
+
+            var result = await service.BatchUpsertHolidaysAsync(new BatchUpsertAttendanceStoreHolidayDto
+            {
+                StoreCodes = new List<string> { "BRI" },
+                HolidayDate = new DateTime(2026, 12, 25),
+                HolidayName = "Christmas Day",
+                BusinessStatus = "Partial",
+                OpenTime = new TimeSpan(10, 0, 0),
+                CloseTime = new TimeSpan(16, 0, 0),
+                IsPaidHoliday = true,
+                Remark = "Updated",
+            });
+
+            Assert.True(result.Success);
+            Assert.Equal(0, result.Data!.CreatedCount);
+            Assert.Equal(1, result.Data.UpdatedCount);
+            var row = await _db.Queryable<AttendanceStoreHoliday>()
+                .FirstAsync(item => item.HolidayGuid == "existing-holiday");
+            Assert.Equal("Christmas Day", row.HolidayName);
+            Assert.Equal("Partial", row.BusinessStatus);
+            Assert.True(row.IsPaidHoliday);
+            Assert.Equal(1, await CountActiveHolidaysAsync(new DateTime(2026, 12, 25)));
+        }
+
+        [Fact]
+        public async Task BatchUpsertHolidaysAsync_WhenAnyStoreIsForbidden_RollsBackEntireBatch()
+        {
+            await SeedStoreScopeAsync();
+            var service = CreateService("manager-user", "manager", "StoreManager");
+
+            var result = await service.BatchUpsertHolidaysAsync(new BatchUpsertAttendanceStoreHolidayDto
+            {
+                StoreCodes = new List<string> { "BRI", "OTHER" },
+                HolidayDate = new DateTime(2026, 12, 25),
+                HolidayName = "Christmas Day",
+                BusinessStatus = "Closed",
+                IsPaidHoliday = true,
+            });
+
+            Assert.False(result.Success);
+            Assert.Equal("FORBIDDEN_STORE", result.ErrorCode);
+            Assert.Equal(0, await CountActiveHolidaysAsync(new DateTime(2026, 12, 25)));
+        }
+
+        [Fact]
+        public async Task BatchUpsertHolidaysAsync_WhenDuplicateActiveRowsExist_UpdatesOneAndSoftDeletesExtras()
+        {
+            await SeedStoreScopeAsync();
+            await _db.Insertable(new[]
+            {
+                new AttendanceStoreHoliday
+                {
+                    HolidayGuid = "duplicate-a",
+                    StoreCode = "BRI",
+                    HolidayDate = new DateTime(2026, 12, 25),
+                    HolidayName = "Duplicate A",
+                    BusinessStatus = "Open",
+                    CreatedAt = DateTime.UtcNow.AddMinutes(-2),
+                },
+                new AttendanceStoreHoliday
+                {
+                    HolidayGuid = "duplicate-b",
+                    StoreCode = "BRI",
+                    HolidayDate = new DateTime(2026, 12, 25),
+                    HolidayName = "Duplicate B",
+                    BusinessStatus = "Open",
+                    CreatedAt = DateTime.UtcNow.AddMinutes(-1),
+                },
+            }).ExecuteCommandAsync();
+            var service = CreateService("manager-user", "manager", "StoreManager");
+
+            var result = await service.BatchUpsertHolidaysAsync(new BatchUpsertAttendanceStoreHolidayDto
+            {
+                StoreCodes = new List<string> { "BRI" },
+                HolidayDate = new DateTime(2026, 12, 25),
+                HolidayName = "Christmas Day",
+                BusinessStatus = "Closed",
+                IsPaidHoliday = true,
+            });
+
+            Assert.True(result.Success);
+            Assert.Equal(0, result.Data!.CreatedCount);
+            Assert.Equal(1, result.Data.UpdatedCount);
+            Assert.Equal(1, await CountActiveHolidaysAsync(new DateTime(2026, 12, 25)));
+            Assert.Equal(1, await _db.Queryable<AttendanceStoreHoliday>()
+                .Where(item =>
+                    item.HolidayDate >= new DateTime(2026, 12, 25)
+                    && item.HolidayDate < new DateTime(2026, 12, 26)
+                    && item.IsDeleted
+                )
+                .CountAsync());
         }
 
         public void Dispose()
@@ -419,13 +695,25 @@ namespace BlazorApp.Api.Tests
                 currentUserService,
                 httpContextAccessor
             );
+            var uploadService = new TencentCloudUploadService(
+                Options.Create(new TencentCloudSettings
+                {
+                    SecretId = "secret-id",
+                    SecretKey = "secret-key",
+                    BucketName = "test-bucket-123",
+                    Region = "ap-guangzhou",
+                }),
+                NullLogger<TencentCloudUploadService>.Instance,
+                new HttpClient()
+            );
 
             return new AttendanceReactService(
                 context,
                 currentUserService,
                 scopeService,
                 httpContextAccessor,
-                NullLogger<AttendanceReactService>.Instance
+                NullLogger<AttendanceReactService>.Instance,
+                uploadService
             );
         }
 
@@ -493,6 +781,39 @@ namespace BlazorApp.Api.Tests
                     },
                 }
             ).ExecuteCommandAsync();
+        }
+
+        private async Task SeedManagerStoreAccessAsync(string userGuid, string storeGuid)
+        {
+            await _db.Insertable(new UserStore
+            {
+                UserStoreGUID = $"{userGuid}-{storeGuid}",
+                UserGUID = userGuid,
+                StoreGUID = storeGuid,
+                IsPrimary = true,
+                CreatedAt = DateTime.UtcNow,
+            }).ExecuteCommandAsync();
+        }
+
+        private async Task SeedEmployeeProfileAsync(string userGuid, EmployeeType? employeeType)
+        {
+            await _db.Insertable(new EmployeeProfile
+            {
+                UserGUID = userGuid,
+                EmployeeType = employeeType,
+                CreatedAt = DateTime.UtcNow,
+            }).ExecuteCommandAsync();
+        }
+
+        private async Task<int> CountActiveHolidaysAsync(DateTime holidayDate)
+        {
+            return await _db.Queryable<AttendanceStoreHoliday>()
+                .Where(item =>
+                    item.HolidayDate >= holidayDate.Date
+                    && item.HolidayDate < holidayDate.Date.AddDays(1)
+                    && !item.IsDeleted
+                )
+                .CountAsync();
         }
 
         private async Task SeedScheduleAsync()

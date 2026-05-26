@@ -65,6 +65,20 @@ namespace BlazorApp.Api.Authorization
                 return;
             }
 
+            var equivalentPermissions = Permissions.GetEquivalentPermissionCodes(
+                requirement.Permission
+            );
+
+            if (
+                equivalentPermissions.Any(permission =>
+                    context.User.HasClaim("permission", permission)
+                )
+            )
+            {
+                context.Succeed(requirement);
+                return;
+            }
+
             // 缓存键: user_permission_{userId}_{permission}
             var cacheKey = $"user_permission_{userId}_{requirement.Permission}";
 
@@ -76,11 +90,15 @@ namespace BlazorApp.Api.Authorization
                     using var scope = _serviceScopeFactory.CreateScope();
                     var roleService = scope.ServiceProvider.GetRequiredService<IRoleService>();
 
-                    var result = await roleService.UserHasPermissionAsync(
-                        userId,
-                        requirement.Permission
-                    );
-                    hasPermission = result.Data;
+                    foreach (var permission in equivalentPermissions)
+                    {
+                        var result = await roleService.UserHasPermissionAsync(userId, permission);
+                        if (result.Data)
+                        {
+                            hasPermission = true;
+                            break;
+                        }
+                    }
 
                     // 缓存结果 5 分钟
                     _cache.Set(cacheKey, hasPermission, TimeSpan.FromMinutes(5));
