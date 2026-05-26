@@ -85,7 +85,7 @@ namespace BlazorApp.Api.Tests
             Assert.Contains(seeds, seed => seed.Code == "ChinaProduct.View" && seed.Category == "国内订货");
             Assert.Contains(seeds, seed => seed.Code == "LocalInvocie.Edit" && seed.Category == "澳洲进货单的管理");
             Assert.Contains(seeds, seed => seed.Code == "LocalPurchase" && seed.Category == "澳洲本地进货管理");
-            Assert.Contains(seeds, seed => seed.Code == "OrderFront" && seed.Category == "前台订货");
+            Assert.Contains(seeds, seed => seed.Code == Permissions.OrderFront.View && seed.Category == "前台订货");
             Assert.Contains(seeds, seed => seed.Code == "Promotions" && seed.Category == "促销管理");
             Assert.Contains(seeds, seed => seed.Code == "StoreProducts" && seed.Category == "分店商品管理");
             Assert.Equal(seeds.Count, seeds.Select(seed => seed.Code.ToLowerInvariant()).Distinct().Count());

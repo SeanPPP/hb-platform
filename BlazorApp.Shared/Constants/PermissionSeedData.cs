@@ -33,7 +33,7 @@ namespace BlazorApp.Shared.Constants
         private static IReadOnlyList<PermissionSeedDefinition> ExistingDatabasePermissions { get; } =
             new List<PermissionSeedDefinition>
             {
-                new("Dashboard", "访问后台", "后台管理", "后台管理 - 访问后台"),
+                new(Permissions.Dashboard.View, "访问后台", "后台管理", "后台管理 - 访问后台"),
                 new("Container.Delete", "货柜管理 - 删除", "货柜管理", "货柜管理 - 删除"),
                 new("Container.Create", "货柜管理 - 创建", "货柜管理", "货柜管理 - 创建"),
                 new("AustralianSuppliers", "澳洲供应商", "澳洲供应商管理", "澳洲供应商管理 - 澳洲供应商"),
@@ -51,7 +51,7 @@ namespace BlazorApp.Shared.Constants
                 new("Roles.Delete", "删除角色", "角色管理", "角色管理 - 删除角色"),
                 new("Container.View", "货柜管理 - 查看", "货柜管理", "货柜管理 - 查看"),
                 new("ChinaProduct.Create", "国内订货 - 创建", "国内订货", "国内订货 - 创建"),
-                new("OrderFront", "前台订货", "前台订货", "前台订货 - 前台订货"),
+                new(Permissions.OrderFront.View, "前台订货", "前台订货", "前台订货 - 前台订货"),
                 new("ChinaProduct.Delete", "国内订货 - 删除", "国内订货", "国内订货 - 删除"),
                 new("Orders.Create", "创建订单", "订单管理", "订单管理 - 创建订单"),
                 new("LocalInvocie.Create", "澳洲进货单的管理 - 创建", "澳洲进货单的管理", "澳洲进货单的管理 - 创建"),

@@ -11,6 +11,7 @@ using BlazorApp.Api.Models;
 using BlazorApp.Api.Repositories;
 using BlazorApp.Api.Repositories.Interfaces;
 using BlazorApp.Api.Services; // 业务服务层
+using BlazorApp.Api.Services.Attendance;
 using BlazorApp.Api.Services.Background; // 后台定时服务
 using BlazorApp.Api.Services.Pricing; // 自动定价服务
 using BlazorApp.Api.Services.React; // React 专用服务层
@@ -425,6 +426,8 @@ builder.Services.AddScoped<IPricingStrategyReactService, PricingStrategyReactSer
 builder.Services.AddScoped<IPromotionReactService, PromotionReactService>();
 builder.Services.AddScoped<IStoreOrderReactService, StoreOrderReactService>();
 builder.Services.AddScoped<IStoreProductMaintenanceReactService, StoreProductMaintenanceReactService>();
+builder.Services.AddScoped<IAustralianPublicHolidayProvider, AustralianPublicHolidayProvider>();
+builder.Services.AddScoped<IAttendancePublicHolidaySyncService, AttendancePublicHolidaySyncService>();
 builder.Services.AddScoped<IAttendanceReactService, AttendanceReactService>();
 builder.Services.AddScoped<IPDACartToOrderService, PDACartToOrderService>();
 builder.Services.AddScoped<IPDAWarehouseOrderService, PDAWarehouseOrderService>();

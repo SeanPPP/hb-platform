@@ -20,6 +20,8 @@ namespace BlazorApp.Api.Interfaces.React
         Task<ApiResponse<List<AttendanceLeaveRequestDto>>> GetMyLeaveRequestsAsync();
         Task<ApiResponse<AttendanceLeaveRequestDto>> CreateMyLeaveRequestAsync(CreateAttendanceLeaveRequestDto request);
         Task<ApiResponse<bool>> CancelMyLeaveRequestAsync(string leaveGuid);
+        Task<ApiResponse<AttendanceLeaveRequestDto>> CreateManagedLeaveRequestAsync(CreateManagedAttendanceLeaveRequestDto request);
+        Task<ApiResponse<DirectUploadSignature>> GetLeaveAttachmentUploadSignatureAsync(DirectUploadRequest request);
         Task<ApiResponse<List<AttendanceAvailabilityDto>>> GetAvailabilityAsync(AttendanceAvailabilityQueryDto query);
         Task<ApiResponse<List<AttendancePunchDto>>> GetPunchesAsync(AttendancePunchQueryDto query);
         Task<ApiResponse<List<AttendanceApprovalDto>>> GetApprovalsAsync(AttendanceApprovalQueryDto query);

@@ -208,6 +208,32 @@ namespace BlazorApp.Shared.DTOs
         public List<AttendanceStoreHolidayDto> Items { get; set; } = new();
     }
 
+    public class SyncAttendanceStoreHolidayDto
+    {
+        public string StoreCode { get; set; } = string.Empty;
+        public string? Postcode { get; set; }
+        public string? StateCode { get; set; }
+        public string? Jurisdiction { get; set; }
+        public DateTime? FromDate { get; set; }
+        public DateTime? ToDate { get; set; }
+        public int? DaysAhead { get; set; } = 30;
+    }
+
+    public class SyncAttendanceStoreHolidayResultDto
+    {
+        public string StoreCode { get; set; } = string.Empty;
+        public string? Jurisdiction { get; set; }
+        public DateTime FromDate { get; set; }
+        public DateTime ToDate { get; set; }
+        public int SyncedCount { get; set; }
+        public int CreatedCount { get; set; }
+        public int UpdatedCount { get; set; }
+        public int SkippedCount { get; set; }
+        public List<string> SkippedStores { get; set; } = new();
+        public List<AttendanceStoreHolidayDto> Holidays { get; set; } = new();
+        public DateTime SyncedAt { get; set; } = DateTime.UtcNow;
+    }
+
     public class AttendanceStoreHolidayDto
     {
         public string HolidayGuid { get; set; } = string.Empty;
@@ -224,6 +250,19 @@ namespace BlazorApp.Shared.DTOs
     public class CreateAttendanceLeaveRequestDto
     {
         public string StoreCode { get; set; } = string.Empty;
+        public string LeaveType { get; set; } = "AnnualLeave";
+        public DateTime StartDate { get; set; }
+        public DateTime EndDate { get; set; }
+        public TimeSpan? StartTime { get; set; }
+        public TimeSpan? EndTime { get; set; }
+        public string? Reason { get; set; }
+        public string? AttachmentUrl { get; set; }
+    }
+
+    public class CreateManagedAttendanceLeaveRequestDto
+    {
+        public string StoreCode { get; set; } = string.Empty;
+        public string UserGuid { get; set; } = string.Empty;
         public string LeaveType { get; set; } = "AnnualLeave";
         public DateTime StartDate { get; set; }
         public DateTime EndDate { get; set; }

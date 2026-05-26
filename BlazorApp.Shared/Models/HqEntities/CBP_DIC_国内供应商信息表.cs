@@ -43,6 +43,9 @@ namespace BlazorApp.Shared.Models.HqEntities
         [SugarColumn(IsNullable = true, ColumnName = "状态")]
         public int? 状态 { get; set; }
 
+        [SugarColumn(IsNullable = true, ColumnName = "供应商类型")]
+        public int? H供应商类型 { get; set; }
+
         [SugarColumn(IsNullable = true)]
         public string? FGC_Creator { get; set; }
 

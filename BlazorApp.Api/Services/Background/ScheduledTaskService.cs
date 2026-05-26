@@ -1,4 +1,5 @@
 using BlazorApp.Api.Interfaces.React;
+using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Services;
 using BlazorApp.Shared.Models.HBweb;
 using Microsoft.Extensions.DependencyInjection;
@@ -472,6 +473,25 @@ namespace BlazorApp.Api.Services.Background
                             ex.Message + "\n" + ex.StackTrace
                         );
                     _logger.LogError(ex, "每日全量刷新任务执行失败");
+                }
+
+                try
+                {
+                    _logger.LogInformation("开始执行公共假期自动同步任务");
+                    var holidaySyncService =
+                        scope.ServiceProvider.GetRequiredService<IAttendancePublicHolidaySyncService>();
+                    var result = await holidaySyncService.SyncAllActiveStoresAsync();
+                    _logger.LogInformation(
+                        "公共假期自动同步完成：同步 {SyncedCount} 条，新增 {CreatedCount} 条，更新 {UpdatedCount} 条，跳过 {SkippedCount} 个分店",
+                        result.SyncedCount,
+                        result.CreatedCount,
+                        result.UpdatedCount,
+                        result.SkippedCount
+                    );
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "公共假期自动同步任务执行失败");
                 }
             }
         }
