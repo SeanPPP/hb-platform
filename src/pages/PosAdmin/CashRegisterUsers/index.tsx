@@ -18,6 +18,7 @@ import dayjs from 'dayjs'
 import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import BarcodePreview from '../../../components/BarcodePreview'
+import { useAuthStore } from '../../../store/auth'
 import {
   batchDeleteCashRegisterUsers,
   createCashRegisterUser,
@@ -28,6 +29,13 @@ import {
 import { getActiveStores } from '../../../services/storeService'
 import type { CashRegisterUserListDto } from '../../../types/cashRegisterUser'
 import { copyTextToClipboard } from '../../../utils/clipboard'
+import {
+  buildStoreOptionsFromUserStores,
+  buildScopedStoreCodeFilter,
+  filterStoreOptionsByManagedCodes,
+  isStoreCodeInManagedScope,
+  shouldSkipScopedStoreQuery,
+} from '../../../utils/managedStoreScope'
 
 function getColorFromString(str: string): string {
   if (!str) return '#8c8c8c'
@@ -45,6 +53,10 @@ function generateBarcode13(): string {
 
 export default function CashRegisterUsersPage() {
   const { t } = useTranslation()
+  const access = useAuthStore((state) => state.access)
+  const currentUser = useAuthStore((state) => state.currentUser)
+  const managedStoreCodes = access.managedStoreCodes()
+  const managedStoreCodeKey = managedStoreCodes?.join(',') ?? 'all'
   const [loading, setLoading] = useState(false)
   const [data, setData] = useState<CashRegisterUserListDto[]>([])
   const [total, setTotal] = useState(0)
@@ -65,11 +77,20 @@ export default function CashRegisterUsersPage() {
 
   const loadData = async () => {
     if (inFlightRef.current) return
+    if (shouldSkipScopedStoreQuery(managedStoreCodes)) {
+      setData([])
+      setTotal(0)
+      setSelectedRowKeys([])
+      setSelectedRows([])
+      return
+    }
+
     inFlightRef.current = true
     setLoading(true)
     try {
       const filterModel: Record<string, any> = {}
-      if (storeCode) filterModel.storeCode = { filterType: 'text', type: 'equals', filter: storeCode }
+      const scopedStoreFilter = buildScopedStoreCodeFilter(storeCode, managedStoreCodes)
+      if (scopedStoreFilter) filterModel.storeCode = scopedStoreFilter
       if (status !== undefined) filterModel.status = { filterType: 'text', type: 'equals', filter: String(status) }
       const result = await getCashRegisterUserGrid({
         startRow: (page - 1) * pageSize,
@@ -90,15 +111,28 @@ export default function CashRegisterUsersPage() {
 
   useEffect(() => {
     ;(async () => {
-      try { setStoreOptions(await getActiveStores()) } catch { /* ignore */ }
+      try {
+        const stores = managedStoreCodes === null
+          ? filterStoreOptionsByManagedCodes(await getActiveStores(), managedStoreCodes)
+          : buildStoreOptionsFromUserStores(currentUser?.stores, { manageableOnly: true })
+        setStoreOptions(stores)
+        if (storeCode && !stores.some((store) => store.value === storeCode)) {
+          setStoreCode(undefined)
+          setPage(1)
+        }
+      } catch { /* ignore */ }
     })()
-  }, [])
+  }, [currentUser?.stores, managedStoreCodeKey, storeCode])
 
-  useEffect(() => { loadData() }, [keyword, storeCode, status, page, pageSize])
+  useEffect(() => { loadData() }, [keyword, storeCode, status, page, pageSize, managedStoreCodeKey])
 
   const handleCreate = async () => {
     try {
       const values = await createForm.validateFields()
+      if (!isStoreCodeInManagedScope(values.storeCode, managedStoreCodes)) {
+        message.error(t('message.noPermission', '无权操作该数据'))
+        return
+      }
       await createCashRegisterUser({
         storeCode: values.storeCode, operatorUser: values.operatorUser,
         userBarcode: values.userBarcode, loginRole: values.loginRole,
@@ -112,6 +146,11 @@ export default function CashRegisterUsersPage() {
   }
 
   const handleEdit = (record: CashRegisterUserListDto) => {
+    if (!isStoreCodeInManagedScope(record.storeCode, managedStoreCodes)) {
+      message.error(t('message.noPermission', '无权操作该数据'))
+      return
+    }
+
     setEditingRecord(record)
     editForm.setFieldsValue({
       storeCode: record.storeCode, operatorUser: record.operatorUser,
@@ -123,8 +162,17 @@ export default function CashRegisterUsersPage() {
 
   const handleUpdate = async () => {
     if (!editingRecord) return
+    if (!isStoreCodeInManagedScope(editingRecord.storeCode, managedStoreCodes)) {
+      message.error(t('message.noPermission', '无权操作该数据'))
+      return
+    }
+
     try {
       const values = await editForm.validateFields()
+      if (!isStoreCodeInManagedScope(values.storeCode, managedStoreCodes)) {
+        message.error(t('message.noPermission', '无权操作该数据'))
+        return
+      }
       await updateCashRegisterUser(editingRecord.hGuid, {
         storeCode: values.storeCode, operatorUser: values.operatorUser,
         userBarcode: values.userBarcode, loginRole: values.loginRole,
@@ -139,6 +187,11 @@ export default function CashRegisterUsersPage() {
   }
 
   const handleDelete = async (record: CashRegisterUserListDto) => {
+    if (!isStoreCodeInManagedScope(record.storeCode, managedStoreCodes)) {
+      message.error(t('message.noPermission', '无权操作该数据'))
+      return
+    }
+
     Modal.confirm({
       title: t('message.confirmDelete'),
       content: t('posAdmin.cashierUsers.confirmDeleteUser', { name: record.operatorUser || record.userBarcode }),
@@ -155,6 +208,11 @@ export default function CashRegisterUsersPage() {
 
   const handleBatchDelete = async () => {
     if (!selectedRows.length) { message.warning(t('message.pleaseSelect')); return }
+    if (selectedRows.some((row) => !isStoreCodeInManagedScope(row.storeCode, managedStoreCodes))) {
+      message.error(t('message.noPermission', '无权操作该数据'))
+      return
+    }
+
     Modal.confirm({
       title: t('posAdmin.cashierUsers.confirmBatchDelete', '确认批量删除'),
       content: t('message.batchDeleteConfirm', { count: selectedRows.length }),
@@ -234,8 +292,8 @@ export default function CashRegisterUsersPage() {
         <Space>
           <Input.Search allowClear placeholder={t('common.search')} style={{ width: 240 }} onSearch={(v) => { setKeyword(v); setPage(1) }} />
           <Select allowClear placeholder={t('posAdmin.cashierUsers.store')} style={{ width: 150 }} value={storeCode} onChange={(v) => { setStoreCode(v); setPage(1) }} options={storeOptions} showSearch optionFilterProp="label" />
-          <Select allowClear placeholder={t('common.status')} style={{ width: 100 }} value={status === undefined ? undefined : String(status)} onChange={(v) => { setStatus(v === undefined ? undefined : v === 'true'); setPage(1) }} options={[{ label: t('common.active'), value: 'true' }, { label: t('common.inactive'), value: 'false' }]} />
-          <Button type="primary" icon={<PlusOutlined />} onClick={() => { createForm.resetFields(); createForm.setFieldsValue({ userBarcode: generateBarcode13(), loginRole: '2', status: true }); setCreateVisible(true) }}>{t('common.create')}</Button>
+          <Select allowClear placeholder={t('posAdmin.cashierUsers.status', '状态')} style={{ width: 120 }} value={status === undefined ? undefined : String(status)} onChange={(v) => { setStatus(v === undefined ? undefined : v === 'true'); setPage(1) }} options={[{ label: t('common.active'), value: 'true' }, { label: t('common.inactive'), value: 'false' }]} />
+          <Button type="primary" icon={<PlusOutlined />} disabled={storeOptions.length === 0} onClick={() => { createForm.resetFields(); createForm.setFieldsValue({ userBarcode: generateBarcode13(), loginRole: '2', status: true }); setCreateVisible(true) }}>{t('common.create')}</Button>
         </Space>
       }
       styles={{ body: { padding: 0 } }}

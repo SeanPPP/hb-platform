@@ -106,6 +106,7 @@ function createEmptyAccess(): AccessControl {
     hasAnyRole: alwaysFalse,
     hasAllRoles: alwaysFalse,
     managedStoreCodes: () => null,
+    visibleStoreCodes: () => null,
   }
 }
 
@@ -137,7 +138,7 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
   const hasAllRoles = (roles: string[]) => roles.every((role) => hasRole(role))
 
   // --- Role identity flags (backward compat) ---
-  const isStoreManager = hasRole('StoreManager') || hasRole('经理')
+  const isStoreManager = hasRole('StoreManager') || hasRole('店长') || hasRole('经理')
   const isManager = isStoreManager || isWarehouseManager
   const isUser = hasRole('User') || hasRole('用户')
   const isWarehouseStaff =
@@ -154,9 +155,24 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
       return null
     }
     if (currentUser.stores?.length) {
-      return currentUser.stores.map((item) => item.storeCode).filter(Boolean)
+      return currentUser.stores
+        .filter((item) => item.isManageable)
+        .map((item) => item.storeCode)
+        .filter(Boolean)
     }
-    return null
+    return []
+  }
+
+  const visibleStoreCodes = () => {
+    if (isAdmin || isWarehouseManager) {
+      return null
+    }
+    if (currentUser.stores?.length) {
+      return currentUser.stores
+        .map((item) => item.storeCode)
+        .filter(Boolean)
+    }
+    return []
   }
 
   // --- 旧权限（保留兼容）---
@@ -342,5 +358,6 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
     hasAnyRole,
     hasAllRoles,
     managedStoreCodes,
+    visibleStoreCodes,
   }
 }

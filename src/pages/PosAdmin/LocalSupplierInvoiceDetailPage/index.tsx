@@ -45,6 +45,11 @@ import type {
 } from '../../../types/localSupplierInvoice'
 import { copyTextToClipboard } from '../../../utils/clipboard'
 import { discountRateToDecimal, formatDiscountRate } from '../../../utils/discountRate'
+import {
+  buildStoreOptionsFromUserStores,
+  filterStoreOptionsByManagedCodes,
+  isStoreCodeInManagedScope,
+} from '../../../utils/managedStoreScope'
 
 function formatAmount(value?: number) {
   if (value === undefined || value === null) return '--'
@@ -67,13 +72,14 @@ export default function LocalSupplierInvoiceDetailPage() {
   const { t } = useTranslation()
   const route = useStableRouteContext()
   const invoiceGuid = route?.params.id
-  const { access } = useAuthStore()
+  const { access, currentUser } = useAuthStore()
   const isAdmin = access.isAdmin
   const managedStoreCodes = access.managedStoreCodes()
   const managedStoreCodeKey = managedStoreCodes?.join(',') ?? 'all'
 
   // 主表数据
   const [_invoice, setInvoice] = useState<LocalSupplierInvoiceDetailDto | null>(null)
+  const [canAccessInvoice, setCanAccessInvoice] = useState(true)
   const [details, setDetails] = useState<LocalSupplierInvoiceItemDto[]>([])
   const [loading, setLoading] = useState(false)
   const [detailLoading, setDetailLoading] = useState(false)
@@ -106,10 +112,20 @@ export default function LocalSupplierInvoiceDetailPage() {
 
   // 加载数据
   const loadInvoice = async () => {
-    if (!invoiceGuid) return
+    if (!invoiceGuid) return false
     setLoading(true)
     try {
       const data = await getInvoice(invoiceGuid)
+      if (!isStoreCodeInManagedScope(data.storeCode, managedStoreCodes)) {
+        setCanAccessInvoice(false)
+        setInvoice(null)
+        setDetails([])
+        setSelectedRowKeys([])
+        form.resetFields()
+        message.error(t('message.noPermission', '无权查看该数据'))
+        return false
+      }
+      setCanAccessInvoice(true)
       setInvoice(data)
       form.setFieldsValue({
         invoiceNo: data.invoiceNo,
@@ -122,8 +138,10 @@ export default function LocalSupplierInvoiceDetailPage() {
         totalAmount: formatAmount(data.totalAmount),
         remarks: data.remarks,
       })
+      return true
     } catch {
       message.error(t('posAdmin.invoiceDetail.loadInvoiceFailed', '加载进货单失败'))
+      return false
     } finally {
       setLoading(false)
     }
@@ -143,17 +161,21 @@ export default function LocalSupplierInvoiceDetailPage() {
   }
 
   useEffect(() => {
-    loadInvoice()
-    loadDetails()
-    getActiveStores()
-      .then((stores) => {
-        const filteredStores = managedStoreCodes?.length
-          ? stores.filter((store) => managedStoreCodes.includes(store.value))
-          : stores
-        setStoreOptions(filteredStores)
-      })
-      .catch(() => {})
-  }, [invoiceGuid, managedStoreCodeKey])
+    void (async () => {
+      if (await loadInvoice()) {
+        await loadDetails()
+      }
+    })()
+    if (managedStoreCodes === null) {
+      getActiveStores()
+        .then((stores) => {
+          setStoreOptions(filterStoreOptionsByManagedCodes(stores, managedStoreCodes))
+        })
+        .catch(() => setStoreOptions([]))
+    } else {
+      setStoreOptions(buildStoreOptionsFromUserStores(currentUser?.stores, { manageableOnly: true }))
+    }
+  }, [currentUser?.stores, invoiceGuid, managedStoreCodeKey])
 
   // 涨跌统计
   const priceStats = useMemo(() => {
@@ -220,6 +242,11 @@ export default function LocalSupplierInvoiceDetailPage() {
   // 保存主表
   const handleSave = async () => {
     if (!invoiceGuid) return
+    if (!canAccessInvoice) {
+      message.error(t('message.noPermission', '无权操作该数据'))
+      return
+    }
+
     const values = await form.validateFields()
     setSaving(true)
     try {
@@ -240,6 +267,10 @@ export default function LocalSupplierInvoiceDetailPage() {
   // Batch edit
   const handleBatchEdit = async () => {
     if (!invoiceGuid) return
+    if (!canAccessInvoice) {
+      message.error(t('message.noPermission', '无权操作该数据'))
+      return
+    }
     if (!selectedRowKeys.length) {
       message.warning(t('posAdmin.invoiceDetail.selectDetailRows', '请先选择明细行'))
       return
@@ -292,6 +323,10 @@ export default function LocalSupplierInvoiceDetailPage() {
   // 更新到分店价格
   const handleUpdateToStorePrices = async () => {
     if (!invoiceGuid) return
+    if (!canAccessInvoice) {
+      message.error(t('message.noPermission', '无权操作该数据'))
+      return
+    }
     if (!selectedRowKeys.length) {
       message.warning(t('posAdmin.invoiceDetail.selectDetailRows', '请先选择明细行'))
       return
@@ -299,6 +334,10 @@ export default function LocalSupplierInvoiceDetailPage() {
     const values = await storePriceForm.validateFields()
     if (!values.targetStoreCodes?.length) {
       message.warning(t('posAdmin.invoiceDetail.selectTargetStore', '请选择目标分店'))
+      return
+    }
+    if (!values.targetStoreCodes.every((storeCode: string) => isStoreCodeInManagedScope(storeCode, managedStoreCodes))) {
+      message.error(t('message.noPermission', '无权操作该数据'))
       return
     }
 

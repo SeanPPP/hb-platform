@@ -67,6 +67,11 @@ import type {
 import { copyTextToClipboard } from '../../../../utils/clipboard'
 import { discountRateToDecimal, formatDiscountRate } from '../../../../utils/discountRate'
 import { DetailAction as DetailActionEnum } from '../../../../types/localSupplierInvoice'
+import {
+  buildStoreOptionsFromUserStores,
+  filterStoreOptionsByManagedCodes,
+  isStoreCodeInManagedScope,
+} from '../../../../utils/managedStoreScope'
 
 
 /* ------------------------------------------------------------------ */
@@ -234,13 +239,14 @@ export default function InvoiceEditPage() {
   const route = useStableRouteContext()
   const invoiceGuid = route?.params.id
   const navigate = useNavigate()
-  const { access } = useAuthStore()
+  const { access, currentUser } = useAuthStore()
   const isAdmin = access.isAdmin
   const managedStoreCodes = access.managedStoreCodes()
   const managedStoreCodeKey = managedStoreCodes?.join(',') ?? 'all'
 
   /* ---- 主表数据 ---- */
   const [_invoice, setInvoice] = useState<LocalSupplierInvoiceDetailDto | null>(null)
+  const [canAccessInvoice, setCanAccessInvoice] = useState(true)
   const [details, setDetails] = useState<LocalSupplierInvoiceItemDto[]>([])
   const [loading, setLoading] = useState(false)
   const [detailLoading, setDetailLoading] = useState(false)
@@ -296,10 +302,21 @@ export default function InvoiceEditPage() {
   /* ================================================================ */
 
   const loadInvoice = useCallback(async () => {
-    if (!invoiceGuid) return
+    if (!invoiceGuid) return false
     setLoading(true)
     try {
       const data = await getInvoice(invoiceGuid)
+      if (!isStoreCodeInManagedScope(data.storeCode, managedStoreCodes)) {
+        setCanAccessInvoice(false)
+        setInvoice(null)
+        setDetails([])
+        setSelectedRowKeys([])
+        setRowActions({})
+        form.resetFields()
+        message.error(t('message.noPermission', '无权查看该数据'))
+        return false
+      }
+      setCanAccessInvoice(true)
       setInvoice(data)
       form.setFieldsValue({
         invoiceNo: data.invoiceNo,
@@ -312,12 +329,14 @@ export default function InvoiceEditPage() {
         totalAmount: formatAmount(data.totalAmount),
         remarks: data.remarks,
       })
+      return true
     } catch {
       message.error(t('posAdmin.invoiceDetail.loadInvoiceFailed', '加载进货单失败'))
+      return false
     } finally {
       setLoading(false)
     }
-  }, [invoiceGuid, form])
+  }, [invoiceGuid, form, managedStoreCodeKey, t])
 
   const loadDetails = useCallback(async () => {
     if (!invoiceGuid) return
@@ -330,20 +349,32 @@ export default function InvoiceEditPage() {
     } finally {
       setDetailLoading(false)
     }
-  }, [invoiceGuid])
+  }, [invoiceGuid, t])
 
   useEffect(() => {
-    loadInvoice()
-    loadDetails()
-    getActiveStores()
-      .then((stores) => {
-        const filteredStores = managedStoreCodes?.length
-          ? stores.filter((store) => managedStoreCodes.includes(store.value))
-          : stores
-        setStoreOptions(filteredStores)
-      })
-      .catch(() => {})
-  }, [invoiceGuid, managedStoreCodeKey]) // eslint-disable-line react-hooks/exhaustive-deps
+    void (async () => {
+      if (await loadInvoice()) {
+        await loadDetails()
+      }
+    })()
+    if (managedStoreCodes === null) {
+      getActiveStores()
+        .then((stores) => {
+          setStoreOptions(filterStoreOptionsByManagedCodes(stores, managedStoreCodes))
+        })
+        .catch(() => setStoreOptions([]))
+    } else {
+      setStoreOptions(buildStoreOptionsFromUserStores(currentUser?.stores, { manageableOnly: true }))
+    }
+  }, [currentUser?.stores, loadInvoice, loadDetails, managedStoreCodeKey])
+
+  const ensureCanAccessInvoice = useCallback(() => {
+    if (canAccessInvoice) {
+      return true
+    }
+    message.error(t('message.noPermission', '无权操作该数据'))
+    return false
+  }, [canAccessInvoice, t])
 
   /* ---- 动态高度 ---- */
   useLayoutEffect(() => {
@@ -428,7 +459,7 @@ export default function InvoiceEditPage() {
 
   // ---- 保存主表 ----
   const handleSave = async () => {
-    if (!invoiceGuid) return
+    if (!invoiceGuid || !ensureCanAccessInvoice()) return
     const values = await form.validateFields()
     setSaving(true)
     try {
@@ -462,7 +493,7 @@ export default function InvoiceEditPage() {
 
   // ---- 批量保存明细（含行内价格编辑） ----
   const handleSaveDetails = async () => {
-    if (!invoiceGuid) return
+    if (!invoiceGuid || !ensureCanAccessInvoice()) return
     const items: InvoiceDetailUpsertItemDto[] = details.map((d) => ({
       detailGUID: d.detailGUID,
       itemNumber: d.itemNumber,
@@ -492,7 +523,7 @@ export default function InvoiceEditPage() {
 
   // ---- 粘贴数据 ----
   const handlePaste = async () => {
-    if (!invoiceGuid) return
+    if (!invoiceGuid || !ensureCanAccessInvoice()) return
     const parsed = parsePasteText(pasteText)
     if (!parsed.length) {
       message.warning(t('posAdmin.invoiceDetail.noValidData', '未检测到有效数据'))
@@ -520,7 +551,7 @@ export default function InvoiceEditPage() {
 
   // ---- 批量编辑 ----
   const handleBatchEdit = async () => {
-    if (!invoiceGuid) return
+    if (!invoiceGuid || !ensureCanAccessInvoice()) return
     if (!selectedRowKeys.length) {
       message.warning(t('posAdmin.invoiceDetail.selectDetailRows', '请先选择明细行'))
       return
@@ -595,7 +626,7 @@ export default function InvoiceEditPage() {
 
   // ---- 更新到分店价格 ----
   const handleUpdateToStorePrices = async () => {
-    if (!invoiceGuid) return
+    if (!invoiceGuid || !ensureCanAccessInvoice()) return
     if (!selectedRowKeys.length) {
       message.warning(t('posAdmin.invoiceDetail.selectDetailRows', '请先选择明细行'))
       return
@@ -603,6 +634,10 @@ export default function InvoiceEditPage() {
     const values = await storePriceForm.validateFields()
     if (!values.targetStoreCodes?.length) {
       message.warning(t('posAdmin.invoiceDetail.selectTargetStore', '请选择目标分店'))
+      return
+    }
+    if (!values.targetStoreCodes.every((storeCode: string) => isStoreCodeInManagedScope(storeCode, managedStoreCodes))) {
+      message.error(t('message.noPermission', '无权操作该数据'))
       return
     }
 
@@ -649,7 +684,7 @@ export default function InvoiceEditPage() {
 
   // ---- 商品检测 ----
   const handleCheckProducts = async () => {
-    if (!invoiceGuid) return
+    if (!invoiceGuid || !ensureCanAccessInvoice()) return
     if (!details.length) {
       message.warning(t('posAdmin.invoiceDetail.noDetailToDetect', '没有明细数据可检测'))
       return
@@ -701,6 +736,7 @@ export default function InvoiceEditPage() {
 
   // ---- 行操作类型变更 ----
   const handleRowActionChange = async (detailGuid: string, actionKey: string) => {
+    if (!ensureCanAccessInvoice()) return
     const action = Number(actionKey) as DetailAction
     setRowActions((prev) => ({ ...prev, [detailGuid]: action }))
 
@@ -717,7 +753,7 @@ export default function InvoiceEditPage() {
 
   // ---- 批量执行操作 ----
   const handleBatchExecute = async () => {
-    if (!invoiceGuid) return
+    if (!invoiceGuid || !ensureCanAccessInvoice()) return
     if (!selectedRowKeys.length) {
       message.warning(t('posAdmin.invoiceDetail.selectDetailsFirst', '请先选择明细行'))
       return
@@ -763,7 +799,7 @@ export default function InvoiceEditPage() {
 
   // ---- 删除选中 ----
   const handleDeleteSelected = async () => {
-    if (!invoiceGuid) return
+    if (!invoiceGuid || !ensureCanAccessInvoice()) return
     if (!selectedRowKeys.length) {
       message.warning(t('posAdmin.invoiceDetail.selectDeleteRows', '请先选择要删除的明细行'))
       return
@@ -784,7 +820,7 @@ export default function InvoiceEditPage() {
 
   // ---- 批量设置操作类型 ----
   const handleBatchSetAction = async (actionKey: string) => {
-    if (!invoiceGuid || !selectedRowKeys.length) return
+    if (!invoiceGuid || !selectedRowKeys.length || !ensureCanAccessInvoice()) return
     const action = Number(actionKey)
     try {
       await batchUpdateDetailAction(invoiceGuid, selectedRowKeys.map(String), action)

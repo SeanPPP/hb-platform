@@ -75,6 +75,12 @@ import type {
   SaveAttendanceSchedulePayload,
   SaveAttendanceSettingsPayload,
 } from '../../../types/scheduleAttendance'
+import {
+  buildStoreOptionsFromUserStores,
+  filterStoreOptionsByManagedCodes,
+  isStoreCodeInManagedScope,
+  shouldSkipStoreQueryForScope,
+} from '../../../utils/managedStoreScope'
 
 dayjs.extend(isoWeek)
 
@@ -167,6 +173,11 @@ function getIsoWeekEnd(value: Dayjs) {
 export default function ScheduleAttendancePage() {
   const { t } = useTranslation()
   const access = useAuthStore((state) => state.access)
+  const currentUser = useAuthStore((state) => state.currentUser)
+  const managedStoreCodes = access.managedStoreCodes?.()
+  const managedStoreCodeKey = managedStoreCodes?.join(',') ?? 'all'
+  const visibleStoreCodes = access.visibleStoreCodes?.()
+  const visibleStoreCodeKey = visibleStoreCodes?.join(',') ?? 'all'
   const [activeTab, setActiveTab] = useState<TabKey>('schedules')
   const [storeOptions, setStoreOptions] = useState<{ label: string; value: string }[]>([])
   const [storeCode, setStoreCode] = useState<string | undefined>()
@@ -202,13 +213,23 @@ export default function ScheduleAttendancePage() {
   const [settingsForm] = Form.useForm<SaveAttendanceSettingsPayload>()
 
   const storeNameMap = useMemo(() => new Map(storeOptions.map((item) => [item.value, item.label])), [storeOptions])
-  const editableHolidayStoreOptions = useMemo(() => {
-    const managedStoreCodes = access.managedStoreCodes?.()
-    if (!managedStoreCodes?.length) return storeOptions
-
-    const managedSet = new Set(managedStoreCodes.map((item) => item.toLowerCase()))
-    return storeOptions.filter((item) => managedSet.has(item.value.toLowerCase()))
-  }, [access, storeOptions])
+  const editableStoreOptions = useMemo(
+    () => filterStoreOptionsByManagedCodes(storeOptions, managedStoreCodes),
+    [managedStoreCodeKey, storeOptions],
+  )
+  const canEditSelectedStore = isStoreCodeInManagedScope(storeCode, managedStoreCodes)
+  const canEditStoreCode = useCallback(
+    (targetStoreCode?: string) => isStoreCodeInManagedScope(targetStoreCode, managedStoreCodes),
+    [managedStoreCodeKey],
+  )
+  const canViewStoreCode = useCallback(
+    (targetStoreCode?: string) => isStoreCodeInManagedScope(targetStoreCode, visibleStoreCodes),
+    [visibleStoreCodeKey],
+  )
+  const shouldSkipVisibleStoreQuery = useCallback(
+    () => shouldSkipStoreQueryForScope(storeCode, visibleStoreCodes),
+    [storeCode, visibleStoreCodeKey],
+  )
   const weekStart = useMemo(() => getIsoWeekStart(selectedWeek), [selectedWeek])
   const weekEnd = useMemo(() => getIsoWeekEnd(selectedWeek), [selectedWeek])
   const weekDays = useMemo(() => Array.from({ length: 7 }, (_, index) => weekStart.add(index, 'day')), [weekStart])
@@ -242,6 +263,11 @@ export default function ScheduleAttendancePage() {
   }), [storeCode, userGuid, weekEnd, weekStart])
 
   const loadSchedules = useCallback(async (page = schedules.page, pageSize = schedules.pageSize) => {
+    if (shouldSkipVisibleStoreQuery()) {
+      setSchedules({ ...initialListState, page, pageSize })
+      return
+    }
+
     setSchedules((prev) => ({ ...prev, loading: true, page, pageSize }))
     try {
       const result = await getAttendanceScheduleWeek(scheduleQueryParams(page, pageSize))
@@ -251,10 +277,10 @@ export default function ScheduleAttendancePage() {
       message.error(t('posAdmin.scheduleAttendance.messages.loadSchedulesFailed'))
       setSchedules((prev) => ({ ...prev, loading: false }))
     }
-  }, [scheduleQueryParams, schedules.page, schedules.pageSize, t])
+  }, [scheduleQueryParams, schedules.page, schedules.pageSize, shouldSkipVisibleStoreQuery, t])
 
   const loadStoreUsers = useCallback(async () => {
-    if (!storeCode) {
+    if (!storeCode || !canViewStoreCode(storeCode)) {
       setStoreUsers([])
       return
     }
@@ -274,10 +300,10 @@ export default function ScheduleAttendancePage() {
     } finally {
       setStoreUsersLoading(false)
     }
-  }, [storeCode, t, userGuid])
+  }, [canViewStoreCode, storeCode, t, userGuid])
 
   const loadScheduleHolidays = useCallback(async () => {
-    if (!storeCode) {
+    if (!storeCode || !canViewStoreCode(storeCode)) {
       setScheduleHolidays([])
       return
     }
@@ -297,9 +323,14 @@ export default function ScheduleAttendancePage() {
     } finally {
       setScheduleHolidaysLoading(false)
     }
-  }, [storeCode, t, weekEnd, weekStart])
+  }, [canViewStoreCode, storeCode, t, weekEnd, weekStart])
 
   const loadAvailability = useCallback(async (page = availability.page, pageSize = availability.pageSize) => {
+    if (shouldSkipVisibleStoreQuery()) {
+      setAvailability({ ...initialListState, page, pageSize })
+      return
+    }
+
     setAvailability((prev) => ({ ...prev, loading: true, page, pageSize }))
     try {
       const result = await getAttendanceAvailability(queryParams(page, pageSize))
@@ -309,9 +340,14 @@ export default function ScheduleAttendancePage() {
       message.error(t('posAdmin.scheduleAttendance.messages.loadAvailabilityFailed'))
       setAvailability((prev) => ({ ...prev, loading: false }))
     }
-  }, [availability.page, availability.pageSize, queryParams, t])
+  }, [availability.page, availability.pageSize, queryParams, shouldSkipVisibleStoreQuery, t])
 
   const loadPunches = useCallback(async (page = punches.page, pageSize = punches.pageSize) => {
+    if (shouldSkipVisibleStoreQuery()) {
+      setPunches({ ...initialListState, page, pageSize })
+      return
+    }
+
     setPunches((prev) => ({ ...prev, loading: true, page, pageSize }))
     try {
       const result = await getAttendancePunches(queryParams(page, pageSize))
@@ -321,9 +357,14 @@ export default function ScheduleAttendancePage() {
       message.error(t('posAdmin.scheduleAttendance.messages.loadPunchesFailed'))
       setPunches((prev) => ({ ...prev, loading: false }))
     }
-  }, [punches.page, punches.pageSize, queryParams, t])
+  }, [punches.page, punches.pageSize, queryParams, shouldSkipVisibleStoreQuery, t])
 
   const loadApprovals = useCallback(async (page = approvals.page, pageSize = approvals.pageSize) => {
+    if (shouldSkipVisibleStoreQuery()) {
+      setApprovals({ ...initialListState, page, pageSize })
+      return
+    }
+
     setApprovals((prev) => ({ ...prev, loading: true, page, pageSize }))
     try {
       const result = await getPendingAttendanceApprovals(queryParams(page, pageSize))
@@ -333,9 +374,14 @@ export default function ScheduleAttendancePage() {
       message.error(t('posAdmin.scheduleAttendance.messages.loadApprovalsFailed'))
       setApprovals((prev) => ({ ...prev, loading: false }))
     }
-  }, [approvals.page, approvals.pageSize, queryParams, t])
+  }, [approvals.page, approvals.pageSize, queryParams, shouldSkipVisibleStoreQuery, t])
 
   const loadHolidays = useCallback(async (page = holidays.page, pageSize = holidays.pageSize) => {
+    if (shouldSkipVisibleStoreQuery()) {
+      setHolidays({ ...initialListState, page, pageSize })
+      return
+    }
+
     setHolidays((prev) => ({ ...prev, loading: true, page, pageSize }))
     try {
       const result = await getAttendanceHolidays(queryParams(page, pageSize))
@@ -345,7 +391,7 @@ export default function ScheduleAttendancePage() {
       message.error(t('posAdmin.scheduleAttendance.messages.loadHolidaysFailed'))
       setHolidays((prev) => ({ ...prev, loading: false }))
     }
-  }, [holidays.page, holidays.pageSize, queryParams, t])
+  }, [holidays.page, holidays.pageSize, queryParams, shouldSkipVisibleStoreQuery, t])
 
   const loadSettings = useCallback(async () => {
     setSettingsLoading(true)
@@ -375,11 +421,20 @@ export default function ScheduleAttendancePage() {
   }, [activeTab, loadApprovals, loadAvailability, loadHolidays, loadPunches, loadScheduleHolidays, loadSchedules, loadSettings, loadStoreUsers])
 
   useEffect(() => {
+    if (visibleStoreCodes !== null) {
+      const stores = buildStoreOptionsFromUserStores(currentUser?.stores)
+      setStoreOptions(stores)
+      if (storeCode && !stores.some((store) => store.value === storeCode)) {
+        setStoreCode(undefined)
+      }
+      return
+    }
+
     void getActiveStores().then(setStoreOptions).catch((error) => {
       console.error(error)
       message.error(t('posAdmin.scheduleAttendance.messages.loadStoresFailed'))
     })
-  }, [t])
+  }, [currentUser?.stores, storeCode, t, visibleStoreCodeKey])
 
   useEffect(() => {
     loadActiveTab(1)
@@ -410,6 +465,12 @@ export default function ScheduleAttendancePage() {
   }
 
   const openScheduleDrawer = (record?: AttendanceScheduleDto, defaults?: Partial<ScheduleFormValues>) => {
+    const targetStoreCode = record?.storeCode ?? defaults?.storeCode ?? storeCode
+    if (!access.canEditAttendanceSchedule || !canEditStoreCode(targetStoreCode)) {
+      message.error(t('message.noPermission', '无权操作该数据'))
+      return
+    }
+
     setEditingSchedule(record ?? null)
     scheduleForm.resetFields()
     if (record) {
@@ -435,6 +496,11 @@ export default function ScheduleAttendancePage() {
   const saveSchedule = async () => {
     try {
       const values = await scheduleForm.validateFields()
+      if (!access.canEditAttendanceSchedule || !canEditStoreCode(values.storeCode)) {
+        message.error(t('message.noPermission', '无权操作该数据'))
+        return
+      }
+
       const payload: SaveAttendanceSchedulePayload = {
         storeCode: values.storeCode,
         userGuid: values.userGuid.trim(),
@@ -464,6 +530,11 @@ export default function ScheduleAttendancePage() {
   }
 
   const confirmDeleteSchedule = (record: AttendanceScheduleDto) => {
+    if (!access.canEditAttendanceSchedule || !canEditStoreCode(record.storeCode)) {
+      message.error(t('message.noPermission', '无权操作该数据'))
+      return
+    }
+
     Modal.confirm({
       title: t('posAdmin.scheduleAttendance.confirm.deleteSchedule'),
       okText: t('common.delete'),
@@ -479,6 +550,11 @@ export default function ScheduleAttendancePage() {
   }
 
   const openHolidayDrawer = (record?: AttendanceStoreHolidayDto) => {
+    if (record && (!access.canEditAttendanceHoliday || !canEditStoreCode(record.storeCode))) {
+      message.error(t('message.noPermission', '无权操作该数据'))
+      return
+    }
+
     setEditingHoliday(record ?? null)
     holidayForm.resetFields()
     if (record) {
@@ -495,7 +571,7 @@ export default function ScheduleAttendancePage() {
       })
     } else {
       holidayForm.setFieldsValue({
-        storeCodes: storeCode ? [storeCode] : [],
+        storeCodes: storeCode && canEditStoreCode(storeCode) ? [storeCode] : [],
         businessStatus: 'Open',
         isPaidHoliday: true,
       })
@@ -507,8 +583,25 @@ export default function ScheduleAttendancePage() {
     try {
       const values = await holidayForm.validateFields()
       const targetStoreCodes = values.storeCodes?.filter(Boolean) ?? []
+      const selectedStoreCodes = editingHoliday
+        ? [values.storeCode].filter(Boolean)
+        : targetStoreCodes
+      if (
+        !access.canEditAttendanceHoliday ||
+        selectedStoreCodes.length === 0 ||
+        selectedStoreCodes.some((item) => !canEditStoreCode(item))
+      ) {
+        message.error(t('message.noPermission', '无权操作该数据'))
+        return
+      }
+      const payloadStoreCode = values.storeCode ?? targetStoreCodes[0]
+      if (!payloadStoreCode) {
+        message.error(t('message.noPermission', '无权操作该数据'))
+        return
+      }
+
       const payload: SaveAttendanceHolidayPayload = {
-        storeCode: values.storeCode ?? targetStoreCodes[0],
+        storeCode: payloadStoreCode,
         holidayDate: values.holidayDate.format('YYYY-MM-DD'),
         holidayName: values.holidayName.trim(),
         businessStatus: values.businessStatus,
@@ -555,9 +648,14 @@ export default function ScheduleAttendancePage() {
   }
 
   const openBatchHolidayDrawer = () => {
+    if (!access.canEditAttendanceHoliday || !editableStoreOptions.length) {
+      message.error(t('message.noPermission', '无权操作该数据'))
+      return
+    }
+
     batchHolidayForm.resetFields()
     batchHolidayForm.setFieldsValue({
-      storeCodes: storeCode ? [storeCode] : [],
+      storeCodes: storeCode && canEditStoreCode(storeCode) ? [storeCode] : [],
       businessStatus: 'Open',
       isPaidHoliday: true,
     })
@@ -567,6 +665,15 @@ export default function ScheduleAttendancePage() {
   const saveBatchHoliday = async () => {
     try {
       const values = await batchHolidayForm.validateFields()
+      if (
+        !access.canEditAttendanceHoliday ||
+        !values.storeCodes.length ||
+        values.storeCodes.some((item) => !canEditStoreCode(item))
+      ) {
+        message.error(t('message.noPermission', '无权操作该数据'))
+        return
+      }
+
       const payload: BatchUpsertAttendanceHolidayPayload = {
         storeCodes: values.storeCodes,
         holidayDate: values.holidayDate.format('YYYY-MM-DD'),
@@ -600,6 +707,10 @@ export default function ScheduleAttendancePage() {
       message.warning(t('posAdmin.scheduleAttendance.messages.selectStoreBeforeHolidaySync'))
       return
     }
+    if (!access.canEditAttendanceHoliday || !canEditStoreCode(storeCode)) {
+      message.error(t('message.noPermission', '无权操作该数据'))
+      return
+    }
 
     setSyncingHolidays(true)
     try {
@@ -624,6 +735,11 @@ export default function ScheduleAttendancePage() {
   }
 
   const confirmDeleteHoliday = (record: AttendanceStoreHolidayDto) => {
+    if (!access.canEditAttendanceHoliday || !canEditStoreCode(record.storeCode)) {
+      message.error(t('message.noPermission', '无权操作该数据'))
+      return
+    }
+
     Modal.confirm({
       title: t('posAdmin.scheduleAttendance.confirm.deleteHoliday'),
       okText: t('common.delete'),
@@ -638,6 +754,11 @@ export default function ScheduleAttendancePage() {
   }
 
   const openReviewModal = (record: AttendanceApprovalDto, action: ReviewAction) => {
+    if (!access.canReviewAttendance || !canEditStoreCode(record.storeCode)) {
+      message.error(t('message.noPermission', '无权操作该数据'))
+      return
+    }
+
     setReviewTarget(record)
     setReviewAction(action)
     reviewForm.resetFields()
@@ -646,6 +767,11 @@ export default function ScheduleAttendancePage() {
 
   const submitReview = async () => {
     if (!reviewTarget) return
+    if (!access.canReviewAttendance || !canEditStoreCode(reviewTarget.storeCode)) {
+      message.error(t('message.noPermission', '无权操作该数据'))
+      return
+    }
+
     try {
       const values = await reviewForm.validateFields()
       setSaving(true)
@@ -693,6 +819,10 @@ export default function ScheduleAttendancePage() {
   const handlePublishWeek = async () => {
     if (!storeCode) {
       message.warning(t('posAdmin.scheduleAttendance.messages.selectStoreBeforePublish'))
+      return
+    }
+    if (!access.canEditAttendanceSchedule || !canEditStoreCode(storeCode)) {
+      message.error(t('message.noPermission', '无权操作该数据'))
       return
     }
 
@@ -757,7 +887,7 @@ export default function ScheduleAttendancePage() {
   }, [schedules.items, storeCode, storeNameMap, storeUsers, userGuid])
 
   const openCreateScheduleForCell = (row: ScheduleRow, date: Dayjs) => {
-    if (!access.canEditAttendanceSchedule) return
+    if (!access.canEditAttendanceSchedule || !canEditStoreCode(row.storeCode || storeCode)) return
     openScheduleDrawer(undefined, {
       storeCode: row.storeCode || storeCode,
       userGuid: row.userGuid,
@@ -769,12 +899,13 @@ export default function ScheduleAttendancePage() {
   const renderScheduleCell = (row: ScheduleRow, date: Dayjs) => {
     const dateKey = date.format('YYYY-MM-DD')
     const daySchedules = [...(row.schedulesByDate[dateKey] ?? [])].sort((left, right) => left.startTime.localeCompare(right.startTime))
+    const canEditRowStore = access.canEditAttendanceSchedule && canEditStoreCode(row.storeCode || storeCode)
 
     if (!daySchedules.length) {
       return (
         <button
           type="button"
-          disabled={!access.canEditAttendanceSchedule}
+          disabled={!canEditRowStore}
           onClick={() => openCreateScheduleForCell(row, date)}
           style={{
             width: '100%',
@@ -783,39 +914,42 @@ export default function ScheduleAttendancePage() {
             borderRadius: 6,
             background: '#fafafa',
             color: '#8c8c8c',
-            cursor: access.canEditAttendanceSchedule ? 'pointer' : 'default',
+            cursor: canEditRowStore ? 'pointer' : 'default',
           }}
         >
-          {access.canEditAttendanceSchedule ? t('posAdmin.scheduleAttendance.actions.addShift') : t('posAdmin.scheduleAttendance.emptyShift')}
+          {canEditRowStore ? t('posAdmin.scheduleAttendance.actions.addShift') : t('posAdmin.scheduleAttendance.emptyShift')}
         </button>
       )
     }
 
     return (
       <Space direction="vertical" size={6} style={{ width: '100%' }}>
-        {daySchedules.map((schedule) => (
-          <button
-            key={schedule.scheduleGuid}
-            type="button"
-            onClick={() => openScheduleDrawer(schedule)}
-            style={{
-              width: '100%',
-              border: '1px solid #91caff',
-              borderRadius: 6,
-              background: schedule.status === 'Draft' ? '#fffbe6' : schedule.status === 'Cancelled' ? '#fff1f0' : '#e6f4ff',
-              padding: '6px 8px',
-              textAlign: 'left',
-              cursor: access.canEditAttendanceSchedule ? 'pointer' : 'default',
-            }}
-            disabled={!access.canEditAttendanceSchedule}
-          >
-            <Space direction="vertical" size={2}>
-              <Typography.Text strong style={{ fontSize: 12 }}>{formatTime(schedule.startTime)} - {formatTime(schedule.endTime)}</Typography.Text>
-              {scheduleStatusTag(schedule.status)}
-              {schedule.remark ? <Typography.Text type="secondary" style={{ fontSize: 12 }}>{schedule.remark}</Typography.Text> : null}
-            </Space>
-          </button>
-        ))}
+        {daySchedules.map((schedule) => {
+          const canEditSchedule = access.canEditAttendanceSchedule && canEditStoreCode(schedule.storeCode)
+          return (
+            <button
+              key={schedule.scheduleGuid}
+              type="button"
+              onClick={() => openScheduleDrawer(schedule)}
+              style={{
+                width: '100%',
+                border: '1px solid #91caff',
+                borderRadius: 6,
+                background: schedule.status === 'Draft' ? '#fffbe6' : schedule.status === 'Cancelled' ? '#fff1f0' : '#e6f4ff',
+                padding: '6px 8px',
+                textAlign: 'left',
+                cursor: canEditSchedule ? 'pointer' : 'default',
+              }}
+              disabled={!canEditSchedule}
+            >
+              <Space direction="vertical" size={2}>
+                <Typography.Text strong style={{ fontSize: 12 }}>{formatTime(schedule.startTime)} - {formatTime(schedule.endTime)}</Typography.Text>
+                {scheduleStatusTag(schedule.status)}
+                {schedule.remark ? <Typography.Text type="secondary" style={{ fontSize: 12 }}>{schedule.remark}</Typography.Text> : null}
+              </Space>
+            </button>
+          )
+        })}
       </Space>
     )
   }
@@ -903,7 +1037,7 @@ export default function ScheduleAttendancePage() {
       title: t('column.action'),
       key: 'action',
       width: 150,
-      render: (_, record) => access.canReviewAttendance && record.reviewStatus === 'Pending' ? (
+      render: (_, record) => access.canReviewAttendance && record.reviewStatus === 'Pending' && canEditStoreCode(record.storeCode) ? (
         <Space>
           <Button type="link" size="small" icon={<CheckOutlined />} onClick={() => openReviewModal(record, 'approve')}>{t('posAdmin.scheduleAttendance.actions.approve')}</Button>
           <Button type="link" danger size="small" icon={<CloseOutlined />} onClick={() => openReviewModal(record, 'reject')}>{t('posAdmin.scheduleAttendance.actions.reject')}</Button>
@@ -924,7 +1058,7 @@ export default function ScheduleAttendancePage() {
       title: t('column.action'),
       key: 'action',
       width: 150,
-      render: (_, record) => access.canEditAttendanceHoliday ? (
+      render: (_, record) => access.canEditAttendanceHoliday && canEditStoreCode(record.storeCode) ? (
         <Space>
           <Button type="link" size="small" icon={<EditOutlined />} onClick={() => openHolidayDrawer(record)}>{t('common.edit')}</Button>
           <Button type="link" size="small" danger icon={<DeleteOutlined />} onClick={() => confirmDeleteHoliday(record)}>{t('common.delete')}</Button>
@@ -1097,25 +1231,25 @@ export default function ScheduleAttendancePage() {
           {filterBar}
           {activeTab === 'schedules' && access.canEditAttendanceSchedule ? (
             <>
-              <Tooltip title={!storeCode ? t('posAdmin.scheduleAttendance.messages.selectStoreBeforePublish') : undefined}>
+              <Tooltip title={!storeCode ? t('posAdmin.scheduleAttendance.messages.selectStoreBeforePublish') : !canEditSelectedStore ? t('message.noPermission', '无权操作该数据') : undefined}>
                 <Button
                   icon={<CheckOutlined />}
-                  disabled={!storeCode}
+                  disabled={!storeCode || !canEditSelectedStore}
                   loading={publishing}
                   onClick={() => void handlePublishWeek()}
                 >
                   {t('posAdmin.scheduleAttendance.actions.publishWeek')}
                 </Button>
               </Tooltip>
-              <Button type="primary" icon={<PlusOutlined />} onClick={() => openScheduleDrawer()}>{t('posAdmin.scheduleAttendance.actions.createSchedule')}</Button>
+              <Button type="primary" icon={<PlusOutlined />} disabled={!canEditSelectedStore} onClick={() => openScheduleDrawer()}>{t('posAdmin.scheduleAttendance.actions.createSchedule')}</Button>
             </>
           ) : null}
           {activeTab === 'holidays' && access.canEditAttendanceHoliday ? (
             <>
-              <Tooltip title={!storeCode ? t('posAdmin.scheduleAttendance.messages.selectStoreBeforeHolidaySync') : undefined}>
+              <Tooltip title={!storeCode ? t('posAdmin.scheduleAttendance.messages.selectStoreBeforeHolidaySync') : !canEditSelectedStore ? t('message.noPermission', '无权操作该数据') : undefined}>
                 <Button
                   icon={<ReloadOutlined />}
-                  disabled={!storeCode}
+                  disabled={!storeCode || !canEditSelectedStore}
                   loading={syncingHolidays}
                   onClick={() => void syncFutureHolidays()}
                 >
@@ -1125,13 +1259,13 @@ export default function ScheduleAttendancePage() {
               <Tooltip title={t('posAdmin.scheduleAttendance.messages.batchHolidayOverwriteHint')}>
                 <Button
                   icon={<CopyOutlined />}
-                  disabled={!editableHolidayStoreOptions.length}
+                  disabled={!editableStoreOptions.length}
                   onClick={() => openBatchHolidayDrawer()}
                 >
                   {t('posAdmin.scheduleAttendance.actions.batchHoliday')}
                 </Button>
               </Tooltip>
-              <Button type="primary" icon={<PlusOutlined />} onClick={() => openHolidayDrawer()}>{t('posAdmin.scheduleAttendance.actions.createHoliday')}</Button>
+              <Button type="primary" icon={<PlusOutlined />} disabled={Boolean(storeCode && !canEditSelectedStore)} onClick={() => openHolidayDrawer()}>{t('posAdmin.scheduleAttendance.actions.createHoliday')}</Button>
             </>
           ) : null}
         </Space>
@@ -1155,7 +1289,7 @@ export default function ScheduleAttendancePage() {
       >
         <Form form={scheduleForm} layout="vertical">
           <Form.Item name="storeCode" label={t('posAdmin.scheduleAttendance.fields.store')} rules={[{ required: true, message: t('form.pleaseSelectStore') }]}>
-            <Select showSearch optionFilterProp="label" options={storeOptions} />
+            <Select showSearch optionFilterProp="label" options={editableStoreOptions} />
           </Form.Item>
           <Form.Item name="userGuid" label={t('posAdmin.scheduleAttendance.fields.employeeGuid')} rules={[{ required: true, message: t('posAdmin.scheduleAttendance.validation.userGuidRequired') }]}>
             <Select
@@ -1198,7 +1332,7 @@ export default function ScheduleAttendancePage() {
         <Form form={holidayForm} layout="vertical">
           {editingHoliday ? (
             <Form.Item name="storeCode" label={t('posAdmin.scheduleAttendance.fields.store')} rules={[{ required: true, message: t('form.pleaseSelectStore') }]}>
-              <Select showSearch optionFilterProp="label" options={storeOptions} />
+              <Select showSearch optionFilterProp="label" options={editableStoreOptions} />
             </Form.Item>
           ) : (
             <Form.Item
@@ -1211,7 +1345,7 @@ export default function ScheduleAttendancePage() {
                 showSearch
                 optionFilterProp="label"
                 maxTagCount="responsive"
-                options={editableHolidayStoreOptions}
+                options={editableStoreOptions}
               />
             </Form.Item>
           )}
@@ -1258,7 +1392,7 @@ export default function ScheduleAttendancePage() {
               showSearch
               optionFilterProp="label"
               maxTagCount="responsive"
-              options={editableHolidayStoreOptions}
+              options={editableStoreOptions}
             />
           </Form.Item>
           <Form.Item name="holidayDate" label={t('posAdmin.scheduleAttendance.fields.holidayDate')} rules={[{ required: true }]}>

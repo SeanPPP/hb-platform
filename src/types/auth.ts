@@ -98,6 +98,7 @@ export interface AccessControl {
   hasAnyRole: (roles: string[]) => boolean
   hasAllRoles: (roles: string[]) => boolean
   managedStoreCodes: () => string[] | null
+  visibleStoreCodes: () => string[] | null
 }
 
 export interface NavigationMenuDto {

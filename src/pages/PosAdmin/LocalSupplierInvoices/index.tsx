@@ -31,6 +31,13 @@ import { getActiveLocalSuppliers } from '../../../services/localSupplierService'
 import { getActiveStores } from '../../../services/storeService'
 import type { LocalSupplierInvoiceListDto } from '../../../types/localSupplierInvoice'
 import { copyTextToClipboard } from '../../../utils/clipboard'
+import {
+  buildStoreOptionsFromUserStores,
+  buildScopedStoreCodeFilter,
+  filterStoreOptionsByManagedCodes,
+  isStoreCodeInManagedScope,
+  shouldSkipScopedStoreQuery,
+} from '../../../utils/managedStoreScope'
 
 const SORT_FIELD_MAP: Record<string, string> = {
   storeName: 'storeName',
@@ -83,7 +90,7 @@ function formatAmount(value?: number) {
 export default function LocalSupplierInvoicesPage() {
   const { t } = useTranslation()
   const navigate = useNavigate()
-  const { access } = useAuthStore()
+  const { access, currentUser } = useAuthStore()
   const isAdmin = access.isAdmin
   const managedStoreCodes = access.managedStoreCodes()
   const managedStoreCodeKey = managedStoreCodes?.join(',') ?? 'all'
@@ -125,12 +132,20 @@ export default function LocalSupplierInvoicesPage() {
   const [tableScrollY, setTableScrollY] = useState<number | undefined>(undefined)
 
   const loadData = async () => {
+    if (shouldSkipScopedStoreQuery(managedStoreCodes)) {
+      setData([])
+      setTotal(0)
+      setSelectedRowKeys([])
+      return
+    }
+
     setLoading(true)
     try {
       const startRow = (page - 1) * pageSize
       const filterModel: Record<string, unknown> = {}
-      if (storeCode) {
-        filterModel.storeCode = { filterType: 'text', type: 'equals', filter: storeCode }
+      const scopedStoreFilter = buildScopedStoreCodeFilter(storeCode, managedStoreCodes)
+      if (scopedStoreFilter) {
+        filterModel.storeCode = scopedStoreFilter
       }
       if (supplierCode) {
         filterModel.supplierCode = { filterType: 'text', type: 'equals', filter: supplierCode }
@@ -161,7 +176,7 @@ export default function LocalSupplierInvoicesPage() {
 
   useEffect(() => {
     loadData()
-  }, [page, pageSize, sortBy, sortOrder])
+  }, [page, pageSize, sortBy, sortOrder, managedStoreCodeKey])
 
   useLayoutEffect(() => {
     const calc = () => {
@@ -178,20 +193,19 @@ export default function LocalSupplierInvoicesPage() {
 
   useEffect(() => {
     const loadOptions = async () => {
-      const [storesResult, suppliersResult] = await Promise.allSettled([
-        getActiveStores(),
-        getActiveLocalSuppliers(),
-      ])
+      const suppliersResult = await getActiveLocalSuppliers()
+        .then((value) => ({ status: 'fulfilled' as const, value }))
+        .catch(() => ({ status: 'rejected' as const }))
 
-      if (storesResult.status === 'fulfilled') {
-        const filteredStores = managedStoreCodes === null
-          ? storesResult.value
-          : storesResult.value.filter((store) => managedStoreCodes.includes(store.value))
-        setStoreOptions(filteredStores)
-        if (storeCode && !filteredStores.some((store) => store.value === storeCode)) {
+      try {
+        const stores = managedStoreCodes === null
+          ? filterStoreOptionsByManagedCodes(await getActiveStores(), managedStoreCodes)
+          : buildStoreOptionsFromUserStores(currentUser?.stores, { manageableOnly: true })
+        setStoreOptions(stores)
+        if (storeCode && !stores.some((store) => store.value === storeCode)) {
           setStoreCode(undefined)
         }
-      } else {
+      } catch {
         setStoreOptions([])
       }
 
@@ -207,7 +221,7 @@ export default function LocalSupplierInvoicesPage() {
       }
     }
     loadOptions()
-  }, [managedStoreCodeKey, storeCode])
+  }, [currentUser?.stores, managedStoreCodeKey, storeCode])
 
   const handleSearch = () => {
     setPage(1)
@@ -237,6 +251,11 @@ export default function LocalSupplierInvoicesPage() {
 
   const handleCreate = async () => {
     const values = await createForm.validateFields()
+    if (!isStoreCodeInManagedScope(values.storeCode, managedStoreCodes)) {
+      message.error(t('message.noPermission', '无权操作该数据'))
+      return
+    }
+
     // 随货单号重复检测
     const invoiceNoValue = values.invoiceNo?.trim()
     if (invoiceNoValue) {
@@ -497,6 +516,7 @@ export default function LocalSupplierInvoicesPage() {
             <Button
               type="primary"
               icon={<PlusOutlined />}
+              disabled={storeOptions.length === 0}
               onClick={() => setCreateVisible(true)}
             >
               {t('posAdmin.invoices.createInvoice')}

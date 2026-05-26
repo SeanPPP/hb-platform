@@ -41,6 +41,22 @@ const storeManagerAccess = buildAccess(
   createCurrentUser({
     roleNames: ['StoreManager'],
     permissions: [],
+    stores: [
+      {
+        storeGUID: 'managed-store-guid',
+        storeName: 'Managed Store',
+        storeCode: 'M1',
+        isManageable: true,
+        assignedAt: '2026-01-01T00:00:00Z',
+      },
+      {
+        storeGUID: 'linked-store-guid',
+        storeName: 'Linked Store',
+        storeCode: 'L1',
+        isManageable: false,
+        assignedAt: '2026-01-01T00:00:00Z',
+      },
+    ],
   }),
 )
 
@@ -54,6 +70,18 @@ assertEqual(
   storeManagerAccess.canManageStoreProducts,
   false,
   'StoreManager without explicit permissions should not unlock store product management',
+)
+
+assertEqual(
+  storeManagerAccess.managedStoreCodes()?.join(','),
+  'M1',
+  'StoreManager managed store scope should include only manageable stores',
+)
+
+assertEqual(
+  storeManagerAccess.visibleStoreCodes()?.join(','),
+  'M1,L1',
+  'StoreManager visible store scope should include all linked stores',
 )
 
 const adminAccess = buildAccess(
