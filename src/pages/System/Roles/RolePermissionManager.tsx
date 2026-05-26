@@ -1,9 +1,13 @@
 import { CheckOutlined, SaveOutlined } from '@ant-design/icons'
-import { Button, Card, Checkbox, Space, Spin, message } from 'antd'
+import { Alert, Button, Card, Checkbox, Space, Spin, message } from 'antd'
 import { useCallback, useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import type { PermissionCategoryDto } from '../../../types/role'
-import { assignPermissionsToRole, getPermissions, getRolePermissions } from '../../../services/roleService'
+import type { PermissionCategoryDto, RolePermissionStateDto } from '../../../types/role'
+import {
+  assignPermissionsToRole,
+  getPermissionCatalog,
+  getRolePermissionState,
+} from '../../../services/roleService'
 
 interface RolePermissionManagerProps {
   roleGuid: string
@@ -23,18 +27,24 @@ export default function RolePermissionManager({
   const [categories, setCategories] = useState<PermissionCategoryDto[]>([])
   const [checkedKeys, setCheckedKeys] = useState<Set<string>>(new Set())
   const [originalKeys, setOriginalKeys] = useState<Set<string>>(new Set())
+  const [permissionState, setPermissionState] = useState<RolePermissionStateDto | null>(null)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
 
   const loadData = useCallback(async () => {
     setLoading(true)
     try {
-      const [allPerms, rolePerms] = await Promise.all([
-        getPermissions(),
-        getRolePermissions(roleGuid),
+      const [permissionCatalog, rolePermissionState] = await Promise.all([
+        getPermissionCatalog(),
+        getRolePermissionState(roleGuid),
       ])
-      setCategories(allPerms)
-      const keySet = new Set(rolePerms)
+      setCategories(permissionCatalog.categories)
+      setPermissionState(rolePermissionState)
+      const keySet = new Set(
+        rolePermissionState.isSuperAdmin
+          ? rolePermissionState.effectivePermissionCodes
+          : rolePermissionState.explicitPermissionCodes,
+      )
       setCheckedKeys(keySet)
       setOriginalKeys(keySet)
     } catch (error) {
@@ -49,6 +59,9 @@ export default function RolePermissionManager({
     void loadData()
   }, [loadData])
 
+  const isSuperAdmin = permissionState?.isSuperAdmin ?? false
+  const disableEditing = readOnly || isSuperAdmin
+
   const hasChanges = () => {
     if (checkedKeys.size !== originalKeys.size) return true
     for (const key of checkedKeys) {
@@ -58,6 +71,7 @@ export default function RolePermissionManager({
   }
 
   const handleToggle = (code: string) => {
+    if (disableEditing) return
     setCheckedKeys((prev) => {
       const next = new Set(prev)
       if (next.has(code)) {
@@ -70,6 +84,7 @@ export default function RolePermissionManager({
   }
 
   const handleToggleCategory = (codes: string[]) => {
+    if (disableEditing) return
     setCheckedKeys((prev) => {
       const next = new Set(prev)
       const allChecked = codes.every((c) => next.has(c))
@@ -83,6 +98,7 @@ export default function RolePermissionManager({
   }
 
   const handleSave = async () => {
+    if (isSuperAdmin) return
     setSaving(true)
     try {
       await assignPermissionsToRole(roleGuid, {
@@ -105,6 +121,14 @@ export default function RolePermissionManager({
 
   return (
     <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+      {isSuperAdmin && (
+        <Alert
+          type="info"
+          showIcon
+          message={t('system.roles.superAdminPermissionsHint', 'Admin 默认拥有所有权限，无需分配')}
+        />
+      )}
+
       {categories.map((cat) => {
         const codes = cat.permissions.map((p) => p.name)
         const allChecked = codes.length > 0 && codes.every((c) => checkedKeys.has(c))
@@ -120,7 +144,7 @@ export default function RolePermissionManager({
                 checked={allChecked}
                 indeterminate={indeterminate}
                 onChange={() => handleToggleCategory(codes)}
-                disabled={readOnly}
+                disabled={disableEditing}
                 style={{ fontWeight: 600 }}
               >
                 {cat.displayName}
@@ -133,7 +157,7 @@ export default function RolePermissionManager({
                   key={perm.name}
                   checked={checkedKeys.has(perm.name)}
                   onChange={() => handleToggle(perm.name)}
-                  disabled={readOnly}
+                  disabled={disableEditing}
                 >
                   {perm.displayName}
                 </Checkbox>
@@ -143,7 +167,7 @@ export default function RolePermissionManager({
         )
       })}
 
-      {!readOnly && hasChanges() && (
+      {!readOnly && !isSuperAdmin && hasChanges() && (
         <div style={{ textAlign: 'right', paddingTop: 8 }}>
           <Button
             type="primary"
@@ -156,7 +180,15 @@ export default function RolePermissionManager({
         </div>
       )}
 
-      {!readOnly && !hasChanges() && categories.length > 0 && (
+      {!readOnly && isSuperAdmin && categories.length > 0 && (
+        <div style={{ textAlign: 'right', paddingTop: 8 }}>
+          <Button type="primary" icon={<SaveOutlined />} disabled>
+            {t('system.roles.savePermissions')}
+          </Button>
+        </div>
+      )}
+
+      {!readOnly && !isSuperAdmin && !hasChanges() && categories.length > 0 && (
         <div style={{ textAlign: 'center', paddingTop: 4, color: '#999' }}>
           <CheckOutlined style={{ marginRight: 6 }} />
           {t('system.roles.permUpToDate')}

@@ -8,7 +8,7 @@ import type { RequestError } from '../utils/request'
 interface AuthState {
   currentUser: CurrentUser | null
   access: AccessControl
-  navigationMenu: NavigationMenuDto[]
+  navigationMenu: NavigationMenuDto[] | undefined
   initialized: boolean
   loading: boolean
   loginLoading: boolean
@@ -27,14 +27,14 @@ const fetchAndSetMenu = async (
     const menu = await fetchNavigationMenu()
     set({ navigationMenu: menu })
   } catch {
-    set({ navigationMenu: [] })
+    set({ navigationMenu: undefined })
   }
 }
 
 export const useAuthStore = create<AuthState>((set) => ({
   currentUser: null,
   access: emptyAccess,
-  navigationMenu: [],
+  navigationMenu: undefined,
   initialized: false,
   loading: false,
   loginLoading: false,
@@ -64,6 +64,7 @@ export const useAuthStore = create<AuthState>((set) => ({
       set({
         currentUser: null,
         access: emptyAccess,
+        navigationMenu: undefined,
         initialized: true,
         loading: false,
       })
@@ -96,7 +97,7 @@ export const useAuthStore = create<AuthState>((set) => ({
       set({
         currentUser: null,
         access: emptyAccess,
-        navigationMenu: [],
+        navigationMenu: undefined,
         initialized: true,
         loading: false,
         loginLoading: false,
@@ -107,7 +108,7 @@ export const useAuthStore = create<AuthState>((set) => ({
     set({
       currentUser: null,
       access: emptyAccess,
-      navigationMenu: [],
+      navigationMenu: undefined,
       initialized: true,
       loading: false,
       loginLoading: false,

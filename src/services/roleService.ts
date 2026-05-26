@@ -2,11 +2,13 @@ import type { ApiResponse, PagedResult } from '../types/api'
 import type {
   CreateRoleDto,
   CreateSysPermissionDto,
+  PermissionCatalogDto,
   PermissionCategoryDto,
   RoleDetailDto,
   RoleDto,
   RoleOptionDto,
   RolePermissionAssignmentDto,
+  RolePermissionStateDto,
   RoleQueryDto,
   RoleUserDto,
   SysPermissionDto,
@@ -64,10 +66,22 @@ export async function getPermissions(): Promise<PermissionCategoryDto[]> {
   return unwrapApiData(response) ?? []
 }
 
+export async function getPermissionCatalog(): Promise<PermissionCatalogDto> {
+  const response = await request.get<ApiResponse<PermissionCatalogDto>>('/api/Roles/permissions/catalog')
+  return unwrapApiData(response)
+}
+
 /** Get a role's current permission codes */
 export async function getRolePermissions(guid: string): Promise<string[]> {
   const response = await request.get<ApiResponse<string[]>>(`/api/Roles/guid/${guid}/permissions`)
   return unwrapApiData(response) ?? []
+}
+
+export async function getRolePermissionState(guid: string): Promise<RolePermissionStateDto> {
+  const response = await request.get<ApiResponse<RolePermissionStateDto>>(
+    `/api/Roles/guid/${guid}/permissions/state`,
+  )
+  return unwrapApiData(response)
 }
 
 /** Assign permissions to a role (replaces all existing) */

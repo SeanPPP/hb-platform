@@ -72,6 +72,32 @@ export interface PermissionCategoryDto {
   permissions: PermissionDto[]
 }
 
+export interface PermissionAliasDto {
+  canonicalCode: string
+  aliasCodes: string[]
+}
+
+export interface RolePermissionTemplateDto {
+  roleName: string
+  permissionCodes: string[]
+}
+
+export interface PermissionCatalogDto {
+  categories: PermissionCategoryDto[]
+  permissionAliases: PermissionAliasDto[]
+  roleTemplates: RolePermissionTemplateDto[]
+  superAdminRoleNames: string[]
+}
+
+export interface RolePermissionStateDto {
+  roleGuid: string
+  roleName: string
+  isSuperAdmin: boolean
+  implicitAllPermissions: boolean
+  explicitPermissionCodes: string[]
+  effectivePermissionCodes: string[]
+}
+
 /** Request body for POST /api/roles/guid/{guid}/permissions */
 export interface RolePermissionAssignmentDto {
   permissions: string[]

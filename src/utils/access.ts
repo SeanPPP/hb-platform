@@ -1,7 +1,32 @@
 import type { AccessControl, CurrentUser } from '../types/auth'
-import { P, WAREHOUSE_MANAGER_PERMISSION_CODES } from '../types/permissions'
+import { P } from '../types/permissions'
 
-const warehouseManagerPermissionSet = new Set<string>(WAREHOUSE_MANAGER_PERMISSION_CODES)
+const PERMISSION_ALIAS_GROUPS = [
+  {
+    canonicalCode: P.LocalPurchase.View,
+    aliasCodes: ['LocalInvocie.View'],
+  },
+  {
+    canonicalCode: P.LocalPurchase.Edit,
+    aliasCodes: ['LocalInvocie.Edit'],
+  },
+] as const
+
+const permissionAliasMap = new Map<string, string[]>()
+
+PERMISSION_ALIAS_GROUPS.forEach(({ canonicalCode, aliasCodes }) => {
+  const codes = [canonicalCode, ...aliasCodes]
+  const uniqueCodes = Array.from(new Set(codes.map((code) => code.toLowerCase())))
+
+  codes.forEach((code) => {
+    permissionAliasMap.set(code.toLowerCase(), uniqueCodes)
+  })
+})
+
+function getEquivalentPermissionCodes(permission: string): string[] {
+  const normalizedPermission = permission.toLowerCase()
+  return permissionAliasMap.get(normalizedPermission) ?? [normalizedPermission]
+}
 
 function createEmptyAccess(): AccessControl {
   const alwaysFalse = () => false
@@ -68,8 +93,11 @@ function createEmptyAccess(): AccessControl {
     canReviewAttendance: false,
     canEditAttendanceHoliday: false,
     canEditAttendanceSettings: false,
+    canViewEmployeeProfiles: false,
     canViewDeviceRegistration: false,
     canManageDeviceRegistration: false,
+    canViewPosProducts: false,
+    canManagePosProducts: false,
     canAccessDashboard: false,
     canAccessOrderFront: false,
     hasPermission: alwaysFalse,
@@ -91,11 +119,11 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
 
   const isAdmin = hasRole('Admin') || hasRole('管理员')
   const isWarehouseManager = hasRole('WarehouseManager') || hasRole('仓库经理')
+  const currentPermissionSet = new Set((currentUser.permissions ?? []).map((item) => item.toLowerCase()))
 
   const hasPermission = (permission: string) => {
     if (isAdmin) return true
-    if (isWarehouseManager && warehouseManagerPermissionSet.has(permission)) return true
-    return currentUser.permissions?.some((item) => item.toLowerCase() === permission.toLowerCase()) ?? false
+    return getEquivalentPermissionCodes(permission).some((code) => currentPermissionSet.has(code))
   }
 
   const onlyRole = (role: string) => {
@@ -132,69 +160,74 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
   }
 
   // --- 旧权限（保留兼容）---
-  const canReadUser = isAdmin || hasPermission('Users.View')
-  const canWriteUser = isAdmin || hasPermission('Users.Create') || hasPermission('Users.Edit')
-  const canDeleteUser = isAdmin || hasPermission('Users.Delete')
-  const canReadRole = isAdmin || hasPermission('Roles.View')
-  const canWriteRole = isAdmin || hasPermission('Roles.Create') || hasPermission('Roles.Edit')
-  const canDeleteRole = isAdmin || hasPermission('Roles.Delete')
-  const canReadStore = isAdmin || hasPermission('Stores.View')
-  const canWriteStore = isAdmin || hasPermission('Stores.Create') || hasPermission('Stores.Edit')
-  const canDeleteStore = isAdmin || hasPermission('Stores.Delete')
-  const canManageWarehouse = isAdmin || hasPermission('Warehouse.Manage')
-  const canManageStore = isAdmin || hasPermission('Stores.Edit') || hasPermission('Warehouse.Manage')
+  const canReadUser = isAdmin || hasPermission(P.Users.View)
+  const canWriteUser = isAdmin || hasPermission(P.Users.Create) || hasPermission(P.Users.Edit)
+  const canDeleteUser = isAdmin || hasPermission(P.Users.Delete)
+  const canReadRole = isAdmin || hasPermission(P.Roles.View)
+  const canWriteRole = isAdmin || hasPermission(P.Roles.Create) || hasPermission(P.Roles.Edit)
+  const canDeleteRole = isAdmin || hasPermission(P.Roles.Delete)
+  const canReadStore = isAdmin || hasPermission(P.Stores.View)
+  const canWriteStore = isAdmin || hasPermission(P.Stores.Create) || hasPermission(P.Stores.Edit)
+  const canDeleteStore = isAdmin || hasPermission(P.Stores.Delete)
+  const canManageWarehouse = isAdmin || hasPermission(P.Warehouse.Manage)
+  const canManageStore = isAdmin || hasPermission(P.Stores.Edit) || hasPermission(P.Warehouse.Manage)
 
-  const canReadOrder = isAdmin || hasPermission('Orders.View')
-  const canWriteOrder = isAdmin || hasPermission('Orders.Create') || hasPermission('Orders.Edit')
-  const canDeleteOrder = isAdmin || hasPermission('Orders.Delete')
-  const canReadProduct = isAdmin || hasPermission('Products.View')
-  const canWriteProduct = isAdmin || hasPermission('Products.Create') || hasPermission('Products.Edit')
-  const canDeleteProduct = isAdmin || hasPermission('Products.Delete')
+  const canReadOrder = isAdmin || hasPermission(P.Orders.View)
+  const canWriteOrder = isAdmin || hasPermission(P.Orders.Create) || hasPermission(P.Orders.Edit)
+  const canDeleteOrder = isAdmin || hasPermission(P.Orders.Delete)
+  const canReadProduct = isAdmin || hasPermission(P.Products.View)
+  const canWriteProduct = isAdmin || hasPermission(P.Products.Create) || hasPermission(P.Products.Edit)
+  const canDeleteProduct = isAdmin || hasPermission(P.Products.Delete)
 
-  const canViewReports = isAdmin || hasPermission('Reports.View')
-  const canExportData = isAdmin || hasPermission('Reports.Export')
-  const canModifyPrice = isAdmin || hasPermission('Prices.Modify')
-  const canDeletePrice = isAdmin || hasPermission('Prices.Delete')
+  const canViewReports = isAdmin || hasPermission(P.Reports.View)
+  const canExportData = isAdmin || hasPermission(P.Reports.Export)
+  const canModifyPrice = isAdmin || hasPermission(P.Prices.Modify)
+  const canDeletePrice = isAdmin || hasPermission(P.Prices.Delete)
 
   // --- 新细粒度权限 ---
   // 仓库
-  const canManageWarehouseProducts = isAdmin || hasPermission('Warehouse.ManageProducts') || hasPermission('Warehouse.Manage')
-  const canManageWarehouseOrders = isAdmin || hasPermission('Warehouse.ManageOrders') || hasPermission('Warehouse.Manage')
-  const canManageWarehouseCategories = isAdmin || hasPermission('Warehouse.ManageCategories') || hasPermission('Warehouse.Manage')
-  const canManageWarehouseLocations = isAdmin || hasPermission('Warehouse.ManageLocations') || hasPermission('Warehouse.Manage')
-  const canViewContainers = isAdmin || hasPermission('Container.View')
-  const canCreateContainer = isAdmin || hasPermission('Container.Create')
-  const canEditContainer = isAdmin || hasPermission('Container.Edit')
-  const canDeleteContainer = isAdmin || hasPermission('Container.Delete')
+  const canManageWarehouseProducts =
+    isAdmin || hasPermission(P.Warehouse.ManageProducts) || hasPermission(P.Warehouse.Manage)
+  const canManageWarehouseOrders =
+    isAdmin || hasPermission(P.Warehouse.ManageOrders) || hasPermission(P.Warehouse.Manage)
+  const canManageWarehouseCategories =
+    isAdmin || hasPermission(P.Warehouse.ManageCategories) || hasPermission(P.Warehouse.Manage)
+  const canManageWarehouseLocations =
+    isAdmin || hasPermission(P.Warehouse.ManageLocations) || hasPermission(P.Warehouse.Manage)
+  const canViewContainers = isAdmin || hasPermission(P.Container.View)
+  const canCreateContainer = isAdmin || hasPermission(P.Container.Create)
+  const canEditContainer = isAdmin || hasPermission(P.Container.Edit)
+  const canDeleteContainer = isAdmin || hasPermission(P.Container.Delete)
 
   // 分店商品
-  const canManageStoreProducts = isAdmin || hasPermission('StoreProducts.View')
-  const canEditStoreProducts = isAdmin || hasPermission('StoreProducts.Edit')
-  const canCreateStoreProducts = isAdmin || hasPermission('StoreProducts.Create')
+  const canManageStoreProducts = isAdmin || hasPermission(P.StoreProducts.View)
+  const canEditStoreProducts = isAdmin || hasPermission(P.StoreProducts.Edit)
+  const canCreateStoreProducts = isAdmin || hasPermission(P.StoreProducts.Create)
 
   // 分店运营
-  const canManageStoreOps = isAdmin || hasPermission('Store.ManageOperations')
+  const canManageStoreOps = isAdmin || hasPermission(P.Store.ManageOperations)
 
   // 本地进货
-  const canManageLocalPurchase = isAdmin || hasPermission('LocalPurchase.View') || hasPermission('LocalInvocie.View')
-  const canEditLocalPurchase = isAdmin || hasPermission('LocalPurchase.Edit') || hasPermission('LocalInvocie.Edit')
+  const canManageLocalPurchase = isAdmin || hasPermission(P.LocalPurchase.View)
+  const canEditLocalPurchase = isAdmin || hasPermission(P.LocalPurchase.Edit)
 
   // 定价策略
-  const canManagePricing = isAdmin || hasPermission('PricingStrategy.View')
-  const canEditPricing = isAdmin || hasPermission('PricingStrategy.Edit')
+  const canManagePricing = isAdmin || hasPermission(P.PricingStrategy.View)
+  const canEditPricing = isAdmin || hasPermission(P.PricingStrategy.Edit)
 
   // 促销
-  const canManagePromotions = isAdmin || hasPermission('Promotions.View')
-  const canEditPromotions = isAdmin || hasPermission('Promotions.Edit')
+  const canManagePromotions = isAdmin || hasPermission(P.Promotions.View)
+  const canEditPromotions = isAdmin || hasPermission(P.Promotions.Edit)
 
   // 澳洲供应商
-  const canViewAustralianSuppliers = isAdmin || hasPermission('AustralianSuppliers.View')
-  const canEditAustralianSuppliers = isAdmin || hasPermission('AustralianSuppliers.Edit')
+  const canViewAustralianSuppliers = isAdmin || hasPermission(P.AustralianSuppliers.View)
+  const canEditAustralianSuppliers = isAdmin || hasPermission(P.AustralianSuppliers.Edit)
 
   // 国内采购
-  const canManageDomesticSuppliers = isAdmin || hasPermission('DomesticPurchase.ManageSuppliers')
-  const canManageDomesticProducts = isAdmin || hasPermission('DomesticPurchase.ManageProducts')
-  const canManageDomesticPrefixCodes = isAdmin || hasPermission('DomesticPurchase.ManagePrefixCodes')
+  const canManageDomesticSuppliers = isAdmin || hasPermission(P.DomesticPurchase.ManageSuppliers)
+  const canManageDomesticProducts = isAdmin || hasPermission(P.DomesticPurchase.ManageProducts)
+  const canManageDomesticPrefixCodes =
+    isAdmin || hasPermission(P.DomesticPurchase.ManagePrefixCodes)
 
   // 排班考勤
   const canViewAttendanceSchedule =
@@ -223,9 +256,13 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
     hasPermission(P.Attendance.AdminView) ||
     hasPermission(P.Attendance.HolidayEditManagedStore)
   const canEditAttendanceSettings = isAdmin || hasPermission(P.Attendance.SettingsEdit)
+  const canViewEmployeeProfiles = isAdmin || hasPermission(P.EmployeeProfiles.View)
   const canManageDeviceRegistration = isAdmin || hasPermission(P.DeviceRegistration.Manage)
   const canViewDeviceRegistration =
     canManageDeviceRegistration || isAdmin || hasPermission(P.DeviceRegistration.View)
+  const canViewPosProducts =
+    isAdmin || hasPermission(P.PosProducts.View) || hasPermission(P.PosProducts.Manage)
+  const canManagePosProducts = isAdmin || hasPermission(P.PosProducts.Manage)
 
   const canAccessDashboard = isAdmin || hasPermission(P.Dashboard.View)
   const canAccessOrderFront = isAdmin || hasPermission(P.OrderFront.View)
@@ -292,8 +329,11 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
     canReviewAttendance,
     canEditAttendanceHoliday,
     canEditAttendanceSettings,
+    canViewEmployeeProfiles,
     canViewDeviceRegistration,
     canManageDeviceRegistration,
+    canViewPosProducts,
+    canManagePosProducts,
     canAccessDashboard,
     canAccessOrderFront,
     hasPermission,

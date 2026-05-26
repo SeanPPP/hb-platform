@@ -66,11 +66,11 @@ export default function RoleDetailPage() {
         <HasPermission
           code={P.Roles.ManagePermissions}
           fallback={
-            <Space wrap>
-              {role.permissions?.length
-                ? role.permissions.map((item) => <Tag key={item}>{item}</Tag>)
-                : t('system.roles.noPermissions')}
-            </Space>
+            <RolePermissionManager
+              roleGuid={role.roleGUID}
+              roleName={role.roleName}
+              readOnly
+            />
           }
         >
           <RolePermissionManager

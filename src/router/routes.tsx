@@ -147,7 +147,7 @@ export const appRoutes: AppRouteItem[] = [
           title: 'menu.systemEmployeeProfiles',
           icon: 'IdcardOutlined',
           keepAlive: true,
-          accessKey: 'isAdmin',
+          accessKey: 'canViewEmployeeProfiles',
         },
         element: <SystemEmployeeProfilesPage />,
       },
@@ -422,7 +422,7 @@ export const appRoutes: AppRouteItem[] = [
           title: 'menu.productManagement',
           icon: 'AppstoreOutlined',
           keepAlive: true,
-          accessKey: 'isAdmin',
+          accessKey: 'canViewPosProducts',
         },
         element: <PosAdminProductManagementPage />,
       },
@@ -626,7 +626,7 @@ function buildMenusInternal(routes: AppRouteItem[], access: AccessControl): Menu
 }
 
 export function buildMenus(access: AccessControl, navigationMenu?: NavigationMenuDto[]) {
-  if (navigationMenu?.length) {
+  if (navigationMenu !== undefined) {
     return buildMenusFromBackend(navigationMenu)
   }
   return buildMenusInternal(appRoutes, access)

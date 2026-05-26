@@ -27,7 +27,7 @@ import {
   createPermission,
   deletePermission,
   getActiveRoles,
-  getPermissions,
+  getPermissionCatalog,
   getPermissionRoles,
   getSysPermissions,
 } from '../../../services/roleService'
@@ -70,7 +70,7 @@ function buildPermissionTableItems(
         name: permission.displayName || sysPermission?.name || permission.name,
         category: category.displayName || permission.category || category.category,
         description: permission.description || sysPermission?.description,
-        deletable: Boolean(sysPermission),
+        deletable: !permission.isSystemPermission && Boolean(sysPermission),
       })
     })
   })
@@ -104,15 +104,18 @@ export default function SystemPermissionsPage() {
   const [assignOpen, setAssignOpen] = useState(false)
   const [assignLoading, setAssignLoading] = useState(false)
   const [assignSaving, setAssignSaving] = useState(false)
-  const [currentPermission, setCurrentPermission] = useState<SysPermissionDto | null>(null)
+  const [currentPermission, setCurrentPermission] = useState<PermissionTableItem | null>(null)
   const [allRoles, setAllRoles] = useState<RoleOptionDto[]>([])
   const [roleTargetKeys, setRoleTargetKeys] = useState<string[]>([])
 
   const loadData = async () => {
     setLoading(true)
     try {
-      const [permissionCategories, sysPermissions] = await Promise.all([getPermissions(), getSysPermissions()])
-      setData(buildPermissionTableItems(permissionCategories, sysPermissions))
+      const [permissionCatalog, sysPermissions] = await Promise.all([
+        getPermissionCatalog(),
+        getSysPermissions(),
+      ])
+      setData(buildPermissionTableItems(permissionCatalog.categories, sysPermissions))
     } catch (error) {
       console.error(error)
       message.error(t('system.permissions.loadListFailed'))

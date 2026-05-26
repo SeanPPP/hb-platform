@@ -8,54 +8,63 @@ import {
 import { useLocation, useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import type { AccessControl } from '../types/auth'
-import { useEffect, useRef } from 'react'
+import { createElement, useEffect, useRef, type ReactNode } from 'react'
 
-interface TabConfig {
+export type MobileTabTranslate = ReturnType<typeof useTranslation>['t']
+
+export interface MobileTabConfig {
   key: string
   title: string
-  icon: React.ReactNode
+  icon: ReactNode
   path: string
   accessKey?: keyof AccessControl
 }
 
-const getTabs = (t: ReturnType<typeof useTranslation>['t']): TabConfig[] => [
+export const getMobileTabs = (t: MobileTabTranslate): MobileTabConfig[] => [
   {
     key: 'dashboard',
     title: t('mobileTab.dashboard', '工作台'),
-    icon: <AppstoreOutline />,
+    icon: createElement(AppstoreOutline),
     path: '/dashboard',
   },
   {
     key: 'warehouse',
     title: t('mobileTab.warehouse', '仓库'),
-    icon: <ShopbagOutline />,
+    icon: createElement(ShopbagOutline),
     path: '/warehouse/store-orders',
     accessKey: 'canManageWarehouseOrders',
   },
   {
     key: 'pos-admin',
     title: t('mobileTab.posAdmin', '收银'),
-    icon: <ReceivePaymentOutline />,
+    icon: createElement(ReceivePaymentOutline),
     path: '/pos-admin/suppliers',
     accessKey: 'canManageStoreProducts',
   },
   {
     key: 'domestic-purchase',
     title: t('mobileTab.domesticPurchase', '采购'),
-    icon: <BillOutline />,
+    icon: createElement(BillOutline),
     path: '/domestic-purchase/china-suppliers',
     accessKey: 'canManageDomesticSuppliers',
   },
   {
     key: 'system',
     title: t('mobileTab.system', '系统'),
-    icon: <SetOutline />,
+    icon: createElement(SetOutline),
     path: '/system/stores',
     accessKey: 'canReadStore',
   },
 ]
 
-function getActiveTab(pathname: string, tabs: TabConfig[]): string {
+export function getVisibleMobileTabs(access: AccessControl, t: MobileTabTranslate): MobileTabConfig[] {
+  return getMobileTabs(t).filter((tab) => {
+    if (!tab.accessKey) return true
+    return access[tab.accessKey] === true
+  })
+}
+
+function getActiveTab(pathname: string, tabs: MobileTabConfig[]): string {
   for (const tab of tabs) {
     if (pathname === tab.path || pathname.startsWith('/' + tab.key + '/')) {
       return tab.key
@@ -75,15 +84,11 @@ export default function MobileTabBar({ access }: MobileTabBarProps) {
   const navigate = useNavigate()
   const location = useLocation()
   const { t } = useTranslation()
-  const tabs = getTabs(t)
+  const tabs = getMobileTabs(t)
   const activeKey = getActiveTab(location.pathname, tabs)
   const scrollRef = useRef<HTMLDivElement>(null)
   const activeRef = useRef<HTMLButtonElement>(null)
-
-  const visibleTabs = tabs.filter((tab) => {
-    if (!tab.accessKey) return true
-    return access[tab.accessKey] === true
-  })
+  const visibleTabs = getVisibleMobileTabs(access, t)
 
   useEffect(() => {
     if (activeRef.current && scrollRef.current) {
