@@ -1,0 +1,66 @@
+{
+  "title": "门店代金券",
+  "subtitle": "按分店、状态和日期范围查看代金券、使用流水及关联订单",
+  "filters": {
+    "storeCode": "分店",
+    "supplierCode": "供应商",
+    "status": "状态",
+    "dateFrom": "开始日期",
+    "dateTo": "结束日期",
+    "emptyDate": "未选择",
+    "allStores": "全部分店",
+    "allSuppliers": "全部供应商",
+    "allStatuses": "全部状态",
+    "storePickerTitle": "选择分店",
+    "supplierPickerTitle": "选择供应商",
+    "statusPickerTitle": "选择状态"
+  },
+  "statuses": {
+    "available": "可用",
+    "used": "已使用",
+    "expired": "已过期",
+    "voided": "已作废",
+    "unknown": "未知状态"
+  },
+  "ledgerActions": {
+    "issued": "发放",
+    "used": "使用"
+  },
+  "labels": {
+    "voucherCode": "代金券号",
+    "store": "分店",
+    "status": "状态",
+    "amount": "面值",
+    "remainingAmount": "剩余金额",
+    "issuedAt": "发放时间",
+    "updatedAt": "更新时间",
+    "expiredAt": "到期时间",
+    "supplier": "供应商",
+    "ledger": "发放/使用流水",
+    "relatedOrders": "关联订单",
+    "action": "动作",
+    "actionTime": "操作时间",
+    "orderTime": "订单时间",
+    "orderNo": "订单号",
+    "orderAmount": "订单金额",
+    "remainingAfter": "变动后余额",
+    "operator": "操作人",
+    "reference": "参考号",
+    "customer": "客户",
+    "remark": "备注"
+  },
+  "actions": {
+    "viewDetail": "查看详情",
+    "loadMore": "加载更多"
+  },
+  "messages": {
+    "empty": "没有找到代金券",
+    "loadFailed": "加载代金券失败",
+    "detailsLoadFailed": "加载代金券详情失败",
+    "ledgerEmpty": "暂无流水记录",
+    "relatedOrdersEmpty": "暂无关联订单",
+    "suppliersLoading": "正在加载供应商",
+    "suppliersEmpty": "暂无供应商",
+    "suppliersLoadFailed": "加载供应商失败"
+  }
+}

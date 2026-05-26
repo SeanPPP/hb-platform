@@ -137,6 +137,18 @@ assertEqual(
 );
 
 assertEqual(
+  TAB_PATHS["installment-orders"],
+  "/(tabs)/installment-orders",
+  "installment orders route is registered as a valid tab path"
+);
+
+assertEqual(
+  TAB_PATHS["store-vouchers"],
+  "/(tabs)/store-vouchers",
+  "store vouchers route is registered as a valid tab path"
+);
+
+assertEqual(
   resolveTabRouteCorrection({
     currentRouteName: "local-supplier-invoices",
     hasAppliedDefaultRoute: true,
@@ -145,4 +157,26 @@ assertEqual(
   }),
   null,
   "local supplier invoices route is allowed when app menu exposes it"
+);
+
+assertEqual(
+  resolveTabRouteCorrection({
+    currentRouteName: "installment-orders",
+    hasAppliedDefaultRoute: true,
+    isDeviceMode: false,
+    routeNames: ["home", "installment-orders", "settings"],
+  }),
+  null,
+  "installment orders route is allowed when app menu exposes it"
+);
+
+assertEqual(
+  resolveTabRouteCorrection({
+    currentRouteName: "store-vouchers",
+    hasAppliedDefaultRoute: true,
+    isDeviceMode: false,
+    routeNames: ["home", "store-vouchers", "settings"],
+  }),
+  null,
+  "store vouchers route is allowed when app menu exposes it"
 );

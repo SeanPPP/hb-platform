@@ -37,6 +37,8 @@
     "warehouse": "Warehouse",
     "domesticPurchase": "China Purchase",
     "localSupplierInvoices": "AU Invoices",
+    "installmentOrders": "Installments",
+    "storeVouchers": "Vouchers",
     "attendance": "Attendance",
     "attendancePersonal": "Attendance",
     "attendanceManagement": "Attendance Admin",

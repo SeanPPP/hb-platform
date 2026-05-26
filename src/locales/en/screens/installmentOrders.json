@@ -1,0 +1,59 @@
+{
+  "title": "Installment Orders",
+  "subtitle": "View installment orders and payment records by store, status, customer phone, customer name, and date range",
+  "filters": {
+    "storeCode": "Store",
+    "status": "Status",
+    "userPhone": "Customer phone",
+    "userName": "Customer name",
+    "dateFrom": "From date",
+    "dateTo": "To date",
+    "emptyDate": "Not selected",
+    "allStores": "All stores",
+    "allStatuses": "All statuses",
+    "storePickerTitle": "Select store",
+    "statusPickerTitle": "Select status"
+  },
+  "statuses": {
+    "pending": "Pending",
+    "paid": "Paid",
+    "cancelled": "Cancelled",
+    "refunded": "Refunded",
+    "installment": "In installments",
+    "unknown": "Unknown status"
+  },
+  "labels": {
+    "orderNo": "Order no.",
+    "orderTime": "Order time",
+    "store": "Store",
+    "status": "Status",
+    "customer": "Customer",
+    "customerPhone": "Customer phone",
+    "customerName": "Customer name",
+    "itemCount": "Items",
+    "skuCount": "SKU count",
+    "totalAmount": "Total",
+    "discountAmount": "Discount",
+    "actualAmount": "Paid",
+    "paymentRecords": "Payment records",
+    "paymentMethod": "Payment method",
+    "paymentTime": "Payment time",
+    "paymentAmount": "Payment amount",
+    "cashier": "Cashier",
+    "reference": "Reference",
+    "orderLines": "Order lines",
+    "quantity": "Quantity",
+    "unitPrice": "Unit price"
+  },
+  "actions": {
+    "viewDetail": "View details",
+    "loadMore": "Load more"
+  },
+  "messages": {
+    "empty": "No installment orders found",
+    "loadFailed": "Failed to load installment orders",
+    "detailsLoadFailed": "Failed to load order details",
+    "paymentRecordsEmpty": "No payment records",
+    "orderLinesEmpty": "No order lines"
+  }
+}
