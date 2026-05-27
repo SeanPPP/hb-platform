@@ -243,9 +243,8 @@ export function useStores() {
     };
   }, [deviceBoundStore, isDeviceMode, setCartSummary, setSelectedStore, setUserStores, storesQuery.data, storesQuery.isSuccess, userGuid]);
 
-  const effectiveStores = isDeviceMode && deviceBoundStore ? [deviceBoundStore] : userStores;
-  const effectiveSelectedStore =
-    isDeviceMode && deviceBoundStore ? deviceBoundStore : selectedStore;
+  const effectiveStores = isDeviceMode ? (deviceBoundStore ? [deviceBoundStore] : []) : userStores;
+  const effectiveSelectedStore = isDeviceMode ? deviceBoundStore : selectedStore;
   const selectedStoreCode = effectiveSelectedStore?.storeCode ?? null;
   const embeddedStores = useMemo(() => sortStores(normalizeStores(user?.stores)), [user?.stores]);
   const debugInfo = useMemo(

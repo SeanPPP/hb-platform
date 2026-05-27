@@ -304,7 +304,7 @@ export function SeasonalCardsScreen() {
       pageNumber: historyPageNumber,
       pageSize: PAGE_SIZE,
     },
-    canView && Boolean(historyFilters.storeCode)
+    canView && Boolean(historyFilters.storeCode) && (!isDeviceMode || Boolean(deviceBoundStoreCode))
   );
   const submitMutation = useSubmitSeasonalCardSubmission();
   const detailQuery = useSeasonalCardSubmissionDetail(
@@ -351,6 +351,26 @@ export function SeasonalCardsScreen() {
       return;
     }
 
+    if (isDeviceMode) {
+      setDraft((current) =>
+        current.storeCode
+          ? {
+              ...current,
+              storeCode: "",
+            }
+          : current
+      );
+      setHistoryFilters((current) =>
+        current.storeCode
+          ? {
+              ...current,
+              storeCode: "",
+            }
+          : current
+      );
+      return;
+    }
+
     if (!selectedStore?.storeCode) {
       return;
     }
@@ -371,7 +391,7 @@ export function SeasonalCardsScreen() {
             storeCode: selectedStore.storeCode,
           }
     );
-  }, [deviceBoundStoreCode, selectedStore?.storeCode]);
+  }, [deviceBoundStoreCode, isDeviceMode, selectedStore?.storeCode]);
 
   useEffect(() => {
     if (!selectedCatalogGroup?.options.length) {
@@ -488,6 +508,12 @@ export function SeasonalCardsScreen() {
   };
 
   const handleSubmit = async () => {
+    const submitStoreCode = deviceBoundStoreCode ?? draft.storeCode;
+    if (isDeviceMode && !submitStoreCode) {
+      setSnackbar(t("messages.formFixErrors"));
+      return;
+    }
+
     setSubmitAttempted(true);
     if (Object.keys(formErrors).length > 0) {
       setSnackbar(t("messages.formFixErrors"));
@@ -496,7 +522,7 @@ export function SeasonalCardsScreen() {
 
     try {
       await submitMutation.mutateAsync({
-        storeCode: draft.storeCode,
+        storeCode: submitStoreCode,
         catalogGuid: draft.catalogGuid,
         seasonYear: draft.seasonYear,
         remainingQuantity: draft.remainingQuantity,

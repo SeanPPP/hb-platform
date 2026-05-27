@@ -95,6 +95,18 @@ function mapAdvertisementToDraft(item: AdvertisementItem): AdvertisementDraft {
   };
 }
 
+function bindAdvertisementDraftStoreCodes(
+  draft: AdvertisementDraft,
+  deviceBoundStoreCode?: string
+): AdvertisementDraft {
+  return deviceBoundStoreCode
+    ? {
+        ...draft,
+        storeCodes: [deviceBoundStoreCode],
+      }
+    : draft;
+}
+
 function formatDateTime(value?: string | null, localeTag = "en-AU") {
   if (!value) {
     return "--";
@@ -269,8 +281,8 @@ export function AdvertisementsScreen() {
     if (!detailQuery.data || !editingId) {
       return;
     }
-    setDraft(mapAdvertisementToDraft(detailQuery.data));
-  }, [detailQuery.data, editingId]);
+    setDraft(bindAdvertisementDraftStoreCodes(mapAdvertisementToDraft(detailQuery.data), deviceBoundStoreCode));
+  }, [detailQuery.data, deviceBoundStoreCode, editingId]);
 
   const saveMutation = useMutation({
     mutationFn: async (payload: AdvertisementUpsertPayload) => {
@@ -445,7 +457,7 @@ export function AdvertisementsScreen() {
 
   function openEditEditor(item: AdvertisementItem) {
     setEditingId(item.id);
-    setDraft(mapAdvertisementToDraft(item));
+    setDraft(bindAdvertisementDraftStoreCodes(mapAdvertisementToDraft(item), deviceBoundStoreCode));
     setSubmitAttempted(false);
     setEditorVisible(true);
   }
@@ -485,7 +497,7 @@ export function AdvertisementsScreen() {
       setSnackbar(t("messages.validationFailed"));
       return;
     }
-    saveMutation.mutate(buildPayloadFromDraft(draft));
+    saveMutation.mutate(buildPayloadFromDraft(bindAdvertisementDraftStoreCodes(draft, deviceBoundStoreCode)));
   }
 
   const items = advertisementsQuery.data?.items ?? [];
