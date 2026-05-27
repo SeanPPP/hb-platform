@@ -16,6 +16,10 @@ export const PERMISSIONS = {
   InstallmentOrders: {
     View: "InstallmentOrders.View",
   },
+  Advertisements: {
+    View: "Advertisements.View",
+    Edit: "Advertisements.Edit",
+  },
   StoreVouchers: {
     View: "StoreVouchers.View",
   },
@@ -144,6 +148,8 @@ function createEmptyAccess(): AccessControl {
     canEditLocalPurchase: false,
     canPushLocalPurchaseToHq: false,
     canViewInstallmentOrders: false,
+    canViewAdvertisements: false,
+    canManageAdvertisements: false,
     canViewStoreVouchers: false,
     canViewSeasonalCardRemaining: false,
     canSubmitSeasonalCardRemaining: false,
@@ -258,6 +264,8 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
   const canEditLocalPurchase = hasPermission(PERMISSIONS.LocalPurchase.Edit);
   const canPushLocalPurchaseToHq = hasPermission(PERMISSIONS.LocalPurchase.PushToHq);
   const canViewInstallmentOrders = hasPermission(PERMISSIONS.InstallmentOrders.View);
+  const canViewAdvertisements = hasPermission(PERMISSIONS.Advertisements.View);
+  const canManageAdvertisements = hasPermission(PERMISSIONS.Advertisements.Edit);
   const canViewStoreVouchers = hasPermission(PERMISSIONS.StoreVouchers.View);
   const canViewSeasonalCardRemaining = hasPermission(
     PERMISSIONS.SeasonalCards.Remaining.ViewManagedStore
@@ -311,6 +319,8 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
     canEditLocalPurchase,
     canPushLocalPurchaseToHq,
     canViewInstallmentOrders,
+    canViewAdvertisements,
+    canManageAdvertisements,
     canViewStoreVouchers,
     canViewSeasonalCardRemaining,
     canSubmitSeasonalCardRemaining,

@@ -188,6 +188,12 @@ assertEqual(
 );
 
 assertEqual(
+  TAB_PATHS.advertisements,
+  "/(tabs)/advertisements",
+  "advertisements route is registered as a valid tab path"
+);
+
+assertEqual(
   TAB_PATHS["store-vouchers"],
   "/(tabs)/store-vouchers",
   "store vouchers route is registered as a valid tab path"
@@ -219,6 +225,17 @@ assertEqual(
   }),
   null,
   "installment orders route is allowed when app menu exposes it"
+);
+
+assertEqual(
+  resolveTabRouteCorrection({
+    currentRouteName: "advertisements",
+    hasAppliedDefaultRoute: true,
+    isDeviceMode: false,
+    routeNames: ["home", "advertisements", "settings"],
+  }),
+  null,
+  "advertisements route is allowed when app menu exposes it"
 );
 
 assertEqual(

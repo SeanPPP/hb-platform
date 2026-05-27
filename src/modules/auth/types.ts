@@ -83,6 +83,8 @@ export interface AccessControl {
   canEditLocalPurchase: boolean;
   canPushLocalPurchaseToHq: boolean;
   canViewInstallmentOrders: boolean;
+  canViewAdvertisements: boolean;
+  canManageAdvertisements: boolean;
   canViewStoreVouchers: boolean;
   canViewSeasonalCardRemaining: boolean;
   canSubmitSeasonalCardRemaining: boolean;

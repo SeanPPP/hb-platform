@@ -139,6 +139,8 @@ const storeFinanceAccess = buildAccess(
     PERMISSIONS.LocalPurchase.PushToHq,
     PERMISSIONS.StoreProducts.Create,
     PERMISSIONS.InstallmentOrders.View,
+    PERMISSIONS.Advertisements.View,
+    PERMISSIONS.Advertisements.Edit,
     PERMISSIONS.StoreVouchers.View,
     PERMISSIONS.SeasonalCards.Remaining.ViewManagedStore,
     PERMISSIONS.SeasonalCards.Remaining.SubmitManagedStore,
@@ -167,6 +169,24 @@ assertEqual(
   storeFinanceAccess.canViewInstallmentOrders,
   true,
   "InstallmentOrders.View enables installment orders capability"
+);
+
+assertEqual(
+  storeFinanceAccess.canViewAdvertisements,
+  true,
+  "Advertisements.View enables advertisements capability"
+);
+
+assertEqual(
+  storeFinanceAccess.canManageAdvertisements,
+  true,
+  "Advertisements.Edit enables advertisements management capability"
+);
+
+assertEqual(
+  buildAccess(createUser([PERMISSIONS.Advertisements.Edit])).canViewAdvertisements,
+  false,
+  "Advertisements.Edit alone does not enable advertisements list visibility"
 );
 
 assertEqual(
