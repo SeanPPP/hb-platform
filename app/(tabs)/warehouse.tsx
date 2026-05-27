@@ -8,6 +8,8 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { LoadingOverlay } from "@/components/ui/LoadingOverlay";
 import { NumericInputModal } from "@/components/product-maintenance/NumericInputModal";
+import { hasVisibleTabRoute } from "@/modules/navigation/default-route";
+import { useAppNavigationStore } from "@/modules/navigation/store";
 import { useCameraScan } from "@/modules/scanner/use-camera-scan";
 import { useHidBarcodeScanner } from "@/modules/scanner/use-hid-barcode-scanner";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
@@ -311,8 +313,14 @@ export default function WarehouseScreen() {
   const [editingLocationGuid, setEditingLocationGuid] = useState<string | null>(null);
   const [scannerVisible, setScannerVisible] = useState(false);
   const [photoVisible, setPhotoVisible] = useState(false);
+  const navigationItems = useAppNavigationStore((state) => state.items);
 
-  const hasWarehouseAccess = access.isAdmin || access.isWarehouseManager || access.isWarehouseStaff || hasStoredDeviceSession;
+  const hasWarehouseAccess =
+    hasStoredDeviceSession ||
+    hasVisibleTabRoute(
+      navigationItems.map((item) => item.routeName),
+      "warehouse"
+    );
   const notAvailableText = t("messages.notAvailable");
 
   const parseNullableNumber = useCallback((value: string) => {

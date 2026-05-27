@@ -191,10 +191,10 @@ export function AttendanceScreen({ mode = "combined" }: AttendanceScreenProps) {
     () => (access.isAdmin ? stores : stores.filter(isPrimaryStore)),
     [access.isAdmin, stores],
   );
-  const canReview = access.isAdmin || access.isStoreManager;
-  const canEditAttendanceHoliday =
-    access.isAdmin || access.hasPermission("Attendance.Holiday.EditManagedStore");
-  const canSwitchMainTabs = mode === "combined" && canReview;
+  const canViewAttendanceManagement = access.canViewAttendanceManagement;
+  const canReviewAttendance = access.canReviewAttendance;
+  const canEditAttendanceHoliday = access.canEditAttendanceHoliday;
+  const canSwitchMainTabs = mode === "combined" && canViewAttendanceManagement;
   const isManagementMode =
     mode === "management" ||
     (mode === "combined" && activeMainTab === "management");
@@ -202,10 +202,11 @@ export function AttendanceScreen({ mode = "combined" }: AttendanceScreenProps) {
     mode === "personal" ||
     (mode === "combined" && activeMainTab === "personal");
   const isManagementTab =
-    canReview &&
+    canViewAttendanceManagement &&
     (mode === "management" ||
       (mode === "combined" && activeMainTab === "management"));
-  const isManagementUnavailable = mode === "management" && !canReview;
+  const isManagementUnavailable =
+    mode === "management" && !canViewAttendanceManagement;
   const isPunchRecordsTab =
     isPersonalTab && activePersonalTab === "punchRecords";
   const isAvailabilityWeekTab =
@@ -248,10 +249,10 @@ export function AttendanceScreen({ mode = "combined" }: AttendanceScreenProps) {
       return;
     }
 
-    if (!canReview && activeMainTab !== "personal") {
+    if (!canViewAttendanceManagement && activeMainTab !== "personal") {
       setActiveMainTab("personal");
     }
-  }, [activeMainTab, canReview, mode]);
+  }, [activeMainTab, canViewAttendanceManagement, mode]);
 
   const showMessage = useCallback((message: string) => {
     setSnackbarMessage(message);
@@ -1095,6 +1096,7 @@ export function AttendanceScreen({ mode = "combined" }: AttendanceScreenProps) {
                   emptyMessage={t("leaveManagement.empty")}
                   approvals={leaveApprovals}
                   isBusy={isApprovalBusy}
+                  canReview={canReviewAttendance}
                   onApprove={(approvalGuid, remark) =>
                     approveMutation.mutate({ approvalGuid, remark })
                   }

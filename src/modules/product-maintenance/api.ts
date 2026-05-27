@@ -3,7 +3,10 @@ import { isAxiosError } from "axios";
 import { apiClient } from "@/shared/api/client";
 import { useDeviceStore } from "@/store/device-store";
 import type {
+  CreateProductWithPricesRequest,
+  CreateProductWithPricesResult,
   CreateSetCodeRequest,
+  LocalSupplierOption,
   MultiCodeEditableItem,
   ProductDetail,
   ProductCodePage,
@@ -21,8 +24,15 @@ import type {
   UpdateStorePriceRequest,
   UpsertClearancePriceRequest,
 } from "@/modules/product-maintenance/types";
+import {
+  buildCreateProductWithPricesPayload,
+  normalizeActiveLocalSuppliersResponse,
+  normalizeCreateProductWithPricesResult,
+} from "@/modules/product-maintenance/api-normalization";
 
 const BASE_PATH = "/react/v1/store-product-maintenance";
+const PRODUCTS_PATH = "/react/v1/products";
+const ACTIVE_LOCAL_SUPPLIERS_PATH = "/react/v1/local-suppliers/active";
 
 function buildRequestConfig(): AxiosRequestConfig {
   const session = useDeviceStore.getState().session;
@@ -230,6 +240,22 @@ export async function lookupProducts(
     count: items.length,
   });
   return items;
+}
+
+export async function fetchActiveLocalSuppliers(): Promise<LocalSupplierOption[]> {
+  const response = await apiClient.get(ACTIVE_LOCAL_SUPPLIERS_PATH, buildRequestConfig());
+  return normalizeActiveLocalSuppliersResponse(response.data);
+}
+
+export async function createProductWithPrices(
+  payload: CreateProductWithPricesRequest
+): Promise<CreateProductWithPricesResult> {
+  const response = await apiClient.post(
+    `${PRODUCTS_PATH}/create-with-prices`,
+    buildCreateProductWithPricesPayload(payload),
+    buildRequestConfig()
+  );
+  return normalizeCreateProductWithPricesResult(response.data);
 }
 
 export async function getProductDetail(

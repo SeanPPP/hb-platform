@@ -71,14 +71,15 @@ export default function Settings() {
   const [printerBusy, setPrinterBusy] = useState(false);
   const [filterXPOnly, setFilterXPOnly] = useState(true);
 
-  const canRegisterDevice = access.isStoreManager || access.hasRole("店长");
+  const canRegisterDevice = access.canManageDeviceRegistration;
   const settingsAuthMode = resolveSettingsAuthMode({
     hasUser: Boolean(user),
     hasDeviceSession: Boolean(deviceSession),
   });
   const isDeviceMode = settingsAuthMode === "device";
   const showProfileAction = shouldShowProfileAction(settingsAuthMode);
-  const canViewDeviceCard = canRegisterDevice || Boolean(deviceSession);
+  const canViewDeviceCard =
+    canRegisterDevice || access.canViewDeviceRegistration || Boolean(deviceSession);
 
   const effectiveStore = selectedStore
     ? selectedStore

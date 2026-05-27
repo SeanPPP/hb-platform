@@ -8,6 +8,32 @@
   "actions": {
     "returnToInvoiceDetails": "Back to invoice details"
   },
+  "createProduct": {
+    "action": "Create product",
+    "title": "Create product",
+    "submit": "Create",
+    "reloadSuppliers": "Reload suppliers",
+    "fields": {
+      "supplier": "Supplier",
+      "itemNumber": "Item number",
+      "barcode": "Barcode",
+      "productName": "Name",
+      "purchasePrice": "Purchase price",
+      "retailPrice": "Retail price",
+      "isSpecialProduct": "Special product",
+      "isAutoPricing": "Auto pricing"
+    },
+    "messages": {
+      "required": "Supplier, item number, barcode, name, purchase price, and retail price are required.",
+      "priceInvalid": "Purchase price and retail price must be valid numbers greater than or equal to 0.",
+      "manualRetailPriceInvalid": "Retail price must be greater than 0 when auto pricing is off.",
+      "suppliersLoading": "Loading suppliers...",
+      "suppliersLoadFailed": "Failed to load suppliers",
+      "created": "Product created.",
+      "refreshFailedAfterCreate": "Product was created, but details failed to refresh. Search manually.",
+      "createFailed": "Failed to create product"
+    }
+  },
   "messages": {
     "selectStoreFirst": "Please select a store first.",
     "keywordRequired": "Enter a barcode, item number, or product code.",

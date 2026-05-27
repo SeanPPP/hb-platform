@@ -8,6 +8,32 @@
   "actions": {
     "returnToInvoiceDetails": "返回订单明细"
   },
+  "createProduct": {
+    "action": "创建商品",
+    "title": "创建商品",
+    "submit": "创建",
+    "reloadSuppliers": "重新加载供应商",
+    "fields": {
+      "supplier": "供应商",
+      "itemNumber": "货号",
+      "barcode": "条码",
+      "productName": "名称",
+      "purchasePrice": "进货价",
+      "retailPrice": "零售价",
+      "isSpecialProduct": "是否特殊商品",
+      "isAutoPricing": "是否自动价格"
+    },
+    "messages": {
+      "required": "供应商、货号、条码、名称、进货价、零售价必填",
+      "priceInvalid": "进货价和零售价必须是大于等于 0 的数字",
+      "manualRetailPriceInvalid": "关闭自动价格时零售价必须大于 0",
+      "suppliersLoading": "正在加载供应商...",
+      "suppliersLoadFailed": "供应商加载失败",
+      "created": "商品已创建",
+      "refreshFailedAfterCreate": "商品已创建，但刷新详情失败，请手动查询",
+      "createFailed": "创建商品失败"
+    }
+  },
   "messages": {
     "selectStoreFirst": "请先选择分店",
     "keywordRequired": "请输入条码、货号或商品编码",

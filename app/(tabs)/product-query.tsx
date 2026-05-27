@@ -3,7 +3,7 @@ import { ScrollView, StyleSheet, TextInput, View } from "react-native";
 import { CameraView } from "expo-camera";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useFocusEffect, useIsFocused } from "@react-navigation/native";
-import { Button, Card, Modal, Portal, Snackbar, Text } from "react-native-paper";
+import { Button, Card, Modal, Portal, RadioButton, Snackbar, Switch, Text } from "react-native-paper";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { LookupResultSheet } from "@/components/product-maintenance/LookupResultSheet";
 import { LabelPrintCard } from "@/components/product-maintenance/LabelPrintCard";
@@ -27,8 +27,10 @@ import {
 import { usePrinterStore } from "@/modules/printer/state";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 import {
+  createProductWithPrices,
   createSetCode,
   evaluateAutoPricing,
+  fetchActiveLocalSuppliers,
   getProductCodes,
   getProductFastDetail,
   lookupProducts,
@@ -38,8 +40,10 @@ import {
   upsertClearancePrice,
 } from "@/modules/product-maintenance/api";
 import { resolveExternalQueryStore } from "@/modules/product-maintenance/external-query-store";
+import { validateCreateProductForm } from "@/modules/product-maintenance/create-product-validation";
 import type {
   EvaluateAutoPricingResult,
+  LocalSupplierOption,
   MultiCodeEditableItem,
   ProductDetail,
   ProductLookupItem,
@@ -51,6 +55,7 @@ import { useHidBarcodeScanner } from "@/modules/scanner/use-hid-barcode-scanner"
 import { playScanFeedbackSound, preloadScanFeedbackSounds } from "@/modules/scanner/scan-sound";
 import type { ScanSource } from "@/modules/scanner/types";
 import { useStores } from "@/modules/shop/use-stores";
+import { useAuthStore } from "@/store/auth-store";
 import {
   buildLocalSupplierInvoicesRestoreHref,
   decodeLocalSupplierInvoicesReturnParams,
@@ -235,8 +240,29 @@ interface CodeAddModalState {
   value: string;
 }
 
+interface CreateProductDraft {
+  localSupplierCode: string;
+  itemNumber: string;
+  barcode: string;
+  productName: string;
+  purchasePrice: string;
+  retailPrice: string;
+  isSpecialProduct: boolean;
+  isAutoPricing: boolean;
+}
+
 const PRODUCT_TYPE_OPTIONS = [0, 1, 2] as const;
 const CODE_PAGE_SIZE = 50;
+const EMPTY_CREATE_PRODUCT_DRAFT: CreateProductDraft = {
+  localSupplierCode: "",
+  itemNumber: "",
+  barcode: "",
+  productName: "",
+  purchasePrice: "",
+  retailPrice: "",
+  isSpecialProduct: false,
+  isAutoPricing: false,
+};
 
 const DEFAULT_LOOKUP_FLOW_RESULT: LookupFlowResult = {
   keepCameraOpen: false,
@@ -273,6 +299,7 @@ function ProductQueryContent() {
     isLoading: storesLoading,
     isHydratingSelection,
   } = useStores();
+  const access = useAuthStore((state) => state.access);
   const printerAutoReconnectPaused = usePrinterStore((state) => state.autoReconnectPaused);
   const [keyword, setKeyword] = useState("");
   const [lookupItems, setLookupItems] = useState<ProductLookupItem[]>([]);
@@ -294,6 +321,13 @@ function ProductQueryContent() {
   const [autoPrintOnLookupConfirm, setAutoPrintOnLookupConfirm] = useState(false);
   const [autoPricingDialog, setAutoPricingDialog] = useState<AutoPricingDialogState | null>(null);
   const [autoPricingDialogSaving, setAutoPricingDialogSaving] = useState(false);
+  const [createProductVisible, setCreateProductVisible] = useState(false);
+  const [createProductSaving, setCreateProductSaving] = useState(false);
+  const [createSuppliers, setCreateSuppliers] = useState<LocalSupplierOption[]>([]);
+  const [createSuppliersLoading, setCreateSuppliersLoading] = useState(false);
+  const [createProductDraft, setCreateProductDraft] = useState<CreateProductDraft>(
+    EMPTY_CREATE_PRODUCT_DRAFT
+  );
   const [productTypeDialogVisible, setProductTypeDialogVisible] = useState(false);
   const [productTypeSaving, setProductTypeSaving] = useState(false);
   const [storePurchaseInput, setStorePurchaseInput] = useState("");
@@ -473,6 +507,87 @@ function ProductQueryContent() {
     },
     [loadProductCodes, selectedStoreCode, t]
   );
+
+  const selectedCreateSupplier = useMemo(
+    () =>
+      createSuppliers.find(
+        (supplier) => supplier.supplierCode === createProductDraft.localSupplierCode
+      ) ?? null,
+    [createProductDraft.localSupplierCode, createSuppliers]
+  );
+
+  const loadCreateSuppliers = useCallback(async () => {
+    setCreateSuppliersLoading(true);
+    try {
+      const suppliers = await fetchActiveLocalSuppliers();
+      setCreateSuppliers(suppliers);
+      setCreateProductDraft((current) =>
+        current.localSupplierCode || !suppliers[0]
+          ? current
+          : { ...current, localSupplierCode: suppliers[0].supplierCode }
+      );
+    } catch (error) {
+      const fallback = t("createProduct.messages.suppliersLoadFailed");
+      setSnackbarMessage(error instanceof Error ? `${fallback}: ${error.message}` : fallback);
+    } finally {
+      setCreateSuppliersLoading(false);
+    }
+  }, [t]);
+
+  const openCreateProductModal = useCallback(() => {
+    setCreateProductDraft({
+      ...EMPTY_CREATE_PRODUCT_DRAFT,
+      localSupplierCode: createSuppliers[0]?.supplierCode ?? "",
+    });
+    setCreateProductVisible(true);
+    if (!createSuppliers.length) {
+      void loadCreateSuppliers();
+    }
+  }, [createSuppliers, loadCreateSuppliers]);
+
+  const updateCreateProductDraft = useCallback(
+    (patch: Partial<CreateProductDraft>) => {
+      setCreateProductDraft((current) => ({ ...current, ...patch }));
+    },
+    []
+  );
+
+  const handleCreateProductSubmit = useCallback(async () => {
+    const validation = validateCreateProductForm(createProductDraft);
+    if (!validation.ok) {
+      setSnackbarMessage(t(`createProduct.messages.${validation.reason}`));
+      return;
+    }
+
+    setCreateProductSaving(true);
+    let createdProductCode = "";
+    try {
+      const result = await createProductWithPrices(validation.payload);
+      const nextKeyword =
+        result.productCode || validation.payload.itemNumber || validation.payload.barcode;
+      createdProductCode = result.productCode;
+      setCreateProductVisible(false);
+      setCreateProductDraft(EMPTY_CREATE_PRODUCT_DRAFT);
+      setKeyword(nextKeyword);
+      setSnackbarMessage(t("createProduct.messages.created"));
+    } catch (error) {
+      const fallback = t("createProduct.messages.createFailed");
+      setSnackbarMessage(error instanceof Error ? `${fallback}: ${error.message}` : fallback);
+      setCreateProductSaving(false);
+      return;
+    }
+
+    if (createdProductCode) {
+      try {
+        await loadDetail(createdProductCode);
+      } catch (error) {
+        const fallback = t("createProduct.messages.refreshFailedAfterCreate");
+        setSnackbarMessage(error instanceof Error ? `${fallback}: ${error.message}` : fallback);
+      }
+    }
+
+    setCreateProductSaving(false);
+  }, [createProductDraft, loadDetail, t]);
 
   const persistStorePrice = useCallback(
     async (
@@ -1743,6 +1858,13 @@ function ProductQueryContent() {
       />
 
       <ScrollView contentContainerStyle={styles.content}>
+        {access.canCreateStoreProducts ? (
+          <View style={styles.createProductBar}>
+            <Button icon="plus" mode="contained-tonal" onPress={openCreateProductModal}>
+              {t("createProduct.action")}
+            </Button>
+          </View>
+        ) : null}
         {invoiceReturnState ? (
           <View style={styles.returnBar}>
             <Button icon="arrow-left" mode="contained-tonal" onPress={handleReturnToInvoices}>
@@ -1910,6 +2032,157 @@ function ProductQueryContent() {
       />
 
       <Portal>
+        <Modal
+          visible={createProductVisible}
+          onDismiss={createProductSaving ? undefined : () => setCreateProductVisible(false)}
+          contentContainerStyle={styles.createProductModal}
+        >
+          <ScrollView
+            contentContainerStyle={styles.createProductModalContent}
+            keyboardShouldPersistTaps="handled"
+          >
+            <Text variant="titleMedium" style={styles.createProductTitle}>
+              {t("createProduct.title")}
+            </Text>
+
+            <View style={styles.createFieldGroup}>
+              <Text variant="labelMedium" style={styles.createFieldLabel}>
+                {t("createProduct.fields.supplier")}
+              </Text>
+              {createSuppliersLoading ? (
+                <Text variant="bodySmall" style={styles.createHint}>
+                  {t("createProduct.messages.suppliersLoading")}
+                </Text>
+              ) : createSuppliers.length ? (
+                <ScrollView
+                  style={styles.createSupplierList}
+                  nestedScrollEnabled
+                  keyboardShouldPersistTaps="handled"
+                >
+                  {createSuppliers.map((supplier) => (
+                    <View key={supplier.supplierCode} style={styles.createSupplierItem}>
+                      <RadioButton
+                        value={supplier.supplierCode}
+                        status={
+                          supplier.supplierCode === createProductDraft.localSupplierCode
+                            ? "checked"
+                            : "unchecked"
+                        }
+                        onPress={() =>
+                          updateCreateProductDraft({ localSupplierCode: supplier.supplierCode })
+                        }
+                        disabled={createProductSaving}
+                      />
+                      <Button
+                        mode="text"
+                        compact
+                        onPress={() =>
+                          updateCreateProductDraft({ localSupplierCode: supplier.supplierCode })
+                        }
+                        disabled={createProductSaving}
+                        style={styles.createSupplierButton}
+                        contentStyle={styles.createSupplierButtonContent}
+                      >
+                        {supplier.supplierName || supplier.supplierCode}
+                      </Button>
+                    </View>
+                  ))}
+                </ScrollView>
+              ) : (
+                <Button
+                  mode="outlined"
+                  onPress={() => void loadCreateSuppliers()}
+                  disabled={createProductSaving}
+                >
+                  {t("createProduct.reloadSuppliers")}
+                </Button>
+              )}
+              {selectedCreateSupplier ? (
+                <Text variant="bodySmall" style={styles.createHint}>
+                  {selectedCreateSupplier.supplierCode}
+                </Text>
+              ) : null}
+            </View>
+
+            <TextInput
+              style={styles.createTextInput}
+              value={createProductDraft.itemNumber}
+              onChangeText={(itemNumber) => updateCreateProductDraft({ itemNumber })}
+              placeholder={t("createProduct.fields.itemNumber")}
+              editable={!createProductSaving}
+            />
+            <TextInput
+              style={styles.createTextInput}
+              value={createProductDraft.barcode}
+              onChangeText={(barcode) => updateCreateProductDraft({ barcode })}
+              placeholder={t("createProduct.fields.barcode")}
+              editable={!createProductSaving}
+            />
+            <TextInput
+              style={styles.createTextInput}
+              value={createProductDraft.productName}
+              onChangeText={(productName) => updateCreateProductDraft({ productName })}
+              placeholder={t("createProduct.fields.productName")}
+              editable={!createProductSaving}
+            />
+            <TextInput
+              style={styles.createTextInput}
+              value={createProductDraft.purchasePrice}
+              onChangeText={(purchasePrice) => updateCreateProductDraft({ purchasePrice })}
+              placeholder={t("createProduct.fields.purchasePrice")}
+              keyboardType="decimal-pad"
+              editable={!createProductSaving}
+            />
+            <TextInput
+              style={styles.createTextInput}
+              value={createProductDraft.retailPrice}
+              onChangeText={(retailPrice) => updateCreateProductDraft({ retailPrice })}
+              placeholder={t("createProduct.fields.retailPrice")}
+              keyboardType="decimal-pad"
+              editable={!createProductSaving}
+            />
+
+            <View style={styles.createSwitchRow}>
+              <Text variant="bodyMedium">{t("createProduct.fields.isSpecialProduct")}</Text>
+              <Switch
+                value={createProductDraft.isSpecialProduct}
+                onValueChange={(isSpecialProduct) =>
+                  updateCreateProductDraft({ isSpecialProduct })
+                }
+                disabled={createProductSaving}
+              />
+            </View>
+            <View style={styles.createSwitchRow}>
+              <Text variant="bodyMedium">{t("createProduct.fields.isAutoPricing")}</Text>
+              <Switch
+                value={createProductDraft.isAutoPricing}
+                onValueChange={(isAutoPricing) =>
+                  updateCreateProductDraft({ isAutoPricing })
+                }
+                disabled={createProductSaving}
+              />
+            </View>
+
+            <View style={styles.createProductFooter}>
+              <Button
+                mode="text"
+                onPress={() => setCreateProductVisible(false)}
+                disabled={createProductSaving}
+              >
+                {t("common:actions.cancel")}
+              </Button>
+              <Button
+                mode="contained"
+                loading={createProductSaving}
+                disabled={createProductSaving}
+                onPress={() => void handleCreateProductSubmit()}
+              >
+                {t("createProduct.submit")}
+              </Button>
+            </View>
+          </ScrollView>
+        </Modal>
+
         <Modal
           visible={Boolean(autoPricingDialog)}
           onDismiss={autoPricingDialogSaving ? undefined : () => {
@@ -2230,6 +2503,10 @@ const styles = StyleSheet.create({
     alignItems: "flex-start",
     paddingTop: 8,
   },
+  createProductBar: {
+    alignItems: "flex-start",
+    paddingTop: 8,
+  },
   hiddenInput: {
     position: "absolute",
     width: 1,
@@ -2265,6 +2542,73 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     backgroundColor: "#fff",
     padding: 16,
+  },
+  createProductModal: {
+    marginHorizontal: 16,
+    maxHeight: "88%",
+    borderRadius: 16,
+    backgroundColor: "#fff",
+    padding: 16,
+  },
+  createProductModalContent: {
+    gap: 12,
+    paddingBottom: 4,
+  },
+  createProductTitle: {
+    fontWeight: "700",
+    color: "#111827",
+  },
+  createFieldGroup: {
+    gap: 6,
+  },
+  createFieldLabel: {
+    color: "#344054",
+    fontWeight: "700",
+  },
+  createHint: {
+    color: "#667085",
+  },
+  createSupplierList: {
+    maxHeight: 180,
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+    borderRadius: 8,
+    paddingVertical: 4,
+  },
+  createSupplierItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    minHeight: 44,
+  },
+  createSupplierButton: {
+    flex: 1,
+    minWidth: 0,
+  },
+  createSupplierButtonContent: {
+    justifyContent: "flex-start",
+  },
+  createTextInput: {
+    borderWidth: 1,
+    borderColor: "#CBD5E1",
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    fontSize: 16,
+    backgroundColor: "#FFFFFF",
+  },
+  createSwitchRow: {
+    minHeight: 44,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+  createProductFooter: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "flex-end",
+    gap: 8,
+    paddingTop: 4,
   },
   autoPricingContent: {
     gap: 12,

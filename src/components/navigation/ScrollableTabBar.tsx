@@ -10,10 +10,11 @@ import {
 import type { BottomTabBarProps } from "@react-navigation/bottom-tabs";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { expandAttendanceRouteNames } from "@/modules/navigation/default-route";
+import { getVisibleTabRouteNames } from "@/modules/navigation/default-route";
 import { useAppNavigationStore } from "@/modules/navigation/store";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 import { useAuthStore } from "@/store/auth-store";
+import { useDeviceStore } from "@/store/device-store";
 import {
   buildNavigationDisplayTabs,
   isNavigationDisplayTabFocused,
@@ -53,17 +54,29 @@ export function ScrollableTabBar({
   const [isStoreMenuOpen, setIsStoreMenuOpen] = useState(false);
   const [scrollOffset, setScrollOffset] = useState(0);
   const navigationItems = useAppNavigationStore((store) => store.items);
-  const access = useAuthStore((store) => store.access);
-  const canReviewAttendance = access.isAdmin || access.isStoreManager;
+  const canViewAttendanceManagement = useAuthStore(
+    (state) => state.access.canViewAttendanceManagement
+  );
+  const hasUserSession = useAuthStore(
+    (state) => Boolean(state.isAuthenticated && state.user?.userGUID)
+  );
+  const deviceSession = useDeviceStore((state) => state.session);
+  const isDeviceMode = Boolean(
+    deviceSession?.hardwareId &&
+      deviceSession.authCode &&
+      deviceSession.storeCode &&
+      !hasUserSession
+  );
   const visibleRouteNames = useMemo(
     () =>
       new Set(
-        expandAttendanceRouteNames(
-          navigationItems.map((item) => item.routeName),
-          canReviewAttendance,
-        ),
+        getVisibleTabRouteNames({
+          routeNames: navigationItems.map((item) => item.routeName),
+          isDeviceMode,
+          canViewAttendanceManagement,
+        }),
       ),
-    [canReviewAttendance, navigationItems]
+    [canViewAttendanceManagement, isDeviceMode, navigationItems]
   );
   const visibleRoutes: VisibleRoute[] = state.routes
     .map((route, index) => ({ ...route, index }))

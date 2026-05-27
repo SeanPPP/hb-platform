@@ -18,6 +18,8 @@ import {
 } from "react-native-paper";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { EmptyState } from "@/components/ui/EmptyState";
+import { hasVisibleTabRoute } from "@/modules/navigation/default-route";
+import { useAppNavigationStore } from "@/modules/navigation/store";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 import { resolveLocaleTag } from "@/shared/i18n/types";
 import { useAuthStore } from "@/store/auth-store";
@@ -117,8 +119,12 @@ export default function DomesticPurchaseScreen() {
   const { t, language } = useAppTranslation(["domesticPurchase", "common"]);
   const localeTag = resolveLocaleTag(language);
   const access = useAuthStore((state) => state.access);
+  const navigationItems = useAppNavigationStore((state) => state.items);
   const hasAccess =
-    access.isAdmin || access.isWarehouseManager || access.hasPermission("DomesticPurchase.ManageProducts");
+    hasVisibleTabRoute(
+      navigationItems.map((item) => item.routeName),
+      "domestic-purchase"
+    ) || access.hasPermission("DomesticPurchase.ManageProducts");
 
   const [activeTab, setActiveTab] = useState<DomesticPurchaseTab>("creation");
   const [batches, setBatches] = useState<DomesticProductBatch[]>([]);

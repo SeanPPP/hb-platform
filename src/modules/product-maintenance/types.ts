@@ -103,6 +103,27 @@ export interface StoreProductLookupRequest {
   storeCode?: string | null;
 }
 
+export interface LocalSupplierOption {
+  supplierCode: string;
+  supplierName: string;
+}
+
+export interface CreateProductWithPricesRequest {
+  localSupplierCode: string;
+  itemNumber: string;
+  barcode: string;
+  productName: string;
+  purchasePrice: number;
+  retailPrice: number;
+  isSpecialProduct: boolean;
+  isAutoPricing: boolean;
+}
+
+export interface CreateProductWithPricesResult {
+  productCode: string;
+  storeProductCodes: Record<string, string>;
+}
+
 export interface UpdateStorePriceRequest {
   purchasePrice?: number | null;
   retailPrice?: number | null;

@@ -9,6 +9,7 @@ export function ManagerApprovalList({
   emptyMessage,
   approvals,
   isBusy,
+  canReview = true,
   onApprove,
   onReject,
 }: {
@@ -16,6 +17,7 @@ export function ManagerApprovalList({
   emptyMessage?: string;
   approvals: AttendanceApproval[];
   isBusy: boolean;
+  canReview?: boolean;
   onApprove: (approvalGuid: string, remark?: string) => void;
   onReject: (approvalGuid: string, remark?: string) => void;
 }) {
@@ -64,7 +66,7 @@ export function ManagerApprovalList({
                   onPress={() =>
                     onReject(item.approvalGuid, remarks[item.approvalGuid])
                   }
-                  disabled={isBusy}
+                  disabled={isBusy || !canReview}
                 >
                   {t("actions.reject")}
                 </Button>
@@ -74,7 +76,7 @@ export function ManagerApprovalList({
                   onPress={() =>
                     onApprove(item.approvalGuid, remarks[item.approvalGuid])
                   }
-                  disabled={isBusy}
+                  disabled={isBusy || !canReview}
                 >
                   {t("actions.approve")}
                 </Button>

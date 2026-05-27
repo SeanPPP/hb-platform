@@ -1,10 +1,11 @@
 import { create } from "zustand";
 import { fetchAppNavigationMenu } from "@/modules/navigation/api";
 import type { AppNavigationMenuItem } from "@/modules/navigation/types";
+import { SETTINGS_FALLBACK_ROUTE_NAME } from "@/modules/navigation/default-route";
 
 const SETTINGS_ONLY_MENU: AppNavigationMenuItem[] = [
   {
-    routeName: "settings",
+    routeName: SETTINGS_FALLBACK_ROUTE_NAME,
     titleKey: "tabs.settings",
     icon: "account-circle-outline",
     permission: null,

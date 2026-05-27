@@ -109,7 +109,7 @@ export default function DeviceManagementScreen() {
   const { t, language } = useAppTranslation(["deviceManagement", "common"]);
   const access = useAuthStore((state) => state.access);
 
-  if (access.isAdmin !== true) {
+  if (!access.canViewDeviceRegistration) {
     return (
       <SafeAreaView style={styles.screen} edges={["top", "left", "right"]}>
         <EmptyState title={t("messages.noAccessTitle")} description={t("messages.noAccessDescription")} />
@@ -117,13 +117,21 @@ export default function DeviceManagementScreen() {
     );
   }
 
-  return <DeviceManagementAdminContent language={language} t={t} />;
+  return (
+    <DeviceManagementAdminContent
+      canManageDeviceRegistration={access.canManageDeviceRegistration}
+      language={language}
+      t={t}
+    />
+  );
 }
 
 function DeviceManagementAdminContent({
+  canManageDeviceRegistration,
   language,
   t,
 }: {
+  canManageDeviceRegistration: boolean;
   language: string;
   t: ReturnType<typeof useAppTranslation>["t"];
 }) {
@@ -322,38 +330,40 @@ function DeviceManagementAdminContent({
               ) : null}
             </View>
 
-            <View style={styles.actionRow}>
-              <Button
-                compact
-                mode={item.status === DEVICE_STATUS.ACTIVE ? "outlined" : "contained-tonal"}
-                icon="play-circle-outline"
-                loading={isBusy && activateMutation.isPending}
-                disabled={isBusy}
-                onPress={() => runDeviceAction("activate", item)}
-              >
-                {t("actions.activate")}
-              </Button>
-              <Button
-                compact
-                mode="outlined"
-                icon="pause-circle-outline"
-                loading={isBusy && disableMutation.isPending}
-                disabled={isBusy}
-                onPress={() => runDeviceAction("disable", item)}
-              >
-                {t("actions.disable")}
-              </Button>
-              <Button
-                compact
-                mode="outlined"
-                icon="lock-outline"
-                loading={isBusy && lockMutation.isPending}
-                disabled={isBusy}
-                onPress={() => runDeviceAction("lock", item)}
-              >
-                {t("actions.lock")}
-              </Button>
-            </View>
+            {canManageDeviceRegistration ? (
+              <View style={styles.actionRow}>
+                <Button
+                  compact
+                  mode={item.status === DEVICE_STATUS.ACTIVE ? "outlined" : "contained-tonal"}
+                  icon="play-circle-outline"
+                  loading={isBusy && activateMutation.isPending}
+                  disabled={isBusy}
+                  onPress={() => runDeviceAction("activate", item)}
+                >
+                  {t("actions.activate")}
+                </Button>
+                <Button
+                  compact
+                  mode="outlined"
+                  icon="pause-circle-outline"
+                  loading={isBusy && disableMutation.isPending}
+                  disabled={isBusy}
+                  onPress={() => runDeviceAction("disable", item)}
+                >
+                  {t("actions.disable")}
+                </Button>
+                <Button
+                  compact
+                  mode="outlined"
+                  icon="lock-outline"
+                  loading={isBusy && lockMutation.isPending}
+                  disabled={isBusy}
+                  onPress={() => runDeviceAction("lock", item)}
+                >
+                  {t("actions.lock")}
+                </Button>
+              </View>
+            ) : null}
           </Card.Content>
         </Card>
       );

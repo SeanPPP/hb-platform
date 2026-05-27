@@ -60,14 +60,16 @@ function normalizeUserStores(payload: unknown): UserStoreDto[] {
 
 function normalizeCurrentUser(payload: unknown): CurrentUser {
   const data = (payload && typeof payload === "object" ? payload : {}) as Record<string, unknown>;
+  const userGuid =
+    (typeof data.userGuid === "string" && data.userGuid) ||
+    (typeof data.userGUID === "string" && data.userGUID) ||
+    (typeof data.UserGuid === "string" && data.UserGuid) ||
+    (typeof data.UserGUID === "string" && data.UserGUID) ||
+    "";
 
   return {
-    userGUID:
-      (typeof data.userGUID === "string" && data.userGUID) ||
-      (typeof data.userGuid === "string" && data.userGuid) ||
-      (typeof data.UserGUID === "string" && data.UserGUID) ||
-      (typeof data.UserGuid === "string" && data.UserGuid) ||
-      "",
+    userGuid,
+    userGUID: userGuid,
     username:
       (typeof data.username === "string" && data.username) ||
       (typeof data.userName === "string" && data.userName) ||
