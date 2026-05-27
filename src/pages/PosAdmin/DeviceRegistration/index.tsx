@@ -1,17 +1,35 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Button, Card, Select, Space, Table, Tag, Typography, message } from 'antd'
+import {
+  Button,
+  Card,
+  Descriptions,
+  Form,
+  Input,
+  Modal,
+  Select,
+  Space,
+  Spin,
+  Table,
+  Tag,
+  Typography,
+  message,
+} from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import {
   activateDevice,
   disableDevice,
+  getDeviceRegistrationDetail,
   getDeviceRegistrations,
   getStoreOptions,
   lockDevice,
+  updateDeviceRegistration,
 } from '../../../services/deviceRegistrationService'
 import type {
+  DeviceRegistrationDetail,
   DeviceRegistrationItem,
   StoreOption,
+  UpdateDeviceRegistrationPayload,
 } from '../../../types/deviceRegistration'
 import { useAuthStore } from '../../../store/auth'
 
@@ -65,9 +83,12 @@ function renderDeviceSystemTag(value?: string | null) {
   return value ? <Tag color={getTagColor(value, DEVICE_SYSTEM_COLOR_MAP)}>{value}</Tag> : '--'
 }
 
+type DeviceEditFormValues = UpdateDeviceRegistrationPayload
+
 export default function DeviceRegistrationPage() {
   const { t } = useTranslation()
   const access = useAuthStore((state) => state.access)
+  const [editForm] = Form.useForm<DeviceEditFormValues>()
   const [items, setItems] = useState<DeviceRegistrationItem[]>([])
   const [stores, setStores] = useState<StoreOption[]>([])
   const [loading, setLoading] = useState(false)
@@ -75,6 +96,10 @@ export default function DeviceRegistrationPage() {
   const [selectedDeviceType, setSelectedDeviceType] = useState<string>()
   const [selectedDeviceSystem, setSelectedDeviceSystem] = useState<string>()
   const [actionDeviceId, setActionDeviceId] = useState<number | null>(null)
+  const [editOpen, setEditOpen] = useState(false)
+  const [editLoading, setEditLoading] = useState(false)
+  const [editSaving, setEditSaving] = useState(false)
+  const [editingDevice, setEditingDevice] = useState<DeviceRegistrationDetail | null>(null)
 
   async function loadStores() {
     try {
@@ -139,6 +164,66 @@ export default function DeviceRegistrationPage() {
       message.error(t('message.deviceStatusFailed'))
     } finally {
       setActionDeviceId(null)
+    }
+  }
+
+  async function openEditModal(item: DeviceRegistrationItem) {
+    if (!access.canManageDeviceRegistration) {
+      return
+    }
+
+    setEditOpen(true)
+    setEditLoading(true)
+    setEditingDevice(null)
+    editForm.resetFields()
+    try {
+      const detail = await getDeviceRegistrationDetail(item.id)
+      setEditingDevice(detail)
+      editForm.setFieldsValue({
+        deviceType: detail.deviceType,
+        deviceSystem: detail.deviceSystem,
+        remark: detail.remark ?? '',
+      })
+    } catch (error) {
+      console.error(t('posAdmin.devices.loadDetailFailed'), error)
+      message.error(t('posAdmin.devices.loadDetailFailed'))
+      setEditOpen(false)
+    } finally {
+      setEditLoading(false)
+    }
+  }
+
+  function closeEditModal() {
+    setEditOpen(false)
+    setEditingDevice(null)
+    setEditLoading(false)
+    editForm.resetFields()
+  }
+
+  async function submitEditModal() {
+    if (!editingDevice) {
+      return
+    }
+
+    try {
+      const values = await editForm.validateFields()
+      setEditSaving(true)
+      await updateDeviceRegistration(editingDevice.id, {
+        deviceType: values.deviceType,
+        deviceSystem: values.deviceSystem,
+        remark: values.remark ?? '',
+      })
+      message.success(t('posAdmin.devices.updateSuccess'))
+      closeEditModal()
+      await loadDevices()
+    } catch (error) {
+      if (typeof error === 'object' && error !== null && 'errorFields' in error) {
+        return
+      }
+      console.error(t('posAdmin.devices.updateFailed'), error)
+      message.error(t('posAdmin.devices.updateFailed'))
+    } finally {
+      setEditSaving(false)
     }
   }
 
@@ -215,10 +300,13 @@ export default function DeviceRegistrationPage() {
       {
         title: t('column.action'),
         key: 'actions',
-        width: 240,
+        width: 300,
         fixed: 'right',
         render: (_value, record) => (
           <Space wrap>
+            <Button size="small" onClick={() => void openEditModal(record)}>
+              {t('common.edit')}
+            </Button>
             <Button
               type="primary"
               size="small"
@@ -248,61 +336,149 @@ export default function DeviceRegistrationPage() {
     ]
   }, [access.canManageDeviceRegistration, actionDeviceId, storeNameMap, t])
 
+  const renderStore = (device: DeviceRegistrationDetail) =>
+    device.storeCode ? `${device.storeCode}${device.storeName ? ` / ${device.storeName}` : ''}` : '--'
+
   return (
-    <Card
-      title={t('posAdmin.devices.title')}
-      extra={
-        <Space wrap>
-          <Select
-            allowClear
-            placeholder={t('posAdmin.devices.filterByStore')}
-            style={{ width: 240 }}
-            value={selectedStoreCode}
-            onChange={(value) => setSelectedStoreCode(value)}
-            options={stores.map((store) => ({
-              label: `${store.storeCode} / ${store.storeName}`,
-              value: store.storeCode,
-            }))}
+    <>
+      <Card
+        title={t('posAdmin.devices.title')}
+        extra={
+          <Space wrap>
+            <Select
+              allowClear
+              placeholder={t('posAdmin.devices.filterByStore')}
+              style={{ width: 240 }}
+              value={selectedStoreCode}
+              onChange={(value) => setSelectedStoreCode(value)}
+              options={stores.map((store) => ({
+                label: `${store.storeCode} / ${store.storeName}`,
+                value: store.storeCode,
+              }))}
+            />
+            <Select
+              allowClear
+              placeholder={t('posAdmin.devices.filterByDeviceType')}
+              style={{ width: 160 }}
+              value={selectedDeviceType}
+              onChange={(value) => setSelectedDeviceType(value)}
+              options={DEVICE_TYPE_OPTIONS.map((deviceType) => ({
+                label: renderDeviceTypeTag(deviceType),
+                value: deviceType,
+              }))}
+            />
+            <Select
+              allowClear
+              placeholder={t('posAdmin.devices.filterByDeviceSystem')}
+              style={{ width: 160 }}
+              value={selectedDeviceSystem}
+              onChange={(value) => setSelectedDeviceSystem(value)}
+              options={DEVICE_SYSTEM_OPTIONS.map((deviceSystem) => ({
+                label: renderDeviceSystemTag(deviceSystem),
+                value: deviceSystem,
+              }))}
+            />
+            <Button onClick={() => void loadDevices()}>{t('common.refresh')}</Button>
+          </Space>
+        }
+      >
+        <Space direction="vertical" size={12} style={{ width: '100%' }}>
+          <Typography.Text type="secondary">
+            {t('posAdmin.devices.deviceNote')}
+          </Typography.Text>
+          <Table<DeviceRegistrationItem>
+            rowKey="id"
+            loading={loading}
+            columns={columns}
+            dataSource={items}
+            scroll={{ x: access.canManageDeviceRegistration ? 1320 : 1020 }}
+            pagination={false}
           />
-          <Select
-            allowClear
-            placeholder={t('posAdmin.devices.filterByDeviceType')}
-            style={{ width: 160 }}
-            value={selectedDeviceType}
-            onChange={(value) => setSelectedDeviceType(value)}
-            options={DEVICE_TYPE_OPTIONS.map((deviceType) => ({
-              label: renderDeviceTypeTag(deviceType),
-              value: deviceType,
-            }))}
-          />
-          <Select
-            allowClear
-            placeholder={t('posAdmin.devices.filterByDeviceSystem')}
-            style={{ width: 160 }}
-            value={selectedDeviceSystem}
-            onChange={(value) => setSelectedDeviceSystem(value)}
-            options={DEVICE_SYSTEM_OPTIONS.map((deviceSystem) => ({
-              label: renderDeviceSystemTag(deviceSystem),
-              value: deviceSystem,
-            }))}
-          />
-          <Button onClick={() => void loadDevices()}>{t('common.refresh')}</Button>
         </Space>
-      }
-    >
-      <Space direction="vertical" size={12} style={{ width: '100%' }}>
-        <Typography.Text type="secondary">
-          {t('posAdmin.devices.deviceNote')}
-        </Typography.Text>
-        <Table<DeviceRegistrationItem>
-          rowKey="id"
-          loading={loading}
-          columns={columns}
-          dataSource={items}
-          scroll={{ x: access.canManageDeviceRegistration ? 1260 : 1020 }}
-          pagination={false}
-        />
-      </Space>
-    </Card>
+      </Card>
+
+      <Modal
+        open={editOpen}
+        title={t('posAdmin.devices.editTitle')}
+        okText={t('common.save')}
+        cancelText={t('common.cancel')}
+        confirmLoading={editSaving}
+        okButtonProps={{ disabled: editLoading || !editingDevice }}
+        onOk={() => void submitEditModal()}
+        onCancel={closeEditModal}
+        destroyOnHidden
+        width={760}
+      >
+        <Spin spinning={editLoading}>
+          {editingDevice ? (
+          <Space direction="vertical" size={16} style={{ width: '100%' }}>
+            <Descriptions bordered column={2} size="small">
+              <Descriptions.Item label={t('posAdmin.devices.deviceNo')}>
+                {editingDevice.systemDeviceNumber || '--'}
+              </Descriptions.Item>
+              <Descriptions.Item label={t('posAdmin.devices.hardwareId')}>
+                {editingDevice.hardwareId || '--'}
+              </Descriptions.Item>
+              <Descriptions.Item label={t('column.store')}>
+                {renderStore(editingDevice)}
+              </Descriptions.Item>
+              <Descriptions.Item label={t('column.status')}>
+                <Tag color={STATUS_COLOR_MAP[editingDevice.status] ?? 'default'}>
+                  {editingDevice.statusDescription || String(editingDevice.status)}
+                </Tag>
+              </Descriptions.Item>
+              <Descriptions.Item label={t('column.createTime')}>
+                {formatDateTime(editingDevice.createdAt)}
+              </Descriptions.Item>
+              <Descriptions.Item label={t('column.creator')}>
+                {editingDevice.createdBy || '--'}
+              </Descriptions.Item>
+              <Descriptions.Item label={t('posAdmin.devices.lastModified')}>
+                {formatDateTime(editingDevice.lastModified)}
+              </Descriptions.Item>
+              <Descriptions.Item label={t('column.updater')}>
+                {editingDevice.lastModifiedBy || '--'}
+              </Descriptions.Item>
+            </Descriptions>
+
+            <Form form={editForm} layout="vertical">
+              <Form.Item
+                name="deviceType"
+                label={t('posAdmin.devices.deviceType')}
+                rules={[{ required: true, message: t('posAdmin.devices.deviceTypeRequired') }]}
+              >
+                <Select
+                  options={DEVICE_TYPE_OPTIONS.map((deviceType) => ({
+                    label: renderDeviceTypeTag(deviceType),
+                    value: deviceType,
+                  }))}
+                />
+              </Form.Item>
+              <Form.Item
+                name="deviceSystem"
+                label={t('posAdmin.devices.deviceSystem')}
+                rules={[{ required: true, message: t('posAdmin.devices.deviceSystemRequired') }]}
+              >
+                <Select
+                  options={DEVICE_SYSTEM_OPTIONS.map((deviceSystem) => ({
+                    label: renderDeviceSystemTag(deviceSystem),
+                    value: deviceSystem,
+                  }))}
+                />
+              </Form.Item>
+              <Form.Item name="remark" label={t('column.remarks')}>
+                <Input.TextArea
+                  rows={3}
+                  maxLength={500}
+                  showCount
+                  placeholder={t('posAdmin.devices.remarkPlaceholder')}
+                />
+              </Form.Item>
+            </Form>
+          </Space>
+          ) : null}
+        </Spin>
+      </Modal>
+    </>
   )
 }

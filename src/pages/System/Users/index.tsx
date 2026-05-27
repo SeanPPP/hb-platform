@@ -48,6 +48,19 @@ import type { StoreDto } from '../../../types/store'
 import { getRoleColor, getStoreColor } from '../../../utils/userTableColors'
 import { hashPassword } from '../../../utils/password'
 import { useAuthStore } from '../../../store/auth'
+import {
+  areRoleGuidsAllowedForScopedManager,
+  buildScopedStoreAssignments,
+  filterRoleOptionsForScopedManager,
+  filterStoresForManager,
+  filterUsersVisibleToScopedManager,
+  getManagedStores,
+  getScopedStoreGuidsForQuery,
+  hasForbiddenRoleForScopedManager,
+  isScopedStoreManager,
+  isStoreVisibleToManager,
+  mergeUsersByGuid,
+} from './userScope'
 
 export default function SystemUsersPage() {
   const { t } = useTranslation()
@@ -67,7 +80,7 @@ export default function SystemUsersPage() {
   const [sortOrder, setSortOrder] = useState<'ascend' | 'descend' | null>(null)
 
   const [storeOptions, setStoreOptions] = useState<{ label: string; value: string }[]>([])
-  const [roleOptions, setRoleOptions] = useState<{ label: string; value: string }[]>([])
+  const [roleOptions, setRoleOptions] = useState<{ label: string; value: string; roleName: string }[]>([])
 
   const [detailOpen, setDetailOpen] = useState(false)
   const [detailLoading, setDetailLoading] = useState(false)
@@ -116,34 +129,64 @@ export default function SystemUsersPage() {
     [allStores],
   )
 
+  const isCurrentUserScoped = isScopedStoreManager(currentUser, access)
+  const managedStores = useMemo(() => getManagedStores(currentUser, access), [access, currentUser])
+  const managedStoreKey = managedStores.map((store) => store.storeGUID).join('|')
+  const canLoadRoleOptions = access.canReadRole || access.hasPermission(P.Users.ManageRoles)
+
   const visibleStoreOptions = useMemo(() => {
-    if (!access.isStoreLevelManager || !currentUser?.stores?.length) {
-      return storeOptions
+    if (isCurrentUserScoped) {
+      return managedStores.map((store) => ({
+        label: `${store.storeName} (${store.storeCode})`,
+        value: store.storeGUID,
+      }))
     }
 
-    const allowedStoreGuids = new Set(
-      currentUser.stores
-        .map((item) => item.storeGUID)
-        .filter(Boolean),
-    )
-    const allowedStoreCodes = new Set(
-      currentUser.stores
-        .map((item) => item.storeCode)
-        .filter(Boolean),
-    )
+    return storeOptions
+  }, [isCurrentUserScoped, managedStores, storeOptions])
 
-    return storeOptions.filter(
-      (option) => allowedStoreGuids.has(option.value) || allowedStoreCodes.has(option.value),
-    )
-  }, [access.isStoreLevelManager, currentUser?.stores, storeOptions])
+  const managedStoreDetails = useMemo<StoreDto[]>(
+    () => managedStores.map((store) => ({
+      storeGUID: store.storeGUID,
+      storeName: store.storeName,
+      storeCode: store.storeCode,
+      isActive: true,
+      createdAt: '',
+      updatedAt: '',
+    })),
+    [managedStores],
+  )
 
-  const sortStoreGuids = (keys: string[]) =>
+  const sortStoreGuidsFromStores = (keys: string[], stores: StoreDto[]) =>
     [...keys].sort((a, b) => {
-      const storeA = sortedStores.find((item) => item.storeGUID === a)
-      const storeB = sortedStores.find((item) => item.storeGUID === b)
+      const storeA = stores.find((item) => item.storeGUID === a)
+      const storeB = stores.find((item) => item.storeGUID === b)
       if (!storeA || !storeB) return 0
       return storeA.storeName.localeCompare(storeB.storeName)
     })
+
+  const sortStoreGuids = (keys: string[]) => sortStoreGuidsFromStores(keys, sortedStores)
+
+  const sortScopedUsers = (
+    users: UserDto[],
+    currentSortBy?: string,
+    currentSortOrder?: 'ascend' | 'descend' | null,
+  ) => {
+    if (!currentSortBy || !currentSortOrder) {
+      return users
+    }
+
+    const direction = currentSortOrder === 'ascend' ? 1 : -1
+    return [...users].sort((left, right) => {
+      const leftValue = currentSortBy === 'roleNames' || currentSortBy === 'storeNames'
+        ? (left[currentSortBy] ?? []).join(',')
+        : String(left[currentSortBy as keyof UserDto] ?? '')
+      const rightValue = currentSortBy === 'roleNames' || currentSortBy === 'storeNames'
+        ? (right[currentSortBy] ?? []).join(',')
+        : String(right[currentSortBy as keyof UserDto] ?? '')
+      return leftValue.localeCompare(rightValue) * direction
+    })
+  }
 
   const handleStoreTargetChange = (nextTargetKeys: Key[]) => {
     const next = sortStoreGuids(nextTargetKeys.map(String))
@@ -218,6 +261,65 @@ export default function SystemUsersPage() {
   const loadData = async (nextPage = page, nextPageSize = pageSize, currentSortBy?: string, currentSortOrder?: 'ascend' | 'descend' | null) => {
     setLoading(true)
     try {
+      if (isCurrentUserScoped) {
+        const scopedStoreGuids = getScopedStoreGuidsForQuery(selectedStoreGuid, managedStores)
+
+        if (!scopedStoreGuids.length) {
+          setData([])
+          setTotal(0)
+          setPage(nextPage)
+          setPageSize(nextPageSize)
+          return
+        }
+
+        const queryBase = {
+          search: keyword || undefined,
+          roleGuid: selectedRoleGuid,
+          sortBy: currentSortBy || undefined,
+          sortDirection: currentSortOrder === 'ascend' ? 'asc' : currentSortOrder === 'descend' ? 'desc' : undefined,
+        }
+        const scopedStorePageSize = 500
+        const loadAllUsersForStore = async (storeGuid: string) => {
+          const firstPage = await getUsers({
+            page: 1,
+            pageSize: scopedStorePageSize,
+            storeGuid,
+            ...queryBase,
+          })
+          const pageCount = Math.ceil(firstPage.total / (firstPage.pageSize || scopedStorePageSize))
+          if (pageCount <= 1) {
+            return firstPage.items
+          }
+
+          const restPages = await Promise.all(
+            Array.from({ length: pageCount - 1 }, (_, index) =>
+              getUsers({
+                page: index + 2,
+                pageSize: scopedStorePageSize,
+                storeGuid,
+                ...queryBase,
+              }),
+            ),
+          )
+          return [firstPage, ...restPages].flatMap((result) => result.items)
+        }
+
+        const results = await Promise.all(
+          scopedStoreGuids.map((storeGuid) => loadAllUsersForStore(storeGuid)),
+        )
+        const mergedUsers = sortScopedUsers(
+          filterUsersVisibleToScopedManager(mergeUsersByGuid(results.flat())),
+          currentSortBy,
+          currentSortOrder,
+        )
+        const startIndex = (nextPage - 1) * nextPageSize
+        setData(mergedUsers.slice(startIndex, startIndex + nextPageSize))
+        setTotal(mergedUsers.length)
+        setPage(nextPage)
+        setPageSize(nextPageSize)
+        return
+      }
+
       const result = await getUsers({
         page: nextPage,
         pageSize: nextPageSize,
@@ -240,41 +342,80 @@ export default function SystemUsersPage() {
   }
 
   useEffect(() => {
+    if (!currentUser) {
+      return
+    }
+
     void loadData(1, pageSize, undefined, undefined)
-  }, [])
+  }, [currentUser?.userGUID, isCurrentUserScoped, managedStoreKey])
 
   useEffect(() => {
     void (async () => {
-      try {
-        const [storeResult, roles] = await Promise.all([
-          getStores({ page: 1, pageSize: 200, sortField: 'storeName', sortOrder: 'asc' }),
-          getActiveRoles(),
-        ])
-        setStoreOptions(storeResult.items.map((s) => ({
-          label: `${s.storeName} (${s.storeCode})`,
-          value: s.storeGUID,
+      if (isCurrentUserScoped) {
+        setStoreOptions(managedStores.map((store) => ({
+          label: `${store.storeName} (${store.storeCode})`,
+          value: store.storeGUID,
         })))
-        setRoleOptions(roles.map((r) => ({ label: r.roleName, value: r.roleGUID })))
-      } catch (error) {
-        console.error(error)
+      } else {
+        try {
+          const storeResult = await getStores({ page: 1, pageSize: 200, sortField: 'storeName', sortOrder: 'asc' })
+          setStoreOptions(storeResult.items.map((s) => ({
+            label: `${s.storeName} (${s.storeCode})`,
+            value: s.storeGUID,
+          })))
+        } catch (error) {
+          console.error(error)
+          setStoreOptions([])
+        }
+      }
+
+      if (canLoadRoleOptions) {
+        try {
+          const roles = await getActiveRoles()
+          const nextRoles = isCurrentUserScoped ? filterRoleOptionsForScopedManager(roles) : roles
+          setRoleOptions(nextRoles.map((r) => ({ label: r.roleName, value: r.roleGUID, roleName: r.roleName })))
+        } catch (error) {
+          console.error(error)
+          setRoleOptions([])
+        }
+      } else {
+        setRoleOptions([])
       }
     })()
-  }, [])
+  }, [canLoadRoleOptions, isCurrentUserScoped, managedStoreKey])
 
   useEffect(() => {
+    if (isCurrentUserScoped) {
+      if (selectedStoreGuid && !isStoreVisibleToManager(selectedStoreGuid, managedStores)) {
+        setSelectedStoreGuid(undefined)
+      }
+      return
+    }
+
     if (selectedStoreGuid && !visibleStoreOptions.some((option) => option.value === selectedStoreGuid)) {
       setSelectedStoreGuid(undefined)
     }
-  }, [selectedStoreGuid, visibleStoreOptions])
+  }, [isCurrentUserScoped, managedStoreKey, managedStores, selectedStoreGuid, visibleStoreOptions])
+
+  useEffect(() => {
+    if (selectedRoleGuid && !roleOptions.some((option) => option.value === selectedRoleGuid)) {
+      setSelectedRoleGuid(undefined)
+    }
+  }, [roleOptions, selectedRoleGuid])
 
   const reloadUserDetail = async (userGuid: string) => {
     const [detail, stores] = await Promise.all([getUserByGuid(userGuid), getUserStores(userGuid).catch(() => [])])
     setDetailUser(detail)
-    setDetailStores(stores)
+    setDetailStores(isCurrentUserScoped ? filterStoresForManager(stores, managedStores) : stores)
     return detail
   }
 
   const handleViewDetail = async (record: UserDto) => {
+    if (isCurrentUserScoped && (!data.some((item) => item.userGUID === record.userGUID) || hasForbiddenRoleForScopedManager(record))) {
+      message.error(t('system.users.detailOutOfScope', '无权查看该用户详情'))
+      return
+    }
+
     setDetailOpen(true)
     setDetailLoading(true)
     setDetailUser(null)
@@ -284,8 +425,13 @@ export default function SystemUsersPage() {
         getUserByGuid(record.userGUID),
         getUserStores(record.userGUID).catch(() => []),
       ])
+      if (isCurrentUserScoped && hasForbiddenRoleForScopedManager(detail)) {
+        message.error(t('system.users.detailOutOfScope', '无权查看该用户详情'))
+        setDetailOpen(false)
+        return
+      }
       setDetailUser(detail)
-      setDetailStores(stores)
+      setDetailStores(isCurrentUserScoped ? filterStoresForManager(stores, managedStores) : stores)
     } catch (error) {
       console.error(error)
       message.error(t('system.users.loadDetailFailed', '加载用户详情失败'))
@@ -298,8 +444,14 @@ export default function SystemUsersPage() {
   const loadRoleData = async (userGuid: string) => {
     setRoleLoading(true)
     try {
+      if (!canLoadRoleOptions) {
+        setAllRoles([])
+        setRoleTargetKeys([])
+        return
+      }
+
       const [roles, userRoles] = await Promise.all([getActiveRoles(), getUserRoles(userGuid)])
-      setAllRoles(roles)
+      setAllRoles(isCurrentUserScoped ? filterRoleOptionsForScopedManager(roles) : roles)
       setRoleTargetKeys(userRoles.map((item) => item.roleGUID))
     } catch (error) {
       console.error(error)
@@ -312,6 +464,18 @@ export default function SystemUsersPage() {
   const loadStoreData = async (userGuid: string) => {
     setStoreLoading(true)
     try {
+      if (isCurrentUserScoped) {
+        const userStores = await getUserStores(userGuid)
+        const scopedUserStores = filterStoresForManager(userStores, managedStores)
+        setAllStores(managedStoreDetails)
+        setStoreTargetKeys(sortStoreGuidsFromStores(scopedUserStores.map((item) => item.storeGUID), managedStoreDetails))
+        setStoreManageableKeys(sortStoreGuidsFromStores(
+          scopedUserStores.filter((item) => item.isManageable).map((item) => item.storeGUID),
+          managedStoreDetails,
+        ))
+        return
+      }
+
       const [stores, userStores] = await Promise.all([
         getStores({ page: 1, pageSize: 200, sortField: 'storeName', sortOrder: 'asc' }),
         getUserStores(userGuid),
@@ -353,6 +517,11 @@ export default function SystemUsersPage() {
   }
 
   const handleEdit = async (record: UserDto) => {
+    if (isCurrentUserScoped && (!data.some((item) => item.userGUID === record.userGUID) || hasForbiddenRoleForScopedManager(record))) {
+      message.error(t('system.users.editOutOfScope', '无权编辑该用户'))
+      return
+    }
+
     setEditOpen(true)
     setEditLoading(true)
     setEditingUser(null)
@@ -360,6 +529,11 @@ export default function SystemUsersPage() {
     form.resetFields()
     try {
       const detail = await getUserByGuid(record.userGUID)
+      if (isCurrentUserScoped && hasForbiddenRoleForScopedManager(detail)) {
+        message.error(t('system.users.editOutOfScope', '无权编辑该用户'))
+        setEditOpen(false)
+        return
+      }
       setEditingUser(detail)
       form.setFieldsValue({
         username: detail.username,
@@ -402,6 +576,10 @@ export default function SystemUsersPage() {
 
   const handleSaveRoles = async () => {
     if (!editingUser) return
+    if (isCurrentUserScoped && !areRoleGuidsAllowedForScopedManager(roleTargetKeys, allRoles)) {
+      message.error(t('system.users.roleAssignForbidden', '店长不能分配管理员、店长或仓库经理角色'))
+      return
+    }
     setRoleSaving(true)
     try {
       await assignRolesToUser(editingUser.userGUID, { roleGuids: roleTargetKeys })
@@ -423,13 +601,22 @@ export default function SystemUsersPage() {
     if (!editingUser) return
     setStoreSaving(true)
     try {
-      await assignStoresToUser(
-        editingUser.userGUID,
-        storeTargetKeys.map((storeGUID) => ({
+      const storeAssignments = isCurrentUserScoped
+        ? buildScopedStoreAssignments(
+          await getUserStores(editingUser.userGUID),
+          storeTargetKeys,
+          storeManageableKeys,
+          managedStores,
+        )
+        : storeTargetKeys.map((storeGUID) => ({
           storeGUID,
           accessLevel: 'ReadWrite',
           isManageable: storeManageableKeys.includes(storeGUID),
-        })),
+        }))
+
+      await assignStoresToUser(
+        editingUser.userGUID,
+        storeAssignments,
       )
       message.success(t('system.users.storeAssignSuccess', '分店分配成功'))
       void loadData(page, pageSize, sortBy, sortOrder)
@@ -475,11 +662,13 @@ export default function SystemUsersPage() {
     setCreateStoreLoading(true)
     try {
       const [roles, stores] = await Promise.all([
-        getActiveRoles(),
-        getStores({ page: 1, pageSize: 200, sortField: 'storeName', sortOrder: 'asc' }),
+        canLoadRoleOptions ? getActiveRoles() : Promise.resolve([]),
+        isCurrentUserScoped
+          ? Promise.resolve(managedStoreDetails)
+          : getStores({ page: 1, pageSize: 200, sortField: 'storeName', sortOrder: 'asc' }).then((result) => result.items),
       ])
-      setAllRoles(roles)
-      setAllStores(stores.items)
+      setAllRoles(isCurrentUserScoped ? filterRoleOptionsForScopedManager(roles) : roles)
+      setAllStores(stores)
     } catch (error) {
       console.error(error)
     } finally {
@@ -491,6 +680,10 @@ export default function SystemUsersPage() {
   const handleCreateSubmit = async () => {
     try {
       const values = await createForm.validateFields()
+      if (isCurrentUserScoped && !areRoleGuidsAllowedForScopedManager(createRoleTargetKeys, allRoles)) {
+        message.error(t('system.users.roleAssignForbidden', '店长不能分配管理员、店长或仓库经理角色'))
+        return
+      }
       setCreateLoading(true)
       const payload: CreateUserDto = {
         username: values.username,

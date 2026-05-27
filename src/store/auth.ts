@@ -13,6 +13,7 @@ interface AuthState {
   loading: boolean
   loginLoading: boolean
   fetchCurrentUser: () => Promise<CurrentUser | null>
+  refreshCurrentUserSilently: () => Promise<CurrentUser | null>
   login: (payload: LoginRequest) => Promise<void>
   logout: () => Promise<void>
   clearAuth: () => void
@@ -68,6 +69,32 @@ export const useAuthStore = create<AuthState>((set) => ({
         initialized: true,
         loading: false,
       })
+      return null
+    }
+  },
+  refreshCurrentUserSilently: async () => {
+    try {
+      const currentUser = await getCurrentUser()
+      const access = buildAccess(currentUser)
+      set({
+        currentUser,
+        access,
+        initialized: true,
+      })
+
+      try {
+        const menu = await fetchNavigationMenu()
+        set({ navigationMenu: menu })
+      } catch (error) {
+        console.error('静默刷新导航菜单失败', error)
+      }
+
+      return currentUser
+    } catch (error) {
+      const requestError = error as RequestError
+      if (requestError.status !== 401) {
+        console.error('静默刷新当前用户失败', error)
+      }
       return null
     }
   },

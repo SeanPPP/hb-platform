@@ -1,10 +1,38 @@
 import type { ApiResponse } from '../types/api'
 import type {
+  DeviceRegistrationDetail,
   DeviceRegistrationItem,
   DeviceRegistrationPagedResult,
   StoreOption,
+  UpdateDeviceRegistrationApiPayload,
+  UpdateDeviceRegistrationPayload,
 } from '../types/deviceRegistration'
-import request from '../utils/request'
+import request, { unwrapApiData } from '../utils/request'
+
+const REACT_API_BASE = '/api/react/v1/device-registration'
+
+function getString(raw: Record<string, unknown>, ...keys: string[]) {
+  for (const key of keys) {
+    const value = raw[key]
+    if (typeof value === 'string') {
+      return value
+    }
+  }
+  return undefined
+}
+
+function getNullableString(raw: Record<string, unknown>, ...keys: string[]) {
+  for (const key of keys) {
+    const value = raw[key]
+    if (typeof value === 'string') {
+      return value
+    }
+    if (value === null) {
+      return null
+    }
+  }
+  return null
+}
 
 function normalizeItem(raw: Record<string, unknown>): DeviceRegistrationItem {
   return {
@@ -17,10 +45,12 @@ function normalizeItem(raw: Record<string, unknown>): DeviceRegistrationItem {
         : typeof raw.StoreCode === 'string'
           ? raw.StoreCode
           : null,
+    storeName: getNullableString(raw, 'storeName', 'StoreName'),
     deviceType: String(raw.deviceType ?? raw.DeviceType ?? ''),
     deviceSystem: String(raw.deviceSystem ?? raw.DeviceSystem ?? ''),
     status: Number(raw.status ?? raw.Status ?? -1),
     statusDescription: String(raw.statusDescription ?? raw.StatusDescription ?? ''),
+    remark: getNullableString(raw, 'remark', 'remarks', 'Remark', 'Remarks'),
     createdAt:
       typeof raw.createdAt === 'string'
         ? raw.createdAt
@@ -45,6 +75,41 @@ function normalizeItem(raw: Record<string, unknown>): DeviceRegistrationItem {
         : typeof raw.LastModifiedBy === 'string'
           ? raw.LastModifiedBy
           : null,
+  }
+}
+
+export function normalizeDeviceRegistrationDetail(
+  raw: Record<string, unknown>
+): DeviceRegistrationDetail {
+  return {
+    id: Number(raw.id ?? raw.ID ?? raw.Id ?? 0),
+    hardwareId: String(raw.hardwareId ?? raw.设备硬件识别码 ?? raw.HardwareId ?? ''),
+    systemDeviceNumber: String(
+      raw.systemDeviceNumber ?? raw.系统设备编号 ?? raw.SystemDeviceNumber ?? ''
+    ),
+    storeCode: getNullableString(raw, 'storeCode', '分店代码', 'StoreCode'),
+    storeName: getNullableString(raw, 'storeName', '分店名称', 'StoreName'),
+    deviceType: String(raw.deviceType ?? raw.设备类型 ?? raw.DeviceType ?? ''),
+    deviceSystem: String(raw.deviceSystem ?? raw.设备系统 ?? raw.DeviceSystem ?? ''),
+    status: Number(raw.status ?? raw.设备状态 ?? raw.Status ?? -1),
+    statusDescription: String(
+      raw.statusDescription ?? raw.设备状态描述 ?? raw.StatusDescription ?? ''
+    ),
+    remark: getNullableString(raw, 'remark', 'remarks', '备注', 'Remark', 'Remarks'),
+    createdAt: getString(raw, 'createdAt', '创建时间', 'CreatedAt'),
+    lastModified: getNullableString(raw, 'lastModified', '最后修改时间', 'LastModified'),
+    createdBy: getNullableString(raw, 'createdBy', '创建人', 'CreatedBy'),
+    lastModifiedBy: getNullableString(raw, 'lastModifiedBy', '最后修改人', 'LastModifiedBy'),
+  }
+}
+
+export function buildUpdateDeviceRegistrationPayload(
+  payload: UpdateDeviceRegistrationPayload
+): UpdateDeviceRegistrationApiPayload {
+  return {
+    设备类型: payload.deviceType,
+    设备系统: payload.deviceSystem,
+    备注: payload.remark ?? '',
   }
 }
 
@@ -97,6 +162,22 @@ export async function disableDevice(id: number) {
 
 export async function lockDevice(id: number) {
   return request.post<ApiResponse<object>>(`/api/${id}/lock`, {})
+}
+
+export async function getDeviceRegistrationDetail(id: number): Promise<DeviceRegistrationDetail> {
+  const response = await request.get<ApiResponse<Record<string, unknown>>>(`${REACT_API_BASE}/${id}`)
+  return normalizeDeviceRegistrationDetail(unwrapApiData(response) ?? {})
+}
+
+export async function updateDeviceRegistration(
+  id: number,
+  payload: UpdateDeviceRegistrationPayload
+): Promise<DeviceRegistrationDetail> {
+  const response = await request.put<ApiResponse<Record<string, unknown>>>(
+    `${REACT_API_BASE}/${id}`,
+    buildUpdateDeviceRegistrationPayload(payload)
+  )
+  return normalizeDeviceRegistrationDetail(unwrapApiData(response) ?? {})
 }
 
 export async function getStoreOptions(): Promise<StoreOption[]> {

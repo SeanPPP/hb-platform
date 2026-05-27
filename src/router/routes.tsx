@@ -70,6 +70,8 @@ import StoreOrdersPage from '../pages/Warehouse/StoreOrders'
 import type { AccessControl } from '../types/auth'
 import type { NavigationMenuDto } from '../types/auth'
 import type { AppRouteItem, AppRouteMeta, TabItem } from '../types/router'
+import { chooseNavigationMenus } from './menuFallback'
+import { shouldIncludeLocalMenuRoute } from './menuVisibility'
 
 export interface ResolvedRoute extends AppRouteItem {
   parentPaths: string[]
@@ -607,11 +609,18 @@ function buildMenusInternal(routes: AppRouteItem[], access: AccessControl): Menu
         return null
       }
 
-      const children = route.children ? buildMenusInternal(route.children, access) : undefined
+      const hasRouteChildren = Boolean(route.children?.length)
+      const children = hasRouteChildren ? buildMenusInternal(route.children!, access) : undefined
       const hasChildren = Boolean(children?.length)
       const hasSelfAccess = canAccessRoute(route.meta, access)
 
-      if (!hasSelfAccess && !hasChildren) {
+      if (
+        !shouldIncludeLocalMenuRoute({
+          hasRouteChildren,
+          hasVisibleChildren: hasChildren,
+          hasSelfAccess,
+        })
+      ) {
         return null
       }
 
@@ -626,10 +635,11 @@ function buildMenusInternal(routes: AppRouteItem[], access: AccessControl): Menu
 }
 
 export function buildMenus(access: AccessControl, navigationMenu?: NavigationMenuDto[]) {
+  const localMenus = buildMenusInternal(appRoutes, access)
   if (navigationMenu !== undefined) {
-    return buildMenusFromBackend(navigationMenu)
+    return chooseNavigationMenus(localMenus, buildMenusFromBackend(navigationMenu))
   }
-  return buildMenusInternal(appRoutes, access)
+  return localMenus
 }
 
 function buildMenusFromBackend(nodes: NavigationMenuDto[]): MenuProps['items'] {

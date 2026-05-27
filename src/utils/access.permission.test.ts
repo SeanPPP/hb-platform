@@ -1,8 +1,9 @@
 import type { CurrentUser } from '../types/auth'
 import { P } from '../types/permissions'
 import { buildAccess } from './access'
-import { buildExpoRoleMenuPreview } from './expoRoleMenuPreview'
-import { buildRolePreviewAccess } from './roleMenuPreview'
+import { buildExpoRoleMenuPreview, filterExpoRoutesByVisibility } from './expoRoleMenuPreview'
+import { applyRolePermissionMutation, buildRolePreviewAccess } from './roleMenuPreview'
+import { buildWebRoleMenuPreview, filterWebMenuNodesByVisibility, getAccessKeyPermissionCodes, type WebMenuPreviewNode } from './webMenuPreview'
 
 function createCurrentUser(overrides: Partial<CurrentUser> = {}): CurrentUser {
   return {
@@ -23,6 +24,19 @@ function assertEqual<T>(actual: T, expected: T, message: string) {
 }
 
 const translate = (key: string, fallback?: string) => fallback ?? key
+
+function findWebMenuNode(nodes: WebMenuPreviewNode[], path: string): WebMenuPreviewNode | undefined {
+  for (const node of nodes) {
+    if (node.path === path) {
+      return node
+    }
+    const child = node.children ? findWebMenuNode(node.children, path) : undefined
+    if (child) {
+      return child
+    }
+  }
+  return undefined
+}
 
 const warehouseManagerAccess = buildAccess(
   createCurrentUser({
@@ -149,6 +163,18 @@ assertEqual(
   'Role preview without Expo app permissions should not show store menu children',
 )
 
+assertEqual(
+  filterExpoRoutesByVisibility(noPermissionExpoPreview.allRoutes, 'visible').map((route) => route.routeName).join(','),
+  'settings',
+  'Visible HbwebExpo filter should only show settings for roles without app permissions',
+)
+
+assertEqual(
+  filterExpoRoutesByVisibility(noPermissionExpoPreview.allRoutes, 'hidden').some((route) => route.routeName === 'home'),
+  true,
+  'Hidden HbwebExpo filter should include protected routes for roles without app permissions',
+)
+
 const orderCreatorExpoPreview = buildExpoRoleMenuPreview(
   buildRolePreviewAccess({
     roleGuid: 'order-creator-role',
@@ -205,6 +231,24 @@ assertEqual(
   'Collapsed HbwebExpo store menu should include installment orders when permitted',
 )
 
+assertEqual(
+  filterExpoRoutesByVisibility(orderCreatorExpoPreview.allRoutes, 'visible').some((route) => route.routeName === 'local-supplier-invoices'),
+  true,
+  'Visible HbwebExpo filter should include authorized local supplier invoice route',
+)
+
+assertEqual(
+  filterExpoRoutesByVisibility(orderCreatorExpoPreview.allRoutes, 'hidden').some((route) => route.routeName === 'local-supplier-invoices'),
+  false,
+  'Hidden HbwebExpo filter should exclude authorized local supplier invoice route',
+)
+
+assertEqual(
+  filterExpoRoutesByVisibility(orderCreatorExpoPreview.allRoutes, 'all').length,
+  orderCreatorExpoPreview.allRoutes.length,
+  'All HbwebExpo filter should keep the complete route permission list',
+)
+
 const attendanceExpoPreview = buildExpoRoleMenuPreview(
   buildRolePreviewAccess({
     roleGuid: 'attendance-role',
@@ -227,6 +271,42 @@ assertEqual(
   attendanceExpoPreview.visibleRoutes.some((route) => route.routeName === 'attendance'),
   false,
   'HbwebExpo preview should not expose the legacy attendance route directly',
+)
+
+const attendanceSelfByAvailabilityPreview = buildExpoRoleMenuPreview(
+  buildRolePreviewAccess({
+    roleGuid: 'attendance-self-availability-role',
+    roleName: 'AttendanceSelfAvailabilityRole',
+    isSuperAdmin: false,
+    implicitAllPermissions: false,
+    explicitPermissionCodes: [P.Attendance.AvailabilitySubmitSelf],
+    effectivePermissionCodes: [P.Attendance.AvailabilitySubmitSelf],
+  }),
+  translate,
+)
+
+assertEqual(
+  attendanceSelfByAvailabilityPreview.visibleRoutes.some((route) => route.routeName === 'attendance-personal'),
+  true,
+  'HbwebExpo attendance personal menu should follow AnyPermissions rules, not only ScheduleViewSelf',
+)
+
+const attendanceManagementPreview = buildExpoRoleMenuPreview(
+  buildRolePreviewAccess({
+    roleGuid: 'attendance-management-role',
+    roleName: 'AttendanceManagementRole',
+    isSuperAdmin: false,
+    implicitAllPermissions: false,
+    explicitPermissionCodes: [P.Attendance.ScheduleViewStore],
+    effectivePermissionCodes: [P.Attendance.ScheduleViewStore],
+  }),
+  translate,
+)
+
+assertEqual(
+  attendanceManagementPreview.visibleRoutes.some((route) => route.routeName === 'attendance-management'),
+  true,
+  'HbwebExpo attendance management menu should follow AnyPermissions rules for store attendance permissions',
 )
 
 const warehousePreviewAccess = buildRolePreviewAccess({
@@ -264,6 +344,224 @@ assertEqual(
   superAdminExpoPreview.visibleRoutes.length > orderCreatorExpoPreview.visibleRoutes.length,
   true,
   'Super admin role preview should show more HbwebExpo app tabs than a limited order role',
+)
+
+const roleReaderWebPreview = buildWebRoleMenuPreview(
+  buildRolePreviewAccess({
+    roleGuid: 'role-reader-role',
+    roleName: 'RoleReaderRole',
+    isSuperAdmin: false,
+    implicitAllPermissions: false,
+    explicitPermissionCodes: [P.Roles.View],
+    effectivePermissionCodes: [P.Roles.View],
+  }),
+  translate,
+)
+const systemMenu = roleReaderWebPreview.find((node) => node.path === '/system')
+const rolesMenu = systemMenu?.children?.find((node) => node.path === '/system/roles')
+const roleReaderCompleteWebPreview = buildWebRoleMenuPreview(
+  buildRolePreviewAccess({
+    roleGuid: 'role-reader-role',
+    roleName: 'RoleReaderRole',
+    isSuperAdmin: false,
+    implicitAllPermissions: false,
+    explicitPermissionCodes: [P.Roles.View],
+    effectivePermissionCodes: [P.Roles.View],
+  }),
+  translate,
+  {
+    includeHidden: true,
+  },
+)
+const roleReaderVisibleWebPreview = filterWebMenuNodesByVisibility(roleReaderCompleteWebPreview, 'visible')
+const roleReaderHiddenWebPreview = filterWebMenuNodesByVisibility(roleReaderCompleteWebPreview, 'hidden')
+
+assertEqual(
+  systemMenu?.permissionCodes.length,
+  0,
+  'Parent Web menus without direct accessKey should keep an empty permission list',
+)
+
+assertEqual(
+  rolesMenu?.permissionCodes.join(','),
+  P.Roles.View,
+  'Roles.View role preview should show Roles.View on the system roles Web menu',
+)
+
+assertEqual(
+  rolesMenu?.accessKey,
+  'canReadRole',
+  'Web menu preview should expose the accessKey that controls the system roles menu',
+)
+
+assertEqual(
+  filterWebMenuNodesByVisibility(roleReaderCompleteWebPreview, 'all').length,
+  roleReaderCompleteWebPreview.length,
+  'All Web menu filter should keep the complete desktop menu tree',
+)
+
+assertEqual(
+  Boolean(findWebMenuNode(roleReaderVisibleWebPreview, '/system')),
+  true,
+  'Visible Web menu filter should keep parent context for authorized child menus',
+)
+
+assertEqual(
+  Boolean(findWebMenuNode(roleReaderVisibleWebPreview, '/system/roles')),
+  true,
+  'Visible Web menu filter should include authorized desktop menu entries',
+)
+
+assertEqual(
+  Boolean(findWebMenuNode(roleReaderHiddenWebPreview, '/system')),
+  true,
+  'Hidden Web menu filter should keep parent context for hidden child menus',
+)
+
+assertEqual(
+  Boolean(findWebMenuNode(roleReaderHiddenWebPreview, '/system/stores')),
+  true,
+  'Hidden Web menu filter should include unauthorized desktop menu entries',
+)
+
+assertEqual(
+  Boolean(findWebMenuNode(roleReaderHiddenWebPreview, '/system/roles')),
+  false,
+  'Hidden Web menu filter should exclude authorized desktop menu entries',
+)
+
+const warehouseManageCodes = getAccessKeyPermissionCodes('canManageWarehouseProducts')
+
+assertEqual(
+  warehouseManageCodes.join(','),
+  `${P.Warehouse.ManageProducts},${P.Warehouse.Manage}`,
+  'Warehouse product Web menu should document both fine-grained and legacy manager permissions',
+)
+
+const warehouseLegacyWebPreview = buildWebRoleMenuPreview(
+  buildRolePreviewAccess({
+    roleGuid: 'warehouse-legacy-role',
+    roleName: 'WarehouseLegacyRole',
+    isSuperAdmin: false,
+    implicitAllPermissions: false,
+    explicitPermissionCodes: [P.Warehouse.Manage],
+    effectivePermissionCodes: [P.Warehouse.Manage],
+  }),
+  translate,
+)
+const warehouseProductsMenu = warehouseLegacyWebPreview
+  .find((node) => node.path === '/warehouse')
+  ?.children?.find((node) => node.path === '/warehouse/products')
+
+assertEqual(
+  warehouseProductsMenu?.permissionCodes.join(','),
+  `${P.Warehouse.ManageProducts},${P.Warehouse.Manage}`,
+  'Warehouse.Manage role preview should show the warehouse products Web menu with both accepted permissions',
+)
+
+const superAdminWebPreview = buildWebRoleMenuPreview(superAdminPreviewAccess, translate)
+const superAdminDeviceMenu = superAdminWebPreview
+  .find((node) => node.path === '/system')
+  ?.children?.find((node) => node.path === '/system/device-registration')
+
+assertEqual(
+  superAdminDeviceMenu?.permissionCodes.join(','),
+  `${P.DeviceRegistration.View},${P.DeviceRegistration.Manage}`,
+  'Super admin Web preview should show protected menus with their normal permission codes',
+)
+
+const legacyLocalInvoiceWebPreview = buildWebRoleMenuPreview(
+  buildRolePreviewAccess({
+    roleGuid: 'legacy-local-invoice-role',
+    roleName: 'LegacyLocalInvoiceRole',
+    isSuperAdmin: false,
+    implicitAllPermissions: false,
+    explicitPermissionCodes: ['LocalInvocie.View'],
+    effectivePermissionCodes: ['LocalInvocie.View', P.LocalPurchase.View],
+  }),
+  translate,
+  {
+    includeHidden: true,
+    explicitPermissionCodes: ['LocalInvocie.View'],
+  },
+)
+const legacyLocalInvoiceMenu = legacyLocalInvoiceWebPreview
+  .find((node) => node.path === '/pos-admin')
+  ?.children?.find((node) => node.path === '/pos-admin/local-supplier-invoices')
+
+assertEqual(
+  legacyLocalInvoiceMenu?.edit.removePermissionCodes.includes('LocalInvocie.View'),
+  true,
+  'Web preview remove action should include legacy LocalInvocie.View so old roles can hide the menu',
+)
+
+const legacyLocalInvoiceRemovedPermissions = applyRolePermissionMutation({
+  currentPermissionCodes: ['LocalInvocie.View'],
+  removePermissionCodes: legacyLocalInvoiceMenu?.edit.removePermissionCodes ?? [],
+})
+
+assertEqual(
+  legacyLocalInvoiceRemovedPermissions.length,
+  0,
+  'Removing the legacy local invoice menu should delete the effective legacy permission assignment',
+)
+
+const hiddenLocalInvoiceAfterLegacyRemoval = filterWebMenuNodesByVisibility(
+  buildWebRoleMenuPreview(
+    buildRolePreviewAccess({
+      roleGuid: 'legacy-local-invoice-removed-role',
+      roleName: 'LegacyLocalInvoiceRemovedRole',
+      isSuperAdmin: false,
+      implicitAllPermissions: false,
+      explicitPermissionCodes: legacyLocalInvoiceRemovedPermissions,
+      effectivePermissionCodes: legacyLocalInvoiceRemovedPermissions,
+    }),
+    translate,
+    {
+      includeHidden: true,
+      explicitPermissionCodes: legacyLocalInvoiceRemovedPermissions,
+    },
+  ),
+  'hidden',
+)
+
+assertEqual(
+  Boolean(findWebMenuNode(hiddenLocalInvoiceAfterLegacyRemoval, '/pos-admin/local-supplier-invoices')),
+  true,
+  'Hidden Web menu filter should include local supplier invoices after removing the legacy LocalInvocie.View alias',
+)
+
+const legacyLocalInvoiceExpoPreview = buildExpoRoleMenuPreview(
+  buildRolePreviewAccess({
+    roleGuid: 'legacy-local-invoice-expo-role',
+    roleName: 'LegacyLocalInvoiceExpoRole',
+    isSuperAdmin: false,
+    implicitAllPermissions: false,
+    explicitPermissionCodes: ['LocalInvocie.View'],
+    effectivePermissionCodes: ['LocalInvocie.View', P.LocalPurchase.View],
+  }),
+  translate,
+  {
+    explicitPermissionCodes: ['LocalInvocie.View'],
+  },
+)
+const legacyLocalInvoiceExpoRoute = legacyLocalInvoiceExpoPreview.allRoutes.find(
+  (route) => route.routeName === 'local-supplier-invoices',
+)
+
+assertEqual(
+  legacyLocalInvoiceExpoRoute?.removePermissionCodes.includes('LocalInvocie.View'),
+  true,
+  'HbwebExpo preview remove action should include legacy LocalInvocie.View so old roles can hide the menu',
+)
+
+assertEqual(
+  applyRolePermissionMutation({
+    currentPermissionCodes: ['LocalInvocie.View'],
+    removePermissionCodes: legacyLocalInvoiceExpoRoute?.removePermissionCodes ?? [],
+  }).length,
+  0,
+  'Removing the legacy local invoice HbwebExpo menu should delete the effective legacy permission assignment',
 )
 
 console.log('access.permission.test: ok')

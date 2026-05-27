@@ -1,4 +1,14 @@
-import { AppstoreOutlined, EditOutlined, EyeOutlined, PlusOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons'
+import {
+  AppstoreOutlined,
+  DeleteOutlined,
+  EditOutlined,
+  EyeOutlined,
+  LockOutlined,
+  PlusCircleOutlined,
+  PlusOutlined,
+  ReloadOutlined,
+  SearchOutlined,
+} from '@ant-design/icons'
 import {
   Alert,
   Button,
@@ -9,8 +19,9 @@ import {
   Form,
   Input,
   List,
-  Menu,
   Modal,
+  Popconfirm,
+  Segmented,
   Space,
   Switch,
   Table,
@@ -20,32 +31,38 @@ import {
   message,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
-import type { MenuProps } from 'antd'
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 import { HasPermission, usePermission } from '../../../components/Access'
 import PageContainer from '../../../components/PageContainer'
-import { buildMenus } from '../../../router/routes'
+import { useAuthStore } from '../../../store/auth'
 import type { AccessControl } from '../../../types/auth'
 import { P } from '../../../types/permissions'
-import { buildExpoRoleMenuPreview, type ExpoAppVisibleRoute, type ExpoAppDisplayTab } from '../../../utils/expoRoleMenuPreview'
-import { buildRolePreviewAccess } from '../../../utils/roleMenuPreview'
-import { createRole, getRoleByGuid, getRolePermissionState, getRoles, updateRole } from '../../../services/roleService'
+import {
+  buildExpoRoleMenuPreview,
+  filterExpoRoutesByVisibility,
+  type ExpoAppVisibleRoute,
+  type ExpoAppDisplayTab,
+  type ExpoMenuVisibilityFilter,
+} from '../../../utils/expoRoleMenuPreview'
+import { applyRolePermissionMutation, buildRolePreviewAccess, isImplicitAllRole } from '../../../utils/roleMenuPreview'
+import {
+  buildWebRoleMenuPreview,
+  filterWebMenuNodesByVisibility,
+  type WebMenuPreviewNode,
+  type WebMenuVisibilityFilter,
+} from '../../../utils/webMenuPreview'
+import {
+  assignPermissionsToRole,
+  createRole,
+  getRoleByGuid,
+  getRolePermissionState,
+  getRoles,
+  updateRole,
+} from '../../../services/roleService'
 import type { CreateRoleDto, RoleDetailDto, RoleDto, RolePermissionStateDto, UpdateRoleDto } from '../../../types/role'
 import RolePermissionManager from './RolePermissionManager'
 import RoleUserManagement from './RoleUserManagement'
-
-function collectOpenMenuKeys(items: MenuProps['items']): string[] {
-  const keys: string[] = []
-  items?.forEach((item) => {
-    if (!item || !('children' in item) || !item.children?.length) {
-      return
-    }
-    keys.push(String(item.key))
-    keys.push(...collectOpenMenuKeys(item.children as MenuProps['items']))
-  })
-  return keys
-}
 
 type ExpoDirectTabPreviewItem =
   | {
@@ -72,6 +89,10 @@ function toExpoDirectTabPreviewItems(displayTabs: ExpoAppDisplayTab[]): ExpoDire
       route: item.route,
     }
   })
+}
+
+function countWebMenuPreviewNodes(items: WebMenuPreviewNode[]): number {
+  return items.reduce((total, item) => total + 1 + countWebMenuPreviewNodes(item.children ?? []), 0)
 }
 
 export default function SystemRolesPage() {
@@ -104,6 +125,10 @@ export default function SystemRolesPage() {
   const [menuPreviewRole, setMenuPreviewRole] = useState<RoleDto | null>(null)
   const [menuPreviewAccess, setMenuPreviewAccess] = useState<AccessControl | null>(null)
   const [menuPreviewPermissionState, setMenuPreviewPermissionState] = useState<RolePermissionStateDto | null>(null)
+  const [menuPreviewSavingKey, setMenuPreviewSavingKey] = useState<string | null>(null)
+  const [webMenuVisibilityFilter, setWebMenuVisibilityFilter] = useState<WebMenuVisibilityFilter>('all')
+  const [expoMenuVisibilityFilter, setExpoMenuVisibilityFilter] = useState<ExpoMenuVisibilityFilter>('all')
+  const refreshCurrentUserSilently = useAuthStore((state) => state.refreshCurrentUserSilently)
 
   const loadData = async (nextPage = page, nextPageSize = pageSize) => {
     setLoading(true)
@@ -133,6 +158,13 @@ export default function SystemRolesPage() {
     const detail = await getRoleByGuid(roleGuid)
     setDetailRole(detail)
     return detail
+  }
+
+  const reloadMenuPreviewPermissionState = async (roleGuid: string) => {
+    const permissionState = await getRolePermissionState(roleGuid)
+    setMenuPreviewPermissionState(permissionState)
+    setMenuPreviewAccess(buildRolePreviewAccess(permissionState))
+    return permissionState
   }
 
   const handleCreateOpen = () => {
@@ -236,10 +268,10 @@ export default function SystemRolesPage() {
     setMenuPreviewRole(record)
     setMenuPreviewAccess(null)
     setMenuPreviewPermissionState(null)
+    setWebMenuVisibilityFilter('all')
+    setExpoMenuVisibilityFilter('all')
     try {
-      const permissionState = await getRolePermissionState(record.roleGUID)
-      setMenuPreviewPermissionState(permissionState)
-      setMenuPreviewAccess(buildRolePreviewAccess(permissionState))
+      await reloadMenuPreviewPermissionState(record.roleGUID)
     } catch (error) {
       console.error(error)
       message.error(t('system.roles.loadMenuPreviewFailed', '加载菜单预览失败'))
@@ -249,21 +281,190 @@ export default function SystemRolesPage() {
     }
   }
 
-  const renderMenuPreview = (items: MenuProps['items']) => {
-    if (!items?.length) {
+  const handleMenuPermissionChange = async ({
+    key,
+    addPermissionCodes = [],
+    removePermissionCodes = [],
+  }: {
+    key: string
+    addPermissionCodes?: string[]
+    removePermissionCodes?: string[]
+  }) => {
+    if (!menuPreviewRole || !menuPreviewPermissionState) return
+    if (!canManageRolePermissions) {
+      message.warning(t('system.roles.menuPermissionReadonlyTip', '当前账号没有维护角色权限的权限。'))
+      return
+    }
+    if (isImplicitAllRole(menuPreviewPermissionState)) {
+      message.info(t('system.roles.superAdminPermissionsReadOnly', '管理员默认拥有所有权限和菜单，无需在此处维护。'))
+      return
+    }
+
+    const nextPermissions = applyRolePermissionMutation({
+      currentPermissionCodes: menuPreviewPermissionState.explicitPermissionCodes,
+      addPermissionCodes,
+      removePermissionCodes,
+    })
+
+    setMenuPreviewSavingKey(key)
+    try {
+      await assignPermissionsToRole(menuPreviewRole.roleGUID, { permissions: nextPermissions })
+      await reloadMenuPreviewPermissionState(menuPreviewRole.roleGUID)
+      await refreshCurrentUserSilently()
+      message.success(t('system.roles.menuPermissionSaved', '权限已更新'))
+    } catch (error) {
+      console.error(error)
+      message.error(t('system.roles.permSaveFailed', '保存权限失败'))
+    } finally {
+      setMenuPreviewSavingKey(null)
+    }
+  }
+
+  const renderPermissionTags = (permissionCodes: string[]) => {
+    if (!permissionCodes.length) {
+      return <Tag>{t('system.roles.webMenuNoDirectPermission', '无直接权限')}</Tag>
+    }
+
+    return (
+      <>
+        <Tag color="green">{t('system.roles.webMenuAnyPermission', '任一权限满足即可')}</Tag>
+        {permissionCodes.map((code) => (
+          <Tag key={code}>{code}</Tag>
+        ))}
+      </>
+    )
+  }
+
+  const renderMenuPermissionActions = (item: {
+    key: string
+    visible: boolean
+    edit: {
+      canAdd: boolean
+      canRemove: boolean
+      isReadOnly: boolean
+      isFixed: boolean
+      addPermissionCodes: string[]
+      removePermissionCodes: string[]
+    }
+  }) => {
+    if (item.edit.isFixed) {
+      return (
+        <Tag icon={<LockOutlined />} color="default">
+          {t('system.roles.fixedMenuPermission', '固定入口')}
+        </Tag>
+      )
+    }
+
+    if (item.edit.isReadOnly) {
+      return <Tag>{t('system.roles.readOnlyMenuPermission', '只读')}</Tag>
+    }
+
+    if (item.edit.canRemove) {
+      return (
+        <Popconfirm
+          title={t('system.roles.removeMenuPermissionConfirm', '移除这些权限后该菜单可能不再显示，确定继续吗？')}
+          okText={t('common.confirm')}
+          cancelText={t('common.cancel')}
+          onConfirm={() =>
+            void handleMenuPermissionChange({
+              key: item.key,
+              removePermissionCodes: item.edit.removePermissionCodes,
+            })
+          }
+        >
+          <Button
+            danger
+            size="small"
+            icon={<DeleteOutlined />}
+            loading={menuPreviewSavingKey === item.key}
+          >
+            {t('system.roles.removeMenuPermission', '移除权限')}
+          </Button>
+        </Popconfirm>
+      )
+    }
+
+    if (item.edit.canAdd) {
+      return (
+        <Button
+          type="primary"
+          size="small"
+          icon={<PlusCircleOutlined />}
+          loading={menuPreviewSavingKey === item.key}
+          onClick={() =>
+            void handleMenuPermissionChange({
+              key: item.key,
+              addPermissionCodes: item.edit.addPermissionCodes,
+            })
+          }
+        >
+          {t('system.roles.addMenuPermission', '添加权限')}
+        </Button>
+      )
+    }
+
+    return null
+  }
+
+  const toExpoMenuActionTarget = (item: ExpoAppVisibleRoute) => ({
+    key: `expo-${item.routeName}`,
+    visible: item.visible,
+    edit: {
+      canAdd: !item.visible && !item.readOnly && !item.locked && item.addPermissionCodes.length > 0,
+      canRemove: item.visible && !item.readOnly && !item.locked && item.removePermissionCodes.length > 0,
+      isReadOnly: item.readOnly,
+      isFixed: item.locked,
+      addPermissionCodes: item.addPermissionCodes,
+      removePermissionCodes: item.removePermissionCodes,
+    },
+  })
+
+  const renderWebMenuPreview = (items: WebMenuPreviewNode[], level = 0): ReactNode => {
+    if (!items.length) {
       return <Empty description={t('system.roles.noVisibleMenus', '暂无可见菜单')} />
     }
+
     return (
-      <Menu
-        mode="inline"
-        items={items}
-        defaultOpenKeys={collectOpenMenuKeys(items)}
-        selectable={false}
+      <List
+        dataSource={items}
+        renderItem={(item) => (
+          <List.Item style={{ display: 'block', paddingLeft: level * 16 }}>
+            <Space direction="vertical" size={6} style={{ width: '100%' }}>
+              <Space wrap>
+                <Typography.Text strong>{item.title}</Typography.Text>
+                <Tag color="blue">{t('system.roles.webMenuPath', '路径')}: {item.path}</Tag>
+                <Tag color={item.visible ? 'success' : 'default'}>
+                  {item.visible
+                    ? t('system.roles.menuPermissionVisible', '可见')
+                    : t('system.roles.menuPermissionHidden', '未显示')}
+                </Tag>
+                {item.accessKey ? <Tag>{item.accessKey}</Tag> : null}
+                {renderMenuPermissionActions(item)}
+              </Space>
+              <Space wrap size={8}>
+                <Typography.Text type="secondary">
+                  {t('system.roles.webMenuPermission', '对应权限')}:
+                </Typography.Text>
+                {item.permissionCodes.length ? renderPermissionTags(item.permissionCodes) : (
+                  <>
+                    {renderPermissionTags(item.permissionCodes)}
+                    {item.children?.length ? (
+                      <Typography.Text type="secondary">
+                        {t('system.roles.webMenuVisibleByChildren', '由可见子菜单决定')}
+                      </Typography.Text>
+                    ) : null}
+                  </>
+                )}
+              </Space>
+              {item.children?.length ? renderWebMenuPreview(item.children, level + 1) : null}
+            </Space>
+          </List.Item>
+        )}
       />
     )
   }
 
-  const renderExpoRouteList = (items: ExpoAppVisibleRoute[], emptyText: string) => {
+  const renderExpoRouteList = (items: ExpoAppVisibleRoute[], emptyText: string, editable = false) => {
     if (!items.length) {
       return <Empty description={emptyText} />
     }
@@ -278,13 +479,20 @@ export default function SystemRolesPage() {
                 <Typography.Text strong>{item.zhTitle}</Typography.Text>
                 <Typography.Text type="secondary">{item.enTitle}</Typography.Text>
                 <Tag color="blue">{item.routeName}</Tag>
+                <Tag color={item.visible ? 'success' : 'default'}>
+                  {item.visible
+                    ? t('system.roles.menuPermissionVisible', '可见')
+                    : t('system.roles.menuPermissionHidden', '未显示')}
+                </Tag>
                 <Tag>{item.icon}</Tag>
+                {editable ? renderMenuPermissionActions(toExpoMenuActionTarget(item)) : null}
               </Space>
               <Space wrap size={8}>
                 <Typography.Text type="secondary">{item.path}</Typography.Text>
                 <Typography.Text type="secondary">
-                  {t('system.roles.expoPermission', '权限')}: {item.permission || t('common.none', '无')}
+                  {t('system.roles.expoPermission', '权限')}:
                 </Typography.Text>
+                {renderPermissionTags(item.permissionCodes)}
               </Space>
             </Space>
           </List.Item>
@@ -332,8 +540,9 @@ export default function SystemRolesPage() {
                 <Space wrap size={8}>
                   <Typography.Text type="secondary">{item.route.path}</Typography.Text>
                   <Typography.Text type="secondary">
-                    {t('system.roles.expoPermission', '权限')}: {item.route.permission || t('common.none', '无')}
+                    {t('system.roles.expoPermission', '权限')}:
                   </Typography.Text>
+                  {renderPermissionTags(item.route.permissionCodes)}
                 </Space>
               </Space>
             </List.Item>
@@ -377,9 +586,34 @@ export default function SystemRolesPage() {
     },
   ]
 
-  const previewDesktopMenus = menuPreviewAccess ? buildMenus(menuPreviewAccess) : []
-  const previewExpoMenu = menuPreviewAccess ? buildExpoRoleMenuPreview(menuPreviewAccess) : null
+  const previewDesktopMenus = menuPreviewAccess
+    ? buildWebRoleMenuPreview(menuPreviewAccess, (key, fallback) => (fallback ? t(key, fallback) : t(key)), {
+        includeHidden: true,
+        explicitPermissionCodes: menuPreviewPermissionState?.explicitPermissionCodes,
+        readOnly: !canManageRolePermissions || !menuPreviewPermissionState || isImplicitAllRole(menuPreviewPermissionState),
+      })
+    : []
+  const previewExpoMenu = menuPreviewAccess
+    ? buildExpoRoleMenuPreview(menuPreviewAccess, undefined, {
+        explicitPermissionCodes: menuPreviewPermissionState?.explicitPermissionCodes,
+        readOnly: !canManageRolePermissions || !menuPreviewPermissionState || isImplicitAllRole(menuPreviewPermissionState),
+      })
+    : null
+  const previewDesktopFilteredMenus = filterWebMenuNodesByVisibility(previewDesktopMenus, webMenuVisibilityFilter)
+  const previewDesktopAllMenuCount = countWebMenuPreviewNodes(previewDesktopMenus)
+  const previewDesktopVisibleMenuCount = countWebMenuPreviewNodes(
+    filterWebMenuNodesByVisibility(previewDesktopMenus, 'visible'),
+  )
+  const previewDesktopHiddenMenuCount = countWebMenuPreviewNodes(
+    filterWebMenuNodesByVisibility(previewDesktopMenus, 'hidden'),
+  )
   const previewExpoDirectTabs = previewExpoMenu ? toExpoDirectTabPreviewItems(previewExpoMenu.displayTabs) : []
+  const previewExpoFilteredRoutes = previewExpoMenu
+    ? filterExpoRoutesByVisibility(previewExpoMenu.allRoutes, expoMenuVisibilityFilter)
+    : []
+  const previewExpoVisibleRouteCount = previewExpoMenu?.allRoutes.filter((route) => route.visible).length ?? 0
+  const previewExpoHiddenRouteCount = previewExpoMenu?.allRoutes.filter((route) => !route.visible).length ?? 0
+  const previewExpoAllRouteCount = previewExpoMenu?.allRoutes.length ?? 0
 
   return (
     <PageContainer title={t('system.roles.pageTitle')} subtitle={t('system.roles.pageSubtitle')}>
@@ -501,6 +735,9 @@ export default function SystemRolesPage() {
           setMenuPreviewRole(null)
           setMenuPreviewAccess(null)
           setMenuPreviewPermissionState(null)
+          setMenuPreviewSavingKey(null)
+          setWebMenuVisibilityFilter('all')
+          setExpoMenuVisibilityFilter('all')
         }}
         loading={menuPreviewLoading}
         destroyOnHidden
@@ -514,11 +751,11 @@ export default function SystemRolesPage() {
               </Descriptions.Item>
             </Descriptions>
 
-            {menuPreviewPermissionState.isSuperAdmin ? (
+            {isImplicitAllRole(menuPreviewPermissionState) ? (
               <Alert
                 type="info"
                 showIcon
-                message={t('system.roles.superAdminMenuPreviewTip', '超级管理员角色默认预览全部可访问菜单。')}
+                message={t('system.roles.superAdminMenuPreviewTip', '管理员默认预览全部可访问菜单。')}
               />
             ) : null}
 
@@ -527,7 +764,36 @@ export default function SystemRolesPage() {
                 {
                   key: 'desktop',
                   label: t('system.roles.desktopMenuPreview', '桌面菜单'),
-                  children: renderMenuPreview(previewDesktopMenus),
+                  children: (
+                    <Space direction="vertical" size={12} style={{ width: '100%' }}>
+                      <Space wrap>
+                        <Segmented
+                          value={webMenuVisibilityFilter}
+                          options={[
+                            {
+                              label: `${t('system.roles.menuFilterAll', '全部')} (${previewDesktopAllMenuCount})`,
+                              value: 'all',
+                            },
+                            {
+                              label: `${t('system.roles.menuFilterVisible', '可见')} (${previewDesktopVisibleMenuCount})`,
+                              value: 'visible',
+                            },
+                            {
+                              label: `${t('system.roles.menuFilterHidden', '未显示')} (${previewDesktopHiddenMenuCount})`,
+                              value: 'hidden',
+                            },
+                          ]}
+                          onChange={(value) => setWebMenuVisibilityFilter(value as WebMenuVisibilityFilter)}
+                        />
+                        <Typography.Text type="secondary">
+                          {t('system.roles.menuFilterCount', '当前显示 {{count}} 项', {
+                            count: countWebMenuPreviewNodes(previewDesktopFilteredMenus),
+                          })}
+                        </Typography.Text>
+                      </Space>
+                      {renderWebMenuPreview(previewDesktopFilteredMenus)}
+                    </Space>
+                  ),
                 },
                 {
                   key: 'mobile',
@@ -555,11 +821,41 @@ export default function SystemRolesPage() {
                               <Empty description={t('system.roles.noVisibleExpoTabs', '暂无可见 HbwebExpo 底部入口')} />
                             )}
                       </Card>
-                      <Card title={t('system.roles.expoAllVisibleRoutes', 'HbwebExpo 全部可见路由')} size="small">
+                      <Card title={t('system.roles.expoMenuMaintenance', 'HbwebExpo 菜单权限维护')} size="small">
                         {previewExpoMenu
-                          ? renderExpoRouteList(
-                              previewExpoMenu.visibleRoutes,
-                              t('system.roles.noVisibleExpoTabs', '暂无可见 HbwebExpo 底部入口'),
+                          ? (
+                              <Space direction="vertical" size={12} style={{ width: '100%' }}>
+                                <Space wrap>
+                                  <Segmented
+                                    value={expoMenuVisibilityFilter}
+                                    options={[
+                                      {
+                                        label: `${t('system.roles.menuFilterAll', '全部')} (${previewExpoAllRouteCount})`,
+                                        value: 'all',
+                                      },
+                                      {
+                                        label: `${t('system.roles.menuFilterVisible', '可见')} (${previewExpoVisibleRouteCount})`,
+                                        value: 'visible',
+                                      },
+                                      {
+                                        label: `${t('system.roles.menuFilterHidden', '未显示')} (${previewExpoHiddenRouteCount})`,
+                                        value: 'hidden',
+                                      },
+                                    ]}
+                                    onChange={(value) => setExpoMenuVisibilityFilter(value as ExpoMenuVisibilityFilter)}
+                                  />
+                                  <Typography.Text type="secondary">
+                                    {t('system.roles.menuFilterCount', '当前显示 {{count}} 项', {
+                                      count: previewExpoFilteredRoutes.length,
+                                    })}
+                                  </Typography.Text>
+                                </Space>
+                                {renderExpoRouteList(
+                                  previewExpoFilteredRoutes,
+                                  t('system.roles.noVisibleExpoTabs', '暂无可见 HbwebExpo 底部入口'),
+                                  true,
+                                )}
+                              </Space>
                             )
                           : (
                               <Empty description={t('system.roles.noVisibleExpoTabs', '暂无可见 HbwebExpo 底部入口')} />
