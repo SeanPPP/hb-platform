@@ -17,6 +17,7 @@ import { SetCodeCompactSection } from "@/components/product-maintenance/SetCodeC
 import { StickyActionBar } from "@/components/product-maintenance/StickyActionBar";
 import { StoreClearancePriceCard } from "@/components/product-maintenance/StoreClearancePriceCard";
 import { StorePriceStrategyCard } from "@/components/product-maintenance/StorePriceStrategyCard";
+import { StorePickerModal } from "@/components/ui/StorePickerModal";
 import {
   getSavedPrinter,
   printBigDiscountLabel,
@@ -55,6 +56,7 @@ import { useHidBarcodeScanner } from "@/modules/scanner/use-hid-barcode-scanner"
 import { playScanFeedbackSound, preloadScanFeedbackSounds } from "@/modules/scanner/scan-sound";
 import type { ScanSource } from "@/modules/scanner/types";
 import { useStores } from "@/modules/shop/use-stores";
+import type { Store } from "@/modules/shop/types";
 import { useAuthStore } from "@/store/auth-store";
 import {
   buildLocalSupplierInvoicesRestoreHref,
@@ -296,6 +298,7 @@ function ProductQueryContent() {
     selectedStore,
     selectedStoreCode,
     selectStore,
+    isDeviceMode,
     isLoading: storesLoading,
     isHydratingSelection,
   } = useStores();
@@ -344,6 +347,7 @@ function ProductQueryContent() {
   const [printQuantity, setPrintQuantity] = useState(1);
   const [quantitySingleUse, setQuantitySingleUse] = useState(true);
   const [printSettingsVisible, setPrintSettingsVisible] = useState(false);
+  const [storePickerVisible, setStorePickerVisible] = useState(false);
   const autoPricingDialogResolverRef = useRef<((result: AutoPricingDialogResolution) => void) | null>(null);
   const numericInputConfirmRef = useRef<((value: string) => void) | null>(null);
   const saveClearanceRef = useRef<() => Promise<void>>(async () => {});
@@ -386,8 +390,14 @@ function ProductQueryContent() {
   }, []);
 
   const loadProductCodes = useCallback(
-    async (sourceDetail: ProductDetail, nextPage = 1, append = false): Promise<ProductDetail | undefined> => {
-      if (!selectedStoreCode) {
+    async (
+      sourceDetail: ProductDetail,
+      nextPage = 1,
+      append = false,
+      storeCodeOverride?: string
+    ): Promise<ProductDetail | undefined> => {
+      const storeCode = storeCodeOverride ?? selectedStoreCode;
+      if (!storeCode) {
         return;
       }
 
@@ -409,7 +419,7 @@ function ProductQueryContent() {
         if (sourceDetail.productType === 1 || (sourceDetail.productType !== 2 && hasSetCodes && !hasMultiCodes)) {
           const page = await getProductCodes(
             sourceDetail.productCode,
-            selectedStoreCode,
+            storeCode,
             1,
             nextPage,
             CODE_PAGE_SIZE
@@ -440,7 +450,7 @@ function ProductQueryContent() {
 
         const page = await getProductCodes(
           sourceDetail.productCode,
-          selectedStoreCode,
+          storeCode,
           2,
           nextPage,
           CODE_PAGE_SIZE
@@ -506,6 +516,43 @@ function ProductQueryContent() {
       return detailWithCodes ?? payload;
     },
     [loadProductCodes, selectedStoreCode, t]
+  );
+
+  const canSelectStore = !isDeviceMode && stores.length > 0;
+
+  const handleSelectStore = useCallback(
+    async (store: Store | null) => {
+      if (!store) {
+        return;
+      }
+
+      setStorePickerVisible(false);
+      await selectStore(store);
+
+      if (detail?.productCode) {
+        setLoading(true);
+        try {
+          const payload = await getProductFastDetail(detail.productCode, store.storeCode);
+          setDetail(payload);
+          setInitialDetail(cloneDetail(payload));
+          setLastHitLabel(`${payload.itemNumber || payload.productCode} / ${payload.barcode || "--"}`);
+          setCodePage(1);
+          setCodesHasMore(false);
+          await loadProductCodes(payload, 1, false, store.storeCode);
+        } catch (error) {
+          setDetail(null);
+          setInitialDetail(null);
+          setSelectedLookupProductCode(undefined);
+          setCodePage(1);
+          setCodesHasMore(false);
+          setSnackbarMessage(error instanceof Error ? `${t("messages.refreshFailed")}: ${error.message}` : t("messages.refreshFailed"));
+          playQueryFeedback("error");
+        } finally {
+          setLoading(false);
+        }
+      }
+    },
+    [detail?.productCode, loadProductCodes, playQueryFeedback, selectStore, t]
   );
 
   const selectedCreateSupplier = useMemo(
@@ -1842,6 +1889,8 @@ function ProductQueryContent() {
     <SafeAreaView style={styles.safeArea} edges={["top", "left", "right"]}>
       <QueryHeader
         storeName={selectedStore?.storeName}
+        canSelectStore={canSelectStore}
+        onStorePress={() => setStorePickerVisible(true)}
         onScanPress={() => setCameraVisible(true)}
         onRefreshPress={() => void handleRefresh()}
         refreshing={refreshing}
@@ -2433,6 +2482,15 @@ function ProductQueryContent() {
           onChangePrintQuantity={setPrintQuantity}
           onToggleQuantitySingleUse={setQuantitySingleUse}
           onDismiss={() => setPrintSettingsVisible(false)}
+        />
+        <StorePickerModal
+          visible={storePickerVisible}
+          stores={stores}
+          selectedStoreCode={selectedStoreCode}
+          title={t("common:labels.selectStore")}
+          cancelLabel={t("common:actions.cancel")}
+          onDismiss={() => setStorePickerVisible(false)}
+          onSelectStore={handleSelectStore}
         />
 
         <Modal
