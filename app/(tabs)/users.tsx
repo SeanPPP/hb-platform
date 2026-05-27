@@ -22,6 +22,7 @@ import {
 import { EmptyState } from "@/components/ui/EmptyState";
 import { StorePickerModal } from "@/components/ui/StorePickerModal";
 import type { Store } from "@/modules/shop/types";
+import { getDeviceBoundStoreCode } from "@/modules/shop/device-bound-store-filter";
 import { useStores } from "@/modules/shop/use-stores";
 import {
   STORE_STAFF_ROLE,
@@ -83,6 +84,7 @@ export default function UsersScreen() {
   const {
     stores,
     selectedStoreCode: rememberedStoreCode,
+    isDeviceMode,
     isHydratingSelection,
     isLoading: storesLoading,
     selectStore,
@@ -101,11 +103,20 @@ export default function UsersScreen() {
   const [resetPasswordVisible, setResetPasswordVisible] = useState(false);
   const [resetPasswordValue, setResetPasswordValue] = useState("");
   const [passwordUser, setPasswordUser] = useState<StoreUserListItem | null>(null);
+  const deviceBoundStoreCode = getDeviceBoundStoreCode({
+    isDeviceMode,
+    selectedStoreCode: rememberedStoreCode,
+  });
 
   const canManageUsers = access.isAdmin || (access.canReadUser && access.canWriteUser);
   const manageableStores = useMemo(
-    () => (access.isAdmin ? stores : stores.filter((store) => store.isPrimary === true)),
-    [access.isAdmin, stores]
+    () =>
+      deviceBoundStoreCode
+        ? stores
+        : access.isAdmin
+          ? stores
+          : stores.filter((store) => store.isPrimary === true),
+    [access.isAdmin, deviceBoundStoreCode, stores]
   );
 
   useEffect(() => {
@@ -114,6 +125,10 @@ export default function UsersScreen() {
     }
 
     setManagedStoreCode((current) => {
+      if (deviceBoundStoreCode) {
+        return deviceBoundStoreCode;
+      }
+
       if (current && manageableStores.some((store) => store.storeCode === current)) {
         return current;
       }
@@ -127,14 +142,17 @@ export default function UsersScreen() {
 
       return null;
     });
-  }, [isHydratingSelection, manageableStores, rememberedStoreCode, storesLoading]);
+  }, [deviceBoundStoreCode, isHydratingSelection, manageableStores, rememberedStoreCode, storesLoading]);
 
   const managedStore = useMemo(
     () => manageableStores.find((store) => store.storeCode === managedStoreCode) ?? null,
     [manageableStores, managedStoreCode]
   );
 
-  const usersQuery = useStoreUsers(canManageUsers ? managedStoreCode : undefined, keyword);
+  const usersQuery = useStoreUsers(
+    canManageUsers ? (isDeviceMode ? deviceBoundStoreCode : managedStoreCode) : undefined,
+    keyword
+  );
   const detailQuery = useStoreUserDetail(
     dialogMode === "edit" ? editingUserGuid : null,
     dialogMode === "edit" ? editingStoreCode : null
@@ -236,7 +254,7 @@ export default function UsersScreen() {
 
   const handleSelectManagedStore = useCallback(
     async (store: Store | null) => {
-      setManagedStoreCode(store?.storeCode ?? null);
+      setManagedStoreCode(deviceBoundStoreCode ?? store?.storeCode ?? null);
       setStorePickerVisible(false);
 
       try {
@@ -245,7 +263,7 @@ export default function UsersScreen() {
         console.warn("[store-users] failed to persist store selection", error);
       }
     },
-    [selectStore]
+    [deviceBoundStoreCode, selectStore]
   );
 
   const handleRefresh = useCallback(async () => {
@@ -755,7 +773,7 @@ export default function UsersScreen() {
         selectedStoreCode={managedStoreCode}
         title={t("common:labels.selectStore")}
         cancelLabel={t("common:actions.cancel")}
-        includeAllOption
+        includeAllOption={!deviceBoundStoreCode}
         allLabel={t("currentStore.allRelated")}
         onDismiss={() => setStorePickerVisible(false)}
         onSelectStore={handleSelectManagedStore}

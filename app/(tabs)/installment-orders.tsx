@@ -35,6 +35,7 @@ import type {
   InstallmentOrderStatus,
 } from "@/modules/installment-orders/types";
 import type { Store } from "@/modules/shop/types";
+import { bindDeviceStoreFilter, getDeviceBoundStoreCode } from "@/modules/shop/device-bound-store-filter";
 import { useStores } from "@/modules/shop/use-stores";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 import { resolveLocaleTag } from "@/shared/i18n/types";
@@ -167,7 +168,12 @@ function SectionTitle({ children }: { children: string }) {
 export default function InstallmentOrdersScreen() {
   const { t, language } = useAppTranslation(["installmentOrders", "common"]);
   const localeTag = useMemo(() => resolveLocaleTag(language), [language]);
-  const { stores, isLoading: storesLoading } = useStores();
+  const {
+    stores,
+    selectedStoreCode,
+    isDeviceMode,
+    isLoading: storesLoading,
+  } = useStores();
   const [draftFilters, setDraftFilters] = useState<InstallmentOrderFilters>({});
   const [filters, setFilters] = useState<InstallmentOrderFilters>({});
   const [storePickerVisible, setStorePickerVisible] = useState(false);
@@ -182,6 +188,7 @@ export default function InstallmentOrdersScreen() {
   const [detail, setDetail] = useState<InstallmentOrderDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [snackbar, setSnackbar] = useState("");
+  const deviceBoundStoreCode = getDeviceBoundStoreCode({ isDeviceMode, selectedStoreCode });
 
   const selectedStore = useMemo(
     () => stores.find((store) => store.storeCode === (draftFilters.branchCode ?? "")) ?? null,
@@ -208,6 +215,10 @@ export default function InstallmentOrdersScreen() {
 
   const loadOrders = useCallback(
     async (refresh = false) => {
+      if (isDeviceMode && !selectedStoreCode) {
+        return;
+      }
+
       if (refresh) {
         setRefreshing(true);
       } else {
@@ -215,7 +226,15 @@ export default function InstallmentOrdersScreen() {
       }
 
       try {
-        const result = await fetchInstallmentOrders({ page, pageSize: PAGE_SIZE, filters });
+        const result = await fetchInstallmentOrders({
+          page,
+          pageSize: PAGE_SIZE,
+          filters: bindDeviceStoreFilter(filters, {
+            isDeviceMode,
+            selectedStoreCode,
+            storeField: "branchCode",
+          }),
+        });
         setItems(result.items);
         setTotal(result.total);
       } catch (error) {
@@ -225,7 +244,7 @@ export default function InstallmentOrdersScreen() {
         setRefreshing(false);
       }
     },
-    [filters, page, t]
+    [filters, isDeviceMode, page, selectedStoreCode, t]
   );
 
   useEffect(() => {
@@ -263,25 +282,52 @@ export default function InstallmentOrdersScreen() {
     };
   }, [selectedOrder?.orderGuid, t]);
 
+  useEffect(() => {
+    if (!deviceBoundStoreCode) {
+      return;
+    }
+
+    setDraftFilters((current) =>
+      current.branchCode === deviceBoundStoreCode
+        ? current
+        : { ...current, branchCode: deviceBoundStoreCode }
+    );
+    setFilters((current) =>
+      current.branchCode === deviceBoundStoreCode
+        ? current
+        : { ...current, branchCode: deviceBoundStoreCode }
+    );
+  }, [deviceBoundStoreCode]);
+
+  const bindDeviceStore = useCallback(
+    (nextFilters: InstallmentOrderFilters) =>
+      bindDeviceStoreFilter(nextFilters, {
+        isDeviceMode,
+        selectedStoreCode,
+        storeField: "branchCode",
+      }),
+    [isDeviceMode, selectedStoreCode]
+  );
+
   const applyFilters = useCallback(() => {
     setPage(1);
-    setFilters(draftFilters);
-  }, [draftFilters]);
+    setFilters(bindDeviceStore(draftFilters));
+  }, [bindDeviceStore, draftFilters]);
 
   const clearFilters = useCallback(() => {
-    const emptyFilters: InstallmentOrderFilters = {};
+    const emptyFilters = bindDeviceStore({});
     setDraftFilters(emptyFilters);
     setFilters(emptyFilters);
     setPage(1);
-  }, []);
+  }, [bindDeviceStore]);
 
   const handleSelectStore = useCallback((store: Store | null) => {
     setDraftFilters((current) => ({
       ...current,
-      branchCode: store?.storeCode || undefined,
+      branchCode: deviceBoundStoreCode ?? store?.storeCode ?? undefined,
     }));
     setStorePickerVisible(false);
-  }, []);
+  }, [deviceBoundStoreCode]);
 
   const handleSelectStatus = useCallback((item: SelectionListItem | null) => {
     const option = item
@@ -605,7 +651,7 @@ export default function InstallmentOrdersScreen() {
         selectedStoreCode={draftFilters.branchCode}
         title={t("filters.storePickerTitle")}
         cancelLabel={t("common:actions.cancel")}
-        includeAllOption
+        includeAllOption={!deviceBoundStoreCode}
         allLabel={t("filters.allStores")}
         onDismiss={() => setStorePickerVisible(false)}
         onSelectStore={handleSelectStore}

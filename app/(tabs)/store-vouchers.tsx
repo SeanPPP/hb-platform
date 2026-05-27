@@ -35,6 +35,7 @@ import type {
   StoreVoucherStatus,
 } from "@/modules/store-vouchers/types";
 import type { Store } from "@/modules/shop/types";
+import { bindDeviceStoreFilter, getDeviceBoundStoreCode } from "@/modules/shop/device-bound-store-filter";
 import { useStores } from "@/modules/shop/use-stores";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 import { resolveLocaleTag } from "@/shared/i18n/types";
@@ -203,7 +204,12 @@ function SectionTitle({ children }: { children: string }) {
 export default function StoreVouchersScreen() {
   const { t, language } = useAppTranslation(["storeVouchers", "common"]);
   const localeTag = useMemo(() => resolveLocaleTag(language), [language]);
-  const { stores, isLoading: storesLoading } = useStores();
+  const {
+    stores,
+    selectedStoreCode,
+    isDeviceMode,
+    isLoading: storesLoading,
+  } = useStores();
   const [draftFilters, setDraftFilters] = useState<StoreVoucherFilters>({});
   const [filters, setFilters] = useState<StoreVoucherFilters>({});
   const [storePickerVisible, setStorePickerVisible] = useState(false);
@@ -218,6 +224,7 @@ export default function StoreVouchersScreen() {
   const [detail, setDetail] = useState<StoreVoucherDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [snackbar, setSnackbar] = useState("");
+  const deviceBoundStoreCode = getDeviceBoundStoreCode({ isDeviceMode, selectedStoreCode });
 
   const selectedStore = useMemo(
     () => stores.find((store) => store.storeCode === (draftFilters.storeCode ?? "")) ?? null,
@@ -255,6 +262,10 @@ export default function StoreVouchersScreen() {
 
   const loadVouchers = useCallback(
     async (refresh = false) => {
+      if (isDeviceMode && !selectedStoreCode) {
+        return;
+      }
+
       if (refresh) {
         setRefreshing(true);
       } else {
@@ -262,7 +273,15 @@ export default function StoreVouchersScreen() {
       }
 
       try {
-        const result = await fetchStoreVouchers({ page, pageSize: PAGE_SIZE, filters });
+        const result = await fetchStoreVouchers({
+          page,
+          pageSize: PAGE_SIZE,
+          filters: bindDeviceStoreFilter(filters, {
+            isDeviceMode,
+            selectedStoreCode,
+            storeField: "storeCode",
+          }),
+        });
         setItems(result.items);
         setTotal(result.total);
       } catch (error) {
@@ -272,7 +291,7 @@ export default function StoreVouchersScreen() {
         setRefreshing(false);
       }
     },
-    [filters, page, t]
+    [filters, isDeviceMode, page, selectedStoreCode, t]
   );
 
   useEffect(() => {
@@ -310,25 +329,52 @@ export default function StoreVouchersScreen() {
     };
   }, [detailTargets, t]);
 
+  useEffect(() => {
+    if (!deviceBoundStoreCode) {
+      return;
+    }
+
+    setDraftFilters((current) =>
+      current.storeCode === deviceBoundStoreCode
+        ? current
+        : { ...current, storeCode: deviceBoundStoreCode }
+    );
+    setFilters((current) =>
+      current.storeCode === deviceBoundStoreCode
+        ? current
+        : { ...current, storeCode: deviceBoundStoreCode }
+    );
+  }, [deviceBoundStoreCode]);
+
+  const bindDeviceStore = useCallback(
+    (nextFilters: StoreVoucherFilters) =>
+      bindDeviceStoreFilter(nextFilters, {
+        isDeviceMode,
+        selectedStoreCode,
+        storeField: "storeCode",
+      }),
+    [isDeviceMode, selectedStoreCode]
+  );
+
   const applyFilters = useCallback(() => {
     setPage(1);
-    setFilters(draftFilters);
-  }, [draftFilters]);
+    setFilters(bindDeviceStore(draftFilters));
+  }, [bindDeviceStore, draftFilters]);
 
   const clearFilters = useCallback(() => {
-    const emptyFilters: StoreVoucherFilters = {};
+    const emptyFilters = bindDeviceStore({});
     setDraftFilters(emptyFilters);
     setFilters(emptyFilters);
     setPage(1);
-  }, []);
+  }, [bindDeviceStore]);
 
   const handleSelectStore = useCallback((store: Store | null) => {
     setDraftFilters((current) => ({
       ...current,
-      storeCode: store?.storeCode || undefined,
+      storeCode: deviceBoundStoreCode ?? store?.storeCode ?? undefined,
     }));
     setStorePickerVisible(false);
-  }, []);
+  }, [deviceBoundStoreCode]);
 
   const handleSelectStatus = useCallback((item: SelectionListItem | null) => {
     const option = item
@@ -644,7 +690,7 @@ export default function StoreVouchersScreen() {
         selectedStoreCode={draftFilters.storeCode}
         title={t("filters.storePickerTitle")}
         cancelLabel={t("common:actions.cancel")}
-        includeAllOption
+        includeAllOption={!deviceBoundStoreCode}
         allLabel={t("filters.allStores")}
         onDismiss={() => setStorePickerVisible(false)}
         onSelectStore={handleSelectStore}

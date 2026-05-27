@@ -231,6 +231,7 @@ export function AdvertisementsScreen() {
       filterMediaType,
       filterEnabled,
     ],
+    enabled: !isDeviceMode || Boolean(selectedStoreCode),
     queryFn: () =>
       fetchAdvertisements({
         pageNumber,

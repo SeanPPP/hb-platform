@@ -44,6 +44,7 @@ import type {
 } from "@/modules/local-supplier-invoices/types";
 import { printWarehouseProductLabel } from "@/modules/printer/api";
 import type { Store } from "@/modules/shop/types";
+import { bindDeviceStoreFilter, getDeviceBoundStoreCode } from "@/modules/shop/device-bound-store-filter";
 import { useStores } from "@/modules/shop/use-stores";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 
@@ -286,7 +287,12 @@ function PageSizeMenu<T extends number>({
 export default function LocalSupplierInvoicesScreen() {
   const { t, language } = useAppTranslation(["localSupplierInvoices", "common", "attendance"]);
   const router = useRouter();
-  const { stores, isLoading: storesLoading } = useStores();
+  const {
+    stores,
+    selectedStoreCode,
+    isDeviceMode,
+    isLoading: storesLoading,
+  } = useStores();
   const searchParams = useLocalSearchParams<{
     source?: string | string[];
     returnInvoiceGuid?: string | string[];
@@ -330,6 +336,7 @@ export default function LocalSupplierInvoicesScreen() {
   const [snackbar, setSnackbar] = useState("");
   const pendingRestoreRef = useRef<ReturnType<typeof decodeLocalSupplierInvoicesReturnParams>>(null);
   const handledRestoreKeyRef = useRef<string | null>(null);
+  const deviceBoundStoreCode = getDeviceBoundStoreCode({ isDeviceMode, selectedStoreCode });
 
   const restoreState = useMemo(
     () => decodeLocalSupplierInvoicesReturnParams(searchParams),
@@ -400,15 +407,29 @@ export default function LocalSupplierInvoicesScreen() {
     ).text;
   }, [draftFilters.orderDateFrom, draftFilters.orderDateTo, t]);
 
+  const bindDeviceStore = useCallback(
+    (nextFilters: InvoiceGridFilters) =>
+      bindDeviceStoreFilter(nextFilters, {
+        isDeviceMode,
+        selectedStoreCode,
+        storeField: "storeCode",
+      }),
+    [isDeviceMode, selectedStoreCode]
+  );
+
   const loadInvoices = useCallback(
     async (refresh = false) => {
+      if (isDeviceMode && !selectedStoreCode) {
+        return;
+      }
+
       if (refresh) {
         setRefreshing(true);
       } else {
         setLoading(true);
       }
       try {
-        const result = await fetchInvoices({ page, pageSize, filters, sort });
+        const result = await fetchInvoices({ page, pageSize, filters: bindDeviceStore(filters), sort });
         setItems(result.items);
         setTotal(result.total);
       } catch (error) {
@@ -418,7 +439,7 @@ export default function LocalSupplierInvoicesScreen() {
         setRefreshing(false);
       }
     },
-    [filters, page, pageSize, sort, t]
+    [bindDeviceStore, filters, isDeviceMode, page, pageSize, selectedStoreCode, sort, t]
   );
 
   const loadDetails = useCallback(async () => {
@@ -496,9 +517,13 @@ export default function LocalSupplierInvoicesScreen() {
     }
 
     handledRestoreKeyRef.current = restoreKey;
-    pendingRestoreRef.current = restoreState;
-    setDraftFilters(restoreState.filters);
-    setFilters(restoreState.filters);
+    const restoredFilters = bindDeviceStore(restoreState.filters);
+    pendingRestoreRef.current = {
+      ...restoreState,
+      filters: restoredFilters,
+    };
+    setDraftFilters(restoredFilters);
+    setFilters(restoredFilters);
     setSort(restoreState.sort);
     setPageSize(restoreState.returnListPageSize);
     setPage(restoreState.returnListPage);
@@ -507,7 +532,24 @@ export default function LocalSupplierInvoicesScreen() {
     setDetailsTotal(0);
     setDetailsPage(restoreState.returnDetailsPage);
     setDetailsPageSize(restoreState.returnDetailsPageSize);
-  }, [restoreState]);
+  }, [bindDeviceStore, restoreState]);
+
+  useEffect(() => {
+    if (!deviceBoundStoreCode) {
+      return;
+    }
+
+    setDraftFilters((current) =>
+      current.storeCode === deviceBoundStoreCode
+        ? current
+        : { ...current, storeCode: deviceBoundStoreCode }
+    );
+    setFilters((current) =>
+      current.storeCode === deviceBoundStoreCode
+        ? current
+        : { ...current, storeCode: deviceBoundStoreCode }
+    );
+  }, [deviceBoundStoreCode]);
 
   useEffect(() => {
     const pendingRestore = pendingRestoreRef.current;
@@ -535,15 +577,15 @@ export default function LocalSupplierInvoicesScreen() {
 
   const applyFilters = useCallback(() => {
     setPage(1);
-    setFilters(draftFilters);
-  }, [draftFilters]);
+    setFilters(bindDeviceStore(draftFilters));
+  }, [bindDeviceStore, draftFilters]);
 
   const clearFilters = useCallback(() => {
-    const emptyFilters: InvoiceGridFilters = {};
+    const emptyFilters = bindDeviceStore({});
     setDraftFilters(emptyFilters);
     setFilters(emptyFilters);
     setPage(1);
-  }, []);
+  }, [bindDeviceStore]);
 
   const openDetails = useCallback((invoice: LocalSupplierInvoice) => {
     setSelectedInvoice(invoice);
@@ -648,10 +690,10 @@ export default function LocalSupplierInvoicesScreen() {
   const handleSelectStore = useCallback((store: Store | null) => {
     setDraftFilters((current) => ({
       ...current,
-      storeCode: store?.storeCode || undefined,
+      storeCode: deviceBoundStoreCode ?? store?.storeCode ?? undefined,
     }));
     setStorePickerVisible(false);
-  }, []);
+  }, [deviceBoundStoreCode]);
 
   const handleSelectSupplier = useCallback((supplierCode?: string) => {
     setDraftFilters((current) => ({
@@ -674,7 +716,8 @@ export default function LocalSupplierInvoicesScreen() {
     const from = normalizeMonthDate(draftFilters.orderDateFrom);
     const to = normalizeMonthDate(draftFilters.orderDateTo);
     setDateRangeSnapshot({ from, to });
-    setDateRangeDisplayMonth(getMonthStart(parseMonthDate(from || to) ?? new Date()));
+    const displayMonth = parseMonthDate(from || to) ?? new Date();
+    setDateRangeDisplayMonth(getMonthStart(displayMonth));
     setDateRangeModalVisible(true);
   }, [draftFilters.orderDateFrom, draftFilters.orderDateTo]);
 
@@ -1032,7 +1075,7 @@ export default function LocalSupplierInvoicesScreen() {
         selectedStoreCode={draftFilters.storeCode ?? null}
         title={t("filters.storePickerTitle")}
         cancelLabel={t("common:actions.cancel")}
-        includeAllOption
+        includeAllOption={!deviceBoundStoreCode}
         allLabel={t("filters.allStores")}
         renderAllLabel={(label) => <EntityTag label={label} tone="neutral" />}
         renderStoreLabel={(store) => (

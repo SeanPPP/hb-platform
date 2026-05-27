@@ -51,6 +51,7 @@ import type {
   SeasonalCardType,
 } from "@/modules/seasonal-cards/types";
 import type { Store } from "@/modules/shop/types";
+import { getDeviceBoundStoreCode } from "@/modules/shop/device-bound-store-filter";
 import { useStores } from "@/modules/shop/use-stores";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 import { resolveLocaleTag } from "@/shared/i18n/types";
@@ -196,7 +197,7 @@ export function SeasonalCardsScreen() {
   const localeTag = useMemo(() => resolveLocaleTag(language), [language]);
   const access = useAuthStore((state) => state.access);
   const selectedStore = useCartStore((state) => state.selectedStore);
-  const { stores } = useStores();
+  const { stores, selectedStoreCode, isDeviceMode } = useStores();
   const canView = access.canViewSeasonalCardRemaining;
   const canSubmit = access.canSubmitSeasonalCardRemaining;
   const yearOptions = useMemo(
@@ -231,6 +232,7 @@ export function SeasonalCardsScreen() {
     seasonYear: String(new Date().getFullYear()),
     cardType: "",
   });
+  const deviceBoundStoreCode = getDeviceBoundStoreCode({ isDeviceMode, selectedStoreCode });
   const getCardTypeLabel = (cardType: SeasonalCardType | null, cardTypeName?: string | null) => {
     return getSeasonalCardLocalizedTypeLabel(cardType, cardTypeName, (key) => t(key));
   };
@@ -329,6 +331,26 @@ export function SeasonalCardsScreen() {
   }, [canSubmit, canView]);
 
   useEffect(() => {
+    if (deviceBoundStoreCode) {
+      setDraft((current) =>
+        current.storeCode === deviceBoundStoreCode
+          ? current
+          : {
+              ...current,
+              storeCode: deviceBoundStoreCode,
+            }
+      );
+      setHistoryFilters((current) =>
+        current.storeCode === deviceBoundStoreCode
+          ? current
+          : {
+              ...current,
+              storeCode: deviceBoundStoreCode,
+            }
+      );
+      return;
+    }
+
     if (!selectedStore?.storeCode) {
       return;
     }
@@ -349,7 +371,7 @@ export function SeasonalCardsScreen() {
             storeCode: selectedStore.storeCode,
           }
     );
-  }, [selectedStore?.storeCode]);
+  }, [deviceBoundStoreCode, selectedStore?.storeCode]);
 
   useEffect(() => {
     if (!selectedCatalogGroup?.options.length) {
@@ -395,7 +417,7 @@ export function SeasonalCardsScreen() {
     if (storePickerTarget === "formStore") {
       setDraft((current) => ({
         ...current,
-        storeCode: store?.storeCode ?? "",
+        storeCode: deviceBoundStoreCode ?? store?.storeCode ?? "",
       }));
     }
 
@@ -403,7 +425,7 @@ export function SeasonalCardsScreen() {
       setHistoryPageNumber(1);
       setHistoryFilters((current) => ({
         ...current,
-        storeCode: store?.storeCode ?? "",
+        storeCode: deviceBoundStoreCode ?? store?.storeCode ?? "",
       }));
     }
 

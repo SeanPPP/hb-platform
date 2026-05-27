@@ -301,6 +301,8 @@ export function useStores() {
     stores: effectiveStores,
     selectedStore: effectiveSelectedStore,
     selectedStoreCode,
+    isDeviceMode,
+    deviceBoundStore,
     isHydratingSelection,
     debugInfo,
     ...storesQuery,
