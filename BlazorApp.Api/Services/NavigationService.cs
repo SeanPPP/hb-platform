@@ -196,6 +196,7 @@ namespace BlazorApp.Api.Services
                 Permission = Permissions.Advertisements.View,
                 Order = 47,
             },
+            new()
             {
                 RouteName = "product-query",
                 TitleKey = "tabs.productQuery",
