@@ -259,6 +259,34 @@ public class ControllerAuthorizationMetadataTests
             nameof(ReactCashRegisterUserController.Delete),
             Permissions.Store.ManageOperations
         );
+        yield return Policy<ReactAdvertisementsController>(
+            nameof(ReactAdvertisementsController.Grid),
+            Permissions.Advertisements.View
+        );
+        yield return Policy<ReactAdvertisementsController>(
+            nameof(ReactAdvertisementsController.Get),
+            Permissions.Advertisements.View
+        );
+        yield return Policy<ReactAdvertisementsController>(
+            nameof(ReactAdvertisementsController.Create),
+            Permissions.Advertisements.Edit
+        );
+        yield return Policy<ReactAdvertisementsController>(
+            nameof(ReactAdvertisementsController.Update),
+            Permissions.Advertisements.Edit
+        );
+        yield return Policy<ReactAdvertisementsController>(
+            nameof(ReactAdvertisementsController.Delete),
+            Permissions.Advertisements.Edit
+        );
+        yield return Policy<ReactAdvertisementsController>(
+            nameof(ReactAdvertisementsController.Enable),
+            Permissions.Advertisements.Edit
+        );
+        yield return Policy<ReactAdvertisementsController>(
+            nameof(ReactAdvertisementsController.UploadSignature),
+            Permissions.Advertisements.Edit
+        );
         yield return Policy<ReactCashRegisterUserController>(
             nameof(ReactCashRegisterUserController.BatchDelete),
             Permissions.Store.ManageOperations

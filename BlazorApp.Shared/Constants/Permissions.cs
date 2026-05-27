@@ -129,6 +129,12 @@ namespace BlazorApp.Shared.Constants
             public const string Edit = "Promotions.Edit";
         }
 
+        public static class Advertisements
+        {
+            public const string View = "Advertisements.View";
+            public const string Edit = "Advertisements.Edit";
+        }
+
         public static class PricingStrategy
         {
             public const string View = "PricingStrategy.View";

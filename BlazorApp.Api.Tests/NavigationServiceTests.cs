@@ -138,6 +138,25 @@ public class NavigationServiceTests
     }
 
     [Fact]
+    public void BuildMenu_ShowsAdvertisementsWithAdvertisementViewPermission()
+    {
+        var user = CreateUser(
+            new Claim("permission", Permissions.Dashboard.View),
+            new Claim("permission", Permissions.Advertisements.View)
+        );
+
+        var menu = _service.BuildMenu(user);
+
+        var posAdmin = Assert.Single(menu, item => item.Path == "/pos-admin");
+        Assert.Contains(
+            posAdmin.Children!,
+            item =>
+                item.Path == "/pos-admin/advertisements"
+                && item.Permission == Permissions.Advertisements.View
+        );
+    }
+
+    [Fact]
     public void BuildMenu_DoesNotUnlockNavigationForWarehouseManagerRoleWithoutPermissionClaims()
     {
         var user = CreateUser(new Claim(ClaimTypes.Role, "WarehouseManager"));
@@ -281,13 +300,14 @@ public class NavigationServiceTests
 
         var menu = _service.BuildAppMenu(user);
 
-        Assert.Equal(16, menu.Count);
+        Assert.Equal(17, menu.Count);
         Assert.Contains(menu, item => item.RouteName == "users");
         Assert.Contains(menu, item => item.RouteName == "employee-profile");
         Assert.Contains(menu, item => item.RouteName == "device-management");
         Assert.Contains(menu, item => item.RouteName == "attendance-personal");
         Assert.Contains(menu, item => item.RouteName == "attendance-management");
         Assert.Contains(menu, item => item.RouteName == "seasonal-cards");
+        Assert.Contains(menu, item => item.RouteName == "advertisements");
         Assert.DoesNotContain(menu, item => item.RouteName == "attendance");
         Assert.Contains(menu, item => item.RouteName == "local-supplier-invoices");
         Assert.Contains(menu, item => item.RouteName == "warehouse");
@@ -334,6 +354,18 @@ public class NavigationServiceTests
         var menu = _service.BuildAppMenu(user);
 
         Assert.DoesNotContain(menu, item => item.RouteName == "local-supplier-invoices");
+    }
+
+    [Fact]
+    public void BuildAppMenu_ShowsAdvertisementsWithAdvertisementViewPermission()
+    {
+        var user = CreateUser(new Claim("permission", Permissions.Advertisements.View));
+
+        var menu = _service.BuildAppMenu(user);
+
+        var item = Assert.Single(menu, item => item.RouteName == "advertisements");
+        Assert.Equal("tabs.advertisements", item.TitleKey);
+        Assert.Equal(Permissions.Advertisements.View, item.Permission);
     }
 
     [Fact]

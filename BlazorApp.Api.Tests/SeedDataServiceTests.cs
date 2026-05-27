@@ -25,6 +25,8 @@ namespace BlazorApp.Api.Tests
         private const string DeviceRegistrationManagePermission = "DeviceRegistration.Manage";
         private const string PosProductsViewPermission = "PosProducts.View";
         private const string PosProductsManagePermission = "PosProducts.Manage";
+        private const string AdvertisementsViewPermission = "Advertisements.View";
+        private const string AdvertisementsEditPermission = "Advertisements.Edit";
         private const string SeasonalCardsViewManagedStorePermission =
             "SeasonalCards.Remaining.ViewManagedStore";
         private const string SeasonalCardsSubmitManagedStorePermission =
@@ -191,6 +193,16 @@ namespace BlazorApp.Api.Tests
             Assert.Equal("POS 管理", posProductsManage.Category);
             Assert.Contains("/pos-admin/products", posProductsManage.Description);
             Assert.Contains("编辑 POS 商品、批量改价、同步总部/分店、维护分类/套装码、执行完整性修复", posProductsManage.Description);
+
+            var advertisementsView = Assert.Single(seeds, seed => seed.Code == AdvertisementsViewPermission);
+            Assert.Equal("查看广告素材", advertisementsView.Name);
+            Assert.Equal("广告管理", advertisementsView.Category);
+            Assert.Contains("/pos-admin/advertisements", advertisementsView.Description);
+
+            var advertisementsEdit = Assert.Single(seeds, seed => seed.Code == AdvertisementsEditPermission);
+            Assert.Equal("编辑广告素材", advertisementsEdit.Name);
+            Assert.Equal("广告管理", advertisementsEdit.Category);
+            Assert.Contains("/pos-admin/advertisements", advertisementsEdit.Description);
         }
 
         [Fact]

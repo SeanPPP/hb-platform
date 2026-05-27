@@ -275,6 +275,9 @@ namespace BlazorApp.Api.Data
             new SimpleClient<PricingStrategyTarget>(_db);
 
         // 促销相关实体
+        public SimpleClient<Advertisement> AdvertisementDb => new SimpleClient<Advertisement>(_db);
+        public SimpleClient<AdvertisementStore> AdvertisementStoreDb =>
+            new SimpleClient<AdvertisementStore>(_db);
         public SimpleClient<Promotion> PromotionDb => new SimpleClient<Promotion>(_db);
         public SimpleClient<PromotionProduct> PromotionProductDb =>
             new SimpleClient<PromotionProduct>(_db);
@@ -408,6 +411,8 @@ namespace BlazorApp.Api.Data
                 typeof(PricingStrategy),
                 typeof(PricingStrategyDetail),
                 typeof(PricingStrategyTarget),
+                typeof(Advertisement),
+                typeof(AdvertisementStore),
                 typeof(Promotion),
                 typeof(PromotionProduct),
                 typeof(PromotionStore),

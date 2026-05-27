@@ -26,6 +26,8 @@ using Microsoft.IdentityModel.Tokens; // JWT令牌验证
 // 这是ASP.NET Core 6+的新式启动方式，替代了传统的Startup.cs
 var builder = WebApplication.CreateBuilder(args);
 
+MapTencentCloudEnvironmentVariables(builder.Configuration);
+
 // ===================== 服务注册区域 =====================
 
 // --------------------- 基础Web API服务 ---------------------
@@ -489,6 +491,7 @@ builder.Services.AddScoped<
 builder.Services.AddScoped<ILocalSupplierInvoicesReactService, LocalSupplierInvoicesReactService>();
 builder.Services.AddScoped<IPricingStrategyReactService, PricingStrategyReactService>();
 builder.Services.AddScoped<IPromotionReactService, PromotionReactService>();
+builder.Services.AddScoped<IAdvertisementReactService, AdvertisementReactService>();
 builder.Services.AddScoped<IStoreOrderReactService, StoreOrderReactService>();
 builder.Services.AddScoped<IStoreProductMaintenanceReactService, StoreProductMaintenanceReactService>();
 builder.Services.AddScoped<IAustralianPublicHolidayProvider, AustralianPublicHolidayProvider>();
@@ -702,3 +705,25 @@ catch (Exception ex)
  */
 // 启动Web应用
 app.Run();
+
+static void MapTencentCloudEnvironmentVariables(ConfigurationManager configuration)
+{
+    var envMappings = new Dictionary<string, string>
+    {
+        ["TENCENT_SECRET_ID"] = "TencentCloud:SecretId",
+        ["TENCENT_SECRET_KEY"] = "TencentCloud:SecretKey",
+        ["TENCENT_BUCKET_NAME"] = "TencentCloud:BucketName",
+        ["TENCENT_REGION"] = "TencentCloud:Region",
+        ["TENCENT_IMAGE_BUCKET_NAME"] = "TencentCloud:ImageBucketName",
+        ["TENCENT_IMAGE_REGION"] = "TencentCloud:ImageRegion",
+    };
+
+    foreach (var (envKey, configKey) in envMappings)
+    {
+        var value = Environment.GetEnvironmentVariable(envKey);
+        if (!string.IsNullOrWhiteSpace(value))
+        {
+            configuration[configKey] = value;
+        }
+    }
+}

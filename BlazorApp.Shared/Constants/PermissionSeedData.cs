@@ -139,6 +139,8 @@ namespace BlazorApp.Shared.Constants
                 new(Permissions.PosProducts.Manage, "管理 POS 商品", "POS 管理", "页面 /pos-admin/products - 编辑 POS 商品、批量改价、同步总部/分店、维护分类/套装码、执行完整性修复"),
                 new(Permissions.Promotions.View, "查看促销", "促销管理", "页面 /pos-admin/promotions - 查看促销活动"),
                 new(Permissions.Promotions.Edit, "编辑促销", "促销管理", "页面 /pos-admin/promotions - 编辑促销活动"),
+                new(Permissions.Advertisements.View, "查看广告素材", "广告管理", "页面 /pos-admin/advertisements - 查看广告素材列表与详情"),
+                new(Permissions.Advertisements.Edit, "编辑广告素材", "广告管理", "页面 /pos-admin/advertisements - 新增、编辑、删除、启用与上传广告素材"),
                 new(Permissions.PricingStrategy.View, "查看定价策略", "定价策略", "页面 /pos-admin/pricing-strategies - 查看自动价格策略"),
                 new(Permissions.PricingStrategy.Edit, "编辑定价策略", "定价策略", "页面 /pos-admin/pricing-strategies - 编辑自动价格策略"),
                 new(Permissions.DeviceRegistration.View, "查看设备注册", "系统管理", "页面 /system/device-registration - 查看 POS 设备注册列表与状态"),
