@@ -53,11 +53,6 @@ namespace BlazorApp.Shared.DTOs
         public string 设备状态描述 { get; set; } = string.Empty;
 
         /// <summary>
-        /// 设备授权码
-        /// </summary>
-        public string 设备授权码 { get; set; } = string.Empty;
-
-        /// <summary>
         /// 备注
         /// </summary>
         public string? 备注 { get; set; }
@@ -129,11 +124,6 @@ namespace BlazorApp.Shared.DTOs
         public string 设备状态描述 { get; set; } = string.Empty;
 
         /// <summary>
-        /// 设备授权码
-        /// </summary>
-        public string 设备授权码 { get; set; } = string.Empty;
-
-        /// <summary>
         /// 备注
         /// </summary>
         public string? 备注 { get; set; }
@@ -164,11 +154,6 @@ namespace BlazorApp.Shared.DTOs
     /// </summary>
     public class UpdateDeviceRegistrationDto
     {
-        /// <summary>
-        /// 设备状态：-1-待确认 0-禁用 1-启用 2-锁定 3-未注册
-        /// </summary>
-        public int 设备状态 { get; set; }
-
         /// <summary>
         /// 设备类型：PDA/Mobile/POS/Admin
         /// </summary>

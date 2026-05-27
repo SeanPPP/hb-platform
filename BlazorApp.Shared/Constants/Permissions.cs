@@ -218,6 +218,15 @@ namespace BlazorApp.Shared.Constants
             }
         }
 
+        public static class SeasonalCards
+        {
+            public static class Remaining
+            {
+                public const string ViewManagedStore = "SeasonalCards.Remaining.ViewManagedStore";
+                public const string SubmitManagedStore = "SeasonalCards.Remaining.SubmitManagedStore";
+            }
+        }
+
         public static class System
         {
             public const string ViewLogs = "System.ViewLogs";

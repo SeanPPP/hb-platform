@@ -528,6 +528,9 @@ namespace BlazorApp.Api.Services
 
             // 3. 为普通角色按模板补齐缺失权限，不覆盖额外权限
             await SeedRolePermissionTemplatesAsync();
+
+            // 4. 初始化季节卡目录种子
+            await SeedSeasonalCardCatalogAsync();
         }
 
         private static void AddRoleIfMissing(
@@ -636,6 +639,102 @@ namespace BlazorApp.Api.Services
             {
                 await db.Insertable(newRolePermissions).ExecuteCommandAsync();
                 _logger.LogInformation("已补齐 {Count} 条普通角色模板权限", newRolePermissions.Count);
+            }
+        }
+
+        private async Task SeedSeasonalCardCatalogAsync()
+        {
+            var db = _dbContext.Db;
+            var now = DateTime.UtcNow;
+            var definitions = SeasonalCardCatalogSeedData.Catalogs.ToList();
+            var existing = await db.Queryable<SeasonalCardCatalog>().ToListAsync();
+            var existingByCode = existing.ToDictionary(
+                item => item.CatalogCode,
+                item => item,
+                StringComparer.OrdinalIgnoreCase
+            );
+
+            var inserts = new List<SeasonalCardCatalog>();
+            var updates = new List<SeasonalCardCatalog>();
+
+            foreach (var definition in definitions)
+            {
+                if (!existingByCode.TryGetValue(definition.CatalogCode, out var model))
+                {
+                    inserts.Add(
+                        new SeasonalCardCatalog
+                        {
+                            CatalogGuid = Guid.NewGuid().ToString(),
+                            CatalogCode = definition.CatalogCode,
+                            CardType = definition.CardType,
+                            PriceOption = definition.PriceOption,
+                            PriceLabel = definition.PriceLabel,
+                            FixedUnitPrice = definition.FixedUnitPrice,
+                            AllowsCustomUnitPrice = definition.AllowsCustomUnitPrice,
+                            IsEnabled = true,
+                            SortOrder = definition.SortOrder,
+                            CreatedAt = now,
+                            CreatedBy = "System",
+                            UpdatedAt = now,
+                            UpdatedBy = "System",
+                        }
+                    );
+                    continue;
+                }
+
+                var shouldUpdate =
+                    model.CardType != definition.CardType
+                    || model.PriceOption != definition.PriceOption
+                    || model.PriceLabel != definition.PriceLabel
+                    || model.FixedUnitPrice != definition.FixedUnitPrice
+                    || model.AllowsCustomUnitPrice != definition.AllowsCustomUnitPrice
+                    || !model.IsEnabled
+                    || model.SortOrder != definition.SortOrder
+                    || model.IsDeleted;
+
+                model.CardType = definition.CardType;
+                model.PriceOption = definition.PriceOption;
+                model.PriceLabel = definition.PriceLabel;
+                model.FixedUnitPrice = definition.FixedUnitPrice;
+                model.AllowsCustomUnitPrice = definition.AllowsCustomUnitPrice;
+                model.IsEnabled = true;
+                model.SortOrder = definition.SortOrder;
+                model.IsDeleted = false;
+
+                if (!shouldUpdate)
+                {
+                    continue;
+                }
+
+                model.UpdatedAt = now;
+                model.UpdatedBy = "System";
+                updates.Add(model);
+            }
+
+            if (inserts.Any())
+            {
+                await db.Insertable(inserts).ExecuteCommandAsync();
+                _logger.LogInformation("已新增 {Count} 条季节卡目录种子", inserts.Count);
+            }
+
+            if (updates.Any())
+            {
+                await db.Updateable(updates)
+                    .UpdateColumns(item => new
+                    {
+                        item.CardType,
+                        item.PriceOption,
+                        item.PriceLabel,
+                        item.FixedUnitPrice,
+                        item.AllowsCustomUnitPrice,
+                        item.IsEnabled,
+                        item.SortOrder,
+                        item.IsDeleted,
+                        item.UpdatedAt,
+                        item.UpdatedBy,
+                    })
+                    .ExecuteCommandAsync();
+                _logger.LogInformation("已更新 {Count} 条季节卡目录种子", updates.Count);
             }
         }
     }

@@ -209,6 +209,11 @@ public class ControllerAuthorizationMetadataTests
             Permissions.DomesticPurchase.ManageProducts
         );
 
+        yield return Policy<ReactProductsController>(
+            nameof(ReactProductsController.CreateWithPrices),
+            Permissions.StoreProducts.Create
+        );
+
         yield return Policy<DomesticProductCreationController>(
             nameof(DomesticProductCreationController.CreateBatch),
             Permissions.DomesticPurchase.ManageProducts
@@ -258,6 +263,36 @@ public class ControllerAuthorizationMetadataTests
             nameof(ReactCashRegisterUserController.BatchDelete),
             Permissions.Store.ManageOperations
         );
+
+        yield return Policy<ReactDeviceRegistrationController>(
+            nameof(ReactDeviceRegistrationController.Grid),
+            Permissions.DeviceRegistration.View
+        );
+        yield return Policy<ReactDeviceRegistrationController>(
+            nameof(ReactDeviceRegistrationController.GetById),
+            Permissions.DeviceRegistration.Manage
+        );
+        yield return Policy<ReactDeviceRegistrationController>(
+            nameof(ReactDeviceRegistrationController.Update),
+            Permissions.DeviceRegistration.Manage
+        );
+
+        yield return Policy<SeasonalCardRemainingController>(
+            nameof(SeasonalCardRemainingController.GetCatalog),
+            Permissions.SeasonalCards.Remaining.SubmitManagedStore
+        );
+        yield return Policy<SeasonalCardRemainingController>(
+            nameof(SeasonalCardRemainingController.CreateSubmission),
+            Permissions.SeasonalCards.Remaining.SubmitManagedStore
+        );
+        yield return Policy<SeasonalCardRemainingController>(
+            nameof(SeasonalCardRemainingController.GetSubmissions),
+            Permissions.SeasonalCards.Remaining.ViewManagedStore
+        );
+        yield return Policy<SeasonalCardRemainingController>(
+            nameof(SeasonalCardRemainingController.GetSubmission),
+            Permissions.SeasonalCards.Remaining.ViewManagedStore
+        );
     }
 
     [Theory]
@@ -289,6 +324,7 @@ public class ControllerAuthorizationMetadataTests
     [InlineData(typeof(ReactDomesticProductsController))]
     [InlineData(typeof(DomesticProductCreationController))]
     [InlineData(typeof(ReactCashRegisterUserController))]
+    [InlineData(typeof(ReactDeviceRegistrationController))]
     public void TargetControllers_DoNotUseLegacyRoleGates(Type controllerType)
     {
         AssertNoRoleGate(

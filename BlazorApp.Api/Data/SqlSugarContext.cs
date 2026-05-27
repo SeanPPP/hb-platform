@@ -313,6 +313,10 @@ namespace BlazorApp.Api.Data
         // 节日商品相关实体
         public SimpleClient<HolidayProduct> HolidayProductDb =>
             new SimpleClient<HolidayProduct>(_db);
+        public SimpleClient<SeasonalCardCatalog> SeasonalCardCatalogDb =>
+            new SimpleClient<SeasonalCardCatalog>(_db);
+        public SimpleClient<SeasonalCardRemainingSubmission> SeasonalCardRemainingSubmissionDb =>
+            new SimpleClient<SeasonalCardRemainingSubmission>(_db);
 
         // 义乌订单相关
         public SimpleClient<YIWU_Order> YIWU_OrderDb => new SimpleClient<YIWU_Order>(_db);
@@ -429,6 +433,8 @@ namespace BlazorApp.Api.Data
                 typeof(AttendanceStoreHoliday),
                 typeof(AttendanceLeaveRequest),
                 typeof(AttendanceSettings),
+                typeof(SeasonalCardCatalog),
+                typeof(SeasonalCardRemainingSubmission),
             };
 
             var existingTables = GetExistingTableNames();
@@ -802,7 +808,9 @@ namespace BlazorApp.Api.Data
                 typeof(AttendanceApproval),
                 typeof(AttendanceStoreHoliday),
                 typeof(AttendanceLeaveRequest),
-                typeof(AttendanceSettings)
+                typeof(AttendanceSettings),
+                typeof(SeasonalCardCatalog),
+                typeof(SeasonalCardRemainingSubmission)
             );
             Console.WriteLine("✓ Attendance表创建成功");
 

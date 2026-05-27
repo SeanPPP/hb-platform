@@ -35,6 +35,23 @@ namespace BlazorApp.Shared.Constants
                 new(Permissions.Attendance.Admin.View, "查看全部考勤管理", "排班考勤", "页面 /pos-admin/schedule-attendance - 查看全部考勤管理"),
             };
 
+        public static IReadOnlyList<PermissionSeedDefinition> SeasonalCardPermissions { get; } =
+            new List<PermissionSeedDefinition>
+            {
+                new(
+                    Permissions.SeasonalCards.Remaining.ViewManagedStore,
+                    "查看管理分店季节卡剩余",
+                    "季节卡片",
+                    "页面 /seasonal-cards - 查看管理分店季节卡剩余上报记录"
+                ),
+                new(
+                    Permissions.SeasonalCards.Remaining.SubmitManagedStore,
+                    "提交管理分店季节卡剩余",
+                    "季节卡片",
+                    "页面 /seasonal-cards - 提交管理分店季节卡剩余"
+                ),
+            };
+
         private static IReadOnlyList<string> AttendanceSelfServicePermissionCodes { get; } =
             new[]
             {
@@ -197,6 +214,8 @@ namespace BlazorApp.Shared.Constants
                         Permissions.Attendance.Leave.ApplySelf,
                         Permissions.Attendance.Leave.ViewManagedStore,
                         Permissions.Attendance.Leave.ReviewManagedStore,
+                        Permissions.SeasonalCards.Remaining.ViewManagedStore,
+                        Permissions.SeasonalCards.Remaining.SubmitManagedStore,
                         Permissions.DeviceRegistration.View,
                         Permissions.DeviceRegistration.Manage,
                     }
@@ -210,6 +229,7 @@ namespace BlazorApp.Shared.Constants
         public static IReadOnlyList<PermissionSeedDefinition> AllPermissions { get; } =
             SharedPermissionSeeds
             .Concat(AttendancePermissions)
+            .Concat(SeasonalCardPermissions)
             .GroupBy(seed => seed.Code, StringComparer.OrdinalIgnoreCase)
             .Select(group => group.Last())
             .ToList();

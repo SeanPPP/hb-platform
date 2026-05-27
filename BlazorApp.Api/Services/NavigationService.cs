@@ -230,6 +230,19 @@ namespace BlazorApp.Api.Services
             },
             new()
             {
+                RouteName = "seasonal-cards",
+                TitleKey = "tabs.seasonalCards",
+                Icon = "gift-outline",
+                Permission = Permissions.SeasonalCards.Remaining.ViewManagedStore,
+                AnyPermissions = new[]
+                {
+                    Permissions.SeasonalCards.Remaining.ViewManagedStore,
+                    Permissions.SeasonalCards.Remaining.SubmitManagedStore,
+                },
+                Order = 56,
+            },
+            new()
+            {
                 RouteName = "users",
                 TitleKey = "tabs.users",
                 Icon = "account-group-outline",

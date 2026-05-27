@@ -281,12 +281,13 @@ public class NavigationServiceTests
 
         var menu = _service.BuildAppMenu(user);
 
-        Assert.Equal(15, menu.Count);
+        Assert.Equal(16, menu.Count);
         Assert.Contains(menu, item => item.RouteName == "users");
         Assert.Contains(menu, item => item.RouteName == "employee-profile");
         Assert.Contains(menu, item => item.RouteName == "device-management");
         Assert.Contains(menu, item => item.RouteName == "attendance-personal");
         Assert.Contains(menu, item => item.RouteName == "attendance-management");
+        Assert.Contains(menu, item => item.RouteName == "seasonal-cards");
         Assert.DoesNotContain(menu, item => item.RouteName == "attendance");
         Assert.Contains(menu, item => item.RouteName == "local-supplier-invoices");
         Assert.Contains(menu, item => item.RouteName == "warehouse");
@@ -379,6 +380,32 @@ public class NavigationServiceTests
         Assert.DoesNotContain(menu, item => item.RouteName == "attendance-personal");
         Assert.DoesNotContain(menu, item => item.RouteName == "attendance-management");
         Assert.DoesNotContain(menu, item => item.RouteName == "attendance");
+    }
+
+    [Fact]
+    public void BuildAppMenu_ShowsSeasonalCardsWithViewPermission()
+    {
+        var user = CreateUser(
+            new Claim("permission", Permissions.SeasonalCards.Remaining.ViewManagedStore)
+        );
+
+        var menu = _service.BuildAppMenu(user);
+
+        var item = Assert.Single(menu, node => node.RouteName == "seasonal-cards");
+        Assert.Equal("tabs.seasonalCards", item.TitleKey);
+        Assert.Equal(Permissions.SeasonalCards.Remaining.ViewManagedStore, item.Permission);
+    }
+
+    [Fact]
+    public void BuildAppMenu_ShowsSeasonalCardsWithSubmitPermission()
+    {
+        var user = CreateUser(
+            new Claim("permission", Permissions.SeasonalCards.Remaining.SubmitManagedStore)
+        );
+
+        var menu = _service.BuildAppMenu(user);
+
+        Assert.Contains(menu, item => item.RouteName == "seasonal-cards");
     }
 
     [Fact]

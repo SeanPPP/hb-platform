@@ -8,6 +8,7 @@ using System.Threading.Tasks;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Services;
 using BlazorApp.Shared.Constants;
+using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -24,6 +25,10 @@ namespace BlazorApp.Api.Tests
         private const string DeviceRegistrationManagePermission = "DeviceRegistration.Manage";
         private const string PosProductsViewPermission = "PosProducts.View";
         private const string PosProductsManagePermission = "PosProducts.Manage";
+        private const string SeasonalCardsViewManagedStorePermission =
+            "SeasonalCards.Remaining.ViewManagedStore";
+        private const string SeasonalCardsSubmitManagedStorePermission =
+            "SeasonalCards.Remaining.SubmitManagedStore";
 
         private readonly string _dbPath;
         private readonly SqliteConnection _sqliteConnection;
@@ -43,7 +48,7 @@ namespace BlazorApp.Api.Tests
                 InitKeyType = InitKeyType.Attribute,
             });
 
-            _db.CodeFirst.InitTables<Role, SysPermission, SysRolePermission>();
+            _db.CodeFirst.InitTables<Role, SysPermission, SysRolePermission, SeasonalCardCatalog>();
         }
 
         [Fact]
@@ -186,6 +191,41 @@ namespace BlazorApp.Api.Tests
             Assert.Equal("POS 管理", posProductsManage.Category);
             Assert.Contains("/pos-admin/products", posProductsManage.Description);
             Assert.Contains("编辑 POS 商品、批量改价、同步总部/分店、维护分类/套装码、执行完整性修复", posProductsManage.Description);
+        }
+
+        [Fact]
+        public void SeasonalCardPermissionSeeds_UseSeasonalCardsCategoryAndGrantStoreManagerTemplate()
+        {
+            var seeds = PermissionSeedData.AllPermissions.ToList();
+
+            var viewSeed = Assert.Single(
+                seeds,
+                seed => seed.Code == SeasonalCardsViewManagedStorePermission
+            );
+            Assert.Equal("查看管理分店季节卡剩余", viewSeed.Name);
+            Assert.Equal("季节卡片", viewSeed.Category);
+            Assert.Contains("/seasonal-cards", viewSeed.Description);
+
+            var submitSeed = Assert.Single(
+                seeds,
+                seed => seed.Code == SeasonalCardsSubmitManagedStorePermission
+            );
+            Assert.Equal("提交管理分店季节卡剩余", submitSeed.Name);
+            Assert.Equal("季节卡片", submitSeed.Category);
+            Assert.Contains("/seasonal-cards", submitSeed.Description);
+
+            var storeManagerTemplate = Assert.Single(
+                PermissionSeedData.RolePermissionTemplates,
+                template => template.RoleName == "StoreManager"
+            );
+            Assert.Contains(
+                SeasonalCardsViewManagedStorePermission,
+                storeManagerTemplate.PermissionCodes
+            );
+            Assert.Contains(
+                SeasonalCardsSubmitManagedStorePermission,
+                storeManagerTemplate.PermissionCodes
+            );
         }
 
         [Fact]
@@ -335,6 +375,40 @@ namespace BlazorApp.Api.Tests
             Assert.Contains(InstallmentOrdersPermission, permissionCodes);
             Assert.Contains(StoreVouchersPermission, permissionCodes);
             Assert.Empty(adminPermissionCodes);
+        }
+
+        [Fact]
+        public async Task InitializePermissionSeedsAsync_SeedsSeasonalCardCatalogIdempotently()
+        {
+            await _db.Insertable(new Role
+            {
+                RoleGUID = "role-store-manager",
+                RoleName = "StoreManager",
+                Description = "Store manager",
+                IsActive = true,
+            }).ExecuteCommandAsync();
+
+            await CreateService().InitializePermissionSeedsAsync();
+            await CreateService().InitializePermissionSeedsAsync();
+
+            var catalogs = await _db.Queryable<SeasonalCardCatalog>()
+                .OrderBy(item => item.SortOrder)
+                .ToListAsync();
+
+            Assert.Equal(20, catalogs.Count);
+            Assert.Equal(20, catalogs.Select(item => item.CatalogCode).Distinct().Count());
+            Assert.Equal(5, catalogs.Select(item => item.CardType).Distinct().Count());
+            Assert.Equal(15, catalogs.Count(item => !item.AllowsCustomUnitPrice));
+            Assert.Equal(5, catalogs.Count(item => item.AllowsCustomUnitPrice));
+            Assert.All(catalogs, item => Assert.True(item.IsEnabled));
+            Assert.Equal(
+                new decimal?[] { 1m, 2m, 3m, null },
+                catalogs
+                    .Where(item => item.CardType == SeasonalCardType.Christmas)
+                    .OrderBy(item => item.SortOrder)
+                    .Select(item => item.FixedUnitPrice)
+                    .ToArray()
+            );
         }
 
         [Fact]

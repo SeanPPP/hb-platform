@@ -17,6 +17,11 @@ namespace BlazorApp.Api.Services.React
     /// </summary>
     public class DeviceRegistrationReactService : IDeviceRegistrationReactService
     {
+        private static readonly HashSet<string> AllowedDeviceTypes =
+            new(StringComparer.OrdinalIgnoreCase) { "PDA", "Mobile", "POS", "Admin" };
+        private static readonly HashSet<string> AllowedDeviceSystems =
+            new(StringComparer.OrdinalIgnoreCase) { "Android", "iOS", "Mac", "Windows" };
+
         private readonly POSMSqlSugarContext _posmDb;
         private readonly SqlSugarContext _mainDb;
         private readonly ILogger<DeviceRegistrationReactService> _logger;
@@ -192,7 +197,6 @@ namespace BlazorApp.Api.Services.React
                         设备系统 = d.设备系统,
                         设备状态 = d.设备状态,
                         设备状态描述 = GetStatusDescription(d.设备状态),
-                        设备授权码 = d.设备授权码,
                         备注 = d.备注,
                         创建时间 = d.创建时间,
                         最后修改时间 = d.最后修改时间,
@@ -272,7 +276,6 @@ namespace BlazorApp.Api.Services.React
                     设备系统 = entity.设备系统,
                     设备状态 = entity.设备状态,
                     设备状态描述 = GetStatusDescription(entity.设备状态),
-                    设备授权码 = entity.设备授权码,
                     备注 = entity.备注,
                     创建时间 = entity.创建时间,
                     最后修改时间 = entity.最后修改时间,
@@ -310,14 +313,28 @@ namespace BlazorApp.Api.Services.React
                     return ApiResponse<DeviceRegistrationDetailDto>.Error("设备不存在");
                 }
 
-                entity.设备状态 = dto.设备状态;
-                if (!string.IsNullOrEmpty(dto.设备类型))
+                if (
+                    !string.IsNullOrWhiteSpace(dto.设备类型)
+                    && !AllowedDeviceTypes.Contains(dto.设备类型.Trim())
+                )
                 {
-                    entity.设备类型 = dto.设备类型;
+                    return ApiResponse<DeviceRegistrationDetailDto>.Error("设备类型无效");
                 }
-                if (!string.IsNullOrEmpty(dto.设备系统))
+                if (
+                    !string.IsNullOrWhiteSpace(dto.设备系统)
+                    && !AllowedDeviceSystems.Contains(dto.设备系统.Trim())
+                )
                 {
-                    entity.设备系统 = dto.设备系统;
+                    return ApiResponse<DeviceRegistrationDetailDto>.Error("设备系统无效");
+                }
+
+                if (!string.IsNullOrWhiteSpace(dto.设备类型))
+                {
+                    entity.设备类型 = dto.设备类型.Trim();
+                }
+                if (!string.IsNullOrWhiteSpace(dto.设备系统))
+                {
+                    entity.设备系统 = dto.设备系统.Trim();
                 }
                 entity.备注 = dto.备注 ?? string.Empty;
                 entity.最后修改人 = updatedBy;
@@ -346,7 +363,6 @@ namespace BlazorApp.Api.Services.React
                     设备系统 = entity.设备系统,
                     设备状态 = entity.设备状态,
                     设备状态描述 = GetStatusDescription(entity.设备状态),
-                    设备授权码 = entity.设备授权码,
                     备注 = entity.备注,
                     创建时间 = entity.创建时间,
                     最后修改时间 = entity.最后修改时间,
