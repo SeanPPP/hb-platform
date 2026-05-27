@@ -8,7 +8,7 @@ import { useAuthStore } from "@/store/auth-store";
 import { useDeviceStore } from "@/store/device-store";
 import { useAppNavigationStore } from "@/modules/navigation/store";
 import {
-  expandAttendanceRouteNames,
+  getVisibleTabRouteNames,
   resolveTabRouteCorrection,
 } from "@/modules/navigation/default-route";
 import { prepareStoredDeviceSession } from "@/modules/auth/device-login-session";
@@ -19,7 +19,6 @@ export default function TabsLayout() {
   const { t } = useAppTranslation("common");
   const userGuid = useAuthStore((state) => state.user?.userGUID);
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated);
-  const access = useAuthStore((state) => state.access);
   const isLoading = useAuthStore((state) => state.isLoading);
   const restoreSession = useAuthStore((state) => state.restoreSession);
   const clearLocalAuthSession = useAuthStore((state) => state.clearLocalSession);
@@ -29,6 +28,9 @@ export default function TabsLayout() {
   const navigationItems = useAppNavigationStore((state) => state.items);
   const navigationReady = useAppNavigationStore((state) => state.isReady);
   const navigationLoading = useAppNavigationStore((state) => state.isLoading);
+  const canViewAttendanceManagement = useAuthStore(
+    (state) => state.access.canViewAttendanceManagement
+  );
   const hasRestored = useRef(false);
   const hasAppliedDefaultRoute = useRef(false);
   const hasUserSession = Boolean(isAuthenticated && userGuid);
@@ -127,24 +129,25 @@ export default function TabsLayout() {
   ]);
 
   const isDeviceMode = Boolean(hasStoredDeviceSession && !hasUserSession);
-  const canReviewAttendance = access.isAdmin || access.isStoreManager;
   const visibleRouteNames = useMemo(
     () =>
       new Set(
-        expandAttendanceRouteNames(
-          navigationItems.map((item) => item.routeName),
-          canReviewAttendance,
-        ).filter((routeName) => !(isDeviceMode && routeName === "device-management"))
+        getVisibleTabRouteNames({
+          routeNames: navigationItems.map((item) => item.routeName),
+          isDeviceMode,
+          canViewAttendanceManagement,
+        })
       ),
-    [canReviewAttendance, isDeviceMode, navigationItems]
+    [canViewAttendanceManagement, isDeviceMode, navigationItems]
   );
   const orderedVisibleRouteNames = useMemo(
     () =>
-      expandAttendanceRouteNames(
-        navigationItems.map((item) => item.routeName),
-        canReviewAttendance,
-      ).filter((routeName) => !(isDeviceMode && routeName === "device-management")),
-    [canReviewAttendance, isDeviceMode, navigationItems]
+      getVisibleTabRouteNames({
+        routeNames: navigationItems.map((item) => item.routeName),
+        isDeviceMode,
+        canViewAttendanceManagement,
+      }),
+    [canViewAttendanceManagement, isDeviceMode, navigationItems]
   );
   const shouldWaitForNavigation =
     (hasUserSession || isDeviceMode) && (!navigationReady || navigationLoading);
@@ -275,6 +278,16 @@ export default function TabsLayout() {
           title: t("tabs.storeVouchers"),
           tabBarIcon: ({ color, size }) => (
             <MaterialCommunityIcons name="ticket-percent-outline" color={color} size={size} />
+          ),
+        }}
+      />
+      <Tabs.Screen
+        name="seasonal-cards"
+        options={{
+          href: isRouteVisible("seasonal-cards") ? undefined : null,
+          title: t("tabs.seasonalCards"),
+          tabBarIcon: ({ color, size }) => (
+            <MaterialCommunityIcons name="cards-outline" color={color} size={size} />
           ),
         }}
       />

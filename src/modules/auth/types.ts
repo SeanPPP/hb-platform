@@ -28,6 +28,7 @@ export interface UserStoreDto {
 }
 
 export interface CurrentUser {
+  userGuid: string;
   userGUID: string;
   username: string;
   email: string;
@@ -36,7 +37,7 @@ export interface CurrentUser {
   permissions: string[];
   roleNames: string[];
   storeNames: string[];
-  stores?: UserStoreDto[];
+  stores: UserStoreDto[];
 }
 
 export interface AccessControl {
@@ -70,6 +71,23 @@ export interface AccessControl {
   canExportData: boolean;
   canModifyPrice: boolean;
   canDeletePrice: boolean;
+  canViewDeviceRegistration: boolean;
+  canManageDeviceRegistration: boolean;
+  canViewEmployeeProfiles: boolean;
+  canViewAttendancePersonal: boolean;
+  canViewAttendanceManagement: boolean;
+  canReviewAttendance: boolean;
+  canEditAttendanceHoliday: boolean;
+  canEditAttendanceSettings: boolean;
+  canViewLocalPurchase: boolean;
+  canEditLocalPurchase: boolean;
+  canPushLocalPurchaseToHq: boolean;
+  canViewInstallmentOrders: boolean;
+  canViewStoreVouchers: boolean;
+  canViewSeasonalCardRemaining: boolean;
+  canSubmitSeasonalCardRemaining: boolean;
+  canCreateStoreProducts: boolean;
+  canManageAttendance: boolean;
   hasPermission: (permission: string) => boolean;
   hasRole: (role: string) => boolean;
   onlyRole: (role: string) => boolean;

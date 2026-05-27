@@ -1,0 +1,79 @@
+{
+  "title": "Seasonal Cards",
+  "submitSubtitle": "Submit remaining seasonal cards by managed store, year, and card type",
+  "historyTitle": "Submission History",
+  "historySubtitle": "Review submitted records by store, year, and card type",
+  "detailTitle": "Seasonal Card Detail",
+  "viewModes": {
+    "submit": "Submit",
+    "history": "History"
+  },
+  "cardTypes": {
+    "1": "Christmas",
+    "2": "Valentines Day",
+    "3": "Mother's Day",
+    "4": "Easter",
+    "5": "Father's Day"
+  },
+  "form": {
+    "storeCode": "Store",
+    "seasonYear": "Year",
+    "cardType": "Festival",
+    "priceOption": "Catalog price",
+    "customPriceOption": "Other",
+    "customUnitPrice": "Actual amount",
+    "remainingQuantity": "Remaining quantity",
+    "remark": "Remark",
+    "selectStore": "Select store",
+    "selectSeasonYear": "Select year",
+    "selectCardType": "Select festival",
+    "selectPriceOption": "Select price option",
+    "storePickerTitle": "Select store",
+    "yearPickerTitle": "Select year",
+    "cardTypePickerTitle": "Select festival",
+    "priceOptionPickerTitle": "Select price option"
+  },
+  "history": {
+    "storeCode": "Store",
+    "seasonYear": "Year",
+    "cardType": "Festival",
+    "allCardTypes": "All festivals",
+    "allYears": "All years",
+    "displayList": "List",
+    "displayTable": "Table",
+    "priceTypeHeader": "Price type",
+    "nextPage": "Next"
+  },
+  "labels": {
+    "storeCode": "Store",
+    "seasonYear": "Year",
+    "cardType": "Festival",
+    "unitPrice": "Price",
+    "remainingQuantity": "Remaining quantity",
+    "submittedByName": "Submitted by",
+    "submittedAt": "Submitted at",
+    "remark": "Remark"
+  },
+  "errors": {
+    "storeCode": "Please select a store",
+    "seasonYear": "Please select a valid year",
+    "catalogGuid": "Please select a catalog price option",
+    "customUnitPrice": "Please enter an amount greater than 0",
+    "remainingQuantity": "Please enter a non-negative whole quantity"
+  },
+  "messages": {
+    "noAccessTitle": "No access",
+    "noAccessDescription": "This account cannot view or submit seasonal card remaining records.",
+    "formFixErrors": "Please fix the form errors first",
+    "submitSuccess": "Submitted successfully",
+    "submitFailed": "Failed to submit",
+    "historyLoadFailed": "Failed to load history",
+    "detailLoadFailed": "Failed to load details",
+    "detailLoadFailedDescription": "Unable to load the selected submission details right now.",
+    "emptyHistory": "No history records",
+    "emptyHistoryDescription": "There are no seasonal card submissions for the current filters.",
+    "emptyOptions": "No options available",
+    "selectCardTypeFirst": "Select a festival first",
+    "catalogEmpty": "No seasonal card catalog is available for submission"
+  }
+}

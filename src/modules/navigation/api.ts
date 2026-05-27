@@ -1,10 +1,12 @@
-import { apiClient } from "@/shared/api/client";
 import type { AppNavigationMenuItem } from "@/modules/navigation/types";
+import { SUPPORTED_APP_MENU_ROUTE_NAMES } from "@/modules/navigation/default-route";
 
-function normalizeAppNavigationMenu(payload: unknown): AppNavigationMenuItem[] {
+export function normalizeAppNavigationMenu(payload: unknown): AppNavigationMenuItem[] {
   if (!Array.isArray(payload)) {
     return [];
   }
+
+  const seenRouteNames = new Set<string>();
 
   return payload
     .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object")
@@ -27,11 +29,23 @@ function normalizeAppNavigationMenu(payload: unknown): AppNavigationMenuItem[] {
         null,
       order: Number(item.order ?? item.Order ?? 0),
     }))
-    .filter((item) => Boolean(item.routeName))
+    .filter((item) => {
+      if (
+        !item.routeName ||
+        !SUPPORTED_APP_MENU_ROUTE_NAMES.has(item.routeName) ||
+        seenRouteNames.has(item.routeName)
+      ) {
+        return false;
+      }
+
+      seenRouteNames.add(item.routeName);
+      return true;
+    })
     .sort((left, right) => left.order - right.order);
 }
 
 export async function fetchAppNavigationMenu(): Promise<AppNavigationMenuItem[]> {
+  const { apiClient } = await import("@/shared/api/client");
   const response = await apiClient.get("/navigation/app-menu");
   return normalizeAppNavigationMenu(response.data);
 }

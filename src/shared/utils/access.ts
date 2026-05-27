@@ -1,5 +1,103 @@
 import type { AccessControl, CurrentUser } from "@/modules/auth/types";
 
+export const PERMISSIONS = {
+  DeviceRegistration: {
+    View: "DeviceRegistration.View",
+    Manage: "DeviceRegistration.Manage",
+  },
+  EmployeeProfiles: {
+    View: "EmployeeProfiles.View",
+  },
+  LocalPurchase: {
+    View: "LocalPurchase.View",
+    Edit: "LocalPurchase.Edit",
+    PushToHq: "LocalPurchase.PushToHq",
+  },
+  InstallmentOrders: {
+    View: "InstallmentOrders.View",
+  },
+  StoreVouchers: {
+    View: "StoreVouchers.View",
+  },
+  StoreProducts: {
+    Create: "StoreProducts.Create",
+  },
+  SeasonalCards: {
+    Remaining: {
+      ViewManagedStore: "SeasonalCards.Remaining.ViewManagedStore",
+      SubmitManagedStore: "SeasonalCards.Remaining.SubmitManagedStore",
+    },
+  },
+  Attendance: {
+    ScheduleViewSelf: "Attendance.Schedule.ViewSelf",
+    ScheduleViewStore: "Attendance.Schedule.ViewStore",
+    ScheduleEditManagedStore: "Attendance.Schedule.EditManagedStore",
+    AvailabilitySubmitSelf: "Attendance.Availability.SubmitSelf",
+    AvailabilityViewManagedStore: "Attendance.Availability.ViewManagedStore",
+    PunchSelf: "Attendance.Punch.Self",
+    PunchViewManagedStore: "Attendance.Punch.ViewManagedStore",
+    ApprovalViewManagedStore: "Attendance.Approval.ViewManagedStore",
+    ApprovalReviewManagedStore: "Attendance.Approval.ReviewManagedStore",
+    HolidayViewStore: "Attendance.Holiday.ViewStore",
+    HolidayEditManagedStore: "Attendance.Holiday.EditManagedStore",
+    LeaveApplySelf: "Attendance.Leave.ApplySelf",
+    LeaveViewManagedStore: "Attendance.Leave.ViewManagedStore",
+    LeaveReviewManagedStore: "Attendance.Leave.ReviewManagedStore",
+    SettingsEdit: "Attendance.Settings.Edit",
+    AdminView: "Attendance.Admin.View",
+  },
+} as const;
+
+const PERMISSION_ALIAS_GROUPS = [
+  {
+    canonicalCode: PERMISSIONS.LocalPurchase.View,
+    aliasCodes: ["LocalInvocie.View"],
+  },
+  {
+    canonicalCode: PERMISSIONS.LocalPurchase.Edit,
+    aliasCodes: ["LocalInvocie.Edit"],
+  },
+] as const;
+
+const ATTENDANCE_PERSONAL_PERMISSIONS = [
+  PERMISSIONS.Attendance.ScheduleViewSelf,
+  PERMISSIONS.Attendance.AvailabilitySubmitSelf,
+  PERMISSIONS.Attendance.PunchSelf,
+  PERMISSIONS.Attendance.LeaveApplySelf,
+];
+
+const ATTENDANCE_MANAGEMENT_PERMISSIONS = [
+  PERMISSIONS.Attendance.ScheduleViewStore,
+  PERMISSIONS.Attendance.ScheduleEditManagedStore,
+  PERMISSIONS.Attendance.AvailabilityViewManagedStore,
+  PERMISSIONS.Attendance.PunchViewManagedStore,
+  PERMISSIONS.Attendance.ApprovalViewManagedStore,
+  PERMISSIONS.Attendance.ApprovalReviewManagedStore,
+  PERMISSIONS.Attendance.HolidayViewStore,
+  PERMISSIONS.Attendance.HolidayEditManagedStore,
+  PERMISSIONS.Attendance.LeaveViewManagedStore,
+  PERMISSIONS.Attendance.LeaveReviewManagedStore,
+  PERMISSIONS.Attendance.SettingsEdit,
+  PERMISSIONS.Attendance.AdminView,
+];
+
+const ATTENDANCE_REVIEW_PERMISSIONS = [
+  PERMISSIONS.Attendance.ApprovalReviewManagedStore,
+  PERMISSIONS.Attendance.LeaveReviewManagedStore,
+  PERMISSIONS.Attendance.AdminView,
+];
+
+function resolvePermissionAliases(permission: string) {
+  const normalizedPermission = permission.toLowerCase();
+  const group = PERMISSION_ALIAS_GROUPS.find(({ canonicalCode, aliasCodes }) =>
+    [canonicalCode, ...aliasCodes].some(
+      (item) => item.toLowerCase() === normalizedPermission
+    )
+  );
+
+  return group ? [group.canonicalCode, ...group.aliasCodes] : [permission];
+}
+
 function createEmptyAccess(): AccessControl {
   const alwaysFalse = () => false;
 
@@ -34,6 +132,23 @@ function createEmptyAccess(): AccessControl {
     canExportData: false,
     canModifyPrice: false,
     canDeletePrice: false,
+    canViewDeviceRegistration: false,
+    canManageDeviceRegistration: false,
+    canViewEmployeeProfiles: false,
+    canViewAttendancePersonal: false,
+    canViewAttendanceManagement: false,
+    canReviewAttendance: false,
+    canEditAttendanceHoliday: false,
+    canEditAttendanceSettings: false,
+    canViewLocalPurchase: false,
+    canEditLocalPurchase: false,
+    canPushLocalPurchaseToHq: false,
+    canViewInstallmentOrders: false,
+    canViewStoreVouchers: false,
+    canViewSeasonalCardRemaining: false,
+    canSubmitSeasonalCardRemaining: false,
+    canCreateStoreProducts: false,
+    canManageAttendance: false,
     hasPermission: alwaysFalse,
     hasRole: alwaysFalse,
     onlyRole: alwaysFalse,
@@ -47,11 +162,6 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
   if (!currentUser) {
     return createEmptyAccess();
   }
-
-  const hasPermission = (permission: string) =>
-    currentUser.permissions?.some(
-      (item) => item.toLowerCase() === permission.toLowerCase()
-    ) ?? false;
 
   const hasRole = (role: string) =>
     currentUser.roleNames?.some(
@@ -69,6 +179,14 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
   const hasAllRoles = (roles: string[]) => roles.every((role) => hasRole(role));
 
   const isAdmin = hasRole("Admin") || hasRole("管理员");
+  const normalizedPermissions = new Set(
+    currentUser.permissions?.map((item) => item.toLowerCase()) ?? []
+  );
+  const hasPermission = (permission: string) =>
+    isAdmin ||
+    resolvePermissionAliases(permission).some((item) =>
+      normalizedPermissions.has(item.toLowerCase())
+    );
   const isWarehouseManager =
     hasRole("WarehouseManager") || hasRole("仓库经理");
   const isStoreManager = hasRole("StoreManager") || hasRole("经理");
@@ -90,35 +208,65 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
     return null;
   };
 
-  const canReadUser = isAdmin || hasPermission("Users.View");
-  const canWriteUser =
-    isAdmin || hasPermission("Users.Create") || hasPermission("Users.Edit");
-  const canDeleteUser = isAdmin || hasPermission("Users.Delete");
-  const canReadRole = isAdmin || hasPermission("Roles.View");
-  const canWriteRole =
-    isAdmin || hasPermission("Roles.Create") || hasPermission("Roles.Edit");
-  const canDeleteRole = isAdmin || hasPermission("Roles.Delete");
-  const canReadStore = isAdmin || hasPermission("Stores.View");
-  const canWriteStore =
-    isAdmin || hasPermission("Stores.Create") || hasPermission("Stores.Edit");
-  const canDeleteStore = isAdmin || hasPermission("Stores.Delete");
-  const canManageWarehouse = isAdmin || hasPermission("Warehouse.Manage");
-  const canManageStore =
-    isAdmin || hasPermission("Stores.Edit") || hasPermission("Warehouse.Manage");
+  const canReadUser = hasPermission("Users.View");
+  const canWriteUser = hasPermission("Users.Create") || hasPermission("Users.Edit");
+  const canDeleteUser = hasPermission("Users.Delete");
+  const canReadRole = hasPermission("Roles.View");
+  const canWriteRole = hasPermission("Roles.Create") || hasPermission("Roles.Edit");
+  const canDeleteRole = hasPermission("Roles.Delete");
+  const canReadStore = hasPermission("Stores.View");
+  const canWriteStore = hasPermission("Stores.Create") || hasPermission("Stores.Edit");
+  const canDeleteStore = hasPermission("Stores.Delete");
+  const canManageWarehouse = hasPermission("Warehouse.Manage");
+  const canManageStore = hasPermission("Stores.Edit") || hasPermission("Warehouse.Manage");
 
-  const canReadOrder = isAdmin || hasPermission("Orders.View");
-  const canWriteOrder =
-    isAdmin || hasPermission("Orders.Create") || hasPermission("Orders.Edit");
-  const canDeleteOrder = isAdmin || hasPermission("Orders.Delete");
-  const canReadProduct = isAdmin || hasPermission("Products.View");
-  const canWriteProduct =
-    isAdmin || hasPermission("Products.Create") || hasPermission("Products.Edit");
-  const canDeleteProduct = isAdmin || hasPermission("Products.Delete");
+  const canReadOrder = hasPermission("Orders.View");
+  const canWriteOrder = hasPermission("Orders.Create") || hasPermission("Orders.Edit");
+  const canDeleteOrder = hasPermission("Orders.Delete");
+  const canReadProduct = hasPermission("Products.View");
+  const canWriteProduct = hasPermission("Products.Create") || hasPermission("Products.Edit");
+  const canDeleteProduct = hasPermission("Products.Delete");
 
-  const canViewReports = isAdmin || hasPermission("Reports.View");
-  const canExportData = isAdmin || hasPermission("Reports.Export");
-  const canModifyPrice = isAdmin || hasPermission("Prices.Modify");
-  const canDeletePrice = isAdmin || hasPermission("Prices.Delete");
+  const canViewReports = hasPermission("Reports.View");
+  const canExportData = hasPermission("Reports.Export");
+  const canModifyPrice = hasPermission("Prices.Modify");
+  const canDeletePrice = hasPermission("Prices.Delete");
+  const canManageDeviceRegistration = hasPermission(PERMISSIONS.DeviceRegistration.Manage);
+  const canViewDeviceRegistration =
+    canManageDeviceRegistration || hasPermission(PERMISSIONS.DeviceRegistration.View);
+  const canViewEmployeeProfiles = hasPermission(PERMISSIONS.EmployeeProfiles.View);
+  const canViewAttendancePersonal =
+    isAdmin ||
+    ATTENDANCE_PERSONAL_PERMISSIONS.some((permission) =>
+      hasPermission(permission)
+    );
+  const canViewAttendanceManagement =
+    isAdmin ||
+    ATTENDANCE_MANAGEMENT_PERMISSIONS.some((permission) =>
+      hasPermission(permission)
+    );
+  const canReviewAttendance =
+    isAdmin ||
+    ATTENDANCE_REVIEW_PERMISSIONS.some((permission) =>
+      hasPermission(permission)
+    );
+  const canEditAttendanceHoliday =
+    isAdmin || hasPermission(PERMISSIONS.Attendance.HolidayEditManagedStore);
+  const canEditAttendanceSettings =
+    isAdmin || hasPermission(PERMISSIONS.Attendance.SettingsEdit);
+  const canViewLocalPurchase = hasPermission(PERMISSIONS.LocalPurchase.View);
+  const canEditLocalPurchase = hasPermission(PERMISSIONS.LocalPurchase.Edit);
+  const canPushLocalPurchaseToHq = hasPermission(PERMISSIONS.LocalPurchase.PushToHq);
+  const canViewInstallmentOrders = hasPermission(PERMISSIONS.InstallmentOrders.View);
+  const canViewStoreVouchers = hasPermission(PERMISSIONS.StoreVouchers.View);
+  const canViewSeasonalCardRemaining = hasPermission(
+    PERMISSIONS.SeasonalCards.Remaining.ViewManagedStore
+  );
+  const canSubmitSeasonalCardRemaining = hasPermission(
+    PERMISSIONS.SeasonalCards.Remaining.SubmitManagedStore
+  );
+  const canCreateStoreProducts = hasPermission(PERMISSIONS.StoreProducts.Create);
+  const canManageAttendance = canViewAttendanceManagement;
 
   return {
     isAdmin,
@@ -151,6 +299,23 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
     canExportData,
     canModifyPrice,
     canDeletePrice,
+    canViewDeviceRegistration,
+    canManageDeviceRegistration,
+    canViewEmployeeProfiles,
+    canViewAttendancePersonal,
+    canViewAttendanceManagement,
+    canReviewAttendance,
+    canEditAttendanceHoliday,
+    canEditAttendanceSettings,
+    canViewLocalPurchase,
+    canEditLocalPurchase,
+    canPushLocalPurchaseToHq,
+    canViewInstallmentOrders,
+    canViewStoreVouchers,
+    canViewSeasonalCardRemaining,
+    canSubmitSeasonalCardRemaining,
+    canCreateStoreProducts,
+    canManageAttendance,
     hasPermission,
     hasRole,
     onlyRole,

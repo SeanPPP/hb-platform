@@ -7,6 +7,7 @@ export const STORE_ROUTE_NAMES = new Set([
   "local-supplier-invoices",
   "installment-orders",
   "store-vouchers",
+  "seasonal-cards",
 ]);
 
 export type NavigationGroupRoute = {
@@ -31,6 +32,10 @@ export function buildNavigationDisplayTabs<T extends NavigationGroupRoute>(
   visibleRoutes: T[],
   maxVisibleTabs = MAX_VISIBLE_TABS
 ): NavigationDisplayTab<T>[] {
+  if (visibleRoutes.length === 0) {
+    return [];
+  }
+
   if (visibleRoutes.length <= maxVisibleTabs) {
     return visibleRoutes.map((route) => ({
       type: "route",

@@ -12,6 +12,7 @@ import localSupplierInvoicesEn from "@/locales/en/screens/localSupplierInvoices.
 import loginEn from "@/locales/en/screens/login.json";
 import ordersEn from "@/locales/en/screens/orders.json";
 import productQueryEn from "@/locales/en/screens/productQuery.json";
+import seasonalCardsEn from "@/locales/en/screens/seasonalCards.json";
 import settingsEn from "@/locales/en/screens/settings.json";
 import storeVouchersEn from "@/locales/en/screens/storeVouchers.json";
 import userManagementEn from "@/locales/en/screens/userManagement.json";
@@ -28,6 +29,7 @@ import localSupplierInvoicesZh from "@/locales/zh/screens/localSupplierInvoices.
 import loginZh from "@/locales/zh/screens/login.json";
 import ordersZh from "@/locales/zh/screens/orders.json";
 import productQueryZh from "@/locales/zh/screens/productQuery.json";
+import seasonalCardsZh from "@/locales/zh/screens/seasonalCards.json";
 import settingsZh from "@/locales/zh/screens/settings.json";
 import storeVouchersZh from "@/locales/zh/screens/storeVouchers.json";
 import userManagementZh from "@/locales/zh/screens/userManagement.json";
@@ -53,6 +55,7 @@ const resources = {
     employeeProfile: employeeProfileZh,
     orders: ordersZh,
     settings: settingsZh,
+    seasonalCards: seasonalCardsZh,
     storeVouchers: storeVouchersZh,
     productQuery: productQueryZh,
     userManagement: userManagementZh,
@@ -71,6 +74,7 @@ const resources = {
     employeeProfile: employeeProfileEn,
     orders: ordersEn,
     settings: settingsEn,
+    seasonalCards: seasonalCardsEn,
     storeVouchers: storeVouchersEn,
     productQuery: productQueryEn,
     userManagement: userManagementEn,
@@ -100,7 +104,7 @@ if (!i18n.isInitialized) {
     lng: DEFAULT_APP_LANGUAGE,
     fallbackLng: DEFAULT_APP_LANGUAGE,
     defaultNS: "common",
-    ns: ["common", "attendance", "login", "home", "cart", "domesticPurchase", "deviceManagement", "employeeProfile", "installmentOrders", "localSupplierInvoices", "orders", "settings", "storeVouchers", "productQuery", "userManagement", "warehouse"],
+    ns: ["common", "attendance", "login", "home", "cart", "domesticPurchase", "deviceManagement", "employeeProfile", "installmentOrders", "localSupplierInvoices", "orders", "seasonalCards", "settings", "storeVouchers", "productQuery", "userManagement", "warehouse"],
     interpolation: {
       escapeValue: false,
     },
