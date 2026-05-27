@@ -221,9 +221,13 @@ export async function syncContainersFromHq(startDate?: string): Promise<SyncResu
 
 export async function translateHqProductNamesByContainerNumber(containerNumber: string): Promise<HqTranslationResult> {
   const response = await request<{ success?: boolean; message?: string; data?: HqTranslationResult }>(
-    `/api/react/v1/hq-products/translate-names/by-container-number/${encodeURIComponent(containerNumber)}`,
+    '/api/react/v1/hq-products/translate-names/by-container-number',
     {
       method: 'POST',
+      data: {
+        ContainerNumbers: [containerNumber],
+        OverwriteExisting: false,
+      },
     },
   )
 
