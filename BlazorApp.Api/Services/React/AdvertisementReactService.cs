@@ -5,6 +5,7 @@ using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Api.Models;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Helper;
+using BlazorApp.Shared.Models;
 using BlazorApp.Shared.Models.HBweb;
 using Microsoft.Extensions.Options;
 using SqlSugar;
@@ -120,7 +121,7 @@ namespace BlazorApp.Api.Services.React
 
         public async Task<ApiResponse<AdvertisementDetailDto>> CreateAsync(CreateAdvertisementDto dto)
         {
-            var validationError = ValidatePayload(dto);
+            var validationError = await ValidatePayloadAsync(dto);
             if (validationError != null)
             {
                 return validationError;
@@ -171,7 +172,7 @@ namespace BlazorApp.Api.Services.React
             UpdateAdvertisementDto dto
         )
         {
-            var validationError = ValidatePayload(dto);
+            var validationError = await ValidatePayloadAsync(dto);
             if (validationError != null)
             {
                 return validationError;
@@ -377,7 +378,7 @@ namespace BlazorApp.Api.Services.React
                 : "Image";
         }
 
-        private ApiResponse<AdvertisementDetailDto>? ValidatePayload(CreateAdvertisementDto dto)
+        private async Task<ApiResponse<AdvertisementDetailDto>?> ValidatePayloadAsync(CreateAdvertisementDto dto)
         {
             if (dto == null)
             {
@@ -387,6 +388,32 @@ namespace BlazorApp.Api.Services.React
             if (string.IsNullOrWhiteSpace(dto.Title))
             {
                 return ApiResponse<AdvertisementDetailDto>.Error("标题不能为空", "INVALID_REQUEST");
+            }
+
+            var storeCodes = NormalizeStoreCodes(dto.Stores);
+            if (storeCodes.Count == 0)
+            {
+                return ApiResponse<AdvertisementDetailDto>.Error("请至少选择一个分店", "INVALID_STORE_SCOPE");
+            }
+
+            var activeStoreCodes = await _context
+                .StoreDb.AsQueryable()
+                .Where(store => store.IsActive && !store.IsDeleted)
+                .Select(store => store.StoreCode)
+                .ToListAsync();
+            var activeStoreCodeSet = new HashSet<string>(
+                activeStoreCodes.Where(code => !string.IsNullOrWhiteSpace(code)),
+                StringComparer.OrdinalIgnoreCase
+            );
+            var invalidStoreCodes = storeCodes
+                .Where(storeCode => !activeStoreCodeSet.Contains(storeCode))
+                .ToList();
+            if (invalidStoreCodes.Count > 0)
+            {
+                return ApiResponse<AdvertisementDetailDto>.Error(
+                    $"分店不存在或未启用: {string.Join(", ", invalidStoreCodes)}",
+                    "INVALID_STORE_SCOPE"
+                );
             }
 
             if (string.IsNullOrWhiteSpace(dto.OriginalFileName))
@@ -844,16 +871,22 @@ namespace BlazorApp.Api.Services.React
             IEnumerable<AdvertisementStoreItemDto>? stores
         )
         {
-            return (stores ?? Array.Empty<AdvertisementStoreItemDto>())
-                .Where(item => !string.IsNullOrWhiteSpace(item.StoreCode))
-                .Select(item => item.StoreCode.Trim())
-                .Distinct(StringComparer.OrdinalIgnoreCase)
+            return NormalizeStoreCodes(stores)
                 .Select(storeCode => new AdvertisementStore
                 {
                     Id = UuidHelper.GenerateUuid7(),
                     AdvertisementId = advertisementId,
                     StoreCode = storeCode,
                 })
+                .ToList();
+        }
+
+        private static List<string> NormalizeStoreCodes(IEnumerable<AdvertisementStoreItemDto>? stores)
+        {
+            return (stores ?? Array.Empty<AdvertisementStoreItemDto>())
+                .Where(item => !string.IsNullOrWhiteSpace(item.StoreCode))
+                .Select(item => item.StoreCode.Trim())
+                .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToList();
         }
     }

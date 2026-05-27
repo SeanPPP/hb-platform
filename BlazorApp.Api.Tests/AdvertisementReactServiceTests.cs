@@ -5,6 +5,7 @@ using BlazorApp.Api.Models;
 using BlazorApp.Api.Services;
 using BlazorApp.Api.Services.React;
 using BlazorApp.Shared.DTOs;
+using BlazorApp.Shared.Models;
 using BlazorApp.Shared.Models.HBweb;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -34,7 +35,8 @@ public sealed class AdvertisementReactServiceTests : IDisposable
             InitKeyType = InitKeyType.Attribute,
         });
 
-        _db.CodeFirst.InitTables(typeof(Advertisement), typeof(AdvertisementStore));
+        _db.CodeFirst.InitTables(typeof(Store), typeof(Advertisement), typeof(AdvertisementStore));
+        SeedStores();
     }
 
     [Fact]
@@ -274,6 +276,66 @@ public sealed class AdvertisementReactServiceTests : IDisposable
         Assert.Equal("INVALID_OBJECT_KEY", result.ErrorCode);
     }
 
+    [Fact]
+    public async Task CreateAsync_RejectsEmptyStoreScope()
+    {
+        var service = CreateService();
+
+        var result = await service.CreateAsync(
+            new CreateAdvertisementDto
+            {
+                Title = "No stores",
+                Description = "Invalid",
+                MediaType = "Image",
+                MediaUrl = "https://cdn.example.com/file.jpg",
+                ObjectKey = "ads/2026/018f45ad00007000a000000000000004.jpg",
+                OriginalFileName = "file.jpg",
+                ContentType = "image/jpeg",
+                FileSize = 1024,
+                EffectiveStart = new DateTime(2026, 5, 1),
+                EffectiveEnd = new DateTime(2026, 5, 31),
+                IsEnabled = true,
+                SortOrder = 1,
+                Stores = new List<AdvertisementStoreItemDto>(),
+            }
+        );
+
+        Assert.False(result.Success);
+        Assert.Equal("INVALID_STORE_SCOPE", result.ErrorCode);
+    }
+
+    [Fact]
+    public async Task CreateAsync_RejectsInactiveOrMissingStores()
+    {
+        var service = CreateService();
+
+        var result = await service.CreateAsync(
+            new CreateAdvertisementDto
+            {
+                Title = "Bad stores",
+                Description = "Invalid",
+                MediaType = "Image",
+                MediaUrl = "https://cdn.example.com/file.jpg",
+                ObjectKey = "ads/2026/018f45ad00007000a000000000000005.jpg",
+                OriginalFileName = "file.jpg",
+                ContentType = "image/jpeg",
+                FileSize = 1024,
+                EffectiveStart = new DateTime(2026, 5, 1),
+                EffectiveEnd = new DateTime(2026, 5, 31),
+                IsEnabled = true,
+                SortOrder = 1,
+                Stores = new List<AdvertisementStoreItemDto>
+                {
+                    new() { StoreCode = "S99" },
+                    new() { StoreCode = "S04" },
+                },
+            }
+        );
+
+        Assert.False(result.Success);
+        Assert.Equal("INVALID_STORE_SCOPE", result.ErrorCode);
+    }
+
     public void Dispose()
     {
         _db.Dispose();
@@ -316,6 +378,47 @@ public sealed class AdvertisementReactServiceTests : IDisposable
                 }
             )
         );
+    }
+
+    private void SeedStores()
+    {
+        _db.Insertable(
+            new List<Store>
+            {
+                new()
+                {
+                    StoreGUID = "store-guid-1",
+                    StoreCode = "S01",
+                    StoreName = "Store 1",
+                    IsActive = true,
+                    IsDeleted = false,
+                },
+                new()
+                {
+                    StoreGUID = "store-guid-2",
+                    StoreCode = "S02",
+                    StoreName = "Store 2",
+                    IsActive = true,
+                    IsDeleted = false,
+                },
+                new()
+                {
+                    StoreGUID = "store-guid-3",
+                    StoreCode = "S03",
+                    StoreName = "Store 3",
+                    IsActive = true,
+                    IsDeleted = false,
+                },
+                new()
+                {
+                    StoreGUID = "store-guid-4",
+                    StoreCode = "S04",
+                    StoreName = "Store 4",
+                    IsActive = false,
+                    IsDeleted = false,
+                },
+            }
+        ).ExecuteCommand();
     }
 
     private async Task SeedAdvertisementAsync(
