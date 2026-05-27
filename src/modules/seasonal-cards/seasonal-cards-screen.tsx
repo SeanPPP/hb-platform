@@ -508,8 +508,8 @@ export function SeasonalCardsScreen() {
   };
 
   const handleSubmit = async () => {
-    const submitStoreCode = deviceBoundStoreCode ?? draft.storeCode;
-    if (isDeviceMode && !submitStoreCode) {
+    const submitStoreCode = isDeviceMode ? deviceBoundStoreCode : draft.storeCode;
+    if (!submitStoreCode) {
       setSnackbar(t("messages.formFixErrors"));
       return;
     }
