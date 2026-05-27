@@ -1,0 +1,830 @@
+import {
+  DeleteOutlined,
+  EyeOutlined,
+  FileImageOutlined,
+  PlusOutlined,
+  UploadOutlined,
+  VideoCameraOutlined,
+} from '@ant-design/icons'
+import {
+  Button,
+  Card,
+  Checkbox,
+  DatePicker,
+  Form,
+  Image,
+  Input,
+  InputNumber,
+  message,
+  Modal,
+  Popconfirm,
+  Select,
+  Space,
+  Switch,
+  Table,
+  Tag,
+  Tooltip,
+  Typography,
+} from 'antd'
+import type { ColumnsType } from 'antd/es/table'
+import dayjs from 'dayjs'
+import type { Dayjs } from 'dayjs'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { useTranslation } from 'react-i18next'
+import PageContainer from '../../../components/PageContainer'
+import {
+  buildAdvertisementUpsertPayload,
+  createAdvertisement,
+  deleteAdvertisement,
+  enableAdvertisement,
+  getAdvertisementById,
+  getAdvertisementGrid,
+  requestAdvertisementUploadSignature,
+  resolveAdvertisementMediaType,
+  stripAdvertisementMediaUrlQuery,
+  updateAdvertisement,
+  uploadAdvertisementFile,
+} from '../../../services/advertisementService'
+import { getActiveStores, type StoreOption } from '../../../services/storeService'
+import { useAuthStore } from '../../../store/auth'
+import type {
+  AdvertisementDetailDto,
+  AdvertisementListDto,
+  AdvertisementMediaType,
+} from '../../../types/advertisement'
+
+type AdvertisementRow = AdvertisementListDto & { key: string }
+
+interface QueryFormValues {
+  keyword?: string
+  storeCode?: string
+  mediaType?: AdvertisementMediaType
+  isEnabled?: boolean
+  effectiveRange?: [Dayjs, Dayjs]
+}
+
+interface AdvertisementFormValues {
+  title: string
+  description?: string
+  mediaType: AdvertisementMediaType
+  mediaUrl: string
+  thumbnailUrl?: string
+  objectKey?: string
+  originalFileName?: string
+  contentType?: string
+  fileSize?: number
+  effectiveStart: Dayjs
+  effectiveEnd: Dayjs
+  isEnabled: boolean
+  sortOrder: number
+  stores: string[]
+}
+
+function formatDateTime(value?: string | null) {
+  if (!value) return '--'
+  const timestamp = Date.parse(value)
+  if (Number.isNaN(timestamp)) return value
+  return new Date(timestamp).toLocaleString()
+}
+
+function formatFileSize(fileSize?: number) {
+  if (!fileSize) return '--'
+  if (fileSize < 1024) return `${fileSize} B`
+  if (fileSize < 1024 * 1024) return `${(fileSize / 1024).toFixed(1)} KB`
+  return `${(fileSize / 1024 / 1024).toFixed(1)} MB`
+}
+
+function renderStoreTags(stores: { storeCode: string }[]) {
+  if (!stores?.length) {
+    return '--'
+  }
+
+  const visibleStores = stores.slice(0, 3)
+  return (
+    <Space size={[4, 4]} wrap>
+      {visibleStores.map((store) => (
+        <Tag key={store.storeCode}>{store.storeCode}</Tag>
+      ))}
+      {stores.length > visibleStores.length ? <Tag>+{stores.length - visibleStores.length}</Tag> : null}
+    </Space>
+  )
+}
+
+function renderMediaThumb(record: AdvertisementListDto) {
+  const previewUrl = record.thumbnailUrl || record.mediaUrl
+
+  if (record.mediaType === 'Image' && previewUrl) {
+    return (
+      <Image
+        src={previewUrl}
+        alt={record.title}
+        width={72}
+        height={48}
+        style={{ objectFit: 'cover', borderRadius: 6 }}
+        preview={false}
+      />
+    )
+  }
+
+  if (record.thumbnailUrl) {
+    return (
+      <Image
+        src={record.thumbnailUrl}
+        alt={record.title}
+        width={72}
+        height={48}
+        style={{ objectFit: 'cover', borderRadius: 6 }}
+        preview={false}
+      />
+    )
+  }
+
+  return (
+    <Space>
+      {record.mediaType === 'Video' ? <VideoCameraOutlined /> : <FileImageOutlined />}
+      <Typography.Text type="secondary">{record.mediaType}</Typography.Text>
+    </Space>
+  )
+}
+
+export default function AdvertisementsPage() {
+  const { t } = useTranslation()
+  const access = useAuthStore((state) => state.access)
+  const [queryForm] = Form.useForm<QueryFormValues>()
+  const [editorForm] = Form.useForm<AdvertisementFormValues>()
+  const [loading, setLoading] = useState(false)
+  const [data, setData] = useState<AdvertisementRow[]>([])
+  const [total, setTotal] = useState(0)
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(20)
+  const [sortField, setSortField] = useState<string | undefined>('sortOrder')
+  const [sortOrder, setSortOrder] = useState<'ascend' | 'descend' | undefined>('ascend')
+  const [storeOptions, setStoreOptions] = useState<StoreOption[]>([])
+  const [editorOpen, setEditorOpen] = useState(false)
+  const [editorSaving, setEditorSaving] = useState(false)
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [uploading, setUploading] = useState(false)
+  const [previewOpen, setPreviewOpen] = useState(false)
+  const [previewRecord, setPreviewRecord] = useState<AdvertisementListDto | null>(null)
+  const [togglingId, setTogglingId] = useState<string | null>(null)
+  const fileInputRef = useRef<HTMLInputElement | null>(null)
+
+  const selectedStores = Form.useWatch('stores', editorForm) ?? []
+  const currentMediaType = Form.useWatch('mediaType', editorForm)
+  const currentMediaUrl = Form.useWatch('mediaUrl', editorForm)
+  const currentThumbnailUrl = Form.useWatch('thumbnailUrl', editorForm)
+  const currentOriginalFileName = Form.useWatch('originalFileName', editorForm)
+  const currentContentType = Form.useWatch('contentType', editorForm)
+  const currentFileSize = Form.useWatch('fileSize', editorForm)
+  const allStoresSelected = storeOptions.length > 0 && selectedStores.length === storeOptions.length
+
+  const mediaTypeOptions = useMemo(
+    () => [
+      { label: t('posAdmin.advertisements.mediaTypes.image'), value: 'Image' },
+      { label: t('posAdmin.advertisements.mediaTypes.video'), value: 'Video' },
+    ],
+    [t],
+  )
+
+  const loadStoreOptions = async () => {
+    try {
+      const stores = await getActiveStores()
+      setStoreOptions(stores)
+    } catch (error) {
+      console.error(t('posAdmin.advertisements.loadStoresFailed'), error)
+      message.error(t('posAdmin.advertisements.loadStoresFailed'))
+    }
+  }
+
+  const loadData = async () => {
+    try {
+      setLoading(true)
+      const values = queryForm.getFieldsValue()
+      const sortModel: Record<string, string>[] = []
+
+      if (sortField && sortOrder) {
+        sortModel.push({
+          ColId: sortField,
+          Sort: sortOrder === 'ascend' ? 'asc' : 'desc',
+        })
+      }
+
+      const result = await getAdvertisementGrid({
+        StartRow: (page - 1) * pageSize,
+        EndRow: page * pageSize - 1,
+        PageSize: pageSize,
+        GlobalSearch: values.keyword || undefined,
+        keyword: values.keyword || undefined,
+        storeCode: values.storeCode || undefined,
+        mediaType: values.mediaType || undefined,
+        isEnabled: typeof values.isEnabled === 'boolean' ? values.isEnabled : undefined,
+        effectiveStart: values.effectiveRange?.[0]?.startOf('day').toISOString(),
+        effectiveEnd: values.effectiveRange?.[1]?.endOf('day').toISOString(),
+        SortModel: sortModel.length ? sortModel : undefined,
+      })
+
+      const items = result?.items ?? []
+      setData(items.map((item) => ({ ...item, key: String(item.id) })))
+      setTotal(result?.total ?? 0)
+    } catch (error) {
+      console.error(t('posAdmin.advertisements.loadFailed'), error)
+      message.error(t('posAdmin.advertisements.loadFailed'))
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    void loadStoreOptions()
+  }, [])
+
+  useEffect(() => {
+    void loadData()
+  }, [page, pageSize, sortField, sortOrder])
+
+  const triggerSearch = () => {
+    if (page !== 1) {
+      setPage(1)
+      return
+    }
+    void loadData()
+  }
+
+  const resetEditor = () => {
+    setEditingId(null)
+    editorForm.resetFields()
+    editorForm.setFieldsValue({
+      mediaType: 'Image',
+      isEnabled: true,
+      sortOrder: 0,
+      stores: [],
+      mediaUrl: '',
+      thumbnailUrl: '',
+      objectKey: '',
+      originalFileName: '',
+      contentType: '',
+      fileSize: undefined,
+      effectiveStart: dayjs(),
+      effectiveEnd: dayjs().add(7, 'day'),
+    })
+  }
+
+  const openCreate = () => {
+    resetEditor()
+    setEditorOpen(true)
+  }
+
+  const openEdit = async (id: string) => {
+    try {
+      const detail: AdvertisementDetailDto = await getAdvertisementById(id)
+      setEditingId(id)
+      editorForm.setFieldsValue({
+        title: detail.title,
+        description: detail.description,
+        mediaType: detail.mediaType,
+        mediaUrl: stripAdvertisementMediaUrlQuery(detail.mediaUrl),
+        thumbnailUrl: detail.thumbnailUrl,
+        objectKey: detail.objectKey,
+        originalFileName: detail.originalFileName,
+        contentType: detail.contentType,
+        fileSize: detail.fileSize,
+        effectiveStart: dayjs(detail.effectiveStart),
+        effectiveEnd: dayjs(detail.effectiveEnd),
+        isEnabled: detail.isEnabled,
+        sortOrder: detail.sortOrder,
+        stores: detail.stores?.map((store) => store.storeCode) ?? [],
+      })
+      setEditorOpen(true)
+    } catch (error) {
+      console.error(t('posAdmin.advertisements.loadDetailFailed'), error)
+      message.error(t('posAdmin.advertisements.loadDetailFailed'))
+    }
+  }
+
+  const closeEditor = () => {
+    setEditorOpen(false)
+    setEditingId(null)
+    setUploading(false)
+    editorForm.resetFields()
+  }
+
+  const handleUploadClick = () => {
+    if (!access.canEditAdvertisements) return
+    fileInputRef.current?.click()
+  }
+
+  const handleFileSelected = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    event.target.value = ''
+
+    if (!file) {
+      return
+    }
+
+    try {
+      setUploading(true)
+      const mediaType = resolveAdvertisementMediaType(file)
+      const signature = await requestAdvertisementUploadSignature({
+        fileName: file.name,
+        contentType: file.type || (mediaType === 'Video' ? 'video/mp4' : 'image/jpeg'),
+        fileSize: file.size,
+        mediaType,
+      })
+      const mediaUrl = await uploadAdvertisementFile(signature, file)
+      const nextValues: Partial<AdvertisementFormValues> = {
+        mediaType,
+        mediaUrl,
+        objectKey: signature.objectKey,
+        originalFileName: file.name,
+        contentType: file.type || undefined,
+        fileSize: file.size,
+      }
+
+      if (mediaType === 'Image') {
+        nextValues.thumbnailUrl = mediaUrl
+      }
+
+      editorForm.setFieldsValue(nextValues)
+      message.success(t('posAdmin.advertisements.uploadSuccess'))
+    } catch (error) {
+      console.error(t('posAdmin.advertisements.uploadFailed'), error)
+      message.error(t('posAdmin.advertisements.uploadFailed'))
+    } finally {
+      setUploading(false)
+    }
+  }
+
+  const handleSave = async () => {
+    try {
+      const values = await editorForm.validateFields()
+
+      if (!values.mediaUrl) {
+        message.error(t('posAdmin.advertisements.mediaRequired'))
+        return
+      }
+
+      if (values.effectiveEnd.isBefore(values.effectiveStart)) {
+        message.error(t('posAdmin.advertisements.invalidEffectiveRange'))
+        return
+      }
+
+      setEditorSaving(true)
+      const payload = buildAdvertisementUpsertPayload(values)
+
+      if (editingId) {
+        await updateAdvertisement(editingId, payload)
+      } else {
+        await createAdvertisement(payload)
+      }
+
+      message.success(t('message.saveSuccess'))
+      closeEditor()
+      await loadData()
+    } catch (error) {
+      if (
+        typeof error === 'object' &&
+        error !== null &&
+        'errorFields' in error &&
+        Array.isArray((error as { errorFields?: unknown[] }).errorFields)
+      ) {
+        return
+      }
+      console.error(t('posAdmin.advertisements.saveFailed'), error)
+      message.error(t('posAdmin.advertisements.saveFailed'))
+    } finally {
+      setEditorSaving(false)
+    }
+  }
+
+  const handleDelete = async (id: string) => {
+    try {
+      await deleteAdvertisement(id)
+      message.success(t('message.deleteSuccess'))
+      await loadData()
+    } catch (error) {
+      console.error(t('posAdmin.advertisements.deleteFailed'), error)
+      message.error(t('posAdmin.advertisements.deleteFailed'))
+    }
+  }
+
+  const handleToggleEnable = async (record: AdvertisementRow, enable: boolean) => {
+    try {
+      setTogglingId(record.id)
+      await enableAdvertisement(record.id, enable)
+      message.success(t('posAdmin.advertisements.toggleSuccess'))
+      await loadData()
+    } catch (error) {
+      console.error(t('posAdmin.advertisements.toggleFailed'), error)
+      message.error(t('posAdmin.advertisements.toggleFailed'))
+    } finally {
+      setTogglingId(null)
+    }
+  }
+
+  const columns: ColumnsType<AdvertisementRow> = [
+    {
+      title: t('posAdmin.advertisements.preview'),
+      dataIndex: 'mediaUrl',
+      key: 'preview',
+      width: 120,
+      render: (_, record) => renderMediaThumb(record),
+    },
+    {
+      title: t('posAdmin.advertisements.title'),
+      dataIndex: 'title',
+      key: 'title',
+      sorter: true,
+      width: 220,
+      render: (value: string, record) => (
+        <Space direction="vertical" size={0}>
+          <Typography.Text strong>{value}</Typography.Text>
+          {record.description ? (
+            <Typography.Text type="secondary" ellipsis={{ tooltip: record.description }}>
+              {record.description}
+            </Typography.Text>
+          ) : null}
+        </Space>
+      ),
+    },
+    {
+      title: t('posAdmin.advertisements.mediaType'),
+      dataIndex: 'mediaType',
+      key: 'mediaType',
+      width: 120,
+      render: (value: AdvertisementMediaType) => (
+        <Tag color={value === 'Video' ? 'purple' : 'blue'}>
+          {value === 'Video'
+            ? t('posAdmin.advertisements.mediaTypes.video')
+            : t('posAdmin.advertisements.mediaTypes.image')}
+        </Tag>
+      ),
+    },
+    {
+      title: t('posAdmin.advertisements.sortOrder'),
+      dataIndex: 'sortOrder',
+      key: 'sortOrder',
+      sorter: true,
+      width: 110,
+    },
+    {
+      title: t('posAdmin.advertisements.stores'),
+      dataIndex: 'stores',
+      key: 'stores',
+      width: 240,
+      render: (stores: { storeCode: string }[]) => renderStoreTags(stores),
+    },
+    {
+      title: t('posAdmin.advertisements.effectiveRange'),
+      key: 'effectiveRange',
+      width: 220,
+      render: (_, record) => (
+        <Space direction="vertical" size={0}>
+          <Typography.Text>{formatDateTime(record.effectiveStart)}</Typography.Text>
+          <Typography.Text type="secondary">{formatDateTime(record.effectiveEnd)}</Typography.Text>
+        </Space>
+      ),
+    },
+    {
+      title: t('posAdmin.advertisements.enabled'),
+      dataIndex: 'isEnabled',
+      key: 'isEnabled',
+      width: 110,
+      render: (value: boolean, record) => (
+        <Switch
+          checked={value}
+          disabled={!access.canEditAdvertisements}
+          loading={togglingId === record.id}
+          onChange={(checked) => void handleToggleEnable(record, checked)}
+        />
+      ),
+    },
+    {
+      title: t('column.action'),
+      key: 'action',
+      width: 220,
+      fixed: 'right',
+      render: (_, record) => (
+        <Space size="small" wrap>
+          <Tooltip title={t('posAdmin.advertisements.preview')}>
+            <Button
+              icon={<EyeOutlined />}
+              onClick={() => {
+                setPreviewRecord(record)
+                setPreviewOpen(true)
+              }}
+            />
+          </Tooltip>
+          <Button onClick={() => void openEdit(record.id)} disabled={!access.canEditAdvertisements}>
+            {t('common.edit')}
+          </Button>
+          <Popconfirm
+            title={t('posAdmin.advertisements.confirmDelete')}
+            okText={t('common.delete')}
+            cancelText={t('common.cancel')}
+            okButtonProps={{ danger: true }}
+            onConfirm={() => void handleDelete(record.id)}
+            disabled={!access.canEditAdvertisements}
+          >
+            <Button danger icon={<DeleteOutlined />} disabled={!access.canEditAdvertisements}>
+              {t('common.delete')}
+            </Button>
+          </Popconfirm>
+        </Space>
+      ),
+    },
+  ]
+
+  return (
+    <PageContainer
+      title={t('posAdmin.advertisements.title')}
+      subtitle={t('posAdmin.advertisements.subtitle')}
+      extra={
+        <Button
+          type="primary"
+          icon={<PlusOutlined />}
+          disabled={!access.canEditAdvertisements}
+          onClick={openCreate}
+        >
+          {t('posAdmin.advertisements.create')}
+        </Button>
+      }
+    >
+      <Card>
+        <Form<QueryFormValues> form={queryForm} layout="inline" onFinish={triggerSearch}>
+          <Form.Item name="keyword" label={t('posAdmin.advertisements.keyword')}>
+            <Input
+              allowClear
+              placeholder={t('posAdmin.advertisements.keywordPlaceholder')}
+              style={{ width: 220 }}
+            />
+          </Form.Item>
+          <Form.Item name="storeCode" label={t('common.store')}>
+            <Select
+              allowClear
+              showSearch
+              optionFilterProp="label"
+              options={storeOptions}
+              style={{ width: 180 }}
+            />
+          </Form.Item>
+          <Form.Item name="mediaType" label={t('posAdmin.advertisements.mediaType')}>
+            <Select allowClear options={mediaTypeOptions} style={{ width: 140 }} />
+          </Form.Item>
+          <Form.Item name="isEnabled" label={t('posAdmin.advertisements.enabled')}>
+            <Select
+              allowClear
+              style={{ width: 140 }}
+              options={[
+                { label: t('posAdmin.advertisements.enabledOptions.enabled'), value: true },
+                { label: t('posAdmin.advertisements.enabledOptions.disabled'), value: false },
+              ]}
+            />
+          </Form.Item>
+          <Form.Item name="effectiveRange" label={t('posAdmin.advertisements.effectiveRange')}>
+            <DatePicker.RangePicker showTime />
+          </Form.Item>
+          <Form.Item>
+            <Space>
+              <Button type="primary" htmlType="submit">
+                {t('common.query')}
+              </Button>
+              <Button
+                onClick={() => {
+                  queryForm.resetFields()
+                  triggerSearch()
+                }}
+              >
+                {t('common.reset')}
+              </Button>
+            </Space>
+          </Form.Item>
+        </Form>
+      </Card>
+
+      <Card style={{ marginTop: 16 }}>
+        <Table<AdvertisementRow>
+          rowKey="key"
+          loading={loading}
+          dataSource={data}
+          columns={columns}
+          scroll={{ x: 1380 }}
+          pagination={{
+            total,
+            current: page,
+            pageSize,
+            showSizeChanger: true,
+            pageSizeOptions: ['10', '20', '50', '100'],
+          }}
+          onChange={(pagination, _filters, sorter) => {
+            const singleSorter = Array.isArray(sorter) ? sorter[0] : sorter
+            setPage(pagination.current ?? 1)
+            setPageSize(pagination.pageSize ?? 20)
+            setSortField(
+              singleSorter?.field ? String(singleSorter.field) : undefined,
+            )
+            setSortOrder(singleSorter?.order ?? undefined)
+          }}
+        />
+      </Card>
+
+      <Modal
+        open={editorOpen}
+        title={editingId ? t('posAdmin.advertisements.edit') : t('posAdmin.advertisements.create')}
+        onCancel={closeEditor}
+        onOk={() => void handleSave()}
+        width={860}
+        okButtonProps={{ disabled: !access.canEditAdvertisements, loading: editorSaving }}
+        destroyOnClose
+      >
+        <Form<AdvertisementFormValues> form={editorForm} layout="vertical" disabled={!access.canEditAdvertisements}>
+          <Space style={{ width: '100%' }} wrap>
+            <Form.Item
+              name="title"
+              label={t('posAdmin.advertisements.title')}
+              rules={[{ required: true, message: t('posAdmin.advertisements.titleRequired') }]}
+              style={{ minWidth: 260, flex: 1 }}
+            >
+              <Input maxLength={120} />
+            </Form.Item>
+            <Form.Item name="mediaType" label={t('posAdmin.advertisements.mediaType')} rules={[{ required: true }]}>
+              <Select options={mediaTypeOptions} style={{ width: 160 }} />
+            </Form.Item>
+            <Form.Item name="sortOrder" label={t('posAdmin.advertisements.sortOrder')}>
+              <InputNumber style={{ width: 140 }} />
+            </Form.Item>
+            <Form.Item name="isEnabled" label={t('posAdmin.advertisements.enabled')} valuePropName="checked">
+              <Switch />
+            </Form.Item>
+          </Space>
+
+          <Form.Item name="description" label={t('posAdmin.advertisements.description')}>
+            <Input.TextArea rows={3} maxLength={500} showCount />
+          </Form.Item>
+
+          <Space style={{ width: '100%' }} wrap align="start">
+            <Form.Item
+              name="effectiveStart"
+              label={t('posAdmin.advertisements.effectiveStart')}
+              rules={[{ required: true, message: t('posAdmin.advertisements.effectiveStartRequired') }]}
+            >
+              <DatePicker showTime style={{ width: 240 }} />
+            </Form.Item>
+            <Form.Item
+              name="effectiveEnd"
+              label={t('posAdmin.advertisements.effectiveEnd')}
+              rules={[{ required: true, message: t('posAdmin.advertisements.effectiveEndRequired') }]}
+            >
+              <DatePicker showTime style={{ width: 240 }} />
+            </Form.Item>
+          </Space>
+
+          <Form.Item
+            label={t('posAdmin.advertisements.stores')}
+            required
+          >
+            <Space direction="vertical" style={{ width: '100%' }} size={8}>
+              <Checkbox
+                checked={allStoresSelected}
+                onChange={(event) =>
+                  editorForm.setFieldsValue({
+                    stores: event.target.checked ? storeOptions.map((item) => item.value) : [],
+                  })
+                }
+              >
+                {t('posAdmin.advertisements.selectAllStores')}
+              </Checkbox>
+              <Form.Item
+                name="stores"
+                noStyle
+                rules={[{ required: true, message: t('posAdmin.advertisements.storesRequired') }]}
+              >
+                <Select
+                  mode="multiple"
+                  allowClear
+                  showSearch
+                  optionFilterProp="label"
+                  options={storeOptions}
+                  placeholder={t('posAdmin.advertisements.storesPlaceholder')}
+                />
+              </Form.Item>
+            </Space>
+          </Form.Item>
+
+          <Card
+            size="small"
+            title={t('posAdmin.advertisements.mediaSection')}
+            extra={
+              <Space>
+                <Button
+                  icon={<UploadOutlined />}
+                  loading={uploading}
+                  onClick={handleUploadClick}
+                  disabled={!access.canEditAdvertisements}
+                >
+                  {t('common.upload')}
+                </Button>
+                <Button
+                  icon={<EyeOutlined />}
+                  disabled={!currentMediaUrl}
+                  onClick={() => {
+                    setPreviewRecord({
+                      id: editingId || 'preview',
+                      title: editorForm.getFieldValue('title') || t('posAdmin.advertisements.preview'),
+                      description: editorForm.getFieldValue('description'),
+                      mediaType: currentMediaType || 'Image',
+                      mediaUrl: currentMediaUrl,
+                      thumbnailUrl: currentThumbnailUrl,
+                      objectKey: editorForm.getFieldValue('objectKey'),
+                      originalFileName: editorForm.getFieldValue('originalFileName'),
+                      contentType: editorForm.getFieldValue('contentType'),
+                      fileSize: editorForm.getFieldValue('fileSize'),
+                      effectiveStart: editorForm.getFieldValue('effectiveStart')?.toISOString?.() || '',
+                      effectiveEnd: editorForm.getFieldValue('effectiveEnd')?.toISOString?.() || '',
+                      isEnabled: editorForm.getFieldValue('isEnabled') ?? true,
+                      sortOrder: editorForm.getFieldValue('sortOrder') ?? 0,
+                      stores: (editorForm.getFieldValue('stores') || []).map((storeCode: string) => ({
+                        storeCode,
+                      })),
+                    })
+                    setPreviewOpen(true)
+                  }}
+                >
+                  {t('posAdmin.advertisements.preview')}
+                </Button>
+              </Space>
+            }
+          >
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*,video/*"
+              style={{ display: 'none' }}
+              onChange={(event) => void handleFileSelected(event)}
+            />
+
+            <Space direction="vertical" style={{ width: '100%' }} size={12}>
+              <Form.Item name="mediaUrl" label={t('posAdmin.advertisements.mediaUrl')} rules={[{ required: true, message: t('posAdmin.advertisements.mediaRequired') }]}>
+                <Input placeholder={t('posAdmin.advertisements.mediaUrlPlaceholder')} />
+              </Form.Item>
+              <Form.Item name="thumbnailUrl" label={t('posAdmin.advertisements.thumbnailUrl')}>
+                <Input placeholder={t('posAdmin.advertisements.thumbnailUrlPlaceholder')} />
+              </Form.Item>
+
+              <Space wrap size={[16, 8]}>
+                <Typography.Text type="secondary">
+                  {t('posAdmin.advertisements.originalFileName')}: {currentOriginalFileName || '--'}
+                </Typography.Text>
+                <Typography.Text type="secondary">
+                  {t('posAdmin.advertisements.contentType')}: {currentContentType || '--'}
+                </Typography.Text>
+                <Typography.Text type="secondary">
+                  {t('posAdmin.advertisements.fileSize')}: {formatFileSize(currentFileSize)}
+                </Typography.Text>
+              </Space>
+
+              <Form.Item name="objectKey" label={t('posAdmin.advertisements.objectKey')}>
+                <Input placeholder={t('posAdmin.advertisements.objectKeyPlaceholder')} />
+              </Form.Item>
+            </Space>
+          </Card>
+        </Form>
+      </Modal>
+
+      <Modal
+        open={previewOpen}
+        title={previewRecord?.title || t('posAdmin.advertisements.preview')}
+        footer={null}
+        onCancel={() => {
+          setPreviewOpen(false)
+          setPreviewRecord(null)
+        }}
+        width={760}
+      >
+        {previewRecord?.mediaType === 'Video' ? (
+          <video
+            src={previewRecord.mediaUrl}
+            poster={previewRecord.thumbnailUrl}
+            controls
+            style={{ width: '100%', maxHeight: 460, borderRadius: 8, background: '#000' }}
+          />
+        ) : (
+          <Image
+            src={previewRecord?.mediaUrl}
+            alt={previewRecord?.title}
+            width="100%"
+            style={{ borderRadius: 8 }}
+          />
+        )}
+        <Space direction="vertical" style={{ width: '100%', marginTop: 16 }}>
+          <Typography.Text>{previewRecord?.description || '--'}</Typography.Text>
+          <Typography.Text type="secondary">
+            {t('posAdmin.advertisements.mediaUrl')}: {previewRecord?.mediaUrl || '--'}
+          </Typography.Text>
+          <Typography.Text type="secondary">
+            {t('posAdmin.advertisements.thumbnailUrl')}: {previewRecord?.thumbnailUrl || '--'}
+          </Typography.Text>
+        </Space>
+      </Modal>
+    </PageContainer>
+  )
+}

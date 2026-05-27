@@ -16,6 +16,7 @@ import {
   KeyOutlined,
   MoneyCollectOutlined,
   NumberOutlined,
+  PictureOutlined,
   ReconciliationOutlined,
   ScheduleOutlined,
   SettingOutlined,
@@ -50,6 +51,7 @@ import PosAdminDeviceRegistrationPage from '../pages/PosAdmin/DeviceRegistration
 import PosAdminSupplierManagementPage from '../pages/PosAdmin/SupplierManagement'
 import PosAdminProductManagementPage from '../pages/PosAdmin/ProductManagement'
 import PosAdminStoreProductPricePage from '../pages/PosAdmin/StoreProductPrice'
+import PosAdminAdvertisementsPage from '../pages/PosAdmin/Advertisements'
 import LocalSupplierInvoicesPage from '../pages/PosAdmin/LocalSupplierInvoices'
 import LocalSupplierInvoiceDetailPage from '../pages/PosAdmin/LocalSupplierInvoiceDetailPage'
 import InvoiceEditPage from '../pages/PosAdmin/LocalSupplierInvoices/InvoiceEdit'
@@ -109,6 +111,7 @@ const iconMap = {
   TagsOutlined: <TagsOutlined />,
   MoneyCollectOutlined: <MoneyCollectOutlined />,
   KeyOutlined: <KeyOutlined />,
+  PictureOutlined: <PictureOutlined />,
   TrophyOutlined: <TrophyOutlined />,
   WalletOutlined: <WalletOutlined />,
 }
@@ -457,6 +460,16 @@ export const appRoutes: AppRouteItem[] = [
           accessKey: 'canManagePromotions',
         },
         element: <PosAdminPromotionsPage />,
+      },
+      {
+        path: '/pos-admin/advertisements',
+        meta: {
+          title: 'menu.advertisements',
+          icon: 'PictureOutlined',
+          keepAlive: true,
+          accessKey: 'canManageAdvertisements',
+        },
+        element: <PosAdminAdvertisementsPage />,
       },
       {
         path: '/pos-admin/schedule-attendance',

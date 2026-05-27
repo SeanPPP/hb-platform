@@ -73,6 +73,8 @@ export interface AccessControl {
   canEditPricing: boolean
   canManagePromotions: boolean
   canEditPromotions: boolean
+  canManageAdvertisements: boolean
+  canEditAdvertisements: boolean
   canViewAustralianSuppliers: boolean
   canEditAustralianSuppliers: boolean
   canManageDomesticSuppliers: boolean

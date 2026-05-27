@@ -470,6 +470,65 @@ assertEqual(
   'Super admin Web preview should show protected menus with their normal permission codes',
 )
 
+const advertisementViewerAccess = buildAccess(
+  createCurrentUser({
+    permissions: [P.Advertisements.View],
+  }),
+)
+const advertisementEditorOnlyAccess = buildAccess(
+  createCurrentUser({
+    permissions: [P.Advertisements.Edit],
+  }),
+)
+
+assertEqual(
+  advertisementViewerAccess.canManageAdvertisements,
+  true,
+  'Advertisements.View should unlock advertisement management page visibility',
+)
+
+assertEqual(
+  advertisementEditorOnlyAccess.canManageAdvertisements,
+  false,
+  'Advertisements.Edit alone should not unlock advertisement list visibility',
+)
+
+assertEqual(
+  advertisementViewerAccess.canEditAdvertisements,
+  false,
+  'Advertisements.View alone should not unlock advertisement editing',
+)
+
+const advertisementManageCodes = getAccessKeyPermissionCodes('canManageAdvertisements')
+
+assertEqual(
+  advertisementManageCodes.join(','),
+  P.Advertisements.View,
+  'Advertisement Web menu should document the view permission required by backend read APIs',
+)
+
+const advertisementPreview = buildWebRoleMenuPreview(
+  buildRolePreviewAccess({
+    roleGuid: 'advertisement-role',
+    roleName: 'AdvertisementRole',
+    isSuperAdmin: false,
+    implicitAllPermissions: false,
+    explicitPermissionCodes: [P.Advertisements.View],
+    effectivePermissionCodes: [P.Advertisements.View],
+  }),
+  translate,
+)
+
+const advertisementMenu = advertisementPreview
+  .find((node) => node.path === '/pos-admin')
+  ?.children?.find((node) => node.path === '/pos-admin/advertisements')
+
+assertEqual(
+  advertisementMenu?.permissionCodes.join(','),
+  P.Advertisements.View,
+  'Advertisements.View role preview should show the advertisement menu with backend read permission',
+)
+
 const legacyLocalInvoiceWebPreview = buildWebRoleMenuPreview(
   buildRolePreviewAccess({
     roleGuid: 'legacy-local-invoice-role',

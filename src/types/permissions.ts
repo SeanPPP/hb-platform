@@ -98,6 +98,10 @@ export const P = {
     View: 'Promotions.View',
     Edit: 'Promotions.Edit',
   },
+  Advertisements: {
+    View: 'Advertisements.View',
+    Edit: 'Advertisements.Edit',
+  },
   PricingStrategy: {
     View: 'PricingStrategy.View',
     Edit: 'PricingStrategy.Edit',

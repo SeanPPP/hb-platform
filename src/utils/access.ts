@@ -81,6 +81,8 @@ function createEmptyAccess(): AccessControl {
     canEditPricing: false,
     canManagePromotions: false,
     canEditPromotions: false,
+    canManageAdvertisements: false,
+    canEditAdvertisements: false,
     canViewAustralianSuppliers: false,
     canEditAustralianSuppliers: false,
     canManageDomesticSuppliers: false,
@@ -235,6 +237,10 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
   const canManagePromotions = isAdmin || hasPermission(P.Promotions.View)
   const canEditPromotions = isAdmin || hasPermission(P.Promotions.Edit)
 
+  // 广告
+  const canManageAdvertisements = isAdmin || hasPermission(P.Advertisements.View)
+  const canEditAdvertisements = isAdmin || hasPermission(P.Advertisements.Edit)
+
   // 澳洲供应商
   const canViewAustralianSuppliers = isAdmin || hasPermission(P.AustralianSuppliers.View)
   const canEditAustralianSuppliers = isAdmin || hasPermission(P.AustralianSuppliers.Edit)
@@ -333,6 +339,8 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
     canEditPricing,
     canManagePromotions,
     canEditPromotions,
+    canManageAdvertisements,
+    canEditAdvertisements,
     canViewAustralianSuppliers,
     canEditAustralianSuppliers,
     canManageDomesticSuppliers,
