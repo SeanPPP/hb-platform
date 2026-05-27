@@ -764,7 +764,7 @@ export default function AdvertisementsPage() {
 
             <Space direction="vertical" style={{ width: '100%' }} size={12}>
               <Form.Item name="mediaUrl" label={t('posAdmin.advertisements.mediaUrl')} rules={[{ required: true, message: t('posAdmin.advertisements.mediaRequired') }]}>
-                <Input placeholder={t('posAdmin.advertisements.mediaUrlPlaceholder')} />
+                <Input disabled placeholder={t('posAdmin.advertisements.mediaUrlPlaceholder')} />
               </Form.Item>
               <Form.Item name="thumbnailUrl" label={t('posAdmin.advertisements.thumbnailUrl')}>
                 <Input placeholder={t('posAdmin.advertisements.thumbnailUrlPlaceholder')} />
@@ -783,7 +783,7 @@ export default function AdvertisementsPage() {
               </Space>
 
               <Form.Item name="objectKey" label={t('posAdmin.advertisements.objectKey')}>
-                <Input placeholder={t('posAdmin.advertisements.objectKeyPlaceholder')} />
+                <Input disabled placeholder={t('posAdmin.advertisements.objectKeyPlaceholder')} />
               </Form.Item>
             </Space>
           </Card>
