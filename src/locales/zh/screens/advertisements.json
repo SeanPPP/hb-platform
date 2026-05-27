@@ -80,7 +80,9 @@
     "title": "请输入标题。",
     "mediaUrl": "请先上传或填写素材地址。",
     "effectiveStart": "请输入生效开始时间。",
+    "effectiveStartInvalid": "请输入有效的生效开始时间。",
     "effectiveEnd": "请输入生效结束时间。",
+    "effectiveEndInvalid": "请输入有效的生效结束时间。",
     "effectiveEndOrder": "结束时间必须晚于开始时间。",
     "storeCodes": "请至少选择一个分店。"
   },

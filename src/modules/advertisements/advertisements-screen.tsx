@@ -45,6 +45,7 @@ import type {
   AdvertisementMediaType,
   AdvertisementUpsertPayload,
 } from "@/modules/advertisements/types";
+import { getDeviceBoundStoreCode } from "@/modules/shop/device-bound-store-filter";
 import { useStores } from "@/modules/shop/use-stores";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 import { resolveLocaleTag } from "@/shared/i18n/types";
@@ -154,11 +155,15 @@ function validateDraft(draft: AdvertisementDraft) {
   if (draft.storeCodes.length === 0) {
     errors.storeCodes = "storeCodes";
   }
-  if (
-    draft.effectiveStart.trim() &&
-    draft.effectiveEnd.trim() &&
-    new Date(draft.effectiveStart).getTime() > new Date(draft.effectiveEnd).getTime()
-  ) {
+  const startTime = new Date(draft.effectiveStart).getTime();
+  const endTime = new Date(draft.effectiveEnd).getTime();
+  if (draft.effectiveStart.trim() && !Number.isFinite(startTime)) {
+    errors.effectiveStart = "effectiveStartInvalid";
+  }
+  if (draft.effectiveEnd.trim() && !Number.isFinite(endTime)) {
+    errors.effectiveEnd = "effectiveEndInvalid";
+  }
+  if (Number.isFinite(startTime) && Number.isFinite(endTime) && startTime > endTime) {
     errors.effectiveEnd = "effectiveEndOrder";
   }
   return errors;
@@ -196,7 +201,12 @@ export function AdvertisementsScreen() {
     () => access.managedStoreCodes()?.filter(Boolean) ?? [],
     [access]
   );
-  const { stores, isLoading: storesLoading } = useStores();
+  const {
+    stores,
+    selectedStoreCode,
+    isDeviceMode,
+    isLoading: storesLoading,
+  } = useStores();
   const [pageNumber, setPageNumber] = useState(1);
   const [filterTitle, setFilterTitle] = useState("");
   const [filterStoreCode, setFilterStoreCode] = useState("");
@@ -209,13 +219,15 @@ export function AdvertisementsScreen() {
   const [draft, setDraft] = useState<AdvertisementDraft>(createEmptyDraft);
   const [submitAttempted, setSubmitAttempted] = useState(false);
   const [snackbar, setSnackbar] = useState("");
+  const deviceBoundStoreCode = getDeviceBoundStoreCode({ isDeviceMode, selectedStoreCode });
+  const effectiveFilterStoreCode = deviceBoundStoreCode ?? filterStoreCode;
 
   const advertisementsQuery = useQuery({
     queryKey: [
       "advertisements",
       pageNumber,
       filterTitle,
-      filterStoreCode,
+      effectiveFilterStoreCode,
       filterMediaType,
       filterEnabled,
     ],
@@ -224,7 +236,7 @@ export function AdvertisementsScreen() {
         pageNumber,
         pageSize: PAGE_SIZE,
         title: filterTitle,
-        storeCode: filterStoreCode,
+        storeCode: effectiveFilterStoreCode,
         mediaType: filterMediaType === "all" ? undefined : filterMediaType,
         isEnabled:
           filterEnabled === "all"
@@ -232,6 +244,19 @@ export function AdvertisementsScreen() {
             : filterEnabled === "enabled",
       }),
   });
+
+  useEffect(() => {
+    if (!deviceBoundStoreCode) {
+      return;
+    }
+
+    setFilterStoreCode(deviceBoundStoreCode);
+    setDraft((current) =>
+      current.storeCodes.length === 1 && current.storeCodes[0] === deviceBoundStoreCode
+        ? current
+        : { ...current, storeCodes: [deviceBoundStoreCode] }
+    );
+  }, [deviceBoundStoreCode]);
 
   const detailQuery = useQuery({
     queryKey: ["advertisement-detail", editingId],
@@ -372,7 +397,8 @@ export function AdvertisementsScreen() {
   });
 
   const errors = useMemo(() => validateDraft(draft), [draft]);
-  const selectedFilterStore = stores.find((store) => store.storeCode === filterStoreCode) ?? null;
+  const selectedFilterStore =
+    stores.find((store) => store.storeCode === effectiveFilterStoreCode) ?? null;
   const selectedDraftStores = useMemo(
     () =>
       draft.storeCodes
@@ -402,7 +428,11 @@ export function AdvertisementsScreen() {
     setEditingId(null);
     setDraft({
       ...createEmptyDraft(),
-      storeCodes: managedStoreCodes.length > 0 ? managedStoreCodes : [],
+      storeCodes: deviceBoundStoreCode
+        ? [deviceBoundStoreCode]
+        : managedStoreCodes.length > 0
+          ? managedStoreCodes
+          : [],
     });
     setSubmitAttempted(false);
   }
@@ -420,6 +450,11 @@ export function AdvertisementsScreen() {
   }
 
   function toggleDraftStore(storeCode: string) {
+    if (deviceBoundStoreCode) {
+      setDraft((current) => ({ ...current, storeCodes: [deviceBoundStoreCode] }));
+      return;
+    }
+
     setDraft((current) => ({
       ...current,
       storeCodes: current.storeCodes.includes(storeCode)
@@ -429,6 +464,11 @@ export function AdvertisementsScreen() {
   }
 
   function toggleAllDraftStores() {
+    if (deviceBoundStoreCode) {
+      setDraft((current) => ({ ...current, storeCodes: [deviceBoundStoreCode] }));
+      return;
+    }
+
     setDraft((current) => ({
       ...current,
       storeCodes: allDraftStoresSelected
@@ -653,14 +693,14 @@ export function AdvertisementsScreen() {
       <StorePickerModal
         visible={selectedStorePicker === "filter"}
         stores={stores}
-        selectedStoreCode={filterStoreCode}
+        selectedStoreCode={effectiveFilterStoreCode}
         title={t("filters.store")}
         cancelLabel={t("common:actions.cancel")}
-        includeAllOption
+        includeAllOption={!deviceBoundStoreCode}
         allLabel={t("filters.storePlaceholder")}
         onDismiss={() => setSelectedStorePicker(null)}
         onSelectStore={(store) => {
-          setFilterStoreCode(store?.storeCode ?? "");
+          setFilterStoreCode(deviceBoundStoreCode ?? store?.storeCode ?? "");
           setPageNumber(1);
           setSelectedStorePicker(null);
         }}
@@ -745,7 +785,7 @@ export function AdvertisementsScreen() {
               mode="outlined"
               label={t("fields.mediaUrl")}
               value={draft.mediaUrl}
-              onChangeText={(value) => updateDraft("mediaUrl", value)}
+              disabled
             />
             <HelperText type="error" visible={submitAttempted && Boolean(errors.mediaUrl)}>
               {t("validation.mediaUrl")}
@@ -761,28 +801,28 @@ export function AdvertisementsScreen() {
               mode="outlined"
               label={t("fields.objectKey")}
               value={draft.objectKey}
-              onChangeText={(value) => updateDraft("objectKey", value)}
+              disabled
             />
             <TextInput
               mode="outlined"
               label={t("fields.originalFileName")}
               value={draft.originalFileName}
-              onChangeText={(value) => updateDraft("originalFileName", value)}
+              disabled
             />
             <View style={styles.filterRow}>
               <TextInput
                 mode="outlined"
                 label={t("fields.contentType")}
                 value={draft.contentType}
-                onChangeText={(value) => updateDraft("contentType", value)}
+                disabled
                 style={styles.flexField}
               />
               <TextInput
                 mode="outlined"
                 label={t("fields.fileSize")}
                 value={draft.fileSize}
-                onChangeText={(value) => updateDraft("fileSize", value)}
                 keyboardType="numeric"
+                disabled
                 style={styles.flexField}
               />
             </View>
@@ -795,7 +835,7 @@ export function AdvertisementsScreen() {
               onChangeText={(value) => updateDraft("effectiveStart", value)}
             />
             <HelperText type="error" visible={submitAttempted && Boolean(errors.effectiveStart)}>
-              {t("validation.effectiveStart")}
+              {t(errors.effectiveStart === "effectiveStartInvalid" ? "validation.effectiveStartInvalid" : "validation.effectiveStart")}
             </HelperText>
 
             <TextInput
@@ -806,7 +846,13 @@ export function AdvertisementsScreen() {
               onChangeText={(value) => updateDraft("effectiveEnd", value)}
             />
             <HelperText type="error" visible={submitAttempted && Boolean(errors.effectiveEnd)}>
-              {t(errors.effectiveEnd === "effectiveEndOrder" ? "validation.effectiveEndOrder" : "validation.effectiveEnd")}
+              {t(
+                errors.effectiveEnd === "effectiveEndOrder"
+                  ? "validation.effectiveEndOrder"
+                  : errors.effectiveEnd === "effectiveEndInvalid"
+                    ? "validation.effectiveEndInvalid"
+                    : "validation.effectiveEnd"
+              )}
             </HelperText>
 
             <TextInput

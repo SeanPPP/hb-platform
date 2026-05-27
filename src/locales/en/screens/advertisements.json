@@ -80,7 +80,9 @@
     "title": "Title is required.",
     "mediaUrl": "Media URL is required.",
     "effectiveStart": "Effective start is required.",
+    "effectiveStartInvalid": "Enter a valid effective start time.",
     "effectiveEnd": "Effective end is required.",
+    "effectiveEndInvalid": "Enter a valid effective end time.",
     "effectiveEndOrder": "Effective end must be after effective start.",
     "storeCodes": "Select at least one store."
   },
