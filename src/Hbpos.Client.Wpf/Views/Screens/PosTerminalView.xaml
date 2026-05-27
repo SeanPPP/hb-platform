@@ -1010,6 +1010,30 @@
                         <TextBlock Text="{Binding RecallOrderText}" Style="{StaticResource PosStitchTileLabelStyle}" />
                     </StackPanel>
                 </Button>
+                <Button Command="{Binding OpenHistoryCommand}" Style="{StaticResource PosStitchActionButtonStyle}">
+                    <StackPanel>
+                        <Border Style="{StaticResource PosStitchActionIconCircleStyle}">
+                            <materialDesign:PackIcon Kind="History" Width="18" Height="18" Foreground="{StaticResource PosPrimaryBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+                        <TextBlock Text="{Binding HistoryText}" Style="{StaticResource PosStitchTileLabelStyle}" />
+                    </StackPanel>
+                </Button>
+                <Button Command="{Binding OpenCustomerDisplayCommand}" Style="{StaticResource PosStitchActionButtonStyle}">
+                    <StackPanel>
+                        <Border Style="{StaticResource PosStitchActionIconCircleStyle}">
+                            <materialDesign:PackIcon Kind="Monitor" Width="18" Height="18" Foreground="{StaticResource PosPrimaryBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+                        <TextBlock Text="{Binding CustomerDisplayText}" Style="{StaticResource PosStitchTileLabelStyle}" />
+                    </StackPanel>
+                </Button>
+                <Button Command="{Binding OpenSettingsCommand}" Style="{StaticResource PosStitchActionButtonStyle}">
+                    <StackPanel>
+                        <Border Style="{StaticResource PosStitchActionIconCircleStyle}">
+                            <materialDesign:PackIcon Kind="Cog" Width="18" Height="18" Foreground="{StaticResource PosPrimaryBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+                        <TextBlock Text="{Binding SettingsText}" Style="{StaticResource PosStitchTileLabelStyle}" />
+                    </StackPanel>
+                </Button>
             </UniformGrid>
 
             <Border Grid.Row="1" Margin="12,4,12,10" Padding="12" Background="#CCFFFFFF" BorderBrush="#80FFFFFF" BorderThickness="1" CornerRadius="14">

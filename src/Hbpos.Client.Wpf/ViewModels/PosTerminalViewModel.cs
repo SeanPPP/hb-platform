@@ -32,6 +32,9 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
     private readonly Func<Task>? _onOpenSpecialProductsAsync;
     private readonly Func<Task>? _onHoldOrderAsync;
     private readonly Func<Task>? _onRecallOrderAsync;
+    private readonly Func<Task>? _onOpenHistoryAsync;
+    private readonly Func<Task>? _onOpenSettingsAsync;
+    private readonly Action? _onOpenCustomerDisplay;
     private readonly Func<Task>? _onReregisterDeviceAsync;
     private readonly ILocalizationService? _localization;
     private readonly IUserFeedbackService _userFeedbackService;
@@ -94,6 +97,9 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
         IPosTerminalWorkflowService? workflowService = null,
         Func<Task>? onHoldOrderAsync = null,
         Func<Task>? onRecallOrderAsync = null,
+        Func<Task>? onOpenHistoryAsync = null,
+        Func<Task>? onOpenSettingsAsync = null,
+        Action? onOpenCustomerDisplay = null,
         Action? onOpenReturns = null)
     {
         _priceIndex = priceIndex;
@@ -105,6 +111,9 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
         _onOpenSpecialProductsAsync = onOpenSpecialProductsAsync;
         _onHoldOrderAsync = onHoldOrderAsync;
         _onRecallOrderAsync = onRecallOrderAsync;
+        _onOpenHistoryAsync = onOpenHistoryAsync;
+        _onOpenSettingsAsync = onOpenSettingsAsync;
+        _onOpenCustomerDisplay = onOpenCustomerDisplay;
         _onReregisterDeviceAsync = onReregisterDeviceAsync;
         _localization = localization;
         _userFeedbackService = userFeedbackService ?? NoopUserFeedbackService.Instance;
@@ -143,6 +152,9 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
         OpenSpecialProductsCommand = new AsyncRelayCommand(OpenSpecialProductsAsync);
         HoldOrderCommand = new AsyncRelayCommand(HoldOrderAsync, () => !_cart.IsEmpty);
         RecallOrderCommand = new AsyncRelayCommand(RecallOrderAsync);
+        OpenHistoryCommand = new AsyncRelayCommand(OpenHistoryAsync);
+        OpenSettingsCommand = new AsyncRelayCommand(OpenSettingsAsync);
+        OpenCustomerDisplayCommand = new RelayCommand(OpenCustomerDisplay);
         SyncCommand = new AsyncRelayCommand(SyncAsync);
         ResetCatalogCommand = new AsyncRelayCommand(ResetCatalogAsync);
         ReregisterDeviceCommand = new AsyncRelayCommand(ReregisterDeviceAsync);
@@ -196,6 +208,12 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
 
     public IAsyncRelayCommand RecallOrderCommand { get; }
 
+    public IAsyncRelayCommand OpenHistoryCommand { get; }
+
+    public IAsyncRelayCommand OpenSettingsCommand { get; }
+
+    public IRelayCommand OpenCustomerDisplayCommand { get; }
+
     public IAsyncRelayCommand SyncCommand { get; }
 
     public IAsyncRelayCommand ResetCatalogCommand { get; }
@@ -223,6 +241,12 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
     public string HoldOrderText => T("pos.terminal.actions.holdOrder");
 
     public string RecallOrderText => T("pos.terminal.actions.recallOrder");
+
+    public string HistoryText => T("pos.terminal.actions.history");
+
+    public string SettingsText => T("pos.terminal.actions.settings");
+
+    public string CustomerDisplayText => T("pos.terminal.actions.customerDisplay");
 
     public string MemberText => T("pos.terminal.actions.member");
 
@@ -802,6 +826,27 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
         }
     }
 
+    private async Task OpenHistoryAsync()
+    {
+        if (_onOpenHistoryAsync is not null)
+        {
+            await _onOpenHistoryAsync();
+        }
+    }
+
+    private async Task OpenSettingsAsync()
+    {
+        if (_onOpenSettingsAsync is not null)
+        {
+            await _onOpenSettingsAsync();
+        }
+    }
+
+    private void OpenCustomerDisplay()
+    {
+        _onOpenCustomerDisplay?.Invoke();
+    }
+
     private async Task ReregisterDeviceAsync()
     {
         if (_onReregisterDeviceAsync is not null)
@@ -1033,6 +1078,9 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
         OnPropertyChanged(nameof(ClearCartText));
         OnPropertyChanged(nameof(HoldOrderText));
         OnPropertyChanged(nameof(RecallOrderText));
+        OnPropertyChanged(nameof(HistoryText));
+        OnPropertyChanged(nameof(SettingsText));
+        OnPropertyChanged(nameof(CustomerDisplayText));
         OnPropertyChanged(nameof(MemberText));
         OnPropertyChanged(nameof(SyncText));
         OnPropertyChanged(nameof(CatalogResetText));

@@ -332,5 +332,23 @@
   <data name="payment.status.retryVoucherUpload" xml:space="preserve"><value>Retry the voucher order upload before changing tenders.</value></data>
   <data name="payment.status.uploadFailed" xml:space="preserve"><value>Voucher order upload failed. Press Complete Payment to retry.</value></data>
   <data name="payment.status.completed" xml:space="preserve"><value>Payment completed.</value></data>
+  <data name="shell.backToPos" xml:space="preserve"><value>Back to POS</value></data>
+  <data name="shell.page.loading" xml:space="preserve"><value>Loading</value></data>
+  <data name="shell.page.pos" xml:space="preserve"><value>POS</value></data>
+  <data name="shell.page.payment" xml:space="preserve"><value>Payment</value></data>
+  <data name="shell.page.specialProducts" xml:space="preserve"><value>Special Items</value></data>
+  <data name="shell.page.returns" xml:space="preserve"><value>Returns</value></data>
+  <data name="shell.page.paymentSuccess" xml:space="preserve"><value>Payment Success</value></data>
+  <data name="shell.page.history" xml:space="preserve"><value>History</value></data>
+  <data name="shell.page.settings" xml:space="preserve"><value>Settings</value></data>
+  <data name="shell.page.customerDisplay" xml:space="preserve"><value>Customer Display</value></data>
+  <data name="shell.page.deviceRegistration" xml:space="preserve"><value>Device Registration</value></data>
+  <data name="pos.terminal.actions.history" xml:space="preserve"><value>History</value></data>
+  <data name="pos.terminal.actions.settings" xml:space="preserve"><value>Settings</value></data>
+  <data name="pos.terminal.actions.customerDisplay" xml:space="preserve"><value>Customer Display</value></data>
+  <data name="history.source.local" xml:space="preserve"><value>Local</value></data>
+  <data name="history.source.online" xml:space="preserve"><value>Online</value></data>
+  <data name="history.payment.suspended" xml:space="preserve"><value>Suspended</value></data>
+  <data name="history.status.pendingRecall" xml:space="preserve"><value>Pending recall</value></data>
   <data name="suspended.recall" xml:space="preserve"><value>Recall Suspended</value></data>
 </root>

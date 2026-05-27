@@ -326,6 +326,8 @@ public sealed partial class MainViewModel : ObservableObject
         !IsCashPaymentScreenActive &&
         !IsSpecialProductsScreenActive;
 
+    public string ActivePageTitleText => _localization.T(GetActivePageTitleKey());
+
     public ObservableCollection<SyncQueueListItem> SyncCenterOrders { get; } = [];
 
     public IRelayCommand ShowPosCommand { get; }
@@ -468,6 +470,9 @@ public sealed partial class MainViewModel : ObservableObject
             userFeedbackService: _userFeedbackService,
             onHoldOrderAsync: SuspendCurrentOrderAsync,
             onRecallOrderAsync: ShowSuspendedHistoryAsync,
+            onOpenHistoryAsync: ShowHistoryAsync,
+            onOpenSettingsAsync: ShowSettingsAsync,
+            onOpenCustomerDisplay: ShowCustomerDisplay,
             syncCatalogAsync: SyncCatalogAndReloadAsync,
             resetCatalogAsync: ResetCatalogAndReloadAsync,
             refreshOnlineAsync: RefreshOnlineStateAsync,
@@ -646,6 +651,7 @@ public sealed partial class MainViewModel : ObservableObject
         OnPropertyChanged(nameof(IsCashPaymentScreenActive));
         OnPropertyChanged(nameof(IsSpecialProductsScreenActive));
         OnPropertyChanged(nameof(IsFallbackScreenActive));
+        OnPropertyChanged(nameof(ActivePageTitleText));
     }
 
     partial void OnCustomerDisplayWindowModeChanged(CustomerDisplayWindowMode value)
@@ -702,10 +708,61 @@ public sealed partial class MainViewModel : ObservableObject
             _localization.CurrentCulture,
             _localization.T("shell.sync.detailTitle"),
             SyncCenterOrders.Count);
+        OnPropertyChanged(nameof(ActivePageTitleText));
         if (resetStatus || string.IsNullOrWhiteSpace(StatusMessage))
         {
             StatusMessage = _localization.T("StatusOfflineReady");
         }
+    }
+
+    private string GetActivePageTitleKey()
+    {
+        if (ReferenceEquals(CurrentScreen, PosTerminal))
+        {
+            return "shell.page.pos";
+        }
+
+        if (ReferenceEquals(CurrentScreen, CashPayment))
+        {
+            return "shell.page.payment";
+        }
+
+        if (ReferenceEquals(CurrentScreen, SpecialProducts))
+        {
+            return "shell.page.specialProducts";
+        }
+
+        if (ReferenceEquals(CurrentScreen, ReceiptReturns))
+        {
+            return "shell.page.returns";
+        }
+
+        if (ReferenceEquals(CurrentScreen, PaymentSuccess))
+        {
+            return "shell.page.paymentSuccess";
+        }
+
+        if (ReferenceEquals(CurrentScreen, TransactionHistory))
+        {
+            return "shell.page.history";
+        }
+
+        if (ReferenceEquals(CurrentScreen, Settings))
+        {
+            return "shell.page.settings";
+        }
+
+        if (ReferenceEquals(CurrentScreen, CustomerDisplay))
+        {
+            return "shell.page.customerDisplay";
+        }
+
+        if (ReferenceEquals(CurrentScreen, DeviceRegistration))
+        {
+            return "shell.page.deviceRegistration";
+        }
+
+        return "shell.page.loading";
     }
 
     private async Task RefreshPendingSyncAsync()
@@ -1191,7 +1248,8 @@ public sealed partial class MainViewModel : ObservableObject
             {
                 await ResetCatalogAndReloadAsync(cancellationToken);
             },
-            BeginDeviceReregistrationAsync);
+            BeginDeviceReregistrationAsync,
+            ShowPos);
         await Settings.LoadAsync();
         CurrentScreen = Settings;
     }
@@ -1232,7 +1290,8 @@ public sealed partial class MainViewModel : ObservableObject
             _remoteOrderHistoryService,
             Session,
             OnSuspendedOrderRecalledAsync,
-            ShowPos);
+            ShowPos,
+            _localization);
     }
 
     private Task OnSuspendedOrderRecalledAsync()

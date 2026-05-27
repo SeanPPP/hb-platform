@@ -62,6 +62,30 @@ public sealed class LocalizationAndSettingsTests
     }
 
     [Fact]
+    public void Localization_has_navigation_and_history_text()
+    {
+        var localization = new LocalizationService();
+
+        Assert.Equal("Back to POS", localization.T("shell.backToPos"));
+        Assert.Equal("History", localization.T("shell.page.history"));
+        Assert.Equal("Local", localization.T("history.source.local"));
+        Assert.Equal("Pending recall", localization.T("history.status.pendingRecall"));
+        Assert.Equal("History", localization.T("pos.terminal.actions.history"));
+        Assert.Equal("Settings", localization.T("pos.terminal.actions.settings"));
+        Assert.Equal("Customer Display", localization.T("pos.terminal.actions.customerDisplay"));
+
+        localization.SetCulture("zh-CN");
+
+        Assert.Equal("\u8FD4\u56DE\u6536\u94F6", localization.T("shell.backToPos"));
+        Assert.Equal("\u5386\u53F2", localization.T("shell.page.history"));
+        Assert.Equal("\u672C\u5730", localization.T("history.source.local"));
+        Assert.Equal("\u5F85\u53D6\u56DE", localization.T("history.status.pendingRecall"));
+        Assert.Equal("\u5386\u53F2", localization.T("pos.terminal.actions.history"));
+        Assert.Equal("\u8BBE\u7F6E", localization.T("pos.terminal.actions.settings"));
+        Assert.Equal("\u5BA2\u663E", localization.T("pos.terminal.actions.customerDisplay"));
+    }
+
+    [Fact]
     public void Localization_returns_placeholder_for_missing_key()
     {
         var localization = new LocalizationService();

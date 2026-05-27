@@ -11,6 +11,50 @@ namespace Hbpos.Client.Tests;
 public sealed class PosTerminalCashPaymentViewModelTests
 {
     [Fact]
+    public async Task Pos_terminal_open_history_command_invokes_navigation_callback()
+    {
+        var opened = false;
+        var viewModel = new PosTerminalViewModel(
+            new LocalSellableItemIndex(),
+            new PosCartService(),
+            Session,
+            onOpenPayment: null,
+            onOpenHistoryAsync: () =>
+            {
+                opened = true;
+                return Task.CompletedTask;
+            });
+
+        await viewModel.OpenHistoryCommand.ExecuteAsync(null);
+
+        Assert.True(opened);
+    }
+
+    [Fact]
+    public async Task Pos_terminal_page_navigation_commands_invoke_callbacks()
+    {
+        var settingsOpened = false;
+        var customerDisplayOpened = false;
+        var viewModel = new PosTerminalViewModel(
+            new LocalSellableItemIndex(),
+            new PosCartService(),
+            Session,
+            onOpenPayment: null,
+            onOpenSettingsAsync: () =>
+            {
+                settingsOpened = true;
+                return Task.CompletedTask;
+            },
+            onOpenCustomerDisplay: () => customerDisplayOpened = true);
+
+        await viewModel.OpenSettingsCommand.ExecuteAsync(null);
+        viewModel.OpenCustomerDisplayCommand.Execute(null);
+
+        Assert.True(settingsOpened);
+        Assert.True(customerDisplayOpened);
+    }
+
+    [Fact]
     public void Pos_terminal_scans_exact_barcode_into_cart()
     {
         var cart = new PosCartService();

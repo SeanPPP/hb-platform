@@ -18,6 +18,26 @@ namespace Hbpos.Client.Tests;
 public sealed class MainViewModelScannerTests
 {
     [Fact]
+    public async Task Active_page_title_tracks_navigation_and_culture()
+    {
+        var viewModel = CreateAuthorizedMainViewModel(new FakeCustomerDisplayWindowService());
+
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+
+        Assert.Equal("POS", viewModel.ActivePageTitleText);
+
+        viewModel.ShowReturnsCommand.Execute(null);
+        Assert.Equal("Returns", viewModel.ActivePageTitleText);
+
+        await viewModel.ShowHistoryCommand.ExecuteAsync(null);
+        Assert.Equal("History", viewModel.ActivePageTitleText);
+
+        await viewModel.ToggleCultureCommand.ExecuteAsync(null);
+
+        Assert.Equal("\u5386\u53F2", viewModel.ActivePageTitleText);
+    }
+
+    [Fact]
     public async Task Reset_scanner_binding_command_resets_scanner_and_updates_status()
     {
         var scanner = new FakeRawScannerService();

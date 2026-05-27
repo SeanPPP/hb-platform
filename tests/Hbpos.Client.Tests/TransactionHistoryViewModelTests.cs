@@ -1,4 +1,5 @@
 using Hbpos.Client.Wpf.Models;
+using Hbpos.Client.Wpf.Localization;
 using Hbpos.Client.Wpf.Services;
 using Hbpos.Client.Wpf.ViewModels;
 using Hbpos.Contracts.Orders;
@@ -144,8 +145,8 @@ public sealed class TransactionHistoryViewModelTests
                 Assert.Equal(suspendedOrderGuid, order.OrderGuid);
                 Assert.True(order.IsSuspendedOrder);
                 Assert.True(order.CanRecall);
-                Assert.Equal("挂单", order.PaymentSummary);
-                Assert.Equal("待取回", order.StatusLabel);
+                Assert.Equal("Suspended", order.PaymentSummary);
+                Assert.Equal("Pending recall", order.StatusLabel);
             },
             order =>
             {
@@ -337,6 +338,63 @@ public sealed class TransactionHistoryViewModelTests
         viewModel.ReturnToPosCommand.Execute(null);
 
         Assert.True(returned);
+    }
+
+    [Fact]
+    public async Task Suspended_order_labels_follow_localization_culture()
+    {
+        var suspendedOrderGuid = Guid.NewGuid();
+        var localization = new LocalizationService();
+        var suspendedOrders = new CapturingSuspendedOrderService
+        {
+            PendingOrders =
+            [
+                new SuspendedOrderSummary(
+                    suspendedOrderGuid,
+                    "S001",
+                    "POS-01",
+                    "Alice",
+                    DateTimeOffset.Now,
+                    10m,
+                    0m,
+                    10m,
+                    1,
+                    SuspendedOrderStatus.Pending)
+            ]
+        };
+        var viewModel = new TransactionHistoryViewModel(
+            new CapturingReceiptQueryService(),
+            suspendedOrders,
+            new CapturingRemoteOrderHistoryService(),
+            CreateSession(),
+            localization: localization);
+
+        await viewModel.LoadAsync();
+        Assert.Equal("Suspended", viewModel.SelectedOrder?.PaymentSummary);
+        Assert.Equal("Local", viewModel.SourceOptions[0].Label);
+
+        localization.SetCulture("zh-CN");
+
+        Assert.Equal("\u6302\u5355", viewModel.SelectedOrder?.PaymentSummary);
+        Assert.Equal("\u5F85\u53D6\u56DE", viewModel.SelectedOrder?.StatusLabel);
+        Assert.Equal("\u672C\u5730", viewModel.SourceOptions[0].Label);
+    }
+
+    [Fact]
+    public void All_terminal_filter_text_uses_current_culture_when_selected()
+    {
+        var localization = new LocalizationService();
+        var viewModel = new TransactionHistoryViewModel(
+            new CapturingReceiptQueryService(),
+            new CapturingSuspendedOrderService(),
+            new CapturingRemoteOrderHistoryService(),
+            CreateSession(deviceCode: "POS-01"),
+            localization: localization);
+        localization.SetCulture("zh-CN");
+
+        viewModel.SelectedTerminalOption = viewModel.TerminalOptions.Single(option => option.DeviceCode is null);
+
+        Assert.Equal("\u5168\u90E8\u7EC8\u7AEF", viewModel.TerminalFilterText);
     }
 
     private static PosSessionState CreateSession(

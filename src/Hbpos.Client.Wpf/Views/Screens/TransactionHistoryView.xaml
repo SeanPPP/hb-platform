@@ -35,24 +35,22 @@
             <Border Grid.Row="0" Background="{StaticResource PosScreenBackgroundBrush}" Padding="24,20">
                 <StackPanel>
                     <DockPanel Margin="0,0,0,16">
-                        <Button DockPanel.Dock="Right"
+                        <Button DockPanel.Dock="Left"
                                 Command="{Binding ReturnToPosCommand}"
                                 MinWidth="132"
                                 Height="44"
-                                Margin="12,0,0,0"
+                                Margin="0,0,12,0"
                                 Style="{StaticResource PosSecondaryButtonStyle}">
                             <StackPanel Orientation="Horizontal">
                                 <materialDesign:PackIcon Kind="ArrowLeft" Width="16" Height="16" Margin="0,0,6,0" />
-                                <TextBlock Text="{loc:Loc shell.pos}" />
+                                <TextBlock Text="{loc:Loc shell.backToPos}" />
                             </StackPanel>
                         </Button>
-                        <TextBlock Text="{loc:Loc TransactionHistory}" FontSize="22" FontWeight="Black" Foreground="{StaticResource PosTextBrush}" VerticalAlignment="Center" />
                     </DockPanel>
 
                     <Grid>
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="1.05*" />
-                            <ColumnDefinition Width="*" />
                             <ColumnDefinition Width="*" />
                             <ColumnDefinition Width="*" />
                             <ColumnDefinition Width="1.4*" />
@@ -68,12 +66,12 @@
                                     CornerRadius="8"
                                     Background="White">
                                 <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                                    <RadioButton Content="本地"
+                                    <RadioButton Content="{loc:Loc history.source.local}"
                                                  GroupName="HistorySource"
                                                  IsChecked="{Binding IsLocalSourceSelected, Mode=TwoWay}"
                                                  VerticalAlignment="Center"
                                                  Margin="0,0,20,0" />
-                                    <RadioButton Content="在线"
+                                    <RadioButton Content="{loc:Loc history.source.online}"
                                                  GroupName="HistorySource"
                                                  IsChecked="{Binding IsOnlineSourceSelected, Mode=TwoWay}"
                                                  VerticalAlignment="Center" />
@@ -100,11 +98,6 @@
                         </StackPanel>
 
                         <StackPanel Grid.Column="2" Margin="0,0,12,0">
-                            <TextBlock Text="{loc:Loc Store}" Style="{StaticResource HistoryFilterLabel}" />
-                            <TextBox Text="{Binding StoreFilterText}" IsReadOnly="True" Height="52" FontSize="16" Style="{StaticResource PosSearchTextBoxStyle}" />
-                        </StackPanel>
-
-                        <StackPanel Grid.Column="3" Margin="0,0,12,0">
                             <TextBlock Text="{loc:Loc Terminal}" Style="{StaticResource HistoryFilterLabel}" />
                             <ComboBox ItemsSource="{Binding TerminalOptions}"
                                       SelectedItem="{Binding SelectedTerminalOption, Mode=TwoWay}"
@@ -113,7 +106,7 @@
                                       FontSize="16" />
                         </StackPanel>
 
-                        <StackPanel Grid.Column="4" Margin="0,0,12,0">
+                        <StackPanel Grid.Column="3" Margin="0,0,12,0">
                             <TextBlock Text="{loc:Loc history.searchLabel}" Style="{StaticResource HistoryFilterLabel}" />
                             <TextBox Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged}"
                                      materialDesign:HintAssist.Hint="{Binding SearchHintText}"
@@ -122,7 +115,7 @@
                                      Style="{StaticResource PosSearchTextBoxStyle}" />
                         </StackPanel>
 
-                        <Button Grid.Column="5"
+                        <Button Grid.Column="4"
                                 Command="{Binding LoadCommand}"
                                 MinWidth="116"
                                 Height="52"

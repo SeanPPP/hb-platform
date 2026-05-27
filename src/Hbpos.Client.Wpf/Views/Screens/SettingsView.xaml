@@ -60,16 +60,21 @@
                 BorderBrush="#FFE1E5EC"
                 BorderThickness="0,0,0,1"
                 Padding="24,18">
-            <StackPanel>
-                <TextBlock Text="{Binding ScreenTitleText}"
-                           FontSize="24"
-                           FontWeight="Black"
-                           Foreground="{StaticResource PosTextBrush}" />
+            <DockPanel>
+                <Button DockPanel.Dock="Left"
+                        Command="{Binding BackCommand}"
+                        Style="{StaticResource PosSecondaryButtonStyle}"
+                        Margin="0,0,16,0">
+                    <StackPanel Orientation="Horizontal">
+                        <materialDesign:PackIcon Kind="ArrowLeft" Width="18" Height="18" Margin="0,0,8,0" />
+                        <TextBlock Text="{loc:Loc shell.backToPos}" />
+                    </StackPanel>
+                </Button>
                 <TextBlock Text="{Binding SettingsSubtitleText}"
                            FontSize="12"
                            Foreground="{StaticResource PosMutedForegroundBrush}"
-                           Margin="0,4,0,0" />
-            </StackPanel>
+                           VerticalAlignment="Center" />
+            </DockPanel>
         </Border>
 
         <Grid Grid.Row="1" Margin="24">

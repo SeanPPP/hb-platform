@@ -61,10 +61,12 @@
                     </StackPanel>
                 </Button>
 
-                <StackPanel Grid.Column="1" VerticalAlignment="Center">
-                    <TextBlock Text="{Binding TitleText}" FontSize="24" FontWeight="Black" Foreground="{StaticResource PosTextBrush}" />
-                    <TextBlock Text="{Binding SubtitleText}" FontSize="12" Foreground="{StaticResource PosMutedForegroundBrush}" Margin="0,4,0,0" />
-                </StackPanel>
+                <TextBlock Grid.Column="1"
+                           Text="{Binding SubtitleText}"
+                           FontSize="12"
+                           Foreground="{StaticResource PosMutedForegroundBrush}"
+                           VerticalAlignment="Center"
+                           TextWrapping="Wrap" />
 
                 <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
                     <Border Background="#FFE8F0FE" CornerRadius="18" Padding="14,8" Margin="0,0,10,0">

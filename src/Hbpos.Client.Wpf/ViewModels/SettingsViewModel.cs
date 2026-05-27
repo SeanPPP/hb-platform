@@ -22,6 +22,7 @@ public sealed partial class SettingsViewModel : ObservableObject
     private readonly Func<CancellationToken, Task>? _downloadCatalogAsync;
     private readonly Func<CancellationToken, Task>? _resetCatalogAsync;
     private readonly Func<Task>? _reregisterDeviceAsync;
+    private readonly Action? _returnToPos;
     private CardTerminalConfiguration _loadedConfiguration = CardTerminalConfiguration.Default;
     private string? _savedSquareLocationId;
     private string? _savedSquareDeviceId;
@@ -81,13 +82,15 @@ public sealed partial class SettingsViewModel : ObservableObject
         ILocalizationService? localization = null,
         Func<CancellationToken, Task>? downloadCatalogAsync = null,
         Func<CancellationToken, Task>? resetCatalogAsync = null,
-        Func<Task>? reregisterDeviceAsync = null)
+        Func<Task>? reregisterDeviceAsync = null,
+        Action? returnToPos = null)
     {
         _setupService = setupService;
         _localization = localization;
         _downloadCatalogAsync = downloadCatalogAsync;
         _resetCatalogAsync = resetCatalogAsync;
         _reregisterDeviceAsync = reregisterDeviceAsync;
+        _returnToPos = returnToPos;
         if (_localization is not null)
         {
             _localization.CultureChanged += (_, _) => RaiseLocalizedProperties();
@@ -108,6 +111,7 @@ public sealed partial class SettingsViewModel : ObservableObject
         DownloadCatalogCommand = new AsyncRelayCommand(DownloadCatalogAsync, CanDownloadCatalog);
         ResetCatalogCommand = new AsyncRelayCommand(ResetCatalogAsync, CanResetCatalog);
         ReregisterDeviceCommand = new AsyncRelayCommand(ReregisterDeviceAsync, CanReregisterDevice);
+        BackCommand = new RelayCommand(ReturnToPos, () => _returnToPos is not null);
         RefreshLocalizedMessages();
     }
 
@@ -146,6 +150,8 @@ public sealed partial class SettingsViewModel : ObservableObject
     public IAsyncRelayCommand ResetCatalogCommand { get; }
 
     public IAsyncRelayCommand ReregisterDeviceCommand { get; }
+
+    public IRelayCommand BackCommand { get; }
 
     public string ScreenTitleText => T("settings.title");
 
@@ -567,6 +573,11 @@ public sealed partial class SettingsViewModel : ObservableObject
     private bool CanReregisterDevice()
     {
         return !IsBusy && _reregisterDeviceAsync is not null;
+    }
+
+    private void ReturnToPos()
+    {
+        _returnToPos?.Invoke();
     }
 
     private async Task RunBusyAsync(Func<Task> action, string? operationName = null)

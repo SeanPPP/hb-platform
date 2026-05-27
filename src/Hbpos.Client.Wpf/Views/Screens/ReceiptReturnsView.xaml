@@ -40,40 +40,33 @@
         <Border Grid.Row="0" Padding="24,18,24,14" Background="{StaticResource PosSurfaceAltBrush}">
             <Grid>
                 <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
 
-                <StackPanel>
-                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                        <materialDesign:PackIcon Kind="Receipt"
-                                                 Width="28"
-                                                 Height="28"
-                                                 Foreground="{StaticResource PosPrimaryBrush}"
-                                                 Margin="0,0,10,0" />
-                        <TextBlock Text="{loc:Loc returns.title}"
-                                   FontSize="24"
-                                   FontWeight="Black"
-                                   Foreground="{StaticResource PosTextBrush}" />
+                <Button Grid.Column="0"
+                        Command="{Binding BackCommand}"
+                        Style="{StaticResource PosSecondaryButtonStyle}"
+                        Margin="0,0,16,0">
+                    <StackPanel Orientation="Horizontal">
+                        <materialDesign:PackIcon Kind="ArrowLeft" Width="18" Height="18" Margin="0,0,8,0" />
+                        <TextBlock Text="{loc:Loc shell.backToPos}" />
                     </StackPanel>
-                    <TextBlock Text="{Binding OrderSummaryText}"
-                               Margin="38,4,0,0"
-                               Foreground="{StaticResource PosMutedForegroundBrush}"
-                               FontWeight="SemiBold" />
-                </StackPanel>
+                </Button>
 
-                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                <TextBlock Grid.Column="1"
+                           Text="{Binding OrderSummaryText}"
+                           Foreground="{StaticResource PosMutedForegroundBrush}"
+                           FontWeight="SemiBold"
+                           VerticalAlignment="Center" />
+
+                <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
                     <CheckBox IsChecked="{Binding IsNoReceiptMode}"
                               Content="{loc:Loc returns.noReceipt}"
                               VerticalAlignment="Center"
                               FontWeight="Bold"
-                              Margin="0,0,16,0" />
-                    <Button Command="{Binding BackCommand}" Style="{StaticResource PosSecondaryButtonStyle}">
-                        <StackPanel Orientation="Horizontal">
-                            <materialDesign:PackIcon Kind="ArrowLeft" Width="18" Height="18" Margin="0,0,8,0" />
-                            <TextBlock Text="{loc:Loc returns.back}" />
-                        </StackPanel>
-                    </Button>
+                              Margin="0,0,0,0" />
                 </StackPanel>
             </Grid>
         </Border>
