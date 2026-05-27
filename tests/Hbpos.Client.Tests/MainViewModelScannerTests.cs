@@ -171,7 +171,7 @@ public sealed class MainViewModelScannerTests
     }
 
     [Fact]
-    public async Task InitializeAsync_StartsStartupCatalogLoadWithoutBlockingPos()
+    public async Task InitializeAsync_WaitsForStartupCatalogLoadBeforeShowingPos()
     {
         var index = new LocalSellableItemIndex();
         var allowCatalogLoad = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -207,13 +207,13 @@ public sealed class MainViewModelScannerTests
         await WaitUntilAsync(() => catalog.LoadSellableItemsCallCount > 0);
 
         Assert.Equal(1, catalog.LoadSellableItemsCallCount);
-        await initializeTask;
-        Assert.Same(viewModel.PosTerminal, viewModel.CurrentScreen);
-        Assert.True(viewModel.IsPosTerminalScreenActive);
+        Assert.False(initializeTask.IsCompleted);
+        Assert.NotSame(viewModel.PosTerminal, viewModel.CurrentScreen);
+        Assert.False(viewModel.IsPosTerminalScreenActive);
         Assert.Empty(index.FindExactMatches("1042", "9528502522381"));
 
         allowCatalogLoad.SetResult();
-        await WaitUntilAsync(() => index.FindExactMatches("1042", "9528502522381").Count == 1);
+        await initializeTask;
 
         Assert.Same(viewModel.PosTerminal, viewModel.CurrentScreen);
         Assert.Same(viewModel.PosTerminal, viewModel.CachedPosTerminalScreen);
@@ -1058,6 +1058,44 @@ public sealed class MainViewModelScannerTests
         Assert.Equal(1, catalog.LoadSellableItemsCallCount);
         Assert.Same(viewModel.PosTerminal, viewModel.CurrentScreen);
         Assert.Contains("catalog load failed", viewModel.StatusMessage, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task InitializeAsync_WhenStartupCatalogLoadIsCanceled_StillShowsPos()
+    {
+        var index = new LocalSellableItemIndex();
+        var catalog = new FakeCatalogRepository
+        {
+            Items = [CreateItem("1042", "SKU-001", "319844731768")],
+            LoadSellableItemsException = new OperationCanceledException("catalog load canceled")
+        };
+        var viewModel = new MainViewModel(
+            index,
+            new PosCartService(),
+            new CashCheckoutService(),
+            new FakeLocalSchemaService(),
+            new FakeSettingsRepository(),
+            catalog,
+            new FakeCatalogSyncService(),
+            new FakeRemoteLookupRefreshService(),
+            new FakeSpecialProductService(),
+            new FakeConnectivityApiClient(),
+            new FakeLocalDeviceRepository { Latest = CreateAllowedDevice("1042") },
+            new FakeDeviceApiClient(),
+            new FakeDeviceFingerprintService(),
+            new DeviceAuthorizationState(),
+            new FakeLocalOrderRepository(),
+            new FakeSyncQueueRepository(),
+            new LocalizationService(),
+            new FakeCustomerDisplayWindowService(),
+            new FakeRawScannerService());
+
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+
+        Assert.Equal(1, catalog.LoadSellableItemsCallCount);
+        Assert.Same(viewModel.PosTerminal, viewModel.CurrentScreen);
+        Assert.True(viewModel.IsPosTerminalScreenActive);
+        Assert.Empty(index.FindExactMatches("1042", "319844731768"));
     }
 
     [Fact]

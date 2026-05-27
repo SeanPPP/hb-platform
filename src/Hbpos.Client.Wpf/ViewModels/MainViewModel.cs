@@ -62,7 +62,7 @@ public sealed partial class MainViewModel : ObservableObject
     private Task? _deviceRegistrationStoreLoadTask;
     private Task? _posPostShowStartupTask;
     private bool _customerDisplayPrewarmed;
-    private Task? _startupCatalogIndexLoadTask;
+    private Task<IReadOnlyList<SellableItemDto>>? _startupCatalogIndexLoadTask;
     private AppStartupOptions? _startupOptions;
 
     [ObservableProperty]
@@ -539,7 +539,7 @@ public sealed partial class MainViewModel : ObservableObject
         ApplySessionToScreens();
         PrepareCachedCashPaymentScreen();
         PrewarmCustomerDisplay();
-        _ = BeginStartupCatalogIndexLoadAsync(startupOptions);
+        await BeginStartupCatalogIndexLoadAsync(startupOptions);
         NavigateFromStartup(startupOptions.InitialScreen);
     }
 
@@ -594,11 +594,11 @@ public sealed partial class MainViewModel : ObservableObject
         }
     }
 
-    private async Task BeginStartupCatalogIndexLoadAsync(AppStartupOptions startupOptions)
+    private async Task<IReadOnlyList<SellableItemDto>> BeginStartupCatalogIndexLoadAsync(AppStartupOptions startupOptions)
     {
         if (startupOptions.PreviewMode)
         {
-            return;
+            return [];
         }
 
         _startupCatalogIndexLoadCts ??= new CancellationTokenSource();
@@ -608,7 +608,7 @@ public sealed partial class MainViewModel : ObservableObject
         var loadTask = _startupCatalogIndexLoadTask;
         try
         {
-            await loadTask;
+            return await loadTask;
         }
         finally
         {
