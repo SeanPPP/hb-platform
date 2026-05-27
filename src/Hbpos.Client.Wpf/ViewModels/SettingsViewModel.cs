@@ -10,6 +10,7 @@ public enum SettingsCategory
 {
     DataMaintenance,
     PaymentTerminal,
+    ReceiptPrinter,
     DeviceRegistration
 }
 
@@ -23,6 +24,8 @@ public sealed partial class SettingsViewModel : ObservableObject
     private readonly Func<CancellationToken, Task>? _resetCatalogAsync;
     private readonly Func<Task>? _reregisterDeviceAsync;
     private readonly Action? _returnToPos;
+    private readonly IReceiptPrinterSettingsStore? _receiptPrinterSettingsStore;
+    private readonly IReceiptPrintService? _receiptPrintService;
     private CardTerminalConfiguration _loadedConfiguration = CardTerminalConfiguration.Default;
     private string? _savedSquareLocationId;
     private string? _savedSquareDeviceId;
@@ -33,6 +36,7 @@ public sealed partial class SettingsViewModel : ObservableObject
     private string? _linklyTestStatusKey;
     private object[] _linklyTestStatusArgs = [];
     private string? _linklyTestStatusOverride;
+    private string? _receiptPrinterTestStatusOverride;
     private string _lastSquareDeviceCodeNameSuggestion = DefaultSquareDeviceCodeName;
 
     [ObservableProperty]
@@ -77,13 +81,39 @@ public sealed partial class SettingsViewModel : ObservableObject
     [ObservableProperty]
     private string _linklyTestStatusMessage = string.Empty;
 
+    [ObservableProperty]
+    private string _receiptPrinterPortText = ReceiptPrinterSettings.Default.PrinterPort;
+
+    [ObservableProperty]
+    private string _receiptBrandNameText = ReceiptPrinterSettings.Default.BrandName;
+
+    [ObservableProperty]
+    private string _receiptStoreNameText = string.Empty;
+
+    [ObservableProperty]
+    private string _receiptStoreAddressText = string.Empty;
+
+    [ObservableProperty]
+    private string _receiptStorePhoneText = string.Empty;
+
+    [ObservableProperty]
+    private string _receiptAbnText = string.Empty;
+
+    [ObservableProperty]
+    private string _receiptReturnPolicyText = string.Empty;
+
+    [ObservableProperty]
+    private string _receiptPrinterTestStatusMessage = string.Empty;
+
     public SettingsViewModel(
         ICardTerminalSetupService setupService,
         ILocalizationService? localization = null,
         Func<CancellationToken, Task>? downloadCatalogAsync = null,
         Func<CancellationToken, Task>? resetCatalogAsync = null,
         Func<Task>? reregisterDeviceAsync = null,
-        Action? returnToPos = null)
+        Action? returnToPos = null,
+        IReceiptPrinterSettingsStore? receiptPrinterSettingsStore = null,
+        IReceiptPrintService? receiptPrintService = null)
     {
         _setupService = setupService;
         _localization = localization;
@@ -91,6 +121,8 @@ public sealed partial class SettingsViewModel : ObservableObject
         _resetCatalogAsync = resetCatalogAsync;
         _reregisterDeviceAsync = reregisterDeviceAsync;
         _returnToPos = returnToPos;
+        _receiptPrinterSettingsStore = receiptPrinterSettingsStore;
+        _receiptPrintService = receiptPrintService;
         if (_localization is not null)
         {
             _localization.CultureChanged += (_, _) => RaiseLocalizedProperties();
@@ -98,6 +130,7 @@ public sealed partial class SettingsViewModel : ObservableObject
 
         SelectDataMaintenanceCommand = new RelayCommand(() => SelectedCategory = SettingsCategory.DataMaintenance);
         SelectPaymentTerminalCommand = new RelayCommand(() => SelectedCategory = SettingsCategory.PaymentTerminal);
+        SelectReceiptPrinterCommand = new RelayCommand(() => SelectedCategory = SettingsCategory.ReceiptPrinter);
         SelectDeviceRegistrationCommand = new RelayCommand(() => SelectedCategory = SettingsCategory.DeviceRegistration);
         LoadCommand = new AsyncRelayCommand(LoadAsync);
         LoadLocationsCommand = new AsyncRelayCommand(LoadLocationsAsync, CanLoadLocations);
@@ -108,6 +141,8 @@ public sealed partial class SettingsViewModel : ObservableObject
         RefreshDeviceCodeStatusCommand = new AsyncRelayCommand(RefreshDeviceCodeStatusAsync, CanRefreshDeviceCodeStatus);
         TestLinklyCommand = new AsyncRelayCommand(TestLinklyAsync, CanTestLinkly);
         SaveLinklyCommand = new AsyncRelayCommand(SaveLinklyAsync, CanSaveLinkly);
+        SaveReceiptPrinterCommand = new AsyncRelayCommand(SaveReceiptPrinterAsync, CanSaveReceiptPrinter);
+        TestReceiptPrinterCommand = new AsyncRelayCommand(TestReceiptPrinterAsync, CanTestReceiptPrinter);
         DownloadCatalogCommand = new AsyncRelayCommand(DownloadCatalogAsync, CanDownloadCatalog);
         ResetCatalogCommand = new AsyncRelayCommand(ResetCatalogAsync, CanResetCatalog);
         ReregisterDeviceCommand = new AsyncRelayCommand(ReregisterDeviceAsync, CanReregisterDevice);
@@ -143,7 +178,13 @@ public sealed partial class SettingsViewModel : ObservableObject
 
     public IRelayCommand SelectPaymentTerminalCommand { get; }
 
+    public IRelayCommand SelectReceiptPrinterCommand { get; }
+
     public IRelayCommand SelectDeviceRegistrationCommand { get; }
+
+    public IAsyncRelayCommand SaveReceiptPrinterCommand { get; }
+
+    public IAsyncRelayCommand TestReceiptPrinterCommand { get; }
 
     public IAsyncRelayCommand DownloadCatalogCommand { get; }
 
@@ -159,6 +200,7 @@ public sealed partial class SettingsViewModel : ObservableObject
     {
         SettingsCategory.DataMaintenance => T("settings.subtitle.dataMaintenance"),
         SettingsCategory.PaymentTerminal => T("settings.subtitle.paymentTerminal"),
+        SettingsCategory.ReceiptPrinter => T("settings.subtitle.receiptPrinter"),
         SettingsCategory.DeviceRegistration => T("settings.subtitle.deviceRegistration"),
         _ => T("settings.title")
     };
@@ -173,9 +215,13 @@ public sealed partial class SettingsViewModel : ObservableObject
 
     public string LinklyTitleText => T("settings.linkly.title");
 
+    public string ReceiptPrinterTitleText => T("settings.receiptPrinter.title");
+
     public bool IsDataMaintenanceSelected => SelectedCategory == SettingsCategory.DataMaintenance;
 
     public bool IsPaymentTerminalSelected => SelectedCategory == SettingsCategory.PaymentTerminal;
+
+    public bool IsReceiptPrinterSelected => SelectedCategory == SettingsCategory.ReceiptPrinter;
 
     public bool IsDeviceRegistrationSelected => SelectedCategory == SettingsCategory.DeviceRegistration;
 
@@ -198,6 +244,7 @@ public sealed partial class SettingsViewModel : ObservableObject
         await RunBusyAsync(async () =>
         {
             _loadedConfiguration = await _setupService.LoadConfigurationAsync();
+            await LoadReceiptPrinterSettingsAsync();
             IsSandbox = _loadedConfiguration.Environment == CardTerminalEnvironment.Sandbox;
             LinklyHostText = _loadedConfiguration.LinklyHost;
             LinklyPortText = _loadedConfiguration.LinklyPort.ToString();
@@ -465,6 +512,46 @@ public sealed partial class SettingsViewModel : ObservableObject
         });
     }
 
+    private async Task SaveReceiptPrinterAsync()
+    {
+        if (_receiptPrinterSettingsStore is null)
+        {
+            SetStatus("settings.status.receiptPrinterNotConfigured");
+            return;
+        }
+
+        await RunBusyAsync(async () =>
+        {
+            var settings = CreateReceiptPrinterSettingsFromFields();
+            await _receiptPrinterSettingsStore.SaveAsync(settings);
+            ApplyReceiptPrinterSettings(settings);
+            SetStatus("settings.status.receiptPrinterSaved");
+        });
+    }
+
+    private async Task TestReceiptPrinterAsync()
+    {
+        if (_receiptPrintService is null)
+        {
+            SetStatus("settings.status.receiptPrinterNotConfigured");
+            return;
+        }
+
+        await RunBusyAsync(async () =>
+        {
+            ReceiptPrinterTestStatusMessage = string.Empty;
+            if (_receiptPrinterSettingsStore is not null)
+            {
+                await _receiptPrinterSettingsStore.SaveAsync(CreateReceiptPrinterSettingsFromFields());
+            }
+
+            var result = await _receiptPrintService.TestPrinterAsync();
+            ReceiptPrinterTestStatusMessage = result.Message;
+            _receiptPrinterTestStatusOverride = result.Message;
+            SetStatusOverride(result.Message);
+        });
+    }
+
     private async Task DownloadCatalogAsync(CancellationToken cancellationToken)
     {
         if (_downloadCatalogAsync is null)
@@ -560,6 +647,16 @@ public sealed partial class SettingsViewModel : ObservableObject
         return !IsBusy && LinklyConnectionSucceeded;
     }
 
+    private bool CanSaveReceiptPrinter()
+    {
+        return !IsBusy && _receiptPrinterSettingsStore is not null;
+    }
+
+    private bool CanTestReceiptPrinter()
+    {
+        return !IsBusy && _receiptPrintService is not null;
+    }
+
     private bool CanDownloadCatalog()
     {
         return !IsBusy && _downloadCatalogAsync is not null;
@@ -618,6 +715,7 @@ public sealed partial class SettingsViewModel : ObservableObject
         OnPropertyChanged(nameof(DeviceRegistrationTitleText));
         OnPropertyChanged(nameof(SquareTitleText));
         OnPropertyChanged(nameof(LinklyTitleText));
+        OnPropertyChanged(nameof(ReceiptPrinterTitleText));
         OnPropertyChanged(nameof(SquareTokenStatusText));
         OnPropertyChanged(nameof(SquareDeviceCodesUnavailableText));
         RefreshLocalizedMessages();
@@ -628,7 +726,43 @@ public sealed partial class SettingsViewModel : ObservableObject
         OnPropertyChanged(nameof(SettingsSubtitleText));
         OnPropertyChanged(nameof(IsDataMaintenanceSelected));
         OnPropertyChanged(nameof(IsPaymentTerminalSelected));
+        OnPropertyChanged(nameof(IsReceiptPrinterSelected));
         OnPropertyChanged(nameof(IsDeviceRegistrationSelected));
+    }
+
+    private async Task LoadReceiptPrinterSettingsAsync()
+    {
+        if (_receiptPrinterSettingsStore is null)
+        {
+            ApplyReceiptPrinterSettings(ReceiptPrinterSettings.Default);
+            return;
+        }
+
+        ApplyReceiptPrinterSettings(await _receiptPrinterSettingsStore.LoadAsync());
+    }
+
+    private void ApplyReceiptPrinterSettings(ReceiptPrinterSettings settings)
+    {
+        ReceiptPrinterPortText = settings.PrinterPort;
+        ReceiptBrandNameText = settings.BrandName;
+        ReceiptStoreNameText = settings.StoreName;
+        ReceiptStoreAddressText = settings.StoreAddress;
+        ReceiptStorePhoneText = settings.StorePhone;
+        ReceiptAbnText = settings.Abn;
+        ReceiptReturnPolicyText = settings.ReturnPolicy;
+    }
+
+    private ReceiptPrinterSettings CreateReceiptPrinterSettingsFromFields()
+    {
+        return new ReceiptPrinterSettings(
+            ReceiptPrinterPortText,
+            ReceiptBrandNameText,
+            ReceiptStoreNameText,
+            ReceiptStoreAddressText,
+            ReceiptStorePhoneText,
+            ReceiptAbnText,
+            ReceiptReturnPolicyText,
+            ReceiptPrinterSettings.Default.CutDistance);
     }
 
     partial void OnIsSandboxChanged(bool value)
@@ -729,6 +863,8 @@ public sealed partial class SettingsViewModel : ObservableObject
         RefreshDeviceCodeStatusCommand.NotifyCanExecuteChanged();
         TestLinklyCommand.NotifyCanExecuteChanged();
         SaveLinklyCommand.NotifyCanExecuteChanged();
+        SaveReceiptPrinterCommand.NotifyCanExecuteChanged();
+        TestReceiptPrinterCommand.NotifyCanExecuteChanged();
         DownloadCatalogCommand.NotifyCanExecuteChanged();
         ResetCatalogCommand.NotifyCanExecuteChanged();
         ReregisterDeviceCommand.NotifyCanExecuteChanged();
@@ -781,6 +917,10 @@ public sealed partial class SettingsViewModel : ObservableObject
         StatusMessage = _statusOverride ?? Format(_statusKey, _statusArgs);
         LinklyTestStatusMessage = _linklyTestStatusOverride
             ?? (_linklyTestStatusKey is null ? string.Empty : Format(_linklyTestStatusKey, _linklyTestStatusArgs));
+        if (_receiptPrinterTestStatusOverride is not null)
+        {
+            ReceiptPrinterTestStatusMessage = _receiptPrinterTestStatusOverride;
+        }
     }
 
     private string T(string key)

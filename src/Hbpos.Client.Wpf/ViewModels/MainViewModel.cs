@@ -8,6 +8,7 @@ using Hbpos.Client.Wpf.Localization;
 using Hbpos.Client.Wpf.Models;
 using Hbpos.Client.Wpf.Services;
 using Hbpos.Contracts.Catalog;
+using Hbpos.Contracts.Orders;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace Hbpos.Client.Wpf.ViewModels;
@@ -35,6 +36,9 @@ public sealed partial class MainViewModel : ObservableObject
     private readonly IRawScannerService _rawScannerService;
     private readonly IUserFeedbackService _userFeedbackService;
     private readonly IReceiptQueryService _receiptQueryService;
+    private readonly IReceiptPrintService _receiptPrintService;
+    private readonly IReceiptPrinterSettingsStore? _receiptPrinterSettingsStore;
+    private readonly IReceiptTextFormatter _receiptTextFormatter;
     private readonly ISuspendedOrderService? _suspendedOrderService;
     private readonly IRemoteOrderHistoryService? _remoteOrderHistoryService;
     private readonly ICashPaymentWorkflowService _cashPaymentWorkflowService;
@@ -166,7 +170,10 @@ public sealed partial class MainViewModel : ObservableObject
         ILocalizationService localization,
         ICustomerDisplayWindowService customerDisplayWindowService,
         IRawScannerService rawScannerService,
-        IUserFeedbackService? userFeedbackService = null)
+        IUserFeedbackService? userFeedbackService = null,
+        IReceiptPrintService? receiptPrintService = null,
+        IReceiptPrinterSettingsStore? receiptPrinterSettingsStore = null,
+        IReceiptTextFormatter? receiptTextFormatter = null)
         : this(
             priceIndex,
             cart,
@@ -199,7 +206,10 @@ public sealed partial class MainViewModel : ObservableObject
                 null,
                 priceIndex,
                 cart),
-            userFeedbackService: userFeedbackService ?? NoopUserFeedbackService.Instance)
+            userFeedbackService: userFeedbackService ?? NoopUserFeedbackService.Instance,
+            receiptPrintService: receiptPrintService ?? NoopReceiptPrintService.Instance,
+            receiptPrinterSettingsStore: receiptPrinterSettingsStore,
+            receiptTextFormatter: receiptTextFormatter ?? new ReceiptTextFormatter())
     {
     }
 
@@ -231,7 +241,10 @@ public sealed partial class MainViewModel : ObservableObject
         IReceiptReturnsWorkflowService? receiptReturnsWorkflowService = null,
         IVoucherApiClient? voucherApiClient = null,
         ICardTerminalClient? cardTerminalClient = null,
-        ICardTerminalSetupService? cardTerminalSetupService = null)
+        ICardTerminalSetupService? cardTerminalSetupService = null,
+        IReceiptPrintService? receiptPrintService = null,
+        IReceiptPrinterSettingsStore? receiptPrinterSettingsStore = null,
+        IReceiptTextFormatter? receiptTextFormatter = null)
     {
         _priceIndex = priceIndex;
         _cart = cart;
@@ -251,6 +264,9 @@ public sealed partial class MainViewModel : ObservableObject
         _rawScannerService = rawScannerService;
         _userFeedbackService = userFeedbackService ?? NoopUserFeedbackService.Instance;
         _receiptQueryService = receiptQueryService;
+        _receiptPrintService = receiptPrintService ?? NoopReceiptPrintService.Instance;
+        _receiptPrinterSettingsStore = receiptPrinterSettingsStore;
+        _receiptTextFormatter = receiptTextFormatter ?? new ReceiptTextFormatter();
         _suspendedOrderService = suspendedOrderService;
         _remoteOrderHistoryService = remoteOrderHistoryService;
         _cashPaymentWorkflowService = cashPaymentWorkflowService;
@@ -267,7 +283,12 @@ public sealed partial class MainViewModel : ObservableObject
             _cart);
         _posTerminalWorkflowFactory = posTerminalWorkflowFactory;
 
-        PaymentSuccess = new PaymentSuccessViewModel(_receiptQueryService);
+        PaymentSuccess = new PaymentSuccessViewModel(
+            _receiptQueryService,
+            _receiptTextFormatter,
+            _receiptPrinterSettingsStore);
+        PaymentSuccess.NewTransactionRequested += (_, _) => ResetForNewTransaction();
+        PaymentSuccess.PrintReceiptRequested += async (_, _) => await PrintPaymentSuccessReceiptAsync();
 
         ShowPosCommand = new RelayCommand(ShowPos);
         ShowCashPaymentCommand = new RelayCommand(ShowCashPayment, () => !_cart.IsEmpty);
@@ -479,7 +500,8 @@ public sealed partial class MainViewModel : ObservableObject
             rawScannerService: _rawScannerService,
             onReregisterDeviceAsync: BeginDeviceReregistrationAsync,
             workflowService: posWorkflowService,
-            onOpenReturns: ShowReturns);
+            onOpenReturns: ShowReturns,
+            onPrintLastReceiptAsync: PrintLatestReceiptAsync);
         SpecialProducts = new SpecialProductsViewModel(
             _priceIndex,
             _cart,
@@ -504,7 +526,6 @@ public sealed partial class MainViewModel : ObservableObject
         }
 
         TransactionHistory = CreateTransactionHistoryViewModel();
-        PaymentSuccess.NewTransactionRequested += (_, _) => ResetForNewTransaction();
 
         if (startupOptions.PreviewMode)
         {
@@ -1202,17 +1223,21 @@ public sealed partial class MainViewModel : ObservableObject
     {
         _lastCompletedOrder = e.Order;
         await RefreshPendingSyncAsync();
-        PaymentSuccess.LoadFromOrder(e.Order);
+        await PaymentSuccess.LoadFromOrderAsync(e.Order);
         CurrentScreen = PaymentSuccess;
 
         ShowCashPaymentCommand.NotifyCanExecuteChanged();
+        if (ContainsCardPayment(e.Order))
+        {
+            await PrintReceiptAsync(ReceiptQueryService.CreateReceipt(e.Order), ReceiptPrintReason.CardAuto);
+        }
     }
 
     private async Task ShowPaymentSuccessLatestAsync()
     {
         if (_lastCompletedOrder is not null)
         {
-            PaymentSuccess.LoadFromOrder(_lastCompletedOrder);
+            await PaymentSuccess.LoadFromOrderAsync(_lastCompletedOrder);
         }
         else
         {
@@ -1249,7 +1274,9 @@ public sealed partial class MainViewModel : ObservableObject
                 await ResetCatalogAndReloadAsync(cancellationToken);
             },
             BeginDeviceReregistrationAsync,
-            ShowPos);
+            ShowPos,
+            _receiptPrinterSettingsStore,
+            _receiptPrintService);
         await Settings.LoadAsync();
         CurrentScreen = Settings;
     }
@@ -1284,14 +1311,101 @@ public sealed partial class MainViewModel : ObservableObject
 
     private TransactionHistoryViewModel CreateTransactionHistoryViewModel()
     {
-        return new TransactionHistoryViewModel(
+        var viewModel = new TransactionHistoryViewModel(
             _receiptQueryService,
             _suspendedOrderService,
             _remoteOrderHistoryService,
             Session,
             OnSuspendedOrderRecalledAsync,
             ShowPos,
-            _localization);
+            _localization,
+            _receiptTextFormatter,
+            _receiptPrinterSettingsStore);
+        viewModel.ReprintRequested += async (_, _) => await PrintSelectedHistoryReceiptAsync(viewModel);
+        return viewModel;
+    }
+
+    private async Task<ReceiptPrintResult> PrintLatestReceiptAsync()
+    {
+        ReceiptPrintResult result;
+        try
+        {
+            result = await _receiptPrintService.PrintLatestReceiptAsync(ReceiptPrintReason.LastReceipt);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            result = new ReceiptPrintResult(false, ex.Message);
+        }
+
+        ApplyReceiptPrintStatus(result);
+        return result;
+    }
+
+    private async Task PrintPaymentSuccessReceiptAsync()
+    {
+        if (PaymentSuccess.TransactionId is not Guid orderGuid)
+        {
+            return;
+        }
+
+        await PrintReceiptAsync(orderGuid, ReceiptPrintReason.Manual);
+    }
+
+    private async Task PrintSelectedHistoryReceiptAsync(TransactionHistoryViewModel history)
+    {
+        if (history.SelectedOrder is null)
+        {
+            return;
+        }
+
+        await PrintReceiptAsync(history.SelectedOrder.OrderGuid, ReceiptPrintReason.Reprint);
+    }
+
+    private async Task<ReceiptPrintResult> PrintReceiptAsync(Guid orderGuid, ReceiptPrintReason reason)
+    {
+        ReceiptPrintResult result;
+        try
+        {
+            result = await _receiptPrintService.PrintReceiptAsync(orderGuid, reason);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            result = new ReceiptPrintResult(false, ex.Message, orderGuid);
+        }
+
+        ApplyReceiptPrintStatus(result);
+        return result;
+    }
+
+    private async Task<ReceiptPrintResult> PrintReceiptAsync(ReceiptDetails receipt, ReceiptPrintReason reason)
+    {
+        ReceiptPrintResult result;
+        try
+        {
+            result = await _receiptPrintService.PrintReceiptAsync(receipt, reason);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            result = new ReceiptPrintResult(false, ex.Message, receipt.OrderGuid);
+        }
+
+        ApplyReceiptPrintStatus(result);
+        return result;
+    }
+
+    private void ApplyReceiptPrintStatus(ReceiptPrintResult result)
+    {
+        StatusMessage = result.Succeeded
+            ? _localization.T("receipt.print.success")
+            : string.Format(
+                _localization.CurrentCulture,
+                _localization.T("receipt.print.failed"),
+                result.Message);
+    }
+
+    private static bool ContainsCardPayment(LocalOrder order)
+    {
+        return order.Payments.Any(payment => payment.Method == PaymentMethodKind.Card);
     }
 
     private Task OnSuspendedOrderRecalledAsync()

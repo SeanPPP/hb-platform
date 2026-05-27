@@ -89,6 +89,10 @@ public static class ServiceRegistration
         services.AddSingleton<ISuspendedOrderService, SuspendedOrderService>();
         services.AddSingleton<IRemoteOrderHistoryService, RemoteOrderHistoryService>();
         services.AddSingleton<IReceiptQueryService, ReceiptQueryService>();
+        services.AddSingleton<IReceiptPrinterSettingsStore, ReceiptPrinterSettingsStore>();
+        services.AddSingleton<IReceiptTextFormatter, ReceiptTextFormatter>();
+        services.AddSingleton<IReceiptPrinterDriver, XpReceiptPrinterDriver>();
+        services.AddSingleton<IReceiptPrintService, ReceiptPrintService>();
         services.AddSingleton<IOrderUploadService, OrderUploadService>();
         services.AddSingleton<IOrderUploadExecutionService, OrderUploadExecutionService>();
         services.AddSingleton<ICardTerminalSettingsStore>(sp => new CardTerminalSettingsStore(
@@ -163,7 +167,10 @@ public static class ServiceRegistration
             receiptReturnsWorkflowService: sp.GetRequiredService<IReceiptReturnsWorkflowService>(),
             voucherApiClient: sp.GetRequiredService<IVoucherApiClient>(),
             cardTerminalClient: sp.GetRequiredService<ICardTerminalClient>(),
-            cardTerminalSetupService: sp.GetRequiredService<ICardTerminalSetupService>()));
+            cardTerminalSetupService: sp.GetRequiredService<ICardTerminalSetupService>(),
+            receiptPrintService: sp.GetRequiredService<IReceiptPrintService>(),
+            receiptPrinterSettingsStore: sp.GetRequiredService<IReceiptPrinterSettingsStore>(),
+            receiptTextFormatter: sp.GetRequiredService<IReceiptTextFormatter>()));
         services.AddSingleton<MainWindow>();
 
         return services;

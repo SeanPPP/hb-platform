@@ -199,6 +199,9 @@
   <data name="history.transactions" xml:space="preserve"><value>transactions</value></data>
   <data name="history.reprint" xml:space="preserve"><value>Reprint</value></data>
   <data name="history.refund" xml:space="preserve"><value>Refund</value></data>
+  <data name="receipt.print.printing" xml:space="preserve"><value>Printing receipt...</value></data>
+  <data name="receipt.print.success" xml:space="preserve"><value>Receipt printed.</value></data>
+  <data name="receipt.print.failed" xml:space="preserve"><value>Receipt print failed: {0}</value></data>
 
   <data name="customer.totalToPay" xml:space="preserve"><value>Total To Pay</value></data>
   <data name="customer.itemQuantity" xml:space="preserve"><value>Item Quantity</value></data>
@@ -346,6 +349,7 @@
   <data name="pos.terminal.actions.history" xml:space="preserve"><value>History</value></data>
   <data name="pos.terminal.actions.settings" xml:space="preserve"><value>Settings</value></data>
   <data name="pos.terminal.actions.customerDisplay" xml:space="preserve"><value>Customer Display</value></data>
+  <data name="pos.terminal.actions.printLastReceipt" xml:space="preserve"><value>Last Receipt</value></data>
   <data name="history.source.local" xml:space="preserve"><value>Local</value></data>
   <data name="history.source.online" xml:space="preserve"><value>Online</value></data>
   <data name="history.payment.suspended" xml:space="preserve"><value>Suspended</value></data>

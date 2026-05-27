@@ -11,6 +11,7 @@ using Hbpos.Client.Wpf.Services;
 using Hbpos.Client.Wpf.ViewModels;
 using Hbpos.Contracts.Catalog;
 using Hbpos.Contracts.Devices;
+using Hbpos.Contracts.Orders;
 
 namespace Hbpos.Client.Tests;
 
@@ -66,6 +67,68 @@ public sealed class MainViewModelScannerTests
 
         Assert.Equal(1, scanner.ResetCount);
         Assert.Equal("扫码枪绑定已清除，请在收银页扫描一次重新学习。", viewModel.StatusMessage);
+    }
+
+    [Fact]
+    public async Task Card_payment_completion_auto_prints_receipt_after_success_screen()
+    {
+        var printService = new RecordingReceiptPrintService();
+        var viewModel = CreateAuthorizedMainViewModel(new FakeCustomerDisplayWindowService(), printService);
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+        var order = CreateReceiptPrintOrder(PaymentMethodKind.Card);
+
+        InvokePaymentCompleted(viewModel, order);
+
+        await WaitUntilAsync(() => ReferenceEquals(viewModel.PaymentSuccess, viewModel.CurrentScreen) && printService.Calls.Count == 1);
+        var call = Assert.Single(printService.Calls);
+        Assert.Equal(order.OrderGuid, call.OrderGuid);
+        Assert.Equal(ReceiptPrintReason.CardAuto, call.Reason);
+    }
+
+    [Fact]
+    public async Task Cash_payment_completion_does_not_auto_print_receipt()
+    {
+        var printService = new RecordingReceiptPrintService();
+        var viewModel = CreateAuthorizedMainViewModel(new FakeCustomerDisplayWindowService(), printService);
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+        var order = CreateReceiptPrintOrder(PaymentMethodKind.Cash);
+
+        InvokePaymentCompleted(viewModel, order);
+
+        await WaitUntilAsync(() => ReferenceEquals(viewModel.PaymentSuccess, viewModel.CurrentScreen));
+        await Task.Delay(50);
+        Assert.Empty(printService.Calls);
+    }
+
+    [Fact]
+    public async Task Payment_success_print_button_prints_current_receipt()
+    {
+        var printService = new RecordingReceiptPrintService();
+        var viewModel = CreateAuthorizedMainViewModel(new FakeCustomerDisplayWindowService(), printService);
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+        var order = CreateReceiptPrintOrder(PaymentMethodKind.Cash);
+        viewModel.PaymentSuccess.LoadFromOrder(order);
+
+        viewModel.PaymentSuccess.PrintReceiptCommand.Execute(null);
+
+        await WaitUntilAsync(() => printService.Calls.Count == 1);
+        var call = Assert.Single(printService.Calls);
+        Assert.Equal(order.OrderGuid, call.OrderGuid);
+        Assert.Equal(ReceiptPrintReason.Manual, call.Reason);
+    }
+
+    [Fact]
+    public async Task Pos_terminal_print_last_receipt_command_uses_print_service()
+    {
+        var printService = new RecordingReceiptPrintService();
+        var viewModel = CreateAuthorizedMainViewModel(new FakeCustomerDisplayWindowService(), printService);
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+
+        await viewModel.PosTerminal!.PrintLastReceiptCommand.ExecuteAsync(null);
+
+        var call = Assert.Single(printService.Calls);
+        Assert.Null(call.OrderGuid);
+        Assert.Equal(ReceiptPrintReason.LastReceipt, call.Reason);
     }
 
     [Fact]
@@ -1282,7 +1345,9 @@ public sealed class MainViewModelScannerTests
         };
     }
 
-    private static MainViewModel CreateAuthorizedMainViewModel(FakeCustomerDisplayWindowService customerDisplayWindow)
+    private static MainViewModel CreateAuthorizedMainViewModel(
+        FakeCustomerDisplayWindowService customerDisplayWindow,
+        IReceiptPrintService? receiptPrintService = null)
     {
         return new MainViewModel(
             new LocalSellableItemIndex(),
@@ -1303,7 +1368,69 @@ public sealed class MainViewModelScannerTests
             new FakeSyncQueueRepository(),
             new LocalizationService(),
             customerDisplayWindow,
-            new FakeRawScannerService());
+            new FakeRawScannerService(),
+            receiptPrintService: receiptPrintService);
+    }
+
+    private static LocalOrder CreateReceiptPrintOrder(PaymentMethodKind paymentMethod)
+    {
+        var orderGuid = Guid.NewGuid();
+        return new LocalOrder(
+            orderGuid,
+            "1042",
+            "POS-01",
+            "C001",
+            "Alice",
+            DateTimeOffset.UtcNow,
+            10m,
+            0m,
+            10m,
+            [
+                new LocalOrderLine(
+                    Guid.NewGuid(),
+                    "SKU-001",
+                    null,
+                    "Receipt Item",
+                    "930110",
+                    "ITEM-1",
+                    1m,
+                    10m,
+                    0m,
+                    10m,
+                    PriceSourceKind.StoreRetailPrice)
+            ],
+            [
+                new LocalPayment(
+                    Guid.NewGuid(),
+                    paymentMethod,
+                    10m,
+                    paymentMethod == PaymentMethodKind.Card ? "CARD-123" : null,
+                    paymentMethod == PaymentMethodKind.Card
+                        ? [
+                            new CardTransactionDto(
+                                "Linkly",
+                                "TXN-1",
+                                "AUTH-1",
+                                "VISA",
+                                411111,
+                                "****1111",
+                                "M1",
+                                "00",
+                                "APPROVED",
+                                "123456",
+                                DateTimeOffset.UtcNow,
+                                10m,
+                                "APPROVED CARD RECEIPT")
+                        ]
+                        : null)
+            ]);
+    }
+
+    private static void InvokePaymentCompleted(MainViewModel viewModel, LocalOrder order)
+    {
+        var method = typeof(MainViewModel).GetMethod("OnPaymentCompleted", BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(method);
+        method!.Invoke(viewModel, [null, new PaymentCompletedEventArgs(order, order.ActualAmount, 0m)]);
     }
 
     private static byte[] OnePixelPngBytes()
@@ -1736,6 +1863,45 @@ public sealed class MainViewModelScannerTests
             return Task.FromResult<LocalOrder?>(null);
         }
     }
+
+    private sealed class RecordingReceiptPrintService : IReceiptPrintService
+    {
+        public List<ReceiptPrintCall> Calls { get; } = [];
+
+        public Task<ReceiptPrintResult> PrintLatestReceiptAsync(
+            ReceiptPrintReason reason = ReceiptPrintReason.LastReceipt,
+            CancellationToken cancellationToken = default)
+        {
+            Calls.Add(new ReceiptPrintCall(null, reason));
+            return Task.FromResult(new ReceiptPrintResult(true, "printed"));
+        }
+
+        public Task<ReceiptPrintResult> PrintReceiptAsync(
+            Guid orderGuid,
+            ReceiptPrintReason reason = ReceiptPrintReason.Manual,
+            CancellationToken cancellationToken = default)
+        {
+            Calls.Add(new ReceiptPrintCall(orderGuid, reason));
+            return Task.FromResult(new ReceiptPrintResult(true, "printed", orderGuid));
+        }
+
+        public Task<ReceiptPrintResult> PrintReceiptAsync(
+            ReceiptDetails receipt,
+            ReceiptPrintReason reason = ReceiptPrintReason.Manual,
+            CancellationToken cancellationToken = default)
+        {
+            Calls.Add(new ReceiptPrintCall(receipt.OrderGuid, reason));
+            return Task.FromResult(new ReceiptPrintResult(true, "printed", receipt.OrderGuid));
+        }
+
+        public Task<ReceiptPrintResult> TestPrinterAsync(CancellationToken cancellationToken = default)
+        {
+            Calls.Add(new ReceiptPrintCall(null, ReceiptPrintReason.Test));
+            return Task.FromResult(new ReceiptPrintResult(true, "tested"));
+        }
+    }
+
+    private sealed record ReceiptPrintCall(Guid? OrderGuid, ReceiptPrintReason Reason);
 
     private sealed class FakeSyncQueueRepository : ISyncQueueRepository
     {

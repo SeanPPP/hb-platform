@@ -7,10 +7,12 @@
   <data name="settings.title" xml:space="preserve"><value>Settings</value></data>
   <data name="settings.subtitle.dataMaintenance" xml:space="preserve"><value>Data maintenance</value></data>
   <data name="settings.subtitle.paymentTerminal" xml:space="preserve"><value>Card terminal settings</value></data>
+  <data name="settings.subtitle.receiptPrinter" xml:space="preserve"><value>Receipt printer settings</value></data>
   <data name="settings.subtitle.deviceRegistration" xml:space="preserve"><value>Device registration</value></data>
   <data name="settings.category.title" xml:space="preserve"><value>Categories</value></data>
   <data name="settings.category.dataMaintenance" xml:space="preserve"><value>Data maintenance</value></data>
   <data name="settings.category.paymentTerminal" xml:space="preserve"><value>Payment terminal</value></data>
+  <data name="settings.category.receiptPrinter" xml:space="preserve"><value>Receipt printer</value></data>
   <data name="settings.category.deviceRegistration" xml:space="preserve"><value>Device registration</value></data>
   <data name="settings.section.dataDownload.title" xml:space="preserve"><value>Data Download</value></data>
   <data name="settings.section.dataDownload.description" xml:space="preserve"><value>Sync the current store catalog from the server and refresh the local checkout item index.</value></data>
@@ -49,6 +51,17 @@
   <data name="settings.linkly.port" xml:space="preserve"><value>Port</value></data>
   <data name="settings.linkly.test" xml:space="preserve"><value>Test Linkly</value></data>
   <data name="settings.linkly.enable" xml:space="preserve"><value>Enable Linkly</value></data>
+  <data name="settings.receiptPrinter.title" xml:space="preserve"><value>Receipt printer</value></data>
+  <data name="settings.receiptPrinter.description" xml:space="preserve"><value>Configure the thermal receipt printer and the store information printed on receipts.</value></data>
+  <data name="settings.receiptPrinter.port" xml:space="preserve"><value>Printer Port</value></data>
+  <data name="settings.receiptPrinter.brandName" xml:space="preserve"><value>Brand Name</value></data>
+  <data name="settings.receiptPrinter.storeName" xml:space="preserve"><value>Store Name</value></data>
+  <data name="settings.receiptPrinter.address" xml:space="preserve"><value>Address</value></data>
+  <data name="settings.receiptPrinter.phone" xml:space="preserve"><value>Phone</value></data>
+  <data name="settings.receiptPrinter.abn" xml:space="preserve"><value>ABN</value></data>
+  <data name="settings.receiptPrinter.returnPolicy" xml:space="preserve"><value>Return Policy</value></data>
+  <data name="settings.receiptPrinter.save" xml:space="preserve"><value>Save Receipt Printer</value></data>
+  <data name="settings.receiptPrinter.test" xml:space="preserve"><value>Test Print</value></data>
   <data name="settings.deviceRegistration.description" xml:space="preserve"><value>Submit a fresh registration request for this checkout device while keeping the current cart and order sync safety checks in place.</value></data>
   <data name="settings.deviceRegistration.action" xml:space="preserve"><value>Re-register Device</value></data>
   <data name="settings.status.ready" xml:space="preserve"><value>Ready.</value></data>
@@ -72,6 +85,8 @@
   <data name="settings.status.linklyTestFailed" xml:space="preserve"><value>Linkly EFT-Client connection failed.</value></data>
   <data name="settings.status.testLinklyBeforeSave" xml:space="preserve"><value>Test Linkly connection before enabling ANZ Linkly.</value></data>
   <data name="settings.status.linklySaved" xml:space="preserve"><value>ANZ Linkly terminal settings saved.</value></data>
+  <data name="settings.status.receiptPrinterNotConfigured" xml:space="preserve"><value>Receipt printer service is not configured.</value></data>
+  <data name="settings.status.receiptPrinterSaved" xml:space="preserve"><value>Receipt printer settings saved.</value></data>
   <data name="settings.status.catalogDownloadNotConfigured" xml:space="preserve"><value>Catalog download service is not configured.</value></data>
   <data name="settings.status.catalogDownloading" xml:space="preserve"><value>Downloading catalog data...</value></data>
   <data name="settings.status.catalogDownloadCompleted" xml:space="preserve"><value>Catalog data download completed.</value></data>

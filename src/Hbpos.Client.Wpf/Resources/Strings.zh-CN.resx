@@ -189,6 +189,9 @@
   <data name="history.transactions" xml:space="preserve"><value>笔交易</value></data>
   <data name="history.reprint" xml:space="preserve"><value>重印</value></data>
   <data name="history.refund" xml:space="preserve"><value>退款</value></data>
+  <data name="receipt.print.printing" xml:space="preserve"><value>&#x6B63;&#x5728;&#x6253;&#x5370;&#x5C0F;&#x7968;...</value></data>
+  <data name="receipt.print.success" xml:space="preserve"><value>&#x5C0F;&#x7968;&#x5DF2;&#x6253;&#x5370;&#x3002;</value></data>
+  <data name="receipt.print.failed" xml:space="preserve"><value>&#x5C0F;&#x7968;&#x6253;&#x5370;&#x5931;&#x8D25;&#xFF1A;{0}</value></data>
   <data name="history.dateRangeLabel" xml:space="preserve"><value>日期范围</value></data>
   <data name="history.searchLabel" xml:space="preserve"><value>订单查询</value></data>
 
@@ -347,6 +350,7 @@
   <data name="pos.terminal.actions.history" xml:space="preserve"><value>&#x5386;&#x53F2;</value></data>
   <data name="pos.terminal.actions.settings" xml:space="preserve"><value>&#x8BBE;&#x7F6E;</value></data>
   <data name="pos.terminal.actions.customerDisplay" xml:space="preserve"><value>&#x5BA2;&#x663E;</value></data>
+  <data name="pos.terminal.actions.printLastReceipt" xml:space="preserve"><value>&#x4E0A;&#x5F20;&#x5C0F;&#x7968;</value></data>
   <data name="history.source.local" xml:space="preserve"><value>&#x672C;&#x5730;</value></data>
   <data name="history.source.online" xml:space="preserve"><value>&#x5728;&#x7EBF;</value></data>
   <data name="history.payment.suspended" xml:space="preserve"><value>&#x6302;&#x5355;</value></data>

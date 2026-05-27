@@ -403,6 +403,42 @@ public sealed class PosCoreTests
         Assert.Equal(order.OrderGuid, viewModel.TransactionId);
     }
 
+    [Fact]
+    public void Payment_success_view_model_builds_formatter_backed_receipt_preview()
+    {
+        var order = CreateLocalOrder();
+        var viewModel = new PaymentSuccessViewModel();
+
+        viewModel.LoadFromOrder(order);
+
+        Assert.Contains(viewModel.ReceiptPreviewRows, row => row.Text.Contains("===== TAX INVOICE =====", StringComparison.Ordinal));
+        Assert.Contains(viewModel.ReceiptPreviewRows, row => row.IsBarcode && row.Text.Contains(order.OrderGuid.ToString(), StringComparison.Ordinal));
+        Assert.Contains(viewModel.ReceiptPreviewRows, row => row.Text.Contains("GST", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Pos_terminal_print_last_receipt_command_invokes_callback_and_shows_status()
+    {
+        var printed = false;
+        var viewModel = new PosTerminalViewModel(
+            new LocalSellableItemIndex(),
+            new PosCartService(),
+            new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0),
+            onOpenPayment: null,
+            onPrintLastReceiptAsync: () =>
+            {
+                printed = true;
+                return Task.FromResult(new ReceiptPrintResult(true, "Receipt printed."));
+            });
+
+        Assert.True(viewModel.PrintLastReceiptCommand.CanExecute(null));
+
+        await viewModel.PrintLastReceiptCommand.ExecuteAsync(null);
+
+        Assert.True(printed);
+        Assert.Equal("Receipt printed.", viewModel.StatusMessage);
+    }
+
     private static SellableItemDto CreateItem(
         string productCode,
         string name,

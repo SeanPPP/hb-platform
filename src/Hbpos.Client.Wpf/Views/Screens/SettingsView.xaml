@@ -537,6 +537,148 @@
                         </Border>
                     </Grid>
 
+                    <StackPanel Visibility="{Binding IsReceiptPrinterSelected, Converter={StaticResource BoolToVis}}">
+                        <Border Style="{StaticResource SettingsActionCardStyle}">
+                            <Grid>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
+
+                                <DockPanel Grid.Row="0" Margin="0,0,0,18">
+                                    <Border DockPanel.Dock="Left"
+                                            Width="42"
+                                            Height="42"
+                                            Background="#FFE8F0FE"
+                                            CornerRadius="8"
+                                            Margin="0,0,14,0">
+                                        <materialDesign:PackIcon Kind="Printer"
+                                                                 Width="24"
+                                                                 Height="24"
+                                                                 Foreground="{StaticResource PosPrimaryBrush}"
+                                                                 HorizontalAlignment="Center"
+                                                                 VerticalAlignment="Center" />
+                                    </Border>
+                                    <StackPanel>
+                                        <TextBlock Text="{Binding ReceiptPrinterTitleText}"
+                                                   FontSize="18"
+                                                   FontWeight="Black"
+                                                   Foreground="{StaticResource PosTextBrush}" />
+                                        <TextBlock Text="{loc:Loc settings.receiptPrinter.description}"
+                                                   FontSize="12"
+                                                   Foreground="{StaticResource PosMutedForegroundBrush}"
+                                                   TextWrapping="Wrap"
+                                                   Margin="0,5,0,0" />
+                                    </StackPanel>
+                                </DockPanel>
+
+                                <Grid Grid.Row="1" Margin="0,0,0,14">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="14" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Grid.Column="0">
+                                        <TextBlock Text="{loc:Loc settings.receiptPrinter.port}" Style="{StaticResource SettingsLabelStyle}" />
+                                        <TextBox Text="{Binding ReceiptPrinterPortText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                 Style="{StaticResource SettingsFieldTextBoxStyle}" />
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="2">
+                                        <TextBlock Text="{loc:Loc settings.receiptPrinter.brandName}" Style="{StaticResource SettingsLabelStyle}" />
+                                        <TextBox Text="{Binding ReceiptBrandNameText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                 Style="{StaticResource SettingsFieldTextBoxStyle}" />
+                                    </StackPanel>
+                                </Grid>
+
+                                <Grid Grid.Row="2" Margin="0,0,0,14">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="14" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Grid.Column="0">
+                                        <TextBlock Text="{loc:Loc settings.receiptPrinter.storeName}" Style="{StaticResource SettingsLabelStyle}" />
+                                        <TextBox Text="{Binding ReceiptStoreNameText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                 Style="{StaticResource SettingsFieldTextBoxStyle}" />
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="2">
+                                        <TextBlock Text="{loc:Loc settings.receiptPrinter.phone}" Style="{StaticResource SettingsLabelStyle}" />
+                                        <TextBox Text="{Binding ReceiptStorePhoneText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                 Style="{StaticResource SettingsFieldTextBoxStyle}" />
+                                    </StackPanel>
+                                </Grid>
+
+                                <Grid Grid.Row="3" Margin="0,0,0,18">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="14" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Grid.Column="0">
+                                        <TextBlock Text="{loc:Loc settings.receiptPrinter.address}" Style="{StaticResource SettingsLabelStyle}" />
+                                        <TextBox Text="{Binding ReceiptStoreAddressText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                 Style="{StaticResource SettingsFieldTextBoxStyle}"
+                                                 Height="86"
+                                                 TextWrapping="Wrap"
+                                                 AcceptsReturn="True"
+                                                 VerticalScrollBarVisibility="Auto" />
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="2">
+                                        <TextBlock Text="{loc:Loc settings.receiptPrinter.abn}" Style="{StaticResource SettingsLabelStyle}" />
+                                        <TextBox Text="{Binding ReceiptAbnText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                 Style="{StaticResource SettingsFieldTextBoxStyle}"
+                                                 Margin="0,0,0,14" />
+                                        <TextBlock Text="{loc:Loc settings.receiptPrinter.returnPolicy}" Style="{StaticResource SettingsLabelStyle}" />
+                                        <TextBox Text="{Binding ReceiptReturnPolicyText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                 Style="{StaticResource SettingsFieldTextBoxStyle}"
+                                                 Height="86"
+                                                 TextWrapping="Wrap"
+                                                 AcceptsReturn="True"
+                                                 VerticalScrollBarVisibility="Auto" />
+                                    </StackPanel>
+                                </Grid>
+
+                                <DockPanel Grid.Row="4">
+                                    <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Margin="18,0,0,0">
+                                        <Button Command="{Binding TestReceiptPrinterCommand}"
+                                                Style="{StaticResource PosSecondaryButtonStyle}"
+                                                Height="42"
+                                                MinWidth="138"
+                                                Margin="0,0,10,0">
+                                            <StackPanel Orientation="Horizontal">
+                                                <materialDesign:PackIcon Kind="Printer" Width="18" Height="18" Margin="0,0,8,0" />
+                                                <TextBlock Text="{loc:Loc settings.receiptPrinter.test}" />
+                                            </StackPanel>
+                                        </Button>
+                                        <Button Command="{Binding SaveReceiptPrinterCommand}"
+                                                Style="{StaticResource PosPrimaryButtonStyle}"
+                                                Height="42"
+                                                MinWidth="138">
+                                            <StackPanel Orientation="Horizontal">
+                                                <materialDesign:PackIcon Kind="ContentSave" Width="18" Height="18" Margin="0,0,8,0" Foreground="White" />
+                                                <TextBlock Text="{loc:Loc settings.receiptPrinter.save}" Foreground="White" />
+                                            </StackPanel>
+                                        </Button>
+                                    </StackPanel>
+                                    <Border Background="#FFF6F8FB"
+                                            BorderBrush="#FFE0E4EC"
+                                            BorderThickness="1"
+                                            CornerRadius="6"
+                                            Padding="10,8">
+                                        <TextBlock Text="{Binding ReceiptPrinterTestStatusMessage}"
+                                                   FontSize="12"
+                                                   FontWeight="SemiBold"
+                                                   Foreground="{StaticResource PosMutedForegroundBrush}"
+                                                   TextWrapping="Wrap" />
+                                    </Border>
+                                </DockPanel>
+                            </Grid>
+                        </Border>
+                    </StackPanel>
+
                     <StackPanel Visibility="{Binding IsDeviceRegistrationSelected, Converter={StaticResource BoolToVis}}">
                         <Border Style="{StaticResource SettingsActionCardStyle}">
                             <DockPanel>
@@ -607,6 +749,14 @@
                         <StackPanel Orientation="Horizontal">
                             <materialDesign:PackIcon Kind="ContactlessPayment" Width="20" Height="20" Margin="0,0,10,0" />
                             <TextBlock Text="{loc:Loc settings.category.paymentTerminal}" FontWeight="Bold" VerticalAlignment="Center" />
+                        </StackPanel>
+                    </Button>
+
+                    <Button Command="{Binding SelectReceiptPrinterCommand}"
+                            Style="{StaticResource SettingsCategoryButtonStyle}">
+                        <StackPanel Orientation="Horizontal">
+                            <materialDesign:PackIcon Kind="Printer" Width="20" Height="20" Margin="0,0,10,0" />
+                            <TextBlock Text="{loc:Loc settings.category.receiptPrinter}" FontWeight="Bold" VerticalAlignment="Center" />
                         </StackPanel>
                     </Button>
 

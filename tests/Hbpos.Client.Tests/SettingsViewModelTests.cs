@@ -47,6 +47,11 @@ public sealed class SettingsViewModelTests
 
         Assert.Equal(SettingsCategory.DataMaintenance, viewModel.SelectedCategory);
         Assert.True(viewModel.IsDataMaintenanceSelected);
+
+        viewModel.SelectReceiptPrinterCommand.Execute(null);
+
+        Assert.Equal(SettingsCategory.ReceiptPrinter, viewModel.SelectedCategory);
+        Assert.True(viewModel.IsReceiptPrinterSelected);
     }
 
     [Fact]
@@ -427,6 +432,66 @@ public sealed class SettingsViewModelTests
         Assert.Equal("connection failed", viewModel.LinklyTestStatusMessage);
         Assert.Equal("connection failed", viewModel.StatusMessage);
     }
+
+    [Fact]
+    public async Task LoadAsync_loads_receipt_printer_settings_and_save_persists_changes()
+    {
+        var store = new FakeReceiptPrinterSettingsStore
+        {
+            Settings = ReceiptPrinterSettings.Default with
+            {
+                PrinterPort = "COM3",
+                BrandName = "HB",
+                StoreName = "Sunnybank",
+                StoreAddress = "Shop 1",
+                StorePhone = "07",
+                Abn = "ABN",
+                ReturnPolicy = "Returns within 7 days"
+            }
+        };
+        var viewModel = new SettingsViewModel(
+            new FakeCardTerminalSetupService(),
+            receiptPrinterSettingsStore: store,
+            receiptPrintService: new FakeReceiptPrintService());
+
+        await viewModel.LoadAsync();
+
+        Assert.Equal("COM3", viewModel.ReceiptPrinterPortText);
+        Assert.Equal("HB", viewModel.ReceiptBrandNameText);
+        Assert.Equal("Sunnybank", viewModel.ReceiptStoreNameText);
+
+        viewModel.ReceiptPrinterPortText = "USB,";
+        viewModel.ReceiptStorePhoneText = "0730000000";
+        await viewModel.SaveReceiptPrinterCommand.ExecuteAsync(null);
+
+        Assert.NotNull(store.SavedSettings);
+        Assert.Equal("USB,", store.SavedSettings!.PrinterPort);
+        Assert.Equal("0730000000", store.SavedSettings.StorePhone);
+        Assert.Equal("Receipt printer settings saved.", viewModel.StatusMessage);
+    }
+
+    [Fact]
+    public async Task TestReceiptPrinterCommand_calls_print_service()
+    {
+        var printService = new FakeReceiptPrintService
+        {
+            TestResult = new ReceiptPrintResult(true, "Printer test completed.")
+        };
+        var store = new FakeReceiptPrinterSettingsStore();
+        var viewModel = new SettingsViewModel(
+            new FakeCardTerminalSetupService(),
+            receiptPrinterSettingsStore: store,
+            receiptPrintService: printService);
+        viewModel.ReceiptPrinterPortText = "COM7";
+
+        await viewModel.TestReceiptPrinterCommand.ExecuteAsync(null);
+
+        Assert.Equal(1, printService.TestCallCount);
+        Assert.Equal("COM7", store.SavedSettings?.PrinterPort);
+        Assert.Equal("Printer test completed.", viewModel.ReceiptPrinterTestStatusMessage);
+        Assert.Equal("Printer test completed.", viewModel.StatusMessage);
+    }
+
     [Fact]
     public void Localized_properties_and_status_refresh_when_culture_changes()
     {
@@ -591,6 +656,61 @@ public sealed class SettingsViewModelTests
             CancellationToken cancellationToken = default)
         {
             return Task.FromResult(LinklyTestResult);
+        }
+    }
+
+    private sealed class FakeReceiptPrinterSettingsStore : IReceiptPrinterSettingsStore
+    {
+        public ReceiptPrinterSettings Settings { get; set; } = ReceiptPrinterSettings.Default;
+
+        public ReceiptPrinterSettings? SavedSettings { get; private set; }
+
+        public Task<ReceiptPrinterSettings> LoadAsync(CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(Settings);
+        }
+
+        public Task SaveAsync(ReceiptPrinterSettings settings, CancellationToken cancellationToken = default)
+        {
+            SavedSettings = settings;
+            Settings = settings;
+            return Task.CompletedTask;
+        }
+    }
+
+    private sealed class FakeReceiptPrintService : IReceiptPrintService
+    {
+        public ReceiptPrintResult TestResult { get; init; } = new(true, "Printer test completed.");
+
+        public int TestCallCount { get; private set; }
+
+        public Task<ReceiptPrintResult> PrintLatestReceiptAsync(
+            ReceiptPrintReason reason = ReceiptPrintReason.LastReceipt,
+            CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
+        }
+
+        public Task<ReceiptPrintResult> PrintReceiptAsync(
+            Guid orderGuid,
+            ReceiptPrintReason reason = ReceiptPrintReason.Manual,
+            CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
+        }
+
+        public Task<ReceiptPrintResult> PrintReceiptAsync(
+            ReceiptDetails receipt,
+            ReceiptPrintReason reason = ReceiptPrintReason.Manual,
+            CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
+        }
+
+        public Task<ReceiptPrintResult> TestPrinterAsync(CancellationToken cancellationToken = default)
+        {
+            TestCallCount++;
+            return Task.FromResult(TestResult);
         }
     }
 }

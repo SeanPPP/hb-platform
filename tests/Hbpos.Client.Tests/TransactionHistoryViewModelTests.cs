@@ -323,6 +323,61 @@ public sealed class TransactionHistoryViewModelTests
     }
 
     [Fact]
+    public async Task Local_history_selection_builds_formatter_backed_preview_and_reprint_event()
+    {
+        var orderGuid = Guid.NewGuid();
+        var reprintRequested = false;
+        var receiptQuery = new CapturingReceiptQueryService
+        {
+            Orders =
+            [
+                new LocalOrderSummary(
+                    orderGuid,
+                    "S001",
+                    "POS-01",
+                    "Alice",
+                    new DateTimeOffset(2026, 5, 27, 9, 0, 0, TimeSpan.Zero),
+                    5m,
+                    0m,
+                    5m,
+                    "Synced",
+                    1,
+                    "Cash")
+            ],
+            Receipts =
+            {
+                [orderGuid] = new ReceiptDetails(
+                    orderGuid,
+                    "S001",
+                    "POS-01",
+                    "Alice",
+                    new DateTimeOffset(2026, 5, 27, 9, 0, 0, TimeSpan.Zero),
+                    5m,
+                    0m,
+                    5m,
+                    [new ReceiptPreviewLine("Receipt Tea", "930001", 1m, 5m, 0m, 5m)],
+                    [new ReceiptPaymentLine(PaymentMethodKind.Cash, 5m, null)])
+            }
+        };
+        var viewModel = new TransactionHistoryViewModel(
+            receiptQuery,
+            new CapturingSuspendedOrderService(),
+            new CapturingRemoteOrderHistoryService(),
+            CreateSession());
+        viewModel.ReprintRequested += (_, _) => reprintRequested = true;
+
+        await viewModel.LoadAsync();
+
+        Assert.True(viewModel.IsReprintVisible);
+        Assert.True(viewModel.ReprintCommand.CanExecute(null));
+        Assert.Contains(viewModel.ReceiptPreviewRows, row => row.Text.Contains("===== TAX INVOICE =====", StringComparison.Ordinal));
+
+        viewModel.ReprintCommand.Execute(null);
+
+        Assert.True(reprintRequested);
+    }
+
+    [Fact]
     public void Return_to_pos_command_invokes_callback()
     {
         var returned = false;
@@ -409,6 +464,8 @@ public sealed class TransactionHistoryViewModelTests
     {
         public IReadOnlyList<LocalOrderSummary> Orders { get; set; } = [];
 
+        public Dictionary<Guid, ReceiptDetails> Receipts { get; } = [];
+
         public LocalOrderHistoryQuery? LastQuery { get; private set; }
 
         public Task<IReadOnlyList<LocalOrderSummary>> GetRecentOrdersAsync(int take = 50, CancellationToken cancellationToken = default)
@@ -427,12 +484,12 @@ public sealed class TransactionHistoryViewModelTests
 
         public Task<ReceiptDetails?> GetReceiptAsync(Guid orderGuid, CancellationToken cancellationToken = default)
         {
-            return Task.FromResult<ReceiptDetails?>(null);
+            return Task.FromResult(Receipts.TryGetValue(orderGuid, out var receipt) ? receipt : null);
         }
 
         public Task<ReceiptDetails?> GetLatestReceiptAsync(CancellationToken cancellationToken = default)
         {
-            return Task.FromResult<ReceiptDetails?>(null);
+            return Task.FromResult(Receipts.Values.FirstOrDefault());
         }
     }
 

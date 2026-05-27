@@ -35,6 +35,7 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
     private readonly Func<Task>? _onOpenHistoryAsync;
     private readonly Func<Task>? _onOpenSettingsAsync;
     private readonly Action? _onOpenCustomerDisplay;
+    private readonly Func<Task<ReceiptPrintResult>>? _onPrintLastReceiptAsync;
     private readonly Func<Task>? _onReregisterDeviceAsync;
     private readonly ILocalizationService? _localization;
     private readonly IUserFeedbackService _userFeedbackService;
@@ -100,7 +101,8 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
         Func<Task>? onOpenHistoryAsync = null,
         Func<Task>? onOpenSettingsAsync = null,
         Action? onOpenCustomerDisplay = null,
-        Action? onOpenReturns = null)
+        Action? onOpenReturns = null,
+        Func<Task<ReceiptPrintResult>>? onPrintLastReceiptAsync = null)
     {
         _priceIndex = priceIndex;
         _cart = cart;
@@ -114,6 +116,7 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
         _onOpenHistoryAsync = onOpenHistoryAsync;
         _onOpenSettingsAsync = onOpenSettingsAsync;
         _onOpenCustomerDisplay = onOpenCustomerDisplay;
+        _onPrintLastReceiptAsync = onPrintLastReceiptAsync;
         _onReregisterDeviceAsync = onReregisterDeviceAsync;
         _localization = localization;
         _userFeedbackService = userFeedbackService ?? NoopUserFeedbackService.Instance;
@@ -155,6 +158,7 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
         OpenHistoryCommand = new AsyncRelayCommand(OpenHistoryAsync);
         OpenSettingsCommand = new AsyncRelayCommand(OpenSettingsAsync);
         OpenCustomerDisplayCommand = new RelayCommand(OpenCustomerDisplay);
+        PrintLastReceiptCommand = new AsyncRelayCommand(PrintLastReceiptAsync, () => _onPrintLastReceiptAsync is not null);
         SyncCommand = new AsyncRelayCommand(SyncAsync);
         ResetCatalogCommand = new AsyncRelayCommand(ResetCatalogAsync);
         ReregisterDeviceCommand = new AsyncRelayCommand(ReregisterDeviceAsync);
@@ -214,6 +218,8 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
 
     public IRelayCommand OpenCustomerDisplayCommand { get; }
 
+    public IAsyncRelayCommand PrintLastReceiptCommand { get; }
+
     public IAsyncRelayCommand SyncCommand { get; }
 
     public IAsyncRelayCommand ResetCatalogCommand { get; }
@@ -247,6 +253,8 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
     public string SettingsText => T("pos.terminal.actions.settings");
 
     public string CustomerDisplayText => T("pos.terminal.actions.customerDisplay");
+
+    public string PrintLastReceiptText => T("pos.terminal.actions.printLastReceipt");
 
     public string MemberText => T("pos.terminal.actions.member");
 
@@ -847,6 +855,21 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
         _onOpenCustomerDisplay?.Invoke();
     }
 
+    private async Task PrintLastReceiptAsync()
+    {
+        if (_onPrintLastReceiptAsync is null)
+        {
+            return;
+        }
+
+        SetStatusText(T("receipt.print.printing"));
+        var result = await _onPrintLastReceiptAsync();
+        SetStatusText(
+            result.Message,
+            result.Succeeded ? StatusFeedbackKind.Success : StatusFeedbackKind.Error,
+            result.Succeeded ? null : UserFeedbackCue.OperationError);
+    }
+
     private async Task ReregisterDeviceAsync()
     {
         if (_onReregisterDeviceAsync is not null)
@@ -1081,6 +1104,7 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
         OnPropertyChanged(nameof(HistoryText));
         OnPropertyChanged(nameof(SettingsText));
         OnPropertyChanged(nameof(CustomerDisplayText));
+        OnPropertyChanged(nameof(PrintLastReceiptText));
         OnPropertyChanged(nameof(MemberText));
         OnPropertyChanged(nameof(SyncText));
         OnPropertyChanged(nameof(CatalogResetText));

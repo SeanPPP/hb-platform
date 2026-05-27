@@ -9,6 +9,8 @@ namespace Hbpos.Client.Wpf.ViewModels;
 public sealed partial class PaymentSuccessViewModel : ObservableObject
 {
     private readonly IReceiptQueryService? _receiptQueryService;
+    private readonly IReceiptTextFormatter _receiptTextFormatter;
+    private readonly IReceiptPrinterSettingsStore? _receiptPrinterSettingsStore;
 
     [ObservableProperty]
     private Guid? _transactionId;
@@ -29,23 +31,32 @@ public sealed partial class PaymentSuccessViewModel : ObservableObject
     private string _cashierName = string.Empty;
 
     public PaymentSuccessViewModel()
-        : this(initialize: true, receiptQueryService: null)
+        : this(initialize: true, receiptQueryService: null, receiptTextFormatter: null, receiptPrinterSettingsStore: null)
     {
     }
 
     public PaymentSuccessViewModel(ILocalOrderRepository orderRepository)
-        : this(initialize: true, receiptQueryService: new ReceiptQueryService(orderRepository))
+        : this(initialize: true, receiptQueryService: new ReceiptQueryService(orderRepository), receiptTextFormatter: null, receiptPrinterSettingsStore: null)
     {
     }
 
-    public PaymentSuccessViewModel(IReceiptQueryService receiptQueryService)
-        : this(initialize: true, receiptQueryService)
+    public PaymentSuccessViewModel(
+        IReceiptQueryService receiptQueryService,
+        IReceiptTextFormatter? receiptTextFormatter = null,
+        IReceiptPrinterSettingsStore? receiptPrinterSettingsStore = null)
+        : this(initialize: true, receiptQueryService, receiptTextFormatter, receiptPrinterSettingsStore)
     {
     }
 
-    private PaymentSuccessViewModel(bool initialize, IReceiptQueryService? receiptQueryService)
+    private PaymentSuccessViewModel(
+        bool initialize,
+        IReceiptQueryService? receiptQueryService,
+        IReceiptTextFormatter? receiptTextFormatter,
+        IReceiptPrinterSettingsStore? receiptPrinterSettingsStore)
     {
         _receiptQueryService = receiptQueryService;
+        _receiptTextFormatter = receiptTextFormatter ?? new ReceiptTextFormatter();
+        _receiptPrinterSettingsStore = receiptPrinterSettingsStore;
         PrintReceiptCommand = new RelayCommand(() => PrintReceiptRequested?.Invoke(this, EventArgs.Empty), () => TransactionId is not null);
         NewTransactionCommand = new RelayCommand(() => NewTransactionRequested?.Invoke(this, EventArgs.Empty));
     }
@@ -57,6 +68,8 @@ public sealed partial class PaymentSuccessViewModel : ObservableObject
     public ObservableCollection<ReceiptPreviewLine> ReceiptLines { get; } = [];
 
     public ObservableCollection<ReceiptPaymentLine> Payments { get; } = [];
+
+    public ObservableCollection<ReceiptPreviewRow> ReceiptPreviewRows { get; } = [];
 
     public IRelayCommand PrintReceiptCommand { get; }
 
@@ -96,7 +109,7 @@ public sealed partial class PaymentSuccessViewModel : ObservableObject
         var receipt = await _receiptQueryService.GetReceiptAsync(orderGuid, cancellationToken);
         if (receipt is not null)
         {
-            ApplyReceipt(receipt);
+            ApplyReceipt(receipt, await LoadPreviewSettingsAsync(cancellationToken));
         }
     }
 
@@ -110,16 +123,23 @@ public sealed partial class PaymentSuccessViewModel : ObservableObject
         var latest = await _receiptQueryService.GetLatestReceiptAsync(cancellationToken);
         if (latest is not null)
         {
-            ApplyReceipt(latest);
+            ApplyReceipt(latest, await LoadPreviewSettingsAsync(cancellationToken));
         }
     }
 
     public void LoadFromOrder(LocalOrder order)
     {
-        ApplyReceipt(ReceiptQueryService.CreateReceipt(order));
+        ApplyReceipt(ReceiptQueryService.CreateReceipt(order), ReceiptPrinterSettings.Default);
     }
 
-    private void ApplyReceipt(ReceiptDetails receipt)
+    public async Task LoadFromOrderAsync(LocalOrder order, CancellationToken cancellationToken = default)
+    {
+        ApplyReceipt(
+            ReceiptQueryService.CreateReceipt(order),
+            await LoadPreviewSettingsAsync(cancellationToken));
+    }
+
+    private void ApplyReceipt(ReceiptDetails receipt, ReceiptPrinterSettings settings)
     {
         TransactionId = receipt.OrderGuid;
         TotalAmountPaid = receipt.ActualAmount;
@@ -130,11 +150,48 @@ public sealed partial class PaymentSuccessViewModel : ObservableObject
 
         ReceiptLines.ReplaceWith(receipt.Lines);
         Payments.ReplaceWith(receipt.Payments);
+        ReceiptPreviewRows.ReplaceWith(BuildPreviewRows(receipt, settings));
 
         OnPropertyChanged(nameof(TransactionIdDisplay));
         OnPropertyChanged(nameof(SoldAtDisplay));
         OnPropertyChanged(nameof(Subtotal));
         OnPropertyChanged(nameof(DiscountTotal));
         PrintReceiptCommand.NotifyCanExecuteChanged();
+    }
+
+    private async Task<ReceiptPrinterSettings> LoadPreviewSettingsAsync(CancellationToken cancellationToken)
+    {
+        if (_receiptPrinterSettingsStore is null)
+        {
+            return ReceiptPrinterSettings.Default;
+        }
+
+        try
+        {
+            return await _receiptPrinterSettingsStore.LoadAsync(cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return ReceiptPrinterSettings.Default;
+        }
+    }
+
+    private IReadOnlyList<ReceiptPreviewRow> BuildPreviewRows(ReceiptDetails receipt, ReceiptPrinterSettings settings)
+    {
+        try
+        {
+            return _receiptTextFormatter.Build(receipt, settings, receipt.SoldAt).PreviewRows;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            try
+            {
+                return new ReceiptTextFormatter().Build(receipt, ReceiptPrinterSettings.Default, receipt.SoldAt).PreviewRows;
+            }
+            catch (Exception fallbackEx) when (fallbackEx is not OperationCanceledException)
+            {
+                return [];
+            }
+        }
     }
 }

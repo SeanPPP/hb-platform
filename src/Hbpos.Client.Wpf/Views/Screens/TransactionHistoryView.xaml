@@ -213,83 +213,39 @@
                                 <TextBlock Text="{loc:Loc success.receiptPreview}" FontSize="14" FontWeight="Black" Foreground="{StaticResource PosTextBrush}" />
                             </StackPanel>
 
-                            <StackPanel HorizontalAlignment="Center" Margin="0,0,0,20">
-                                <TextBlock Text="{loc:Loc AppName}" FontSize="20" FontWeight="Black" Foreground="{StaticResource PosPrimaryBrush}" HorizontalAlignment="Center" />
-                                <TextBlock Text="{Binding PreviewOrderId}" FontSize="10" FontWeight="Bold" Foreground="{StaticResource PosMutedForegroundBrush}" HorizontalAlignment="Center" Margin="0,4,0,0" />
-                                <TextBlock Text="{Binding PreviewSoldAt}" FontSize="10" Foreground="{StaticResource PosMutedForegroundBrush}" HorizontalAlignment="Center" />
-                            </StackPanel>
-
-                            <Rectangle Height="1" Fill="{StaticResource PosBorderBrush}" Margin="0,0,0,12" StrokeDashArray="4,3" Stroke="{StaticResource PosBorderBrush}" StrokeThickness="1" />
-
-                            <ItemsControl ItemsSource="{Binding ReceiptLines}">
+                            <ItemsControl ItemsSource="{Binding ReceiptPreviewRows}">
                                 <ItemsControl.ItemTemplate>
                                     <DataTemplate>
-                                        <Grid Margin="0,0,0,8">
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="*" />
-                                                <ColumnDefinition Width="Auto" />
-                                            </Grid.ColumnDefinitions>
-                                            <StackPanel>
-                                                <TextBlock Text="{Binding DisplayName}" FontSize="11" FontWeight="Bold" TextWrapping="Wrap" />
-                                                <TextBlock FontSize="9" Foreground="{StaticResource PosMutedForegroundBrush}">
-                                                    <Run Text="{Binding QuantityDisplay, Mode=OneWay}" />
-                                                    <Run Text=" x " />
-                                                    <Run Text="{Binding UnitPrice, Mode=OneWay, StringFormat={}{0:C2}}" />
-                                                </TextBlock>
-                                            </StackPanel>
-                                            <TextBlock Grid.Column="1" Text="{Binding ActualAmount, StringFormat={}{0:C2}}" FontSize="11" FontWeight="Bold" VerticalAlignment="Center" />
-                                        </Grid>
+                                        <TextBlock Text="{Binding Text}"
+                                                   Margin="0,0,0,3"
+                                                   FontFamily="Consolas"
+                                                   FontSize="11"
+                                                   TextWrapping="Wrap">
+                                            <TextBlock.Style>
+                                                <Style TargetType="TextBlock">
+                                                    <Setter Property="TextAlignment" Value="Left" />
+                                                    <Setter Property="FontWeight" Value="Normal" />
+                                                    <Setter Property="Foreground" Value="{StaticResource PosTextBrush}" />
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding IsCentered}" Value="True">
+                                                            <Setter Property="TextAlignment" Value="Center" />
+                                                        </DataTrigger>
+                                                        <DataTrigger Binding="{Binding IsRightAligned}" Value="True">
+                                                            <Setter Property="TextAlignment" Value="Right" />
+                                                        </DataTrigger>
+                                                        <DataTrigger Binding="{Binding IsEmphasized}" Value="True">
+                                                            <Setter Property="FontWeight" Value="Black" />
+                                                        </DataTrigger>
+                                                        <DataTrigger Binding="{Binding IsMachineCode}" Value="True">
+                                                            <Setter Property="Foreground" Value="{StaticResource PosPrimaryBrush}" />
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </TextBlock.Style>
+                                        </TextBlock>
                                     </DataTemplate>
                                 </ItemsControl.ItemTemplate>
                             </ItemsControl>
-
-                            <ItemsControl ItemsSource="{Binding Payments}" Margin="0,8,0,0">
-                                <ItemsControl.ItemTemplate>
-                                    <DataTemplate>
-                                        <Grid Margin="0,0,0,6">
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="*" />
-                                                <ColumnDefinition Width="Auto" />
-                                            </Grid.ColumnDefinitions>
-                                            <StackPanel>
-                                                <TextBlock FontSize="10" Foreground="{StaticResource PosMutedForegroundBrush}">
-                                                    <Run Text="{Binding MethodLabel, Mode=OneWay}" />
-                                                    <Run Text="{Binding DisplayReference, Mode=OneWay, StringFormat={}  {0}}" />
-                                                </TextBlock>
-                                                <TextBlock Text="{Binding CardSummary}" FontSize="9" Foreground="{StaticResource PosMutedForegroundBrush}" TextWrapping="Wrap" />
-                                                <TextBlock Text="{Binding ReceiptText}" FontSize="8" Foreground="{StaticResource PosMutedForegroundBrush}" TextWrapping="Wrap" FontFamily="Consolas" />
-                                            </StackPanel>
-                                            <TextBlock Grid.Column="1"
-                                                       Text="{Binding Amount, StringFormat={}{0:C2}}"
-                                                       FontSize="10"
-                                                       FontWeight="Bold" />
-                                        </Grid>
-                                    </DataTemplate>
-                                </ItemsControl.ItemTemplate>
-                            </ItemsControl>
-
-                            <Rectangle Height="1" Fill="{StaticResource PosBorderBrush}" Margin="0,8" StrokeDashArray="4,3" Stroke="{StaticResource PosBorderBrush}" StrokeThickness="1" />
-
-                            <Grid>
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*" />
-                                    <ColumnDefinition Width="Auto" />
-                                </Grid.ColumnDefinitions>
-                                <Grid.RowDefinitions>
-                                    <RowDefinition Height="Auto" />
-                                    <RowDefinition Height="Auto" />
-                                    <RowDefinition Height="Auto" />
-                                </Grid.RowDefinitions>
-
-                                <TextBlock Grid.Row="0" Text="{loc:Loc Subtotal}" FontSize="10" FontWeight="Bold" Foreground="{StaticResource PosMutedForegroundBrush}" />
-                                <TextBlock Grid.Row="0" Grid.Column="1" Text="{Binding PreviewSubtotal, StringFormat={}{0:C2}}" FontSize="11" FontWeight="Bold" TextAlignment="Right" />
-
-                                <TextBlock Grid.Row="1" Text="{loc:Loc Discount}" FontSize="10" FontWeight="Bold" Foreground="{StaticResource PosMutedForegroundBrush}" Margin="0,0,0,8" />
-                                <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding PreviewDiscount, StringFormat={}{0:C2}}" FontSize="11" FontWeight="Bold" TextAlignment="Right" Margin="0,0,0,8" />
-
-                                <TextBlock Grid.Row="2" Text="{loc:Loc Total}" FontSize="16" FontWeight="Black" />
-                                <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding PreviewTotal, StringFormat={}{0:C2}}" FontSize="18" FontWeight="Black" Foreground="{StaticResource PosPrimaryBrush}" TextAlignment="Right" />
-                            </Grid>
                         </StackPanel>
                     </ScrollViewer>
                 </Border>

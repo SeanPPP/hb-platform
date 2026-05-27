@@ -44,6 +44,8 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject
     private readonly IReceiptQueryService? _receiptQueryService;
     private readonly ISuspendedOrderService? _suspendedOrderService;
     private readonly IRemoteOrderHistoryService? _remoteOrderHistoryService;
+    private readonly IReceiptTextFormatter _receiptTextFormatter;
+    private readonly IReceiptPrinterSettingsStore? _receiptPrinterSettingsStore;
     private readonly Func<Task>? _onSuspendedOrderRecalledAsync;
     private readonly Action? _returnToPos;
     private readonly ILocalizationService? _localization;
@@ -99,17 +101,17 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject
     private PosSessionState _session = new("HB POS", "1002", "Main Branch", "Terminal 04", "C001", "Alice", false, 0);
 
     public TransactionHistoryViewModel()
-        : this(null, null, null, null, null, null, null, initialize: true)
+        : this(null, null, null, null, null, null, null, null, null, initialize: true)
     {
     }
 
     public TransactionHistoryViewModel(ILocalOrderRepository orderRepository)
-        : this(new ReceiptQueryService(orderRepository), null, null, null, null, null, null, initialize: true)
+        : this(new ReceiptQueryService(orderRepository), null, null, null, null, null, null, null, null, initialize: true)
     {
     }
 
     public TransactionHistoryViewModel(IReceiptQueryService receiptQueryService)
-        : this(receiptQueryService, null, null, null, null, null, null, initialize: true)
+        : this(receiptQueryService, null, null, null, null, null, null, null, null, initialize: true)
     {
     }
 
@@ -120,8 +122,10 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject
         PosSessionState session,
         Func<Task>? onSuspendedOrderRecalledAsync = null,
         Action? returnToPos = null,
-        ILocalizationService? localization = null)
-        : this(receiptQueryService, suspendedOrderService, remoteOrderHistoryService, session, onSuspendedOrderRecalledAsync, returnToPos, localization, initialize: true)
+        ILocalizationService? localization = null,
+        IReceiptTextFormatter? receiptTextFormatter = null,
+        IReceiptPrinterSettingsStore? receiptPrinterSettingsStore = null)
+        : this(receiptQueryService, suspendedOrderService, remoteOrderHistoryService, session, onSuspendedOrderRecalledAsync, returnToPos, localization, receiptTextFormatter, receiptPrinterSettingsStore, initialize: true)
     {
     }
 
@@ -133,6 +137,8 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject
         Func<Task>? onSuspendedOrderRecalledAsync,
         Action? returnToPos,
         ILocalizationService? localization,
+        IReceiptTextFormatter? receiptTextFormatter,
+        IReceiptPrinterSettingsStore? receiptPrinterSettingsStore,
         bool initialize)
     {
         _receiptQueryService = receiptQueryService;
@@ -141,6 +147,8 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject
         _onSuspendedOrderRecalledAsync = onSuspendedOrderRecalledAsync;
         _returnToPos = returnToPos;
         _localization = localization;
+        _receiptTextFormatter = receiptTextFormatter ?? new ReceiptTextFormatter();
+        _receiptPrinterSettingsStore = receiptPrinterSettingsStore;
         if (_localization is not null)
         {
             _localization.CultureChanged += OnCultureChanged;
@@ -176,6 +184,8 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject
     public ObservableCollection<ReceiptPreviewLine> ReceiptLines { get; } = [];
 
     public ObservableCollection<ReceiptPaymentLine> Payments { get; } = [];
+
+    public ObservableCollection<ReceiptPreviewRow> ReceiptPreviewRows { get; } = [];
 
     public IAsyncRelayCommand LoadCommand { get; }
 
@@ -447,6 +457,9 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject
 
         ReceiptLines.ReplaceWith(receipt.Lines);
         Payments.ReplaceWith(receipt.Payments);
+        ReceiptPreviewRows.ReplaceWith(BuildPreviewRows(
+            receipt,
+            await LoadPreviewSettingsAsync(cancellationToken)));
         PreviewSubtotal = receipt.TotalAmount;
         PreviewDiscount = receipt.DiscountAmount;
         PreviewTotal = receipt.ActualAmount;
@@ -543,6 +556,7 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject
     {
         ReceiptLines.Clear();
         Payments.Clear();
+        ReceiptPreviewRows.Clear();
         PreviewSubtotal = 0m;
         PreviewDiscount = 0m;
         PreviewTotal = 0m;
@@ -659,5 +673,41 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject
     private static DateTimeOffset? ParseDateTo(DateTime? value)
     {
         return value is null ? null : new DateTimeOffset(value.Value.Date.AddDays(1).AddTicks(-1));
+    }
+
+    private async Task<ReceiptPrinterSettings> LoadPreviewSettingsAsync(CancellationToken cancellationToken)
+    {
+        if (_receiptPrinterSettingsStore is null)
+        {
+            return ReceiptPrinterSettings.Default;
+        }
+
+        try
+        {
+            return await _receiptPrinterSettingsStore.LoadAsync(cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return ReceiptPrinterSettings.Default;
+        }
+    }
+
+    private IReadOnlyList<ReceiptPreviewRow> BuildPreviewRows(ReceiptDetails receipt, ReceiptPrinterSettings settings)
+    {
+        try
+        {
+            return _receiptTextFormatter.Build(receipt, settings, receipt.SoldAt).PreviewRows;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            try
+            {
+                return new ReceiptTextFormatter().Build(receipt, ReceiptPrinterSettings.Default, receipt.SoldAt).PreviewRows;
+            }
+            catch (Exception fallbackEx) when (fallbackEx is not OperationCanceledException)
+            {
+                return [];
+            }
+        }
     }
 }
