@@ -143,6 +143,7 @@ namespace BlazorApp.Api.Data
                     typeof(User),
                     typeof(Role),
                     typeof(UserRole),
+                    typeof(SysUserPermission),
                     typeof(Store),
                     typeof(UserStore),
                     typeof(RefreshToken),
@@ -155,6 +156,8 @@ namespace BlazorApp.Api.Data
                     typeof(ChinaSupplier),
                     typeof(DomesticProduct),
                     typeof(ProductPrefixCode),
+                    typeof(SysPermission),
+                    typeof(SysRolePermission),
                     typeof(DomesticSetProduct),
                     typeof(Location),
                     typeof(ProductLocation),
@@ -168,6 +171,12 @@ namespace BlazorApp.Api.Data
                 };
 
                 _db.CodeFirst.InitTables(tables);
+                _db.Ado.ExecuteCommand(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_SysUserPermission_User_Permission_Unique\" ON \"HBwebSysUserPermissions\" (\"UserGuid\", \"PermissionCode\")"
+                );
+                _db.Ado.ExecuteCommand(
+                    "CREATE INDEX IF NOT EXISTS \"IX_SysUserPermission_UserGuid\" ON \"HBwebSysUserPermissions\" (\"UserGuid\")"
+                );
                 _logger.LogInformation("PostgreSQL数据库表结构检查完成");
             }
             catch (Exception ex)

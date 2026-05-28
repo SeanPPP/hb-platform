@@ -184,6 +184,24 @@ namespace BlazorApp.Api.Interfaces
         Task<ApiResponse<UserPermissionSnapshotDto>> GetUserPermissionSnapshotAsync(string userGuid);
 
         /// <summary>
+        /// 获取用户权限状态
+        /// </summary>
+        /// <param name="userGuid">用户GUID</param>
+        /// <returns>角色继承权限、用户直接权限和最终有效权限</returns>
+        Task<ApiResponse<UserPermissionStateDto>> GetUserPermissionStateAsync(string userGuid);
+
+        /// <summary>
+        /// 为用户分配直接权限
+        /// </summary>
+        /// <param name="userGuid">用户GUID</param>
+        /// <param name="dto">用户直接权限分配DTO</param>
+        /// <returns>分配结果</returns>
+        Task<ApiResponse<bool>> AssignPermissionsToUserAsync(
+            string userGuid,
+            UserPermissionAssignmentDto dto
+        );
+
+        /// <summary>
         /// 复制角色
         /// </summary>
         /// <param name="sourceRoleGuid">源角色GUID</param>

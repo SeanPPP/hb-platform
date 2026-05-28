@@ -38,7 +38,14 @@ public sealed class RoleServicePermissionTests : IDisposable
             InitKeyType = InitKeyType.Attribute,
         });
 
-        _db.CodeFirst.InitTables<User, Role, UserRole, SysPermission, SysRolePermission>();
+        _db.CodeFirst.InitTables(
+            typeof(User),
+            typeof(Role),
+            typeof(UserRole),
+            typeof(SysPermission),
+            typeof(SysRolePermission),
+            typeof(SysUserPermission)
+        );
     }
 
     [Fact]
@@ -64,6 +71,17 @@ public sealed class RoleServicePermissionTests : IDisposable
     }
 
     [Fact]
+    public async Task UserHasPermissionAsync_DirectUserPermissionGrantsAccess()
+    {
+        await SeedUserWithRoleAsync("user-1", "role-user", "User");
+        await InsertUserPermissionAsync("user-1", Permissions.Reports.View);
+
+        var result = await CreateService().UserHasPermissionAsync("user-1", Permissions.Reports.View);
+
+        Assert.True(result.Data);
+    }
+
+    [Fact]
     public async Task GetUserPermissionSnapshotAsync_AdminRoleReturnsImplicitAllPermissions()
     {
         await SeedUserWithRoleAsync("user-1", "role-admin", "Admin");
@@ -84,6 +102,7 @@ public sealed class RoleServicePermissionTests : IDisposable
     {
         await SeedUserWithRoleAsync("user-1", "role-user", "User");
         await InsertRolePermissionAsync("role-user", "LocalInvocie.View");
+        await InsertUserPermissionAsync("user-1", Permissions.Reports.View);
 
         var result = await CreateService().GetUserPermissionSnapshotAsync("user-1");
 
@@ -92,6 +111,7 @@ public sealed class RoleServicePermissionTests : IDisposable
         Assert.Contains("User", result.Data.RoleNames);
         Assert.Contains("LocalInvocie.View", result.Data.PermissionCodes);
         Assert.Contains(Permissions.LocalPurchase.View, result.Data.PermissionCodes);
+        Assert.Contains(Permissions.Reports.View, result.Data.PermissionCodes);
     }
 
     [Fact]
@@ -201,6 +221,61 @@ public sealed class RoleServicePermissionTests : IDisposable
         Assert.Contains(Permissions.Attendance.Punch.Self, result.Data.EffectivePermissionCodes);
     }
 
+    [Fact]
+    public async Task GetUserPermissionStateAsync_SeparatesInheritedDirectAndEffectivePermissions()
+    {
+        await SeedUserWithRoleAsync("user-1", "role-store", "StoreManager");
+        await InsertRolePermissionAsync("role-store", Permissions.Attendance.Schedule.ViewStore);
+        await InsertUserPermissionAsync("user-1", Permissions.Reports.View);
+
+        var result = await CreateService().GetUserPermissionStateAsync("user-1");
+
+        Assert.NotNull(result.Data);
+        Assert.Contains(Permissions.Attendance.Schedule.ViewStore, result.Data.InheritedPermissionCodes);
+        Assert.Contains(Permissions.Reports.View, result.Data.DirectPermissionCodes);
+        Assert.Contains(Permissions.Attendance.Schedule.ViewStore, result.Data.EffectivePermissionCodes);
+        Assert.Contains(Permissions.Reports.View, result.Data.EffectivePermissionCodes);
+        var source = Assert.Single(result.Data.InheritedSources);
+        Assert.Equal("StoreManager", source.RoleName);
+        Assert.Contains(Permissions.Attendance.Schedule.ViewStore, source.PermissionCodes);
+    }
+
+    [Fact]
+    public async Task AssignPermissionsToUserAsync_ReplacesOnlyDirectUserPermissions()
+    {
+        await SeedUserWithRoleAsync("user-1", "role-store", "StoreManager");
+        await InsertPermissionAsync(Permissions.Reports.View);
+        await InsertPermissionAsync(Permissions.Users.View);
+        await InsertRolePermissionAsync("role-store", Permissions.Attendance.Schedule.ViewStore);
+        await InsertUserPermissionAsync("user-1", Permissions.Reports.View);
+
+        var result = await CreateService()
+            .AssignPermissionsToUserAsync(
+                "user-1",
+                new UserPermissionAssignmentDto
+                {
+                    Permissions = new List<string>
+                    {
+                        Permissions.Users.View,
+                        "Missing.Permission",
+                        Permissions.Users.View,
+                    },
+                }
+            );
+
+        var directLinks = await _db.Queryable<SysUserPermission>()
+            .Where(item => item.UserGuid == "user-1")
+            .ToListAsync();
+        var roleLinks = await _db.Queryable<SysRolePermission>()
+            .Where(item => item.RoleGuid == "role-store")
+            .ToListAsync();
+
+        Assert.True(result.Data);
+        var directLink = Assert.Single(directLinks);
+        Assert.Equal(Permissions.Users.View, directLink.PermissionCode);
+        Assert.Contains(roleLinks, item => item.PermissionCode == Permissions.Attendance.Schedule.ViewStore);
+    }
+
     public void Dispose()
     {
         _db.Dispose();
@@ -266,6 +341,17 @@ public sealed class RoleServicePermissionTests : IDisposable
         {
             Id = $"{roleGuid}-{permissionCode}",
             RoleGuid = roleGuid,
+            PermissionCode = permissionCode,
+            IsDeleted = false,
+        }).ExecuteCommandAsync();
+    }
+
+    private async Task InsertUserPermissionAsync(string userGuid, string permissionCode)
+    {
+        await _db.Insertable(new SysUserPermission
+        {
+            Id = $"{userGuid}-{permissionCode}",
+            UserGuid = userGuid,
             PermissionCode = permissionCode,
             IsDeleted = false,
         }).ExecuteCommandAsync();

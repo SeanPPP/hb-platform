@@ -1657,6 +1657,24 @@ namespace BlazorApp.Api.Services
                     return ApiResponse<bool>.OK(false, "用户没有该权限");
                 }
 
+                var directPermissionCodes = await db.Queryable<SysUserPermission>()
+                    .InnerJoin<User>((up, u) => up.UserGuid == u.UserGUID)
+                    .Where(
+                        (up, u) =>
+                            up.UserGuid == userGuid
+                            && !up.IsDeleted
+                            && u.IsActive
+                            && !u.IsDeleted
+                    )
+                    .Select((up, u) => up.PermissionCode)
+                    .ToListAsync();
+
+                if (Permissions.ExpandPermissionCodes(directPermissionCodes)
+                    .Any(code => equivalentPermissionCodes.Contains(code, StringComparer.OrdinalIgnoreCase)))
+                {
+                    return ApiResponse<bool>.OK(true, "用户拥有该权限");
+                }
+
                 // 链路: User -> UserRole -> Role -> SysRolePermission
                 // 只要有一个角色拥有该权限即可
                 var hasPermission = await db.Queryable<UserRole>()
@@ -1751,7 +1769,14 @@ namespace BlazorApp.Api.Services
                             .Select(item => item.PermissionCode)
                             .ToListAsync();
 
-                    permissionCodes = Permissions.ExpandPermissionCodes(explicitCodes).ToList();
+                    var directCodes = await db.Queryable<SysUserPermission>()
+                        .Where(item => item.UserGuid == userGuid && !item.IsDeleted)
+                        .Select(item => item.PermissionCode)
+                        .ToListAsync();
+
+                    permissionCodes = Permissions.ExpandPermissionCodes(
+                        explicitCodes.Concat(directCodes)
+                    ).ToList();
                 }
 
                 return ApiResponse<UserPermissionSnapshotDto>.OK(
@@ -1773,6 +1798,204 @@ namespace BlazorApp.Api.Services
                 return ApiResponse<UserPermissionSnapshotDto>.Error(
                     "获取用户权限快照失败",
                     "GET_USER_PERMISSION_SNAPSHOT_FAILED"
+                );
+            }
+        }
+
+        public async Task<ApiResponse<UserPermissionStateDto>> GetUserPermissionStateAsync(
+            string userGuid
+        )
+        {
+            try
+            {
+                var db = _context.Db;
+                var userExists = await db.Queryable<User>()
+                    .Where(item => item.UserGUID == userGuid && !item.IsDeleted)
+                    .AnyAsync();
+
+                if (!userExists)
+                {
+                    return ApiResponse<UserPermissionStateDto>.Error(
+                        "用户不存在",
+                        "USER_NOT_FOUND"
+                    );
+                }
+
+                var roleEntries = await db.Queryable<UserRole>()
+                    .InnerJoin<Role>((ur, r) => ur.RoleGUID == r.RoleGUID)
+                    .Where(
+                        (ur, r) =>
+                            ur.UserGUID == userGuid
+                            && !ur.IsDeleted
+                            && r.IsActive
+                            && !r.IsDeleted
+                    )
+                    .Select((ur, r) => new { r.RoleGUID, r.RoleName })
+                    .ToListAsync();
+
+                var directCodes = await db.Queryable<SysUserPermission>()
+                    .Where(item => item.UserGuid == userGuid && !item.IsDeleted)
+                    .Select(item => item.PermissionCode)
+                    .ToListAsync();
+
+                var isSuperAdmin = roleEntries.Any(item => IsSuperAdminRoleName(item.RoleName));
+                List<string> inheritedCodes;
+                List<UserPermissionInheritedSourceDto> inheritedSources;
+
+                if (isSuperAdmin)
+                {
+                    inheritedCodes = await db.Queryable<SysPermission>()
+                        .Where(item => !item.IsDeleted)
+                        .Select(item => item.Code)
+                        .ToListAsync();
+
+                    inheritedSources = roleEntries
+                        .Where(item => IsSuperAdminRoleName(item.RoleName))
+                        .Select(item => new UserPermissionInheritedSourceDto
+                        {
+                            RoleName = item.RoleName,
+                            PermissionCodes = inheritedCodes
+                                .Distinct(StringComparer.OrdinalIgnoreCase)
+                                .ToList(),
+                        })
+                        .ToList();
+                }
+                else
+                {
+                    var roleGuids = roleEntries
+                        .Select(item => item.RoleGUID)
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .ToList();
+                    var rolePermissionRows = roleGuids.Count == 0
+                        ? new List<SysRolePermission>()
+                        : await db.Queryable<SysRolePermission>()
+                            .Where(item => roleGuids.Contains(item.RoleGuid) && !item.IsDeleted)
+                            .ToListAsync();
+
+                    inheritedSources = roleEntries
+                        .Select(role =>
+                        {
+                            var roleCodes = rolePermissionRows
+                                .Where(item => item.RoleGuid == role.RoleGUID)
+                                .Select(item => item.PermissionCode)
+                                .ToList();
+
+                            return new UserPermissionInheritedSourceDto
+                            {
+                                RoleName = role.RoleName,
+                                PermissionCodes = Permissions.ExpandPermissionCodes(roleCodes)
+                                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                                    .ToList(),
+                            };
+                        })
+                        .Where(item => item.PermissionCodes.Count > 0)
+                        .ToList();
+
+                    inheritedCodes = inheritedSources
+                        .SelectMany(item => item.PermissionCodes)
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .ToList();
+                }
+
+                var normalizedDirectCodes = Permissions.ExpandPermissionCodes(directCodes)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                var effectiveCodes = inheritedCodes
+                    .Concat(normalizedDirectCodes)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+
+                return ApiResponse<UserPermissionStateDto>.OK(
+                    new UserPermissionStateDto
+                    {
+                        UserGuid = userGuid,
+                        InheritedPermissionCodes = inheritedCodes,
+                        DirectPermissionCodes = normalizedDirectCodes,
+                        EffectivePermissionCodes = effectiveCodes,
+                        InheritedSources = inheritedSources,
+                    },
+                    "获取用户权限状态成功"
+                );
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "获取用户权限状态失败，UserGUID: {UserGUID}", userGuid);
+                return ApiResponse<UserPermissionStateDto>.Error(
+                    "获取用户权限状态失败",
+                    "GET_USER_PERMISSION_STATE_FAILED"
+                );
+            }
+        }
+
+        public async Task<ApiResponse<bool>> AssignPermissionsToUserAsync(
+            string userGuid,
+            UserPermissionAssignmentDto dto
+        )
+        {
+            try
+            {
+                var db = _context.Db;
+                var userExists = await db.Queryable<User>()
+                    .Where(item => item.UserGUID == userGuid && !item.IsDeleted)
+                    .AnyAsync();
+
+                if (!userExists)
+                {
+                    return ApiResponse<bool>.Error("用户不存在", "USER_NOT_FOUND");
+                }
+
+                var requestedCodes = Permissions.ExpandPermissionCodes(dto.Permissions)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                var existingCodes = requestedCodes.Count == 0
+                    ? new List<string>()
+                    : await db.Queryable<SysPermission>()
+                        .Where(item => requestedCodes.Contains(item.Code) && !item.IsDeleted)
+                        .Select(item => item.Code)
+                        .ToListAsync();
+
+                await db.Ado.BeginTranAsync();
+                try
+                {
+                    await db.Deleteable<SysUserPermission>()
+                        .Where(item => item.UserGuid == userGuid)
+                        .ExecuteCommandAsync();
+
+                    if (existingCodes.Any())
+                    {
+                        var newPermissions = existingCodes
+                            .Distinct(StringComparer.OrdinalIgnoreCase)
+                            .Select(code => new SysUserPermission
+                            {
+                                Id = UuidHelper.GenerateUuid7(),
+                                UserGuid = userGuid,
+                                PermissionCode = code,
+                                CreatedAt = DateTime.Now,
+                                CreatedBy = GetCurrentUsername(),
+                                UpdatedAt = DateTime.Now,
+                                UpdatedBy = GetCurrentUsername(),
+                                IsDeleted = false,
+                            })
+                            .ToList();
+
+                        await db.Insertable(newPermissions).ExecuteCommandAsync();
+                    }
+
+                    await db.Ado.CommitTranAsync();
+                    return ApiResponse<bool>.OK(true, "用户直接权限分配成功");
+                }
+                catch
+                {
+                    await db.Ado.RollbackTranAsync();
+                    throw;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "为用户分配直接权限失败，UserGUID: {UserGUID}", userGuid);
+                return ApiResponse<bool>.Error(
+                    "用户直接权限分配失败",
+                    "ASSIGN_USER_PERMISSIONS_FAILED"
                 );
             }
         }

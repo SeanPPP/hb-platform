@@ -15,6 +15,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging.Abstractions;
+using Moq;
 using SqlSugar;
 using Xunit;
 
@@ -41,6 +42,14 @@ namespace BlazorApp.Api.Tests
             });
 
             _db.CodeFirst.InitTables<User, Store, UserStore, Role, UserRole>();
+        }
+
+        [Fact]
+        public void UsersController_HasSinglePublicConstructor_ForDependencyInjection()
+        {
+            var constructors = typeof(UsersController).GetConstructors();
+
+            Assert.Single(constructors);
         }
 
         [Fact]
@@ -241,6 +250,7 @@ namespace BlazorApp.Api.Tests
             await SeedUsersRolesAndStoresForScopeTestsAsync();
             var controller = new UsersController(
                 CreateUserService(),
+                Mock.Of<IRoleService>(),
                 NullLogger<UsersController>.Instance
             )
             {
