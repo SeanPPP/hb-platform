@@ -794,7 +794,14 @@ public class NavigationServiceTests
                 InitKeyType = InitKeyType.Attribute,
             });
 
-            _db.CodeFirst.InitTables<User, Role, UserRole, SysPermission, SysRolePermission>();
+            _db.CodeFirst.InitTables(
+                typeof(User),
+                typeof(Role),
+                typeof(UserRole),
+                typeof(SysPermission),
+                typeof(SysRolePermission),
+                typeof(SysUserPermission)
+            );
         }
 
         public NavigationService CreateNavigationService()
