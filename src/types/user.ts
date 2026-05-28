@@ -49,6 +49,23 @@ export interface UserRoleAssignmentDto {
   roleGuids: string[]
 }
 
+export interface UserPermissionInheritedSourceDto {
+  roleName: string
+  permissionCodes: string[]
+}
+
+export interface UserPermissionStateDto {
+  userGuid: string
+  inheritedPermissionCodes: string[]
+  directPermissionCodes: string[]
+  effectivePermissionCodes: string[]
+  inheritedSources: UserPermissionInheritedSourceDto[]
+}
+
+export interface UserPermissionAssignmentDto {
+  permissions: string[]
+}
+
 export interface UserStoreAssignmentDto {
   storeGUID: string
   accessLevel?: string

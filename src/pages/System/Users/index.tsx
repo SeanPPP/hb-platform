@@ -1,4 +1,4 @@
-import { EditOutlined, EyeOutlined, LockOutlined, PlusOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons'
+import { EditOutlined, EyeOutlined, LockOutlined, PlusOutlined, ReloadOutlined, SaveOutlined, SearchOutlined } from '@ant-design/icons'
 import {
   Button,
   Card,
@@ -22,6 +22,7 @@ import {
 } from 'antd'
 import type { TransferDirection } from 'antd/es/transfer'
 import type { ColumnsType } from 'antd/es/table'
+import type { DataNode } from 'antd/es/tree'
 import type { Dispatch, Key, SetStateAction } from 'react'
 import { useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -31,8 +32,10 @@ import { P } from '../../../types/permissions'
 import {
   assignRolesToUser,
   assignStoresToUser,
+  assignPermissionsToUser,
   createUser,
   getUserByGuid,
+  getUserPermissionState,
   getUserRoles,
   getUserStores,
   getUsers,
@@ -40,9 +43,9 @@ import {
   updateUserPassword,
 } from '../../../services/userService'
 import { getActiveRoles } from '../../../services/roleService'
-import { getPermissions, getRolePermissions } from '../../../services/roleService'
+import { getPermissions } from '../../../services/roleService'
 import { getStores } from '../../../services/storeService'
-import type { CreateUserDto, UpdateUserDto, UserDetailDto, UserDto, UserStoreDto } from '../../../types/user'
+import type { CreateUserDto, UpdateUserDto, UserDetailDto, UserDto, UserPermissionStateDto, UserStoreDto } from '../../../types/user'
 import type { RoleOptionDto, PermissionCategoryDto } from '../../../types/role'
 import type { StoreDto } from '../../../types/store'
 import { getRoleColor, getStoreColor } from '../../../utils/userTableColors'
@@ -61,6 +64,13 @@ import {
   isStoreVisibleToManager,
   mergeUsersByGuid,
 } from './userScope'
+import {
+  arePermissionSetsEqual,
+  buildDirectPermissionPayload,
+  buildPermissionSourceMap,
+  deriveDirectPermissionKeysFromChecked,
+  uniquePermissionCodes,
+} from './userPermissions'
 
 export default function SystemUsersPage() {
   const { t } = useTranslation()
@@ -105,8 +115,11 @@ export default function SystemUsersPage() {
   const [storeSaving, setStoreSaving] = useState(false)
 
   const [permCategories, setPermCategories] = useState<PermissionCategoryDto[]>([])
-  const [rolePermMap, setRolePermMap] = useState<Record<string, string[]>>({})
+  const [permissionState, setPermissionState] = useState<UserPermissionStateDto | null>(null)
+  const [directPermKeys, setDirectPermKeys] = useState<string[]>([])
+  const [originalDirectPermKeys, setOriginalDirectPermKeys] = useState<string[]>([])
   const [permLoading, setPermLoading] = useState(false)
+  const [permSaving, setPermSaving] = useState(false)
 
   const [resetPwdLoading, setResetPwdLoading] = useState(false)
   const [resetPwdOpen, setResetPwdOpen] = useState(false)
@@ -133,6 +146,8 @@ export default function SystemUsersPage() {
   const managedStores = useMemo(() => getManagedStores(currentUser, access), [access, currentUser])
   const managedStoreKey = managedStores.map((store) => store.storeGUID).join('|')
   const canLoadRoleOptions = access.canReadRole || access.hasPermission(P.Users.ManageRoles)
+  const canManageUserPermissions = access.hasPermission(P.Users.ManageRoles)
+  const canEditUserPermissions = canManageUserPermissions
 
   const visibleStoreOptions = useMemo(() => {
     if (isCurrentUserScoped) {
@@ -494,20 +509,14 @@ export default function SystemUsersPage() {
   const loadPermData = async (userGuid: string) => {
     setPermLoading(true)
     try {
-      const [categories, userRoles] = await Promise.all([getPermissions(), getUserRoles(userGuid)])
+      const [categories, nextPermissionState] = await Promise.all([
+        getPermissions(),
+        getUserPermissionState(userGuid),
+      ])
       setPermCategories(categories)
-      const map: Record<string, string[]> = {}
-      await Promise.all(
-        userRoles.map(async (role) => {
-          try {
-            const perms = await getRolePermissions(role.roleGUID)
-            map[role.roleName] = perms
-          } catch {
-            map[role.roleName] = []
-          }
-        }),
-      )
-      setRolePermMap(map)
+      setPermissionState(nextPermissionState)
+      setDirectPermKeys(nextPermissionState.directPermissionCodes)
+      setOriginalDirectPermKeys(nextPermissionState.directPermissionCodes)
     } catch (error) {
       console.error(error)
       message.error(t('system.users.loadPermsFailed', '加载权限数据失败'))
@@ -526,6 +535,9 @@ export default function SystemUsersPage() {
     setEditLoading(true)
     setEditingUser(null)
     setEditTab('info')
+    setPermissionState(null)
+    setDirectPermKeys([])
+    setOriginalDirectPermKeys([])
     form.resetFields()
     try {
       const detail = await getUserByGuid(record.userGUID)
@@ -585,8 +597,8 @@ export default function SystemUsersPage() {
       await assignRolesToUser(editingUser.userGUID, { roleGuids: roleTargetKeys })
       message.success(t('system.users.roleAssignSuccess', '角色分配成功'))
       void loadData(page, pageSize, sortBy, sortOrder)
-      void loadPermData(editingUser.userGUID)
       const updated = await getUserByGuid(editingUser.userGUID)
+      void loadPermData(editingUser.userGUID)
       setEditingUser(updated)
       if (detailUser?.userGUID === updated.userGUID) setDetailUser(updated)
     } catch (error) {
@@ -594,6 +606,26 @@ export default function SystemUsersPage() {
       message.error(t('system.users.roleAssignFailed', '角色分配失败'))
     } finally {
       setRoleSaving(false)
+    }
+  }
+
+  const handleSavePermissions = async () => {
+    if (!editingUser || !canEditUserPermissions) return
+    setPermSaving(true)
+    try {
+      const permissions = buildDirectPermissionPayload(directPermKeys)
+      await assignPermissionsToUser(editingUser.userGUID, { permissions })
+      message.success(t('system.users.permissionAssignSuccess', '用户直接权限已保存'))
+      await loadPermData(editingUser.userGUID)
+      void loadData(page, pageSize, sortBy, sortOrder)
+      const updated = await getUserByGuid(editingUser.userGUID)
+      setEditingUser(updated)
+      if (detailUser?.userGUID === updated.userGUID) setDetailUser(updated)
+    } catch (error) {
+      console.error(error)
+      message.error(t('system.users.permissionAssignFailed', '用户直接权限保存失败'))
+    } finally {
+      setPermSaving(false)
     }
   }
 
@@ -721,39 +753,91 @@ export default function SystemUsersPage() {
     }
   }
 
-  const allPermSet = useMemo(() => {
-    const set = new Set<string>()
-    Object.values(rolePermMap).forEach((perms) => perms.forEach((p) => set.add(p)))
-    return set
-  }, [rolePermMap])
+  const inheritedPermSet = useMemo(() => {
+    return new Set(permissionState?.inheritedPermissionCodes ?? [])
+  }, [permissionState])
 
-  const permTreeData = useMemo(() => {
+  const allPermissionCodes = useMemo(() => {
+    return new Set(permCategories.flatMap((cat) => cat.permissions.map((permission) => permission.name)))
+  }, [permCategories])
+
+  const directPermSet = useMemo(() => {
+    return new Set(directPermKeys)
+  }, [directPermKeys])
+
+  const effectivePermSet = useMemo(() => {
+    return new Set(uniquePermissionCodes([
+      ...(permissionState?.inheritedPermissionCodes ?? []),
+      ...directPermKeys,
+    ]))
+  }, [directPermKeys, permissionState])
+
+  const permissionSourceMap = useMemo(() => {
+    return buildPermissionSourceMap(permissionState?.inheritedSources ?? [])
+  }, [permissionState])
+
+  const hasDirectPermChanges = useMemo(() => {
+    return !arePermissionSetsEqual(directPermKeys, originalDirectPermKeys)
+  }, [directPermKeys, originalDirectPermKeys])
+
+  const permTreeData = useMemo<DataNode[]>(() => {
     return permCategories.map((cat) => ({
-      key: cat.category,
+      key: `category:${cat.category}`,
       title: <strong>{cat.displayName}</strong>,
       children: cat.permissions.map((p) => ({
         key: p.name,
         title: (
           <Space size={4}>
             <span>{p.displayName}</span>
-            {Object.entries(rolePermMap)
-              .filter(([, perms]) => perms.includes(p.name))
-              .map(([roleName]) => (
-                <Tag key={roleName} color={getRoleColor(roleName)} style={{ fontSize: 11, lineHeight: '18px', padding: '0 4px' }}>
-                  {roleName}
-                </Tag>
-              ))}
+            {(permissionSourceMap[p.name] ?? []).map((roleName) => (
+              <Tag key={roleName} color={getRoleColor(roleName)} style={{ fontSize: 11, lineHeight: '18px', padding: '0 4px' }}>
+                {roleName}
+              </Tag>
+            ))}
+            {directPermSet.has(p.name) ? (
+              <Tag color="blue" style={{ fontSize: 11, lineHeight: '18px', padding: '0 4px' }}>
+                {t('system.users.directPermissionTag', '直接授权')}
+              </Tag>
+            ) : null}
           </Space>
         ),
       })),
     }))
-  }, [permCategories, rolePermMap])
+  }, [directPermSet, permCategories, permissionSourceMap, t])
 
   const checkedPermKeys = useMemo(() => {
-    return permCategories.flatMap((cat) =>
-      cat.permissions.filter((p) => allPermSet.has(p.name)).map((p) => p.name),
+    return Array.from(effectivePermSet)
+  }, [effectivePermSet])
+
+  const handlePermissionCheck = (
+    nextCheckedKeys: Key[] | { checked: Key[]; halfChecked: Key[] },
+    info: { checked: boolean; node: { key: Key } },
+  ) => {
+    if (!canEditUserPermissions) return
+
+    const changedKey = String(info.node.key)
+    const checkedKeys = Array.isArray(nextCheckedKeys)
+      ? nextCheckedKeys
+      : nextCheckedKeys.checked
+    const checkedPermissionKeys = checkedKeys.map(String)
+
+    if (!info.checked && inheritedPermSet.has(changedKey)) {
+      if (directPermSet.has(changedKey)) {
+        message.info(t('system.users.directPermissionRemovedInheritedKept', '已移除直接授权，该权限仍由角色继承保留'))
+      } else {
+        message.info(t('system.users.inheritedPermissionReadonly', '该权限来自角色，请到角色权限管理调整'))
+      }
+    }
+
+    setDirectPermKeys(
+      deriveDirectPermissionKeysFromChecked({
+        checkedPermissionKeys,
+        allPermissionCodes: Array.from(allPermissionCodes),
+        inheritedPermissionCodes: Array.from(inheritedPermSet),
+        currentDirectPermissionCodes: directPermKeys,
+      }),
     )
-  }, [permCategories, allPermSet])
+  }
 
   const columns: ColumnsType<UserDto> = [
     {
@@ -950,20 +1034,50 @@ export default function SystemUsersPage() {
         <Spin spinning={permLoading}>
           <div style={{ marginBottom: 12 }}>
             <Typography.Text type="secondary">
-              {t('system.users.permInheritDesc', '以下权限通过角色继承获得，共 {{count}} 项。权限标签表示来源角色。', { count: allPermSet.size })}
+              {t(
+                'system.users.permEditDesc',
+                '当前有效权限共 {{effectiveCount}} 项，其中角色继承 {{inheritedCount}} 项，直接授权 {{directCount}} 项。角色标签表示继承来源。',
+                {
+                  effectiveCount: effectivePermSet.size,
+                  inheritedCount: inheritedPermSet.size,
+                  directCount: directPermKeys.length,
+                },
+              )}
             </Typography.Text>
+            {!canManageUserPermissions ? (
+              <Typography.Text type="secondary" style={{ display: 'block', marginTop: 4 }}>
+                {t('system.users.noPermissionManagePermission', '无权限编辑用户直接权限')}
+              </Typography.Text>
+            ) : null}
           </div>
           {permCategories.length === 0 ? (
             <Typography.Text type="secondary">{t('system.users.noPermData', '暂无权限数据')}</Typography.Text>
           ) : (
-            <Tree
-              treeData={permTreeData}
-              checkedKeys={checkedPermKeys}
-              checkable
-              selectable={false}
-              defaultExpandAll
-              style={{ background: '#fafafa', padding: 12, borderRadius: 8 }}
-            />
+            <>
+              <Tree
+                treeData={permTreeData}
+                checkedKeys={checkedPermKeys}
+                checkable
+                disabled={!canEditUserPermissions}
+                selectable={false}
+                defaultExpandAll
+                onCheck={handlePermissionCheck}
+                style={{ background: '#fafafa', padding: 12, borderRadius: 8 }}
+              />
+              {canEditUserPermissions ? (
+                <div style={{ marginTop: 16, textAlign: 'right' }}>
+                  <Button
+                    type="primary"
+                    icon={<SaveOutlined />}
+                    loading={permSaving}
+                    disabled={!hasDirectPermChanges}
+                    onClick={() => void handleSavePermissions()}
+                  >
+                    {t('system.users.savePermissionAssign', '保存权限分配')}
+                  </Button>
+                </div>
+              ) : null}
+            </>
           )}
         </Spin>
       ),
@@ -1116,6 +1230,8 @@ export default function SystemUsersPage() {
         onClose={() => {
           setEditOpen(false)
           setEditingUser(null)
+          setPermissionState(null)
+          setDirectPermKeys([])
           form.resetFields()
         }}
         destroyOnHidden

@@ -3,6 +3,8 @@ import type { RoleOptionDto } from '../types/role'
 import type {
   CreateUserDto,
   UpdateUserDto,
+  UserPermissionAssignmentDto,
+  UserPermissionStateDto,
   UpdateUserPasswordDto,
   UserDetailDto,
   UserDto,
@@ -70,6 +72,24 @@ export async function assignRolesToUser(guid: string, payload: UserRoleAssignmen
   const response = await request.post<ApiResponse<boolean>>(`/api/Users/guid/${guid}/roles`, {
     RoleGuids: payload.roleGuids,
   })
+  return unwrapApiData(response)
+}
+
+export async function getUserPermissionState(guid: string): Promise<UserPermissionStateDto> {
+  const response = await request.get<ApiResponse<UserPermissionStateDto>>(
+    `/api/Users/guid/${guid}/permissions/state`,
+  )
+  return unwrapApiData(response)
+}
+
+export async function assignPermissionsToUser(
+  guid: string,
+  payload: UserPermissionAssignmentDto,
+): Promise<boolean> {
+  const response = await request.post<ApiResponse<boolean>>(
+    `/api/Users/guid/${guid}/permissions`,
+    { permissions: payload.permissions },
+  )
   return unwrapApiData(response)
 }
 
