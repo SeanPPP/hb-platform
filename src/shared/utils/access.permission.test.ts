@@ -160,6 +160,18 @@ assertEqual(
 );
 
 assertEqual(
+  buildAccess(createUser(["StoreProductManagement.Create"], ["StoreManager"])).canCreateStoreProducts,
+  true,
+  "StoreProductManagement.Create direct grant enables store product creation capability"
+);
+
+assertEqual(
+  buildAccess(createUser(["StoreProducts.Edit"], ["StoreManager"])).canCreateStoreProducts,
+  true,
+  "StoreProducts.Edit direct grant enables store product creation capability"
+);
+
+assertEqual(
   buildAccess(createUser([])).canCreateStoreProducts,
   false,
   "missing StoreProducts.Create keeps store product creation capability disabled"

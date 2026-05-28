@@ -24,7 +24,9 @@ export const PERMISSIONS = {
     View: "StoreVouchers.View",
   },
   StoreProducts: {
+    View: "StoreProducts.View",
     Create: "StoreProducts.Create",
+    Edit: "StoreProducts.Edit",
   },
   SeasonalCards: {
     Remaining: {
@@ -60,6 +62,18 @@ const PERMISSION_ALIAS_GROUPS = [
   {
     canonicalCode: PERMISSIONS.LocalPurchase.Edit,
     aliasCodes: ["LocalInvocie.Edit"],
+  },
+  {
+    canonicalCode: PERMISSIONS.StoreProducts.Create,
+    aliasCodes: [
+      "StoreProduct.Create",
+      "StoreProductManagement.Create",
+      "StoreProductMaintenance.Create",
+      "StoreProductsManagement.Create",
+      "StoreProductsMaintenance.Create",
+      "分店商品管理.创建分店商品",
+      "创建分店商品",
+    ],
   },
 ] as const;
 
@@ -273,7 +287,9 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
   const canSubmitSeasonalCardRemaining = hasPermission(
     PERMISSIONS.SeasonalCards.Remaining.SubmitManagedStore
   );
-  const canCreateStoreProducts = hasPermission(PERMISSIONS.StoreProducts.Create);
+  const canCreateStoreProducts =
+    hasPermission(PERMISSIONS.StoreProducts.Create) ||
+    hasPermission(PERMISSIONS.StoreProducts.Edit);
   const canManageAttendance = canViewAttendanceManagement;
 
   return {
