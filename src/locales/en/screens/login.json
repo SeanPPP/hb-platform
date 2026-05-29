@@ -1,5 +1,9 @@
 {
   "subtitle": "",
+  "languageSwitch": {
+    "toEnglish": "EN",
+    "toChinese": "中"
+  },
   "username": "Username",
   "password": "Password",
   "userMode": "User login",

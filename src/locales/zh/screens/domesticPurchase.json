@@ -63,6 +63,9 @@
     "exportSuccess": "导出成功",
     "exportFailed": "导出失败"
   },
+  "copy": {
+    "batchHeader": "货号 条码 贴牌价格"
+  },
   "productList": {
     "title": "国内商品列表",
     "headerSubtitle": "查看、编辑和复制国内商品信息",

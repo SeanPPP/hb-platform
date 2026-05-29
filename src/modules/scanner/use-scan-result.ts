@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { i18n } from "@/shared/i18n/i18n";
+import { resolveLocalizedErrorMessage } from "@/shared/i18n/error-message";
 import { useAddToCart, resolveMinimumOrderQuantity } from "@/modules/shop/use-add-to-cart";
 import { lookupProductsByBarcode } from "@/modules/scanner/api";
 import { playScanFeedbackSound, preloadScanFeedbackSounds } from "@/modules/scanner/scan-sound";
@@ -125,7 +126,11 @@ export function useScanResult({
       } catch (error) {
         updateFeedback({
           status: "error",
-          message: error instanceof Error ? error.message : i18n.t("common:scanner.failed"),
+          message: resolveLocalizedErrorMessage(error, {
+            language: i18n.resolvedLanguage ?? "zh",
+            t: i18n.t.bind(i18n),
+            fallbackKey: "common:scanner.failed",
+          }),
           barcode,
         });
       }

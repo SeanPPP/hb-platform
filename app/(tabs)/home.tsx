@@ -33,6 +33,7 @@ import { useScanResult } from "@/modules/scanner/use-scan-result";
 import { ScanResultPicker } from "@/components/ui/ScanResultPicker";
 import type { StoreOrderCategoryNode, StoreOrderProductItem } from "@/modules/shop/types";
 import { useCartStore } from "@/store/cart-store";
+import { resolveLocalizedErrorMessage } from "@/shared/i18n/error-message";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 
 function resolveDisplayCategories(tree: StoreOrderCategoryNode[]) {
@@ -67,7 +68,7 @@ function normalizeGradeValue(value: string | null | undefined) {
 }
 
 export default function Home() {
-  const { t } = useAppTranslation(["home", "common"]);
+  const { t, language } = useAppTranslation(["home", "common"]);
   const { height: windowHeight } = useWindowDimensions();
   const router = useRouter();
   const {
@@ -95,6 +96,13 @@ export default function Home() {
   const [pageNumber, setPageNumber] = useState(1);
   const [snackbarMessage, setSnackbarMessage] = useState("");
   const [activeCartMutationProductCode, setActiveCartMutationProductCode] = useState<string | null>(null);
+  const getErrorMessage = useCallback((error: unknown, fallbackKey: string) => (
+    resolveLocalizedErrorMessage(error, {
+      language,
+      t,
+      fallbackKey,
+    })
+  ), [language, t]);
   const addToCart = useAddToCart(selectedStoreCode);
   const updateCartQuantity = useUpdateCartQuantity(selectedStoreCode);
 
@@ -121,12 +129,12 @@ export default function Home() {
           t("messages.addedToCart", { name: product.productName || product.productCode })
         );
       } catch (error) {
-        setSnackbarMessage(error instanceof Error ? error.message : t("messages.scanAddFailed"));
+        setSnackbarMessage(getErrorMessage(error, "messages.scanAddFailed"));
       } finally {
         setActiveCartMutationProductCode(null);
       }
     },
-    [addToCart, autoAddWhenSingle, t]
+    [addToCart, autoAddWhenSingle, getErrorMessage, t]
   );
   const scanResult = useScanResult({
     autoAddWhenSingle,
@@ -210,22 +218,16 @@ export default function Home() {
       return;
     }
 
-    setSnackbarMessage(
-      storesError instanceof Error ? storesError.message : t("messages.storesLoadFailed")
-    );
-  }, [storesError, storesLoadFailed, t]);
+    setSnackbarMessage(getErrorMessage(storesError, "messages.storesLoadFailed"));
+  }, [getErrorMessage, storesError, storesLoadFailed]);
 
   useEffect(() => {
     if (!productsQuery.isError) {
       return;
     }
 
-    setSnackbarMessage(
-      productsQuery.error instanceof Error
-        ? productsQuery.error.message
-        : t("messages.productsLoadFailed")
-    );
-  }, [productsQuery.error, productsQuery.isError, t]);
+    setSnackbarMessage(getErrorMessage(productsQuery.error, "messages.productsLoadFailed"));
+  }, [getErrorMessage, productsQuery.error, productsQuery.isError]);
 
   const canGoNextPage = useMemo(() => {
     const total = productsQuery.data?.total ?? 0;
@@ -337,7 +339,7 @@ export default function Home() {
         t("messages.addedToCart", { name: product.productName || product.productCode })
       );
     } catch (error) {
-      setSnackbarMessage(error instanceof Error ? error.message : t("messages.addFailed"));
+      setSnackbarMessage(getErrorMessage(error, "messages.addFailed"));
     } finally {
       setActiveCartMutationProductCode(null);
     }
@@ -358,7 +360,7 @@ export default function Home() {
         product,
       });
     } catch (error) {
-      setSnackbarMessage(error instanceof Error ? error.message : t("messages.updateQtyFailed"));
+      setSnackbarMessage(getErrorMessage(error, "messages.updateQtyFailed"));
     } finally {
       setActiveCartMutationProductCode(null);
     }
@@ -375,7 +377,7 @@ export default function Home() {
         product,
       });
     } catch (error) {
-      setSnackbarMessage(error instanceof Error ? error.message : t("messages.updateQtyFailed"));
+      setSnackbarMessage(getErrorMessage(error, "messages.updateQtyFailed"));
     } finally {
       setActiveCartMutationProductCode(null);
     }
@@ -598,7 +600,7 @@ export default function Home() {
               ) : storesLoadFailed ? (
                 <View style={styles.storeErrorWrap}>
                   <Text variant="bodyMedium">
-                    {storesError instanceof Error ? storesError.message : t("messages.storesLoadFailed")}
+                    {getErrorMessage(storesError, "messages.storesLoadFailed")}
                   </Text>
                   <Button mode="outlined" onPress={() => void refetchStores()}>
                     {t("common:actions.retry")}

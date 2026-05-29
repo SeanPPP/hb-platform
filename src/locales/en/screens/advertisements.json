@@ -31,7 +31,9 @@
     "effectiveEnd": "Effective end",
     "sortOrder": "Sort order",
     "isEnabled": "Enabled",
-    "storeScope": "Store scope"
+    "storeScope": "Store scope",
+    "effectiveStartPlaceholder": "2026-06-01T00:00:00Z",
+    "effectiveEndPlaceholder": "2026-06-30T23:59:59Z"
   },
   "labels": {
     "sortOrder": "Sort",

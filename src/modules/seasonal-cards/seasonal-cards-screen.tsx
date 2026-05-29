@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   RefreshControl,
   ScrollView,
@@ -53,6 +53,7 @@ import type {
 import type { Store } from "@/modules/shop/types";
 import { getDeviceBoundStoreCode } from "@/modules/shop/device-bound-store-filter";
 import { useStores } from "@/modules/shop/use-stores";
+import { resolveLocalizedErrorMessage } from "@/shared/i18n/error-message";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 import { resolveLocaleTag } from "@/shared/i18n/types";
 import { useAuthStore } from "@/store/auth-store";
@@ -194,6 +195,13 @@ function DetailLine({ label, value }: { label: string; value: string }) {
 
 export function SeasonalCardsScreen() {
   const { t, language } = useAppTranslation(["seasonalCards", "common"]);
+  const getErrorMessage = useCallback((error: unknown, fallbackKey: string) => (
+    resolveLocalizedErrorMessage(error, {
+      language,
+      t,
+      fallbackKey,
+    })
+  ), [language, t]);
   const localeTag = useMemo(() => resolveLocaleTag(language), [language]);
   const access = useAuthStore((state) => state.access);
   const selectedStore = useCartStore((state) => state.selectedStore);
@@ -549,7 +557,7 @@ export function SeasonalCardsScreen() {
         setViewMode("history");
       }
     } catch (error) {
-      setSnackbar(error instanceof Error ? error.message : t("messages.submitFailed"));
+      setSnackbar(getErrorMessage(error, "messages.submitFailed"));
     }
   };
 
@@ -747,11 +755,11 @@ export function SeasonalCardsScreen() {
       ) : historyQuery.isError ? (
         <EmptyState
           title={t("messages.historyLoadFailed")}
-          description={
-            historyQuery.error instanceof Error
-              ? historyQuery.error.message
-              : t("messages.historyLoadFailed")
-          }
+          description={resolveLocalizedErrorMessage(historyQuery.error, {
+            t,
+            language,
+            fallbackKey: "messages.historyLoadFailed",
+          })}
         />
       ) : historyQuery.data?.items.length && historyDisplayMode === "table" ? (
         <Surface style={styles.tableSurface}>

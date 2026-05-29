@@ -238,7 +238,7 @@ export function HolidayManagementCard({
               mode="outlined"
               label={t("fields.startTime")}
               value={form.openTime}
-              placeholder="09:00"
+              placeholder={t("common:placeholders.time")}
               style={styles.timeInput}
               onChangeText={(value) => setField("openTime", value)}
               disabled={isBusy || isClosed}
@@ -247,7 +247,7 @@ export function HolidayManagementCard({
               mode="outlined"
               label={t("fields.endTime")}
               value={form.closeTime}
-              placeholder="17:00"
+              placeholder={t("common:placeholders.time")}
               style={styles.timeInput}
               onChangeText={(value) => setField("closeTime", value)}
               disabled={isBusy || isClosed}

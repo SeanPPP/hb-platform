@@ -23,6 +23,7 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
+import { resolveLocalizedErrorMessage } from "@/shared/i18n/error-message";
 import { resolveLocaleTag } from "@/shared/i18n/types";
 import { fetchOrderDetail, fetchOrderList } from "@/modules/orders/store-order-api";
 import {
@@ -286,6 +287,13 @@ function OrderDetailContent({
 
 export default function Orders() {
   const { t, language } = useAppTranslation(["orders", "common"]);
+  const getErrorMessage = useCallback((error: unknown, fallbackKey: string) => (
+    resolveLocalizedErrorMessage(error, {
+      language,
+      t,
+      fallbackKey,
+    })
+  ), [language, t]);
   const localeTag = resolveLocaleTag(language);
   const { stores, selectedStore, selectedStoreCode, selectStore, isLoading: storesLoading } = useStores();
   const [selectedStatus, setSelectedStatus] = useState<"all" | StoreOrderFlowStatus>("all");
@@ -440,7 +448,11 @@ export default function Orders() {
             ) : ordersQuery.isError ? (
               <EmptyState
                 title={t("empty.listFailedTitle")}
-                description={ordersQuery.error instanceof Error ? ordersQuery.error.message : t("empty.noHistoryDescription")}
+                description={resolveLocalizedErrorMessage(ordersQuery.error, {
+                  t,
+                  language,
+                  fallbackKey: "empty.noHistoryDescription",
+                })}
                 primaryAction={{
                   label: t("common:actions.retry"),
                   icon: "refresh",
@@ -610,7 +622,11 @@ export default function Orders() {
           <OrderDetailContent
             detail={detailQuery.data}
             loading={!detailQuery.data && (detailQuery.isLoading || detailQuery.isFetching)}
-            errorMessage={detailQuery.error instanceof Error ? detailQuery.error.message : undefined}
+            errorMessage={
+              detailQuery.error
+                ? getErrorMessage(detailQuery.error, "empty.detailFailedDescription")
+                : undefined
+            }
             localeTag={localeTag}
             onClose={() => setSelectedOrderGuid(null)}
             onRetry={() => void detailQuery.refetch()}

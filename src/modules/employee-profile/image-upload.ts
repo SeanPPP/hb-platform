@@ -6,6 +6,7 @@ import type {
   EmployeeProfileImageKind,
   EmployeeProfileImageUploadResult,
 } from "@/modules/employee-profile/types";
+import { i18n } from "@/shared/i18n/i18n";
 
 export class EmployeeProfileImageUploadError extends Error {
   code: "signature_unavailable" | "upload_failed";
@@ -49,7 +50,10 @@ export async function uploadEmployeeProfileImage(params: {
   const fileBlob = await fileResponse.blob();
 
   if (!fileBlob.size) {
-    throw new EmployeeProfileImageUploadError("upload_failed", "Empty image file");
+    throw new EmployeeProfileImageUploadError(
+      "upload_failed",
+      i18n.t("common:errors.requestFailed")
+    );
   }
 
   let signature;
@@ -64,7 +68,7 @@ export async function uploadEmployeeProfileImage(params: {
     if (isMissingUploadSignatureError(error)) {
       throw new EmployeeProfileImageUploadError(
         "signature_unavailable",
-        "Employee profile image upload is not available"
+        i18n.t("common:errors.requestFailed")
       );
     }
 
@@ -76,7 +80,7 @@ export async function uploadEmployeeProfileImage(params: {
   } catch (error) {
     throw new EmployeeProfileImageUploadError(
       "upload_failed",
-      error instanceof Error ? error.message : "Image upload failed"
+      error instanceof Error ? error.message : i18n.t("common:errors.requestFailed")
     );
   }
 

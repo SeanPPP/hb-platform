@@ -30,6 +30,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { LoadingOverlay } from "@/components/ui/LoadingOverlay";
 import { ScanResultPicker } from "@/components/ui/ScanResultPicker";
+import { resolveLocalizedErrorMessage } from "@/shared/i18n/error-message";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 import { submitStoreOrder } from "@/modules/orders/store-order-api";
 import { useClearCart } from "@/modules/shop/use-clear-cart";
@@ -283,7 +284,7 @@ function CartListItemCard({
 export default function Cart() {
   const router = useRouter();
   const viewport = useWindowDimensions();
-  const { t } = useAppTranslation(["cart", "common"]);
+  const { t, language } = useAppTranslation(["cart", "common"]);
   const queryClient = useQueryClient();
   const { selectedStore, selectedStoreCode } = useStores();
   const [page, setPage] = useState(1);
@@ -292,6 +293,13 @@ export default function Cart() {
   const [searchInput, setSearchInput] = useState("");
   const [filtersVisible, setFiltersVisible] = useState(false);
   const [snackbarMessage, setSnackbarMessage] = useState("");
+  const getErrorMessage = useCallback((error: unknown, fallbackKey: string) => (
+    resolveLocalizedErrorMessage(error, {
+      language,
+      t,
+      fallbackKey,
+    })
+  ), [language, t]);
   const [activeCartItemCode, setActiveCartItemCode] = useState<string | null>(null);
   const [activeDeleteDetailGUID, setActiveDeleteDetailGUID] = useState<string | null>(null);
   const [openSwipeDetailGUID, setOpenSwipeDetailGUID] = useState<string | null>(null);
@@ -382,7 +390,7 @@ export default function Cart() {
         product: item,
       });
     } catch (error) {
-      setSnackbarMessage(error instanceof Error ? error.message : t("messages.updateQtyFailed"));
+      setSnackbarMessage(getErrorMessage(error, "messages.updateQtyFailed"));
     } finally {
       setActiveCartItemCode(null);
     }
@@ -402,7 +410,7 @@ export default function Cart() {
         setPriorityProductCode(null);
       }
     } catch (error) {
-      setSnackbarMessage(error instanceof Error ? error.message : t("messages.deleteFailed"));
+      setSnackbarMessage(getErrorMessage(error, "messages.deleteFailed"));
     } finally {
       setActiveDeleteDetailGUID(null);
     }
@@ -416,7 +424,7 @@ export default function Cart() {
       setPage(1);
       setSnackbarMessage(t("messages.clearSuccess"));
     } catch (error) {
-      setSnackbarMessage(error instanceof Error ? error.message : t("messages.clearFailed"));
+      setSnackbarMessage(getErrorMessage(error, "messages.clearFailed"));
     }
   }
 
@@ -454,7 +462,7 @@ export default function Cart() {
       setSnackbarMessage(t("messages.submitSuccess"));
       router.push("/(tabs)/orders");
     } catch (error) {
-      setSnackbarMessage(error instanceof Error ? error.message : t("messages.submitFailed"));
+      setSnackbarMessage(getErrorMessage(error, "messages.submitFailed"));
     } finally {
       setSubmitPending(false);
     }

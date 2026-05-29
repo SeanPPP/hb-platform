@@ -33,6 +33,7 @@ import {
   type EmployeeProfileImageKind,
   type UpdateEmployeeProfilePayload,
 } from "@/modules/employee-profile/types";
+import { resolveLocalizedErrorMessage } from "@/shared/i18n/error-message";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 import { resolveLocaleTag } from "@/shared/i18n/types";
 import { useAuthStore } from "@/store/auth-store";
@@ -191,6 +192,13 @@ export default function EmployeeProfileScreen() {
   const [snackbarVisible, setSnackbarVisible] = useState(false);
   const [cameraTarget, setCameraTarget] = useState<EmployeeProfileImageKind | null>(null);
   const [uploadingField, setUploadingField] = useState<ImageFieldKey | null>(null);
+  const getErrorMessage = useCallback((error: unknown, fallbackKey: string) => (
+    resolveLocalizedErrorMessage(error, {
+      language,
+      t,
+      fallbackKey,
+    })
+  ), [language, t]);
 
   const locale = useMemo(() => resolveLocaleTag(language), [language]);
 
@@ -239,7 +247,7 @@ export default function EmployeeProfileScreen() {
       showMessage(t("messages.saveSuccess"));
     },
     onError: (error) => {
-      showMessage(error instanceof Error ? error.message : t("messages.saveFailed"));
+      showMessage(getErrorMessage(error, "messages.saveFailed"));
     },
   });
 
@@ -330,7 +338,7 @@ export default function EmployeeProfileScreen() {
       ) {
         showMessage(t("messages.uploadNotAvailable"));
       } else {
-        showMessage(error instanceof Error ? error.message : t("messages.uploadFailed"));
+        showMessage(getErrorMessage(error, "messages.uploadFailed"));
       }
     } finally {
       setUploadingField(null);
@@ -367,9 +375,7 @@ export default function EmployeeProfileScreen() {
           <EmptyState
             title={t("messages.loadFailed")}
             description={
-              profileQuery.error instanceof Error
-                ? profileQuery.error.message
-                : t("messages.loadFailed")
+              getErrorMessage(profileQuery.error, "messages.loadFailed")
             }
             primaryAction={{
               label: t("common:actions.retry"),
@@ -550,9 +556,7 @@ export default function EmployeeProfileScreen() {
         </Surface>
 
         <HelperText type="error" visible={profileQuery.isError && Boolean(profileQuery.data)}>
-          {profileQuery.error instanceof Error
-            ? profileQuery.error.message
-            : t("messages.loadFailed")}
+          {getErrorMessage(profileQuery.error, "messages.loadFailed")}
         </HelperText>
 
         <Button

@@ -60,7 +60,7 @@ export function LeaveRequestCard({
             mode="outlined"
             label={t("fields.startDate")}
             value={form.startDate}
-            placeholder="YYYY-MM-DD"
+            placeholder={t("common:placeholders.date")}
             style={styles.dateInput}
             onChangeText={(value) => setField("startDate", value)}
           />
@@ -68,7 +68,7 @@ export function LeaveRequestCard({
             mode="outlined"
             label={t("fields.endDate")}
             value={form.endDate}
-            placeholder="YYYY-MM-DD"
+            placeholder={t("common:placeholders.date")}
             style={styles.dateInput}
             onChangeText={(value) => setField("endDate", value)}
           />

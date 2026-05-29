@@ -68,9 +68,18 @@
     "selectStore": "Select store",
     "allRelatedStores": "All related stores"
   },
+  "placeholders": {
+    "time": "09:00",
+    "date": "YYYY-MM-DD"
+  },
   "errors": {
     "selectStoreFirst": "Please select a store first.",
-    "loginFailed": "Login failed"
+    "loginFailed": "Login failed",
+    "network": "Network connection failed. Please try again.",
+    "timeout": "The request timed out. Please try again.",
+    "unauthorized": "Your session has expired or access is not available. Please sign in again.",
+    "server": "The server is temporarily unavailable. Please try again later.",
+    "requestFailed": "Request failed. Please try again."
   },
   "scanner": {
     "waiting": "Waiting for a scan",

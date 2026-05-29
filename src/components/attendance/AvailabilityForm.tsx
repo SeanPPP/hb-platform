@@ -119,7 +119,7 @@ export function AvailabilityForm({
               mode="outlined"
               label={t("fields.startTime")}
               value={form.startTime}
-              placeholder="09:00"
+              placeholder={t("common:placeholders.time")}
               style={styles.timeInput}
               onChangeText={(value) => setField("startTime", value)}
             />
@@ -127,7 +127,7 @@ export function AvailabilityForm({
               mode="outlined"
               label={t("fields.endTime")}
               value={form.endTime}
-              placeholder="17:00"
+              placeholder={t("common:placeholders.time")}
               style={styles.timeInput}
               onChangeText={(value) => setField("endTime", value)}
             />

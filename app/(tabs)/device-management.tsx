@@ -19,7 +19,7 @@ import { useStores } from "@/modules/shop/use-stores";
 import { useDeviceManagementDevices, useDeviceManagementMutations } from "@/modules/device-management/hooks";
 import { DEVICE_STATUS, getDeviceStatusKey, type DeviceStatusKey } from "@/modules/device-management/status";
 import type { DeviceManagementDevice, DeviceManagementQuery } from "@/modules/device-management/types";
-import { extractApiErrorMessage } from "@/shared/api/error-message";
+import { resolveLocalizedErrorMessage } from "@/shared/i18n/error-message";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 import { useAuthStore } from "@/store/auth-store";
 
@@ -238,9 +238,9 @@ function DeviceManagementAdminContent({
       await devicesQuery.refetch();
     } catch (error) {
       console.warn("[device-management] refresh failed", error);
-      setSnackbarMessage(extractApiErrorMessage(error, t("messages.refreshFailed")));
+      setSnackbarMessage(resolveLocalizedErrorMessage(error, { t, language, fallbackKey: "messages.refreshFailed" }));
     }
-  }, [devicesQuery, pageNumber, t]);
+  }, [devicesQuery, language, pageNumber, t]);
 
   const handleLoadMore = useCallback(() => {
     if (!hasNextPage || devicesQuery.isFetching) {
@@ -276,7 +276,11 @@ function DeviceManagementAdminContent({
                   setSnackbarMessage(t(`messages.${action}Success`));
                 } catch (error) {
                   console.warn(`[device-management] ${action} failed`, error);
-                  setSnackbarMessage(extractApiErrorMessage(error, t(`messages.${action}Failed`)));
+                  setSnackbarMessage(resolveLocalizedErrorMessage(error, {
+                    t,
+                    language,
+                    fallbackKey: `messages.${action}Failed`,
+                  }));
                 } finally {
                   setBusyDeviceKey(null);
                 }
@@ -286,7 +290,7 @@ function DeviceManagementAdminContent({
         ]
       );
     },
-    [activateMutation, disableMutation, lockMutation, t]
+    [activateMutation, disableMutation, language, lockMutation, t]
   );
 
   const renderDeviceCard = useCallback(
@@ -440,11 +444,11 @@ function DeviceManagementAdminContent({
             {devicesQuery.isError ? (
               <EmptyState
                 title={t("messages.loadFailedTitle")}
-                description={
-                  devicesQuery.error instanceof Error
-                    ? devicesQuery.error.message
-                    : t("messages.loadFailedDescription")
-                }
+                description={resolveLocalizedErrorMessage(devicesQuery.error, {
+                  t,
+                  language,
+                  fallbackKey: "messages.loadFailedDescription",
+                })}
                 primaryAction={{
                   label: t("common:actions.retry"),
                   icon: "refresh",

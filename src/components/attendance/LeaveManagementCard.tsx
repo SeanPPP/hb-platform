@@ -31,6 +31,7 @@ import type {
   AttendanceLeaveType,
 } from "@/modules/attendance/types";
 import type { StoreUserListItem } from "@/modules/users/types";
+import { resolveLocalizedErrorMessage } from "@/shared/i18n/error-message";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 
 type LeaveFormState = AttendanceLeaveRequestPayload & {
@@ -98,7 +99,7 @@ export function LeaveManagementCard({
   onSubmit,
   onShowMessage,
 }: LeaveManagementCardProps) {
-  const { t } = useAppTranslation(["attendance", "common"]);
+  const { t, language } = useAppTranslation(["attendance", "common"]);
   const { height } = useWindowDimensions();
   const [form, setForm] = useState<LeaveFormState>(() => createEmptyForm(storeCode));
   const [employeePickerVisible, setEmployeePickerVisible] = useState(false);
@@ -252,10 +253,11 @@ export function LeaveManagementCard({
       setCameraVisible(false);
       onShowMessage?.(t("leaveManagement.messages.attachmentUploaded"));
     } catch (error) {
-      const message =
-        error instanceof Error
-          ? error.message
-          : t("leaveManagement.messages.uploadFailed");
+      const message = resolveLocalizedErrorMessage(error, {
+        t,
+        language,
+        fallbackKey: "leaveManagement.messages.uploadFailed",
+      });
       setCameraError(message);
       onShowMessage?.(message);
     } finally {
@@ -330,7 +332,7 @@ export function LeaveManagementCard({
               mode="outlined"
               label={t("fields.startTimeOptional")}
               value={form.startTime ?? ""}
-              placeholder="09:00"
+              placeholder={t("common:placeholders.time")}
               style={styles.timeInput}
               onChangeText={(value) => setField("startTime", value)}
               disabled={isBusy}
@@ -339,7 +341,7 @@ export function LeaveManagementCard({
               mode="outlined"
               label={t("fields.endTimeOptional")}
               value={form.endTime ?? ""}
-              placeholder="17:00"
+              placeholder={t("common:placeholders.time")}
               style={styles.timeInput}
               onChangeText={(value) => setField("endTime", value)}
               disabled={isBusy}

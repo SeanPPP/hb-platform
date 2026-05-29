@@ -20,6 +20,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { hasVisibleTabRoute } from "@/modules/navigation/default-route";
 import { useAppNavigationStore } from "@/modules/navigation/store";
+import { resolveLocalizedErrorMessage } from "@/shared/i18n/error-message";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 import { resolveLocaleTag } from "@/shared/i18n/types";
 import { useAuthStore } from "@/store/auth-store";
@@ -87,7 +88,10 @@ function formatCopyValue(value?: string | null) {
   return nextValue ? nextValue : "--";
 }
 
-function buildBatchDetailCopyText(items: DomesticProductBatchItem[]) {
+function buildBatchDetailCopyText(
+  items: DomesticProductBatchItem[],
+  header: string
+) {
   if (items.length === 0) {
     return "";
   }
@@ -101,7 +105,7 @@ function buildBatchDetailCopyText(items: DomesticProductBatchItem[]) {
     return `${productNo} ${barcode} ${privateLabelPrice}`;
   });
 
-  return ["货号 条码 贴牌价格", ...rows].join("\n");
+  return [header, ...rows].join("\n");
 }
 
 function typeLabel(type: ProductCreationType, t: (key: string) => string) {
@@ -154,6 +158,13 @@ export default function DomesticPurchaseScreen() {
   const [selectedPrefix, setSelectedPrefix] = useState<ProductPrefixOption | null>(null);
   const [createCount, setCreateCount] = useState("5");
   const [privateLabelPrice, setPrivateLabelPrice] = useState("");
+  const getErrorMessage = useCallback((error: unknown, fallbackKey: string) => (
+    resolveLocalizedErrorMessage(error, {
+      language,
+      t,
+      fallbackKey,
+    })
+  ), [language, t]);
 
   const hasMore = batches.length < total;
 
@@ -171,7 +182,7 @@ export default function DomesticPurchaseScreen() {
         setPage(result.page);
         setLoadErrorMessage("");
       } catch (error) {
-        const message = error instanceof Error ? error.message : t("messages.loadFailed");
+        const message = getErrorMessage(error, "messages.loadFailed");
         setLoadErrorMessage(message);
         setSnackbar(message);
       } finally {
@@ -179,16 +190,16 @@ export default function DomesticPurchaseScreen() {
         setRefreshing(false);
       }
     },
-    [hasAccess, t]
+    [getErrorMessage, hasAccess]
   );
 
   const loadSuppliers = useCallback(async () => {
     try {
       setSuppliers(await fetchDomesticSuppliers());
     } catch (error) {
-      setSnackbar(error instanceof Error ? error.message : t("messages.loadSuppliersFailed"));
+      setSnackbar(getErrorMessage(error, "messages.loadSuppliersFailed"));
     }
-  }, [t]);
+  }, [getErrorMessage]);
 
   useFocusEffect(
     useCallback(() => {
@@ -217,14 +228,14 @@ export default function DomesticPurchaseScreen() {
         setDetail(nextDetail);
         setDetailEdits(buildDetailEdits(nextDetail.items));
       } catch (error) {
-        const message = error instanceof Error ? error.message : t("messages.loadDetailFailed");
+        const message = getErrorMessage(error, "messages.loadDetailFailed");
         setDetailErrorMessage(message);
         setSnackbar(message);
       } finally {
         setDetailLoading(false);
       }
     },
-    [t]
+    [getErrorMessage]
   );
 
   const resetCreateForm = useCallback(() => {
@@ -245,10 +256,10 @@ export default function DomesticPurchaseScreen() {
       try {
         setPrefixes(await fetchProductPrefixes(supplier.supplierCode));
       } catch (error) {
-        setSnackbar(error instanceof Error ? error.message : t("messages.loadPrefixesFailed"));
+        setSnackbar(getErrorMessage(error, "messages.loadPrefixesFailed"));
       }
     },
-    [t]
+    [getErrorMessage]
   );
 
   const handleCreate = useCallback(async () => {
@@ -286,11 +297,11 @@ export default function DomesticPurchaseScreen() {
       resetCreateForm();
       await loadBatches(1, "replace");
     } catch (error) {
-      setSnackbar(error instanceof Error ? error.message : t("messages.createFailed"));
+      setSnackbar(getErrorMessage(error, "messages.createFailed"));
     } finally {
       setBusy(false);
     }
-  }, [createCount, loadBatches, privateLabelPrice, resetCreateForm, selectedPrefix, selectedSupplier, t]);
+  }, [createCount, getErrorMessage, loadBatches, privateLabelPrice, resetCreateForm, selectedPrefix, selectedSupplier, t]);
 
   const handleExport = useCallback(
     async (batchNumber: string) => {
@@ -299,12 +310,12 @@ export default function DomesticPurchaseScreen() {
         await exportDomesticProductBatch(batchNumber);
         setSnackbar(t("messages.exportSuccess"));
       } catch (error) {
-        setSnackbar(error instanceof Error ? error.message : t("messages.exportFailed"));
+        setSnackbar(getErrorMessage(error, "messages.exportFailed"));
       } finally {
         setBusy(false);
       }
     },
-    [t]
+    [getErrorMessage, t]
   );
 
   const handleCopyBatch = useCallback(
@@ -312,7 +323,10 @@ export default function DomesticPurchaseScreen() {
       setCopyingBatchNumber(batchNumber);
       try {
         const nextDetail = await fetchDomesticProductBatchDetail(batchNumber);
-        const copyText = buildBatchDetailCopyText(nextDetail.items);
+        const copyText = buildBatchDetailCopyText(
+          nextDetail.items,
+          t("copy.batchHeader")
+        );
 
         if (!copyText) {
           setSnackbar(t("messages.copyEmpty"));
@@ -322,12 +336,12 @@ export default function DomesticPurchaseScreen() {
         await Clipboard.setStringAsync(copyText);
         setSnackbar(t("messages.copySuccess"));
       } catch (error) {
-        setSnackbar(error instanceof Error ? error.message : t("messages.copyFailed"));
+        setSnackbar(getErrorMessage(error, "messages.copyFailed"));
       } finally {
         setCopyingBatchNumber("");
       }
     },
-    [t]
+    [getErrorMessage, t]
   );
 
   const updateDetailEdit = useCallback((key: string, patch: Partial<DetailEditState>) => {
@@ -375,11 +389,11 @@ export default function DomesticPurchaseScreen() {
       setDetailEdits(buildDetailEdits(nextDetail.items));
       setSnackbar(t("messages.saveSuccess"));
     } catch (error) {
-      setSnackbar(error instanceof Error ? error.message : t("messages.saveFailed"));
+      setSnackbar(getErrorMessage(error, "messages.saveFailed"));
     } finally {
       setDetailSaving(false);
     }
-  }, [detail, detailEdits, selectedBatch, t]);
+  }, [detail, detailEdits, getErrorMessage, selectedBatch, t]);
 
   const summaryText = useMemo(
     () =>

@@ -6,6 +6,7 @@ import {
   syncPrinterStatus,
 } from "@/modules/printer/api";
 import { usePrinterStore } from "@/modules/printer/state";
+import { i18n } from "@/shared/i18n/i18n";
 
 const RECONNECT_INTERVAL_MS = 5000;
 
@@ -51,7 +52,11 @@ export function usePrinterAutoConnect() {
         await connectSavedPrinter({ status: initial ? "connecting" : "reconnecting" });
       } catch (error) {
         if (!cancelled) {
-          setLastError(error instanceof Error ? error.message : "Printer reconnect failed.");
+          setLastError(
+            error instanceof Error
+              ? error.message
+              : i18n.t("common:errors.requestFailed")
+          );
           setStatus("error");
         }
       } finally {
@@ -84,7 +89,11 @@ export function usePrinterAutoConnect() {
         nativeStatus = await syncPrinterStatus();
       } catch (error) {
         if (!cancelled) {
-          setLastError(error instanceof Error ? error.message : "Printer status check failed.");
+          setLastError(
+            error instanceof Error
+              ? error.message
+              : i18n.t("common:errors.requestFailed")
+          );
           setStatus("error");
         }
         return;
@@ -109,7 +118,11 @@ export function usePrinterAutoConnect() {
         await connectSavedPrinter({ status: "reconnecting" });
       } catch (error) {
         if (!cancelled) {
-          setLastError(error instanceof Error ? error.message : "Printer reconnect failed.");
+          setLastError(
+            error instanceof Error
+              ? error.message
+              : i18n.t("common:errors.requestFailed")
+          );
           setStatus("error");
         }
       } finally {

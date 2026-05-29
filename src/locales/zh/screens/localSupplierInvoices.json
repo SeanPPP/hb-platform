@@ -37,7 +37,8 @@
     "barcode": "条码",
     "purchasePrice": "进货价",
     "quantity": "数量",
-    "detailsCount": "{{count}} 条明细"
+    "detailsCount": "{{count}} 条明细",
+    "noImage": "无图"
   },
   "actions": {
     "copyItemNumber": "复制货号",

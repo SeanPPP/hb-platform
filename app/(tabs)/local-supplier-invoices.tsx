@@ -46,6 +46,7 @@ import { printWarehouseProductLabel } from "@/modules/printer/api";
 import type { Store } from "@/modules/shop/types";
 import { bindDeviceStoreFilter, getDeviceBoundStoreCode } from "@/modules/shop/device-bound-store-filter";
 import { useStores } from "@/modules/shop/use-stores";
+import { resolveLocalizedErrorMessage } from "@/shared/i18n/error-message";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 
 type SortOption = InvoiceGridSort & { labelKey: string };
@@ -286,6 +287,13 @@ function PageSizeMenu<T extends number>({
 
 export default function LocalSupplierInvoicesScreen() {
   const { t, language } = useAppTranslation(["localSupplierInvoices", "common", "attendance"]);
+  const getErrorMessage = useCallback((error: unknown, fallbackKey: string) => (
+    resolveLocalizedErrorMessage(error, {
+      language,
+      t,
+      fallbackKey,
+    })
+  ), [language, t]);
   const router = useRouter();
   const {
     stores,
@@ -403,6 +411,7 @@ export default function LocalSupplierInvoicesScreen() {
         allDatesLabel: t("filters.allDates"),
         formatFrom: (date) => t("filters.dateRangeFrom", { date }),
         formatTo: (date) => t("filters.dateRangeTo", { date }),
+        rangeSeparator: " ~ ",
       }
     ).text;
   }, [draftFilters.orderDateFrom, draftFilters.orderDateTo, t]);
@@ -433,13 +442,13 @@ export default function LocalSupplierInvoicesScreen() {
         setItems(result.items);
         setTotal(result.total);
       } catch (error) {
-        setSnackbar(error instanceof Error ? error.message : t("messages.loadFailed"));
+        setSnackbar(getErrorMessage(error, "messages.loadFailed"));
       } finally {
         setLoading(false);
         setRefreshing(false);
       }
     },
-    [bindDeviceStore, filters, isDeviceMode, page, pageSize, selectedStoreCode, sort, t]
+    [bindDeviceStore, filters, getErrorMessage, isDeviceMode, page, pageSize, selectedStoreCode, sort]
   );
 
   const loadDetails = useCallback(async () => {
@@ -456,11 +465,11 @@ export default function LocalSupplierInvoicesScreen() {
       setDetails(result.items);
       setDetailsTotal(result.total);
     } catch (error) {
-      setSnackbar(error instanceof Error ? error.message : t("messages.detailsLoadFailed"));
+      setSnackbar(getErrorMessage(error, "messages.detailsLoadFailed"));
     } finally {
       setDetailsLoading(false);
     }
-  }, [detailsPage, detailsPageSize, selectedInvoice?.invoiceGuid, t]);
+  }, [detailsPage, detailsPageSize, getErrorMessage, selectedInvoice?.invoiceGuid]);
 
   const loadSuppliers = useCallback(async () => {
     if (suppliersLoading) {
@@ -481,11 +490,11 @@ export default function LocalSupplierInvoicesScreen() {
       setSuppliers(normalizeSupplierOptions(payload));
       setSuppliersLoaded(true);
     } catch (error) {
-      setSnackbar(error instanceof Error ? error.message : t("messages.suppliersLoadFailed"));
+      setSnackbar(getErrorMessage(error, "messages.suppliersLoadFailed"));
     } finally {
       setSuppliersLoading(false);
     }
-  }, [suppliersLoading, t]);
+  }, [getErrorMessage, suppliersLoading, t]);
 
   useEffect(() => {
     void loadInvoices();
@@ -626,13 +635,12 @@ export default function LocalSupplierInvoicesScreen() {
         });
         setSnackbar(t("messages.printSuccess"));
       } catch (error) {
-        const fallback = t("messages.printFailed");
-        setSnackbar(error instanceof Error ? `${fallback}: ${error.message}` : fallback);
+        setSnackbar(getErrorMessage(error, "messages.printFailed"));
       } finally {
         setPrintingDetailGuid(null);
       }
     },
-    [selectedInvoice?.supplierCode, selectedInvoice?.supplierName, t]
+    [getErrorMessage, selectedInvoice?.supplierCode, selectedInvoice?.supplierName, t]
   );
 
   const openProduct = useCallback(
@@ -674,10 +682,10 @@ export default function LocalSupplierInvoicesScreen() {
           setTimeout(navigate, 0);
         }
       } catch (error) {
-        setSnackbar(error instanceof Error ? error.message : t("messages.productOpenFailed"));
+        setSnackbar(getErrorMessage(error, "messages.productOpenFailed"));
       }
     },
-    [detailsPage, detailsPageSize, filters, page, pageSize, router, selectedInvoice?.invoiceGuid, selectedInvoice?.storeCode, sort, t]
+    [detailsPage, detailsPageSize, filters, getErrorMessage, page, pageSize, router, selectedInvoice?.invoiceGuid, selectedInvoice?.storeCode, sort, t]
   );
 
   const openSupplierPicker = useCallback(() => {
@@ -1011,7 +1019,7 @@ export default function LocalSupplierInvoicesScreen() {
                     <Image source={{ uri: detail.productImage }} style={styles.productImage} />
                   ) : (
                     <View style={styles.productImagePlaceholder}>
-                      <Text variant="labelSmall">IMG</Text>
+                      <Text variant="labelSmall">{t("labels.noImage")}</Text>
                     </View>
                   )}
                   <View style={styles.detailBody}>

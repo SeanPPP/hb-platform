@@ -37,7 +37,8 @@
     "barcode": "Barcode",
     "purchasePrice": "Purchase",
     "quantity": "Qty",
-    "detailsCount": "{{count}} items"
+    "detailsCount": "{{count}} items",
+    "noImage": "No image"
   },
   "actions": {
     "copyItemNumber": "Copy item",

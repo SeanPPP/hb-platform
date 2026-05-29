@@ -14,6 +14,7 @@ export interface FormatInvoiceDateRangeDisplayOptions {
   allDatesLabel?: string;
   formatFrom?: (date: string) => string;
   formatTo?: (date: string) => string;
+  rangeSeparator?: string;
 }
 
 function trimDate(value?: string) {
@@ -38,15 +39,15 @@ export function formatInvoiceDateRangeDisplay(
   const { from, to } = normalizeRange(range);
 
   if (from && to) {
-    return { kind: "range", text: `${from} ~ ${to}` };
+    return { kind: "range", text: `${from}${options.rangeSeparator ?? " ~ "}${to}` };
   }
 
   if (from) {
-    return { kind: "from-only", text: options.formatFrom?.(from) ?? `${from} 起` };
+    return { kind: "from-only", text: options.formatFrom?.(from) ?? from };
   }
 
   if (to) {
-    return { kind: "to-only", text: options.formatTo?.(to) ?? `截至 ${to}` };
+    return { kind: "to-only", text: options.formatTo?.(to) ?? to };
   }
 
   return { kind: "all", text: options.allDatesLabel ?? "" };

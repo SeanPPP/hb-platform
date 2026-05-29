@@ -31,7 +31,9 @@
     "effectiveEnd": "生效结束时间",
     "sortOrder": "排序",
     "isEnabled": "启用状态",
-    "storeScope": "适用分店"
+    "storeScope": "适用分店",
+    "effectiveStartPlaceholder": "2026-06-01T00:00:00Z",
+    "effectiveEndPlaceholder": "2026-06-30T23:59:59Z"
   },
   "labels": {
     "sortOrder": "排序",

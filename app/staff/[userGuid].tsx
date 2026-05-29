@@ -28,7 +28,7 @@ import {
 } from "@/modules/users";
 import { calculateAge, maskTrailingFour } from "@/modules/users/profile-display";
 import { validatePasswordValue } from "@/modules/users/validation";
-import { extractApiErrorMessage } from "@/shared/api/error-message";
+import { resolveLocalizedErrorMessage } from "@/shared/i18n/error-message";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 import { resolveLocaleTag } from "@/shared/i18n/types";
 
@@ -187,10 +187,14 @@ export default function StaffDetailScreen() {
     } catch (error) {
       console.warn("[staff-profile] password reset failed", error);
       setSnackbarMessage(
-        extractApiErrorMessage(error, t("messages.passwordResetFailed")),
+        resolveLocalizedErrorMessage(error, {
+          t,
+          language,
+          fallbackKey: "messages.passwordResetFailed",
+        }),
       );
     }
-  }, [passwordMutation, resetPasswordValue, storeCode, t, userGuid]);
+  }, [language, passwordMutation, resetPasswordValue, storeCode, t, userGuid]);
 
   const handleToggleStatus = useCallback(() => {
     if (!profile || !storeCode) {
@@ -228,14 +232,18 @@ export default function StaffDetailScreen() {
             } catch (error) {
               console.warn("[staff-profile] status failed", error);
               setSnackbarMessage(
-                extractApiErrorMessage(error, t("messages.statusFailed")),
+                resolveLocalizedErrorMessage(error, {
+                  t,
+                  language,
+                  fallbackKey: "messages.statusFailed",
+                }),
               );
             }
           },
         },
       ],
     );
-  }, [profile, profileQuery, statusMutation, storeCode, t]);
+  }, [language, profile, profileQuery, statusMutation, storeCode, t]);
 
   const scheduleQuery = useQuery({
     queryKey: [
@@ -323,10 +331,11 @@ export default function StaffDetailScreen() {
       const description =
         scheduleQuery.error instanceof StaffAttendanceEndpointUnavailableError
           ? t("detail.schedule.endpointUnavailable")
-          : extractApiErrorMessage(
-              scheduleQuery.error,
-              t("detail.schedule.loadFailedDescription"),
-            );
+          : resolveLocalizedErrorMessage(scheduleQuery.error, {
+              t,
+              language,
+              fallbackKey: "detail.schedule.loadFailedDescription",
+            });
 
       return renderTabStateCard({
         title: t("detail.schedule.loadFailedTitle"),
@@ -444,10 +453,11 @@ export default function StaffDetailScreen() {
       const description =
         recordsQuery.error instanceof StaffAttendanceEndpointUnavailableError
           ? t("detail.records.endpointUnavailable")
-          : extractApiErrorMessage(
-              recordsQuery.error,
-              t("detail.records.loadFailedDescription"),
-            );
+          : resolveLocalizedErrorMessage(recordsQuery.error, {
+              t,
+              language,
+              fallbackKey: "detail.records.loadFailedDescription",
+            });
 
       return renderTabStateCard({
         title: t("detail.records.loadFailedTitle"),
@@ -699,11 +709,11 @@ export default function StaffDetailScreen() {
       <SafeAreaView style={styles.container}>
         <EmptyState
           title={t("detail.loadFailedTitle")}
-          description={
-            profileQuery.error instanceof Error
-              ? profileQuery.error.message
-              : t("messages.loadFailedDescription")
-          }
+          description={resolveLocalizedErrorMessage(profileQuery.error, {
+            t,
+            language,
+            fallbackKey: "messages.loadFailedDescription",
+          })}
           primaryAction={{
             label: t("common:actions.retry"),
             icon: "refresh",

@@ -63,6 +63,9 @@
     "exportSuccess": "Exported",
     "exportFailed": "Export failed"
   },
+  "copy": {
+    "batchHeader": "Item Barcode OEM Price"
+  },
   "productList": {
     "title": "Domestic Product List",
     "headerSubtitle": "View, edit, and copy domestic product information",

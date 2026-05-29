@@ -37,6 +37,7 @@ import type {
 import type { Store } from "@/modules/shop/types";
 import { bindDeviceStoreFilter, getDeviceBoundStoreCode } from "@/modules/shop/device-bound-store-filter";
 import { useStores } from "@/modules/shop/use-stores";
+import { resolveLocalizedErrorMessage } from "@/shared/i18n/error-message";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 import { resolveLocaleTag } from "@/shared/i18n/types";
 import { resolveQrDisplayValue } from "@/shared/utils/qr-display";
@@ -203,6 +204,13 @@ function SectionTitle({ children }: { children: string }) {
 
 export default function StoreVouchersScreen() {
   const { t, language } = useAppTranslation(["storeVouchers", "common"]);
+  const getErrorMessage = useCallback((error: unknown, fallbackKey: string) => (
+    resolveLocalizedErrorMessage(error, {
+      language,
+      t,
+      fallbackKey,
+    })
+  ), [language, t]);
   const localeTag = useMemo(() => resolveLocaleTag(language), [language]);
   const {
     stores,
@@ -285,13 +293,13 @@ export default function StoreVouchersScreen() {
         setItems(result.items);
         setTotal(result.total);
       } catch (error) {
-        setSnackbar(error instanceof Error ? error.message : t("messages.loadFailed"));
+        setSnackbar(getErrorMessage(error, "messages.loadFailed"));
       } finally {
         setLoading(false);
         setRefreshing(false);
       }
     },
-    [filters, isDeviceMode, page, selectedStoreCode, t]
+    [filters, getErrorMessage, isDeviceMode, page, selectedStoreCode, t]
   );
 
   useEffect(() => {
@@ -315,7 +323,7 @@ export default function StoreVouchersScreen() {
       })
       .catch((error) => {
         if (active) {
-          setSnackbar(error instanceof Error ? error.message : t("messages.detailsLoadFailed"));
+          setSnackbar(getErrorMessage(error, "messages.detailsLoadFailed"));
         }
       })
       .finally(() => {
@@ -327,7 +335,7 @@ export default function StoreVouchersScreen() {
     return () => {
       active = false;
     };
-  }, [detailTargets, t]);
+  }, [detailTargets, getErrorMessage, t]);
 
   useEffect(() => {
     if (!deviceBoundStoreCode) {

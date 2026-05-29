@@ -26,6 +26,7 @@ import {
   printProductLabel,
 } from "@/modules/printer/api";
 import { usePrinterStore } from "@/modules/printer/state";
+import { resolveLocalizedErrorMessage } from "@/shared/i18n/error-message";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 import {
   createProductWithPrices,
@@ -273,7 +274,7 @@ const DEFAULT_LOOKUP_FLOW_RESULT: LookupFlowResult = {
 };
 
 function ProductQueryContent() {
-  const { t } = useAppTranslation(["productQuery", "common"]);
+  const { t, language } = useAppTranslation(["productQuery", "common"]);
   const router = useRouter();
   const queryParams = useLocalSearchParams<{
     productCode?: string | string[];
@@ -348,6 +349,13 @@ function ProductQueryContent() {
   const [quantitySingleUse, setQuantitySingleUse] = useState(true);
   const [printSettingsVisible, setPrintSettingsVisible] = useState(false);
   const [storePickerVisible, setStorePickerVisible] = useState(false);
+  const getErrorMessage = useCallback((error: unknown, fallbackKey: string) => (
+    resolveLocalizedErrorMessage(error, {
+      language,
+      t,
+      fallbackKey,
+    })
+  ), [language, t]);
   const autoPricingDialogResolverRef = useRef<((result: AutoPricingDialogResolution) => void) | null>(null);
   const numericInputConfirmRef = useRef<((value: string) => void) | null>(null);
   const saveClearanceRef = useRef<() => Promise<void>>(async () => {});
@@ -484,7 +492,7 @@ function ProductQueryContent() {
             ? t("messages.lookupTimeout")
             : t("messages.lookupNetworkError");
         } else {
-          detail = error instanceof Error ? error.message : "";
+          detail = getErrorMessage(error, "messages.codesLoadFailed");
         }
         setSnackbarMessage(detail ? `${fallback}: ${detail}` : fallback);
         playQueryFeedback("error");
@@ -545,14 +553,14 @@ function ProductQueryContent() {
           setSelectedLookupProductCode(undefined);
           setCodePage(1);
           setCodesHasMore(false);
-          setSnackbarMessage(error instanceof Error ? `${t("messages.refreshFailed")}: ${error.message}` : t("messages.refreshFailed"));
+          setSnackbarMessage(getErrorMessage(error, "messages.refreshFailed"));
           playQueryFeedback("error");
         } finally {
           setLoading(false);
         }
       }
     },
-    [detail?.productCode, loadProductCodes, playQueryFeedback, selectStore, t]
+    [detail?.productCode, getErrorMessage, loadProductCodes, playQueryFeedback, selectStore]
   );
 
   const selectedCreateSupplier = useMemo(
@@ -574,12 +582,11 @@ function ProductQueryContent() {
           : { ...current, localSupplierCode: suppliers[0].supplierCode }
       );
     } catch (error) {
-      const fallback = t("createProduct.messages.suppliersLoadFailed");
-      setSnackbarMessage(error instanceof Error ? `${fallback}: ${error.message}` : fallback);
+      setSnackbarMessage(getErrorMessage(error, "createProduct.messages.suppliersLoadFailed"));
     } finally {
       setCreateSuppliersLoading(false);
     }
-  }, [t]);
+  }, [getErrorMessage]);
 
   const openCreateProductModal = useCallback(() => {
     setCreateProductDraft({
@@ -618,8 +625,7 @@ function ProductQueryContent() {
       setKeyword(nextKeyword);
       setSnackbarMessage(t("createProduct.messages.created"));
     } catch (error) {
-      const fallback = t("createProduct.messages.createFailed");
-      setSnackbarMessage(error instanceof Error ? `${fallback}: ${error.message}` : fallback);
+      setSnackbarMessage(getErrorMessage(error, "createProduct.messages.createFailed"));
       setCreateProductSaving(false);
       return;
     }
@@ -628,13 +634,12 @@ function ProductQueryContent() {
       try {
         await loadDetail(createdProductCode);
       } catch (error) {
-        const fallback = t("createProduct.messages.refreshFailedAfterCreate");
-        setSnackbarMessage(error instanceof Error ? `${fallback}: ${error.message}` : fallback);
+        setSnackbarMessage(getErrorMessage(error, "createProduct.messages.refreshFailedAfterCreate"));
       }
     }
 
     setCreateProductSaving(false);
-  }, [createProductDraft, loadDetail, t]);
+  }, [createProductDraft, getErrorMessage, loadDetail, t]);
 
   const persistStorePrice = useCallback(
     async (
@@ -673,13 +678,12 @@ function ProductQueryContent() {
         setInitialDetail(cloneDetail(nextDetail));
         return nextDetail;
       } catch (error) {
-        const fallback = t("messages.autoPricingUpdateFailed");
-        setSnackbarMessage(error instanceof Error ? `${fallback}: ${error.message}` : fallback);
+        setSnackbarMessage(getErrorMessage(error, "messages.autoPricingUpdateFailed"));
         playQueryFeedback("error");
         return null;
       }
     },
-    [loadProductCodes, playQueryFeedback, selectedStoreCode, t]
+    [getErrorMessage, loadProductCodes, playQueryFeedback, selectedStoreCode]
   );
 
   const finishAutoPricingDialog = useCallback((result: AutoPricingDialogResolution) => {
@@ -784,15 +788,14 @@ function ProductQueryContent() {
           error: error instanceof Error ? error.message : String(error),
           stack: error instanceof Error ? error.stack : undefined,
         });
-        const fallback = t("messages.printFailed");
-        setSnackbarMessage(error instanceof Error ? `${fallback}: ${error.message}` : fallback);
+        setSnackbarMessage(getErrorMessage(error, "messages.printFailed"));
         playQueryFeedback("error");
         return false;
       } finally {
         setPrintingAction(null);
       }
     },
-    [playQueryFeedback, printQuantity, printerAutoReconnectPaused, quantitySingleUse, t]
+    [getErrorMessage, playQueryFeedback, printQuantity, printerAutoReconnectPaused, quantitySingleUse, t]
   );
 
   const smartAutoPrint = useCallback(
@@ -841,12 +844,7 @@ function ProductQueryContent() {
             setPrintQuantity(1);
           }
         } catch (error) {
-          const fallback = t("messages.printFailed");
-          setSnackbarMessage(
-            error instanceof Error
-              ? `${fallback}: ${error.message}`
-              : fallback,
-          );
+          setSnackbarMessage(getErrorMessage(error, "messages.printFailed"));
         } finally {
           setPrintingAction(null);
         }
@@ -855,7 +853,7 @@ function ProductQueryContent() {
 
       await sendProductLabel(targetDetail);
     },
-    [printQuantity, quantitySingleUse, sendProductLabel, smallLabel, t],
+    [getErrorMessage, printQuantity, quantitySingleUse, sendProductLabel, smallLabel, t],
   );
 
   const maybeHandleAutoPricing = useCallback(
@@ -921,8 +919,7 @@ function ProductQueryContent() {
 
         return DEFAULT_LOOKUP_FLOW_RESULT;
       } catch (error) {
-        const fallback = t("messages.autoPricingEvaluateFailed");
-        setSnackbarMessage(error instanceof Error ? `${fallback}: ${error.message}` : fallback);
+        setSnackbarMessage(getErrorMessage(error, "messages.autoPricingEvaluateFailed"));
         playQueryFeedback("error");
         return {
           keepCameraOpen: false,
@@ -931,7 +928,7 @@ function ProductQueryContent() {
         };
       }
     },
-    [openAutoPricingDialog, persistStorePrice, playQueryFeedback, selectedStoreCode, t]
+    [getErrorMessage, openAutoPricingDialog, persistStorePrice, playQueryFeedback, selectedStoreCode]
   );
 
   const handleLookup = useCallback(
@@ -1018,7 +1015,7 @@ function ProductQueryContent() {
               : t("messages.lookupFailed");
           }
         } else {
-          message = error instanceof Error ? error.message : t("messages.lookupFailed");
+          message = getErrorMessage(error, "messages.lookupFailed");
         }
         console.error("[product-query] lookup failed", {
           keyword: nextKeyword,
@@ -1105,7 +1102,7 @@ function ProductQueryContent() {
         }
         await handleLookup(nextKeyword, "manual");
       } catch (error) {
-        setSnackbarMessage(error instanceof Error ? error.message : t("messages.lookupFailed"));
+        setSnackbarMessage(getErrorMessage(error, "messages.lookupFailed"));
         playQueryFeedback("error");
       }
     }
@@ -1189,7 +1186,7 @@ function ProductQueryContent() {
     try {
       await loadDetail(detail.productCode);
     } catch (error) {
-      setSnackbarMessage(error instanceof Error ? error.message : t("messages.refreshFailed"));
+      setSnackbarMessage(getErrorMessage(error, "messages.refreshFailed"));
     } finally {
       setRefreshing(false);
     }
@@ -1227,7 +1224,7 @@ function ProductQueryContent() {
         }
       }
     } catch (error) {
-      const message = error instanceof Error ? error.message : t("messages.lookupFailed");
+      const message = getErrorMessage(error, "messages.lookupFailed");
       setDetail(null);
       setInitialDetail(null);
       setQueryFeedback({ type: "error", query: keyword.trim(), message });
@@ -1302,13 +1299,12 @@ function ProductQueryContent() {
         setSnackbarMessage(t("messages.productTypeUpdated"));
         setProductTypeDialogVisible(false);
       } catch (error) {
-        const fallback = t("messages.productTypeUpdateFailed");
-        setSnackbarMessage(error instanceof Error ? `${fallback}: ${error.message}` : fallback);
+        setSnackbarMessage(getErrorMessage(error, "messages.productTypeUpdateFailed"));
       } finally {
         setProductTypeSaving(false);
       }
     },
-    [detail, selectedStoreCode, t]
+    [detail, getErrorMessage, selectedStoreCode, t]
   );
 
   const handleToggleAutoPricing = useCallback(
@@ -1510,12 +1506,12 @@ function ProductQueryContent() {
         await loadDetail(detail.productCode);
         setSnackbarMessage(t("messages.setCodeSaved"));
       } catch (error) {
-        setSnackbarMessage(error instanceof Error ? error.message : t("messages.setCodeSaveFailed"));
+        setSnackbarMessage(getErrorMessage(error, "messages.setCodeSaveFailed"));
       } finally {
         setSavingItemId(null);
       }
     },
-    [detail, loadDetail, selectedStoreCode, t]
+    [detail, getErrorMessage, loadDetail, selectedStoreCode, t]
   );
 
   const openEditSetCodeBarcode = useCallback((setCodeId: string) => {
@@ -1614,11 +1610,11 @@ function ProductQueryContent() {
       await loadDetail(detail.productCode);
       setSnackbarMessage(codeType === "set" ? t("messages.setCodeSaved") : t("messages.multiCodeSaved"));
     } catch (error) {
-      setSnackbarMessage(error instanceof Error ? error.message : t("messages.setCodeSaveFailed"));
+      setSnackbarMessage(getErrorMessage(error, "messages.setCodeSaveFailed"));
     } finally {
       setSavingItemId(null);
     }
-  }, [barcodeEditModal, detail?.productCode, loadDetail, selectedStoreCode, t]);
+  }, [barcodeEditModal, detail?.productCode, getErrorMessage, loadDetail, selectedStoreCode, t]);
 
   const handleConfirmCodeAdd = useCallback(async () => {
     if (!codeAddModal || !detail?.productCode || !selectedStoreCode) {
@@ -1647,11 +1643,11 @@ function ProductQueryContent() {
       await loadDetail(detail.productCode);
       setSnackbarMessage(codeType === "set" ? t("messages.setCodeCreated") : t("messages.multiCodeCreated"));
     } catch (error) {
-      setSnackbarMessage(error instanceof Error ? error.message : t("messages.setCodeSaveFailed"));
+      setSnackbarMessage(getErrorMessage(error, "messages.setCodeSaveFailed"));
     } finally {
       setSavingItemId(null);
     }
-  }, [codeAddModal, detail?.productCode, loadDetail, selectedStoreCode, t]);
+  }, [codeAddModal, detail?.productCode, getErrorMessage, loadDetail, selectedStoreCode, t]);
 
   const openClearancePriceEditor = useCallback(() => {
     openNumericInputModal({
@@ -1688,12 +1684,12 @@ function ProductQueryContent() {
         await loadDetail(detail.productCode);
         setSnackbarMessage(t("messages.multiCodeSaved"));
       } catch (error) {
-        setSnackbarMessage(error instanceof Error ? error.message : t("messages.multiCodeSaveFailed"));
+        setSnackbarMessage(getErrorMessage(error, "messages.multiCodeSaveFailed"));
       } finally {
         setSavingItemId(null);
       }
     },
-    [detail, loadDetail, selectedStoreCode, t]
+    [detail, getErrorMessage, loadDetail, selectedStoreCode, t]
   );
 
   const handleLoadMoreCodes = useCallback(() => {
@@ -1724,11 +1720,11 @@ function ProductQueryContent() {
       await loadDetail(detail.productCode);
       setSnackbarMessage(t("messages.clearanceSaved"));
     } catch (error) {
-      setSnackbarMessage(error instanceof Error ? error.message : t("messages.clearanceSaveFailed"));
+      setSnackbarMessage(getErrorMessage(error, "messages.clearanceSaveFailed"));
     } finally {
       setSavingClearance(false);
     }
-  }, [clearancePriceInput, detail?.productCode, loadDetail, selectedStoreCode, t]);
+  }, [clearancePriceInput, detail?.productCode, getErrorMessage, loadDetail, selectedStoreCode, t]);
 
   saveClearanceRef.current = handleSaveClearancePrice;
 
@@ -1751,11 +1747,11 @@ function ProductQueryContent() {
         setSnackbarMessage(t("messages.saved"));
       }
     } catch (error) {
-      setSnackbarMessage(error instanceof Error ? error.message : t("messages.saveFailed"));
+      setSnackbarMessage(getErrorMessage(error, "messages.saveFailed"));
     } finally {
       setSaving(false);
     }
-  }, [detail, initialDetail, persistStorePrice, t]);
+  }, [detail, getErrorMessage, initialDetail, persistStorePrice, t]);
 
   const handleReset = useCallback(() => {
     setDetail(cloneDetail(initialDetail));
@@ -1856,13 +1852,12 @@ function ProductQueryContent() {
           setPrintQuantity(1);
         }
       } catch (error) {
-        const fallback = t("messages.printFailed");
-        setSnackbarMessage(error instanceof Error ? `${fallback}: ${error.message}` : fallback);
+        setSnackbarMessage(getErrorMessage(error, "messages.printFailed"));
       } finally {
         setPrintingAction(null);
       }
     },
-    [detail, printQuantity, quantitySingleUse, sendProductLabel, smallLabel, t]
+    [detail, getErrorMessage, printQuantity, quantitySingleUse, sendProductLabel, smallLabel, t]
   );
 
   const handleReturnToInvoices = useCallback(() => {

@@ -843,7 +843,7 @@ export function AdvertisementsScreen() {
             <TextInput
               mode="outlined"
               label={t("fields.effectiveStart")}
-              placeholder="2026-06-01T00:00:00Z"
+              placeholder={t("fields.effectiveStartPlaceholder")}
               value={draft.effectiveStart}
               onChangeText={(value) => updateDraft("effectiveStart", value)}
             />
@@ -854,7 +854,7 @@ export function AdvertisementsScreen() {
             <TextInput
               mode="outlined"
               label={t("fields.effectiveEnd")}
-              placeholder="2026-06-30T23:59:59Z"
+              placeholder={t("fields.effectiveEndPlaceholder")}
               value={draft.effectiveEnd}
               onChangeText={(value) => updateDraft("effectiveEnd", value)}
             />

@@ -68,9 +68,18 @@
     "selectStore": "选择门店",
     "allRelatedStores": "全部相关分店"
   },
+  "placeholders": {
+    "time": "09:00",
+    "date": "YYYY-MM-DD"
+  },
   "errors": {
     "selectStoreFirst": "请先选择门店",
-    "loginFailed": "登录失败"
+    "loginFailed": "登录失败",
+    "network": "网络连接失败，请稍后重试。",
+    "timeout": "请求超时，请稍后重试。",
+    "unauthorized": "登录已失效或当前无权限，请重新登录。",
+    "server": "服务器暂时不可用，请稍后重试。",
+    "requestFailed": "请求失败，请稍后重试。"
   },
   "scanner": {
     "waiting": "等待扫码",

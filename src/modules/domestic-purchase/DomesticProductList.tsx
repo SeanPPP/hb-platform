@@ -26,6 +26,7 @@ import type {
   DomesticSupplierOption,
   UpdateDomesticProductRequest,
 } from "@/modules/domestic-purchase/types";
+import { resolveLocalizedErrorMessage } from "@/shared/i18n/error-message";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 
 const PAGE_SIZE_OPTIONS = [20, 50, 100] as const;
@@ -112,7 +113,7 @@ function buildCopyText(product: DomesticProductListItem, labels: Record<string, 
 }
 
 export function DomesticProductList() {
-  const { t } = useAppTranslation(["domesticPurchase", "common"]);
+  const { t, language } = useAppTranslation(["domesticPurchase", "common"]);
   const [items, setItems] = useState<DomesticProductListItem[]>([]);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState<PageSizeOption>(20);
@@ -126,6 +127,13 @@ export function DomesticProductList() {
   const [productNoKeyword, setProductNoKeyword] = useState("");
   const [appliedProductNo, setAppliedProductNo] = useState("");
   const [snackbar, setSnackbar] = useState("");
+  const getErrorMessage = useCallback((error: unknown, fallbackKey: string) => (
+    resolveLocalizedErrorMessage(error, {
+      language,
+      t,
+      fallbackKey,
+    })
+  ), [language, t]);
   const [copyingProductCode, setCopyingProductCode] = useState("");
   const [editingProduct, setEditingProduct] = useState<DomesticProductListItem | null>(null);
   const [editState, setEditState] = useState<DomesticProductEditState | null>(null);
@@ -163,7 +171,7 @@ export function DomesticProductList() {
         setPage(result.page);
         setLoadErrorMessage("");
       } catch (error) {
-        const message = error instanceof Error ? error.message : t("productList.messages.loadFailed");
+        const message = getErrorMessage(error, "productList.messages.loadFailed");
         setLoadErrorMessage(message);
         setSnackbar(message);
       } finally {
@@ -171,7 +179,7 @@ export function DomesticProductList() {
         setRefreshing(false);
       }
     },
-    [appliedProductNo, pageSize, selectedSupplier, t]
+    [appliedProductNo, getErrorMessage, pageSize, selectedSupplier]
   );
 
   useEffect(() => {
@@ -189,7 +197,7 @@ export function DomesticProductList() {
         }
       } catch (error) {
         if (!cancelled) {
-          setSnackbar(error instanceof Error ? error.message : t("messages.loadSuppliersFailed"));
+          setSnackbar(getErrorMessage(error, "messages.loadSuppliersFailed"));
         }
       }
     }
@@ -200,7 +208,7 @@ export function DomesticProductList() {
     return () => {
       cancelled = true;
     };
-  }, [loadProducts, t]);
+  }, [getErrorMessage, loadProducts]);
 
   const activeFilterCount = useMemo(
     () => [selectedSupplier, appliedProductNo.trim()].filter(Boolean).length,
@@ -255,12 +263,12 @@ export function DomesticProductList() {
         );
         setSnackbar(t("productList.messages.copySuccess"));
       } catch (error) {
-        setSnackbar(error instanceof Error ? error.message : t("productList.messages.copyFailed"));
+        setSnackbar(getErrorMessage(error, "productList.messages.copyFailed"));
       } finally {
         setCopyingProductCode("");
       }
     },
-    [t]
+    [getErrorMessage, t]
   );
 
   const openEdit = useCallback((product: DomesticProductListItem) => {
@@ -322,11 +330,11 @@ export function DomesticProductList() {
       setEditState(null);
       setSnackbar(t("productList.messages.saveSuccess"));
     } catch (error) {
-      setSnackbar(error instanceof Error ? error.message : t("productList.messages.saveFailed"));
+      setSnackbar(getErrorMessage(error, "productList.messages.saveFailed"));
     } finally {
       setSaving(false);
     }
-  }, [editState, editingProduct, t]);
+  }, [editState, editingProduct, getErrorMessage, t]);
 
   const renderProduct = useCallback(
     ({ item }: { item: DomesticProductListItem }) => {

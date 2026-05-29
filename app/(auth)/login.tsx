@@ -317,7 +317,7 @@ export default function Login() {
             activeOpacity={0.7}
           >
             <Text style={styles.langSwitchText}>
-              {i18n.language === "zh" ? "EN" : "中"}
+              {t(i18n.language === "zh" ? "languageSwitch.toEnglish" : "languageSwitch.toChinese")}
             </Text>
           </TouchableOpacity>
         </View>

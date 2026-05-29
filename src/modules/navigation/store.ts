@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { fetchAppNavigationMenu } from "@/modules/navigation/api";
 import type { AppNavigationMenuItem } from "@/modules/navigation/types";
 import { SETTINGS_FALLBACK_ROUTE_NAME } from "@/modules/navigation/default-route";
+import { i18n } from "@/shared/i18n/i18n";
 
 const SETTINGS_ONLY_MENU: AppNavigationMenuItem[] = [
   {
@@ -41,7 +42,9 @@ export const useAppNavigationStore = create<AppNavigationState>((set) => ({
       });
       return nextItems;
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : "Failed to load navigation";
+      const errorMessage = error instanceof Error
+        ? error.message
+        : i18n.t("common:errors.requestFailed");
       console.warn("[app-navigation] failed to load app menu", { error });
       set({
         items: SETTINGS_ONLY_MENU,
