@@ -36,37 +36,56 @@ namespace BlazorApp.Shared.DTOs
     /// </summary>
     public class CreateBatchItemDto
     {
+        [JsonPropertyName("productName")]
         public string? ProductName { get; set; }
 
         /// <summary>
         /// 0=Normal, 1=Set
         /// </summary>
+        [JsonPropertyName("productType")]
         public int ProductType { get; set; }
 
         /// <summary>
         /// For Set products
         /// </summary>
+        [JsonPropertyName("setQuantity")]
         public int? SetQuantity { get; set; }
 
         /// <summary>
         /// For Set products (total price)
         /// </summary>
+        [JsonPropertyName("setPrice")]
         public decimal? SetPrice { get; set; }
 
         /// <summary>
         /// OEMPrice for this item
         /// </summary>
+        [JsonPropertyName("privateLabelPrice")]
         public decimal? PrivateLabelPrice { get; set; }
 
         /// <summary>
         /// For Set sub-items (ProductType=2 means sub-item): Parent item's item number
         /// </summary>
+        [JsonPropertyName("parentItemNumber")]
         public string? ParentItemNumber { get; set; }
 
         /// <summary>
         /// For Set sub-items: Sub-item product name
         /// </summary>
+        [JsonPropertyName("subItemProductName")]
         public string? SubItemProductName { get; set; }
+
+        /// <summary>
+        /// 套装模板创建套数，仅套装商品有效，默认创建 1 套
+        /// </summary>
+        [JsonPropertyName("createCount")]
+        public int? CreateCount { get; set; }
+
+        /// <summary>
+        /// 指定套装模板下的子项列表
+        /// </summary>
+        [JsonPropertyName("subItems")]
+        public List<CreateBatchItemDto> SubItems { get; set; } = new();
     }
 
     /// <summary>

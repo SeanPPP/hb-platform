@@ -8,6 +8,7 @@ using BlazorApp.Api.Utils;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Helper;
 using BlazorApp.Shared.Models;
+using BlazorApp.Shared.Models.HqEntities;
 using SqlSugar;
 
 namespace BlazorApp.Api.Services.React
@@ -1939,7 +1940,11 @@ namespace BlazorApp.Api.Services.React
                     );
                 }
                 var items = await db.Queryable<DomesticSetProduct>()
-                    .Where(sp => sp.ProductCode == productCode && !sp.IsDeleted)
+                    .Where(sp =>
+                        sp.ProductCode == productCode
+                        && sp.ProductNo != sp.SetProductNo
+                        && !sp.IsDeleted
+                    )
                     .Select(sp => new DomesticSetProductDto
                     {
                         SetProductCode = sp.SetProductCode,
@@ -1995,7 +2000,11 @@ namespace BlazorApp.Api.Services.React
                 }
 
                 var existingItems = await db.Queryable<DomesticSetProduct>()
-                    .Where(sp => sp.ProductCode == productCode && !sp.IsDeleted)
+                    .Where(sp =>
+                        sp.ProductCode == productCode
+                        && sp.ProductNo != sp.SetProductNo
+                        && !sp.IsDeleted
+                    )
                     .ToListAsync();
                 var existingItemsDict = existingItems.ToDictionary(x => x.SetProductCode);
 
@@ -2817,6 +2826,17 @@ namespace BlazorApp.Api.Services.React
                             );
                         }
                     }
+
+                    var setSyncResult = await SyncSetItemsToHBSalesAsync(
+                        products,
+                        hbSalesDb
+                    );
+                    errors.AddRange(setSyncResult.Warnings);
+                    failCount += setSyncResult.ErrorCount;
+                    if (!string.IsNullOrWhiteSpace(setSyncResult.Details))
+                    {
+                        result.Details = setSyncResult.Details;
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -2832,6 +2852,10 @@ namespace BlazorApp.Api.Services.React
                     failCount == 0
                         ? $"同步成功：新增 {addedCount} 条，更新 {updatedCount} 条"
                         : $"同步完成：新增 {addedCount} 条，更新 {updatedCount} 条，失败 {failCount} 条";
+                if (!string.IsNullOrWhiteSpace(result.Details))
+                {
+                    result.Message = $"{result.Message}；{result.Details}";
+                }
                 result.EndTime = DateTime.Now;
                 result.Duration = result.EndTime - result.StartTime;
 
@@ -2848,6 +2872,186 @@ namespace BlazorApp.Api.Services.React
             {
                 _logger.LogError(ex, "[HBSalesSync] 同步商品到HBSales异常");
                 return ApiResponse<SyncResult>.Error("同步失败", "SYNC_ERROR");
+            }
+        }
+
+        private async Task<HBSalesSetItemSyncResult> SyncSetItemsToHBSalesAsync(
+            List<DomesticProduct> products,
+            SqlSugarScope hbSalesDb
+        )
+        {
+            var result = new HBSalesSetItemSyncResult();
+            var setProductCodes = products
+                .Where(p => p.ProductType == 1 && !string.IsNullOrWhiteSpace(p.ProductCode))
+                .Select(p => p.ProductCode)
+                .Distinct()
+                .ToList();
+
+            if (!setProductCodes.Any())
+            {
+                return result;
+            }
+
+            var setItems = await _context.Db.Queryable<DomesticSetProduct>()
+                .Where(x =>
+                    setProductCodes.Contains(x.ProductCode)
+                    && x.ProductNo != x.SetProductNo
+                    && !x.IsDeleted
+                )
+                .ToListAsync();
+
+            var setItemProductCodes = setItems.Select(x => x.ProductCode.Trim()).ToHashSet();
+            foreach (var productCode in setProductCodes.Where(code => !setItemProductCodes.Contains(code)))
+            {
+                result.SkippedCount++;
+                result.Warnings.Add($"套装商品 {productCode} 没有本地套装明细");
+            }
+
+            var validSetItems = new List<DomesticSetProduct>();
+            var seenKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var item in setItems)
+            {
+                if (string.IsNullOrWhiteSpace(item.SetBarcode))
+                {
+                    result.SkippedCount++;
+                    result.Warnings.Add($"套装商品 {item.ProductCode} 的小货号 {item.SetProductNo} 缺少套装条码");
+                    continue;
+                }
+
+                var key = BuildSetItemKey(item.ProductCode, item.SetBarcode);
+                if (!seenKeys.Add(key))
+                {
+                    result.SkippedCount++;
+                    result.Warnings.Add($"套装商品 {item.ProductCode} 的套装条码 {item.SetBarcode} 重复，已跳过重复明细");
+                    continue;
+                }
+
+                validSetItems.Add(item);
+            }
+
+            if (!validSetItems.Any())
+            {
+                result.RefreshDetails();
+                return result;
+            }
+
+            var validProductCodes = validSetItems
+                .Select(x => x.ProductCode.Trim())
+                .Distinct()
+                .ToList();
+
+            // 先按商品编码取候选，再用标准化后的“商品编码+条形码”在内存里精确匹配，避免条码空格导致重复新增。
+            var existingRows = await hbSalesDb.Queryable<CPT_DIC_商品套装信息表>()
+                .Where(x =>
+                    x.商品编码 != null
+                    && x.条形码 != null
+                    && validProductCodes.Contains(x.商品编码)
+                )
+                .ToListAsync();
+
+            var existingMap = existingRows
+                .GroupBy(x => BuildSetItemKey(x.商品编码, x.条形码), StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(g => g.Key, g => g.OrderBy(x => x.ID).First(), StringComparer.OrdinalIgnoreCase);
+
+            foreach (var item in validSetItems)
+            {
+                try
+                {
+                    var key = BuildSetItemKey(item.ProductCode, item.SetBarcode);
+                    if (existingMap.TryGetValue(key, out var existing))
+                    {
+                        existing.商品小货号 = item.SetProductNo?.Trim();
+                        existing.国内价格 = item.DomesticPrice;
+                        existing.进口价格 = item.ImportPrice;
+                        existing.贴牌价格 = item.OEMPrice;
+                        existing.备注 = item.Remarks;
+                        existing.使用状态 = 1;
+
+                        var updated = await hbSalesDb.Updateable(existing)
+                            .UpdateColumns(x => new
+                            {
+                                x.商品小货号,
+                                x.国内价格,
+                                x.进口价格,
+                                x.贴牌价格,
+                                x.备注,
+                                x.使用状态,
+                            })
+                            .WhereColumns(x => x.ID)
+                            .ExecuteCommandAsync();
+                        result.UpdatedCount += updated;
+                    }
+                    else
+                    {
+                        var newRow = new CPT_DIC_商品套装信息表
+                        {
+                            HGUID = item.SetProductCode,
+                            商品编码 = item.ProductCode.Trim(),
+                            商品小货号 = item.SetProductNo?.Trim(),
+                            条形码 = item.SetBarcode?.Trim(),
+                            国内价格 = item.DomesticPrice,
+                            进口价格 = item.ImportPrice,
+                            贴牌价格 = item.OEMPrice,
+                            备注 = item.Remarks,
+                            使用状态 = 1,
+                        };
+
+                        var inserted = await hbSalesDb.Insertable(newRow).ExecuteCommandAsync();
+                        result.AddedCount += inserted;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    result.ErrorCount++;
+                    result.Warnings.Add($"套装商品 {item.ProductCode} 条码 {item.SetBarcode} 同步失败：{ex.Message}");
+                    _logger.LogWarning(
+                        ex,
+                        "[HBSalesSync] 套装明细同步失败: ProductCode={ProductCode}, SetBarcode={SetBarcode}",
+                        item.ProductCode,
+                        item.SetBarcode
+                    );
+                }
+            }
+
+            result.RefreshDetails();
+            _logger.LogInformation(
+                "[HBSalesSync] 套装明细同步完成：新增{Added}，更新{Updated}，跳过{Skipped}，失败{Errors}",
+                result.AddedCount,
+                result.UpdatedCount,
+                result.SkippedCount,
+                result.ErrorCount
+            );
+
+            return result;
+        }
+
+        private static string BuildSetItemKey(string? productCode, string? setBarcode)
+        {
+            return $"{productCode?.Trim() ?? string.Empty}\u001F{setBarcode?.Trim() ?? string.Empty}";
+        }
+
+        private sealed class HBSalesSetItemSyncResult
+        {
+            public int AddedCount { get; set; }
+            public int UpdatedCount { get; set; }
+            public int SkippedCount { get; set; }
+            public int ErrorCount { get; set; }
+            public string Details { get; private set; } = string.Empty;
+            public List<string> Warnings { get; } = new();
+
+            public void RefreshDetails()
+            {
+                if (AddedCount == 0 && UpdatedCount == 0 && SkippedCount == 0 && ErrorCount == 0)
+                {
+                    Details = string.Empty;
+                    return;
+                }
+
+                Details = $"套装明细新增 {AddedCount} 条，更新 {UpdatedCount} 条，跳过 {SkippedCount} 条，失败 {ErrorCount} 条";
+                if (Warnings.Any())
+                {
+                    Details = $"{Details}；{string.Join("；", Warnings)}";
+                }
             }
         }
 
