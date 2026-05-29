@@ -33,6 +33,7 @@ import {
 import type { ColumnsType } from 'antd/es/table'
 import type { SortOrder, SorterResult } from 'antd/es/table/interface'
 import { useEffect, useMemo, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { useLocation, useNavigate } from 'react-router-dom'
 import BarcodePreview from '../../../components/BarcodePreview'
 import PageContainer from '../../../components/PageContainer'
@@ -65,7 +66,7 @@ import type {
   StoreOrderPasteTargetField,
   StoreOrderProductItem,
 } from '../../../types/storeOrder'
-import { StoreOrderStatusColorMap, StoreOrderStatusLabelMap } from '../../../types/storeOrder'
+import { StoreOrderStatusColorMap } from '../../../types/storeOrder'
 import { copyTextToClipboard } from '../../../utils/clipboard'
 import { useDynamicTabTitle } from '../../../hooks/useDynamicTabTitle'
 
@@ -182,6 +183,7 @@ interface PastePreviewItem extends ParsedPasteItem {
 }
 
 function ProductPickerModal({ open, orderGUID, loading, onCancel, onConfirm }: ProductPickerModalProps) {
+  const { t } = useTranslation()
   const [fetching, setFetching] = useState(false)
   const [keyword, setKeyword] = useState('')
   const [products, setProducts] = useState<StoreOrderProductItem[]>([])
@@ -216,7 +218,7 @@ function ProductPickerModal({ open, orderGUID, loading, onCancel, onConfirm }: P
       setPageSize(nextPageSize)
     } catch (error) {
       console.error(error)
-      message.error(error instanceof Error ? error.message : '加载商品失败')
+      message.error(error instanceof Error ? error.message : t('storeOrders.detail.loadProductsFailed'))
     } finally {
       setFetching(false)
     }
@@ -243,7 +245,7 @@ function ProductPickerModal({ open, orderGUID, loading, onCancel, onConfirm }: P
 
   const columns: ColumnsType<StoreOrderProductItem> = [
     {
-      title: '图片',
+      title: t('column.image'),
       dataIndex: 'productImage',
       width: 84,
       render: (value: string | undefined, record) => (
@@ -258,7 +260,7 @@ function ProductPickerModal({ open, orderGUID, loading, onCancel, onConfirm }: P
       ),
     },
     {
-      title: '货号',
+      title: t('column.itemNumber'),
       dataIndex: 'itemNumber',
       width: 140,
       render: (value: string | undefined) =>
@@ -266,7 +268,7 @@ function ProductPickerModal({ open, orderGUID, loading, onCancel, onConfirm }: P
           <Space size={4} wrap>
             <Typography.Text>{value}</Typography.Text>
             <Button size="small" type="link" onClick={() => void copyTextToClipboard(value)}>
-              复制
+              {t('common.copy')}
             </Button>
           </Space>
         ) : (
@@ -274,36 +276,36 @@ function ProductPickerModal({ open, orderGUID, loading, onCancel, onConfirm }: P
         ),
     },
     {
-      title: '商品名称',
+      title: t('column.productName'),
       dataIndex: 'productName',
       width: 240,
       ellipsis: true,
       render: (value: string | undefined) => value || '--',
     },
     {
-      title: '条码',
+      title: t('column.barcode'),
       dataIndex: 'barcode',
       width: 170,
       render: (value: string | undefined) => <BarcodePreview value={value} textMaxWidth={110} />,
     },
     {
-      title: '库存',
+      title: t('column.stock'),
       dataIndex: 'stockQuantity',
       width: 90,
     },
     {
-      title: '最小订货',
+      title: t('column.minOrder'),
       dataIndex: 'minOrderQuantity',
       width: 110,
     },
     {
-      title: '默认进口价',
+      title: t('column.defaultImportPrice'),
       dataIndex: 'importPrice',
       width: 120,
       render: (value: number | undefined) => formatAmount(value),
     },
     {
-      title: '发货数',
+      title: t('column.allocQuantity'),
       key: 'quantity',
       width: 120,
       render: (_, record) => (
@@ -325,7 +327,7 @@ function ProductPickerModal({ open, orderGUID, loading, onCancel, onConfirm }: P
       ),
     },
     {
-      title: '导入价',
+      title: t('column.importPriceShort'),
       key: 'importPriceEdit',
       width: 120,
       render: (_, record) => (
@@ -350,11 +352,11 @@ function ProductPickerModal({ open, orderGUID, loading, onCancel, onConfirm }: P
 
   const handleOk = async () => {
     if (!orderGUID) {
-      message.error('缺少订单编号')
+      message.error(t('storeOrders.detail.missingOrderNoError'))
       return
     }
     if (!selectedRowKeys.length) {
-      message.warning('请先选择商品')
+      message.warning(t('storeOrders.detail.selectProductsFirst'))
       return
     }
 
@@ -372,12 +374,12 @@ function ProductPickerModal({ open, orderGUID, loading, onCancel, onConfirm }: P
 
   return (
     <Modal
-      title="选择商品"
+      title={t('storeOrders.selectProductTitle')}
       open={open}
       width={1280}
       destroyOnClose
-      okText={`添加选中 (${selectedRowKeys.length})`}
-      cancelText="关闭"
+      okText={t('storeOrders.addSelected', { count: selectedRowKeys.length })}
+      cancelText={t('common.close')}
       confirmLoading={loading}
       onCancel={onCancel}
       onOk={() => void handleOk()}
@@ -385,7 +387,7 @@ function ProductPickerModal({ open, orderGUID, loading, onCancel, onConfirm }: P
       <Space direction="vertical" size={12} style={{ width: '100%' }}>
         <Input.Search
           allowClear
-          placeholder="搜索货号 / 商品名称"
+          placeholder={t('storeOrders.detail.searchProductPlaceholder')}
           prefix={<SearchOutlined />}
           value={keyword}
           onChange={(event) => setKeyword(event.target.value)}
@@ -419,6 +421,7 @@ function ProductPickerModal({ open, orderGUID, loading, onCancel, onConfirm }: P
 }
 
 function BatchEditModal({ open, loading, selectedCount, onCancel, onConfirm }: BatchEditModalProps) {
+  const { t } = useTranslation()
   const [type, setType] = useState<'allocQuantity' | 'importPrice' | 'status'>('allocQuantity')
   const [allocQuantity, setAllocQuantity] = useState<number>()
   const [importPrice, setImportPrice] = useState<number>()
@@ -435,17 +438,17 @@ function BatchEditModal({ open, loading, selectedCount, onCancel, onConfirm }: B
 
   const handleOk = async () => {
     if (selectedCount === 0) {
-      message.warning('请先选择明细行')
+      message.warning(t('storeOrders.detail.selectLinesFirst'))
       return
     }
 
     if (type === 'allocQuantity' && (allocQuantity === undefined || allocQuantity < 0)) {
-      message.warning('请输入有效的发货数')
+      message.warning(t('storeOrders.detail.enterValidAllocQty'))
       return
     }
 
     if (type === 'importPrice' && (importPrice === undefined || importPrice < 0)) {
-      message.warning('请输入有效的进口价')
+      message.warning(t('storeOrders.detail.enterValidImportPrice'))
       return
     }
 
@@ -459,11 +462,11 @@ function BatchEditModal({ open, loading, selectedCount, onCancel, onConfirm }: B
 
   return (
     <Modal
-      title="批量修改明细"
+      title={t('storeOrders.batchModifyTitle')}
       open={open}
       destroyOnClose
-      okText={`应用到 ${selectedCount} 行`}
-      cancelText="关闭"
+      okText={t('storeOrders.applyTo', { count: selectedCount })}
+      cancelText={t('common.close')}
       confirmLoading={loading}
       onCancel={onCancel}
       onOk={() => void handleOk()}
@@ -472,9 +475,9 @@ function BatchEditModal({ open, loading, selectedCount, onCancel, onConfirm }: B
         <Select
           value={type}
           options={[
-            { value: 'allocQuantity', label: '批量改发货数' },
-            { value: 'importPrice', label: '批量改进口价' },
-            { value: 'status', label: '批量改状态' },
+            { value: 'allocQuantity', label: t('storeOrders.batchAllocQty') },
+            { value: 'importPrice', label: t('storeOrders.batchImportPrice') },
+            { value: 'status', label: t('storeOrders.batchStatus') },
           ]}
           onChange={setType}
         />
@@ -484,7 +487,7 @@ function BatchEditModal({ open, loading, selectedCount, onCancel, onConfirm }: B
             min={0}
             precision={0}
             style={{ width: '100%' }}
-            placeholder="输入新的发货数"
+            placeholder={t('storeOrders.newAllocQty')}
             value={allocQuantity}
             onChange={(value) => setAllocQuantity(value === null ? undefined : Number(value))}
           />
@@ -495,7 +498,7 @@ function BatchEditModal({ open, loading, selectedCount, onCancel, onConfirm }: B
             min={0}
             precision={2}
             style={{ width: '100%' }}
-            placeholder="输入新的进口价"
+            placeholder={t('storeOrders.newImportPrice')}
             value={importPrice}
             onChange={(value) => setImportPrice(value === null ? undefined : Number(value))}
           />
@@ -505,8 +508,8 @@ function BatchEditModal({ open, loading, selectedCount, onCancel, onConfirm }: B
           <Select
             value={isActive ? 'active' : 'inactive'}
             options={[
-              { value: 'active', label: '启用' },
-              { value: 'inactive', label: '停用' },
+              { value: 'active', label: t('common.active') },
+              { value: 'inactive', label: t('common.inactive') },
             ]}
             onChange={(value) => setIsActive(value === 'active')}
           />
@@ -517,6 +520,7 @@ function BatchEditModal({ open, loading, selectedCount, onCancel, onConfirm }: B
 }
 
 export default function StoreOrderDetailPage() {
+  const { t } = useTranslation()
   const route = useStableRouteContext()
   const location = useLocation()
   const navigate = useNavigate()
@@ -574,7 +578,7 @@ export default function StoreOrderDetailPage() {
     typeof location.state.orderNo === 'string'
       ? location.state.orderNo
       : ''
-  const tabTitle = detail?.orderNo || initialOrderNo || '订货明细'
+  const tabTitle = detail?.orderNo || initialOrderNo || t('storeOrders.orderDetail')
 
   useDynamicTabTitle(tabTitle)
 
@@ -603,7 +607,7 @@ export default function StoreOrderDetailPage() {
       setEditingRows({})
     } catch (error) {
       console.error(error)
-      message.error(error instanceof Error ? error.message : '加载订货明细失败')
+      message.error(error instanceof Error ? error.message : t('storeOrders.detail.loadDetailFailed'))
     } finally {
       if (showLoading) {
         setLoading(false)
@@ -626,7 +630,7 @@ export default function StoreOrderDetailPage() {
       setStores(result.items)
     } catch (error) {
       console.error(error)
-      message.error(error instanceof Error ? error.message : '加载分店失败')
+      message.error(error instanceof Error ? error.message : t('storeOrders.loadStoresFailed'))
     } finally {
       setStoresLoading(false)
     }
@@ -649,7 +653,7 @@ export default function StoreOrderDetailPage() {
       if (headerForm.storeCode && !options.some((item) => item.value === headerForm.storeCode)) {
         options.push({
           value: headerForm.storeCode,
-          label: `${headerForm.storeCode} (当前订单分店)`,
+          label: `${headerForm.storeCode} (${t('column.currentStore')})`,
         })
       }
 
@@ -726,6 +730,16 @@ export default function StoreOrderDetailPage() {
     }
   }, [detail?.items, detailItemFilter, detailStatFilter])
 
+  const statusLabelMap = useMemo(
+    () => ({
+      0: t('storeOrders.statusShoppingCart'),
+      1: t('storeOrders.statusSubmitted'),
+      2: t('storeOrders.statusCompleted'),
+      3: t('storeOrders.statusPicking'),
+    }),
+    [t],
+  )
+
   const sortedItems = useMemo(() => {
     if (!detailSortField || !detailSortOrder) {
       return filteredItems
@@ -771,11 +785,11 @@ export default function StoreOrderDetailPage() {
         shippingFee: headerForm.shippingFee,
         remarks: headerForm.remarks,
       })
-      message.success('订单头信息已保存')
+      message.success(t('storeOrders.detail.headerSaveSuccess'))
       await loadDetail(false)
     } catch (error) {
       console.error(error)
-      message.error(error instanceof Error ? error.message : '保存订单头失败')
+      message.error(error instanceof Error ? error.message : t('storeOrders.detail.headerSaveFailed'))
     } finally {
       setSavingHeader(false)
     }
@@ -787,11 +801,11 @@ export default function StoreOrderDetailPage() {
     }
     const normalizedItemNumber = quickAddItemNumber.trim()
     if (!normalizedItemNumber) {
-      message.warning('请输入货号')
+      message.warning(t('storeOrders.detail.enterItemNumber'))
       return
     }
     if (!quickAddQuantity || quickAddQuantity <= 0) {
-      message.warning('请输入有效的发货数')
+      message.warning(t('storeOrders.detail.enterValidAllocQty'))
       return
     }
 
@@ -808,12 +822,12 @@ export default function StoreOrderDetailPage() {
       )
 
       if (exactMatches.length === 0) {
-        message.warning('未找到精确匹配的货号')
+        message.warning(t('storeOrders.detail.noExactItemMatch'))
         return
       }
 
       if (exactMatches.length > 1) {
-        message.warning('存在多个完全相同的货号，请使用“选择商品”确认后再添加')
+        message.warning(t('storeOrders.detail.multipleExactItemMatches'))
         return
       }
 
@@ -824,13 +838,13 @@ export default function StoreOrderDetailPage() {
         productCode: target.productCode,
         quantity: quickAddQuantity,
       })
-      message.success('商品已加入订单')
+      message.success(t('storeOrders.detail.productAdded'))
       setQuickAddItemNumber('')
       setQuickAddQuantity(1)
       await loadDetail(false)
     } catch (error) {
       console.error(error)
-      message.error(error instanceof Error ? error.message : '快速加商品失败')
+      message.error(error instanceof Error ? error.message : t('storeOrders.detail.quickAddFailed'))
     } finally {
       setLineActionLoading(false)
     }
@@ -854,13 +868,13 @@ export default function StoreOrderDetailPage() {
           items,
         })
       }
-      message.success(`成功添加 ${items.length} 个商品`)
+      message.success(t('storeOrders.addProductsSuccess', { count: items.length }))
       setPickerOpen(false)
       setContainerPickerOpen(false)
       await loadDetail(false)
     } catch (error) {
       console.error(error)
-      message.error(error instanceof Error ? error.message : '添加商品失败')
+      message.error(error instanceof Error ? error.message : t('storeOrders.detail.addProductsFailed'))
     } finally {
       setLineActionLoading(false)
     }
@@ -876,7 +890,7 @@ export default function StoreOrderDetailPage() {
     const importPrice = edited?.importPrice ?? line.importPrice
 
     if (allocQuantity < 0) {
-      message.warning('发货数不能小于 0')
+      message.warning(t('storeOrders.detail.allocQtyNonNegative'))
       return
     }
 
@@ -888,11 +902,11 @@ export default function StoreOrderDetailPage() {
         quantity: allocQuantity,
         importPrice,
       })
-      message.success('明细已保存')
+      message.success(t('storeOrders.detail.lineSaved'))
       await loadDetail(false)
     } catch (error) {
       console.error(error)
-      message.error(error instanceof Error ? error.message : '保存明细失败')
+      message.error(error instanceof Error ? error.message : t('storeOrders.detail.lineSaveFailed'))
     } finally {
       setLineActionLoading(false)
     }
@@ -908,12 +922,12 @@ export default function StoreOrderDetailPage() {
         orderGUID: detail.orderGUID,
         detailGUID: line.detailGUID,
       })
-      message.success('明细已删除')
+      message.success(t('storeOrders.detail.lineDeleted'))
       setSelectedLineKeys((current) => current.filter((key) => key !== line.detailGUID))
       await loadDetail(false)
     } catch (error) {
       console.error(error)
-      message.error(error instanceof Error ? error.message : '删除明细失败')
+      message.error(error instanceof Error ? error.message : t('storeOrders.detail.lineDeleteFailed'))
     } finally {
       setLineActionLoading(false)
     }
@@ -926,11 +940,11 @@ export default function StoreOrderDetailPage() {
         productCode: line.productCode,
         isActive: !line.isActive,
       })
-      message.success(`商品已${line.isActive ? '停用' : '启用'}`)
+      message.success(t('storeOrders.detail.productStatusUpdated', { status: line.isActive ? t('common.inactive') : t('common.active') }))
       await loadDetail(false)
     } catch (error) {
       console.error(error)
-      message.error(error instanceof Error ? error.message : '更新商品状态失败')
+      message.error(error instanceof Error ? error.message : t('storeOrders.detail.productStatusUpdateFailed'))
     } finally {
       setLineActionLoading(false)
     }
@@ -964,13 +978,13 @@ export default function StoreOrderDetailPage() {
         })
       }
 
-      message.success(`已批量更新 ${selectedLines.length} 行`)
+      message.success(t('storeOrders.batchUpdateSuccess', { count: selectedLines.length }))
       setBatchModalOpen(false)
       setSelectedLineKeys([])
       await loadDetail(false)
     } catch (error) {
       console.error(error)
-      message.error(error instanceof Error ? error.message : '批量更新失败')
+      message.error(error instanceof Error ? error.message : t('storeOrders.detail.batchUpdateFailed'))
     } finally {
       setBatchLoading(false)
     }
@@ -990,7 +1004,7 @@ export default function StoreOrderDetailPage() {
 
   const handleParsePasteData = async () => {
     if (!pasteData.trim()) {
-      message.warning('请先粘贴 Excel 数据')
+      message.warning(t('storeOrders.detail.pasteExcelFirst'))
       return
     }
 
@@ -1025,7 +1039,7 @@ export default function StoreOrderDetailPage() {
       })
 
       if (!items.length) {
-        message.warning('未解析出有效的货号数据')
+        message.warning(t('storeOrders.detail.noValidPasteItems'))
         setParsedPasteItems([])
         setPastePreviewItems([])
         return
@@ -1054,10 +1068,10 @@ export default function StoreOrderDetailPage() {
       })
 
       setPastePreviewItems(preview)
-      message.success(`已解析 ${items.length} 行，其中 ${preview.filter((item) => item.valid).length} 行可导入`)
+      message.success(t('storeOrders.detail.pasteParseSuccess', { total: items.length, valid: preview.filter((item) => item.valid).length }))
     } catch (error) {
       console.error(error)
-      message.error(error instanceof Error ? error.message : '解析粘贴数据失败')
+      message.error(error instanceof Error ? error.message : t('storeOrders.detail.pasteParseFailed'))
     } finally {
       setParsingPaste(false)
     }
@@ -1084,7 +1098,7 @@ export default function StoreOrderDetailPage() {
     })
 
     if (!validItems.length) {
-      message.warning('没有可导入的有效商品')
+      message.warning(t('storeOrders.detail.noValidImportProducts'))
       return
     }
 
@@ -1095,13 +1109,13 @@ export default function StoreOrderDetailPage() {
         targetField: pasteTargetField,
         items: validItems,
       })
-      message.success(`已通过粘贴更新 ${validItems.length} 行`)
+      message.success(t('storeOrders.pasteUpdateSuccess', { count: validItems.length }))
       setPasteModalOpen(false)
       resetPasteState(pasteTargetField)
       await loadDetail(false)
     } catch (error) {
       console.error(error)
-      message.error(error instanceof Error ? error.message : '粘贴导入失败')
+      message.error(error instanceof Error ? error.message : t('storeOrders.detail.pasteImportFailed'))
     } finally {
       setSubmittingPaste(false)
     }
@@ -1112,19 +1126,19 @@ export default function StoreOrderDetailPage() {
       return
     }
     Modal.confirm({
-      title: '确认完成订单？',
-      content: '完成后订单状态将变为已完成。',
-      okText: '确认',
-      cancelText: '取消',
+      title: t('storeOrders.detail.confirmCompleteTitle'),
+      content: t('storeOrders.detail.confirmCompleteContent'),
+      okText: t('common.confirm'),
+      cancelText: t('common.cancel'),
       onOk: async () => {
         try {
           setLineActionLoading(true)
           await completeStoreOrder(detail.orderGUID)
-          message.success('订单已完成')
+          message.success(t('storeOrders.detail.orderCompleted'))
           await loadDetail(false)
         } catch (error) {
           console.error(error)
-          message.error(error instanceof Error ? error.message : '完成订单失败')
+          message.error(error instanceof Error ? error.message : t('storeOrders.detail.completeOrderFailed'))
         } finally {
           setLineActionLoading(false)
         }
@@ -1139,11 +1153,11 @@ export default function StoreOrderDetailPage() {
     try {
       setLineActionLoading(true)
       await startPickingStoreOrder(detail.orderGUID)
-      message.success('订单已进入配货中')
+      message.success(t('storeOrders.detail.orderPickingStarted'))
       await loadDetail(false)
     } catch (error) {
       console.error(error)
-      message.error(error instanceof Error ? error.message : '开始配货失败')
+      message.error(error instanceof Error ? error.message : t('storeOrders.detail.startPickingFailed'))
     } finally {
       setLineActionLoading(false)
     }
@@ -1194,7 +1208,7 @@ export default function StoreOrderDetailPage() {
       render: (_, __, index) => (detailPage - 1) * detailPageSize + index + 1,
     },
     {
-      title: '图片',
+      title: t('column.image'),
       dataIndex: 'productImage',
       width: 50,
       fixed: isDesktop ? 'left' : undefined,
@@ -1210,7 +1224,7 @@ export default function StoreOrderDetailPage() {
       ),
     },
     {
-      title: '货号',
+      title: t('column.itemNumber'),
       dataIndex: 'itemNumber',
       width: 100,
       fixed: isDesktop ? 'left' : undefined,
@@ -1221,7 +1235,7 @@ export default function StoreOrderDetailPage() {
           <Space size={4} wrap>
             <Typography.Text>{value}</Typography.Text>
             <Button size="small" type="link" onClick={() => void copyTextToClipboard(value)}>
-              复制
+              {t('common.copy')}
             </Button>
           </Space>
         ) : (
@@ -1229,7 +1243,7 @@ export default function StoreOrderDetailPage() {
         ),
     },
     {
-      title: '商品名称',
+      title: t('column.productName'),
       dataIndex: 'productName',
       width: 100,
       render: (value: string | undefined) =>
@@ -1253,19 +1267,19 @@ export default function StoreOrderDetailPage() {
         ),
     },
     {
-      title: '条码',
+      title: t('column.barcode'),
       dataIndex: 'barcode',
       width: 110,
       render: (value: string | undefined) => <BarcodePreview value={value} textMaxWidth={150} />,
     },
     {
-      title: '贴牌价',
+      title: t('column.oemPrice'),
       dataIndex: 'price',
       width: 80,
       render: (value: number | undefined) => formatAmount(value),
     },
     {
-      title: '货位',
+      title: t('column.location'),
       dataIndex: 'locationCode',
       width: 100,
       sorter: true,
@@ -1273,13 +1287,13 @@ export default function StoreOrderDetailPage() {
       render: (value: string | undefined) => renderZeroOrEmptyCell(value),
     },
     {
-      title: '订货数',
+      title: t('column.orderQuantity'),
       dataIndex: 'quantity',
       width: 50,
       render: (_, record) => renderQuantityText(record),
     },
     {
-      title: '发货数',
+      title: t('column.allocQuantity'),
       dataIndex: 'allocQuantity',
       width: 80,
       render: (value: number | undefined, record) => (
@@ -1303,7 +1317,7 @@ export default function StoreOrderDetailPage() {
     },
     
     {
-      title: '进口价',
+      title: t('column.importPrice'),
       dataIndex: 'importPrice',
       width: 80,
       render: (value: number | undefined, record) => (
@@ -1326,14 +1340,14 @@ export default function StoreOrderDetailPage() {
       ),
     },
     {
-      title: '进口金额',
+      title: t('column.importAmount'),
       dataIndex: 'importAmount',
       width: 80,
       render: (value: number | undefined) =>
         value === undefined || value === null ? renderDangerValue('--') : value === 0 ? renderDangerValue('0.00') : formatAmount(value),
     },
     {
-      title: '订货体积',
+      title: t('column.orderVolume'),
       dataIndex: 'orderVolume',
       width: 90,
       render: (value: number | undefined, record) => {
@@ -1351,7 +1365,7 @@ export default function StoreOrderDetailPage() {
       },
     },
     {
-      title: '发货体积',
+      title: t('column.shipVolume'),
       dataIndex: 'allocVolume',
       width: 90,
       render: (value: number | undefined, record) => {
@@ -1369,13 +1383,13 @@ export default function StoreOrderDetailPage() {
       },
     },
     {
-      title: '状态',
+      title: t('column.status'),
       dataIndex: 'isActive',
       width: 50,
-      render: (value: boolean) => <Tag color={value ? 'success' : 'default'}>{value ? '启用' : '停用'}</Tag>,
+      render: (value: boolean) => <Tag color={value ? 'success' : 'default'}>{value ? t('common.active') : t('common.inactive')}</Tag>,
     },
     {
-      title: '操作',
+      title: t('column.action'),
       key: 'actions',
       width: 100,
       fixed: isDesktop ? 'right' : undefined,
@@ -1387,7 +1401,7 @@ export default function StoreOrderDetailPage() {
             icon={<SaveOutlined />}
             onClick={() => void handleSaveLine(record)}
           >
-            保存
+            {t('common.save')}
           </Button>
           <Button
             size="small"
@@ -1395,16 +1409,16 @@ export default function StoreOrderDetailPage() {
             icon={<EditOutlined />}
             onClick={() => void handleToggleLineStatus(record)}
           >
-            {record.isActive ? '停用' : '启用'}
+            {record.isActive ? t('common.inactive') : t('common.active')}
           </Button>
           <Popconfirm
-            title="确认删除这行商品？"
-            okText="删除"
-            cancelText="取消"
+            title={t('storeOrders.detail.confirmDeleteLine')}
+            okText={t('common.delete')}
+            cancelText={t('common.cancel')}
             onConfirm={() => void handleRemoveLine(record)}
           >
             <Button size="small" danger type="link" icon={<DeleteOutlined />}>
-              删除
+              {t('common.delete')}
             </Button>
           </Popconfirm>
         </Space>
@@ -1414,9 +1428,9 @@ export default function StoreOrderDetailPage() {
 
   if (!id) {
     return (
-      <PageContainer title="订货明细" subtitle="缺少订单编号，无法加载明细。">
+      <PageContainer title={t('storeOrders.orderDetail')} subtitle={t('storeOrders.detail.missingOrderNoSubtitle')}>
         <Card>
-          <Empty description="未提供订单编号" />
+          <Empty description={t('storeOrders.missingOrderNo')} />
         </Card>
       </PageContainer>
     )
@@ -1424,8 +1438,8 @@ export default function StoreOrderDetailPage() {
 
   return (
     <PageContainer
-      title={`订货明细 - ${tabTitle}`}
-      subtitle="阶段 2 已升级为核心可编辑版，已支持订单头编辑、明细维护、批量修改、商品选择、货柜选品和 Excel 粘贴。"
+      title={t('storeOrders.detailTitleWithNo', { orderNo: tabTitle })}
+      subtitle={t('storeOrders.orderDetailSubtitle')}
     >
       <Spin spinning={loading}>
         {detail ? (
@@ -1441,14 +1455,14 @@ export default function StoreOrderDetailPage() {
                       loading={savingHeader}
                       onClick={() => void handleSaveHeader()}
                     >
-                      保存订单头
+                      {t('storeOrders.saveOrderHeader')}
                     </Button>
                     <Button
                       icon={<CheckOutlined />}
                       loading={lineActionLoading}
                       onClick={() => void handleStartPicking()}
                     >
-                      开始配货
+                      {t('storeOrders.startPicking')}
                     </Button>
                     <Button
                       type="primary"
@@ -1456,13 +1470,13 @@ export default function StoreOrderDetailPage() {
                       loading={lineActionLoading}
                       onClick={() => void handleCompleteOrder()}
                     >
-                      完成订单
+                      {t('storeOrders.completeOrder')}
                     </Button>
                   </Space>
                 }
               >
-                <Descriptions.Item label="订单号">{detail.orderNo || '--'}</Descriptions.Item>
-                <Descriptions.Item label="分店">
+                <Descriptions.Item label={t('storeOrders.orderNoLabel')}>{detail.orderNo || '--'}</Descriptions.Item>
+                <Descriptions.Item label={t('storeOrders.storeLabel')}>
                   <Select
                     showSearch
                     style={{ width: '100%' }}
@@ -1473,12 +1487,12 @@ export default function StoreOrderDetailPage() {
                     onChange={(value) => setHeaderForm((current) => ({ ...current, storeCode: value }))}
                   />
                 </Descriptions.Item>
-                <Descriptions.Item label="状态">
+                <Descriptions.Item label={t('storeOrders.statusLabel')}>
                   <Tag color={StoreOrderStatusColorMap[(detail.flowStatus || 0) as StoreOrderFlowStatus] || 'default'}>
-                    {StoreOrderStatusLabelMap[(detail.flowStatus || 0) as StoreOrderFlowStatus] || `状态 ${detail.flowStatus ?? '--'}`}
+                    {statusLabelMap[(detail.flowStatus || 0) as StoreOrderFlowStatus] || t('common.statusN', { n: detail.flowStatus ?? '--' })}
                   </Tag>
                 </Descriptions.Item>
-                <Descriptions.Item label="订货日期">
+                <Descriptions.Item label={t('storeOrders.orderDateLabel')}>
                   <Input
                     type="date"
                     value={headerForm.orderDate ? headerForm.orderDate.slice(0, 10) : ''}
@@ -1490,13 +1504,13 @@ export default function StoreOrderDetailPage() {
                     }
                   />
                 </Descriptions.Item>
-                <Descriptions.Item label="订货数量">{detail.totalQuantity}</Descriptions.Item>
-                <Descriptions.Item label="发货数量">{totalAllocQuantity}</Descriptions.Item>
-                <Descriptions.Item label="订货体积">{formatVolume(totalOrderVolume)}</Descriptions.Item>
-                <Descriptions.Item label="发货体积">{formatVolume(totalAllocVolume)}</Descriptions.Item>
-                <Descriptions.Item label="订单金额">{formatAmount(detail.totalAmount)}</Descriptions.Item>
-                <Descriptions.Item label="进口金额">{formatAmount(detail.totalImportAmount)}</Descriptions.Item>
-                <Descriptions.Item label="运费">
+                <Descriptions.Item label={t('storeOrders.orderQtyLabel')}>{detail.totalQuantity}</Descriptions.Item>
+                <Descriptions.Item label={t('storeOrders.shipQtyLabel')}>{totalAllocQuantity}</Descriptions.Item>
+                <Descriptions.Item label={t('storeOrders.orderVolumeLabel')}>{formatVolume(totalOrderVolume)}</Descriptions.Item>
+                <Descriptions.Item label={t('storeOrders.shipVolumeLabel')}>{formatVolume(totalAllocVolume)}</Descriptions.Item>
+                <Descriptions.Item label={t('storeOrders.orderAmountLabel')}>{formatAmount(detail.totalAmount)}</Descriptions.Item>
+                <Descriptions.Item label={t('storeOrders.importAmountLabel')}>{formatAmount(detail.totalImportAmount)}</Descriptions.Item>
+                <Descriptions.Item label={t('storeOrders.freightLabel')}>
                   <InputNumber
                     min={0}
                     precision={2}
@@ -1510,11 +1524,11 @@ export default function StoreOrderDetailPage() {
                     }
                   />
                 </Descriptions.Item>
-                <Descriptions.Item label="地址" span={2}>
+                <Descriptions.Item label={t('storeOrders.addressLabel')} span={2}>
                   {currentStore?.address || detail.storeAddress || '--'}
                 </Descriptions.Item>
-                <Descriptions.Item label="SKU 数">{detail.totalSKU ?? detail.items.length}</Descriptions.Item>
-                <Descriptions.Item label="备注" span={3}>
+                <Descriptions.Item label={t('storeOrders.skuCountLabel')}>{detail.totalSKU ?? detail.items.length}</Descriptions.Item>
+                <Descriptions.Item label={t('storeOrders.remarksLabel')} span={3}>
                   <Input.TextArea
                     rows={3}
                     value={headerForm.remarks}
@@ -1524,19 +1538,19 @@ export default function StoreOrderDetailPage() {
                         remarks: event.target.value,
                       }))
                     }
-                    placeholder="请输入备注"
+                    placeholder={t('common.enterRemarks')}
                   />
                 </Descriptions.Item>
               </Descriptions>
             </Card>
 
             <Card
-              title="订单明细"
+              title={t('storeOrders.orderDetailSection')}
               extra={
                 <Space wrap>
                   <Input
                     allowClear
-                    placeholder="输入货号快速加入"
+                    placeholder={t('storeOrders.quickAddPlaceholder')}
                     style={{ width: 220 }}
                     value={quickAddItemNumber}
                     onChange={(event) => setQuickAddItemNumber(event.target.value)}
@@ -1545,7 +1559,7 @@ export default function StoreOrderDetailPage() {
                   <InputNumber
                     min={1}
                     precision={0}
-                    placeholder="发货数"
+                    placeholder={t('storeOrders.allocQtyPlaceholder')}
                     value={quickAddQuantity}
                     onChange={(value) => setQuickAddQuantity(Number(value ?? 1))}
                   />
@@ -1554,25 +1568,25 @@ export default function StoreOrderDetailPage() {
                     loading={lineActionLoading}
                     onClick={() => void handleQuickAdd()}
                   >
-                    快速加入
+                    {t('storeOrders.quickAdd')}
                   </Button>
                   <Button icon={<SearchOutlined />} onClick={() => setPickerOpen(true)}>
-                    选择商品
+                    {t('storeOrders.selectProduct')}
                   </Button>
                   <Button icon={<ContainerOutlined />} onClick={() => setContainerPickerOpen(true)}>
-                    货柜选择器
+                    {t('storeOrders.containerPicker')}
                   </Button>
                   <Button
                     icon={<PrinterOutlined />}
                     onClick={() => detail && navigate(`/warehouse/store-order/picking/${detail.orderGUID}`)}
                   >
-                    配货单
+                    {t('storeOrders.pickingList')}
                   </Button>
                   <Button
                     icon={<FileTextOutlined />}
                     onClick={() => detail && navigate(`/warehouse/store-order/invoice/${detail.orderGUID}`)}
                   >
-                    发票
+                    {t('storeOrders.invoice')}
                   </Button>
                   <Button
                     icon={<CopyOutlined />}
@@ -1581,12 +1595,12 @@ export default function StoreOrderDetailPage() {
                       setPasteModalOpen(true)
                     }}
                   >
-                    Excel 粘贴
+                    {t('storeOrders.excelPaste')}
                   </Button>
                   <Button disabled={!selectedLineKeys.length} onClick={() => setBatchModalOpen(true)}>
-                    批量修改
+                    {t('storeOrders.batchModify')}
                   </Button>
-                  <Typography.Text type="secondary">已选 {selectedLineKeys.length} 行</Typography.Text>
+                  <Typography.Text type="secondary">{t('storeOrders.detail.selectedRows', { count: selectedLineKeys.length })}</Typography.Text>
                 </Space>
               }
             >
@@ -1599,10 +1613,10 @@ export default function StoreOrderDetailPage() {
                 }}
               >
                 <Space wrap size={[8, 8]}>
-                  <Typography.Text strong>统计过滤</Typography.Text>
+                  <Typography.Text strong>{t('storeOrders.statsFilter')}</Typography.Text>
                   <Input
                     allowClear
-                    placeholder="按货号过滤"
+                    placeholder={t('storeOrders.filterByItemNumber')}
                     style={{ width: 220 }}
                     value={detailItemFilter}
                     onChange={(event) => setDetailItemFilter(event.target.value)}
@@ -1612,7 +1626,7 @@ export default function StoreOrderDetailPage() {
                     style={{ cursor: 'pointer' }}
                     onClick={() => setDetailStatFilter('all')}
                   >
-                    全部 {statSummary.all}
+                    {t('storeOrders.allItems', { count: statSummary.all })}
                   </Tag>
                   <Tag
                     color={detailStatFilter === 'orderedNotShipped' ? 'orange' : 'gold'}
@@ -1621,7 +1635,7 @@ export default function StoreOrderDetailPage() {
                       setDetailStatFilter((current) => (current === 'orderedNotShipped' ? 'all' : 'orderedNotShipped'))
                     }
                   >
-                    有订货未发 SKU {statSummary.orderedNotShipped}
+                    {t('storeOrders.orderedNotShipped', { count: statSummary.orderedNotShipped })}
                   </Tag>
                   <Tag
                     color={detailStatFilter === 'shippedWithoutOrder' ? 'geekblue' : 'blue'}
@@ -1630,9 +1644,9 @@ export default function StoreOrderDetailPage() {
                       setDetailStatFilter((current) => (current === 'shippedWithoutOrder' ? 'all' : 'shippedWithoutOrder'))
                     }
                   >
-                    无订货主动发货 SKU {statSummary.shippedWithoutOrder}
+                    {t('storeOrders.shippedWithoutOrder', { count: statSummary.shippedWithoutOrder })}
                   </Tag>
-                  <Typography.Text type="secondary">当前显示 {sortedItems.length} 行</Typography.Text>
+                  <Typography.Text type="secondary">{t('storeOrders.detail.currentRows', { count: sortedItems.length })}</Typography.Text>
                 </Space>
               </div>
               <Table
@@ -1675,11 +1689,11 @@ export default function StoreOrderDetailPage() {
 
             <Card>
               <Typography.Text type="secondary">
-                当前阶段 2 已支持订单头编辑、商品选择加入、货柜选品、Excel 粘贴、明细单行保存、批量改发货数/进口价/状态、配货单、发票，以及完成订单。
+                {t('storeOrders.stage2Note')}
               </Typography.Text>
               <div style={{ marginTop: 8 }}>
                 <Typography.Text type="secondary">
-                  最近更新时间：{formatDateTime(new Date().toISOString())}
+                  {t('storeOrders.lastUpdateTime', { time: formatDateTime(new Date().toISOString()) })}
                 </Typography.Text>
               </div>
             </Card>
@@ -1709,17 +1723,17 @@ export default function StoreOrderDetailPage() {
             />
 
             <Modal
-              title="Excel 粘贴到订单明细"
+              title={t('storeOrders.detail.excelPasteTitle')}
               open={pasteModalOpen}
               width={880}
               destroyOnClose
               onCancel={() => setPasteModalOpen(false)}
               footer={[
                 <Button key="cancel" onClick={() => setPasteModalOpen(false)}>
-                  关闭
+                  {t('common.close')}
                 </Button>,
                 <Button key="parse" type="primary" loading={parsingPaste} onClick={() => void handleParsePasteData()}>
-                  解析数据
+                  {t('storeOrders.detail.parseData')}
                 </Button>,
                 <Button
                   key="confirm"
@@ -1728,46 +1742,46 @@ export default function StoreOrderDetailPage() {
                   disabled={validPastePreviewCount === 0}
                   onClick={() => void handleConfirmPaste()}
                 >
-                  导入有效行 ({validPastePreviewCount})
+                  {t('storeOrders.detail.importValidRows', { count: validPastePreviewCount })}
                 </Button>,
               ]}
             >
               <Space direction="vertical" size={16} style={{ width: '100%' }}>
                 <div>
-                  <Typography.Text strong>写入目标</Typography.Text>
+                  <Typography.Text strong>{t('storeOrders.detail.writeTarget')}</Typography.Text>
                   <div style={{ marginTop: 8 }}>
                     <Radio.Group
                       value={pasteTargetField}
                       onChange={(event) => setPasteTargetField(event.target.value as StoreOrderPasteTargetField)}
                     >
-                      <Radio value="allocQuantity">发货数量（默认）</Radio>
-                      <Radio value="quantity">订货数量</Radio>
+                      <Radio value="allocQuantity">{t('storeOrders.detail.allocQuantityDefault')}</Radio>
+                      <Radio value="quantity">{t('storeOrders.detail.orderQuantity')}</Radio>
                     </Radio.Group>
                   </div>
                 </div>
 
                 <div>
-                  <Typography.Text strong>Excel 文本</Typography.Text>
+                  <Typography.Text strong>{t('storeOrders.detail.excelText')}</Typography.Text>
                   <Input.TextArea
                     rows={7}
                     value={pasteData}
                     onChange={(event) => setPasteData(event.target.value)}
-                    placeholder={'按行粘贴 Excel 数据，默认第 1 列为货号，第 2 列为数量。'}
+                    placeholder={t('storeOrders.detail.excelPastePlaceholder')}
                     style={{ marginTop: 8 }}
                   />
                 </div>
 
                 <div>
-                  <Typography.Text strong>列映射</Typography.Text>
+                  <Typography.Text strong>{t('storeOrders.detail.columnMapping')}</Typography.Text>
                   <Space wrap size={[12, 12]} style={{ display: 'flex', marginTop: 8 }}>
                     <Space>
-                      <Typography.Text>货号列</Typography.Text>
+                      <Typography.Text>{t('storeOrders.detail.itemNumberColumn')}</Typography.Text>
                       <Select
                         style={{ width: 100 }}
                         value={columnMapping.itemNumber}
                         options={[0, 1, 2, 3, 4].map((index) => ({
                           value: index,
-                          label: `第 ${index + 1} 列`,
+                          label: t('storeOrders.detail.columnNumber', { number: index + 1 }),
                         }))}
                         onChange={(value) =>
                           setColumnMapping((current) => ({
@@ -1778,15 +1792,15 @@ export default function StoreOrderDetailPage() {
                       />
                     </Space>
                     <Space>
-                      <Typography.Text>数量列</Typography.Text>
+                      <Typography.Text>{t('storeOrders.detail.quantityColumn')}</Typography.Text>
                       <Select
                         style={{ width: 120 }}
                         value={columnMapping.quantity}
                         options={[
-                          { value: -1, label: '无，默认 1' },
+                          { value: -1, label: t('storeOrders.detail.noneDefaultOne') },
                           ...[0, 1, 2, 3, 4].map((index) => ({
                             value: index,
-                            label: `第 ${index + 1} 列`,
+                            label: t('storeOrders.detail.columnNumber', { number: index + 1 }),
                           })),
                         ]}
                         onChange={(value) =>
@@ -1798,15 +1812,15 @@ export default function StoreOrderDetailPage() {
                       />
                     </Space>
                     <Space>
-                      <Typography.Text>价格列</Typography.Text>
+                      <Typography.Text>{t('storeOrders.detail.priceColumn')}</Typography.Text>
                       <Select
                         style={{ width: 120 }}
                         value={columnMapping.price}
                         options={[
-                          { value: -1, label: '无' },
+                          { value: -1, label: t('storeOrders.detail.none') },
                           ...[0, 1, 2, 3, 4].map((index) => ({
                             value: index,
-                            label: `第 ${index + 1} 列`,
+                            label: t('storeOrders.detail.columnNumber', { number: index + 1 }),
                           })),
                         ]}
                         onChange={(value) =>
@@ -1822,7 +1836,7 @@ export default function StoreOrderDetailPage() {
 
                 {pastePreviewItems.length ? (
                   <div>
-                    <Typography.Text strong>{`预览结果：${validPastePreviewCount} / ${pastePreviewItems.length} 行可导入`}</Typography.Text>
+                    <Typography.Text strong>{t('storeOrders.detail.previewResult', { valid: validPastePreviewCount, total: pastePreviewItems.length })}</Typography.Text>
                     <Table<PastePreviewItem>
                       size="small"
                       rowKey={(record, index) => `${record.itemNumber}-${index ?? 0}`}
@@ -1832,30 +1846,30 @@ export default function StoreOrderDetailPage() {
                       scroll={{ y: 280 }}
                       columns={[
                         {
-                          title: '状态',
+                          title: t('column.status'),
                           dataIndex: 'valid',
                           width: 90,
                           render: (value: boolean) =>
-                            value ? <Tag color="success">有效</Tag> : <Tag color="error">未匹配</Tag>,
+                            value ? <Tag color="success">{t('storeOrders.detail.valid')}</Tag> : <Tag color="error">{t('storeOrders.detail.unmatched')}</Tag>,
                         },
                         {
-                          title: '货号',
+                          title: t('column.itemNumber'),
                           dataIndex: 'itemNumber',
                           width: 140,
                         },
                         {
-                          title: '商品名称',
+                          title: t('column.productName'),
                           key: 'productName',
                           ellipsis: true,
                           render: (_, record) => record.product?.productName || '--',
                         },
                         {
-                          title: pasteTargetField === 'allocQuantity' ? '发货数量' : '订货数量',
+                          title: pasteTargetField === 'allocQuantity' ? t('column.shipQuantity') : t('column.orderQuantity'),
                           dataIndex: 'quantity',
                           width: 110,
                         },
                         {
-                          title: '导入价',
+                          title: t('column.importPriceShort'),
                           dataIndex: 'price',
                           width: 110,
                           render: (value: number | undefined) => (value === undefined ? '--' : formatAmount(value)),
@@ -1869,7 +1883,7 @@ export default function StoreOrderDetailPage() {
           </Space>
         ) : (
           <Card>
-            <Empty description="未找到对应订单明细" />
+            <Empty description={t('storeOrders.detail.notFound')} />
           </Card>
         )}
       </Spin>

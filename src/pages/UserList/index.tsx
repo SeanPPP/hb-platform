@@ -1,6 +1,7 @@
 import { SearchOutlined } from '@ant-design/icons'
 import { Button, Card, Input, Space, Table, Tag, Typography } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
+import type { TFunction } from 'i18next'
 import { useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import PageContainer from '../../components/PageContainer'
@@ -13,22 +14,22 @@ interface UserRow {
   email: string
 }
 
-function getSourceData(t: (key: string, fallback: string) => string): UserRow[] {
+function getSourceData(t: TFunction): UserRow[] {
   return Array.from({ length: 42 }).map((_, index) => ({
     key: String(index + 1),
-    name: t('userList.userN', `用户 ${index + 1}`),
+    name: t('userList.userN', { count: index + 1 }),
     dept: [t('userList.productDept', '产品部'), t('userList.devDept', '研发部'), t('userList.opsDept', '运营部')][index % 3],
     status: index % 4 === 0 ? t('common.disabled', '停用') : t('common.enabled', '启用'),
     email: `user${index + 1}@demo.com`,
   }))
 }
 
-function getColumns(t: (key: string, fallback: string) => string): ColumnsType<UserRow> {
+function getColumns(t: TFunction): ColumnsType<UserRow> {
   return [
     { title: t('userList.name', '姓名'), dataIndex: 'name' },
     { title: t('userList.dept', '部门'), dataIndex: 'dept' },
     {
-      title: t('domesticProducts.status', '状态'),
+      title: t('common.status', '状态'),
       dataIndex: 'status',
       render: (value: string) =>
         value === t('common.enabled', '启用') ? <Tag color="success">{t('common.enabled', '启用')}</Tag> : <Tag color="default">{t('common.disabled', '停用')}</Tag>,

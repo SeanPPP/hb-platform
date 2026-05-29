@@ -158,7 +158,7 @@ export default function CreateProductModal({ open, suppliers, onCancel, onSucces
         }
       } catch (error) {
         console.error(error)
-        message.error(error instanceof Error ? error.message : t('warehouse.loadCreateDataFailed', '加载新建商品所需数据失败'))
+        message.error(error instanceof Error ? error.message : t('warehouse.loadCreateDataFailed'))
       } finally {
         if (!cancelled) {
           setLoading(false)
@@ -211,12 +211,12 @@ export default function CreateProductModal({ open, suppliers, onCancel, onSucces
   const setColumns = useMemo<ColumnsType<SetDetailFormRow>>(
     () => [
       {
-        title: t('warehouse.productCode', '商品编码'),
+        title: t('warehouse.productCode'),
         dataIndex: 'productCode',
         render: (_, record) => (
           <Input
             value={record.productCode}
-            placeholder={t('warehouse.enterProductCode', '请输入商品编码')}
+            placeholder={t('warehouse.enterProductCode')}
             onChange={(event) => {
               const value = event.target.value
               setSetDetails((current) =>
@@ -227,7 +227,7 @@ export default function CreateProductModal({ open, suppliers, onCancel, onSucces
         ),
       },
       {
-        title: t('warehouse.quantity', '数量'),
+        title: t('warehouse.quantity'),
         dataIndex: 'quantity',
         width: 120,
         render: (_, record) => (
@@ -245,7 +245,7 @@ export default function CreateProductModal({ open, suppliers, onCancel, onSucces
         ),
       },
       {
-        title: t('common.action', '操作'),
+        title: t('common.action'),
         key: 'action',
         width: 80,
         render: (_, record) => (
@@ -256,31 +256,31 @@ export default function CreateProductModal({ open, suppliers, onCancel, onSucces
             onClick={() => {
               setSetDetails((current) => {
                 if (current.length === 1) {
-                  message.warning(t('warehouse.keepOneSetDetail', '至少保留一条套装明细'))
+                  message.warning(t('warehouse.keepOneSetDetail'))
                   return current
                 }
                 return current.filter((item) => item.key !== record.key)
               })
             }}
           >
-            删除
+            {t('common.delete')}
           </Button>
         ),
       },
     ],
-    [],
+    [t],
   )
 
   const multiCodeColumns = useMemo<ColumnsType<MultiCodeFormRow>>(
     () => [
       {
-        title: t('warehouse.code', '编码'),
+        title: t('warehouse.code'),
         dataIndex: 'code',
         width: 140,
         render: (_, record) => (
           <Input
             value={record.code}
-            placeholder={t('warehouse.enterCode', '请输入编码')}
+            placeholder={t('warehouse.enterCode')}
             onChange={(event) => {
               const value = event.target.value
               setMultiCodeDetails((current) =>
@@ -291,13 +291,13 @@ export default function CreateProductModal({ open, suppliers, onCancel, onSucces
         ),
       },
       {
-        title: t('warehouse.name', '名称'),
+        title: t('warehouse.name'),
         dataIndex: 'name',
         width: 160,
         render: (_, record) => (
           <Input
             value={record.name}
-            placeholder={t('productCreation.enterName', '请输入名称')}
+            placeholder={t('productCreation.enterName')}
             onChange={(event) => {
               const value = event.target.value
               setMultiCodeDetails((current) =>
@@ -308,13 +308,13 @@ export default function CreateProductModal({ open, suppliers, onCancel, onSucces
         ),
       },
       {
-        title: t('domesticProducts.barcode', '条码'),
+        title: t('domesticProducts.barcode'),
         dataIndex: 'barcode',
         width: 180,
         render: (_, record) => (
           <Input
             value={record.barcode}
-            placeholder={t('warehouse.autoGenerateOptional', '可留空自动生成')}
+            placeholder={t('warehouse.autoGenerateOptional')}
             onChange={(event) => {
               const value = event.target.value
               setMultiCodeDetails((current) =>
@@ -325,7 +325,7 @@ export default function CreateProductModal({ open, suppliers, onCancel, onSucces
         ),
       },
       {
-        title: t('warehouse.quantity', '数量'),
+        title: t('warehouse.quantity'),
         dataIndex: 'quantity',
         width: 120,
         render: (_, record) => (
@@ -343,7 +343,7 @@ export default function CreateProductModal({ open, suppliers, onCancel, onSucces
         ),
       },
       {
-        title: t('common.action', '操作'),
+        title: t('common.action'),
         key: 'action',
         width: 80,
         render: (_, record) => (
@@ -354,31 +354,31 @@ export default function CreateProductModal({ open, suppliers, onCancel, onSucces
             onClick={() => {
               setMultiCodeDetails((current) => {
                 if (current.length === 1) {
-                  message.warning(t('warehouse.keepOneMultiCodeDetail', '至少保留一条多码明细'))
+                  message.warning(t('warehouse.keepOneMultiCodeDetail'))
                   return current
                 }
                 return current.filter((item) => item.key !== record.key)
               })
             }}
           >
-            删除
+            {t('common.delete')}
           </Button>
         ),
       },
     ],
-    [],
+    [t],
   )
 
   const retailPriceColumns = useMemo<ColumnsType<RetailPriceFormRow>>(
     () => [
       {
-        title: t('warehouse.store', '分店'),
+        title: t('warehouse.store'),
         dataIndex: 'storeCode',
         width: 220,
         render: (_, record) => (
           <Select
             value={record.storeCode || undefined}
-            placeholder={t('warehouse.selectStore', '请选择分店')}
+            placeholder={t('warehouse.selectStore')}
             showSearch
             optionFilterProp="label"
             options={stores}
@@ -399,7 +399,7 @@ export default function CreateProductModal({ open, suppliers, onCancel, onSucces
         ),
       },
       {
-        title: t('productCreation.privateLabelPrice', '贴牌价格'),
+        title: t('productCreation.privateLabelPrice'),
         dataIndex: 'price',
         width: 140,
         render: (_, record) => (
@@ -417,7 +417,7 @@ export default function CreateProductModal({ open, suppliers, onCancel, onSucces
         ),
       },
       {
-        title: t('warehouse.costPrice', '成本价格'),
+        title: t('warehouse.costPrice'),
         dataIndex: 'cost',
         width: 140,
         render: (_, record) => (
@@ -435,7 +435,7 @@ export default function CreateProductModal({ open, suppliers, onCancel, onSucces
         ),
       },
       {
-        title: t('common.action', '操作'),
+        title: t('common.action'),
         key: 'action',
         width: 80,
         render: (_, record) => (
@@ -446,19 +446,19 @@ export default function CreateProductModal({ open, suppliers, onCancel, onSucces
             onClick={() => {
               setRetailPrices((current) => {
                 if (current.length === 1) {
-                  message.warning(t('warehouse.keepOneStorePrice', '至少保留一条分店价格'))
+                  message.warning(t('warehouse.keepOneStorePrice'))
                   return current
                 }
                 return current.filter((item) => item.key !== record.key)
               })
             }}
           >
-            删除
+            {t('common.delete')}
           </Button>
         ),
       },
     ],
-    [stores],
+    [stores, t],
   )
 
   const handleClose = () => {
@@ -487,7 +487,7 @@ export default function CreateProductModal({ open, suppliers, onCancel, onSucces
         .filter((item) => item.productCode)
 
       if (values.productType === 1 && !normalizedSetItems.length) {
-        message.error(t('warehouse.addOneSetDetail', '请至少添加一条有效的套装明细'))
+        message.error(t('warehouse.addOneSetDetail'))
         return
       }
 
@@ -500,7 +500,7 @@ export default function CreateProductModal({ open, suppliers, onCancel, onSucces
         .filter((item) => item.code || item.barcode)
 
       if (values.productType === 2 && !normalizedMultiCodeItems.length) {
-        message.error(t('warehouse.addOneMultiCodeDetail', '请至少添加一条有效的多码明细'))
+        message.error(t('warehouse.addOneMultiCodeDetail'))
         return
       }
 
@@ -567,7 +567,7 @@ export default function CreateProductModal({ open, suppliers, onCancel, onSucces
       })
 
       if (!result.success || !result.productCode) {
-        message.error(result.message || t('warehouse.createProductFailed', '创建商品失败'))
+        message.error(result.message || t('warehouse.createProductFailed'))
         return
       }
 
@@ -579,7 +579,7 @@ export default function CreateProductModal({ open, suppliers, onCancel, onSucces
         message.warning(result.warnings.join('；'))
       }
 
-      message.success(result.message || t('warehouse.createProductSuccess', '创建商品成功'))
+      message.success(result.message || t('warehouse.createProductSuccess'))
       handleClose()
       onSuccess()
     } catch (error) {
@@ -587,7 +587,7 @@ export default function CreateProductModal({ open, suppliers, onCancel, onSucces
         return
       }
       console.error(error)
-      message.error(error instanceof Error ? error.message : t('warehouse.createProductFailed', '创建商品失败'))
+      message.error(error instanceof Error ? error.message : t('warehouse.createProductFailed'))
     } finally {
       setSubmitting(false)
     }
@@ -595,32 +595,32 @@ export default function CreateProductModal({ open, suppliers, onCancel, onSucces
 
   return (
     <Modal
-      title={t('warehouse.createProduct', '新建商品')}
+      title={t('warehouse.createProduct')}
       open={open}
       width={980}
       destroyOnClose
-      okText={t('common.save', '保存')}
-      cancelText={t('common.cancel', '取消')}
+      okText={t('common.save')}
+      cancelText={t('common.cancel')}
       confirmLoading={submitting}
       onCancel={handleClose}
       onOk={() => void handleSubmit()}
     >
       <Spin spinning={loading}>
         <Form form={form} layout="vertical" preserve={false}>
-          <Card title={t('warehouse.productType', '商品类型')} size="small" style={{ marginBottom: 16 }}>
+          <Card title={t('warehouse.productType')} size="small" style={{ marginBottom: 16 }}>
             <Form.Item name="productType" initialValue={0}>
               <Radio.Group>
-                <Radio value={0}>{t('warehouse.normalProduct', '普通商品')}</Radio>
-                <Radio value={1}>{t('warehouse.setProduct', '套装商品')}</Radio>
-                <Radio value={2}>{t('warehouse.multiCodeProduct', '多码商品')}</Radio>
+                <Radio value={0}>{t('warehouse.normalProduct')}</Radio>
+                <Radio value={1}>{t('warehouse.setProduct')}</Radio>
+                <Radio value={2}>{t('warehouse.multiCodeProduct')}</Radio>
               </Radio.Group>
             </Form.Item>
           </Card>
 
-          <Card title="基础信息" size="small" style={{ marginBottom: 16 }}>
+          <Card title={t('warehouse.products.basicInfo')} size="small" style={{ marginBottom: 16 }}>
             <Row gutter={16}>
               <Col span={12}>
-                <Form.Item label="货号生成方式">
+                <Form.Item label={t('warehouse.products.itemNumberMethod')}>
                   <Radio.Group
                     value={autoGenerateItemNumber ? 'auto' : 'manual'}
                     onChange={(event) => {
@@ -631,22 +631,22 @@ export default function CreateProductModal({ open, suppliers, onCancel, onSucces
                       }
                     }}
                   >
-                    <Radio value="auto">自动生成</Radio>
-                    <Radio value="manual">手动输入</Radio>
+                    <Radio value="auto">{t('common.auto')}</Radio>
+                    <Radio value="manual">{t('common.manual')}</Radio>
                   </Radio.Group>
                 </Form.Item>
                 {!autoGenerateItemNumber ? (
                   <Form.Item
                     name="itemNumber"
-                    label="货号"
-                    rules={[{ required: true, message: '请输入货号' }]}
+                    label={t('column.itemNumber')}
+                    rules={[{ required: true, message: t('warehouse.enterItemNumber') }]}
                   >
-                    <Input placeholder="请输入货号" />
+                    <Input placeholder={t('warehouse.enterItemNumber')} />
                   </Form.Item>
                 ) : null}
               </Col>
               <Col span={12}>
-                <Form.Item label="条码生成方式">
+                <Form.Item label={t('warehouse.products.barcodeMethod')}>
                   <Radio.Group
                     value={autoGenerateBarcode ? 'auto' : 'manual'}
                     onChange={(event) => {
@@ -657,40 +657,40 @@ export default function CreateProductModal({ open, suppliers, onCancel, onSucces
                       }
                     }}
                   >
-                    <Radio value="auto">自动生成</Radio>
-                    <Radio value="manual">手动输入</Radio>
+                    <Radio value="auto">{t('common.auto')}</Radio>
+                    <Radio value="manual">{t('common.manual')}</Radio>
                   </Radio.Group>
                 </Form.Item>
                 {!autoGenerateBarcode ? (
-                  <Form.Item name="barcode" label="条码">
-                    <Input placeholder={t('warehouse.enterBarcode', '请输入条码')} />
+                  <Form.Item name="barcode" label={t('column.barcode')}>
+                    <Input placeholder={t('warehouse.enterBarcode')} />
                   </Form.Item>
                 ) : null}
               </Col>
               <Col span={12}>
                 <Form.Item
                   name="chineseName"
-                  label={t('warehouse.chineseName', '中文名称')}
-                  rules={[{ required: true, message: t('warehouse.enterChineseName', '请输入中文名称') }]}
+                  label={t('warehouse.chineseName')}
+                  rules={[{ required: true, message: t('warehouse.enterChineseName') }]}
                 >
-                  <Input placeholder={t('warehouse.enterChineseName', '请输入中文名称')} />
+                  <Input placeholder={t('warehouse.enterChineseName')} />
                 </Form.Item>
               </Col>
               <Col span={12}>
-                <Form.Item name="englishName" label={t('warehouse.englishName', '英文名称')}>
-                  <Input placeholder={t('warehouse.enterEnglishName', '请输入英文名称')} />
+                <Form.Item name="englishName" label={t('warehouse.englishName')}>
+                  <Input placeholder={t('warehouse.enterEnglishName')} />
                 </Form.Item>
               </Col>
               <Col span={8}>
-                <Form.Item name="domesticPrice" label={t('warehouse.domesticPriceLabel', '国内价格')}>
+                <Form.Item name="domesticPrice" label={t('warehouse.domesticPriceLabel')}>
                   <InputNumber min={0} precision={2} style={{ width: '100%' }} />
                 </Form.Item>
               </Col>
               <Col span={8}>
                 <Form.Item
                   name="oemPrice"
-                  label={t('warehouse.oemPriceLabel', '贴牌价格')}
-                  rules={[{ required: true, message: t('warehouse.enterOemPrice', '请输入贴牌价格') }]}
+                  label={t('warehouse.oemPriceLabel')}
+                  rules={[{ required: true, message: t('warehouse.enterOemPrice') }]}
                 >
                   <InputNumber min={0.01} precision={2} style={{ width: '100%' }} />
                 </Form.Item>
@@ -698,75 +698,75 @@ export default function CreateProductModal({ open, suppliers, onCancel, onSucces
               <Col span={8}>
                 <Form.Item
                   name="importPrice"
-                  label={t('warehouse.importPriceLabel', '进口价格')}
-                  rules={[{ required: true, message: t('warehouse.enterImportPrice', '请输入进口价格') }]}
+                  label={t('warehouse.importPriceLabel')}
+                  rules={[{ required: true, message: t('warehouse.enterImportPrice') }]}
                 >
                   <InputNumber min={0.01} precision={2} style={{ width: '100%' }} />
                 </Form.Item>
               </Col>
               <Col span={8}>
-                <Form.Item name="volume" label={t('warehouse.volume', '体积')}>
+                <Form.Item name="volume" label={t('warehouse.volume')}>
                   <InputNumber min={0} precision={3} style={{ width: '100%' }} />
                 </Form.Item>
               </Col>
               <Col span={8}>
-                <Form.Item name="packingQuantity" label={t('warehouse.packingQuantity', '装箱数')}>
+                <Form.Item name="packingQuantity" label={t('warehouse.packingQuantity')}>
                   <InputNumber min={0} precision={0} style={{ width: '100%' }} />
                 </Form.Item>
               </Col>
               <Col span={8}>
-                <Form.Item name="middlePackQuantity" label={t('warehouse.middlePackQuantity', '中包数量')}>
+                <Form.Item name="middlePackQuantity" label={t('warehouse.middlePackQuantity')}>
                   <InputNumber min={0} precision={0} style={{ width: '100%' }} />
                 </Form.Item>
               </Col>
               <Col span={8}>
-                <Form.Item name="productSpecification" label={t('domesticProducts.specification', '规格')}>
-                  <Input placeholder={t('warehouse.enterSpec', '请输入规格')} />
+                <Form.Item name="productSpecification" label={t('domesticProducts.specification')}>
+                  <Input placeholder={t('warehouse.enterSpec')} />
                 </Form.Item>
               </Col>
               <Col span={8}>
-                <Form.Item name="packingSize" label={t('warehouse.packingSize', '包装尺寸')}>
-                  <Input placeholder={t('warehouse.enterPackingSize', '请输入包装尺寸')} />
+                <Form.Item name="packingSize" label={t('warehouse.packingSize')}>
+                  <Input placeholder={t('warehouse.enterPackingSize')} />
                 </Form.Item>
               </Col>
               <Col span={8}>
-                <Form.Item name="material" label={t('warehouse.material', '材质')}>
-                  <Input placeholder={t('warehouse.enterMaterial', '请输入材质')} />
+                <Form.Item name="material" label={t('warehouse.material')}>
+                  <Input placeholder={t('warehouse.enterMaterial')} />
                 </Form.Item>
               </Col>
               <Col span={12}>
-                <Form.Item name="categoryGuid" label={t('warehouse.category', '分类')}>
+                <Form.Item name="categoryGuid" label={t('warehouse.category')}>
                   <TreeSelect
                     allowClear
-                    placeholder={t('warehouse.selectCategory', '请选择分类')}
+                    placeholder={t('warehouse.selectCategory')}
                     treeData={createTreeData(categoryTree)}
                     treeDefaultExpandAll
                   />
                 </Form.Item>
               </Col>
               <Col span={12}>
-                <Form.Item name="imageUrl" label={t('warehouse.imageUrl', '图片地址')}>
-                  <Input placeholder="请输入图片 URL" />
+                <Form.Item name="imageUrl" label={t('warehouse.imageUrl')}>
+                  <Input placeholder={t('warehouse.enterImageUrl')} />
                 </Form.Item>
               </Col>
               <Col span={24}>
-                <Form.Item name="remarks" label={t('common.remarks', '备注')}>
-                  <Input.TextArea rows={3} placeholder={t('common.enterRemarks', '请输入备注')} />
+                <Form.Item name="remarks" label={t('common.remarks')}>
+                  <Input.TextArea rows={3} placeholder={t('common.enterRemarks')} />
                 </Form.Item>
               </Col>
             </Row>
           </Card>
 
-          <Card title={t('warehouse.supplierInfo', '供应商信息')} size="small" style={{ marginBottom: 16 }}>
+          <Card title={t('warehouse.supplierInfo')} size="small" style={{ marginBottom: 16 }}>
             <Row gutter={16}>
               <Col span={12}>
                 <Form.Item
                   name="supplierCode"
-                  label={t('warehouse.domesticSupplier', '国内供应商')}
-                  rules={[{ required: true, message: t('warehouse.selectDomesticSupplier', '请选择国内供应商') }]}
+                  label={t('warehouse.domesticSupplier')}
+                  rules={[{ required: true, message: t('warehouse.selectDomesticSupplier') }]}
                 >
                   <Select
-                    placeholder={t('warehouse.selectDomesticSupplier', '请选择国内供应商')}
+                    placeholder={t('warehouse.selectDomesticSupplier')}
                     showSearch
                     optionFilterProp="label"
                     options={supplierOptions}
@@ -774,24 +774,24 @@ export default function CreateProductModal({ open, suppliers, onCancel, onSucces
                 </Form.Item>
               </Col>
               <Col span={12}>
-                <Form.Item name="isActive" label={t('warehouse.isListed', '是否上架')} valuePropName="checked" initialValue>
+                <Form.Item name="isActive" label={t('warehouse.isListed')} valuePropName="checked" initialValue>
                   <Switch />
                 </Form.Item>
               </Col>
             </Row>
             {autoGenerateItemNumber && supplierCode ? (
-              <Alert message={t('warehouse.autoGenerateHint', '货号将基于供应商 {{code}} 自动生成', { code: supplierCode })} type="info" showIcon />
+              <Alert message={t('warehouse.autoGenerateHint', { code: supplierCode })} type="info" showIcon />
             ) : null}
           </Card>
 
           {productType === 1 ? (
-            <Card title={t('warehouse.setConfig', '套装配置')} size="small" style={{ marginBottom: 16 }}>
-              <Form.Item name="setProductType" label={t('warehouse.setType', '套装类型')} initialValue="combination">
+            <Card title={t('warehouse.setConfig')} size="small" style={{ marginBottom: 16 }}>
+              <Form.Item name="setProductType" label={t('warehouse.setType')} initialValue="combination">
                 <Select
                   options={[
-                    { value: 'combination', label: t('warehouse.combinationSet', '组合套装') },
-                    { value: 'fixed', label: t('warehouse.fixedSet', '固定套装') },
-                    { value: 'variable', label: t('warehouse.variableSet', '变量套装') },
+                    { value: 'combination', label: t('warehouse.combinationSet') },
+                    { value: 'fixed', label: t('warehouse.fixedSet') },
+                    { value: 'variable', label: t('warehouse.variableSet') },
                   ]}
                 />
               </Form.Item>
@@ -812,13 +812,13 @@ export default function CreateProductModal({ open, suppliers, onCancel, onSucces
                   ])
                 }}
               >
-                添加明细
+                {t('warehouse.products.addDetail')}
               </Button>
             </Card>
           ) : null}
 
           {productType === 2 ? (
-            <Card title={t('warehouse.multiCodeConfig', '多码配置')} size="small" style={{ marginBottom: 16 }}>
+            <Card title={t('warehouse.multiCodeConfig')} size="small" style={{ marginBottom: 16 }}>
               <Table rowKey="key" dataSource={multiCodeDetails} columns={multiCodeColumns} pagination={false} size="small" />
               <Button
                 block
@@ -835,12 +835,12 @@ export default function CreateProductModal({ open, suppliers, onCancel, onSucces
                   ])
                 }}
               >
-                添加明细
+                {t('warehouse.products.addDetail')}
               </Button>
             </Card>
           ) : null}
 
-          <Card title={t('warehouse.storeRetailPrice', '分店零售价格')} size="small">
+          <Card title={t('warehouse.storeRetailPrice')} size="small">
             <Table rowKey="key" dataSource={retailPrices} columns={retailPriceColumns} pagination={false} size="small" />
             <Space direction="vertical" style={{ width: '100%', marginTop: 8 }}>
               <Button
@@ -859,7 +859,7 @@ export default function CreateProductModal({ open, suppliers, onCancel, onSucces
                   ])
                 }}
               >
-                添加价格
+                {t('warehouse.products.addPrice')}
               </Button>
               <Button
                 block
@@ -867,7 +867,7 @@ export default function CreateProductModal({ open, suppliers, onCancel, onSucces
                 icon={<PlusOutlined />}
                 onClick={() => {
                   if (!stores.length) {
-                    message.warning(t('warehouse.noStoresAvailable', '暂无可用分店'))
+                    message.warning(t('warehouse.noStoresAvailable'))
                     return
                   }
 
@@ -882,7 +882,7 @@ export default function CreateProductModal({ open, suppliers, onCancel, onSucces
                   )
                 }}
               >
-                添加所有分店
+                {t('warehouse.products.addAllStores')}
               </Button>
             </Space>
           </Card>

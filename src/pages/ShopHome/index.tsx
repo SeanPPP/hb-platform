@@ -1,5 +1,6 @@
 import { Breadcrumb, Empty, Pagination, Select, Space, Spin, Tag, Tooltip, message } from 'antd'
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { Link, useSearchParams } from 'react-router-dom'
 import ShopScanBar from '../../components/ShopScanBar'
 import ShopScanResultPicker from '../../components/ShopScanResultPicker'
@@ -28,6 +29,7 @@ import {
 } from '../../utils/scanFeedback'
 
 export default function ShopHomePage() {
+  const { t } = useTranslation()
   const [searchParams] = useSearchParams()
   const categoryId = searchParams.get('category')
   const keyword = searchParams.get('keyword')
@@ -43,7 +45,7 @@ export default function ShopHomePage() {
   const [scanStatus, setScanStatus] = useState<StoreOrderScanStatus>('ready')
   const [scanEnabled, setScanEnabled] = useState(false)
   const [scanBusy, setScanBusy] = useState(false)
-  const [scanMessage, setScanMessage] = useState('Waiting for barcode scan')
+  const [scanMessage, setScanMessage] = useState(t('shop.scan.waiting'))
   const [lastScannedCode, setLastScannedCode] = useState('')
   const [lastScannedProduct, setLastScannedProduct] = useState('')
   const [lastProductImage, setLastProductImage] = useState('')
@@ -61,15 +63,15 @@ export default function ShopHomePage() {
 
   const pageTitle = useMemo(() => {
     if (keyword) {
-      return `Search: ${keyword}`
+      return t('shop.searchTitle', { keyword })
     }
 
     if (categoryId) {
-      return categoryName || 'Category Products'
+      return categoryName || t('shop.categoryProducts')
     }
 
-    return 'All Products'
-  }, [categoryId, categoryName, keyword])
+    return t('shop.allProducts')
+  }, [categoryId, categoryName, keyword, t])
 
   useEffect(() => {
     setCurrentPage(1)
@@ -117,13 +119,13 @@ export default function ShopHomePage() {
         setTotal(result.total)
 
         if (categoryId) {
-          setCategoryName(result.items[0]?.categoryName || 'Category Products')
+          setCategoryName(result.items[0]?.categoryName || t('shop.categoryProducts'))
         } else {
           setCategoryName('')
         }
       } catch (error) {
         if (!cancelled) {
-          message.error('Failed to load products')
+          message.error(t('shop.loadProductsFailed'))
           setProducts([])
           setTotal(0)
         }
@@ -139,7 +141,7 @@ export default function ShopHomePage() {
     return () => {
       cancelled = true
     }
-  }, [categoryId, currentPage, keyword, pageSize, gradeFilter])
+  }, [categoryId, currentPage, keyword, pageSize, gradeFilter, t])
 
   useEffect(() => {
     let cancelled = false
@@ -305,7 +307,7 @@ export default function ShopHomePage() {
   const addScannedProductToCart = useCallback(
     async (product: StoreOrderProductItem, barcode: string) => {
       if (!selectedStore?.storeCode) {
-        updateScanFeedback('blocked', 'Select store first', {
+        updateScanFeedback('blocked', t('shop.scan.selectStoreFirst'), {
           barcode,
           tone: 'blocked',
         })
@@ -328,7 +330,7 @@ export default function ShopHomePage() {
           cartTotalQty = cart?.items.find((ci) => ci.productCode === product.productCode)?.quantity
         } catch {}
 
-        updateScanFeedback('added', `Added ${product.productName || product.productCode}`, {
+        updateScanFeedback('added', t('shop.scan.addedProduct', { name: product.productName || product.productCode }), {
           barcode,
           productName: product.productName || product.productCode,
           productImage: product.productImage,
@@ -340,7 +342,7 @@ export default function ShopHomePage() {
         Promise.all([refreshDynamicData(), refreshPickerDynamicData()]).catch(() => {})
         return true
       } catch (error) {
-        updateScanFeedback('error', 'Failed to add item', {
+        updateScanFeedback('error', t('shop.scan.addItemFailed'), {
           barcode,
           productName: product.productName || product.productCode,
           tone: 'error',
@@ -348,7 +350,7 @@ export default function ShopHomePage() {
         return false
       }
     },
-    [refreshCart, refreshDynamicData, refreshPickerDynamicData, selectedStore?.storeCode, updateScanFeedback],
+    [refreshCart, refreshDynamicData, refreshPickerDynamicData, selectedStore?.storeCode, t, updateScanFeedback],
   )
 
   const handleBarcodeSubmit = useCallback(
@@ -360,10 +362,10 @@ export default function ShopHomePage() {
 
       setScanBusy(true)
       setScanStatus('scanning')
-      setScanMessage(`Looking up ${barcode}...`)
+      setScanMessage(t('shop.scan.lookingUp', { barcode }))
 
       if (!selectedStore?.storeCode) {
-        updateScanFeedback('blocked', 'Select store first', {
+        updateScanFeedback('blocked', t('shop.scan.selectStoreFirst'), {
           barcode,
           tone: 'blocked',
         })
@@ -375,7 +377,7 @@ export default function ShopHomePage() {
         const result = await lookupStoreOrderProductsByBarcode(barcode)
 
         if (!result.items.length) {
-          updateScanFeedback('not_found', 'Barcode not found', {
+          updateScanFeedback('not_found', t('shop.scan.barcodeNotFound'), {
             barcode,
             tone: 'not-found',
           })
@@ -389,12 +391,12 @@ export default function ShopHomePage() {
 
         setScanCandidates(result.items)
         setPickerOpen(true)
-        updateScanFeedback('multiple', 'Multiple matches found', {
+        updateScanFeedback('multiple', t('shop.scan.multipleMatchesFound'), {
           barcode,
           tone: 'multiple',
         })
       } catch (error) {
-        updateScanFeedback('error', 'Lookup failed', {
+        updateScanFeedback('error', t('shop.scan.lookupFailed'), {
           barcode,
           tone: 'error',
         })
@@ -402,14 +404,14 @@ export default function ShopHomePage() {
         setScanBusy(false)
       }
     },
-    [addScannedProductToCart, scanBusy, selectedStore?.storeCode, updateScanFeedback],
+    [addScannedProductToCart, scanBusy, selectedStore?.storeCode, t, updateScanFeedback],
   )
 
   const handleUnlockSound = useCallback(async () => {
     const success = await unlockScanFeedback()
     setSoundEnabled(success)
-    setScanMessage(success ? 'Sound feedback is ready' : 'Sound is unavailable on this device')
-  }, [])
+    setScanMessage(success ? t('shop.scan.soundFeedbackReady') : t('shop.scan.soundUnavailable'))
+  }, [t])
 
   useBarcodeScanner({
     enabled: scanEnabled && !scanBusy,
@@ -422,7 +424,7 @@ export default function ShopHomePage() {
 
   const handleAddToCart = async (product: StoreOrderProductItem, quantity: number) => {
     if (!selectedStore?.storeCode) {
-      message.warning('Please select a store first')
+      message.warning(t('shop.selectStoreFirst'))
       return
     }
 
@@ -432,16 +434,16 @@ export default function ShopHomePage() {
         productCode: product.productCode,
         quantity,
       })
-      message.success(`Added ${quantity} x ${product.productName} to cart`)
+      message.success(t('shop.addedToCart', { quantity, name: product.productName }))
       await Promise.all([refreshCart(), refreshDynamicData()])
     } catch (error) {
-      message.error('Failed to add to cart')
+      message.error(t('shop.addToCartFailed'))
     }
   }
 
   const handleRemoveFromCart = async (product: StoreOrderProductItem) => {
     if (!selectedStore?.storeCode) {
-      message.warning('Please select a store first')
+      message.warning(t('shop.selectStoreFirst'))
       return
     }
 
@@ -449,7 +451,7 @@ export default function ShopHomePage() {
     const cartItem = cart?.items.find((item) => item.productCode === product.productCode)
 
     if (!cartItem) {
-      message.warning('Item not found in cart')
+      message.warning(t('shop.itemNotFoundInCart'))
       return
     }
 
@@ -458,10 +460,10 @@ export default function ShopHomePage() {
         storeCode: selectedStore.storeCode,
         detailGUID: cartItem.detailGUID,
       })
-      message.success(`Removed ${product.productName} from cart`)
+      message.success(t('shop.removedFromCart', { name: product.productName }))
       await Promise.all([refreshCart(), refreshDynamicData()])
     } catch (error) {
-      message.error('Failed to remove item')
+      message.error(t('shop.cartRemoveFailed'))
     }
   }
 
@@ -501,11 +503,11 @@ export default function ShopHomePage() {
 
         <div className="shop-home-controls">
           <div className="shop-home-pagination-info">
-            {total} items | Page: {currentPage}
+            {t('shop.paginationInfo', { total, page: currentPage })}
           </div>
           <div className="shop-home-filters">
             <Space size={4} wrap>
-              <span className="shop-home-filter-label">Grade:</span>
+              <span className="shop-home-filter-label">{t('shop.grade')}:</span>
               <Tag.CheckableTag
                 checked={gradeFilter.length === 0}
                 onChange={() => {
@@ -514,10 +516,10 @@ export default function ShopHomePage() {
                 }}
                 style={{ padding: '2px 8px', borderRadius: 4 }}
               >
-                All
+                {t('common.all')}
               </Tag.CheckableTag>
               {(Object.entries(PRODUCT_GRADE_CONFIG) as [string, typeof PRODUCT_GRADE_CONFIG[keyof typeof PRODUCT_GRADE_CONFIG]][]).map(([key, cfg]) => (
-                <Tooltip key={key} title={cfg.shopTooltip}>
+                <Tooltip key={key} title={t(`shop.gradeTooltip.${key}`)}>
                   <Tag.CheckableTag
                     checked={gradeFilter.includes(key)}
                     onChange={(checked) => {
@@ -536,14 +538,14 @@ export default function ShopHomePage() {
                       background: gradeFilter.includes(key) ? cfg.color : 'transparent',
                     }}
                   >
-                    {key} - {cfg.shopLabel}
+                    {key} - {t(`shop.gradeLabel.${key}`)}
                   </Tag.CheckableTag>
                 </Tooltip>
               ))}
             </Space>
           </div>
           <div className="shop-home-filters">
-            <span className="shop-home-filter-label">Items per page:</span>
+            <span className="shop-home-filter-label">{t('shop.itemsPerPage')}:</span>
             <Select
               value={pageSize}
               className="shop-home-filter-select"
@@ -596,7 +598,7 @@ export default function ShopHomePage() {
           </div>
         </>
       ) : (
-        <Empty description="No products found" />
+        <Empty description={t('shop.noProductsFound')} />
       )}
 
       <ShopScanResultPicker

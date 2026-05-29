@@ -12,7 +12,7 @@ import {
 interface RolePermissionManagerProps {
   roleGuid: string
   roleName: string
-  /** Called after permissions are successfully saved */
+  /** 权限保存成功后触发 */
   onChanged?: () => void
   readOnly?: boolean
 }

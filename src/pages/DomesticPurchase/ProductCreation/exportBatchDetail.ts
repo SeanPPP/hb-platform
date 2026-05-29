@@ -10,6 +10,8 @@ interface ExportBatchDetailOptions {
 }
 
 interface ExportRow {
+  type: string
+  parentItemNumber: string
   itemNumber: string
   barcode: string
   productName: string
@@ -19,13 +21,50 @@ interface ExportRow {
 }
 
 export function getExportableBatchItems(items: BatchProductItem[]) {
-  return items
-    .filter((item) => item.productType === ProductCreationType.SET || item.productType === ProductCreationType.NORMAL)
+  const normalItems = items
+    .filter((item) => item.productType === ProductCreationType.NORMAL)
     .sort((a, b) => a.hbProductNo.localeCompare(b.hbProductNo))
+  const setItems = items
+    .filter((item) => item.productType === ProductCreationType.SET)
+    .sort((a, b) => a.hbProductNo.localeCompare(b.hbProductNo))
+  const subItemsByParent = items
+    .filter((item) => item.productType === ProductCreationType.SET_SUB_ITEM)
+    .reduce<Record<string, BatchProductItem[]>>((groups, item) => {
+      const parentItemNumber = (item.parentItemNumber || '').trim()
+      if (!parentItemNumber) return groups
+      groups[parentItemNumber] = groups[parentItemNumber] || []
+      groups[parentItemNumber].push(item)
+      return groups
+    }, {})
+  const groupedSubItemIds = new Set<string>()
+
+  const groupedSetItems = setItems.flatMap((setItem) => {
+    const children = (subItemsByParent[setItem.hbProductNo.trim()] || []).sort((a, b) =>
+      a.hbProductNo.localeCompare(b.hbProductNo),
+    )
+    children.forEach((child) => groupedSubItemIds.add(child.itemNumber || child.hbProductNo))
+    return [setItem, ...children]
+  })
+  const unmatchedSubItems = items
+    .filter((item) => item.productType === ProductCreationType.SET_SUB_ITEM)
+    .filter((item) => !groupedSubItemIds.has(item.itemNumber || item.hbProductNo))
+    .sort(
+      (a, b) =>
+        (a.parentItemNumber || '').localeCompare(b.parentItemNumber || '') || a.hbProductNo.localeCompare(b.hbProductNo),
+    )
+
+  return [...groupedSetItems, ...unmatchedSubItems, ...normalItems]
 }
 
-function toExportRows(items: BatchProductItem[]): ExportRow[] {
+export function toExportRows(items: BatchProductItem[], t?: TFunction): ExportRow[] {
+  const typeMap: Record<ProductCreationType, string> = {
+    [ProductCreationType.NORMAL]: t?.('productCreation.normal', '普通') ?? '普通',
+    [ProductCreationType.SET]: t?.('productCreation.set', '套装') ?? '套装',
+    [ProductCreationType.SET_SUB_ITEM]: t?.('productCreation.setSubItem', '套装子项') ?? '套装子项',
+  }
   return getExportableBatchItems(items).map((item) => ({
+    type: typeMap[item.productType] || String(item.productType),
+    parentItemNumber: item.productType === ProductCreationType.SET_SUB_ITEM ? item.parentItemNumber || '' : '',
     itemNumber: item.hbProductNo,
     barcode: item.barcode,
     productName: item.productName,
@@ -42,6 +81,8 @@ export async function exportProductCreationBatchToExcel(
   const workbook = new ExcelJS.Workbook()
   const worksheet = workbook.addWorksheet(t('productCreation.batchDetail', '批次明细'))
   worksheet.columns = [
+    { header: t('productCreation.type', '类型'), key: 'type', width: 12 },
+    { header: t('productCreation.parentSetItemNumber', '父套装货号'), key: 'parentItemNumber', width: 20 },
     { header: t('productImport.hbProductNoCol', '货号'), key: 'itemNumber', width: 20 },
     { header: t('domesticProducts.barcode', '条码'), key: 'barcode', width: 18 },
     { header: t('domesticProducts.productName', '商品名称'), key: 'productName', width: 30 },
@@ -59,13 +100,15 @@ export async function exportProductCreationBatchToExcel(
     cell.alignment = { horizontal: 'center', vertical: 'middle' }
   })
 
-  const rows = toExportRows(detail.items)
+  const rows = toExportRows(detail.items, t)
   const barcodes = rows.map((item) => item.barcode).filter(Boolean)
   const barcodeMap = await generateBarcodeImages(barcodes, { width: 1, height: 40, displayValue: true })
 
   rows.forEach((item, index) => {
     const currentRow = worksheet.getRow(index + 2)
     currentRow.values = [
+      item.type,
+      item.parentItemNumber,
       item.itemNumber,
       item.barcode,
       item.productName,
@@ -86,8 +129,8 @@ export async function exportProductCreationBatchToExcel(
         const base64Image = barcodeData.split(',')[1]
         const imageId = workbook.addImage({ base64: base64Image, extension: 'png' })
         worksheet.addImage(imageId, {
-          tl: { col: 6, row: index + 1 },
-          br: { col: 7, row: index + 2 },
+          tl: { col: 8, row: index + 1 },
+          br: { col: 9, row: index + 2 },
           editAs: 'oneCell',
         } as any)
       }

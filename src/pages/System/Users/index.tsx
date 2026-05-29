@@ -841,14 +841,14 @@ export default function SystemUsersPage() {
 
   const columns: ColumnsType<UserDto> = [
     {
-      title: '#',
+      title: t('system.users.rowIndex', '#'),
       key: 'rowIndex',
       width: 60,
       align: 'center',
       render: (_: unknown, __: UserDto, index: number) => (page - 1) * pageSize + index + 1,
     },
     { title: t('system.users.username', '用户名'), dataIndex: 'username', width: 180, sorter: true, sortOrder: sortBy === 'username' ? sortOrder : null },
-    { title: t('system.users.fullName', '姓名'), dataIndex: 'fullName', width: 160, sorter: true, sortOrder: sortBy === 'fullName' ? sortOrder : null, render: (value) => value || '--' },
+    { title: t('system.users.fullName', '姓名'), dataIndex: 'fullName', width: 160, sorter: true, sortOrder: sortBy === 'fullName' ? sortOrder : null, render: (value) => value || t('common.emptyValue') },
     { title: t('system.users.email', '邮箱'), dataIndex: 'email', width: 220 },
     {
       title: t('system.users.roles', '角色'),
@@ -857,7 +857,7 @@ export default function SystemUsersPage() {
       sorter: true,
       sortOrder: sortBy === 'roleNames' ? sortOrder : null,
       render: (value: string[]) =>
-        value?.length ? value.map((item) => <Tag key={item} color={getRoleColor(item)}>{item}</Tag>) : '--',
+        value?.length ? value.map((item) => <Tag key={item} color={getRoleColor(item)}>{item}</Tag>) : t('common.emptyValue'),
     },
     {
       title: t('system.users.linkedStores', '关联分店'),
@@ -867,7 +867,7 @@ export default function SystemUsersPage() {
       sortOrder: sortBy === 'storeNames' ? sortOrder : null,
       render: (value: string[]) => {
         const stores = [...(value || [])].sort((left, right) => left.localeCompare(right))
-        if (!stores.length) return '--'
+        if (!stores.length) return t('common.emptyValue')
         return (
           <Space wrap size={[4, 4]}>
             {stores.slice(0, 2).map((store) => (
@@ -1181,7 +1181,7 @@ export default function SystemUsersPage() {
           <Space direction="vertical" size={16} style={{ width: '100%' }}>
             <Descriptions bordered column={2}>
               <Descriptions.Item label={t('system.users.username', '用户名')}>{detailUser.username}</Descriptions.Item>
-              <Descriptions.Item label={t('system.users.fullName', '姓名')}>{detailUser.fullName || '--'}</Descriptions.Item>
+              <Descriptions.Item label={t('system.users.fullName', '姓名')}>{detailUser.fullName || t('common.emptyValue')}</Descriptions.Item>
               <Descriptions.Item label={t('system.users.email', '邮箱')}>{detailUser.email}</Descriptions.Item>
               <Descriptions.Item label={t('common.status', '状态')}>
                 <Tag color={detailUser.isActive ? 'success' : 'default'}>
@@ -1190,14 +1190,14 @@ export default function SystemUsersPage() {
               </Descriptions.Item>
               <Descriptions.Item label={t('system.users.roles', '角色')} span={2}>
                 <Space wrap>
-                  {detailUser.roleNames?.length ? detailUser.roleNames.map((item) => <Tag key={item}>{item}</Tag>) : '--'}
+                  {detailUser.roleNames?.length ? detailUser.roleNames.map((item) => <Tag key={item}>{item}</Tag>) : t('common.emptyValue')}
                 </Space>
               </Descriptions.Item>
               <Descriptions.Item label={t('system.users.permissions', '权限')} span={2}>
                 <Space wrap>
                   {detailUser.permissions?.length
                     ? detailUser.permissions.map((p) => <Tag key={p} color="green">{p}</Tag>)
-                    : '--'}
+                    : t('common.emptyValue')}
                 </Space>
               </Descriptions.Item>
               <Descriptions.Item label={t('system.users.createdAt', '创建时间')}>{detailUser.createdAt}</Descriptions.Item>

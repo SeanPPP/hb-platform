@@ -351,7 +351,7 @@ export default function ShopCartDrawer({
               }}
               showSizeChanger
               showQuickJumper
-              showTotal={(total, range) => `${range[0]}-${range[1]} / ${total}`}
+              showTotal={(total, range) => t('shop.paginationRange', { start: range[0], end: range[1], total })}
               pageSizeOptions={['50', '100']}
             />
           </div>

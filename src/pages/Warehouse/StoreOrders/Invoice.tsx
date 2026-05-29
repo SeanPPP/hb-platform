@@ -1,7 +1,9 @@
 import { DownloadOutlined, FileExcelOutlined, PrinterOutlined, RollbackOutlined } from '@ant-design/icons'
 import { Button, Empty, Image, Space, Spin, message } from 'antd'
 import ExcelJS from 'exceljs'
+import type { TFunction } from 'i18next'
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { useNavigate } from 'react-router-dom'
 import BarcodePreview from '../../../components/BarcodePreview'
 import { useDynamicTabTitle } from '../../../hooks/useDynamicTabTitle'
@@ -41,19 +43,19 @@ function sortInvoiceItems(items: StoreOrderDetailLine[]) {
   })
 }
 
-async function downloadInvoiceExcel(order: StoreOrderDetail, items: StoreOrderDetailLine[], storeName?: string) {
+async function downloadInvoiceExcel(order: StoreOrderDetail, items: StoreOrderDetailLine[], storeName: string | undefined, t: TFunction) {
   const workbook = new ExcelJS.Workbook()
-  const worksheet = workbook.addWorksheet('Invoice')
+  const worksheet = workbook.addWorksheet(t('warehouse.invoice.excel.sheetName'))
 
   worksheet.columns = [
     { header: '#', key: 'index', width: 8 },
-    { header: 'Item No', key: 'itemNumber', width: 18 },
-    { header: 'Name', key: 'productName', width: 28 },
-    { header: 'Barcode', key: 'barcode', width: 20 },
-    { header: 'Cost', key: 'importPrice', width: 14 },
-    { header: 'Order Qty', key: 'orderQuantity', width: 12 },
-    { header: 'Ship Qty', key: 'allocQuantity', width: 12 },
-    { header: 'Subtotal', key: 'subtotal', width: 16 },
+    { header: t('warehouse.invoice.excel.itemNo'), key: 'itemNumber', width: 18 },
+    { header: t('warehouse.invoice.excel.name'), key: 'productName', width: 28 },
+    { header: t('warehouse.invoice.excel.barcode'), key: 'barcode', width: 20 },
+    { header: t('warehouse.invoice.excel.cost'), key: 'importPrice', width: 14 },
+    { header: t('warehouse.invoice.excel.orderQty'), key: 'orderQuantity', width: 12 },
+    { header: t('warehouse.invoice.excel.shipQty'), key: 'allocQuantity', width: 12 },
+    { header: t('warehouse.invoice.excel.subtotal'), key: 'subtotal', width: 16 },
   ]
 
   worksheet.getRow(1).font = { bold: true }
@@ -79,12 +81,12 @@ async function downloadInvoiceExcel(order: StoreOrderDetail, items: StoreOrderDe
   const total = Number((subTotal + gst + freight).toFixed(2))
 
   worksheet.addRow({})
-  worksheet.addRow({ productName: 'Sub-Total', subtotal: subTotal })
-  worksheet.addRow({ productName: 'GST 10%', subtotal: gst })
-  worksheet.addRow({ productName: 'Freight', subtotal: freight })
-  worksheet.addRow({ productName: 'Total', subtotal: total })
+  worksheet.addRow({ productName: t('warehouse.invoice.subTotal'), subtotal: subTotal })
+  worksheet.addRow({ productName: t('warehouse.invoice.gst'), subtotal: gst })
+  worksheet.addRow({ productName: t('warehouse.invoice.freight'), subtotal: freight })
+  worksheet.addRow({ productName: t('warehouse.invoice.total'), subtotal: total })
   worksheet.addRow({})
-  worksheet.addRow({ productName: '备注', barcode: '图片只做参考，以实物为准' })
+  worksheet.addRow({ productName: t('warehouse.invoice.remarks'), barcode: t('warehouse.invoice.imageRefNote') })
 
   worksheet.getColumn('importPrice').numFmt = '$#,##0.00'
   worksheet.getColumn('subtotal').numFmt = '$#,##0.00'
@@ -96,7 +98,7 @@ async function downloadInvoiceExcel(order: StoreOrderDetail, items: StoreOrderDe
   const url = URL.createObjectURL(blob)
   const link = document.createElement('a')
   link.href = url
-  link.download = buildDocumentFileName('发票', storeName || order.storeCode, order.orderNo || order.orderGUID, 'xlsx')
+  link.download = buildDocumentFileName(t('warehouse.invoice.fileName'), storeName || order.storeCode, order.orderNo || order.orderGUID, 'xlsx')
   document.body.appendChild(link)
   link.click()
   document.body.removeChild(link)
@@ -104,6 +106,7 @@ async function downloadInvoiceExcel(order: StoreOrderDetail, items: StoreOrderDe
 }
 
 export default function StoreOrderInvoicePage() {
+  const { t } = useTranslation()
   const route = useStableRouteContext()
   const id = route?.params.id || ''
   const navigate = useNavigate()
@@ -116,8 +119,8 @@ export default function StoreOrderInvoicePage() {
 
   useDynamicTabTitle(
     order?.orderNo
-      ? `发票 - ${store?.storeName || order.storeCode || '未知分店'} - ${order.orderNo}`
-      : '发票',
+      ? t('warehouse.invoice.titleWithStore', { storeName: store?.storeName || order.storeCode || t('warehouse.invoice.unknownStore'), orderNo: order.orderNo })
+      : t('warehouse.invoice.title'),
   )
 
   useEffect(() => {
@@ -130,7 +133,7 @@ export default function StoreOrderInvoicePage() {
       try {
         const detail = await getStoreOrderDetail(id)
         if (!detail) {
-          message.error('未找到订单明细')
+          message.error(t('storeOrders.detail.notFound'))
           return
         }
 
@@ -148,7 +151,7 @@ export default function StoreOrderInvoicePage() {
         }
       } catch (error) {
         console.error(error)
-        message.error(error instanceof Error ? error.message : '加载发票失败')
+        message.error(error instanceof Error ? error.message : t('warehouse.invoice.loadFailed'))
       } finally {
         setLoading(false)
       }
@@ -184,11 +187,11 @@ export default function StoreOrderInvoicePage() {
     try {
       await downloadElementAsPdf(
         printRootRef.current,
-        buildDocumentFileName('发票', store?.storeName || order.storeCode, order.orderNo || order.orderGUID, 'pdf'),
+        buildDocumentFileName(t('warehouse.invoice.fileName'), store?.storeName || order.storeCode, order.orderNo || order.orderGUID, 'pdf'),
       )
     } catch (error) {
       console.error(error)
-      message.error(error instanceof Error ? error.message : '下载发票 PDF 失败')
+      message.error(error instanceof Error ? error.message : t('warehouse.invoice.downloadPdfFailed'))
     } finally {
       setDownloading(false)
     }
@@ -201,10 +204,10 @@ export default function StoreOrderInvoicePage() {
 
     setExportingExcel(true)
     try {
-      await downloadInvoiceExcel(order, sortedItems, store?.storeName || order.storeCode)
+      await downloadInvoiceExcel(order, sortedItems, store?.storeName || order.storeCode, t)
     } catch (error) {
       console.error(error)
-      message.error(error instanceof Error ? error.message : '导出发票 Excel 失败')
+      message.error(error instanceof Error ? error.message : t('warehouse.invoice.exportExcelFailed'))
     } finally {
       setExportingExcel(false)
     }
@@ -215,7 +218,7 @@ export default function StoreOrderInvoicePage() {
   }
 
   if (!order) {
-    return <Empty description="未找到订单数据" style={{ marginTop: 120 }} />
+    return <Empty description={t('storeOrders.detail.orderDataNotFound')} style={{ marginTop: 120 }} />
   }
 
   const displayStoreName = store?.storeName || order.storeCode || '--'
@@ -226,16 +229,16 @@ export default function StoreOrderInvoicePage() {
       <div className="store-order-print-toolbar no-print">
         <Space wrap>
           <Button icon={<RollbackOutlined />} onClick={() => navigate(-1)}>
-            返回
+            {t('common.back')}
           </Button>
           <Button icon={<FileExcelOutlined />} loading={exportingExcel} onClick={() => void handleExportExcel()}>
-            导出 Excel
+            {t('warehouse.invoice.exportExcel')}
           </Button>
           <Button icon={<DownloadOutlined />} loading={downloading} onClick={() => void handleDownloadPdf()}>
-            下载 PDF
+            {t('warehouse.invoice.downloadPdf')}
           </Button>
           <Button type="primary" icon={<PrinterOutlined />} onClick={handlePrint}>
-            打印发票
+            {t('warehouse.invoice.printInvoice')}
           </Button>
         </Space>
       </div>
@@ -246,33 +249,33 @@ export default function StoreOrderInvoicePage() {
             <Image src="/invoice-logo.png" alt="HOT BARGAIN" preview={false} style={{ maxHeight: 120, objectFit: 'contain' }} />
           </div>
           <div className="store-order-invoice-company">
-            <h4>WAREHOUSE ADDRESS:</h4>
+            <h4>{t('warehouse.invoice.warehouseAddress')}</h4>
             <p>3 Rogilla close Maryland, NSW, 2287, Australia</p>
             <p>
               <strong>A.B.N.</strong> 35 160 589 793
             </p>
             <p>
-              <strong>WAREHOUSE EMAIL:</strong> dong@hotbargain.com.au
+              <strong>{t('warehouse.invoice.warehouseEmail')}</strong> dong@hotbargain.com.au
             </p>
           </div>
         </div>
 
         <div className="store-order-invoice-bar">
-          <div>INVOICE NO. {order.orderNo || order.orderGUID}</div>
-          <div>INVOICE DATE: {formatPrintDate(undefined, false)}</div>
+          <div>{t('warehouse.invoice.invoiceNo', { orderNo: order.orderNo || order.orderGUID })}</div>
+          <div>{t('warehouse.invoice.invoiceDate', { date: formatPrintDate(undefined, false) })}</div>
         </div>
 
         <div className="store-order-invoice-customer">
           <div className="store-order-invoice-customer-row">
-            <span className="store-order-invoice-label">CUSTOMER:</span>
+            <span className="store-order-invoice-label">{t('warehouse.invoice.customer')}</span>
             <span>{displayStoreName}</span>
           </div>
           <div className="store-order-invoice-customer-row">
-            <span className="store-order-invoice-label">CUSTOMER CONTACT:</span>
+            <span className="store-order-invoice-label">{t('warehouse.invoice.customerContact')}</span>
             <span>{store?.contactPhone || '-'}</span>
           </div>
           <div className="store-order-invoice-customer-row">
-            <span className="store-order-invoice-label">ADDRESS:</span>
+            <span className="store-order-invoice-label">{t('warehouse.invoice.address')}</span>
             <span>{storeAddress}</span>
           </div>
         </div>
@@ -281,14 +284,14 @@ export default function StoreOrderInvoicePage() {
           <thead>
             <tr>
               <th className="col-index">#</th>
-              <th className="col-image">图片</th>
-              <th className="col-item">货号</th>
-              <th className="col-barcode">条码</th>
-              <th>名称</th>
-              <th className="col-cost">成本</th>
-              <th className="col-qty">订货数量</th>
-              <th className="col-qty">发货数量</th>
-              <th className="col-subtotal">小计</th>
+              <th className="col-image">{t('column.image')}</th>
+              <th className="col-item">{t('column.itemNumber')}</th>
+              <th className="col-barcode">{t('column.barcode')}</th>
+              <th>{t('column.name')}</th>
+              <th className="col-cost">{t('column.cost')}</th>
+              <th className="col-qty">{t('column.orderQuantity')}</th>
+              <th className="col-qty">{t('column.shipQuantity')}</th>
+              <th className="col-subtotal">{t('column.subtotal')}</th>
             </tr>
           </thead>
           <tbody>
@@ -339,49 +342,48 @@ export default function StoreOrderInvoicePage() {
 
         <div className="store-order-invoice-footer">
           <div className="store-order-invoice-payment">
-            <h4>PAYMENT DETAIL: DIRECT DEBIT</h4>
+            <h4>{t('warehouse.invoice.paymentDetail')}</h4>
             <div className="store-order-invoice-payment-row">
-              <span className="store-order-invoice-label">NAME:</span>
+              <span className="store-order-invoice-label">{t('warehouse.invoice.paymentName')}</span>
               <span>HOT BARGAIN INTERNATIONAL</span>
             </div>
             <div className="store-order-invoice-payment-row">
-              <span className="store-order-invoice-label">BSB:</span>
+              <span className="store-order-invoice-label">{t('warehouse.invoice.bsb')}</span>
               <span>12532</span>
             </div>
             <div className="store-order-invoice-payment-row">
-              <span className="store-order-invoice-label">ACCOUNT:</span>
+              <span className="store-order-invoice-label">{t('warehouse.invoice.account')}</span>
               <span>208034605</span>
             </div>
             <div className="store-order-invoice-disclaimer">
-              All products remain the property of Hot Bargain International Pty Ltd until payment is received in full
-              for the invoiced amount. Payment strictly within 30 days of the invoice date.
+              {t('warehouse.invoice.paymentDisclaimer')}
             </div>
           </div>
 
           <div className="store-order-invoice-totals">
             <div className="store-order-invoice-total-row">
-              <span>Sub-Total:</span>
+              <span>{t('warehouse.invoice.subTotal')}</span>
               <span>{formatCurrency(totals.subTotal)}</span>
             </div>
             <div className="store-order-invoice-total-row">
-              <span>GST 10%:</span>
+              <span>{t('warehouse.invoice.gst')}</span>
               <span>{formatCurrency(totals.gst)}</span>
             </div>
             <div className="store-order-invoice-total-row">
-              <span>Freight:</span>
+              <span>{t('warehouse.invoice.freight')}</span>
               <span>{formatCurrency(totals.freight)}</span>
             </div>
             <div className="store-order-invoice-total-row is-grand">
-              <span>Total Before Discount:</span>
+              <span>{t('warehouse.invoice.totalBeforeDiscount')}</span>
               <span>{formatCurrency(totals.total)}</span>
             </div>
           </div>
         </div>
 
         <div className="store-order-print-footer">
-          <div>Page document</div>
-          <div>图片只做参考，以实物为准</div>
-          <div>Date: {formatPrintDate(undefined)}</div>
+          <div>{t('warehouse.invoice.pageDocument')}</div>
+          <div>{t('warehouse.invoice.imageRefNote')}</div>
+          <div>{t('warehouse.invoice.dateLabel')} {formatPrintDate(undefined)}</div>
         </div>
       </div>
     </div>

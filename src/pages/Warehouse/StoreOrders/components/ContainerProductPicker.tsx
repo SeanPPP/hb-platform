@@ -3,6 +3,7 @@ import { Button, Image, Input, InputNumber, Modal, Space, Steps, Table, Tag, Typ
 import type { ColumnsType } from 'antd/es/table'
 import type { SortOrder } from 'antd/es/table/interface'
 import { useEffect, useMemo, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { getContainerList, getContainerProducts } from '../../../../services/containerService'
 import type { ContainerDetail, ContainerMain } from '../../../../types/container'
 
@@ -24,6 +25,7 @@ export default function ContainerProductPicker({
   onConfirm,
   alreadySelectedCodes = [],
 }: ContainerProductPickerProps) {
+  const { t } = useTranslation()
   const [step, setStep] = useState(0)
   const [fetching, setFetching] = useState(false)
   const [submitting, setSubmitting] = useState(false)
@@ -71,7 +73,7 @@ export default function ContainerProductPicker({
         setContainers(result.containers.map((item) => ({ ...item, key: item.hguid })))
       } catch (error) {
         console.error(error)
-        message.error(error instanceof Error ? error.message : '加载货柜列表失败')
+      message.error(error instanceof Error ? error.message : t('containers.messages.loadListFailed'))
       } finally {
         setFetching(false)
       }
@@ -100,7 +102,7 @@ export default function ContainerProductPicker({
       setProducts(rows)
     } catch (error) {
       console.error(error)
-      message.error(error instanceof Error ? error.message : '加载货柜商品失败')
+      message.error(error instanceof Error ? error.message : t('storeOrders.containerPickerLoadProductsFailed'))
       setStep(0)
     } finally {
       setFetching(false)
@@ -165,12 +167,12 @@ export default function ContainerProductPicker({
     })
 
     if (!selectedRowKeys.length) {
-      message.warning('请先选择商品')
+      message.warning(t('storeOrders.detail.selectProductsFirst'))
       return
     }
 
     if (!items.length) {
-      message.warning('请先为已选商品填写大于 0 的数量')
+      message.warning(t('storeOrders.containerPickerEnterPositiveQty'))
       return
     }
 
@@ -185,25 +187,25 @@ export default function ContainerProductPicker({
 
   const containerColumns: ColumnsType<ContainerRow> = [
     {
-      title: '货柜编号',
+      title: t('containers.fields.containerNumber'),
       dataIndex: '货柜编号',
       width: 160,
       render: (value?: string) => value || '--',
     },
     {
-      title: '预计到岸日期',
+      title: t('containers.fields.estimatedArrivalDate'),
       dataIndex: '预计到岸日期',
       width: 140,
       render: (value?: string) => value || '--',
     },
     {
-      title: '合计件数',
+      title: t('containers.fields.totalPieces'),
       dataIndex: '合计件数',
       width: 100,
       render: (value?: number) => value ?? 0,
     },
     {
-      title: '合计数量',
+      title: t('column.totalQuantity'),
       dataIndex: '合计数量',
       width: 100,
       render: (value?: number) => value ?? 0,
@@ -212,7 +214,7 @@ export default function ContainerProductPicker({
 
   const productColumns: ColumnsType<ProductRow> = [
     {
-      title: '图片',
+      title: t('column.image'),
       width: 72,
       render: (_, record) =>
         record.商品信息?.商品图片 ? (
@@ -229,7 +231,7 @@ export default function ContainerProductPicker({
         ),
     },
     {
-      title: '货号',
+      title: t('column.itemNumber'),
       dataIndex: '商品信息',
       width: 120,
       sorter: true,
@@ -237,24 +239,24 @@ export default function ContainerProductPicker({
       render: (_, record) => record.商品信息?.货号 || '--',
     },
     {
-      title: '商品名称',
+      title: t('column.productName'),
       ellipsis: true,
       render: (_, record) => record.商品信息?.商品名称 || '--',
     },
     {
-      title: '进口价',
+      title: t('column.importPrice'),
       dataIndex: '进口价格',
       width: 90,
       render: (value?: number) => (value === undefined || value === null ? '--' : value.toFixed(2)),
     },
     {
-      title: '货柜数量',
+      title: t('column.containerQty'),
       dataIndex: '装柜数量',
       width: 100,
       render: (value?: number) => value ?? 0,
     },
     {
-      title: '发货数量',
+      title: t('column.shipQty'),
       width: 120,
       render: (_, record) => {
         const productCode = record.商品编码 || record.商品信息?.商品编码
@@ -265,7 +267,7 @@ export default function ContainerProductPicker({
             min={0}
             precision={0}
             disabled={disabled}
-            placeholder="请输入"
+            placeholder={t('common.enter')}
             style={{ width: '100%' }}
             value={productQuantities[String(record.key)]}
             onChange={(value) =>
@@ -279,19 +281,19 @@ export default function ContainerProductPicker({
       },
     },
     {
-      title: '状态',
+      title: t('column.status'),
       width: 90,
       render: (_, record) => {
         const productCode = record.商品编码 || record.商品信息?.商品编码
         const disabled = productCode ? alreadySelectedCodes.includes(productCode) : false
-        return disabled ? <Tag color="warning">已在订单中</Tag> : <Tag color="success">可添加</Tag>
+        return disabled ? <Tag color="warning">{t('storeOrders.containerPickerAlreadyInOrder')}</Tag> : <Tag color="success">{t('storeOrders.containerPickerCanAdd')}</Tag>
       },
     },
   ]
 
   return (
     <Modal
-      title="从货柜中选择商品"
+      title={t('storeOrders.containerPickerTitle')}
       open={open}
       width={1000}
       destroyOnClose
@@ -301,7 +303,7 @@ export default function ContainerProductPicker({
       <Steps
         current={step}
         style={{ marginBottom: 16 }}
-        items={[{ title: '选择货柜' }, { title: '选择商品' }]}
+        items={[{ title: t('storeOrders.selectContainer') }, { title: t('storeOrders.selectProducts') }]}
       />
 
       {step === 0 ? (
@@ -309,7 +311,7 @@ export default function ContainerProductPicker({
           <Input
             allowClear
             value={containerKeyword}
-            placeholder="按货柜编号搜索"
+            placeholder={t('storeOrders.containerPickerSearchContainer')}
             onChange={(event) => setContainerKeyword(event.target.value)}
           />
           <Table<ContainerRow>
@@ -329,18 +331,18 @@ export default function ContainerProductPicker({
         <Space direction="vertical" size={12} style={{ width: '100%' }}>
           <Space wrap style={{ justifyContent: 'space-between', width: '100%' }}>
             <Space wrap>
-              <Tag color="blue">{selectedContainer?.货柜编号 || '未选择货柜'}</Tag>
-              <Typography.Text type="secondary">默认数量为空，只有填写发货数量后才会加入订单</Typography.Text>
+              <Tag color="blue">{selectedContainer?.货柜编号 || t('storeOrders.containerNotSelected')}</Tag>
+              <Typography.Text type="secondary">{t('storeOrders.containerPickerQuantityHint')}</Typography.Text>
             </Space>
             <Button icon={<ArrowLeftOutlined />} onClick={() => setStep(0)}>
-              返回货柜列表
+              {t('storeOrders.backToContainer')}
             </Button>
           </Space>
 
           <Input
             allowClear
             value={productKeyword}
-            placeholder="按货号、商品名称或商品编码搜索"
+            placeholder={t('storeOrders.containerPickerSearchProduct')}
             onChange={(event) => setProductKeyword(event.target.value)}
           />
 
@@ -380,9 +382,9 @@ export default function ContainerProductPicker({
 
           <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
             <Space>
-              <Button onClick={onClose}>取消</Button>
+              <Button onClick={onClose}>{t('common.cancel')}</Button>
               <Button type="primary" loading={loading || submitting} onClick={() => void handleConfirm()}>
-                加入已选商品 ({selectedRowKeys.length})
+                {t('storeOrders.containerPickerAddSelected', { count: selectedRowKeys.length })}
               </Button>
             </Space>
           </div>

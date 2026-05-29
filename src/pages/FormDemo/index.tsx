@@ -5,8 +5,8 @@ import PageContainer from '../../components/PageContainer'
 
 export default function FormDemoPage() {
   const { t } = useTranslation()
-  const [draft, setDraft] = useState(t('formDemo.draftContent', '这里是一个未保存的草稿内容。'))
-  const [items, setItems] = useState<string[]>([t('formDemo.menuLink', '已完成菜单联动'), t('formDemo.tabsManage', '已完成 Tabs 管理')])
+  const [draft, setDraft] = useState(t('formDemo.draftContent'))
+  const [items, setItems] = useState<string[]>([t('formDemo.menuLink'), t('formDemo.tabsManage')])
   const [keyword, setKeyword] = useState('')
 
   const filteredItems = useMemo(() => {
@@ -31,8 +31,8 @@ export default function FormDemoPage() {
               onChange={(event) => setKeyword(event.target.value)}
               style={{ width: 240 }}
             />
-            <Button onClick={() => setItems((value) => [...value, `t('formDemo.addItem', '新增事项') ${value.length + 1}`])}>
-              t('formDemo.addItem', '新增事项')
+            <Button onClick={() => setItems((value) => [...value, t('formDemo.addItemWithIndex', { index: value.length + 1 })])}>
+              {t('formDemo.addItem')}
             </Button>
           </Space>
 
@@ -44,7 +44,7 @@ export default function FormDemoPage() {
         </Card>
 
         <Typography.Text type="secondary">
-          试试在这个页面输入内容，然后切换到“用户列表”或“角色管理”，再切回来。
+          {t('formDemo.keepAliveTip')}
         </Typography.Text>
       </Space>
     </PageContainer>

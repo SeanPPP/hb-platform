@@ -30,6 +30,7 @@ import {
 import type { DefaultOptionType } from 'antd/es/select'
 import type { ColumnsType, TablePaginationConfig } from 'antd/es/table'
 import type { SorterResult } from 'antd/es/table/interface'
+import type { ClipboardEvent } from 'react'
 import { useEffect, useMemo, useState } from 'react'
 import BarcodePreview from '../../../components/BarcodePreview'
 import PageContainer from '../../../components/PageContainer'
@@ -56,6 +57,12 @@ import type {
 import { ProductTypeLabels } from '../../../types/domesticProduct'
 import { copyTextToClipboard } from '../../../utils/clipboard'
 import { useTranslation } from 'react-i18next'
+import {
+  applySetItemColumnPaste,
+  buildSetProductPriceSyncPayload,
+  calculateSetItemPriceTotals,
+  type PasteableSetItemField,
+} from './setItemsBulkPaste'
 
 interface ProductFormValues {
   supplierCode?: string
@@ -266,6 +273,7 @@ function SetItemsModal({
   onAddRow,
   onRemoveRow,
   onChangeField,
+  onPasteColumn,
   onSubmit,
 }: {
   open: boolean
@@ -278,17 +286,50 @@ function SetItemsModal({
   onAddRow: () => void
   onRemoveRow: (rowId: string) => void
   onChangeField: (rowId: string, field: keyof DomesticProductSetItem, value: string | number | undefined) => void
+  onPasteColumn: (rowId: string | undefined, field: PasteableSetItemField, clipboardText: string) => void
   onSubmit: () => void
 }) {
   const { t } = useTranslation()
+  const totals = useMemo(() => calculateSetItemPriceTotals(items), [items])
+  const handlePaste = (
+    event: ClipboardEvent<HTMLElement>,
+    rowId: string | undefined,
+    field: PasteableSetItemField,
+  ) => {
+    if (!canEdit) {
+      return
+    }
+
+    const clipboardText = event.clipboardData.getData('text')
+    if (!clipboardText) {
+      return
+    }
+
+    event.preventDefault()
+    onPasteColumn(rowId, field, clipboardText)
+  }
+
+  const createPasteTitle = (label: string, field: PasteableSetItemField) => (
+    <span
+      tabIndex={canEdit ? 0 : -1}
+      onClick={(event) => event.currentTarget.focus()}
+      onPaste={(event) => {
+        handlePaste(event, items[0]?.id, field)
+      }}
+    >
+      {label}
+    </span>
+  )
+
   const columns: ColumnsType<DomesticProductSetItem> = [
     {
-      title: t('domesticProducts.productName', '商品名称'),
+      title: createPasteTitle(t('domesticProducts.productName', '商品名称'), 'productName'),
       dataIndex: 'productName',
       render: (_, record) => (
         <Input
           value={record.productName}
           disabled={!canEdit}
+          onPaste={(event) => handlePaste(event, record.id, 'productName')}
           onChange={(event) => onChangeField(record.id, 'productName', event.target.value)}
         />
       ),
@@ -317,18 +358,20 @@ function SetItemsModal({
       ),
     },
     {
-      title: t('domesticProducts.domesticPrice', '国内价'),
+      title: createPasteTitle(t('domesticProducts.domesticPrice', '国内价'), 'domesticPrice'),
       dataIndex: 'domesticPrice',
       width: 120,
       render: (_, record) => (
-        <InputNumber
-          min={0}
-          precision={2}
-          value={record.domesticPrice}
-          disabled={!canEdit}
-          style={{ width: '100%' }}
-          onChange={(value) => onChangeField(record.id, 'domesticPrice', value ?? undefined)}
-        />
+        <div onPaste={(event) => handlePaste(event, record.id, 'domesticPrice')}>
+          <InputNumber
+            min={0}
+            precision={2}
+            value={record.domesticPrice}
+            disabled={!canEdit}
+            style={{ width: '100%' }}
+            onChange={(value) => onChangeField(record.id, 'domesticPrice', value ?? undefined)}
+          />
+        </div>
       ),
     },
     {
@@ -347,18 +390,20 @@ function SetItemsModal({
       ),
     },
     {
-      title: t('domesticProducts.oemPrice', '贴牌价'),
+      title: createPasteTitle(t('domesticProducts.oemPrice', '贴牌价'), 'oemPrice'),
       dataIndex: 'oemPrice',
       width: 120,
       render: (_, record) => (
-        <InputNumber
-          min={0}
-          precision={2}
-          value={record.oemPrice}
-          disabled={!canEdit}
-          style={{ width: '100%' }}
-          onChange={(value) => onChangeField(record.id, 'oemPrice', value ?? undefined)}
-        />
+        <div onPaste={(event) => handlePaste(event, record.id, 'oemPrice')}>
+          <InputNumber
+            min={0}
+            precision={2}
+            value={record.oemPrice}
+            disabled={!canEdit}
+            style={{ width: '100%' }}
+            onChange={(value) => onChangeField(record.id, 'oemPrice', value ?? undefined)}
+          />
+        </div>
       ),
     },
     {
@@ -387,10 +432,15 @@ function SetItemsModal({
       confirmLoading={saving}
       okButtonProps={{ disabled: !canEdit }}
     >
-      <Space style={{ marginBottom: 16 }}>
+      <Space direction="vertical" size={4} style={{ marginBottom: 16 }}>
           <Typography.Text type="secondary">
             {t('domesticProducts.setItemsHint', '仅对套装商品开放编辑，普通商品和多码商品不展示此入口。')}
         </Typography.Text>
+        {canEdit ? (
+          <Typography.Text type="secondary">
+            {t('domesticProducts.setItemsPasteHint', '点击商品名称、国内价或贴牌价列后，可粘贴 Excel 单列数据。')}
+          </Typography.Text>
+        ) : null}
         {canEdit ? (
           <Button type="dashed" onClick={onAddRow}>
             {t('domesticProducts.addSubItem', '新增子项')}
@@ -405,12 +455,20 @@ function SetItemsModal({
         pagination={false}
         scroll={{ x: 980, y: 420 }}
       />
+      <Space style={{ marginTop: 16, width: '100%', justifyContent: 'flex-end' }}>
+        <Typography.Text strong>
+          {t('domesticProducts.setItemsDomesticTotal', '国内价合计')}: {totals.domesticPriceTotal?.toFixed(2) ?? '--'}
+        </Typography.Text>
+        <Typography.Text strong>
+          {t('domesticProducts.setItemsOemTotal', '贴牌价合计')}: {totals.oemPriceTotal?.toFixed(2) ?? '--'}
+        </Typography.Text>
+      </Space>
     </Modal>
   )
 }
 
 export default function DomesticProductsPage() {
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
   const statusOptions = getStatusOptions(t)
   const [form] = Form.useForm<ProductFormValues>()
   const [loading, setLoading] = useState(false)
@@ -588,7 +646,41 @@ export default function DomesticProductsPage() {
     try {
       setSetItemsSaving(true)
       await updateDomesticProductSetItems(currentSetProduct.id, setItemsDraft)
-      message.success(t('domesticProducts.setItemsUpdated', '套装子项已更新'))
+      const totals = calculateSetItemPriceTotals(setItemsDraft)
+
+      const shouldSyncDomesticPrice = totals.hasDomesticPrice
+      const shouldSyncOemPrice = totals.hasOemPrice
+
+      const priceSyncPayload = buildSetProductPriceSyncPayload(currentSetProduct, totals)
+      if (priceSyncPayload) {
+        await updateDomesticProduct(currentSetProduct.id, priceSyncPayload)
+      }
+
+      const syncLabels = [
+        shouldSyncDomesticPrice ? t('domesticProducts.domesticPrice', '国内价') : '',
+        shouldSyncOemPrice ? t('domesticProducts.oemPrice', '贴牌价') : '',
+      ].filter(Boolean)
+      const syncFields = (() => {
+        if (syncLabels.length <= 1) {
+          return syncLabels[0] || ''
+        }
+
+        if (i18n.language.startsWith('zh')) {
+          return syncLabels.join('、')
+        }
+
+        if (syncLabels.length === 2) {
+          return `${syncLabels[0]} and ${syncLabels[1]}`
+        }
+
+        return `${syncLabels.slice(0, -1).join(', ')}, and ${syncLabels[syncLabels.length - 1]}`
+      })()
+
+      message.success(
+        syncLabels.length
+          ? t('domesticProducts.setItemsUpdatedWithPriceSync', '套装子项已更新，已同步主码{{fields}}合计', { fields: syncFields })
+          : t('domesticProducts.setItemsUpdated', '套装子项已更新'),
+      )
       setSetItemsOpen(false)
       setCurrentSetProduct(null)
       setSetItemsDraft([])
@@ -999,6 +1091,23 @@ export default function DomesticProductsPage() {
           setSetItemsDraft((current) =>
             current.map((item) => (item.id === rowId ? { ...item, [field]: value } : item)),
           )
+        }}
+        onPasteColumn={(rowId, field, clipboardText) => {
+          setSetItemsDraft((current) => {
+            const result = applySetItemColumnPaste({
+              items: current,
+              startRowId: rowId,
+              field,
+              clipboardText,
+              createId: (rowIndex) => `temp_${Date.now()}_${rowIndex}_${Math.random()}`,
+            })
+
+            if (result.skippedCount) {
+              message.warning(t('domesticProducts.setItemsPasteSkipped', '已跳过 {{count}} 个无效价格', { count: result.skippedCount }))
+            }
+
+            return result.items
+          })
         }}
         onSubmit={() => void handleSaveSetItems()}
       />

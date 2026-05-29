@@ -1,6 +1,7 @@
 import { DownloadOutlined, PrinterOutlined, RollbackOutlined } from '@ant-design/icons'
 import { Button, Empty, Space, Spin, message } from 'antd'
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { useNavigate } from 'react-router-dom'
 import { useStableRouteContext } from '../../../hooks/useStableRouteContext'
 import { getStores } from '../../../services/storeService'
@@ -35,6 +36,7 @@ function formatVolume(value?: number) {
 }
 
 export default function PickingListPage() {
+  const { t } = useTranslation()
   const route = useStableRouteContext()
   const id = route?.params.id || ''
   const navigate = useNavigate()
@@ -47,8 +49,8 @@ export default function PickingListPage() {
 
   useDynamicTabTitle(
     order?.orderNo
-      ? `配货单 - ${store?.storeName || order.storeCode || '未知分店'} - ${order.orderNo}`
-      : '配货单',
+      ? t('warehouse.pickingList.titleWithStore', { storeName: store?.storeName || order.storeCode || t('warehouse.pickingList.unknownStore'), orderNo: order.orderNo })
+      : t('warehouse.pickingList.title'),
   )
 
   useEffect(() => {
@@ -61,7 +63,7 @@ export default function PickingListPage() {
       try {
         const detail = await getStoreOrderDetail(id)
         if (!detail) {
-          message.error('未找到订单明细')
+          message.error(t('storeOrders.detail.notFound'))
           return
         }
 
@@ -79,7 +81,7 @@ export default function PickingListPage() {
         }
       } catch (error) {
         console.error(error)
-        message.error(error instanceof Error ? error.message : '加载配货单失败')
+        message.error(error instanceof Error ? error.message : t('warehouse.pickingList.loadFailed'))
       } finally {
         setLoading(false)
       }
@@ -156,7 +158,7 @@ export default function PickingListPage() {
       window.print()
     } catch (error) {
       console.error(error)
-      message.error(error instanceof Error ? error.message : '打印配货单失败')
+      message.error(error instanceof Error ? error.message : t('warehouse.pickingList.printFailed'))
     } finally {
       setPrinting(false)
     }
@@ -172,11 +174,11 @@ export default function PickingListPage() {
       await handleBeforePrint()
       await downloadElementAsPdf(
         printRootRef.current,
-        buildDocumentFileName('配货单', store?.storeName || order.storeCode, order.orderNo || order.orderGUID, 'pdf'),
+        buildDocumentFileName(t('warehouse.pickingList.fileName'), store?.storeName || order.storeCode, order.orderNo || order.orderGUID, 'pdf'),
       )
     } catch (error) {
       console.error(error)
-      message.error(error instanceof Error ? error.message : '下载配货单 PDF 失败')
+      message.error(error instanceof Error ? error.message : t('warehouse.pickingList.downloadPdfFailed'))
     } finally {
       setDownloading(false)
     }
@@ -187,7 +189,7 @@ export default function PickingListPage() {
   }
 
   if (!order) {
-    return <Empty description="未找到订单数据" style={{ marginTop: 120 }} />
+    return <Empty description={t('storeOrders.detail.orderDataNotFound')} style={{ marginTop: 120 }} />
   }
 
   const displayStoreName = store?.storeName || order.storeCode || '--'
@@ -200,13 +202,13 @@ export default function PickingListPage() {
       <div className="store-order-print-toolbar no-print">
         <Space wrap>
           <Button icon={<RollbackOutlined />} onClick={() => navigate(-1)}>
-            返回
+            {t('common.back')}
           </Button>
           <Button icon={<DownloadOutlined />} loading={downloading} onClick={() => void handleDownload()}>
-            下载 PDF
+            {t('warehouse.pickingList.downloadPdf')}
           </Button>
           <Button type="primary" icon={<PrinterOutlined />} loading={printing} onClick={() => void handlePrint()}>
-            打印配货单
+            {t('warehouse.pickingList.printPickingList')}
           </Button>
         </Space>
       </div>
@@ -225,7 +227,7 @@ export default function PickingListPage() {
                     borderBottom: '2px solid #000',
                   }}
                 >
-                  <div style={{ fontSize: 24, fontWeight: 700 }}>配货单</div>
+                  <div style={{ fontSize: 24, fontWeight: 700 }}>{t('warehouse.pickingList.title')}</div>
                   <div
                     style={{
                       display: 'grid',
@@ -235,19 +237,19 @@ export default function PickingListPage() {
                     }}
                   >
                     <div>
-                      <strong>订单号：</strong>
+                      <strong>{t('warehouse.pickingList.orderNoLabel')}</strong>
                       {order.orderNo || order.orderGUID}
                     </div>
                     <div>
-                      <strong>打印时间：</strong>
+                      <strong>{t('warehouse.pickingList.printTime')}</strong>
                       {formatPrintDate(undefined)}
                     </div>
                     <div>
-                      <strong>分店：</strong>
+                      <strong>{t('warehouse.pickingList.storeLabel')}</strong>
                       {displayStoreText}
                     </div>
                     <div>
-                      <strong>订货日期：</strong>
+                      <strong>{t('warehouse.pickingList.orderDate')}</strong>
                       {formatPrintDate(order.orderDate, false)}
                     </div>
                   </div>
@@ -256,13 +258,13 @@ export default function PickingListPage() {
             </tr>
             <tr>
               <th className="col-index">#</th>
-              <th className="col-item">货号</th>
-              <th className="col-location">货位</th>
-              <th>商品名称</th>
-              <th className="col-inner-pack">内包装</th>
-              <th className="col-qty">订货数</th>
-              <th className="col-send-qty">发货数</th>
-              <th className="col-price">进口价</th>
+              <th className="col-item">{t('column.itemNumber')}</th>
+              <th className="col-location">{t('column.location')}</th>
+              <th>{t('column.productName')}</th>
+              <th className="col-inner-pack">{t('column.innerPack')}</th>
+              <th className="col-qty">{t('column.orderQuantity')}</th>
+              <th className="col-send-qty">{t('column.allocQuantity')}</th>
+              <th className="col-price">{t('column.importPrice')}</th>
               <th className="col-price">RRP</th>
             </tr>
           </thead>
@@ -299,19 +301,19 @@ export default function PickingListPage() {
                   }}
                 >
                   <div>
-                    <strong>订单号：</strong>
+                    <strong>{t('warehouse.pickingList.orderNoLabel')}</strong>
                     {order.orderNo || order.orderGUID}
                   </div>
                   <div>
-                    <strong>打印时间：</strong>
+                    <strong>{t('warehouse.pickingList.printTime')}</strong>
                     {formatPrintDate(undefined)}
                   </div>
                   <div>
-                    <strong>分店：</strong>
+                    <strong>{t('warehouse.pickingList.storeLabel')}</strong>
                     {displayStoreText}
                   </div>
                   <div>
-                    <strong>订货日期：</strong>
+                    <strong>{t('warehouse.pickingList.orderDate')}</strong>
                     {formatPrintDate(order.orderDate, false)}
                   </div>
                 </div>
@@ -323,14 +325,14 @@ export default function PickingListPage() {
         <div className="store-order-picking-footer">
           {order.remarks ? (
             <div style={{ fontSize: 16, fontWeight: 700, paddingBottom: 10, borderBottom: '1px dashed #ccc' }}>
-              备注：{order.remarks}
+              {t('warehouse.pickingList.remarks', { remarks: order.remarks })}
             </div>
           ) : null}
           <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-            <div>总 SKU：{order.totalSKU ?? order.items.length}</div>
-            <div>订货总数：{order.totalQuantity}</div>
-            <div>发货总数：{order.totalAllocQuantity ?? 0}</div>
-            <div>订货体积：{formatVolume(totalOrderVolume)}</div>
+            <div>{t('warehouse.pickingList.totalSKU', { count: order.totalSKU ?? order.items.length })}</div>
+            <div>{t('warehouse.pickingList.totalOrderQty', { count: order.totalQuantity })}</div>
+            <div>{t('warehouse.pickingList.totalShipQty', { count: order.totalAllocQuantity ?? 0 })}</div>
+            <div>{t('warehouse.pickingList.totalOrderVolume', { volume: formatVolume(totalOrderVolume) })}</div>
           </div>
         </div>
       </div>

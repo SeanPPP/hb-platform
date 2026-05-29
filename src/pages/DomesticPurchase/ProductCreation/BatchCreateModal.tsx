@@ -34,8 +34,23 @@ interface ProductItem {
   privateLabelPrice?: number
   setQuantity?: number
   setPrice?: number
-  parentItemNumber?: string
+  createCount?: number
+  subItems?: SetSubItem[]
 }
+
+interface SetSubItem {
+  key: string
+  productName: string
+  privateLabelPrice?: number
+}
+
+interface PreviewItem extends ProductItem {
+  itemNumber: string
+  parentPreviewKey?: string
+}
+
+const createProductKey = (prefix: string, index: number) => `${prefix}_${Date.now()}_${index}_${Math.random().toString(36).slice(2, 8)}`
+const normalizeCreateCount = (value?: number | null) => Math.max(1, Math.floor(Number(value) || 1))
 
 interface BatchCreateModalProps {
   visible: boolean
@@ -51,7 +66,7 @@ export default function BatchCreateModal({ visible, onClose, onSuccess }: BatchC
   const [suppliers, setSuppliers] = useState<Array<{ supplierCode: string; supplierName: string }>>([])
   const [prefixCodes, setPrefixCodes] = useState<Array<{ prefixCode: string; prefixName: string; prefixDescription?: string }>>([])
   const [products, setProducts] = useState<ProductItem[]>([
-    { key: `temp_${Date.now()}_0`, productName: '', productType: ProductCreationType.NORMAL },
+    { key: createProductKey('temp', 0), productName: '', productType: ProductCreationType.NORMAL },
   ])
   const [submitting, setSubmitting] = useState(false)
   const [manageModalVisible, setManageModalVisible] = useState(false)
@@ -64,6 +79,18 @@ export default function BatchCreateModal({ visible, onClose, onSuccess }: BatchC
   const [batchEditNameMode, setBatchEditNameMode] = useState<'replace' | 'prefix' | 'suffix'>('replace')
   const [batchEditNameValue, setBatchEditNameValue] = useState('')
   const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([])
+
+  const createEmptyProduct = useCallback(
+    (type: ProductCreationType, index: number, price?: number | null): ProductItem => ({
+      key: createProductKey('temp', index),
+      productName: '',
+      productType: type,
+      privateLabelPrice: price ?? undefined,
+      createCount: type === ProductCreationType.SET ? 1 : undefined,
+      subItems: type === ProductCreationType.SET ? [] : undefined,
+    }),
+    [],
+  )
 
   const loadSuppliers = async () => {
     try {
@@ -83,7 +110,7 @@ export default function BatchCreateModal({ visible, onClose, onSuccess }: BatchC
     setSuppliers([])
     setPrefixCodes([])
     setSelectedSupplier(null)
-    setProducts([{ key: `temp_${Date.now()}_0`, productName: '', productType: ProductCreationType.NORMAL }])
+    setProducts([createEmptyProduct(ProductCreationType.NORMAL, 0)])
     setManageModalVisible(false)
     setBatchAddVisible(false)
     setBatchAddCount(5)
@@ -93,7 +120,7 @@ export default function BatchCreateModal({ visible, onClose, onSuccess }: BatchC
     setBatchEditNameMode('replace')
     setBatchEditNameValue('')
     setSelectedRowKeys([])
-  }, [form])
+  }, [createEmptyProduct, form])
 
   useEffect(() => {
     if (visible) {
@@ -115,48 +142,32 @@ export default function BatchCreateModal({ visible, onClose, onSuccess }: BatchC
 
   const handleAddProduct = useCallback(
     (type: ProductCreationType) => {
-      const newProduct: ProductItem = { key: `temp_${Date.now()}_${products.length}`, productName: '', productType: type }
-      if (type === ProductCreationType.SET_SUB_ITEM && products.length > 0) {
-        for (let i = products.length - 1; i >= 0; i--) {
-          if (products[i].productType === ProductCreationType.SET) {
-            newProduct.parentItemNumber = `SET_${products[i].key}`
-            break
-          }
-        }
-      }
-      setProducts([...products, newProduct])
+      setProducts([...products, createEmptyProduct(type, products.length)])
     },
-    [products],
+    [createEmptyProduct, products],
   )
+
+  const handleAddSubItem = useCallback((setKey: string) => {
+    const newSubItem: SetSubItem = {
+      key: createProductKey('sub', 0),
+      productName: '',
+    }
+    setProducts((current) => current.map((item) => (item.key === setKey ? { ...item, subItems: [...(item.subItems || []), newSubItem] } : item)))
+  }, [])
 
   const handleBatchAdd = useCallback(
     (type: ProductCreationType, count: number, price?: number | null, mode: 'append' | 'overwrite' = 'append') => {
-      const createProduct = (index: number): ProductItem => ({
-        key: `temp_${Date.now()}_${index}`,
-        productName: '',
-        productType: type,
-        privateLabelPrice: price ?? undefined,
-      })
       if (mode === 'append') {
         const newProducts: ProductItem[] = []
         for (let i = 0; i < count; i++) {
-          const newProduct = createProduct(products.length + i)
-          if (type === ProductCreationType.SET_SUB_ITEM && products.length > 0) {
-            for (let j = products.length - 1; j >= 0; j--) {
-              if (products[j].productType === ProductCreationType.SET) {
-                newProduct.parentItemNumber = `SET_${products[j].key}`
-                break
-              }
-            }
-          }
-          newProducts.push(newProduct)
+          newProducts.push(createEmptyProduct(type, products.length + i, price))
         }
         setProducts([...products, ...newProducts])
       } else {
         const diff = count - products.length
         if (diff > 0) {
           const newProducts: ProductItem[] = []
-          for (let i = 0; i < diff; i++) newProducts.push(createProduct(products.length + i))
+          for (let i = 0; i < diff; i++) newProducts.push(createEmptyProduct(type, products.length + i, price))
           setProducts([...products, ...newProducts])
         } else if (diff < 0) {
           setProducts(products.slice(0, count))
@@ -164,7 +175,7 @@ export default function BatchCreateModal({ visible, onClose, onSuccess }: BatchC
       }
       setBatchAddVisible(false)
     },
-    [products],
+    [createEmptyProduct, products],
   )
 
   const handleDeleteProduct = useCallback(
@@ -184,6 +195,75 @@ export default function BatchCreateModal({ visible, onClose, onSuccess }: BatchC
     },
     [products],
   )
+
+  const handleDeleteSubItem = useCallback((setKey: string, subKey: string) => {
+    setProducts((current) => current.map((item) => (item.key === setKey ? { ...item, subItems: (item.subItems || []).filter((subItem) => subItem.key !== subKey) } : item)))
+  }, [])
+
+  const handleUpdateSubItem = useCallback((setKey: string, subKey: string, field: keyof SetSubItem, value: unknown) => {
+    setProducts((current) => current.map((item) => (
+      item.key === setKey
+        ? { ...item, subItems: (item.subItems || []).map((subItem) => (subItem.key === subKey ? { ...subItem, [field]: value } : subItem)) }
+        : item
+    )))
+  }, [])
+
+  const parsePasteRows = useCallback((text: string) => text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => line.split('\t').map((cell) => cell.trim())), [])
+
+  const parsePrice = useCallback((value?: string) => {
+    if (!value) return undefined
+    const normalized = value.replace(/[$,\s]/g, '')
+    if (!normalized || Number.isNaN(Number(normalized))) return undefined
+    return Number(normalized)
+  }, [])
+
+  const handleProductPaste = useCallback((event: React.ClipboardEvent<HTMLElement>, startKey: string) => {
+    const rows = parsePasteRows(event.clipboardData.getData('text'))
+    if (rows.length <= 1 && (rows[0]?.length || 0) <= 1) return
+    event.preventDefault()
+    const startIndex = products.findIndex((item) => item.key === startKey)
+    if (startIndex < 0) return
+
+    setProducts((current) => current.map((item, index) => {
+      const row = rows[index - startIndex]
+      if (!row) return item
+      const isSinglePriceColumn = row.length === 1 && parsePrice(row[0]) !== undefined
+      return {
+        ...item,
+        // Excel 单列数字按零售价粘贴，多列按名称 + 零售价粘贴。
+        productName: isSinglePriceColumn ? item.productName : row[0] || item.productName,
+        privateLabelPrice: isSinglePriceColumn ? parsePrice(row[0]) : parsePrice(row[1]) ?? item.privateLabelPrice,
+      }
+    }))
+  }, [parsePasteRows, parsePrice, products])
+
+  const handleSubItemPaste = useCallback((event: React.ClipboardEvent<HTMLElement>, setKey: string, startSubKey: string) => {
+    const rows = parsePasteRows(event.clipboardData.getData('text'))
+    if (rows.length <= 1 && (rows[0]?.length || 0) <= 1) return
+    event.preventDefault()
+    setProducts((current) => current.map((item) => {
+      if (item.key !== setKey) return item
+      const startIndex = (item.subItems || []).findIndex((subItem) => subItem.key === startSubKey)
+      if (startIndex < 0) return item
+      return {
+        ...item,
+        subItems: (item.subItems || []).map((subItem, index) => {
+          const row = rows[index - startIndex]
+          if (!row) return subItem
+          const isSinglePriceColumn = row.length === 1 && parsePrice(row[0]) !== undefined
+          return {
+            ...subItem,
+            productName: isSinglePriceColumn ? subItem.productName : row[0] || subItem.productName,
+            privateLabelPrice: isSinglePriceColumn ? parsePrice(row[0]) : parsePrice(row[1]) ?? subItem.privateLabelPrice,
+          }
+        }),
+      }
+    }))
+  }, [parsePasteRows, parsePrice])
 
   const handleBatchEditName = useCallback(() => {
     if (!batchEditNameValue.trim()) {
@@ -208,12 +288,31 @@ export default function BatchCreateModal({ visible, onClose, onSuccess }: BatchC
     setBatchEditNameMode('replace')
   }, [products, selectedRowKeys, batchEditNameMode, batchEditNameValue])
 
-  const previewData = useMemo(() => {
+  const previewData = useMemo<PreviewItem[]>(() => {
     const prefixCode = form.getFieldValue('prefixCode') || ''
     let itemIndex = 1
-    return products
-      .map((p) => ({ ...p, itemNumber: `${prefixCode}${String(itemIndex++).padStart(4, '0')}` }))
-      .sort((a, b) => a.itemNumber.localeCompare(b.itemNumber))
+    return products.flatMap((product) => {
+      if (product.productType !== ProductCreationType.SET) {
+        return [{ ...product, itemNumber: `${prefixCode}${String(itemIndex++).padStart(4, '0')}` }]
+      }
+
+      const expandedRows: PreviewItem[] = []
+      const createCount = normalizeCreateCount(product.createCount)
+      for (let i = 0; i < createCount; i++) {
+        const parentPreviewKey = `${product.key}_${i}`
+        expandedRows.push({ ...product, key: parentPreviewKey, itemNumber: `${prefixCode}${String(itemIndex++).padStart(4, '0')}` })
+        ;(product.subItems || []).forEach((subItem) => {
+          expandedRows.push({
+            ...subItem,
+            key: `${parentPreviewKey}_${subItem.key}`,
+            productType: ProductCreationType.SET_SUB_ITEM,
+            itemNumber: `${prefixCode}${String(itemIndex++).padStart(4, '0')}`,
+            parentPreviewKey,
+          })
+        })
+      }
+      return expandedRows
+    })
   }, [products, form])
 
   const handleNext = useCallback(async () => {
@@ -248,7 +347,17 @@ export default function BatchCreateModal({ visible, onClose, onSuccess }: BatchC
           privateLabelPrice: p.privateLabelPrice,
           setQuantity: p.setQuantity,
           setPrice: p.setPrice,
-          parentItemNumber: p.parentItemNumber,
+          createCount: p.productType === ProductCreationType.SET ? normalizeCreateCount(p.createCount) : undefined,
+          subItems: p.productType === ProductCreationType.SET
+            ? (p.subItems || [])
+              // 未填写任何有效信息的子项不提交，避免误点“添加子项”产生空数据。
+              .filter((subItem) => subItem.productName.trim() || subItem.privateLabelPrice != null)
+              .map((subItem) => ({
+                productName: subItem.productName.trim() || undefined,
+                productType: ProductCreationType.SET_SUB_ITEM,
+                privateLabelPrice: subItem.privateLabelPrice,
+              }))
+            : undefined,
         })),
       }
       const response = await createBatch(requestData)
@@ -320,14 +429,29 @@ export default function BatchCreateModal({ visible, onClose, onSuccess }: BatchC
       title: t('domesticProducts.productName', '商品名称'),
       dataIndex: 'productName',
       key: 'productName',
-      render: (text, record) => <Input value={text} onChange={(e) => handleUpdateProduct(record.key, 'productName', e.target.value)} placeholder={t('domesticProducts.productName', '商品名称')} />,
+      render: (text, record) => (
+        <Input
+          value={text}
+          onChange={(e) => handleUpdateProduct(record.key, 'productName', e.target.value)}
+          onPaste={(event) => handleProductPaste(event, record.key)}
+          placeholder={t('domesticProducts.productName', '商品名称')}
+        />
+      ),
     },
     {
-      title: t('productCreation.privateLabelPrice', '贴牌价格'),
+      title: t('productCreation.privateLabelPrice', '零售价'),
       dataIndex: 'privateLabelPrice',
       key: 'privateLabelPrice',
       width: 120,
-      render: (text, record) => <InputNumber value={text} onChange={(value) => handleUpdateProduct(record.key, 'privateLabelPrice', value)} placeholder={t('productCreation.privateLabelPrice', '贴牌价格')} style={{ width: '100%' }} min={0} precision={2} />,
+      render: (text, record) => <InputNumber value={text} onChange={(value) => handleUpdateProduct(record.key, 'privateLabelPrice', value)} onPaste={(event) => handleProductPaste(event, record.key)} placeholder={t('productCreation.privateLabelPrice', '零售价')} style={{ width: '100%' }} min={0} precision={2} />,
+    },
+    {
+      title: t('productCreation.createCount', '创建套数'),
+      dataIndex: 'createCount',
+      key: 'createCount',
+      width: 110,
+      render: (text, record) =>
+        record.productType === ProductCreationType.SET ? <InputNumber value={text ?? 1} onChange={(value) => handleUpdateProduct(record.key, 'createCount', normalizeCreateCount(value))} style={{ width: '100%' }} min={1} precision={0} /> : '-',
     },
     {
       title: t('productCreation.setQuantity', '套装数量'),
@@ -335,7 +459,7 @@ export default function BatchCreateModal({ visible, onClose, onSuccess }: BatchC
       key: 'setQuantity',
       width: 100,
       render: (text, record) =>
-        record.productType === ProductCreationType.SET || record.productType === ProductCreationType.SET_SUB_ITEM ? <InputNumber value={text} onChange={(value) => handleUpdateProduct(record.key, 'setQuantity', value)} style={{ width: '100%' }} min={1} /> : '-',
+        record.productType === ProductCreationType.SET ? <InputNumber value={text} onChange={(value) => handleUpdateProduct(record.key, 'setQuantity', value)} style={{ width: '100%' }} min={1} /> : '-',
     },
     {
       title: t('productCreation.setPrice', '套装价格'),
@@ -343,17 +467,58 @@ export default function BatchCreateModal({ visible, onClose, onSuccess }: BatchC
       key: 'setPrice',
       width: 120,
       render: (text, record) =>
-        record.productType === ProductCreationType.SET || record.productType === ProductCreationType.SET_SUB_ITEM ? <InputNumber value={text} onChange={(value) => handleUpdateProduct(record.key, 'setPrice', value)} style={{ width: '100%' }} min={0} precision={2} /> : '-',
+        record.productType === ProductCreationType.SET ? <InputNumber value={text} onChange={(value) => handleUpdateProduct(record.key, 'setPrice', value)} style={{ width: '100%' }} min={0} precision={2} /> : '-',
+    },
+    {
+      title: t('common.action', '操作'),
+      key: 'actions',
+      width: 130,
+      render: (_, record) => (
+        <Space size={4}>
+          {record.productType === ProductCreationType.SET && <Button type="text" size="small" icon={<PlusOutlined />} onClick={() => handleAddSubItem(record.key)}>{t('productCreation.setSubItem', '子项')}</Button>}
+          <Button type="text" danger icon={<DeleteOutlined />} onClick={() => handleDeleteProduct(record.key)} disabled={products.length <= 1} />
+        </Space>
+      ),
+    },
+  ]
+
+  const createSubItemColumns = (setKey: string): ColumnsType<SetSubItem> => [
+    {
+      title: '#',
+      key: '_index',
+      width: 50,
+      align: 'center',
+      render: (_, __, index) => index + 1,
+    },
+    {
+      title: t('domesticProducts.productName', '商品名称'),
+      dataIndex: 'productName',
+      key: 'productName',
+      render: (text, record) => (
+        <Input
+          value={text}
+          onChange={(e) => handleUpdateSubItem(setKey, record.key, 'productName', e.target.value)}
+          onPaste={(event) => handleSubItemPaste(event, setKey, record.key)}
+          placeholder={t('domesticProducts.productName', '商品名称')}
+        />
+      ),
+    },
+    {
+      title: t('productCreation.privateLabelPrice', '零售价'),
+      dataIndex: 'privateLabelPrice',
+      key: 'privateLabelPrice',
+      width: 140,
+      render: (text, record) => <InputNumber value={text} onChange={(value) => handleUpdateSubItem(setKey, record.key, 'privateLabelPrice', value)} onPaste={(event) => handleSubItemPaste(event, setKey, record.key)} placeholder={t('productCreation.privateLabelPrice', '零售价')} style={{ width: '100%' }} min={0} precision={2} />,
     },
     {
       title: t('common.action', '操作'),
       key: 'actions',
       width: 80,
-      render: (_, record) => <Button type="text" danger icon={<DeleteOutlined />} onClick={() => handleDeleteProduct(record.key)} disabled={products.length <= 1} />,
+      render: (_, record) => <Button type="text" danger icon={<DeleteOutlined />} onClick={() => handleDeleteSubItem(setKey, record.key)} />,
     },
   ]
 
-  const previewColumns: ColumnsType<any> = [
+  const previewColumns: ColumnsType<PreviewItem> = [
     {
       title: '#',
       key: '_index',
@@ -362,7 +527,7 @@ export default function BatchCreateModal({ visible, onClose, onSuccess }: BatchC
       render: (_, __, index) => index + 1,
     },
     { title: t('productImport.hbProductNoCol', '货号'), dataIndex: 'itemNumber', key: 'itemNumber', width: 150, render: (text) => <span style={{ fontFamily: 'monospace' }}>{text}</span> },
-    { title: t('domesticProducts.productName', '商品名称'), dataIndex: 'productName', key: 'productName' },
+    { title: t('domesticProducts.productName', '商品名称'), dataIndex: 'productName', key: 'productName', render: (text, record) => <span style={{ paddingLeft: record.parentPreviewKey ? 20 : 0 }}>{record.parentPreviewKey ? '└ ' : ''}{text}</span> },
     {
       title: t('productCreation.type', '类型'),
       dataIndex: 'productType',
@@ -373,7 +538,7 @@ export default function BatchCreateModal({ visible, onClose, onSuccess }: BatchC
         return typeMap[type] || type
       },
     },
-    { title: t('productCreation.privateLabelPrice', '贴牌价格'), dataIndex: 'privateLabelPrice', key: 'privateLabelPrice', width: 120, render: (text) => (text ? `$${text}` : '-') },
+    { title: t('productCreation.privateLabelPrice', '零售价'), dataIndex: 'privateLabelPrice', key: 'privateLabelPrice', width: 120, render: (text) => (text != null ? `$${text}` : '-') },
   ]
 
   const steps = [{ title: t('productCreation.basicInfo', '基本信息') }, { title: t('productCreation.productDetail', '商品明细') }, { title: t('productCreation.previewConfirm', '预览确认') }]
@@ -404,7 +569,6 @@ export default function BatchCreateModal({ visible, onClose, onSuccess }: BatchC
             <Space style={{ marginBottom: 16 }}>
               <Button icon={<PlusOutlined />} onClick={() => handleAddProduct(ProductCreationType.NORMAL)}>{t('productCreation.normal', '普通')}</Button>
               <Button icon={<PlusOutlined />} onClick={() => handleAddProduct(ProductCreationType.SET)}>{t('productCreation.set', '套装')}</Button>
-              <Button icon={<PlusOutlined />} onClick={() => handleAddProduct(ProductCreationType.SET_SUB_ITEM)}>{t('productCreation.setSubItem', '套装子项')}</Button>
               <Button type="dashed" onClick={() => setBatchAddVisible(true)}>{t('productCreation.batchAdd', '批量添加')}</Button>
               <Button type="dashed" icon={<EditOutlined />} onClick={() => setBatchEditNameVisible(true)}>{t('productCreation.batchName', '批量命名')}</Button>
             </Space>
@@ -437,7 +601,28 @@ export default function BatchCreateModal({ visible, onClose, onSuccess }: BatchC
                 </div>
               </Space>
             </Modal>
-            <Table columns={productColumns} dataSource={products} rowKey="key" pagination={false} size="small" scroll={{ y: 300 }} rowSelection={{ selectedRowKeys, onChange: (keys) => setSelectedRowKeys(keys) }} />
+            <Table
+              columns={productColumns}
+              dataSource={products}
+              rowKey="key"
+              pagination={false}
+              size="small"
+              scroll={{ y: 300 }}
+              rowSelection={{ selectedRowKeys, onChange: (keys) => setSelectedRowKeys(keys) }}
+              expandable={{
+                rowExpandable: (record) => record.productType === ProductCreationType.SET,
+                expandedRowRender: (record) => (
+                  <Table
+                    columns={createSubItemColumns(record.key)}
+                    dataSource={record.subItems || []}
+                    rowKey="key"
+                    pagination={false}
+                    size="small"
+                    locale={{ emptyText: <Button type="link" icon={<PlusOutlined />} onClick={() => handleAddSubItem(record.key)}>{t('productCreation.addSetSubItem', '添加套装子项')}</Button> }}
+                  />
+                ),
+              }}
+            />
           </div>
         )}
 

@@ -27,7 +27,9 @@ import {
 } from 'antd'
 import type { ColumnsType, TablePaginationConfig } from 'antd/es/table'
 import type { DataNode } from 'antd/es/tree'
+import type { TFunction } from 'i18next'
 import { useEffect, useMemo, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import PageContainer from '../../../components/PageContainer'
 import {
   batchAssignProducts,
@@ -111,7 +113,7 @@ function buildParentOptions(nodes: WarehouseCategoryNode[], level = 0): Array<{ 
   ])
 }
 
-function buildTreeData(nodes: WarehouseCategoryNode[]): DataNode[] {
+function buildTreeData(nodes: WarehouseCategoryNode[], t: TFunction): DataNode[] {
   return nodes.map((node) => ({
     key: node.categoryGUID,
     title: (
@@ -119,13 +121,13 @@ function buildTreeData(nodes: WarehouseCategoryNode[]): DataNode[] {
         <Typography.Text>{node.categoryName}</Typography.Text>
         {node.chineseName ? <Typography.Text type="secondary">{node.chineseName}</Typography.Text> : null}
         {node.isActive ? (
-          <Tag color="success">启用</Tag>
+          <Tag color="success">{t('common.active')}</Tag>
         ) : (
-          <Tag>停用</Tag>
+          <Tag>{t('common.inactive')}</Tag>
         )}
       </Space>
     ),
-    children: buildTreeData(node.children || []),
+    children: buildTreeData(node.children || [], t),
   }))
 }
 
@@ -156,6 +158,7 @@ function formatDomesticSupplier(record: WarehouseCategoryProductItem): string {
 }
 
 export default function WarehouseCategoriesPage() {
+  const { t } = useTranslation()
   const [form] = Form.useForm<WarehouseCategoryFormValues>()
   const [productFilterForm] = Form.useForm<ProductFilterValues>()
   const [loading, setLoading] = useState(false)
@@ -181,7 +184,7 @@ export default function WarehouseCategoriesPage() {
     [categories, selectedCategoryGuid],
   )
 
-  const treeData = useMemo(() => buildTreeData(categories), [categories])
+  const treeData = useMemo(() => buildTreeData(categories, t), [categories, t])
 
   const disallowedParentKeys = useMemo(() => {
     if (!selectedCategory || formMode !== 'edit') {
@@ -236,7 +239,7 @@ export default function WarehouseCategoriesPage() {
       setProductFilterCategoryGuid(ALL_PRODUCTS_FILTER_KEY)
     } catch (error) {
       console.error(error)
-      message.error(error instanceof Error ? error.message : '加载分类商品失败')
+      message.error(error instanceof Error ? error.message : t('warehouse.categories.loadProductsFailed'))
     } finally {
       setProductLoading(false)
     }
@@ -290,7 +293,7 @@ export default function WarehouseCategoriesPage() {
       form.resetFields()
     } catch (error) {
       console.error(error)
-      message.error(error instanceof Error ? error.message : '加载分类树失败')
+      message.error(error instanceof Error ? error.message : t('warehouse.categories.loadTreeFailed'))
     } finally {
       setLoading(false)
     }
@@ -347,7 +350,7 @@ export default function WarehouseCategoriesPage() {
 
   const handleCreateChild = () => {
     if (!selectedCategory) {
-      message.warning('请先选择父分类')
+      message.warning(t('warehouse.categories.selectParentFirst'))
       return
     }
 
@@ -364,7 +367,7 @@ export default function WarehouseCategoriesPage() {
 
   const handleEditCategory = () => {
     if (!selectedCategory) {
-      message.warning('请先选择要编辑的分类')
+      message.warning(t('warehouse.categories.selectEditFirst'))
       return
     }
 
@@ -404,19 +407,19 @@ export default function WarehouseCategoriesPage() {
 
       if (formMode === 'create') {
         const created = await createWarehouseCategory(values)
-        message.success('创建分类成功')
+        message.success(t('warehouse.categories.createSuccess'))
         setModalOpen(false)
         await loadTree(created.categoryGUID)
         return
       }
 
       if (!selectedCategoryGuid) {
-        message.warning('请先选择要编辑的分类')
+        message.warning(t('warehouse.categories.selectEditFirst'))
         return
       }
 
       const updated = await updateWarehouseCategory(selectedCategoryGuid, values)
-      message.success('更新分类成功')
+      message.success(t('warehouse.categories.updateSuccess'))
       setModalOpen(false)
       await loadTree(updated.categoryGUID)
     } catch (error) {
@@ -425,7 +428,7 @@ export default function WarehouseCategoriesPage() {
       }
 
       console.error(error)
-      message.error(error instanceof Error ? error.message : '保存分类失败')
+      message.error(error instanceof Error ? error.message : t('warehouse.categories.saveFailed'))
     } finally {
       setSaving(false)
     }
@@ -440,11 +443,11 @@ export default function WarehouseCategoriesPage() {
       setSaving(true)
       const parentGuid = selectedCategory.parentGUID
       await deleteWarehouseCategory(selectedCategory.categoryGUID)
-      message.success('删除分类成功')
+      message.success(t('warehouse.categories.deleteSuccess'))
       await loadTree(parentGuid || '', false)
     } catch (error) {
       console.error(error)
-      message.error(error instanceof Error ? error.message : '删除分类失败')
+      message.error(error instanceof Error ? error.message : t('warehouse.categories.deleteFailed'))
     } finally {
       setSaving(false)
     }
@@ -491,12 +494,12 @@ export default function WarehouseCategoriesPage() {
     const targetCategoryGuid = productFilterForm.getFieldValue('targetCategoryGuid') as string | undefined
 
     if (!targetCategoryGuid) {
-      message.warning('请先选择目标分类')
+      message.warning(t('warehouse.categories.selectTargetFirst'))
       return
     }
 
     if (!selectedProductCodes.length) {
-      message.warning('请先选择要更新分类的商品')
+      message.warning(t('warehouse.categories.selectProductsFirst'))
       return
     }
 
@@ -504,7 +507,10 @@ export default function WarehouseCategoriesPage() {
       setAssigning(true)
       await batchAssignProducts(targetCategoryGuid, selectedProductCodes.map(String))
       const targetCategory = findCategory(categories, targetCategoryGuid)
-      message.success(`已将 ${selectedProductCodes.length} 个商品更新到“${targetCategory?.categoryName || '目标分类'}”`)
+      message.success(t('warehouse.categories.batchUpdateSuccess', {
+        count: selectedProductCodes.length,
+        categoryName: targetCategory?.categoryName || t('warehouse.categories.targetCategory'),
+      }))
       setSelectedProductCodes([])
       await Promise.all([
         loadTree(selectedCategoryGuid),
@@ -514,7 +520,7 @@ export default function WarehouseCategoriesPage() {
       ])
     } catch (error) {
       console.error(error)
-      message.error(error instanceof Error ? error.message : '批量更新商品分类失败')
+      message.error(error instanceof Error ? error.message : t('warehouse.categories.batchUpdateFailed'))
     } finally {
       setAssigning(false)
     }
@@ -522,7 +528,7 @@ export default function WarehouseCategoriesPage() {
 
   const productColumns: ColumnsType<WarehouseCategoryProductItem> = [
     {
-      title: '图片',
+      title: t('column.image'),
       dataIndex: 'productImage',
       width: 88,
       render: (value?: string) => (
@@ -538,20 +544,20 @@ export default function WarehouseCategoriesPage() {
       ),
     },
     {
-      title: '货号',
+      title: t('column.itemNumber'),
       dataIndex: 'itemNumber',
       width: 160,
       render: (value?: string) => value || '--',
     },
     {
-      title: '商品名称',
+      title: t('column.productName'),
       dataIndex: 'productBaseName',
       width: 240,
       ellipsis: true,
       render: (value?: string) => value || '--',
     },
     {
-      title: '国内供应商',
+      title: t('warehouse.categories.domesticSupplier'),
       key: 'domesticSupplier',
       width: 220,
       render: (_value, record) => {
@@ -560,23 +566,23 @@ export default function WarehouseCategoriesPage() {
       },
     },
     {
-      title: '当前分类',
+      title: t('column.currentCategory'),
       dataIndex: 'productCategoryName',
       width: 160,
       render: (value?: string) => value || '--',
     },
     {
-      title: '状态',
+      title: t('column.status'),
       dataIndex: 'isActive',
       width: 100,
-      render: (value: boolean) => (value ? <Tag color="success">启用</Tag> : <Tag>停用</Tag>),
+      render: (value: boolean) => (value ? <Tag color="success">{t('common.active')}</Tag> : <Tag>{t('common.inactive')}</Tag>),
     },
   ]
 
   return (
     <PageContainer
-      title="分类管理"
-      subtitle="维护仓库分类树，支持新增顶级分类、子分类、修改父类与启停状态。"
+      title={t('warehouse.categories.title')}
+      subtitle={t('warehouse.categories.subtitle')}
     >
       <div
         style={{
@@ -586,33 +592,33 @@ export default function WarehouseCategoriesPage() {
         }}
       >
         <Card
-          title="分类树"
+          title={t('warehouse.categories.categoryTree')}
           extra={
             <Space size={8}>
               <Button icon={<ReloadOutlined />} onClick={() => void loadTree()}>
-                刷新
+                {t('common.refresh')}
               </Button>
               <Button type="primary" icon={<PlusOutlined />} onClick={handleCreateRoot}>
-                新增顶级分类
+                {t('warehouse.categories.addTopCategory')}
               </Button>
             </Space>
           }
         >
           <Space wrap size={[8, 8]} style={{ marginBottom: 12, width: '100%' }}>
             <Button onClick={handleCreateChild} disabled={!selectedCategory}>
-              新增子分类
+              {t('warehouse.categories.addChildCategory')}
             </Button>
             <Button icon={<EditOutlined />} onClick={handleEditCategory} disabled={!selectedCategory}>
-              编辑分类
+              {t('warehouse.categories.editCategory')}
             </Button>
             <Popconfirm
-              title="确认删除该分类？"
-              description="若该分类存在子分类，后端会阻止删除。"
+              title={t('warehouse.categories.confirmDelete')}
+              description={t('warehouse.categories.deleteBlockedHint')}
               onConfirm={() => void handleDelete()}
               disabled={!selectedCategory}
             >
               <Button danger icon={<DeleteOutlined />} disabled={!selectedCategory} loading={saving}>
-                删除分类
+                {t('warehouse.categories.deleteCategory')}
               </Button>
             </Popconfirm>
           </Space>
@@ -638,14 +644,14 @@ export default function WarehouseCategoriesPage() {
                 />
               </div>
             ) : (
-              <Empty description="暂无分类数据" />
+              <Empty description={t('warehouse.categories.noCategoryData')} />
             )}
           </Spin>
         </Card>
 
         <div style={{ display: 'grid', gap: 16 }}>
           <Card
-            title="商品分类管理"
+            title={t('warehouse.categories.productCategoryManagement')}
             extra={
               <Space>
                 <Button
@@ -654,7 +660,7 @@ export default function WarehouseCategoriesPage() {
                   loading={assigning}
                   onClick={() => void handleBatchAssign()}
                 >
-                  批量更新到目标分类
+                  {t('warehouse.categories.batchUpdateToTarget')}
                 </Button>
                 <Button
                   icon={<ReloadOutlined />}
@@ -671,19 +677,19 @@ export default function WarehouseCategoriesPage() {
                       : undefined
                   }
                 >
-                  刷新
+                  {t('common.refresh')}
                 </Button>
               </Space>
             }
           >
             {!categories.length ? (
-              <Empty description="暂无分类数据" />
+              <Empty description={t('warehouse.categories.noCategoryData')} />
             ) : (
               <Space direction="vertical" size={16} style={{ width: '100%' }}>
                 <Alert
                   type="info"
                   showIcon
-                  message="操作步骤：可直接查询全部商品，或先选择筛选分类再查询；勾选商品后选择目标分类，最后执行批量更新。"
+                  message={t('warehouse.categories.operationSteps')}
                 />
 
                 <Form
@@ -691,27 +697,27 @@ export default function WarehouseCategoriesPage() {
                   layout="inline"
                   initialValues={{ filterCategoryGuid: undefined, targetCategoryGuid: selectedCategoryGuid }}
                 >
-                  <Form.Item label="货号" name="itemNumber">
-                    <Input allowClear placeholder="请输入货号" style={{ width: 180 }} />
+                  <Form.Item label={t('warehouse.categories.itemNumber')} name="itemNumber">
+                    <Input allowClear placeholder={t('warehouse.categories.enterItemNumber')} style={{ width: 180 }} />
                   </Form.Item>
-                  <Form.Item label="供应商代码" name="supplierCode">
-                    <Input allowClear placeholder="请输入国内供应商代码" style={{ width: 180 }} />
+                  <Form.Item label={t('warehouse.categories.supplierCode')} name="supplierCode">
+                    <Input allowClear placeholder={t('warehouse.categories.enterDomesticSupplierCode')} style={{ width: 180 }} />
                   </Form.Item>
-                  <Form.Item label="分类" name="filterCategoryGuid">
+                  <Form.Item label={t('warehouse.categories.category')} name="filterCategoryGuid">
                     <Select
                       style={{ width: 260 }}
                       options={categoryOptions}
-                      placeholder="不选则查询全部商品"
+                      placeholder={t('warehouse.categories.allProductsWhenEmpty')}
                       showSearch
                       optionFilterProp="label"
                       allowClear
                     />
                   </Form.Item>
-                  <Form.Item label="目标分类" name="targetCategoryGuid">
+                  <Form.Item label={t('warehouse.categories.targetCategory')} name="targetCategoryGuid">
                     <Select
                       style={{ width: 260 }}
                       options={categoryOptions}
-                      placeholder="请选择批量更新目标分类"
+                      placeholder={t('warehouse.categories.selectBatchTarget')}
                       showSearch
                       optionFilterProp="label"
                       allowClear
@@ -720,10 +726,10 @@ export default function WarehouseCategoriesPage() {
                   <Form.Item>
                     <Space>
                       <Button type="primary" icon={<SearchOutlined />} onClick={() => void handleSearchProducts()}>
-                        查询
+                        {t('common.query')}
                       </Button>
                       <Button onClick={() => void handleResetProducts()}>
-                        重置
+                        {t('common.reset')}
                       </Button>
                     </Space>
                   </Form.Item>
@@ -755,7 +761,7 @@ export default function WarehouseCategoriesPage() {
         </div>
       </div>
       <Modal
-        title={formMode === 'create' ? '新建分类' : '编辑分类'}
+        title={formMode === 'create' ? t('warehouse.categories.newCategory') : t('warehouse.categories.editCategory')}
         open={modalOpen}
         confirmLoading={saving}
         onOk={() => void handleSave()}
@@ -770,8 +776,8 @@ export default function WarehouseCategoriesPage() {
               showIcon
               message={
                 selectedCategory && form.getFieldValue('parentGUID') === selectedCategory.categoryGUID
-                  ? `正在为“${selectedCategory.categoryName}”新增子分类`
-                  : '正在新增顶级分类'
+                  ? t('warehouse.categories.addingChildFor', { name: selectedCategory.categoryName })
+                  : t('warehouse.categories.addingTopCategory')
               }
             />
           ) : null}
@@ -782,36 +788,36 @@ export default function WarehouseCategoriesPage() {
             initialValues={{ isActive: true }}
           >
             <Form.Item
-              label="分类名称"
+              label={t('warehouse.categories.categoryName')}
               name="categoryName"
               rules={[
-                { required: true, message: '请输入分类名称' },
-                { max: 100, message: '分类名称不能超过 100 个字符' },
+                { required: true, message: t('warehouse.categories.enterCategoryName') },
+                { max: 100, message: t('warehouse.categories.categoryNameMax') },
               ]}
             >
-              <Input maxLength={100} placeholder="请输入分类名称" />
+              <Input maxLength={100} placeholder={t('warehouse.categories.enterCategoryName')} />
             </Form.Item>
 
-            <Form.Item label="中文名称" name="chineseName" rules={[{ max: 100, message: '中文名称不能超过 100 个字符' }]}>
-              <Input maxLength={100} placeholder="请输入中文名称" />
+            <Form.Item label={t('warehouse.categories.chineseName')} name="chineseName" rules={[{ max: 100, message: t('warehouse.categories.chineseNameMax') }]}>
+              <Input maxLength={100} placeholder={t('warehouse.categories.enterChineseName')} />
             </Form.Item>
 
-            <Form.Item label="父类" name="parentGUID">
+            <Form.Item label={t('warehouse.categories.parent')} name="parentGUID">
               <Select
                 allowClear
                 showSearch
-                placeholder="不选择则为顶级分类"
+                placeholder={t('warehouse.categories.topCategoryWhenEmpty')}
                 options={parentOptions}
                 optionFilterProp="label"
               />
             </Form.Item>
 
-            <Form.Item label="状态" name="isActive" valuePropName="checked">
-              <Switch checkedChildren="启用" unCheckedChildren="停用" />
+            <Form.Item label={t('warehouse.categories.isActive')} name="isActive" valuePropName="checked">
+              <Switch checkedChildren={t('common.active')} unCheckedChildren={t('common.inactive')} />
             </Form.Item>
 
-            <Form.Item label="备注" name="remarks" rules={[{ max: 500, message: '备注不能超过 500 个字符' }]}>
-              <Input.TextArea rows={4} maxLength={500} showCount placeholder="请输入备注" />
+            <Form.Item label={t('warehouse.categories.remarks')} name="remarks" rules={[{ max: 500, message: t('warehouse.categories.remarksMax') }]}>
+              <Input.TextArea rows={4} maxLength={500} showCount placeholder={t('common.enterRemarks')} />
             </Form.Item>
           </Form>
         </Space>

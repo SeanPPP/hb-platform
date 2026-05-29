@@ -20,7 +20,7 @@ export default function RoleManagePage() {
   const handleSubmit = async () => {
     setSaving(true)
     await new Promise((resolve) => setTimeout(resolve, 600))
-    message.success(t('roleManage.saved', `已保存角色：${form.getFieldValue('roleName') || t('roleManage.unnamed', '未命名角色')}`))
+    message.success(t('roleManage.saved', { name: form.getFieldValue('roleName') || t('roleManage.unnamed') }))
     setSaving(false)
   }
 

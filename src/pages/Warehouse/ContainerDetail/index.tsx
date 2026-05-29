@@ -62,6 +62,7 @@ import { useAuthStore } from '../../../store/auth'
 import type { ContainerDetail, ContainerMain, HqTranslationResult, UpdateContainerDetailRequest } from '../../../types/container'
 
 type TagFilter = 'all' | 'new' | 'existing' | 'noOemPrice' | 'abnormalImport'
+type ProductTypeFilter = 'all' | 'normal' | 'set' | 'setChild'
 
 function formatDate(value?: string) {
   return value ? dayjs(value).format('YYYY-MM-DD') : '--'
@@ -98,6 +99,23 @@ function getProductTypeLabel(value: string | undefined, t: TFunction) {
   return map[type] ? t(map[type]) : type
 }
 
+function getProductTypeFilterKey(value: string | undefined): ProductTypeFilter {
+  const type = value || '普通商品'
+  if (type === '套装商品') return 'set'
+  if (type === '套装子商品') return 'setChild'
+  return 'normal'
+}
+
+function getProductTypeFilterLabel(value: ProductTypeFilter, t: TFunction) {
+  const map: Record<ProductTypeFilter, string> = {
+    all: 'common.all',
+    normal: 'containers.productTypes.normal',
+    set: 'containers.productTypes.set',
+    setChild: 'containers.productTypes.setChild',
+  }
+  return t(map[value])
+}
+
 function isSetProduct(row: ContainerDetail) {
   return row.商品类型 === '套装商品' || row.商品类型 === '套装子商品' || row.商品信息?.商品类型 === '套装商品'
 }
@@ -114,7 +132,7 @@ export default function ContainerDetailPage() {
   const [rows, setRows] = useState<ContainerDetail[]>([])
   const [selectedRowKeys, setSelectedRowKeys] = useState<Key[]>([])
   const [itemNumberFilter, setItemNumberFilter] = useState('')
-  const [productTypeFilter, setProductTypeFilter] = useState('全部')
+  const [productTypeFilter, setProductTypeFilter] = useState<ProductTypeFilter>('all')
   const [tagFilter, setTagFilter] = useState<TagFilter>('all')
   const [batchFloatRate, setBatchFloatRate] = useState<number | null>(null)
   const [batchImportPrice, setBatchImportPrice] = useState<number | null>(null)
@@ -167,9 +185,8 @@ export default function ContainerDetailPage() {
   const filteredRows = useMemo(() => {
     return rows.filter((row) => {
       const itemNumber = row.商品信息?.货号 || ''
-      const productType = getProductTypeLabel(row.商品类型 || row.商品信息?.商品类型, t)
       if (itemNumberFilter && !itemNumber.toLowerCase().includes(itemNumberFilter.toLowerCase())) return false
-      if (productTypeFilter !== '全部' && productType !== productTypeFilter) return false
+      if (productTypeFilter !== 'all' && getProductTypeFilterKey(row.商品类型 || row.商品信息?.商品类型) !== productTypeFilter) return false
       if (tagFilter === 'new') return Boolean(row.是否新商品)
       if (tagFilter === 'existing') return !row.是否新商品
       if (tagFilter === 'noOemPrice') return Boolean(row.是否新商品) && (!row.贴牌价格 || row.贴牌价格 <= 0)
@@ -660,7 +677,12 @@ export default function ContainerDetailPage() {
               <Space wrap style={{ justifyContent: 'space-between', width: '100%' }}>
                 <Space wrap>
                   <Input value={itemNumberFilter} allowClear prefix={<SearchOutlined />} placeholder={t('containers.placeholders.filterItemNumber')} style={{ width: 180 }} onChange={(event) => setItemNumberFilter(event.target.value)} />
-                  <Select value={productTypeFilter} style={{ width: 140 }} onChange={setProductTypeFilter} options={['全部', '普通商品', '套装商品', '套装子商品'].map((value) => ({ value, label: getProductTypeLabel(value, t) }))} />
+                  <Select
+                    value={productTypeFilter}
+                    style={{ width: 140 }}
+                    onChange={setProductTypeFilter}
+                    options={(['all', 'normal', 'set', 'setChild'] as ProductTypeFilter[]).map((value) => ({ value, label: getProductTypeFilterLabel(value, t) }))}
+                  />
                   <Select
                     value={tagFilter}
                     style={{ width: 150 }}
