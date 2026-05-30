@@ -7,6 +7,8 @@ namespace BlazorApp.Shared.Constants
     /// </summary>
     public static class Permissions
     {
+        public static readonly string[] SuperAdminRoleNames = ["Admin", "管理员"];
+
         public static class Users
         {
             public const string View = "Users.View";
@@ -49,6 +51,12 @@ namespace BlazorApp.Shared.Constants
             public const string Create = "Products.Create";
             public const string Edit = "Products.Edit";
             public const string Delete = "Products.Delete";
+        }
+
+        public static class PosProducts
+        {
+            public const string View = "PosProducts.View";
+            public const string Manage = "PosProducts.Manage";
         }
 
         public static class Orders
@@ -121,16 +129,29 @@ namespace BlazorApp.Shared.Constants
             public const string Edit = "Promotions.Edit";
         }
 
+        public static class Advertisements
+        {
+            public const string View = "Advertisements.View";
+            public const string Edit = "Advertisements.Edit";
+        }
+
         public static class PricingStrategy
         {
             public const string View = "PricingStrategy.View";
             public const string Edit = "PricingStrategy.Edit";
         }
 
+        public static class DeviceRegistration
+        {
+            public const string View = "DeviceRegistration.View";
+            public const string Manage = "DeviceRegistration.Manage";
+        }
+
         public static class LocalPurchase
         {
             public const string View = "LocalPurchase.View";
             public const string Edit = "LocalPurchase.Edit";
+            public const string PushToHq = "LocalPurchase.PushToHq";
         }
 
         private static readonly IReadOnlyDictionary<string, string[]> PermissionAliases =
@@ -203,6 +224,15 @@ namespace BlazorApp.Shared.Constants
             }
         }
 
+        public static class SeasonalCards
+        {
+            public static class Remaining
+            {
+                public const string ViewManagedStore = "SeasonalCards.Remaining.ViewManagedStore";
+                public const string SubmitManagedStore = "SeasonalCards.Remaining.SubmitManagedStore";
+            }
+        }
+
         public static class System
         {
             public const string ViewLogs = "System.ViewLogs";
@@ -219,92 +249,15 @@ namespace BlazorApp.Shared.Constants
             public const string View = "OrderFront";
         }
 
-        private static readonly HashSet<string> WarehouseManagerGrantedPermissions = new(
-            StringComparer.OrdinalIgnoreCase
-        )
+        public static bool IsSuperAdminRole(string? roleName)
         {
-            Stores.View,
-            Stores.Create,
-            Stores.Edit,
-            Stores.Delete,
-            Stores.Sync,
-            Products.View,
-            Products.Create,
-            Products.Edit,
-            Products.Delete,
-            Orders.View,
-            Orders.Create,
-            Orders.Edit,
-            Orders.Delete,
-            Container.View,
-            Container.Create,
-            Container.Edit,
-            Container.Delete,
-            Warehouse.View,
-            Warehouse.Manage,
-            Warehouse.ManageProducts,
-            Warehouse.ManageCategories,
-            Warehouse.ManageLocations,
-            Warehouse.ManageOrders,
-            DomesticPurchase.View,
-            DomesticPurchase.ManageSuppliers,
-            DomesticPurchase.ManageProducts,
-            DomesticPurchase.ManagePrefixCodes,
-            Reports.View,
-            Reports.Export,
-            Dashboard.View,
-        };
-
-        private static readonly HashSet<string> AttendanceSelfServicePermissions = new(
-            StringComparer.OrdinalIgnoreCase
-        )
-        {
-            Attendance.Schedule.ViewSelf,
-            Attendance.Availability.SubmitSelf,
-            Attendance.Punch.Self,
-            Attendance.Leave.ApplySelf,
-        };
-
-        private static readonly HashSet<string> StoreManagerGrantedPermissions = new(
-            StringComparer.OrdinalIgnoreCase
-        )
-        {
-            Attendance.Schedule.ViewSelf,
-            Attendance.Schedule.ViewStore,
-            Attendance.Schedule.EditManagedStore,
-            Attendance.Availability.SubmitSelf,
-            Attendance.Availability.ViewManagedStore,
-            Attendance.Punch.Self,
-            Attendance.Punch.ViewManagedStore,
-            Attendance.Approval.ViewManagedStore,
-            Attendance.Approval.ReviewManagedStore,
-            Attendance.Holiday.ViewStore,
-            Attendance.Holiday.EditManagedStore,
-            Attendance.Leave.ApplySelf,
-            Attendance.Leave.ViewManagedStore,
-            Attendance.Leave.ReviewManagedStore,
-        };
-
-        /// <summary>
-        /// WarehouseManager role-level permission grants.
-        /// Keep this list in sync with hbweb_rv/src/types/permissions.ts.
-        /// </summary>
-        public static bool IsWarehouseManagerGranted(string? permission)
-        {
-            return !string.IsNullOrWhiteSpace(permission)
-                && WarehouseManagerGrantedPermissions.Contains(permission);
+            return !string.IsNullOrWhiteSpace(roleName)
+                && SuperAdminRoleNames.Contains(roleName, StringComparer.OrdinalIgnoreCase);
         }
 
-        public static bool IsAttendanceSelfServiceGranted(string? permission)
+        public static IReadOnlyDictionary<string, string[]> GetPermissionAliases()
         {
-            return !string.IsNullOrWhiteSpace(permission)
-                && AttendanceSelfServicePermissions.Contains(permission);
-        }
-
-        public static bool IsStoreManagerGranted(string? permission)
-        {
-            return !string.IsNullOrWhiteSpace(permission)
-                && StoreManagerGrantedPermissions.Contains(permission);
+            return PermissionAliases;
         }
 
         public static IReadOnlyCollection<string> GetEquivalentPermissionCodes(string? permission)
@@ -323,7 +276,36 @@ namespace BlazorApp.Shared.Constants
             return codes;
         }
 
+        public static IReadOnlyCollection<string> ExpandPermissionCodes(
+            IEnumerable<string>? permissions
+        )
+        {
+            if (permissions == null)
+            {
+                return Array.Empty<string>();
+            }
+
+            var codes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var permission in permissions.Where(permission => !string.IsNullOrWhiteSpace(permission)))
+            {
+                codes.Add(permission);
+
+                foreach (var alias in PermissionAliases)
+                {
+                    if (alias.Value.Contains(permission, StringComparer.OrdinalIgnoreCase))
+                    {
+                        codes.Add(alias.Key);
+                    }
+                }
+            }
+
+            return codes.ToList();
+        }
+
         public static IEnumerable<(string Code, string Name, string Category)> GetAllPermissions() =>
-            PermissionSeedData.AllPermissions.Select(seed => (seed.Code, seed.Name, seed.Category));
+            PermissionSeedData.AllPermissions
+                .Select(seed => (seed.Code, seed.Name, seed.Category))
+                .GroupBy(item => item.Code, StringComparer.OrdinalIgnoreCase)
+                .Select(group => group.First());
     }
 }

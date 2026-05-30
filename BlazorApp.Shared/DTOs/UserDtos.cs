@@ -246,6 +246,36 @@ namespace BlazorApp.Shared.DTOs
     }
 
     /// <summary>
+    /// 用户直接权限分配DTO
+    /// </summary>
+    public class UserPermissionAssignmentDto
+    {
+        [Required(ErrorMessage = "权限列表不能为空")]
+        public List<string> Permissions { get; set; } = new();
+    }
+
+    /// <summary>
+    /// 用户权限继承来源DTO
+    /// </summary>
+    public class UserPermissionInheritedSourceDto
+    {
+        public string RoleName { get; set; } = string.Empty;
+        public List<string> PermissionCodes { get; set; } = new();
+    }
+
+    /// <summary>
+    /// 用户权限状态DTO
+    /// </summary>
+    public class UserPermissionStateDto
+    {
+        public string UserGuid { get; set; } = string.Empty;
+        public List<string> InheritedPermissionCodes { get; set; } = new();
+        public List<string> DirectPermissionCodes { get; set; } = new();
+        public List<string> EffectivePermissionCodes { get; set; } = new();
+        public List<UserPermissionInheritedSourceDto> InheritedSources { get; set; } = new();
+    }
+
+    /// <summary>
     /// 用户分店分配DTO（批量）
     /// </summary>
     public class UserStoreAssignmentBatchDto

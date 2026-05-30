@@ -1,4 +1,5 @@
 using System.ComponentModel.DataAnnotations;
+using System.Text.Json;
 using BlazorApp.Api.Controllers;
 using BlazorApp.Api.Services;
 using BlazorApp.Shared.DTOs;
@@ -18,6 +19,127 @@ namespace BlazorApp.Api.Tests
 
             Assert.NotNull(property);
             Assert.Empty(property!.GetCustomAttributes(typeof(RequiredAttribute), inherit: true));
+        }
+
+        [Fact]
+        public void CreateBatchItemDto_SupportsNestedSetTemplate()
+        {
+            var item = new CreateBatchItemDto
+            {
+                ProductName = "套装模板",
+                ProductType = 1,
+                CreateCount = 4,
+                SubItems = new List<CreateBatchItemDto>
+                {
+                    new()
+                    {
+                        ProductName = "子项A",
+                        ProductType = 2,
+                        PrivateLabelPrice = 12.5m,
+                    },
+                    new()
+                    {
+                        ProductName = "子项B",
+                        ProductType = 2,
+                        PrivateLabelPrice = 15m,
+                    },
+                },
+            };
+
+            var json = JsonSerializer.Serialize(item);
+
+            Assert.Contains("\"createCount\":4", json);
+            Assert.Contains("\"subItems\"", json);
+            Assert.Equal(2, item.SubItems.Count);
+            Assert.All(item.SubItems, subItem => Assert.Equal(2, subItem.ProductType));
+        }
+
+        [Fact]
+        public void ExportBatch_OrdersSetSubItemsUnderParentSet()
+        {
+            var method = typeof(DomesticProductCreationService).GetMethod(
+                "OrderBatchDetailItemsForExport",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static
+            );
+
+            Assert.NotNull(method);
+
+            var items = new List<BatchDetailItemDto>
+            {
+                new()
+                {
+                    HBProductNo = "HB001-8001-02",
+                    Barcode = "9527800100002",
+                    ProductName = "子项2",
+                    ProductType = 2,
+                    ParentHBProductNo = "HB001-8001",
+                },
+                new()
+                {
+                    HBProductNo = "HB001-9001",
+                    Barcode = "9527900100001",
+                    ProductName = "普通商品",
+                    ProductType = 0,
+                },
+                new()
+                {
+                    HBProductNo = "HB001-8001",
+                    Barcode = "9527800100001",
+                    ProductName = "套装商品",
+                    ProductType = 1,
+                },
+                new()
+                {
+                    HBProductNo = "HB001-8001-01",
+                    Barcode = "9527800100003",
+                    ProductName = "子项1",
+                    ProductType = 2,
+                    ParentHBProductNo = "HB001-8001",
+                },
+                new()
+                {
+                    HBProductNo = "HB001-0000-01",
+                    Barcode = "9527000000001",
+                    ProductName = "父货号异常子项",
+                    ProductType = 2,
+                    ParentHBProductNo = "HB001-MISSING",
+                },
+            };
+
+            var ordered = Assert.IsAssignableFrom<List<BatchDetailItemDto>>(
+                method!.Invoke(null, new object[] { items })
+            );
+
+            Assert.Equal(
+                new[]
+                {
+                    "HB001-8001",
+                    "HB001-8001-01",
+                    "HB001-8001-02",
+                    "HB001-0000-01",
+                    "HB001-9001",
+                },
+                ordered.Select(x => x.HBProductNo).ToArray()
+            );
+        }
+
+        [Fact]
+        public void ExportBatch_GeneratesBarcodePngImage()
+        {
+            var method = typeof(DomesticProductCreationService).GetMethod(
+                "GenerateBarcodeImagePng",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static
+            );
+
+            Assert.NotNull(method);
+
+            var imageBytes = Assert.IsType<byte[]>(method!.Invoke(null, new object?[] { "9527800100001" }));
+
+            Assert.True(imageBytes.Length > 8);
+            Assert.Equal(0x89, imageBytes[0]);
+            Assert.Equal((byte)'P', imageBytes[1]);
+            Assert.Equal((byte)'N', imageBytes[2]);
+            Assert.Equal((byte)'G', imageBytes[3]);
         }
 
         [Fact]

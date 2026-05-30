@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using BlazorApp.Api.Interfaces;
 using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.DTOs;
 
@@ -13,16 +14,40 @@ namespace BlazorApp.Api.Services
 
     public class NavigationService : INavigationService
     {
+        private readonly IRoleService? _roleService;
+
+        private sealed class NavigationPermissionContext
+        {
+            public bool IsAdmin { get; init; }
+            public HashSet<string> PermissionCodes { get; init; } =
+                new(StringComparer.OrdinalIgnoreCase);
+        }
+
         private sealed class AppNavigationDefinition
         {
             public string RouteName { get; init; } = string.Empty;
             public string TitleKey { get; init; } = string.Empty;
             public string Icon { get; init; } = string.Empty;
             public string? Permission { get; init; }
-            public string[] Roles { get; init; } = Array.Empty<string>();
-            public bool RequireAdmin { get; init; }
+            public IReadOnlyCollection<string>? AnyPermissions { get; init; }
             public int Order { get; init; }
         }
+
+        private static readonly string[] AttendanceManagementPermissions =
+        {
+            Permissions.Attendance.Schedule.ViewStore,
+            Permissions.Attendance.Schedule.EditManagedStore,
+            Permissions.Attendance.Availability.ViewManagedStore,
+            Permissions.Attendance.Punch.ViewManagedStore,
+            Permissions.Attendance.Approval.ViewManagedStore,
+            Permissions.Attendance.Approval.ReviewManagedStore,
+            Permissions.Attendance.Holiday.ViewStore,
+            Permissions.Attendance.Holiday.EditManagedStore,
+            Permissions.Attendance.Leave.ViewManagedStore,
+            Permissions.Attendance.Leave.ReviewManagedStore,
+            Permissions.Attendance.Settings.Edit,
+            Permissions.Attendance.Admin.View,
+        };
 
         /// <summary>
         /// 完整导航树（与前端 routes.tsx 结构一致）
@@ -46,10 +71,10 @@ namespace BlazorApp.Api.Services
                 {
                     new() { Path = "/system/stores",   TitleKey = "menu.systemStores",      Icon = "ShopOutlined",    Permission = Permissions.Stores.View },
                     new() { Path = "/system/users",    TitleKey = "menu.systemUsers",       Icon = "UserOutlined",     Permission = Permissions.Users.View },
-                    new() { Path = "/system/employee-profiles", TitleKey = "menu.employeeProfiles", Icon = "IdcardOutlined", Permission = Permissions.EmployeeProfiles.View, RequireAdmin = true },
+                    new() { Path = "/system/employee-profiles", TitleKey = "menu.employeeProfiles", Icon = "IdcardOutlined", Permission = Permissions.EmployeeProfiles.View },
                     new() { Path = "/system/roles",    TitleKey = "menu.systemRoles",       Icon = "TeamOutlined",     Permission = Permissions.Roles.View },
                     new() { Path = "/system/permissions", TitleKey = "menu.systemPermissions", Icon = "KeyOutlined", Permission = Permissions.Roles.View },
-                    new() { Path = "/system/device-registration", TitleKey = "menu.deviceRegistration", Icon = "BuildOutlined", Permission = Permissions.Store.ManageOperations },
+                    new() { Path = "/system/device-registration", TitleKey = "menu.deviceRegistration", Icon = "BuildOutlined", Permission = Permissions.DeviceRegistration.View },
                 },
             },
             new()
@@ -100,10 +125,11 @@ namespace BlazorApp.Api.Services
                 Children = new List<NavigationMenuDto>
                 {
                     new() { Path = "/pos-admin/suppliers",              TitleKey = "menu.suppliers",              Icon = "ShopOutlined",               Permission = Permissions.AustralianSuppliers.View },
-                    new() { Path = "/pos-admin/products",              TitleKey = "menu.productManagement",      Icon = "AppstoreOutlined",           RequireAdmin = true },
+                    new() { Path = "/pos-admin/products",              TitleKey = "menu.productManagement",      Icon = "AppstoreOutlined",           Permission = Permissions.PosProducts.View },
                     new() { Path = "/pos-admin/store-product-price",   TitleKey = "menu.storeProductPrice",      Icon = "DollarOutlined",             Permission = Permissions.StoreProducts.View },
                     new() { Path = "/pos-admin/pricing-strategies",    TitleKey = "menu.pricingStrategies",      Icon = "FileTextOutlined",           Permission = Permissions.PricingStrategy.View },
                     new() { Path = "/pos-admin/promotions",            TitleKey = "menu.promotions",             Icon = "GiftOutlined",               Permission = Permissions.Promotions.View },
+                    new() { Path = "/pos-admin/advertisements",        TitleKey = "menu.advertisements",         Icon = "PictureOutlined",            Permission = Permissions.Advertisements.View },
                     new() { Path = "/pos-admin/cash-register-users",   TitleKey = "menu.cashRegisterUsers",      Icon = "UserOutlined",               Permission = Permissions.Store.ManageOperations },
                     new() { Path = "/pos-admin/schedule-attendance",   TitleKey = "menu.scheduleAttendance",     Icon = "CalendarOutlined",           Permission = Permissions.Attendance.Schedule.ViewStore },
                     new() { Path = "/pos-admin/sales-orders",          TitleKey = "menu.salesOrders",            Icon = "FileDoneOutlined",           Permission = Permissions.Orders.View },
@@ -164,6 +190,14 @@ namespace BlazorApp.Api.Services
             },
             new()
             {
+                RouteName = "advertisements",
+                TitleKey = "tabs.advertisements",
+                Icon = "image-multiple",
+                Permission = Permissions.Advertisements.View,
+                Order = 47,
+            },
+            new()
+            {
                 RouteName = "product-query",
                 TitleKey = "tabs.productQuery",
                 Icon = "barcode-scan",
@@ -188,20 +222,41 @@ namespace BlazorApp.Api.Services
             },
             new()
             {
-                RouteName = "attendance",
-                TitleKey = "tabs.attendance",
+                RouteName = "attendance-personal",
+                TitleKey = "tabs.attendancePersonal",
                 Icon = "calendar-clock",
                 Permission = Permissions.Attendance.Schedule.ViewSelf,
                 Order = 55,
             },
             new()
             {
+                RouteName = "attendance-management",
+                TitleKey = "tabs.attendanceManagement",
+                Icon = "calendar-clock",
+                Permission = Permissions.Attendance.Schedule.ViewStore,
+                AnyPermissions = AttendanceManagementPermissions,
+                Order = 56,
+            },
+            new()
+            {
+                RouteName = "seasonal-cards",
+                TitleKey = "tabs.seasonalCards",
+                Icon = "gift-outline",
+                Permission = Permissions.SeasonalCards.Remaining.ViewManagedStore,
+                AnyPermissions = new[]
+                {
+                    Permissions.SeasonalCards.Remaining.ViewManagedStore,
+                    Permissions.SeasonalCards.Remaining.SubmitManagedStore,
+                },
+                Order = 56,
+            },
+            new()
+            {
                 RouteName = "users",
                 TitleKey = "tabs.users",
                 Icon = "account-group-outline",
-                Roles = new[] { "Admin", "管理员", "StoreManager" },
                 Permission = Permissions.Users.View,
-                Order = 56,
+                Order = 57,
             },
             new()
             {
@@ -209,15 +264,15 @@ namespace BlazorApp.Api.Services
                 TitleKey = "tabs.employeeProfile",
                 Icon = "card-account-details-outline",
                 Permission = Permissions.EmployeeProfiles.View,
-                Order = 57,
+                Order = 58,
             },
             new()
             {
                 RouteName = "device-management",
                 TitleKey = "tabs.deviceManagement",
                 Icon = "cellphone-cog",
-                RequireAdmin = true,
-                Order = 58,
+                Permission = Permissions.DeviceRegistration.View,
+                Order = 59,
             },
             new()
             {
@@ -238,32 +293,44 @@ namespace BlazorApp.Api.Services
             StringComparer.OrdinalIgnoreCase
         );
 
+        public NavigationService()
+        {
+        }
+
+        public NavigationService(IRoleService roleService)
+        {
+            _roleService = roleService;
+        }
+
         public List<NavigationMenuDto> BuildMenu(ClaimsPrincipal user)
         {
-            var isAdmin = user.IsInRole("Admin") || user.IsInRole("管理员");
-            if (isAdmin)
+            var context = ResolvePermissionContext(user);
+
+            if (context.IsAdmin)
             {
                 return FullMenu;
             }
 
-            var hasDashboardAccess =
-                user.HasClaim("permission", Permissions.Dashboard.View)
-                || (
-                    user.HasClaim(ClaimTypes.Role, "WarehouseManager")
-                    && Permissions.IsWarehouseManagerGranted(Permissions.Dashboard.View)
-                );
+            var hasDashboardAccess = HasPermission(context, Permissions.Dashboard.View);
             if (!hasDashboardAccess)
             {
                 return new List<NavigationMenuDto>();
             }
 
-            return FilterMenu(FullMenu, user);
+            return FilterMenu(FullMenu, context);
         }
 
         public List<AppNavigationMenuDto> BuildAppMenu(ClaimsPrincipal user)
         {
+            var context = ResolvePermissionContext(user);
+
+            if (context.IsAdmin)
+            {
+                return FullAppMenu.OrderBy(node => node.Order).Select(ToAppNavigationMenuDto).ToList();
+            }
+
             return FullAppMenu
-                .Where(node => CanAccess(node, user))
+                .Where(node => CanAccess(node, context))
                 .OrderBy(node => node.Order)
                 .Select(ToAppNavigationMenuDto)
                 .ToList();
@@ -283,7 +350,10 @@ namespace BlazorApp.Api.Services
                 .ToList();
         }
 
-        private static List<NavigationMenuDto> FilterMenu(List<NavigationMenuDto> nodes, ClaimsPrincipal user)
+        private static List<NavigationMenuDto> FilterMenu(
+            List<NavigationMenuDto> nodes,
+            NavigationPermissionContext context
+        )
         {
             var result = new List<NavigationMenuDto>();
 
@@ -291,7 +361,7 @@ namespace BlazorApp.Api.Services
             {
                 var hasChildren = node.Children != null && node.Children.Count > 0;
                 var filteredChildren = hasChildren
-                    ? FilterMenu(node.Children!, user)
+                    ? FilterMenu(node.Children!, context)
                     : null;
 
                 if (hasChildren)
@@ -310,7 +380,7 @@ namespace BlazorApp.Api.Services
                 }
                 else
                 {
-                    if (CanAccess(node, user))
+                    if (CanAccess(node, context))
                     {
                         result.Add(new NavigationMenuDto
                         {
@@ -327,91 +397,133 @@ namespace BlazorApp.Api.Services
             return result;
         }
 
-        private static bool CanAccess(NavigationMenuDto node, ClaimsPrincipal user)
+        private static bool CanAccess(NavigationMenuDto node, NavigationPermissionContext context)
         {
-            if (node.RequireAdmin && !user.IsInRole("Admin") && !user.IsInRole("管理员"))
-            {
-                return false;
-            }
-
             if (string.IsNullOrEmpty(node.Permission))
             {
                 return true;
             }
 
+            if (context.IsAdmin || HasPermission(context, node.Permission))
+            {
+                return true;
+            }
+
+            return false;
+        }
+
+        private static bool CanAccess(
+            AppNavigationDefinition node,
+            NavigationPermissionContext context
+        )
+        {
+            if (string.IsNullOrEmpty(node.Permission) && (node.AnyPermissions == null || node.AnyPermissions.Count == 0))
+            {
+                return true;
+            }
+
+            if (context.IsAdmin)
+            {
+                return true;
+            }
+
+            if (HasPermission(context, node.Permission))
+            {
+                return true;
+            }
+
             if (
-                user.HasClaim(ClaimTypes.Role, "WarehouseManager")
-                && Permissions.IsWarehouseManagerGranted(node.Permission)
+                node.AnyPermissions != null
+                && node.AnyPermissions.Any(permission => HasPermission(context, permission))
             )
             {
                 return true;
             }
 
-            if (user.HasClaim("permission", node.Permission)
-                || user.HasClaim(ClaimTypes.Role, "Admin")
-                || user.HasClaim(ClaimTypes.Role, "管理员"))
+            return false;
+        }
+
+        private NavigationPermissionContext ResolvePermissionContext(ClaimsPrincipal user)
+        {
+            if (_roleService == null)
             {
-                return true;
+                return BuildClaimPermissionContext(user);
             }
 
-            if (node.Permission == "LocalPurchase.View" && user.HasClaim("permission", "LocalInvocie.View"))
-                return true;
-            if (node.Permission == "LocalPurchase.Edit" && user.HasClaim("permission", "LocalInvocie.Edit"))
-                return true;
+            var userId = GetUserId(user);
+            if (string.IsNullOrWhiteSpace(userId))
+            {
+                return BuildClaimPermissionContext(user);
+            }
 
-            return false;
+            var result = _roleService
+                .GetUserPermissionSnapshotAsync(userId)
+                .ConfigureAwait(false)
+                .GetAwaiter()
+                .GetResult();
+
+            if (!result.Success || result.Data == null)
+            {
+                return BuildClaimPermissionContext(user);
+            }
+
+            return new NavigationPermissionContext
+            {
+                IsAdmin = result.Data.IsSuperAdmin,
+                PermissionCodes = new HashSet<string>(
+                    Permissions.ExpandPermissionCodes(result.Data.PermissionCodes),
+                    StringComparer.OrdinalIgnoreCase
+                ),
+            };
         }
 
-        private static bool CanAccess(AppNavigationDefinition node, ClaimsPrincipal user)
+        private static NavigationPermissionContext BuildClaimPermissionContext(ClaimsPrincipal user)
         {
-            var isAdmin = user.IsInRole("Admin") || user.IsInRole("管理员");
+            return new NavigationPermissionContext
+            {
+                IsAdmin = user.IsInRole("Admin") || user.IsInRole("管理员"),
+                PermissionCodes = new HashSet<string>(
+                    Permissions.ExpandPermissionCodes(
+                        user.Claims
+                            .Where(claim =>
+                                string.Equals(
+                                    claim.Type,
+                                    "permission",
+                                    StringComparison.OrdinalIgnoreCase
+                                )
+                            )
+                            .Select(claim => claim.Value)
+                    ),
+                    StringComparer.OrdinalIgnoreCase
+                ),
+            };
+        }
 
-            if (node.RequireAdmin && !isAdmin)
+        private static string? GetUserId(ClaimsPrincipal user)
+        {
+            return user.FindFirst(ClaimTypes.NameIdentifier)?.Value
+                ?? user.FindFirst("nameidentifier")?.Value
+                ?? user.FindFirst("userId")?.Value
+                ?? user.FindFirst("userGuid")?.Value
+                ?? user.FindFirst(ClaimTypes.Name)?.Value
+                ?? user.FindFirst("sub")?.Value;
+        }
+
+        private static bool HasPermission(NavigationPermissionContext context, string? permission)
+        {
+            if (string.IsNullOrWhiteSpace(permission))
             {
                 return false;
             }
 
-            if (node.Roles.Length > 0 && !node.Roles.Any(user.IsInRole))
-            {
-                return false;
-            }
+            return Permissions.GetEquivalentPermissionCodes(permission)
+                .Any(code => context.PermissionCodes.Contains(code));
+        }
 
-            if (string.IsNullOrEmpty(node.Permission))
-            {
-                return true;
-            }
-
-            if (isAdmin)
-            {
-                return true;
-            }
-
-            if (
-                user.HasClaim(ClaimTypes.Role, "WarehouseManager")
-                && Permissions.IsWarehouseManagerGranted(node.Permission)
-            )
-            {
-                return true;
-            }
-
-            if (user.HasClaim("permission", node.Permission))
-            {
-                return true;
-            }
-
-            if (node.Permission == Permissions.LocalPurchase.View
-                && user.HasClaim("permission", "LocalInvocie.View"))
-            {
-                return true;
-            }
-
-            if (node.Permission == Permissions.LocalPurchase.Edit
-                && user.HasClaim("permission", "LocalInvocie.Edit"))
-            {
-                return true;
-            }
-
-            return false;
+        private static bool HasPermissionClaim(ClaimsPrincipal user, string? permission)
+        {
+            return Permissions.GetEquivalentPermissionCodes(permission)
+                .Any(code => user.HasClaim("permission", code));
         }
 
         private static bool IsWarehouseDevice(string? deviceType)

@@ -8,7 +8,7 @@ namespace BlazorApp.Api.Controllers.React
 {
     [ApiController]
     [Route("api/react/v1/store-users")]
-    [Authorize(Roles = "Admin,StoreManager")]
+    [Authorize]
     public class ReactStoreUsersController : ControllerBase
     {
         private readonly IStoreUserReactService _service;

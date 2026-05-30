@@ -3,7 +3,13 @@ using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
 using ClosedXML.Excel;
 using Microsoft.Extensions.Logging;
+using SixLabors.ImageSharp;
+using SixLabors.ImageSharp.Formats.Png;
+using SixLabors.ImageSharp.PixelFormats;
 using SqlSugar;
+using ZXing;
+using ZXing.Common;
+using ZXing.ImageSharp;
 
 namespace BlazorApp.Api.Services
 {
@@ -119,21 +125,33 @@ namespace BlazorApp.Api.Services
                     }
                 }
 
-                var setProductCodeMap = new Dictionary<string, string>();
-                var setProductNoMap = new Dictionary<string, string>();
+                var nestedSubItemsBySetProductCode = new Dictionary<
+                    string,
+                    List<CreateBatchItemDto>
+                >();
+                var expandedSetItemCount = 0;
 
                 if (setItems.Any())
                 {
+                    var expandedSetItems = setItems
+                        .SelectMany(item =>
+                            Enumerable
+                                .Range(0, Math.Max(item.CreateCount.GetValueOrDefault(1), 1))
+                                .Select(_ => item)
+                        )
+                        .ToList();
+                    expandedSetItemCount = expandedSetItems.Count;
+
                     var codes = await _itemBarcodeService.GenerateBatchItemNumbersAndBarcodesAsync(
                         request.SupplierCode,
                         ProductTypeEnum.Set,
-                        setItems.Count,
+                        expandedSetItems.Count,
                         null
                     );
 
-                    for (var i = 0; i < setItems.Count && i < codes.Count; i++)
+                    for (var i = 0; i < expandedSetItems.Count && i < codes.Count; i++)
                     {
-                        var item = setItems[i];
+                        var item = expandedSetItems[i];
                         var (itemNumber, barcode) = codes[i];
                         var productCode = Guid.NewGuid().ToString();
 
@@ -195,16 +213,23 @@ namespace BlazorApp.Api.Services
                         };
                         responseItems.Add(createdItem);
 
-                        setProductCodeMap[itemNumber] = productCode;
-                        setProductNoMap[itemNumber] = itemNumber;
+                        // 嵌套子项按真实父商品编码暂存，后续用真实父货号生成子货号条码
+                        if (item.SubItems.Any())
+                        {
+                            nestedSubItemsBySetProductCode[productCode] = item.SubItems.ToList();
+                        }
                     }
                 }
 
                 foreach (var createdItem in responseItems.Where(x => x.ProductType == 1))
                 {
-                    var relatedSubItems = subItems
-                        .Where(s => s.ParentItemNumber == createdItem.HBProductNo)
-                        .ToList();
+                    var hasNestedSubItems = nestedSubItemsBySetProductCode.TryGetValue(
+                        createdItem.ProductCode,
+                        out var nestedSubItems
+                    );
+                    var relatedSubItems = hasNestedSubItems
+                        ? nestedSubItems!
+                        : subItems.Where(s => s.ParentItemNumber == createdItem.HBProductNo).ToList();
 
                     if (!relatedSubItems.Any())
                         continue;
@@ -241,7 +266,7 @@ namespace BlazorApp.Api.Services
                             new DomesticSetProduct
                             {
                                 SetProductCode = Guid.NewGuid().ToString(),
-                                ProductCode = subProductCode,
+                                ProductCode = createdItem.ProductCode,
                                 ProductNo = createdItem.HBProductNo,
                                 SetProductNo = subItemNumber,
                                 SetBarcode = subBarcode,
@@ -303,9 +328,9 @@ namespace BlazorApp.Api.Services
                 {
                     BatchNumber = batchNumber,
                     Items = responseItems,
-                    TotalCreated = responseItems.Count,
+                    TotalCreated = allProducts.Count,
                     NormalProductCount = normalItems.Count,
-                    SetProductCount = setItems.Count,
+                    SetProductCount = expandedSetItemCount,
                 };
 
                 return ApiResponse<CreateDomesticProductBatchResponse>.OK(response, "批量创建成功");
@@ -453,7 +478,7 @@ namespace BlazorApp.Api.Services
                 var setProduct = new DomesticSetProduct
                 {
                     SetProductCode = Guid.NewGuid().ToString(),
-                    ProductCode = domesticProduct.ProductCode,
+                    ProductCode = parentProductCode,
                     ProductNo = parentItemNumber, // 关联到父商品货号
                     SetProductNo = itemNumber,
                     SetBarcode = barcode,
@@ -556,7 +581,9 @@ namespace BlazorApp.Api.Services
                         SupplierName = g.First().SupplierName,
                         CreatedTime = g.Min(x => x.CreatedAt),
                         NormalProductCount = g.Count(x =>
-                            x.Product != null && x.Product.ProductType == 0
+                            x.Product != null
+                            && x.Product.ProductType == 0
+                            && (x.Remark == null || !x.Remark.StartsWith("Parent:"))
                         ),
                         SetProductCount = g.Count(x =>
                             x.Product != null && x.Product.ProductType == 1
@@ -640,11 +667,6 @@ namespace BlazorApp.Api.Services
                     var product = await _context.DomesticProductDb.GetByIdAsync(log.ProductCode);
                     var productType = product?.ProductType ?? 0;
 
-                    if (productType == 0)
-                        normalCount++;
-                    else if (productType == 1)
-                        setCount++;
-
                     // 检查是否是子商品（通过 Remark 中的 Parent 信息判断）
                     var isSubItem = false;
                     string? parentProductCode = null;
@@ -662,6 +684,11 @@ namespace BlazorApp.Api.Services
                             parentHBProductNo = parentLog.HBProductNo;
                         }
                     }
+
+                    if (productType == 0 && !isSubItem)
+                        normalCount++;
+                    else if (productType == 1)
+                        setCount++;
 
                     items.Add(
                         new BatchDetailItemDto
@@ -716,7 +743,7 @@ namespace BlazorApp.Api.Services
             try
             {
                 var setProducts = await _context.DomesticSetProductDb.GetListAsync(x =>
-                    x.ProductCode == productCode
+                    x.ProductCode == productCode && x.ProductNo != x.SetProductNo
                 );
                 return setProducts?.Count;
             }
@@ -734,7 +761,7 @@ namespace BlazorApp.Api.Services
             try
             {
                 var setProduct = await _context.DomesticSetProductDb.GetFirstAsync(x =>
-                    x.ProductCode == productCode
+                    x.ProductCode == productCode && x.ProductNo == x.SetProductNo
                 );
                 return setProduct?.DomesticPrice;
             }
@@ -782,14 +809,15 @@ namespace BlazorApp.Api.Services
                 {
                     "批次号",
                     "供应商",
+                    "类型",
+                    "父套装货号",
                     "货号",
                     "条码",
                     "商品名称",
-                    "类型",
                     "贴牌价格",
                     "套装数量",
                     "套装价格",
-                    "父货号",
+                    "条码图片",
                 };
 
                 for (var i = 0; i < headers.Length; i++)
@@ -805,29 +833,41 @@ namespace BlazorApp.Api.Services
                 var supplierText = string.IsNullOrWhiteSpace(detail.SupplierName)
                     ? detail.SupplierCode
                     : $"{detail.SupplierCode} - {detail.SupplierName}";
-                var sortedItems = detail.Items
-                    .OrderBy(item => item.HBProductNo)
-                    .ThenBy(item => item.Barcode)
-                    .ToList();
+                var sortedItems = OrderBatchDetailItemsForExport(detail.Items);
 
                 var row = headerRow + 1;
                 foreach (var item in sortedItems)
                 {
                     worksheet.Cell(row, 1).Value = detail.BatchNumber;
                     worksheet.Cell(row, 2).Value = supplierText;
-                    worksheet.Cell(row, 3).Value = item.HBProductNo;
-                    worksheet.Cell(row, 4).Style.NumberFormat.Format = "@";
-                    worksheet.Cell(row, 4).Value = item.Barcode ?? "";
-                    worksheet.Cell(row, 5).Value = item.ProductName ?? "";
-                    worksheet.Cell(row, 6).Value = GetProductTypeLabel(item.ProductType);
-                    worksheet.Cell(row, 7).Value = item.PrivateLabelPrice;
-                    worksheet.Cell(row, 8).Value = item.SetQuantity;
-                    worksheet.Cell(row, 9).Value = item.SetPrice;
-                    worksheet.Cell(row, 10).Value = item.ParentHBProductNo ?? "";
+                    worksheet.Cell(row, 3).Value = GetProductTypeLabel(item.ProductType);
+                    worksheet.Cell(row, 4).Value =
+                        item.ProductType == 2 ? item.ParentHBProductNo ?? "" : "";
+                    worksheet.Cell(row, 5).Value = item.HBProductNo;
+                    worksheet.Cell(row, 6).Style.NumberFormat.Format = "@";
+                    worksheet.Cell(row, 6).Value = item.Barcode ?? "";
+                    worksheet.Cell(row, 7).Value = item.ProductName ?? "";
+                    worksheet.Cell(row, 8).Value = item.PrivateLabelPrice;
+                    worksheet.Cell(row, 9).Value = item.SetQuantity;
+                    worksheet.Cell(row, 10).Value = item.SetPrice;
+
+                    var barcodeImage = GenerateBarcodeImagePng(item.Barcode);
+                    if (barcodeImage != null)
+                    {
+                        // 导出时把图片直接嵌入条码图片列，方便仓库/采购直接扫码核对。
+                        using var imageStream = new MemoryStream(barcodeImage);
+                        worksheet
+                            .AddPicture(imageStream, $"Barcode_{row}")
+                            .MoveTo(worksheet.Cell(row, 11))
+                            .WithSize(180, 45);
+                        worksheet.Row(row).Height = 45;
+                    }
+
                     row++;
                 }
 
                 worksheet.Columns().AdjustToContents();
+                worksheet.Column(11).Width = 28;
                 worksheet.SheetView.FreezeRows(headerRow);
 
                 using var stream = new MemoryStream();
@@ -862,6 +902,81 @@ namespace BlazorApp.Api.Services
             };
         }
 
+        private static List<BatchDetailItemDto> OrderBatchDetailItemsForExport(
+            IEnumerable<BatchDetailItemDto> items
+        )
+        {
+            var normalItems = items
+                .Where(item => item.ProductType == 0)
+                .OrderBy(item => item.HBProductNo)
+                .ThenBy(item => item.Barcode)
+                .ToList();
+            var setItems = items
+                .Where(item => item.ProductType == 1)
+                .OrderBy(item => item.HBProductNo)
+                .ThenBy(item => item.Barcode)
+                .ToList();
+            var subItemsByParent = items
+                .Where(item => item.ProductType == 2 && !string.IsNullOrWhiteSpace(item.ParentHBProductNo))
+                .GroupBy(item => item.ParentHBProductNo!.Trim())
+                .ToDictionary(
+                    group => group.Key,
+                    group => group
+                        .OrderBy(item => item.HBProductNo)
+                        .ThenBy(item => item.Barcode)
+                        .ToList()
+                );
+
+            var orderedItems = new List<BatchDetailItemDto>();
+            var groupedSubItems = new HashSet<BatchDetailItemDto>();
+            foreach (var setItem in setItems)
+            {
+                orderedItems.Add(setItem);
+                if (
+                    !string.IsNullOrWhiteSpace(setItem.HBProductNo)
+                    && subItemsByParent.TryGetValue(setItem.HBProductNo.Trim(), out var subItems)
+                )
+                {
+                    orderedItems.AddRange(subItems);
+                    foreach (var subItem in subItems)
+                    {
+                        groupedSubItems.Add(subItem);
+                    }
+                }
+            }
+
+            var unmatchedSubItems = items
+                .Where(item => item.ProductType == 2 && !groupedSubItems.Contains(item))
+                .OrderBy(item => item.ParentHBProductNo)
+                .ThenBy(item => item.HBProductNo)
+                .ThenBy(item => item.Barcode)
+                .ToList();
+            orderedItems.AddRange(unmatchedSubItems);
+            orderedItems.AddRange(normalItems);
+            return orderedItems;
+        }
+
+        private static byte[]? GenerateBarcodeImagePng(string? barcode)
+        {
+            if (string.IsNullOrWhiteSpace(barcode))
+                return null;
+
+            var writer = new ZXing.ImageSharp.BarcodeWriter<Rgba32>
+            {
+                Format = BarcodeFormat.CODE_128,
+                Options = new EncodingOptions
+                {
+                    Width = 220,
+                    Height = 60,
+                    Margin = 4,
+                },
+            };
+            using var image = writer.Write(barcode);
+            using var stream = new MemoryStream();
+            image.Save(stream, PngFormat.Instance);
+            return stream.ToArray();
+        }
+
         /// <summary>
         /// 批量更新私牌价格
         /// </summary>
@@ -893,15 +1008,7 @@ namespace BlazorApp.Api.Services
                         product.OEMPrice = item.PrivateLabelPrice;
                         await _context.DomesticProductDb.UpdateAsync(product);
 
-                        // 更新 DomesticSetProduct
-                        var setProducts = await _context.DomesticSetProductDb.GetListAsync(x =>
-                            x.ProductCode == item.ProductCode
-                        );
-                        foreach (var setProduct in setProducts)
-                        {
-                            setProduct.OEMPrice = item.PrivateLabelPrice;
-                            await _context.DomesticSetProductDb.UpdateAsync(setProduct);
-                        }
+                        await UpdateSetProductOemPricesAsync(product, item.PrivateLabelPrice);
 
                         updatedCount++;
                     }
@@ -968,14 +1075,7 @@ namespace BlazorApp.Api.Services
                         product.OEMPrice = item.PrivateLabelPrice;
                         await _context.DomesticProductDb.UpdateAsync(product);
 
-                        var setProducts = await _context.DomesticSetProductDb.GetListAsync(x =>
-                            x.ProductCode == item.ProductCode
-                        );
-                        foreach (var setProduct in setProducts)
-                        {
-                            setProduct.OEMPrice = item.PrivateLabelPrice;
-                            await _context.DomesticSetProductDb.UpdateAsync(setProduct);
-                        }
+                        await UpdateSetProductOemPricesAsync(product, item.PrivateLabelPrice);
 
                         updatedCount++;
                     }
@@ -993,6 +1093,24 @@ namespace BlazorApp.Api.Services
                     "更新批次明细失败: " + ex.Message,
                     "UPDATE_BATCH_ITEMS_ERROR"
                 );
+            }
+        }
+
+        /// <summary>
+        /// 更新商品对应的套装明细贴牌价格，子项按小货号反查父套装明细
+        /// </summary>
+        private async Task UpdateSetProductOemPricesAsync(
+            DomesticProduct product,
+            decimal? privateLabelPrice
+        )
+        {
+            var setProducts = await _context.DomesticSetProductDb.GetListAsync(x =>
+                x.ProductCode == product.ProductCode || x.SetProductNo == product.HBProductNo
+            );
+            foreach (var setProduct in setProducts)
+            {
+                setProduct.OEMPrice = privateLabelPrice;
+                await _context.DomesticSetProductDb.UpdateAsync(setProduct);
             }
         }
     }

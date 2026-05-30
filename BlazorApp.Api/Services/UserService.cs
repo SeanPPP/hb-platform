@@ -18,11 +18,17 @@ namespace BlazorApp.Api.Services
     {
         private readonly SqlSugarContext _context;
         private readonly ILogger<UserService> _logger;
+        private readonly ICurrentUserManageableStoreScopeService? _manageableStoreScopeService;
 
-        public UserService(SqlSugarContext context, ILogger<UserService> logger)
+        public UserService(
+            SqlSugarContext context,
+            ILogger<UserService> logger,
+            ICurrentUserManageableStoreScopeService? manageableStoreScopeService = null
+        )
         {
             _context = context;
             _logger = logger;
+            _manageableStoreScopeService = manageableStoreScopeService;
         }
 
         /// <summary>
@@ -33,8 +39,44 @@ namespace BlazorApp.Api.Services
             try
             {
                 var db = _context.Db;
+                var storeScope = await ResolveUserListStoreScopeAsync(db);
+                if (storeScope.ReturnEmptyPage)
+                {
+                    return ApiResponse<PagedResult<UserDto>>.OK(
+                        CreateEmptyPagedResult(query),
+                        "获取用户列表成功"
+                    );
+                }
+                if (IsOutOfScopedStoreQuery(storeScope, query.StoreGuid))
+                {
+                    return ApiResponse<PagedResult<UserDto>>.OK(
+                        CreateEmptyPagedResult(query),
+                        "获取用户列表成功"
+                    );
+                }
+
                 //使用多对多导航查询
                 var userQuery = db.Queryable<User>().Includes(u => u.Roles).Includes(u => u.Stores);
+
+                if (storeScope.StoreGuids.Count > 0)
+                {
+                    var scopedStoreGuids = storeScope.StoreGuids.ToArray();
+                    var scopedUserGuids = await db.Queryable<UserStore>()
+                        .Where(us => !us.IsDeleted && scopedStoreGuids.Contains(us.StoreGUID))
+                        .Select(us => us.UserGUID)
+                        .Distinct()
+                        .ToListAsync();
+
+                    if (scopedUserGuids.Count == 0)
+                    {
+                        return ApiResponse<PagedResult<UserDto>>.OK(
+                            CreateEmptyPagedResult(query),
+                            "获取用户列表成功"
+                        );
+                    }
+
+                    userQuery = userQuery.Where(u => scopedUserGuids.Contains(u.UserGUID));
+                }
 
                 // 搜索条件
                 if (!string.IsNullOrEmpty(query.SearchKeyword))
@@ -134,6 +176,10 @@ namespace BlazorApp.Api.Services
                             .Select(r => r.RoleName)
                             .ToList(),
                         StoreNames = (user.Stores ?? new List<Store>())
+                            .Where(s =>
+                                storeScope.StoreGuids.Count == 0
+                                || storeScope.StoreGuids.Contains(s.StoreGUID)
+                            )
                             .Select(s => s.StoreName)
                             .ToList(),
                         Roles = (user.Roles ?? new List<Role>())
@@ -148,6 +194,10 @@ namespace BlazorApp.Api.Services
                             })
                             .ToList(),
                         Stores = (user.Stores ?? new List<Store>())
+                            .Where(s =>
+                                storeScope.StoreGuids.Count == 0
+                                || storeScope.StoreGuids.Contains(s.StoreGUID)
+                            )
                             .Select(s => new UserStoreDto
                             {
                                 StoreGUID = s.StoreGUID,
@@ -191,6 +241,21 @@ namespace BlazorApp.Api.Services
             try
             {
                 var db = _context.Db;
+                var storeScope = await ResolveUserListStoreScopeAsync(db);
+                if (storeScope.ReturnEmptyPage)
+                {
+                    return ApiResponse<PagedResult<UserDto>>.OK(
+                        CreateEmptyPagedResult(query),
+                        "获取用户列表成功"
+                    );
+                }
+                if (IsOutOfScopedStoreQuery(storeScope, query.StoreGuid))
+                {
+                    return ApiResponse<PagedResult<UserDto>>.OK(
+                        CreateEmptyPagedResult(query),
+                        "获取用户列表成功"
+                    );
+                }
 
                 // 构建复合查询，一次性获取所有需要的数据
                 var baseQuery = db.Queryable<User>()
@@ -200,6 +265,15 @@ namespace BlazorApp.Api.Services
                     .LeftJoin<Store>(
                         (u, ur, r, us, s) => us.StoreGUID == s.StoreGUID && s.IsActive
                     );
+
+                if (storeScope.StoreGuids.Count > 0)
+                {
+                    var scopedStoreGuids = storeScope.StoreGuids.ToArray();
+                    baseQuery = baseQuery.Where(
+                        (u, ur, r, us, s) =>
+                            !us.IsDeleted && scopedStoreGuids.Contains(us.StoreGUID)
+                    );
+                }
 
                 // 搜索条件
                 if (!string.IsNullOrEmpty(query.SearchKeyword))
@@ -363,6 +437,153 @@ namespace BlazorApp.Api.Services
                     "GET_USERS_FAILED"
                 );
             }
+        }
+
+        private async Task<UserListStoreScope> ResolveUserListStoreScopeAsync(ISqlSugarClient db)
+        {
+            if (_manageableStoreScopeService == null)
+            {
+                return UserListStoreScope.Unrestricted;
+            }
+
+            var scope = await _manageableStoreScopeService.GetScopeAsync();
+            if (scope.IsAdmin)
+            {
+                return UserListStoreScope.Unrestricted;
+            }
+
+            if (scope.IsAllowed)
+            {
+                return new UserListStoreScope(
+                    scope.StoreGuids
+                        .Where(item => !string.IsNullOrWhiteSpace(item))
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .ToList(),
+                    false
+                );
+            }
+
+            if (!scope.IsAuthenticated || string.IsNullOrWhiteSpace(scope.UserGuid))
+            {
+                return UserListStoreScope.Unrestricted;
+            }
+
+            var isStoreManager = await CurrentUserHasRoleAliasAsync(
+                db,
+                scope.UserGuid,
+                CurrentUserManageableStoreScopeService.StoreManagerRoleAliases
+            );
+
+            return isStoreManager
+                ? new UserListStoreScope(Array.Empty<string>(), true)
+                : UserListStoreScope.Unrestricted;
+        }
+
+        private static bool IsOutOfScopedStoreQuery(
+            UserListStoreScope storeScope,
+            string? requestedStoreGuid
+        )
+        {
+            return storeScope.StoreGuids.Count > 0
+                && !string.IsNullOrWhiteSpace(requestedStoreGuid)
+                && !storeScope.StoreGuids.Contains(
+                    requestedStoreGuid,
+                    StringComparer.OrdinalIgnoreCase
+                );
+        }
+
+        private async Task<UserStoreMutationScope> ResolveUserStoreMutationScopeAsync(
+            ISqlSugarClient db
+        )
+        {
+            if (_manageableStoreScopeService == null)
+            {
+                return UserStoreMutationScope.Unrestricted;
+            }
+
+            var scope = await _manageableStoreScopeService.GetScopeAsync();
+            if (scope.IsAdmin)
+            {
+                return UserStoreMutationScope.Unrestricted;
+            }
+
+            if (scope.IsAllowed)
+            {
+                return new UserStoreMutationScope(
+                    scope.StoreGuids
+                        .Where(item => !string.IsNullOrWhiteSpace(item))
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .ToList(),
+                    true,
+                    false
+                );
+            }
+
+            if (!scope.IsAuthenticated || string.IsNullOrWhiteSpace(scope.UserGuid))
+            {
+                return UserStoreMutationScope.Unrestricted;
+            }
+
+            var isStoreManager = await CurrentUserHasRoleAliasAsync(
+                db,
+                scope.UserGuid,
+                CurrentUserManageableStoreScopeService.StoreManagerRoleAliases
+            );
+
+            return isStoreManager
+                ? UserStoreMutationScope.Forbidden
+                : UserStoreMutationScope.Unrestricted;
+        }
+
+        private async Task<bool> CurrentUserHasRoleAliasAsync(
+            ISqlSugarClient db,
+            string userGuid,
+            IReadOnlyCollection<string> roleAliases
+        )
+        {
+            var aliases = roleAliases.ToArray();
+            var roleGuids = await db.Queryable<Role>()
+                .Where(role => !role.IsDeleted && aliases.Contains(role.RoleName))
+                .Select(role => role.RoleGUID)
+                .ToListAsync();
+
+            return roleGuids.Count > 0
+                && await db.Queryable<UserRole>()
+                    .AnyAsync(userRole =>
+                        userRole.UserGUID == userGuid
+                        && !userRole.IsDeleted
+                        && roleGuids.Contains(userRole.RoleGUID)
+                    );
+        }
+
+        private static PagedResult<UserDto> CreateEmptyPagedResult(UserQueryDto query)
+        {
+            return new PagedResult<UserDto>
+            {
+                Items = new List<UserDto>(),
+                Total = 0,
+                Page = query.Page,
+                PageSize = query.PageSize,
+            };
+        }
+
+        private sealed record UserListStoreScope(IReadOnlyCollection<string> StoreGuids, bool ReturnEmptyPage)
+        {
+            public static UserListStoreScope Unrestricted { get; } =
+                new(Array.Empty<string>(), false);
+        }
+
+        private sealed record UserStoreMutationScope(
+            IReadOnlyCollection<string> StoreGuids,
+            bool IsRestricted,
+            bool IsForbidden
+        )
+        {
+            public static UserStoreMutationScope Unrestricted { get; } =
+                new(Array.Empty<string>(), false, false);
+
+            public static UserStoreMutationScope Forbidden { get; } =
+                new(Array.Empty<string>(), false, true);
         }
 
         /// <summary>
@@ -618,6 +839,27 @@ namespace BlazorApp.Api.Services
             try
             {
                 var db = _context.Db;
+                var storeMutationScope = await ResolveUserStoreMutationScopeAsync(db);
+                if (storeMutationScope.IsForbidden)
+                {
+                    return ApiResponse<UserDto>.Error(
+                        "当前店长未分配任何可管理分店",
+                        "STORE_SCOPE_DENIED"
+                    );
+                }
+
+                if (
+                    storeMutationScope.IsRestricted
+                    && dto.StoreGuids.Any(storeGuid =>
+                        !storeMutationScope.StoreGuids.Contains(
+                            storeGuid,
+                            StringComparer.OrdinalIgnoreCase
+                        )
+                    )
+                )
+                {
+                    return ApiResponse<UserDto>.Error("不能分配非管辖分店", "STORE_SCOPE_DENIED");
+                }
 
                 // 检查用户名是否已存在（用户名大小写不敏感）
                 var usernameLower = (dto.Username ?? string.Empty).Trim().ToLowerInvariant();
@@ -1153,20 +1395,82 @@ namespace BlazorApp.Api.Services
                     return ApiResponse<bool>.Error("用户不存在", "USER_NOT_FOUND");
                 }
 
+                var storeMutationScope = await ResolveUserStoreMutationScopeAsync(db);
+                if (storeMutationScope.IsForbidden)
+                {
+                    return ApiResponse<bool>.Error(
+                        "当前店长未分配任何可管理分店",
+                        "STORE_SCOPE_DENIED"
+                    );
+                }
+
+                var effectiveStoreAssignments = storeAssignments;
+                if (storeMutationScope.IsRestricted)
+                {
+                    var scopedStoreGuids = new HashSet<string>(
+                        storeMutationScope.StoreGuids,
+                        StringComparer.OrdinalIgnoreCase
+                    );
+                    var existingUserStores = await db.Queryable<UserStore>()
+                        .Where(us => us.UserGUID == userGuid && !us.IsDeleted)
+                        .ToListAsync();
+                    var existingInScope = existingUserStores.Any(us =>
+                        scopedStoreGuids.Contains(us.StoreGUID)
+                    );
+
+                    if (!existingInScope)
+                    {
+                        return ApiResponse<bool>.Error("无权管理该用户的分店", "USER_SCOPE_DENIED");
+                    }
+
+                    var hiddenExistingStoreGuids = existingUserStores
+                        .Where(us => !scopedStoreGuids.Contains(us.StoreGUID))
+                        .Select(us => us.StoreGUID)
+                        .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                    var outOfScopeAssignments = storeAssignments
+                        .Where(assignment => !scopedStoreGuids.Contains(assignment.StoreGUID))
+                        .ToList();
+
+                    if (
+                        outOfScopeAssignments.Any(assignment =>
+                            !hiddenExistingStoreGuids.Contains(assignment.StoreGUID)
+                        )
+                    )
+                    {
+                        return ApiResponse<bool>.Error("不能分配非管辖分店", "STORE_SCOPE_DENIED");
+                    }
+
+                    effectiveStoreAssignments = storeAssignments
+                        .Where(assignment => scopedStoreGuids.Contains(assignment.StoreGUID))
+                        .ToList();
+                }
+
                 // 开启事务
                 await db.Ado.BeginTranAsync();
 
                 try
                 {
                     // 删除现有的分店分配
-                    await db.Deleteable<UserStore>()
-                        .Where(us => us.UserGUID == userGuid)
-                        .ExecuteCommandAsync();
+                    if (storeMutationScope.IsRestricted)
+                    {
+                        var scopedStoreGuids = storeMutationScope.StoreGuids.ToArray();
+                        await db.Deleteable<UserStore>()
+                            .Where(us =>
+                                us.UserGUID == userGuid && scopedStoreGuids.Contains(us.StoreGUID)
+                            )
+                            .ExecuteCommandAsync();
+                    }
+                    else
+                    {
+                        await db.Deleteable<UserStore>()
+                            .Where(us => us.UserGUID == userGuid)
+                            .ExecuteCommandAsync();
+                    }
 
                     // 添加新的分店分配
-                    if (storeAssignments.Any())
+                    if (effectiveStoreAssignments.Any())
                     {
-                        var userStores = storeAssignments
+                        var userStores = effectiveStoreAssignments
                             .Select(
                                 (assignment, index) =>
                                     new UserStore
@@ -1189,7 +1493,7 @@ namespace BlazorApp.Api.Services
                     _logger.LogInformation(
                         "用户分店分配成功，UserGUID: {UserGUID}, StoreCount: {StoreCount}",
                         userGuid,
-                        storeAssignments.Count
+                        effectiveStoreAssignments.Count
                     );
                     return ApiResponse<bool>.OK(true, "分店分配成功");
                 }

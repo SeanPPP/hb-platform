@@ -1,5 +1,6 @@
 using System.Threading.Tasks;
 using BlazorApp.Api.Interfaces.React;
+using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.DTOs;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -19,6 +20,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPost("grid")]
+        [Authorize(Policy = Permissions.DeviceRegistration.View)]
         public async Task<IActionResult> Grid([FromBody] GridRequestDto request)
         {
             var result = await _service.GetGridDataAsync(request);
@@ -47,6 +49,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpGet("{id}")]
+        [Authorize(Policy = Permissions.DeviceRegistration.Manage)]
         public async Task<IActionResult> GetById(int id)
         {
             var result = await _service.GetByIdAsync(id);
@@ -63,6 +66,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPut("{id}")]
+        [Authorize(Policy = Permissions.DeviceRegistration.Manage)]
         public async Task<IActionResult> Update(int id, [FromBody] UpdateDeviceRegistrationDto dto)
         {
             var user = User.Identity?.Name ?? "system";

@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
 using BlazorApp.Api.Data;
+using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Helper;
 using BlazorApp.Shared.Models;
@@ -35,7 +36,7 @@ namespace BlazorApp.Api.Controllers.React
         /// 不联动零售价更新逻辑
         /// </summary>
         [HttpPost("create-with-prices")]
-        [Authorize(Roles = "Admin,WarehouseManager")]
+        [Authorize(Policy = Permissions.StoreProducts.Create)]
         public async Task<IActionResult> CreateWithPrices([FromBody] CreateProductWithPricesDto dto)
         {
             try

@@ -3,13 +3,19 @@ using System.Collections.Generic;
 using System.IO;
 using System.Reflection;
 using System.Runtime.CompilerServices;
+using System.Security.Claims;
 using System.Threading.Tasks;
+using BlazorApp.Api.Controllers;
 using BlazorApp.Api.Data;
+using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Services;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging.Abstractions;
+using Moq;
 using SqlSugar;
 using Xunit;
 
@@ -35,7 +41,15 @@ namespace BlazorApp.Api.Tests
                 InitKeyType = InitKeyType.Attribute,
             });
 
-            _db.CodeFirst.InitTables<User, Store, UserStore>();
+            _db.CodeFirst.InitTables<User, Store, UserStore, Role, UserRole>();
+        }
+
+        [Fact]
+        public void UsersController_HasSinglePublicConstructor_ForDependencyInjection()
+        {
+            var constructors = typeof(UsersController).GetConstructors();
+
+            Assert.Single(constructors);
         }
 
         [Fact]
@@ -132,6 +146,397 @@ namespace BlazorApp.Api.Tests
             Assert.True(result.Data.Users[0].IsPrimary);
         }
 
+        [Theory]
+        [InlineData("店长", false)]
+        [InlineData("店长", true)]
+        [InlineData("经理", false)]
+        [InlineData("经理", true)]
+        public async Task GetUsers_WhenChineseStoreManagerHasManagedStores_OnlyReturnsScopedUsers(
+            string roleName,
+            bool useOptimized
+        )
+        {
+            await SeedUsersRolesAndStoresForScopeTestsAsync();
+            await SeedAliasedStoreManagerAsync(
+                "manager-cn-1",
+                "role-store-manager-cn",
+                roleName,
+                true
+            );
+
+            var service = CreateUserService(
+                CreateCurrentUserManageableStoreScopeService("manager-cn-1", roleName)
+            );
+
+            var result = await GetUsersAsync(
+                service,
+                useOptimized,
+                new UserQueryDto { Page = 1, PageSize = 20 }
+            );
+
+            Assert.True(result.Success);
+            Assert.NotNull(result.Data);
+            Assert.Equal(4, result.Data!.Total);
+            Assert.Equal(
+                new[] { "dual-user", "manager-1", "manager-cn-1", "scoped-user" },
+                result.Data.Items!
+                    .Select(item => item.UserGUID)
+                    .OrderBy(item => item)
+                    .ToArray()
+            );
+            Assert.DoesNotContain(result.Data.Items!, item => item.UserGUID == "foreign-user");
+        }
+
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task GetUsers_WhenChineseStoreManagerHasNoManagedStores_ReturnsEmptyPage(
+            bool useOptimized
+        )
+        {
+            await SeedUsersRolesAndStoresForScopeTestsAsync();
+            await SeedAliasedStoreManagerAsync(
+                "manager-cn-no-store",
+                "role-store-manager-manager",
+                "经理",
+                false
+            );
+
+            var service = CreateUserService(
+                CreateCurrentUserManageableStoreScopeService("manager-cn-no-store", "经理")
+            );
+
+            var result = await GetUsersAsync(
+                service,
+                useOptimized,
+                new UserQueryDto { Page = 1, PageSize = 20 }
+            );
+
+            Assert.True(result.Success);
+            Assert.NotNull(result.Data);
+            Assert.Empty(result.Data!.Items!);
+            Assert.Equal(0, result.Data.Total);
+        }
+
+        [Theory]
+        [InlineData("Admin")]
+        [InlineData("管理员")]
+        [InlineData("WarehouseManager")]
+        [InlineData("仓库经理")]
+        public async Task GetScopeAsync_WhenCurrentUserIsUnrestrictedAlias_ReturnsAdminScope(
+            string roleName
+        )
+        {
+            await SeedUsersRolesAndStoresForScopeTestsAsync();
+            await _db.Insertable(CreateUser("admin-1", "admin@example.com")).ExecuteCommandAsync();
+            var service = CreateCurrentUserManageableStoreScopeService("admin-1", roleName);
+
+            var scope = await service.GetScopeAsync();
+
+            Assert.True(scope.IsAllowed);
+            Assert.True(scope.IsAuthenticated);
+            Assert.True(scope.IsAdmin);
+            Assert.Equal("admin-1", scope.UserGuid);
+        }
+
+        [Theory]
+        [InlineData("管理员")]
+        [InlineData("WarehouseManager")]
+        [InlineData("仓库经理")]
+        public async Task GetUserStores_WhenPrivilegedAliasViewsOtherUser_ReturnsStores(
+            string roleName
+        )
+        {
+            await SeedUsersRolesAndStoresForScopeTestsAsync();
+            var controller = new UsersController(
+                CreateUserService(),
+                Mock.Of<IRoleService>(),
+                NullLogger<UsersController>.Instance
+            )
+            {
+                ControllerContext = new ControllerContext
+                {
+                    HttpContext = new DefaultHttpContext
+                    {
+                        User = CreatePrincipal("operator-1", roleName),
+                    },
+                },
+            };
+
+            var result = await controller.GetUserStores(
+                "scoped-user",
+                new FakeCurrentUserService("operator-1")
+            );
+
+            Assert.IsType<OkObjectResult>(result);
+        }
+
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task GetUsers_WhenStoreManagerHasManagedStores_OnlyReturnsScopedUsers(
+            bool useOptimized
+        )
+        {
+            await SeedUsersRolesAndStoresForScopeTestsAsync();
+            var service = CreateUserService(
+                new FakeManageableStoreScopeService(
+                    new CurrentUserManageableStoreScope
+                    {
+                        IsAllowed = true,
+                        IsAuthenticated = true,
+                        UserGuid = "manager-1",
+                        StoreGuids = new[] { "store-1" },
+                        StoreCodes = new[] { "S001" },
+                    }
+                )
+            );
+
+            var result = await GetUsersAsync(
+                service,
+                useOptimized,
+                new UserQueryDto { Page = 1, PageSize = 20 }
+            );
+
+            Assert.True(result.Success);
+            Assert.NotNull(result.Data);
+            Assert.Equal(3, result.Data!.Total);
+            Assert.Equal(
+                new[] { "dual-user", "manager-1", "scoped-user" },
+                result.Data.Items!
+                    .Select(item => item.UserGUID)
+                    .OrderBy(item => item)
+                    .ToArray()
+            );
+            Assert.DoesNotContain(
+                result.Data.Items!,
+                item => item.UserGUID == "soft-deleted-scoped-user"
+            );
+
+            var dualUser = Assert.Single(result.Data.Items, item => item.UserGUID == "dual-user");
+            Assert.Equal(new[] { "Store 1" }, dualUser.StoreNames);
+        }
+
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task GetUsers_WhenStoreManagerRequestsOutOfScopeStore_ReturnsEmptyPage(
+            bool useOptimized
+        )
+        {
+            await SeedUsersRolesAndStoresForScopeTestsAsync();
+            var service = CreateUserService(
+                new FakeManageableStoreScopeService(
+                    new CurrentUserManageableStoreScope
+                    {
+                        IsAllowed = true,
+                        IsAuthenticated = true,
+                        UserGuid = "manager-1",
+                        StoreGuids = new[] { "store-1" },
+                        StoreCodes = new[] { "S001" },
+                    }
+                )
+            );
+
+            var result = await GetUsersAsync(
+                service,
+                useOptimized,
+                new UserQueryDto { Page = 1, PageSize = 20, StoreGuid = "store-2" }
+            );
+
+            Assert.True(result.Success);
+            Assert.NotNull(result.Data);
+            Assert.Empty(result.Data!.Items!);
+            Assert.Equal(0, result.Data.Total);
+        }
+
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task GetUsers_WhenStoreManagerHasNoManagedStores_ReturnsEmptyPage(
+            bool useOptimized
+        )
+        {
+            await SeedUsersRolesAndStoresForScopeTestsAsync();
+            var service = CreateUserService(
+                new FakeManageableStoreScopeService(
+                    new CurrentUserManageableStoreScope
+                    {
+                        IsAllowed = false,
+                        IsAuthenticated = true,
+                        UserGuid = "manager-no-store",
+                        Message = "当前店长未分配任何可管理分店",
+                    }
+                )
+            );
+
+            var result = await GetUsersAsync(
+                service,
+                useOptimized,
+                new UserQueryDto { Page = 1, PageSize = 20 }
+            );
+
+            Assert.True(result.Success);
+            Assert.NotNull(result.Data);
+            Assert.Empty(result.Data!.Items!);
+            Assert.Equal(0, result.Data.Total);
+        }
+
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task GetUsers_WhenViewerIsNotStoreManager_RemainsUnrestricted(bool useOptimized)
+        {
+            await SeedUsersRolesAndStoresForScopeTestsAsync();
+            var service = CreateUserService(
+                new FakeManageableStoreScopeService(
+                    new CurrentUserManageableStoreScope
+                    {
+                        IsAllowed = false,
+                        IsAuthenticated = true,
+                        UserGuid = "viewer-1",
+                        Message = "当前账号没有店员管理权限",
+                    }
+                )
+            );
+
+            var result = await GetUsersAsync(
+                service,
+                useOptimized,
+                new UserQueryDto { Page = 1, PageSize = 20 }
+            );
+
+            Assert.True(result.Success);
+            Assert.NotNull(result.Data);
+            Assert.Equal(7, result.Data!.Total);
+            Assert.Contains(result.Data.Items!, item => item.UserGUID == "foreign-user");
+            Assert.Contains(result.Data.Items!, item => item.UserGUID == "viewer-1");
+        }
+
+        [Fact]
+        public async Task AssignStoresToUser_WhenScopedManagerAddsOutOfScopeStore_ReturnsError()
+        {
+            await SeedUsersRolesAndStoresForScopeTestsAsync();
+            var service = CreateUserService(
+                new FakeManageableStoreScopeService(
+                    new CurrentUserManageableStoreScope
+                    {
+                        IsAllowed = true,
+                        IsAuthenticated = true,
+                        UserGuid = "manager-1",
+                        StoreGuids = new[] { "store-1" },
+                        StoreCodes = new[] { "S001" },
+                    }
+                )
+            );
+
+            var result = await service.AssignStoresToUserAsync(
+                "scoped-user",
+                new List<UserStoreAssignmentDto>
+                {
+                    new() { StoreGUID = "store-2", IsPrimary = true },
+                }
+            );
+
+            Assert.False(result.Success);
+            Assert.Equal("STORE_SCOPE_DENIED", result.ErrorCode);
+            Assert.False(await _db.Queryable<UserStore>().AnyAsync(item =>
+                item.UserGUID == "scoped-user" && item.StoreGUID == "store-2"
+            ));
+        }
+
+        [Fact]
+        public async Task CreateUser_WhenScopedManagerAssignsOutOfScopeStore_ReturnsError()
+        {
+            await SeedUsersRolesAndStoresForScopeTestsAsync();
+            var service = CreateUserService(
+                new FakeManageableStoreScopeService(
+                    new CurrentUserManageableStoreScope
+                    {
+                        IsAllowed = true,
+                        IsAuthenticated = true,
+                        UserGuid = "manager-1",
+                        StoreGuids = new[] { "store-1" },
+                        StoreCodes = new[] { "S001" },
+                    }
+                )
+            );
+
+            var result = await service.CreateUserAsync(
+                new CreateUserDto
+                {
+                    Username = "new-scoped-user",
+                    Email = "new-scoped@example.com",
+                    Password = "secret1",
+                    IsActive = true,
+                    StoreGuids = new List<string> { "store-2" },
+                }
+            );
+
+            Assert.False(result.Success);
+            Assert.Equal("STORE_SCOPE_DENIED", result.ErrorCode);
+            Assert.False(await _db.Queryable<User>().AnyAsync(item =>
+                item.Username == "new-scoped-user"
+            ));
+        }
+
+        [Fact]
+        public async Task AssignStoresToUser_WhenChineseStoreManagerAddsOutOfScopeStore_ReturnsError()
+        {
+            await SeedUsersRolesAndStoresForScopeTestsAsync();
+            await SeedAliasedStoreManagerAsync(
+                "manager-cn-1",
+                "role-store-manager-cn",
+                "店长",
+                true
+            );
+            var service = CreateUserService(
+                CreateCurrentUserManageableStoreScopeService("manager-cn-1", "店长")
+            );
+
+            var result = await service.AssignStoresToUserAsync(
+                "scoped-user",
+                new List<UserStoreAssignmentDto>
+                {
+                    new() { StoreGUID = "store-2", IsPrimary = true },
+                }
+            );
+
+            Assert.False(result.Success);
+            Assert.Equal("STORE_SCOPE_DENIED", result.ErrorCode);
+        }
+
+        [Fact]
+        public async Task AssignStoresToUser_WhenScopedManagerReceivesHiddenExistingStore_PreservesIt()
+        {
+            await SeedUsersRolesAndStoresForScopeTestsAsync();
+            var service = CreateUserService(
+                new FakeManageableStoreScopeService(
+                    new CurrentUserManageableStoreScope
+                    {
+                        IsAllowed = true,
+                        IsAuthenticated = true,
+                        UserGuid = "manager-1",
+                        StoreGuids = new[] { "store-1" },
+                        StoreCodes = new[] { "S001" },
+                    }
+                )
+            );
+
+            var result = await service.AssignStoresToUserAsync(
+                "dual-user",
+                new List<UserStoreAssignmentDto>
+                {
+                    new() { StoreGUID = "store-1", IsPrimary = true },
+                    new() { StoreGUID = "store-2", IsPrimary = true },
+                }
+            );
+
+            Assert.True(result.Success);
+            Assert.True((await FindUserStoreAsync("dual-user", "store-1")).IsPrimary);
+            Assert.False((await FindUserStoreAsync("dual-user", "store-2")).IsPrimary);
+        }
+
         public void Dispose()
         {
             _db.Dispose();
@@ -142,9 +547,15 @@ namespace BlazorApp.Api.Tests
             }
         }
 
-        private UserService CreateUserService()
+        private UserService CreateUserService(
+            ICurrentUserManageableStoreScopeService? manageableStoreScopeService = null
+        )
         {
-            return new UserService(CreateSqlSugarContext(_db), NullLogger<UserService>.Instance);
+            return new UserService(
+                CreateSqlSugarContext(_db),
+                NullLogger<UserService>.Instance,
+                manageableStoreScopeService
+            );
         }
 
         private StoreService CreateStoreService()
@@ -185,6 +596,159 @@ namespace BlazorApp.Api.Tests
             }).ExecuteCommandAsync();
         }
 
+        private async Task SeedUsersRolesAndStoresForScopeTestsAsync()
+        {
+            await _db.Insertable(
+                new[]
+                {
+                    CreateUser("manager-1", "manager1@example.com"),
+                    CreateUser("manager-no-store", "manager2@example.com"),
+                    CreateUser("viewer-1", "viewer@example.com"),
+                    CreateUser("scoped-user", "scoped@example.com"),
+                    CreateUser("soft-deleted-scoped-user", "deleted-scoped@example.com"),
+                    CreateUser("foreign-user", "foreign@example.com"),
+                    CreateUser("dual-user", "dual@example.com"),
+                }
+            ).ExecuteCommandAsync();
+
+            await _db.Insertable(
+                new[]
+                {
+                    new Role
+                    {
+                        RoleGUID = "role-store-manager",
+                        RoleName = "StoreManager",
+                        IsActive = true,
+                    },
+                    new Role
+                    {
+                        RoleGUID = "role-viewer",
+                        RoleName = "Viewer",
+                        IsActive = true,
+                    },
+                }
+            ).ExecuteCommandAsync();
+
+            await _db.Insertable(
+                new[]
+                {
+                    new Store
+                    {
+                        StoreGUID = "store-1",
+                        StoreCode = "S001",
+                        StoreName = "Store 1",
+                        IsActive = true,
+                    },
+                    new Store
+                    {
+                        StoreGUID = "store-2",
+                        StoreCode = "S002",
+                        StoreName = "Store 2",
+                        IsActive = true,
+                    },
+                }
+            ).ExecuteCommandAsync();
+
+            await _db.Insertable(
+                new[]
+                {
+                    CreateUserRole("manager-1", "role-store-manager"),
+                    CreateUserRole("manager-no-store", "role-store-manager"),
+                    CreateUserRole("viewer-1", "role-viewer"),
+                }
+            ).ExecuteCommandAsync();
+
+            await _db.Insertable(
+                new[]
+                {
+                    CreateUserStore("manager-1", "store-1", true),
+                    CreateUserStore("scoped-user", "store-1", false),
+                    CreateUserStore("soft-deleted-scoped-user", "store-1", false, true),
+                    CreateUserStore("foreign-user", "store-2", false),
+                    CreateUserStore("dual-user", "store-1", false),
+                    CreateUserStore("dual-user", "store-2", false),
+                }
+            ).ExecuteCommandAsync();
+        }
+
+        private async Task SeedAliasedStoreManagerAsync(
+            string userGuid,
+            string roleGuid,
+            string roleName,
+            bool assignManagedStore
+        )
+        {
+            await _db.Insertable(CreateUser(userGuid, $"{userGuid}@example.com")).ExecuteCommandAsync();
+            await _db.Insertable(
+                new Role
+                {
+                    RoleGUID = roleGuid,
+                    RoleName = roleName,
+                    IsActive = true,
+                }
+            ).ExecuteCommandAsync();
+            await _db.Insertable(CreateUserRole(userGuid, roleGuid)).ExecuteCommandAsync();
+
+            if (assignManagedStore)
+            {
+                await _db.Insertable(CreateUserStore(userGuid, "store-1", true)).ExecuteCommandAsync();
+            }
+        }
+
+        private static User CreateUser(string userGuid, string email)
+        {
+            return new User
+            {
+                UserGUID = userGuid,
+                Username = userGuid,
+                Email = email,
+                PasswordHash = "hashed",
+                IsActive = true,
+                CreatedAt = DateTime.UtcNow,
+            };
+        }
+
+        private static UserRole CreateUserRole(string userGuid, string roleGuid)
+        {
+            return new UserRole
+            {
+                UserRoleGUID = Guid.NewGuid().ToString(),
+                UserGUID = userGuid,
+                RoleGUID = roleGuid,
+                AssignedAt = DateTime.UtcNow,
+                CreatedAt = DateTime.UtcNow,
+            };
+        }
+
+        private static UserStore CreateUserStore(
+            string userGuid,
+            string storeGuid,
+            bool isPrimary,
+            bool isDeleted = false
+        )
+        {
+            return new UserStore
+            {
+                UserStoreGUID = Guid.NewGuid().ToString(),
+                UserGUID = userGuid,
+                StoreGUID = storeGuid,
+                IsPrimary = isPrimary,
+                IsDeleted = isDeleted,
+                AssignedAt = DateTime.UtcNow,
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow,
+            };
+        }
+
+        private static Task<ApiResponse<PagedResult<UserDto>>> GetUsersAsync(
+            UserService service,
+            bool useOptimized,
+            UserQueryDto query
+        )
+        {
+            return useOptimized ? service.GetUsersOptimizedAsync(query) : service.GetUsersAsync(query);
+        }
+
         private async Task InsertUserStoreAsync(string userGuid, string storeGuid, bool isPrimary)
         {
             await _db.Insertable(new UserStore
@@ -220,6 +784,79 @@ namespace BlazorApp.Api.Tests
             dbField!.SetValue(context, db);
 
             return context;
+        }
+
+        private CurrentUserManageableStoreScopeService CreateCurrentUserManageableStoreScopeService(
+            string userGuid,
+            string roleName
+        )
+        {
+            var httpContextAccessor = new HttpContextAccessor
+            {
+                HttpContext = new DefaultHttpContext
+                {
+                    User = CreatePrincipal(userGuid, roleName),
+                },
+            };
+
+            return new CurrentUserManageableStoreScopeService(
+                CreateSqlSugarContext(_db),
+                new FakeCurrentUserService(userGuid),
+                httpContextAccessor
+            );
+        }
+
+        private static ClaimsPrincipal CreatePrincipal(string userGuid, string roleName)
+        {
+            var claims = new List<Claim>
+            {
+                new("userGuid", userGuid),
+                new(ClaimTypes.NameIdentifier, userGuid),
+                new(ClaimTypes.Name, userGuid),
+                new(ClaimTypes.Role, roleName),
+            };
+
+            return new ClaimsPrincipal(new ClaimsIdentity(claims, "TestAuthType"));
+        }
+
+        private sealed class FakeManageableStoreScopeService
+            : ICurrentUserManageableStoreScopeService
+        {
+            private readonly CurrentUserManageableStoreScope _scope;
+
+            public FakeManageableStoreScopeService(CurrentUserManageableStoreScope scope)
+            {
+                _scope = scope;
+            }
+
+            public Task<CurrentUserManageableStoreScope> GetScopeAsync() => Task.FromResult(_scope);
+
+            public Task<IReadOnlyList<string>> GetAccessibleStoreCodesAsync() =>
+                Task.FromResult(_scope.StoreCodes);
+
+            public Task<bool> CanAccessStoreCodeAsync(string storeCode) =>
+                Task.FromResult(_scope.CanAccessStoreCode(storeCode));
+
+            public Task<bool> CanAccessOrderAsync(string orderGuid) => Task.FromResult(false);
+
+            public Task<bool> CanManageStoreAsync(string storeGuid) =>
+                Task.FromResult(_scope.CanAccessStoreGuid(storeGuid));
+
+            public Task<bool> CanManageUserAsync(string userGuid) => Task.FromResult(false);
+        }
+
+        private sealed class FakeCurrentUserService : ICurrentUserService
+        {
+            private readonly string _userGuid;
+
+            public FakeCurrentUserService(string userGuid)
+            {
+                _userGuid = userGuid;
+            }
+
+            public string GetCurrentUsername() => _userGuid;
+
+            public string GetCurrentUserGuid() => _userGuid;
         }
     }
 }

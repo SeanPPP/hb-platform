@@ -1,9 +1,8 @@
-using System.Security.Claims;
 using BlazorApp.Api.Cache;
 using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Interfaces.React;
+using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.DTOs;
-using DocumentFormat.OpenXml.Drawing.Charts;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Caching.Memory;
@@ -15,90 +14,101 @@ namespace BlazorApp.Api.Controllers.React
     /// </summary>
     [ApiController]
     [Route("api/react/v1/store-order")]
-    [AllowAnonymous]
+    [Authorize]
     public class ReactStoreOrderController : ControllerBase
     {
         private readonly IStoreOrderReactService _service;
         private readonly ILogger<ReactStoreOrderController> _logger;
         private readonly IMemoryCache _cache;
-        private readonly IUserService _userService;
-        private readonly IStoreService _storeService;
+        private readonly IAuthorizationService _authorizationService;
+        private readonly ICurrentUserManageableStoreScopeService _storeScopeService;
 
         private static readonly TimeSpan CACHE_DURATION = TimeSpan.FromMinutes(10);
+        private static readonly string[] OrderReadPermissions =
+        {
+            Permissions.OrderFront.View,
+            Permissions.Orders.View,
+            Permissions.Warehouse.ManageOrders,
+        };
+        private static readonly string[] OrderCreatePermissions =
+        {
+            Permissions.Orders.Create,
+            Permissions.Warehouse.ManageOrders,
+        };
+        private static readonly string[] OrderEditPermissions =
+        {
+            Permissions.Orders.Edit,
+            Permissions.Warehouse.ManageOrders,
+        };
+        private static readonly string[] OrderDeletePermissions =
+        {
+            Permissions.Orders.Delete,
+            Permissions.Warehouse.ManageOrders,
+        };
 
         public ReactStoreOrderController(
             IStoreOrderReactService service,
             ILogger<ReactStoreOrderController> logger,
             IMemoryCache cache,
             IUserService userService,
-            IStoreService storeService
+            IStoreService storeService,
+            IAuthorizationService authorizationService,
+            ICurrentUserManageableStoreScopeService storeScopeService
         )
         {
             _service = service;
             _logger = logger;
             _cache = cache;
-            _userService = userService;
-            _storeService = storeService;
+            _authorizationService = authorizationService;
+            _storeScopeService = storeScopeService;
         }
 
-        /// <summary>
-        /// 检查当前用户是否拥有指定角色（大小写不敏感）
-        /// </summary>
-        /// <param name="role">角色名称</param>
-        /// <returns>是否拥有该角色</returns>
-        private bool HasRole(string role)
+        private async Task<bool> HasAnyPermissionAsync(params string[] permissions)
         {
-            var user = HttpContext.User;
-            if (user == null)
-                return false;
-            return user.Claims.Any(c =>
-                c.Type == ClaimTypes.Role
-                && c.Value.Equals(role, StringComparison.OrdinalIgnoreCase)
-            );
-        }
-
-        /// <summary>
-        /// 检查当前用户是否为管理员或仓库管理员
-        /// </summary>
-        /// <returns>是否为管理员或仓库管理员</returns>
-        private bool IsAdminOrWarehouseAdmin()
-        {
-            var user = HttpContext.User;
-            if (user == null)
-                return false;
-            return HasRole("Admin") || HasRole("WarehouseManager") || HasRole("WarehouseStaff");
-        }
-
-        /// <summary>
-        /// 获取当前用户可访问的分店代码列表
-        /// 管理员和仓库管理员返回所有分店代码，普通用户返回其关联的分店代码列表
-        /// </summary>
-        /// <returns>分店代码列表</returns>
-        private async Task<List<string>?> GetUserBranchCodesAsync()
-        {
-            // 管理员和仓库管理员可访问所有分店
-            if (IsAdminOrWarehouseAdmin())
+            foreach (var permission in permissions)
             {
-                var allStores = await _storeService.GetActiveStoresAsync();
-                if (allStores?.Success == true && allStores.Data != null)
+                var result = await _authorizationService.AuthorizeAsync(User, null, permission);
+                if (result.Succeeded)
                 {
-                    return allStores.Data.Select(s => s.StoreCode).ToList();
+                    return true;
                 }
-                return new List<string>();
             }
 
-            // 获取当前用户GUID
-            var userGuid = HttpContext.User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
-            if (string.IsNullOrEmpty(userGuid))
-                return null;
+            return false;
+        }
 
-            // 查询用户信息
-            var user = await _userService.GetUserByGuidAsync(userGuid);
-            if (user?.Success != true || user?.Data == null)
-                return null;
+        private async Task<IActionResult?> RequireAnyPermissionAsync(params string[] permissions)
+        {
+            return await HasAnyPermissionAsync(permissions) ? null : Forbid();
+        }
 
-            // 返回用户关联的分店代码
-            return user.Data.Stores?.Select(s => s.StoreCode).ToList();
+        private async Task<IActionResult?> RequireStoreScopeAsync(string? storeCode)
+        {
+            if (string.IsNullOrWhiteSpace(storeCode))
+            {
+                return null;
+            }
+
+            return await _storeScopeService.CanAccessStoreCodeAsync(storeCode) ? null : Forbid();
+        }
+
+        private async Task<IActionResult?> RequireOrderScopeAsync(string orderGuid)
+        {
+            return await _storeScopeService.CanAccessOrderAsync(orderGuid) ? null : Forbid();
+        }
+
+        private async Task<IActionResult?> RequireOrderScopesAsync(IEnumerable<string> orderGuids)
+        {
+            foreach (var orderGuid in orderGuids.Where(item => !string.IsNullOrWhiteSpace(item)))
+            {
+                var forbidden = await RequireOrderScopeAsync(orderGuid);
+                if (forbidden != null)
+                {
+                    return forbidden;
+                }
+            }
+
+            return null;
         }
 
         /// <summary>
@@ -109,6 +119,14 @@ namespace BlazorApp.Api.Controllers.React
         {
             try
             {
+                var forbidden =
+                    await RequireAnyPermissionAsync(Permissions.OrderFront.View)
+                    ?? await RequireStoreScopeAsync(filter.StoreCode);
+                if (forbidden != null)
+                {
+                    return forbidden;
+                }
+
                 // 生成缓存键
                 var cacheKey = StoreOrderCacheKeys.Products(filter);
 
@@ -156,6 +174,12 @@ namespace BlazorApp.Api.Controllers.React
         {
             try
             {
+                var forbidden = await RequireAnyPermissionAsync(Permissions.OrderFront.View);
+                if (forbidden != null)
+                {
+                    return forbidden;
+                }
+
                 var result = await _service.BatchLookupProductsAsync(request);
                 if (result.Success)
                 {
@@ -177,6 +201,12 @@ namespace BlazorApp.Api.Controllers.React
         {
             try
             {
+                var forbidden = await RequireAnyPermissionAsync(Permissions.OrderFront.View);
+                if (forbidden != null)
+                {
+                    return forbidden;
+                }
+
                 var result = await _service.ScanLookupProductsAsync(request);
                 if (result.Success)
                 {
@@ -199,6 +229,14 @@ namespace BlazorApp.Api.Controllers.React
         {
             try
             {
+                var forbidden =
+                    await RequireAnyPermissionAsync(Permissions.OrderFront.View)
+                    ?? await RequireStoreScopeAsync(storeCode);
+                if (forbidden != null)
+                {
+                    return forbidden;
+                }
+
                 var result = await _service.GetActiveCartAsync(storeCode);
                 if (result.Success)
                 {
@@ -221,6 +259,14 @@ namespace BlazorApp.Api.Controllers.React
         {
             try
             {
+                var forbidden =
+                    await RequireAnyPermissionAsync(Permissions.OrderFront.View)
+                    ?? await RequireStoreScopeAsync(request.StoreCode);
+                if (forbidden != null)
+                {
+                    return forbidden;
+                }
+
                 var result = await _service.AddToCartAsync(request);
                 if (result.Success)
                 {
@@ -243,6 +289,14 @@ namespace BlazorApp.Api.Controllers.React
         {
             try
             {
+                var forbidden =
+                    await RequireAnyPermissionAsync(Permissions.OrderFront.View)
+                    ?? await RequireStoreScopeAsync(request.StoreCode);
+                if (forbidden != null)
+                {
+                    return forbidden;
+                }
+
                 var result = await _service.UpdateCartItemAsync(request);
                 if (result.Success)
                 {
@@ -265,6 +319,14 @@ namespace BlazorApp.Api.Controllers.React
         {
             try
             {
+                var forbidden =
+                    await RequireAnyPermissionAsync(Permissions.OrderFront.View)
+                    ?? await RequireStoreScopeAsync(request.StoreCode);
+                if (forbidden != null)
+                {
+                    return forbidden;
+                }
+
                 var result = await _service.RemoveFromCartAsync(request);
                 if (result.Success)
                 {
@@ -287,6 +349,14 @@ namespace BlazorApp.Api.Controllers.React
         {
             try
             {
+                var forbidden =
+                    await RequireAnyPermissionAsync(Permissions.OrderFront.View)
+                    ?? await RequireStoreScopeAsync(request.StoreCode);
+                if (forbidden != null)
+                {
+                    return forbidden;
+                }
+
                 var result = await _service.ClearCartAsync(request.StoreCode);
                 if (result.Success)
                 {
@@ -313,6 +383,14 @@ namespace BlazorApp.Api.Controllers.React
         {
             try
             {
+                var forbidden =
+                    await RequireAnyPermissionAsync(Permissions.OrderFront.View)
+                    ?? await RequireStoreScopeAsync(request.StoreCode);
+                if (forbidden != null)
+                {
+                    return forbidden;
+                }
+
                 var result = await _service.SubmitOrderAsync(request);
                 if (result.Success)
                 {
@@ -337,6 +415,14 @@ namespace BlazorApp.Api.Controllers.React
         {
             try
             {
+                var forbidden =
+                    await RequireAnyPermissionAsync(Permissions.OrderFront.View)
+                    ?? await RequireStoreScopeAsync(request.StoreCode);
+                if (forbidden != null)
+                {
+                    return forbidden;
+                }
+
                 var result = await _service.GetProductsDynamicDataAsync(request);
                 if (result.Success)
                 {
@@ -359,6 +445,27 @@ namespace BlazorApp.Api.Controllers.React
         {
             try
             {
+                var forbidden = await RequireAnyPermissionAsync(OrderReadPermissions);
+                if (forbidden == null)
+                {
+                    forbidden = await RequireStoreScopeAsync(filter.StoreCode);
+                }
+                if (forbidden == null && filter.StoreCodes != null)
+                {
+                    foreach (var storeCode in filter.StoreCodes)
+                    {
+                        forbidden = await RequireStoreScopeAsync(storeCode);
+                        if (forbidden != null)
+                        {
+                            break;
+                        }
+                    }
+                }
+                if (forbidden != null)
+                {
+                    return forbidden;
+                }
+
                 var result = await _service.GetOrderListAsync(filter);
                 return Ok(new { success = true, data = result });
             }
@@ -377,6 +484,14 @@ namespace BlazorApp.Api.Controllers.React
         {
             try
             {
+                var forbidden =
+                    await RequireAnyPermissionAsync(OrderReadPermissions)
+                    ?? await RequireOrderScopeAsync(orderGuid);
+                if (forbidden != null)
+                {
+                    return forbidden;
+                }
+
                 var result = await _service.GetOrderDetailAsync(orderGuid);
                 return Ok(
                     new
@@ -402,6 +517,14 @@ namespace BlazorApp.Api.Controllers.React
         {
             try
             {
+                var forbidden =
+                    await RequireAnyPermissionAsync(OrderCreatePermissions)
+                    ?? await RequireStoreScopeAsync(request.StoreCode);
+                if (forbidden != null)
+                {
+                    return forbidden;
+                }
+
                 var result = await _service.CreateOrderAsync(request);
                 if (result.Success)
                 {
@@ -424,6 +547,14 @@ namespace BlazorApp.Api.Controllers.React
         {
             try
             {
+                var forbidden =
+                    await RequireAnyPermissionAsync(OrderEditPermissions)
+                    ?? await RequireOrderScopeAsync(request.OrderGUID);
+                if (forbidden != null)
+                {
+                    return forbidden;
+                }
+
                 var result = await _service.AddOrderLineAsync(request);
                 if (result.Success)
                 {
@@ -446,6 +577,14 @@ namespace BlazorApp.Api.Controllers.React
         {
             try
             {
+                var forbidden =
+                    await RequireAnyPermissionAsync(OrderEditPermissions)
+                    ?? await RequireOrderScopeAsync(request.OrderGUID);
+                if (forbidden != null)
+                {
+                    return forbidden;
+                }
+
                 var result = await _service.BatchAddOrderLineAsync(request);
                 if (result.Success)
                 {
@@ -470,6 +609,14 @@ namespace BlazorApp.Api.Controllers.React
         {
             try
             {
+                var forbidden =
+                    await RequireAnyPermissionAsync(OrderEditPermissions)
+                    ?? await RequireOrderScopeAsync(request.OrderGUID);
+                if (forbidden != null)
+                {
+                    return forbidden;
+                }
+
                 var result = await _service.PasteReplaceOrderLinesAsync(request);
                 if (result.Success)
                 {
@@ -492,6 +639,14 @@ namespace BlazorApp.Api.Controllers.React
         {
             try
             {
+                var forbidden =
+                    await RequireAnyPermissionAsync(OrderEditPermissions)
+                    ?? await RequireOrderScopeAsync(request.OrderGUID);
+                if (forbidden != null)
+                {
+                    return forbidden;
+                }
+
                 var result = await _service.UpdateOrderLineAsync(request);
                 if (result.Success)
                 {
@@ -514,6 +669,14 @@ namespace BlazorApp.Api.Controllers.React
         {
             try
             {
+                var forbidden =
+                    await RequireAnyPermissionAsync(OrderEditPermissions)
+                    ?? await RequireOrderScopeAsync(request.OrderGUID);
+                if (forbidden != null)
+                {
+                    return forbidden;
+                }
+
                 var result = await _service.RemoveOrderLineAsync(request);
                 if (result.Success)
                 {
@@ -538,6 +701,14 @@ namespace BlazorApp.Api.Controllers.React
         {
             try
             {
+                var forbidden =
+                    await RequireAnyPermissionAsync(OrderEditPermissions)
+                    ?? await RequireOrderScopeAsync(request.OrderGUID);
+                if (forbidden != null)
+                {
+                    return forbidden;
+                }
+
                 var result = await _service.BatchUpdateOrderLineAsync(request);
                 if (result.Success)
                 {
@@ -562,6 +733,12 @@ namespace BlazorApp.Api.Controllers.React
         {
             try
             {
+                var forbidden = await RequireAnyPermissionAsync(OrderEditPermissions);
+                if (forbidden != null)
+                {
+                    return forbidden;
+                }
+
                 var result = await _service.UpdateProductStatusAsync(request);
                 if (result.Success)
                 {
@@ -586,6 +763,12 @@ namespace BlazorApp.Api.Controllers.React
         {
             try
             {
+                var forbidden = await RequireAnyPermissionAsync(OrderEditPermissions);
+                if (forbidden != null)
+                {
+                    return forbidden;
+                }
+
                 var result = await _service.BatchUpdateProductStatusAsync(request);
                 if (result.Success)
                 {
@@ -608,6 +791,18 @@ namespace BlazorApp.Api.Controllers.React
         {
             try
             {
+                var forbidden =
+                    await RequireAnyPermissionAsync(OrderEditPermissions)
+                    ?? await RequireOrderScopeAsync(request.OrderGuid);
+                if (forbidden == null)
+                {
+                    forbidden = await RequireStoreScopeAsync(request.StoreCode);
+                }
+                if (forbidden != null)
+                {
+                    return forbidden;
+                }
+
                 var result = await _service.UpdateOrderHeaderAsync(request);
                 if (result.Success)
                 {
@@ -626,11 +821,16 @@ namespace BlazorApp.Api.Controllers.React
         /// 获取订单中使用过的分店信息
         /// </summary>
         [HttpGet("used-branches")]
-        [AllowAnonymous]
         public async Task<IActionResult> GetUsedBranches()
         {
             try
             {
+                var forbidden = await RequireAnyPermissionAsync(OrderReadPermissions);
+                if (forbidden != null)
+                {
+                    return forbidden;
+                }
+
                 var result = await _service.GetUsedBranchesAsync();
                 if (result.Success)
                 {
@@ -651,12 +851,17 @@ namespace BlazorApp.Api.Controllers.React
         /// GET api/react/v1/store-order/accessible-branches
         /// </summary>
         [HttpGet("accessible-branches")]
-        [Authorize]
         public async Task<IActionResult> GetAccessibleBranches()
         {
             try
             {
-                var branchCodes = await GetUserBranchCodesAsync();
+                var forbidden = await RequireAnyPermissionAsync(OrderReadPermissions);
+                if (forbidden != null)
+                {
+                    return forbidden;
+                }
+
+                var branchCodes = await _storeScopeService.GetAccessibleStoreCodesAsync();
                 return Ok(new { success = true, data = branchCodes });
             }
             catch (Exception ex)
@@ -674,6 +879,14 @@ namespace BlazorApp.Api.Controllers.React
         {
             try
             {
+                var forbidden =
+                    await RequireAnyPermissionAsync(OrderDeletePermissions)
+                    ?? await RequireOrderScopeAsync(orderGuid);
+                if (forbidden != null)
+                {
+                    return forbidden;
+                }
+
                 var result = await _service.DeleteOrderAsync(orderGuid);
                 if (result.Success)
                 {
@@ -696,6 +909,15 @@ namespace BlazorApp.Api.Controllers.React
         {
             try
             {
+                var forbidden =
+                    await RequireAnyPermissionAsync(OrderCreatePermissions)
+                    ?? await RequireOrderScopeAsync(request.SourceOrderGUID)
+                    ?? await RequireStoreScopeAsync(request.TargetStoreCode);
+                if (forbidden != null)
+                {
+                    return forbidden;
+                }
+
                 var result = await _service.CopyOrderAsync(request);
                 if (result.Success)
                 {
@@ -720,6 +942,14 @@ namespace BlazorApp.Api.Controllers.React
         {
             try
             {
+                var forbidden =
+                    await RequireAnyPermissionAsync(Permissions.Warehouse.ManageOrders)
+                    ?? await RequireStoreScopeAsync(request?.StoreCode);
+                if (forbidden != null)
+                {
+                    return forbidden;
+                }
+
                 var storeCode = request?.StoreCode;
                 var result = await _service.SyncMissingOrdersFromHqAsync(storeCode);
                 return Ok(result);
@@ -739,6 +969,14 @@ namespace BlazorApp.Api.Controllers.React
         {
             try
             {
+                var forbidden =
+                    await RequireAnyPermissionAsync(OrderEditPermissions)
+                    ?? await RequireOrderScopeAsync(orderGuid);
+                if (forbidden != null)
+                {
+                    return forbidden;
+                }
+
                 var result = await _service.CompleteOrderAsync(orderGuid);
                 if (result.Success)
                 {
@@ -761,6 +999,14 @@ namespace BlazorApp.Api.Controllers.React
         {
             try
             {
+                var forbidden =
+                    await RequireAnyPermissionAsync(OrderEditPermissions)
+                    ?? await RequireOrderScopeAsync(orderGuid);
+                if (forbidden != null)
+                {
+                    return forbidden;
+                }
+
                 var result = await _service.StartPickingAsync(orderGuid);
                 if (result.Success)
                 {
@@ -783,6 +1029,14 @@ namespace BlazorApp.Api.Controllers.React
         {
             try
             {
+                var forbidden =
+                    await RequireAnyPermissionAsync(OrderEditPermissions)
+                    ?? await RequireOrderScopeAsync(request.OrderGUID);
+                if (forbidden != null)
+                {
+                    return forbidden;
+                }
+
                 var result = await _service.UpdateOrderStatusAsync(request.OrderGUID, request.NewStatus);
                 if (result.Success)
                 {
@@ -805,6 +1059,14 @@ namespace BlazorApp.Api.Controllers.React
         {
             try
             {
+                var forbidden =
+                    await RequireAnyPermissionAsync(OrderEditPermissions)
+                    ?? await RequireOrderScopesAsync(request.OrderGUIDs);
+                if (forbidden != null)
+                {
+                    return forbidden;
+                }
+
                 var result = await _service.BatchUpdateOrderStatusAsync(request.OrderGUIDs, request.NewStatus);
                 if (result.Success)
                 {

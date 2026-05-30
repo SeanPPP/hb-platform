@@ -97,7 +97,6 @@ namespace BlazorApp.Api.Controllers.React
 
         [HttpPost("grid")]
         [Authorize(Policy = Permissions.LocalPurchase.View)]
-        //  [Authorize(Roles = "Admin,WarehouseManager,Manager")]
         public async Task<IActionResult> Grid([FromBody] GridRequestDto request)
         {
             var allowedStoreCodes = IsFullStoreAccessUser()
@@ -129,7 +128,6 @@ namespace BlazorApp.Api.Controllers.React
 
         [HttpGet("{invoiceGuid}")]
         [Authorize(Policy = Permissions.LocalPurchase.View)]
-        // [Authorize(Roles = "Admin,WarehouseManager,Manager")]
         public async Task<IActionResult> GetInvoice(string invoiceGuid)
         {
             if (!await CanAccessInvoiceAsync(invoiceGuid))
@@ -553,7 +551,6 @@ namespace BlazorApp.Api.Controllers.React
 
         [HttpPost("{invoiceGuid}/details/batch-execute")]
         [Authorize(Policy = Permissions.LocalPurchase.Edit)]
-        [Authorize(Roles = "Admin,WarehouseManager,Manager")]
         public async Task<IActionResult> BatchExecuteActions(
             [FromRoute] string invoiceGuid,
             [FromBody] BatchExecuteActionsRequestDto dto
@@ -570,7 +567,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPost("push-to-hq")]
-        [Authorize(Roles = "Admin")]
+        [Authorize(Policy = Permissions.LocalPurchase.PushToHq)]
         public async Task<IActionResult> PushInvoicesToHq([FromBody] PushToHqRequest request)
         {
             try

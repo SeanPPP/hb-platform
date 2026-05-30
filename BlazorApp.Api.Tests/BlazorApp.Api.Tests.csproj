@@ -27,7 +27,9 @@
     <Compile Include="StoreProductMaintenanceClearanceBarcodeHelperTests.cs" />
     <Compile Include="ReactProductWarehouseControllerTests.cs" />
     <Compile Include="DeviceRegistrationControllerTests.cs" />
+    <Compile Include="DeviceRegistrationReactServiceTests.cs" />
     <Compile Include="DomesticProductCreationControllerTests.cs" />
+    <Compile Include="DomesticProductReactServiceTests.cs" />
     <Compile Include="EmployeeProfileServiceTests.cs" />
     <Compile Include="StoreUsersReactServiceTests.cs" />
     <Compile Include="UserStoreManagementRelationTests.cs" />
@@ -36,10 +38,16 @@
     <Compile Include="AttendancePublicHolidaySyncServiceTests.cs" />
     <Compile Include="SeedDataServiceTests.cs" />
     <Compile Include="NavigationServiceTests.cs" />
+    <Compile Include="ControllerAuthorizationMetadataTests.cs" />
     <Compile Include="PermissionAuthorizationHandlerTests.cs" />
+    <Compile Include="RoleServicePermissionTests.cs" />
+    <Compile Include="SeasonalCardRemainingReactServiceTests.cs" />
     <Compile Include="LocalSupplierInvoicesReactServiceTests.cs" />
     <Compile Include="ProductWarehouseReactServiceTests.cs" />
     <Compile Include="AuthServiceTests.cs" />
+    <Compile Include="AuthSessionControllerTests.cs" />
     <Compile Include="StoreVoucherReactRouteTests.cs" />
+    <Compile Include="ReactStoreOrderAuthorizationTests.cs" />
+    <Compile Include="AdvertisementReactServiceTests.cs" />
   </ItemGroup>
 </Project>

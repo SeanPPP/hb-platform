@@ -19,11 +19,17 @@ namespace BlazorApp.Api.Controllers
     public class UsersController : ControllerBase
     {
         private readonly IUserService _userService;
+        private readonly IRoleService _roleService;
         private readonly ILogger<UsersController> _logger;
 
-        public UsersController(IUserService userService, ILogger<UsersController> logger)
+        public UsersController(
+            IUserService userService,
+            IRoleService roleService,
+            ILogger<UsersController> logger
+        )
         {
             _userService = userService;
+            _roleService = roleService;
             _logger = logger;
         }
 
@@ -392,6 +398,63 @@ namespace BlazorApp.Api.Controllers
         }
 
         /// <summary>
+        /// 获取用户权限状态
+        /// </summary>
+        [HttpGet("guid/{guid}/permissions/state")]
+        [Authorize(Policy = Permissions.Users.ManageRoles)]
+        public async Task<IActionResult> GetUserPermissionState(string guid)
+        {
+            try
+            {
+                var result = await _roleService.GetUserPermissionStateAsync(guid);
+                return Ok(result);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "获取用户权限状态失败，UserGUID: {UserGUID}", guid);
+                return StatusCode(
+                    500,
+                    ApiResponse<UserPermissionStateDto>.Error(
+                        "服务器内部错误",
+                        "INTERNAL_SERVER_ERROR"
+                    )
+                );
+            }
+        }
+
+        /// <summary>
+        /// 为用户分配直接权限
+        /// </summary>
+        [HttpPost("guid/{guid}/permissions")]
+        [Authorize(Policy = Permissions.Users.ManageRoles)]
+        public async Task<IActionResult> AssignPermissionsToUser(
+            string guid,
+            [FromBody] UserPermissionAssignmentDto dto
+        )
+        {
+            try
+            {
+                if (!ModelState.IsValid)
+                {
+                    return BadRequest(
+                        ApiResponse<bool>.Error("请求参数验证失败", "VALIDATION_ERROR", ModelState)
+                    );
+                }
+
+                var result = await _roleService.AssignPermissionsToUserAsync(guid, dto);
+                return Ok(result);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "为用户分配直接权限失败，UserGUID: {UserGUID}", guid);
+                return StatusCode(
+                    500,
+                    ApiResponse<bool>.Error("服务器内部错误", "INTERNAL_SERVER_ERROR")
+                );
+            }
+        }
+
+        /// <summary>
         /// 为用户分配分店
         /// </summary>
         [HttpPost("guid/{guid}/stores")]
@@ -454,8 +517,17 @@ namespace BlazorApp.Api.Controllers
         {
             var currentUserGuid = currentUser.GetCurrentUserGuid();
             var isSelf = string.Equals(currentUserGuid, guid, StringComparison.OrdinalIgnoreCase);
+            var canViewOtherUserStores =
+                CurrentUserManageableStoreScopeService.HasAnyRole(
+                    User,
+                    CurrentUserManageableStoreScopeService.AdminRoleAliases
+                )
+                || CurrentUserManageableStoreScopeService.HasAnyRole(
+                    User,
+                    CurrentUserManageableStoreScopeService.WarehouseManagerRoleAliases
+                );
 
-            if (!isSelf && !User.IsInRole("Admin"))
+            if (!isSelf && !canViewOtherUserStores)
             {
                 return Forbid();
             }

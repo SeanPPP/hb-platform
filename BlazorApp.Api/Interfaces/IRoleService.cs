@@ -133,11 +133,24 @@ namespace BlazorApp.Api.Interfaces
         Task<ApiResponse<List<PermissionCategoryDto>>> GetPermissionsAsync();
 
         /// <summary>
+        /// 获取权限目录元数据
+        /// </summary>
+        /// <returns>权限分组、别名、角色模板与超级管理员角色名</returns>
+        Task<ApiResponse<PermissionCatalogDto>> GetPermissionCatalogAsync();
+
+        /// <summary>
         /// 获取角色的权限列表
         /// </summary>
         /// <param name="roleGuid">角色GUID</param>
         /// <returns>权限列表</returns>
         Task<ApiResponse<List<string>>> GetRolePermissionsAsync(string roleGuid);
+
+        /// <summary>
+        /// 获取角色权限状态
+        /// </summary>
+        /// <param name="roleGuid">角色GUID</param>
+        /// <returns>显式权限、有效权限和超级管理员状态</returns>
+        Task<ApiResponse<RolePermissionStateDto>> GetRolePermissionStateAsync(string roleGuid);
 
         /// <summary>
         /// 为角色分配权限
@@ -162,6 +175,31 @@ namespace BlazorApp.Api.Interfaces
         /// <param name="permission">权限名</param>
         /// <returns>是否有权限</returns>
         Task<ApiResponse<bool>> UserHasPermissionAsync(string userGuid, string permission);
+
+        /// <summary>
+        /// 获取用户当前激活角色聚合后的权限快照
+        /// </summary>
+        /// <param name="userGuid">用户GUID</param>
+        /// <returns>超级管理员状态、角色名和有效权限</returns>
+        Task<ApiResponse<UserPermissionSnapshotDto>> GetUserPermissionSnapshotAsync(string userGuid);
+
+        /// <summary>
+        /// 获取用户权限状态
+        /// </summary>
+        /// <param name="userGuid">用户GUID</param>
+        /// <returns>角色继承权限、用户直接权限和最终有效权限</returns>
+        Task<ApiResponse<UserPermissionStateDto>> GetUserPermissionStateAsync(string userGuid);
+
+        /// <summary>
+        /// 为用户分配直接权限
+        /// </summary>
+        /// <param name="userGuid">用户GUID</param>
+        /// <param name="dto">用户直接权限分配DTO</param>
+        /// <returns>分配结果</returns>
+        Task<ApiResponse<bool>> AssignPermissionsToUserAsync(
+            string userGuid,
+            UserPermissionAssignmentDto dto
+        );
 
         /// <summary>
         /// 复制角色

@@ -8,6 +8,25 @@ namespace BlazorApp.Api.Services
 {
     public class CurrentUserManageableStoreScopeService : ICurrentUserManageableStoreScopeService
     {
+        internal static IReadOnlyList<string> AdminRoleAliases { get; } = new[]
+        {
+            "Admin",
+            "管理员",
+        };
+
+        internal static IReadOnlyList<string> StoreManagerRoleAliases { get; } = new[]
+        {
+            "StoreManager",
+            "店长",
+            "经理",
+        };
+
+        internal static IReadOnlyList<string> WarehouseManagerRoleAliases { get; } = new[]
+        {
+            "WarehouseManager",
+            "仓库经理",
+        };
+
         private readonly SqlSugarContext _context;
         private readonly ICurrentUserService _currentUserService;
         private readonly IHttpContextAccessor _httpContextAccessor;
@@ -38,7 +57,7 @@ namespace BlazorApp.Api.Services
                 };
             }
 
-            if (HasRole(user, "Admin"))
+            if (HasAnyRole(user, AdminRoleAliases) || HasAnyRole(user, WarehouseManagerRoleAliases))
             {
                 return new CurrentUserManageableStoreScope
                 {
@@ -50,7 +69,7 @@ namespace BlazorApp.Api.Services
                 };
             }
 
-            if (!HasRole(user, "StoreManager"))
+            if (!HasAnyRole(user, StoreManagerRoleAliases))
             {
                 return new CurrentUserManageableStoreScope
                 {
@@ -115,6 +134,49 @@ namespace BlazorApp.Api.Services
             return scope.IsAllowed && scope.CanAccessStoreGuid(storeGuid);
         }
 
+        public async Task<IReadOnlyList<string>> GetAccessibleStoreCodesAsync()
+        {
+            var scope = await GetScopeAsync();
+            return scope.IsAllowed ? scope.StoreCodes : Array.Empty<string>();
+        }
+
+        public async Task<bool> CanAccessStoreCodeAsync(string storeCode)
+        {
+            if (string.IsNullOrWhiteSpace(storeCode))
+            {
+                return false;
+            }
+
+            var scope = await GetScopeAsync();
+            return scope.IsAllowed && scope.CanAccessStoreCode(storeCode.Trim());
+        }
+
+        public async Task<bool> CanAccessOrderAsync(string orderGuid)
+        {
+            if (string.IsNullOrWhiteSpace(orderGuid))
+            {
+                return false;
+            }
+
+            var scope = await GetScopeAsync();
+            if (!scope.IsAllowed)
+            {
+                return false;
+            }
+
+            if (scope.IsAdmin)
+            {
+                return true;
+            }
+
+            var storeCode = await _context.Db.Queryable<WareHouseOrder>()
+                .Where(item => item.OrderGUID == orderGuid && !item.IsDeleted)
+                .Select(item => item.StoreCode)
+                .FirstAsync();
+
+            return !string.IsNullOrWhiteSpace(storeCode) && scope.CanAccessStoreCode(storeCode);
+        }
+
         public async Task<bool> CanManageUserAsync(string userGuid)
         {
             var scope = await GetScopeAsync();
@@ -140,11 +202,11 @@ namespace BlazorApp.Api.Services
                 ?? user?.FindFirst(ClaimTypes.NameIdentifier)?.Value;
         }
 
-        private static bool HasRole(ClaimsPrincipal? user, string role)
+        internal static bool HasAnyRole(ClaimsPrincipal? user, IReadOnlyCollection<string> roles)
         {
             return user?.Claims.Any(claim =>
                 claim.Type == ClaimTypes.Role
-                && claim.Value.Equals(role, StringComparison.OrdinalIgnoreCase)
+                && roles.Any(role => claim.Value.Equals(role, StringComparison.OrdinalIgnoreCase))
             ) == true;
         }
     }

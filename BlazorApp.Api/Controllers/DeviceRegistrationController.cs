@@ -1,5 +1,6 @@
 using AutoMapper;
 using BlazorApp.Api.Interfaces;
+using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models.POSM;
 using Microsoft.AspNetCore.Authorization;
@@ -36,7 +37,7 @@ namespace BlazorApp.Api.Controllers
         /// 获取所有设备列表
         /// </summary>
         [HttpGet]
-        [Authorize(Roles = "Admin,Manager,StoreManager")]
+        [Authorize(Policy = Permissions.DeviceRegistration.View)]
         public async Task<IActionResult> GetAllDevices()
         {
             try
@@ -57,7 +58,7 @@ namespace BlazorApp.Api.Controllers
         /// 分页获取设备列表
         /// </summary>
         [HttpGet("paged")]
-        [Authorize(Roles = "Admin,Manager,StoreManager")]
+        [Authorize(Policy = Permissions.DeviceRegistration.View)]
         public async Task<IActionResult> GetDevicesPaged(
             [FromQuery] int page = 1,
             [FromQuery] int pageSize = 20,
@@ -110,7 +111,7 @@ namespace BlazorApp.Api.Controllers
         /// 移动端管理员分页获取设备列表
         /// </summary>
         [HttpGet("mobile/device-management/paged")]
-        [Authorize(Roles = "Admin,管理员")]
+        [Authorize(Policy = Permissions.DeviceRegistration.View)]
         public Task<IActionResult> GetMobileAdminDevicesPaged(
             [FromQuery] int page = 1,
             [FromQuery] int pageSize = 20,
@@ -204,7 +205,7 @@ namespace BlazorApp.Api.Controllers
         /// 根据分店代码获取设备列表
         /// </summary>
         [HttpGet("by-store/{storeCode}")]
-        [Authorize(Roles = "Admin,Manager,StoreManager")]
+        [Authorize(Policy = Permissions.DeviceRegistration.View)]
         public async Task<IActionResult> GetDevicesByStoreCode(string storeCode)
         {
             try
@@ -368,7 +369,7 @@ namespace BlazorApp.Api.Controllers
         /// 激活设备
         /// </summary>
         [HttpPost("{id}/activate")]
-        [Authorize(Roles = "Admin,Manager,StoreManager")]
+        [Authorize(Policy = Permissions.DeviceRegistration.Manage)]
         public async Task<IActionResult> ActivateDevice(int id)
         {
             try
@@ -400,7 +401,7 @@ namespace BlazorApp.Api.Controllers
         /// 移动端管理员激活设备
         /// </summary>
         [HttpPost("mobile/device-management/{id}/activate")]
-        [Authorize(Roles = "Admin,管理员")]
+        [Authorize(Policy = Permissions.DeviceRegistration.Manage)]
         public Task<IActionResult> ActivateMobileAdminDevice(int id)
         {
             return ActivateDevice(id);
@@ -410,7 +411,7 @@ namespace BlazorApp.Api.Controllers
         /// 禁用设备
         /// </summary>
         [HttpPost("{id}/disable")]
-        [Authorize(Roles = "Admin,Manager,StoreManager")]
+        [Authorize(Policy = Permissions.DeviceRegistration.Manage)]
         public async Task<IActionResult> DisableDevice(int id)
         {
             try
@@ -442,7 +443,7 @@ namespace BlazorApp.Api.Controllers
         /// 移动端管理员禁用设备
         /// </summary>
         [HttpPost("mobile/device-management/{id}/disable")]
-        [Authorize(Roles = "Admin,管理员")]
+        [Authorize(Policy = Permissions.DeviceRegistration.Manage)]
         public Task<IActionResult> DisableMobileAdminDevice(int id)
         {
             return DisableDevice(id);
@@ -452,7 +453,7 @@ namespace BlazorApp.Api.Controllers
         /// 锁定设备
         /// </summary>
         [HttpPost("{id}/lock")]
-        [Authorize(Roles = "Admin,Manager,StoreManager")]
+        [Authorize(Policy = Permissions.DeviceRegistration.Manage)]
         public async Task<IActionResult> LockDevice(int id)
         {
             try
@@ -484,7 +485,7 @@ namespace BlazorApp.Api.Controllers
         /// 移动端管理员锁定设备
         /// </summary>
         [HttpPost("mobile/device-management/{id}/lock")]
-        [Authorize(Roles = "Admin,管理员")]
+        [Authorize(Policy = Permissions.DeviceRegistration.Manage)]
         public Task<IActionResult> LockMobileAdminDevice(int id)
         {
             return LockDevice(id);

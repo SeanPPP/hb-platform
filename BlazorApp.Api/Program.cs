@@ -1,5 +1,6 @@
 // ===================== 引用和命名空间 =====================
 using System.Linq;
+using System.Security.Claims;
 using System.Text; // 字符串编码
 using AutoMapper; // AutoMapper映射服务
 using BlazorApp.Api.Data; // 数据访问层
@@ -16,6 +17,7 @@ using BlazorApp.Api.Services.Background; // 后台定时服务
 using BlazorApp.Api.Services.Pricing; // 自动定价服务
 using BlazorApp.Api.Services.React; // React 专用服务层
 using BlazorApp.Api.Utils; // Cookie 配置辅助类
+using BlazorApp.Shared.Models;
 using Microsoft.AspNetCore.Authentication.JwtBearer; // JWT Bearer认证
 using Microsoft.IdentityModel.Tokens; // JWT令牌验证
 
@@ -23,6 +25,8 @@ using Microsoft.IdentityModel.Tokens; // JWT令牌验证
 // 创建WebApplicationBuilder实例，读取命令行参数和配置文件
 // 这是ASP.NET Core 6+的新式启动方式，替代了传统的Startup.cs
 var builder = WebApplication.CreateBuilder(args);
+
+MapTencentCloudEnvironmentVariables(builder.Configuration);
 
 // ===================== 服务注册区域 =====================
 
@@ -274,6 +278,69 @@ builder
 
                 return Task.CompletedTask;
             },
+            OnTokenValidated = async context =>
+            {
+                var principal = context.Principal;
+                var identity = principal?.Identities.FirstOrDefault(identity => identity.IsAuthenticated);
+                if (principal == null || identity == null)
+                {
+                    context.Fail("无效的认证主体");
+                    return;
+                }
+
+                var userGuid =
+                    principal.FindFirst(ClaimTypes.NameIdentifier)?.Value
+                    ?? principal.FindFirst("userId")?.Value
+                    ?? principal.FindFirst("userGuid")?.Value
+                    ?? principal.FindFirst("uid")?.Value
+                    ?? principal.FindFirst(ClaimTypes.Name)?.Value
+                    ?? principal.FindFirst(System.IdentityModel.Tokens.Jwt.JwtRegisteredClaimNames.Sub)?.Value;
+
+                if (string.IsNullOrWhiteSpace(userGuid))
+                {
+                    context.Fail("令牌缺少用户标识");
+                    return;
+                }
+
+                var dbContext = context.HttpContext.RequestServices.GetRequiredService<SqlSugarContext>();
+                var user = await dbContext.Db.Queryable<User>()
+                    .FirstAsync(item => item.UserGUID == userGuid && item.IsActive && !item.IsDeleted);
+
+                if (user == null)
+                {
+                    context.Fail("用户已失效");
+                    return;
+                }
+
+                var activeRoleNames = await dbContext.Db.Queryable<UserRole>()
+                    .InnerJoin<Role>((userRole, role) => userRole.RoleGUID == role.RoleGUID)
+                    .Where((userRole, role) =>
+                        userRole.UserGUID == userGuid
+                        && !userRole.IsDeleted
+                        && role.IsActive
+                        && !role.IsDeleted
+                    )
+                    .Select((userRole, role) => role.RoleName)
+                    .Distinct()
+                    .ToListAsync();
+
+                var staleClaims = identity.Claims
+                    .Where(claim =>
+                        claim.Type == ClaimTypes.Role
+                        || claim.Type == "permission"
+                    )
+                    .ToList();
+
+                foreach (var staleClaim in staleClaims)
+                {
+                    identity.RemoveClaim(staleClaim);
+                }
+
+                foreach (var roleName in activeRoleNames)
+                {
+                    identity.AddClaim(new System.Security.Claims.Claim(ClaimTypes.Role, roleName));
+                }
+            },
         };
     });
 
@@ -424,11 +491,13 @@ builder.Services.AddScoped<
 builder.Services.AddScoped<ILocalSupplierInvoicesReactService, LocalSupplierInvoicesReactService>();
 builder.Services.AddScoped<IPricingStrategyReactService, PricingStrategyReactService>();
 builder.Services.AddScoped<IPromotionReactService, PromotionReactService>();
+builder.Services.AddScoped<IAdvertisementReactService, AdvertisementReactService>();
 builder.Services.AddScoped<IStoreOrderReactService, StoreOrderReactService>();
 builder.Services.AddScoped<IStoreProductMaintenanceReactService, StoreProductMaintenanceReactService>();
 builder.Services.AddScoped<IAustralianPublicHolidayProvider, AustralianPublicHolidayProvider>();
 builder.Services.AddScoped<IAttendancePublicHolidaySyncService, AttendancePublicHolidaySyncService>();
 builder.Services.AddScoped<IAttendanceReactService, AttendanceReactService>();
+builder.Services.AddScoped<ISeasonalCardRemainingReactService, SeasonalCardRemainingReactService>();
 builder.Services.AddScoped<IPDACartToOrderService, PDACartToOrderService>();
 builder.Services.AddScoped<IPDAWarehouseOrderService, PDAWarehouseOrderService>();
 builder.Services.AddScoped<IPosmSalesOrderReactService, PosmSalesOrderReactService>();
@@ -636,3 +705,25 @@ catch (Exception ex)
  */
 // 启动Web应用
 app.Run();
+
+static void MapTencentCloudEnvironmentVariables(ConfigurationManager configuration)
+{
+    var envMappings = new Dictionary<string, string>
+    {
+        ["TENCENT_SECRET_ID"] = "TencentCloud:SecretId",
+        ["TENCENT_SECRET_KEY"] = "TencentCloud:SecretKey",
+        ["TENCENT_BUCKET_NAME"] = "TencentCloud:BucketName",
+        ["TENCENT_REGION"] = "TencentCloud:Region",
+        ["TENCENT_IMAGE_BUCKET_NAME"] = "TencentCloud:ImageBucketName",
+        ["TENCENT_IMAGE_REGION"] = "TencentCloud:ImageRegion",
+    };
+
+    foreach (var (envKey, configKey) in envMappings)
+    {
+        var value = Environment.GetEnvironmentVariable(envKey);
+        if (!string.IsNullOrWhiteSpace(value))
+        {
+            configuration[configKey] = value;
+        }
+    }
+}

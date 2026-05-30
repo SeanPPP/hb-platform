@@ -9,7 +9,6 @@ namespace BlazorApp.Api.Authorization
     public class PermissionAuthorizationHandler : AuthorizationHandler<PermissionRequirement>
     {
         private readonly IServiceScopeFactory _serviceScopeFactory;
-        private readonly IMemoryCache _cache;
         private readonly ILogger<PermissionAuthorizationHandler> _logger;
 
         public PermissionAuthorizationHandler(
@@ -19,7 +18,6 @@ namespace BlazorApp.Api.Authorization
         )
         {
             _serviceScopeFactory = serviceScopeFactory;
-            _cache = cache;
             _logger = logger;
         }
 
@@ -28,97 +26,63 @@ namespace BlazorApp.Api.Authorization
             PermissionRequirement requirement
         )
         {
-            var userId = context.User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            var userId =
+                context.User.FindFirst(ClaimTypes.NameIdentifier)?.Value
+                ?? context.User.FindFirst("userId")?.Value
+                ?? context.User.FindFirst("userGuid")?.Value
+                ?? context.User.FindFirst(ClaimTypes.Name)?.Value
+                ?? context.User.FindFirst("sub")?.Value;
 
             if (string.IsNullOrEmpty(userId))
             {
                 return;
             }
 
-            if (context.User.IsInRole("Admin") || context.User.IsInRole("管理员"))
+            try
             {
-                context.Succeed(requirement);
-                return;
-            }
+                using var scope = _serviceScopeFactory.CreateScope();
+                var roleService = scope.ServiceProvider.GetRequiredService<IRoleService>();
 
-            if (Permissions.IsAttendanceSelfServiceGranted(requirement.Permission))
-            {
-                context.Succeed(requirement);
-                return;
-            }
-
-            if (
-                context.User.IsInRole("StoreManager")
-                && Permissions.IsStoreManagerGranted(requirement.Permission)
-            )
-            {
-                context.Succeed(requirement);
-                return;
-            }
-
-            if (
-                context.User.IsInRole("WarehouseManager")
-                && Permissions.IsWarehouseManagerGranted(requirement.Permission)
-            )
-            {
-                context.Succeed(requirement);
-                return;
-            }
-
-            var equivalentPermissions = Permissions.GetEquivalentPermissionCodes(
-                requirement.Permission
-            );
-
-            if (
-                equivalentPermissions.Any(permission =>
-                    context.User.HasClaim("permission", permission)
-                )
-            )
-            {
-                context.Succeed(requirement);
-                return;
-            }
-
-            // 缓存键: user_permission_{userId}_{permission}
-            var cacheKey = $"user_permission_{userId}_{requirement.Permission}";
-
-            if (!_cache.TryGetValue(cacheKey, out bool hasPermission))
-            {
-                try
+                if (await UserHasAnyRoleAsync(roleService, userId, Permissions.SuperAdminRoleNames))
                 {
-                    // 创建新的 Scope 以解析 Scoped Service (IRoleService)
-                    using var scope = _serviceScopeFactory.CreateScope();
-                    var roleService = scope.ServiceProvider.GetRequiredService<IRoleService>();
-
-                    foreach (var permission in equivalentPermissions)
-                    {
-                        var result = await roleService.UserHasPermissionAsync(userId, permission);
-                        if (result.Data)
-                        {
-                            hasPermission = true;
-                            break;
-                        }
-                    }
-
-                    // 缓存结果 5 分钟
-                    _cache.Set(cacheKey, hasPermission, TimeSpan.FromMinutes(5));
+                    context.Succeed(requirement);
+                    return;
                 }
-                catch (Exception ex)
+
+                var result = await roleService.UserHasPermissionAsync(userId, requirement.Permission);
+                if (result.Data)
                 {
-                    _logger.LogError(
-                        ex,
-                        "权限验证失败: User={UserId}, Permission={Permission}",
-                        userId,
-                        requirement.Permission
-                    );
-                    hasPermission = false;
+                    context.Succeed(requirement);
+                    return;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(
+                    ex,
+                    "权限验证失败: User={UserId}, Permission={Permission}",
+                    userId,
+                    requirement.Permission
+                );
+            }
+        }
+
+        private static async Task<bool> UserHasAnyRoleAsync(
+            IRoleService roleService,
+            string userId,
+            params string[] roleNames
+        )
+        {
+            foreach (var roleName in roleNames)
+            {
+                var roleResult = await roleService.UserHasRoleAsync(userId, roleName);
+                if (roleResult.Data)
+                {
+                    return true;
                 }
             }
 
-            if (hasPermission)
-            {
-                context.Succeed(requirement);
-            }
+            return false;
         }
     }
 }
