@@ -46,14 +46,17 @@ export interface CreateBatchRequest {
   supplierCode: string
   prefixCode?: string
   prefixName?: string
-  items: Array<{
-    productName?: string
-    productType: ProductCreationType
-    privateLabelPrice?: number
-    setQuantity?: number
-    setPrice?: number
-    parentItemNumber?: string
-  }>
+  items: CreateBatchRequestItem[]
+}
+
+export interface CreateBatchRequestItem {
+  productName?: string
+  productType: ProductCreationType
+  privateLabelPrice?: number
+  setQuantity?: number
+  setPrice?: number
+  createCount?: number
+  subItems?: CreateBatchRequestItem[]
 }
 
 export interface CreateBatchResponse {

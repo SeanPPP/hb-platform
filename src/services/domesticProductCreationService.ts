@@ -95,7 +95,13 @@ function transformBatchProductItem(raw: Record<string, unknown>): BatchProductIt
     privateLabelPrice: raw.privateLabelPrice != null ? Number(raw.privateLabelPrice) : undefined,
     setQuantity: raw.setQuantity != null ? Number(raw.setQuantity) : undefined,
     setPrice: raw.setPrice != null ? Number(raw.setPrice) : undefined,
-    parentItemNumber: raw.parentProductCode ? String(raw.parentProductCode) : raw.parentItemNumber ? String(raw.parentItemNumber) : undefined,
+    parentItemNumber: raw.parentHBProductNo
+      ? String(raw.parentHBProductNo)
+      : raw.parentProductCode
+        ? String(raw.parentProductCode)
+        : raw.parentItemNumber
+          ? String(raw.parentItemNumber)
+          : undefined,
     subItems: undefined,
   }
 }
