@@ -283,7 +283,7 @@ public sealed class RoleServicePermissionTests : IDisposable
 
         if (File.Exists(_dbPath))
         {
-            File.Delete(_dbPath);
+            SqliteTempFileCleanup.DeleteIfExists(_dbPath);
         }
     }
 

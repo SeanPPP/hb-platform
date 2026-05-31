@@ -191,7 +191,7 @@ public sealed class DeviceRegistrationReactServiceTests : IDisposable
     {
         if (File.Exists(path))
         {
-            File.Delete(path);
+            SqliteTempFileCleanup.DeleteIfExists(path);
         }
     }
 }

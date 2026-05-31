@@ -1,4 +1,4 @@
-using System.Reflection;
+﻿using System.Reflection;
 using System.Runtime.CompilerServices;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Models;
@@ -277,15 +277,15 @@ public sealed class AdvertisementReactServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task CreateAsync_RejectsEmptyStoreScope()
+    public async Task CreateAsync_AllStoresScopeStoresNoRelations()
     {
         var service = CreateService();
 
         var result = await service.CreateAsync(
             new CreateAdvertisementDto
             {
-                Title = "No stores",
-                Description = "Invalid",
+                Title = "All stores",
+                Description = "Global campaign",
                 MediaType = "Image",
                 MediaUrl = "https://cdn.example.com/file.jpg",
                 ObjectKey = "ads/2026/018f45ad00007000a000000000000004.jpg",
@@ -300,8 +300,12 @@ public sealed class AdvertisementReactServiceTests : IDisposable
             }
         );
 
-        Assert.False(result.Success);
-        Assert.Equal("INVALID_STORE_SCOPE", result.ErrorCode);
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        Assert.Empty(result.Data!.Stores);
+
+        var stores = await _db.Queryable<AdvertisementStore>().ToListAsync();
+        Assert.Empty(stores);
     }
 
     [Fact]
@@ -341,10 +345,7 @@ public sealed class AdvertisementReactServiceTests : IDisposable
         _db.Dispose();
         _sqliteConnection.Dispose();
 
-        if (File.Exists(_dbPath))
-        {
-            File.Delete(_dbPath);
-        }
+        SqliteTempFileCleanup.DeleteIfExists(_dbPath);
     }
 
     private AdvertisementReactService CreateService()

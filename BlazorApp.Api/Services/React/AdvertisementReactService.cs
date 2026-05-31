@@ -391,10 +391,6 @@ namespace BlazorApp.Api.Services.React
             }
 
             var storeCodes = NormalizeStoreCodes(dto.Stores);
-            if (storeCodes.Count == 0)
-            {
-                return ApiResponse<AdvertisementDetailDto>.Error("请至少选择一个分店", "INVALID_STORE_SCOPE");
-            }
 
             var activeStoreCodes = await _context
                 .StoreDb.AsQueryable()
@@ -501,16 +497,7 @@ namespace BlazorApp.Api.Services.React
             if (!string.IsNullOrWhiteSpace(request.StoreCode))
             {
                 var storeCode = request.StoreCode.Trim();
-                query = query.Where(item =>
-                    SqlFunc
-                        .Subqueryable<AdvertisementStore>()
-                        .Where(store =>
-                            store.AdvertisementId == item.Id
-                            && !store.IsDeleted
-                            && store.StoreCode == storeCode
-                        )
-                        .Any()
-                );
+                ApplyStoreScopeFilter(ref query, new[] { storeCode });
             }
 
             if (!string.IsNullOrWhiteSpace(request.MediaType))
@@ -586,13 +573,28 @@ namespace BlazorApp.Api.Services.React
                 return;
             }
 
+            ApplyStoreScopeFilter(ref query, values);
+        }
+
+        private static void ApplyStoreScopeFilter(
+            ref ISugarQueryable<Advertisement> query,
+            IReadOnlyCollection<string> storeCodes
+        )
+        {
             query = query.Where(item =>
+                !SqlFunc
+                    .Subqueryable<AdvertisementStore>()
+                    .Where(store =>
+                        store.AdvertisementId == item.Id
+                    )
+                    .Any()
+                ||
                 SqlFunc
                     .Subqueryable<AdvertisementStore>()
                     .Where(store =>
                         store.AdvertisementId == item.Id
                         && !store.IsDeleted
-                        && values.Contains(store.StoreCode)
+                        && storeCodes.Contains(store.StoreCode)
                     )
                     .Any()
             );

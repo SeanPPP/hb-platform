@@ -101,7 +101,7 @@ namespace BlazorApp.Api.Tests
 
             if (File.Exists(_dbPath))
             {
-                File.Delete(_dbPath);
+                SqliteTempFileCleanup.DeleteIfExists(_dbPath);
             }
         }
 

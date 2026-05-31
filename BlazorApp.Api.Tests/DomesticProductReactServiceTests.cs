@@ -220,9 +220,9 @@ public sealed class DomesticProductReactServiceTests : IDisposable
         _hbSalesConnection.Dispose();
 
         if (File.Exists(_localDbPath))
-            File.Delete(_localDbPath);
+            SqliteTempFileCleanup.DeleteIfExists(_localDbPath);
         if (File.Exists(_hbSalesDbPath))
-            File.Delete(_hbSalesDbPath);
+            SqliteTempFileCleanup.DeleteIfExists(_hbSalesDbPath);
     }
 
     private DomesticProductReactService CreateService()
