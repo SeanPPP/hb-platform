@@ -1866,7 +1866,7 @@ function ProductQueryContent() {
     }
 
     router.replace(
-      buildLocalSupplierInvoicesRestoreHref(invoiceReturnState) as Parameters<typeof router.replace>[0]
+      buildLocalSupplierInvoicesRestoreHref(invoiceReturnState) as unknown as Parameters<typeof router.replace>[0]
     );
   }, [invoiceReturnState, router]);
 

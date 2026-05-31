@@ -237,7 +237,7 @@ export default function UsersScreen() {
       router.push({
         pathname: "/staff/[userGuid]",
         params: { userGuid: user.userGUID, storeCode: targetStoreCode },
-      } as Parameters<typeof router.push>[0]);
+      } as unknown as Parameters<typeof router.push>[0]);
     },
     [resolveUserStoreCode, router, t]
   );
