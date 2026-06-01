@@ -3,6 +3,7 @@ using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.DTOs;
+using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Caching.Memory;
@@ -20,6 +21,7 @@ namespace BlazorApp.Api.Controllers.React
         private readonly IStoreOrderReactService _service;
         private readonly ILogger<ReactStoreOrderController> _logger;
         private readonly IMemoryCache _cache;
+        private readonly IUserService _userService;
         private readonly IAuthorizationService _authorizationService;
         private readonly ICurrentUserManageableStoreScopeService _storeScopeService;
 
@@ -45,6 +47,13 @@ namespace BlazorApp.Api.Controllers.React
             Permissions.Orders.Delete,
             Permissions.Warehouse.ManageOrders,
         };
+        private static readonly string[] GlobalStoreScopeRoles =
+        {
+            "Admin",
+            "管理员",
+            "WarehouseManager",
+            "仓库经理",
+        };
 
         public ReactStoreOrderController(
             IStoreOrderReactService service,
@@ -59,6 +68,7 @@ namespace BlazorApp.Api.Controllers.React
             _service = service;
             _logger = logger;
             _cache = cache;
+            _userService = userService;
             _authorizationService = authorizationService;
             _storeScopeService = storeScopeService;
         }
@@ -80,6 +90,52 @@ namespace BlazorApp.Api.Controllers.React
         private async Task<IActionResult?> RequireAnyPermissionAsync(params string[] permissions)
         {
             return await HasAnyPermissionAsync(permissions) ? null : Forbid();
+        }
+
+        private bool HasAnyRole(params string[] roleNames)
+        {
+            return User?.Claims.Any(claim =>
+                claim.Type == ClaimTypes.Role
+                && roleNames.Any(role =>
+                    string.Equals(role, claim.Value, StringComparison.OrdinalIgnoreCase)
+                )
+            ) == true;
+        }
+
+        private async Task<IActionResult?> RequireProductStoreScopeAsync(string? storeCode)
+        {
+            if (!string.IsNullOrWhiteSpace(storeCode))
+            {
+                if (await _storeScopeService.CanAccessStoreCodeAsync(storeCode))
+                {
+                    return null;
+                }
+
+                return await CanAccessAssignedStoreCodeAsync(storeCode) ? null : Forbid();
+            }
+
+            return HasAnyRole(GlobalStoreScopeRoles) ? null : Forbid();
+        }
+
+        private async Task<bool> CanAccessAssignedStoreCodeAsync(string storeCode)
+        {
+            var userGuid = GetCurrentUserId();
+            if (string.IsNullOrWhiteSpace(userGuid))
+            {
+                return false;
+            }
+
+            var storesResult = await _userService.GetUserStoresAsync(userGuid);
+            if (!storesResult.Success || storesResult.Data == null)
+            {
+                return false;
+            }
+
+            // 商品列表是订货读取场景，Order 用户按“已分配分店”读取，不复用店长管理分店的 IsPrimary 限制。
+            return storesResult.Data.Any(store =>
+                !string.IsNullOrWhiteSpace(store.StoreCode)
+                && store.StoreCode.Equals(storeCode.Trim(), StringComparison.OrdinalIgnoreCase)
+            );
         }
 
         private async Task<IActionResult?> RequireStoreScopeAsync(string? storeCode)
@@ -111,6 +167,12 @@ namespace BlazorApp.Api.Controllers.React
             return null;
         }
 
+        private string? GetCurrentUserId()
+        {
+            return User?.FindFirst("userId")?.Value
+                ?? User?.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+        }
+
         /// <summary>
         /// 获取商品列表 (支持货号搜索和分类筛选)
         /// </summary>
@@ -120,8 +182,8 @@ namespace BlazorApp.Api.Controllers.React
             try
             {
                 var forbidden =
-                    await RequireAnyPermissionAsync(Permissions.OrderFront.View)
-                    ?? await RequireStoreScopeAsync(filter.StoreCode);
+                    await RequireAnyPermissionAsync(OrderReadPermissions)
+                    ?? await RequireProductStoreScopeAsync(filter.StoreCode);
                 if (forbidden != null)
                 {
                     return forbidden;

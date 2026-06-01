@@ -118,10 +118,7 @@ namespace BlazorApp.Api.Services.React
                 .LeftJoin<WarehouseCategory>(
                     (p, wp, wc) => p.WarehouseCategoryGUID == wc.CategoryGUID
                 )
-                .LeftJoin<ProductGrade>(
-                    (p, wp, wc, pg) => p.ProductCode == pg.ProductCode && !pg.IsDeleted
-                )
-                .Where((p, wp, wc, pg) => p.IsActive && !p.IsDeleted && !wp.IsDeleted && wp.IsActive);
+                .Where((p, wp, wc) => p.IsActive && !p.IsDeleted && !wp.IsDeleted && wp.IsActive);
 
             if (!string.IsNullOrWhiteSpace(filter.CategoryGUID))
             {
@@ -132,7 +129,7 @@ namespace BlazorApp.Api.Services.React
                     filter.CategoryGUID
                 );
                 q = q.Where(
-                    (p, wp, wc, pg) =>
+                    (p, wp, wc) =>
                         p.WarehouseCategoryGUID != null
                         && categoryIds.Contains(p.WarehouseCategoryGUID)
                 );
@@ -142,7 +139,7 @@ namespace BlazorApp.Api.Services.React
             {
                 var keyword = filter.ItemNumber.Trim().ToLower();
                 q = q.Where(
-                    (p, wp, wc, pg) =>
+                    (p, wp, wc) =>
                         (p.ItemNumber != null && p.ItemNumber.ToLower().Contains(keyword))
                         || (p.Barcode != null && p.Barcode.ToLower().Contains(keyword))
                 );
@@ -152,7 +149,7 @@ namespace BlazorApp.Api.Services.React
             {
                 var keyword = filter.ProductName.Trim().ToLower();
                 q = q.Where(
-                    (p, wp, wc, pg) =>
+                    (p, wp, wc) =>
                         p.ProductName != null && p.ProductName.ToLower().Contains(keyword)
                 );
             }
@@ -160,7 +157,14 @@ namespace BlazorApp.Api.Services.React
             if (normalizedGrades.Count > 0)
             {
                 q = q.Where(
-                    (p, wp, wc, pg) => normalizedGrades.Contains(pg.Grade)
+                    (p, wp, wc) =>
+                        SqlFunc.Subqueryable<ProductGrade>()
+                            .Where(pg =>
+                                pg.ProductCode == p.ProductCode
+                                && !pg.IsDeleted
+                                && normalizedGrades.Contains(pg.Grade)
+                            )
+                            .Any()
                 );
             }
 
@@ -169,28 +173,28 @@ namespace BlazorApp.Api.Services.React
                 switch (filter.SortBy.ToLower())
                 {
                     case "priceasc":
-                        q = q.OrderBy((p, wp, wc, pg) => wp.OEMPrice, OrderByType.Asc);
+                        q = q.OrderBy((p, wp, wc) => wp.OEMPrice, OrderByType.Asc);
                         break;
                     case "pricedesc":
-                        q = q.OrderBy((p, wp, wc, pg) => wp.OEMPrice, OrderByType.Desc);
+                        q = q.OrderBy((p, wp, wc) => wp.OEMPrice, OrderByType.Desc);
                         break;
                     case "name":
-                        q = q.OrderBy((p, wp, wc, pg) => p.ProductName, OrderByType.Asc);
+                        q = q.OrderBy((p, wp, wc) => p.ProductName, OrderByType.Asc);
                         break;
                     default:
-                        q = q.OrderBy((p, wp, wc, pg) => p.ItemNumber, OrderByType.Asc);
+                        q = q.OrderBy((p, wp, wc) => p.ItemNumber, OrderByType.Asc);
                         break;
                 }
             }
             else
             {
-                q = q.OrderBy((p, wp, wc, pg) => p.ItemNumber, OrderByType.Asc);
+                q = q.OrderBy((p, wp, wc) => p.ItemNumber, OrderByType.Asc);
             }
 
             var total = await q.CountAsync();
 
             var items = await q.Select(
-                    (p, wp, wc, pg) =>
+                    (p, wp, wc) =>
                         new StoreOrderProductDto
                         {
                             ProductCode = p.ProductCode ?? string.Empty,
@@ -204,12 +208,46 @@ namespace BlazorApp.Api.Services.React
                             StockQuantity = wp.StockQuantity ?? 0,
                             PackQty = p.MiddlePackageQuantity,
                             ImportPrice = wp.ImportPrice,
-                            Grade = pg.Grade,
                         }
                 )
                 .Skip((filter.PageNumber - 1) * filter.PageSize)
                 .Take(filter.PageSize)
                 .ToListAsync();
+
+            var productCodes = items
+                .Select(item => item.ProductCode)
+                .Where(code => !string.IsNullOrWhiteSpace(code))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            if (productCodes.Count > 0)
+            {
+                var gradeRows = await _db.Queryable<ProductGrade>()
+                    .Where(pg => productCodes.Contains(pg.ProductCode) && !pg.IsDeleted)
+                    .OrderBy(pg => pg.Grade)
+                    .Select(pg => new { pg.ProductCode, pg.Grade })
+                    .ToListAsync();
+
+                var gradeMap = gradeRows
+                    .GroupBy(row => row.ProductCode, StringComparer.OrdinalIgnoreCase)
+                    .ToDictionary(
+                        group => group.Key,
+                        group =>
+                            normalizedGrades.Count > 0
+                                ? group.FirstOrDefault(row => normalizedGrades.Contains(row.Grade))?.Grade
+                                    ?? group.First().Grade
+                                : group.First().Grade,
+                        StringComparer.OrdinalIgnoreCase
+                    );
+
+                foreach (var item in items)
+                {
+                    if (gradeMap.TryGetValue(item.ProductCode, out var grade))
+                    {
+                        item.Grade = grade;
+                    }
+                }
+            }
 
             return new PagedListReactDto<StoreOrderProductDto>
             {

@@ -1,8 +1,10 @@
 using System.Reflection;
 using System.Security.Claims;
+using BlazorApp.Api.Cache;
 using BlazorApp.Api.Controllers.React;
 using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Interfaces.React;
+using BlazorApp.Api.Services.React;
 using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.DTOs;
 using Microsoft.AspNetCore.Authorization;
@@ -17,6 +19,67 @@ namespace BlazorApp.Api.Tests;
 
 public class ReactStoreOrderAuthorizationTests
 {
+    [Fact]
+    public void ProductCacheKey_IgnoresStoreCodeForSameProductFilters()
+    {
+        StoreOrderCacheKeys.ClearActiveKeys();
+
+        var warehouseStoreKey = StoreOrderCacheKeys.Products(
+            new StoreOrderFilterDto
+            {
+                StoreCode = "1006",
+                PageNumber = 1,
+                PageSize = 18,
+                SortBy = "Default",
+            }
+        );
+        var brisbaneStoreKey = StoreOrderCacheKeys.Products(
+            new StoreOrderFilterDto
+            {
+                StoreCode = "1004",
+                PageNumber = 1,
+                PageSize = 18,
+                SortBy = "Default",
+            }
+        );
+
+        Assert.Equal(warehouseStoreKey, brisbaneStoreKey);
+    }
+
+    [Fact]
+    public async Task ProductCacheClear_KeepsBothWebAndExpoHomePageKeys()
+    {
+        StoreOrderCacheKeys.ClearActiveKeys();
+
+        var cache = new MemoryCache(new MemoryCacheOptions());
+        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        var warmer = new StoreOrderCacheWarmer(
+            service.Object,
+            Mock.Of<ILogger<StoreOrderCacheWarmer>>(),
+            cache
+        );
+        var webHomeKey = StoreOrderCacheKeys.GetHomePageCacheKey(50);
+        var expoHomeKey = StoreOrderCacheKeys.GetHomePageCacheKey(18);
+        var customKey = StoreOrderCacheKeys.Products(
+            new StoreOrderFilterDto
+            {
+                PageNumber = 2,
+                PageSize = 18,
+                SortBy = "Default",
+            }
+        );
+
+        cache.Set(webHomeKey, "web");
+        cache.Set(expoHomeKey, "expo");
+        cache.Set(customKey, "custom");
+
+        await warmer.ClearCacheAsync();
+
+        Assert.True(cache.TryGetValue(webHomeKey, out _));
+        Assert.True(cache.TryGetValue(expoHomeKey, out _));
+        Assert.False(cache.TryGetValue(customKey, out _));
+    }
+
     [Fact]
     public void Controller_RequiresAuthorization_AndNoLongerAllowsAnonymous()
     {
@@ -50,6 +113,115 @@ public class ReactStoreOrderAuthorizationTests
 
         Assert.IsType<ForbidResult>(result);
         service.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task GetProducts_ForbidsScopedUserWhenStoreCodeIsMissing()
+    {
+        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        var controller = CreateController(
+            service,
+            CreateAuthorizationService(Permissions.OrderFront.View),
+            CreateScopeService(),
+            new[] { "Order" }
+        );
+
+        var result = await controller.GetProducts(new StoreOrderFilterDto());
+
+        Assert.IsType<ForbidResult>(result);
+        service.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task GetProducts_AllowsOrderRolePermissions_AndCallsService()
+    {
+        var filter = new StoreOrderFilterDto { StoreCode = "S001" };
+        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        service
+            .Setup(item => item.GetPagedListAsync(filter))
+            .ReturnsAsync(new PagedListReactDto<StoreOrderProductDto>());
+
+        var controller = CreateController(
+            service,
+            CreateAuthorizationService(Permissions.Orders.View),
+            CreateScopeService(),
+            new[] { "Order" }
+        );
+
+        var result = await controller.GetProducts(filter);
+
+        Assert.IsType<OkObjectResult>(result);
+        service.Verify(item => item.GetPagedListAsync(filter), Times.Once);
+    }
+
+    [Fact]
+    public async Task GetProducts_AllowsAssignedStoreWhenManageScopeRejectsOrderUser()
+    {
+        var filter = new StoreOrderFilterDto { StoreCode = "1024" };
+        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        service
+            .Setup(item => item.GetPagedListAsync(filter))
+            .ReturnsAsync(new PagedListReactDto<StoreOrderProductDto>());
+        var scopeService = CreateScopeService();
+        scopeService.Setup(item => item.CanAccessStoreCodeAsync("1024")).ReturnsAsync(false);
+        var userService = new Mock<IUserService>(MockBehavior.Strict);
+        userService
+            .Setup(item => item.GetUserStoresAsync("user-1"))
+            .ReturnsAsync(
+                ApiResponse<List<UserStoreDto>>.OK(
+                    new List<UserStoreDto>
+                    {
+                        new() { StoreCode = "1024", StoreName = "Bankstown" },
+                    }
+                )
+            );
+
+        var controller = CreateController(
+            service,
+            CreateAuthorizationService(Permissions.Orders.View),
+            scopeService,
+            new[] { "Order" },
+            userService: userService
+        );
+
+        var result = await controller.GetProducts(filter);
+
+        Assert.IsType<OkObjectResult>(result);
+        service.Verify(item => item.GetPagedListAsync(filter), Times.Once);
+        userService.Verify(item => item.GetUserStoresAsync("user-1"), Times.Once);
+    }
+
+    [Fact]
+    public async Task GetProducts_ForbidsUnassignedStoreWhenManageScopeRejectsOrderUser()
+    {
+        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        var scopeService = CreateScopeService();
+        scopeService.Setup(item => item.CanAccessStoreCodeAsync("1024")).ReturnsAsync(false);
+        var userService = new Mock<IUserService>(MockBehavior.Strict);
+        userService
+            .Setup(item => item.GetUserStoresAsync("user-1"))
+            .ReturnsAsync(
+                ApiResponse<List<UserStoreDto>>.OK(
+                    new List<UserStoreDto>
+                    {
+                        new() { StoreCode = "1006", StoreName = "HB WARE HOUSE" },
+                    }
+                )
+            );
+
+        var controller = CreateController(
+            service,
+            CreateAuthorizationService(Permissions.Orders.View),
+            scopeService,
+            new[] { "Order" },
+            userService: userService
+        );
+
+        var result = await controller.GetProducts(new StoreOrderFilterDto { StoreCode = "1024" });
+
+        Assert.IsType<ForbidResult>(result);
+        service.VerifyNoOtherCalls();
+        userService.Verify(item => item.GetUserStoresAsync("user-1"), Times.Once);
     }
 
     [Fact]
@@ -139,14 +311,16 @@ public class ReactStoreOrderAuthorizationTests
     private static ReactStoreOrderController CreateController(
         Mock<IStoreOrderReactService> service,
         Mock<IAuthorizationService> authorizationService,
-        Mock<ICurrentUserManageableStoreScopeService> scopeService
+        Mock<ICurrentUserManageableStoreScopeService> scopeService,
+        IReadOnlyCollection<string>? roles = null,
+        Mock<IUserService>? userService = null
     )
     {
         var controller = new ReactStoreOrderController(
             service.Object,
             Mock.Of<ILogger<ReactStoreOrderController>>(),
             new MemoryCache(new MemoryCacheOptions()),
-            Mock.Of<BlazorApp.Api.Interfaces.IUserService>(),
+            userService?.Object ?? Mock.Of<BlazorApp.Api.Interfaces.IUserService>(),
             Mock.Of<BlazorApp.Api.Interfaces.IStoreService>(),
             authorizationService.Object,
             scopeService.Object
@@ -162,7 +336,9 @@ public class ReactStoreOrderAuthorizationTests
                         {
                             new Claim(ClaimTypes.NameIdentifier, "user-1"),
                             new Claim(ClaimTypes.Name, "tester"),
-                        },
+                        }.Concat((roles ?? Array.Empty<string>()).Select(role =>
+                            new Claim(ClaimTypes.Role, role)
+                        )),
                         "TestAuth"
                     )
                 ),

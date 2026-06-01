@@ -13,6 +13,7 @@ namespace BlazorApp.Api.Cache
     {
         private const string PREFIX = "StoreOrder";
         private static readonly HashSet<string> _activeKeys = new(StringComparer.Ordinal);
+        private static readonly object _activeKeysLock = new();
         private static ILogger? _logger;
 
         /// <summary>
@@ -26,7 +27,16 @@ namespace BlazorApp.Api.Cache
         /// <summary>
         /// 获取所有活动缓存键的只读集合
         /// </summary>
-        public static IReadOnlyCollection<string> ActiveKeys => _activeKeys;
+        public static IReadOnlyCollection<string> ActiveKeys
+        {
+            get
+            {
+                lock (_activeKeysLock)
+                {
+                    return _activeKeys.ToList();
+                }
+            }
+        }
 
         /// <summary>
         /// 生成商品列表缓存键
@@ -34,7 +44,10 @@ namespace BlazorApp.Api.Cache
         public static string Products(StoreOrderFilterDto filter)
         {
             var key = $"{PREFIX}:Products:{Hash(filter)}";
-            _activeKeys.Add(key);
+            lock (_activeKeysLock)
+            {
+                _activeKeys.Add(key);
+            }
             LogKeyGenerated("Products", key, filter);
             return key;
         }
@@ -44,7 +57,10 @@ namespace BlazorApp.Api.Cache
         /// </summary>
         public static void ClearActiveKeys()
         {
-            _activeKeys.Clear();
+            lock (_activeKeysLock)
+            {
+                _activeKeys.Clear();
+            }
         }
 
         /// <summary>
@@ -55,13 +71,13 @@ namespace BlazorApp.Api.Cache
         /// <summary>
         /// 获取首页缓存键（用于排除清除）
         /// </summary>
-        public static string GetHomePageCacheKey()
+        public static string GetHomePageCacheKey(int pageSize = 50)
         {
             var filter = new StoreOrderFilterDto
             {
                 StoreCode = null,
                 PageNumber = 1,
-                PageSize = 50,
+                PageSize = pageSize,
                 ItemNumber = null,
                 ProductName = null,
                 CategoryGUID = null,
@@ -95,7 +111,7 @@ namespace BlazorApp.Api.Cache
         {
             var parts = new[]
             {
-                filter.StoreCode ?? "null",
+                "store-scope-checked-before-cache",
                 filter.ItemNumber ?? "null",
                 filter.ProductName ?? "null",
                 filter.CategoryGUID ?? "null",
@@ -124,4 +140,3 @@ namespace BlazorApp.Api.Cache
         }
     }
 }
-

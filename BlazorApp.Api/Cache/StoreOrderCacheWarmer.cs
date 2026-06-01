@@ -37,33 +37,8 @@ namespace BlazorApp.Api.Cache
 
             try
             {
-                // 首页默认查询参数：pageNumber=1, pageSize=50, 无分类和搜索条件
-                var filter = new StoreOrderFilterDto
-                {
-                    PageNumber = 1,
-                    PageSize = 50,
-                    ItemNumber = null,
-                    ProductName = null,
-                    CategoryGUID = null,
-                    SortBy = "Default"
-                };
-
-                // 调用服务获取数据，这会触发缓存逻辑
-                var result = await _service.GetPagedListAsync(filter);
-
-                // 手动设置缓存，确保缓存已写入
-                var cacheKey = StoreOrderCacheKeys.Products(filter);
-                var cacheOptions = new MemoryCacheEntryOptions()
-                    .SetAbsoluteExpiration(CACHE_DURATION)
-                    .SetPriority(Microsoft.Extensions.Caching.Memory.CacheItemPriority.High);
-
-                _cache.Set(cacheKey, result, cacheOptions);
-
-                _logger.LogInformation(
-                    "首页商品列表缓存预热完成，共 {Count} 条商品，缓存键: {CacheKey}",
-                    result.Items?.Count ?? 0,
-                    cacheKey
-                );
+                await WarmUpProductListAsync(50);
+                await WarmUpProductListAsync(18);
             }
             catch (Exception ex)
             {
@@ -72,17 +47,49 @@ namespace BlazorApp.Api.Cache
             }
         }
 
+        private async Task WarmUpProductListAsync(int pageSize)
+        {
+            var filter = new StoreOrderFilterDto
+            {
+                PageNumber = 1,
+                PageSize = pageSize,
+                ItemNumber = null,
+                ProductName = null,
+                CategoryGUID = null,
+                SortBy = "Default"
+            };
+
+            var result = await _service.GetPagedListAsync(filter);
+            var cacheKey = StoreOrderCacheKeys.Products(filter);
+            var cacheOptions = new MemoryCacheEntryOptions()
+                .SetAbsoluteExpiration(CACHE_DURATION)
+                .SetPriority(Microsoft.Extensions.Caching.Memory.CacheItemPriority.High);
+
+            _cache.Set(cacheKey, result, cacheOptions);
+
+            _logger.LogInformation(
+                "首页商品列表缓存预热完成，PageSize={PageSize}，共 {Count} 条商品，缓存键: {CacheKey}",
+                pageSize,
+                result.Items?.Count ?? 0,
+                cacheKey
+            );
+        }
+
         /// <summary>
         /// 清除所有商品列表缓存（排除首页缓存）
         /// </summary>
         public Task ClearCacheAsync()
         {
-            // 先获取首页缓存键，确保它在活动键列表中
-            var homePageCacheKey = StoreOrderCacheKeys.GetHomePageCacheKey();
+            // 先获取首页缓存键，确保 Web 与 Expo 首页默认列表都保留。
+            var homePageCacheKeys = new HashSet<string>(StringComparer.Ordinal)
+            {
+                StoreOrderCacheKeys.GetHomePageCacheKey(50),
+                StoreOrderCacheKeys.GetHomePageCacheKey(18),
+            };
             var keysToClear = StoreOrderCacheKeys.ActiveKeys.ToList();
 
             // 排除首页缓存，只清除其他缓存
-            var keysToRemove = keysToClear.Where(k => k != homePageCacheKey).ToList();
+            var keysToRemove = keysToClear.Where(k => !homePageCacheKeys.Contains(k)).ToList();
 
             foreach (var key in keysToRemove)
             {
@@ -91,9 +98,11 @@ namespace BlazorApp.Api.Cache
 
             // 清除活动键列表，但保留首页缓存键
             StoreOrderCacheKeys.ClearActiveKeys();
-            // 重新添加首页缓存键到活动键列表
-            // GetHomePageCacheKey 会重新生成相同的键（因为参数相同），并自动添加到 _activeKeys
-            _ = StoreOrderCacheKeys.GetHomePageCacheKey();
+            // 重新添加首页缓存键到活动键列表。
+            foreach (var pageSize in new[] { 50, 18 })
+            {
+                _ = StoreOrderCacheKeys.GetHomePageCacheKey(pageSize);
+            }
 
             _logger.LogInformation(
                 "已清除 {Count} 个商品列表缓存（首页缓存已保留）",
@@ -104,4 +113,3 @@ namespace BlazorApp.Api.Cache
         }
     }
 }
-
