@@ -108,6 +108,8 @@ namespace BlazorApp.Shared.DTOs
   {
     [Required]
     public string Barcode { get; set; } = string.Empty;
+
+    public string? StoreCode { get; set; }
   }
 
   /// <summary>

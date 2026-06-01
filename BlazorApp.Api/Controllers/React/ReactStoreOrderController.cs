@@ -37,6 +37,12 @@ namespace BlazorApp.Api.Controllers.React
             Permissions.Orders.Create,
             Permissions.Warehouse.ManageOrders,
         };
+        private static readonly string[] CartWritePermissions =
+        {
+            Permissions.OrderFront.View,
+            Permissions.Orders.Create,
+            Permissions.Warehouse.ManageOrders,
+        };
         private static readonly string[] OrderEditPermissions =
         {
             Permissions.Orders.Edit,
@@ -102,7 +108,7 @@ namespace BlazorApp.Api.Controllers.React
             ) == true;
         }
 
-        private async Task<IActionResult?> RequireProductStoreScopeAsync(string? storeCode)
+        private async Task<IActionResult?> RequireAssignedStoreScopeAsync(string? storeCode)
         {
             if (!string.IsNullOrWhiteSpace(storeCode))
             {
@@ -131,7 +137,7 @@ namespace BlazorApp.Api.Controllers.React
                 return false;
             }
 
-            // 商品列表是订货读取场景，Order 用户按“已分配分店”读取，不复用店长管理分店的 IsPrimary 限制。
+            // 订货前台按“已分配分店”访问商品与购物车，不复用店长管理分店的 IsPrimary 限制。
             return storesResult.Data.Any(store =>
                 !string.IsNullOrWhiteSpace(store.StoreCode)
                 && store.StoreCode.Equals(storeCode.Trim(), StringComparison.OrdinalIgnoreCase)
@@ -183,7 +189,7 @@ namespace BlazorApp.Api.Controllers.React
             {
                 var forbidden =
                     await RequireAnyPermissionAsync(OrderReadPermissions)
-                    ?? await RequireProductStoreScopeAsync(filter.StoreCode);
+                    ?? await RequireAssignedStoreScopeAsync(filter.StoreCode);
                 if (forbidden != null)
                 {
                     return forbidden;
@@ -263,7 +269,9 @@ namespace BlazorApp.Api.Controllers.React
         {
             try
             {
-                var forbidden = await RequireAnyPermissionAsync(Permissions.OrderFront.View);
+                var forbidden =
+                    await RequireAnyPermissionAsync(OrderReadPermissions)
+                    ?? await RequireAssignedStoreScopeAsync(request.StoreCode);
                 if (forbidden != null)
                 {
                     return forbidden;
@@ -292,8 +300,8 @@ namespace BlazorApp.Api.Controllers.React
             try
             {
                 var forbidden =
-                    await RequireAnyPermissionAsync(Permissions.OrderFront.View)
-                    ?? await RequireStoreScopeAsync(storeCode);
+                    await RequireAnyPermissionAsync(OrderReadPermissions)
+                    ?? await RequireAssignedStoreScopeAsync(storeCode);
                 if (forbidden != null)
                 {
                     return forbidden;
@@ -322,8 +330,8 @@ namespace BlazorApp.Api.Controllers.React
             try
             {
                 var forbidden =
-                    await RequireAnyPermissionAsync(Permissions.OrderFront.View)
-                    ?? await RequireStoreScopeAsync(request.StoreCode);
+                    await RequireAnyPermissionAsync(CartWritePermissions)
+                    ?? await RequireAssignedStoreScopeAsync(request.StoreCode);
                 if (forbidden != null)
                 {
                     return forbidden;
@@ -352,8 +360,8 @@ namespace BlazorApp.Api.Controllers.React
             try
             {
                 var forbidden =
-                    await RequireAnyPermissionAsync(Permissions.OrderFront.View)
-                    ?? await RequireStoreScopeAsync(request.StoreCode);
+                    await RequireAnyPermissionAsync(CartWritePermissions)
+                    ?? await RequireAssignedStoreScopeAsync(request.StoreCode);
                 if (forbidden != null)
                 {
                     return forbidden;
@@ -382,8 +390,8 @@ namespace BlazorApp.Api.Controllers.React
             try
             {
                 var forbidden =
-                    await RequireAnyPermissionAsync(Permissions.OrderFront.View)
-                    ?? await RequireStoreScopeAsync(request.StoreCode);
+                    await RequireAnyPermissionAsync(CartWritePermissions)
+                    ?? await RequireAssignedStoreScopeAsync(request.StoreCode);
                 if (forbidden != null)
                 {
                     return forbidden;
@@ -412,8 +420,8 @@ namespace BlazorApp.Api.Controllers.React
             try
             {
                 var forbidden =
-                    await RequireAnyPermissionAsync(Permissions.OrderFront.View)
-                    ?? await RequireStoreScopeAsync(request.StoreCode);
+                    await RequireAnyPermissionAsync(CartWritePermissions)
+                    ?? await RequireAssignedStoreScopeAsync(request.StoreCode);
                 if (forbidden != null)
                 {
                     return forbidden;
@@ -446,8 +454,8 @@ namespace BlazorApp.Api.Controllers.React
             try
             {
                 var forbidden =
-                    await RequireAnyPermissionAsync(Permissions.OrderFront.View)
-                    ?? await RequireStoreScopeAsync(request.StoreCode);
+                    await RequireAnyPermissionAsync(CartWritePermissions)
+                    ?? await RequireAssignedStoreScopeAsync(request.StoreCode);
                 if (forbidden != null)
                 {
                     return forbidden;
@@ -478,8 +486,8 @@ namespace BlazorApp.Api.Controllers.React
             try
             {
                 var forbidden =
-                    await RequireAnyPermissionAsync(Permissions.OrderFront.View)
-                    ?? await RequireStoreScopeAsync(request.StoreCode);
+                    await RequireAnyPermissionAsync(OrderReadPermissions)
+                    ?? await RequireAssignedStoreScopeAsync(request.StoreCode);
                 if (forbidden != null)
                 {
                     return forbidden;

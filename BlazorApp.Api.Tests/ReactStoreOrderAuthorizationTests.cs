@@ -225,6 +225,152 @@ public class ReactStoreOrderAuthorizationTests
     }
 
     [Fact]
+    public async Task ScanLookupProducts_AllowsAssignedStoreForOrderReadUser()
+    {
+        var request = new StoreOrderScanLookupRequestDto { Barcode = "930001", StoreCode = "1024" };
+        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        service
+            .Setup(item => item.ScanLookupProductsAsync(request))
+            .ReturnsAsync(
+                ApiResponse<StoreOrderScanLookupResultDto>.OK(
+                    new StoreOrderScanLookupResultDto { Barcode = "930001" }
+                )
+            );
+        var scopeService = CreateScopeService();
+        scopeService.Setup(item => item.CanAccessStoreCodeAsync("1024")).ReturnsAsync(false);
+        var userService = new Mock<IUserService>(MockBehavior.Strict);
+        userService
+            .Setup(item => item.GetUserStoresAsync("user-1"))
+            .ReturnsAsync(
+                ApiResponse<List<UserStoreDto>>.OK(
+                    new List<UserStoreDto> { new() { StoreCode = "1024" } }
+                )
+            );
+
+        var controller = CreateController(
+            service,
+            CreateAuthorizationService(Permissions.Orders.View),
+            scopeService,
+            new[] { "Order" },
+            userService: userService
+        );
+
+        var result = await controller.ScanLookupProducts(request);
+
+        Assert.IsType<OkObjectResult>(result);
+        service.Verify(item => item.ScanLookupProductsAsync(request), Times.Once);
+        userService.Verify(item => item.GetUserStoresAsync("user-1"), Times.Once);
+    }
+
+    [Fact]
+    public async Task ScanLookupProducts_ForbidsMissingStoreCodeForScopedUser()
+    {
+        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        var controller = CreateController(
+            service,
+            CreateAuthorizationService(Permissions.Orders.View),
+            CreateScopeService(),
+            new[] { "Order" }
+        );
+
+        var result = await controller.ScanLookupProducts(
+            new StoreOrderScanLookupRequestDto { Barcode = "930001" }
+        );
+
+        Assert.IsType<ForbidResult>(result);
+        service.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task AddToCart_AllowsAssignedStoreForOrderCreateUser()
+    {
+        var request = new AddToCartRequestDto
+        {
+            StoreCode = "1024",
+            ProductCode = "P001",
+            Quantity = 1,
+        };
+        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        service
+            .Setup(item => item.AddToCartAsync(request))
+            .ReturnsAsync(new ApiResponse<bool> { Success = true, Data = true });
+        var scopeService = CreateScopeService();
+        scopeService.Setup(item => item.CanAccessStoreCodeAsync("1024")).ReturnsAsync(false);
+        var userService = new Mock<IUserService>(MockBehavior.Strict);
+        userService
+            .Setup(item => item.GetUserStoresAsync("user-1"))
+            .ReturnsAsync(
+                ApiResponse<List<UserStoreDto>>.OK(
+                    new List<UserStoreDto> { new() { StoreCode = "1024" } }
+                )
+            );
+
+        var controller = CreateController(
+            service,
+            CreateAuthorizationService(Permissions.Orders.Create),
+            scopeService,
+            new[] { "Order" },
+            userService: userService
+        );
+
+        var result = await controller.AddToCart(request);
+
+        Assert.IsType<OkObjectResult>(result);
+        service.Verify(item => item.AddToCartAsync(request), Times.Once);
+        userService.Verify(item => item.GetUserStoresAsync("user-1"), Times.Once);
+    }
+
+    [Fact]
+    public async Task AddToCart_ForbidsOrderReadOnlyUser()
+    {
+        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        var controller = CreateController(
+            service,
+            CreateAuthorizationService(Permissions.Orders.View),
+            CreateScopeService(),
+            new[] { "Order" }
+        );
+
+        var result = await controller.AddToCart(
+            new AddToCartRequestDto { StoreCode = "S001", ProductCode = "P001", Quantity = 1 }
+        );
+
+        Assert.IsType<ForbidResult>(result);
+        service.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task AddToCart_ForbidsUnassignedStoreForOrderCreateUser()
+    {
+        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        var scopeService = CreateScopeService();
+        scopeService.Setup(item => item.CanAccessStoreCodeAsync("1024")).ReturnsAsync(false);
+        var userService = new Mock<IUserService>(MockBehavior.Strict);
+        userService
+            .Setup(item => item.GetUserStoresAsync("user-1"))
+            .ReturnsAsync(
+                ApiResponse<List<UserStoreDto>>.OK(
+                    new List<UserStoreDto> { new() { StoreCode = "1006" } }
+                )
+            );
+        var controller = CreateController(
+            service,
+            CreateAuthorizationService(Permissions.Orders.Create),
+            scopeService,
+            new[] { "Order" },
+            userService: userService
+        );
+
+        var result = await controller.AddToCart(
+            new AddToCartRequestDto { StoreCode = "1024", ProductCode = "P001", Quantity = 1 }
+        );
+
+        Assert.IsType<ForbidResult>(result);
+        service.VerifyNoOtherCalls();
+        userService.Verify(item => item.GetUserStoresAsync("user-1"), Times.Once);
+    }
+
+    [Fact]
     public async Task GetOrderList_ForbidsWhenRequestedStoreIsOutsideCurrentUserScope()
     {
         var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
