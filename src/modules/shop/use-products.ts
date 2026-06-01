@@ -6,6 +6,9 @@ import type { ProductDynamicDataMap, StoreOrderProductQuery } from "@/modules/sh
 export function useProducts(query: StoreOrderProductQuery) {
   const productsQuery = useQuery({
     queryKey: ["shopProducts", query],
+    enabled: Boolean(query.storeCode),
+    staleTime: 5 * 60 * 1000,
+    retry: false,
     queryFn: () => getProducts(query),
   });
 
