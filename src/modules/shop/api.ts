@@ -14,6 +14,7 @@ import type {
   StoreOrderCart,
 } from "@/modules/shop/types";
 import { resolveCartSkuCount } from "@/modules/shop/cart-summary-density";
+import { buildScanLookupPayload } from "@/modules/shop/scan-lookup-payload";
 import { apiClient } from "@/shared/api/client";
 
 type ApiItem = Record<string, unknown>;
@@ -383,10 +384,14 @@ export async function updateCartQuantity(payload: UpdateCartQuantityPayload): Pr
   await apiClient.post("/react/v1/store-order/cart/update", payload);
 }
 
-export async function lookupProductsByBarcode(barcode: string): Promise<StoreOrderScanLookupResult> {
-  const response = await apiClient.post("/react/v1/store-order/products/scan-lookup", {
-    barcode,
-  });
+export async function lookupProductsByBarcode(
+  barcode: string,
+  storeCode?: string | null
+): Promise<StoreOrderScanLookupResult> {
+  const response = await apiClient.post(
+    "/react/v1/store-order/products/scan-lookup",
+    buildScanLookupPayload(barcode, storeCode)
+  );
 
   const data = response.data as Partial<StoreOrderScanLookupResult> | null | undefined;
 

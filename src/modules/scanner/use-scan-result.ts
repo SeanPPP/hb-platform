@@ -85,7 +85,7 @@ export function useScanResult({
       });
 
       try {
-        const result = await lookupProductsByBarcode(barcode);
+        const result = await lookupProductsByBarcode(barcode, storeCode);
         const items = result.items ?? [];
 
         if (items.length === 0) {
