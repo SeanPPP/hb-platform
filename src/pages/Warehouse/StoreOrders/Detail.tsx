@@ -11,6 +11,7 @@ import {
   SearchOutlined,
 } from '@ant-design/icons'
 import {
+  Alert,
   Button,
   Card,
   Descriptions,
@@ -68,13 +69,13 @@ import type {
   StoreOrderDetailQuery,
   StoreOrderDetailStatFilter,
   StoreOrderDetailSortField,
-  StoreOrderFlowStatus,
   StoreOrderPasteTargetField,
   StoreOrderProductItem,
 } from '../../../types/storeOrder'
-import { StoreOrderStatusColorMap } from '../../../types/storeOrder'
+import { StoreOrderFlowStatus, StoreOrderStatusColorMap } from '../../../types/storeOrder'
 import { copyTextToClipboard } from '../../../utils/clipboard'
 import { useDynamicTabTitle } from '../../../hooks/useDynamicTabTitle'
+import { deriveStoreOrderDetailPermissions } from './storeOrderDetailPermissions'
 
 function formatDateTime(value?: string) {
   if (!value) {
@@ -879,8 +880,27 @@ export default function StoreOrderDetailPage() {
     [t],
   )
 
+  const {
+    canEditOrder,
+    canStartPicking,
+    canCompleteOrder,
+    isReadonlyOrder,
+  } = deriveStoreOrderDetailPermissions(detail?.flowStatus)
+
+  function ensureOrderEditable() {
+    if (canEditOrder) {
+      return true
+    }
+
+    message.warning(t('storeOrders.detail.orderReadonlyRefresh'))
+    return false
+  }
+
   const handleSaveHeader = async () => {
     if (!detail) {
+      return
+    }
+    if (!ensureOrderEditable()) {
       return
     }
     setSavingHeader(true)
@@ -904,6 +924,9 @@ export default function StoreOrderDetailPage() {
 
   const handleQuickAdd = async () => {
     if (!detail) {
+      return
+    }
+    if (!ensureOrderEditable()) {
       return
     }
     const normalizedItemNumber = quickAddItemNumber.trim()
@@ -961,6 +984,9 @@ export default function StoreOrderDetailPage() {
     if (!detail) {
       return
     }
+    if (!ensureOrderEditable()) {
+      return
+    }
     setLineActionLoading(true)
     try {
       if (items.length === 1) {
@@ -991,6 +1017,9 @@ export default function StoreOrderDetailPage() {
     if (!detail) {
       return
     }
+    if (!ensureOrderEditable()) {
+      return
+    }
 
     const edited = editingRows[line.detailGUID]
     const allocQuantity = edited?.allocQuantity ?? line.allocQuantity ?? 0
@@ -1006,7 +1035,7 @@ export default function StoreOrderDetailPage() {
       await updateStoreOrderLine({
         orderGUID: detail.orderGUID,
         productCode: line.productCode,
-        quantity: allocQuantity,
+        allocQuantity,
         importPrice,
       })
       message.success(t('storeOrders.detail.lineSaved'))
@@ -1021,6 +1050,9 @@ export default function StoreOrderDetailPage() {
 
   const handleRemoveLine = async (line: StoreOrderDetailLine) => {
     if (!detail) {
+      return
+    }
+    if (!ensureOrderEditable()) {
       return
     }
     setLineActionLoading(true)
@@ -1041,6 +1073,9 @@ export default function StoreOrderDetailPage() {
   }
 
   const handleToggleLineStatus = async (line: StoreOrderDetailLine) => {
+    if (!ensureOrderEditable()) {
+      return
+    }
     setLineActionLoading(true)
     try {
       await updateStoreOrderProductStatus({
@@ -1064,6 +1099,9 @@ export default function StoreOrderDetailPage() {
     isActive?: boolean
   }) => {
     if (!detail || selectedLines.length === 0) {
+      return
+    }
+    if (!ensureOrderEditable()) {
       return
     }
 
@@ -1188,6 +1226,9 @@ export default function StoreOrderDetailPage() {
     if (!detail) {
       return
     }
+    if (!ensureOrderEditable()) {
+      return
+    }
 
     const validItems: Array<{ productCode: string; quantity: number; importPrice?: number }> = []
 
@@ -1232,6 +1273,10 @@ export default function StoreOrderDetailPage() {
     if (!detail) {
       return
     }
+    if (!canCompleteOrder) {
+      message.warning(t('storeOrders.detail.orderReadonlyRefresh'))
+      return
+    }
     Modal.confirm({
       title: t('storeOrders.detail.confirmCompleteTitle'),
       content: t('storeOrders.detail.confirmCompleteContent'),
@@ -1255,6 +1300,10 @@ export default function StoreOrderDetailPage() {
 
   const handleStartPicking = async () => {
     if (!detail) {
+      return
+    }
+    if (!canStartPicking) {
+      message.warning(t('storeOrders.detail.orderReadonlyRefresh'))
       return
     }
     try {
@@ -1407,6 +1456,7 @@ export default function StoreOrderDetailPage() {
         <InputNumber
           min={0}
           precision={0}
+          disabled={isReadonlyOrder}
           status={getQuantityHighlight(record)}
           style={{ width: '100%' }}
           value={editingRows[record.detailGUID]?.allocQuantity ?? value ?? 0}
@@ -1431,6 +1481,7 @@ export default function StoreOrderDetailPage() {
         <InputNumber
           min={0}
           precision={2}
+          disabled={isReadonlyOrder}
           status={isZeroOrEmpty(editingRows[record.detailGUID]?.importPrice ?? value) ? 'error' : undefined}
           style={{ width: '100%' }}
           value={editingRows[record.detailGUID]?.importPrice ?? value}
@@ -1506,6 +1557,7 @@ export default function StoreOrderDetailPage() {
             size="small"
             type="link"
             icon={<SaveOutlined />}
+            disabled={isReadonlyOrder}
             onClick={() => void handleSaveLine(record)}
           >
             {t('common.save')}
@@ -1514,6 +1566,7 @@ export default function StoreOrderDetailPage() {
             size="small"
             type="link"
             icon={<EditOutlined />}
+            disabled={isReadonlyOrder}
             onClick={() => void handleToggleLineStatus(record)}
           >
             {record.isActive ? t('common.inactive') : t('common.active')}
@@ -1524,7 +1577,7 @@ export default function StoreOrderDetailPage() {
             cancelText={t('common.cancel')}
             onConfirm={() => void handleRemoveLine(record)}
           >
-            <Button size="small" danger type="link" icon={<DeleteOutlined />}>
+            <Button size="small" danger type="link" icon={<DeleteOutlined />} disabled={isReadonlyOrder}>
               {t('common.delete')}
             </Button>
           </Popconfirm>
@@ -1576,6 +1629,15 @@ export default function StoreOrderDetailPage() {
       ) : detail ? (
         <Space direction="vertical" size={16} style={{ width: '100%' }}>
             <Card>
+              {isReadonlyOrder ? (
+                <Alert
+                  type="warning"
+                  showIcon
+                  message={t('storeOrders.detail.orderReadonlyTitle')}
+                  description={t('storeOrders.detail.orderReadonlyDescription')}
+                  style={{ marginBottom: 16 }}
+                />
+              ) : null}
               <Descriptions
                 column={3}
                 size="small"
@@ -1584,6 +1646,7 @@ export default function StoreOrderDetailPage() {
                     <Button
                       icon={<SaveOutlined />}
                       loading={savingHeader}
+                      disabled={isReadonlyOrder}
                       onClick={() => void handleSaveHeader()}
                     >
                       {t('storeOrders.saveOrderHeader')}
@@ -1591,6 +1654,7 @@ export default function StoreOrderDetailPage() {
                     <Button
                       icon={<CheckOutlined />}
                       loading={lineActionLoading}
+                      disabled={isReadonlyOrder || !canStartPicking}
                       onClick={() => void handleStartPicking()}
                     >
                       {t('storeOrders.startPicking')}
@@ -1599,6 +1663,7 @@ export default function StoreOrderDetailPage() {
                       type="primary"
                       icon={<CheckOutlined />}
                       loading={lineActionLoading}
+                      disabled={!canCompleteOrder}
                       onClick={() => void handleCompleteOrder()}
                     >
                       {t('storeOrders.completeOrder')}
@@ -1612,6 +1677,7 @@ export default function StoreOrderDetailPage() {
                     showSearch
                     style={{ width: '100%' }}
                     loading={storesLoading}
+                    disabled={isReadonlyOrder}
                     value={headerForm.storeCode}
                     options={storeOptions}
                     optionFilterProp="label"
@@ -1626,6 +1692,7 @@ export default function StoreOrderDetailPage() {
                 <Descriptions.Item label={t('storeOrders.orderDateLabel')}>
                   <Input
                     type="date"
+                    disabled={isReadonlyOrder}
                     value={headerForm.orderDate ? headerForm.orderDate.slice(0, 10) : ''}
                     onChange={(event) =>
                       setHeaderForm((current) => ({
@@ -1645,6 +1712,7 @@ export default function StoreOrderDetailPage() {
                   <InputNumber
                     min={0}
                     precision={2}
+                    disabled={isReadonlyOrder}
                     style={{ width: '100%' }}
                     value={headerForm.shippingFee}
                     onChange={(value) =>
@@ -1662,6 +1730,7 @@ export default function StoreOrderDetailPage() {
                 <Descriptions.Item label={t('storeOrders.remarksLabel')} span={3}>
                   <Input.TextArea
                     rows={3}
+                    disabled={isReadonlyOrder}
                     value={headerForm.remarks}
                     onChange={(event) =>
                       setHeaderForm((current) => ({
@@ -1681,6 +1750,7 @@ export default function StoreOrderDetailPage() {
                 <Space wrap>
                   <Input
                     allowClear
+                    disabled={isReadonlyOrder}
                     placeholder={t('storeOrders.quickAddPlaceholder')}
                     style={{ width: 220 }}
                     value={quickAddItemNumber}
@@ -1690,6 +1760,7 @@ export default function StoreOrderDetailPage() {
                   <InputNumber
                     min={1}
                     precision={0}
+                    disabled={isReadonlyOrder}
                     placeholder={t('storeOrders.allocQtyPlaceholder')}
                     value={quickAddQuantity}
                     onChange={(value) => setQuickAddQuantity(Number(value ?? 1))}
@@ -1697,16 +1768,18 @@ export default function StoreOrderDetailPage() {
                   <Button
                     icon={<PlusOutlined />}
                     loading={lineActionLoading}
+                    disabled={isReadonlyOrder}
                     onClick={() => void handleQuickAdd()}
                   >
                     {t('storeOrders.quickAdd')}
                   </Button>
-                  <Button icon={<SearchOutlined />} onClick={() => setPickerOpen(true)}>
+                  <Button icon={<SearchOutlined />} disabled={isReadonlyOrder} onClick={() => setPickerOpen(true)}>
                     {t('storeOrders.selectProduct')}
                   </Button>
                   <Button
                     icon={<ContainerOutlined />}
                     loading={containerPickerLoading}
+                    disabled={isReadonlyOrder}
                     onClick={() => void handleOpenContainerPicker()}
                   >
                     {t('storeOrders.containerPicker')}
@@ -1725,6 +1798,7 @@ export default function StoreOrderDetailPage() {
                   </Button>
                   <Button
                     icon={<CopyOutlined />}
+                    disabled={isReadonlyOrder}
                     onClick={() => {
                       resetPasteState('allocQuantity')
                       setPasteModalOpen(true)
@@ -1732,7 +1806,7 @@ export default function StoreOrderDetailPage() {
                   >
                     {t('storeOrders.excelPaste')}
                   </Button>
-                  <Button disabled={!selectedLineKeys.length} onClick={() => setBatchModalOpen(true)}>
+                  <Button disabled={isReadonlyOrder || !selectedLineKeys.length} onClick={() => setBatchModalOpen(true)}>
                     {t('storeOrders.batchModify')}
                   </Button>
                   <Typography.Text type="secondary">{t('storeOrders.detail.selectedRows', { count: selectedLineKeys.length })}</Typography.Text>
@@ -1896,7 +1970,7 @@ export default function StoreOrderDetailPage() {
                   key="confirm"
                   type="primary"
                   loading={submittingPaste}
-                  disabled={validPastePreviewCount === 0}
+                  disabled={isReadonlyOrder || validPastePreviewCount === 0}
                   onClick={() => void handleConfirmPaste()}
                 >
                   {t('storeOrders.detail.importValidRows', { count: validPastePreviewCount })}

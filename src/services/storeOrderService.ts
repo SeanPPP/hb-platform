@@ -491,9 +491,14 @@ export async function pasteReplaceStoreOrderLines(payload: PasteReplaceStoreOrde
 }
 
 export async function updateStoreOrderLine(payload: UpdateStoreOrderLinePayload) {
+  const { allocQuantity, ...restPayload } = payload
   await request<ApiResponse<unknown> | unknown>(`${API_BASE}/line/update`, {
     method: 'POST',
-    data: payload,
+    // 后端当前接口仍使用 quantity 字段表达发货数，前端类型保持 allocQuantity 语义。
+    data: {
+      ...restPayload,
+      quantity: allocQuantity,
+    },
   })
 }
 

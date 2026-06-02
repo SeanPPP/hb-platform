@@ -338,7 +338,7 @@ export interface BatchAddStoreOrderLinePayload {
 export interface UpdateStoreOrderLinePayload {
   orderGUID: string
   productCode: string
-  quantity: number
+  allocQuantity: number
   importPrice?: number
 }
 

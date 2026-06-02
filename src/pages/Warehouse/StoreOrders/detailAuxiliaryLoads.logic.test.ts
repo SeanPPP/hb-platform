@@ -55,6 +55,67 @@ async function main() {
   })
   if (translationFailure) failures.push(translationFailure)
 
+  const editabilityStateFailure = await runTest('详情页应复用订单状态权限派生函数', () => {
+    assert(
+      detailSource.includes("import { deriveStoreOrderDetailPermissions } from './storeOrderDetailPermissions'") &&
+        detailSource.includes('} = deriveStoreOrderDetailPermissions(detail?.flowStatus)'),
+      '详情页尚未复用 deriveStoreOrderDetailPermissions 派生状态权限',
+    )
+  })
+  if (editabilityStateFailure) failures.push(editabilityStateFailure)
+
+  const editGuardFailure = await runTest('不可编辑订单的写入口应先走统一 guard', () => {
+    assert(
+      detailSource.includes('function ensureOrderEditable') &&
+        detailSource.includes("message.warning(t('storeOrders.detail.orderReadonlyRefresh'))") &&
+        detailSource.includes('if (!ensureOrderEditable())') &&
+        detailSource.includes('handleSaveLine') &&
+        detailSource.includes('handleConfirmPaste'),
+      '详情页写操作尚未统一拦截不可编辑订单',
+    )
+  })
+  if (editGuardFailure) failures.push(editGuardFailure)
+
+  const flowGuardFailure = await runTest('状态流转写入口应有函数内二次门禁', () => {
+    assert(
+      detailSource.includes('if (!canStartPicking)') &&
+        detailSource.includes('if (!canCompleteOrder)') &&
+        detailSource.includes("message.warning(t('storeOrders.detail.orderReadonlyRefresh'))"),
+      '开始配货/完成订单函数入口尚未按状态二次拦截',
+    )
+  })
+  if (flowGuardFailure) failures.push(flowGuardFailure)
+
+  const disabledUiFailure = await runTest('不可编辑订单应禁用表头和明细写控件但保留只读动作', () => {
+    assert(
+      detailSource.includes('disabled={isReadonlyOrder}') &&
+        detailSource.includes('disabled={isReadonlyOrder || !selectedLineKeys.length}') &&
+        detailSource.includes('disabled={isReadonlyOrder || validPastePreviewCount === 0}') &&
+        detailSource.includes('disabled={isReadonlyOrder || !canStartPicking}') &&
+        detailSource.includes('disabled={!canCompleteOrder}') &&
+        detailSource.includes('navigate(`/warehouse/store-order/picking/${detail.orderGUID}`)') &&
+        detailSource.includes('navigate(`/warehouse/store-order/invoice/${detail.orderGUID}`)'),
+      '详情页尚未禁用写控件或误影响配货单/发票只读动作',
+    )
+  })
+  if (disabledUiFailure) failures.push(disabledUiFailure)
+
+  const readonlyCopyFailure = await runTest('只读状态应提供中英文提示文案', () => {
+    assert(
+      zhSource.includes('"orderReadonlyTitle": "当前订单为只读状态"') &&
+        zhSource.includes('"orderReadonlyDescription": "已完成/配货中的订单为只读状态"') &&
+        zhSource.includes('"orderReadonlyRefresh": "当前订单状态不可编辑，请刷新确认状态。"'),
+      '中文文案缺少订单只读提示',
+    )
+    assert(
+      enSource.includes('"orderReadonlyTitle": "Order is read-only"') &&
+        enSource.includes('"orderReadonlyDescription": "Completed or picking orders are read-only."') &&
+        enSource.includes('"orderReadonlyRefresh": "The current order status is not editable. Please refresh and confirm the status."'),
+      '英文文案缺少订单只读提示',
+    )
+  })
+  if (readonlyCopyFailure) failures.push(readonlyCopyFailure)
+
   if (failures.length > 0) {
     throw new Error(`共有 ${failures.length} 个测试失败\n- ${failures.join('\n- ')}`)
   }

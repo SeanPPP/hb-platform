@@ -2,6 +2,7 @@ import {
   getStoreOrderDetail,
   getStoreOrderDetailFull,
   getStoreOrderDetailProductCodes,
+  updateStoreOrderLine,
 } from './storeOrderService'
 
 function assertEqual<T>(actual: T, expected: T, label: string) {
@@ -170,6 +171,51 @@ try {
     '跨页去重应读取轻量商品编码接口',
   )
   assertDeepEqual(productCodes, ['P001', 'P002'], '商品编码接口应过滤非字符串值')
+} finally {
+  globalThis.fetch = originalFetch
+}
+
+try {
+  let capturedUrl = ''
+  let capturedMethod = ''
+  let capturedBody: unknown = null
+
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    capturedUrl = String(input)
+    capturedMethod = String(init?.method)
+    capturedBody = init?.body ? JSON.parse(String(init.body)) : null
+
+    return new Response(
+      JSON.stringify({
+        success: true,
+        data: null,
+      }),
+      {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      },
+    )
+  }) as typeof fetch
+
+  await updateStoreOrderLine({
+    orderGUID: 'order-1',
+    productCode: 'product-1',
+    allocQuantity: 7,
+    importPrice: 1.25,
+  })
+
+  assertEqual(capturedUrl, '/api/react/v1/store-order/line/update', '单行保存接口路径应保持不变')
+  assertEqual(capturedMethod, 'POST', '单行保存接口应继续使用 POST')
+  assertDeepEqual(
+    capturedBody,
+    {
+      orderGUID: 'order-1',
+      productCode: 'product-1',
+      importPrice: 1.25,
+      quantity: 7,
+    },
+    '单行保存应在 service 层把前端 allocQuantity 显式映射为后端 quantity 字段',
+  )
 } finally {
   globalThis.fetch = originalFetch
 }
