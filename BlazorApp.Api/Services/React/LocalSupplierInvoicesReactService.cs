@@ -19,13 +19,15 @@ namespace BlazorApp.Api.Services.React
         private readonly IMapper _mapper;
         private readonly ILogger<LocalSupplierInvoicesReactService> _logger;
         private readonly IAutoPricingService _autoPricingService;
+        private readonly ILocalSupplierInvoiceHqProductSyncService? _hqProductSyncService;
 
         public LocalSupplierInvoicesReactService(
             SqlSugarContext context,
             HqSqlSugarContext hqContext,
             IMapper mapper,
             ILogger<LocalSupplierInvoicesReactService> logger,
-            IAutoPricingService autoPricingService
+            IAutoPricingService autoPricingService,
+            ILocalSupplierInvoiceHqProductSyncService? hqProductSyncService = null
         )
         {
             _context = context;
@@ -33,6 +35,7 @@ namespace BlazorApp.Api.Services.React
             _mapper = mapper;
             _logger = logger;
             _autoPricingService = autoPricingService;
+            _hqProductSyncService = hqProductSyncService;
         }
 
         public async Task<GridResponseDto<LocalSupplierInvoiceListDto>> GetGridDataAsync(
@@ -482,48 +485,59 @@ namespace BlazorApp.Api.Services.React
                     return ApiResponse<bool>.Error("数据不存在", "NOT_FOUND");
 
                 var now = DateTime.UtcNow;
-                var updater = db.Updateable<StoreLocalSupplierInvoice>()
-                    .SetColumnsIF(dto.InvoiceNo != null, x => x.InvoiceNo == dto.InvoiceNo)
-                    .SetColumnsIF(dto.OrderDate != null, x => x.OrderDate == dto.OrderDate)
-                    .SetColumnsIF(dto.InboundDate != null, x => x.InboundDate == dto.InboundDate)
-                    .SetColumnsIF(dto.Remarks != null, x => x.Remarks == dto.Remarks)
-                    .SetColumnsIF(dto.VoucherImage != null, x => x.VoucherImage == dto.VoucherImage)
-                    .SetColumnsIF(dto.FlowStatus != null, x => x.FlowStatus == dto.FlowStatus)
-                    .SetColumnsIF(
-                        dto.InboundStatus != null,
-                        x => x.InboundStatus == dto.InboundStatus
-                    )
-                    .SetColumnsIF(
-                        !string.IsNullOrWhiteSpace(dto.StoreCode),
-                        x => x.StoreCode == dto.StoreCode
-                    )
-                    .SetColumnsIF(
-                        !string.IsNullOrWhiteSpace(dto.SupplierCode),
-                        x => x.SupplierCode == dto.SupplierCode
-                    )
-                    .SetColumns(x => x.UpdatedAt == now)
-                    .Where(x => x.InvoiceGUID == invoiceGuid);
-
-                var affected = await updater.ExecuteCommandAsync();
-
-                if (affected > 0 && (!string.IsNullOrWhiteSpace(dto.StoreCode) || !string.IsNullOrWhiteSpace(dto.SupplierCode)))
+                await db.Ado.BeginTranAsync();
+                try
                 {
-                    var detailUpdater = db.Updateable<StoreLocalSupplierInvoiceDetails>()
-                        .SetColumnsIF(!string.IsNullOrWhiteSpace(dto.StoreCode), x => x.StoreCode == dto.StoreCode)
-                        .SetColumnsIF(!string.IsNullOrWhiteSpace(dto.SupplierCode), x => x.SupplierCode == dto.SupplierCode)
+                    var updater = db.Updateable<StoreLocalSupplierInvoice>()
+                        .SetColumnsIF(dto.InvoiceNo != null, x => x.InvoiceNo == dto.InvoiceNo)
+                        .SetColumnsIF(dto.OrderDate != null, x => x.OrderDate == dto.OrderDate)
+                        .SetColumnsIF(dto.InboundDate != null, x => x.InboundDate == dto.InboundDate)
+                        .SetColumnsIF(dto.Remarks != null, x => x.Remarks == dto.Remarks)
+                        .SetColumnsIF(dto.VoucherImage != null, x => x.VoucherImage == dto.VoucherImage)
+                        .SetColumnsIF(dto.FlowStatus != null, x => x.FlowStatus == dto.FlowStatus)
+                        .SetColumnsIF(
+                            dto.InboundStatus != null,
+                            x => x.InboundStatus == dto.InboundStatus
+                        )
+                        .SetColumnsIF(
+                            !string.IsNullOrWhiteSpace(dto.StoreCode),
+                            x => x.StoreCode == dto.StoreCode
+                        )
+                        .SetColumnsIF(
+                            !string.IsNullOrWhiteSpace(dto.SupplierCode),
+                            x => x.SupplierCode == dto.SupplierCode
+                        )
+                        .SetColumns(x => x.UpdatedAt == now)
                         .Where(x => x.InvoiceGUID == invoiceGuid);
 
-                    await detailUpdater.ExecuteCommandAsync();
+                    var affected = await updater.ExecuteCommandAsync();
 
-                    _logger.LogInformation(
-                        "[InvoiceUpdate] 级联更新明细: InvoiceGUID={InvoiceGUID}, StoreCode={StoreCode}, SupplierCode={SupplierCode}",
-                        invoiceGuid, dto.StoreCode ?? "(不变)", dto.SupplierCode ?? "(不变)"
-                    );
+                    if (affected > 0 && (!string.IsNullOrWhiteSpace(dto.StoreCode) || !string.IsNullOrWhiteSpace(dto.SupplierCode)))
+                    {
+                        var detailUpdater = db.Updateable<StoreLocalSupplierInvoiceDetails>()
+                            .SetColumnsIF(!string.IsNullOrWhiteSpace(dto.StoreCode), x => x.StoreCode == dto.StoreCode)
+                            .SetColumnsIF(!string.IsNullOrWhiteSpace(dto.SupplierCode), x => x.SupplierCode == dto.SupplierCode)
+                            .Where(x => x.InvoiceGUID == invoiceGuid);
+
+                        await detailUpdater.ExecuteCommandAsync();
+
+                        _logger.LogInformation(
+                            "[InvoiceUpdate] 级联更新明细: InvoiceGUID={InvoiceGUID}, StoreCode={StoreCode}, SupplierCode={SupplierCode}",
+                            invoiceGuid, dto.StoreCode ?? "(不变)", dto.SupplierCode ?? "(不变)"
+                        );
+                    }
+
+                    await db.Ado.CommitTranAsync();
+
+                    return affected > 0
+                        ? ApiResponse<bool>.OK(true)
+                        : ApiResponse<bool>.Error("未更新任何字段", "NO_CHANGE");
                 }
-
-                return affected > 0
-                    ? ApiResponse<bool>.OK(true)
-                    : ApiResponse<bool>.Error("未更新任何字段", "NO_CHANGE");
+                catch
+                {
+                    await db.Ado.RollbackTranAsync();
+                    throw;
+                }
             }
             catch (Exception ex)
             {
@@ -1743,7 +1757,7 @@ namespace BlazorApp.Api.Services.React
             public string? StoreProductCode { get; set; }
         }
 
-        public async Task<ApiResponse<BatchResultDto>> UpdateDetailsToStorePricesAsync(
+        public async Task<ApiResponse<UpdateToStorePricesResultDto>> UpdateDetailsToStorePricesAsync(
             UpdateToStorePricesRequest dto,
             string updatedBy
         )
@@ -1763,7 +1777,7 @@ namespace BlazorApp.Api.Services.React
 
                 if (details == null || details.Count == 0)
                 {
-                    return ApiResponse<BatchResultDto>.Error("未找到要更新的明细记录", "NOT_FOUND");
+                    return ApiResponse<UpdateToStorePricesResultDto>.Error("未找到要更新的明细记录", "NOT_FOUND");
                 }
 
                 var now = DateTime.UtcNow;
@@ -1908,30 +1922,85 @@ namespace BlazorApp.Api.Services.React
                     }
 
                     await db.Ado.CommitTranAsync();
-
-                    return ApiResponse<BatchResultDto>.OK(
-                        new BatchResultDto
-                        {
-                            Inserted = 0,
-                            Updated = totalUpdated,
-                            Failed = 0,
-                        }
-                    );
                 }
                 catch (Exception exTran)
                 {
                     await db.Ado.RollbackTranAsync();
                     _logger.LogError(exTran, "更新到分店价格表事务失败");
                     var msg = exTran.InnerException?.Message ?? exTran.Message ?? "更新失败";
-                    return ApiResponse<BatchResultDto>.Error(msg, "UPDATE_ERROR");
+                    return ApiResponse<UpdateToStorePricesResultDto>.Error(msg, "UPDATE_ERROR");
                 }
+
+                var result = new UpdateToStorePricesResultDto
+                {
+                    Inserted = 0,
+                    Updated = totalUpdated,
+                    Failed = 0,
+                };
+
+                if (dto.UpdateHqProduct)
+                {
+                    if (_hqProductSyncService == null)
+                    {
+                        result.HqFailed = details.Count;
+                        result.Failed += details.Count;
+                        result.HqErrors.Add(new EnsureHqProductError
+                        {
+                            Message = "HQ商品同步服务未注册",
+                        });
+                        return ApiResponse<UpdateToStorePricesResultDto>.Error(
+                            "更新到分店价格完成，但同步HQ商品失败",
+                            "HQ_SYNC_SERVICE_MISSING",
+                            result
+                        );
+                    }
+
+                    var hqResult = await _hqProductSyncService.EnsureHqProductsAsync(
+                        dto.InvoiceGuid,
+                        new EnsureHqProductsRequest
+                        {
+                            DetailGuids = dto.DetailGuids,
+                            TargetStoreCodes = dto.TargetStoreCodes,
+                        },
+                        updatedBy
+                    );
+                    MergeHqResult(result, hqResult.Data ?? hqResult.Details as EnsureHqProductsResult);
+                    if (!hqResult.Success)
+                    {
+                        result.Failed += result.HqFailed;
+                        return ApiResponse<UpdateToStorePricesResultDto>.Error(
+                            hqResult.Message,
+                            hqResult.ErrorCode,
+                            result
+                        );
+                    }
+                }
+
+                return ApiResponse<UpdateToStorePricesResultDto>.OK(result);
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "更新到分店价格表失败");
                 var msg = ex.InnerException?.Message ?? ex.Message ?? "更新失败";
-                return ApiResponse<BatchResultDto>.Error(msg, "UPDATE_ERROR");
+                return ApiResponse<UpdateToStorePricesResultDto>.Error(msg, "UPDATE_ERROR");
             }
+        }
+
+        private static void MergeHqResult(
+            UpdateToStorePricesResultDto target,
+            EnsureHqProductsResult? source
+        )
+        {
+            if (source == null)
+                return;
+
+            target.HqExisting = source.HqExisting;
+            target.HbwebCreated = source.HbwebCreated;
+            target.HqCreated = source.HqCreated;
+            target.HqSynced = source.HqSynced;
+            target.HqPurchasePricesUpdated = source.HqPurchasePricesUpdated;
+            target.HqFailed = source.Failed;
+            target.HqErrors = source.Errors;
         }
 
         /// <summary>
@@ -2214,8 +2283,12 @@ namespace BlazorApp.Api.Services.React
                         }
                     }
 
-                    // 使用预加载的策略在内存中计算定价浮率和自动零售价，避免 N+1 查询
-                    if (detail.PurchasePrice.HasValue && detail.PurchasePrice > 0)
+                    // 只有已存在商品才保留自动定价衍生字段；不存在商品要清空旧检测值。
+                    if (
+                        result.ProductStatus == 1
+                        && detail.PurchasePrice.HasValue
+                        && detail.PurchasePrice > 0
+                    )
                     {
                         var purchasePrice = detail.PurchasePrice.Value;
                         var strategy = _autoPricingService.FindBestStrategyForPrice(
@@ -2290,53 +2363,26 @@ namespace BlazorApp.Api.Services.React
 
                     if (updateItems.Count > 0)
                     {
-                        // 判断哪些字段有值，只更新非空字段
-                        var hasProductCode = results.Any(r => r.ProductInfo?.ProductCode != null);
-                        var hasStoreProductCode = results.Any(r =>
-                            r.ProductInfo?.StoreProductCode != null
-                        );
-                        var hasLastPurchasePrice = results.Any(r => r.LastPurchasePrice != null);
-                        var hasAutoPricing = results.Any(r => r.AutoPricing != null);
-                        var hasIsSpecialProduct = results.Any(r => r.IsSpecialProduct != null);
-                        var hasDiscountRate = results.Any(r => r.DiscountRate != null);
-                        var hasExistingProductCount = results.Any(r => r.ExistingProductCount > 0);
-                        var hasBarcodeStatus = results.Any(r => r.BarcodeStatus != 0);
-                        var hasBarcodeMatchCount = results.Any(r => r.BarcodeMatchCount != 0);
-                        var hasPricingFloatRate = results.Any(r => r.PricingFloatRate != null);
-                        var hasNewAutoRetailPrice = results.Any(r => r.NewAutoRetailPrice != null);
-                        var hasDefaultAction = results.Any(r => r.DefaultAction != 0);
+                        // 检测结果必须覆盖写入，避免旧商品编码、旧条码状态和旧操作类型残留。
+                        var updateColumns = new[]
+                        {
+                            "ProductCode",
+                            "StoreProductCode",
+                            "LastPurchasePrice",
+                            "AutoPricing",
+                            "IsSpecialProduct",
+                            "DiscountRate",
+                            "ExistingProductCount",
+                            "BarcodeStatus",
+                            "BarcodeMatchCount",
+                            "PricingFloatRate",
+                            "NewAutoRetailPrice",
+                            "ActivityType",
+                            "UpdatedAt",
+                        };
 
-                        // 构建需要更新的列
-                        var updateColumns = new List<string> { "UpdatedAt" };
-
-                        if (hasProductCode)
-                            updateColumns.Add("ProductCode");
-                        if (hasStoreProductCode)
-                            updateColumns.Add("StoreProductCode");
-                        if (hasLastPurchasePrice)
-                            updateColumns.Add("LastPurchasePrice");
-                        if (hasAutoPricing)
-                            updateColumns.Add("AutoPricing");
-                        if (hasIsSpecialProduct)
-                            updateColumns.Add("IsSpecialProduct");
-                        if (hasDiscountRate)
-                            updateColumns.Add("DiscountRate");
-                        if (hasExistingProductCount)
-                            updateColumns.Add("ExistingProductCount");
-                        if (hasBarcodeStatus)
-                            updateColumns.Add("BarcodeStatus");
-                        if (hasBarcodeMatchCount)
-                            updateColumns.Add("BarcodeMatchCount");
-                        if (hasPricingFloatRate)
-                            updateColumns.Add("PricingFloatRate");
-                        if (hasNewAutoRetailPrice)
-                            updateColumns.Add("NewAutoRetailPrice");
-                        if (hasDefaultAction)
-                            updateColumns.Add("ActivityType");
-
-                        // 使用 UpdateColumns 只更新指定列
                         await db.Updateable(updateItems)
-                            .UpdateColumns(updateColumns.ToArray())
+                            .UpdateColumns(updateColumns)
                             .ExecuteCommandAsync();
                     }
 
@@ -2456,17 +2502,23 @@ namespace BlazorApp.Api.Services.React
         {
             try
             {
+                if (!IsClientSelectableDetailAction(action))
+                    return ApiResponse<bool>.Error("操作类型无效", "VALIDATION_ERROR");
+
                 var db = _context.Db;
 
-                var exists = await db.Queryable<StoreLocalSupplierInvoiceDetails>()
-                    .AnyAsync(x =>
+                var detail = await db.Queryable<StoreLocalSupplierInvoiceDetails>()
+                    .Where(x =>
                         x.DetailGUID == detailGuid
                         && x.InvoiceGUID == invoiceGuid
                         && x.IsDeleted == false
-                    );
+                    )
+                    .FirstAsync();
 
-                if (!exists)
+                if (detail == null)
                     return ApiResponse<bool>.Error("明细不存在", "NOT_FOUND");
+                if (detail.ActivityType == 99)
+                    return ApiResponse<bool>.Error("已执行完成的明细不能修改操作类型", "VALIDATION_ERROR");
 
                 var now = DateTime.UtcNow;
                 await db.Updateable<StoreLocalSupplierInvoiceDetails>()
@@ -2494,6 +2546,9 @@ namespace BlazorApp.Api.Services.React
                 var db = _context.Db;
                 var now = DateTime.UtcNow;
 
+                if (!IsClientSelectableDetailAction(dto.Action))
+                    return ApiResponse<BatchResultDto>.Error("操作类型无效", "VALIDATION_ERROR");
+
                 if (dto.DetailGuids == null || dto.DetailGuids.Count == 0)
                 {
                     return ApiResponse<BatchResultDto>.Error("未选择任何明细", "VALIDATION_ERROR");
@@ -2510,6 +2565,13 @@ namespace BlazorApp.Api.Services.React
                 if (detailsToUpdate.Count == 0)
                 {
                     return ApiResponse<BatchResultDto>.Error("没有找到要更新的明细", "NOT_FOUND");
+                }
+                if (detailsToUpdate.Any(x => x.ActivityType == 99))
+                {
+                    return ApiResponse<BatchResultDto>.Error(
+                        "已执行完成的明细不能修改操作类型",
+                        "VALIDATION_ERROR"
+                    );
                 }
 
                 await db.Ado.BeginTranAsync();
@@ -3054,13 +3116,18 @@ namespace BlazorApp.Api.Services.React
         }
 
         public async Task<ApiResponse<InvoiceNoCheckResult>> CheckInvoiceNoExistsAsync(
+            string storeCode,
             string supplierCode,
             string invoiceNo
         )
         {
             try
             {
-                if (string.IsNullOrWhiteSpace(supplierCode) || string.IsNullOrWhiteSpace(invoiceNo))
+                if (
+                    string.IsNullOrWhiteSpace(storeCode)
+                    || string.IsNullOrWhiteSpace(supplierCode)
+                    || string.IsNullOrWhiteSpace(invoiceNo)
+                )
                     return ApiResponse<InvoiceNoCheckResult>.OK(
                         new InvoiceNoCheckResult { Exists = false }
                     );
@@ -3068,7 +3135,8 @@ namespace BlazorApp.Api.Services.React
                 var db = _context.Db;
                 var existing = await db.Queryable<StoreLocalSupplierInvoice>()
                     .Where(x =>
-                        x.SupplierCode == supplierCode
+                        x.StoreCode == storeCode.Trim()
+                        && x.SupplierCode == supplierCode
                         && x.InvoiceNo == invoiceNo.Trim()
                         && x.IsDeleted == false
                     )
@@ -3098,6 +3166,11 @@ namespace BlazorApp.Api.Services.React
             }
         }
 
+        private static bool IsClientSelectableDetailAction(int action)
+        {
+            return action >= (int)DetailAction.None && action <= (int)DetailAction.AddMultiCode;
+        }
+
         public async Task<ApiResponse<BatchExecuteActionsResultDto>> BatchExecuteActionsAsync(
             string invoiceGuid,
             List<string> detailGuids,
@@ -3108,6 +3181,18 @@ namespace BlazorApp.Api.Services.React
             {
                 var result = new BatchExecuteActionsResultDto();
                 var db = _context.Db;
+
+                var selectedDetailGuids = detailGuids?
+                    .Where(x => !string.IsNullOrWhiteSpace(x))
+                    .Distinct()
+                    .ToList() ?? new List<string>();
+                if (selectedDetailGuids.Count == 0)
+                {
+                    return ApiResponse<BatchExecuteActionsResultDto>.Error(
+                        "请选择要执行的明细",
+                        "VALIDATION_ERROR"
+                    );
+                }
 
                 // 1. 获取进货单头信息
                 var header = await db.Queryable<StoreLocalSupplierInvoice>()
@@ -3123,15 +3208,21 @@ namespace BlazorApp.Api.Services.React
                 }
 
                 // 2. 获取明细列表
-                var detailsQuery = db.Queryable<StoreLocalSupplierInvoiceDetails>()
-                    .Where(x => x.InvoiceGUID == invoiceGuid && x.IsDeleted == false);
+                var details = await db.Queryable<StoreLocalSupplierInvoiceDetails>()
+                    .Where(x =>
+                        x.InvoiceGUID == invoiceGuid
+                        && selectedDetailGuids.Contains(x.DetailGUID)
+                        && x.IsDeleted == false
+                    )
+                    .ToListAsync();
 
-                if (detailGuids != null && detailGuids.Count > 0)
+                if (details.Count != selectedDetailGuids.Count)
                 {
-                    detailsQuery = detailsQuery.Where(x => detailGuids.Contains(x.DetailGUID));
+                    return ApiResponse<BatchExecuteActionsResultDto>.Error(
+                        "部分明细不存在或不属于当前进货单",
+                        "VALIDATION_ERROR"
+                    );
                 }
-
-                var details = await detailsQuery.ToListAsync();
 
                 // 3. 获取已有商品的 ItemNumber（用于判断是否需要更新货号）
                 var productCodes = details
@@ -3160,95 +3251,136 @@ namespace BlazorApp.Api.Services.React
                     }
                 }
 
-                // 4. 按 action 分组（仅做分类，不操作数据库）
-                var groupedDetails =
-                    new Dictionary<DetailAction, List<StoreLocalSupplierInvoiceDetails>>();
-
-                foreach (var detail in details)
+                var successfulDetailGuids = new List<string>();
+                await db.Ado.BeginTranAsync();
+                try
                 {
-                    var action = GetActionForDetail(detail, productItemNumbers);
-
-                    if (!groupedDetails.ContainsKey(action))
+                    var validationErrors = await ValidateBatchExecuteDetailsAsync(details, header);
+                    if (validationErrors.Count > 0)
                     {
-                        groupedDetails[action] = new List<StoreLocalSupplierInvoiceDetails>();
+                        result.Failed = validationErrors.Count;
+                        result.Errors.AddRange(validationErrors);
+                        await db.Ado.RollbackTranAsync();
+                        return ApiResponse<BatchExecuteActionsResultDto>.Error(
+                            "批量执行校验失败",
+                            "VALIDATION_ERROR",
+                            result
+                        );
                     }
-                    groupedDetails[action].Add(detail);
-                }
 
-                // 5. 批量处理每个 action 组
-                // ========== 创建商品 ==========
-                if (
-                    groupedDetails.TryGetValue(DetailAction.CreateProduct, out var createList)
-                    && createList.Count > 0
-                )
-                {
-                    var createResult = await BatchCreateProductsAsync(createList, header, userName);
-                    result.CreatedProducts = createResult.SuccessCount;
-                    result.Failed += createResult.FailedCount;
-                    result.Errors.AddRange(createResult.Errors);
-                    result.Skipped += createResult.SkippedCount;
-                }
+                    // 4. 按用户保存的 ActivityType 分组，不能在执行阶段重新推导覆盖用户选择。
+                    var groupedDetails =
+                        new Dictionary<DetailAction, List<StoreLocalSupplierInvoiceDetails>>();
 
-                // ========== 更新进货价 ==========
-                if (
-                    groupedDetails.TryGetValue(DetailAction.UpdatePurchasePrice, out var priceList)
-                    && priceList.Count > 0
-                )
-                {
-                    var priceResult = await BatchUpdatePurchasePriceAsync(priceList, userName);
-                    result.UpdatedPurchasePrices = priceResult.SuccessCount;
-                    result.Failed += priceResult.FailedCount;
-                    result.Errors.AddRange(priceResult.Errors);
-                    result.Skipped += priceResult.SkippedCount;
-                }
+                    foreach (var detail in details)
+                    {
+                        var action = GetSavedActionForDetail(detail);
 
-                // ========== 更新货号 ==========
-                if (
-                    groupedDetails.TryGetValue(DetailAction.UpdateItemNumber, out var itemList)
-                    && itemList.Count > 0
-                )
-                {
-                    var itemResult = await BatchUpdateItemNumberAsync(
-                        itemList,
-                        productItemNumbers,
-                        userName
-                    );
-                    result.UpdatedItemNumbers = itemResult.SuccessCount;
-                    result.Failed += itemResult.FailedCount;
-                    result.Errors.AddRange(itemResult.Errors);
-                    result.Skipped += itemResult.SkippedCount;
-                }
+                        if (!groupedDetails.ContainsKey(action))
+                        {
+                            groupedDetails[action] = new List<StoreLocalSupplierInvoiceDetails>();
+                        }
+                        groupedDetails[action].Add(detail);
+                    }
 
-                // ========== 添加多码 ==========
-                if (
-                    groupedDetails.TryGetValue(DetailAction.AddMultiCode, out var multiCodeList)
-                    && multiCodeList.Count > 0
-                )
-                {
-                    var multiCodeResult = await BatchAddMultiCodesAsync(
-                        multiCodeList,
-                        header,
-                        userName
-                    );
-                    result.AddedMultiCodes = multiCodeResult.SuccessCount;
-                    result.Failed += multiCodeResult.FailedCount;
-                    result.Errors.AddRange(multiCodeResult.Errors);
-                    result.Skipped += multiCodeResult.SkippedCount;
-                }
+                    // 5. 批量处理每个 action 组
+                    // ========== 创建商品 ==========
+                    if (
+                        groupedDetails.TryGetValue(DetailAction.CreateProduct, out var createList)
+                        && createList.Count > 0
+                    )
+                    {
+                        var createResult = await BatchCreateProductsAsync(createList, header, userName);
+                        result.CreatedProducts = createResult.SuccessCount;
+                        result.Failed += createResult.FailedCount;
+                        result.Errors.AddRange(createResult.Errors);
+                        result.Skipped += createResult.SkippedCount;
+                        successfulDetailGuids.AddRange(createResult.SuccessfulDetailGuids);
+                    }
 
-                // ========== 无操作/等待操作 ==========
-                if (groupedDetails.TryGetValue(DetailAction.None, out var noneList))
-                {
-                    result.Skipped += noneList.Count;
-                }
-                if (groupedDetails.TryGetValue(DetailAction.WaitForOperation, out var waitList))
-                {
-                    result.Skipped += waitList.Count;
-                }
+                    // ========== 更新进货价 ==========
+                    if (
+                        groupedDetails.TryGetValue(DetailAction.UpdatePurchasePrice, out var priceList)
+                        && priceList.Count > 0
+                    )
+                    {
+                        var priceResult = await BatchUpdatePurchasePriceAsync(priceList, userName);
+                        result.UpdatedPurchasePrices = priceResult.SuccessCount;
+                        result.Failed += priceResult.FailedCount;
+                        result.Errors.AddRange(priceResult.Errors);
+                        result.Skipped += priceResult.SkippedCount;
+                        successfulDetailGuids.AddRange(priceResult.SuccessfulDetailGuids);
+                    }
 
-                // 6. 批量更新明细的 ActivityType
-                var allDetailGuids = details.Select(d => d.DetailGUID).ToList();
-                await BatchUpdateDetailActivityTypeAsync(allDetailGuids, userName);
+                    // ========== 更新货号 ==========
+                    if (
+                        groupedDetails.TryGetValue(DetailAction.UpdateItemNumber, out var itemList)
+                        && itemList.Count > 0
+                    )
+                    {
+                        var itemResult = await BatchUpdateItemNumberAsync(
+                            itemList,
+                            productItemNumbers,
+                            userName
+                        );
+                        result.UpdatedItemNumbers = itemResult.SuccessCount;
+                        result.Failed += itemResult.FailedCount;
+                        result.Errors.AddRange(itemResult.Errors);
+                        result.Skipped += itemResult.SkippedCount;
+                        successfulDetailGuids.AddRange(itemResult.SuccessfulDetailGuids);
+                    }
+
+                    // ========== 添加多码 ==========
+                    if (
+                        groupedDetails.TryGetValue(DetailAction.AddMultiCode, out var multiCodeList)
+                        && multiCodeList.Count > 0
+                    )
+                    {
+                        var multiCodeResult = await BatchAddMultiCodesAsync(
+                            multiCodeList,
+                            header,
+                            userName
+                        );
+                        result.AddedMultiCodes = multiCodeResult.SuccessCount;
+                        result.Failed += multiCodeResult.FailedCount;
+                        result.Errors.AddRange(multiCodeResult.Errors);
+                        result.Skipped += multiCodeResult.SkippedCount;
+                        successfulDetailGuids.AddRange(multiCodeResult.SuccessfulDetailGuids);
+                    }
+
+                    if (result.Failed > 0)
+                    {
+                        await db.Ado.RollbackTranAsync();
+                        return ApiResponse<BatchExecuteActionsResultDto>.Error(
+                            "批量执行失败，已回滚",
+                            "BATCH_EXECUTE_ERROR",
+                            result
+                        );
+                    }
+
+                    // ========== 无操作/等待操作/已完成 ==========
+                    if (groupedDetails.TryGetValue(DetailAction.None, out var noneList))
+                    {
+                        result.Skipped += noneList.Count;
+                    }
+                    if (groupedDetails.TryGetValue(DetailAction.WaitForOperation, out var waitList))
+                    {
+                        result.Skipped += waitList.Count;
+                    }
+
+                    // 6. 只把真正执行成功的明细标记为完成，保留跳过项和待处理项。
+                    if (successfulDetailGuids.Count > 0)
+                    {
+                        await BatchUpdateDetailActivityTypeAsync(successfulDetailGuids, userName);
+                    }
+
+                    await db.Ado.CommitTranAsync();
+                }
+                catch
+                {
+                    await db.Ado.RollbackTranAsync();
+                    throw;
+                }
 
                 return ApiResponse<BatchExecuteActionsResultDto>.OK(result, "批量执行完成");
             }
@@ -3260,6 +3392,177 @@ namespace BlazorApp.Api.Services.React
                     "BATCH_EXECUTE_ERROR"
                 );
             }
+        }
+
+        private async Task<List<string>> ValidateBatchExecuteDetailsAsync(
+            List<StoreLocalSupplierInvoiceDetails> details,
+            StoreLocalSupplierInvoice header
+        )
+        {
+            var db = _context.Db;
+            var errors = new List<string>();
+            var createItemNumbers = new HashSet<string>();
+            var createBarcodes = new HashSet<string>();
+            var multiCodeKeys = new HashSet<string>();
+
+            foreach (var detail in details)
+            {
+                if (!detail.ActivityType.HasValue)
+                {
+                    errors.Add($"明细 {detail.DetailGUID} 未设置操作类型，请先执行商品检测或手动设置操作类型");
+                    continue;
+                }
+
+                var actionValue = detail.ActivityType.Value;
+                if (actionValue == 99)
+                    continue;
+
+                if (!Enum.IsDefined(typeof(DetailAction), actionValue))
+                {
+                    errors.Add($"明细 {detail.DetailGUID} 操作类型无效：{actionValue}");
+                    continue;
+                }
+
+                var action = (DetailAction)actionValue;
+                switch (action)
+                {
+                    case DetailAction.None:
+                    case DetailAction.WaitForOperation:
+                        break;
+
+                    case DetailAction.CreateProduct:
+                        if (string.IsNullOrWhiteSpace(detail.ItemNumber))
+                            errors.Add($"明细 {detail.DetailGUID} 新建商品失败：货号不能为空");
+                        if (string.IsNullOrWhiteSpace(detail.Barcode))
+                            errors.Add($"明细 {detail.DetailGUID} 新建商品失败：条码不能为空");
+                        if (detail.PurchasePrice == null || detail.PurchasePrice <= 0)
+                            errors.Add($"明细 {detail.DetailGUID} 新建商品失败：进货价必须大于0");
+                        if (
+                            !string.IsNullOrWhiteSpace(detail.ItemNumber)
+                            && !createItemNumbers.Add(detail.ItemNumber)
+                        )
+                            errors.Add($"明细 {detail.DetailGUID} 新建商品失败：本次执行内货号重复");
+                        if (
+                            !string.IsNullOrWhiteSpace(detail.Barcode)
+                            && !createBarcodes.Add(detail.Barcode)
+                        )
+                            errors.Add($"明细 {detail.DetailGUID} 新建商品失败：本次执行内条码重复");
+                        if (
+                            !string.IsNullOrWhiteSpace(detail.ItemNumber)
+                            || !string.IsNullOrWhiteSpace(detail.Barcode)
+                        )
+                        {
+                            var duplicateProduct = await db.Queryable<Product>()
+                                .AnyAsync(p =>
+                                    p.IsDeleted == false
+                                    && p.LocalSupplierCode == header.SupplierCode
+                                    && (
+                                        (
+                                            !string.IsNullOrWhiteSpace(detail.ItemNumber)
+                                            && p.ItemNumber == detail.ItemNumber
+                                        )
+                                        || (
+                                            !string.IsNullOrWhiteSpace(detail.Barcode)
+                                            && p.Barcode == detail.Barcode
+                                        )
+                                    )
+                                );
+                            if (duplicateProduct)
+                                errors.Add($"明细 {detail.DetailGUID} 新建商品失败：货号或条码已存在");
+                        }
+                        break;
+
+                    case DetailAction.UpdatePurchasePrice:
+                        if (detail.PurchasePrice == null || detail.PurchasePrice <= 0)
+                            errors.Add($"明细 {detail.DetailGUID} 更新进货价失败：新进货价必须大于0");
+                        if (string.IsNullOrWhiteSpace(detail.ProductCode))
+                        {
+                            errors.Add($"明细 {detail.DetailGUID} 更新进货价失败：未找到商品编码");
+                            break;
+                        }
+                        if (!await ProductExistsByCodeAsync(detail.ProductCode))
+                            errors.Add($"明细 {detail.DetailGUID} 更新进货价失败：商品不存在");
+                        if (
+                            string.IsNullOrWhiteSpace(detail.StoreCode)
+                            || !await StorePriceExistsAsync(detail.StoreCode, detail.ProductCode)
+                        )
+                            errors.Add($"明细 {detail.DetailGUID} 更新进货价失败：分店价格不存在");
+                        break;
+
+                    case DetailAction.UpdateItemNumber:
+                        if (string.IsNullOrWhiteSpace(detail.ItemNumber))
+                            errors.Add($"明细 {detail.DetailGUID} 更新货号失败：新货号不能为空");
+                        if (string.IsNullOrWhiteSpace(detail.ProductCode))
+                        {
+                            errors.Add($"明细 {detail.DetailGUID} 更新货号失败：未找到商品编码");
+                            break;
+                        }
+                        if (!await ProductExistsByCodeAsync(detail.ProductCode))
+                            errors.Add($"明细 {detail.DetailGUID} 更新货号失败：商品不存在");
+                        break;
+
+                    case DetailAction.AddMultiCode:
+                        if (string.IsNullOrWhiteSpace(detail.ProductCode))
+                        {
+                            errors.Add($"明细 {detail.DetailGUID} 添加多码失败：未找到商品编码");
+                            break;
+                        }
+                        if (string.IsNullOrWhiteSpace(detail.Barcode))
+                            errors.Add($"明细 {detail.DetailGUID} 添加多码失败：条码不能为空");
+                        if (!await ProductExistsByCodeAsync(detail.ProductCode))
+                            errors.Add($"明细 {detail.DetailGUID} 添加多码失败：商品不存在");
+                        if (!string.IsNullOrWhiteSpace(detail.Barcode))
+                        {
+                            var key = $"{detail.ProductCode}|{detail.Barcode}";
+                            if (!multiCodeKeys.Add(key))
+                                errors.Add($"明细 {detail.DetailGUID} 添加多码失败：本次执行内多码重复");
+
+                            var duplicateMultiCode = await db.Queryable<StoreMultiCodeProduct>()
+                                .AnyAsync(x =>
+                                    x.ProductCode == detail.ProductCode
+                                    && x.MultiBarcode == detail.Barcode
+                                    && x.IsDeleted == false
+                                );
+                            if (duplicateMultiCode)
+                                errors.Add($"明细 {detail.DetailGUID} 添加多码失败：分店多码已存在");
+
+                            var duplicateProductSetCode = await db.Queryable<ProductSetCode>()
+                                .AnyAsync(x =>
+                                    x.ProductCode == detail.ProductCode
+                                    && x.SetBarcode == detail.Barcode
+                                    && x.IsDeleted == false
+                                );
+                            if (duplicateProductSetCode)
+                                errors.Add($"明细 {detail.DetailGUID} 添加多码失败：商品多码关系已存在");
+                        }
+                        break;
+                }
+            }
+
+            return errors;
+        }
+
+        private async Task<bool> ProductExistsByCodeAsync(string productCode)
+        {
+            return await _context.Db.Queryable<Product>()
+                .AnyAsync(p => p.ProductCode == productCode && p.IsDeleted == false);
+        }
+
+        private async Task<bool> StorePriceExistsAsync(string storeCode, string productCode)
+        {
+            return await _context.Db.Queryable<StoreRetailPrice>()
+                .AnyAsync(sp =>
+                    sp.StoreCode == storeCode
+                    && sp.ProductCode == productCode
+                    && sp.IsDeleted == false
+                );
+        }
+
+        private DetailAction GetSavedActionForDetail(StoreLocalSupplierInvoiceDetails detail)
+        {
+            if (detail.ActivityType == 99)
+                return DetailAction.None;
+            return (DetailAction)detail.ActivityType!.Value;
         }
 
         private DetailAction GetActionForDetail(
@@ -3455,6 +3758,7 @@ namespace BlazorApp.Api.Services.React
                 }
 
                 result.SuccessCount++;
+                result.SuccessfulDetailGuids.Add(detail.DetailGUID);
             }
 
             if (productsToCreate.Count > 0)
@@ -3495,15 +3799,15 @@ namespace BlazorApp.Api.Services.React
                     continue;
                 }
 
-                // ProductCode 实际上存储的是 UUID
-                await db.Updateable<Product>()
+                // 明细 ProductCode 与商品 ProductCode 保持一致，不能混用 UUID。
+                var productUpdated = await db.Updateable<Product>()
                     .SetColumns(p => p.PurchasePrice == detail.PurchasePrice)
                     .SetColumns(p => p.UpdatedAt == now)
                     .SetColumns(p => p.UpdatedBy == userName)
-                    .Where(p => p.UUID == detail.ProductCode && p.IsDeleted == false)
+                    .Where(p => p.ProductCode == detail.ProductCode && p.IsDeleted == false)
                     .ExecuteCommandAsync();
 
-                await db.Updateable<StoreRetailPrice>()
+                var storePriceUpdated = await db.Updateable<StoreRetailPrice>()
                     .SetColumns(srp => srp.PurchasePrice == detail.PurchasePrice)
                     .SetColumns(srp => srp.UpdatedAt == now)
                     .SetColumns(srp => srp.UpdatedBy == userName)
@@ -3514,7 +3818,15 @@ namespace BlazorApp.Api.Services.React
                     )
                     .ExecuteCommandAsync();
 
+                if (productUpdated == 0 || storePriceUpdated == 0)
+                {
+                    result.Errors.Add($"更新进货价失败：商品或分店价格未更新");
+                    result.FailedCount++;
+                    continue;
+                }
+
                 result.SuccessCount++;
+                result.SuccessfulDetailGuids.Add(detail.DetailGUID);
             }
 
             return result;
@@ -3546,15 +3858,23 @@ namespace BlazorApp.Api.Services.React
                     continue;
                 }
 
-                // ProductCode 实际上存储的是 UUID
-                await db.Updateable<Product>()
+                // 明细 ProductCode 与商品 ProductCode 保持一致，不能混用 UUID。
+                var updated = await db.Updateable<Product>()
                     .SetColumns(p => p.ItemNumber == detail.ItemNumber)
                     .SetColumns(p => p.UpdatedAt == now)
                     .SetColumns(p => p.UpdatedBy == userName)
-                    .Where(p => p.UUID == detail.ProductCode && p.IsDeleted == false)
+                    .Where(p => p.ProductCode == detail.ProductCode && p.IsDeleted == false)
                     .ExecuteCommandAsync();
 
+                if (updated == 0)
+                {
+                    result.Errors.Add($"更新货号失败：商品未更新");
+                    result.FailedCount++;
+                    continue;
+                }
+
                 result.SuccessCount++;
+                result.SuccessfulDetailGuids.Add(detail.DetailGUID);
             }
 
             return result;
@@ -3678,6 +3998,7 @@ namespace BlazorApp.Api.Services.React
                 }
 
                 result.SuccessCount++;
+                result.SuccessfulDetailGuids.Add(detail.DetailGUID);
             }
 
             // 4. 批量插入 StoreMultiCodeProduct
@@ -3717,6 +4038,7 @@ namespace BlazorApp.Api.Services.React
             public int FailedCount { get; set; }
             public int SkippedCount { get; set; }
             public List<string> Errors { get; set; } = new();
+            public List<string> SuccessfulDetailGuids { get; set; } = new();
         }
 
         public async Task<SyncResult> PushInvoicesToHqAsync(List<string> invoiceGuids)

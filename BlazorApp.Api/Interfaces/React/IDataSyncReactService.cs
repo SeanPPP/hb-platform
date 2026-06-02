@@ -204,6 +204,11 @@ namespace BlazorApp.Api.Interfaces.React
         );
 
         /// <summary>
+        /// 货柜主表+明细同步组合门面，后台入口也统一走货柜 HQ 同步核心。
+        /// </summary>
+        Task<SyncResult> SyncContainersWithDetailsFromHqAsync(DateTime? startDate = null);
+
+        /// <summary>
         /// 增量同步分店订货单主表：HQ → 本地 WareHouseOrder
         /// 基于最近一次成功同步的时间点，默认100天内
         /// </summary>

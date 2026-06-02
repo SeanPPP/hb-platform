@@ -105,6 +105,26 @@ namespace BlazorApp.Api.Tests
         }
 
         [Fact]
+        public void RolePermissionTemplates_OrderRoles_UseOrderPermissionsWithoutAttendance()
+        {
+            foreach (var roleName in new[] { "Order", "订货员" })
+            {
+                var template = Assert.Single(
+                    PermissionSeedData.RolePermissionTemplates,
+                    item => item.RoleName == roleName
+                );
+
+                Assert.Contains(Permissions.OrderFront.View, template.PermissionCodes);
+                Assert.Contains(Permissions.Orders.View, template.PermissionCodes);
+                Assert.Contains(Permissions.Orders.Create, template.PermissionCodes);
+                Assert.DoesNotContain(
+                    template.PermissionCodes,
+                    code => code.StartsWith("Attendance.", StringComparison.OrdinalIgnoreCase)
+                );
+            }
+        }
+
+        [Fact]
         public void DeprecatedPermissionCodes_AreNotActiveSeeds()
         {
             var activeSeedCodes = PermissionSeedData.AllPermissions
@@ -250,6 +270,7 @@ namespace BlazorApp.Api.Tests
             var userRole = CreateRole("role-user", "User", "User");
             var storeStaffRole = CreateRole("role-store-staff", "StoreStaff", "Store staff");
             var orderRole = CreateRole("role-order", "Order", "Order");
+            var chineseOrderRole = CreateRole("role-order-cn", "订货员", "订货员");
 
             await _db.Insertable(
                 new[]
@@ -261,6 +282,7 @@ namespace BlazorApp.Api.Tests
                     userRole,
                     storeStaffRole,
                     orderRole,
+                    chineseOrderRole,
                 }
             ).ExecuteCommandAsync();
 
@@ -283,6 +305,24 @@ namespace BlazorApp.Api.Tests
                     {
                         Id = "store-manager-existing-template",
                         RoleGuid = storeManagerRole.RoleGUID,
+                        PermissionCode = Permissions.Attendance.Schedule.ViewSelf,
+                    },
+                    new SysRolePermission
+                    {
+                        Id = "order-existing-attendance",
+                        RoleGuid = orderRole.RoleGUID,
+                        PermissionCode = Permissions.Attendance.Punch.Self,
+                    },
+                    new SysRolePermission
+                    {
+                        Id = "order-existing-extra",
+                        RoleGuid = orderRole.RoleGUID,
+                        PermissionCode = Permissions.Users.View,
+                    },
+                    new SysRolePermission
+                    {
+                        Id = "order-cn-existing-attendance",
+                        RoleGuid = chineseOrderRole.RoleGUID,
                         PermissionCode = Permissions.Attendance.Schedule.ViewSelf,
                     },
                 }
@@ -335,10 +375,28 @@ namespace BlazorApp.Api.Tests
                 storeStaffRole.RoleGUID,
                 "StoreStaff"
             );
+            var expectedOrderPermissions = PermissionSeedData
+                .RolePermissionTemplates.Single(template => template.RoleName == "Order")
+                .PermissionCodes
+                .Append(Permissions.Users.View)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(code => code);
+            var actualOrderPermissions = GetRolePermissionCodes(
+                allRolePermissions,
+                orderRole.RoleGUID
+            ).OrderBy(code => code);
+
+            Assert.Equal(expectedOrderPermissions, actualOrderPermissions);
             AssertRolePermissionsMatchTemplate(
                 allRolePermissions,
-                orderRole.RoleGUID,
-                "Order"
+                chineseOrderRole.RoleGUID,
+                "订货员"
+            );
+            Assert.DoesNotContain(
+                allRolePermissions,
+                item =>
+                    (item.RoleGuid == orderRole.RoleGUID || item.RoleGuid == chineseOrderRole.RoleGUID)
+                    && item.PermissionCode.StartsWith("Attendance.", StringComparison.OrdinalIgnoreCase)
             );
 
             var expectedStoreManagerPermissions = PermissionSeedData

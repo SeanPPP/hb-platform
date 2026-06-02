@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using BlazorApp.Shared.DTOs;
+using BlazorApp.Shared.Models;
 
 namespace BlazorApp.Api.Interfaces.React
 {
@@ -54,10 +55,9 @@ namespace BlazorApp.Api.Interfaces.React
         );
 
         /// <summary>
-        /// 从HQ商品库存表同步到本地仓库商品表
-        /// 同步规则：没有的添加，多的删除，有变化的更新
+        /// 从 HQ 商品库存表全量同步到本地仓库商品表
         /// </summary>
-        Task<WarehouseProductSyncResultDto> SyncFromHqAsync();
+        Task<SyncResult> SyncFromHqAsync();
         Task<List<WarehouseMobileProductDto>> LookupMobileProductsAsync(string keyword);
         Task<WarehouseMobileProductDto?> GetMobileProductAsync(string productCode);
         Task<WarehouseMobileProductDto?> PatchMobileProductAsync(

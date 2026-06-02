@@ -28,6 +28,7 @@ namespace BlazorApp.Api.Services.React
         private readonly IConfiguration _configuration;
         private readonly ItemBarcodeService _itemBarcodeService;
         private readonly IMapper _mapper;
+        private readonly IDataSyncFullService _dataSyncFullService;
 
         public ProductWarehouseReactService(
             SqlSugarContext context,
@@ -35,7 +36,8 @@ namespace BlazorApp.Api.Services.React
             ILogger<ProductWarehouseReactService> logger,
             IConfiguration configuration,
             ItemBarcodeService itemBarcodeService,
-            IMapper mapper
+            IMapper mapper,
+            IDataSyncFullService dataSyncFullService
         )
         {
             _context = context;
@@ -44,6 +46,7 @@ namespace BlazorApp.Api.Services.React
             _configuration = configuration;
             _itemBarcodeService = itemBarcodeService;
             _mapper = mapper;
+            _dataSyncFullService = dataSyncFullService;
         }
 
         /// <summary>
@@ -2894,8 +2897,7 @@ namespace BlazorApp.Api.Services.React
                 .LeftJoin<HBLocalSupplier>((p, s) => p.LocalSupplierCode == s.LocalSupplierCode)
                 .Where(
                     (p, s) =>
-                        p.LocalSupplierCode != "200"
-                        && !p.IsDeleted
+                        !p.IsDeleted
                         && p.IsActive
                         && p.ProductCode != null
                 )
@@ -3054,13 +3056,21 @@ namespace BlazorApp.Api.Services.React
                 var existingWpCodes = (
                     await _context
                         .Db.Queryable<WarehouseProduct>()
-                        .Where(wp => codes.Contains(wp.ProductCode))
+                        // 软删除的仓库记录不应阻止同商品重新导入。
+                        .Where(wp => codes.Contains(wp.ProductCode) && !wp.IsDeleted)
                         .Select(wp => wp.ProductCode)
                         .ToListAsync()
                 ).ToHashSet();
+                var softDeletedWarehouseProducts = (
+                    await _context
+                        .Db.Queryable<WarehouseProduct>()
+                        .Where(wp => codes.Contains(wp.ProductCode) && wp.IsDeleted)
+                        .ToListAsync()
+                ).ToDictionary(wp => wp.ProductCode);
 
                 // 待插入的仓库商品列表
                 var toInsertWarehouseProducts = new List<WarehouseProduct>();
+                var toRestoreWarehouseProducts = new List<WarehouseProduct>();
 
                 // 遍历处理每个商品
                 foreach (var productCode in codes)
@@ -3084,6 +3094,33 @@ namespace BlazorApp.Api.Services.React
                         result.Message = "商品已存在于仓库中";
                         response.Results.Add(result);
                         response.FailedCount++;
+                        continue;
+                    }
+
+                    // 软删除记录改为恢复，避免主键冲突并符合重新导入语义。
+                    if (softDeletedWarehouseProducts.TryGetValue(productCode, out var deletedWp))
+                    {
+                        deletedWp.DomesticPrice = 0;
+                        deletedWp.OEMPrice = 0;
+                        deletedWp.ImportPrice = product.PurchasePrice ?? 0;
+                        deletedWp.StockQuantity = 0;
+                        deletedWp.MinOrderQuantity = null;
+                        deletedWp.StockValue = null;
+                        deletedWp.StockAlertQuantity = null;
+                        deletedWp.Volume = null;
+                        deletedWp.PackingQuantity = null;
+                        deletedWp.IsActive = true;
+                        deletedWp.IsDeleted = false;
+                        deletedWp.CreatedAt = now;
+                        deletedWp.CreatedBy = null;
+                        deletedWp.UpdatedAt = now;
+                        deletedWp.UpdatedBy = null;
+                        toRestoreWarehouseProducts.Add(deletedWp);
+
+                        result.Success = true;
+                        result.Message = "导入成功";
+                        response.Results.Add(result);
+                        response.SuccessCount++;
                         continue;
                     }
 
@@ -3112,6 +3149,19 @@ namespace BlazorApp.Api.Services.React
                 if (toInsertWarehouseProducts.Any())
                 {
                     await _context.Db.Insertable(toInsertWarehouseProducts).ExecuteCommandAsync();
+                }
+                if (toRestoreWarehouseProducts.Any())
+                {
+                    var restoredProductCodes = toRestoreWarehouseProducts
+                        .Select(wp => wp.ProductCode)
+                        .ToList();
+                    await _context
+                        .Db.Deleteable<ProductLocation>()
+                        .Where(pl =>
+                            pl.ProductCode != null && restoredProductCodes.Contains(pl.ProductCode)
+                        )
+                        .ExecuteCommandAsync();
+                    await _context.Db.Updateable(toRestoreWarehouseProducts).ExecuteCommandAsync();
                 }
 
                 // 提交事务
@@ -3295,129 +3345,14 @@ namespace BlazorApp.Api.Services.React
         }
 
         /// <summary>
-        /// 从HQ商品库存表同步到本地仓库商品表
-        /// 同步规则：没有的添加，多的删除，有变化的更新
-        /// 同步规则：没有的添加，多的删除，有变化的更新
+        /// 从 HQ 商品库存表同步到本地仓库商品表
+        /// 这里统一委托给全量同步服务，避免 React 服务层保留旧的逐条增删改逻辑。
         /// </summary>
         /// <returns>同步结果</returns>
-        public async Task<WarehouseProductSyncResultDto> SyncFromHqAsync()
+        public async Task<SyncResult> SyncFromHqAsync()
         {
-            var result = new WarehouseProductSyncResultDto();
-            var startTime = DateTime.Now;
-            _logger.LogInformation("[WarehouseProductSync] 开始从HQ同步仓库商品库存");
-
-            try
-            {
-                // 步骤1：查询 HQ 全部商品库存数据
-                _hqContext.CheckConnection();
-                var hqProducts = await _hqContext.CBP_DIC_商品库存表Db.GetListAsync();
-
-                result.TotalHqProducts = hqProducts.Count;
-                Console.WriteLine($"📦 [仓库商品库存同步] HQ数据量: {hqProducts.Count:N0} 条");
-
-                // 步骤2：查询本地全部 WarehouseProduct
-                var localProducts = await _context.Db.Queryable<WarehouseProduct>().ToListAsync();
-
-                result.TotalLocalProductsBefore = localProducts.Count;
-                Console.WriteLine($"📦 [仓库商品库存同步] 本地数据量: {localProducts.Count:N0} 条");
-
-                // 构建本地商品的字典，便于快速查找
-                var localDict = localProducts.ToDictionary(p => p.ProductCode);
-
-                // HQ 商品编码集合
-                var hqCodes = hqProducts
-                    .Where(p => !string.IsNullOrEmpty(p.H商品编码))
-                    .Select(p => p.H商品编码!)
-                    .ToHashSet();
-
-                // 分类处理
-                var toAdd = new List<WarehouseProduct>();
-                var toUpdate = new List<WarehouseProduct>();
-                var toDelete = new List<WarehouseProduct>();
-
-                // 遍历 HQ 数据，找出新增和更新
-                foreach (var hqItem in hqProducts)
-                {
-                    if (string.IsNullOrEmpty(hqItem.H商品编码))
-                        continue;
-
-                    var code = hqItem.H商品编码;
-                    if (localDict.TryGetValue(code, out var localItem))
-                    {
-                        // 本地存在，检查是否需要更新
-                        if (HasChanges(hqItem, localItem))
-                        {
-                            UpdateFromHq(hqItem, localItem);
-                            toUpdate.Add(localItem);
-                        }
-                    }
-                    else
-                    {
-                        // 本地不存在，需要新增
-                        var newItem = MapFromHq(hqItem);
-                        toAdd.Add(newItem);
-                    }
-                }
-
-                // 找出需要删除的（本地有，HQ没有）
-                foreach (var localItem in localProducts)
-                {
-                    if (!hqCodes.Contains(localItem.ProductCode))
-                    {
-                        toDelete.Add(localItem);
-                    }
-                }
-
-                Console.WriteLine(
-                    $"📊 [仓库商品库存同步] 待新增: {toAdd.Count:N0}, 待更新: {toUpdate.Count:N0}, 待删除: {toDelete.Count:N0}"
-                );
-
-                // 步骤3：批量执行操作
-                _context.Db.Ado.BeginTran();
-
-                // 新增
-                if (toAdd.Any())
-                {
-                    var addCount = await _context.Db.Insertable(toAdd).ExecuteCommandAsync();
-                    result.AddedCount = addCount;
-                    Console.WriteLine($"✅ [仓库商品库存同步] 新增: {addCount:N0} 条");
-                }
-
-                // 更新
-                if (toUpdate.Any())
-                {
-                    var updateCount = await _context.Db.Updateable(toUpdate).ExecuteCommandAsync();
-                    result.UpdatedCount = updateCount;
-                    Console.WriteLine($"✅ [仓库商品库存同步] 更新: {updateCount:N0} 条");
-                }
-
-                // 删除
-                if (toDelete.Any())
-                {
-                    var deleteCount = await _context.Db.Deleteable(toDelete).ExecuteCommandAsync();
-                    result.DeletedCount = deleteCount;
-                    Console.WriteLine($"🗑️ [仓库商品库存同步] 删除: {deleteCount:N0} 条");
-                }
-
-                _context.Db.Ado.CommitTran();
-
-                result.Success = true;
-                result.Message =
-                    $"同步完成：新增 {result.AddedCount}, 更新 {result.UpdatedCount}, 删除 {result.DeletedCount}";
-            }
-            catch (Exception ex)
-            {
-                _context.Db.Ado.RollbackTran();
-                _logger.LogError(ex, "[WarehouseProductSync] 同步失败");
-                result.Success = false;
-                result.Message = "同步失败: " + ex.Message;
-                result.Errors.Add(ex.Message);
-            }
-
-            result.DurationMs = (long)(DateTime.Now - startTime).TotalMilliseconds;
-            Console.WriteLine($"⏱️ [仓库商品库存同步] 耗时: {result.DurationMs:N0}ms");
-
-            return result;
+            _logger.LogInformation("[WarehouseProductSync] 开始委托全量同步仓库商品库存");
+            return await _dataSyncFullService.SyncWarehouseProductsFromHqAsync();
         }
 
         public async Task<List<WarehouseMobileProductDto>> LookupMobileProductsAsync(string keyword)
@@ -3865,55 +3800,6 @@ namespace BlazorApp.Api.Services.React
                 1 => "套装",
                 2 => "多码",
                 _ => "未知",
-            };
-        }
-
-        /// <summary>
-        /// 检查 HQ 数据与本地数据是否有变化
-        /// </summary>
-        private bool HasChanges(CBP_DIC_商品库存表 hq, WarehouseProduct local)
-        {
-            return hq.H国内价格 != local.DomesticPrice
-                || hq.H贴牌价格 != local.OEMPrice
-                || hq.H进口价格 != local.ImportPrice
-                || SafeConvertToInt(hq.H库存) != local.StockQuantity
-                || SafeConvertToInt(hq.H最小订货量) != local.MinOrderQuantity
-                || hq.H库存金额 != local.StockValue
-                || hq.H库存预警数 != local.StockAlertQuantity
-                || ConvertToBool(hq.H使用状态) != local.IsActive;
-        }
-
-        /// <summary>
-        /// 从 HQ 数据更新到本地实体
-        /// </summary>
-        private void UpdateFromHq(CBP_DIC_商品库存表 hq, WarehouseProduct local)
-        {
-            local.DomesticPrice = hq.H国内价格;
-            local.OEMPrice = hq.H贴牌价格;
-            local.ImportPrice = hq.H进口价格;
-            local.StockQuantity = SafeConvertToInt(hq.H库存);
-            local.MinOrderQuantity = SafeConvertToInt(hq.H最小订货量);
-            local.StockValue = hq.H库存金额;
-            local.StockAlertQuantity = hq.H库存预警数;
-            local.IsActive = ConvertToBool(hq.H使用状态);
-        }
-
-        /// <summary>
-        /// 将 HQ 数据映射为本地实体
-        /// </summary>
-        private WarehouseProduct MapFromHq(CBP_DIC_商品库存表 hq)
-        {
-            return new WarehouseProduct
-            {
-                ProductCode = hq.H商品编码!,
-                DomesticPrice = hq.H国内价格,
-                OEMPrice = hq.H贴牌价格,
-                ImportPrice = hq.H进口价格,
-                StockQuantity = SafeConvertToInt(hq.H库存),
-                MinOrderQuantity = SafeConvertToInt(hq.H最小订货量),
-                StockValue = hq.H库存金额,
-                StockAlertQuantity = hq.H库存预警数,
-                IsActive = ConvertToBool(hq.H使用状态),
             };
         }
 

@@ -14,6 +14,8 @@ namespace BlazorApp.Shared.DTOs
     public string? ProductImage { get; set; }
     public string? CategoryName { get; set; }
     public string? WarehouseCategoryGUID { get; set; }
+    public string? LocalSupplierCode { get; set; }
+    public string? LocalSupplierName { get; set; }
 
     /// <summary>
     /// 贴牌价格 (订货价格)
@@ -72,6 +74,21 @@ namespace BlazorApp.Shared.DTOs
     /// 分类GUID
     /// </summary>
     public string? CategoryGUID { get; set; }
+
+    /// <summary>
+    /// 澳洲供应商代码过滤。
+    /// </summary>
+    public string? LocalSupplierCode { get; set; }
+
+    /// <summary>
+    /// 是否排除仓库库存表中已有未删除记录的商品。
+    /// </summary>
+    public bool ExcludeExistingWarehouseProducts { get; set; }
+
+    /// <summary>
+    /// 排除指定订货单中已有未删除明细的商品。
+    /// </summary>
+    public string? ExcludeOrderGUID { get; set; }
 
     public int PageNumber { get; set; } = 1;
     public int PageSize { get; set; } = 24;
@@ -177,6 +194,44 @@ namespace BlazorApp.Shared.DTOs
     public int? FlowStatus { get; set; }
 
     public List<StoreOrderCartItemDto> Items { get; set; } = new();
+  }
+
+  /// <summary>
+  /// 订货明细交互页查询参数。
+  /// </summary>
+  public class StoreOrderDetailQueryDto
+  {
+    public const int DefaultPageNumber = 1;
+    public const int DefaultPageSize = 50;
+    public const int MaxPageSize = 500;
+
+    public int PageNumber { get; set; } = DefaultPageNumber;
+    public int PageSize { get; set; } = DefaultPageSize;
+    public string? Keyword { get; set; }
+    public string? StatFilter { get; set; }
+    public string? SortBy { get; set; }
+    public bool SortDescending { get; set; }
+  }
+
+  /// <summary>
+  /// 订货明细交互页 DTO，保留订单头和整单汇总，只分页返回当前页明细。
+  /// </summary>
+  public class StoreOrderDetailDto : StoreOrderCartDto
+  {
+    public int Total { get; set; }
+    public int ItemsTotal { get; set; }
+    public int PageNumber { get; set; } = 1;
+    public int PageSize { get; set; } = 50;
+
+    /// <summary>
+    /// 整单“订货未配货”的行数。
+    /// </summary>
+    public int OrderedNotShippedCount { get; set; }
+
+    /// <summary>
+    /// 整单“主动配货”的行数。
+    /// </summary>
+    public int ShippedWithoutOrderCount { get; set; }
   }
 
   /// <summary>
@@ -604,6 +659,16 @@ public class SyncMissingOrdersResultDto
 
     public string Message { get; set; } = string.Empty;
 
+    /// <summary>
+    /// HQ 同步模式；旧缺失订单同步为空。
+    /// </summary>
+    public string? Mode { get; set; }
+
+    /// <summary>
+    /// 同步任务标识。
+    /// </summary>
+    public string? RunId { get; set; }
+
     public int OrdersSynced { get; set; }
 
     public int DetailsSynced { get; set; }
@@ -611,6 +676,20 @@ public class SyncMissingOrdersResultDto
     public int OrdersUpdated { get; set; }
 
     public int DetailsUpdated { get; set; }
+
+    public int OrdersSoftDeleted { get; set; }
+
+    public int DetailsSoftDeleted { get; set; }
+
+    public int HqOrderCount { get; set; }
+
+    public int HqDetailCount { get; set; }
+
+    public int ShadowRowCount { get; set; }
+
+    public long DurationMs { get; set; }
+
+    public List<string> Errors { get; set; } = new();
 }
 
 /// <summary>
@@ -619,9 +698,122 @@ public class SyncMissingOrdersResultDto
 public class SyncMissingOrdersRequestDto
 {
     /// <summary>
-    /// 分店代码（可选，不传则同步所有分店）
+    /// 分店代码（旧字段，可选；不传则同步所有分店）
     /// </summary>
     public string? StoreCode { get; set; }
+
+    /// <summary>
+    /// 分店代码集合（新字段，可选；优先级高于 StoreCode）
+    /// </summary>
+    public List<string>? StoreCodes { get; set; }
+}
+
+/// <summary>
+/// 分店订货 HQ 同步模式。
+/// </summary>
+public enum StoreOrderHqSyncMode
+{
+    Full = 1,
+    Incremental = 2,
+}
+
+/// <summary>
+/// 分店订货 HQ 同步请求。
+/// </summary>
+public class StoreOrderHqSyncRequestDto
+{
+    /// <summary>
+    /// 旧字段兼容：单个分店/外购客户代码。
+    /// </summary>
+    public string? StoreCode { get; set; }
+
+    /// <summary>
+    /// 分店/外购客户代码集合；优先级高于 StoreCode。
+    /// </summary>
+    public List<string>? StoreCodes { get; set; }
+
+    /// <summary>
+    /// 增量同步开始时间；为空时后端默认最近 30 天。
+    /// </summary>
+    public DateTime? StartDate { get; set; }
+
+    /// <summary>
+    /// 增量同步结束时间；为空时后端默认当前时间。
+    /// </summary>
+    public DateTime? EndDate { get; set; }
+}
+
+/// <summary>
+/// 分店订货 HQ 同步结果。
+/// </summary>
+public class StoreOrderHqSyncResultDto : SyncMissingOrdersResultDto
+{
+}
+
+/// <summary>
+/// 订货缺失订单同步 job 状态常量
+/// </summary>
+public static class StoreOrderSyncJobStatusConstants
+{
+    public const string Pending = "Pending";
+    public const string Running = "Running";
+    public const string Succeeded = "Succeeded";
+    public const string Failed = "Failed";
+}
+
+/// <summary>
+/// 订货缺失订单同步 job 状态
+/// </summary>
+public class StoreOrderSyncJobDto
+{
+    /// <summary>
+    /// job 标识
+    /// </summary>
+    public string JobId { get; set; } = string.Empty;
+
+    /// <summary>
+    /// job 状态
+    /// </summary>
+    public string Status { get; set; } = StoreOrderSyncJobStatusConstants.Running;
+
+    /// <summary>
+    /// HQ 同步模式；旧缺失订单同步为空。
+    /// </summary>
+    public string? Mode { get; set; }
+
+    /// <summary>
+    /// 参与同步的分店集合
+    /// </summary>
+    public List<string> StoreCodes { get; set; } = new();
+
+    public DateTime? StartDate { get; set; }
+
+    public DateTime? EndDate { get; set; }
+
+    /// <summary>
+    /// 是否命中了运行中去重
+    /// </summary>
+    public bool IsDuplicateRequest { get; set; }
+
+    /// <summary>
+    /// 创建时间
+    /// </summary>
+    public DateTime CreatedAt { get; set; }
+
+    /// <summary>
+    /// 完成时间
+    /// </summary>
+    public DateTime? CompletedAt { get; set; }
+
+    /// <summary>
+    /// 终态过期时间
+    /// </summary>
+    public DateTime? ExpiresAt { get; set; }
+
+    /// <summary>
+    /// 同步结果
+    /// </summary>
+    public SyncMissingOrdersResultDto? Result { get; set; }
 }
 
 /// <summary>

@@ -3,6 +3,7 @@ using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.DTOs;
+using System.Diagnostics;
 using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -24,8 +25,11 @@ namespace BlazorApp.Api.Controllers.React
         private readonly IUserService _userService;
         private readonly IAuthorizationService _authorizationService;
         private readonly ICurrentUserManageableStoreScopeService _storeScopeService;
+        private readonly IStoreOrderSyncJobService _storeOrderSyncJobService;
 
         private static readonly TimeSpan CACHE_DURATION = TimeSpan.FromMinutes(10);
+        private static readonly TimeSpan AuthorizationSuccessCacheDuration = TimeSpan.FromSeconds(30);
+        private static readonly TimeSpan AuthorizationFailureCacheDuration = TimeSpan.FromSeconds(5);
         private static readonly string[] OrderReadPermissions =
         {
             Permissions.OrderFront.View,
@@ -53,6 +57,11 @@ namespace BlazorApp.Api.Controllers.React
             Permissions.Orders.Delete,
             Permissions.Warehouse.ManageOrders,
         };
+        private static readonly string[] WarehouseOrderSyncPermissions =
+        {
+            Permissions.Warehouse.ManageOrders,
+            Permissions.Warehouse.Manage,
+        };
         private static readonly string[] GlobalStoreScopeRoles =
         {
             "Admin",
@@ -60,6 +69,35 @@ namespace BlazorApp.Api.Controllers.React
             "WarehouseManager",
             "仓库经理",
         };
+        private static readonly string[] ScopedStoreRoles =
+        {
+            "StoreManager",
+            "店长",
+            "经理",
+        };
+
+        private string GetScanTraceId()
+        {
+            // 前端扫码链路透传 traceId，缺失时使用 ASP.NET TraceIdentifier 兜底。
+            return Request.Headers["X-Scan-Trace-Id"].FirstOrDefault()
+                ?? HttpContext.TraceIdentifier;
+        }
+
+        private static string GetBarcodeTail(string? barcode)
+        {
+            var trimmed = barcode?.Trim();
+            if (string.IsNullOrEmpty(trimmed))
+            {
+                return "empty";
+            }
+
+            return trimmed.Length <= 6 ? trimmed : trimmed[^6..];
+        }
+
+        private static int GetBarcodeLength(string? barcode)
+        {
+            return barcode?.Trim().Length ?? 0;
+        }
 
         public ReactStoreOrderController(
             IStoreOrderReactService service,
@@ -68,7 +106,8 @@ namespace BlazorApp.Api.Controllers.React
             IUserService userService,
             IStoreService storeService,
             IAuthorizationService authorizationService,
-            ICurrentUserManageableStoreScopeService storeScopeService
+            ICurrentUserManageableStoreScopeService storeScopeService,
+            IStoreOrderSyncJobService storeOrderSyncJobService
         )
         {
             _service = service;
@@ -77,14 +116,32 @@ namespace BlazorApp.Api.Controllers.React
             _userService = userService;
             _authorizationService = authorizationService;
             _storeScopeService = storeScopeService;
+            _storeOrderSyncJobService = storeOrderSyncJobService;
         }
 
         private async Task<bool> HasAnyPermissionAsync(params string[] permissions)
         {
+            return await HasAnyPermissionAsync(null, "global", permissions);
+        }
+
+        private async Task<bool> HasAnyPermissionAsync(
+            string? storeCode,
+            string checkType,
+            params string[] permissions
+        )
+        {
+            var userId = GetCurrentUserId();
+            var normalizedStoreCode = NormalizeAuthorizationStoreCode(storeCode);
             foreach (var permission in permissions)
             {
-                var result = await _authorizationService.AuthorizeAsync(User, null, permission);
-                if (result.Succeeded)
+                if (
+                    await AuthorizePolicyWithCacheAsync(
+                        userId,
+                        normalizedStoreCode,
+                        checkType,
+                        permission
+                    )
+                )
                 {
                     return true;
                 }
@@ -98,6 +155,45 @@ namespace BlazorApp.Api.Controllers.React
             return await HasAnyPermissionAsync(permissions) ? null : Forbid();
         }
 
+        private async Task<IActionResult?> RequireAnyPermissionAsync(
+            string? storeCode,
+            string checkType,
+            params string[] permissions
+        )
+        {
+            return await HasAnyPermissionAsync(storeCode, checkType, permissions) ? null : Forbid();
+        }
+
+        private async Task<bool> AuthorizePolicyWithCacheAsync(
+            string? userId,
+            string normalizedStoreCode,
+            string checkType,
+            string permission
+        )
+        {
+            if (string.IsNullOrWhiteSpace(userId))
+            {
+                var uncached = await _authorizationService.AuthorizeAsync(User, null, permission);
+                return uncached.Succeeded;
+            }
+
+            var cacheKey = BuildAuthorizationCacheKey(
+                "policy",
+                userId,
+                normalizedStoreCode,
+                checkType,
+                permission
+            );
+            if (_cache.TryGetValue<bool>(cacheKey, out var cachedResult))
+            {
+                return cachedResult;
+            }
+
+            var result = await _authorizationService.AuthorizeAsync(User, null, permission);
+            SetAuthorizationCache(cacheKey, result.Succeeded);
+            return result.Succeeded;
+        }
+
         private bool HasAnyRole(params string[] roleNames)
         {
             return User?.Claims.Any(claim =>
@@ -108,19 +204,104 @@ namespace BlazorApp.Api.Controllers.React
             ) == true;
         }
 
+        private bool IsStoreScopedUser()
+        {
+            return HasAnyRole(ScopedStoreRoles) && !HasAnyRole(GlobalStoreScopeRoles);
+        }
+
+        private bool IsRealAdmin()
+        {
+            return HasAnyRole("Admin", "管理员");
+        }
+
+        private async Task<IActionResult?> RequireStoreScopeAsync(string? storeCode)
+        {
+            if (string.IsNullOrWhiteSpace(storeCode))
+            {
+                return null;
+            }
+
+            return await _storeScopeService.CanAccessStoreCodeAsync(storeCode) ? null : Forbid();
+        }
+
         private async Task<IActionResult?> RequireAssignedStoreScopeAsync(string? storeCode)
         {
             if (!string.IsNullOrWhiteSpace(storeCode))
             {
-                if (await _storeScopeService.CanAccessStoreCodeAsync(storeCode))
+                var userGuid = GetCurrentUserId();
+                var normalizedStoreCode = NormalizeAuthorizationStoreCode(storeCode);
+                var cacheKey = BuildAuthorizationCacheKey(
+                    "assigned-store-scope",
+                    userGuid,
+                    normalizedStoreCode,
+                    "RequireAssignedStoreScopeAsync",
+                    "manage-or-assigned"
+                );
+
+                if (
+                    !string.IsNullOrWhiteSpace(userGuid)
+                    && _cache.TryGetValue<bool>(cacheKey, out var cachedScopeAllowed)
+                )
                 {
-                    return null;
+                    return cachedScopeAllowed ? null : Forbid();
                 }
 
-                return await CanAccessAssignedStoreCodeAsync(storeCode) ? null : Forbid();
+                var isAllowed =
+                    await _storeScopeService.CanAccessStoreCodeAsync(storeCode)
+                    || await CanAccessAssignedStoreCodeAsync(storeCode);
+
+                if (!string.IsNullOrWhiteSpace(userGuid))
+                {
+                    // 扫码链路会连续 lookup/add，同用户同门店的 scope 判断短 TTL 复用，避免重复查权限与用户分店。
+                    SetAuthorizationCache(cacheKey, isAllowed);
+                }
+
+                return isAllowed ? null : Forbid();
             }
 
             return HasAnyRole(GlobalStoreScopeRoles) ? null : Forbid();
+        }
+
+        private static string NormalizeAuthorizationStoreCode(string? storeCode)
+        {
+            return string.IsNullOrWhiteSpace(storeCode)
+                ? "none"
+                : storeCode.Trim().ToUpperInvariant();
+        }
+
+        private static string BuildAuthorizationCacheKey(
+            string cacheType,
+            string? userId,
+            string normalizedStoreCode,
+            string checkType,
+            string permissionOrScope
+        )
+        {
+            return string.Join(
+                ':',
+                "ReactStoreOrderController",
+                "authorization",
+                cacheType,
+                userId?.Trim() ?? "anonymous",
+                normalizedStoreCode,
+                checkType,
+                permissionOrScope
+            );
+        }
+
+        private void SetAuthorizationCache(string cacheKey, bool isAllowed)
+        {
+            var duration = isAllowed
+                ? AuthorizationSuccessCacheDuration
+                : AuthorizationFailureCacheDuration;
+
+            _cache.Set(
+                cacheKey,
+                isAllowed,
+                new MemoryCacheEntryOptions()
+                    .SetAbsoluteExpiration(duration)
+                    .SetPriority(CacheItemPriority.Low)
+            );
         }
 
         private async Task<bool> CanAccessAssignedStoreCodeAsync(string storeCode)
@@ -144,14 +325,135 @@ namespace BlazorApp.Api.Controllers.React
             );
         }
 
-        private async Task<IActionResult?> RequireStoreScopeAsync(string? storeCode)
+        private async Task<(IActionResult? Forbidden, SyncMissingOrdersRequestDto? Request)>
+            BuildScopedSyncRequestAsync(SyncMissingOrdersRequestDto? request)
         {
-            if (string.IsNullOrWhiteSpace(storeCode))
+            var storeCodes = NormalizeSyncRequestStoreCodes(request);
+            if (!IsStoreScopedUser())
             {
-                return null;
+                return (null, request);
             }
 
-            return await _storeScopeService.CanAccessStoreCodeAsync(storeCode) ? null : Forbid();
+            if (storeCodes.Count > 0)
+            {
+                foreach (var storeCode in storeCodes)
+                {
+                    var forbidden = await RequireStoreScopeAsync(storeCode);
+                    if (forbidden != null)
+                    {
+                        return (forbidden, request);
+                    }
+                }
+
+                return (null, request);
+            }
+
+            var scope = await _storeScopeService.GetScopeAsync();
+            if (!scope.IsAllowed)
+            {
+                return (Forbid(), request);
+            }
+
+            if (scope.IsAdmin)
+            {
+                return (null, request);
+            }
+
+            var scopedStoreCodes = scope.StoreCodes
+                .Where(item => !string.IsNullOrWhiteSpace(item))
+                .Select(item => item.Trim())
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            if (scopedStoreCodes.Count == 0)
+            {
+                return (Forbid(), request);
+            }
+
+            var scopedRequest = request ?? new SyncMissingOrdersRequestDto();
+            scopedRequest.StoreCodes = scopedStoreCodes;
+            return (null, scopedRequest);
+        }
+
+        private static List<string> NormalizeSyncRequestStoreCodes(
+            SyncMissingOrdersRequestDto? request
+        )
+        {
+            var storeCodes = (request?.StoreCodes ?? new List<string>())
+                .Where(item => !string.IsNullOrWhiteSpace(item))
+                .Select(item => item.Trim())
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            if (storeCodes.Count == 0 && !string.IsNullOrWhiteSpace(request?.StoreCode))
+            {
+                storeCodes.Add(request.StoreCode.Trim());
+            }
+
+            return storeCodes;
+        }
+
+        private async Task<(IActionResult? Forbidden, StoreOrderHqSyncRequestDto? Request)>
+            BuildScopedHqSyncRequestAsync(StoreOrderHqSyncRequestDto? request)
+        {
+            var storeCodes = NormalizeHqSyncRequestStoreCodes(request);
+            if (!IsStoreScopedUser())
+            {
+                return (null, request);
+            }
+
+            if (storeCodes.Count > 0)
+            {
+                foreach (var storeCode in storeCodes)
+                {
+                    var forbidden = await RequireStoreScopeAsync(storeCode);
+                    if (forbidden != null)
+                    {
+                        return (forbidden, request);
+                    }
+                }
+
+                return (null, request);
+            }
+
+            var scope = await _storeScopeService.GetScopeAsync();
+            if (!scope.IsAllowed || scope.IsAdmin)
+            {
+                return (Forbid(), request);
+            }
+
+            var scopedStoreCodes = scope.StoreCodes
+                .Where(item => !string.IsNullOrWhiteSpace(item))
+                .Select(item => item.Trim())
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            if (scopedStoreCodes.Count == 0)
+            {
+                return (Forbid(), request);
+            }
+
+            var scopedRequest = request ?? new StoreOrderHqSyncRequestDto();
+            scopedRequest.StoreCodes = scopedStoreCodes;
+            return (null, scopedRequest);
+        }
+
+        private static List<string> NormalizeHqSyncRequestStoreCodes(
+            StoreOrderHqSyncRequestDto? request
+        )
+        {
+            var storeCodes = (request?.StoreCodes ?? new List<string>())
+                .Where(item => !string.IsNullOrWhiteSpace(item))
+                .Select(item => item.Trim())
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            if (storeCodes.Count == 0 && !string.IsNullOrWhiteSpace(request?.StoreCode))
+            {
+                storeCodes.Add(request.StoreCode.Trim());
+            }
+
+            return storeCodes;
         }
 
         private async Task<IActionResult?> RequireOrderScopeAsync(string orderGuid)
@@ -195,13 +497,31 @@ namespace BlazorApp.Api.Controllers.React
                     return forbidden;
                 }
 
-                // 生成缓存键
-                var cacheKey = StoreOrderCacheKeys.Products(filter);
+                if (!string.IsNullOrWhiteSpace(filter.ExcludeOrderGUID))
+                {
+                    var orderForbidden = await RequireOrderScopeAsync(filter.ExcludeOrderGUID.Trim());
+                    if (orderForbidden != null)
+                    {
+                        return orderForbidden;
+                    }
+                }
+
+                var shouldUseProductCache =
+                    !filter.ExcludeExistingWarehouseProducts
+                    && string.IsNullOrWhiteSpace(filter.ExcludeOrderGUID);
+
+                string? cacheKey = null;
+                if (shouldUseProductCache)
+                {
+                    cacheKey = StoreOrderCacheKeys.Products(filter);
+                }
 
                 //// 尝试从缓存获取
                 if (
+                    shouldUseProductCache
+                    &&
                     _cache.TryGetValue<PagedListReactDto<StoreOrderProductDto>>(
-                        cacheKey,
+                        cacheKey!,
                         out var cachedResult
                     )
                 )
@@ -215,16 +535,19 @@ namespace BlazorApp.Api.Controllers.React
                 var result = await _service.GetPagedListAsync(filter);
 
                 // 将结果存入缓存
-                var cacheOptions = new MemoryCacheEntryOptions()
-                    .SetAbsoluteExpiration(CACHE_DURATION)
-                    .SetPriority(CacheItemPriority.Normal);
+                if (shouldUseProductCache)
+                {
+                    var cacheOptions = new MemoryCacheEntryOptions()
+                        .SetAbsoluteExpiration(CACHE_DURATION)
+                        .SetPriority(CacheItemPriority.Normal);
 
-                _cache.Set(cacheKey, result, cacheOptions);
-                _logger.LogDebug(
-                    "商品列表已缓存: {CacheKey}, 过期时间: {Expiration}",
-                    cacheKey,
-                    DateTime.Now.Add(CACHE_DURATION)
-                );
+                    _cache.Set(cacheKey!, result, cacheOptions);
+                    _logger.LogDebug(
+                        "商品列表已缓存: {CacheKey}, 过期时间: {Expiration}",
+                        cacheKey,
+                        DateTime.Now.Add(CACHE_DURATION)
+                    );
+                }
 
                 return Ok(new { success = true, data = result });
             }
@@ -242,7 +565,7 @@ namespace BlazorApp.Api.Controllers.React
         {
             try
             {
-                var forbidden = await RequireAnyPermissionAsync(Permissions.OrderFront.View);
+                var forbidden = await RequireAnyPermissionAsync(OrderReadPermissions);
                 if (forbidden != null)
                 {
                     return forbidden;
@@ -267,17 +590,48 @@ namespace BlazorApp.Api.Controllers.React
             [FromBody] StoreOrderScanLookupRequestDto request
         )
         {
+            var totalSw = Stopwatch.StartNew();
+            var traceId = GetScanTraceId();
             try
             {
+                var permissionSw = Stopwatch.StartNew();
                 var forbidden =
-                    await RequireAnyPermissionAsync(OrderReadPermissions)
+                    await RequireAnyPermissionAsync(
+                        request.StoreCode,
+                        "scan-order-flow",
+                        OrderReadPermissions
+                    )
                     ?? await RequireAssignedStoreScopeAsync(request.StoreCode);
+                permissionSw.Stop();
                 if (forbidden != null)
                 {
+                    _logger.LogInformation(
+                        "[shop-scan-perf] traceId={TraceId} stage=scan.lookup.controller.forbidden storeCode={StoreCode} barcodeTail={BarcodeTail} barcodeLength={BarcodeLength} permissionMs={PermissionMs} totalMs={TotalMs}",
+                        traceId,
+                        request.StoreCode,
+                        GetBarcodeTail(request.Barcode),
+                        GetBarcodeLength(request.Barcode),
+                        permissionSw.ElapsedMilliseconds,
+                        totalSw.ElapsedMilliseconds
+                    );
                     return forbidden;
                 }
 
+                var serviceSw = Stopwatch.StartNew();
                 var result = await _service.ScanLookupProductsAsync(request);
+                serviceSw.Stop();
+                _logger.LogInformation(
+                    "[shop-scan-perf] traceId={TraceId} stage=scan.lookup.controller.done storeCode={StoreCode} barcodeTail={BarcodeTail} barcodeLength={BarcodeLength} success={Success} itemCount={ItemCount} permissionMs={PermissionMs} serviceMs={ServiceMs} totalMs={TotalMs}",
+                    traceId,
+                    request.StoreCode,
+                    GetBarcodeTail(request.Barcode),
+                    GetBarcodeLength(request.Barcode),
+                    result.Success,
+                    result.Data?.Items?.Count ?? 0,
+                    permissionSw.ElapsedMilliseconds,
+                    serviceSw.ElapsedMilliseconds,
+                    totalSw.ElapsedMilliseconds
+                );
                 if (result.Success)
                 {
                     return Ok(new { success = true, data = result.Data });
@@ -286,6 +640,15 @@ namespace BlazorApp.Api.Controllers.React
             }
             catch (Exception ex)
             {
+                _logger.LogError(
+                    ex,
+                    "[shop-scan-perf] traceId={TraceId} stage=scan.lookup.controller.error storeCode={StoreCode} barcodeTail={BarcodeTail} barcodeLength={BarcodeLength} totalMs={TotalMs}",
+                    traceId,
+                    request.StoreCode,
+                    GetBarcodeTail(request.Barcode),
+                    GetBarcodeLength(request.Barcode),
+                    totalSw.ElapsedMilliseconds
+                );
                 _logger.LogError(ex, "ScanLookupProducts failed");
                 return StatusCode(500, new { success = false, message = "服务器内部错误" });
             }
@@ -327,17 +690,47 @@ namespace BlazorApp.Api.Controllers.React
         [HttpPost("cart/add")]
         public async Task<IActionResult> AddToCart([FromBody] AddToCartRequestDto request)
         {
+            var totalSw = Stopwatch.StartNew();
+            var traceId = GetScanTraceId();
             try
             {
+                var permissionSw = Stopwatch.StartNew();
                 var forbidden =
-                    await RequireAnyPermissionAsync(CartWritePermissions)
+                    await RequireAnyPermissionAsync(
+                        request.StoreCode,
+                        "scan-order-flow",
+                        CartWritePermissions
+                    )
                     ?? await RequireAssignedStoreScopeAsync(request.StoreCode);
+                permissionSw.Stop();
                 if (forbidden != null)
                 {
+                    _logger.LogInformation(
+                        "[shop-scan-perf] traceId={TraceId} stage=cart.add.controller.forbidden storeCode={StoreCode} productCode={ProductCode} permissionMs={PermissionMs} totalMs={TotalMs}",
+                        traceId,
+                        request.StoreCode,
+                        request.ProductCode,
+                        permissionSw.ElapsedMilliseconds,
+                        totalSw.ElapsedMilliseconds
+                    );
                     return forbidden;
                 }
 
+                var serviceSw = Stopwatch.StartNew();
                 var result = await _service.AddToCartAsync(request);
+                serviceSw.Stop();
+                _logger.LogInformation(
+                    "[shop-scan-perf] traceId={TraceId} stage=cart.add.controller.done storeCode={StoreCode} productCode={ProductCode} quantity={Quantity} success={Success} totalQuantity={TotalQuantity} permissionMs={PermissionMs} serviceMs={ServiceMs} totalMs={TotalMs}",
+                    traceId,
+                    request.StoreCode,
+                    request.ProductCode,
+                    request.Quantity,
+                    result.Success,
+                    result.Data?.TotalQuantity ?? 0,
+                    permissionSw.ElapsedMilliseconds,
+                    serviceSw.ElapsedMilliseconds,
+                    totalSw.ElapsedMilliseconds
+                );
                 if (result.Success)
                 {
                     return Ok(new { success = true, data = result.Data });
@@ -346,6 +739,15 @@ namespace BlazorApp.Api.Controllers.React
             }
             catch (Exception ex)
             {
+                _logger.LogError(
+                    ex,
+                    "[shop-scan-perf] traceId={TraceId} stage=cart.add.controller.error storeCode={StoreCode} productCode={ProductCode} quantity={Quantity} totalMs={TotalMs}",
+                    traceId,
+                    request.StoreCode,
+                    request.ProductCode,
+                    request.Quantity,
+                    totalSw.ElapsedMilliseconds
+                );
                 _logger.LogError(ex, "AddToCart failed");
                 return StatusCode(500, new { success = false, message = "服务器内部错误" });
             }
@@ -357,17 +759,47 @@ namespace BlazorApp.Api.Controllers.React
         [HttpPost("cart/update")]
         public async Task<IActionResult> UpdateCartItem([FromBody] AddToCartRequestDto request)
         {
+            var totalSw = Stopwatch.StartNew();
+            var traceId = GetScanTraceId();
             try
             {
+                var permissionSw = Stopwatch.StartNew();
                 var forbidden =
-                    await RequireAnyPermissionAsync(CartWritePermissions)
+                    await RequireAnyPermissionAsync(
+                        request.StoreCode,
+                        "scan-order-flow",
+                        CartWritePermissions
+                    )
                     ?? await RequireAssignedStoreScopeAsync(request.StoreCode);
+                permissionSw.Stop();
                 if (forbidden != null)
                 {
+                    _logger.LogInformation(
+                        "[shop-scan-perf] traceId={TraceId} stage=cart.update.controller.forbidden storeCode={StoreCode} productCode={ProductCode} permissionMs={PermissionMs} totalMs={TotalMs}",
+                        traceId,
+                        request.StoreCode,
+                        request.ProductCode,
+                        permissionSw.ElapsedMilliseconds,
+                        totalSw.ElapsedMilliseconds
+                    );
                     return forbidden;
                 }
 
+                var serviceSw = Stopwatch.StartNew();
                 var result = await _service.UpdateCartItemAsync(request);
+                serviceSw.Stop();
+                _logger.LogInformation(
+                    "[shop-scan-perf] traceId={TraceId} stage=cart.update.controller.done storeCode={StoreCode} productCode={ProductCode} quantity={Quantity} success={Success} totalQuantity={TotalQuantity} permissionMs={PermissionMs} serviceMs={ServiceMs} totalMs={TotalMs}",
+                    traceId,
+                    request.StoreCode,
+                    request.ProductCode,
+                    request.Quantity,
+                    result.Success,
+                    result.Data?.TotalQuantity ?? 0,
+                    permissionSw.ElapsedMilliseconds,
+                    serviceSw.ElapsedMilliseconds,
+                    totalSw.ElapsedMilliseconds
+                );
                 if (result.Success)
                 {
                     return Ok(new { success = true, data = result.Data });
@@ -376,6 +808,15 @@ namespace BlazorApp.Api.Controllers.React
             }
             catch (Exception ex)
             {
+                _logger.LogError(
+                    ex,
+                    "[shop-scan-perf] traceId={TraceId} stage=cart.update.controller.error storeCode={StoreCode} productCode={ProductCode} quantity={Quantity} totalMs={TotalMs}",
+                    traceId,
+                    request.StoreCode,
+                    request.ProductCode,
+                    request.Quantity,
+                    totalSw.ElapsedMilliseconds
+                );
                 _logger.LogError(ex, "UpdateCartItem failed");
                 return StatusCode(500, new { success = false, message = "服务器内部错误" });
             }
@@ -550,7 +991,10 @@ namespace BlazorApp.Api.Controllers.React
         /// 获取订单详情
         /// </summary>
         [HttpGet("detail/{orderGuid}")]
-        public async Task<IActionResult> GetOrderDetail(string orderGuid)
+        public async Task<IActionResult> GetOrderDetail(
+            string orderGuid,
+            [FromQuery] StoreOrderDetailQueryDto query
+        )
         {
             try
             {
@@ -562,7 +1006,7 @@ namespace BlazorApp.Api.Controllers.React
                     return forbidden;
                 }
 
-                var result = await _service.GetOrderDetailAsync(orderGuid);
+                var result = await _service.GetOrderDetailAsync(orderGuid, query);
                 return Ok(
                     new
                     {
@@ -575,6 +1019,72 @@ namespace BlazorApp.Api.Controllers.React
             catch (Exception ex)
             {
                 _logger.LogError(ex, "GetOrderDetail failed");
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
+        /// <summary>
+        /// 获取订单全量详情，供打印和发票页面使用。
+        /// </summary>
+        [HttpGet("detail/{orderGuid}/full")]
+        public async Task<IActionResult> GetOrderDetailFull(string orderGuid)
+        {
+            try
+            {
+                var forbidden =
+                    await RequireAnyPermissionAsync(OrderReadPermissions)
+                    ?? await RequireOrderScopeAsync(orderGuid);
+                if (forbidden != null)
+                {
+                    return forbidden;
+                }
+
+                var result = await _service.GetOrderDetailFullAsync(orderGuid);
+                return Ok(
+                    new
+                    {
+                        success = result.Success,
+                        data = result.Data,
+                        message = result.Message,
+                    }
+                );
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "GetOrderDetail failed");
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
+        /// <summary>
+        /// 获取订单已包含商品编码，供分页明细页跨页去重使用。
+        /// </summary>
+        [HttpGet("detail/{orderGuid}/product-codes")]
+        public async Task<IActionResult> GetOrderDetailProductCodes(string orderGuid)
+        {
+            try
+            {
+                var forbidden =
+                    await RequireAnyPermissionAsync(OrderReadPermissions)
+                    ?? await RequireOrderScopeAsync(orderGuid);
+                if (forbidden != null)
+                {
+                    return forbidden;
+                }
+
+                var result = await _service.GetOrderDetailProductCodesAsync(orderGuid);
+                return Ok(
+                    new
+                    {
+                        success = result.Success,
+                        data = result.Data,
+                        message = result.Message,
+                    }
+                );
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "GetOrderDetailProductCodes failed");
                 return StatusCode(500, new { success = false, message = "服务器内部错误" });
             }
         }
@@ -1012,21 +1522,271 @@ namespace BlazorApp.Api.Controllers.React
         {
             try
             {
-                var forbidden =
-                    await RequireAnyPermissionAsync(Permissions.Warehouse.ManageOrders)
-                    ?? await RequireStoreScopeAsync(request?.StoreCode);
+                var forbidden = await RequireAnyPermissionAsync(WarehouseOrderSyncPermissions);
                 if (forbidden != null)
                 {
                     return forbidden;
                 }
 
-                var storeCode = request?.StoreCode;
-                var result = await _service.SyncMissingOrdersFromHqAsync(storeCode);
+                var scoped = await BuildScopedSyncRequestAsync(request);
+                if (scoped.Forbidden != null)
+                {
+                    return scoped.Forbidden;
+                }
+
+                var result = await _service.SyncMissingOrdersFromHqAsync(scoped.Request);
                 return Ok(result);
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "SyncMissingOrders failed");
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
+        /// <summary>
+        /// 创建分店订货缺失订单同步 job。
+        /// </summary>
+        [HttpPost("sync-missing-orders/jobs")]
+        public async Task<IActionResult> CreateSyncMissingOrdersJob(
+            [FromBody] SyncMissingOrdersRequestDto? request
+        )
+        {
+            try
+            {
+                var forbidden = await RequireAnyPermissionAsync(WarehouseOrderSyncPermissions);
+                if (forbidden != null)
+                {
+                    return forbidden;
+                }
+
+                var scoped = await BuildScopedSyncRequestAsync(request);
+                if (scoped.Forbidden != null)
+                {
+                    return scoped.Forbidden;
+                }
+
+                var userId = GetCurrentUserId();
+                if (string.IsNullOrWhiteSpace(userId))
+                {
+                    return Unauthorized(new { success = false, message = "未获取到当前用户" });
+                }
+
+                var job = await _storeOrderSyncJobService.StartJobAsync(
+                    userId,
+                    scoped.Request,
+                    HttpContext.RequestAborted
+                );
+                return Ok(new { success = true, data = job });
+            }
+            catch (Exception ex)
+            {
+                if (ex is InvalidOperationException invalidOperation
+                    && invalidOperation.Message.Contains("已有分店订货同步任务", StringComparison.Ordinal))
+                {
+                    return Conflict(new { success = false, message = invalidOperation.Message });
+                }
+
+                _logger.LogError(ex, "CreateSyncMissingOrdersJob failed");
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
+        /// <summary>
+        /// 获取分店订货缺失订单同步 job 状态。
+        /// </summary>
+        [HttpGet("sync-missing-orders/jobs/{jobId}")]
+        public async Task<IActionResult> GetSyncMissingOrdersJob(string jobId)
+        {
+            try
+            {
+                var forbidden = await RequireAnyPermissionAsync(WarehouseOrderSyncPermissions);
+                if (forbidden != null)
+                {
+                    return forbidden;
+                }
+
+                var job = await _storeOrderSyncJobService.GetJobAsync(
+                    jobId,
+                    HttpContext.RequestAborted
+                );
+                if (job == null)
+                {
+                    return NotFound(new { success = false, message = "任务不存在" });
+                }
+
+                if (IsStoreScopedUser())
+                {
+                    if (job.StoreCodes.Count == 0)
+                    {
+                        return Forbid();
+                    }
+
+                    foreach (var storeCode in job.StoreCodes)
+                    {
+                        var scopeForbidden = await RequireStoreScopeAsync(storeCode);
+                        if (scopeForbidden != null)
+                        {
+                            return scopeForbidden;
+                        }
+                    }
+                }
+
+                return Ok(new { success = true, data = job });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "GetSyncMissingOrdersJob failed");
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
+        /// <summary>
+        /// 创建分店订货 HQ 全量同步 job。全量同步只允许真实 Admin，且忽略前端筛选条件。
+        /// </summary>
+        [HttpPost("hq-sync/full/jobs")]
+        public async Task<IActionResult> CreateStoreOrderHqFullSyncJob(
+            [FromBody] StoreOrderHqSyncRequestDto? request
+        )
+        {
+            try
+            {
+                if (!IsRealAdmin())
+                {
+                    return Forbid();
+                }
+
+                var userId = GetCurrentUserId();
+                if (string.IsNullOrWhiteSpace(userId))
+                {
+                    return Unauthorized(new { success = false, message = "未获取到当前用户" });
+                }
+
+                // 全量同步是全库行为，服务端主动丢弃页面分店/客户筛选。
+                var job = await _storeOrderSyncJobService.StartHqSyncJobAsync(
+                    userId,
+                    StoreOrderHqSyncMode.Full,
+                    new StoreOrderHqSyncRequestDto(),
+                    HttpContext.RequestAborted
+                );
+                return Ok(new { success = true, data = job });
+            }
+            catch (Exception ex)
+            {
+                if (ex is InvalidOperationException invalidOperation
+                    && invalidOperation.Message.Contains("已有分店订货同步任务", StringComparison.Ordinal))
+                {
+                    return Conflict(new { success = false, message = invalidOperation.Message });
+                }
+
+                _logger.LogError(ex, "CreateStoreOrderHqFullSyncJob failed");
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
+        /// <summary>
+        /// 创建分店订货 HQ 增量同步 job。
+        /// </summary>
+        [HttpPost("hq-sync/incremental/jobs")]
+        public async Task<IActionResult> CreateStoreOrderHqIncrementalSyncJob(
+            [FromBody] StoreOrderHqSyncRequestDto? request
+        )
+        {
+            try
+            {
+                var forbidden = await RequireAnyPermissionAsync(WarehouseOrderSyncPermissions);
+                if (forbidden != null)
+                {
+                    return forbidden;
+                }
+
+                var scoped = await BuildScopedHqSyncRequestAsync(request);
+                if (scoped.Forbidden != null)
+                {
+                    return scoped.Forbidden;
+                }
+
+                var userId = GetCurrentUserId();
+                if (string.IsNullOrWhiteSpace(userId))
+                {
+                    return Unauthorized(new { success = false, message = "未获取到当前用户" });
+                }
+
+                var job = await _storeOrderSyncJobService.StartHqSyncJobAsync(
+                    userId,
+                    StoreOrderHqSyncMode.Incremental,
+                    scoped.Request,
+                    HttpContext.RequestAborted
+                );
+                return Ok(new { success = true, data = job });
+            }
+            catch (Exception ex)
+            {
+                if (ex is InvalidOperationException invalidOperation
+                    && invalidOperation.Message.Contains("已有分店订货同步任务", StringComparison.Ordinal))
+                {
+                    return Conflict(new { success = false, message = invalidOperation.Message });
+                }
+
+                _logger.LogError(ex, "CreateStoreOrderHqIncrementalSyncJob failed");
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
+        /// <summary>
+        /// 获取分店订货 HQ 同步 job 状态。
+        /// </summary>
+        [HttpGet("hq-sync/jobs/{jobId}")]
+        public async Task<IActionResult> GetStoreOrderHqSyncJob(string jobId)
+        {
+            try
+            {
+                var forbidden = await RequireAnyPermissionAsync(WarehouseOrderSyncPermissions);
+                if (forbidden != null)
+                {
+                    return forbidden;
+                }
+
+                var job = await _storeOrderSyncJobService.GetJobAsync(
+                    jobId,
+                    HttpContext.RequestAborted
+                );
+                if (job == null)
+                {
+                    return NotFound(new { success = false, message = "任务不存在" });
+                }
+
+                if (
+                    string.Equals(job.Mode, StoreOrderHqSyncMode.Full.ToString(), StringComparison.OrdinalIgnoreCase)
+                )
+                {
+                    return IsRealAdmin()
+                        ? Ok(new { success = true, data = job })
+                        : Forbid();
+                }
+
+                if (IsStoreScopedUser())
+                {
+                    if (job.StoreCodes.Count == 0)
+                    {
+                        return Forbid();
+                    }
+
+                    foreach (var storeCode in job.StoreCodes)
+                    {
+                        var scopeForbidden = await RequireStoreScopeAsync(storeCode);
+                        if (scopeForbidden != null)
+                        {
+                            return scopeForbidden;
+                        }
+                    }
+                }
+
+                return Ok(new { success = true, data = job });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "GetStoreOrderHqSyncJob failed");
                 return StatusCode(500, new { success = false, message = "服务器内部错误" });
             }
         }

@@ -220,6 +220,72 @@ namespace BlazorApp.Shared.DTOs
         /// </summary>
         [Required]
         public UpdateToStorePricesFields UpdateFields { get; set; } = new();
+
+        /// <summary>
+        /// 是否在更新本地分店价格后同步商品和价格到HQ
+        /// </summary>
+        public bool UpdateHqProduct { get; set; }
+    }
+
+    /// <summary>
+    /// 更新到分店价格结果DTO
+    /// </summary>
+    public class UpdateToStorePricesResultDto : BatchResultDto
+    {
+        public int HqExisting { get; set; }
+        public int HbwebCreated { get; set; }
+        public int HqCreated { get; set; }
+        public int HqSynced { get; set; }
+        public int HqPurchasePricesUpdated { get; set; }
+        public int HqFailed { get; set; }
+        public List<EnsureHqProductError> HqErrors { get; set; } = new();
+    }
+
+    /// <summary>
+    /// 同步本地进货单明细商品到HQ请求DTO
+    /// </summary>
+    public class EnsureHqProductsRequest
+    {
+        /// <summary>
+        /// 要同步的明细GUID列表
+        /// </summary>
+        public List<string> DetailGuids { get; set; } = new();
+
+        /// <summary>
+        /// 更新已有商品时只同步这些目标分店
+        /// </summary>
+        public List<string> TargetStoreCodes { get; set; } = new();
+
+        /// <summary>
+        /// 幂等键，当前后端保留字段以兼容前端请求
+        /// </summary>
+        public string? IdempotencyKey { get; set; }
+    }
+
+    /// <summary>
+    /// 同步本地进货单明细商品到HQ结果DTO
+    /// </summary>
+    public class EnsureHqProductsResult
+    {
+        public int Total { get; set; }
+        public int HqExisting { get; set; }
+        public int HbwebCreated { get; set; }
+        public int HqCreated { get; set; }
+        public int HqSynced { get; set; }
+        public int HqPurchasePricesUpdated { get; set; }
+        public int Skipped { get; set; }
+        public int Failed { get; set; }
+        public List<EnsureHqProductError> Errors { get; set; } = new();
+    }
+
+    /// <summary>
+    /// 同步HQ商品逐行错误
+    /// </summary>
+    public class EnsureHqProductError
+    {
+        public string DetailGuid { get; set; } = string.Empty;
+        public string? StoreCode { get; set; }
+        public string Message { get; set; } = string.Empty;
     }
 
     /// <summary>
@@ -455,7 +521,8 @@ namespace BlazorApp.Shared.DTOs
     public class UpdateDetailActionRequest
     {
         /// <summary>
-        /// 操作类型：0=无操作，1=新建商品，2=更新进货价，3=等待操作
+        /// 操作类型：0=无操作，1=新建商品，2=更新进货价，3=等待操作，4=更新货号，5=添加多码
+        /// 99=已执行完成，仅服务端内部写入，客户端不可提交
         /// </summary>
         public int Action { get; set; }
     }
@@ -471,7 +538,8 @@ namespace BlazorApp.Shared.DTOs
         public List<string> DetailGuids { get; set; } = new();
 
         /// <summary>
-        /// 操作类型：0=无操作，1=新建商品，2=更新进货价，3=等待操作
+        /// 操作类型：0=无操作，1=新建商品，2=更新进货价，3=等待操作，4=更新货号，5=添加多码
+        /// 99=已执行完成，仅服务端内部写入，客户端不可提交
         /// </summary>
         public int Action { get; set; }
     }
@@ -538,6 +606,7 @@ namespace BlazorApp.Shared.DTOs
     /// </summary>
     public class CheckInvoiceNoExistsRequest
     {
+        public string StoreCode { get; set; } = string.Empty;
         public string SupplierCode { get; set; } = string.Empty;
         public string InvoiceNo { get; set; } = string.Empty;
     }
@@ -636,5 +705,27 @@ namespace BlazorApp.Shared.DTOs
     public class PushToHqRequest
     {
         public List<string> InvoiceGuids { get; set; } = new();
+    }
+
+    public class LocalSupplierInvoiceHqSyncRequest
+    {
+        public List<string>? SelectedStoreCodes { get; set; }
+        public DateTime? StartDate { get; set; }
+        public DateTime? EndDate { get; set; }
+    }
+
+    public class LocalSupplierInvoiceHqSyncResult
+    {
+        public string RequestId { get; set; } = string.Empty;
+        public string Status { get; set; } = string.Empty;
+        public DateTime StartedAt { get; set; }
+        public DateTime? CompletedAt { get; set; }
+        public long DurationMs { get; set; }
+        public int InvoiceAddedCount { get; set; }
+        public int InvoiceUpdatedCount { get; set; }
+        public int DetailAddedCount { get; set; }
+        public int DetailUpdatedCount { get; set; }
+        public int TotalProcessed { get; set; }
+        public List<string> Errors { get; set; } = new();
     }
 }

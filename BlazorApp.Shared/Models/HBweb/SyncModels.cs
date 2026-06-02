@@ -66,6 +66,7 @@ namespace BlazorApp.Shared.Models
         public TimeSpan Duration { get; set; }
         public bool IsSuccess { get; set; }
         public string Message { get; set; } = "";
+        public string? ErrorCode { get; set; }
         public string? Details { get; set; }
         public int AddedCount { get; set; }
         public int UpdatedCount { get; set; }

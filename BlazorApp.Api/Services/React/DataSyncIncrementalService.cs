@@ -22,6 +22,7 @@ namespace BlazorApp.Api.Services.React
         private readonly IMapper _mapper;
         private readonly ILogger<DataSyncIncrementalService> _logger;
         private readonly ScheduledTaskLogService _taskLogService;
+        private readonly IStoreRetailPriceHqSyncService _storeRetailPriceHqSyncService;
 
         public DataSyncIncrementalService(
             SqlSugarContext localContext,
@@ -31,7 +32,8 @@ namespace BlazorApp.Api.Services.React
             IConfiguration configuration,
             IMapper mapper,
             ILogger<DataSyncIncrementalService> logger,
-            ScheduledTaskLogService taskLogService
+            ScheduledTaskLogService taskLogService,
+            IStoreRetailPriceHqSyncService storeRetailPriceHqSyncService
         )
         {
             _localContext = localContext;
@@ -42,6 +44,7 @@ namespace BlazorApp.Api.Services.React
             _mapper = mapper;
             _logger = logger;
             _taskLogService = taskLogService;
+            _storeRetailPriceHqSyncService = storeRetailPriceHqSyncService;
         }
 
         public async Task<SyncResult> SyncPosmProductSupplierMappingsIncrementalAsync(
@@ -1282,6 +1285,16 @@ namespace BlazorApp.Api.Services.React
             DateTime? startDateFromRequest = null
         )
         {
+            if (_storeRetailPriceHqSyncService != null)
+            {
+                return await _storeRetailPriceHqSyncService.SyncIncrementalAsync(
+                    selectedStoreCodes,
+                    startDateFromRequest
+                );
+            }
+
+            throw new InvalidOperationException("分店零售价 HQ 统一同步服务未注册");
+
             var result = new SyncResult();
             var taskLog = await _taskLogService.LogTaskStartAsync(
                 "SyncStoreRetailPricesIncremental",

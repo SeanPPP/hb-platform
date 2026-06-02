@@ -5,6 +5,7 @@ using System.Runtime.CompilerServices;
 using System.Threading.Tasks;
 using AutoMapper;
 using BlazorApp.Api.Data;
+using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Api.Services;
 using BlazorApp.Api.Services.React;
 using BlazorApp.Shared.Models;
@@ -160,7 +161,8 @@ namespace BlazorApp.Api.Tests
                 NullLogger<ProductWarehouseReactService>.Instance,
                 configuration,
                 itemBarcodeService,
-                Mock.Of<IMapper>()
+                Mock.Of<IMapper>(),
+                Mock.Of<IDataSyncFullService>()
             );
         }
 

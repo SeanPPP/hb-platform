@@ -5,6 +5,7 @@ using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Helper;
 using BlazorApp.Shared.Models;
 using BlazorApp.Shared.Models.HqEntities;
+using System.Diagnostics;
 using System.Security.Claims;
 using Microsoft.Extensions.Configuration;
 using SqlSugar;
@@ -19,6 +20,31 @@ namespace BlazorApp.Api.Services.React
         private readonly IOrderNumberGenerator _orderNumberGenerator;
         private readonly IConfiguration _configuration;
         private readonly IMapper _mapper;
+        private Func<ISqlSugarClient> _createHqConnection;
+
+        private string GetScanTraceId()
+        {
+            // 同一次扫码的前后端日志使用同一个 traceId，方便按链路聚合耗时。
+            return _httpContextAccessor.HttpContext?.Request.Headers["X-Scan-Trace-Id"].FirstOrDefault()
+                ?? _httpContextAccessor.HttpContext?.TraceIdentifier
+                ?? "no-trace";
+        }
+
+        private static string GetBarcodeTail(string? barcode)
+        {
+            var trimmed = barcode?.Trim();
+            if (string.IsNullOrEmpty(trimmed))
+            {
+                return "empty";
+            }
+
+            return trimmed.Length <= 6 ? trimmed : trimmed[^6..];
+        }
+
+        private static int GetBarcodeLength(string? barcode)
+        {
+            return barcode?.Trim().Length ?? 0;
+        }
 
         public StoreOrderReactService(
             SqlSugarContext context,
@@ -35,6 +61,7 @@ namespace BlazorApp.Api.Services.React
             _orderNumberGenerator = orderNumberGenerator;
             _configuration = configuration;
             _mapper = mapper;
+            _createHqConnection = () => HqSqlSugarContext.CreateConcurrentConnection(_configuration);
         }
 
         private static decimal? CalculateVolume(decimal? unitVolume, decimal quantity)
@@ -113,12 +140,20 @@ namespace BlazorApp.Api.Services.React
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToList();
 
+            if (filter.ExcludeExistingWarehouseProducts)
+            {
+                return await GetProductMasterRowsNotInWarehouseAsync(filter, normalizedGrades);
+            }
+
             var q = _db.Queryable<Product>()
                 .InnerJoin<WarehouseProduct>((p, wp) => p.ProductCode == wp.ProductCode)
                 .LeftJoin<WarehouseCategory>(
                     (p, wp, wc) => p.WarehouseCategoryGUID == wc.CategoryGUID
                 )
-                .Where((p, wp, wc) => p.IsActive && !p.IsDeleted && !wp.IsDeleted && wp.IsActive);
+                .LeftJoin<HBLocalSupplier>(
+                    (p, wp, wc, ls) => p.LocalSupplierCode == ls.LocalSupplierCode && !ls.IsDeleted
+                )
+                .Where((p, wp, wc, ls) => p.IsActive && !p.IsDeleted && !wp.IsDeleted && wp.IsActive);
 
             if (!string.IsNullOrWhiteSpace(filter.CategoryGUID))
             {
@@ -129,9 +164,30 @@ namespace BlazorApp.Api.Services.React
                     filter.CategoryGUID
                 );
                 q = q.Where(
-                    (p, wp, wc) =>
+                    (p, wp, wc, ls) =>
                         p.WarehouseCategoryGUID != null
                         && categoryIds.Contains(p.WarehouseCategoryGUID)
+                );
+            }
+
+            if (!string.IsNullOrWhiteSpace(filter.LocalSupplierCode))
+            {
+                var supplierCode = filter.LocalSupplierCode.Trim();
+                q = q.Where((p, wp, wc, ls) => p.LocalSupplierCode == supplierCode);
+            }
+
+            if (!string.IsNullOrWhiteSpace(filter.ExcludeOrderGUID))
+            {
+                var orderGuid = filter.ExcludeOrderGUID.Trim();
+                q = q.Where(
+                    (p, wp, wc, ls) =>
+                        !SqlFunc.Subqueryable<WareHouseOrderDetails>()
+                            .Where(d =>
+                                d.OrderGUID == orderGuid
+                                && d.ProductCode == p.ProductCode
+                                && !d.IsDeleted
+                            )
+                            .Any()
                 );
             }
 
@@ -139,7 +195,7 @@ namespace BlazorApp.Api.Services.React
             {
                 var keyword = filter.ItemNumber.Trim().ToLower();
                 q = q.Where(
-                    (p, wp, wc) =>
+                    (p, wp, wc, ls) =>
                         (p.ItemNumber != null && p.ItemNumber.ToLower().Contains(keyword))
                         || (p.Barcode != null && p.Barcode.ToLower().Contains(keyword))
                 );
@@ -149,7 +205,7 @@ namespace BlazorApp.Api.Services.React
             {
                 var keyword = filter.ProductName.Trim().ToLower();
                 q = q.Where(
-                    (p, wp, wc) =>
+                    (p, wp, wc, ls) =>
                         p.ProductName != null && p.ProductName.ToLower().Contains(keyword)
                 );
             }
@@ -157,7 +213,7 @@ namespace BlazorApp.Api.Services.React
             if (normalizedGrades.Count > 0)
             {
                 q = q.Where(
-                    (p, wp, wc) =>
+                    (p, wp, wc, ls) =>
                         SqlFunc.Subqueryable<ProductGrade>()
                             .Where(pg =>
                                 pg.ProductCode == p.ProductCode
@@ -173,36 +229,39 @@ namespace BlazorApp.Api.Services.React
                 switch (filter.SortBy.ToLower())
                 {
                     case "priceasc":
-                        q = q.OrderBy((p, wp, wc) => wp.OEMPrice, OrderByType.Asc);
+                        q = q.OrderBy((p, wp, wc, ls) => wp.OEMPrice, OrderByType.Asc);
                         break;
                     case "pricedesc":
-                        q = q.OrderBy((p, wp, wc) => wp.OEMPrice, OrderByType.Desc);
+                        q = q.OrderBy((p, wp, wc, ls) => wp.OEMPrice, OrderByType.Desc);
                         break;
                     case "name":
-                        q = q.OrderBy((p, wp, wc) => p.ProductName, OrderByType.Asc);
+                        q = q.OrderBy((p, wp, wc, ls) => p.ProductName, OrderByType.Asc);
                         break;
                     default:
-                        q = q.OrderBy((p, wp, wc) => p.ItemNumber, OrderByType.Asc);
+                        q = q.OrderBy((p, wp, wc, ls) => p.ItemNumber, OrderByType.Asc);
                         break;
                 }
             }
             else
             {
-                q = q.OrderBy((p, wp, wc) => p.ItemNumber, OrderByType.Asc);
+                q = q.OrderBy((p, wp, wc, ls) => p.ItemNumber, OrderByType.Asc);
             }
 
             var total = await q.CountAsync();
 
             var items = await q.Select(
-                    (p, wp, wc) =>
+                    (p, wp, wc, ls) =>
                         new StoreOrderProductDto
                         {
                             ProductCode = p.ProductCode ?? string.Empty,
                             ItemNumber = p.ItemNumber,
+                            Barcode = p.Barcode,
                             ProductName = p.ProductName,
                             ProductImage = p.ProductImage,
                             CategoryName = wc.CategoryName,
                             WarehouseCategoryGUID = p.WarehouseCategoryGUID,
+                            LocalSupplierCode = p.LocalSupplierCode,
+                            LocalSupplierName = ls.Name,
                             OEMPrice = wp.OEMPrice,
                             MinOrderQuantity = wp.MinOrderQuantity ?? 1,
                             StockQuantity = wp.StockQuantity ?? 0,
@@ -256,6 +315,194 @@ namespace BlazorApp.Api.Services.React
                 PageNumber = filter.PageNumber,
                 PageSize = filter.PageSize,
             };
+        }
+
+        private async Task<PagedListReactDto<StoreOrderProductDto>>
+            GetProductMasterRowsNotInWarehouseAsync(
+                StoreOrderFilterDto filter,
+                List<string> normalizedGrades
+            )
+        {
+            // 选择商品弹窗需要基于 Product 主档做候选集，再显式排除仍有有效仓库记录的商品。
+            var q = _db.Queryable<Product>()
+                .LeftJoin<WarehouseCategory>((p, wc) => p.WarehouseCategoryGUID == wc.CategoryGUID)
+                .LeftJoin<HBLocalSupplier>(
+                    (p, wc, ls) => p.LocalSupplierCode == ls.LocalSupplierCode && !ls.IsDeleted
+                )
+                .Where(
+                    (p, wc, ls) =>
+                        p.IsActive
+                        && !p.IsDeleted
+                        && p.ProductCode != null
+                        && !SqlFunc.Subqueryable<WarehouseProduct>()
+                            .Where(wp => wp.ProductCode == p.ProductCode && !wp.IsDeleted)
+                            .Any()
+                );
+
+            if (!string.IsNullOrWhiteSpace(filter.CategoryGUID))
+            {
+                var categoryIds = GetAllSubCategoryIds(filter.CategoryGUID);
+                q = q.Where(
+                    (p, wc, ls) =>
+                        p.WarehouseCategoryGUID != null
+                        && categoryIds.Contains(p.WarehouseCategoryGUID)
+                );
+            }
+
+            if (!string.IsNullOrWhiteSpace(filter.LocalSupplierCode))
+            {
+                var supplierCode = filter.LocalSupplierCode.Trim();
+                q = q.Where((p, wc, ls) => p.LocalSupplierCode == supplierCode);
+            }
+
+            if (!string.IsNullOrWhiteSpace(filter.ExcludeOrderGUID))
+            {
+                var orderGuid = filter.ExcludeOrderGUID.Trim();
+                q = q.Where(
+                    (p, wc, ls) =>
+                        !SqlFunc.Subqueryable<WareHouseOrderDetails>()
+                            .Where(d =>
+                                d.OrderGUID == orderGuid
+                                && d.ProductCode == p.ProductCode
+                                && !d.IsDeleted
+                            )
+                            .Any()
+                );
+            }
+
+            if (!string.IsNullOrWhiteSpace(filter.ItemNumber))
+            {
+                var keyword = filter.ItemNumber.Trim().ToLower();
+                q = q.Where(
+                    (p, wc, ls) =>
+                        (p.ItemNumber != null && p.ItemNumber.ToLower().Contains(keyword))
+                        || (p.Barcode != null && p.Barcode.ToLower().Contains(keyword))
+                );
+            }
+
+            if (!string.IsNullOrWhiteSpace(filter.ProductName))
+            {
+                var keyword = filter.ProductName.Trim().ToLower();
+                q = q.Where(
+                    (p, wc, ls) =>
+                        p.ProductName != null && p.ProductName.ToLower().Contains(keyword)
+                );
+            }
+
+            if (normalizedGrades.Count > 0)
+            {
+                q = q.Where(
+                    (p, wc, ls) =>
+                        SqlFunc.Subqueryable<ProductGrade>()
+                            .Where(pg =>
+                                pg.ProductCode == p.ProductCode
+                                && !pg.IsDeleted
+                                && normalizedGrades.Contains(pg.Grade)
+                            )
+                            .Any()
+                );
+            }
+
+            if (!string.IsNullOrWhiteSpace(filter.SortBy))
+            {
+                switch (filter.SortBy.ToLower())
+                {
+                    case "priceasc":
+                        q = q.OrderBy((p, wc, ls) => p.PurchasePrice, OrderByType.Asc);
+                        break;
+                    case "pricedesc":
+                        q = q.OrderBy((p, wc, ls) => p.PurchasePrice, OrderByType.Desc);
+                        break;
+                    case "name":
+                        q = q.OrderBy((p, wc, ls) => p.ProductName, OrderByType.Asc);
+                        break;
+                    default:
+                        q = q.OrderBy((p, wc, ls) => p.ItemNumber, OrderByType.Asc);
+                        break;
+                }
+            }
+            else
+            {
+                q = q.OrderBy((p, wc, ls) => p.ItemNumber, OrderByType.Asc);
+            }
+
+            var total = await q.CountAsync();
+            var items = await q.Select(
+                    (p, wc, ls) =>
+                        new StoreOrderProductDto
+                        {
+                            ProductCode = p.ProductCode ?? string.Empty,
+                            ItemNumber = p.ItemNumber,
+                            Barcode = p.Barcode,
+                            ProductName = p.ProductName,
+                            ProductImage = p.ProductImage,
+                            CategoryName = wc.CategoryName,
+                            WarehouseCategoryGUID = p.WarehouseCategoryGUID,
+                            LocalSupplierCode = p.LocalSupplierCode,
+                            LocalSupplierName = ls.Name,
+                            OEMPrice = 0,
+                            MinOrderQuantity = 1,
+                            StockQuantity = 0,
+                            PackQty = p.MiddlePackageQuantity,
+                            ImportPrice = p.PurchasePrice ?? 0,
+                        }
+                )
+                .Skip((filter.PageNumber - 1) * filter.PageSize)
+                .Take(filter.PageSize)
+                .ToListAsync();
+
+            await FillProductGradesAsync(items, normalizedGrades);
+
+            return new PagedListReactDto<StoreOrderProductDto>
+            {
+                Items = items,
+                Total = total,
+                PageNumber = filter.PageNumber,
+                PageSize = filter.PageSize,
+            };
+        }
+
+        private async Task FillProductGradesAsync(
+            List<StoreOrderProductDto> items,
+            List<string> normalizedGrades
+        )
+        {
+            var productCodes = items
+                .Select(item => item.ProductCode)
+                .Where(code => !string.IsNullOrWhiteSpace(code))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            if (productCodes.Count == 0)
+            {
+                return;
+            }
+
+            var gradeRows = await _db.Queryable<ProductGrade>()
+                .Where(pg => productCodes.Contains(pg.ProductCode) && !pg.IsDeleted)
+                .OrderBy(pg => pg.Grade)
+                .Select(pg => new { pg.ProductCode, pg.Grade })
+                .ToListAsync();
+
+            var gradeMap = gradeRows
+                .GroupBy(row => row.ProductCode, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(
+                    group => group.Key,
+                    group =>
+                        normalizedGrades.Count > 0
+                            ? group.FirstOrDefault(row => normalizedGrades.Contains(row.Grade))?.Grade
+                                ?? group.First().Grade
+                            : group.First().Grade,
+                    StringComparer.OrdinalIgnoreCase
+                );
+
+            foreach (var item in items)
+            {
+                if (gradeMap.TryGetValue(item.ProductCode, out var grade))
+                {
+                    item.Grade = grade;
+                }
+            }
         }
 
         public async Task<ApiResponse<List<StoreOrderBatchLookupItemDto>>> BatchLookupProductsAsync(
@@ -368,11 +615,19 @@ namespace BlazorApp.Api.Services.React
             StoreOrderScanLookupRequestDto request
         )
         {
+            var totalSw = Stopwatch.StartNew();
+            var traceId = GetScanTraceId();
             try
             {
                 var barcode = request.Barcode?.Trim();
                 if (string.IsNullOrWhiteSpace(barcode))
                 {
+                    _logger.LogInformation(
+                        "[shop-scan-perf] traceId={TraceId} stage=scan.lookup.service.invalid storeCode={StoreCode} totalMs={TotalMs}",
+                        traceId,
+                        request.StoreCode,
+                        totalSw.ElapsedMilliseconds
+                    );
                     return new ApiResponse<StoreOrderScanLookupResultDto>
                     {
                         Success = false,
@@ -380,8 +635,13 @@ namespace BlazorApp.Api.Services.React
                     };
                 }
 
-                var barcodeLower = barcode.ToLower();
+                var lookupCodes = new[] { barcode, barcode.ToUpperInvariant(), barcode.ToLowerInvariant() }
+                    .Distinct(StringComparer.Ordinal)
+                    .ToList();
+                var useSqlServerCaseInsensitiveCollation =
+                    _db.CurrentConnectionConfig.DbType == DbType.SqlServer;
 
+                var exactQuerySw = Stopwatch.StartNew();
                 var allMatches = await _db.Queryable<Product>()
                     .InnerJoin<WarehouseProduct>((p, wp) => p.ProductCode == wp.ProductCode)
                     .LeftJoin<WarehouseCategory>(
@@ -393,11 +653,38 @@ namespace BlazorApp.Api.Services.React
                     .Where(
                         (p, wp, wc, pg) => p.IsActive && !p.IsDeleted && !wp.IsDeleted && wp.IsActive
                     )
-                    .Where(
+                    .WhereIF(
+                        useSqlServerCaseInsensitiveCollation,
                         (p, wp, wc, pg) =>
-                            (p.Barcode != null && p.Barcode.ToLower() == barcodeLower)
-                            || (p.ItemNumber != null && p.ItemNumber.ToLower() == barcodeLower)
-                            || (p.ProductCode != null && p.ProductCode.ToLower() == barcodeLower)
+                            // SQL Server 明确指定 CI 排序规则，避免字段 ToLower()，同时覆盖混合大小写编码。
+                            (
+                                p.Barcode != null
+                                && SqlFunc.MappingColumn(
+                                    p.Barcode,
+                                    "p.Barcode collate Chinese_PRC_CI_AS"
+                                ) == barcode
+                            )
+                            || (
+                                p.ItemNumber != null
+                                && SqlFunc.MappingColumn(
+                                    p.ItemNumber,
+                                    "p.ItemNumber collate Chinese_PRC_CI_AS"
+                                ) == barcode
+                            )
+                            || (
+                                p.ProductCode != null
+                                && SqlFunc.MappingColumn(
+                                    p.ProductCode,
+                                    "p.ProductCode collate Chinese_PRC_CI_AS"
+                                ) == barcode
+                            )
+                    )
+                    .WhereIF(
+                        !useSqlServerCaseInsensitiveCollation,
+                        (p, wp, wc, pg) =>
+                            (p.Barcode != null && lookupCodes.Contains(p.Barcode))
+                            || (p.ItemNumber != null && lookupCodes.Contains(p.ItemNumber))
+                            || (p.ProductCode != null && lookupCodes.Contains(p.ProductCode))
                     )
                     .Select(
                         (p, wp, wc, pg) =>
@@ -419,8 +706,19 @@ namespace BlazorApp.Api.Services.React
                             }
                     )
                     .ToListAsync();
+                exactQuerySw.Stop();
 
-                var barcodeItems = allMatches
+                // 保持数据库字段可走索引：扫码只做精确匹配，不再对字段执行 ToLower() 兜底。
+                long fallbackQueryMs = 0;
+
+                var buildSw = Stopwatch.StartNew();
+                // ProductGrade 可能存在多行，扫码候选按商品去重，避免前端弹出重复商品。
+                var distinctMatches = allMatches
+                    .GroupBy(p => p.ProductCode, StringComparer.OrdinalIgnoreCase)
+                    .Select(group => group.First())
+                    .ToList();
+
+                var barcodeItems = distinctMatches
                     .Where(p =>
                         p.Barcode?.Equals(barcode, StringComparison.OrdinalIgnoreCase) == true
                     )
@@ -428,8 +726,24 @@ namespace BlazorApp.Api.Services.React
 
                 var matchType =
                     barcodeItems.Count > 0 ? "barcode"
-                    : allMatches.Count > 0 ? "fallback"
+                    : distinctMatches.Count > 0 ? "fallback"
                     : null;
+                buildSw.Stop();
+
+                _logger.LogInformation(
+                    "[shop-scan-perf] traceId={TraceId} stage=scan.lookup.service.done storeCode={StoreCode} barcodeTail={BarcodeTail} barcodeLength={BarcodeLength} matchType={MatchType} rawCount={RawCount} itemCount={ItemCount} exactQueryMs={ExactQueryMs} fallbackQueryMs={FallbackQueryMs} buildMs={BuildMs} totalMs={TotalMs}",
+                    traceId,
+                    request.StoreCode,
+                    GetBarcodeTail(barcode),
+                    GetBarcodeLength(barcode),
+                    matchType ?? "none",
+                    allMatches.Count,
+                    (barcodeItems.Count > 0 ? barcodeItems.Count : distinctMatches.Count),
+                    exactQuerySw.ElapsedMilliseconds,
+                    fallbackQueryMs,
+                    buildSw.ElapsedMilliseconds,
+                    totalSw.ElapsedMilliseconds
+                );
 
                 return new ApiResponse<StoreOrderScanLookupResultDto>
                 {
@@ -438,12 +752,21 @@ namespace BlazorApp.Api.Services.React
                     {
                         Barcode = barcode,
                         MatchType = matchType,
-                        Items = barcodeItems.Count > 0 ? barcodeItems : allMatches,
+                        Items = barcodeItems.Count > 0 ? barcodeItems : distinctMatches,
                     },
                 };
             }
             catch (Exception ex)
             {
+                _logger.LogError(
+                    ex,
+                    "[shop-scan-perf] traceId={TraceId} stage=scan.lookup.service.error storeCode={StoreCode} barcodeTail={BarcodeTail} barcodeLength={BarcodeLength} totalMs={TotalMs}",
+                    traceId,
+                    request.StoreCode,
+                    GetBarcodeTail(request.Barcode),
+                    GetBarcodeLength(request.Barcode),
+                    totalSw.ElapsedMilliseconds
+                );
                 _logger.LogError(ex, "ScanLookupProductsAsync failed");
                 return new ApiResponse<StoreOrderScanLookupResultDto>
                 {
@@ -495,16 +818,29 @@ namespace BlazorApp.Api.Services.React
 
         public async Task<ApiResponse<StoreOrderCartDto?>> GetActiveCartAsync(string storeCode)
         {
+            var totalSw = Stopwatch.StartNew();
+            var traceId = GetScanTraceId();
+
             // FlowStatus = 0 代表购物车
+            var orderSw = Stopwatch.StartNew();
             var order = await _db.Queryable<WareHouseOrder>()
                 .Where(o => o.StoreCode == storeCode && o.FlowStatus == 0 && !o.IsDeleted)
                 .FirstAsync();
+            orderSw.Stop();
 
             if (order == null)
             {
+                _logger.LogInformation(
+                    "[shop-scan-perf] traceId={TraceId} stage=cart.reload.service.empty storeCode={StoreCode} orderMs={OrderMs} totalMs={TotalMs}",
+                    traceId,
+                    storeCode,
+                    orderSw.ElapsedMilliseconds,
+                    totalSw.ElapsedMilliseconds
+                );
                 return new ApiResponse<StoreOrderCartDto?> { Success = true, Data = null };
             }
 
+            var detailsQuerySw = Stopwatch.StartNew();
             var details = await _db.Queryable<WareHouseOrderDetails>()
                 .LeftJoin<Product>((d, p) => d.ProductCode == p.ProductCode)
                 .LeftJoin<WarehouseProduct>((d, p, wp) => d.ProductCode == wp.ProductCode)
@@ -539,7 +875,9 @@ namespace BlazorApp.Api.Services.React
                         }
                 )
                 .ToListAsync();
+            detailsQuerySw.Stop();
 
+            var buildSw = Stopwatch.StartNew();
             // 计算小计体积和总计
             foreach (var item in details)
             {
@@ -571,12 +909,28 @@ namespace BlazorApp.Api.Services.React
                 ShippingFee = order.ShippingFee,
                 Items = details,
             };
+            buildSw.Stop();
+
+            _logger.LogInformation(
+                "[shop-scan-perf] traceId={TraceId} stage=cart.reload.service.done storeCode={StoreCode} itemCount={ItemCount} totalQuantity={TotalQuantity} totalSku={TotalSku} orderMs={OrderMs} detailsQueryMs={DetailsQueryMs} buildMs={BuildMs} totalMs={TotalMs}",
+                traceId,
+                storeCode,
+                details.Count,
+                dto.TotalQuantity,
+                dto.TotalSKU,
+                orderSw.ElapsedMilliseconds,
+                detailsQuerySw.ElapsedMilliseconds,
+                buildSw.ElapsedMilliseconds,
+                totalSw.ElapsedMilliseconds
+            );
 
             return new ApiResponse<StoreOrderCartDto?> { Success = true, Data = dto };
         }
 
-        public async Task<ApiResponse<bool>> AddToCartAsync(AddToCartRequestDto request)
+        public async Task<ApiResponse<StoreOrderCartDto?>> AddToCartAsync(AddToCartRequestDto request)
         {
+            var totalSw = Stopwatch.StartNew();
+            var traceId = GetScanTraceId();
             try
             {
                 var now = DateTime.Now;
@@ -584,6 +938,7 @@ namespace BlazorApp.Api.Services.React
                     _httpContextAccessor.HttpContext?.User?.Identity?.Name ?? "System";
 
                 // 1. 获取或创建订单 (FlowStatus = 0)
+                var orderSw = Stopwatch.StartNew();
                 var order = await _db.Queryable<WareHouseOrder>()
                     .Where(o =>
                         o.StoreCode == request.StoreCode && o.FlowStatus == 0 && !o.IsDeleted
@@ -608,8 +963,10 @@ namespace BlazorApp.Api.Services.React
                     };
                     await _db.Insertable(order).ExecuteCommandAsync();
                 }
+                orderSw.Stop();
 
                 // 2. 获取商品信息 (获取贴牌价)
+                var productSw = Stopwatch.StartNew();
                 var warehouseProduct = await _db.Queryable<WarehouseProduct>()
                     .Where(wp => wp.ProductCode == request.ProductCode)
                     .FirstAsync();
@@ -617,16 +974,28 @@ namespace BlazorApp.Api.Services.React
                 var product = await _db.Queryable<Product>()
                     .Where(p => p.ProductCode == request.ProductCode)
                     .FirstAsync();
+                productSw.Stop();
 
                 if (warehouseProduct == null || product == null)
                 {
-                    return new ApiResponse<bool> { Success = false, Message = "商品不存在" };
+                    _logger.LogInformation(
+                        "[shop-scan-perf] traceId={TraceId} stage=cart.add.service.product-missing storeCode={StoreCode} productCode={ProductCode} quantity={Quantity} orderMs={OrderMs} productMs={ProductMs} totalMs={TotalMs}",
+                        traceId,
+                        request.StoreCode,
+                        request.ProductCode,
+                        request.Quantity,
+                        orderSw.ElapsedMilliseconds,
+                        productSw.ElapsedMilliseconds,
+                        totalSw.ElapsedMilliseconds
+                    );
+                    return new ApiResponse<StoreOrderCartDto?> { Success = false, Message = "商品不存在" };
                 }
 
                 decimal price = warehouseProduct.OEMPrice ?? 0;
                 decimal importPrice = warehouseProduct.ImportPrice ?? 0; // 记录ImportPrice以便统计
 
                 // 3. 检查明细是否已存在
+                var detailLookupSw = Stopwatch.StartNew();
                 var detail = await _db.Queryable<WareHouseOrderDetails>()
                     .Where(d =>
                         d.OrderGUID == order.OrderGUID
@@ -634,7 +1003,9 @@ namespace BlazorApp.Api.Services.React
                         && !d.IsDeleted
                     )
                     .FirstAsync();
+                detailLookupSw.Stop();
 
+                var detailWriteSw = Stopwatch.StartNew();
                 if (detail == null)
                 {
                     // 新增明细
@@ -675,21 +1046,56 @@ namespace BlazorApp.Api.Services.React
                         await _db.Updateable(detail).ExecuteCommandAsync();
                     }
                 }
+                detailWriteSw.Stop();
 
                 // 4. 更新主表总金额
+                var totalUpdateSw = Stopwatch.StartNew();
                 await UpdateOrderTotalAsync(order.OrderGUID);
+                totalUpdateSw.Stop();
 
-                return new ApiResponse<bool> { Success = true, Data = true };
+                var cartReloadSw = Stopwatch.StartNew();
+                var cartResult = await GetActiveCartAsync(request.StoreCode);
+                cartReloadSw.Stop();
+                _logger.LogInformation(
+                    "[shop-scan-perf] traceId={TraceId} stage=cart.add.service.done storeCode={StoreCode} productCode={ProductCode} quantity={Quantity} success={Success} totalQuantity={TotalQuantity} totalSku={TotalSku} orderMs={OrderMs} productMs={ProductMs} detailLookupMs={DetailLookupMs} detailWriteMs={DetailWriteMs} recalculateMs={RecalculateMs} cartReloadMs={CartReloadMs} totalMs={TotalMs}",
+                    traceId,
+                    request.StoreCode,
+                    request.ProductCode,
+                    request.Quantity,
+                    cartResult.Success,
+                    cartResult.Data?.TotalQuantity ?? 0,
+                    cartResult.Data?.TotalSKU ?? 0,
+                    orderSw.ElapsedMilliseconds,
+                    productSw.ElapsedMilliseconds,
+                    detailLookupSw.ElapsedMilliseconds,
+                    detailWriteSw.ElapsedMilliseconds,
+                    totalUpdateSw.ElapsedMilliseconds,
+                    cartReloadSw.ElapsedMilliseconds,
+                    totalSw.ElapsedMilliseconds
+                );
+
+                return cartResult;
             }
             catch (Exception ex)
             {
+                _logger.LogError(
+                    ex,
+                    "[shop-scan-perf] traceId={TraceId} stage=cart.add.service.error storeCode={StoreCode} productCode={ProductCode} quantity={Quantity} totalMs={TotalMs}",
+                    traceId,
+                    request.StoreCode,
+                    request.ProductCode,
+                    request.Quantity,
+                    totalSw.ElapsedMilliseconds
+                );
                 _logger.LogError(ex, "AddToCart failed");
-                return new ApiResponse<bool> { Success = false, Message = ex.Message };
+                return new ApiResponse<StoreOrderCartDto?> { Success = false, Message = ex.Message };
             }
         }
 
-        public async Task<ApiResponse<bool>> UpdateCartItemAsync(AddToCartRequestDto request)
+        public async Task<ApiResponse<StoreOrderCartDto?>> UpdateCartItemAsync(AddToCartRequestDto request)
         {
+            var totalSw = Stopwatch.StartNew();
+            var traceId = GetScanTraceId();
             try
             {
                 var now = DateTime.Now;
@@ -697,6 +1103,7 @@ namespace BlazorApp.Api.Services.React
                     _httpContextAccessor.HttpContext?.User?.Identity?.Name ?? "System";
 
                 // 1. 获取购物车
+                var orderSw = Stopwatch.StartNew();
                 var order = await _db.Queryable<WareHouseOrder>()
                     .Where(o =>
                         o.StoreCode == request.StoreCode && o.FlowStatus == 0 && !o.IsDeleted
@@ -705,25 +1112,49 @@ namespace BlazorApp.Api.Services.React
 
                 if (order == null)
                 {
+                    orderSw.Stop();
+                    _logger.LogInformation(
+                        "[shop-scan-perf] traceId={TraceId} stage=cart.update.service.fallback-add storeCode={StoreCode} productCode={ProductCode} quantity={Quantity} orderMs={OrderMs} totalMs={TotalMs}",
+                        traceId,
+                        request.StoreCode,
+                        request.ProductCode,
+                        request.Quantity,
+                        orderSw.ElapsedMilliseconds,
+                        totalSw.ElapsedMilliseconds
+                    );
                     // 如果购物车不存在，则尝试当作添加处理 (或返回错误，取决于业务)
                     // 这里我们选择直接调用 AddToCart
                     return await AddToCartAsync(request);
                 }
+                orderSw.Stop();
 
                 // 2. 获取商品信息 (获取贴牌价)
+                var productSw = Stopwatch.StartNew();
                 var warehouseProduct = await _db.Queryable<WarehouseProduct>()
                     .Where(wp => wp.ProductCode == request.ProductCode)
                     .FirstAsync();
+                productSw.Stop();
 
                 if (warehouseProduct == null)
                 {
-                    return new ApiResponse<bool> { Success = false, Message = "商品不存在" };
+                    _logger.LogInformation(
+                        "[shop-scan-perf] traceId={TraceId} stage=cart.update.service.product-missing storeCode={StoreCode} productCode={ProductCode} quantity={Quantity} orderMs={OrderMs} productMs={ProductMs} totalMs={TotalMs}",
+                        traceId,
+                        request.StoreCode,
+                        request.ProductCode,
+                        request.Quantity,
+                        orderSw.ElapsedMilliseconds,
+                        productSw.ElapsedMilliseconds,
+                        totalSw.ElapsedMilliseconds
+                    );
+                    return new ApiResponse<StoreOrderCartDto?> { Success = false, Message = "商品不存在" };
                 }
 
                 decimal price = warehouseProduct.OEMPrice ?? 0;
                 decimal importPrice = warehouseProduct.ImportPrice ?? 0;
 
                 // 3. 检查明细
+                var detailLookupSw = Stopwatch.StartNew();
                 var detail = await _db.Queryable<WareHouseOrderDetails>()
                     .Where(d =>
                         d.OrderGUID == order.OrderGUID
@@ -731,7 +1162,9 @@ namespace BlazorApp.Api.Services.React
                         && !d.IsDeleted
                     )
                     .FirstAsync();
+                detailLookupSw.Stop();
 
+                var detailWriteSw = Stopwatch.StartNew();
                 if (detail == null)
                 {
                     // 如果明细不存在，创建新的
@@ -772,16 +1205,49 @@ namespace BlazorApp.Api.Services.React
                         await _db.Updateable(detail).ExecuteCommandAsync();
                     }
                 }
+                detailWriteSw.Stop();
 
                 // 4. 更新主表总金额
+                var totalUpdateSw = Stopwatch.StartNew();
                 await UpdateOrderTotalAsync(order.OrderGUID);
+                totalUpdateSw.Stop();
 
-                return new ApiResponse<bool> { Success = true, Data = true };
+                var cartReloadSw = Stopwatch.StartNew();
+                var cartResult = await GetActiveCartAsync(request.StoreCode);
+                cartReloadSw.Stop();
+                _logger.LogInformation(
+                    "[shop-scan-perf] traceId={TraceId} stage=cart.update.service.done storeCode={StoreCode} productCode={ProductCode} quantity={Quantity} success={Success} totalQuantity={TotalQuantity} totalSku={TotalSku} orderMs={OrderMs} productMs={ProductMs} detailLookupMs={DetailLookupMs} detailWriteMs={DetailWriteMs} recalculateMs={RecalculateMs} cartReloadMs={CartReloadMs} totalMs={TotalMs}",
+                    traceId,
+                    request.StoreCode,
+                    request.ProductCode,
+                    request.Quantity,
+                    cartResult.Success,
+                    cartResult.Data?.TotalQuantity ?? 0,
+                    cartResult.Data?.TotalSKU ?? 0,
+                    orderSw.ElapsedMilliseconds,
+                    productSw.ElapsedMilliseconds,
+                    detailLookupSw.ElapsedMilliseconds,
+                    detailWriteSw.ElapsedMilliseconds,
+                    totalUpdateSw.ElapsedMilliseconds,
+                    cartReloadSw.ElapsedMilliseconds,
+                    totalSw.ElapsedMilliseconds
+                );
+
+                return cartResult;
             }
             catch (Exception ex)
             {
+                _logger.LogError(
+                    ex,
+                    "[shop-scan-perf] traceId={TraceId} stage=cart.update.service.error storeCode={StoreCode} productCode={ProductCode} quantity={Quantity} totalMs={TotalMs}",
+                    traceId,
+                    request.StoreCode,
+                    request.ProductCode,
+                    request.Quantity,
+                    totalSw.ElapsedMilliseconds
+                );
                 _logger.LogError(ex, "UpdateCartItemAsync failed");
-                return new ApiResponse<bool> { Success = false, Message = ex.Message };
+                return new ApiResponse<StoreOrderCartDto?> { Success = false, Message = ex.Message };
             }
         }
 
@@ -1495,8 +1961,101 @@ namespace BlazorApp.Api.Services.React
             }
         }
 
-        public async Task<ApiResponse<StoreOrderCartDto?>> GetOrderDetailAsync(string orderGuid)
+        public async Task<ApiResponse<StoreOrderDetailDto?>> GetOrderDetailAsync(
+            string orderGuid,
+            StoreOrderDetailQueryDto? query = null
+        )
         {
+            return await GetOrderDetailCoreAsync(orderGuid, query, loadAllItems: false);
+        }
+
+        public async Task<ApiResponse<StoreOrderCartDto?>> GetOrderDetailFullAsync(string orderGuid)
+        {
+            var result = await GetOrderDetailCoreAsync(orderGuid, null, loadAllItems: true);
+            return new ApiResponse<StoreOrderCartDto?>
+            {
+                Success = result.Success,
+                Data = result.Data == null
+                    ? null
+                    : new StoreOrderCartDto
+                    {
+                        OrderGUID = result.Data.OrderGUID,
+                        OrderNo = result.Data.OrderNo,
+                        StoreCode = result.Data.StoreCode,
+                        TotalAmount = result.Data.TotalAmount,
+                        TotalQuantity = result.Data.TotalQuantity,
+                        TotalImportAmount = result.Data.TotalImportAmount,
+                        TotalVolume = result.Data.TotalVolume,
+                        TotalOrderVolume = result.Data.TotalOrderVolume,
+                        TotalAllocVolume = result.Data.TotalAllocVolume,
+                        ShippingFee = result.Data.ShippingFee,
+                        Remarks = result.Data.Remarks,
+                        StoreAddress = result.Data.StoreAddress,
+                        OrderDate = result.Data.OrderDate,
+                        TotalAllocQuantity = result.Data.TotalAllocQuantity,
+                        TotalSKU = result.Data.TotalSKU,
+                        FlowStatus = result.Data.FlowStatus,
+                        Items = result.Data.Items,
+                    },
+                Message = result.Message,
+            };
+        }
+
+        public async Task<ApiResponse<List<string>>> GetOrderDetailProductCodesAsync(string orderGuid)
+        {
+            var accessibleStoreCodes = await GetAccessibleStoreCodesAsync();
+            var order = await _db.Queryable<WareHouseOrder>()
+                .Where(o => o.OrderGUID == orderGuid && !o.IsDeleted)
+                .FirstAsync();
+
+            if (order == null)
+            {
+                return new ApiResponse<List<string>>
+                {
+                    Success = false,
+                    Message = "Order not found",
+                    Data = new List<string>(),
+                };
+            }
+
+            if (
+                accessibleStoreCodes != null
+                && !string.IsNullOrWhiteSpace(order.StoreCode)
+                && !accessibleStoreCodes.Contains(order.StoreCode, StringComparer.OrdinalIgnoreCase)
+            )
+            {
+                return new ApiResponse<List<string>>
+                {
+                    Success = false,
+                    Message = "You do not have access to this order",
+                    Data = new List<string>(),
+                };
+            }
+
+            // 只读取商品编码，避免分页详情页为了跨页去重再次加载完整明细。
+            var productCodes = await _db.Queryable<WareHouseOrderDetails>()
+                .Where(d => d.OrderGUID == orderGuid && !d.IsDeleted && d.ProductCode != null)
+                .Select(d => d.ProductCode!)
+                .Distinct()
+                .ToListAsync();
+
+            return new ApiResponse<List<string>>
+            {
+                Success = true,
+                Data = productCodes
+                    .Where(code => !string.IsNullOrWhiteSpace(code))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList(),
+            };
+        }
+
+        private async Task<ApiResponse<StoreOrderDetailDto?>> GetOrderDetailCoreAsync(
+            string orderGuid,
+            StoreOrderDetailQueryDto? query,
+            bool loadAllItems
+        )
+        {
+            var normalizedQuery = NormalizeStoreOrderDetailQuery(query);
             var accessibleStoreCodes = await GetAccessibleStoreCodesAsync();
             var order = await _db.Queryable<WareHouseOrder>()
                 .InnerJoin<Store>(
@@ -1508,7 +2067,7 @@ namespace BlazorApp.Api.Services.React
 
             if (order == null)
             {
-                return new ApiResponse<StoreOrderCartDto?>
+                return new ApiResponse<StoreOrderDetailDto?>
                 {
                     Success = false,
                     Message = "Order not found",
@@ -1525,28 +2084,88 @@ namespace BlazorApp.Api.Services.React
                 )
             )
             {
-                return new ApiResponse<StoreOrderCartDto?>
+                return new ApiResponse<StoreOrderDetailDto?>
                 {
                     Success = false,
                     Message = "You do not have access to this order",
                 };
             }
 
-            var baseDetails = await _db.Queryable<WareHouseOrderDetails>()
+            var detailQuery = _db.Queryable<WareHouseOrderDetails>()
                 .LeftJoin<Product>((d, p) => d.ProductCode == p.ProductCode)
                 .LeftJoin<WarehouseProduct>((d, p, wp) => d.ProductCode == wp.ProductCode)
                 .LeftJoin<DomesticProduct>((d, p, wp, dp) => wp.ProductCode == dp.ProductCode)
-                .LeftJoin<ProductGrade>((d, p, wp, dp, pg) => d.ProductCode == pg.ProductCode && !pg.IsDeleted)
-                .Where(d => d.OrderGUID == order.Order.OrderGUID && !d.IsDeleted)
-                .Select(
-                    (d, p, wp, dp, pg) =>
+                .Where(d => d.OrderGUID == order.Order.OrderGUID && !d.IsDeleted);
+
+            var keyword = normalizedQuery.Keyword?.Trim();
+            if (!string.IsNullOrWhiteSpace(keyword))
+            {
+                detailQuery = detailQuery.Where(
+                    (d, p, wp, dp) =>
+                        (p.ItemNumber != null && p.ItemNumber.Contains(keyword))
+                        || (p.ProductName != null && p.ProductName.Contains(keyword))
+                        || (p.Barcode != null && p.Barcode.Contains(keyword))
+                        || (d.ProductCode != null && d.ProductCode.Contains(keyword))
+                );
+            }
+
+            var statFilter = normalizedQuery.StatFilter?.Trim().ToLowerInvariant();
+            if (statFilter == "orderednotshipped")
+            {
+                detailQuery = detailQuery.Where(
+                    (d, p, wp, dp) => (d.Quantity ?? 0) > 0 && (d.AllocQuantity ?? 0) == 0
+                );
+            }
+            else if (statFilter == "shippedwithoutorder")
+            {
+                detailQuery = detailQuery.Where(
+                    (d, p, wp, dp) => (d.Quantity ?? 0) <= 0 && (d.AllocQuantity ?? 0) > 0
+                );
+            }
+            else if (statFilter is "active" or "1" or "true")
+            {
+                detailQuery = detailQuery.Where((d, p, wp, dp) => p.IsActive);
+            }
+            else if (statFilter is "inactive" or "0" or "false")
+            {
+                detailQuery = detailQuery.Where((d, p, wp, dp) => !p.IsActive);
+            }
+
+            var itemsTotal = await detailQuery.CountAsync();
+            var orderType = normalizedQuery.SortDescending ? OrderByType.Desc : OrderByType.Asc;
+            detailQuery = (normalizedQuery.SortBy ?? string.Empty).Trim().ToLowerInvariant() switch
+            {
+                "productcode" => detailQuery.OrderBy((d, p, wp, dp) => d.ProductCode, orderType),
+                "barcode" => detailQuery.OrderBy((d, p, wp, dp) => p.Barcode, orderType),
+                "productname" => detailQuery.OrderBy((d, p, wp, dp) => p.ProductName, orderType),
+                "quantity" => detailQuery.OrderBy((d, p, wp, dp) => d.Quantity, orderType),
+                "allocquantity" => detailQuery.OrderBy((d, p, wp, dp) => d.AllocQuantity, orderType),
+                "price" => detailQuery.OrderBy((d, p, wp, dp) => d.OEMPrice, orderType),
+                "amount" => detailQuery.OrderBy((d, p, wp, dp) => d.OEMAmount, orderType),
+                "importprice" => detailQuery.OrderBy(
+                    (d, p, wp, dp) => d.ImportPrice ?? wp.ImportPrice,
+                    orderType
+                ),
+                "importamount" => detailQuery.OrderBy((d, p, wp, dp) => d.ImportAmount, orderType),
+                "isactive" => detailQuery.OrderBy((d, p, wp, dp) => p.IsActive, orderType),
+                "locationcode" => detailQuery.OrderBy((d, p, wp, dp) => d.ProductCode, orderType),
+                _ => detailQuery.OrderBy((d, p, wp, dp) => p.ItemNumber, orderType),
+            };
+            detailQuery = detailQuery.OrderBy((d, p, wp, dp) => d.DetailGUID, OrderByType.Asc);
+
+            // SqlSugar 多表查询在 Skip/Take 后会丢失泛型联表形态，先投影再分页更稳定。
+            var pageQuery = detailQuery.Select(
+                    (d, p, wp, dp) =>
                         new StoreOrderCartItemDto
                         {
                             DetailGUID = d.DetailGUID,
                             ProductCode = d.ProductCode ?? string.Empty,
                             ItemNumber = p.ItemNumber,
                             Barcode = p.Barcode,
-                            Grade = pg.Grade,
+                            Grade = SqlFunc.Subqueryable<ProductGrade>()
+                                .Where(pg => pg.ProductCode == d.ProductCode && !pg.IsDeleted)
+                                .OrderBy(pg => pg.Grade)
+                                .Select(pg => pg.Grade),
                             ProductName = p.ProductName,
                             ProductImage = p.ProductImage,
                             Price = d.OEMPrice ?? 0,
@@ -1568,66 +2187,206 @@ namespace BlazorApp.Api.Services.React
                             IsActive = p.IsActive,
                             RRP = p.RetailPrice,
                         }
+                );
+
+            if (!loadAllItems)
+            {
+                pageQuery = pageQuery
+                    .Skip((normalizedQuery.PageNumber - 1) * normalizedQuery.PageSize)
+                    .Take(normalizedQuery.PageSize);
+            }
+
+            var pageDetails = await pageQuery.ToListAsync();
+
+            await FillLocationCodesAsync(pageDetails);
+            FillVolumeFields(pageDetails);
+
+            // 汇总永远按整单计算，不能被当前页、关键词或状态筛选影响；用数据库聚合避免翻页时拉取全量明细。
+            var summary = await _db.Queryable<WareHouseOrderDetails>()
+                .LeftJoin<Product>((d, p) => d.ProductCode == p.ProductCode)
+                .LeftJoin<WarehouseProduct>((d, p, wp) => d.ProductCode == wp.ProductCode)
+                .LeftJoin<DomesticProduct>((d, p, wp, dp) => wp.ProductCode == dp.ProductCode)
+                .Where(d => d.OrderGUID == order.Order.OrderGUID && !d.IsDeleted)
+                .Select(
+                    (d, p, wp, dp) =>
+                        new
+                        {
+                            TotalQuantity = SqlFunc.AggregateSum(d.Quantity ?? 0),
+                            TotalAllocQuantity = SqlFunc.AggregateSum(d.AllocQuantity ?? 0),
+                            TotalSKU = SqlFunc.AggregateDistinctCount(d.ProductCode),
+                            TotalImportAmount = SqlFunc.AggregateSum(
+                                d.ImportAmount
+                                    ?? (
+                                        (d.ImportPrice ?? (wp.ImportPrice ?? 0))
+                                        * (d.AllocQuantity ?? d.Quantity ?? 0)
+                                    )
+                            ),
+                            TotalOrderVolume = SqlFunc.AggregateSum(
+                                (
+                                    (dp.PackingQuantity > 0)
+                                        ? (dp.UnitVolume / dp.PackingQuantity)
+                                        : dp.UnitVolume
+                                )
+                                    * (d.Quantity ?? 0)
+                            ),
+                            TotalAllocVolume = SqlFunc.AggregateSum(
+                                (
+                                    (dp.PackingQuantity > 0)
+                                        ? (dp.UnitVolume / dp.PackingQuantity)
+                                        : dp.UnitVolume
+                                )
+                                    * (d.AllocQuantity ?? 0)
+                            ),
+                            OrderedNotShippedCount = SqlFunc.AggregateCount(
+                                SqlFunc.IIF(
+                                    (d.Quantity ?? 0) > 0 && (d.AllocQuantity ?? 0) == 0,
+                                    d.DetailGUID,
+                                    null
+                                )
+                            ),
+                            ShippedWithoutOrderCount = SqlFunc.AggregateCount(
+                                SqlFunc.IIF(
+                                    (d.Quantity ?? 0) <= 0 && (d.AllocQuantity ?? 0) > 0,
+                                    d.DetailGUID,
+                                    null
+                                )
+                            ),
+                        }
                 )
-                .ToListAsync();
+                .FirstAsync();
 
-            // 2. 批量获取 LocationCode (LocationType = 1)
-            var productCodes = baseDetails.Select(x => x.ProductCode).Distinct().ToList();
-            if (productCodes.Any())
-            {
-                var locations = await _db.Queryable<ProductLocation>()
-                    .InnerJoin<Location>((pl, l) => pl.LocationGuid == l.LocationGuid)
-                    .Where(
-                        (pl, l) =>
-                            pl.ProductCode != null
-                            && productCodes.Contains(pl.ProductCode)
-                            && l.LocationType == 1
-                    )
-                    .Select((pl, l) => new { pl.ProductCode, l.LocationCode })
-                    .ToListAsync();
-
-                foreach (var item in baseDetails)
-                {
-                    var locs = locations
-                        .Where(x => x.ProductCode == item.ProductCode)
-                        .Select(x => x.LocationCode)
-                        .Distinct();
-                    item.LocationCode = string.Join(", ", locs);
-                }
-            }
-
-            foreach (var item in baseDetails)
-            {
-                if (item.Volume.HasValue)
-                {
-                    item.OrderVolume = CalculateVolume(item.Volume, item.Quantity);
-                    item.AllocVolume = CalculateVolume(item.Volume, item.AllocQuantity ?? 0);
-                    item.TotalVolume = item.OrderVolume;
-                }
-            }
-
-            var dto = new StoreOrderCartDto
+            var dto = new StoreOrderDetailDto
             {
                 OrderGUID = order.Order.OrderGUID,
                 OrderNo = order.Order.OrderNo,
                 StoreCode = order.Order.StoreCode,
                 OrderDate = order.Order.OrderDate,
                 TotalAmount = order.Order.OEMTotalAmount ?? 0,
-                TotalQuantity = (int)baseDetails.Sum(x => x.Quantity),
-                TotalAllocQuantity = (int)baseDetails.Sum(x => x.AllocQuantity ?? 0),
-                TotalSKU = baseDetails.Select(x => x.ProductCode).Distinct().Count(),
-                TotalImportAmount = baseDetails.Sum(x => x.ImportAmount),
-                TotalVolume = baseDetails.Sum(x => x.TotalVolume ?? 0),
-                TotalOrderVolume = baseDetails.Sum(x => x.OrderVolume ?? 0),
-                TotalAllocVolume = baseDetails.Sum(x => x.AllocVolume ?? 0),
+                TotalQuantity = (int)(summary?.TotalQuantity ?? 0),
+                TotalAllocQuantity = (int)(summary?.TotalAllocQuantity ?? 0),
+                TotalSKU = summary?.TotalSKU ?? 0,
+                TotalImportAmount = summary?.TotalImportAmount ?? 0,
+                TotalVolume = summary?.TotalOrderVolume ?? 0,
+                TotalOrderVolume = summary?.TotalOrderVolume ?? 0,
+                TotalAllocVolume = summary?.TotalAllocVolume ?? 0,
                 Remarks = order.Order.Remarks,
                 StoreAddress = order.StoreAddress,
                 ShippingFee = order.Order.ShippingFee,
                 FlowStatus = order.Order.FlowStatus,
-                Items = baseDetails,
+                Items = pageDetails,
+                Total = loadAllItems ? pageDetails.Count : itemsTotal,
+                ItemsTotal = loadAllItems ? pageDetails.Count : itemsTotal,
+                PageNumber = loadAllItems ? 1 : normalizedQuery.PageNumber,
+                PageSize = loadAllItems ? pageDetails.Count : normalizedQuery.PageSize,
+                OrderedNotShippedCount = summary?.OrderedNotShippedCount ?? 0,
+                ShippedWithoutOrderCount = summary?.ShippedWithoutOrderCount ?? 0,
             };
 
-            return new ApiResponse<StoreOrderCartDto?> { Success = true, Data = dto };
+            return new ApiResponse<StoreOrderDetailDto?> { Success = true, Data = dto };
+        }
+
+        private static StoreOrderDetailQueryDto NormalizeStoreOrderDetailQuery(
+            StoreOrderDetailQueryDto? query
+        )
+        {
+            var pageNumber = Math.Max(
+                StoreOrderDetailQueryDto.DefaultPageNumber,
+                query?.PageNumber ?? StoreOrderDetailQueryDto.DefaultPageNumber
+            );
+            var requestedPageSize = query?.PageSize ?? StoreOrderDetailQueryDto.DefaultPageSize;
+            var pageSize = Math.Clamp(
+                requestedPageSize <= 0
+                    ? StoreOrderDetailQueryDto.DefaultPageSize
+                    : requestedPageSize,
+                1,
+                StoreOrderDetailQueryDto.MaxPageSize
+            );
+
+            return new StoreOrderDetailQueryDto
+            {
+                PageNumber = pageNumber,
+                PageSize = pageSize,
+                Keyword = query?.Keyword,
+                StatFilter = query?.StatFilter,
+                SortBy = query?.SortBy,
+                SortDescending = query?.SortDescending ?? false,
+            };
+        }
+
+        private async Task FillLocationCodesAsync(List<StoreOrderCartItemDto> items)
+        {
+            var productCodes = items
+                .Select(x => x.ProductCode)
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            if (!productCodes.Any())
+            {
+                return;
+            }
+
+            var locations = await _db.Queryable<ProductLocation>()
+                .InnerJoin<Location>((pl, l) => pl.LocationGuid == l.LocationGuid)
+                .Where(
+                    (pl, l) =>
+                        pl.ProductCode != null
+                        && productCodes.Contains(pl.ProductCode)
+                        && !pl.IsDeleted
+                        && !l.IsDeleted
+                        && l.LocationType == 1
+                        && l.LocationCode != null
+                )
+                .Select((pl, l) => new { ProductCode = pl.ProductCode!, LocationCode = l.LocationCode! })
+                .ToListAsync();
+
+            // 将货位一次性分组到字典，避免每一行明细都扫描完整货位列表。
+            var locationMap = locations
+                .GroupBy(x => x.ProductCode, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(
+                    group => group.Key,
+                    group => string.Join(
+                        ", ",
+                        group.Select(x => x.LocationCode)
+                            .Where(x => !string.IsNullOrWhiteSpace(x))
+                            .Distinct(StringComparer.OrdinalIgnoreCase)
+                            .OrderBy(x => x)
+                    ),
+                    StringComparer.OrdinalIgnoreCase
+                );
+
+            foreach (var item in items)
+            {
+                if (locationMap.TryGetValue(item.ProductCode, out var locationCode))
+                {
+                    item.LocationCode = locationCode;
+                }
+            }
+        }
+
+        private static void FillVolumeFields(List<StoreOrderCartItemDto> items)
+        {
+            foreach (var item in items)
+            {
+                if (!item.Volume.HasValue)
+                {
+                    continue;
+                }
+
+                item.OrderVolume = CalculateVolume(item.Volume, item.Quantity);
+                item.AllocVolume = CalculateVolume(item.Volume, item.AllocQuantity ?? 0);
+                item.TotalVolume = item.OrderVolume;
+            }
+        }
+
+        private static bool IsOrderedNotShipped(StoreOrderCartItemDto item)
+        {
+            return item.Quantity > 0 && (item.AllocQuantity ?? 0) == 0;
+        }
+
+        private static bool IsShippedWithoutOrder(StoreOrderCartItemDto item)
+        {
+            return item.Quantity <= 0 && (item.AllocQuantity ?? 0) > 0;
         }
 
         public async Task<ApiResponse<List<BranchDto>>> GetUsedBranchesAsync()
@@ -1650,48 +2409,91 @@ namespace BlazorApp.Api.Services.React
                     };
                 }
 
-                // 区分 GUID 格式和非 GUID 格式的分店代码
+                // HQ 订单的“分店代码”可能是本地数字门店代码，也可能是外购客户 HGUID。
                 var guidCodes = usedStoreCodes.Where(c => Guid.TryParse(c, out _)).ToList();
                 var normalCodes = usedStoreCodes.Where(c => !Guid.TryParse(c, out _)).ToList();
+                _logger.LogInformation(
+                    "分店订货筛选分店解析开始：订单标识 {Total} 个，数字分店代码 {StoreCodeCount} 个，外购客户 HGUID {ExternalCustomerCount} 个",
+                    usedStoreCodes.Count,
+                    normalCodes.Count,
+                    guidCodes.Count
+                );
 
-                // 2. 根据分店代码批量查询分店表获取详细信息
+                // 2. 根据数字分店代码查询本地分店表
                 var branches = await _db.Queryable<Store>()
-                    .Where(s =>
-                        normalCodes.Contains(s.StoreCode) || guidCodes.Contains(s.StoreGUID)
-                    )
+                    .Where(s => normalCodes.Contains(s.StoreCode))
                     .Select(s => new
                     {
-                        s.StoreGUID,
-                        s.StoreCode,
-                        s.StoreName,
+                        Guid = s.StoreGUID,
+                        Code = s.StoreCode,
+                        Name = s.StoreName,
                     })
                     .ToListAsync();
 
+                var externalCustomers = new List<BranchDto>();
+                if (guidCodes.Count > 0)
+                {
+                    using var hqDb = _createHqConnection();
+                    externalCustomers = await hqDb.Queryable<CPT_DIC_外购客户信息表>()
+                        .Where(x => SqlFunc.HasValue(x.HGUID) && guidCodes.Contains(x.HGUID!))
+                        .Select(x => new BranchDto
+                        {
+                            Guid = x.HGUID!,
+                            Code = x.HGUID!,
+                            Name = x.客户名称 ?? x.HGUID!,
+                        })
+                        .ToListAsync();
+                }
+
                 // 3. 构建结果列表
                 var result = new List<BranchDto>();
+                var missingCodes = new List<string>();
 
                 foreach (var code in usedStoreCodes)
                 {
-                    var branch = branches.FirstOrDefault(b =>
-                        b.StoreCode == code || b.StoreGUID == code
-                    );
+                    var branch = branches.FirstOrDefault(b => b.Code == code);
 
                     if (branch != null)
                     {
                         result.Add(
                             new BranchDto
                             {
-                                Guid = branch.StoreGUID,
-                                Code = branch.StoreCode,
-                                Name = branch.StoreName,
+                                Guid = branch.Guid,
+                                Code = branch.Code,
+                                Name = branch.Name,
                             }
                         );
+                        continue;
+                    }
+
+                    var externalCustomer = externalCustomers.FirstOrDefault(item => item.Code == code);
+                    if (externalCustomer != null)
+                    {
+                        result.Add(externalCustomer);
                     }
                     else
                     {
-                        _logger.LogWarning("分店代码 '{Code}' 在订单中存在但分店表中未找到", code);
+                        missingCodes.Add(code ?? string.Empty);
                     }
                 }
+
+                if (missingCodes.Count > 0)
+                {
+                    _logger.LogWarning(
+                        "订单中存在 {Count} 个无法匹配分店表的分店标识，已从筛选列表忽略。示例: {Codes}",
+                        missingCodes.Count,
+                        string.Join(", ", missingCodes.Take(5))
+                    );
+                }
+
+                _logger.LogInformation(
+                    "分店订货筛选分店解析完成：本地分店匹配 {StoreMatchedCount}/{StoreCodeCount}，外购客户匹配 {ExternalMatchedCount}/{ExternalCustomerCount}，未匹配 {MissingCount}",
+                    branches.Count,
+                    normalCodes.Count,
+                    externalCustomers.Count,
+                    guidCodes.Count,
+                    missingCodes.Count
+                );
 
                 // 4. 按分店代码排序
                 result = result.OrderBy(b => b.Code).ToList();
@@ -2550,303 +3352,290 @@ namespace BlazorApp.Api.Services.React
         }
 
         public async Task<SyncMissingOrdersResultDto> SyncMissingOrdersFromHqAsync(
-            string? storeCode
+            SyncMissingOrdersRequestDto? request
         )
         {
             var result = new SyncMissingOrdersResultDto { Success = true, Message = string.Empty };
+            var storeCodes = NormalizeSyncStoreCodes(request);
+            var hasStoreFilter = storeCodes.Count > 0;
+            const int batchSize = 200;
 
             try
             {
-                var existingOrders = await _db.Queryable<WareHouseOrder>()
-                    .WhereIF(!string.IsNullOrEmpty(storeCode), x => x.StoreCode == storeCode)
-                    .Where(x => !x.IsDeleted)
-                    .Select(x => new { x.OrderGUID, x.UpdatedAt })
+                var localOrders = await _db.Queryable<WareHouseOrder>()
+                    .WhereIF(hasStoreFilter, x => storeCodes.Contains(x.StoreCode!))
+                    .Select(x => new { x.OrderGUID, x.StoreCode, x.UpdatedAt, x.IsDeleted })
                     .ToListAsync();
 
-                var existingOrderGuids = existingOrders.Select(x => x.OrderGUID).ToList();
-                var localUpdatedAtMap = existingOrders
+                var activeOrderGuids = localOrders
+                    .Where(x => !x.IsDeleted)
+                    .Select(x => x.OrderGUID)
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                var deletedOrderGuids = localOrders
+                    .Where(x => x.IsDeleted)
+                    .Select(x => x.OrderGUID)
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                var allLocalOrderGuids = localOrders
+                    .Select(x => x.OrderGUID)
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                var localUpdatedAtMap = localOrders
                     .Where(x => x.UpdatedAt.HasValue)
-                    .ToDictionary(x => x.OrderGUID, x => x.UpdatedAt!.Value);
+                    .ToDictionary(x => x.OrderGUID, x => x.UpdatedAt!.Value, StringComparer.OrdinalIgnoreCase);
 
                 _logger.LogInformation(
-                    "本地已存在订单数量: {Count}, 分店代码: {StoreCode}",
-                    existingOrderGuids.Count,
-                    storeCode ?? "全部"
+                    "本地已存在订单数量: {Count}, 分店代码: {StoreCodes}",
+                    allLocalOrderGuids.Count,
+                    hasStoreFilter ? string.Join(",", storeCodes) : "全部"
                 );
 
-                using var hqDb = HqSqlSugarContext.CreateConcurrentConnection(_configuration);
+                using var hqDb = _createHqConnection();
 
                 var allHqOrders = await hqDb.Queryable<CBP_RED_分店订货单主表Store>()
                     .Where(x => SqlFunc.HasValue(x.HGUID))
-                    .WhereIF(!string.IsNullOrEmpty(storeCode), x => x.分店代码 == storeCode)
+                    .WhereIF(hasStoreFilter, x => storeCodes.Contains(x.分店代码!))
                     .ToListAsync();
 
                 if (!allHqOrders.Any())
                 {
+                    _logger.LogInformation(
+                        "HQ 订单读取完成：总数 0，数字分店订单 0，外购客户订单 0，分店筛选 {StoreCodes}",
+                        hasStoreFilter ? string.Join(",", storeCodes) : "全部"
+                    );
                     result.Message = "没有需要同步的订单";
                     return result;
                 }
 
-                var missingHqOrders = allHqOrders
-                    .Where(x => !existingOrderGuids.Contains(x.HGUID!))
+                allHqOrders = allHqOrders
+                    .GroupBy(x => x.HGUID, StringComparer.OrdinalIgnoreCase)
+                    .Select(g => g.First())
                     .ToList();
-
-                // 检查 HQ 数据中是否有重复的 HGUID
-                var hqHguidDups = missingHqOrders
-                    .GroupBy(x => x.HGUID)
-                    .Where(g => g.Count() > 1)
-                    .ToList();
-                if (hqHguidDups.Any())
-                {
-                    _logger.LogWarning(
-                        "HQ 订单数据中存在 {Count} 个重复的 HGUID，同步时将自动去重",
-                        hqHguidDups.Count
-                    );
-                    missingHqOrders = missingHqOrders
-                        .GroupBy(x => x.HGUID)
-                        .Select(g => g.First())
-                        .ToList();
-                }
-
-                var updatedHqOrders = allHqOrders
-                    .Where(x => existingOrderGuids.Contains(x.HGUID!))
-                    .Where(x =>
-                    {
-                        if (!localUpdatedAtMap.TryGetValue(x.HGUID!, out var localUpdated))
-                            return true;
-                        var hqUpdated = x.FGC_LastModifyDate;
-                        if (!hqUpdated.HasValue)
-                            return false;
-                        return hqUpdated.Value > localUpdated;
-                    })
-                    .ToList();
-
+                var hqExternalCustomerOrderCount = allHqOrders.Count(x =>
+                    Guid.TryParse(x.分店代码, out _)
+                );
                 _logger.LogInformation(
-                    "HQ 订单总数: {Total}, 新增: {New}, 更新: {Updated}",
+                    "HQ 订单读取完成：总数 {Total}，数字分店订单 {StoreOrderCount}，外购客户订单 {ExternalCustomerOrderCount}，分店筛选 {StoreCodes}",
                     allHqOrders.Count,
-                    missingHqOrders.Count,
-                    updatedHqOrders.Count
+                    allHqOrders.Count - hqExternalCustomerOrderCount,
+                    hqExternalCustomerOrderCount,
+                    hasStoreFilter ? string.Join(",", storeCodes) : "全部"
                 );
 
-                if (missingHqOrders.Any())
+                var allHqOrderGuids = allHqOrders
+                    .Select(x => x.HGUID!)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+
+                // 先读取轻量明细指纹行，精确判定目标订单；完整明细只在确定有差异后拉取。
+                var hqDetailFingerprints = await QueryHqOrderDetailFingerprintsAsync(
+                    hqDb,
+                    allHqOrderGuids
+                );
+                var hqOrderStoreCodeMap = allHqOrders
+                    .ToDictionary(x => x.HGUID!, x => x.分店代码, StringComparer.OrdinalIgnoreCase);
+                var hqDetailOrderCount = hqDetailFingerprints
+                    .Where(x => !string.IsNullOrWhiteSpace(x.OrderGuid))
+                    .Select(x => x.OrderGuid!)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .Count();
+                var hqExternalCustomerFingerprintCount = hqDetailFingerprints.Count(x =>
+                    !string.IsNullOrWhiteSpace(x.OrderGuid)
+                    && hqOrderStoreCodeMap.TryGetValue(x.OrderGuid, out var storeCode)
+                    && Guid.TryParse(storeCode, out _)
+                );
+                _logger.LogInformation(
+                    "HQ 轻量明细指纹读取完成：订单 {OrderCount} 个，有明细订单 {DetailOrderCount} 个，轻量明细 {DetailCount} 条，外购客户轻量明细 {ExternalCustomerDetailCount} 条",
+                    allHqOrderGuids.Count,
+                    hqDetailOrderCount,
+                    hqDetailFingerprints.Count,
+                    hqExternalCustomerFingerprintCount
+                );
+
+                var localDetailFingerprints = await QueryLocalOrderDetailFingerprintsAsync(
+                    allHqOrderGuids
+                );
+                _logger.LogInformation(
+                    "本地轻量明细指纹读取完成：轻量明细 {DetailCount} 条",
+                    localDetailFingerprints.Count
+                );
+
+                var detailChangedOrderGuids = GetDetailChangedOrderGuids(
+                    hqDetailFingerprints,
+                    localDetailFingerprints
+                );
+
+                var missingHqOrders = allHqOrders
+                    .Where(x => !allLocalOrderGuids.Contains(x.HGUID!))
+                    .ToList();
+                var missingOrderGuidSet = missingHqOrders
+                    .Select(x => x.HGUID!)
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+                var reactivatedHqOrders = allHqOrders
+                    .Where(x => deletedOrderGuids.Contains(x.HGUID!))
+                    .ToList();
+                var reactivatedOrderGuidSet = reactivatedHqOrders
+                    .Select(x => x.HGUID!)
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+                var updatedHqOrders = allHqOrders
+                    .Where(x => activeOrderGuids.Contains(x.HGUID!))
+                    .Where(x => IsHqOrderNewerThanLocal(x, localUpdatedAtMap))
+                    .ToList();
+                var updatedOrderGuidSet = updatedHqOrders
+                    .Select(x => x.HGUID!)
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+                var detailOnlyOrderGuidSet = detailChangedOrderGuids
+                    .Where(orderGuid =>
+                        activeOrderGuids.Contains(orderGuid) && !updatedOrderGuidSet.Contains(orderGuid)
+                    )
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+                var targetOrderGuidSet = missingOrderGuidSet
+                    .Concat(reactivatedOrderGuidSet)
+                    .Concat(updatedOrderGuidSet)
+                    .Concat(detailOnlyOrderGuidSet)
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+                _logger.LogInformation(
+                    "分店订货同步目标判定完成：新增 {NewCount} 个，恢复 {RestoreCount} 个，主表更新 {OrderUpdatedCount} 个，明细变更 {DetailOnlyCount} 个，目标订单 {TargetCount} 个",
+                    missingOrderGuidSet.Count,
+                    reactivatedOrderGuidSet.Count,
+                    updatedOrderGuidSet.Count,
+                    detailOnlyOrderGuidSet.Count,
+                    targetOrderGuidSet.Count
+                );
+
+                if (targetOrderGuidSet.Count == 0)
                 {
-                    var newOrders = new List<WareHouseOrder>();
-                    var newOrderGuids = new List<string>();
-
-                    foreach (var hqOrder in missingHqOrders)
-                    {
-                        var localOrder = _mapper.Map<WareHouseOrder>(hqOrder);
-                        localOrder.IsDeleted = false;
-                        localOrder.CreatedAt = hqOrder.FGC_CreateDate ?? DateTime.Now;
-                        localOrder.UpdatedAt = hqOrder.FGC_LastModifyDate ?? DateTime.Now;
-                        localOrder.CreatedBy = hqOrder.FGC_Creator ?? "HQ同步";
-                        localOrder.UpdatedBy = hqOrder.FGC_LastModifier ?? "HQ同步";
-                        newOrders.Add(localOrder);
-                        newOrderGuids.Add(localOrder.OrderGUID);
-                    }
-
-                    // 按 OrderGUID 去重，防止插入时主键冲突
-                    newOrders = newOrders
-                        .GroupBy(o => o.OrderGUID)
-                        .Select(g => g.First())
-                        .ToList();
-                    newOrderGuids = newOrders.Select(o => o.OrderGUID).ToList();
-
-                    // 检查要插入的 OrderGUID 在本地是否已存在（含软删除的记录）
-                    var allNewGuids = newOrders.Select(o => o.OrderGUID).Distinct().ToList();
-                    var existingAllGuids = await _db.Queryable<WareHouseOrder>()
-                        .Where(x => allNewGuids.Contains(x.OrderGUID))
-                        .Select(x => new { x.OrderGUID, x.IsDeleted })
-                        .ToListAsync();
-                    var existingGuidSet = new HashSet<string>(existingAllGuids.Select(x => x.OrderGUID));
-                    var deletedGuidSet = new HashSet<string>(
-                        existingAllGuids.Where(x => x.IsDeleted).Select(x => x.OrderGUID));
-
-                    if (existingGuidSet.Any())
-                    {
-                        // 分离：真正的新增 vs 已存在需要激活/更新的
-                        var trulyNewOrders = newOrders
-                            .Where(o => !existingGuidSet.Contains(o.OrderGUID))
-                            .ToList();
-                        var reactivateOrders = newOrders
-                            .Where(o => deletedGuidSet.Contains(o.OrderGUID))
-                            .ToList();
-                        var conflictOrders = newOrders
-                            .Where(o => existingGuidSet.Contains(o.OrderGUID) && !deletedGuidSet.Contains(o.OrderGUID))
-                            .ToList();
-
-                        if (conflictOrders.Any())
-                        {
-                            _logger.LogWarning(
-                                "跳过 {Count} 个本地已存在的订单（未删除），OrderGUID: {Guids}",
-                                conflictOrders.Count,
-                                string.Join(", ", conflictOrders.Select(o => o.OrderGUID))
-                            );
-                        }
-
-                        if (reactivateOrders.Any())
-                        {
-                            _logger.LogInformation(
-                                "恢复 {Count} 个已软删除的订单，OrderGUID: {Guids}",
-                                reactivateOrders.Count,
-                                string.Join(", ", reactivateOrders.Select(o => o.OrderGUID))
-                            );
-                            foreach (var order in reactivateOrders)
-                            {
-                                await _db.Updateable<WareHouseOrder>()
-                                    .SetColumns(o => o.IsDeleted == false)
-                                    .SetColumns(o => o.UpdatedAt == order.UpdatedAt)
-                                    .SetColumns(o => o.UpdatedBy == order.UpdatedBy)
-                                    .Where(o => o.OrderGUID == order.OrderGUID)
-                                    .ExecuteCommandAsync();
-                            }
-                            result.OrdersSynced += reactivateOrders.Count;
-                        }
-
-                        newOrders = trulyNewOrders;
-                        newOrderGuids = trulyNewOrders.Select(o => o.OrderGUID).ToList();
-
-                        _logger.LogInformation(
-                            "去重后真正新增: {Count}, 其中恢复已删除: {Reactivate}, 跳过: {Skip}",
-                            trulyNewOrders.Count,
-                            reactivateOrders.Count,
-                            conflictOrders.Count
-                        );
-                    }
-
-                    if (newOrders.Any())
-                    {
-                        await _db.Insertable(newOrders).ExecuteCommandAsync();
-                        result.OrdersSynced += newOrders.Count;
-                    }
-
-                    _logger.LogInformation("新增订单主表数量: {Count}", result.OrdersSynced);
-
-                    var hqDetails = await hqDb.Queryable<CBP_RED_分店订单详情表Store>()
-                        .Where(x => SqlFunc.HasValue(x.HGUID) && SqlFunc.HasValue(x.主表GUID))
-                        .WhereIF(newOrderGuids.Any(), x => newOrderGuids.Contains(x.主表GUID!))
-                        .ToListAsync();
-
-                    if (hqDetails.Any())
-                    {
-                        var newDetails = new List<WareHouseOrderDetails>();
-                        foreach (var hqDetail in hqDetails)
-                        {
-                            var localDetail = _mapper.Map<WareHouseOrderDetails>(hqDetail);
-                            localDetail.IsDeleted = false;
-                            localDetail.CreatedAt = hqDetail.FGC_CreateDate ?? DateTime.Now;
-                            localDetail.UpdatedAt = hqDetail.FGC_LastModifyDate ?? DateTime.Now;
-                            localDetail.CreatedBy = hqDetail.FGC_Creator ?? "HQ同步";
-                            localDetail.UpdatedBy = hqDetail.FGC_LastModifier ?? "HQ同步";
-                            newDetails.Add(localDetail);
-                        }
-                        await _db.Insertable(newDetails).ExecuteCommandAsync();
-                        result.DetailsSynced = newDetails.Count;
-                    }
+                    _logger.LogInformation(
+                        "分店订货同步无需拉取完整明细：目标订单为空，分店筛选 {StoreCodes}",
+                        hasStoreFilter ? string.Join(",", storeCodes) : "全部"
+                    );
+                    result.Message = "所有订单已是最新，无需同步";
+                    return result;
                 }
 
-                if (updatedHqOrders.Any())
+                var targetHqOrders = allHqOrders
+                    .Where(x => targetOrderGuidSet.Contains(x.HGUID!))
+                    .ToList();
+
+                var targetOrderGuids = targetHqOrders
+                    .Select(x => x.HGUID!)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+
+                var hqDetails = await QueryHqOrderDetailsAsync(hqDb, targetOrderGuids);
+                var hqExternalCustomerDetailCount = hqDetails.Count(x =>
+                    Guid.TryParse(x.分店代码, out _)
+                );
+                _logger.LogInformation(
+                    "HQ 目标订单完整明细读取完成：目标订单 {OrderCount} 个，明细 {DetailCount} 条，外购客户明细 {ExternalCustomerDetailCount} 条",
+                    targetOrderGuids.Count,
+                    hqDetails.Count,
+                    hqExternalCustomerDetailCount
+                );
+                var hqDetailsByOrder = hqDetails
+                    .GroupBy(x => x.主表GUID!, StringComparer.OrdinalIgnoreCase)
+                    .ToDictionary(g => g.Key, g => g.ToList(), StringComparer.OrdinalIgnoreCase);
+
+                var localDetails = await _db.Queryable<WareHouseOrderDetails>()
+                    .Where(x => targetOrderGuids.Contains(x.OrderGUID!))
+                    .ToListAsync();
+                var localDetailByGuid = localDetails
+                    .GroupBy(x => x.DetailGUID, StringComparer.OrdinalIgnoreCase)
+                    .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+
+                var ordersSynced = 0;
+                var ordersUpdated = 0;
+                var detailsSynced = 0;
+                var detailsUpdated = 0;
+
+                var transactionResult = await _db.Ado.UseTranAsync(async () =>
                 {
-                    var updatedOrderGuids = updatedHqOrders.Select(x => x.HGUID!).ToList();
+                    var ordersToInsert = new List<WareHouseOrder>();
+                    var ordersToUpdate = new List<WareHouseOrder>();
 
-                    foreach (var hqOrder in updatedHqOrders)
+                    foreach (var hqOrder in targetHqOrders)
                     {
-                        var mapped = _mapper.Map<WareHouseOrder>(hqOrder);
-                        mapped.UpdatedAt = hqOrder.FGC_LastModifyDate ?? DateTime.Now;
-                        mapped.UpdatedBy = hqOrder.FGC_LastModifier ?? "HQ同步";
+                        var order = MapHqOrder(hqOrder);
 
-                        await _db.Updateable<WareHouseOrder>()
-                            .SetColumns(o => new WareHouseOrder
-                            {
-                                StoreCode = mapped.StoreCode,
-                                OrderNo = mapped.OrderNo,
-                                OrderDate = mapped.OrderDate,
-                                OutboundDate = mapped.OutboundDate,
-                                ShippingFee = mapped.ShippingFee,
-                                ImportTotalAmount = mapped.ImportTotalAmount,
-                                OEMTotalAmount = mapped.OEMTotalAmount,
-                                Remarks = mapped.Remarks,
-                                FlowStatus = mapped.FlowStatus,
-                                InboundStatus = mapped.InboundStatus,
-                                UpdatedAt = mapped.UpdatedAt,
-                                UpdatedBy = mapped.UpdatedBy,
-                            })
-                            .Where(o => o.OrderGUID == hqOrder.HGUID)
-                            .ExecuteCommandAsync();
-                    }
-                    result.OrdersUpdated = updatedHqOrders.Count;
-
-                    _logger.LogInformation("更新订单主表数量: {Count}", result.OrdersUpdated);
-
-                    var hqUpdatedDetails = await hqDb.Queryable<CBP_RED_分店订单详情表Store>()
-                        .Where(x => SqlFunc.HasValue(x.HGUID) && SqlFunc.HasValue(x.主表GUID))
-                        .WhereIF(
-                            updatedOrderGuids.Any(),
-                            x => updatedOrderGuids.Contains(x.主表GUID!)
+                        if (missingOrderGuidSet.Contains(hqOrder.HGUID!))
+                        {
+                            ordersToInsert.Add(order);
+                        }
+                        else if (
+                            reactivatedOrderGuidSet.Contains(hqOrder.HGUID!)
+                            || updatedOrderGuidSet.Contains(hqOrder.HGUID!)
                         )
-                        .ToListAsync();
-
-                    if (hqUpdatedDetails.Any())
-                    {
-                        var existingDetailGuids = await _db.Queryable<WareHouseOrderDetails>()
-                            .Where(d => updatedOrderGuids.Contains(d.OrderGUID))
-                            .Select(d => d.DetailGUID)
-                            .ToListAsync();
-
-                        var existingDetailSet = new HashSet<string>(existingDetailGuids);
-
-                        var detailsToInsert = new List<WareHouseOrderDetails>();
-                        var detailsToUpdate = new List<WareHouseOrderDetails>();
-
-                        foreach (var hqDetail in hqUpdatedDetails)
                         {
-                            var localDetail = _mapper.Map<WareHouseOrderDetails>(hqDetail);
-                            localDetail.IsDeleted = false;
-                            localDetail.UpdatedAt = hqDetail.FGC_LastModifyDate ?? DateTime.Now;
-                            localDetail.UpdatedBy = hqDetail.FGC_LastModifier ?? "HQ同步";
-
-                            if (existingDetailSet.Contains(localDetail.DetailGUID))
-                            {
-                                localDetail.CreatedAt = hqDetail.FGC_CreateDate ?? DateTime.Now;
-                                localDetail.CreatedBy = hqDetail.FGC_Creator ?? "HQ同步";
-                                detailsToUpdate.Add(localDetail);
-                            }
-                            else
-                            {
-                                localDetail.CreatedAt = hqDetail.FGC_CreateDate ?? DateTime.Now;
-                                localDetail.CreatedBy = hqDetail.FGC_Creator ?? "HQ同步";
-                                detailsToInsert.Add(localDetail);
-                            }
+                            ordersToUpdate.Add(order);
                         }
-
-                        if (detailsToInsert.Any())
-                        {
-                            await _db.Insertable(detailsToInsert).ExecuteCommandAsync();
-                        }
-
-                        foreach (var detail in detailsToUpdate)
-                        {
-                            await _db.Updateable<WareHouseOrderDetails>()
-                                .SetColumns(d => new WareHouseOrderDetails
-                                {
-                                    StoreCode = detail.StoreCode,
-                                    ProductCode = detail.ProductCode,
-                                    Quantity = detail.Quantity,
-                                    OEMPrice = detail.OEMPrice,
-                                    OEMAmount = detail.OEMAmount,
-                                    AllocQuantity = detail.AllocQuantity,
-                                    ImportPrice = detail.ImportPrice,
-                                    ImportAmount = detail.ImportAmount,
-                                    UpdatedAt = detail.UpdatedAt,
-                                    UpdatedBy = detail.UpdatedBy,
-                                })
-                                .Where(d => d.DetailGUID == detail.DetailGUID)
-                                .ExecuteCommandAsync();
-                        }
-
-                        result.DetailsUpdated = detailsToInsert.Count + detailsToUpdate.Count;
                     }
+
+                    var detailsToInsert = new List<WareHouseOrderDetails>();
+                    var detailsToUpdate = new List<WareHouseOrderDetails>();
+
+                    foreach (var hqDetail in targetHqOrders
+                        .SelectMany(order =>
+                            hqDetailsByOrder.TryGetValue(order.HGUID!, out var details)
+                                ? details
+                                : new List<CBP_RED_分店订单详情表Store>()
+                        )
+                        .GroupBy(x => x.HGUID, StringComparer.OrdinalIgnoreCase)
+                        .Select(g => g.First()))
+                    {
+                        var detail = MapHqDetail(hqDetail);
+                        if (!localDetailByGuid.TryGetValue(detail.DetailGUID, out var localDetail))
+                        {
+                            detailsToInsert.Add(detail);
+                        }
+                        else if (IsHqDetailChanged(hqDetail, localDetail))
+                        {
+                            detailsToUpdate.Add(detail);
+                        }
+                    }
+
+                    ordersSynced = ordersToInsert.Count + reactivatedOrderGuidSet.Count;
+                    ordersUpdated = ordersToUpdate.Count - reactivatedOrderGuidSet.Count;
+                    detailsSynced = detailsToInsert.Count;
+                    detailsUpdated = detailsToUpdate.Count;
+
+                    _logger.LogInformation(
+                        "分店订货同步准备写入：新增订单 {InsertOrderCount} 个，更新订单 {UpdateOrderCount} 个，新增明细 {InsertDetailCount} 条，更新明细 {UpdateDetailCount} 条，批大小 {BatchSize}",
+                        ordersToInsert.Count,
+                        ordersToUpdate.Count,
+                        detailsToInsert.Count,
+                        detailsToUpdate.Count,
+                        batchSize
+                    );
+
+                    await ExecuteInsertInBatchesAsync(ordersToInsert, batchSize);
+                    await ExecuteUpdateInBatchesAsync(ordersToUpdate, batchSize);
+                    await ExecuteInsertInBatchesAsync(detailsToInsert, batchSize);
+                    await ExecuteUpdateInBatchesAsync(detailsToUpdate, batchSize);
+                });
+
+                if (!transactionResult.IsSuccess)
+                {
+                    var transactionError = transactionResult.ErrorException;
+                    throw new InvalidOperationException(
+                        transactionError?.Message ?? "同步订单事务失败",
+                        transactionError
+                    );
                 }
+
+                result.OrdersSynced = ordersSynced;
+                result.OrdersUpdated = ordersUpdated;
+                result.DetailsSynced = detailsSynced;
+                result.DetailsUpdated = detailsUpdated;
+                _logger.LogInformation(
+                    "分店订货同步完成：新增订单 {OrdersSynced}、更新订单 {OrdersUpdated}、新增明细 {DetailsSynced}、更新明细 {DetailsUpdated}",
+                    result.OrdersSynced,
+                    result.OrdersUpdated,
+                    result.DetailsSynced,
+                    result.DetailsUpdated
+                );
 
                 var hasChanges =
                     result.OrdersSynced > 0
@@ -2871,9 +3660,350 @@ namespace BlazorApp.Api.Services.React
             {
                 result.Success = false;
                 result.Message = $"同步失败：{ex.Message}";
-                _logger.LogError(ex, "同步缺失订单失败，分店代码：{StoreCode}", storeCode);
+                _logger.LogError(
+                    ex,
+                    "同步缺失订单失败，分店代码：{StoreCodes}",
+                    storeCodes.Count > 0 ? string.Join(",", storeCodes) : "全部"
+                );
                 return result;
             }
+        }
+
+        private static List<string> NormalizeSyncStoreCodes(SyncMissingOrdersRequestDto? request)
+        {
+            var source =
+                request?.StoreCodes?.Where(item => !string.IsNullOrWhiteSpace(item))
+                ?? Enumerable.Empty<string>();
+            var storeCodes = source
+                .Select(item => item.Trim())
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            if (storeCodes.Count == 0 && !string.IsNullOrWhiteSpace(request?.StoreCode))
+            {
+                storeCodes.Add(request.StoreCode.Trim());
+            }
+
+            return storeCodes;
+        }
+
+        private async Task<List<CBP_RED_分店订单详情表Store>> QueryHqOrderDetailsAsync(
+            ISqlSugarClient hqDb,
+            List<string> orderGuids
+        )
+        {
+            if (orderGuids.Count == 0)
+            {
+                return new List<CBP_RED_分店订单详情表Store>();
+            }
+
+            var result = new List<CBP_RED_分店订单详情表Store>();
+            foreach (var batch in orderGuids.Chunk(500))
+            {
+                var batchOrderGuids = batch.ToList();
+                var batchRows = await hqDb.Queryable<CBP_RED_分店订单详情表Store>()
+                    .Where(x => SqlFunc.HasValue(x.HGUID) && SqlFunc.HasValue(x.主表GUID))
+                    .Where(x => batchOrderGuids.Contains(x.主表GUID!))
+                    .ToListAsync();
+                result.AddRange(batchRows);
+            }
+
+            return result;
+        }
+
+        private async Task<List<HqOrderDetailFingerprint>> QueryHqOrderDetailFingerprintsAsync(
+            ISqlSugarClient hqDb,
+            List<string> orderGuids
+        )
+        {
+            if (orderGuids.Count == 0)
+            {
+                return new List<HqOrderDetailFingerprint>();
+            }
+
+            var result = new List<HqOrderDetailFingerprint>();
+            foreach (var batch in orderGuids.Chunk(500))
+            {
+                var batchOrderGuids = batch.ToList();
+                var batchRows = await hqDb.Queryable<CBP_RED_分店订单详情表Store>()
+                    .Where(x => SqlFunc.HasValue(x.HGUID) && SqlFunc.HasValue(x.主表GUID))
+                    .Where(x => batchOrderGuids.Contains(x.主表GUID!))
+                    .Select(x => new HqOrderDetailFingerprint
+                    {
+                        DetailGuid = x.HGUID,
+                        OrderGuid = x.主表GUID,
+                        StoreCode = x.分店代码,
+                        StoreProductCode = x.分店商品编码,
+                        ProductCode = x.商品编码,
+                        Quantity = x.数量,
+                        AllocQuantity = x.配货数量,
+                        LastCost = x.上次成本,
+                        ImportPrice = x.进口价格,
+                        ImportAmount = x.合计进口金额,
+                        OemPrice = x.贴牌价格,
+                        OemAmount = x.合计贴牌金额,
+                        UpdatedAt = x.FGC_LastModifyDate,
+                    })
+                    .ToListAsync();
+                result.AddRange(batchRows);
+            }
+
+            return result;
+        }
+
+        private async Task<List<LocalOrderDetailFingerprint>> QueryLocalOrderDetailFingerprintsAsync(
+            List<string> orderGuids
+        )
+        {
+            if (orderGuids.Count == 0)
+            {
+                return new List<LocalOrderDetailFingerprint>();
+            }
+
+            var result = new List<LocalOrderDetailFingerprint>();
+
+            foreach (var batch in orderGuids.Chunk(500))
+            {
+                var batchOrderGuids = batch.ToList();
+                var rows = await _db.Queryable<WareHouseOrderDetails>()
+                    .Where(x => batchOrderGuids.Contains(x.OrderGUID!))
+                    .Select(x => new LocalOrderDetailFingerprint
+                    {
+                        DetailGuid = x.DetailGUID,
+                        OrderGuid = x.OrderGUID,
+                        StoreCode = x.StoreCode,
+                        StoreProductCode = x.StoreProductCode,
+                        ProductCode = x.ProductCode,
+                        Quantity = x.Quantity,
+                        AllocQuantity = x.AllocQuantity,
+                        LastCost = x.LastCost,
+                        ImportPrice = x.ImportPrice,
+                        ImportAmount = x.ImportAmount,
+                        OemPrice = x.OEMPrice,
+                        OemAmount = x.OEMAmount,
+                        UpdatedAt = x.UpdatedAt,
+                        IsDeleted = x.IsDeleted,
+                    })
+                    .ToListAsync();
+
+                result.AddRange(rows);
+            }
+
+            return result;
+        }
+
+        private static bool IsHqOrderNewerThanLocal(
+            CBP_RED_分店订货单主表Store hqOrder,
+            Dictionary<string, DateTime> localUpdatedAtMap
+        )
+        {
+            if (!localUpdatedAtMap.TryGetValue(hqOrder.HGUID!, out var localUpdated))
+            {
+                return true;
+            }
+
+            return hqOrder.FGC_LastModifyDate.HasValue
+                && hqOrder.FGC_LastModifyDate.Value > localUpdated;
+        }
+
+        private static HashSet<string> GetDetailChangedOrderGuids(
+            List<HqOrderDetailFingerprint> hqDetails,
+            List<LocalOrderDetailFingerprint> localDetails
+        )
+        {
+            var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var localDetailMap = localDetails
+                .Where(x => !string.IsNullOrWhiteSpace(x.DetailGuid))
+                .GroupBy(x => x.DetailGuid!, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+
+            foreach (var hqDetail in hqDetails)
+            {
+                if (
+                    string.IsNullOrWhiteSpace(hqDetail.OrderGuid)
+                    || string.IsNullOrWhiteSpace(hqDetail.DetailGuid)
+                )
+                {
+                    continue;
+                }
+
+                if (!localDetailMap.TryGetValue(hqDetail.DetailGuid, out var localDetail))
+                {
+                    result.Add(hqDetail.OrderGuid);
+                    continue;
+                }
+
+                if (IsHqDetailFingerprintChanged(hqDetail, localDetail))
+                {
+                    result.Add(hqDetail.OrderGuid);
+                }
+            }
+
+            return result;
+        }
+
+        private static bool IsHqDetailFingerprintChanged(
+            HqOrderDetailFingerprint hqDetail,
+            LocalOrderDetailFingerprint localDetail
+        )
+        {
+            if (localDetail.IsDeleted || !localDetail.UpdatedAt.HasValue)
+            {
+                return true;
+            }
+
+            if (
+                hqDetail.UpdatedAt.HasValue
+                && (
+                    !localDetail.UpdatedAt.HasValue
+                    || hqDetail.UpdatedAt.Value > localDetail.UpdatedAt.Value
+                )
+            )
+            {
+                return true;
+            }
+
+            // HQ 明细偶发只改字段、不推进 FGC_LastModifyDate；轻量行逐字段精确比对兜底。
+            return !SameText(localDetail.OrderGuid, TrimLen(hqDetail.OrderGuid, 50))
+                || !SameText(localDetail.StoreCode, TrimLen(hqDetail.StoreCode, 50))
+                || !SameText(localDetail.StoreProductCode, TrimLen(hqDetail.StoreProductCode, 50))
+                || !SameText(localDetail.ProductCode, TrimLen(hqDetail.ProductCode, 50))
+                || !SameDecimal(localDetail.Quantity, hqDetail.Quantity)
+                || !SameDecimal(localDetail.AllocQuantity, hqDetail.AllocQuantity)
+                || !SameDecimal(localDetail.LastCost, hqDetail.LastCost)
+                || !SameDecimal(localDetail.ImportPrice, hqDetail.ImportPrice)
+                || !SameDecimal(localDetail.ImportAmount, hqDetail.ImportAmount)
+                || !SameDecimal(localDetail.OemPrice, hqDetail.OemPrice)
+                || !SameDecimal(localDetail.OemAmount, hqDetail.OemAmount);
+        }
+
+        private static bool IsHqDetailChanged(
+            CBP_RED_分店订单详情表Store hqDetail,
+            WareHouseOrderDetails localDetail
+        )
+        {
+            if (localDetail.IsDeleted || !localDetail.UpdatedAt.HasValue)
+            {
+                return true;
+            }
+
+            if (
+                hqDetail.FGC_LastModifyDate.HasValue
+                && hqDetail.FGC_LastModifyDate.Value > localDetail.UpdatedAt.Value
+            )
+            {
+                return true;
+            }
+
+            return !SameText(localDetail.OrderGUID, TrimLen(hqDetail.主表GUID, 50))
+                || !SameText(localDetail.StoreCode, TrimLen(hqDetail.分店代码, 50))
+                || !SameText(localDetail.StoreProductCode, TrimLen(hqDetail.分店商品编码, 50))
+                || !SameText(localDetail.ProductCode, TrimLen(hqDetail.商品编码, 50))
+                || !SameDecimal(localDetail.Quantity, hqDetail.数量)
+                || !SameDecimal(localDetail.AllocQuantity, hqDetail.配货数量)
+                || !SameDecimal(localDetail.LastCost, hqDetail.上次成本)
+                || !SameDecimal(localDetail.ImportPrice, hqDetail.进口价格)
+                || !SameDecimal(localDetail.ImportAmount, hqDetail.合计进口金额)
+                || !SameDecimal(localDetail.OEMPrice, hqDetail.贴牌价格)
+                || !SameDecimal(localDetail.OEMAmount, hqDetail.合计贴牌金额);
+        }
+
+        private static bool SameText(string? left, string? right)
+        {
+            return string.Equals(left?.Trim(), right?.Trim(), StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool SameDecimal(decimal? left, decimal? right)
+        {
+            return left == right;
+        }
+
+        private static string? TrimLen(string? value, int maxLength)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return value;
+            }
+
+            var trimmed = value.Trim();
+            return trimmed.Length <= maxLength ? trimmed : trimmed[..maxLength];
+        }
+
+        private WareHouseOrder MapHqOrder(CBP_RED_分店订货单主表Store hqOrder)
+        {
+            var order = _mapper.Map<WareHouseOrder>(hqOrder);
+            order.IsDeleted = false;
+            order.CreatedAt = hqOrder.FGC_CreateDate ?? DateTime.Now;
+            order.UpdatedAt = hqOrder.FGC_LastModifyDate ?? DateTime.Now;
+            order.CreatedBy = hqOrder.FGC_Creator ?? "HQ同步";
+            order.UpdatedBy = hqOrder.FGC_LastModifier ?? "HQ同步";
+            return order;
+        }
+
+        private WareHouseOrderDetails MapHqDetail(CBP_RED_分店订单详情表Store hqDetail)
+        {
+            var detail = _mapper.Map<WareHouseOrderDetails>(hqDetail);
+            detail.IsDeleted = false;
+            detail.CreatedAt = hqDetail.FGC_CreateDate ?? DateTime.Now;
+            detail.UpdatedAt = hqDetail.FGC_LastModifyDate ?? DateTime.Now;
+            detail.CreatedBy = hqDetail.FGC_Creator ?? "HQ同步";
+            detail.UpdatedBy = hqDetail.FGC_LastModifier ?? "HQ同步";
+            return detail;
+        }
+
+        // 分批写入，避免单次 SQL 过大，同时保留外层事务统一提交/回滚。
+        private async Task ExecuteInsertInBatchesAsync<T>(List<T> entities, int size)
+            where T : class, new()
+        {
+            foreach (var batch in entities.Chunk(size))
+            {
+                await _db.Insertable(batch.ToList()).ExecuteCommandAsync();
+            }
+        }
+
+        // 分批更新，沿用现有整实体覆盖方式，但把数据库往返次数压到更低。
+        private async Task ExecuteUpdateInBatchesAsync<T>(List<T> entities, int size)
+            where T : class, new()
+        {
+            foreach (var batch in entities.Chunk(size))
+            {
+                await _db.Updateable(batch.ToList()).ExecuteCommandAsync();
+            }
+        }
+
+        private sealed class HqOrderDetailFingerprint
+        {
+            public string? DetailGuid { get; set; }
+            public string? OrderGuid { get; set; }
+            public string? StoreCode { get; set; }
+            public string? StoreProductCode { get; set; }
+            public string? ProductCode { get; set; }
+            public decimal? Quantity { get; set; }
+            public decimal? AllocQuantity { get; set; }
+            public decimal? LastCost { get; set; }
+            public decimal? ImportPrice { get; set; }
+            public decimal? ImportAmount { get; set; }
+            public decimal? OemPrice { get; set; }
+            public decimal? OemAmount { get; set; }
+            public DateTime? UpdatedAt { get; set; }
+        }
+
+        private sealed class LocalOrderDetailFingerprint
+        {
+            public string? DetailGuid { get; set; }
+            public string? OrderGuid { get; set; }
+            public string? StoreCode { get; set; }
+            public string? StoreProductCode { get; set; }
+            public string? ProductCode { get; set; }
+            public decimal? Quantity { get; set; }
+            public decimal? AllocQuantity { get; set; }
+            public decimal? LastCost { get; set; }
+            public decimal? ImportPrice { get; set; }
+            public decimal? ImportAmount { get; set; }
+            public decimal? OemPrice { get; set; }
+            public decimal? OemAmount { get; set; }
+            public DateTime? UpdatedAt { get; set; }
+            public bool IsDeleted { get; set; }
         }
 
         public async Task<ApiResponse<bool>> CompleteOrderAsync(string orderGuid)

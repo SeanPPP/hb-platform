@@ -14,6 +14,7 @@ namespace BlazorApp.Api.Services
         private readonly SqlSugarContext _dbContext;
         private readonly ILogger<SeedDataService> _logger;
         private static readonly string[] AdminRoleNames = Permissions.SuperAdminRoleNames;
+        private static readonly string[] OrderRoleNames = { "Order", "订货员" };
 
         public SeedDataService(SqlSugarContext dbContext, ILogger<SeedDataService> logger)
         {
@@ -593,6 +594,35 @@ namespace BlazorApp.Api.Services
             var existingRolePermissions = await db.Queryable<SysRolePermission>()
                 .Where(permission => roleGuids.Contains(permission.RoleGuid))
                 .ToListAsync();
+            var orderRoleGuids = roles
+                .Where(role => OrderRoleNames.Contains(role.RoleName, StringComparer.OrdinalIgnoreCase))
+                .Select(role => role.RoleGUID)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var staleOrderAttendancePermissionIds = existingRolePermissions
+                .Where(permission =>
+                    orderRoleGuids.Contains(permission.RoleGuid)
+                    && IsAttendancePermissionCode(permission.PermissionCode)
+                )
+                .Select(permission => permission.Id)
+                .Where(id => !string.IsNullOrWhiteSpace(id))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            if (staleOrderAttendancePermissionIds.Any())
+            {
+                // Order/订货员只用于前台订货，历史种子带入的考勤权限需要主动清掉。
+                var removedOrderAttendanceLinks = await db.Deleteable<SysRolePermission>()
+                    .Where(permission => staleOrderAttendancePermissionIds.Contains(permission.Id))
+                    .ExecuteCommandAsync();
+                existingRolePermissions = existingRolePermissions
+                    .Where(permission => !staleOrderAttendancePermissionIds.Contains(permission.Id))
+                    .ToList();
+                _logger.LogInformation(
+                    "已清理 Order/订货员 角色的 {Count} 条历史考勤权限关联",
+                    removedOrderAttendanceLinks
+                );
+            }
+
             var currentPermissionCodesByRole = existingRolePermissions
                 .GroupBy(permission => permission.RoleGuid, StringComparer.OrdinalIgnoreCase)
                 .ToDictionary(
@@ -640,6 +670,12 @@ namespace BlazorApp.Api.Services
                 await db.Insertable(newRolePermissions).ExecuteCommandAsync();
                 _logger.LogInformation("已补齐 {Count} 条普通角色模板权限", newRolePermissions.Count);
             }
+        }
+
+        private static bool IsAttendancePermissionCode(string? permissionCode)
+        {
+            return !string.IsNullOrWhiteSpace(permissionCode)
+                && permissionCode.StartsWith("Attendance.", StringComparison.OrdinalIgnoreCase);
         }
 
         private async Task SeedSeasonalCardCatalogAsync()

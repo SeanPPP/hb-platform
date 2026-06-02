@@ -1,6 +1,8 @@
 using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Interfaces.React;
+using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.DTOs;
+using BlazorApp.Shared.Models;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
@@ -16,14 +18,17 @@ namespace BlazorApp.Api.Controllers.React
     public class ReactContainerController : ControllerBase
     {
         private readonly IContainerReactService _containerReactService;
+        private readonly IContainerHqSyncService _containerHqSyncService;
         private readonly ILogger<ReactContainerController> _logger;
 
         public ReactContainerController(
             IContainerReactService containerReactService,
+            IContainerHqSyncService containerHqSyncService,
             ILogger<ReactContainerController> logger
         )
         {
             _containerReactService = containerReactService;
+            _containerHqSyncService = containerHqSyncService;
             _logger = logger;
         }
 
@@ -551,7 +556,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPost("sync-from-hq")]
-        [Authorize(Roles = "Admin,WarehouseManager")]
+        [Authorize(Policy = Permissions.Container.Edit)]
         public async Task<IActionResult> SyncContainersFromHq(
             [FromBody] SyncFromHqRequestDto? request
         )
@@ -560,24 +565,87 @@ namespace BlazorApp.Api.Controllers.React
             {
                 _logger.LogInformation("从HQ同步货柜（增量+明细）");
 
-                var result = await _containerReactService.SyncContainersWithDetailsFromHqAsync(
-                    request?.StartDate
-                );
+                var result = await _containerHqSyncService.SyncIncrementalAsync(request?.StartDate);
 
-                return Ok(
-                    new
-                    {
-                        success = result.IsSuccess,
-                        data = result,
-                        message = result.Message,
-                    }
+                if (result.IsSuccess)
+                {
+                    return Ok(CreateSyncResponse(true, result.Message, result));
+                }
+
+                return CreateSyncFailureResponse(result);
+            }
+            catch (ContainerSyncConflictException ex)
+            {
+                _logger.LogWarning(ex, "从HQ同步货柜发生并发冲突");
+                var result = CreateFailedSyncResult(ex.Message, ContainerHqSyncErrorCodes.Conflict);
+                return Conflict(CreateSyncResponse(false, result.Message, result));
+            }
+            catch (ContainerSyncInvalidSourceDataException ex)
+            {
+                _logger.LogWarning(ex, "从HQ同步货柜时发现HQ源数据质量问题");
+                var result = CreateFailedSyncResult(
+                    ex.Message,
+                    ContainerHqSyncErrorCodes.InvalidSourceData
                 );
+                return UnprocessableEntity(CreateSyncResponse(false, result.Message, result));
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "从HQ同步货柜失败");
-                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+                var result = CreateFailedSyncResult("服务器内部错误", ContainerHqSyncErrorCodes.InternalError);
+                return StatusCode(500, CreateSyncResponse(false, result.Message, result));
             }
+        }
+
+        /// <summary>
+        /// 将核心同步结果映射为 HTTP 语义，保证 data 始终是 SyncResult。
+        /// </summary>
+        private static IActionResult CreateSyncFailureResponse(SyncResult result)
+        {
+            return result.ErrorCode switch
+            {
+                ContainerHqSyncErrorCodes.Conflict => new ConflictObjectResult(
+                    CreateSyncResponse(false, result.Message, result)
+                ),
+                ContainerHqSyncErrorCodes.InvalidSourceData => new UnprocessableEntityObjectResult(
+                    CreateSyncResponse(false, result.Message, result)
+                ),
+                _ => new ObjectResult(CreateSyncResponse(false, result.Message, result))
+                {
+                    StatusCode = 500,
+                },
+            };
+        }
+
+        /// <summary>
+        /// 为异常路径补齐标准同步结果，方便前端复用同一 data 契约。
+        /// </summary>
+        private static SyncResult CreateFailedSyncResult(string message, string errorCode)
+        {
+            var now = DateTime.UtcNow;
+            return new SyncResult
+            {
+                StartTime = now,
+                EndTime = now,
+                Duration = TimeSpan.Zero,
+                IsSuccess = false,
+                Message = message,
+                ErrorCode = errorCode,
+                ErrorCount = 1,
+            };
+        }
+
+        /// <summary>
+        /// 统一返回前端兼容的成功/错误结构，避免同步泳道响应分叉。
+        /// </summary>
+        private static object CreateSyncResponse(bool success, string message, object? data)
+        {
+            return new
+            {
+                success,
+                message,
+                data,
+            };
         }
 
         [HttpPost("push-to-hbsales")]

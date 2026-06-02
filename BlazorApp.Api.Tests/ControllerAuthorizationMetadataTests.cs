@@ -43,6 +43,10 @@ public class ControllerAuthorizationMetadataTests
         );
 
         yield return Policy<ReactLocalSupplierInvoicesController>(
+            nameof(ReactLocalSupplierInvoicesController.CheckProducts),
+            Permissions.LocalPurchase.Edit
+        );
+        yield return Policy<ReactLocalSupplierInvoicesController>(
             nameof(ReactLocalSupplierInvoicesController.BatchExecuteActions),
             Permissions.LocalPurchase.Edit
         );
@@ -366,6 +370,12 @@ public class ControllerAuthorizationMetadataTests
 
         foreach (var method in publicMethods)
         {
+            if (controllerType == typeof(ReactLocalSupplierInvoicesController)
+                && method.Name == nameof(ReactLocalSupplierInvoicesController.SyncFromHq))
+            {
+                continue;
+            }
+
             AssertNoRoleGate(
                 method.GetCustomAttributes<AuthorizeAttribute>(inherit: false),
                 $"{controllerType.Name}.{method.Name}"

@@ -102,7 +102,8 @@ namespace BlazorApp.Api.Interfaces.React
 
         Task<ApiResponse<SyncRetailPriceFromHqResult>> SyncFromHqAsync(
             List<string>? storeCodes,
-            DateTime? startDate
+            DateTime? startDate,
+            DateTime? endDate = null
         );
     }
 }

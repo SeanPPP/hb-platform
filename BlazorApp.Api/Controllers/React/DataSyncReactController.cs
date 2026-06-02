@@ -13,16 +13,19 @@ namespace BlazorApp.Api.Controllers.React
     {
         private readonly IDataSyncFullService _fullSyncService;
         private readonly IDataSyncIncrementalService _incrementalSyncService;
+        private readonly IProductHqSyncService _productHqSyncService;
         private readonly ILogger<DataSyncReactController> _logger;
 
         public DataSyncReactController(
             IDataSyncFullService fullSyncService,
             IDataSyncIncrementalService incrementalSyncService,
+            IProductHqSyncService productHqSyncService,
             ILogger<DataSyncReactController> logger
         )
         {
             _fullSyncService = fullSyncService;
             _incrementalSyncService = incrementalSyncService;
+            _productHqSyncService = productHqSyncService;
             _logger = logger;
         }
 
@@ -35,8 +38,9 @@ namespace BlazorApp.Api.Controllers.React
             try
             {
                 _logger.LogInformation("[ReactSync] 开始全量同步商品信息");
-                var result = await _fullSyncService.SyncProductsFromHqAsync();
-                if (result.IsSuccess)
+                var productResult = await _productHqSyncService.SyncFullAsync();
+                var result = ToSyncResult(productResult.Data, productResult.Success, productResult.Message);
+                if (productResult.Success)
                 {
                     _logger.LogInformation(
                         "[ReactSync] 商品同步成功: 新增{Added}, 更新{Updated}, 错误{Error}",
@@ -571,10 +575,11 @@ namespace BlazorApp.Api.Controllers.React
             try
             {
                 _logger.LogInformation("[ReactSync] 开始增量同步商品信息");
-                var result = await _incrementalSyncService.SyncProductsFromHqIncrementalAsync(
+                var productResult = await _productHqSyncService.SyncIncrementalAsync(
                     request?.StartDate
                 );
-                if (result.IsSuccess)
+                var result = ToSyncResult(productResult.Data, productResult.Success, productResult.Message);
+                if (productResult.Success)
                 {
                     _logger.LogInformation(
                         "[ReactSync] 商品信息增量同步成功: 新增{Added}, 更新{Updated}",
@@ -593,6 +598,31 @@ namespace BlazorApp.Api.Controllers.React
                     ApiResponse<SyncResult>.Error("商品信息增量同步异常", "INTERNAL_ERROR")
                 );
             }
+        }
+
+        private static SyncResult ToSyncResult(
+            HqProductSyncResult? source,
+            bool success,
+            string message
+        )
+        {
+            var result = new SyncResult
+            {
+                IsSuccess = success,
+                Message = message,
+                StartTime = DateTime.UtcNow,
+                EndTime = DateTime.UtcNow,
+                AddedCount = source?.ProductsAdded ?? 0,
+                UpdatedCount = source?.ProductsUpdated ?? 0,
+                DeletedCount = source?.ProductsSoftDeleted ?? 0,
+                ErrorCount = source?.Errors.Count ?? (success ? 0 : 1),
+                TotalCount =
+                    (source?.ProductsAdded ?? 0)
+                    + (source?.ProductsUpdated ?? 0)
+                    + (source?.ProductsSoftDeleted ?? 0),
+            };
+            result.Duration = TimeSpan.FromMilliseconds(source?.DurationMs ?? 0);
+            return result;
         }
 
         /// <summary>

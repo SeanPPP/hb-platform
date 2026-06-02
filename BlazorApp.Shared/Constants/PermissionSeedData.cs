@@ -61,6 +61,14 @@ namespace BlazorApp.Shared.Constants
                 Permissions.Attendance.Leave.ApplySelf,
             };
 
+        public static IReadOnlyList<string> OrderRolePermissionCodes { get; } =
+            new[]
+            {
+                Permissions.OrderFront.View,
+                Permissions.Orders.View,
+                Permissions.Orders.Create,
+            };
+
         public static IReadOnlySet<string> DeprecatedPermissionCodes { get; } =
             new HashSet<string>(StringComparer.OrdinalIgnoreCase)
             {
@@ -225,7 +233,8 @@ namespace BlazorApp.Shared.Constants
                 new("Manager", AttendanceSelfServicePermissionCodes),
                 new("User", AttendanceSelfServicePermissionCodes),
                 new("StoreStaff", AttendanceSelfServicePermissionCodes),
-                new("Order", AttendanceSelfServicePermissionCodes),
+                new("Order", OrderRolePermissionCodes),
+                new("订货员", OrderRolePermissionCodes),
             };
 
         public static IReadOnlyList<PermissionSeedDefinition> AllPermissions { get; } =

@@ -415,6 +415,25 @@ public class NavigationServiceTests
     }
 
     [Fact]
+    public void BuildAppMenu_ShowsOrderRoutesWithoutAttendanceForOrderPermissions()
+    {
+        var user = CreateUser(
+            new Claim("permission", Permissions.OrderFront.View),
+            new Claim("permission", Permissions.Orders.View),
+            new Claim("permission", Permissions.Orders.Create)
+        );
+
+        var menu = _service.BuildAppMenu(user);
+
+        Assert.Contains(menu, item => item.RouteName == "home");
+        Assert.Contains(menu, item => item.RouteName == "orders");
+        Assert.Contains(menu, item => item.RouteName == "cart");
+        Assert.DoesNotContain(menu, item => item.RouteName == "attendance-personal");
+        Assert.DoesNotContain(menu, item => item.RouteName == "attendance-management");
+        Assert.DoesNotContain(menu, item => item.RouteName == "attendance");
+    }
+
+    [Fact]
     public void BuildAppMenu_ShowsSeasonalCardsWithViewPermission()
     {
         var user = CreateUser(
@@ -673,7 +692,6 @@ public class NavigationServiceTests
     [InlineData(nameof(ReactLocalSupplierInvoicesController.GetInvoice))]
     [InlineData(nameof(ReactLocalSupplierInvoicesController.GetDetails))]
     [InlineData(nameof(ReactLocalSupplierInvoicesController.GetDetailsGrid))]
-    [InlineData(nameof(ReactLocalSupplierInvoicesController.CheckProducts))]
     [InlineData(nameof(ReactLocalSupplierInvoicesController.GetBarcodeAbnormalDetails))]
     [InlineData(nameof(ReactLocalSupplierInvoicesController.GetProductsByBarcode))]
     [InlineData(nameof(ReactLocalSupplierInvoicesController.GetProductsByProductCode))]
@@ -697,6 +715,7 @@ public class NavigationServiceTests
     [InlineData(nameof(ReactLocalSupplierInvoicesController.DetectSupplierItem))]
     [InlineData(nameof(ReactLocalSupplierInvoicesController.DetectBarcode))]
     [InlineData(nameof(ReactLocalSupplierInvoicesController.UpdateToStorePrices))]
+    [InlineData(nameof(ReactLocalSupplierInvoicesController.CheckProducts))]
     [InlineData(nameof(ReactLocalSupplierInvoicesController.PasteDetails))]
     [InlineData(nameof(ReactLocalSupplierInvoicesController.UpdateDetailAction))]
     [InlineData(nameof(ReactLocalSupplierInvoicesController.BatchUpdateDetailAction))]

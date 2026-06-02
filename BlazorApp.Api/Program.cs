@@ -463,6 +463,11 @@ builder.Services.AddScoped<TencentCloudUploadService>();
 
 // ===================== React 专用服务注册（与原有服务解耦） =====================
 builder.Services.AddScoped<IContainerReactService, ContainerReactService>();
+builder.Services.Configure<ContainerHqSyncOptions>(
+    builder.Configuration.GetSection("ContainerHqSync")
+);
+builder.Services.AddScoped<ContainerHqSyncService>();
+builder.Services.AddScoped<IContainerHqSyncService, ContainerHqSyncService>();
 builder.Services.AddScoped<IDomesticProductReactService, DomesticProductReactService>();
 builder.Services.AddScoped<IProductPrefixCodeReactService, ProductPrefixCodeReactService>();
 builder.Services.AddScoped<IProductGradeReactService, ProductGradeReactService>();
@@ -473,6 +478,10 @@ builder.Services.AddScoped<IProductCategoryReactService, ProductCategoryReactSer
 builder.Services.AddScoped<IProductReactService, ProductReactService>(); // Product CRUD和批量操作服务
 builder.Services.AddScoped<IProductHqSyncService, ProductHqSyncService>(); // 商品HQ解耦同步服务
 builder.Services.AddScoped<IProductSetCodeReactService, ProductSetCodeReactService>();
+builder.Services.Configure<StoreRetailPriceHqSyncOptions>(
+    builder.Configuration.GetSection("StoreRetailPriceHqSync")
+);
+builder.Services.AddScoped<IStoreRetailPriceHqSyncService, StoreRetailPriceHqSyncService>();
 builder.Services.AddScoped<IStoreRetailPriceReactService, StoreRetailPriceReactService>();
 builder.Services.AddScoped<IStoreProductPriceReactService, StoreProductPriceReactService>();
 builder.Services.AddScoped<IStoreMultiCodePricesReactService, StoreMultiCodePricesReactService>();
@@ -489,10 +498,17 @@ builder.Services.AddScoped<
     BlazorApp.Api.Interfaces.React.IHqProductTranslationReactService,
     BlazorApp.Api.Services.React.HqProductTranslationReactService
 >();
+builder.Services.AddScoped<ILocalSupplierInvoiceHqSyncService, LocalSupplierInvoiceHqSyncService>();
+builder.Services.AddScoped<
+    ILocalSupplierInvoiceHqProductSyncService,
+    LocalSupplierInvoiceHqProductSyncService
+>();
 builder.Services.AddScoped<ILocalSupplierInvoicesReactService, LocalSupplierInvoicesReactService>();
 builder.Services.AddScoped<IPricingStrategyReactService, PricingStrategyReactService>();
 builder.Services.AddScoped<IPromotionReactService, PromotionReactService>();
 builder.Services.AddScoped<IAdvertisementReactService, AdvertisementReactService>();
+builder.Services.AddSingleton<IStoreOrderSyncJobService, StoreOrderSyncJobService>();
+builder.Services.AddScoped<IStoreOrderHqSyncService, StoreOrderHqSyncService>();
 builder.Services.AddScoped<IStoreOrderReactService, StoreOrderReactService>();
 builder.Services.AddScoped<IStoreProductMaintenanceReactService, StoreProductMaintenanceReactService>();
 builder.Services.AddScoped<IAustralianPublicHolidayProvider, AustralianPublicHolidayProvider>();

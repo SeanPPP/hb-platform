@@ -22,6 +22,7 @@ namespace BlazorApp.Api.Services.React
         private readonly IMapper _mapper;
         private readonly ILogger<DataSyncFullService> _logger;
         private readonly ScheduledTaskLogService _taskLogService;
+        private readonly IStoreRetailPriceHqSyncService _storeRetailPriceHqSyncService;
 
         public DataSyncFullService(
             SqlSugarContext localContext,
@@ -31,7 +32,8 @@ namespace BlazorApp.Api.Services.React
             IConfiguration configuration,
             IMapper mapper,
             ILogger<DataSyncFullService> logger,
-            ScheduledTaskLogService taskLogService
+            ScheduledTaskLogService taskLogService,
+            IStoreRetailPriceHqSyncService storeRetailPriceHqSyncService
         )
         {
             _localContext = localContext;
@@ -42,6 +44,7 @@ namespace BlazorApp.Api.Services.React
             _mapper = mapper;
             _logger = logger;
             _taskLogService = taskLogService;
+            _storeRetailPriceHqSyncService = storeRetailPriceHqSyncService;
         }
 
         /// <summary>
@@ -307,6 +310,13 @@ namespace BlazorApp.Api.Services.React
             List<string>? selectedStoreCodes = null
         )
         {
+            if (_storeRetailPriceHqSyncService != null)
+            {
+                return await _storeRetailPriceHqSyncService.SyncFullAsync(selectedStoreCodes);
+            }
+
+            throw new InvalidOperationException("分店零售价 HQ 统一同步服务未注册");
+
             var result = new SyncResult { StartTime = DateTime.Now };
             Console.WriteLine("💰 [零售价同步] ===== 开始全量同步分店零售价 =====");
 
@@ -2763,60 +2773,64 @@ namespace BlazorApp.Api.Services.React
             try
             {
                 _hqContext.CheckConnection();
-                await _localContext.Db.Ado.ExecuteCommandAsync("TRUNCATE TABLE WarehouseProduct");
                 var total = await _hqContext
                     .Db.Queryable<CBP_DIC_商品库存表>()
                     .Where(x => SqlFunc.HasValue(x.H商品编码))
                     .CountAsync();
                 var pages = (int)Math.Ceiling(total / (double)hqBatchSize);
                 var added = 0;
-                var errors = 0;
-                for (var page = 1; page <= pages; page++)
+                var transactionResult = await _localContext.Db.Ado.UseTranAsync(async () =>
                 {
-                    var skip = (page - 1) * hqBatchSize;
-                    var batch = await _hqContext
-                        .Db.Queryable<CBP_DIC_商品库存表>()
-                        .Where(x => SqlFunc.HasValue(x.H商品编码))
-                        .OrderBy(x => x.ID)
-                        .Skip(skip)
-                        .Take(hqBatchSize)
-                        .ToListAsync();
-                    if (!batch.Any())
-                        continue;
-                    var localBatch = _mapper
-                        .Map<List<WarehouseProduct>>(batch)
-                        .Where(x => !string.IsNullOrWhiteSpace(x.ProductCode))
-                        .ToList();
-                    try
+                    // 使用 DELETE 而不是 TRUNCATE，确保事务失败时可以完整回滚。
+                    await _localContext.Db.Ado.ExecuteCommandAsync("DELETE FROM WarehouseProduct");
+
+                    for (var page = 1; page <= pages; page++)
                     {
+                        var skip = (page - 1) * hqBatchSize;
+                        var batch = await _hqContext
+                            .Db.Queryable<CBP_DIC_商品库存表>()
+                            .Where(x => SqlFunc.HasValue(x.H商品编码))
+                            .OrderBy(x => x.ID)
+                            .Skip(skip)
+                            .Take(hqBatchSize)
+                            .ToListAsync();
+                        if (!batch.Any())
+                            continue;
+
+                        var localBatch = _mapper
+                            .Map<List<WarehouseProduct>>(batch)
+                            .Where(x => !string.IsNullOrWhiteSpace(x.ProductCode))
+                            .ToList();
+                        if (!localBatch.Any())
+                            continue;
+
+                        // 分页插入继续复用当前事务连接，任一批失败都能整次回滚。
                         await _localContext
-                            .Db.Fastest<WarehouseProduct>()
+                            .Db.Insertable(localBatch)
                             .AS("WarehouseProduct")
                             .PageSize(writePageSize)
-                            .BulkCopyAsync(localBatch);
+                            .ExecuteCommandAsync();
+
                         added += localBatch.Count;
                     }
-                    catch (Exception ex)
-                    {
-                        _logger.LogError(
-                            ex,
-                            "[ReactSync] WarehouseProduct 批{Page} 插入失败 批大小{Size}",
-                            page,
-                            localBatch.Count
-                        );
-                        errors += localBatch.Count;
-                        await Task.Delay(1500);
-                    }
-                    batch.Clear();
-                    localBatch.Clear();
+                });
+
+                if (!transactionResult.IsSuccess)
+                {
+                    _logger.LogError(
+                        transactionResult.ErrorException,
+                        "[ReactSync] WarehouseProduct 全量同步事务失败"
+                    );
+                    result.IsSuccess = false;
+                    result.Message = "WarehouseProduct 同步事务失败";
+                    result.ErrorCount = 1;
+                    return result;
                 }
+
                 result.AddedCount = added;
-                result.ErrorCount = errors;
-                result.IsSuccess = errors == 0;
-                result.Message =
-                    errors == 0
-                        ? "WarehouseProduct 同步成功"
-                        : "WarehouseProduct 同步完成，但存在错误";
+                result.ErrorCount = 0;
+                result.IsSuccess = true;
+                result.Message = "WarehouseProduct 同步成功";
             }
             catch (Exception ex)
             {

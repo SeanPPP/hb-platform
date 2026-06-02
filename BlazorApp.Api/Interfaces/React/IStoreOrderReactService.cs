@@ -31,12 +31,12 @@ namespace BlazorApp.Api.Interfaces.React
         /// <summary>
         /// 添加到购物车 (或更新数量)
         /// </summary>
-        Task<ApiResponse<bool>> AddToCartAsync(AddToCartRequestDto request);
+        Task<ApiResponse<StoreOrderCartDto?>> AddToCartAsync(AddToCartRequestDto request);
 
         /// <summary>
         /// 更新购物车项数量 (覆盖)
         /// </summary>
-        Task<ApiResponse<bool>> UpdateCartItemAsync(AddToCartRequestDto request);
+        Task<ApiResponse<StoreOrderCartDto?>> UpdateCartItemAsync(AddToCartRequestDto request);
 
         /// <summary>
         /// 移除购物车项
@@ -68,7 +68,20 @@ namespace BlazorApp.Api.Interfaces.React
         /// <summary>
         /// 获取订单详情
         /// </summary>
-        Task<ApiResponse<StoreOrderCartDto?>> GetOrderDetailAsync(string orderGuid);
+        Task<ApiResponse<StoreOrderDetailDto?>> GetOrderDetailAsync(
+            string orderGuid,
+            StoreOrderDetailQueryDto? query = null
+        );
+
+        /// <summary>
+        /// 获取订单全量明细，供拣货单、发票等打印链路使用。
+        /// </summary>
+        Task<ApiResponse<StoreOrderCartDto?>> GetOrderDetailFullAsync(string orderGuid);
+
+        /// <summary>
+        /// 获取订单已包含商品编码，用于远程分页详情页的跨页重复校验。
+        /// </summary>
+        Task<ApiResponse<List<string>>> GetOrderDetailProductCodesAsync(string orderGuid);
 
         /// <summary>
         /// 获取订单中使用过的分店信息
@@ -138,9 +151,11 @@ namespace BlazorApp.Api.Interfaces.React
         /// <summary>
         /// 从 HQ 同步本地不存在的仓库订单（主表 + 明细表）
         /// </summary>
-        /// <param name="storeCode">分店代码</param>
+        /// <param name="request">同步请求参数</param>
         /// <returns>同步结果</returns>
-        Task<SyncMissingOrdersResultDto> SyncMissingOrdersFromHqAsync(string? storeCode);
+        Task<SyncMissingOrdersResultDto> SyncMissingOrdersFromHqAsync(
+            SyncMissingOrdersRequestDto? request
+        );
 
         /// <summary>
         /// 完成订单 (FlowStatus -> 2)

@@ -21,6 +21,7 @@ namespace BlazorApp.Api.Services.React
         private readonly IConfiguration _configuration;
         private readonly IMapper _mapper;
         private readonly ILogger<ContainerReactService> _logger;
+        private readonly IContainerHqSyncService _containerHqSyncService;
 
         public ContainerReactService(
             SqlSugarContext context,
@@ -28,7 +29,8 @@ namespace BlazorApp.Api.Services.React
             HBSalesSqlSugarContext hbSalesContext,
             IConfiguration configuration,
             IMapper mapper,
-            ILogger<ContainerReactService> logger
+            ILogger<ContainerReactService> logger,
+            IContainerHqSyncService containerHqSyncService
         )
         {
             _context = context;
@@ -37,6 +39,7 @@ namespace BlazorApp.Api.Services.React
             _configuration = configuration;
             _mapper = mapper;
             _logger = logger;
+            _containerHqSyncService = containerHqSyncService;
         }
 
         /// <summary>
@@ -1483,216 +1486,7 @@ namespace BlazorApp.Api.Services.React
             DateTime? startDate = null
         )
         {
-            var result = new SyncResult { StartTime = DateTime.UtcNow };
-            var syncGuids = new List<string>();
-
-            try
-            {
-                var effectiveStart = startDate ?? DateTime.UtcNow.AddDays(-30);
-
-                _logger.LogInformation(
-                    "[ContainerSync] 开始增量同步货柜主表+明细，起始日期: {StartDate}",
-                    effectiveStart
-                );
-
-                var hqDb = HqSqlSugarContext.CreateConcurrentConnection(_configuration);
-
-                var total = await hqDb.Queryable<CPT_RED_货柜单主表Store>()
-                    .Where(x => SqlFunc.HasValue(x.HGUID))
-                    .Where(x => x.装柜日期 >= effectiveStart)
-                    .CountAsync();
-                hqDb.Dispose();
-
-                if (total == 0)
-                {
-                    result.IsSuccess = true;
-                    result.Message = "没有新数据需要同步";
-                    result.EndTime = DateTime.UtcNow;
-                    result.Duration = result.EndTime - result.StartTime;
-                    return result;
-                }
-
-                const int batchSize = 50000;
-                const int writePageSize = 10000;
-                var pages = (int)Math.Ceiling(total / (double)batchSize);
-                var added = 0;
-                var updated = 0;
-
-                var existingCodes = new HashSet<string>(
-                    await _context
-                        .Db.Queryable<Container>()
-                        .Select(x => x.ContainerCode)
-                        .ToListAsync()
-                );
-
-                for (var page = 1; page <= pages; page++)
-                {
-                    var skip = (page - 1) * batchSize;
-                    var db = HqSqlSugarContext.CreateConcurrentConnection(_configuration);
-                    var batch = await db.Queryable<CPT_RED_货柜单主表Store>()
-                        .Where(x => SqlFunc.HasValue(x.HGUID))
-                        .Where(x => x.装柜日期 >= effectiveStart)
-                        .OrderBy(x => x.ID)
-                        .Skip(skip)
-                        .Take(batchSize)
-                        .ToListAsync();
-                    db.Dispose();
-
-                    if (!batch.Any())
-                        continue;
-
-                    var localBatch = _mapper
-                        .Map<List<Container>>(batch)
-                        .Where(x => !string.IsNullOrWhiteSpace(x.ContainerCode))
-                        .ToList();
-
-                    var toInsert = localBatch
-                        .Where(x => !existingCodes.Contains(x.ContainerCode!))
-                        .ToList();
-                    var toUpdate = localBatch
-                        .Where(x => existingCodes.Contains(x.ContainerCode!))
-                        .ToList();
-
-                    if (toUpdate.Any())
-                    {
-                        await _context
-                            .Db.Fastest<Container>()
-                            .AS("Container")
-                            .PageSize(writePageSize)
-                            .BulkUpdateAsync(toUpdate);
-                        updated += toUpdate.Count;
-                    }
-
-                    if (toInsert.Any())
-                    {
-                        await _context
-                            .Db.Fastest<Container>()
-                            .AS("Container")
-                            .PageSize(writePageSize)
-                            .BulkCopyAsync(toInsert);
-                        added += toInsert.Count;
-                    }
-
-                    foreach (
-                        var c in localBatch.Where(x => !string.IsNullOrWhiteSpace(x.ContainerCode))
-                    )
-                    {
-                        existingCodes.Add(c.ContainerCode!);
-                        syncGuids.Add(c.ContainerCode!);
-                    }
-                }
-
-                result.AddedCount = added;
-                result.UpdatedCount = updated;
-
-                _logger.LogInformation(
-                    "[ContainerSync] 货柜主表同步完成，新增: {Added}, 更新: {Updated}，开始同步明细（按主表GUID过滤）",
-                    added,
-                    updated
-                );
-
-                if (syncGuids.Any())
-                {
-                    var detailAdded = 0;
-                    var detailUpdated = 0;
-
-                    var existingDetailCodes = new HashSet<string>(
-                        await _context
-                            .Db.Queryable<ContainerDetail>()
-                            .Select(x => x.DetailCode)
-                            .ToListAsync()
-                    );
-
-                    var detailDb = HqSqlSugarContext.CreateConcurrentConnection(_configuration);
-                    var detailTotal = await detailDb
-                        .Queryable<CPT_RED_货柜单详情表Store>()
-                        .Where(x => !string.IsNullOrEmpty(x.主表GUID))
-                        .Where(x => SqlFunc.ContainsArray(syncGuids, x.主表GUID))
-                        .CountAsync();
-                    detailDb.Dispose();
-
-                    var detailPages = (int)Math.Ceiling(detailTotal / (double)batchSize);
-
-                    for (var dp = 1; dp <= detailPages; dp++)
-                    {
-                        var dSkip = (dp - 1) * batchSize;
-                        var ddb = HqSqlSugarContext.CreateConcurrentConnection(_configuration);
-                        var detailBatch = await ddb.Queryable<CPT_RED_货柜单详情表Store>()
-                            .Where(x => !string.IsNullOrEmpty(x.主表GUID))
-                            .Where(x => SqlFunc.ContainsArray(syncGuids, x.主表GUID))
-                            .OrderBy(x => x.ID)
-                            .Skip(dSkip)
-                            .Take(batchSize)
-                            .ToListAsync();
-                        ddb.Dispose();
-
-                        if (!detailBatch.Any())
-                            continue;
-
-                        var localDetails = _mapper
-                            .Map<List<ContainerDetail>>(detailBatch)
-                            .Where(x => !string.IsNullOrWhiteSpace(x.ContainerCode))
-                            .ToList();
-
-                        var dInsert = localDetails
-                            .Where(x => !existingDetailCodes.Contains(x.DetailCode!))
-                            .ToList();
-                        var dUpdate = localDetails
-                            .Where(x => existingDetailCodes.Contains(x.DetailCode!))
-                            .ToList();
-
-                        if (dUpdate.Any())
-                        {
-                            await _context
-                                .Db.Fastest<ContainerDetail>()
-                                .AS("ContainerDetail")
-                                .PageSize(writePageSize)
-                                .BulkUpdateAsync(dUpdate);
-                            detailUpdated += dUpdate.Count;
-                        }
-
-                        if (dInsert.Any())
-                        {
-                            await _context
-                                .Db.Fastest<ContainerDetail>()
-                                .AS("ContainerDetail")
-                                .PageSize(writePageSize)
-                                .BulkCopyAsync(dInsert);
-                            detailAdded += dInsert.Count;
-                        }
-
-                        foreach (
-                            var d in localDetails.Where(x =>
-                                !string.IsNullOrWhiteSpace(x.DetailCode)
-                            )
-                        )
-                            existingDetailCodes.Add(d.DetailCode!);
-                    }
-
-                    _logger.LogInformation(
-                        "[ContainerSync] 货柜明细同步完成，新增: {Added}, 更新: {Updated}",
-                        detailAdded,
-                        detailUpdated
-                    );
-
-                    result.Details =
-                        $"主表: 新增{added}, 更新{updated}; 明细: 新增{detailAdded}, 更新{detailUpdated}";
-                }
-
-                result.IsSuccess = true;
-                result.Message = $"同步完成：主表新增 {added} 条，更新 {updated} 条";
-                result.TotalCount = syncGuids.Count;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "[ContainerSync] 从HQ同步货柜失败");
-                result.IsSuccess = false;
-                result.Message = $"同步失败: {ex.Message}";
-            }
-
-            result.EndTime = DateTime.UtcNow;
-            result.Duration = result.EndTime - result.StartTime;
-            return result;
+            return await _containerHqSyncService.SyncIncrementalAsync(startDate);
         }
 
         public async Task<SyncResult> PushContainersToHbSalesAsync(List<string> containerGuids)

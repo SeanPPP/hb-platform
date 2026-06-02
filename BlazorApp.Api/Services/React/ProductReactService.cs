@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using AutoMapper;
 using BlazorApp.Api.Data;
@@ -27,6 +28,10 @@ namespace BlazorApp.Api.Services.React
         private readonly IMapper _mapper;
         private readonly ILogger<ProductReactService> _logger;
         private readonly Microsoft.AspNetCore.Http.IHttpContextAccessor _httpContextAccessor;
+        private const int ProductHqSyncReadBatchSize = 1000;
+        private const int ProductHqSyncWriteBatchSize = 200;
+        private const string ProductHqSyncLockResource = "HB:ProductReactService:SyncProductsFromHq";
+        private static readonly SemaphoreSlim ProductHqSyncSemaphore = new(1, 1);
 
         public ProductReactService(
             SqlSugarContext context,
@@ -1279,14 +1284,33 @@ namespace BlazorApp.Api.Services.React
         /// <returns>同步结果</returns>
         public async Task<ApiResponse<HqProductSyncResult>> SyncProductsFromHqAsync()
         {
+            if (!await ProductHqSyncSemaphore.WaitAsync(0))
+            {
+                return ApiResponse<HqProductSyncResult>.Error(
+                    "已有商品HQ同步任务正在执行，请稍后再试"
+                );
+            }
+
             var result = new HqProductSyncResult();
             var startTime = DateTime.Now;
             var errors = new List<string>();
             var originalTimeout = _db.Ado.CommandTimeOut;
+            var databaseLockAcquired = false;
+            var shouldCloseDatabaseLockConnection = false;
             _db.Ado.CommandTimeOut = 300;
 
             try
             {
+                var databaseLock = await TryAcquireProductHqSyncDatabaseLockAsync();
+                databaseLockAcquired = databaseLock.Acquired;
+                shouldCloseDatabaseLockConnection = databaseLock.ShouldCloseConnection;
+                if (!databaseLockAcquired)
+                {
+                    return ApiResponse<HqProductSyncResult>.Error(
+                        "已有商品HQ同步任务正在执行，请稍后再试"
+                    );
+                }
+
                 _logger.LogInformation("开始从HQ同步商品数据...");
 
                 _hqContext.CheckConnection();
@@ -1298,8 +1322,13 @@ namespace BlazorApp.Api.Services.React
                         .Where(s => s.IsActive && !s.IsDeleted)
                         .ToListAsync();
                     var indexList = await _db.Queryable<Product>()
-                        .Where(p => !p.IsDeleted && p.ProductCode != null)
-                        .Select(p => new { p.ProductCode, p.UpdatedAt })
+                        .Where(p => p.ProductCode != null)
+                        .Select(p => new
+                        {
+                            p.ProductCode,
+                            p.UpdatedAt,
+                            p.IsDeleted,
+                        })
                         .ToListAsync();
                     return (stores, indexList);
                 });
@@ -1315,7 +1344,9 @@ namespace BlazorApp.Api.Services.React
                 var (activeStores, localIndexList) = await localDataTask;
                 var hqIndexList = await hqIndexTask;
 
-                var localIndex = localIndexList.ToDictionary(x => x.ProductCode!, x => x.UpdatedAt);
+                var localIndex = localIndexList
+                    .GroupBy(x => x.ProductCode!)
+                    .ToDictionary(g => g.Key, g => g.First());
                 var localProductCodeSet = localIndex.Keys.ToHashSet();
                 var hqIndexDict = hqIndexList.ToDictionary(p => p.H商品编码!, p => p.FGC_LastModifyDate);
 
@@ -1338,14 +1369,17 @@ namespace BlazorApp.Api.Services.React
                     {
                         toAddCodes.Add(code);
                     }
-                    else if (hqModifyDate > localIndex[code])
+                    else if (
+                        localIndex[code].IsDeleted
+                        || hqModifyDate > (localIndex[code].UpdatedAt ?? DateTime.MinValue)
+                    )
                     {
                         toUpdateCodes.Add(code);
                     }
                 }
 
                 var toDeleteCodes = localIndex.Keys
-                    .Where(code => !hqIndexDict.ContainsKey(code))
+                    .Where(code => !localIndex[code].IsDeleted && !hqIndexDict.ContainsKey(code))
                     .ToList();
 
                 _logger.LogInformation(
@@ -1355,12 +1389,10 @@ namespace BlazorApp.Api.Services.React
                     toDeleteCodes.Count
                 );
 
-                const int batchSize = 5000;
-
                 _logger.LogInformation("阶段四：按需加载完整数据...");
                 var neededCodes = toAddCodes.Concat(toUpdateCodes).ToList();
                 var hqFullDict = new Dictionary<string, DIC_商品信息字典表>();
-                foreach (var codeBatch in neededCodes.Chunk(batchSize))
+                foreach (var codeBatch in neededCodes.Chunk(ProductHqSyncReadBatchSize))
                 {
                     var batch = await _hqContext
                         .DIC_商品信息字典表Db.AsQueryable()
@@ -1374,7 +1406,7 @@ namespace BlazorApp.Api.Services.React
                 }
 
                 var toUpdateProductsDict = new Dictionary<string, Product>();
-                foreach (var codeBatch in toUpdateCodes.Chunk(batchSize))
+                foreach (var codeBatch in toUpdateCodes.Chunk(ProductHqSyncReadBatchSize))
                 {
                     var batch = await _db.Queryable<Product>()
                         .Where(p => codeBatch.Contains(p.ProductCode!))
@@ -1394,204 +1426,39 @@ namespace BlazorApp.Api.Services.React
                     .ToList();
                 int processedPage = 0;
 
-                foreach (var batch in toAdd.Chunk(batchSize))
+                foreach (var batch in toAdd.Chunk(ProductHqSyncWriteBatchSize))
                 {
-                    var batchProductCodes = batch
-                        .Where(hq => !string.IsNullOrEmpty(hq.H商品编码))
-                        .Select(hq => hq.H商品编码!)
-                        .ToList();
-
-                    using var hqConn1 = HqSqlSugarContext.CreateConcurrentConnection(
-                        _hqContext.Configuration
-                    );
-                    using var hqConn2 = HqSqlSugarContext.CreateConcurrentConnection(
-                        _hqContext.Configuration
-                    );
-
-                    var hqRetailPricesTask = hqConn1
-                        .Queryable<DIC_商品零售价表>()
-                        .Where(r =>
-                            batchProductCodes.Contains(r.H商品编码!)
-                            && r.H使用状态 == true
-                            && !string.IsNullOrEmpty(r.H分店代码)
-                        )
-                        .ToListAsync();
-
-                    var hqMultiCodesTask = hqConn2
-                        .Queryable<DIC_分店一品多码表>()
-                        .Where(m =>
-                            batchProductCodes.Contains(m.H商品编码!)
-                            && m.H使用状态 == true
-                            && !string.IsNullOrEmpty(m.H分店代码)
-                        )
-                        .ToListAsync();
-
-                    await Task.WhenAll(hqRetailPricesTask, hqMultiCodesTask);
-
-                    var hqRetailPrices = await hqRetailPricesTask;
-                    var hqMultiCodes = await hqMultiCodesTask;
-
-                    var hqRetailPricesDict = hqRetailPrices.ToDictionary(
-                        r => (r.H分店代码!, r.H商品编码!),
-                        r => r
-                    );
-
-                    var hqMultiCodesByProduct = hqMultiCodes
-                        .GroupBy(m => m.H商品编码!)
-                        .ToDictionary(g => g.Key, g => g.ToList());
-
                     _db.Ado.BeginTran();
                     try
                     {
                         var now = DateTime.UtcNow;
+                        var batchHqByCode = batch
+                            .Where(hq => !string.IsNullOrEmpty(hq.H商品编码))
+                            .ToDictionary(hq => hq.H商品编码!, hq => hq);
                         var newProducts = batch.Select(hq => _mapper.Map<Product>(hq)).ToList();
                         foreach (var p in newProducts)
                         {
                             p.CreatedAt = now;
                             p.UpdatedAt = now;
                             p.IsDeleted = false;
-                        }
-                        await _db.Insertable(newProducts).ExecuteCommandAsync();
-                        result.ProductsAdded += newProducts.Count;
-
-                        var storeRetailPrices = new List<StoreRetailPrice>();
-                        var storeMultiCodes = new List<StoreMultiCodeProduct>();
-                        var productSetCodes = new List<ProductSetCode>();
-
-                        for (int i = 0; i < newProducts.Count; i++)
-                        {
-                            var product = newProducts[i];
-                            var hqProduct = batch[i];
-                            if (product.ProductCode == null)
-                                continue;
-
-                            foreach (var store in activeStores)
-                            {
-                                var retailPriceKey = (store.StoreCode!, product.ProductCode);
-                                if (
-                                    hqRetailPricesDict.TryGetValue(
-                                        retailPriceKey,
-                                        out var hqRetailPrice
-                                    )
-                                )
-                                {
-                                    // 如果 HQ 有对应零售价，使用 HQ 数据
-                                    //
-                                    storeRetailPrices.Add(
-                                        new StoreRetailPrice
-                                        {
-                                            UUID =
-                                                hqRetailPrice.HGUID ?? UuidHelper.GenerateUuid7(),
-                                            StoreCode = store.StoreCode,
-                                            ProductCode = product.ProductCode,
-                                            SupplierCode = hqRetailPrice.H供应商编码,
-                                            PurchasePrice = hqRetailPrice.H进货价,
-                                            StoreRetailPriceValue = hqRetailPrice.H分店零售价,
-                                            DiscountRate = hqRetailPrice.H折扣率,
-                                            IsActive = hqRetailPrice.H使用状态,
-                                            IsAutoPricing = hqRetailPrice.H是否自动定价,
-                                            IsSpecialProduct = hqRetailPrice.H是否特殊商品,
-                                            IsDeleted = false,
-                                            CreatedAt = now,
-                                            UpdatedAt = now,
-                                        }
-                                    );
-                                }
-                                else
-                                {
-                                    // 如果 HQ 没有对应零售价，使用默认值
-                                    //
-                                    storeRetailPrices.Add(
-                                        new StoreRetailPrice
-                                        {
-                                            UUID = UuidHelper.GenerateUuid7(),
-                                            StoreCode = store.StoreCode,
-                                            ProductCode = product.ProductCode,
-                                            PurchasePrice = product.PurchasePrice,
-                                            StoreRetailPriceValue = product.RetailPrice,
-                                            IsActive = true,
-                                            IsAutoPricing = product.IsAutoPricing,
-                                            IsSpecialProduct = product.IsSpecialProduct,
-                                            IsDeleted = false,
-                                            CreatedAt = now,
-                                            UpdatedAt = now,
-                                        }
-                                    );
-                                }
-                            }
-
                             if (
-                                hqMultiCodesByProduct.TryGetValue(
-                                    product.ProductCode,
-                                    out var hqMultiList
-                                )
+                                p.ProductCode != null
+                                && batchHqByCode.TryGetValue(p.ProductCode, out var hqProduct)
                             )
                             {
-                                foreach (var hqMulti in hqMultiList)
-                                {
-                                    productSetCodes.Add(
-                                        new ProductSetCode
-                                        {
-                                            SetCodeId = hqMulti.HGUID ?? UuidHelper.GenerateUuid7(),
-                                            ProductCode = product.ProductCode,
-                                            SetProductCode =
-                                                hqMulti.H多码商品编码
-                                                ?? hqMulti.H商品编码
-                                                ?? product.ProductCode,
-                                            SetItemNumber = hqMulti.H多码商品编码 ?? "",
-                                            SetBarcode = hqMulti.H多条形码,
-                                            SetPurchasePrice = hqMulti.H进货价,
-                                            SetRetailPrice = hqMulti.H一品多码零售价,
-                                            SetType = 2,
-                                            IsActive = hqMulti.H使用状态 ?? true,
-                                            IsDeleted = false,
-                                            CreatedAt = now,
-                                            UpdatedAt = now,
-                                        }
-                                    );
-
-                                    storeMultiCodes.Add(
-                                        new StoreMultiCodeProduct
-                                        {
-                                            UUID = hqMulti.HGUID ?? UuidHelper.GenerateUuid7(),
-                                            StoreCode = hqMulti.H分店代码,
-                                            ProductCode = product.ProductCode,
-                                            MultiCodeProductCode =
-                                                hqMulti.H多码商品编码
-                                                ?? hqMulti.H商品编码
-                                                ?? product.ProductCode,
-                                            StoreMultiCodeProductCode = hqMulti.H分店多码商品编码,
-                                            MultiBarcode = hqMulti.H多条形码,
-                                            PurchasePrice = hqMulti.H进货价,
-                                            MultiCodeRetailPrice = hqMulti.H一品多码零售价,
-                                            DiscountRate = hqMulti.H折扣率,
-                                            IsActive = hqMulti.H使用状态 ?? true,
-                                            IsAutoPricing = hqMulti.H是否自动定价 ?? false,
-                                            IsSpecialProduct = hqMulti.H是否特殊商品 ?? false,
-                                            IsDeleted = false,
-                                            CreatedAt = now,
-                                            UpdatedAt = now,
-                                        }
-                                    );
-                                }
+                                p.EnglishName = Truncate(hqProduct.H大写名称, 200);
                             }
                         }
+                        await BulkInsertAsync(newProducts, ProductHqSyncWriteBatchSize);
+                        result.ProductsAdded += newProducts.Count;
 
-                        if (storeRetailPrices.Any())
-                        {
-                            await _db.Insertable(storeRetailPrices).ExecuteCommandAsync();
-                            result.StoreRetailPricesCreated += storeRetailPrices.Count;
-                        }
-                        if (productSetCodes.Any())
-                        {
-                            await _db.Insertable(productSetCodes).ExecuteCommandAsync();
-                            result.ProductSetCodesCreated += productSetCodes.Count;
-                        }
-                        if (storeMultiCodes.Any())
-                        {
-                            await _db.Insertable(storeMultiCodes).ExecuteCommandAsync();
-                            result.StoreMultiCodesCreated += storeMultiCodes.Count;
-                        }
+                        await SyncTouchedProductAssociationsAsync(
+                            newProducts,
+                            batchHqByCode,
+                            activeStores,
+                            now,
+                            result
+                        );
 
                         _db.Ado.CommitTran();
                     }
@@ -1608,14 +1475,14 @@ namespace BlazorApp.Api.Services.React
                         await Task.Delay(500);
                         _logger.LogInformation(
                             "新增进度: {Processed}/{Total}",
-                            processedPage * batchSize,
+                            processedPage * ProductHqSyncWriteBatchSize,
                             toAdd.Count
                         );
                     }
                 }
 
                 processedPage = 0;
-                foreach (var batch in toUpdate.Chunk(batchSize))
+                foreach (var batch in toUpdate.Chunk(ProductHqSyncWriteBatchSize))
                 {
                     _db.Ado.BeginTran();
                     try
@@ -1623,24 +1490,51 @@ namespace BlazorApp.Api.Services.React
                         var now = DateTime.UtcNow;
                         foreach (var (hqProduct, localProduct) in batch)
                         {
+                            var uuid = localProduct.UUID;
+                            var createdAt = localProduct.CreatedAt;
+                            var createdBy = localProduct.CreatedBy;
                             _mapper.Map(hqProduct, localProduct);
+                            localProduct.UUID = uuid;
+                            localProduct.CreatedAt = createdAt;
+                            localProduct.CreatedBy = createdBy;
+                            localProduct.EnglishName = Truncate(hqProduct.H大写名称, 200);
                             localProduct.UpdatedAt = now;
+                            localProduct.IsDeleted = false;
                         }
                         var productsToUpdate = batch.Select(b => b.Item2).ToList();
                         await _db.Updateable(productsToUpdate)
                             .UpdateColumns(p => new
                             {
                                 p.ProductName,
+                                p.EnglishName,
+                                p.ItemNumber,
                                 p.Barcode,
+                                p.ProductCategoryGUID,
+                                p.LocalSupplierCode,
+                                p.ProductImage,
+                                p.ProductType,
+                                p.MiddlePackageQuantity,
                                 p.PurchasePrice,
                                 p.RetailPrice,
                                 p.IsActive,
                                 p.IsAutoPricing,
                                 p.IsSpecialProduct,
+                                p.WarehouseCategoryGUID,
                                 p.UpdatedAt,
+                                p.IsDeleted,
                             })
                             .ExecuteCommandAsync();
                         result.ProductsUpdated += productsToUpdate.Count;
+                        var batchHqByCode = batch
+                            .Where(item => !string.IsNullOrEmpty(item.Item1.H商品编码))
+                            .ToDictionary(item => item.Item1.H商品编码!, item => item.Item1);
+                        await SyncTouchedProductAssociationsAsync(
+                            productsToUpdate,
+                            batchHqByCode,
+                            activeStores,
+                            now,
+                            result
+                        );
                         _db.Ado.CommitTran();
                     }
                     catch (Exception ex)
@@ -1656,7 +1550,7 @@ namespace BlazorApp.Api.Services.React
                         await Task.Delay(500);
                         _logger.LogInformation(
                             "更新进度: {Processed}/{Total}",
-                            processedPage * batchSize,
+                            processedPage * ProductHqSyncWriteBatchSize,
                             toUpdate.Count
                         );
                     }
@@ -1668,7 +1562,7 @@ namespace BlazorApp.Api.Services.React
                 result.TotalLocalProducts = localIndex.Count;
 
                 processedPage = 0;
-                foreach (var codeBatch in toDeleteCodes.Chunk(batchSize))
+                foreach (var codeBatch in toDeleteCodes.Chunk(ProductHqSyncWriteBatchSize))
                 {
                     var productCodes = codeBatch.ToList();
                     _db.Ado.BeginTran();
@@ -1725,7 +1619,7 @@ namespace BlazorApp.Api.Services.React
                         await Task.Delay(500);
                         _logger.LogInformation(
                             "删除进度: {Processed}/{Total}",
-                            processedPage * batchSize,
+                            processedPage * ProductHqSyncWriteBatchSize,
                             toDeleteCodes.Count
                         );
                     }
@@ -1735,7 +1629,7 @@ namespace BlazorApp.Api.Services.React
                 result.DurationMs = (long)(DateTime.Now - startTime).TotalMilliseconds;
 
                 _logger.LogInformation(
-                    "同步完成！新增: {Added}, 更新: {Updated}, 删除: {Deleted}, 耗时: {Duration}ms",
+                    "同步完成！新增: {Added}, 更新: {Updated}, 删除: {Deleted}, 零售价软删: {RetailDeleted}, 套装软删: {SetDeleted}, 多码软删: {MultiDeleted}, 耗时: {Duration}ms",
                     result.ProductsAdded,
                     result.ProductsUpdated,
                     result.ProductsDeleted,
@@ -1757,8 +1651,598 @@ namespace BlazorApp.Api.Services.React
             }
             finally
             {
+                if (databaseLockAcquired)
+                {
+                    try
+                    {
+                        await ReleaseProductHqSyncDatabaseLockAsync();
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "释放商品HQ同步互斥锁失败");
+                    }
+                }
+
+                if (shouldCloseDatabaseLockConnection)
+                {
+                    _db.Ado.Connection.Close();
+                }
+
                 _db.Ado.CommandTimeOut = originalTimeout;
+                ProductHqSyncSemaphore.Release();
             }
+        }
+
+        private async Task<(bool Acquired, bool ShouldCloseConnection)> TryAcquireProductHqSyncDatabaseLockAsync()
+        {
+            if (_db.CurrentConnectionConfig.DbType != DbType.SqlServer)
+            {
+                return (true, false);
+            }
+
+            var shouldCloseConnection = _db.Ado.Connection.State != System.Data.ConnectionState.Open;
+            if (shouldCloseConnection)
+            {
+                _db.Ado.Connection.Open();
+            }
+
+            // SQL Server 会话锁用于防止多实例部署时重复触发同一类 HQ 商品同步。
+            try
+            {
+                var lockResult = await _db.Ado.SqlQuerySingleAsync<int>(
+                    """
+                    DECLARE @Result INT;
+                    EXEC @Result = sys.sp_getapplock
+                        @Resource = @Resource,
+                        @LockMode = N'Exclusive',
+                        @LockOwner = N'Session',
+                        @LockTimeout = 0;
+                    SELECT @Result;
+                    """,
+                    new SugarParameter("@Resource", ProductHqSyncLockResource)
+                );
+
+                if (lockResult < 0)
+                {
+                    if (shouldCloseConnection)
+                    {
+                        _db.Ado.Connection.Close();
+                    }
+
+                    return (false, false);
+                }
+
+                return (true, shouldCloseConnection);
+            }
+            catch
+            {
+                if (shouldCloseConnection)
+                {
+                    _db.Ado.Connection.Close();
+                }
+
+                throw;
+            }
+        }
+
+        private async Task ReleaseProductHqSyncDatabaseLockAsync()
+        {
+            if (_db.CurrentConnectionConfig.DbType != DbType.SqlServer)
+            {
+                return;
+            }
+
+            await _db.Ado.ExecuteCommandAsync(
+                """
+                EXEC sys.sp_releaseapplock
+                    @Resource = @Resource,
+                    @LockOwner = N'Session';
+                """,
+                new SugarParameter("@Resource", ProductHqSyncLockResource)
+            );
+        }
+
+        private async Task SyncTouchedProductAssociationsAsync(
+            List<Product> touchedProducts,
+            Dictionary<string, DIC_商品信息字典表> hqProductsByCode,
+            List<Store> activeStores,
+            DateTime now,
+            HqProductSyncResult result
+        )
+        {
+            var productCodes = touchedProducts
+                .Select(p => p.ProductCode)
+                .Where(code => !string.IsNullOrWhiteSpace(code))
+                .Select(code => code!)
+                .Distinct()
+                .ToList();
+
+            if (productCodes.Count == 0)
+            {
+                return;
+            }
+
+            var activeStoreCodes = activeStores
+                .Select(s => s.StoreCode)
+                .Where(code => !string.IsNullOrWhiteSpace(code))
+                .Select(code => code!)
+                .ToHashSet();
+
+            var hqRetailPrices = await _hqContext.Db.Queryable<DIC_商品零售价表>()
+                .Where(r =>
+                    productCodes.Contains(r.H商品编码)
+                    && r.H使用状态 == true
+                    && !string.IsNullOrEmpty(r.H分店代码)
+                )
+                .ToListAsync();
+            hqRetailPrices = hqRetailPrices
+                .Where(r => activeStoreCodes.Contains(r.H分店代码))
+                .ToList();
+
+            var hqMultiCodes = await _hqContext.Db.Queryable<DIC_分店一品多码表>()
+                .Where(m =>
+                    productCodes.Contains(m.H商品编码!)
+                    && m.H使用状态 == true
+                    && !string.IsNullOrEmpty(m.H分店代码)
+                )
+                .ToListAsync();
+            hqMultiCodes = hqMultiCodes
+                .Where(m => m.H分店代码 != null && activeStoreCodes.Contains(m.H分店代码))
+                .ToList();
+
+            await UpsertStoreRetailPricesAsync(productCodes, hqRetailPrices, now, result);
+            await UpsertStoreMultiCodesAsync(productCodes, hqMultiCodes, now, result);
+            await UpsertProductSetCodesAsync(productCodes, hqMultiCodes, now, result);
+        }
+
+        private async Task BulkInsertAsync<T>(List<T> rows, int pageSize)
+            where T : class, new()
+        {
+            if (rows.Count == 0)
+            {
+                return;
+            }
+
+            if (_db.CurrentConnectionConfig.DbType == DbType.SqlServer)
+            {
+                // HQ 同步写入量较大，SQL Server 使用 BulkCopy 避免生成超长 INSERT 语句导致超时。
+                await _db.Fastest<T>().PageSize(pageSize).BulkCopyAsync(rows);
+                return;
+            }
+
+            await _db.Insertable(rows).ExecuteCommandAsync();
+        }
+
+        private async Task BulkUpdateAsync<T>(List<T> rows, int pageSize)
+            where T : class, new()
+        {
+            if (rows.Count == 0)
+            {
+                return;
+            }
+
+            if (_db.CurrentConnectionConfig.DbType == DbType.SqlServer)
+            {
+                // 关联表一次可能触达多分店数据，BulkUpdate 可以降低长事务内的单条 SQL 压力。
+                await _db.Fastest<T>().PageSize(pageSize).BulkUpdateAsync(rows);
+                return;
+            }
+
+            await _db.Updateable(rows).ExecuteCommandAsync();
+        }
+
+        private async Task UpsertStoreRetailPricesAsync(
+            List<string> productCodes,
+            List<DIC_商品零售价表> hqRetailPrices,
+            DateTime now,
+            HqProductSyncResult result
+        )
+        {
+            var localRows = await _db.Queryable<StoreRetailPrice>()
+                .Where(row => productCodes.Contains(row.ProductCode!))
+                .ToListAsync();
+            var byGuid = localRows
+                .Where(row => !string.IsNullOrWhiteSpace(row.UUID))
+                .GroupBy(row => row.UUID)
+                .ToDictionary(group => group.Key, group => group.First());
+            var byBusinessKey = localRows
+                .Where(row =>
+                    !string.IsNullOrWhiteSpace(row.StoreCode)
+                    && !string.IsNullOrWhiteSpace(row.ProductCode)
+                )
+                .GroupBy(row => BuildKey(row.StoreCode, row.ProductCode))
+                .ToDictionary(group => group.Key, group => group.First());
+
+            var insertRows = new List<StoreRetailPrice>();
+            var updateRows = new List<StoreRetailPrice>();
+            var touchedIds = new HashSet<string>();
+
+            foreach (var hqRow in hqRetailPrices)
+            {
+                var businessKey = BuildKey(hqRow.H分店代码, hqRow.H商品编码);
+                var localRow = FindByGuidOrBusinessKey(hqRow.HGUID, byGuid, byBusinessKey, businessKey);
+
+                if (localRow == null)
+                {
+                    localRow = new StoreRetailPrice
+                    {
+                        UUID = NormalizeId(hqRow.HGUID) ?? UuidHelper.GenerateUuid7(),
+                        CreatedAt = now,
+                    };
+                    insertRows.Add(localRow);
+                }
+                else
+                {
+                    updateRows.Add(localRow);
+                }
+
+                await NormalizeStoreRetailPriceIdAsync(localRow, hqRow.HGUID, byGuid);
+                localRow.StoreCode = hqRow.H分店代码;
+                localRow.ProductCode = hqRow.H商品编码;
+                localRow.StoreProductCode = hqRow.H分店商品编码;
+                localRow.SupplierCode = hqRow.H供应商编码;
+                localRow.PurchasePrice = hqRow.H进货价;
+                localRow.StoreRetailPriceValue = hqRow.H分店零售价;
+                localRow.DiscountRate = hqRow.H折扣率;
+                localRow.IsActive = hqRow.H使用状态;
+                localRow.IsAutoPricing = hqRow.H是否自动定价;
+                localRow.IsSpecialProduct = hqRow.H是否特殊商品;
+                localRow.IsDeleted = false;
+                localRow.UpdatedAt = now;
+                touchedIds.Add(localRow.UUID);
+            }
+
+            var missingRows = localRows
+                .Where(row => !row.IsDeleted && !touchedIds.Contains(row.UUID))
+                .ToList();
+            foreach (var row in missingRows)
+            {
+                row.IsDeleted = true;
+                row.UpdatedAt = now;
+                updateRows.Add(row);
+            }
+
+            if (insertRows.Count > 0)
+            {
+                await BulkInsertAsync(insertRows, ProductHqSyncWriteBatchSize);
+                result.StoreRetailPricesCreated += insertRows.Count;
+            }
+            if (updateRows.Count > 0)
+            {
+                await BulkUpdateAsync(updateRows, ProductHqSyncWriteBatchSize);
+                result.StoreRetailPricesDeleted += missingRows.Count;
+            }
+        }
+
+        private async Task UpsertStoreMultiCodesAsync(
+            List<string> productCodes,
+            List<DIC_分店一品多码表> hqMultiCodes,
+            DateTime now,
+            HqProductSyncResult result
+        )
+        {
+            var localRows = await _db.Queryable<StoreMultiCodeProduct>()
+                .Where(row => productCodes.Contains(row.ProductCode!))
+                .ToListAsync();
+            var byGuid = localRows
+                .Where(row => !string.IsNullOrWhiteSpace(row.UUID))
+                .GroupBy(row => row.UUID)
+                .ToDictionary(group => group.Key, group => group.First());
+            var byBusinessKey = localRows
+                .Where(row =>
+                    !string.IsNullOrWhiteSpace(row.StoreCode)
+                    && !string.IsNullOrWhiteSpace(row.ProductCode)
+                    && !string.IsNullOrWhiteSpace(row.MultiBarcode)
+                )
+                .GroupBy(row => BuildKey(row.StoreCode, row.ProductCode, row.MultiBarcode))
+                .ToDictionary(group => group.Key, group => group.First());
+            var deletedFallbackByProductStore = localRows
+                .Where(row =>
+                    row.IsDeleted
+                    && !string.IsNullOrWhiteSpace(row.StoreCode)
+                    && !string.IsNullOrWhiteSpace(row.ProductCode)
+                )
+                .GroupBy(row => BuildKey(row.StoreCode, row.ProductCode))
+                .Where(group => group.Count() == 1)
+                .ToDictionary(group => group.Key, group => group.First());
+
+            var insertRows = new List<StoreMultiCodeProduct>();
+            var updateRows = new List<StoreMultiCodeProduct>();
+            var touchedIds = new HashSet<string>();
+
+            foreach (var hqRow in hqMultiCodes)
+            {
+                var businessKey = BuildKey(hqRow.H分店代码, hqRow.H商品编码, hqRow.H多条形码);
+                var localRow = FindByGuidOrBusinessKey(hqRow.HGUID, byGuid, byBusinessKey, businessKey);
+                var productCode = hqRow.H商品编码 ?? string.Empty;
+                if (
+                    localRow == null
+                    && deletedFallbackByProductStore.TryGetValue(
+                        BuildKey(hqRow.H分店代码, productCode),
+                        out var deletedFallback
+                    )
+                )
+                {
+                    // 软删恢复场景下 HQ 可能同时修正条码，兜底复用唯一旧行避免重复插入。
+                    localRow = deletedFallback;
+                }
+
+                if (localRow == null)
+                {
+                    localRow = new StoreMultiCodeProduct
+                    {
+                        UUID = NormalizeId(hqRow.HGUID) ?? UuidHelper.GenerateUuid7(),
+                        CreatedAt = now,
+                    };
+                    insertRows.Add(localRow);
+                }
+                else
+                {
+                    updateRows.Add(localRow);
+                }
+
+                await NormalizeStoreMultiCodeIdAsync(localRow, hqRow.HGUID, byGuid);
+                localRow.StoreCode = hqRow.H分店代码;
+                localRow.ProductCode = productCode;
+                localRow.MultiCodeProductCode = ResolveMultiCodeProductCode(hqRow, productCode);
+                localRow.StoreMultiCodeProductCode = hqRow.H分店多码商品编码;
+                localRow.MultiBarcode = hqRow.H多条形码;
+                localRow.PurchasePrice = hqRow.H进货价;
+                localRow.MultiCodeRetailPrice = hqRow.H一品多码零售价;
+                localRow.DiscountRate = hqRow.H折扣率;
+                localRow.IsActive = hqRow.H使用状态 ?? true;
+                localRow.IsAutoPricing = hqRow.H是否自动定价 ?? false;
+                localRow.IsSpecialProduct = hqRow.H是否特殊商品 ?? false;
+                localRow.IsDeleted = false;
+                localRow.UpdatedAt = now;
+                touchedIds.Add(localRow.UUID);
+            }
+
+            var missingRows = localRows
+                .Where(row => !row.IsDeleted && !touchedIds.Contains(row.UUID))
+                .ToList();
+            foreach (var row in missingRows)
+            {
+                row.IsDeleted = true;
+                row.UpdatedAt = now;
+                updateRows.Add(row);
+            }
+
+            if (insertRows.Count > 0)
+            {
+                await BulkInsertAsync(insertRows, ProductHqSyncWriteBatchSize);
+                result.StoreMultiCodesCreated += insertRows.Count;
+            }
+            if (updateRows.Count > 0)
+            {
+                await BulkUpdateAsync(updateRows, ProductHqSyncWriteBatchSize);
+                result.StoreMultiCodesDeleted += missingRows.Count;
+            }
+        }
+
+        private async Task UpsertProductSetCodesAsync(
+            List<string> productCodes,
+            List<DIC_分店一品多码表> hqMultiCodes,
+            DateTime now,
+            HqProductSyncResult result
+        )
+        {
+            var localRows = await _db.Queryable<ProductSetCode>()
+                .Where(row => productCodes.Contains(row.ProductCode))
+                .ToListAsync();
+            var byGuid = localRows
+                .Where(row => !string.IsNullOrWhiteSpace(row.SetCodeId))
+                .GroupBy(row => row.SetCodeId)
+                .ToDictionary(group => group.Key, group => group.First());
+            var byBusinessKey = localRows
+                .Where(row =>
+                    !string.IsNullOrWhiteSpace(row.ProductCode)
+                    && !string.IsNullOrWhiteSpace(row.SetBarcode)
+                    && !string.IsNullOrWhiteSpace(row.SetProductCode)
+                )
+                .GroupBy(row => BuildKey(row.ProductCode, row.SetBarcode, row.SetProductCode))
+                .ToDictionary(group => group.Key, group => group.First());
+            var deletedFallbackByProduct = localRows
+                .Where(row => row.IsDeleted && !string.IsNullOrWhiteSpace(row.ProductCode))
+                .GroupBy(row => row.ProductCode)
+                .Where(group => group.Count() == 1)
+                .ToDictionary(group => group.Key, group => group.First());
+
+            var insertRows = new List<ProductSetCode>();
+            var updateRows = new List<ProductSetCode>();
+            var touchedIds = new HashSet<string>();
+
+            foreach (var hqRow in hqMultiCodes)
+            {
+                var productCode = hqRow.H商品编码 ?? string.Empty;
+                var setProductCode = ResolveMultiCodeProductCode(hqRow, productCode);
+                var businessKey = BuildKey(productCode, hqRow.H多条形码, setProductCode);
+                var localRow = FindByGuidOrBusinessKey(hqRow.HGUID, byGuid, byBusinessKey, businessKey);
+                if (
+                    localRow == null
+                    && deletedFallbackByProduct.TryGetValue(productCode, out var deletedFallback)
+                )
+                {
+                    // 软删恢复场景下 HQ 可能同时修正套装条码，兜底复用唯一旧行避免重复插入。
+                    localRow = deletedFallback;
+                }
+
+                if (localRow == null)
+                {
+                    localRow = new ProductSetCode
+                    {
+                        SetCodeId = NormalizeId(hqRow.HGUID) ?? UuidHelper.GenerateUuid7(),
+                        CreatedAt = now,
+                    };
+                    insertRows.Add(localRow);
+                }
+                else
+                {
+                    updateRows.Add(localRow);
+                }
+
+                await NormalizeProductSetCodeIdAsync(localRow, hqRow.HGUID, byGuid);
+                localRow.ProductCode = productCode;
+                localRow.SetProductCode = setProductCode;
+                localRow.SetItemNumber = hqRow.H多码商品编码 ?? string.Empty;
+                localRow.SetBarcode = hqRow.H多条形码;
+                localRow.SetPurchasePrice = hqRow.H进货价;
+                localRow.SetRetailPrice = hqRow.H一品多码零售价;
+                localRow.SetType = 2;
+                localRow.SetQuantity = localRow.SetQuantity <= 0 ? 1 : localRow.SetQuantity;
+                localRow.IsActive = hqRow.H使用状态 ?? true;
+                localRow.IsDeleted = false;
+                localRow.UpdatedAt = now;
+                touchedIds.Add(localRow.SetCodeId);
+            }
+
+            var missingRows = localRows
+                .Where(row => !row.IsDeleted && !touchedIds.Contains(row.SetCodeId))
+                .ToList();
+            foreach (var row in missingRows)
+            {
+                row.IsDeleted = true;
+                row.UpdatedAt = now;
+                updateRows.Add(row);
+            }
+
+            if (insertRows.Count > 0)
+            {
+                await BulkInsertAsync(insertRows, ProductHqSyncWriteBatchSize);
+                result.ProductSetCodesCreated += insertRows.Count;
+            }
+            if (updateRows.Count > 0)
+            {
+                await BulkUpdateAsync(updateRows, ProductHqSyncWriteBatchSize);
+                result.ProductSetCodesDeleted += missingRows.Count;
+            }
+        }
+
+        private static T? FindByGuidOrBusinessKey<T>(
+            string? hguid,
+            Dictionary<string, T> byGuid,
+            Dictionary<string, T> byBusinessKey,
+            string businessKey
+        )
+            where T : class
+        {
+            var normalizedGuid = NormalizeId(hguid);
+            if (normalizedGuid != null && byGuid.TryGetValue(normalizedGuid, out var guidMatch))
+            {
+                return guidMatch;
+            }
+
+            return byBusinessKey.TryGetValue(businessKey, out var businessMatch)
+                ? businessMatch
+                : null;
+        }
+
+        private async Task NormalizeStoreRetailPriceIdAsync(
+            StoreRetailPrice localRow,
+            string? hguid,
+            Dictionary<string, StoreRetailPrice> byGuid
+        )
+        {
+            var normalizedGuid = NormalizeId(hguid);
+            if (
+                normalizedGuid == null
+                || localRow.UUID == normalizedGuid
+                || byGuid.ContainsKey(normalizedGuid)
+            )
+            {
+                return;
+            }
+
+            var oldId = localRow.UUID;
+            await _db.Ado.ExecuteCommandAsync(
+                "UPDATE [StoreRetailPrice] SET [UUID] = @NewId WHERE [UUID] = @OldId",
+                new SugarParameter("@NewId", normalizedGuid),
+                new SugarParameter("@OldId", oldId)
+            );
+            localRow.UUID = normalizedGuid;
+            byGuid[normalizedGuid] = localRow;
+        }
+
+        private async Task NormalizeStoreMultiCodeIdAsync(
+            StoreMultiCodeProduct localRow,
+            string? hguid,
+            Dictionary<string, StoreMultiCodeProduct> byGuid
+        )
+        {
+            var normalizedGuid = NormalizeId(hguid);
+            if (
+                normalizedGuid == null
+                || localRow.UUID == normalizedGuid
+                || byGuid.ContainsKey(normalizedGuid)
+            )
+            {
+                return;
+            }
+
+            var oldId = localRow.UUID;
+            await _db.Ado.ExecuteCommandAsync(
+                "UPDATE [StoreMultiCodeProduct] SET [UUID] = @NewId WHERE [UUID] = @OldId",
+                new SugarParameter("@NewId", normalizedGuid),
+                new SugarParameter("@OldId", oldId)
+            );
+            localRow.UUID = normalizedGuid;
+            byGuid[normalizedGuid] = localRow;
+        }
+
+        private async Task NormalizeProductSetCodeIdAsync(
+            ProductSetCode localRow,
+            string? hguid,
+            Dictionary<string, ProductSetCode> byGuid
+        )
+        {
+            var normalizedGuid = NormalizeId(hguid);
+            if (
+                normalizedGuid == null
+                || localRow.SetCodeId == normalizedGuid
+                || byGuid.ContainsKey(normalizedGuid)
+            )
+            {
+                return;
+            }
+
+            var oldId = localRow.SetCodeId;
+            await _db.Ado.ExecuteCommandAsync(
+                "UPDATE [ProductSetCode] SET [SetCodeId] = @NewId WHERE [SetCodeId] = @OldId",
+                new SugarParameter("@NewId", normalizedGuid),
+                new SugarParameter("@OldId", oldId)
+            );
+            localRow.SetCodeId = normalizedGuid;
+            byGuid[normalizedGuid] = localRow;
+        }
+
+        private static string ResolveMultiCodeProductCode(
+            DIC_分店一品多码表 hqRow,
+            string fallbackProductCode
+        )
+        {
+            return !string.IsNullOrWhiteSpace(hqRow.H多码商品编码)
+                ? hqRow.H多码商品编码!
+                : fallbackProductCode;
+        }
+
+        private static string BuildKey(params string?[] parts)
+        {
+            return string.Join("\u001F", parts.Select(part => part ?? string.Empty));
+        }
+
+        private static string? NormalizeId(string? value)
+        {
+            return string.IsNullOrWhiteSpace(value) ? null : value;
+        }
+
+        private static string? Truncate(string? value, int maxLength)
+        {
+            if (string.IsNullOrEmpty(value))
+            {
+                return value;
+            }
+
+            return value.Length <= maxLength ? value : value[..maxLength];
         }
 
         #endregion

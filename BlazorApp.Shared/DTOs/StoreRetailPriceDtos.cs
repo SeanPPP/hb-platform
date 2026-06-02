@@ -152,10 +152,15 @@ namespace BlazorApp.Shared.DTOs
     {
         public List<string>? SelectedStoreCodes { get; set; }
         public DateTime? StartDate { get; set; }
+        public DateTime? EndDate { get; set; }
     }
 
     public class SyncRetailPriceFromHqResult
     {
+        public string RequestId { get; set; } = string.Empty;
+        public string Status { get; set; } = string.Empty;
+        public DateTime StartedAt { get; set; }
+        public DateTime? CompletedAt { get; set; }
         public int AddedCount { get; set; }
         public int UpdatedCount { get; set; }
         public int TotalProcessed { get; set; }

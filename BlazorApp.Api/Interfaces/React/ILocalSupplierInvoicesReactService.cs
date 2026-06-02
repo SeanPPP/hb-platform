@@ -28,7 +28,7 @@ namespace BlazorApp.Api.Interfaces.React
             List<InvoiceDetailUpsertItemDto> items,
             string updatedBy
         );
-        Task<ApiResponse<BatchResultDto>> UpdateDetailsToStorePricesAsync(
+        Task<ApiResponse<UpdateToStorePricesResultDto>> UpdateDetailsToStorePricesAsync(
             UpdateToStorePricesRequest dto,
             string updatedBy
         );
@@ -63,6 +63,7 @@ namespace BlazorApp.Api.Interfaces.React
             string productCode
         );
         Task<ApiResponse<InvoiceNoCheckResult>> CheckInvoiceNoExistsAsync(
+            string storeCode,
             string supplierCode,
             string invoiceNo
         );

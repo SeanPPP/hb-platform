@@ -15,15 +15,21 @@ namespace BlazorApp.Api.Controllers.React
     public class ReactLocalSupplierInvoicesController : ControllerBase
     {
         private readonly ILocalSupplierInvoicesReactService _service;
+        private readonly ILocalSupplierInvoiceHqSyncService _hqSyncService;
+        private readonly ILocalSupplierInvoiceHqProductSyncService? _hqProductSyncService;
         private readonly SqlSugarContext _dbContext;
 
         public ReactLocalSupplierInvoicesController(
             ILocalSupplierInvoicesReactService service,
-            SqlSugarContext dbContext
+            SqlSugarContext dbContext,
+            ILocalSupplierInvoiceHqSyncService hqSyncService,
+            ILocalSupplierInvoiceHqProductSyncService? hqProductSyncService = null
         )
         {
             _service = service;
             _dbContext = dbContext;
+            _hqSyncService = hqSyncService;
+            _hqProductSyncService = hqProductSyncService;
         }
 
         private bool IsFullStoreAccessUser()
@@ -93,6 +99,43 @@ namespace BlazorApp.Api.Controllers.React
 
             var userStoreCodes = await GetCurrentUserStoreCodesAsync();
             return userStoreCodes.Contains(storeCode);
+        }
+
+        private async Task<bool> CanAccessAllStoresAsync(IEnumerable<string?> storeCodes)
+        {
+            if (IsFullStoreAccessUser())
+                return true;
+
+            var requestedStoreCodes = storeCodes
+                .Where(code => !string.IsNullOrWhiteSpace(code))
+                .Select(code => code!)
+                .Distinct()
+                .ToList();
+            if (!requestedStoreCodes.Any())
+                return false;
+
+            var userStoreCodes = await GetCurrentUserStoreCodesAsync();
+            return requestedStoreCodes.All(userStoreCodes.Contains);
+        }
+
+        private async Task<bool> CanAccessAllEnabledStoresAsync()
+        {
+            if (IsFullStoreAccessUser())
+                return true;
+
+            var activeStoreCodes = await _dbContext.Db.Queryable<Store>()
+                .Where(store => store.IsActive == true && store.IsDeleted == false)
+                .Select(store => store.StoreCode)
+                .ToListAsync();
+            activeStoreCodes = activeStoreCodes
+                .Where(code => !string.IsNullOrWhiteSpace(code))
+                .Distinct()
+                .ToList();
+            if (!activeStoreCodes.Any())
+                return false;
+
+            var userStoreCodes = await GetCurrentUserStoreCodesAsync();
+            return activeStoreCodes.All(userStoreCodes.Contains);
         }
 
         [HttpPost("grid")]
@@ -229,6 +272,8 @@ namespace BlazorApp.Api.Controllers.React
         {
             if (!await CanAccessInvoiceAsync(invoiceGuid))
                 return Forbid();
+            if (!string.IsNullOrWhiteSpace(dto.StoreCode) && !await CanAccessStoreAsync(dto.StoreCode))
+                return Forbid();
 
             var result = await _service.UpdateAsync(invoiceGuid, dto);
             if (result.Success)
@@ -338,6 +383,10 @@ namespace BlazorApp.Api.Controllers.React
         {
             if (!await CanAccessInvoiceAsync(dto.InvoiceGuid))
                 return Forbid();
+            if (dto.TargetStoreCodes == null || !await CanAccessAllStoresAsync(dto.TargetStoreCodes))
+                return Forbid();
+            if (dto.UpdateHqProduct && !await CanAccessAllEnabledStoresAsync())
+                return Forbid();
 
             var user = User.Identity?.Name ?? "system";
             var result = await _service.UpdateDetailsToStorePricesAsync(dto, user);
@@ -350,11 +399,18 @@ namespace BlazorApp.Api.Controllers.React
                         message = result.Message,
                     }
                 );
-            return BadRequest(new { success = false, message = result.Message });
+            return BadRequest(
+                new
+                {
+                    success = false,
+                    message = result.Message,
+                    details = result.Details ?? result.Data,
+                }
+            );
         }
 
         [HttpPost("check-products")]
-        [Authorize(Policy = Permissions.LocalPurchase.View)]
+        [Authorize(Policy = Permissions.LocalPurchase.Edit)]
         public async Task<IActionResult> CheckProducts([FromBody] CheckProductsRequest dto)
         {
             if (!await CanAccessInvoiceAsync(dto.InvoiceGuid))
@@ -371,6 +427,43 @@ namespace BlazorApp.Api.Controllers.React
                     }
                 );
             return BadRequest(new { success = false, message = result.Message });
+        }
+
+        [HttpPost("{invoiceGuid}/details/ensure-hq-products")]
+        [Authorize(Policy = Permissions.LocalPurchase.Edit)]
+        public async Task<IActionResult> EnsureHqProducts(
+            [FromRoute] string invoiceGuid,
+            [FromBody] EnsureHqProductsRequest dto
+        )
+        {
+            if (!await CanAccessInvoiceAsync(invoiceGuid))
+                return Forbid();
+            if (dto.TargetStoreCodes == null || !await CanAccessAllStoresAsync(dto.TargetStoreCodes))
+                return Forbid();
+            if (!await CanAccessAllEnabledStoresAsync())
+                return Forbid();
+            if (_hqProductSyncService == null)
+                return BadRequest(new { success = false, message = "HQ商品同步服务未注册" });
+
+            var user = User.Identity?.Name ?? "system";
+            var result = await _hqProductSyncService.EnsureHqProductsAsync(invoiceGuid, dto, user);
+            if (result.Success)
+                return Ok(
+                    new
+                    {
+                        success = true,
+                        data = result.Data,
+                        message = result.Message,
+                    }
+                );
+            return BadRequest(
+                new
+                {
+                    success = false,
+                    message = result.Message,
+                    details = result.Details ?? result.Data,
+                }
+            );
         }
 
         [HttpPost("{invoiceGuid}/details/paste")]
@@ -536,7 +629,10 @@ namespace BlazorApp.Api.Controllers.React
         [Authorize(Policy = Permissions.LocalPurchase.Edit)]
         public async Task<IActionResult> CheckInvoiceNoExists([FromBody] CheckInvoiceNoExistsRequest dto)
         {
-            var result = await _service.CheckInvoiceNoExistsAsync(dto.SupplierCode, dto.InvoiceNo);
+            if (!await CanAccessStoreAsync(dto.StoreCode))
+                return Forbid();
+
+            var result = await _service.CheckInvoiceNoExistsAsync(dto.StoreCode, dto.SupplierCode, dto.InvoiceNo);
             if (result.Success)
                 return Ok(
                     new
@@ -563,7 +659,7 @@ namespace BlazorApp.Api.Controllers.React
             var result = await _service.BatchExecuteActionsAsync(invoiceGuid, dto.DetailGuids, user);
             if (result.Success)
                 return Ok(new { success = true, data = result.Data, message = result.Message });
-            return BadRequest(new { success = false, message = result.Message });
+            return BadRequest(new { success = false, message = result.Message, code = result.Code, details = result.Details });
         }
 
         [HttpPost("push-to-hq")]
@@ -574,6 +670,11 @@ namespace BlazorApp.Api.Controllers.React
             {
                 if (request.InvoiceGuids == null || !request.InvoiceGuids.Any())
                     return BadRequest(new { success = false, message = "请选择要推送的进货单" });
+                foreach (var invoiceGuid in request.InvoiceGuids)
+                {
+                    if (!await CanAccessInvoiceAsync(invoiceGuid))
+                        return Forbid();
+                }
 
                 var result = await _service.PushInvoicesToHqAsync(request.InvoiceGuids);
                 if (result.IsSuccess)
@@ -584,6 +685,32 @@ namespace BlazorApp.Api.Controllers.React
             {
                 return StatusCode(500, ApiResponse<SyncResult>.Error($"推送异常: {ex.Message}", "INTERNAL_ERROR"));
             }
+        }
+
+        [HttpPost("sync-from-hq")]
+        [Authorize(Roles = "Admin,管理员")]
+        public async Task<IActionResult> SyncFromHq([FromBody] LocalSupplierInvoiceHqSyncRequest? request)
+        {
+            request ??= new LocalSupplierInvoiceHqSyncRequest();
+
+            if (request.EndDate.HasValue
+                && request.StartDate.HasValue
+                && request.EndDate.Value < request.StartDate.Value)
+            {
+                return BadRequest(
+                    ApiResponse<LocalSupplierInvoiceHqSyncResult>.Error(
+                        "结束日期不能早于起始日期",
+                        "INVALID_DATE_RANGE"
+                    )
+                );
+            }
+
+            var result = await _hqSyncService.SyncForPageAsync(
+                request.SelectedStoreCodes,
+                request.StartDate,
+                request.EndDate
+            );
+            return result.Success ? Ok(result) : BadRequest(result);
         }
     }
 }

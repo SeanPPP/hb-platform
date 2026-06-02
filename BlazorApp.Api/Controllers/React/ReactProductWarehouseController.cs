@@ -8,6 +8,7 @@ using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Api.Services;
 using BlazorApp.Shared.DTOs;
+using BlazorApp.Shared.Models;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
@@ -624,6 +625,30 @@ namespace BlazorApp.Api.Controllers.React
             {
                 _logger.LogError(ex, "仓库商品批量上下架失败");
                 return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
+        /// <summary>
+        /// 从 HQ 全量同步仓库商品库存
+        /// </summary>
+        [HttpPost("sync-from-hq")]
+        [Authorize(Roles = "Admin")]
+        public async Task<IActionResult> SyncFromHq()
+        {
+            try
+            {
+                // 这里返回统一响应，便于前端沿用现有同步结果处理。
+                var result = await _service.SyncFromHqAsync();
+                var message = result.IsSuccess ? "仓库商品同步成功" : "仓库商品同步完成，但存在错误";
+                return Ok(ApiResponse<SyncResult>.OK(result, message));
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "从HQ同步仓库商品库存失败");
+                return StatusCode(
+                    500,
+                    ApiResponse<SyncResult>.Error("仓库商品同步异常", "INTERNAL_ERROR")
+                );
             }
         }
 

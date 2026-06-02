@@ -21,18 +21,21 @@ namespace BlazorApp.Api.Services.React
         private readonly HqSqlSugarContext _hqContext;
         private readonly IStoreRetailPriceRepository _storeRetailPriceRepository;
         private readonly ILogger<StoreRetailPriceReactService> _logger;
+        private readonly IStoreRetailPriceHqSyncService _hqSyncService;
 
         public StoreRetailPriceReactService(
             SqlSugarContext context,
             HqSqlSugarContext hqContext,
             IStoreRetailPriceRepository storeRetailPriceRepository,
-            ILogger<StoreRetailPriceReactService> logger
+            ILogger<StoreRetailPriceReactService> logger,
+            IStoreRetailPriceHqSyncService hqSyncService
         )
         {
             _context = context;
             _hqContext = hqContext;
             _storeRetailPriceRepository = storeRetailPriceRepository;
             _logger = logger;
+            _hqSyncService = hqSyncService;
         }
 
         public async Task<GridResponseDto<StoreRetailPriceListDto>> GetGridDataAsync(
@@ -1601,142 +1604,11 @@ namespace BlazorApp.Api.Services.React
 
         public async Task<ApiResponse<SyncRetailPriceFromHqResult>> SyncFromHqAsync(
             List<string>? storeCodes,
-            DateTime? startDate
+            DateTime? startDate,
+            DateTime? endDate = null
         )
         {
-            var sw = Stopwatch.StartNew();
-            var result = new SyncRetailPriceFromHqResult();
-            var db = _context.Db;
-            var originalTimeout = db.Ado.CommandTimeOut;
-            db.Ado.CommandTimeOut = 300;
-
-            try
-            {
-                var effectiveStartDate = startDate ?? DateTime.Now.AddDays(-30);
-                _logger.LogInformation(
-                    "开始从HQ增量同步零售价，起始日期: {StartDate}，指定分店: {StoreCount}",
-                    effectiveStartDate,
-                    storeCodes?.Count ?? 0
-                );
-
-                _hqContext.CheckConnection();
-
-                var activeStoreCodes = await db.Queryable<Store>()
-                    .Where(s => s.IsActive && !s.IsDeleted)
-                    .Select(s => s.StoreCode!)
-                    .ToListAsync();
-
-                var targetStoreCodes = (storeCodes != null && storeCodes.Any())
-                    ? storeCodes.Intersect(activeStoreCodes).ToList()
-                    : activeStoreCodes;
-
-                var hqQuery = _hqContext
-                    .DIC_商品零售价表Db.AsQueryable()
-                    .Where(r =>
-                        r.H使用状态 == true
-                        && r.FGC_LastModifyDate >= effectiveStartDate
-                        && targetStoreCodes.Contains(r.H分店代码)
-                    );
-
-                var hqPrices = await hqQuery.ToListAsync();
-                _logger.LogInformation("HQ查询到 {Count} 条零售价记录", hqPrices.Count);
-
-                if (!hqPrices.Any())
-                {
-                    return ApiResponse<SyncRetailPriceFromHqResult>.OK(result);
-                }
-
-                var hqStoreCodes = hqPrices.Select(r => r.H分店代码).Distinct().ToList();
-                var hqProductCodes = hqPrices.Select(r => r.H商品编码).Distinct().ToList();
-
-                var existingDict = new Dictionary<(string, string), StoreRetailPrice>();
-                foreach (var storeBatch in hqStoreCodes.Chunk(100))
-                {
-                    var batch = await db.Queryable<StoreRetailPrice>()
-                        .Where(p =>
-                            storeBatch.Contains(p.StoreCode!)
-                            && !p.IsDeleted
-                            && hqProductCodes.Contains(p.ProductCode!)
-                        )
-                        .ToListAsync();
-                    foreach (var item in batch)
-                    {
-                        if (item.StoreCode != null && item.ProductCode != null)
-                            existingDict[(item.StoreCode, item.ProductCode)] = item;
-                    }
-                }
-
-                var toAdd = new List<StoreRetailPrice>();
-                var toUpdate = new List<StoreRetailPrice>();
-                var now = DateTime.UtcNow;
-
-                foreach (var hq in hqPrices)
-                {
-                    var key = (hq.H分店代码, hq.H商品编码);
-                    var entity = MapHqToLocal(hq, now);
-
-                    if (existingDict.TryGetValue(key, out var existing))
-                    {
-                        if (hq.FGC_LastModifyDate > (existing.UpdatedAt ?? DateTime.MinValue))
-                        {
-                            existing.StoreProductCode = entity.StoreProductCode;
-                            existing.SupplierCode = entity.SupplierCode;
-                            existing.PurchasePrice = entity.PurchasePrice;
-                            existing.StoreRetailPriceValue = entity.StoreRetailPriceValue;
-                            existing.DiscountRate = entity.DiscountRate;
-                            existing.IsAutoPricing = entity.IsAutoPricing;
-                            existing.IsSpecialProduct = entity.IsSpecialProduct;
-                            existing.IsActive = true;
-                            existing.UpdatedAt = now;
-                            toUpdate.Add(existing);
-                        }
-                    }
-                    else
-                    {
-                        toAdd.Add(entity);
-                    }
-                }
-
-                const int batchSize = 1000;
-                foreach (var batch in toAdd.Chunk(batchSize))
-                {
-                    await db.Insertable(batch.ToList()).ExecuteCommandAsync();
-                }
-                result.AddedCount = toAdd.Count;
-
-                foreach (var batch in toUpdate.Chunk(batchSize))
-                {
-                    await db.Updateable(batch.ToList()).ExecuteCommandAsync();
-                }
-                result.UpdatedCount = toUpdate.Count;
-
-                result.TotalProcessed = toAdd.Count + toUpdate.Count;
-                sw.Stop();
-                result.DurationMs = sw.ElapsedMilliseconds;
-
-                _logger.LogInformation(
-                    "HQ零售价同步完成：新增 {Added}，更新 {Updated}，耗时 {Ms}ms",
-                    result.AddedCount,
-                    result.UpdatedCount,
-                    result.DurationMs
-                );
-
-                return ApiResponse<SyncRetailPriceFromHqResult>.OK(result);
-            }
-            catch (Exception ex)
-            {
-                sw.Stop();
-                result.DurationMs = sw.ElapsedMilliseconds;
-                result.Errors.Add(ex.Message);
-                _logger.LogError(ex, "从HQ同步零售价失败");
-                return ApiResponse<SyncRetailPriceFromHqResult>.Error(
-                    "从HQ同步零售价失败: " + ex.Message
-                );
-            }
-            finally
-            {
-                db.Ado.CommandTimeOut = originalTimeout;
-            }
+            return await _hqSyncService.SyncForPageAsync(storeCodes, startDate, endDate);
         }
 
         private static StoreRetailPrice MapHqToLocal(DIC_商品零售价表 hq, DateTime now)
@@ -1747,10 +1619,10 @@ namespace BlazorApp.Api.Services.React
                 StoreCode = hq.H分店代码,
                 ProductCode = hq.H商品编码,
                 StoreProductCode = hq.H分店商品编码,
-                SupplierCode = hq.H分店供应商编码,
+                SupplierCode = hq.H供应商编码,
                 PurchasePrice = hq.H进货价,
                 StoreRetailPriceValue = hq.H分店零售价,
-                DiscountRate = hq.H动态销售数量 > 0 ? (decimal?)hq.H动态销售数量 : null,
+                DiscountRate = hq.H折扣率,
                 IsActive = hq.H使用状态,
                 IsAutoPricing = hq.H是否自动定价,
                 IsSpecialProduct = hq.H是否特殊商品,

@@ -180,14 +180,47 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPost("sync-from-hq")]
-        [Authorize(Roles = "Admin")]
-        public async Task<IActionResult> SyncFromHq([FromBody] SyncRetailPriceFromHqRequest request)
+        [Authorize(Roles = "Admin,管理员")]
+        public async Task<IActionResult> SyncFromHq([FromBody] SyncRetailPriceFromHqRequest? request)
         {
+            request ??= new SyncRetailPriceFromHqRequest();
+
+            if (request.SelectedStoreCodes?.Any(x => !string.IsNullOrWhiteSpace(x)) != true)
+            {
+                return BadRequest(
+                    ApiResponse<SyncRetailPriceFromHqResult>.Error(
+                        "请选择分店",
+                        "INVALID_STORE_SCOPE"
+                    )
+                );
+            }
+
+            if (!request.StartDate.HasValue || !request.EndDate.HasValue)
+            {
+                return BadRequest(
+                    ApiResponse<SyncRetailPriceFromHqResult>.Error(
+                        "请选择起止日期",
+                        "INVALID_DATE_RANGE"
+                    )
+                );
+            }
+
+            if (request.EndDate.Value < request.StartDate.Value)
+            {
+                return BadRequest(
+                    ApiResponse<SyncRetailPriceFromHqResult>.Error(
+                        "结束日期不能早于起始日期",
+                        "INVALID_DATE_RANGE"
+                    )
+                );
+            }
+
             var result = await _retailPriceService.SyncFromHqAsync(
                 request.SelectedStoreCodes,
-                request.StartDate
+                request.StartDate,
+                request.EndDate
             );
-            return Ok(result);
+            return result.Success ? Ok(result) : BadRequest(result);
         }
 
         private async Task<bool> CanAccessSyncStoresAsync(string? sourceStoreCode, IEnumerable<string>? targetStoreCodes)

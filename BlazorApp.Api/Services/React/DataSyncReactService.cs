@@ -11,6 +11,7 @@ namespace BlazorApp.Api.Services.React
     {
         private readonly IDataSyncFullService _fullSyncService; // 全量同步服务
         private readonly IDataSyncIncrementalService _incrementalSyncService; // 增量同步服务
+        private readonly IContainerHqSyncService _containerHqSyncService; // 货柜 HQ 同步核心
         private readonly ILogger<DataSyncReactService> _logger;
 
         /// <summary>
@@ -19,11 +20,13 @@ namespace BlazorApp.Api.Services.React
         public DataSyncReactService(
             IDataSyncFullService fullSyncService,
             IDataSyncIncrementalService incrementalSyncService,
+            IContainerHqSyncService containerHqSyncService,
             ILogger<DataSyncReactService> logger
         )
         {
             _fullSyncService = fullSyncService;
             _incrementalSyncService = incrementalSyncService;
+            _containerHqSyncService = containerHqSyncService;
             _logger = logger;
         }
 
@@ -361,6 +364,18 @@ namespace BlazorApp.Api.Services.React
         public async Task<SyncResult> SyncStoreLocalSupplierInvoicesFromHqIncrementalAsync()
         {
             return await _incrementalSyncService.SyncStoreLocalSupplierInvoicesFromHqIncrementalAsync();
+        }
+
+        /// <summary>
+        /// 货柜主表+明细同步组合门面。
+        /// 后台同步入口统一委托货柜 HQ 同步核心，避免前后端链路各自实现。
+        /// </summary>
+        public async Task<SyncResult> SyncContainersWithDetailsFromHqAsync(
+            DateTime? startDate = null
+        )
+        {
+            _logger.LogInformation("[ContainerSyncFacade] 开始同步货柜主表和明细，开始日期: {StartDate}", startDate);
+            return await _containerHqSyncService.SyncIncrementalAsync(startDate);
         }
 
         /// <summary>
