@@ -5,9 +5,12 @@
     "label": "当前分店",
     "value": "{{name}} ({{code}})",
     "empty": "尚未选择分店",
-    "allRelated": "全部相关分店",
+    "allRelated": "全部已分配分店",
     "select": "选择分店",
-    "helper": "请选择要管理的分店；选择全部相关分店可查看当前账号可管理范围内的所有店员。"
+    "helper": "请选择要查看的已分配分店；只有可管理分店允许新增、编辑、停用和重置密码。",
+    "readOnlyHelper": "当前分店仅可查看，不能新增或修改店员。",
+    "manageableBadge": "可管理",
+    "viewOnlyBadge": "仅查看"
   },
   "actions": {
     "refresh": "刷新",
@@ -135,11 +138,13 @@
     "statusConfirmMessage": "确认要{{action}} {{username}} 吗？"
   },
   "messages": {
-    "noAccessTitle": "暂无店员管理权限",
-    "noAccessDescription": "当前账号没有维护分店店员的权限。",
+    "noAccessTitle": "暂无店员查看权限",
+    "noAccessDescription": "当前账号没有查看分店店员的权限。",
     "selectStoreTitle": "请先选择当前分店",
     "selectStoreDescription": "选择分店后，才能查看和维护该分店的店员账号。",
     "selectStoreFirst": "请先选择当前分店",
+    "selectManageableStoreFirst": "请先选择可管理分店",
+    "storeReadOnly": "当前分店仅可查看，不能修改店员账号",
     "loadFailedTitle": "加载店员列表失败",
     "loadFailedDescription": "请稍后重试，或下拉刷新。",
     "refreshFailed": "刷新店员列表失败",

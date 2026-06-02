@@ -1,71 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { getAllStores, getStoresByUserGuid } from "@/modules/shop/api";
+import { getStoresByUserGuid } from "@/modules/shop/api";
 import { useAuthStore } from "@/store/auth-store";
 import { useCartStore } from "@/store/cart-store";
 import { useDeviceStore } from "@/store/device-store";
 import { AppAsyncStorage } from "@/shared/storage/async-storage";
 import { STORE_SELECTION_STORAGE_KEY, type Store } from "@/modules/shop/types";
-
-function normalizeStores(
-  stores: Array<{
-    storeGUID?: string;
-    storeCode?: string;
-    storeName?: string;
-    postcode?: string;
-    stateCode?: string;
-    isPrimary?: boolean;
-    assignedAt?: string;
-  }> | null | undefined
-): Store[] {
-  return (stores ?? [])
-    .filter(
-      (item): item is {
-        storeGUID?: string;
-        storeCode: string;
-        storeName?: string;
-        postcode?: string;
-        stateCode?: string;
-        isPrimary?: boolean;
-        assignedAt?: string;
-      } => Boolean(item?.storeCode),
-    )
-    .map((item) => ({
-      storeGUID: item.storeGUID,
-      storeCode: item.storeCode,
-      storeName: item.storeName || item.storeCode,
-      postcode: item.postcode,
-      stateCode: item.stateCode,
-      isPrimary: item.isPrimary,
-      assignedAt: item.assignedAt,
-    }));
-}
-
-function sortStores(stores: Store[]) {
-  return stores
-    .slice()
-    .sort((left, right) =>
-      (left.storeName || left.storeCode).localeCompare(right.storeName || right.storeCode, undefined, {
-        sensitivity: "base",
-      })
-    );
-}
-
-function isPrivilegedStoreViewer(roleNames: string[] | undefined) {
-  if (!roleNames?.length) {
-    return false;
-  }
-
-  return roleNames.some((role) => {
-    const normalizedRole = role.trim().toLowerCase();
-    return (
-      normalizedRole === "admin" ||
-      normalizedRole === "管理员" ||
-      normalizedRole === "warehousemanager" ||
-      normalizedRole === "仓库经理"
-    );
-  });
-}
+import { normalizeShopStores, sortShopStores } from "@/modules/shop/store-normalization";
+import { getAssignedStoresForSession, resolveScopedStoreCode } from "@/modules/shop/store-scope";
 
 export function useStores() {
   const user = useAuthStore((state) => state.user);
@@ -96,32 +38,18 @@ export function useStores() {
         : null,
     [deviceSession?.storeCode, deviceSession?.storeName]
   );
-  const shouldLoadAllStores =
-    access.isAdmin || access.isWarehouseManager || isPrivilegedStoreViewer(user?.roleNames);
-
   const storesQuery = useQuery({
-    queryKey: ["userStores", userGuid, shouldLoadAllStores, deviceSession?.storeCode],
+    queryKey: ["userStores", userGuid, deviceSession?.storeCode],
     enabled: !isDeviceMode && Boolean(userGuid),
     queryFn: async () => {
       if (!userGuid) {
         return [];
       }
 
-      const embeddedStores = sortStores(normalizeStores(user?.stores));
-
-      if (shouldLoadAllStores) {
-        const allStores = sortStores(await getAllStores());
-        console.info("[useStores] loaded all stores", {
-          canReadStore: access.canReadStore,
-          count: allStores.length,
-          shouldLoadAllStores,
-          userGuid: user?.userGUID,
-        });
-        return allStores;
-      }
+      const embeddedStores = sortShopStores(normalizeShopStores(user?.stores));
 
       try {
-        const apiStores = sortStores(await getStoresByUserGuid(userGuid));
+        const apiStores = sortShopStores(await getStoresByUserGuid(userGuid));
 
         if (apiStores.length) {
           console.info("[useStores] loaded stores from user endpoint", {
@@ -135,7 +63,8 @@ export function useStores() {
         }
 
         if (embeddedStores.length) {
-          console.warn("[useStores] user endpoint returned empty; fallback to embedded stores", {
+          // 账号模式优先使用用户分店接口；接口空数据时才回退登录态中的已分配分店。
+          console.warn("[useStores] user endpoint returned empty; fallback to embedded assigned stores", {
             canReadStore: access.canReadStore,
             embeddedCount: embeddedStores.length,
             endpoint: `/Users/guid/${userGuid}/stores`,
@@ -216,12 +145,13 @@ export function useStores() {
         return;
       }
 
-      const nextSelectedStore =
-        (currentSelectedStore
-          ? stores.find((item) => item.storeCode === currentSelectedStore.storeCode)
-          : null) ??
-        (persistedStoreCode ? stores.find((item) => item.storeCode === persistedStoreCode) : null) ??
-        (stores.length === 1 ? stores[0] : null);
+      const nextStoreCode = resolveScopedStoreCode({
+        currentStoreCode: currentSelectedStore?.storeCode,
+        persistedStoreCode,
+        isDeviceMode: false,
+        stores,
+      });
+      const nextSelectedStore = nextStoreCode ? stores.find((item) => item.storeCode === nextStoreCode) ?? null : null;
 
       setSelectedStore(nextSelectedStore ?? null);
 
@@ -243,10 +173,14 @@ export function useStores() {
     };
   }, [deviceBoundStore, isDeviceMode, setCartSummary, setSelectedStore, setUserStores, storesQuery.data, storesQuery.isSuccess, userGuid]);
 
-  const effectiveStores = isDeviceMode ? (deviceBoundStore ? [deviceBoundStore] : []) : userStores;
+  const effectiveStores = getAssignedStoresForSession({
+    stores: userStores,
+    isDeviceMode,
+    deviceBoundStore,
+  });
   const effectiveSelectedStore = isDeviceMode ? deviceBoundStore : selectedStore;
   const selectedStoreCode = effectiveSelectedStore?.storeCode ?? null;
-  const embeddedStores = useMemo(() => sortStores(normalizeStores(user?.stores)), [user?.stores]);
+  const embeddedStores = useMemo(() => sortShopStores(normalizeShopStores(user?.stores)), [user?.stores]);
   const debugInfo = useMemo(
     () => ({
       canReadStore: access.canReadStore,

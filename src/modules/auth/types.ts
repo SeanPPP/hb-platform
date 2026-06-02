@@ -95,5 +95,6 @@ export interface AccessControl {
   onlyRole: (role: string) => boolean;
   hasAnyRole: (roles: string[]) => boolean;
   hasAllRoles: (roles: string[]) => boolean;
+  assignedStoreCodes: () => string[] | null;
   managedStoreCodes: () => string[] | null;
 }

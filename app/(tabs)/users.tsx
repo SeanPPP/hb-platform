@@ -23,6 +23,7 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { StorePickerModal } from "@/components/ui/StorePickerModal";
 import type { Store } from "@/modules/shop/types";
 import { getDeviceBoundStoreCode } from "@/modules/shop/device-bound-store-filter";
+import { getManageableStoresForSession, isStoreManageable } from "@/modules/shop/store-scope";
 import { useStores } from "@/modules/shop/use-stores";
 import {
   STORE_STAFF_ROLE,
@@ -108,15 +109,17 @@ export default function UsersScreen() {
     selectedStoreCode: rememberedStoreCode,
   });
 
-  const canManageUsers = access.isAdmin || (access.canReadUser && access.canWriteUser);
+  const canViewUsers = access.isAdmin || access.canReadUser;
+  const canModifyUsers = access.isAdmin || (access.canReadUser && access.canWriteUser);
   const manageableStores = useMemo(
     () =>
-      deviceBoundStoreCode
-        ? stores
-        : access.isAdmin
-          ? stores
-          : stores.filter((store) => store.isPrimary === true),
-    [access.isAdmin, deviceBoundStoreCode, stores]
+      getManageableStoresForSession({
+        stores,
+        isDeviceMode,
+        deviceBoundStore: deviceBoundStoreCode ? stores.find((store) => store.storeCode === deviceBoundStoreCode) ?? null : null,
+        isAdmin: access.isAdmin,
+      }),
+    [access.isAdmin, deviceBoundStoreCode, isDeviceMode, stores]
   );
 
   useEffect(() => {
@@ -129,28 +132,30 @@ export default function UsersScreen() {
         return deviceBoundStoreCode;
       }
 
-      if (current && manageableStores.some((store) => store.storeCode === current)) {
+      if (current && stores.some((store) => store.storeCode === current)) {
         return current;
       }
 
-      const selectedManageableStore = rememberedStoreCode
-        ? manageableStores.find((store) => store.storeCode === rememberedStoreCode)
+      const selectedAssignedStore = rememberedStoreCode
+        ? stores.find((store) => store.storeCode === rememberedStoreCode)
         : null;
-      if (selectedManageableStore) {
-        return selectedManageableStore.storeCode;
+      if (selectedAssignedStore) {
+        return selectedAssignedStore.storeCode;
       }
 
       return null;
     });
-  }, [deviceBoundStoreCode, isHydratingSelection, manageableStores, rememberedStoreCode, storesLoading]);
+  }, [deviceBoundStoreCode, isHydratingSelection, rememberedStoreCode, stores, storesLoading]);
 
   const managedStore = useMemo(
-    () => manageableStores.find((store) => store.storeCode === managedStoreCode) ?? null,
-    [manageableStores, managedStoreCode]
+    () => stores.find((store) => store.storeCode === managedStoreCode) ?? null,
+    [managedStoreCode, stores]
   );
+  const selectedStoreCanModify = canModifyUsers && isStoreManageable(managedStoreCode, manageableStores);
+  const canCreateInCurrentScope = Boolean(managedStoreCode && selectedStoreCanModify);
 
   const usersQuery = useStoreUsers(
-    canManageUsers ? (isDeviceMode ? deviceBoundStoreCode : managedStoreCode) : undefined,
+    canViewUsers ? (isDeviceMode ? deviceBoundStoreCode : managedStoreCode) : undefined,
     keyword
   );
   const detailQuery = useStoreUserDetail(
@@ -169,6 +174,10 @@ export default function UsersScreen() {
   const resolveUserStoreCode = useCallback(
     (user: StoreUserListItem) => managedStoreCode || user.storeCode || null,
     [managedStoreCode]
+  );
+  const canModifyUserStore = useCallback(
+    (user: StoreUserListItem) => canModifyUsers && isStoreManageable(resolveUserStoreCode(user), manageableStores),
+    [canModifyUsers, manageableStores, resolveUserStoreCode]
   );
 
   useEffect(() => {
@@ -195,18 +204,27 @@ export default function UsersScreen() {
   }, []);
 
   const openCreateDialog = useCallback(() => {
+    if (!canCreateInCurrentScope) {
+      setSnackbarMessage(t(managedStoreCode ? "messages.storeReadOnly" : "messages.selectManageableStoreFirst"));
+      return;
+    }
+
     setDialogMode("create");
     setEditingUserGuid(null);
     setEditingStoreCode(null);
     setFormValues(EMPTY_FORM);
     setDialogVisible(true);
-  }, []);
+  }, [canCreateInCurrentScope, managedStoreCode, t]);
 
   const openEditDialog = useCallback(
     (user: StoreUserListItem) => {
       const targetStoreCode = resolveUserStoreCode(user);
       if (!targetStoreCode) {
         setSnackbarMessage(t("messages.selectStoreFirst"));
+        return;
+      }
+      if (!canModifyUserStore(user)) {
+        setSnackbarMessage(t("messages.storeReadOnly"));
         return;
       }
 
@@ -223,7 +241,7 @@ export default function UsersScreen() {
       });
       setDialogVisible(true);
     },
-    [resolveUserStoreCode, t]
+    [canModifyUserStore, resolveUserStoreCode, t]
   );
 
   const openStaffDetail = useCallback(
@@ -291,6 +309,10 @@ export default function UsersScreen() {
       setSnackbarMessage(t("messages.selectStoreFirst"));
       return;
     }
+    if (!canModifyUsers || !isStoreManageable(targetStoreCode, manageableStores)) {
+      setSnackbarMessage(t("messages.storeReadOnly"));
+      return;
+    }
 
     if (!validateForm()) {
       return;
@@ -323,10 +345,12 @@ export default function UsersScreen() {
     }
   }, [
     createMutation,
+    canModifyUsers,
     dialogMode,
     editingStoreCode,
     editingUserGuid,
     formValues,
+    manageableStores,
     managedStoreCode,
     resetDialogState,
     language,
@@ -340,6 +364,10 @@ export default function UsersScreen() {
       const targetStoreCode = resolveUserStoreCode(user);
       if (!targetStoreCode) {
         setSnackbarMessage(t("messages.selectStoreFirst"));
+        return;
+      }
+      if (!canModifyUserStore(user)) {
+        setSnackbarMessage(t("messages.storeReadOnly"));
         return;
       }
 
@@ -370,14 +398,22 @@ export default function UsersScreen() {
         ]
       );
     },
-    [language, resolveUserStoreCode, statusMutation, t]
+    [canModifyUserStore, language, resolveUserStoreCode, statusMutation, t]
   );
 
-  const openResetPasswordDialog = useCallback((user: StoreUserListItem) => {
-    setPasswordUser(user);
-    setResetPasswordValue("");
-    setResetPasswordVisible(true);
-  }, []);
+  const openResetPasswordDialog = useCallback(
+    (user: StoreUserListItem) => {
+      if (!canModifyUserStore(user)) {
+        setSnackbarMessage(t("messages.storeReadOnly"));
+        return;
+      }
+
+      setPasswordUser(user);
+      setResetPasswordValue("");
+      setResetPasswordVisible(true);
+    },
+    [canModifyUserStore, t]
+  );
 
   const handleResetPassword = useCallback(async () => {
     if (!passwordUser) {
@@ -387,6 +423,10 @@ export default function UsersScreen() {
     const targetStoreCode = resolveUserStoreCode(passwordUser);
     if (!targetStoreCode) {
       setSnackbarMessage(t("messages.selectStoreFirst"));
+      return;
+    }
+    if (!canModifyUsers || !isStoreManageable(targetStoreCode, manageableStores)) {
+      setSnackbarMessage(t("messages.storeReadOnly"));
       return;
     }
 
@@ -410,7 +450,9 @@ export default function UsersScreen() {
     }
   }, [
     closeResetPasswordDialog,
+    canModifyUsers,
     language,
+    manageableStores,
     passwordMutation,
     passwordUser,
     resolveUserStoreCode,
@@ -450,6 +492,27 @@ export default function UsersScreen() {
     });
   }, [managedStore, managedStoreCode, t]);
 
+  const renderStorePickerLabel = useCallback(
+    (store: Store) => {
+      const manageable = isStoreManageable(store.storeCode, manageableStores);
+
+      return (
+        <View style={styles.storePickerLabelRow}>
+          <View style={styles.storePickerLabelText}>
+            <Text variant="bodyMedium">{store.storeName || store.storeCode}</Text>
+            <Text variant="bodySmall" style={styles.secondaryText}>
+              {store.storeCode}
+            </Text>
+          </View>
+          <Chip compact style={manageable ? styles.manageableChip : styles.viewOnlyChip}>
+            {manageable ? t("currentStore.manageableBadge") : t("currentStore.viewOnlyBadge")}
+          </Chip>
+        </View>
+      );
+    },
+    [manageableStores, t]
+  );
+
   const renderUserCard = useCallback(
     ({ item }: { item: StoreUserListItem }) => {
       const lastLogin = formatDateTime(item.lastLoginTime, language);
@@ -463,6 +526,7 @@ export default function UsersScreen() {
       const employmentType = item.employmentType
         ? t(`detail.employmentTypes.${item.employmentType}`, item.employmentType)
         : emptyValue;
+      const canModifyThisUser = canModifyUserStore(item);
 
       return (
         <Card style={styles.userCard} mode="elevated" onPress={() => openStaffDetail(item)}>
@@ -486,6 +550,7 @@ export default function UsersScreen() {
                   size={20}
                   accessibilityLabel={t("actions.more")}
                   onPress={() => openEditDialog(item)}
+                  disabled={!canModifyThisUser}
                 />
               </View>
             </View>
@@ -514,10 +579,16 @@ export default function UsersScreen() {
               <Button compact mode="outlined" icon="account-details-outline" onPress={() => openStaffDetail(item)}>
                 {t("actions.viewDetails")}
               </Button>
-              <Button compact mode="outlined" icon="pencil-outline" onPress={() => openEditDialog(item)}>
+              <Button compact mode="outlined" icon="pencil-outline" onPress={() => openEditDialog(item)} disabled={!canModifyThisUser}>
                 {t("actions.edit")}
               </Button>
-              <Button compact mode="outlined" icon="lock-reset" onPress={() => openResetPasswordDialog(item)}>
+              <Button
+                compact
+                mode="outlined"
+                icon="lock-reset"
+                onPress={() => openResetPasswordDialog(item)}
+                disabled={!canModifyThisUser}
+              >
                 {t("actions.resetPassword")}
               </Button>
               <Button
@@ -525,6 +596,7 @@ export default function UsersScreen() {
                 mode={item.status === 1 ? "outlined" : "contained-tonal"}
                 icon={item.status === 1 ? "pause-circle-outline" : "play-circle-outline"}
                 onPress={() => handleToggleStatus(item)}
+                disabled={!canModifyThisUser}
               >
                 {item.status === 1 ? t("actions.disable") : t("actions.enable")}
               </Button>
@@ -534,6 +606,7 @@ export default function UsersScreen() {
       );
     },
     [
+      canModifyUserStore,
       handleToggleStatus,
       language,
       managedStore?.storeName,
@@ -545,7 +618,7 @@ export default function UsersScreen() {
     ]
   );
 
-  if (!canManageUsers) {
+  if (!canViewUsers) {
     return (
       <SafeAreaView style={styles.screen} edges={["top", "left", "right"]}>
         <EmptyState
@@ -580,7 +653,7 @@ export default function UsersScreen() {
                   {storeCaption}
                 </Text>
               </View>
-              <Button mode="contained" icon="account-plus-outline" onPress={openCreateDialog} disabled={!managedStoreCode}>
+              <Button mode="contained" icon="account-plus-outline" onPress={openCreateDialog} disabled={!canCreateInCurrentScope || isBusy}>
                 {t("actions.create")}
               </Button>
             </View>
@@ -594,6 +667,15 @@ export default function UsersScreen() {
               >
                 {managedStore?.storeName || t("currentStore.allRelated")}
               </Button>
+              {managedStoreCode && !selectedStoreCanModify ? (
+                <Text variant="bodySmall" style={styles.readOnlyHint}>
+                  {t("currentStore.readOnlyHelper")}
+                </Text>
+              ) : (
+                <Text variant="bodySmall" style={styles.secondaryText}>
+                  {t("currentStore.helper")}
+                </Text>
+              )}
               <Searchbar
                 placeholder={t("searchPlaceholder")}
                 value={keywordInput}
@@ -661,7 +743,7 @@ export default function UsersScreen() {
         label={t("actions.create")}
         style={styles.fab}
         onPress={openCreateDialog}
-        disabled={!managedStoreCode || isBusy}
+        disabled={!canCreateInCurrentScope || isBusy}
       />
 
       <Portal>
@@ -771,12 +853,13 @@ export default function UsersScreen() {
 
       <StorePickerModal
         visible={storePickerVisible}
-        stores={manageableStores}
+        stores={stores}
         selectedStoreCode={managedStoreCode}
         title={t("common:labels.selectStore")}
         cancelLabel={t("common:actions.cancel")}
         includeAllOption={!deviceBoundStoreCode}
         allLabel={t("currentStore.allRelated")}
+        renderStoreLabel={renderStorePickerLabel}
         onDismiss={() => setStorePickerVisible(false)}
         onSelectStore={handleSelectManagedStore}
       />
@@ -857,6 +940,12 @@ const styles = StyleSheet.create({
   metaWrap: {
     gap: 4,
   },
+  manageableChip: {
+    backgroundColor: "#D1FAE5",
+  },
+  readOnlyHint: {
+    color: "#B45309",
+  },
   screen: {
     backgroundColor: "#F5F7FB",
     flex: 1,
@@ -869,6 +958,18 @@ const styles = StyleSheet.create({
   },
   storePickerButtonContent: {
     justifyContent: "flex-start",
+  },
+  storePickerLabelRow: {
+    alignItems: "center",
+    flex: 1,
+    flexDirection: "row",
+    gap: 8,
+    justifyContent: "space-between",
+    minHeight: 48,
+  },
+  storePickerLabelText: {
+    flex: 1,
+    minWidth: 0,
   },
   switchRow: {
     alignItems: "center",
@@ -897,5 +998,8 @@ const styles = StyleSheet.create({
   userTitleWrap: {
     flex: 1,
     gap: 2,
+  },
+  viewOnlyChip: {
+    backgroundColor: "#FEF3C7",
   },
 });

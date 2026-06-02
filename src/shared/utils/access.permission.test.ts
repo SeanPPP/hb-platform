@@ -8,7 +8,8 @@ function assertEqual(actual: unknown, expected: unknown, label: string) {
 
 function createUser(
   permissions: string[],
-  roleNames = ["User"]
+  roleNames = ["User"],
+  stores: NonNullable<Parameters<typeof buildAccess>[0]>["stores"] = []
 ): NonNullable<Parameters<typeof buildAccess>[0]> {
   return {
     userGuid: "user-1",
@@ -18,7 +19,7 @@ function createUser(
     permissions,
     roleNames,
     storeNames: [],
-    stores: [],
+    stores,
   };
 }
 
@@ -217,4 +218,23 @@ assertEqual(
   storeFinanceAccess.canSubmitSeasonalCardRemaining,
   true,
   "SeasonalCards.Remaining.SubmitManagedStore enables seasonal card remaining submission capability"
+);
+
+const scopedStoreAccess = buildAccess(
+  createUser([], ["StoreManager"], [
+    { storeCode: "1006", storeName: "HB WARE HOUSE", isPrimary: false },
+    { storeCode: "1004", storeName: "Campbelltown", isPrimary: true },
+  ])
+);
+
+assertEqual(
+  scopedStoreAccess.assignedStoreCodes()?.join(","),
+  "1006,1004",
+  "assignedStoreCodes keeps all assigned stores including read-only stores"
+);
+
+assertEqual(
+  scopedStoreAccess.managedStoreCodes()?.join(","),
+  "1004",
+  "managedStoreCodes keeps only isPrimary manageable stores"
 );

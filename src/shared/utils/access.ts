@@ -174,6 +174,7 @@ function createEmptyAccess(): AccessControl {
     onlyRole: alwaysFalse,
     hasAnyRole: alwaysFalse,
     hasAllRoles: alwaysFalse,
+    assignedStoreCodes: () => null,
     managedStoreCodes: () => null,
   };
 }
@@ -218,12 +219,26 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
   const isStoreLevelManager = isStoreManager && !isAdmin && !isWarehouseManager;
   const onlyOrder = onlyRole("Order") || hasRole("订货员");
 
-  const managedStoreCodes = () => {
+  const assignedStoreCodes = () => {
     if (isAdmin || isWarehouseManager) {
       return null;
     }
     if (currentUser.stores?.length) {
       return currentUser.stores.map((item) => item.storeCode).filter(Boolean);
+    }
+    return null;
+  };
+
+  const managedStoreCodes = () => {
+    if (isAdmin || isWarehouseManager) {
+      return null;
+    }
+    if (currentUser.stores?.length) {
+      // isPrimary=true 表示可管理分店；false 是已分配但只读范围。
+      return currentUser.stores
+        .filter((item) => item.isPrimary === true)
+        .map((item) => item.storeCode)
+        .filter(Boolean);
     }
     return null;
   };
@@ -347,6 +362,7 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
     onlyRole,
     hasAnyRole,
     hasAllRoles,
+    assignedStoreCodes,
     managedStoreCodes,
   };
 }

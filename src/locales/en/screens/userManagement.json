@@ -5,9 +5,12 @@
     "label": "Current store",
     "value": "{{name}} ({{code}})",
     "empty": "No store selected",
-    "allRelated": "All related stores",
+    "allRelated": "All assigned stores",
     "select": "Select store",
-    "helper": "Choose a managed store, or view every staff account in your managed store scope."
+    "helper": "Choose an assigned store to view staff. Only manageable stores can create, edit, disable, or reset passwords.",
+    "readOnlyHelper": "This store is view-only. Staff accounts cannot be changed here.",
+    "manageableBadge": "Manage",
+    "viewOnlyBadge": "View only"
   },
   "actions": {
     "refresh": "Refresh",
@@ -135,11 +138,13 @@
     "statusConfirmMessage": "Are you sure you want to {{action}} {{username}}?"
   },
   "messages": {
-    "noAccessTitle": "No staff management access",
-    "noAccessDescription": "The current account cannot manage store staff.",
+    "noAccessTitle": "No staff view access",
+    "noAccessDescription": "The current account cannot view store staff.",
     "selectStoreTitle": "Select a current store first",
     "selectStoreDescription": "Choose a store before viewing or managing staff accounts for that store.",
     "selectStoreFirst": "Select a current store first",
+    "selectManageableStoreFirst": "Select a manageable store first",
+    "storeReadOnly": "This store is view-only. Staff accounts cannot be changed.",
     "loadFailedTitle": "Failed to load staff accounts",
     "loadFailedDescription": "Try again later or pull to refresh.",
     "refreshFailed": "Failed to refresh staff accounts",
