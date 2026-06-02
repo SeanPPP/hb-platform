@@ -108,7 +108,8 @@ export async function batchUpdateDetailAction(
   detailGuids: string[],
   action: number,
 ): Promise<void> {
-  await request.put(`${API_BASE}/${invoiceGuid}/details/batch-action`, { detailGuids, action })
+  const response = await request.put<ApiResponse<void>>(`${API_BASE}/${invoiceGuid}/details/batch-action`, { detailGuids, action })
+  assertApiSuccess(response, '批量设置操作类型失败')
 }
 
 export async function updateDetailAction(
@@ -116,7 +117,8 @@ export async function updateDetailAction(
   detailGuid: string,
   action: number,
 ): Promise<void> {
-  await request.put(`${API_BASE}/${invoiceGuid}/details/${detailGuid}/action`, { action })
+  const response = await request.put<ApiResponse<void>>(`${API_BASE}/${invoiceGuid}/details/${detailGuid}/action`, { action })
+  assertApiSuccess(response, '更新操作类型失败')
 }
 
 export async function updateToStorePrices(data: UpdateToStorePricesRequest): Promise<UpdateToStorePricesResult> {
@@ -191,9 +193,16 @@ export async function batchExecuteActions(data: BatchExecuteActionsRequest): Pro
   if (!data.detailGuids.length) {
     throw new Error('请选择要执行的明细')
   }
+  if (!data.expectedActions.length || data.confirmedCreateProductCount == null || !data.confirmedAt) {
+    throw new Error('请先确认批量执行操作')
+  }
   const response = await request.post<ApiResponse<BatchExecuteActionsResult>>(`${API_BASE}/${data.invoiceGuid}/details/batch-execute`, {
     detailGuids: data.detailGuids,
+    expectedActions: data.expectedActions,
+    confirmedCreateProductCount: data.confirmedCreateProductCount,
+    confirmedAt: data.confirmedAt,
   })
+  assertApiSuccess(response, '批量执行操作失败')
   return unwrapApiData(response)
 }
 

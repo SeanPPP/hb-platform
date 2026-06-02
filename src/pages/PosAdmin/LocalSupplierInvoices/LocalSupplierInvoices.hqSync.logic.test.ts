@@ -1,6 +1,14 @@
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
-import { ensureHqProducts, syncInvoicesFromHq, updateHqProducts, updateToStorePrices } from '../../../services/localSupplierInvoiceService'
+import {
+  batchExecuteActions,
+  batchUpdateDetailAction,
+  ensureHqProducts,
+  syncInvoicesFromHq,
+  updateDetailAction,
+  updateHqProducts,
+  updateToStorePrices,
+} from '../../../services/localSupplierInvoiceService'
 import {
   filterInvoiceDetails,
   getBarcodeStatusFilter,
@@ -9,7 +17,12 @@ import {
   toggleStatusFilter,
 } from './InvoiceEdit/statusFilters'
 import { parsePasteText } from './InvoiceEdit/pasteDetails'
-import type { LocalSupplierInvoiceItemDto } from '../../../types/localSupplierInvoice'
+import {
+  buildBatchExecuteConfirmText,
+  constrainSelectedRowKeysToVisibleDetails,
+  countSelectedBatchExecuteActions,
+} from './InvoiceEdit/batchExecuteConfirm'
+import { DetailAction, type LocalSupplierInvoiceItemDto } from '../../../types/localSupplierInvoice'
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) {
@@ -161,6 +174,54 @@ async function main() {
   })
   if (updateToStoreHqFailure) failures.push(updateToStoreHqFailure)
 
+  const batchExecuteConfirmFailure = await runTest('批量执行操作应先展示二次确认并突出新建商品数量', () => {
+    assert(editPageSource.includes('Modal.confirm({'), '批量执行操作应使用确认框')
+    assert(editPageSource.includes('batchExecuteConfirmTitle'), '确认框应有专用标题文案')
+    assert(editPageSource.includes('batchExecuteCreateProductNotice'), '确认框应包含新建商品风险提示文案')
+    assert(editPageSource.includes('canRunGlobalLocalPurchaseBatchActions'), '批量执行入口应使用与后端全店访问一致的权限条件')
+    assert(editPageSource.includes('okButtonProps: { danger: previewSnapshot.confirmedCreateProductCount > 0 }'), '存在新建商品时确认按钮应使用确认预览快照的危险态')
+    assert(editPageSource.includes('constrainSelectedRowKeysToVisibleDetails(selectedRowKeys, filteredDetails)'), '批量执行前应收敛到当前可见选中明细')
+    assert(
+      editPageSource.indexOf('await updateDetailAction(invoiceGuid, detailGuid, action)') < editPageSource.indexOf('setRowActions((prev) => ({ ...prev, [detailGuid]: action }))'),
+      '行操作类型应在服务端更新成功后再更新本地状态',
+    )
+
+    const counts = countSelectedBatchExecuteActions(
+      ['d1', 'd2', 'd3'],
+      [
+        { detailGUID: 'd1', activityType: DetailAction.CreateProduct },
+        { detailGUID: 'd2', activityType: DetailAction.UpdatePurchasePrice },
+        { detailGUID: 'd3', activityType: DetailAction.WaitForOperation },
+      ],
+      { d2: DetailAction.CreateProduct },
+    )
+    assertEqual(counts.selectedCount, 3, '确认统计应包含选中条数')
+    assertEqual(counts.createProductCount, 2, '确认统计应以 rowActions 覆盖后的操作类型计算新建商品数量')
+
+    const confirmText = buildBatchExecuteConfirmText({
+      ...counts,
+      labels: {
+        title: '确认执行批量操作？',
+        content: '将对 {{count}} 条明细执行已设置的操作。',
+        createProductNotice: '其中 {{count}} 条会新建商品，请确认货号、条码和名称无误。',
+        okText: '确认执行',
+        cancelText: '取消',
+      },
+    })
+    assert(confirmText.content.includes('3 条明细'), '确认文案应展示执行条数')
+    assert(confirmText.content.includes('2 条会新建商品'), '确认文案应展示新建商品数量')
+
+    const visibleKeys = constrainSelectedRowKeysToVisibleDetails(
+      ['d1', 'd2', 'hidden'],
+      [
+        { detailGUID: 'd1' },
+        { detailGUID: 'd2' },
+      ],
+    )
+    assertDeepEqual(visibleKeys.map(String), ['d1', 'd2'], '筛选后隐藏明细不应继续参与批量执行')
+  })
+  if (batchExecuteConfirmFailure) failures.push(batchExecuteConfirmFailure)
+
   const editPageStatsFailure = await runTest('编辑页应提供状态统计栏并支持点击叠加过滤', () => {
     assert(editPageSource.includes("useState<StatusFilterValue<ProductStatusFilter>>('all')"), '编辑页应维护商品状态过滤状态')
     assert(editPageSource.includes("useState<StatusFilterValue<BarcodeStatusFilter>>('all')"), '编辑页应维护条码状态过滤状态')
@@ -277,6 +338,9 @@ async function main() {
     assert(serviceSource.includes('/details/update-hq-products'), '服务层应调用字段级更新 HQ 专用接口')
     assert(serviceSource.includes('assertApiSuccess'), '服务层应复用业务失败检查 helper')
     assert(serviceSource.includes("response.success === false || response.isSuccess === false"), '服务层应识别 success false')
+    assert(serviceSource.includes("assertApiSuccess(response, '批量执行操作失败')"), '批量执行服务层应识别业务失败')
+    assert(serviceSource.includes("assertApiSuccess(response, '批量设置操作类型失败')"), '批量设置操作类型服务层应识别业务失败')
+    assert(serviceSource.includes("assertApiSuccess(response, '更新操作类型失败')"), '行操作类型服务层应识别业务失败')
   })
   if (serviceContractFailure) failures.push(serviceContractFailure)
 
@@ -519,6 +583,74 @@ async function main() {
     assertEqual(result.hqRetailPricesUpdated, 2, '字段级更新 HQ 应保留零售价更新统计')
   })
   if (updateHqProductsPayloadFailure) failures.push(updateHqProductsPayloadFailure)
+
+  const batchExecuteBusinessFailure = await runTest('batchExecuteActions 遇到业务失败应抛出后端消息', async () => {
+    globalThis.fetch = (async () => new Response(JSON.stringify({
+      success: false,
+      message: '批量执行业务失败',
+      data: {
+        createdProducts: 0,
+        updatedPurchasePrices: 0,
+        updatedItemNumbers: 0,
+        addedMultiCodes: 0,
+        skipped: 0,
+        failed: 1,
+        errors: ['测试执行失败'],
+      },
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })) as typeof fetch
+
+    await assertRejects(
+      () => batchExecuteActions({
+        invoiceGuid: 'invoice-1',
+        detailGuids: ['detail-1'],
+        expectedActions: [
+          { detailGuid: 'detail-1', action: 1, activityType: 1 },
+        ],
+        confirmedCreateProductCount: 1,
+        confirmedAt: '2026-06-02T09:30:00.000Z',
+      }),
+      '批量执行业务失败',
+      '批量执行遇到 success=false 时应透传后端消息',
+    )
+  })
+  if (batchExecuteBusinessFailure) failures.push(batchExecuteBusinessFailure)
+
+  const updateDetailActionBusinessFailure = await runTest('updateDetailAction 遇到业务失败应抛出后端消息', async () => {
+    globalThis.fetch = (async () => new Response(JSON.stringify({
+      success: false,
+      message: '更新操作类型业务失败',
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })) as typeof fetch
+
+    await assertRejects(
+      () => updateDetailAction('invoice-1', 'detail-1', DetailAction.CreateProduct),
+      '更新操作类型业务失败',
+      '行操作类型更新遇到 success=false 时应透传后端消息',
+    )
+  })
+  if (updateDetailActionBusinessFailure) failures.push(updateDetailActionBusinessFailure)
+
+  const batchUpdateDetailActionBusinessFailure = await runTest('batchUpdateDetailAction 遇到业务失败应抛出后端消息', async () => {
+    globalThis.fetch = (async () => new Response(JSON.stringify({
+      success: false,
+      message: '批量设置操作类型业务失败',
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })) as typeof fetch
+
+    await assertRejects(
+      () => batchUpdateDetailAction('invoice-1', ['detail-1'], DetailAction.CreateProduct),
+      '批量设置操作类型业务失败',
+      '批量操作类型更新遇到 success=false 时应透传后端消息',
+    )
+  })
+  if (batchUpdateDetailActionBusinessFailure) failures.push(batchUpdateDetailActionBusinessFailure)
 
   const updateHqProductsFailurePayload = await runTest('updateHqProducts 业务失败应保留 HQ 错误 payload', async () => {
     globalThis.fetch = (async () => new Response(JSON.stringify({

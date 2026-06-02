@@ -323,6 +323,15 @@ export interface BarcodeAbnormalDetailDto {
 export interface BatchExecuteActionsRequest {
   invoiceGuid: string
   detailGuids: string[]
+  expectedActions: BatchExecuteExpectedAction[]
+  confirmedCreateProductCount: number
+  confirmedAt: string
+}
+
+export interface BatchExecuteExpectedAction {
+  detailGuid: string
+  action: DetailAction
+  activityType: DetailAction
 }
 
 export interface BatchExecuteActionsResult {

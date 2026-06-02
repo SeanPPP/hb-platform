@@ -125,10 +125,12 @@ export interface SyncMissingStoreOrdersPayload {
 }
 
 export type StoreOrderSyncMode = 'Full' | 'Incremental'
+export type StoreOrderSyncConflictStrategy = 'LatestWins' | 'HqWins'
 
 export interface StoreOrderHqSyncPayload extends SyncMissingStoreOrdersPayload {
   startDate?: string
   endDate?: string
+  conflictStrategy?: StoreOrderSyncConflictStrategy
 }
 
 export type StoreOrderSyncJobStatus = 'Queued' | 'Running' | 'Succeeded' | 'Failed'
@@ -137,6 +139,7 @@ export interface StoreOrderSyncJobResult {
   jobId: string
   status: StoreOrderSyncJobStatus
   mode?: StoreOrderSyncMode
+  conflictStrategy?: StoreOrderSyncConflictStrategy
   message?: string
   success?: boolean
   storeCodes?: string[]
@@ -148,6 +151,8 @@ export interface StoreOrderSyncJobResult {
   detailsUpdated?: number
   ordersSoftDeleted?: number
   detailsSoftDeleted?: number
+  skippedOrdersBecauseLocalNewer?: number
+  skippedDetailsBecauseLocalNewer?: number
   hqOrderCount?: number
   hqDetailCount?: number
   shadowRowCount?: number

@@ -26,3 +26,21 @@
   display: inline-flex;
   align-items: center;
 }
+
+.container-detail-stats {
+  padding: 2px 0 4px;
+}
+
+.container-detail-stat-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-inline-end: 0;
+  padding: 2px 8px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.container-detail-stat-count {
+  line-height: 1;
+}

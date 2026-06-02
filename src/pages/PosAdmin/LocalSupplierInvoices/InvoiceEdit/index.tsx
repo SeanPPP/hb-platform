@@ -87,6 +87,12 @@ import {
   toggleStatusFilter,
 } from './statusFilters'
 import { parsePasteText } from './pasteDetails'
+import {
+  buildBatchExecuteConfirmText,
+  buildBatchExecuteSnapshot,
+  constrainSelectedRowKeysToVisibleDetails,
+  getBatchExecuteErrorFeedback,
+} from './batchExecuteConfirm'
 import type {
   BarcodeStatusFilter,
   PriceFilter,
@@ -125,24 +131,6 @@ const productNameCellStyle: CSSProperties = {
   whiteSpace: 'normal',
   wordBreak: 'break-word',
   lineHeight: '20px',
-}
-
-function getBatchExecuteFailure(error: unknown): BatchExecuteActionsResult | undefined {
-  if (!(error instanceof RequestError)) return undefined
-
-  const payload = error.payload as { data?: unknown; details?: unknown } | undefined
-  const candidate = (payload?.details ?? payload?.data) as Partial<BatchExecuteActionsResult> | undefined
-  if (!candidate || typeof candidate !== 'object') return undefined
-
-  return {
-    createdProducts: Number(candidate.createdProducts ?? 0),
-    updatedPurchasePrices: Number(candidate.updatedPurchasePrices ?? 0),
-    updatedItemNumbers: Number(candidate.updatedItemNumbers ?? 0),
-    addedMultiCodes: Number(candidate.addedMultiCodes ?? 0),
-    skipped: Number(candidate.skipped ?? 0),
-    failed: Number(candidate.failed ?? 0),
-    errors: Array.isArray(candidate.errors) ? candidate.errors.map(String) : [],
-  }
 }
 
 function normalizeEnsureHqErrors(value: unknown): EnsureHqProductError[] {
@@ -335,6 +323,7 @@ export default function InvoiceEditPage() {
   const { access, currentUser } = useAuthStore()
   const isAdmin = access.isAdmin
   const canWriteLocalPurchaseToHq = access.canEditLocalPurchase && access.canPushLocalPurchaseToHq
+  const canRunGlobalLocalPurchaseBatchActions = access.canEditLocalPurchase && (access.isAdmin || access.isWarehouseManager)
   const managedStoreCodes = access.managedStoreCodes()
   const managedStoreCodeKey = managedStoreCodes?.join(',') ?? 'all'
 
@@ -533,6 +522,10 @@ export default function InvoiceEditPage() {
       }),
     [details, searchText, priceFilter, productStatusFilter, barcodeStatusFilter],
   )
+
+  useEffect(() => {
+    setSelectedRowKeys((prev) => constrainSelectedRowKeysToVisibleDetails(prev, filteredDetails))
+  }, [filteredDetails])
 
   /* ================================================================ */
   /*  操作处理函数                                                      */
@@ -918,35 +911,32 @@ export default function InvoiceEditPage() {
   const handleRowActionChange = async (detailGuid: string, actionKey: string) => {
     if (!ensureCanAccessInvoice()) return
     const action = Number(actionKey) as DetailAction
-    setRowActions((prev) => ({ ...prev, [detailGuid]: action }))
-    setDetails((prev) =>
-      prev.map((item) =>
-        item.detailGUID === detailGuid ? { ...item, activityType: action } : item,
-      ),
-    )
 
-    // 同步到服务端
     if (invoiceGuid) {
       try {
         await updateDetailAction(invoiceGuid, detailGuid, action)
-      } catch {
-        message.error(t('posAdmin.invoiceDetail.updateActionFailed', '更新操作类型失败'))
+        setRowActions((prev) => ({ ...prev, [detailGuid]: action }))
+        setDetails((prev) =>
+          prev.map((item) =>
+            item.detailGUID === detailGuid ? { ...item, activityType: action } : item,
+          ),
+        )
+      } catch (error) {
+        message.error(error instanceof Error ? error.message : t('posAdmin.invoiceDetail.updateActionFailed', '更新操作类型失败'))
       }
     }
   }
 
-  // ---- 批量执行操作 ----
-  const handleBatchExecute = async () => {
+  const executeSelectedBatchActions = async (snapshot: ReturnType<typeof buildBatchExecuteSnapshot>) => {
     if (!invoiceGuid || !ensureCanAccessInvoice()) return
-    if (!selectedRowKeys.length) {
-      message.warning(t('posAdmin.invoiceDetail.selectDetailsFirst', '请先选择明细行'))
-      return
-    }
     setExecuting(true)
     try {
       const result: BatchExecuteActionsResult = await batchExecuteActions({
         invoiceGuid,
-        detailGuids: selectedRowKeys.map(String),
+        detailGuids: snapshot.detailGuids,
+        expectedActions: snapshot.expectedActions,
+        confirmedCreateProductCount: snapshot.confirmedCreateProductCount,
+        confirmedAt: snapshot.confirmedAt ?? new Date().toISOString(),
       })
       const parts: string[] = []
       if (result.createdProducts > 0) parts.push(t('posAdmin.invoiceDetail.createdProducts', '新建商品{{count}}条', { count: result.createdProducts }))
@@ -975,24 +965,89 @@ export default function InvoiceEditPage() {
       setSelectedRowKeys([])
       loadDetails()
     } catch (error) {
-      const failure = getBatchExecuteFailure(error)
-      if (failure?.errors.length) {
+      const feedback = getBatchExecuteErrorFeedback(error, t('posAdmin.invoiceDetail.executeFailed', '批量执行操作失败'))
+      if (feedback.details.length) {
         Modal.error({
-          title: t('posAdmin.invoiceDetail.executeFailed', '批量执行操作失败'),
+          title: feedback.message,
           content: (
-            <div style={{ maxHeight: 240, overflow: 'auto' }}>
-              {failure.errors.map((err, i) => (
-                <div key={i} style={{ color: '#ff4d4f', fontSize: 12 }}>{err}</div>
-              ))}
-            </div>
+            <Space direction="vertical" size={8} style={{ width: '100%' }}>
+              {feedback.failure && (
+                <div>
+                  {[
+                    feedback.failure.createdProducts > 0 ? t('posAdmin.invoiceDetail.createdProducts', '新建商品{{count}}条', { count: feedback.failure.createdProducts }) : '',
+                    feedback.failure.updatedPurchasePrices > 0 ? t('posAdmin.invoiceDetail.updatedPurchasePrices', '更新进货价{{count}}条', { count: feedback.failure.updatedPurchasePrices }) : '',
+                    feedback.failure.updatedItemNumbers > 0 ? t('posAdmin.invoiceDetail.updatedItemNumbers', '更新货号{{count}}条', { count: feedback.failure.updatedItemNumbers }) : '',
+                    feedback.failure.addedMultiCodes > 0 ? t('posAdmin.invoiceDetail.addedMultiCodes', '添加多码{{count}}条', { count: feedback.failure.addedMultiCodes }) : '',
+                    feedback.failure.skipped > 0 ? t('posAdmin.invoiceDetail.skipped', '跳过{{count}}条', { count: feedback.failure.skipped }) : '',
+                    feedback.failure.failed > 0 ? t('posAdmin.invoiceDetail.failed', '失败{{count}}条', { count: feedback.failure.failed }) : '',
+                  ].filter(Boolean).join('，')}
+                </div>
+              )}
+              <div style={{ maxHeight: 240, overflow: 'auto' }}>
+                {feedback.details.map((err, i) => (
+                  <div key={i} style={{ color: '#ff4d4f', fontSize: 12 }}>{err}</div>
+                ))}
+              </div>
+            </Space>
           ),
         })
       } else {
-        message.error(t('posAdmin.invoiceDetail.executeFailed', '批量执行操作失败'))
+        message.error(feedback.message)
       }
     } finally {
       setExecuting(false)
     }
+  }
+
+  // ---- 批量执行操作 ----
+  const handleBatchExecute = () => {
+    if (!invoiceGuid || !ensureCanAccessInvoice()) return
+    const visibleSelectedRowKeys = constrainSelectedRowKeysToVisibleDetails(selectedRowKeys, filteredDetails)
+    if (!visibleSelectedRowKeys.length) {
+      message.warning(t('posAdmin.invoiceDetail.selectDetailsFirst', '请先选择明细行'))
+      return
+    }
+    if (visibleSelectedRowKeys.length !== selectedRowKeys.length) {
+      setSelectedRowKeys(visibleSelectedRowKeys)
+    }
+
+    const previewSnapshot = buildBatchExecuteSnapshot({
+      selectedRowKeys: visibleSelectedRowKeys,
+      details,
+      rowActions,
+    })
+    const confirmText = buildBatchExecuteConfirmText({
+      selectedCount: previewSnapshot.selectedCount,
+      createProductCount: previewSnapshot.confirmedCreateProductCount,
+      labels: {
+        title: t('posAdmin.invoiceDetail.batchExecuteConfirmTitle', '确认执行批量操作？'),
+        content: t('posAdmin.invoiceDetail.batchExecuteConfirmContent', '将对 {{count}} 条明细执行已设置的操作。'),
+        createProductNotice: t('posAdmin.invoiceDetail.batchExecuteCreateProductNotice', '其中 {{count}} 条会新建商品，请确认货号、条码和名称无误。'),
+        okText: t('posAdmin.invoiceDetail.batchExecuteConfirmOk', '确认执行'),
+        cancelText: t('common.cancel', '取消'),
+      },
+    })
+
+    Modal.confirm({
+      title: confirmText.title,
+      content: (
+        <Space direction="vertical" size={4}>
+          {confirmText.content.split('\n').map((line) => (
+            <div key={line}>{line}</div>
+          ))}
+        </Space>
+      ),
+      okText: confirmText.okText,
+      cancelText: confirmText.cancelText,
+      okButtonProps: { danger: previewSnapshot.confirmedCreateProductCount > 0 },
+      onOk: () => executeSelectedBatchActions(buildBatchExecuteSnapshot({
+        selectedRowKeys: previewSnapshot.detailGuids,
+        details,
+        rowActions,
+        // 真正提交的确认时间在用户点击确认时生成。
+        confirmedAt: new Date().toISOString(),
+      })),
+    })
   }
 
   // ---- 删除选中 ----
@@ -1035,8 +1090,8 @@ export default function InvoiceEditPage() {
         ),
       )
       message.success(t('posAdmin.invoiceDetail.batchSetActionSuccess', '批量设置操作类型成功'))
-    } catch {
-      message.error(t('posAdmin.invoiceDetail.batchSetActionFailed', '批量设置操作类型失败'))
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : t('posAdmin.invoiceDetail.batchSetActionFailed', '批量设置操作类型失败'))
     }
   }
 
@@ -1484,7 +1539,7 @@ export default function InvoiceEditPage() {
                 {t('posAdmin.invoiceDetail.updateHqProductsBtn', '更新HQ商品')}
               </Button>
             )}
-            {isAdmin && (
+            {canRunGlobalLocalPurchaseBatchActions && (
               <Button
                 icon={<ThunderboltOutlined />}
                 loading={executing}
@@ -1494,7 +1549,7 @@ export default function InvoiceEditPage() {
                 {t('posAdmin.invoiceDetail.batchExecuteBtn', '批量执行操作')}
               </Button>
             )}
-            {isAdmin && (
+            {canRunGlobalLocalPurchaseBatchActions && (
               <Dropdown
                 menu={{
                   items: ACTION_MENU_ITEMS(t),

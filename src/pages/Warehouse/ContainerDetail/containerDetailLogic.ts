@@ -1,6 +1,10 @@
 import type { ContainerDetail, ContainerMain, UpdateContainerDetailRequest } from '../../../types/container'
 import type { PushProductsToHqResult } from '../../../types/posProduct'
 
+export type ContainerDetailTagFilter = 'all' | 'new' | 'existing' | 'noOemPrice' | 'abnormalImport'
+
+export type ContainerDetailTagStats = Record<ContainerDetailTagFilter, number>
+
 export function getContainerDetailProductName(row: ContainerDetail) {
   return row.商品名称 ?? row.商品信息?.商品名称
 }
@@ -25,6 +29,34 @@ export function mergeContainerDetailPatch(row: ContainerDetail, patch: Partial<C
   }
 
   return next
+}
+
+export function matchesContainerDetailTagFilter(row: ContainerDetail, filter: ContainerDetailTagFilter) {
+  if (filter === 'new') return Boolean(row.是否新商品)
+  if (filter === 'existing') return !row.是否新商品
+  if (filter === 'noOemPrice') return Boolean(row.是否新商品) && (!row.贴牌价格 || row.贴牌价格 <= 0)
+  if (filter === 'abnormalImport') return !row.进口价格 || row.进口价格 <= 0
+  return true
+}
+
+export function buildContainerDetailTagStats(rows: ContainerDetail[]): ContainerDetailTagStats {
+  const stats: ContainerDetailTagStats = {
+    all: rows.length,
+    new: 0,
+    existing: 0,
+    noOemPrice: 0,
+    abnormalImport: 0,
+  }
+
+  rows.forEach((row) => {
+    // 统计栏和标签过滤共用同一判断，避免数量与点击后的列表不一致。
+    if (matchesContainerDetailTagFilter(row, 'new')) stats.new += 1
+    if (matchesContainerDetailTagFilter(row, 'existing')) stats.existing += 1
+    if (matchesContainerDetailTagFilter(row, 'noOemPrice')) stats.noOemPrice += 1
+    if (matchesContainerDetailTagFilter(row, 'abnormalImport')) stats.abnormalImport += 1
+  })
+
+  return stats
 }
 
 export function buildContainerDetailTranslationUpdates(

@@ -170,6 +170,7 @@ function normalizeStoreOrderHqIncrementalSyncPayload(payload?: StoreOrderHqSyncP
     ...basePayload,
     ...(payload?.startDate ? { startDate: payload.startDate } : {}),
     ...(payload?.endDate ? { endDate: payload.endDate } : {}),
+    ...(payload?.conflictStrategy ? { conflictStrategy: payload.conflictStrategy } : {}),
   }
 }
 
@@ -236,6 +237,12 @@ function normalizeStoreOrderSyncJobResult(
         : nestedResult.mode === 'Full' || nestedResult.mode === 'Incremental'
           ? nestedResult.mode
           : undefined,
+    conflictStrategy:
+      result.conflictStrategy === 'LatestWins' || result.conflictStrategy === 'HqWins'
+        ? result.conflictStrategy
+        : nestedResult.conflictStrategy === 'LatestWins' || nestedResult.conflictStrategy === 'HqWins'
+          ? nestedResult.conflictStrategy
+          : undefined,
     message,
     success,
     storeCodes: Array.isArray(result.storeCodes)
@@ -249,6 +256,14 @@ function normalizeStoreOrderSyncJobResult(
     detailsUpdated: readNumber(result.detailsUpdated, nestedResult.detailsUpdated),
     ordersSoftDeleted: readNumber(result.ordersSoftDeleted, nestedResult.ordersSoftDeleted),
     detailsSoftDeleted: readNumber(result.detailsSoftDeleted, nestedResult.detailsSoftDeleted),
+    skippedOrdersBecauseLocalNewer: readNumber(
+      result.skippedOrdersBecauseLocalNewer,
+      nestedResult.skippedOrdersBecauseLocalNewer,
+    ),
+    skippedDetailsBecauseLocalNewer: readNumber(
+      result.skippedDetailsBecauseLocalNewer,
+      nestedResult.skippedDetailsBecauseLocalNewer,
+    ),
     hqOrderCount: readNumber(result.hqOrderCount, nestedResult.hqOrderCount),
     hqDetailCount: readNumber(result.hqDetailCount, nestedResult.hqDetailCount),
     shadowRowCount: readNumber(result.shadowRowCount, nestedResult.shadowRowCount),

@@ -113,6 +113,15 @@ async function main() {
     assert(pageSource.includes('stopSyncPollingRef.current?.()'), '页面卸载时应清理轮询定时器')
     assert(pageSource.includes("result.status === 'Failed'"), '页面应单独处理失败状态')
     assert(pageSource.includes('void loadData()'), '同步成功后应刷新当前筛选列表')
+    assert(pageSource.includes('const [incrementalConflictStrategy, setIncrementalConflictStrategy]'), '页面应维护增量同步冲突策略状态')
+    assert(pageSource.includes('const handleOpenIncrementalHqSync = () =>'), '页面应通过统一入口打开增量同步弹窗')
+    assert(pageSource.includes('setIncrementalConflictStrategy(DEFAULT_INCREMENTAL_CONFLICT_STRATEGY)'), '每次打开或取消增量同步弹窗时应恢复默认冲突策略')
+    assert(pageSource.includes('onClick={handleOpenIncrementalHqSync}'), '增量同步按钮应先重置默认策略再打开弹窗')
+    assert(pageSource.includes('conflictStrategy: incrementalConflictStrategy'), '提交增量同步时应带上当前冲突策略')
+    assert(pageSource.includes("value={incrementalConflictStrategy}"), '冲突处理单选组应绑定当前策略')
+    assert(pageSource.includes("t('storeOrders.syncConflictLatestWins')"), '页面应渲染按最新更新时间处理冲突的文案')
+    assert(pageSource.includes("t('storeOrders.syncConflictHqWins')"), '页面应渲染 HQ 优先的冲突处理文案')
+    assert(pageSource.includes("t('storeOrders.syncSkippedSummary'"), '同步成功提示应拼接跳过统计')
   })
   if (pageSourceFailure) failures.push(pageSourceFailure)
 
@@ -125,10 +134,13 @@ async function main() {
         jobId: 'job-1',
         status: 'Succeeded',
         message: '同步完成',
+        conflictStrategy: 'LatestWins',
         ordersSynced: 3,
         detailsSynced: 5,
         ordersUpdated: 1,
         detailsUpdated: 2,
+        skippedOrdersBecauseLocalNewer: 4,
+        skippedDetailsBecauseLocalNewer: 6,
       },
     ]
     const requestedJobIds: string[] = []
@@ -163,10 +175,13 @@ async function main() {
         jobId: 'job-1',
         status: 'Succeeded',
         message: '同步完成',
+        conflictStrategy: 'LatestWins',
         ordersSynced: 3,
         detailsSynced: 5,
         ordersUpdated: 1,
         detailsUpdated: 2,
+        skippedOrdersBecauseLocalNewer: 4,
+        skippedDetailsBecauseLocalNewer: 6,
       },
       '轮询成功后应返回最终摘要',
     )

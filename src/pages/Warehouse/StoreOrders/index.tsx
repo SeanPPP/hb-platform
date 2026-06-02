@@ -16,6 +16,7 @@ import {
   Input,
   Modal,
   Popconfirm,
+  Radio,
   Select,
   Space,
   Table,
@@ -47,6 +48,8 @@ import type { StoreDto } from '../../../types/store'
 import type {
   CopyStoreOrderPayload,
   StoreOrderBranchOption,
+  StoreOrderHqSyncPayload,
+  StoreOrderSyncConflictStrategy,
   StoreOrderFlowStatus,
   StoreOrderListItem,
   StoreOrderListQuery,
@@ -139,6 +142,8 @@ function renderDateTag(value?: string, language?: string) {
 
   return <Tag color={getDateTagColor(displayValue)}>{displayValue}</Tag>
 }
+
+const DEFAULT_INCREMENTAL_CONFLICT_STRATEGY: StoreOrderSyncConflictStrategy = 'LatestWins'
 
 function StorePickerModal({ open, title, loading, onCancel, onSelect }: StorePickerModalProps) {
   const { t } = useTranslation()
@@ -418,6 +423,8 @@ export default function StoreOrdersPage() {
     dayjs().subtract(30, 'day'),
     dayjs(),
   ])
+  const [incrementalConflictStrategy, setIncrementalConflictStrategy] =
+    useState<StoreOrderSyncConflictStrategy>(DEFAULT_INCREMENTAL_CONFLICT_STRATEGY)
   const [storePickerOpen, setStorePickerOpen] = useState(false)
   const [copyModalOpen, setCopyModalOpen] = useState(false)
   // 记录当前轮询停止函数，确保重复触发和页面卸载时都能清理定时器。
@@ -513,7 +520,7 @@ export default function StoreOrdersPage() {
 
   const runStoreOrderHqSync = async (
     mode: 'Full' | 'Incremental',
-    options: { startDate?: string; endDate?: string; storeCodes?: string[] } = {},
+    options: StoreOrderHqSyncPayload = {},
   ) => {
     if (isMountedRef.current) {
       setSyncingMode(mode)
@@ -583,6 +590,17 @@ export default function StoreOrdersPage() {
           }),
         )
       }
+      if (
+        (result.skippedOrdersBecauseLocalNewer ?? 0) > 0 ||
+        (result.skippedDetailsBecauseLocalNewer ?? 0) > 0
+      ) {
+        parts.push(
+          t('storeOrders.syncSkippedSummary', {
+            orders: result.skippedOrdersBecauseLocalNewer ?? 0,
+            details: result.skippedDetailsBecauseLocalNewer ?? 0,
+          }),
+        )
+      }
 
       if (parts.length) {
         message.success(parts.join(', '))
@@ -624,6 +642,12 @@ export default function StoreOrdersPage() {
     })
   }
 
+  const handleOpenIncrementalHqSync = () => {
+    // 每次打开弹窗都恢复安全默认值，避免上次选择 HQ 优先后被无意沿用。
+    setIncrementalConflictStrategy(DEFAULT_INCREMENTAL_CONFLICT_STRATEGY)
+    setIncrementalSyncOpen(true)
+  }
+
   const handleIncrementalHqSync = async () => {
     if (!incrementalSyncRange?.[0] || !incrementalSyncRange?.[1]) {
       message.warning(t('storeOrders.syncDateRangeRequired'))
@@ -635,6 +659,8 @@ export default function StoreOrdersPage() {
       storeCodes: selectedStoreCodes.length ? selectedStoreCodes : undefined,
       startDate: incrementalSyncRange[0].startOf('day').toISOString(),
       endDate: incrementalSyncRange[1].endOf('day').toISOString(),
+      // 增量同步需明确告知后端冲突策略，避免默认行为随接口演进漂移。
+      conflictStrategy: incrementalConflictStrategy,
     })
   }
 
@@ -926,7 +952,7 @@ export default function StoreOrdersPage() {
               icon={<SyncOutlined />}
               loading={syncingMode === 'Incremental'}
               disabled={syncingMode !== null}
-              onClick={() => setIncrementalSyncOpen(true)}
+              onClick={handleOpenIncrementalHqSync}
             >
               {t('storeOrders.syncIncrementalOrders')}
             </Button>
@@ -1138,7 +1164,10 @@ export default function StoreOrdersPage() {
         okText={t('storeOrders.syncIncrementalOrders')}
         cancelText={t('common.cancel')}
         destroyOnHidden
-        onCancel={() => setIncrementalSyncOpen(false)}
+        onCancel={() => {
+          setIncrementalSyncOpen(false)
+          setIncrementalConflictStrategy(DEFAULT_INCREMENTAL_CONFLICT_STRATEGY)
+        }}
         onOk={() => void handleIncrementalHqSync()}
       >
         <Space direction="vertical" style={{ width: '100%' }}>
@@ -1151,6 +1180,20 @@ export default function StoreOrdersPage() {
             showTime
             onChange={(value) => setIncrementalSyncRange(value)}
           />
+          <Space direction="vertical" size={8} style={{ width: '100%' }}>
+            <Typography.Text>{t('storeOrders.syncConflictStrategy')}</Typography.Text>
+            <Radio.Group
+              value={incrementalConflictStrategy}
+              onChange={(event) =>
+                setIncrementalConflictStrategy(event.target.value as StoreOrderSyncConflictStrategy)
+              }
+            >
+              <Space direction="vertical" size={8}>
+                <Radio value="LatestWins">{t('storeOrders.syncConflictLatestWins')}</Radio>
+                <Radio value="HqWins">{t('storeOrders.syncConflictHqWins')}</Radio>
+              </Space>
+            </Radio.Group>
+          </Space>
           {selectedStoreCodes.length ? (
             <Typography.Text type="secondary">
               {t('storeOrders.syncIncrementalScope', { count: selectedStoreCodes.length })}

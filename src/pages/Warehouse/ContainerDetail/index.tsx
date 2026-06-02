@@ -50,13 +50,19 @@ import {
   translateHqProductNamesByContainerNumber,
   updateContainer,
 } from '../../../services/containerService'
+import {
+  buildContainerCreateProductsOperationId,
+  createContainerProductCreationJob,
+  waitForContainerProductCreationJob,
+  type ContainerProductCreationJob,
+  type ContainerProductCreationResultItem,
+} from '../../../services/containerProductCreationService'
 import { exportContainerDetailsToExcel, type ContainerDetailExportItem } from '../../../services/exportService'
-import { createProduct, pushProductsToHq, updateProduct } from '../../../services/posProductService'
+import { pushProductsToHq, updateProduct } from '../../../services/posProductService'
 import { upsertForActiveStores as upsertMultiCodeForActiveStores } from '../../../services/storeMultiCodePriceService'
 import { upsertForActiveStores as upsertRetailForActiveStores } from '../../../services/storeRetailPriceService'
 import { batchTranslate } from '../../../services/translationService'
 import {
-  batchCreateProducts,
   batchUpdateWarehouseProducts,
   bulkSetStatus,
   detectProducts,
@@ -66,18 +72,20 @@ import type { ContainerDetail, ContainerMain, HqTranslationResult, UpdateContain
 import { copyTextToClipboard } from '../../../utils/clipboard'
 import {
   applyContainerDetailEnglishNameUpdates,
+  buildContainerDetailTagStats,
   buildContainerDetailFloatRateUpdates,
   buildContainerDetailHqPushSelection,
   buildContainerDetailTranslationUpdates,
   extractPushToHqErrorResult,
   getContainerDetailEnglishName,
   getContainerDetailProductName,
+  matchesContainerDetailTagFilter,
   mergeContainerDetailPatch,
+  type ContainerDetailTagFilter,
 } from './containerDetailLogic'
 import type { PushProductsToHqResult } from '../../../types/posProduct'
 import './index.css'
 
-type TagFilter = 'all' | 'new' | 'existing' | 'noOemPrice' | 'abnormalImport'
 type ProductTypeFilter = 'all' | 'normal' | 'set' | 'setChild'
 
 function formatDate(value?: string) {
@@ -132,10 +140,6 @@ function getProductTypeFilterLabel(value: ProductTypeFilter, t: TFunction) {
   return t(map[value])
 }
 
-function isSetProduct(row: ContainerDetail) {
-  return row.商品类型 === '套装商品' || row.商品类型 === '套装子商品' || row.商品信息?.商品类型 === '套装商品'
-}
-
 function CopyableText({ value, maxWidth }: { value?: string; maxWidth?: number }) {
   if (!value) {
     return <>--</>
@@ -178,7 +182,7 @@ export default function ContainerDetailPage() {
   const [selectedRowKeys, setSelectedRowKeys] = useState<Key[]>([])
   const [itemNumberFilter, setItemNumberFilter] = useState('')
   const [productTypeFilter, setProductTypeFilter] = useState<ProductTypeFilter>('all')
-  const [tagFilter, setTagFilter] = useState<TagFilter>('all')
+  const [tagFilter, setTagFilter] = useState<ContainerDetailTagFilter>('all')
   const [batchFloatRate, setBatchFloatRate] = useState<number | null>(null)
   const [batchImportPrice, setBatchImportPrice] = useState<number | null>(null)
   const [batchOemPrice, setBatchOemPrice] = useState<number | null>(null)
@@ -187,7 +191,9 @@ export default function ContainerDetailPage() {
   const [hqTranslating, setHqTranslating] = useState(false)
   const [pushToHqLoading, setPushToHqLoading] = useState(false)
   const [recalculateCostsLoading, setRecalculateCostsLoading] = useState(false)
+  const [createProductsLoading, setCreateProductsLoading] = useState(false)
   const pushToHqLoadingRef = useRef(false)
+  const createProductsLoadingRef = useRef(false)
   const [headerEditing, setHeaderEditing] = useState(false)
   const [headerForm, setHeaderForm] = useState<{
     实际到货日期?: Dayjs | null
@@ -230,25 +236,47 @@ export default function ContainerDetailPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [containerGuid])
 
-  const filteredRows = useMemo(() => {
+  useEffect(() => {
+    setSelectedRowKeys([])
+  }, [itemNumberFilter, productTypeFilter, tagFilter])
+
+  const baseFilteredRows = useMemo(() => {
     return rows.filter((row) => {
       const itemNumber = row.商品信息?.货号 || ''
       if (itemNumberFilter && !itemNumber.toLowerCase().includes(itemNumberFilter.toLowerCase())) return false
       if (productTypeFilter !== 'all' && getProductTypeFilterKey(row.商品类型 || row.商品信息?.商品类型) !== productTypeFilter) return false
-      if (tagFilter === 'new') return Boolean(row.是否新商品)
-      if (tagFilter === 'existing') return !row.是否新商品
-      if (tagFilter === 'noOemPrice') return Boolean(row.是否新商品) && (!row.贴牌价格 || row.贴牌价格 <= 0)
-      if (tagFilter === 'abnormalImport') return !row.进口价格 || row.进口价格 <= 0
       return true
     })
-  }, [itemNumberFilter, productTypeFilter, rows, tagFilter])
+  }, [itemNumberFilter, productTypeFilter, rows])
+
+  const filteredRows = useMemo(() => {
+    return baseFilteredRows.filter((row) => matchesContainerDetailTagFilter(row, tagFilter))
+  }, [baseFilteredRows, tagFilter])
+
+  const tagStats = useMemo(() => buildContainerDetailTagStats(baseFilteredRows), [baseFilteredRows])
+
+  const tagStatOptions = useMemo<Array<{ value: ContainerDetailTagFilter; label: string; color?: string }>>(() => [
+    { value: 'all', label: t('containers.filters.allTags') },
+    { value: 'new', label: t('containers.tags.newProduct'), color: 'blue' },
+    { value: 'existing', label: t('containers.tags.existingProduct') },
+    { value: 'noOemPrice', label: t('containers.filters.missingOemPrice'), color: 'orange' },
+    { value: 'abnormalImport', label: t('containers.filters.abnormalImportPrice'), color: 'red' },
+  ], [t])
 
   const selectedRows = useMemo(
     () => filteredRows.filter((row) => selectedRowKeys.includes(rowKey(row))),
     [filteredRows, selectedRowKeys],
   )
 
-  const targetRows = selectedRows.length ? selectedRows : filteredRows
+  const hasHiddenSelectedRows = selectedRowKeys.length > 0 && selectedRows.length === 0
+  const targetRows = selectedRowKeys.length ? selectedRows : filteredRows
+
+  const ensureTargetRowsVisible = () => {
+    if (!hasHiddenSelectedRows) return true
+    message.warning(t('containers.messages.selectedRowsHidden', '已选明细不在当前筛选结果中，请重新选择后再操作'))
+    return false
+  }
+  const canCreateContainerProducts = access.canEditContainer && access.canManagePosProducts
 
   const patchRow = (key: string, patch: Partial<ContainerDetail>) => {
     setRows((items) => items.map((item) => (rowKey(item) === key ? mergeContainerDetailPatch(item, patch) : item)))
@@ -305,6 +333,7 @@ export default function ContainerDetailPage() {
   }
 
   const applyFloatRate = async () => {
+    if (!ensureTargetRowsVisible()) return
     if (batchFloatRate == null) {
       message.warning(t('containers.messages.enterFloatRate'))
       return
@@ -319,6 +348,7 @@ export default function ContainerDetailPage() {
 
   const handleRecalculateCosts = async () => {
     if (!access.canEditContainer) return
+    if (!ensureTargetRowsVisible()) return
     if (container?.运费 == null) {
       message.warning('缺少运费，无法重算成本')
       return
@@ -399,6 +429,7 @@ export default function ContainerDetailPage() {
   }
 
   const translateNames = async () => {
+    if (!ensureTargetRowsVisible()) return
     const names = Array.from(new Set(targetRows.map(getContainerDetailProductName).filter((value): value is string => Boolean(value))))
     if (!names.length) {
       message.warning(t('containers.messages.noNamesToTranslate'))
@@ -580,67 +611,118 @@ export default function ContainerDetailPage() {
     }
   }
 
-  const createNewProducts = async () => {
-    const candidates = targetRows.filter((row) => row.是否新商品)
-    const eligible = candidates.filter((row) => {
-      const name = getContainerDetailProductName(row)
-      const englishName = getContainerDetailEnglishName(row)
-      return name && englishName && (row.进口价格 ?? 0) > 0 && (row.贴牌价格 ?? 0) > 0
+  const renderCreateProductResultItems = (items: ContainerProductCreationResultItem[]) => {
+    if (!items.length) return null
+
+    return (
+      <ul style={{ margin: '4px 0 0', paddingInlineStart: 20 }}>
+        {items.slice(0, 10).map((item, index) => (
+          <li key={`${item.detailHguid || item.productCode || item.itemNumber || index}`}>
+            <Typography.Text>
+              {[item.productCode, item.itemNumber, item.reasonCode, item.message].filter(Boolean).join(' / ')}
+            </Typography.Text>
+          </li>
+        ))}
+        {items.length > 10 ? (
+          <li>
+            <Typography.Text type="secondary">
+              {t('containers.text.moreCreateProductResultItems', '还有 {{count}} 条未显示', { count: items.length - 10 })}
+            </Typography.Text>
+          </li>
+        ) : null}
+      </ul>
+    )
+  }
+
+  const showCreateProductsJobResult = (job: ContainerProductCreationJob) => {
+    const result = job.result
+    const content = (
+      <Space direction="vertical" size={8}>
+        <Typography.Text>
+          {t('containers.text.createProductsJobSummary', '创建 {{created}}，跳过 {{skipped}}，失败 {{failed}}', {
+            created: result.createdCount,
+            skipped: result.skippedCount,
+            failed: result.failedCount,
+          })}
+        </Typography.Text>
+        {job.message ? <Typography.Text type="secondary">{job.message}</Typography.Text> : null}
+        {result.skipped.length ? (
+          <div>
+            <Typography.Text strong>{t('containers.text.skippedRows', '跳过明细')}</Typography.Text>
+            {renderCreateProductResultItems(result.skipped)}
+          </div>
+        ) : null}
+        {result.errors.length ? (
+          <div>
+            <Typography.Text strong>{t('containers.text.failedRows', '失败明细')}</Typography.Text>
+            {renderCreateProductResultItems(result.errors)}
+          </div>
+        ) : null}
+      </Space>
+    )
+
+    if (job.status === 'Failed') {
+      Modal.error({
+        title: t('containers.messages.createProductsJobFailed', '创建新商品失败'),
+        content,
+      })
+      return
+    }
+
+    if (result.failedCount > 0 || result.errors.length > 0 || result.skippedCount > 0) {
+      Modal.warning({
+        title: t('containers.messages.createProductsJobPartialSucceeded', '创建新商品部分完成'),
+        content,
+      })
+      return
+    }
+
+    Modal.success({
+      title: t('containers.messages.createProductsJobSucceeded', '创建新商品完成'),
+      content,
     })
-    if (!eligible.length) {
+  }
+
+  const createNewProducts = async () => {
+    if (createProductsLoadingRef.current) return
+    if (!ensureTargetRowsVisible()) return
+    if (!access.canEditContainer || !access.canManagePosProducts) {
+      message.warning(t('posAdmin.products.noManagePermission', '无权限管理商品'))
+      return
+    }
+    const detailHguids = targetRows.map((row) => row.hguid).filter((value): value is string => Boolean(value))
+    if (!detailHguids.length) {
       message.warning(t('containers.messages.noEligibleNewProducts'))
       return
     }
-    const created: Array<{ row: ContainerDetail; productCode: string }> = []
-    for (const row of eligible) {
-      const productCode = row.商品编码 || row.商品信息?.商品编码
-      if (!productCode) continue
-      await createProduct({
-        productCode,
-        productName: getContainerDetailProductName(row),
-        itemNumber: row.商品信息?.货号,
-        barcode: row.商品信息?.条形码,
-        purchasePrice: row.进口价格,
-        retailPrice: row.贴牌价格,
-        localSupplierCode: '200',
-        isAutoPricing: false,
-        isSpecialProduct: false,
+    const operationId = buildContainerCreateProductsOperationId(containerGuid, detailHguids)
+
+    try {
+      // 创建新商品是跨库后台任务，使用即时锁配合 operationId 防止重复提交。
+      createProductsLoadingRef.current = true
+      setCreateProductsLoading(true)
+      const job = await createContainerProductCreationJob({
+        operationId,
+        containerGuid,
+        detailHguids,
       })
-      created.push({ row, productCode })
+      message.info(t('containers.messages.createProductsJobSubmitted', '创建新商品任务已提交，正在后台处理'))
+      const finalJob = job.status === 'Queued' || job.status === 'Running'
+        ? await waitForContainerProductCreationJob(job.jobId)
+        : job
+      showCreateProductsJobResult(finalJob)
+      setSelectedRowKeys([])
+      await loadData()
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : t('containers.messages.createProductFailed', '创建新商品失败'))
+    } finally {
+      createProductsLoadingRef.current = false
+      setCreateProductsLoading(false)
     }
-    if (created.length) {
-      await batchCreateProducts(created.map(({ row, productCode }) => ({
-        ProductCode: productCode,
-        ItemNumber: row.商品信息?.货号,
-        Barcode: row.商品信息?.条形码,
-        ChineseName: getContainerDetailProductName(row),
-        EnglishName: getContainerDetailEnglishName(row),
-        DomesticPrice: row.国内价格,
-        OEMPrice: row.贴牌价格,
-        ImportPrice: row.进口价格,
-        Volume: row.单件体积,
-        IsSetProduct: isSetProduct(row),
-      })))
-      await upsertRetailForActiveStores(created.map(({ row, productCode }) => ({
-        ProductCode: productCode,
-        PurchasePrice: row.进口价格,
-        StoreRetailPriceValue: row.贴牌价格,
-        IsActive: true,
-        IsAutoPricing: false,
-      })))
-      await upsertMultiCodeForActiveStores(created.filter(({ row }) => isSetProduct(row)).map(({ row, productCode }) => ({
-        ProductCode: productCode,
-        PurchasePrice: row.进口价格,
-        MultiCodeRetailPrice: row.贴牌价格,
-        IsActive: true,
-        IsAutoPricing: false,
-      })))
-    }
-    message.success(t('containers.messages.newProductsCreated', { count: created.length }))
-    await loadData()
   }
 
   const updateExistingPurchase = async () => {
+    if (!ensureTargetRowsVisible()) return
     const candidates = targetRows.filter((row) => !row.是否新商品)
     if (!candidates.length) {
       message.info(t('containers.messages.noExistingProductsToUpdate'))
@@ -670,12 +752,15 @@ export default function ContainerDetailPage() {
       ImportPrice: row.进口价格,
       IsActive: true,
     })))
-    await Promise.all(
+    const posUpdateResults = await Promise.allSettled(
       updates.map((row) => {
         const code = row.商品编码 || row.商品信息?.商品编码
-        return code ? updateProduct(code, { purchasePrice: row.进口价格 ?? 0 }).catch(() => null) : Promise.resolve(null)
+        return code ? updateProduct(code, { purchasePrice: row.进口价格 ?? 0 }) : Promise.resolve(null)
       }),
     )
+    const posUpdateFailures = posUpdateResults
+      .map((result, index) => (result.status === 'rejected' ? updates[index]?.商品编码 || updates[index]?.商品信息?.商品编码 : undefined))
+      .filter((code): code is string => Boolean(code))
     await upsertRetailForActiveStores(updates.map((row) => ({
       ProductCode: row.商品编码 || row.商品信息?.商品编码 || '',
       PurchasePrice: row.进口价格,
@@ -686,6 +771,15 @@ export default function ContainerDetailPage() {
       PurchasePrice: row.进口价格,
       IsActive: true,
     })))
+    if (posUpdateFailures.length) {
+      Modal.warning({
+        title: t('containers.messages.purchasePricesPartiallyUpdated', '进货价部分更新完成'),
+        content: t('containers.messages.posPurchasePriceUpdateFailed', '以下 POS 商品进货价更新失败：{{codes}}', {
+          codes: posUpdateFailures.join(', '),
+        }),
+      })
+      return
+    }
     message.success(t('containers.messages.purchasePricesUpdated', { count: updates.length }))
   }
 
@@ -710,6 +804,7 @@ export default function ContainerDetailPage() {
   }
 
   const exportExcel = async () => {
+    if (!ensureTargetRowsVisible()) return
     const exportRows = targetRows
     if (!exportRows.length) {
       message.warning(t('containers.messages.noDataToExport'))
@@ -910,13 +1005,7 @@ export default function ContainerDetailPage() {
                     value={tagFilter}
                     style={{ width: 150 }}
                     onChange={setTagFilter}
-                    options={[
-                      { value: 'all', label: t('containers.filters.allTags') },
-                      { value: 'new', label: t('containers.tags.newProduct') },
-                      { value: 'existing', label: t('containers.tags.existingProduct') },
-                      { value: 'noOemPrice', label: t('containers.filters.missingOemPrice') },
-                      { value: 'abnormalImport', label: t('containers.filters.abnormalImportPrice') },
-                    ]}
+                    options={tagStatOptions.map(({ value, label }) => ({ value, label }))}
                   />
                   <Typography.Text type="secondary">{t('containers.text.showingRows', { filtered: filteredRows.length, total: rows.length })}</Typography.Text>
                 </Space>
@@ -944,7 +1033,9 @@ export default function ContainerDetailPage() {
                       menu={{
                         items: [
                           { key: 'translate', label: t('containers.actions.batchTranslate') },
-                          { key: 'createNew', label: t('containers.actions.createNewProducts') },
+                          ...(canCreateContainerProducts
+                            ? [{ key: 'createNew', label: t('containers.actions.createNewProducts'), disabled: createProductsLoading }]
+                            : []),
                           { key: 'updatePurchase', label: t('containers.actions.updateExistingPurchase') },
                           { key: 'active', label: t('containers.actions.batchActivate') },
                           { key: 'inactive', label: t('containers.actions.batchDeactivate') },
@@ -976,6 +1067,34 @@ export default function ContainerDetailPage() {
                   <Switch checkedChildren={t('containers.text.selectedFirst')} unCheckedChildren={t('containers.text.allDisplayed')} checked={selectedRowKeys.length > 0} disabled />
                 </Space>
               ) : null}
+
+              <Space className="container-detail-stats" wrap size={[8, 8]}>
+                {tagStatOptions.map((option) => {
+                  const active = tagFilter === option.value
+                  return (
+                    <Tag
+                      key={option.value}
+                      className="container-detail-stat-tag"
+                      color={active ? option.color ?? 'processing' : undefined}
+                      role="button"
+                      tabIndex={0}
+                      aria-pressed={active}
+                      onClick={() => setTagFilter(option.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter' || event.key === ' ') {
+                          event.preventDefault()
+                          setTagFilter(option.value)
+                        }
+                      }}
+                    >
+                      <span>{option.label}</span>
+                      <Typography.Text strong className="container-detail-stat-count">
+                        {tagStats[option.value]}
+                      </Typography.Text>
+                    </Tag>
+                  )
+                })}
+              </Space>
 
               {exporting ? <Progress percent={exportProgress} size="small" /> : null}
 
