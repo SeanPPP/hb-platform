@@ -57,7 +57,14 @@ export interface SyncProductsToStoresRequest {
   productCodes: string[]
   storeCodes: string[]
   overwrite?: boolean
+  fields: SyncProductsToStoresField[]
 }
+
+export type SyncProductsToStoresField =
+  | 'purchasePrice'
+  | 'retailPrice'
+  | 'isAutoPricing'
+  | 'isSpecialProduct'
 
 export interface SyncProductsToStoresResult {
   successCount: number
@@ -65,10 +72,77 @@ export interface SyncProductsToStoresResult {
   errors: string[]
 }
 
-export interface HqProductSyncResult {
-  createdCount: number
-  updatedCount: number
-  skippedCount: number
-  errorCount: number
+export interface PushProductsToHqRequest {
+  productCodes: string[]
+}
+
+export interface PushProductsToHqResult {
+  successCount: number
+  failedCount: number
+  totalCount: number
+  affectedRowCount?: number
+  productsAdded?: number
+  productsUpdated?: number
+  storeRetailPricesCreated?: number
+  storeRetailPricesUpdated?: number
+  productSetCodesCreated?: number
+  productSetCodesUpdated?: number
+  storeMultiCodesCreated?: number
+  storeMultiCodesUpdated?: number
   errors: string[]
+  message?: string
+}
+
+export interface HqProductSyncResult {
+  addedCount?: number
+  updatedCount?: number
+  deletedCount?: number
+  totalCount?: number
+  errorCount?: number
+  message?: string
+  totalHqProducts?: number
+  totalLocalProducts?: number
+  productsAdded?: number
+  productsUpdated?: number
+  productsDeleted?: number
+  productsSoftDeleted?: number
+  storeRetailPricesCreated?: number
+  storeRetailPricesUpdated?: number
+  storeRetailPricesDeleted?: number
+  productSetCodesCreated?: number
+  productSetCodesAdded?: number
+  productSetCodesUpdated?: number
+  productSetCodesDeleted?: number
+  productSetCodesSoftDeleted?: number
+  storeMultiCodesCreated?: number
+  storeMultiCodesUpdated?: number
+  storeMultiCodesDeleted?: number
+  errors?: string[]
+  durationMs?: number
+}
+
+export interface HqProductIncrementalSyncRequest {
+  startDate?: string
+}
+
+export type HqProductSyncJobStatus = 'Queued' | 'Running' | 'Succeeded' | 'Failed'
+
+export type HqProductSyncMode = 'Full' | 'Incremental'
+
+export interface HqProductFullSyncJobRequest {
+  operationId: string
+}
+
+export interface HqProductIncrementalSyncJobRequest extends HqProductIncrementalSyncRequest {
+  operationId: string
+}
+
+export interface HqProductSyncJobResult extends HqProductSyncResult {
+  jobId: string
+  status: HqProductSyncJobStatus
+  mode?: HqProductSyncMode
+  operationId?: string
+  success?: boolean
+  startDate?: string
+  result?: HqProductSyncResult
 }

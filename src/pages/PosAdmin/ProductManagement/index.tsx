@@ -8,6 +8,7 @@ import {
   PlusOutlined,
   ReloadOutlined,
   SafetyCertificateOutlined,
+  SearchOutlined,
   SettingOutlined,
 } from '@ant-design/icons'
 import {
@@ -16,6 +17,7 @@ import {
   Cascader,
   Checkbox,
   Col,
+  DatePicker,
   Descriptions,
   Divider,
   Form,
@@ -39,7 +41,7 @@ import {
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import dayjs from 'dayjs'
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import BarcodePreview from '../../../components/BarcodePreview'
 import PageContainer from '../../../components/PageContainer'
@@ -53,8 +55,14 @@ import {
 } from '../../../services/multiCodeSetService'
 import {
   batchUpdateProducts,
+  buildProductHqSyncOperationId,
+  createProductHqSyncJobPoller,
+  createProductFullHqSyncJob,
+  createProductIncrementalHqSyncJob,
+  getProductHqSyncJob,
   getProducts,
-  syncProductsFromHq,
+  HqProductSyncPollingTimeoutError,
+  pushProductsToHq,
   syncProductsToStores,
   updateProduct,
 } from '../../../services/posProductService'
@@ -66,17 +74,118 @@ import {
 } from '../../../services/productCategoryService'
 import { checkIntegrity, fixIntegrity } from '../../../services/productIntegrityService'
 import { getActiveStores } from '../../../services/storeService'
+import { useAuthStore } from '../../../store/auth'
 import { copyTextToClipboard } from '../../../utils/clipboard'
-import type { BatchUpdatePosProductDto, HqProductSyncResult, PosProductDto, PosProductFilterParams, SyncProductsToStoresRequest, SyncProductsToStoresResult } from '../../../types/posProduct'
+import type { BatchUpdatePosProductDto, HqProductSyncJobResult, HqProductSyncJobStatus, HqProductSyncResult, PosProductDto, PosProductFilterParams, PushProductsToHqResult, SyncProductsToStoresField, SyncProductsToStoresRequest, SyncProductsToStoresResult } from '../../../types/posProduct'
 import type { ProductCategoryDto } from '../../../types/productCategory'
 import type { ProductIntegrityCheckResultDto, ProductIntegrityFixResultDto } from '../../../types/productIntegrity'
 import type { MulticodeSetItem } from '../../../types/multiCodeSet'
 import type { StoreOption } from '../../../services/storeService'
 
 type ProductRow = PosProductDto & { key: string }
+type HqSyncMode = Parameters<typeof buildProductHqSyncOperationId>[0]
+
+type ActiveProductHqSyncJob = {
+  jobId: string
+  mode: HqSyncMode
+  operationId: string
+  createdAt: string
+  status?: HqProductSyncJobStatus | string
+  message?: string
+  startDate?: string
+}
+
+const PRODUCT_HQ_SYNC_ACTIVE_JOB_STORAGE_KEY = 'posAdmin.products.activeHqSyncJob'
+const PRODUCT_HQ_SYNC_POLL_INTERVAL_MS = 2000
+const PRODUCT_HQ_SYNC_TIMEOUT_MS = 10 * 60 * 1000
+
+function readActiveProductHqSyncJob(): ActiveProductHqSyncJob | null {
+  if (typeof window === 'undefined') return null
+  try {
+    const raw = window.localStorage.getItem(PRODUCT_HQ_SYNC_ACTIVE_JOB_STORAGE_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as Partial<ActiveProductHqSyncJob>
+    if (!parsed.jobId || !parsed.operationId || !parsed.mode || !parsed.createdAt) return null
+    return parsed as ActiveProductHqSyncJob
+  } catch {
+    return null
+  }
+}
+
+function saveActiveProductHqSyncJob(job: ActiveProductHqSyncJob | null) {
+  if (typeof window === 'undefined') return
+  if (!job) {
+    window.localStorage.removeItem(PRODUCT_HQ_SYNC_ACTIVE_JOB_STORAGE_KEY)
+    return
+  }
+  window.localStorage.setItem(PRODUCT_HQ_SYNC_ACTIVE_JOB_STORAGE_KEY, JSON.stringify(job))
+}
+
+function resolveCascaderLeafValue(value: unknown): string | undefined {
+  if (Array.isArray(value)) {
+    const leaf = value[value.length - 1]
+    return leaf === undefined || leaf === null || leaf === '' ? undefined : String(leaf)
+  }
+  return typeof value === 'string' && value ? value : undefined
+}
+
+function collectCategoryGuids(nodes: ProductCategoryDto[] | undefined): string[] {
+  return (nodes ?? []).flatMap((node) => [
+    node.guid,
+    ...collectCategoryGuids(node.children),
+  ])
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null
+}
+
+function normalizePushToHqPayload(raw: unknown, fallbackMessage?: string): PushProductsToHqResult | null {
+  if (!isPlainRecord(raw)) return null
+  const errors = Array.isArray(raw.errors)
+    ? raw.errors.filter((item): item is string => typeof item === 'string')
+    : []
+  const affectedRowCount =
+    Number(raw.affectedRowCount ?? 0) ||
+    Number(raw.productsAdded ?? 0) +
+      Number(raw.productsUpdated ?? 0) +
+      Number(raw.storeRetailPricesCreated ?? 0) +
+      Number(raw.storeRetailPricesUpdated ?? 0) +
+      Number(raw.productSetCodesCreated ?? raw.productSetCodesAdded ?? 0) +
+      Number(raw.productSetCodesUpdated ?? 0) +
+      Number(raw.storeMultiCodesCreated ?? 0) +
+      Number(raw.storeMultiCodesUpdated ?? 0)
+
+  return {
+    ...(raw as Partial<PushProductsToHqResult>),
+    successCount: Number(raw.successCount ?? raw.productsAdded ?? 0) +
+      Number(raw.successCount === undefined ? raw.productsUpdated ?? 0 : 0),
+    failedCount: Number(raw.failedCount ?? raw.errorCount ?? errors.length),
+    totalCount: Number(raw.totalCount ?? 0),
+    affectedRowCount,
+    errors,
+    message: typeof raw.message === 'string' ? raw.message : fallbackMessage,
+  }
+}
+
+function extractPushToHqErrorResult(error: unknown): PushProductsToHqResult | null {
+  if (!isPlainRecord(error) || !('payload' in error)) return null
+  const payload = error.payload
+  if (!isPlainRecord(payload)) return null
+  const fallbackMessage = typeof payload.message === 'string'
+    ? payload.message
+    : error instanceof Error
+      ? error.message
+      : undefined
+  return (
+    normalizePushToHqPayload(payload.data, fallbackMessage) ??
+    normalizePushToHqPayload(payload.details, fallbackMessage)
+  )
+}
 
 const SORT_FIELD_MAP: Record<string, string> = {
   productCode: 'productcode',
+  itemNumber: 'productcode',
   barcode: 'barcode',
   productName: 'productname',
   localSupplierCode: 'localsuppliercode',
@@ -84,11 +193,14 @@ const SORT_FIELD_MAP: Record<string, string> = {
   purchasePrice: 'purchaseprice',
   retailPrice: 'retailprice',
   isActive: 'isactive',
+  createdAt: 'createdat',
   updatedAt: 'updatedat',
 }
 
 export default function ProductManagementPage() {
   const { t } = useTranslation()
+  const isAdmin = useAuthStore((state) => state.access.isAdmin)
+  const canManagePosProducts = useAuthStore((state) => state.access.canManagePosProducts)
 
   const [loading, setLoading] = useState(false)
   const [data, setData] = useState<ProductRow[]>([])
@@ -96,16 +208,31 @@ export default function ProductManagementPage() {
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(50)
   const [keyword, setKeyword] = useState('')
+  const [keywordInput, setKeywordInput] = useState('')
   const [supplierCode, setSupplierCode] = useState<string | undefined>(undefined)
+  const [supplierCodeInput, setSupplierCodeInput] = useState<string | undefined>(undefined)
   const [categoryGuid, setCategoryGuid] = useState<string | undefined>(undefined)
+  const [categoryGuidInput, setCategoryGuidInput] = useState<string | undefined>(undefined)
   const [isActiveFilter, setIsActiveFilter] = useState<boolean | undefined>(undefined)
+  const [isActiveFilterInput, setIsActiveFilterInput] = useState<boolean | undefined>(undefined)
   const [isSetFilter, setIsSetFilter] = useState<boolean | undefined>(undefined)
+  const [isSetFilterInput, setIsSetFilterInput] = useState<boolean | undefined>(undefined)
+  const [queryVersion, setQueryVersion] = useState(0)
   const [sortBy, setSortBy] = useState('productCode')
   const [sortOrder, setSortOrder] = useState<'ascend' | 'descend'>('ascend')
   const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([])
+  const [hqSyncSubmitting, setHqSyncSubmitting] = useState(false)
+  const hqSyncSubmittingRef = useRef(false)
+  const stopHqSyncPollingRef = useRef<(() => void) | null>(null)
+  const isMountedRef = useRef(true)
+  const [activeHqSyncJob, setActiveHqSyncJob] = useState<ActiveProductHqSyncJob | null>(() => readActiveProductHqSyncJob())
+  const [hqSyncMode, setHqSyncMode] = useState<HqSyncMode>('incremental')
+  const [hqSyncVisible, setHqSyncVisible] = useState(false)
+  const [hqSyncForm] = Form.useForm()
 
-  const [supplierOptions, setSupplierOptions] = useState<{ label: string; value: string }[]>([])
+  const [supplierOptions, setSupplierOptions] = useState<{ label: string; value: string; name?: string }[]>([])
   const [categoryTree, setCategoryTree] = useState<ProductCategoryDto[]>([])
+  const [categoryLoadFailed, setCategoryLoadFailed] = useState(false)
   const [storeOptions, setStoreOptions] = useState<StoreOption[]>([])
 
   const [editVisible, setEditVisible] = useState(false)
@@ -119,6 +246,8 @@ export default function ProductManagementPage() {
   const [syncToStoreForm] = Form.useForm()
   const [syncToStoreLoading, setSyncToStoreLoading] = useState(false)
   const [syncSelectAll, setSyncSelectAll] = useState(false)
+  const [pushToHqLoading, setPushToHqLoading] = useState(false)
+  const pushToHqLoadingRef = useRef(false)
 
   const productTypeWatch = Form.useWatch('productType', editForm)
   const [editSetCodes, setEditSetCodes] = useState<any[]>([])
@@ -140,6 +269,12 @@ export default function ProductManagementPage() {
   const [integrityLoading, setIntegrityLoading] = useState(false)
   const [integrityResult, setIntegrityResult] = useState<ProductIntegrityCheckResultDto | null>(null)
   const [fixLoading, setFixLoading] = useState(false)
+
+  // 供应商列表接口有时只返回编码，使用筛选下拉中的供应商资料补齐名称。
+  const supplierNameMap = useMemo(
+    () => new Map(supplierOptions.map((option) => [option.value, option.name || option.label])),
+    [supplierOptions],
+  )
 
   const wrapRef = useRef<HTMLDivElement>(null)
   const toolbarRef = useRef<HTMLDivElement>(null)
@@ -169,22 +304,219 @@ export default function ProductManagementPage() {
     } finally {
       setLoading(false)
     }
-  }, [page, pageSize, keyword, supplierCode, categoryGuid, isActiveFilter, isSetFilter, sortBy, sortOrder])
+  }, [page, pageSize, keyword, supplierCode, categoryGuid, isActiveFilter, isSetFilter, sortBy, sortOrder, queryVersion])
+
+  const stopHqSyncJobPolling = useCallback(() => {
+    stopHqSyncPollingRef.current?.()
+    stopHqSyncPollingRef.current = null
+  }, [])
+
+  const saveActiveHqSyncJob = useCallback((job: ActiveProductHqSyncJob) => {
+    setActiveHqSyncJob(job)
+    saveActiveProductHqSyncJob(job)
+  }, [])
+
+  const clearActiveHqSyncJob = useCallback(() => {
+    setActiveHqSyncJob(null)
+    saveActiveProductHqSyncJob(null)
+  }, [])
+
+  const buildHqSyncResultLines = useCallback((result: HqProductSyncResult) => {
+    const lines = [
+      t('posAdmin.products.hqSyncResult', '同步完成：新增 {{added}}，更新 {{updated}}，软删 {{deleted}}', {
+        added: result.productsAdded ?? 0,
+        updated: result.productsUpdated ?? 0,
+        deleted: result.productsDeleted ?? 0,
+      }),
+    ]
+
+    const relationStats = [
+      { label: t('posAdmin.products.storeRetailPricesCreated', '门店零售价新增'), value: result.storeRetailPricesCreated ?? 0 },
+      { label: t('posAdmin.products.storeRetailPricesDeleted', '门店零售价删除'), value: result.storeRetailPricesDeleted ?? 0 },
+      { label: t('posAdmin.products.productSetCodesCreated', '套装编码新增'), value: result.productSetCodesCreated ?? 0 },
+      { label: t('posAdmin.products.productSetCodesUpdated', '套装编码更新'), value: result.productSetCodesUpdated ?? 0 },
+      { label: t('posAdmin.products.productSetCodesDeleted', '套装编码删除'), value: result.productSetCodesDeleted ?? 0 },
+      { label: t('posAdmin.products.storeMultiCodesCreated', '门店多码新增'), value: result.storeMultiCodesCreated ?? 0 },
+      { label: t('posAdmin.products.storeMultiCodesDeleted', '门店多码删除'), value: result.storeMultiCodesDeleted ?? 0 },
+    ].filter((item) => item.value > 0)
+
+    relationStats.forEach((item) => {
+      lines.push(`${item.label}: ${item.value}`)
+    })
+
+    return lines
+  }, [t])
+
+  const showHqSyncJobResult = useCallback((result: HqProductSyncJobResult) => {
+    const displayResult: HqProductSyncResult & Pick<Partial<HqProductSyncJobResult>, 'status' | 'message'> = {
+      ...(result.result ?? result),
+      status: result.status,
+      message: result.message ?? result.result?.message,
+      errors: result.errors?.length ? result.errors : result.result?.errors,
+    }
+    const content = (
+      <Space direction="vertical" size={6}>
+        {displayResult.message && <div>{displayResult.message}</div>}
+        {buildHqSyncResultLines(displayResult).map((line) => (
+          <div key={line}>{line}</div>
+        ))}
+        {displayResult.errors?.length ? (
+          <div>
+            {t('posAdmin.products.partialSyncError', '部分同步错误')}：{displayResult.errors.join('\n')}
+          </div>
+        ) : null}
+      </Space>
+    )
+
+    if (result.status === 'Failed') {
+      Modal.error({
+        title: t('posAdmin.products.hqSyncJobFailed', '商品 HQ 同步失败'),
+        content,
+      })
+      return
+    }
+
+    if (displayResult.errors?.length) {
+      Modal.warning({
+        title: t('posAdmin.products.hqSyncJobPartialSucceeded', '商品 HQ 同步部分成功'),
+        content,
+      })
+      void loadData()
+      return
+    }
+
+    Modal.success({
+      title: t('posAdmin.products.hqSyncJobSucceeded', '商品 HQ 同步完成'),
+      content,
+    })
+    void loadData()
+  }, [buildHqSyncResultLines, loadData, t])
+
+  const startHqSyncJobPolling = useCallback((job: ActiveProductHqSyncJob) => {
+    stopHqSyncJobPolling()
+
+    const showPollingTimeout = () => {
+      clearActiveHqSyncJob()
+      Modal.warning({
+        title: t('posAdmin.products.hqSyncJobTimeoutTitle', '商品 HQ 同步仍在后台执行'),
+        content: t('posAdmin.products.hqSyncJobTimeout', '前端已停止轮询该同步任务。你可以稍后刷新列表，或重新提交同一同步范围以接管后端已有任务。'),
+      })
+    }
+
+    saveActiveHqSyncJob(job)
+    const poller = createProductHqSyncJobPoller({
+      jobId: job.jobId,
+      getJob: async (jobId) => {
+        try {
+          const result = await getProductHqSyncJob(jobId)
+          saveActiveHqSyncJob({
+            ...job,
+            status: result.status,
+            message: result.message,
+          })
+          return result
+        } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : ''
+          if (errorMessage.includes('未知同步任务状态') || errorMessage.includes('未知商品同步任务状态')) {
+            throw error
+          }
+          if (isMountedRef.current) {
+            message.warning(error instanceof Error ? error.message : t('posAdmin.products.hqSyncJobPollingFailed', '同步任务状态获取失败，将继续在后台重试'))
+          }
+          return {
+            jobId,
+            status: 'Running',
+            message: errorMessage,
+          }
+        }
+      },
+      pollIntervalMs: PRODUCT_HQ_SYNC_POLL_INTERVAL_MS,
+      timeoutMs: PRODUCT_HQ_SYNC_TIMEOUT_MS,
+    })
+    stopHqSyncPollingRef.current = poller.stop
+
+    void poller.promise
+      .then((result) => {
+        if (!isMountedRef.current) {
+          return
+        }
+        clearActiveHqSyncJob()
+        showHqSyncJobResult(result)
+      })
+      .catch((error) => {
+        if (!isMountedRef.current) {
+          return
+        }
+
+        const errorMessage = error instanceof Error ? error.message : ''
+        if (error instanceof HqProductSyncPollingTimeoutError) {
+          showPollingTimeout()
+          return
+        }
+        if (errorMessage === '商品同步任务轮询已取消') {
+          return
+        }
+        if (errorMessage.includes('未知同步任务状态') || errorMessage.includes('未知商品同步任务状态')) {
+          clearActiveHqSyncJob()
+          Modal.error({
+            title: t('posAdmin.products.hqSyncJobFailed', '商品 HQ 同步失败'),
+            content: errorMessage,
+          })
+          return
+        }
+        message.warning(error instanceof Error ? error.message : t('posAdmin.products.hqSyncJobPollingFailed', '同步任务状态获取失败，将继续在后台重试'))
+      })
+  }, [clearActiveHqSyncJob, saveActiveHqSyncJob, showHqSyncJobResult, stopHqSyncJobPolling, t])
+
+  const restoreActiveHqSyncJob = useCallback(() => {
+    const restoredJob = readActiveProductHqSyncJob()
+    if (!restoredJob?.jobId) return
+    startHqSyncJobPolling(restoredJob)
+  }, [startHqSyncJobPolling])
+
+  const showActiveHqSyncJobStatus = useCallback((job: ActiveProductHqSyncJob | null = activeHqSyncJob) => {
+    if (!job) return
+
+    Modal.info({
+      title: t('posAdmin.products.hqSyncJobStatusTitle', '商品 HQ 同步正在后台执行'),
+      content: (
+        <Descriptions size="small" column={1}>
+          <Descriptions.Item label={t('posAdmin.products.hqSyncJobId', '任务 ID')}>
+            {job.jobId}
+          </Descriptions.Item>
+          <Descriptions.Item label={t('posAdmin.products.hqSyncJobMode', '同步类型')}>
+            {job.mode === 'full' ? t('posAdmin.products.fullSyncFromHQ', '全量同步') : t('posAdmin.products.incrementalSyncFromHQ', '增量同步')}
+          </Descriptions.Item>
+          <Descriptions.Item label={t('posAdmin.products.hqSyncJobStatus', '任务状态')}>
+            {job.status || t('posAdmin.products.hqSyncJobQueued', '排队中')}
+          </Descriptions.Item>
+          <Descriptions.Item label={t('posAdmin.products.hqSyncJobStartedAt', '提交时间')}>
+            {dayjs(job.createdAt).format('YYYY-MM-DD HH:mm:ss')}
+          </Descriptions.Item>
+        </Descriptions>
+      ),
+    })
+    message.info(t('posAdmin.products.hqSyncJobStatusContent', '同步任务已在后台执行，请等待完成提示。'))
+  }, [activeHqSyncJob, t])
 
   const loadOptions = useCallback(async () => {
     try {
       const suppliers = await getActiveLocalSuppliers()
-      setSupplierOptions(suppliers.map((s) => ({ label: `${s.name} (${s.localSupplierCode})`, value: s.localSupplierCode })))
+      setSupplierOptions(suppliers.map((s) => ({ label: `${s.name} (${s.localSupplierCode})`, value: s.localSupplierCode, name: s.name })))
     } catch { /* ignore */ }
     try {
       const tree = await getProductCategoryTree()
       setCategoryTree(tree ?? [])
-    } catch { /* ignore */ }
+      setCategoryLoadFailed(false)
+    } catch {
+      setCategoryLoadFailed(true)
+      message.error(t('posAdmin.products.categoryLoadFailed', '商品分类加载失败，请刷新后重试'))
+    }
     try {
       const stores = await getActiveStores()
       setStoreOptions(stores)
     } catch { /* ignore */ }
-  }, [])
+  }, [t])
 
   useEffect(() => {
     loadOptions()
@@ -193,6 +525,17 @@ export default function ProductManagementPage() {
   useEffect(() => {
     loadData()
   }, [loadData])
+
+  useEffect(() => {
+    return () => {
+      isMountedRef.current = false
+      stopHqSyncJobPolling()
+    }
+  }, [stopHqSyncJobPolling])
+
+  useEffect(() => {
+    restoreActiveHqSyncJob()
+  }, [restoreActiveHqSyncJob])
 
   useLayoutEffect(() => {
     const calc = () => {
@@ -207,27 +550,41 @@ export default function ProductManagementPage() {
     return () => window.removeEventListener('resize', calc)
   }, [pageSize, total])
 
-  const handleSearch = (value: string) => {
-    setKeyword(value)
+  const handleSearch = () => {
+    setKeyword(keywordInput.trim())
+    setSupplierCode(supplierCodeInput)
+    setCategoryGuid(categoryGuidInput)
+    setIsActiveFilter(isActiveFilterInput)
+    setIsSetFilter(isSetFilterInput)
     setPage(1)
+    setSelectedRowKeys([])
+    setQueryVersion((value) => value + 1)
   }
 
   const handleReset = () => {
+    setKeywordInput('')
     setKeyword('')
+    setSupplierCodeInput(undefined)
     setSupplierCode(undefined)
+    setCategoryGuidInput(undefined)
     setCategoryGuid(undefined)
+    setIsActiveFilterInput(undefined)
     setIsActiveFilter(undefined)
+    setIsSetFilterInput(undefined)
     setIsSetFilter(undefined)
     setSortBy('productCode')
     setSortOrder('ascend')
     setPage(1)
+    setSelectedRowKeys([])
+    setQueryVersion((value) => value + 1)
   }
 
-  const buildCategoryCascaderOptions = (nodes: ProductCategoryDto[]): any[] => {
+  const buildCategoryCascaderOptions = (nodes: ProductCategoryDto[], disabledGuids = new Set<string>()): any[] => {
     return nodes.map((node) => ({
       value: node.guid,
       label: node.name,
-      children: node.children?.length ? buildCategoryCascaderOptions(node.children) : undefined,
+      disabled: disabledGuids.has(node.guid),
+      children: node.children?.length ? buildCategoryCascaderOptions(node.children, disabledGuids) : undefined,
     }))
   }
 
@@ -247,7 +604,83 @@ export default function ProductManagementPage() {
     return findPath(nodes, [])
   }
 
+  const categoryParentDisabledGuids = useMemo(
+    () => new Set(editingCategory ? [editingCategory.guid, ...collectCategoryGuids(editingCategory.children)] : []),
+    [editingCategory],
+  )
+
+  const ensureCanManagePosProducts = () => {
+    if (canManagePosProducts) return true
+    message.warning(t('posAdmin.products.noManagePermission', '无权限管理商品'))
+    return false
+  }
+
+  const buildSyncProductsToStoresFields = (values: Record<string, unknown>): SyncProductsToStoresField[] => {
+    const fields: SyncProductsToStoresField[] = []
+    if (values.syncPurchasePrice) fields.push('purchasePrice')
+    if (values.syncRetailPrice) fields.push('retailPrice')
+    if (values.syncIsAutoPricing) fields.push('isAutoPricing')
+    if (values.syncIsSpecialProduct) fields.push('isSpecialProduct')
+    return fields
+  }
+
+  const showPushToHqResult = useCallback((result: PushProductsToHqResult) => {
+    const errors = result.errors ?? []
+    const detailStats = [
+      { label: t('posAdmin.products.pushToHqAffectedRows', 'HQ影响记录'), value: result.affectedRowCount ?? 0 },
+      { label: t('posAdmin.products.productsAdded', '商品新增'), value: result.productsAdded ?? 0 },
+      { label: t('posAdmin.products.productsUpdated', '商品更新'), value: result.productsUpdated ?? 0 },
+      { label: t('posAdmin.products.storeRetailPricesCreated', '门店零售价新增'), value: result.storeRetailPricesCreated ?? 0 },
+      { label: t('posAdmin.products.storeRetailPricesUpdated', '门店零售价更新'), value: result.storeRetailPricesUpdated ?? 0 },
+      { label: t('posAdmin.products.productSetCodesCreated', '套装编码新增'), value: result.productSetCodesCreated ?? 0 },
+      { label: t('posAdmin.products.productSetCodesUpdated', '套装编码更新'), value: result.productSetCodesUpdated ?? 0 },
+      { label: t('posAdmin.products.storeMultiCodesCreated', '门店多码新增'), value: result.storeMultiCodesCreated ?? 0 },
+      { label: t('posAdmin.products.storeMultiCodesUpdated', '门店多码更新'), value: result.storeMultiCodesUpdated ?? 0 },
+    ].filter((item) => item.value > 0)
+    const content = (
+      <Space direction="vertical" size={6}>
+        {result.message && <div>{result.message}</div>}
+        <div>
+          {t('posAdmin.products.pushToHqResult', '发送完成：商品成功 {{success}}，失败 {{failed}}，合计 {{total}}', {
+            success: result.successCount ?? 0,
+            failed: result.failedCount ?? 0,
+            total: result.totalCount ?? (result.successCount ?? 0) + (result.failedCount ?? 0),
+          })}
+        </div>
+        {detailStats.map((item) => (
+          <div key={item.label}>{item.label}: {item.value}</div>
+        ))}
+        {errors.length ? (
+          <div style={{ whiteSpace: 'pre-wrap' }}>
+            {t('posAdmin.products.partialSyncError', '部分同步错误')}：{errors.join('\n')}
+          </div>
+        ) : null}
+      </Space>
+    )
+
+    if (errors.length || (result.failedCount ?? 0) > 0) {
+      Modal.warning({
+        title: t('posAdmin.products.pushToHqPartialSucceeded', '发送到 HQ 部分成功'),
+        content,
+      })
+      return
+    }
+
+    Modal.success({
+      title: t('posAdmin.products.pushToHqSucceeded', '发送到 HQ 完成'),
+      content,
+    })
+  }, [t])
+
+  const ensureCanSyncProductsFromHq = () => {
+    if (isAdmin) return true
+    setHqSyncVisible(false)
+    message.warning(t('posAdmin.products.noManagePermission', '无权限管理商品'))
+    return false
+  }
+
   const openEdit = (record: PosProductDto) => {
+    if (!ensureCanManagePosProducts()) return
     setEditingProduct(record)
     editForm.setFieldsValue({
       productCode: record.productCode,
@@ -271,11 +704,11 @@ export default function ProductManagementPage() {
 
   const handleEditSave = async () => {
     if (!editingProduct) return
+    if (!ensureCanManagePosProducts()) return
     try {
       const values = await editForm.validateFields()
       if (!validateEditSetCodes()) return
-      const catValue = values.categoryGuid
-      const resolvedCategoryGuid = Array.isArray(catValue) ? catValue[catValue.length - 1] : catValue
+      const resolvedCategoryGuid = resolveCascaderLeafValue(values.categoryGuid)
       const updateData: Partial<PosProductDto> = {
         productName: values.productName,
         itemNumber: values.itemNumber,
@@ -344,6 +777,7 @@ export default function ProductManagementPage() {
   }
 
   const handleBatchEnable = async (enable: boolean) => {
+    if (!ensureCanManagePosProducts()) return
     if (!selectedRowKeys.length) {
       message.warning(t('posAdmin.products.selectProductsFirst', '请先选择商品'))
       return
@@ -366,6 +800,7 @@ export default function ProductManagementPage() {
   }
 
   const openBatchEdit = () => {
+    if (!ensureCanManagePosProducts()) return
     if (!selectedRowKeys.length) {
       message.warning(t('posAdmin.products.selectProductsFirst', '请先选择商品'))
       return
@@ -375,10 +810,10 @@ export default function ProductManagementPage() {
   }
 
   const handleBatchEditSave = async () => {
+    if (!ensureCanManagePosProducts()) return
     try {
       const values = await batchEditForm.validateFields()
-      const catValue = values.categoryGuid
-      const resolvedCategoryGuid = Array.isArray(catValue) ? catValue[catValue.length - 1] : catValue
+      const resolvedCategoryGuid = resolveCascaderLeafValue(values.categoryGuid)
       const items: BatchUpdatePosProductDto[] = selectedRowKeys.map((code) => ({
         productCode: String(code),
         retailPrice: values.retailPrice ?? undefined,
@@ -403,32 +838,112 @@ export default function ProductManagementPage() {
     }
   }
 
-  const handleSyncFromHq = async () => {
-    try {
-      const result: HqProductSyncResult = await syncProductsFromHq()
-      message.success(
-        t('posAdmin.products.hqSyncResult', '同步完成：新增 {{created}}，更新 {{updated}}，跳过 {{skipped}}', { created: result.createdCount ?? 0, updated: result.updatedCount ?? 0, skipped: result.skippedCount ?? 0 }),
-      )
-      if (result.errors?.length) {
-        Modal.error({
-          title: t('posAdmin.products.partialSyncError', '部分同步错误'),
-          content: result.errors.join('\n'),
-        })
+  const openHqSyncModal = (mode: HqSyncMode) => {
+    if (!ensureCanSyncProductsFromHq()) return
+    const storedActiveJob = activeHqSyncJob ?? readActiveProductHqSyncJob()
+    if (storedActiveJob) {
+      if (!activeHqSyncJob) {
+        setActiveHqSyncJob(storedActiveJob)
+        startHqSyncJobPolling(storedActiveJob)
       }
-      await loadData()
-    } catch {
-      message.error(t('posAdmin.products.hqSyncFailed', '从HQ同步失败'))
+      showActiveHqSyncJobStatus(storedActiveJob)
+      return
+    }
+    setHqSyncMode(mode)
+    hqSyncForm.resetFields()
+    if (mode === 'incremental') {
+      hqSyncForm.setFieldsValue({ startDate: dayjs().subtract(100, 'day') })
+    }
+    setHqSyncVisible(true)
+  }
+
+  const openSyncToStoreModal = () => {
+    if (!ensureCanManagePosProducts()) return
+    syncToStoreForm.resetFields()
+    setSyncSelectAll(false)
+    syncToStoreForm.setFieldsValue({
+      syncPurchasePrice: true,
+      syncRetailPrice: true,
+      syncIsAutoPricing: true,
+      syncIsSpecialProduct: true,
+    })
+    if (selectedRowKeys.length) {
+      syncToStoreForm.setFieldsValue({
+        productCodes: selectedRowKeys.map(String),
+      })
+    }
+    setSyncToStoreVisible(true)
+  }
+
+  const handleSyncFromHq = async () => {
+    if (!ensureCanSyncProductsFromHq()) return
+    const storedActiveJob = activeHqSyncJob ?? readActiveProductHqSyncJob()
+    if (hqSyncSubmitting || storedActiveJob) {
+      if (storedActiveJob) {
+        if (!activeHqSyncJob) {
+          setActiveHqSyncJob(storedActiveJob)
+          startHqSyncJobPolling(storedActiveJob)
+        }
+        showActiveHqSyncJobStatus(storedActiveJob)
+      }
+      return
+    }
+    if (hqSyncSubmittingRef.current) return
+
+    try {
+      hqSyncSubmittingRef.current = true
+      setHqSyncSubmitting(true)
+      const values = hqSyncMode === 'incremental' ? await hqSyncForm.validateFields() : {}
+      const startDate = values.startDate ? values.startDate.format('YYYY-MM-DD') : undefined
+      const operationId = buildProductHqSyncOperationId(hqSyncMode, startDate)
+      const syncJob = hqSyncMode === 'full'
+        ? await createProductFullHqSyncJob({ operationId })
+        : await createProductIncrementalHqSyncJob({
+          operationId,
+          startDate,
+        })
+
+      if (!syncJob.jobId) {
+        message.error(syncJob.message || t('posAdmin.products.hqSyncJobCreateFailed', '创建商品 HQ 同步任务失败'))
+        return
+      }
+
+      const activeJob: ActiveProductHqSyncJob = {
+        jobId: syncJob.jobId,
+        mode: hqSyncMode,
+        operationId: syncJob.operationId || operationId,
+        createdAt: new Date().toISOString(),
+        status: syncJob.status ?? 'Queued',
+        message: syncJob.message,
+        startDate,
+      }
+
+      setHqSyncVisible(false)
+      message.success(t('posAdmin.products.hqSyncJobSubmitted', '同步任务已提交，正在后台执行。完成后会自动提示结果。'))
+      startHqSyncJobPolling(activeJob)
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : t('posAdmin.products.hqSyncJobCreateFailed', '创建商品 HQ 同步任务失败'))
+    } finally {
+      hqSyncSubmittingRef.current = false
+      setHqSyncSubmitting(false)
     }
   }
 
   const handleSyncToStores = async () => {
+    if (!ensureCanManagePosProducts()) return
     try {
       const values = await syncToStoreForm.validateFields()
+      const syncFields = buildSyncProductsToStoresFields(values)
+      if (!syncFields.length) {
+        message.warning(t('posAdmin.products.selectSyncFields', '请选择要同步的字段'))
+        return
+      }
       setSyncToStoreLoading(true)
       const req: SyncProductsToStoresRequest = {
         productCodes: values.productCodes || [],
         storeCodes: values.storeCodes || [],
         overwrite: values.overwrite ?? false,
+        fields: syncFields,
       }
       if (!req.productCodes.length && selectedRowKeys.length) {
         req.productCodes = selectedRowKeys.map(String)
@@ -457,6 +972,49 @@ export default function ProductManagementPage() {
       message.error(t('posAdmin.products.syncToStoreFailed', '同步到分店失败'))
     } finally {
       setSyncToStoreLoading(false)
+    }
+  }
+
+  const handlePushToHq = async () => {
+    if (!ensureCanManagePosProducts()) return
+    if (!selectedRowKeys.length) {
+      message.warning(t('posAdmin.products.selectProductsFirst', '请先选择商品'))
+      return
+    }
+    // 使用 ref 作为即时锁，避免 React 状态尚未刷新时连续点击重复提交。
+    if (pushToHqLoadingRef.current) return
+
+    try {
+      pushToHqLoadingRef.current = true
+      setPushToHqLoading(true)
+      const result = await pushProductsToHq({
+        productCodes: selectedRowKeys.map(String),
+      })
+      showPushToHqResult(result)
+      setSelectedRowKeys([])
+      await loadData()
+    } catch (error) {
+      const errorResult = extractPushToHqErrorResult(error)
+      if (errorResult) {
+        Modal.error({
+          title: t('posAdmin.products.pushToHqFailed', '发送到 HQ 失败'),
+          content: (
+            <div>
+              <div>{errorResult.message || (error instanceof Error ? error.message : t('posAdmin.products.pushToHqFailed', '发送到 HQ 失败'))}</div>
+              {errorResult.errors.length ? (
+                <div style={{ marginTop: 8, whiteSpace: 'pre-wrap' }}>
+                  {errorResult.errors.join('\n')}
+                </div>
+              ) : null}
+            </div>
+          ),
+        })
+      } else {
+        message.error(error instanceof Error ? error.message : t('posAdmin.products.pushToHqFailed', '发送到 HQ 失败'))
+      }
+    } finally {
+      pushToHqLoadingRef.current = false
+      setPushToHqLoading(false)
     }
   }
 
@@ -546,6 +1104,7 @@ export default function ProductManagementPage() {
   }
 
   const openSetCodeManager = async (product: PosProductDto) => {
+    if (!ensureCanManagePosProducts()) return
     setSetCodeProduct(product)
     setSetCodeVisible(true)
     setSetCodeLoading(true)
@@ -560,6 +1119,7 @@ export default function ProductManagementPage() {
   }
 
   const handleAddSetCode = () => {
+    if (!ensureCanManagePosProducts()) return
     const newItem: MulticodeSetItem = {
       id: `new_${Date.now()}`,
       productCode: setCodeProduct?.productCode || '',
@@ -579,6 +1139,7 @@ export default function ProductManagementPage() {
   }
 
   const handleDeleteSetCode = async (item: MulticodeSetItem) => {
+    if (!ensureCanManagePosProducts()) return
     if (!item.id || item.id.startsWith('new_')) {
       setSetCodeData((prev) => prev.filter((i) => i.id !== item.id))
       return
@@ -593,6 +1154,7 @@ export default function ProductManagementPage() {
   }
 
   const handleSaveSetCodes = async () => {
+    if (!ensureCanManagePosProducts()) return
     try {
       const newItems = setCodeData.filter((i) => i.id?.startsWith('new_'))
       const existingItems = setCodeData.filter((i) => !i.id?.startsWith('new_'))
@@ -637,35 +1199,43 @@ export default function ProductManagementPage() {
   }
 
   const handleOpenCategoryModal = () => {
+    if (!ensureCanManagePosProducts()) return
     setEditingCategory(null)
     categoryEditForm.resetFields()
     setCategoryModalVisible(true)
   }
 
   const handleEditCategory = (node: ProductCategoryDto) => {
+    if (!ensureCanManagePosProducts()) return
     setEditingCategory(node)
     categoryEditForm.setFieldsValue({
       name: node.name,
-      parentGuid: node.parentGuid,
+      parentGuid: getCategoryValueFromGuid(node.parentGuid, categoryTree),
       sortOrder: node.sortOrder,
     })
     setCategoryModalVisible(true)
   }
 
   const handleSaveCategory = async () => {
+    if (!ensureCanManagePosProducts()) return
     try {
       const values = await categoryEditForm.validateFields()
+      const parentGuid = resolveCascaderLeafValue(values.parentGuid)
+      if (editingCategory && parentGuid && categoryParentDisabledGuids.has(parentGuid)) {
+        message.error(t('posAdmin.products.invalidParentCategory', '父分类不能选择当前分类或其子分类'))
+        return
+      }
       if (editingCategory) {
         await updateProductCategory(editingCategory.guid, {
           name: values.name,
-          parentGuid: values.parentGuid,
+          parentGuid,
           sortOrder: values.sortOrder,
         })
         message.success(t('posAdmin.products.updateCategorySuccess', '更新分类成功'))
       } else {
         await createProductCategory({
           name: values.name,
-          parentGuid: values.parentGuid,
+          parentGuid,
           sortOrder: values.sortOrder,
         })
         message.success(t('posAdmin.products.createCategorySuccess', '创建分类成功'))
@@ -679,6 +1249,7 @@ export default function ProductManagementPage() {
   }
 
   const handleDeleteCategory = async (guid: string) => {
+    if (!ensureCanManagePosProducts()) return
     try {
       await deleteProductCategory(guid)
       message.success(t('posAdmin.products.deleteCategorySuccess', '删除分类成功'))
@@ -708,6 +1279,7 @@ export default function ProductManagementPage() {
   }
 
   const handleFixIntegrity = async () => {
+    if (!ensureCanManagePosProducts()) return
     setFixLoading(true)
     try {
       const result: ProductIntegrityFixResultDto = await fixIntegrity({ fixAll: true })
@@ -753,6 +1325,7 @@ export default function ProductManagementPage() {
     {
       title: t('posAdmin.invoiceDetail.itemNumber', '货号'),
       dataIndex: 'itemNumber',
+      key: 'productCode',
       width: 180,
       fixed: 'left',
       sorter: true,
@@ -813,7 +1386,22 @@ export default function ProductManagementPage() {
       width: 140,
       sorter: true,
       sortOrder: sortBy === 'localSupplierCode' ? sortOrder : undefined,
-      render: (v: string, record) => v || record.localSupplierCode || '-',
+      render: (v: string, record) => {
+        const supplierName = v || supplierNameMap.get(record.localSupplierCode || '') || record.localSupplierCode || '-'
+
+        return (
+          <div
+            title={supplierName}
+            style={{
+              lineHeight: '20px',
+              overflowWrap: 'anywhere',
+              whiteSpace: 'normal',
+            }}
+          >
+            {supplierName}
+          </div>
+        )
+      },
     },
     {
       title: t('posAdmin.products.categoryGuid', '分类'),
@@ -865,13 +1453,27 @@ export default function ProductManagementPage() {
       render: (v: boolean, record) =>
         v ? (
           <Tooltip title={t('posAdmin.products.setTooltip', '套装 ({{count}} 个子码)', { count: record.setCount ?? 0 })}>
-            <Tag color="blue" style={{ cursor: 'pointer' }} onClick={() => openSetCodeManager(record)}>
+            <Tag
+              color="blue"
+              style={{ cursor: canManagePosProducts ? 'pointer' : 'default' }}
+              onClick={() => {
+                if (canManagePosProducts) openSetCodeManager(record)
+              }}
+            >
               {t('posAdmin.products.setProduct', '套装')}
             </Tag>
           </Tooltip>
         ) : (
           '-'
         ),
+    },
+    {
+      title: t('column.createTime', '创建时间'),
+      dataIndex: 'createdAt',
+      width: 160,
+      sorter: true,
+      sortOrder: sortBy === 'createdAt' ? sortOrder : undefined,
+      render: (v: string) => (v ? dayjs(v).format('YYYY-MM-DD HH:mm') : '-'),
     },
     {
       title: t('posAdmin.productPrice.updatedAt', '更新时间'),
@@ -888,12 +1490,20 @@ export default function ProductManagementPage() {
       fixed: 'right',
       render: (_, record) => (
         <Space>
-          <Button type="link" size="small" onClick={() => openEdit(record)}>
-            {t('posAdmin.products.edit', '编辑')}
-          </Button>
-          {record.isSet && (
-            <Button type="link" size="small" onClick={() => openSetCodeManager(record)}>
-              {t('posAdmin.products.setManagement', '套装管理')}
+          {canManagePosProducts ? (
+            <>
+              <Button type="link" size="small" onClick={() => openEdit(record)}>
+                {t('posAdmin.products.edit', '编辑')}
+              </Button>
+              {record.isSet && (
+                <Button type="link" size="small" onClick={() => openSetCodeManager(record)}>
+                  {t('posAdmin.products.setManagement', '套装管理')}
+                </Button>
+              )}
+            </>
+          ) : (
+            <Button type="link" size="small" disabled>
+              {t('posAdmin.products.readOnly', '只读')}
             </Button>
           )}
         </Space>
@@ -910,9 +1520,11 @@ export default function ProductManagementPage() {
           <Button icon={<SafetyCertificateOutlined />} onClick={() => { setIntegrityVisible(true); setIntegrityResult(null) }}>
             {t('posAdmin.products.integrityCheck', '一致性检查')}
           </Button>
-          <Button icon={<SettingOutlined />} onClick={handleOpenCategoryModal}>
-            {t('posAdmin.products.categoryManagement', '分类管理')}
-          </Button>
+          {canManagePosProducts && (
+            <Button icon={<SettingOutlined />} onClick={handleOpenCategoryModal}>
+              {t('posAdmin.products.categoryManagement', '分类管理')}
+            </Button>
+          )}
         </Space>
       }
     >
@@ -927,12 +1539,13 @@ export default function ProductManagementPage() {
       >
         <div ref={toolbarRef} style={{ padding: '12px 0' }}>
           <Space wrap>
-            <Input.Search
+            <Input
               allowClear
               placeholder={t('posAdmin.products.searchPlaceholder')}
               style={{ width: 260 }}
-              onSearch={handleSearch}
-              onClear={() => handleSearch('')}
+              value={keywordInput}
+              onChange={(event) => setKeywordInput(event.target.value)}
+              onPressEnter={handleSearch}
             />
             <Select
               allowClear
@@ -940,25 +1553,26 @@ export default function ProductManagementPage() {
               optionFilterProp="label"
               placeholder={t('posAdmin.products.supplierPlaceholder', '供应商')}
               style={{ width: 200 }}
-              value={supplierCode}
-              onChange={(v) => { setSupplierCode(v); setPage(1) }}
+              value={supplierCodeInput}
+              onChange={setSupplierCodeInput}
               options={supplierOptions}
             />
             <Cascader
               allowClear
               placeholder={t('posAdmin.products.categoryPlaceholder', '分类')}
               style={{ width: 200 }}
-              value={getCategoryValueFromGuid(categoryGuid, categoryTree)}
-              onChange={(v) => { setCategoryGuid(v?.[v.length - 1]); setPage(1) }}
+              value={getCategoryValueFromGuid(categoryGuidInput, categoryTree)}
+              onChange={(v) => setCategoryGuidInput(v?.[v.length - 1])}
               options={buildCategoryCascaderOptions(categoryTree)}
+              disabled={categoryLoadFailed}
               changeOnSelect
             />
             <Select
               allowClear
               placeholder={t('posAdmin.products.statusPlaceholder', '状态')}
               style={{ width: 100 }}
-              value={isActiveFilter}
-              onChange={(v) => { setIsActiveFilter(v); setPage(1) }}
+              value={isActiveFilterInput}
+              onChange={setIsActiveFilterInput}
               options={[
                 { label: t('posAdmin.products.enable', '启用'), value: true },
                 { label: t('posAdmin.products.disable', '禁用'), value: false },
@@ -968,52 +1582,66 @@ export default function ProductManagementPage() {
               allowClear
               placeholder={t('posAdmin.products.setPlaceholder', '套装')}
               style={{ width: 100 }}
-              value={isSetFilter}
-              onChange={(v) => { setIsSetFilter(v); setPage(1) }}
+              value={isSetFilterInput}
+              onChange={setIsSetFilterInput}
               options={[
                 { label: t('posAdmin.products.setProduct', '套装'), value: true },
                 { label: t('posAdmin.products.normalProduct', '单品'), value: false },
               ]}
             />
+            <Button type="primary" icon={<SearchOutlined />} onClick={handleSearch}>
+              {t('common.query', '查询')}
+            </Button>
             <Button icon={<ReloadOutlined />} onClick={handleReset}>
               {t('posAdmin.products.reset', '重置')}
             </Button>
             <Divider type="vertical" style={{ height: 32 }} />
-            <Button icon={<CloudDownloadOutlined />} onClick={handleSyncFromHq}>
-              {t('posAdmin.products.fromHQ', '从HQ同步')}
-            </Button>
-            <Button
-              icon={<CloudUploadOutlined />}
-              onClick={() => {
-                syncToStoreForm.resetFields()
-                setSyncSelectAll(false)
-                syncToStoreForm.setFieldsValue({
-                  syncPurchasePrice: true,
-                  syncRetailPrice: true,
-                  syncIsAutoPricing: true,
-                  syncIsSpecialProduct: true,
-                })
-                if (selectedRowKeys.length) {
-                  syncToStoreForm.setFieldsValue({
-                    productCodes: selectedRowKeys.map(String),
-                  })
-                }
-                setSyncToStoreVisible(true)
-              }}
-            >
-              {t('posAdmin.products.syncToStore', '同步到分店')}
-            </Button>
-            <Button onClick={openBatchEdit} disabled={!selectedRowKeys.length}>
-              {t('posAdmin.products.batchEdit', '批量编辑')}
-            </Button>
-            <Popconfirm title={t('posAdmin.products.confirmBatchEnable', '确认启用选中的商品？')} onConfirm={() => handleBatchEnable(true)}>
-              <Button disabled={!selectedRowKeys.length}>{t('posAdmin.products.batchEnable', '批量启用')}</Button>
-            </Popconfirm>
-            <Popconfirm title={t('posAdmin.products.confirmBatchDisable', '确认禁用选中的商品？')} onConfirm={() => handleBatchEnable(false)}>
-              <Button danger disabled={!selectedRowKeys.length}>
-                {t('posAdmin.products.batchDisable', '批量禁用')}
-              </Button>
-            </Popconfirm>
+            {isAdmin && (
+              <>
+                <Button
+                  icon={<CloudDownloadOutlined />}
+                  loading={hqSyncSubmitting && hqSyncMode === 'full'}
+                  disabled={hqSyncSubmitting}
+                  onClick={() => openHqSyncModal('full')}
+                >
+                  {activeHqSyncJob ? t('posAdmin.products.hqSyncInProgress', '同步中') : t('posAdmin.products.fullSyncFromHQ', '全量同步')}
+                </Button>
+                <Button
+                  icon={<CloudSyncOutlined />}
+                  loading={hqSyncSubmitting && hqSyncMode === 'incremental'}
+                  disabled={hqSyncSubmitting}
+                  onClick={() => openHqSyncModal('incremental')}
+                >
+                  {activeHqSyncJob ? t('posAdmin.products.hqSyncInProgress', '同步中') : t('posAdmin.products.incrementalSyncFromHQ', '增量同步')}
+                </Button>
+              </>
+            )}
+            {canManagePosProducts && (
+              <>
+                <Button
+                  icon={<CloudUploadOutlined />}
+                  loading={pushToHqLoading}
+                  disabled={!selectedRowKeys.length || pushToHqLoading}
+                  onClick={handlePushToHq}
+                >
+                  {t('posAdmin.products.pushToHq', '发送到HQ')}
+                </Button>
+                <Button icon={<CloudUploadOutlined />} onClick={openSyncToStoreModal}>
+                  {t('posAdmin.products.syncToStore', '同步到分店')}
+                </Button>
+                <Button onClick={openBatchEdit} disabled={!selectedRowKeys.length || categoryLoadFailed}>
+                  {t('posAdmin.products.batchEdit', '批量编辑')}
+                </Button>
+                <Popconfirm title={t('posAdmin.products.confirmBatchEnable', '确认启用选中的商品？')} onConfirm={() => handleBatchEnable(true)}>
+                  <Button disabled={!selectedRowKeys.length}>{t('posAdmin.products.batchEnable', '批量启用')}</Button>
+                </Popconfirm>
+                <Popconfirm title={t('posAdmin.products.confirmBatchDisable', '确认禁用选中的商品？')} onConfirm={() => handleBatchEnable(false)}>
+                  <Button danger disabled={!selectedRowKeys.length}>
+                    {t('posAdmin.products.batchDisable', '批量禁用')}
+                  </Button>
+                </Popconfirm>
+              </>
+            )}
           </Space>
         </div>
 
@@ -1025,7 +1653,7 @@ export default function ProductManagementPage() {
             dataSource={data}
             columns={columns}
             pagination={false}
-            scroll={{ x: 1800, y: tableScrollY }}
+            scroll={{ x: 1960, y: tableScrollY }}
             rowSelection={{
               selectedRowKeys,
               onChange: (keys) => setSelectedRowKeys(keys),
@@ -1034,7 +1662,7 @@ export default function ProductManagementPage() {
             rowClassName={(_, index) => (index % 2 === 1 ? 'table-row-striped' : '')}
             onChange={(_pagination, _filters, sorter) => {
               const s = Array.isArray(sorter) ? sorter[0] : sorter
-              const field = String(s?.field || s?.column?.dataIndex || 'productCode')
+              const field = String(s?.columnKey || s?.field || s?.column?.dataIndex || 'productCode')
               const order = s?.order as 'ascend' | 'descend' | undefined
               if (order) {
                 setSortBy(field)
@@ -1086,12 +1714,39 @@ export default function ProductManagementPage() {
       </div>
 
       <Modal
+        open={hqSyncVisible}
+        title={hqSyncMode === 'full' ? t('posAdmin.products.fullSyncFromHQ', '全量同步') : t('posAdmin.products.incrementalSyncFromHQ', '增量同步')}
+        onCancel={() => setHqSyncVisible(false)}
+        onOk={handleSyncFromHq}
+        confirmLoading={hqSyncSubmitting}
+        okText={t('common.confirm', '确定')}
+        cancelText={t('common.cancel', '取消')}
+        destroyOnHidden
+      >
+        <Form form={hqSyncForm} layout="vertical">
+          {hqSyncMode === 'full' ? (
+            <div style={{ color: '#595959' }}>
+              {t('posAdmin.products.fullSyncNotice', '全量同步只覆盖商品主表，不同步关联表。')}
+            </div>
+          ) : (
+            <Form.Item
+              name="startDate"
+              label={t('posAdmin.products.incrementalStartDate', '起始日期')}
+              rules={[{ required: true, message: t('posAdmin.products.incrementalStartDateRequired', '请选择增量同步起始日期') }]}
+            >
+              <DatePicker style={{ width: '100%' }} allowClear={false} format="YYYY-MM-DD" />
+            </Form.Item>
+          )}
+        </Form>
+      </Modal>
+
+      <Modal
         open={editVisible}
         title={editingProduct ? t('posAdmin.products.editProductWithCode', '编辑商品 - {{code}}', { code: editingProduct.productCode }) : t('posAdmin.products.editProduct', '编辑商品')}
         onCancel={() => { setEditVisible(false); setEditingProduct(null) }}
         onOk={handleEditSave}
         width={900}
-        destroyOnClose
+        destroyOnHidden
       >
         <Form form={editForm} labelCol={{ span: 6 }} wrapperCol={{ span: 18 }}>
           <Form.Item name="productName" label={t('posAdmin.products.productName', '商品名称')} rules={[{ required: true, message: t('posAdmin.products.inputProductName', '请输入商品名称') }]}>
@@ -1198,6 +1853,7 @@ export default function ProductManagementPage() {
                   showSearch
                   changeOnSelect
                   options={buildCategoryCascaderOptions(categoryTree)}
+                  disabled={categoryLoadFailed}
                   placeholder={t('posAdmin.products.selectCategory', '选择分类')}
                   style={{ width: '100%' }}
                 />
@@ -1259,7 +1915,7 @@ export default function ProductManagementPage() {
         onCancel={() => setBatchEditVisible(false)}
         onOk={handleBatchEditSave}
         width={600}
-        destroyOnClose
+        destroyOnHidden
       >
         <Form form={batchEditForm} labelCol={{ span: 6 }} wrapperCol={{ span: 18 }}>
           <Form.Item name="categoryGuid" label={t('posAdmin.products.productCategoryLabel', '商品分类')}>
@@ -1268,6 +1924,7 @@ export default function ProductManagementPage() {
               showSearch
               changeOnSelect
               options={buildCategoryCascaderOptions(categoryTree)}
+              disabled={categoryLoadFailed}
               placeholder={t('posAdmin.products.leaveEmpty', '留空不修改')}
               style={{ width: '100%' }}
             />
@@ -1312,7 +1969,7 @@ export default function ProductManagementPage() {
         onOk={handleSyncToStores}
         confirmLoading={syncToStoreLoading}
         width={600}
-        destroyOnClose
+        destroyOnHidden
       >
         <Form form={syncToStoreForm} labelCol={{ span: 6 }} wrapperCol={{ span: 18 }}>
           <Form.Item label={t('posAdmin.products.syncFields', '同步字段')} required>
@@ -1378,7 +2035,7 @@ export default function ProductManagementPage() {
         onCancel={() => { setSetCodeVisible(false); setSetCodeProduct(null); setSetCodeData([]) }}
         onOk={handleSaveSetCodes}
         width={900}
-        destroyOnClose
+        destroyOnHidden
       >
         <Spin spinning={setCodeLoading}>
           <div style={{ marginBottom: 12 }}>
@@ -1535,7 +2192,8 @@ export default function ProductManagementPage() {
                     allowClear
                     showSearch
                     changeOnSelect
-                    options={buildCategoryCascaderOptions(categoryTree)}
+                    options={buildCategoryCascaderOptions(categoryTree, categoryParentDisabledGuids)}
+                    disabled={categoryLoadFailed}
                     placeholder={t('posAdmin.products.noParent', '无（顶级分类）')}
                   />
                 </Form.Item>
@@ -1564,14 +2222,14 @@ export default function ProductManagementPage() {
           <Button key="check" type="primary" loading={integrityLoading} onClick={handleCheckIntegrity} icon={<SafetyCertificateOutlined />}>
             {t('posAdmin.products.check', '检查')}
           </Button>,
-          integrityResult && integrityResult.issues?.length > 0 ? (
+          canManagePosProducts && integrityResult && integrityResult.issues?.length > 0 ? (
             <Button key="fix" type="primary" danger loading={fixLoading} onClick={handleFixIntegrity} icon={<CloudSyncOutlined />}>
               {t('posAdmin.products.autoFix', '自动修复')}
             </Button>
           ) : null,
         ]}
         width={800}
-        destroyOnClose
+        destroyOnHidden
       >
         <Spin spinning={integrityLoading}>
           {integrityResult ? (
