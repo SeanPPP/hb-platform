@@ -21,3 +21,6 @@ vite.config.js.timestamp-*
 vite.config.d.ts
 
 17cfc19*
+.codex_tmp/
+.understand-anything/
+outputs/

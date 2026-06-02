@@ -32,13 +32,14 @@ import {
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import type { SortOrder, SorterResult } from 'antd/es/table/interface'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useLocation, useNavigate } from 'react-router-dom'
 import BarcodePreview from '../../../components/BarcodePreview'
 import PageContainer from '../../../components/PageContainer'
 import { useStableRouteContext } from '../../../hooks/useStableRouteContext'
 import { useAuthStore } from '../../../store/auth'
+import { getActiveLocalSuppliers } from '../../../services/localSupplierService'
 import { getStores } from '../../../services/storeService'
 import ContainerProductPicker from './components/ContainerProductPicker'
 import {
@@ -49,6 +50,7 @@ import {
   batchUpdateStoreOrderProductStatus,
   completeStoreOrder,
   getStoreOrderDetail,
+  getStoreOrderDetailProductCodes,
   getStoreOrderProducts,
   pasteReplaceStoreOrderLines,
   removeStoreOrderLine,
@@ -58,10 +60,14 @@ import {
   updateStoreOrderProductStatus,
 } from '../../../services/storeOrderService'
 import type { StoreDto } from '../../../types/store'
+import type { LocalSupplierDto } from '../../../types/localSupplier'
 import type {
   StoreOrderBatchLookupItem,
   StoreOrderDetail,
   StoreOrderDetailLine,
+  StoreOrderDetailQuery,
+  StoreOrderDetailStatFilter,
+  StoreOrderDetailSortField,
   StoreOrderFlowStatus,
   StoreOrderPasteTargetField,
   StoreOrderProductItem,
@@ -97,8 +103,8 @@ function formatVolume(value?: number) {
   return value.toFixed(4)
 }
 
-type DetailStatFilter = 'all' | 'orderedNotShipped' | 'shippedWithoutOrder'
-type DetailSortField = 'itemNumber' | 'locationCode' | null
+type DetailLoadStatus = 'idle' | 'loading' | 'loaded' | 'notFound' | 'error'
+type DetailSortField = StoreOrderDetailSortField | null
 
 function toNumber(value?: number | null) {
   return Number(value ?? 0)
@@ -106,6 +112,10 @@ function toNumber(value?: number | null) {
 
 function isZeroOrEmpty(value: unknown) {
   return value === undefined || value === null || value === '' || value === 0
+}
+
+function isAbortError(error: unknown) {
+  return typeof error === 'object' && error !== null && 'name' in error && error.name === 'AbortError'
 }
 
 function renderDangerValue(value: string) {
@@ -191,6 +201,9 @@ function ProductPickerModal({ open, orderGUID, loading, onCancel, onConfirm }: P
   const [pageNumber, setPageNumber] = useState(1)
   const [pageSize, setPageSize] = useState(10)
   const [total, setTotal] = useState(0)
+  const [supplierOptions, setSupplierOptions] = useState<Array<{ label: string; value: string }>>([])
+  const [supplierCode, setSupplierCode] = useState<string>()
+  const [supplierLoading, setSupplierLoading] = useState(false)
   const [editingValues, setEditingValues] = useState<
     Record<string, { quantity?: number; importPrice?: number }>
   >({})
@@ -199,15 +212,20 @@ function ProductPickerModal({ open, orderGUID, loading, onCancel, onConfirm }: P
     keyword?: string
     pageNumber?: number
     pageSize?: number
+    supplierCode?: string
   }) => {
     const nextKeyword = overrides?.keyword ?? keyword
     const nextPageNumber = overrides?.pageNumber ?? pageNumber
     const nextPageSize = overrides?.pageSize ?? pageSize
+    const nextSupplierCode = overrides?.supplierCode ?? supplierCode
 
     setFetching(true)
     try {
       const result = await getStoreOrderProducts({
         itemNumber: nextKeyword.trim() || undefined,
+        localSupplierCode: nextSupplierCode || undefined,
+        excludeExistingWarehouseProducts: true,
+        excludeOrderGUID: orderGUID,
         pageNumber: nextPageNumber,
         pageSize: nextPageSize,
         sortBy: 'Default',
@@ -224,10 +242,32 @@ function ProductPickerModal({ open, orderGUID, loading, onCancel, onConfirm }: P
     }
   }
 
+  const loadSupplierOptions = async () => {
+    setSupplierLoading(true)
+    try {
+      const suppliers: LocalSupplierDto[] = await getActiveLocalSuppliers()
+      // 供应商下拉只保留有效编码，便于按编码筛选商品列表。
+      setSupplierOptions(
+        suppliers
+          .filter((item) => Boolean(item.localSupplierCode))
+          .map((item) => ({
+            label: item.name || item.localSupplierCode,
+            value: item.localSupplierCode,
+          })),
+      )
+    } catch (error) {
+      console.error(error)
+      message.error(error instanceof Error ? error.message : t('storeOrders.detail.loadSuppliersFailed', '加载澳洲供应商失败'))
+    } finally {
+      setSupplierLoading(false)
+    }
+  }
+
   useEffect(() => {
     if (!open) {
       return
     }
+    void loadSupplierOptions()
     void loadProducts({ pageNumber: 1 })
   }, [open])
 
@@ -239,6 +279,9 @@ function ProductPickerModal({ open, orderGUID, loading, onCancel, onConfirm }: P
       setPageNumber(1)
       setPageSize(10)
       setTotal(0)
+      setSupplierOptions([])
+      setSupplierCode(undefined)
+      setSupplierLoading(false)
       setEditingValues({})
     }
   }, [open])
@@ -281,6 +324,13 @@ function ProductPickerModal({ open, orderGUID, loading, onCancel, onConfirm }: P
       width: 240,
       ellipsis: true,
       render: (value: string | undefined) => value || '--',
+    },
+    {
+      title: t('column.supplierName', '供应商名称'),
+      dataIndex: 'localSupplierName',
+      width: 180,
+      ellipsis: true,
+      render: (value: string | undefined, record) => value || record.localSupplierCode || '--',
     },
     {
       title: t('column.barcode'),
@@ -385,14 +435,32 @@ function ProductPickerModal({ open, orderGUID, loading, onCancel, onConfirm }: P
       onOk={() => void handleOk()}
     >
       <Space direction="vertical" size={12} style={{ width: '100%' }}>
-        <Input.Search
-          allowClear
-          placeholder={t('storeOrders.detail.searchProductPlaceholder')}
-          prefix={<SearchOutlined />}
-          value={keyword}
-          onChange={(event) => setKeyword(event.target.value)}
-          onSearch={(value) => void loadProducts({ keyword: value, pageNumber: 1 })}
-        />
+        <Space size={12} wrap>
+          <Input.Search
+            allowClear
+            placeholder={t('storeOrders.detail.searchProductPlaceholder')}
+            prefix={<SearchOutlined />}
+            value={keyword}
+            onChange={(event) => setKeyword(event.target.value)}
+            onSearch={(value) => void loadProducts({ keyword: value, pageNumber: 1 })}
+            style={{ width: 320 }}
+          />
+          <Select
+            allowClear
+            showSearch
+            optionFilterProp="label"
+            placeholder={t('storeOrders.detail.filterLocalSupplier', '筛选澳洲供应商')}
+            value={supplierCode}
+            loading={supplierLoading}
+            options={supplierOptions}
+            style={{ width: 260 }}
+            onChange={(value) => {
+              // 切换供应商后回到第一页，避免旧分页落在空页。
+              setSupplierCode(value)
+              void loadProducts({ pageNumber: 1, supplierCode: value })
+            }}
+          />
+        </Space>
         <Table
           rowKey="productCode"
           loading={fetching}
@@ -528,7 +596,9 @@ export default function StoreOrderDetailPage() {
   const { access, currentUser } = useAuthStore()
   const id = route?.params.id || ''
   const isDesktop = Boolean(screens.xl)
-  const [loading, setLoading] = useState(false)
+  const detailRequestControllerRef = useRef<AbortController | null>(null)
+  const [detailLoadStatus, setDetailLoadStatus] = useState<DetailLoadStatus>('idle')
+  const [detailErrorMessage, setDetailErrorMessage] = useState('')
   const [detail, setDetail] = useState<StoreOrderDetail | null>(null)
   const [stores, setStores] = useState<StoreDto[]>([])
   const [storesLoading, setStoresLoading] = useState(false)
@@ -537,6 +607,8 @@ export default function StoreOrderDetailPage() {
   const [batchLoading, setBatchLoading] = useState(false)
   const [pickerOpen, setPickerOpen] = useState(false)
   const [containerPickerOpen, setContainerPickerOpen] = useState(false)
+  const [containerPickerLoading, setContainerPickerLoading] = useState(false)
+  const [containerExistingProductCodes, setContainerExistingProductCodes] = useState<string[]>([])
   const [batchModalOpen, setBatchModalOpen] = useState(false)
   const [pasteModalOpen, setPasteModalOpen] = useState(false)
   const [quickAddItemNumber, setQuickAddItemNumber] = useState('')
@@ -555,7 +627,7 @@ export default function StoreOrderDetailPage() {
   const [submittingPaste, setSubmittingPaste] = useState(false)
   const [detailPage, setDetailPage] = useState(1)
   const [detailPageSize, setDetailPageSize] = useState(50)
-  const [detailStatFilter, setDetailStatFilter] = useState<DetailStatFilter>('all')
+  const [detailStatFilter, setDetailStatFilter] = useState<StoreOrderDetailStatFilter>('all')
   const [detailSortField, setDetailSortField] = useState<DetailSortField>(null)
   const [detailSortOrder, setDetailSortOrder] = useState<SortOrder>(null)
   const [headerForm, setHeaderForm] = useState<{
@@ -582,17 +654,52 @@ export default function StoreOrderDetailPage() {
 
   useDynamicTabTitle(tabTitle)
 
+  const detailQuery = useMemo<StoreOrderDetailQuery>(
+    () => ({
+      pageNumber: detailPage,
+      pageSize: detailPageSize,
+      keyword: detailItemFilter.trim() || undefined,
+      statFilter: detailStatFilter === 'all' ? undefined : detailStatFilter,
+      sortBy: detailSortField || undefined,
+      sortDescending: detailSortField ? detailSortOrder === 'descend' : undefined,
+    }),
+    [detailItemFilter, detailPage, detailPageSize, detailSortField, detailSortOrder, detailStatFilter],
+  )
+
   const loadDetail = async (showLoading = true) => {
     if (!id) {
       return
     }
 
+    detailRequestControllerRef.current?.abort()
+    const currentController = new AbortController()
+    detailRequestControllerRef.current = currentController
+
     if (showLoading) {
-      setLoading(true)
+      setDetailLoadStatus('loading')
     }
 
     try {
-      const result = await getStoreOrderDetail(id)
+      const result = await getStoreOrderDetail(id, detailQuery, detailRequestControllerRef.current.signal)
+
+      if (detailRequestControllerRef.current !== currentController) {
+        return
+      }
+
+      if (!result) {
+        setDetail(null)
+        setDetailLoadStatus('notFound')
+        setDetailErrorMessage('')
+        return
+      }
+
+      const maxPage = Math.max(1, Math.ceil((result.itemsTotal ?? result.items.length) / detailPageSize))
+      if (detailPage > maxPage) {
+        // 删除或筛选后当前页可能超过服务端总页数，回退后由 effect 重新请求有效页。
+        setDetailPage(maxPage)
+        return
+      }
+
       setDetail(result)
       setHeaderForm({
         storeCode: result?.storeCode,
@@ -600,17 +707,26 @@ export default function StoreOrderDetailPage() {
         shippingFee: result?.shippingFee,
         remarks: result?.remarks || '',
       })
-      setDetailPage(1)
-      setDetailPageSize(50)
-      setDetailStatFilter('all')
-      setDetailItemFilter('')
       setEditingRows({})
+      setDetailLoadStatus('loaded')
+      setDetailErrorMessage('')
     } catch (error) {
+      if (isAbortError(error)) {
+        return
+      }
+
+      if (detailRequestControllerRef.current !== currentController) {
+        return
+      }
+
       console.error(error)
+      setDetail(null)
+      setDetailLoadStatus('error')
+      setDetailErrorMessage(error instanceof Error ? error.message : t('storeOrders.detail.loadDetailFailed'))
       message.error(error instanceof Error ? error.message : t('storeOrders.detail.loadDetailFailed'))
     } finally {
-      if (showLoading) {
-        setLoading(false)
+      if (detailRequestControllerRef.current === currentController) {
+        detailRequestControllerRef.current = null
       }
     }
   }
@@ -640,8 +756,45 @@ export default function StoreOrderDetailPage() {
     if (!id) {
       return
     }
-    void Promise.all([loadDetail(), loadStores()])
-  }, [id, access.isAdmin, access.isWarehouseManager, currentUser?.userGUID])
+    void loadDetail()
+    return () => {
+      detailRequestControllerRef.current?.abort()
+    }
+  }, [detailQuery, id])
+
+  useEffect(() => {
+    if (!id) {
+      return
+    }
+    void loadStores()
+  }, [access.isAdmin, access.isWarehouseManager, currentUser?.userGUID, id])
+
+  useEffect(() => {
+    if (!containerPickerOpen) {
+      setContainerExistingProductCodes([])
+    }
+  }, [containerPickerOpen])
+
+  const handleOpenContainerPicker = async () => {
+    if (!detail?.orderGUID) {
+      return
+    }
+
+    setContainerPickerLoading(true)
+    try {
+      // 必须先加载整单商品编码，避免分页详情页只按当前页做货柜选品去重。
+      const productCodes = await getStoreOrderDetailProductCodes(detail.orderGUID)
+      setContainerExistingProductCodes(productCodes)
+      setContainerPickerOpen(true)
+    } catch (error) {
+      console.error(error)
+      setContainerExistingProductCodes([])
+      setContainerPickerOpen(false)
+      message.error(error instanceof Error ? error.message : t('storeOrders.detail.loadDetailFailed'))
+    } finally {
+      setContainerPickerLoading(false)
+    }
+  }
 
   const storeOptions = useMemo(
     () => {
@@ -706,29 +859,14 @@ export default function StoreOrderDetailPage() {
 
   const statSummary = useMemo(() => {
     const items = detail?.items ?? []
+    const total = detail?.itemsTotal ?? items.length
+
     return {
-      all: items.length,
-      orderedNotShipped: items.filter(isOrderedNotShipped).length,
-      shippedWithoutOrder: items.filter(isShippedWithoutOrder).length,
+      all: total,
+      orderedNotShipped: detail?.orderedNotShippedCount ?? items.filter(isOrderedNotShipped).length,
+      shippedWithoutOrder: detail?.shippedWithoutOrderCount ?? items.filter(isShippedWithoutOrder).length,
     }
-  }, [detail?.items])
-
-  const filteredItems = useMemo(() => {
-    const items = detail?.items ?? []
-    const normalizedKeyword = detailItemFilter.trim().toLowerCase()
-    const keywordFiltered = normalizedKeyword
-      ? items.filter((item) => item.itemNumber?.toLowerCase().includes(normalizedKeyword))
-      : items
-
-    switch (detailStatFilter) {
-      case 'orderedNotShipped':
-        return keywordFiltered.filter(isOrderedNotShipped)
-      case 'shippedWithoutOrder':
-        return keywordFiltered.filter(isShippedWithoutOrder)
-      default:
-        return keywordFiltered
-    }
-  }, [detail?.items, detailItemFilter, detailStatFilter])
+  }, [detail?.items, detail?.itemsTotal, detail?.orderedNotShippedCount, detail?.shippedWithoutOrderCount])
 
   const statusLabelMap = useMemo(
     () => ({
@@ -739,38 +877,6 @@ export default function StoreOrderDetailPage() {
     }),
     [t],
   )
-
-  const sortedItems = useMemo(() => {
-    if (!detailSortField || !detailSortOrder) {
-      return filteredItems
-    }
-
-    const items = [...filteredItems]
-    items.sort((left, right) => {
-      const leftValue = (left[detailSortField] || '') as string
-      const rightValue = (right[detailSortField] || '') as string
-      const compareResult = leftValue.localeCompare(rightValue, 'zh-CN', { numeric: true, sensitivity: 'base' })
-      return detailSortOrder === 'ascend' ? compareResult : -compareResult
-    })
-    return items
-  }, [detailSortField, detailSortOrder, filteredItems])
-
-  const pagedItems = useMemo(() => {
-    const start = (detailPage - 1) * detailPageSize
-    return sortedItems.slice(start, start + detailPageSize)
-  }, [detailPage, detailPageSize, sortedItems])
-
-  useEffect(() => {
-    const totalItems = sortedItems.length
-    const maxPage = Math.max(1, Math.ceil(totalItems / detailPageSize))
-    if (detailPage > maxPage) {
-      setDetailPage(maxPage)
-    }
-  }, [detailPage, detailPageSize, sortedItems.length])
-
-  useEffect(() => {
-    setDetailPage(1)
-  }, [detailItemFilter, detailStatFilter, detailSortField, detailSortOrder])
 
   const handleSaveHeader = async () => {
     if (!detail) {
@@ -1441,9 +1547,33 @@ export default function StoreOrderDetailPage() {
       title={t('storeOrders.detailTitleWithNo', { orderNo: tabTitle })}
       subtitle={t('storeOrders.orderDetailSubtitle')}
     >
-      <Spin spinning={loading}>
-        {detail ? (
-          <Space direction="vertical" size={16} style={{ width: '100%' }}>
+      {detailLoadStatus === 'idle' || detailLoadStatus === 'loading' ? (
+        <Card>
+          <div
+            style={{
+              minHeight: 240,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+          >
+            <Spin />
+          </div>
+        </Card>
+      ) : detailLoadStatus === 'notFound' ? (
+        <Card>
+          <Empty description={t('storeOrders.detail.notFound')} />
+        </Card>
+      ) : detailLoadStatus === 'error' ? (
+        <Card>
+          <Empty description={detailErrorMessage || t('storeOrders.detail.loadDetailFailed')}>
+            <Button type="primary" onClick={() => void loadDetail()}>
+              {t('common.retry', '重试')}
+            </Button>
+          </Empty>
+        </Card>
+      ) : detail ? (
+        <Space direction="vertical" size={16} style={{ width: '100%' }}>
             <Card>
               <Descriptions
                 column={3}
@@ -1573,7 +1703,11 @@ export default function StoreOrderDetailPage() {
                   <Button icon={<SearchOutlined />} onClick={() => setPickerOpen(true)}>
                     {t('storeOrders.selectProduct')}
                   </Button>
-                  <Button icon={<ContainerOutlined />} onClick={() => setContainerPickerOpen(true)}>
+                  <Button
+                    icon={<ContainerOutlined />}
+                    loading={containerPickerLoading}
+                    onClick={() => void handleOpenContainerPicker()}
+                  >
                     {t('storeOrders.containerPicker')}
                   </Button>
                   <Button
@@ -1619,34 +1753,49 @@ export default function StoreOrderDetailPage() {
                     placeholder={t('storeOrders.filterByItemNumber')}
                     style={{ width: 220 }}
                     value={detailItemFilter}
-                    onChange={(event) => setDetailItemFilter(event.target.value)}
+                    onChange={(event) => {
+                      // 远程筛选会切换结果集，先清空勾选，避免对旧行执行批量操作。
+                      setSelectedLineKeys([])
+                      setDetailPage(1)
+                      setDetailItemFilter(event.target.value)
+                    }}
                   />
                   <Tag
                     color={detailStatFilter === 'all' ? 'processing' : 'default'}
                     style={{ cursor: 'pointer' }}
-                    onClick={() => setDetailStatFilter('all')}
+                    onClick={() => {
+                      setSelectedLineKeys([])
+                      setDetailPage(1)
+                      setDetailStatFilter('all')
+                    }}
                   >
                     {t('storeOrders.allItems', { count: statSummary.all })}
                   </Tag>
                   <Tag
                     color={detailStatFilter === 'orderedNotShipped' ? 'orange' : 'gold'}
                     style={{ cursor: 'pointer' }}
-                    onClick={() =>
+                    onClick={() => {
+                      setSelectedLineKeys([])
+                      setDetailPage(1)
                       setDetailStatFilter((current) => (current === 'orderedNotShipped' ? 'all' : 'orderedNotShipped'))
-                    }
+                    }}
                   >
                     {t('storeOrders.orderedNotShipped', { count: statSummary.orderedNotShipped })}
                   </Tag>
                   <Tag
                     color={detailStatFilter === 'shippedWithoutOrder' ? 'geekblue' : 'blue'}
                     style={{ cursor: 'pointer' }}
-                    onClick={() =>
+                    onClick={() => {
+                      setSelectedLineKeys([])
+                      setDetailPage(1)
                       setDetailStatFilter((current) => (current === 'shippedWithoutOrder' ? 'all' : 'shippedWithoutOrder'))
-                    }
+                    }}
                   >
                     {t('storeOrders.shippedWithoutOrder', { count: statSummary.shippedWithoutOrder })}
                   </Tag>
-                  <Typography.Text type="secondary">{t('storeOrders.detail.currentRows', { count: sortedItems.length })}</Typography.Text>
+                  <Typography.Text type="secondary">
+                    {t('storeOrders.detail.currentRows', { count: detail.itemsTotal ?? detail.items.length })}
+                  </Typography.Text>
                 </Space>
               </div>
               <Table
@@ -1654,27 +1803,34 @@ export default function StoreOrderDetailPage() {
                 virtual
                 loading={lineActionLoading}
                 columns={columns}
-                dataSource={pagedItems}
+                dataSource={detail.items}
                 rowSelection={{
                   selectedRowKeys: selectedLineKeys,
                   onChange: setSelectedLineKeys,
-                  preserveSelectedRowKeys: true,
+                  preserveSelectedRowKeys: false,
                   columnWidth: 40,
                 }}
                 pagination={{
                   current: detailPage,
                   pageSize: detailPageSize,
-                  total: sortedItems.length,
+                  total: detail.itemsTotal ?? detail.items.length,
                   showSizeChanger: true,
                   pageSizeOptions: ['20', '50', '100', '500'],
-                  onChange: (page, pageSize) => {
-                    setDetailPage(page)
-                    setDetailPageSize(pageSize)
+                  onChange: (nextPage, nextPageSize) => {
+                    setSelectedLineKeys([])
+                    setDetailPage(nextPage)
+                    setDetailPageSize(nextPageSize)
                   },
                 }}
-                onChange={(_, __, sorter) => {
+                onChange={(_, __, sorter, extra) => {
+                  if (extra.action === 'paginate') {
+                    return
+                  }
+
                   const nextSorter = Array.isArray(sorter) ? sorter[0] : (sorter as SorterResult<StoreOrderDetailLine>)
                   const field = nextSorter?.field
+                  setSelectedLineKeys([])
+                  setDetailPage(1)
                   if ((field === 'itemNumber' || field === 'locationCode') && nextSorter.order) {
                     setDetailSortField(field)
                     setDetailSortOrder(nextSorter.order)
@@ -1708,8 +1864,8 @@ export default function StoreOrderDetailPage() {
 
             <ContainerProductPicker
               open={containerPickerOpen}
-              loading={lineActionLoading}
-              alreadySelectedCodes={detail.items.map((item) => item.productCode)}
+              loading={lineActionLoading || containerPickerLoading}
+              alreadySelectedCodes={containerExistingProductCodes}
               onClose={() => setContainerPickerOpen(false)}
               onConfirm={handlePickerConfirm}
             />
@@ -1880,13 +2036,12 @@ export default function StoreOrderDetailPage() {
                 ) : null}
               </Space>
             </Modal>
-          </Space>
-        ) : (
-          <Card>
-            <Empty description={t('storeOrders.detail.notFound')} />
-          </Card>
-        )}
-      </Spin>
+        </Space>
+      ) : (
+        <Card>
+          <Empty description={t('storeOrders.detail.notFound')} />
+        </Card>
+      )}
     </PageContainer>
   )
 }

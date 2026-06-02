@@ -1,4 +1,5 @@
 import type { ApiResponse } from '../types/api'
+import type { SyncResult } from '../types/container'
 import request from '../utils/request'
 
 const API_BASE = '/api/react/v1/product-warehouse'
@@ -140,6 +141,7 @@ export interface WarehouseProductsTableQuery {
   pageSize: number
   searchText?: string
   supplierCode?: string
+  categoryFilter?: 'all' | 'uncategorized'
   productType?: 0 | 1 | 2
   isActive?: boolean
   sortField?: string
@@ -293,6 +295,12 @@ function unwrapResponse<T>(response: unknown, emptyData: T): T {
   }
 
   return emptyData
+}
+
+function ensureApiSuccess(success?: boolean, message?: string, fallback?: string) {
+  if (success === false) {
+    throw new Error(message || fallback || '请求失败')
+  }
 }
 
 function unwrapListResponse<T>(response: unknown): WarehouseImportListResult<T> {
@@ -536,6 +544,17 @@ export async function batchUpdateWarehouseProducts(items: WarehouseProductBatchU
 export async function getWarehouseProductsTable(
   query: WarehouseProductsTableQuery,
 ): Promise<WarehouseProductsTableResult> {
+  const filters: Record<string, string[]> = {
+    ...(query.supplierCode ? { domesticSupplierCode: [query.supplierCode] } : {}),
+    ...(query.productType !== undefined ? { productType: [String(query.productType)] } : {}),
+    ...(query.isActive !== undefined ? { isActive: [String(query.isActive)] } : {}),
+  }
+
+  // 空分类商品通过仓库分类 GUID 空值过滤，避免清空筛选时误查全部商品。
+  if (query.categoryFilter === 'uncategorized') {
+    filters.warehouseCategoryGUID = ['']
+  }
+
   const response = await request<unknown>(`${API_BASE}/table`, {
     method: 'POST',
     data: {
@@ -544,15 +563,28 @@ export async function getWarehouseProductsTable(
       SortBy: query.sortField,
       SortOrder: query.sortOrder,
       GlobalSearch: query.searchText || undefined,
-      Filters: {
-        ...(query.supplierCode ? { domesticSupplierCode: [query.supplierCode] } : {}),
-        ...(query.productType !== undefined ? { productType: [String(query.productType)] } : {}),
-        ...(query.isActive !== undefined ? { isActive: [String(query.isActive)] } : {}),
-      },
+      Filters: filters,
     },
   })
 
   return normalizeWarehouseProductsTableResponse(response, query.page, query.pageSize)
+}
+
+export async function syncWarehouseProductsFromHq(): Promise<SyncResult> {
+  const response = await request.post<ApiResponse<SyncResult>>(`${API_BASE}/sync-from-hq`)
+  const apiSuccess = response.success ?? response.isSuccess
+
+  // 后端明确返回失败时，直接抛出后端 message，避免业务错误被静默吞掉。
+  ensureApiSuccess(apiSuccess, response.message, '从HQ同步 WarehouseProduct 失败')
+  const syncResult = response.data
+  const syncSuccess = syncResult?.isSuccess ?? syncResult?.IsSuccess
+  // 同步结果本身失败时也抛出，避免后续复用该 helper 时误判 resolved promise 为成功。
+  ensureApiSuccess(syncSuccess, syncResult?.message ?? syncResult?.Message ?? response.message, '从HQ同步 WarehouseProduct 失败')
+
+  return syncResult ?? {
+    isSuccess: response.isSuccess ?? response.success,
+    message: response.message,
+  }
 }
 
 export async function updateWarehouseProductFull(

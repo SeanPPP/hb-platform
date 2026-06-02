@@ -13,11 +13,12 @@ import ShopOrdersPage from './pages/ShopOrders'
 import ForbiddenPage from './pages/Forbidden'
 import WebAccessDeniedPage from './pages/WebAccessDenied'
 import { useAuthStore } from './store/auth'
+import { AUTH_EXPIRED_EVENT } from './utils/request'
 import { getDefaultWebPath, WEB_NO_ACCESS_PATH } from './utils/webPortalAccess'
 
 function AppBootstrap() {
   const { t } = useTranslation()
-  const { initialized, loading, currentUser, access, fetchCurrentUser } = useAuthStore()
+  const { initialized, loading, currentUser, access, fetchCurrentUser, clearAuth } = useAuthStore()
   const location = useLocation()
   const isLoginPath = location.pathname === '/login'
 
@@ -26,6 +27,11 @@ function AppBootstrap() {
       void fetchCurrentUser()
     }
   }, [fetchCurrentUser, initialized, isLoginPath, loading])
+
+  useEffect(() => {
+    window.addEventListener(AUTH_EXPIRED_EVENT, clearAuth)
+    return () => window.removeEventListener(AUTH_EXPIRED_EVENT, clearAuth)
+  }, [clearAuth])
 
   const homePage = getDefaultWebPath(access)
   const portalDeniedPage = homePage === WEB_NO_ACCESS_PATH

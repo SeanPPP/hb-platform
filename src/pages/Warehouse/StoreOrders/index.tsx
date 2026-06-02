@@ -1,5 +1,6 @@
 import {
   CopyOutlined,
+  DatabaseOutlined,
   PlusOutlined,
   ReloadOutlined,
   SearchOutlined,
@@ -8,6 +9,7 @@ import {
 import type { ColumnsType, TablePaginationConfig } from 'antd/es/table'
 import type { SorterResult } from 'antd/es/table/interface'
 import {
+  App as AntdApp,
   Button,
   Card,
   DatePicker,
@@ -19,21 +21,24 @@ import {
   Table,
   Tag,
   Typography,
-  message,
 } from 'antd'
 import type { Dayjs } from 'dayjs'
-import { useEffect, useMemo, useState } from 'react'
+import dayjs from 'dayjs'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useNavigate } from 'react-router-dom'
 import PageContainer from '../../../components/PageContainer'
+import { refreshSession } from '../../../services/auth'
 import {
   batchUpdateStoreOrderStatus,
+  createStoreOrderFullHqSyncJob,
+  createStoreOrderIncrementalHqSyncJob,
   copyStoreOrder,
   createStoreOrder,
   deleteStoreOrder,
+  getStoreOrderHqSyncJob,
   getStoreOrderList,
   getUsedStoreOrderBranches,
-  syncMissingStoreOrders,
   updateStoreOrderStatus,
 } from '../../../services/storeOrderService'
 import { getStores } from '../../../services/storeService'
@@ -54,6 +59,16 @@ import {
 import { getDateTagColor } from '../../../utils/tagColors'
 import { getStoreColor } from '../../../utils/userTableColors'
 import { copyTextToClipboard } from '../../../utils/clipboard'
+import { RequestError } from '../../../utils/request'
+import {
+  ensureStoreOrderSyncSession,
+  STORE_ORDER_SYNC_AUTH_EXPIRED_MESSAGE,
+} from './syncSessionGuard'
+import {
+  createStoreOrderSyncJobPoller,
+  StoreOrderSyncPollingCancelledError,
+  StoreOrderSyncPollingTimeoutError,
+} from './syncJobPolling'
 
 type RangeValue = [Dayjs | null, Dayjs | null] | null
 
@@ -127,6 +142,7 @@ function renderDateTag(value?: string, language?: string) {
 
 function StorePickerModal({ open, title, loading, onCancel, onSelect }: StorePickerModalProps) {
   const { t } = useTranslation()
+  const { message } = AntdApp.useApp()
   const [stores, setStores] = useState<StoreDto[]>([])
   const [fetching, setFetching] = useState(false)
   const [keyword, setKeyword] = useState('')
@@ -170,7 +186,7 @@ function StorePickerModal({ open, title, loading, onCancel, onSelect }: StorePic
     return () => {
       cancelled = true
     }
-  }, [keyword, open, t])
+  }, [keyword, message, open, t])
 
   return (
     <Modal
@@ -178,7 +194,7 @@ function StorePickerModal({ open, title, loading, onCancel, onSelect }: StorePic
       open={open}
       width={760}
       footer={null}
-      destroyOnClose
+      destroyOnHidden
       onCancel={() => {
         setKeyword('')
         onCancel()
@@ -230,6 +246,7 @@ function StorePickerModal({ open, title, loading, onCancel, onSelect }: StorePic
 
 function CopyOrderModal({ open, loading, onCancel, onConfirm }: CopyOrderModalProps) {
   const { t } = useTranslation()
+  const { message } = AntdApp.useApp()
   const [stores, setStores] = useState<StoreDto[]>([])
   const [fetching, setFetching] = useState(false)
   const [keyword, setKeyword] = useState('')
@@ -276,7 +293,7 @@ function CopyOrderModal({ open, loading, onCancel, onConfirm }: CopyOrderModalPr
     return () => {
       cancelled = true
     }
-  }, [keyword, open, t])
+  }, [keyword, message, open, t])
 
   const handleClose = () => {
     setKeyword('')
@@ -291,7 +308,7 @@ function CopyOrderModal({ open, loading, onCancel, onConfirm }: CopyOrderModalPr
       title={t('storeOrders.copyOrderTitle')}
       open={open}
       width={860}
-      destroyOnClose
+      destroyOnHidden
       confirmLoading={loading}
       okText={t('storeOrders.confirmCopy')}
       cancelText={t('common.cancel')}
@@ -367,10 +384,15 @@ function CopyOrderModal({ open, loading, onCancel, onConfirm }: CopyOrderModalPr
   )
 }
 
+function isUnauthorizedError(error: unknown) {
+  return error instanceof RequestError && error.status === 401
+}
+
 export default function StoreOrdersPage() {
   const { t, i18n } = useTranslation()
   const navigate = useNavigate()
-  const { access } = useAuthStore()
+  const { message, modal } = AntdApp.useApp()
+  const { access, clearAuth } = useAuthStore()
 
   const [loading, setLoading] = useState(false)
   const [creating, setCreating] = useState(false)
@@ -390,9 +412,18 @@ export default function StoreOrdersPage() {
   const [total, setTotal] = useState(0)
   const [sortField, setSortField] = useState('orderDate')
   const [sortOrder, setSortOrder] = useState<'ascend' | 'descend'>('descend')
-  const [syncLoading, setSyncLoading] = useState(false)
+  const [syncingMode, setSyncingMode] = useState<'Full' | 'Incremental' | null>(null)
+  const [incrementalSyncOpen, setIncrementalSyncOpen] = useState(false)
+  const [incrementalSyncRange, setIncrementalSyncRange] = useState<RangeValue>(() => [
+    dayjs().subtract(30, 'day'),
+    dayjs(),
+  ])
   const [storePickerOpen, setStorePickerOpen] = useState(false)
   const [copyModalOpen, setCopyModalOpen] = useState(false)
+  // 记录当前轮询停止函数，确保重复触发和页面卸载时都能清理定时器。
+  const stopSyncPollingRef = useRef<(() => void) | null>(null)
+  // 避免卸载后继续 setState，防止轮询尾声触发无效更新。
+  const isMountedRef = useRef(true)
 
   const branchMap = useMemo(
     () => Object.fromEntries(branches.map((item) => [item.code, item.name])) as Record<string, string>,
@@ -472,14 +503,57 @@ export default function StoreOrdersPage() {
     void Promise.all([loadData({ pageNumber: 1 }), loadBranches()])
   }, [])
 
-  const handleSyncMissingOrders = async () => {
-    setSyncLoading(true)
-    try {
-      const result = await syncMissingStoreOrders(
-        selectedStoreCodes.length ? selectedStoreCodes[0] : undefined,
-      )
+  useEffect(() => {
+    return () => {
+      isMountedRef.current = false
+      stopSyncPollingRef.current?.()
+      stopSyncPollingRef.current = null
+    }
+  }, [])
 
-      if (!result?.success) {
+  const runStoreOrderHqSync = async (
+    mode: 'Full' | 'Incremental',
+    options: { startDate?: string; endDate?: string; storeCodes?: string[] } = {},
+  ) => {
+    if (isMountedRef.current) {
+      setSyncingMode(mode)
+    }
+    try {
+      const hasSession = await ensureStoreOrderSyncSession({
+        refreshSession,
+        clearAuth,
+        redirectToLogin: (target) => navigate(target, { replace: true }),
+        currentPath:
+          typeof window === 'undefined'
+            ? '/warehouse/store-orders'
+            : `${window.location.pathname}${window.location.search}`,
+      })
+
+      if (!hasSession) {
+        message.warning(STORE_ORDER_SYNC_AUTH_EXPIRED_MESSAGE)
+        return
+      }
+
+      const syncJob =
+        mode === 'Full'
+          ? await createStoreOrderFullHqSyncJob()
+          : await createStoreOrderIncrementalHqSyncJob(options)
+
+      if (!syncJob.jobId) {
+        message.error(syncJob.message || t('storeOrders.syncJobCreateFailed'))
+        return
+      }
+
+      const poller = createStoreOrderSyncJobPoller({
+        jobId: syncJob.jobId,
+        getJob: getStoreOrderHqSyncJob,
+      })
+      stopSyncPollingRef.current = poller.stop
+
+      const result = await poller.promise
+      stopSyncPollingRef.current = null
+
+      if (result.status === 'Failed') {
         message.error(result?.message || t('storeOrders.syncFailed'))
         return
       }
@@ -501,6 +575,14 @@ export default function StoreOrdersPage() {
           }),
         )
       }
+      if ((result.ordersSoftDeleted ?? 0) > 0 || (result.detailsSoftDeleted ?? 0) > 0) {
+        parts.push(
+          t('storeOrders.syncDeletedSummary', {
+            orders: result.ordersSoftDeleted ?? 0,
+            details: result.detailsSoftDeleted ?? 0,
+          }),
+        )
+      }
 
       if (parts.length) {
         message.success(parts.join(', '))
@@ -510,11 +592,50 @@ export default function StoreOrdersPage() {
 
       void loadData()
     } catch (error) {
+      if (isUnauthorizedError(error)) {
+        message.warning(STORE_ORDER_SYNC_AUTH_EXPIRED_MESSAGE)
+        return
+      }
+      if (error instanceof StoreOrderSyncPollingCancelledError) {
+        return
+      }
+      if (error instanceof StoreOrderSyncPollingTimeoutError) {
+        message.warning(t('storeOrders.syncTimeout'))
+        return
+      }
       console.error(error)
       message.error(error instanceof Error ? error.message : t('storeOrders.syncFailed'))
     } finally {
-      setSyncLoading(false)
+      stopSyncPollingRef.current = null
+      if (isMountedRef.current) {
+        setSyncingMode(null)
+      }
     }
+  }
+
+  const handleFullHqSync = () => {
+    modal.confirm({
+      title: t('storeOrders.syncFullTitle'),
+      content: t('storeOrders.syncFullContent'),
+      okText: t('storeOrders.syncFullConfirm'),
+      cancelText: t('common.cancel'),
+      okButtonProps: { danger: true },
+      onOk: () => runStoreOrderHqSync('Full'),
+    })
+  }
+
+  const handleIncrementalHqSync = async () => {
+    if (!incrementalSyncRange?.[0] || !incrementalSyncRange?.[1]) {
+      message.warning(t('storeOrders.syncDateRangeRequired'))
+      return
+    }
+
+    setIncrementalSyncOpen(false)
+    await runStoreOrderHqSync('Incremental', {
+      storeCodes: selectedStoreCodes.length ? selectedStoreCodes : undefined,
+      startDate: incrementalSyncRange[0].startOf('day').toISOString(),
+      endDate: incrementalSyncRange[1].endOf('day').toISOString(),
+    })
   }
 
   const handleStatusToggle = (record: StoreOrderListItem) => {
@@ -529,7 +650,7 @@ export default function StoreOrdersPage() {
         ? t('storeOrders.markCompleted')
         : t('storeOrders.markSubmitted')
 
-    Modal.confirm({
+    modal.confirm({
       title: t('storeOrders.updateStatusTitle'),
       content: t('storeOrders.updateStatusConfirm', {
         orderNo: record.orderNo,
@@ -559,7 +680,7 @@ export default function StoreOrdersPage() {
       return
     }
 
-    Modal.confirm({
+    modal.confirm({
       title: t('storeOrders.batchUpdateStatusTitle'),
       content: t('storeOrders.batchUpdateStatusConfirm', {
         count: selectedRowKeys.length,
@@ -789,14 +910,25 @@ export default function StoreOrdersPage() {
       subtitle={t('storeOrders.subtitle')}
       extra={
         <Space wrap>
-          {access.canManageWarehouse ? (
+          {access.isAdmin ? (
+            <Button
+              danger
+              icon={<DatabaseOutlined />}
+              loading={syncingMode === 'Full'}
+              disabled={syncingMode !== null}
+              onClick={handleFullHqSync}
+            >
+              {t('storeOrders.syncFullOrders')}
+            </Button>
+          ) : null}
+          {access.canManageWarehouseOrders ? (
             <Button
               icon={<SyncOutlined />}
-              loading={syncLoading}
-              disabled={syncLoading}
-              onClick={() => void handleSyncMissingOrders()}
+              loading={syncingMode === 'Incremental'}
+              disabled={syncingMode !== null}
+              onClick={() => setIncrementalSyncOpen(true)}
             >
-              {t('storeOrders.syncOrders')}
+              {t('storeOrders.syncIncrementalOrders')}
             </Button>
           ) : null}
           <Button
@@ -998,6 +1130,38 @@ export default function StoreOrdersPage() {
           }
         }}
       />
+
+      <Modal
+        title={t('storeOrders.syncIncrementalTitle')}
+        open={incrementalSyncOpen}
+        confirmLoading={syncingMode === 'Incremental'}
+        okText={t('storeOrders.syncIncrementalOrders')}
+        cancelText={t('common.cancel')}
+        destroyOnHidden
+        onCancel={() => setIncrementalSyncOpen(false)}
+        onOk={() => void handleIncrementalHqSync()}
+      >
+        <Space direction="vertical" style={{ width: '100%' }}>
+          <Typography.Text type="secondary">
+            {t('storeOrders.syncDefaultRangeHint')}
+          </Typography.Text>
+          <DatePicker.RangePicker
+            value={incrementalSyncRange}
+            style={{ width: '100%' }}
+            showTime
+            onChange={(value) => setIncrementalSyncRange(value)}
+          />
+          {selectedStoreCodes.length ? (
+            <Typography.Text type="secondary">
+              {t('storeOrders.syncIncrementalScope', { count: selectedStoreCodes.length })}
+            </Typography.Text>
+          ) : (
+            <Typography.Text type="secondary">
+              {t('storeOrders.syncIncrementalAllScope')}
+            </Typography.Text>
+          )}
+        </Space>
+      </Modal>
     </PageContainer>
   )
 }

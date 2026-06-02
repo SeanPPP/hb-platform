@@ -26,11 +26,13 @@ import {
   message,
 } from 'antd'
 import type { ColumnsType, TablePaginationConfig } from 'antd/es/table'
+import type { DefaultOptionType } from 'antd/es/select'
 import type { DataNode } from 'antd/es/tree'
 import type { TFunction } from 'i18next'
 import { useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import PageContainer from '../../../components/PageContainer'
+import { getSupplierOptions } from '../../../services/domesticProductService'
 import {
   batchAssignProducts,
   createWarehouseCategory,
@@ -47,6 +49,15 @@ import {
   type WarehouseProductListItem,
   type WarehouseProductsTableQuery,
 } from '../../../services/warehouseProductService'
+import type { SupplierOption } from '../../../types/domesticProduct'
+import {
+  ALL_PRODUCTS_FILTER_KEY,
+  buildCategoryOptions,
+  buildFilterCategoryOptions,
+  type CategoryProductFilterMode,
+  resolveCategoryProductFilterMode,
+  hasExecutedCategoryProductQuery,
+} from './categoryProductFilters'
 
 type FormMode = 'idle' | 'create' | 'edit'
 
@@ -61,7 +72,6 @@ interface ProductFilterValues {
   targetCategoryGuid?: string
 }
 
-const ALL_PRODUCTS_FILTER_KEY = '__ALL_PRODUCTS__'
 const DEFAULT_TREE_EXPAND_LEVEL = 2
 const IMAGE_FALLBACK = 'data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs='
 
@@ -101,16 +111,6 @@ function collectDescendantKeys(node?: WarehouseCategoryNode): string[] {
   }
 
   return (node.children || []).flatMap((child) => [child.categoryGUID, ...collectDescendantKeys(child)])
-}
-
-function buildParentOptions(nodes: WarehouseCategoryNode[], level = 0): Array<{ label: string; value: string }> {
-  return nodes.flatMap((node) => [
-    {
-      value: node.categoryGUID,
-      label: `${level > 0 ? `${'--'.repeat(level)} ` : ''}${node.categoryName}${node.chineseName ? ` / ${node.chineseName}` : ''}`,
-    },
-    ...buildParentOptions(node.children || [], level + 1),
-  ])
 }
 
 function buildTreeData(nodes: WarehouseCategoryNode[], t: TFunction): DataNode[] {
@@ -157,20 +157,40 @@ function formatDomesticSupplier(record: WarehouseCategoryProductItem): string {
     .join(' - ')
 }
 
+type SupplierSelectOption = DefaultOptionType & {
+  searchText?: string
+}
+
+function buildSupplierOptions(suppliers: SupplierOption[]): SupplierSelectOption[] {
+  return suppliers.map((item) => ({
+    value: item.code,
+    label: `${item.code} - ${item.name}`,
+    searchText: `${item.code} ${item.name} ${item.shopNumber ?? ''}`.toLowerCase(),
+  }))
+}
+
+function filterSupplierOption(input: string, option?: DefaultOptionType) {
+  return String((option as SupplierSelectOption | undefined)?.searchText ?? '')
+    .includes(input.trim().toLowerCase())
+}
+
 export default function WarehouseCategoriesPage() {
   const { t } = useTranslation()
   const [form] = Form.useForm<WarehouseCategoryFormValues>()
   const [productFilterForm] = Form.useForm<ProductFilterValues>()
+  const watchedTargetCategoryGuid = Form.useWatch('targetCategoryGuid', productFilterForm)
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
   const [productLoading, setProductLoading] = useState(false)
   const [assigning, setAssigning] = useState(false)
   const [categories, setCategories] = useState<WarehouseCategoryNode[]>([])
+  const [suppliers, setSuppliers] = useState<SupplierOption[]>([])
+  const [supplierLoading, setSupplierLoading] = useState(false)
   const [expandedKeys, setExpandedKeys] = useState<string[]>([])
   const [selectedCategoryGuid, setSelectedCategoryGuid] = useState<string>()
   const [formMode, setFormMode] = useState<FormMode>('idle')
   const [modalOpen, setModalOpen] = useState(false)
-  const [productFilterCategoryGuid, setProductFilterCategoryGuid] = useState<string>()
+  const [productFilterMode, setProductFilterMode] = useState<CategoryProductFilterMode | null>(null)
   const [productItemNumber, setProductItemNumber] = useState('')
   const [productSupplierCode, setProductSupplierCode] = useState('')
   const [productPage, setProductPage] = useState(1)
@@ -195,23 +215,31 @@ export default function WarehouseCategoriesPage() {
   }, [formMode, selectedCategory])
 
   const parentOptions = useMemo(
-    () => buildParentOptions(categories).filter((item) => !disallowedParentKeys.has(item.value)),
+    () => buildCategoryOptions(categories).filter((item) => !disallowedParentKeys.has(String(item.value))),
     [categories, disallowedParentKeys],
   )
-  const categoryOptions = useMemo(() => buildParentOptions(categories), [categories])
+  const categoryOptions = useMemo(() => buildCategoryOptions(categories), [categories])
+  const filterCategoryOptions = useMemo(() => buildFilterCategoryOptions(categories, t), [categories, t])
+  const supplierOptions = useMemo(() => buildSupplierOptions(suppliers), [suppliers])
 
   const loadProducts = async (
-    nextCategoryGuid = productFilterCategoryGuid,
+    nextFilterMode = productFilterMode,
     nextPage = productPage,
     nextPageSize = productPageSize,
     nextItemNumber = productItemNumber,
     nextSupplierCode = productSupplierCode,
   ) => {
+    if (!hasExecutedCategoryProductQuery(nextFilterMode)) {
+      return
+    }
+
     setProductLoading(true)
     try {
-      if (nextCategoryGuid && nextCategoryGuid !== ALL_PRODUCTS_FILTER_KEY) {
+      const filterMode = nextFilterMode
+
+      if (filterMode.type === 'category') {
         const result = await getWarehouseCategoryProducts({
-          categoryGuid: nextCategoryGuid,
+          categoryGuid: filterMode.categoryGuid,
           page: nextPage,
           pageSize: nextPageSize,
           itemNumber: nextItemNumber || undefined,
@@ -221,7 +249,7 @@ export default function WarehouseCategoriesPage() {
         setProductTotal(result.total)
         setProductPage(result.page)
         setProductPageSize(result.pageSize)
-        setProductFilterCategoryGuid(nextCategoryGuid)
+        setProductFilterMode(filterMode)
         return
       }
 
@@ -230,18 +258,31 @@ export default function WarehouseCategoriesPage() {
         pageSize: nextPageSize,
         searchText: nextItemNumber || undefined,
         supplierCode: nextSupplierCode || undefined,
+        categoryFilter: filterMode.type,
       } satisfies WarehouseProductsTableQuery)
 
       setProducts(result.items.map(mapWarehouseTableItemToCategoryProduct))
       setProductTotal(result.total)
       setProductPage(result.page)
       setProductPageSize(result.pageSize)
-      setProductFilterCategoryGuid(ALL_PRODUCTS_FILTER_KEY)
+      setProductFilterMode(filterMode)
     } catch (error) {
       console.error(error)
       message.error(error instanceof Error ? error.message : t('warehouse.categories.loadProductsFailed'))
     } finally {
       setProductLoading(false)
+    }
+  }
+
+  const loadSuppliers = async () => {
+    setSupplierLoading(true)
+    try {
+      setSuppliers(await getSupplierOptions())
+    } catch (error) {
+      console.error(error)
+      message.error(error instanceof Error ? error.message : t('productCreation.loadSupplierListFailed'))
+    } finally {
+      setSupplierLoading(false)
     }
   }
 
@@ -287,7 +328,7 @@ export default function WarehouseCategoriesPage() {
       }
 
       setSelectedCategoryGuid(undefined)
-      setProductFilterCategoryGuid(undefined)
+      setProductFilterMode(null)
       setFormMode('idle')
       setModalOpen(false)
       form.resetFields()
@@ -301,6 +342,7 @@ export default function WarehouseCategoriesPage() {
 
   useEffect(() => {
     void loadTree(undefined, true)
+    void loadSuppliers()
   }, [])
 
   useEffect(() => {
@@ -455,25 +497,25 @@ export default function WarehouseCategoriesPage() {
 
   const handleSearchProducts = async () => {
     const values = productFilterForm.getFieldsValue()
-    const nextFilterCategoryGuid = values.filterCategoryGuid || ALL_PRODUCTS_FILTER_KEY
+    const nextFilterMode = resolveCategoryProductFilterMode(values.filterCategoryGuid)
 
     setProductItemNumber(values.itemNumber?.trim() || '')
     setProductSupplierCode(values.supplierCode?.trim() || '')
     setProductPage(1)
     setSelectedProductCodes([])
-    await loadProducts(nextFilterCategoryGuid, 1, productPageSize, values.itemNumber?.trim() || '', values.supplierCode?.trim() || '')
+    await loadProducts(nextFilterMode, 1, productPageSize, values.itemNumber?.trim() || '', values.supplierCode?.trim() || '')
   }
 
   const handleResetProducts = async () => {
     productFilterForm.setFieldsValue({
       itemNumber: '',
-      supplierCode: '',
-      filterCategoryGuid: undefined,
+      supplierCode: undefined,
+      filterCategoryGuid: ALL_PRODUCTS_FILTER_KEY,
       targetCategoryGuid: selectedCategoryGuid,
     })
     setProductItemNumber('')
     setProductSupplierCode('')
-    setProductFilterCategoryGuid(undefined)
+    setProductFilterMode(null)
     setProductPage(1)
     setProducts([])
     setProductTotal(0)
@@ -483,11 +525,11 @@ export default function WarehouseCategoriesPage() {
   const handleProductTableChange = (pagination: TablePaginationConfig) => {
     const nextPage = pagination.current ?? 1
     const nextPageSize = pagination.pageSize ?? productPageSize
-    if (productFilterCategoryGuid === undefined) {
+    if (!hasExecutedCategoryProductQuery(productFilterMode)) {
       return
     }
 
-    void loadProducts(productFilterCategoryGuid, nextPage, nextPageSize, productItemNumber, productSupplierCode)
+    void loadProducts(productFilterMode, nextPage, nextPageSize, productItemNumber, productSupplierCode)
   }
 
   const handleBatchAssign = async () => {
@@ -514,8 +556,8 @@ export default function WarehouseCategoriesPage() {
       setSelectedProductCodes([])
       await Promise.all([
         loadTree(selectedCategoryGuid),
-        productFilterCategoryGuid
-          ? loadProducts(productFilterCategoryGuid, productPage, productPageSize, productItemNumber, productSupplierCode)
+        hasExecutedCategoryProductQuery(productFilterMode)
+          ? loadProducts(productFilterMode, productPage, productPageSize, productItemNumber, productSupplierCode)
           : Promise.resolve(),
       ])
     } catch (error) {
@@ -656,7 +698,7 @@ export default function WarehouseCategoriesPage() {
               <Space>
                 <Button
                   type="primary"
-                  disabled={!productFilterForm.getFieldValue('targetCategoryGuid') || !selectedProductCodes.length}
+                  disabled={!watchedTargetCategoryGuid || !selectedProductCodes.length}
                   loading={assigning}
                   onClick={() => void handleBatchAssign()}
                 >
@@ -664,11 +706,11 @@ export default function WarehouseCategoriesPage() {
                 </Button>
                 <Button
                   icon={<ReloadOutlined />}
-                  disabled={productFilterCategoryGuid === undefined}
+                  disabled={!hasExecutedCategoryProductQuery(productFilterMode)}
                   onClick={() =>
-                    productFilterCategoryGuid !== undefined
+                    hasExecutedCategoryProductQuery(productFilterMode)
                       ? void loadProducts(
-                          productFilterCategoryGuid,
+                          productFilterMode,
                           productPage,
                           productPageSize,
                           productItemNumber,
@@ -695,19 +737,27 @@ export default function WarehouseCategoriesPage() {
                 <Form
                   form={productFilterForm}
                   layout="inline"
-                  initialValues={{ filterCategoryGuid: undefined, targetCategoryGuid: selectedCategoryGuid }}
+                  initialValues={{ filterCategoryGuid: ALL_PRODUCTS_FILTER_KEY, targetCategoryGuid: selectedCategoryGuid }}
                 >
                   <Form.Item label={t('warehouse.categories.itemNumber')} name="itemNumber">
                     <Input allowClear placeholder={t('warehouse.categories.enterItemNumber')} style={{ width: 180 }} />
                   </Form.Item>
                   <Form.Item label={t('warehouse.categories.supplierCode')} name="supplierCode">
-                    <Input allowClear placeholder={t('warehouse.categories.enterDomesticSupplierCode')} style={{ width: 180 }} />
+                    <Select
+                      allowClear
+                      showSearch
+                      loading={supplierLoading}
+                      options={supplierOptions}
+                      filterOption={filterSupplierOption}
+                      placeholder={t('warehouse.categories.selectDomesticSupplier')}
+                      style={{ width: 220 }}
+                    />
                   </Form.Item>
                   <Form.Item label={t('warehouse.categories.category')} name="filterCategoryGuid">
                     <Select
                       style={{ width: 260 }}
-                      options={categoryOptions}
-                      placeholder={t('warehouse.categories.allProductsWhenEmpty')}
+                      options={filterCategoryOptions}
+                      placeholder={t('warehouse.categories.uncategorizedWhenEmpty')}
                       showSearch
                       optionFilterProp="label"
                       allowClear

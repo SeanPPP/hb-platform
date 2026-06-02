@@ -139,12 +139,67 @@ export interface UpdateToStorePricesRequest {
   detailGuids: string[]
   targetStoreCodes: string[]
   updateFields: UpdateToStorePricesFields
+  updateHqProduct?: boolean
 }
 
 export interface BatchResultDto {
   inserted: number
   updated: number
   failed: number
+}
+
+export interface UpdateToStorePricesResult extends BatchResultDto {
+  hqExisting?: number
+  hbwebCreated?: number
+  hqCreated?: number
+  hqSynced?: number
+  hqPurchasePricesUpdated?: number
+  hqFailed?: number
+  hqErrors?: EnsureHqProductError[]
+}
+
+export interface EnsureHqProductError {
+  detailGuid: string
+  storeCode?: string
+  message: string
+}
+
+export interface EnsureHqProductsRequest {
+  detailGuids: string[]
+  targetStoreCodes: string[]
+  idempotencyKey?: string
+}
+
+export interface EnsureHqProductsResult {
+  total: number
+  hqExisting: number
+  hbwebCreated: number
+  hqCreated: number
+  hqSynced: number
+  hqPurchasePricesUpdated: number
+  skipped: number
+  failed: number
+  errors: EnsureHqProductError[]
+}
+
+export interface LocalSupplierInvoiceHqSyncRequest {
+  selectedStoreCodes?: string[]
+  startDate?: string
+  endDate?: string
+}
+
+export interface LocalSupplierInvoiceHqSyncResult {
+  requestId: string
+  status: string
+  startedAt: string
+  completedAt?: string
+  durationMs: number
+  invoiceAddedCount: number
+  invoiceUpdatedCount: number
+  detailAddedCount: number
+  detailUpdatedCount: number
+  totalProcessed: number
+  errors: string[]
 }
 
 export interface GetInvoiceDetailResponse {
@@ -191,6 +246,7 @@ export interface ProductCheckResult {
     purchasePrice?: number
     retailPrice?: number
     productImage?: string
+    storeProductCode?: string
   }
   barcodeMatchCount?: number
   defaultAction?: DetailAction
@@ -266,6 +322,8 @@ export interface BatchExecuteActionsResult {
 }
 
 export interface CheckInvoiceNoRequest {
+  storeCode: string
+  supplierCode: string
   invoiceNo: string
   excludeInvoiceGuid?: string
 }

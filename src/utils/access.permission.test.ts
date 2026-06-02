@@ -51,6 +51,24 @@ assertEqual(
   'WarehouseManager without explicit permissions should not gain Warehouse.ManageOrders at runtime',
 )
 
+const warehouseOrderManagerAccess = buildAccess(
+  createCurrentUser({
+    permissions: [P.Warehouse.ManageOrders],
+  }),
+)
+
+assertEqual(
+  warehouseOrderManagerAccess.canManageWarehouseOrders,
+  true,
+  'Warehouse.ManageOrders should unlock warehouse store order management',
+)
+
+assertEqual(
+  warehouseOrderManagerAccess.canManageWarehouse,
+  false,
+  'Warehouse.ManageOrders should not be confused with the legacy whole-warehouse permission',
+)
+
 const storeManagerAccess = buildAccess(
   createCurrentUser({
     roleNames: ['StoreManager'],
@@ -621,6 +639,36 @@ assertEqual(
   }).length,
   0,
   'Removing the legacy local invoice HbwebExpo menu should delete the effective legacy permission assignment',
+)
+
+const localPurchasePushAccess = buildAccess(
+  createCurrentUser({
+    permissions: [P.LocalPurchase.PushToHq],
+  }),
+)
+
+assertEqual(
+  localPurchasePushAccess.canPushLocalPurchaseToHq,
+  true,
+  'LocalPurchase.PushToHq should expose the HQ write permission flag',
+)
+
+assertEqual(
+  localPurchasePushAccess.canEditLocalPurchase && localPurchasePushAccess.canPushLocalPurchaseToHq,
+  false,
+  'LocalPurchase.PushToHq alone should not be treated as full edit-page HQ write access',
+)
+
+const localPurchaseViewOnlyAccess = buildAccess(
+  createCurrentUser({
+    permissions: [P.LocalPurchase.View],
+  }),
+)
+
+assertEqual(
+  localPurchaseViewOnlyAccess.canPushLocalPurchaseToHq,
+  false,
+  'LocalPurchase.View should not unlock HQ write actions',
 )
 
 console.log('access.permission.test: ok')

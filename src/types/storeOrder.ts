@@ -104,10 +104,68 @@ export interface StoreOrderBatchStatusUpdatePayload {
 export interface SyncMissingStoreOrdersResult {
   success: boolean
   message: string
+  mode?: StoreOrderSyncMode
+  runId?: string
   ordersSynced: number
   detailsSynced: number
   ordersUpdated: number
   detailsUpdated: number
+  ordersSoftDeleted?: number
+  detailsSoftDeleted?: number
+  hqOrderCount?: number
+  hqDetailCount?: number
+  shadowRowCount?: number
+  durationMs?: number
+  errors?: string[]
+}
+
+export interface SyncMissingStoreOrdersPayload {
+  storeCodes?: string[]
+  storeCode?: string
+}
+
+export type StoreOrderSyncMode = 'Full' | 'Incremental'
+
+export interface StoreOrderHqSyncPayload extends SyncMissingStoreOrdersPayload {
+  startDate?: string
+  endDate?: string
+}
+
+export type StoreOrderSyncJobStatus = 'Queued' | 'Running' | 'Succeeded' | 'Failed'
+
+export interface StoreOrderSyncJobResult {
+  jobId: string
+  status: StoreOrderSyncJobStatus
+  mode?: StoreOrderSyncMode
+  message?: string
+  success?: boolean
+  storeCodes?: string[]
+  startDate?: string
+  endDate?: string
+  ordersSynced?: number
+  detailsSynced?: number
+  ordersUpdated?: number
+  detailsUpdated?: number
+  ordersSoftDeleted?: number
+  detailsSoftDeleted?: number
+  hqOrderCount?: number
+  hqDetailCount?: number
+  shadowRowCount?: number
+  durationMs?: number
+  errors?: string[]
+}
+
+export type StoreOrderDetailStatFilter = 'all' | 'orderedNotShipped' | 'shippedWithoutOrder'
+
+export type StoreOrderDetailSortField = 'itemNumber' | 'locationCode'
+
+export interface StoreOrderDetailQuery {
+  pageNumber: number
+  pageSize: number
+  keyword?: string
+  statFilter?: StoreOrderDetailStatFilter
+  sortBy?: StoreOrderDetailSortField
+  sortDescending?: boolean
 }
 
 export interface StoreOrderDetailLine {
@@ -150,6 +208,9 @@ export interface StoreOrderDetail {
   flowStatus?: StoreOrderFlowStatus
   totalAllocQuantity?: number
   totalSKU?: number
+  itemsTotal: number
+  orderedNotShippedCount?: number
+  shippedWithoutOrderCount?: number
   items: StoreOrderDetailLine[]
 }
 
@@ -157,6 +218,9 @@ export interface StoreOrderProductQuery {
   itemNumber?: string
   productName?: string
   categoryGUID?: string
+  localSupplierCode?: string
+  excludeExistingWarehouseProducts?: boolean
+  excludeOrderGUID?: string
   pageNumber: number
   pageSize: number
   sortBy?: string
@@ -169,6 +233,8 @@ export interface StoreOrderProductItem {
   barcode?: string
   productName?: string
   productImage?: string
+  localSupplierCode?: string
+  localSupplierName?: string
   categoryName?: string
   warehouseCategoryGUID?: string
   oemPrice?: number

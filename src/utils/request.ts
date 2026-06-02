@@ -51,6 +51,7 @@ function buildQueryString(params?: Record<string, unknown>) {
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').trim()
 const LOGIN_PATH = '/login'
+export const AUTH_EXPIRED_EVENT = 'hbweb:auth-expired'
 const AUTH_WHITELIST = new Set([
   '/api/Auth/session/login',
   '/api/Auth/session/logout',
@@ -113,6 +114,7 @@ function handleUnauthorized(requestUrl: string) {
   }
 
   authRedirecting = true
+  window.dispatchEvent(new Event(AUTH_EXPIRED_EVENT))
   window.location.replace(`${LOGIN_PATH}?redirect=${encodeURIComponent(currentPath)}`)
 }
 

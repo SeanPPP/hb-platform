@@ -59,6 +59,7 @@ export interface WarehouseCategoryProductResult {
 
 interface ReactApiResponse<T> {
   success?: boolean
+  isSuccess?: boolean
   data?: T
   message?: string
 }
@@ -88,6 +89,15 @@ function unwrapReactData<T>(payload: ReactApiResponse<T> | T, fallbackMessage: s
   }
 
   return payload as T
+}
+
+function ensureReactSuccess(payload: ReactApiResponse<unknown> | unknown, fallbackMessage: string) {
+  if (payload && typeof payload === 'object' && ('success' in payload || 'isSuccess' in payload)) {
+    const result = payload as ReactApiResponse<unknown>
+    if ((result.success ?? result.isSuccess) === false) {
+      throw new Error(result.message || fallbackMessage)
+    }
+  }
 }
 
 function transformCategory(raw: WarehouseCategoryApiItem): WarehouseCategoryNode {
@@ -194,10 +204,15 @@ export async function deleteWarehouseCategory(categoryGuid: string): Promise<boo
 }
 
 export async function batchAssignProducts(categoryGuid: string, productCodes: string[]): Promise<void> {
-  await request.post(`/api/react/v1/warehouse-categories/${categoryGuid}/products/batch-assign`, {
-    CategoryGuid: categoryGuid,
-    ProductCodes: productCodes,
-  })
+  const response = await request.post<ReactApiResponse<unknown> | unknown>(
+    `/api/react/v1/warehouse-categories/${categoryGuid}/products/batch-assign`,
+    {
+      CategoryGuid: categoryGuid,
+      ProductCodes: productCodes,
+    },
+  )
+  // 批量更新属于强业务操作，HTTP 200 但 success/isSuccess=false 也必须阻断成功提示。
+  ensureReactSuccess(response, '批量更新商品分类失败')
 }
 
 export async function getWarehouseCategoryProducts(

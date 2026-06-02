@@ -1,4 +1,4 @@
-import type { ApiResponse } from '../types/api'
+import type { ApiResponse, PagedResult } from '../types/api'
 import type {
   BatchUpdateStoreRetailPriceDto,
   CopyProgressDto,
@@ -10,16 +10,16 @@ import type {
   SyncFromHqResult,
   SyncToOtherStoresDto,
 } from '../types/storeProductPrice'
-import request, { unwrapApiData } from '../utils/request'
+import request, { RequestError, unwrapApiData, unwrapPagedResult } from '../utils/request'
 
 const API_BASE = '/api/react/v1/store-product-prices'
 
 export async function getStoreProductPriceGrid(data: StoreProductPriceQueryDto) {
-  const response = await request.post<ApiResponse<{ items: StoreProductPriceListDto[]; total: number }>>(
+  const response = await request.post<ApiResponse<PagedResult<StoreProductPriceListDto>> | PagedResult<StoreProductPriceListDto>>(
     `${API_BASE}/grid`,
     data,
   )
-  return unwrapApiData(response)
+  return unwrapPagedResult(response)
 }
 
 export async function batchUpdateStoreRetailPrices(data: BatchUpdateStoreRetailPriceDto): Promise<number> {
@@ -91,5 +91,11 @@ export function subscribeCopyProgress(
 
 export async function syncFromHq(data: SyncFromHqRequest): Promise<SyncFromHqResult> {
   const response = await request.post<ApiResponse<SyncFromHqResult>>(`${API_BASE}/sync-from-hq`, data)
+
+  // 这里显式校验业务成功标记，避免把失败响应误当成成功数据展示。
+  if (response.success === false || response.isSuccess === false) {
+    throw new RequestError(response.message || '从HQ同步失败', 200, response)
+  }
+
   return unwrapApiData(response)
 }

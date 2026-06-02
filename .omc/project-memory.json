@@ -1,0 +1,26 @@
+{
+  "projectName": "hbweb",
+  "lastUpdated": "2026-05-30",
+  "workspaceMap": {
+    "adminBackend": {
+      "path": "/Users/sean/DEV/HBBblazorweb-master-vite",
+      "description": "管理后端目录"
+    },
+    "webFrontend": {
+      "path": "/Users/sean/DEV/hbweb_rv",
+      "description": "web端目录"
+    },
+    "mobileApp": {
+      "path": "/Users/sean/DEV/HbwebExpo",
+      "description": "移动端目录"
+    },
+    "posWindows": {
+      "path": "/Users/sean/DEV/hbpos_win",
+      "description": "收银端 API + WPF 收银客户端"
+    }
+  },
+  "notes": [
+    "后续涉及跨端联动时，默认先按这份目录映射定位对应项目。",
+    "当前仓库 /Users/sean/DEV/hbweb_rv 是 web 端主工作目录。"
+  ]
+}

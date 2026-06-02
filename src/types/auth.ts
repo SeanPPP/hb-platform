@@ -69,6 +69,7 @@ export interface AccessControl {
   canManageStoreOps: boolean
   canManageLocalPurchase: boolean
   canEditLocalPurchase: boolean
+  canPushLocalPurchaseToHq: boolean
   canManagePricing: boolean
   canEditPricing: boolean
   canManagePromotions: boolean

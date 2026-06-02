@@ -95,6 +95,7 @@ export interface CopyProgressDto {
 export interface SyncFromHqRequest {
   selectedStoreCodes?: string[]
   startDate?: string
+  endDate?: string
 }
 
 export interface SyncFromHqResult {

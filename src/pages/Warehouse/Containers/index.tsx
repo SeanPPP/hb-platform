@@ -238,11 +238,17 @@ export default function ContainersPage() {
           const result = await syncContainersFromHq()
           const success = result.isSuccess ?? result.IsSuccess ?? true
           const msg = result.message ?? result.Message ?? t('containers.messages.syncComplete')
-          success ? message.success(msg) : message.error(msg)
-          await loadData(1, pageSize)
+          // 只有同步真正成功时才提示成功并刷新第一页，失败分支只展示后端消息。
+          if (success) {
+            message.success(msg)
+            await loadData(1, pageSize)
+          } else {
+            message.error(msg)
+          }
         } catch (error) {
           console.error(error)
-          message.error(error instanceof Error ? error.message : t('containers.messages.syncFailed'))
+          const errorMessage = error instanceof Error ? error.message : t('containers.messages.syncFailed')
+          message.error(errorMessage)
         } finally {
           setSyncing(false)
         }

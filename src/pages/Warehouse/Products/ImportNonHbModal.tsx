@@ -87,7 +87,6 @@ export default function ImportNonHbModal({ open, onCancel, onSuccess }: ImportNo
         .then((result) => {
           setSupplierOptions(
             result
-              .filter((item) => item.localSupplierCode !== '200')
               .sort((left, right) => left.name.localeCompare(right.name, 'zh-CN')),
           )
         })

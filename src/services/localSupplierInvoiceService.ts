@@ -8,18 +8,29 @@ import type {
   CheckInvoiceNoResponse,
   CheckProductsRequest,
   CheckProductsResponse,
+  EnsureHqProductsRequest,
+  EnsureHqProductsResult,
   GetInvoiceDetailResponse,
   InvoiceDetailUpsertItemDto,
+  LocalSupplierInvoiceHqSyncRequest,
+  LocalSupplierInvoiceHqSyncResult,
   LocalSupplierInvoiceDetailDto,
   LocalSupplierInvoiceItemDto,
   LocalSupplierInvoiceListDto,
   PasteDetailsRequest,
   UpdateInvoiceRequest,
+  UpdateToStorePricesResult,
   UpdateToStorePricesRequest,
 } from '../types/localSupplierInvoice'
-import request, { unwrapApiData } from '../utils/request'
+import request, { RequestError, unwrapApiData } from '../utils/request'
 
 const API_BASE = '/api/react/v1/local-supplier-invoices'
+
+function assertApiSuccess<T>(response: ApiResponse<T>, fallbackMessage: string): void {
+  if (response.success === false || response.isSuccess === false) {
+    throw new RequestError(response.message || fallbackMessage, 200, response)
+  }
+}
 
 export async function getInvoiceGrid(data: Record<string, unknown>) {
   const response = await request.post<ApiResponse<{ items: LocalSupplierInvoiceListDto[]; total: number; page?: number; pageSize?: number }>>(
@@ -106,8 +117,21 @@ export async function updateDetailAction(
   await request.put(`${API_BASE}/${invoiceGuid}/details/${detailGuid}/action`, { action })
 }
 
-export async function updateToStorePrices(data: UpdateToStorePricesRequest): Promise<BatchResultDto> {
-  const response = await request.post<ApiResponse<BatchResultDto>>(`${API_BASE}/update-to-store-prices`, data)
+export async function updateToStorePrices(data: UpdateToStorePricesRequest): Promise<UpdateToStorePricesResult> {
+  const response = await request.post<ApiResponse<UpdateToStorePricesResult>>(`${API_BASE}/update-to-store-prices`, data)
+  assertApiSuccess(response, '更新到分店价格失败')
+  return unwrapApiData(response)
+}
+
+export async function ensureHqProducts(
+  invoiceGuid: string,
+  data: EnsureHqProductsRequest,
+): Promise<EnsureHqProductsResult> {
+  const response = await request.post<ApiResponse<EnsureHqProductsResult>>(
+    `${API_BASE}/${invoiceGuid}/details/ensure-hq-products`,
+    data,
+  )
+  assertApiSuccess(response, '同步商品到HQ失败')
   return unwrapApiData(response)
 }
 
@@ -150,6 +174,9 @@ export async function checkInvoiceNoExists(data: CheckInvoiceNoRequest): Promise
 }
 
 export async function batchExecuteActions(data: BatchExecuteActionsRequest): Promise<BatchExecuteActionsResult> {
+  if (!data.detailGuids.length) {
+    throw new Error('请选择要执行的明细')
+  }
   const response = await request.post<ApiResponse<BatchExecuteActionsResult>>(`${API_BASE}/${data.invoiceGuid}/details/batch-execute`, {
     detailGuids: data.detailGuids,
   })
@@ -158,6 +185,30 @@ export async function batchExecuteActions(data: BatchExecuteActionsRequest): Pro
 
 export async function pushInvoicesToHq(invoiceGuids: string[]): Promise<BatchResultDto> {
   const response = await request.post<ApiResponse<BatchResultDto>>(`${API_BASE}/push-to-hq`, invoiceGuids)
+  return unwrapApiData(response)
+}
+
+export async function syncInvoicesFromHq(data: LocalSupplierInvoiceHqSyncRequest): Promise<LocalSupplierInvoiceHqSyncResult> {
+  let response: ApiResponse<LocalSupplierInvoiceHqSyncResult>
+  try {
+    response = await request.post<ApiResponse<LocalSupplierInvoiceHqSyncResult>>(`${API_BASE}/sync-from-hq`, data)
+  } catch (error) {
+    if (error instanceof RequestError) {
+      const payload = error.payload as ApiResponse<LocalSupplierInvoiceHqSyncResult> | undefined
+      const syncResult = payload?.data ?? (payload?.details as LocalSupplierInvoiceHqSyncResult | undefined)
+      if (syncResult) {
+        throw new RequestError(payload?.message || error.message, error.status, {
+          ...payload,
+          data: syncResult,
+        })
+      }
+    }
+    throw error
+  }
+
+  // 这里显式识别业务失败，避免后端返回 200 + success=false 时被误当成成功。
+  assertApiSuccess(response, '从HQ同步失败')
+
   return unwrapApiData(response)
 }
 

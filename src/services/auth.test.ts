@@ -1,4 +1,4 @@
-import { normalizeCurrentUser } from './auth'
+import { normalizeCurrentUser, refreshSession } from './auth'
 
 function assertEqual<T>(actual: T, expected: T, message: string) {
   if (actual !== expected) {
@@ -59,3 +59,28 @@ assertEqual(
   true,
   'Current user stores should treat legacy isPrimary as manageable',
 )
+
+const originalFetch = globalThis.fetch
+const refreshRequests: Array<{ input: string; init?: RequestInit }> = []
+
+globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+  refreshRequests.push({ input: String(input), init })
+  return new Response(JSON.stringify({ success: true, data: {} }), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' },
+  })
+}) as typeof fetch
+
+assertEqual(await refreshSession(), true, 'session refresh 成功时应返回 true')
+assertEqual(refreshRequests[0]?.input, '/api/Auth/session/refresh', 'session refresh 应调用刷新接口')
+assertEqual(refreshRequests[0]?.init?.credentials, 'include', 'session refresh 应携带 Cookie')
+
+globalThis.fetch = (async () =>
+  new Response(JSON.stringify({ success: false, message: 'expired' }), {
+    status: 401,
+    headers: { 'Content-Type': 'application/json' },
+  })) as typeof fetch
+
+assertEqual(await refreshSession(), false, 'session refresh 失败时应返回 false')
+
+globalThis.fetch = originalFetch

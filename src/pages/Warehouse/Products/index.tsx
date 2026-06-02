@@ -1,4 +1,4 @@
-﻿import { CopyOutlined, DownloadOutlined, EditOutlined, GiftOutlined, PlusOutlined, ReloadOutlined, SearchOutlined, UploadOutlined } from '@ant-design/icons';
+﻿import { CloudSyncOutlined, CopyOutlined, DownloadOutlined, EditOutlined, GiftOutlined, PlusOutlined, ReloadOutlined, SearchOutlined, UploadOutlined } from '@ant-design/icons';
 import { Button, Card, Checkbox, Form, Image, Input, InputNumber, Modal, Popconfirm, Select, Space, Switch, Table, Tag, Tooltip, Typography, message, } from 'antd';
 import type { DefaultOptionType } from 'antd/es/select';
 import type { ColumnsType, TablePaginationConfig } from 'antd/es/table';
@@ -9,7 +9,7 @@ import BarcodePreview from '../../../components/BarcodePreview';
 import PageContainer from '../../../components/PageContainer';
 import { getDomesticProductSetItems, getSupplierOptions, updateDomesticProductSetItems, } from '../../../services/domesticProductService';
 import { exportDomesticProductsToExcel, type ExportResult } from '../../../services/exportService';
-import { batchToggleWarehouseProductsActive, getWarehouseProductsTable, updateWarehouseProductFull, type WarehouseProductListItem, type WarehouseProductsTableQuery, } from '../../../services/warehouseProductService';
+import { batchToggleWarehouseProductsActive, getWarehouseProductsTable, syncWarehouseProductsFromHq, updateWarehouseProductFull, type WarehouseProductListItem, type WarehouseProductsTableQuery, } from '../../../services/warehouseProductService';
 import { useAuthStore } from '../../../store/auth';
 import type { DomesticProductSetItem, ProductType, SupplierOption, } from '../../../types/domesticProduct';
 import { ProductTypeLabels } from '../../../types/domesticProduct';
@@ -345,7 +345,9 @@ export default function WarehouseProductsPage() {
     const [togglingProductCodes, setTogglingProductCodes] = useState<string[]>([]);
     const [exportFailDetailOpen, setExportFailDetailOpen] = useState(false);
     const [exportFailDetail, setExportFailDetail] = useState<ExportResult['failedProductImages']>([]);
+    const [syncingFromHq, setSyncingFromHq] = useState(false);
     const { access } = useAuthStore();
+    const canImportNonHbProducts = access.isAdmin || access.isWarehouseManager;
     const buildGridQuery = (overrides: Partial<WarehouseProductsTableQuery> = {}): WarehouseProductsTableQuery => ({
         page,
         pageSize,
@@ -602,6 +604,38 @@ export default function WarehouseProductsPage() {
             setExporting(false);
         }
     };
+    const handleSyncWarehouseProductsFromHq = () => {
+        Modal.confirm({
+            title: t('warehouse.hqSyncTitle', '从HQ同步库存'),
+            content: t('warehouse.hqSyncContent', '该操作会从 HQ 全量覆盖 WarehouseProduct。确认继续同步吗？'),
+            okText: t('warehouse.hqSyncConfirm', '确认同步'),
+            cancelText: t('common.cancel'),
+            okButtonProps: { danger: true },
+            onOk: async () => {
+                setSyncingFromHq(true);
+                try {
+                    const result = await syncWarehouseProductsFromHq();
+                    const success = result.isSuccess ?? result.IsSuccess ?? true;
+                    const successMessage = result.message ?? result.Message ?? t('warehouse.hqSyncSuccess', '从HQ同步库存成功');
+                    // 只有同步真正成功时才刷新第一页，避免失败时误刷新当前列表。
+                    if (success) {
+                        message.success(successMessage);
+                        await loadData({ page: 1 });
+                    }
+                    else {
+                        message.error(successMessage);
+                    }
+                }
+                catch (error) {
+                    console.error(error);
+                    message.error(error instanceof Error ? error.message : t('warehouse.hqSyncFailed', '从HQ同步库存失败'));
+                }
+                finally {
+                    setSyncingFromHq(false);
+                }
+            },
+        });
+    };
     const columns = useMemo<ColumnsType<WarehouseProductListItem>>(() => [
         { title: '#', dataIndex: 'rowNumber', width: 30, fixed: 'left' },
         {
@@ -749,15 +783,18 @@ export default function WarehouseProductsPage() {
     return (<>
       <style>{warehouseProductsTableStyle}</style>
       <PageContainer title={t('warehouse.productManagement')} subtitle={t('warehouse.productManagementSubtitle')} extra={<Space wrap>
+          {access.isAdmin ? (<Button icon={<CloudSyncOutlined />} loading={syncingFromHq} disabled={syncingFromHq} onClick={handleSyncWarehouseProductsFromHq}>
+              {t('warehouse.hqSync', '从HQ同步库存')}
+            </Button>) : null}
           <Button icon={<DownloadOutlined />} loading={exporting} disabled={exporting} onClick={() => setExportConfigOpen(true)}>
             {t('warehouse.exportExcel')}
           </Button>
           <Button icon={<UploadOutlined />} onClick={() => setImportFromDomesticOpen(true)}>
             {t('warehouse.importFromDomestic')}
           </Button>
-          <Button icon={<UploadOutlined />} onClick={() => setImportNonHbOpen(true)}>
-            {t('warehouse.importNonHb.title')}
-          </Button>
+          {canImportNonHbProducts ? (<Button icon={<UploadOutlined />} onClick={() => setImportNonHbOpen(true)}>
+              {t('warehouse.importNonHb.title')}
+            </Button>) : null}
           <Button icon={<GiftOutlined />} onClick={() => message.info(t('warehouse.batchSetMigrated'))}>
             {t('warehouse.batchCreateSet')}
           </Button>
@@ -912,4 +949,3 @@ export default function WarehouseProductsPage() {
       </PageContainer>
     </>);
 }
-

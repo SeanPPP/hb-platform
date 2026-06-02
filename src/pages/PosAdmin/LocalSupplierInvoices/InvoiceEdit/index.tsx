@@ -1,5 +1,6 @@
 import {
   CheckCircleOutlined,
+  CloudUploadOutlined,
   CopyOutlined,
   DeleteOutlined,
   EditOutlined,
@@ -45,6 +46,7 @@ import {
   batchUpsertDetails,
   checkProducts,
   deleteDetails,
+  ensureHqProducts,
   getInvoice,
   getInvoiceDetails,
   pasteDetails,
@@ -58,14 +60,18 @@ import type {
   BatchExecuteActionsResult,
   CheckProductsResponse,
   DetailAction,
+  EnsureHqProductError,
+  EnsureHqProductsResult,
   InvoiceDetailUpsertItemDto,
   LocalSupplierInvoiceDetailDto,
   LocalSupplierInvoiceItemDto,
+  UpdateToStorePricesResult,
   UpdateToStorePricesFields,
   UpdateToStorePricesRequest,
 } from '../../../../types/localSupplierInvoice'
 import { copyTextToClipboard } from '../../../../utils/clipboard'
 import { discountRateToDecimal, formatDiscountRate } from '../../../../utils/discountRate'
+import { RequestError } from '../../../../utils/request'
 import { DetailAction as DetailActionEnum } from '../../../../types/localSupplierInvoice'
 import {
   buildStoreOptionsFromUserStores,
@@ -81,6 +87,84 @@ import {
 function formatAmount(value?: number) {
   if (value === undefined || value === null) return '--'
   return value.toFixed(2)
+}
+
+function getBatchExecuteFailure(error: unknown): BatchExecuteActionsResult | undefined {
+  if (!(error instanceof RequestError)) return undefined
+
+  const payload = error.payload as { data?: unknown; details?: unknown } | undefined
+  const candidate = (payload?.details ?? payload?.data) as Partial<BatchExecuteActionsResult> | undefined
+  if (!candidate || typeof candidate !== 'object') return undefined
+
+  return {
+    createdProducts: Number(candidate.createdProducts ?? 0),
+    updatedPurchasePrices: Number(candidate.updatedPurchasePrices ?? 0),
+    updatedItemNumbers: Number(candidate.updatedItemNumbers ?? 0),
+    addedMultiCodes: Number(candidate.addedMultiCodes ?? 0),
+    skipped: Number(candidate.skipped ?? 0),
+    failed: Number(candidate.failed ?? 0),
+    errors: Array.isArray(candidate.errors) ? candidate.errors.map(String) : [],
+  }
+}
+
+function normalizeEnsureHqErrors(value: unknown): EnsureHqProductError[] {
+  if (!Array.isArray(value)) return []
+
+  return value.map((item) => {
+    if (typeof item === 'string') {
+      return { detailGuid: '', message: item }
+    }
+    if (item && typeof item === 'object') {
+      const raw = item as Partial<EnsureHqProductError>
+      return {
+        detailGuid: String(raw.detailGuid ?? ''),
+        storeCode: raw.storeCode ? String(raw.storeCode) : undefined,
+        message: String(raw.message ?? ''),
+      }
+    }
+    return { detailGuid: '', message: String(item) }
+  })
+}
+
+function getEnsureHqFailure(error: unknown): EnsureHqProductsResult | undefined {
+  if (!(error instanceof RequestError)) return undefined
+
+  const payload = error.payload as { data?: unknown; details?: unknown } | undefined
+  const candidate = (payload?.details ?? payload?.data) as Partial<EnsureHqProductsResult> | undefined
+  if (!candidate || typeof candidate !== 'object') return undefined
+
+  return {
+    total: Number(candidate.total ?? 0),
+    hqExisting: Number(candidate.hqExisting ?? 0),
+    hbwebCreated: Number(candidate.hbwebCreated ?? 0),
+    hqCreated: Number(candidate.hqCreated ?? 0),
+    hqSynced: Number(candidate.hqSynced ?? 0),
+    hqPurchasePricesUpdated: Number(candidate.hqPurchasePricesUpdated ?? 0),
+    skipped: Number(candidate.skipped ?? 0),
+    failed: Number(candidate.failed ?? 0),
+    errors: normalizeEnsureHqErrors(candidate.errors),
+  }
+}
+
+function getUpdateToStorePricesFailure(error: unknown): UpdateToStorePricesResult | undefined {
+  if (!(error instanceof RequestError)) return undefined
+
+  const payload = error.payload as { data?: unknown; details?: unknown } | undefined
+  const candidate = (payload?.details ?? payload?.data) as Partial<UpdateToStorePricesResult> | undefined
+  if (!candidate || typeof candidate !== 'object') return undefined
+
+  return {
+    inserted: Number(candidate.inserted ?? 0),
+    updated: Number(candidate.updated ?? 0),
+    failed: Number(candidate.failed ?? 0),
+    hqExisting: Number(candidate.hqExisting ?? 0),
+    hbwebCreated: Number(candidate.hbwebCreated ?? 0),
+    hqCreated: Number(candidate.hqCreated ?? 0),
+    hqSynced: Number(candidate.hqSynced ?? 0),
+    hqPurchasePricesUpdated: Number(candidate.hqPurchasePricesUpdated ?? 0),
+    hqFailed: Number(candidate.hqFailed ?? 0),
+    hqErrors: normalizeEnsureHqErrors(candidate.hqErrors),
+  }
 }
 
 /** 价格变动高亮背景色 */
@@ -103,6 +187,7 @@ const DETAIL_ACTION_CONFIG = (t: ReturnType<typeof useTranslation>['t']): Record
   [DetailActionEnum.WaitForOperation]: { label: t('posAdmin.invoiceDetail.waitForOperation', '等待操作'), color: 'orange' },
   [DetailActionEnum.UpdateItemNumber]: { label: t('posAdmin.invoiceDetail.updateItemNumber', '更新货号'), color: 'purple' },
   [DetailActionEnum.AddMultiCode]: { label: t('posAdmin.invoiceDetail.addMultiCode', '添加多码'), color: 'cyan' },
+  [99]: { label: t('posAdmin.invoiceDetail.executed', '已执行'), color: 'default' },
 })
 
 /** 操作类型下拉菜单项 */
@@ -241,6 +326,7 @@ export default function InvoiceEditPage() {
   const navigate = useNavigate()
   const { access, currentUser } = useAuthStore()
   const isAdmin = access.isAdmin
+  const canWriteLocalPurchaseToHq = access.canEditLocalPurchase && access.canPushLocalPurchaseToHq
   const managedStoreCodes = access.managedStoreCodes()
   const managedStoreCodeKey = managedStoreCodes?.join(',') ?? 'all'
 
@@ -288,6 +374,8 @@ export default function InvoiceEditPage() {
 
   /* ---- 商品检测 ---- */
   const [checking, setChecking] = useState(false)
+  const [ensuringHqProducts, setEnsuringHqProducts] = useState(false)
+  const ensureHqIdempotencyKeyRef = useRef<string | null>(null)
 
   /* ---- 批量执行操作 ---- */
   const [executing, setExecuting] = useState(false)
@@ -344,6 +432,13 @@ export default function InvoiceEditPage() {
     try {
       const data = await getInvoiceDetails(invoiceGuid)
       setDetails(data)
+      setRowActions(
+        Object.fromEntries(
+          data
+            .filter((item) => item.activityType !== undefined && item.activityType !== null)
+            .map((item) => [item.detailGUID, item.activityType as number]),
+        ),
+      )
     } catch {
       message.error(t('posAdmin.invoiceDetail.loadDetailsFailed', '加载明细失败'))
     } finally {
@@ -624,6 +719,107 @@ export default function InvoiceEditPage() {
     }
   }
 
+  const openStorePriceModal = () => {
+    storePriceForm.setFieldsValue({ updateHqProduct: false })
+    setStorePriceVisible(true)
+  }
+
+  const confirmUpdateToStorePrices = (
+    targetStoreCodes: string[],
+    detailGuids: string[],
+    updateFields: UpdateToStorePricesFields,
+  ) =>
+    new Promise<boolean>((resolve) => {
+      const fieldLabels = [
+        updateFields.updatePurchasePrice ? t('posAdmin.invoiceDetail.updatePurchasePriceLabel', '更新进货价') : undefined,
+        updateFields.updateRetailPrice ? t('posAdmin.invoiceDetail.updateRetailPrice', '更新零售价') : undefined,
+        updateFields.updateIsAutoPricing ? t('posAdmin.invoiceDetail.updateAutoPricing', '更新自动定价') : undefined,
+        updateFields.updateIsSpecialProduct ? t('posAdmin.invoiceDetail.updateSpecialProduct', '更新特殊商品') : undefined,
+        updateFields.updateDiscountRate ? t('posAdmin.invoiceDetail.updateDiscountRate', '更新折扣率') : undefined,
+      ].filter(Boolean)
+
+      Modal.confirm({
+        title: t('posAdmin.invoiceDetail.confirmUpdateHqTitle', '确认同时更新HQ商品？'),
+        content: (
+          <Space direction="vertical" size={4}>
+            <div>{t('posAdmin.invoiceDetail.confirmUpdateHqStores', '目标分店：{{stores}}', { stores: targetStoreCodes.join(', ') })}</div>
+            <div>{t('posAdmin.invoiceDetail.confirmUpdateHqDetails', '明细数量：{{count}} 条', { count: detailGuids.length })}</div>
+            <div>{t('posAdmin.invoiceDetail.confirmUpdateHqFields', '写入字段：{{fields}}', { fields: fieldLabels.join('，') })}</div>
+          </Space>
+        ),
+        okText: t('common.confirm', '确定'),
+        cancelText: t('common.cancel', '取消'),
+        onOk: () => resolve(true),
+        onCancel: () => resolve(false),
+      })
+    })
+
+  const showEnsureHqResult = (result: EnsureHqProductsResult) => {
+    Modal.info({
+      title: t('posAdmin.invoiceDetail.ensureHqResultTitle', '同步商品到HQ结果'),
+      width: 640,
+      content: (
+        <Space direction="vertical" size={4} style={{ width: '100%' }}>
+          <div>{t('posAdmin.invoiceDetail.ensureHqTotal', '总处理：{{count}} 条', { count: result.total })}</div>
+          <div>{t('posAdmin.invoiceDetail.ensureHqExisting', 'HQ已存在：{{count}} 条', { count: result.hqExisting })}</div>
+          <div>{t('posAdmin.invoiceDetail.ensureHqHbwebCreated', 'HBweb新建：{{count}} 条', { count: result.hbwebCreated })}</div>
+          <div>{t('posAdmin.invoiceDetail.ensureHqCreated', 'HQ新建：{{count}} 条', { count: result.hqCreated })}</div>
+          <div>{t('posAdmin.invoiceDetail.ensureHqSynced', 'HQ同步：{{count}} 条', { count: result.hqSynced })}</div>
+          <div>{t('posAdmin.invoiceDetail.ensureHqPriceUpdated', 'HQ进货价更新：{{count}} 条', { count: result.hqPurchasePricesUpdated })}</div>
+          <div>{t('posAdmin.invoiceDetail.ensureHqSkippedFailed', '跳过 {{skipped}} 条，失败 {{failed}} 条', { skipped: result.skipped, failed: result.failed })}</div>
+          {result.errors.length > 0 && (
+            <div style={{ maxHeight: 220, overflow: 'auto', marginTop: 8 }}>
+              {result.errors.map((item, index) => (
+                <div key={`${item.detailGuid || 'detail'}-${item.storeCode ?? 'store'}-${index}`} style={{ color: '#ff4d4f', fontSize: 12 }}>
+                  {item.detailGuid ? `${item.detailGuid}：` : ''}{item.storeCode ? `${item.storeCode}：` : ''}{item.message}
+                </div>
+              ))}
+            </div>
+          )}
+        </Space>
+      ),
+    })
+  }
+
+  const showUpdateToStoreHqResult = (result: UpdateToStorePricesResult) => {
+    const hqErrors = normalizeEnsureHqErrors(result.hqErrors)
+    if (
+      (result.hqExisting ?? 0) === 0 &&
+      (result.hbwebCreated ?? 0) === 0 &&
+      (result.hqCreated ?? 0) === 0 &&
+      (result.hqSynced ?? 0) === 0 &&
+      (result.hqPurchasePricesUpdated ?? 0) === 0 &&
+      (result.hqFailed ?? 0) === 0 &&
+      hqErrors.length === 0
+    ) {
+      return
+    }
+
+    Modal.info({
+      title: t('posAdmin.invoiceDetail.updateToStoreHqResultTitle', 'HQ商品更新结果'),
+      width: 640,
+      content: (
+        <Space direction="vertical" size={4} style={{ width: '100%' }}>
+          <div>{t('posAdmin.invoiceDetail.ensureHqExisting', 'HQ已存在：{{count}} 条', { count: result.hqExisting ?? 0 })}</div>
+          <div>{t('posAdmin.invoiceDetail.ensureHqHbwebCreated', 'HBweb新建：{{count}} 条', { count: result.hbwebCreated ?? 0 })}</div>
+          <div>{t('posAdmin.invoiceDetail.ensureHqCreated', 'HQ新建：{{count}} 条', { count: result.hqCreated ?? 0 })}</div>
+          <div>{t('posAdmin.invoiceDetail.ensureHqSynced', 'HQ同步：{{count}} 条', { count: result.hqSynced ?? 0 })}</div>
+          <div>{t('posAdmin.invoiceDetail.ensureHqPriceUpdated', 'HQ进货价更新：{{count}} 条', { count: result.hqPurchasePricesUpdated ?? 0 })}</div>
+          <div>{t('posAdmin.invoiceDetail.ensureHqFailedCount', 'HQ失败：{{count}} 条', { count: result.hqFailed ?? 0 })}</div>
+          {hqErrors.length > 0 && (
+            <div style={{ maxHeight: 220, overflow: 'auto', marginTop: 8 }}>
+              {hqErrors.map((item, index) => (
+                <div key={`${item.detailGuid || 'detail'}-${item.storeCode ?? 'store'}-${index}`} style={{ color: '#ff4d4f', fontSize: 12 }}>
+                  {item.detailGuid ? `${item.detailGuid}：` : ''}{item.storeCode ? `${item.storeCode}：` : ''}{item.message}
+                </div>
+              ))}
+            </div>
+          )}
+        </Space>
+      ),
+    })
+  }
+
   // ---- 更新到分店价格 ----
   const handleUpdateToStorePrices = async () => {
     if (!invoiceGuid || !ensureCanAccessInvoice()) return
@@ -660,6 +856,11 @@ export default function InvoiceEditPage() {
       return
     }
 
+    if (values.updateHqProduct) {
+      const confirmed = await confirmUpdateToStorePrices(values.targetStoreCodes, selectedRowKeys.map(String), updateFields)
+      if (!confirmed) return
+    }
+
     setStorePriceLoading(true)
     try {
       const request: UpdateToStorePricesRequest = {
@@ -667,18 +868,100 @@ export default function InvoiceEditPage() {
         detailGuids: selectedRowKeys.map(String),
         targetStoreCodes: values.targetStoreCodes,
         updateFields,
+        updateHqProduct: values.updateHqProduct ?? false,
       }
       const result = await updateToStorePrices(request)
       message.success(
         t('posAdmin.invoiceDetail.updateToStoreResult', '更新完成：成功 {{updated}} 条，失败 {{failed}} 条', { updated: result?.updated ?? 0, failed: result?.failed ?? 0 }),
       )
+      if (values.updateHqProduct) {
+        showUpdateToStoreHqResult(result)
+      }
       setStorePriceVisible(false)
       storePriceForm.resetFields()
       setSelectedRowKeys([])
-    } catch {
-      message.error(t('posAdmin.invoiceDetail.updateToStoreFailed', '更新到分店价格失败'))
+    } catch (error) {
+      const failure = getUpdateToStorePricesFailure(error)
+      if (values.updateHqProduct && failure) {
+        message.error(error instanceof Error ? error.message : t('posAdmin.invoiceDetail.updateToStoreFailed', '更新到分店价格失败'))
+        showUpdateToStoreHqResult(failure)
+      } else {
+        message.error(error instanceof Error ? error.message : t('posAdmin.invoiceDetail.updateToStoreFailed', '更新到分店价格失败'))
+      }
     } finally {
       setStorePriceLoading(false)
+    }
+  }
+
+  // ---- 同步商品到 HQ ----
+  const handleEnsureHqProducts = async () => {
+    if (ensuringHqProducts) return
+    if (!invoiceGuid || !ensureCanAccessInvoice()) return
+    if (!canWriteLocalPurchaseToHq) {
+      message.error(t('message.noPermission', '无权操作该数据'))
+      return
+    }
+    if (!details.length) {
+      message.warning(t('posAdmin.invoiceDetail.noDetailToSyncHq', '没有明细数据可同步到HQ'))
+      return
+    }
+    if (!_invoice?.storeCode) {
+      message.error(t('posAdmin.invoiceDetail.missingInvoiceStore', '进货单缺少分店，无法同步到HQ'))
+      return
+    }
+    if (!isStoreCodeInManagedScope(_invoice.storeCode, managedStoreCodes)) {
+      message.error(t('message.noPermission', '无权操作该数据'))
+      return
+    }
+
+    const detailGuids = selectedRowKeys.length > 0 ? selectedRowKeys.map(String) : details.map((item) => item.detailGUID)
+    const targetStoreCodes = [_invoice.storeCode]
+
+    setEnsuringHqProducts(true)
+    const confirmed = await new Promise<boolean>((resolve) => {
+      Modal.confirm({
+        title: t('posAdmin.invoiceDetail.confirmEnsureHqTitle', '确认同步商品到HQ？'),
+        content: (
+          <Space direction="vertical" size={4}>
+            <div>{t('posAdmin.invoiceDetail.confirmEnsureHqDetails', '将处理明细：{{count}} 条', { count: detailGuids.length })}</div>
+            <div>{t('posAdmin.invoiceDetail.confirmEnsureHqScope', '范围：{{scope}}', { scope: selectedRowKeys.length > 0 ? t('posAdmin.invoiceDetail.selectedRows', '已选明细') : t('posAdmin.invoiceDetail.allRows', '全部明细') })}</div>
+            <div>{t('posAdmin.invoiceDetail.confirmEnsureHqStore', '目标分店：{{store}}', { store: targetStoreCodes?.join(', ') || '--' })}</div>
+          </Space>
+        ),
+        okText: t('common.confirm', '确定'),
+        cancelText: t('common.cancel', '取消'),
+        onOk: () => resolve(true),
+        onCancel: () => resolve(false),
+      })
+    })
+    if (!confirmed) {
+      setEnsuringHqProducts(false)
+      return
+    }
+
+    try {
+      ensureHqIdempotencyKeyRef.current =
+        ensureHqIdempotencyKeyRef.current ??
+        (typeof crypto !== 'undefined' && 'randomUUID' in crypto
+          ? crypto.randomUUID()
+          : `${invoiceGuid}-${detailGuids.join(',')}-${targetStoreCodes.join(',')}`)
+      const result = await ensureHqProducts(invoiceGuid, {
+        detailGuids,
+        targetStoreCodes,
+        idempotencyKey: ensureHqIdempotencyKeyRef.current,
+      })
+      showEnsureHqResult(result)
+      await loadDetails()
+    } catch (error) {
+      const failure = getEnsureHqFailure(error)
+      if (failure) {
+        showEnsureHqResult(failure)
+      } else {
+        message.error(error instanceof Error ? error.message : t('posAdmin.invoiceDetail.ensureHqFailed', '同步商品到HQ失败'))
+      }
+    } finally {
+      ensureHqIdempotencyKeyRef.current = null
+      setEnsuringHqProducts(false)
     }
   }
 
@@ -703,15 +986,18 @@ export default function InvoiceEditPage() {
           if (!checkResult) return d
           return {
             ...d,
+            productCode: checkResult.productInfo?.productCode ?? undefined,
+            storeProductCode: checkResult.productInfo?.storeProductCode ?? checkResult.storeProductCode ?? undefined,
             existingProductCount: checkResult.existingProductCount,
+            barcodeStatus: checkResult.barcodeStatus,
             barcodeMatchCount: checkResult.barcodeMatchCount,
-            autoPricing: checkResult.autoPricing ?? d.autoPricing,
-            isSpecialProduct: checkResult.isSpecialProduct ?? d.isSpecialProduct,
-            discountRate: checkResult.discountRate ?? d.discountRate,
-            pricingFloatRate: checkResult.pricingFloatRate ?? d.pricingFloatRate,
-            newAutoRetailPrice: checkResult.newAutoRetailPrice ?? d.newAutoRetailPrice,
-            lastPurchasePrice: checkResult.lastPurchasePrice ?? d.lastPurchasePrice,
-            storeProductCode: checkResult.storeProductCode ?? d.storeProductCode,
+            autoPricing: checkResult.autoPricing ?? undefined,
+            isSpecialProduct: checkResult.isSpecialProduct ?? undefined,
+            discountRate: checkResult.discountRate ?? undefined,
+            pricingFloatRate: checkResult.pricingFloatRate ?? undefined,
+            newAutoRetailPrice: checkResult.newAutoRetailPrice ?? undefined,
+            lastPurchasePrice: checkResult.lastPurchasePrice ?? undefined,
+            activityType: checkResult.defaultAction ?? d.activityType,
           } as LocalSupplierInvoiceItemDto
         }),
       )
@@ -739,6 +1025,11 @@ export default function InvoiceEditPage() {
     if (!ensureCanAccessInvoice()) return
     const action = Number(actionKey) as DetailAction
     setRowActions((prev) => ({ ...prev, [detailGuid]: action }))
+    setDetails((prev) =>
+      prev.map((item) =>
+        item.detailGUID === detailGuid ? { ...item, activityType: action } : item,
+      ),
+    )
 
     // 同步到服务端
     if (invoiceGuid) {
@@ -790,8 +1081,22 @@ export default function InvoiceEditPage() {
       }
       setSelectedRowKeys([])
       loadDetails()
-    } catch {
-      message.error(t('posAdmin.invoiceDetail.executeFailed', '批量执行操作失败'))
+    } catch (error) {
+      const failure = getBatchExecuteFailure(error)
+      if (failure?.errors.length) {
+        Modal.error({
+          title: t('posAdmin.invoiceDetail.executeFailed', '批量执行操作失败'),
+          content: (
+            <div style={{ maxHeight: 240, overflow: 'auto' }}>
+              {failure.errors.map((err, i) => (
+                <div key={i} style={{ color: '#ff4d4f', fontSize: 12 }}>{err}</div>
+              ))}
+            </div>
+          ),
+        })
+      } else {
+        message.error(t('posAdmin.invoiceDetail.executeFailed', '批量执行操作失败'))
+      }
     } finally {
       setExecuting(false)
     }
@@ -829,6 +1134,13 @@ export default function InvoiceEditPage() {
         newActions[String(key)] = action
       })
       setRowActions((prev) => ({ ...prev, ...newActions }))
+      setDetails((prev) =>
+        prev.map((item) =>
+          selectedRowKeys.map(String).includes(item.detailGUID)
+            ? { ...item, activityType: action }
+            : item,
+        ),
+      )
       message.success(t('posAdmin.invoiceDetail.batchSetActionSuccess', '批量设置操作类型成功'))
     } catch {
       message.error(t('posAdmin.invoiceDetail.batchSetActionFailed', '批量设置操作类型失败'))
@@ -1010,11 +1322,12 @@ export default function InvoiceEditPage() {
       width: 90,
       align: 'center',
       render: (_: number, record) => {
-        const count = record.barcodeMatchCount
-        if (count === undefined || count === null) {
+        const status = record.barcodeStatus
+        const count = record.barcodeMatchCount ?? 0
+        if (status === undefined || status === null || status === 0) {
           return <Tag color="default">{t('posAdmin.invoiceDetail.notDetected', '未检测')}</Tag>
         }
-        if (count === 1) {
+        if (status === 1) {
           return <Tag color="green">{t('posAdmin.invoiceDetail.normal', '正常')}</Tag>
         }
         if (count === 0) {
@@ -1029,7 +1342,7 @@ export default function InvoiceEditPage() {
       width: 110,
       fixed: 'right',
       render: (_, record) => {
-        const currentAction = rowActions[record.detailGUID] ?? 0
+        const currentAction = rowActions[record.detailGUID] ?? record.activityType ?? 0
         const actionConfig = DETAIL_ACTION_CONFIG(t)
         const config = actionConfig[currentAction] || actionConfig[0]
         return (
@@ -1182,7 +1495,7 @@ export default function InvoiceEditPage() {
               <Button
                 icon={<SendOutlined />}
                 disabled={!selectedRowKeys.length}
-                onClick={() => setStorePriceVisible(true)}
+                onClick={() => openStorePriceModal()}
               >
                 {t('posAdmin.invoiceDetail.updateToStoreBtn', '更新到分店')}
               </Button>
@@ -1194,6 +1507,16 @@ export default function InvoiceEditPage() {
                 onClick={() => void handleCheckProducts()}
               >
                 {t('posAdmin.invoiceDetail.productDetectBtn', '商品检测')}
+              </Button>
+            )}
+            {canWriteLocalPurchaseToHq && (
+              <Button
+                icon={<CloudUploadOutlined />}
+                loading={ensuringHqProducts}
+                disabled={ensuringHqProducts || !details.length}
+                onClick={() => void handleEnsureHqProducts()}
+              >
+                {t('posAdmin.invoiceDetail.syncProductsToHqBtn', '同步商品到HQ')}
               </Button>
             )}
             {isAdmin && (
@@ -1470,6 +1793,11 @@ export default function InvoiceEditPage() {
           <Form.Item name="updateDiscountRate" valuePropName="checked">
             <Checkbox>{t('posAdmin.invoiceDetail.updateDiscountRate', '更新折扣率')}</Checkbox>
           </Form.Item>
+          {canWriteLocalPurchaseToHq && (
+            <Form.Item name="updateHqProduct" valuePropName="checked">
+              <Checkbox>{t('posAdmin.invoiceDetail.updateHqProduct', '同时更新HQ商品')}</Checkbox>
+            </Form.Item>
+          )}
         </Form>
       </Modal>
     </Space>

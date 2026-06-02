@@ -26,6 +26,19 @@ export async function logout() {
   return request.post<ApiResponse<object>>('/api/Auth/session/logout', {}, { skipAuthRedirect: true })
 }
 
+export async function refreshSession() {
+  try {
+    const response = await request.post<ApiResponse<SessionResponse>>(
+      '/api/Auth/session/refresh',
+      {},
+      { skipAuthRedirect: true },
+    )
+    return !!(response?.success ?? response?.data)
+  } catch {
+    return false
+  }
+}
+
 export async function getCurrentUser(): Promise<CurrentUser> {
   const response = await request.get<ApiResponse<CurrentUserApiDto>>('/api/Auth/current')
   return normalizeCurrentUser(unwrapApiData(response))

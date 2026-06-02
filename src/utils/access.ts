@@ -77,6 +77,7 @@ function createEmptyAccess(): AccessControl {
     canManageStoreOps: false,
     canManageLocalPurchase: false,
     canEditLocalPurchase: false,
+    canPushLocalPurchaseToHq: false,
     canManagePricing: false,
     canEditPricing: false,
     canManagePromotions: false,
@@ -228,6 +229,7 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
   // 本地进货
   const canManageLocalPurchase = isAdmin || hasPermission(P.LocalPurchase.View)
   const canEditLocalPurchase = isAdmin || hasPermission(P.LocalPurchase.Edit)
+  const canPushLocalPurchaseToHq = isAdmin || hasPermission(P.LocalPurchase.PushToHq)
 
   // 定价策略
   const canManagePricing = isAdmin || hasPermission(P.PricingStrategy.View)
@@ -335,6 +337,7 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
     canManageStoreOps,
     canManageLocalPurchase,
     canEditLocalPurchase,
+    canPushLocalPurchaseToHq,
     canManagePricing,
     canEditPricing,
     canManagePromotions,

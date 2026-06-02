@@ -9,10 +9,15 @@ import type {
   CopyStoreOrderResult,
   CreateStoreOrderPayload,
   RemoveStoreOrderLinePayload,
+  StoreOrderHqSyncPayload,
+  SyncMissingStoreOrdersPayload,
   SyncMissingStoreOrdersResult,
+  StoreOrderSyncJobResult,
+  StoreOrderSyncJobStatus,
   StoreOrderBatchStatusUpdatePayload,
   StoreOrderBranchOption,
   StoreOrderDetail,
+  StoreOrderDetailQuery,
   StoreOrderBatchLookupItem,
   StoreOrderBatchLookupPayload,
   StoreOrderCart,
@@ -123,8 +128,137 @@ function normalizeCart(payload: unknown): StoreOrderCart | null {
   }
 }
 
+function normalizeStoreOrderDetail(payload: unknown): StoreOrderDetail | null {
+  const result = normalizeResult<Partial<StoreOrderDetail> | null>(payload)
+  if (!result) {
+    return null
+  }
+
+  const items = Array.isArray(result.items) ? result.items : []
+
+  return {
+    ...result,
+    orderGUID: result.orderGUID ?? '',
+    totalAmount: result.totalAmount ?? 0,
+    totalQuantity: result.totalQuantity ?? 0,
+    totalImportAmount: result.totalImportAmount ?? 0,
+    totalVolume: result.totalVolume ?? 0,
+    itemsTotal: result.itemsTotal ?? items.length,
+    items,
+  } as StoreOrderDetail
+}
+
 function normalizeResult<T>(payload: unknown): T {
   return unwrapEnvelope<T>(payload)
+}
+
+function normalizeStoreOrderSyncPayload(payload?: SyncMissingStoreOrdersPayload) {
+  const storeCodes = Array.from(
+    new Set(
+      (payload?.storeCodes?.length ? payload.storeCodes : payload?.storeCode ? [payload.storeCode] : [])
+        .map((item) => item.trim())
+        .filter(Boolean),
+    ),
+  )
+
+  return storeCodes.length ? { storeCodes } : {}
+}
+
+function normalizeStoreOrderHqIncrementalSyncPayload(payload?: StoreOrderHqSyncPayload) {
+  const basePayload = normalizeStoreOrderSyncPayload(payload)
+  return {
+    ...basePayload,
+    ...(payload?.startDate ? { startDate: payload.startDate } : {}),
+    ...(payload?.endDate ? { endDate: payload.endDate } : {}),
+  }
+}
+
+function normalizeStoreOrderSyncJobStatus(status: unknown): StoreOrderSyncJobStatus {
+  if (typeof status !== 'string') {
+    return 'Running'
+  }
+
+  switch (status.trim().toLowerCase()) {
+    case 'queued':
+    case 'pending':
+      return 'Queued'
+    case 'running':
+      return 'Running'
+    case 'succeeded':
+      return 'Succeeded'
+    case 'failed':
+      return 'Failed'
+    default:
+      return 'Running'
+  }
+}
+
+function normalizeStoreOrderSyncJobResult(
+  payload: unknown,
+  fallbackJobId = '',
+): StoreOrderSyncJobResult {
+  const rawPayload = isRecord(payload) ? payload : null
+  const rawResult = normalizeResult<Record<string, unknown> | null>(payload)
+  const result = isRecord(rawResult) ? rawResult : {}
+  const nestedResult = isRecord(result.result) ? result.result : {}
+
+  const readNumber = (...values: unknown[]) =>
+    values.find((value): value is number => typeof value === 'number')
+  const message =
+    typeof result.message === 'string'
+      ? result.message
+      : typeof nestedResult.message === 'string'
+        ? nestedResult.message
+        : rawPayload && typeof rawPayload.message === 'string'
+          ? rawPayload.message
+          : undefined
+  const success =
+    typeof result.success === 'boolean'
+      ? result.success
+      : typeof nestedResult.success === 'boolean'
+        ? nestedResult.success
+        : rawPayload && typeof rawPayload.success === 'boolean'
+          ? rawPayload.success
+          : undefined
+  const resolvedStatus =
+    typeof result.status === 'string'
+      ? normalizeStoreOrderSyncJobStatus(result.status)
+      : success === false
+        ? 'Failed'
+        : 'Running'
+
+  return {
+    jobId: typeof result.jobId === 'string' ? result.jobId : fallbackJobId,
+    status: resolvedStatus,
+    mode:
+      result.mode === 'Full' || result.mode === 'Incremental'
+        ? result.mode
+        : nestedResult.mode === 'Full' || nestedResult.mode === 'Incremental'
+          ? nestedResult.mode
+          : undefined,
+    message,
+    success,
+    storeCodes: Array.isArray(result.storeCodes)
+      ? result.storeCodes.filter((item): item is string => typeof item === 'string')
+      : undefined,
+    startDate: typeof result.startDate === 'string' ? result.startDate : undefined,
+    endDate: typeof result.endDate === 'string' ? result.endDate : undefined,
+    ordersSynced: readNumber(result.ordersSynced, nestedResult.ordersSynced),
+    detailsSynced: readNumber(result.detailsSynced, nestedResult.detailsSynced),
+    ordersUpdated: readNumber(result.ordersUpdated, nestedResult.ordersUpdated),
+    detailsUpdated: readNumber(result.detailsUpdated, nestedResult.detailsUpdated),
+    ordersSoftDeleted: readNumber(result.ordersSoftDeleted, nestedResult.ordersSoftDeleted),
+    detailsSoftDeleted: readNumber(result.detailsSoftDeleted, nestedResult.detailsSoftDeleted),
+    hqOrderCount: readNumber(result.hqOrderCount, nestedResult.hqOrderCount),
+    hqDetailCount: readNumber(result.hqDetailCount, nestedResult.hqDetailCount),
+    shadowRowCount: readNumber(result.shadowRowCount, nestedResult.shadowRowCount),
+    durationMs: readNumber(result.durationMs, nestedResult.durationMs),
+    errors: Array.isArray(nestedResult.errors)
+      ? nestedResult.errors.filter((item): item is string => typeof item === 'string')
+      : Array.isArray(result.errors)
+        ? result.errors.filter((item): item is string => typeof item === 'string')
+        : undefined,
+  }
 }
 
 export async function getStoreOrderList(query: StoreOrderListQuery) {
@@ -144,12 +278,43 @@ export async function getUsedStoreOrderBranches() {
   return normalizeResult<StoreOrderBranchOption[]>(response)
 }
 
-export async function getStoreOrderDetail(orderGuid: string) {
-  const response = await request<ApiResponse<unknown> | unknown>(`${API_BASE}/detail/${orderGuid}`, {
+export async function getStoreOrderDetail(
+  orderGuid: string,
+  query?: StoreOrderDetailQuery,
+  signal?: AbortSignal,
+) {
+  const response = await request<ApiResponse<unknown> | unknown>(
+    query ? `${API_BASE}/detail/${orderGuid}` : `${API_BASE}/detail/${orderGuid}/full`,
+    {
+      method: 'GET',
+      params: query ? { ...query } : undefined,
+      signal,
+    },
+  )
+
+  return normalizeStoreOrderDetail(response)
+}
+
+export async function getStoreOrderDetailFull(orderGuid: string, signal?: AbortSignal) {
+  const response = await request<ApiResponse<unknown> | unknown>(`${API_BASE}/detail/${orderGuid}/full`, {
     method: 'GET',
+    signal,
   })
 
-  return normalizeResult<StoreOrderDetail | null>(response)
+  return normalizeStoreOrderDetail(response)
+}
+
+export async function getStoreOrderDetailProductCodes(orderGuid: string, signal?: AbortSignal) {
+  const response = await request<ApiResponse<unknown> | unknown>(
+    `${API_BASE}/detail/${orderGuid}/product-codes`,
+    {
+      method: 'GET',
+      signal,
+    },
+  )
+
+  const result = normalizeResult<unknown>(response)
+  return Array.isArray(result) ? result.filter((item): item is string => typeof item === 'string') : []
 }
 
 export async function getStoreOrderProducts(query: StoreOrderProductQuery) {
@@ -382,14 +547,14 @@ export async function startPickingStoreOrder(orderGuid: string) {
   })
 }
 
-export async function syncMissingStoreOrders(storeCode?: string) {
+export async function syncMissingStoreOrders(payload?: SyncMissingStoreOrdersPayload) {
   const controller = new AbortController()
   const timeoutId = setTimeout(() => controller.abort(), 10 * 60 * 1000)
 
   try {
     const response = await request<ApiResponse<unknown> | unknown>(`${API_BASE}/sync-missing-orders`, {
       method: 'POST',
-      data: { storeCode },
+      data: normalizeStoreOrderSyncPayload(payload),
       signal: controller.signal,
     })
 
@@ -397,6 +562,55 @@ export async function syncMissingStoreOrders(storeCode?: string) {
   } finally {
     clearTimeout(timeoutId)
   }
+}
+
+export async function createStoreOrderSyncJob(payload?: SyncMissingStoreOrdersPayload) {
+  const response = await request<ApiResponse<unknown> | unknown>(`${API_BASE}/sync-missing-orders/jobs`, {
+    method: 'POST',
+    data: normalizeStoreOrderSyncPayload(payload),
+  })
+
+  return normalizeStoreOrderSyncJobResult(response)
+}
+
+export async function createStoreOrderFullHqSyncJob() {
+  const response = await request<ApiResponse<unknown> | unknown>(`${API_BASE}/hq-sync/full/jobs`, {
+    method: 'POST',
+    data: {},
+  })
+
+  return normalizeStoreOrderSyncJobResult(response)
+}
+
+export async function createStoreOrderIncrementalHqSyncJob(payload?: StoreOrderHqSyncPayload) {
+  const response = await request<ApiResponse<unknown> | unknown>(`${API_BASE}/hq-sync/incremental/jobs`, {
+    method: 'POST',
+    data: normalizeStoreOrderHqIncrementalSyncPayload(payload),
+  })
+
+  return normalizeStoreOrderSyncJobResult(response)
+}
+
+export async function getStoreOrderSyncJob(jobId: string) {
+  const response = await request<ApiResponse<unknown> | unknown>(
+    `${API_BASE}/sync-missing-orders/jobs/${encodeURIComponent(jobId)}`,
+    {
+      method: 'GET',
+    },
+  )
+
+  return normalizeStoreOrderSyncJobResult(response, jobId)
+}
+
+export async function getStoreOrderHqSyncJob(jobId: string) {
+  const response = await request<ApiResponse<unknown> | unknown>(
+    `${API_BASE}/hq-sync/jobs/${encodeURIComponent(jobId)}`,
+    {
+      method: 'GET',
+    },
+  )
+
+  return normalizeStoreOrderSyncJobResult(response, jobId)
 }
 
 export type { StoreOrderPasteTargetField }
