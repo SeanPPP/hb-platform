@@ -15,9 +15,21 @@ import type {
 } from "@/modules/shop/types";
 import { resolveCartSkuCount } from "@/modules/shop/cart-summary-density";
 import { buildScanLookupPayload } from "@/modules/shop/scan-lookup-payload";
+import { normalizeShopStores } from "@/modules/shop/store-normalization";
 import { apiClient } from "@/shared/api/client";
 
 type ApiItem = Record<string, unknown>;
+
+function buildScanTraceHeaders(scanTraceId?: string) {
+  // 扫码链路的 trace 只在相关请求上透传，普通商品/购物车请求不带额外 header。
+  return scanTraceId
+    ? {
+        headers: {
+          "X-Scan-Trace-Id": scanTraceId,
+        },
+      }
+    : undefined;
+}
 
 function getStringValue(...values: unknown[]) {
   for (const value of values) {
@@ -276,28 +288,12 @@ function normalizeCart(payload: Partial<StoreOrderCart> | null | undefined): Sto
 export async function getStoresByUserGuid(userGuid: string): Promise<Store[]> {
   const stores = await getUserStoresApi(userGuid);
 
-  return stores
-    .filter((item) => item.storeCode)
-    .map((item) => ({
-      storeGUID: item.storeGUID,
-      storeCode: item.storeCode,
-      storeName: item.storeName || item.storeCode,
-      isPrimary: item.isPrimary,
-      assignedAt: item.assignedAt,
-    }));
+  return normalizeShopStores(stores);
 }
 
 export async function getAllStores(): Promise<Store[]> {
   const response = await apiClient.get("/stores/all-by-name");
-  const stores = Array.isArray(response.data) ? response.data : [];
-
-  return stores
-    .filter((item): item is { storeCode?: string; storeName?: string } => Boolean(item))
-    .filter((item) => Boolean(item.storeCode))
-    .map((item) => ({
-      storeCode: item.storeCode!,
-      storeName: item.storeName || item.storeCode!,
-    }));
+  return normalizeShopStores(response.data);
 }
 
 export async function getCategoryTree(): Promise<StoreOrderCategoryNode[]> {
@@ -375,22 +371,39 @@ export async function getCart(storeCode: string): Promise<StoreOrderCart | null>
   return normalizeCart(response.data as Partial<StoreOrderCart> | null);
 }
 
-export async function addToCart(payload: AddToCartPayload): Promise<StoreOrderCart | null> {
-  const response = await apiClient.post("/react/v1/store-order/cart/add", payload);
+export async function addToCart(
+  payload: AddToCartPayload,
+  scanTraceId?: string
+): Promise<StoreOrderCart | null> {
+  const response = await apiClient.post(
+    "/react/v1/store-order/cart/add",
+    payload,
+    buildScanTraceHeaders(scanTraceId)
+  );
   return normalizeCart(response.data as Partial<StoreOrderCart> | null);
 }
 
-export async function updateCartQuantity(payload: UpdateCartQuantityPayload): Promise<void> {
-  await apiClient.post("/react/v1/store-order/cart/update", payload);
+export async function updateCartQuantity(
+  payload: UpdateCartQuantityPayload,
+  scanTraceId?: string
+): Promise<StoreOrderCart | null> {
+  const response = await apiClient.post(
+    "/react/v1/store-order/cart/update",
+    payload,
+    buildScanTraceHeaders(scanTraceId)
+  );
+  return normalizeCart(response.data as Partial<StoreOrderCart> | null);
 }
 
 export async function lookupProductsByBarcode(
   barcode: string,
-  storeCode?: string | null
+  storeCode?: string | null,
+  scanTraceId?: string
 ): Promise<StoreOrderScanLookupResult> {
   const response = await apiClient.post(
     "/react/v1/store-order/products/scan-lookup",
-    buildScanLookupPayload(barcode, storeCode)
+    buildScanLookupPayload(barcode, storeCode),
+    buildScanTraceHeaders(scanTraceId)
   );
 
   const data = response.data as Partial<StoreOrderScanLookupResult> | null | undefined;

@@ -1,4 +1,4 @@
-﻿import { useCallback, useEffect, useMemo, useState } from "react";
+﻿import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { FlatList, ScrollView, StyleSheet, TextInput, useWindowDimensions, View } from "react-native";
 import { useQuery } from "@tanstack/react-query";
 import { CameraView } from "expo-camera";
@@ -21,6 +21,7 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { LoadingOverlay } from "@/components/ui/LoadingOverlay";
 import { ProductCard } from "@/components/ui/ProductCard";
 import { getCategoryTree } from "@/modules/shop/api";
+import { shouldClearActiveCartMutation } from "@/modules/shop/cart-mutation-state";
 import { resolveMinimumOrderQuantity, useAddToCart } from "@/modules/shop/use-add-to-cart";
 import { useCartSummary } from "@/modules/shop/use-cart-summary";
 import { useProductGrades } from "@/modules/shop/use-product-grades";
@@ -67,6 +68,11 @@ function normalizeGradeValue(value: string | null | undefined) {
   return value?.trim().toUpperCase() || "";
 }
 
+function normalizeStoreCode(value: string | null | undefined) {
+  const normalized = value?.trim();
+  return normalized ? normalized : null;
+}
+
 export default function Home() {
   const { t, language } = useAppTranslation(["home", "common"]);
   const { height: windowHeight } = useWindowDimensions();
@@ -105,10 +111,24 @@ export default function Home() {
   ), [language, t]);
   const addToCart = useAddToCart(selectedStoreCode);
   const updateCartQuantity = useUpdateCartQuantity(selectedStoreCode);
+  const selectedStoreCodeRef = useRef<string | null>(normalizeStoreCode(selectedStoreCode));
+
+  selectedStoreCodeRef.current = normalizeStoreCode(selectedStoreCode);
 
   useCartSummary(selectedStoreCode);
   const handleScanLookupProduct = useCallback(
-    async (product: StoreOrderProductItem) => {
+    async (
+      product: StoreOrderProductItem,
+      _barcode?: string,
+      _source?: unknown,
+      scanTraceId?: string,
+      scanStoreCode?: string | null
+    ) => {
+      const expectedStoreCode = normalizeStoreCode(scanStoreCode ?? selectedStoreCodeRef.current);
+      if (selectedStoreCodeRef.current !== expectedStoreCode) {
+        return;
+      }
+
       setSearchInput("");
       setKeyword("");
       setScannedProducts([product]);
@@ -124,14 +144,25 @@ export default function Home() {
         await addToCart.mutateAsync({
           product,
           quantity: resolveMinimumOrderQuantity(product),
+          scanTraceId,
         });
+        if (selectedStoreCodeRef.current !== expectedStoreCode) {
+          return;
+        }
+
         setSnackbarMessage(
           t("messages.addedToCart", { name: product.productName || product.productCode })
         );
       } catch (error) {
+        if (selectedStoreCodeRef.current !== expectedStoreCode) {
+          return;
+        }
+
         setSnackbarMessage(getErrorMessage(error, "messages.scanAddFailed"));
       } finally {
-        setActiveCartMutationProductCode(null);
+        if (shouldClearActiveCartMutation(selectedStoreCodeRef.current, expectedStoreCode)) {
+          setActiveCartMutationProductCode(null);
+        }
       }
     },
     [addToCart, autoAddWhenSingle, getErrorMessage, t]
@@ -201,6 +232,11 @@ export default function Home() {
   }, [keyword, selectedCategoryGUID, selectedGrade, selectedStoreCode]);
 
   useEffect(() => {
+    // 门店切换后清空旧门店扫码结果，避免迟到的加购反馈落到新门店界面。
+    setScannedProducts(null);
+  }, [selectedStoreCode]);
+
+  useEffect(() => {
     if (
       scanResult.feedback.status === "ready" ||
       scanResult.feedback.status === "scanning" ||
@@ -233,6 +269,7 @@ export default function Home() {
     const total = productsQuery.data?.total ?? 0;
     return pageNumber * 18 < total;
   }, [pageNumber, productsQuery.data?.total]);
+  const hasNoAssignedStores = !storesLoading && !storesLoadFailed && stores.length === 0 && !selectedStoreCode;
   const isCompactLayout = windowHeight < 780;
   const productListContentStyle = useMemo(
     () => [styles.listContent, isCompactLayout ? styles.listContentCompact : null],
@@ -332,6 +369,7 @@ export default function Home() {
   );
 
   async function handleAddToCart(product: StoreOrderProductItem) {
+    const mutationStoreCode = selectedStoreCodeRef.current;
     setActiveCartMutationProductCode(product.productCode);
     try {
       await addToCart.mutateAsync({ product });
@@ -341,7 +379,9 @@ export default function Home() {
     } catch (error) {
       setSnackbarMessage(getErrorMessage(error, "messages.addFailed"));
     } finally {
-      setActiveCartMutationProductCode(null);
+      if (shouldClearActiveCartMutation(selectedStoreCodeRef.current, mutationStoreCode)) {
+        setActiveCartMutationProductCode(null);
+      }
     }
   }
 
@@ -350,6 +390,7 @@ export default function Home() {
   }
 
   async function handleIncreaseCartQuantity(product: StoreOrderProductItem) {
+    const mutationStoreCode = selectedStoreCodeRef.current;
     const step = resolveMinimumOrderQuantity(product);
     const nextQuantity = getCurrentCartQuantity(product.productCode) + step;
     setActiveCartMutationProductCode(product.productCode);
@@ -362,11 +403,14 @@ export default function Home() {
     } catch (error) {
       setSnackbarMessage(getErrorMessage(error, "messages.updateQtyFailed"));
     } finally {
-      setActiveCartMutationProductCode(null);
+      if (shouldClearActiveCartMutation(selectedStoreCodeRef.current, mutationStoreCode)) {
+        setActiveCartMutationProductCode(null);
+      }
     }
   }
 
   async function handleDecreaseCartQuantity(product: StoreOrderProductItem, currentQuantity: number) {
+    const mutationStoreCode = selectedStoreCodeRef.current;
     const step = resolveMinimumOrderQuantity(product);
     const nextQuantity = Math.max(0, currentQuantity - step);
     setActiveCartMutationProductCode(product.productCode);
@@ -379,7 +423,9 @@ export default function Home() {
     } catch (error) {
       setSnackbarMessage(getErrorMessage(error, "messages.updateQtyFailed"));
     } finally {
-      setActiveCartMutationProductCode(null);
+      if (shouldClearActiveCartMutation(selectedStoreCodeRef.current, mutationStoreCode)) {
+        setActiveCartMutationProductCode(null);
+      }
     }
   }
 
@@ -529,6 +575,8 @@ export default function Home() {
             title={
               productsQuery.isError
                 ? t("empty.productsLoadFailedTitle")
+                : hasNoAssignedStores
+                  ? t("empty.noAssignedStoresTitle")
                 : selectedStoreCode
                   ? t("empty.noProductsTitle")
                   : t("empty.selectStoreTitle")
@@ -536,6 +584,8 @@ export default function Home() {
             description={
               productsQuery.isError
                 ? t("empty.productsLoadFailedDescription")
+                : hasNoAssignedStores
+                  ? t("empty.noAssignedStoresDescription")
                 : selectedStoreCode
                   ? t("empty.noProductsDescription")
                   : t("empty.selectStoreDescription")

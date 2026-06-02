@@ -30,6 +30,8 @@
     "noProductsDescription": "可以换个关键词、重新扫码或切换分类试试",
     "productsLoadFailedTitle": "商品加载失败",
     "productsLoadFailedDescription": "后端响应较慢或网络不稳定，请重试。",
+    "noAssignedStoresTitle": "暂无可用分店",
+    "noAssignedStoresDescription": "当前账号没有已分配分店，请联系管理员同步权限。",
     "selectStoreTitle": "先选择门店",
     "selectStoreDescription": "选中门店后可查看商品动态"
   },

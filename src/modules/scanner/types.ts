@@ -12,6 +12,8 @@ export interface ScanFeedbackState {
 
 export interface ScanSelectionState {
   barcode: string;
+  scanTraceId?: string;
+  storeCode?: string | null;
   source: ScanSource;
   items: StoreOrderProductItem[];
 }

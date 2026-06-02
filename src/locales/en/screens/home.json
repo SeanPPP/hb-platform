@@ -30,6 +30,8 @@
     "noProductsDescription": "Try another keyword, rescan, or switch the category.",
     "productsLoadFailedTitle": "Products failed to load",
     "productsLoadFailedDescription": "The backend is slow or the network is unstable. Please retry.",
+    "noAssignedStoresTitle": "No stores available",
+    "noAssignedStoresDescription": "This account has no assigned stores. Ask an administrator to sync access.",
     "selectStoreTitle": "Select a store first",
     "selectStoreDescription": "Choose a store to view its products."
   },
