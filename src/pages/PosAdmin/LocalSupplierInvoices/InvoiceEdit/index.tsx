@@ -50,6 +50,7 @@ import {
   getInvoice,
   getInvoiceDetails,
   pasteDetails,
+  updateDetailAction,
   updateHqProducts,
   updateInvoice,
   updateToStorePrices,
@@ -927,7 +928,6 @@ export default function InvoiceEditPage() {
     // 同步到服务端
     if (invoiceGuid) {
       try {
-        const { updateDetailAction } = await import('../../../../services/localSupplierInvoiceService')
         await updateDetailAction(invoiceGuid, detailGuid, action)
       } catch {
         message.error(t('posAdmin.invoiceDetail.updateActionFailed', '更新操作类型失败'))

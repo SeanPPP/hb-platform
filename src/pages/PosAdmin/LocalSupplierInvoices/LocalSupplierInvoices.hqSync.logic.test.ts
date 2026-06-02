@@ -140,6 +140,15 @@ async function main() {
   })
   if (editPageButtonFailure) failures.push(editPageButtonFailure)
 
+  const editPageImportFailure = await runTest('编辑页不应动态导入已静态使用的本地供应商进货单服务', () => {
+    assert(
+      !editPageSource.includes("await import('../../../../services/localSupplierInvoiceService')"),
+      '编辑页已静态导入该服务，不能再动态导入同一模块，否则 Vite 会提示动态导入无法拆分 chunk',
+    )
+    assert(editPageSource.includes('updateDetailAction,'), '编辑页应静态导入更新行操作接口')
+  })
+  if (editPageImportFailure) failures.push(editPageImportFailure)
+
   const updateToStoreHqFailure = await runTest('更新到分店应移除同步HQ耦合并保留独立HQ弹窗', () => {
     assert(!editPageSource.includes('name="updateHqProduct"'), '更新到分店弹窗不应再包含 updateHqProduct 复选框')
     assert(!editPageSource.includes('confirmUpdateToStorePrices'), '更新到分店不应再包含同时更新 HQ 的二次确认')
