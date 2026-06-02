@@ -1,5 +1,7 @@
 import {
   ArrowLeftOutlined,
+  CloudUploadOutlined,
+  CopyOutlined,
   DeleteOutlined,
   DownloadOutlined,
   EditOutlined,
@@ -25,6 +27,7 @@ import {
   Switch,
   Table,
   Tag,
+  Tooltip,
   Typography,
   message,
 } from 'antd'
@@ -32,7 +35,7 @@ import type { ColumnsType } from 'antd/es/table'
 import type { TFunction } from 'i18next'
 import type { Dayjs } from 'dayjs'
 import dayjs from 'dayjs'
-import { useEffect, useMemo, useState, type Key } from 'react'
+import { useEffect, useMemo, useRef, useState, type Key } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useNavigate } from 'react-router-dom'
 import BarcodePreview from '../../../components/BarcodePreview'
@@ -48,7 +51,7 @@ import {
   updateContainer,
 } from '../../../services/containerService'
 import { exportContainerDetailsToExcel, type ContainerDetailExportItem } from '../../../services/exportService'
-import { createProduct, updateProduct } from '../../../services/posProductService'
+import { createProduct, pushProductsToHq, updateProduct } from '../../../services/posProductService'
 import { upsertForActiveStores as upsertMultiCodeForActiveStores } from '../../../services/storeMultiCodePriceService'
 import { upsertForActiveStores as upsertRetailForActiveStores } from '../../../services/storeRetailPriceService'
 import { batchTranslate } from '../../../services/translationService'
@@ -59,7 +62,20 @@ import {
   detectProducts,
 } from '../../../services/warehouseProductService'
 import { useAuthStore } from '../../../store/auth'
-import type { ContainerDetail, ContainerMain, HqTranslationResult, UpdateContainerDetailRequest } from '../../../types/container'
+import type { ContainerDetail, ContainerMain, HqTranslationResult, UpdateContainerDetailRequest, UpdateContainerRequest } from '../../../types/container'
+import { copyTextToClipboard } from '../../../utils/clipboard'
+import {
+  applyContainerDetailEnglishNameUpdates,
+  buildContainerDetailFloatRateUpdates,
+  buildContainerDetailHqPushSelection,
+  buildContainerDetailTranslationUpdates,
+  extractPushToHqErrorResult,
+  getContainerDetailEnglishName,
+  getContainerDetailProductName,
+  mergeContainerDetailPatch,
+} from './containerDetailLogic'
+import type { PushProductsToHqResult } from '../../../types/posProduct'
+import './index.css'
 
 type TagFilter = 'all' | 'new' | 'existing' | 'noOemPrice' | 'abnormalImport'
 type ProductTypeFilter = 'all' | 'normal' | 'set' | 'setChild'
@@ -120,6 +136,35 @@ function isSetProduct(row: ContainerDetail) {
   return row.商品类型 === '套装商品' || row.商品类型 === '套装子商品' || row.商品信息?.商品类型 === '套装商品'
 }
 
+function CopyableText({ value, maxWidth }: { value?: string; maxWidth?: number }) {
+  if (!value) {
+    return <>--</>
+  }
+
+  return (
+    <Space size={4} wrap={false}>
+      <Typography.Text style={maxWidth ? { maxWidth } : undefined} ellipsis={maxWidth ? { tooltip: value } : false}>
+        {value}
+      </Typography.Text>
+      <Tooltip title="复制">
+        <Button
+          size="small"
+          type="link"
+          aria-label={`复制 ${value}`}
+          icon={<CopyOutlined />}
+          style={{ paddingInline: 0 }}
+          onClick={(event) => {
+            event.stopPropagation()
+            void copyTextToClipboard(value)
+          }}
+        >
+          复制
+        </Button>
+      </Tooltip>
+    </Space>
+  )
+}
+
 export default function ContainerDetailPage() {
   const { t } = useTranslation()
   const navigate = useNavigate()
@@ -140,6 +185,9 @@ export default function ContainerDetailPage() {
   const [exporting, setExporting] = useState(false)
   const [exportProgress, setExportProgress] = useState(0)
   const [hqTranslating, setHqTranslating] = useState(false)
+  const [pushToHqLoading, setPushToHqLoading] = useState(false)
+  const [recalculateCostsLoading, setRecalculateCostsLoading] = useState(false)
+  const pushToHqLoadingRef = useRef(false)
   const [headerEditing, setHeaderEditing] = useState(false)
   const [headerForm, setHeaderForm] = useState<{
     实际到货日期?: Dayjs | null
@@ -203,7 +251,7 @@ export default function ContainerDetailPage() {
   const targetRows = selectedRows.length ? selectedRows : filteredRows
 
   const patchRow = (key: string, patch: Partial<ContainerDetail>) => {
-    setRows((items) => items.map((item) => (rowKey(item) === key ? { ...item, ...patch } : item)))
+    setRows((items) => items.map((item) => (rowKey(item) === key ? mergeContainerDetailPatch(item, patch) : item)))
   }
 
   const saveRowPatch = async (row: ContainerDetail, patch: Partial<ContainerDetail>) => {
@@ -212,16 +260,26 @@ export default function ContainerDetailPage() {
     await batchUpdateDetails([{ hguid: row.hguid, ...patch } as UpdateContainerDetailRequest])
   }
 
+  const applyDetailUpdatesToRows = (updates: UpdateContainerDetailRequest[]) => {
+    setRows((items) =>
+      items.map((item) => {
+        const match = updates.find((update) => update.hguid === item.hguid)
+        return match ? mergeContainerDetailPatch(item, match as Partial<ContainerDetail>) : item
+      }),
+    )
+  }
+
   const saveHeader = async () => {
     if (!containerGuid || !access.canEditContainer) return
     setSavingHeader(true)
+    const updatePayload: UpdateContainerRequest = {
+      实际到货日期: headerForm.实际到货日期 ? headerForm.实际到货日期.format('YYYY-MM-DD') : undefined,
+      汇率: headerForm.汇率,
+      运费: headerForm.运费,
+      备注: headerForm.备注,
+    }
     try {
-      await updateContainer(containerGuid, {
-        实际到货日期: headerForm.实际到货日期 ? headerForm.实际到货日期.format('YYYY-MM-DD') : undefined,
-        汇率: headerForm.汇率,
-        运费: headerForm.运费,
-        备注: headerForm.备注,
-      })
+      await updateContainer(containerGuid, updatePayload)
       message.success(t('containers.messages.headerSaveSuccess'))
       setHeaderEditing(false)
       await loadData()
@@ -233,11 +291,17 @@ export default function ContainerDetailPage() {
     }
   }
 
-  const calculateImportPrice = (row: ContainerDetail, floatRate: number) => {
-    const rate = container?.汇率
-    if (!rate || rate <= 0 || !row.国内价格) return row.进口价格
-    const transportCost = row.运输成本 ?? 0
-    return ((row.国内价格 / rate + transportCost) * floatRate * 10) / 11
+  const saveFloatRatePatch = async (row: ContainerDetail, value?: number) => {
+    if (value == null) {
+      await saveRowPatch(row, { 调整浮率: undefined })
+      return
+    }
+
+    const updates = buildContainerDetailFloatRateUpdates([row], container, value)
+    const update = updates[0]
+    if (!update) return
+    applyDetailUpdatesToRows(updates)
+    await batchUpdateDetails(updates)
   }
 
   const applyFloatRate = async () => {
@@ -245,23 +309,44 @@ export default function ContainerDetailPage() {
       message.warning(t('containers.messages.enterFloatRate'))
       return
     }
-    const updates = targetRows
-      .filter((row) => row.hguid)
-      .map((row) => ({
-        hguid: row.hguid,
-        调整浮率: batchFloatRate,
-        进口价格: calculateImportPrice(row, batchFloatRate),
-      }))
+    const updates = buildContainerDetailFloatRateUpdates(targetRows, container, batchFloatRate)
     if (!updates.length) return
     await batchUpdateDetails(updates)
-    setRows((items) =>
-      items.map((item) => {
-        const match = updates.find((update) => update.hguid === item.hguid)
-        return match ? { ...item, 调整浮率: match.调整浮率, 进口价格: match.进口价格 } : item
-      }),
-    )
+    applyDetailUpdatesToRows(updates)
     setBatchFloatRate(null)
     message.success(t('containers.messages.detailsUpdated', { count: updates.length }))
+  }
+
+  const handleRecalculateCosts = async () => {
+    if (!access.canEditContainer) return
+    if (container?.运费 == null) {
+      message.warning('缺少运费，无法重算成本')
+      return
+    }
+    if (!container?.总体积 || container.总体积 <= 0) {
+      message.warning('缺少总体积，无法重算成本')
+      return
+    }
+    if (!targetRows.length) {
+      message.warning('没有可重算的明细')
+      return
+    }
+
+    const updates = buildContainerDetailFloatRateUpdates(targetRows, container)
+    if (!updates.length) {
+      message.warning('没有可写回的成本更新')
+      return
+    }
+
+    setRecalculateCostsLoading(true)
+    try {
+      // 手动入口只处理当前目标行，避免页面加载或头部保存时意外批量写库。
+      await batchUpdateDetails(updates)
+      applyDetailUpdatesToRows(updates)
+      message.success(t('containers.messages.detailsUpdated', { count: updates.length }))
+    } finally {
+      setRecalculateCostsLoading(false)
+    }
   }
 
   const applyPrices = async () => {
@@ -314,26 +399,16 @@ export default function ContainerDetailPage() {
   }
 
   const translateNames = async () => {
-    const names = Array.from(new Set(targetRows.map((row) => row.商品信息?.商品名称).filter((value): value is string => Boolean(value))))
+    const names = Array.from(new Set(targetRows.map(getContainerDetailProductName).filter((value): value is string => Boolean(value))))
     if (!names.length) {
       message.warning(t('containers.messages.noNamesToTranslate'))
       return
     }
     const translations = await batchTranslate(names)
-    const updates = targetRows
-      .filter((row) => row.hguid && row.商品信息?.商品名称 && translations[row.商品信息.商品名称])
-      .map((row) => ({
-        hguid: row.hguid,
-        英文名称: translations[row.商品信息!.商品名称!],
-      }))
+    const updates = buildContainerDetailTranslationUpdates(targetRows, translations)
     if (updates.length) {
       await batchUpdateDetails(updates)
-      setRows((items) =>
-        items.map((item) => {
-          const match = updates.find((update) => update.hguid === item.hguid)
-          return match ? { ...item, 商品信息: { ...item.商品信息, 英文名称: match.英文名称 } } : item
-        }),
-      )
+      setRows((items) => applyContainerDetailEnglishNameUpdates(items, updates))
     }
     message.success(t('containers.messages.namesTranslated', { count: updates.length }))
   }
@@ -402,11 +477,114 @@ export default function ContainerDetailPage() {
     }
   }
 
+  const showPushToHqResult = (
+    result: PushProductsToHqResult,
+    selection: ReturnType<typeof buildContainerDetailHqPushSelection>,
+    resultKind: 'success' | 'failed' = 'success',
+  ) => {
+    const errors = result.errors ?? []
+    const detailStats = [
+      { label: t('posAdmin.products.pushToHqAffectedRows', 'HQ影响记录'), value: result.affectedRowCount ?? 0 },
+      { label: t('posAdmin.products.productsAdded', '商品新增'), value: result.productsAdded ?? 0 },
+      { label: t('posAdmin.products.productsUpdated', '商品更新'), value: result.productsUpdated ?? 0 },
+      { label: t('posAdmin.products.storeRetailPricesCreated', '门店零售价新增'), value: result.storeRetailPricesCreated ?? 0 },
+      { label: t('posAdmin.products.storeRetailPricesUpdated', '门店零售价更新'), value: result.storeRetailPricesUpdated ?? 0 },
+      { label: t('posAdmin.products.productSetCodesCreated', '套装编码新增'), value: result.productSetCodesCreated ?? 0 },
+      { label: t('posAdmin.products.productSetCodesUpdated', '套装编码更新'), value: result.productSetCodesUpdated ?? 0 },
+      { label: t('posAdmin.products.storeMultiCodesCreated', '门店多码新增'), value: result.storeMultiCodesCreated ?? 0 },
+      { label: t('posAdmin.products.storeMultiCodesUpdated', '门店多码更新'), value: result.storeMultiCodesUpdated ?? 0 },
+      { label: t('containers.text.skippedNewProducts', '跳过新商品'), value: selection.skippedNewProductCount },
+      { label: t('containers.text.missingProductCodeRows', '缺商品编码'), value: selection.missingProductCodeCount },
+    ].filter((item) => item.value > 0)
+    const content = (
+      <Space direction="vertical" size={6}>
+        {result.message ? <div>{result.message}</div> : null}
+        <div>
+          {t('posAdmin.products.pushToHqResult', '发送完成：商品成功 {{success}}，失败 {{failed}}，合计 {{total}}', {
+            success: result.successCount ?? 0,
+            failed: result.failedCount ?? 0,
+            total: result.totalCount ?? (result.successCount ?? 0) + (result.failedCount ?? 0),
+          })}
+        </div>
+        <div>{t('containers.text.pushToHqSelectedLocalProducts', '本次发送本地已有商品：{{count}} 个', { count: selection.productCodes.length })}</div>
+        {detailStats.map((item) => (
+          <div key={item.label}>{item.label}: {item.value}</div>
+        ))}
+        {errors.length ? (
+          <div style={{ whiteSpace: 'pre-wrap' }}>
+            {t('posAdmin.products.partialSyncError', '部分同步错误')}：{errors.join('\n')}
+          </div>
+        ) : null}
+      </Space>
+    )
+
+    if (resultKind === 'failed') {
+      Modal.error({
+        title: t('posAdmin.products.pushToHqFailed', '发送到 HQ 失败'),
+        content,
+      })
+      return
+    }
+
+    if (errors.length || (result.failedCount ?? 0) > 0) {
+      Modal.warning({
+        title: t('posAdmin.products.pushToHqPartialSucceeded', '发送到 HQ 部分成功'),
+        content,
+      })
+      return
+    }
+
+    Modal.success({
+      title: t('posAdmin.products.pushToHqSucceeded', '发送到 HQ 完成'),
+      content,
+    })
+  }
+
+  const handlePushSelectedProductsToHq = async () => {
+    if (pushToHqLoadingRef.current) return
+    if (!access.canManagePosProducts) {
+      message.warning(t('posAdmin.products.noManagePermission', '无权限管理商品'))
+      return
+    }
+    if (!selectedRows.length) {
+      message.warning(t('containers.messages.selectProducts'))
+      return
+    }
+
+    const selection = buildContainerDetailHqPushSelection(selectedRows)
+    if (!selection.productCodes.length) {
+      message.warning(t('containers.messages.noExistingLocalProductsToPushHq', '选中明细没有可发送到 HQ 的本地已有商品'))
+      return
+    }
+
+    try {
+      // 写 HQ 是跨库操作，使用即时锁防止连续点击造成重复提交。
+      pushToHqLoadingRef.current = true
+      setPushToHqLoading(true)
+      const result = await pushProductsToHq({
+        productCodes: selection.productCodes,
+      })
+      showPushToHqResult(result, selection)
+      setSelectedRowKeys([])
+      await loadData()
+    } catch (error) {
+      const errorResult = extractPushToHqErrorResult(error)
+      if (errorResult) {
+        showPushToHqResult(errorResult, selection, 'failed')
+      } else {
+        message.error(error instanceof Error ? error.message : t('posAdmin.products.pushToHqFailed', '发送到 HQ 失败'))
+      }
+    } finally {
+      pushToHqLoadingRef.current = false
+      setPushToHqLoading(false)
+    }
+  }
+
   const createNewProducts = async () => {
     const candidates = targetRows.filter((row) => row.是否新商品)
     const eligible = candidates.filter((row) => {
-      const name = row.商品信息?.商品名称
-      const englishName = row.商品信息?.英文名称
+      const name = getContainerDetailProductName(row)
+      const englishName = getContainerDetailEnglishName(row)
       return name && englishName && (row.进口价格 ?? 0) > 0 && (row.贴牌价格 ?? 0) > 0
     })
     if (!eligible.length) {
@@ -419,7 +597,7 @@ export default function ContainerDetailPage() {
       if (!productCode) continue
       await createProduct({
         productCode,
-        productName: row.商品信息?.商品名称,
+        productName: getContainerDetailProductName(row),
         itemNumber: row.商品信息?.货号,
         barcode: row.商品信息?.条形码,
         purchasePrice: row.进口价格,
@@ -435,8 +613,8 @@ export default function ContainerDetailPage() {
         ProductCode: productCode,
         ItemNumber: row.商品信息?.货号,
         Barcode: row.商品信息?.条形码,
-        ChineseName: row.商品信息?.商品名称,
-        EnglishName: row.商品信息?.英文名称,
+        ChineseName: getContainerDetailProductName(row),
+        EnglishName: getContainerDetailEnglishName(row),
         DomesticPrice: row.国内价格,
         OEMPrice: row.贴牌价格,
         ImportPrice: row.进口价格,
@@ -543,7 +721,7 @@ export default function ContainerDetailPage() {
         imageUrl: row.商品信息?.商品图片,
         itemNumber: row.商品信息?.货号 || '',
         barcode: row.商品信息?.条形码 || '',
-        productName: row.商品信息?.商品名称 || '',
+        productName: getContainerDetailProductName(row) || '',
         isNewProduct: Boolean(row.是否新商品),
         containerQuantity: row.装柜数量 || 0,
         domesticPrice: row.国内价格 || 0,
@@ -575,18 +753,48 @@ export default function ContainerDetailPage() {
           <span style={{ color: '#999' }}>{t('containers.empty.noImage')}</span>
         ),
     },
-    { title: t('containers.fields.itemNumber'), width: 150, sorter: (a, b) => (a.商品信息?.货号 || '').localeCompare(b.商品信息?.货号 || ''), render: (_, row) => row.商品信息?.货号 || '--' },
-    { title: t('containers.fields.barcode'), width: 180, render: (_, row) => <BarcodePreview value={row.商品信息?.条形码} showText={false} showCopy={false} /> },
-    { title: t('containers.fields.productName'), width: 240, render: (_, row) => row.商品信息?.商品名称 || '--' },
+    { title: t('containers.fields.itemNumber'), width: 160, fixed: 'left', sorter: (a, b) => (a.商品信息?.货号 || '').localeCompare(b.商品信息?.货号 || ''), render: (_, row) => <CopyableText value={row.商品信息?.货号} maxWidth={118} /> },
+    {
+      title: t('containers.fields.barcode'),
+      width: 190,
+      render: (_, row) => {
+        const barcode = row.商品信息?.条形码
+
+        return barcode ? (
+          <Space size={4} wrap={false}>
+            <BarcodePreview value={barcode} showText={false} showCopy={false} />
+            <Tooltip title="复制">
+              <Button
+                size="small"
+                type="link"
+                aria-label={`复制 ${barcode}`}
+                icon={<CopyOutlined />}
+                style={{ paddingInline: 0 }}
+                onClick={(event) => {
+                  event.stopPropagation()
+                  void copyTextToClipboard(barcode)
+                }}
+              >
+                复制
+              </Button>
+            </Tooltip>
+          </Space>
+        ) : '--'
+      },
+    },
+    { title: t('containers.fields.productName'), width: 240, render: (_, row) => getContainerDetailProductName(row) || '--' },
     {
       title: t('containers.fields.englishName'),
       width: 220,
       render: (_, row) => access.canEditContainer ? (
-        <Input
-          defaultValue={row.商品信息?.英文名称}
-          onBlur={(event) => void saveRowPatch(row, { 商品信息: { ...row.商品信息, 英文名称: event.target.value } } as Partial<ContainerDetail>)}
+        <Input.TextArea
+          value={getContainerDetailEnglishName(row) ?? ''}
+          autoSize={{ minRows: 1, maxRows: 2 }}
+          style={{ resize: 'none' }}
+          onChange={(event) => patchRow(rowKey(row), { 英文名称: event.target.value })}
+          onBlur={(event) => void saveRowPatch(row, { 英文名称: event.target.value })}
         />
-      ) : row.商品信息?.英文名称 || '--',
+      ) : getContainerDetailEnglishName(row) || '--',
     },
     { title: t('containers.fields.productType'), width: 110, render: (_, row) => getProductTypeLabel(row.商品类型 || row.商品信息?.商品类型, t) },
     { title: t('containers.fields.newProduct'), width: 90, render: (_, row) => (row.是否新商品 ? <Tag color="blue">{t('containers.tags.new')}</Tag> : <Tag>{t('containers.tags.existing')}</Tag>) },
@@ -600,10 +808,16 @@ export default function ContainerDetailPage() {
       align: 'right',
       render: (_value, row) =>
         access.canEditContainer ? (
-          <InputNumber defaultValue={row.调整浮率} precision={4} style={{ width: 96 }} onBlur={(event) => {
-            const value = event.target.value ? Number(event.target.value) : undefined
-            void saveRowPatch(row, { 调整浮率: value, 进口价格: value == null ? row.进口价格 : calculateImportPrice(row, value) })
-          }} />
+          <InputNumber
+            value={row.调整浮率}
+            precision={4}
+            style={{ width: 96 }}
+            onChange={(value) => patchRow(rowKey(row), { 调整浮率: value == null ? undefined : Number(value) })}
+            onBlur={(event) => {
+              const value = event.target.value ? Number(event.target.value) : undefined
+              void saveFloatRatePatch(row, value)
+            }}
+          />
         ) : formatNumber(row.调整浮率, 4),
     },
     { title: t('containers.fields.transportCost'), dataIndex: '运输成本', width: 110, align: 'right', render: (v) => formatNumber(v) },
@@ -613,7 +827,16 @@ export default function ContainerDetailPage() {
       width: 120,
       align: 'right',
       render: (_value, row) =>
-        access.canEditContainer ? <InputNumber defaultValue={row.进口价格} min={0} precision={2} style={{ width: 100 }} onBlur={(event) => void saveRowPatch(row, { 进口价格: event.target.value ? Number(event.target.value) : undefined })} /> : formatNumber(row.进口价格),
+        access.canEditContainer ? (
+          <InputNumber
+            value={row.进口价格}
+            min={0}
+            precision={2}
+            style={{ width: 100 }}
+            onChange={(value) => patchRow(rowKey(row), { 进口价格: value == null ? undefined : Number(value) })}
+            onBlur={(event) => void saveRowPatch(row, { 进口价格: event.target.value ? Number(event.target.value) : undefined })}
+          />
+        ) : formatNumber(row.进口价格),
     },
     {
       title: t('containers.fields.oemPrice'),
@@ -704,6 +927,18 @@ export default function ContainerDetailPage() {
                       {t('containers.actions.translateHqData')}
                     </Button>
                   ) : null}
+                  {access.canManagePosProducts ? (
+                    <Tooltip title={!selectedRowKeys.length ? t('containers.messages.selectProducts') : ''}>
+                      <Button
+                        icon={<CloudUploadOutlined />}
+                        loading={pushToHqLoading}
+                        disabled={!selectedRowKeys.length || pushToHqLoading}
+                        onClick={() => void handlePushSelectedProductsToHq()}
+                      >
+                        {t('containers.actions.pushToHq', '发送到 HQ')}
+                      </Button>
+                    </Tooltip>
+                  ) : null}
                   {access.canEditContainer ? (
                     <Dropdown
                       menu={{
@@ -734,6 +969,7 @@ export default function ContainerDetailPage() {
                 <Space wrap>
                   <InputNumber value={batchFloatRate} placeholder={t('containers.fields.floatRate')} precision={4} onChange={setBatchFloatRate} />
                   <Button onClick={() => void applyFloatRate()}>{t('containers.actions.applyFloatRate')}</Button>
+                  <Button loading={recalculateCostsLoading} onClick={() => void handleRecalculateCosts()}>重算成本</Button>
                   <InputNumber value={batchImportPrice} placeholder={t('containers.fields.importPrice')} min={0} precision={2} onChange={setBatchImportPrice} />
                   <InputNumber value={batchOemPrice} placeholder={t('containers.fields.oemPrice')} min={0} precision={2} onChange={setBatchOemPrice} />
                   <Button onClick={() => void applyPrices()}>{t('containers.actions.applyPrices')}</Button>
@@ -744,13 +980,20 @@ export default function ContainerDetailPage() {
               {exporting ? <Progress percent={exportProgress} size="small" /> : null}
 
               <Table
+                className="container-detail-table"
                 rowKey={rowKey}
                 size="small"
                 columns={columns}
                 dataSource={filteredRows}
-                rowSelection={{ selectedRowKeys, onChange: setSelectedRowKeys }}
+                rowSelection={{ selectedRowKeys, onChange: setSelectedRowKeys, fixed: true }}
                 pagination={{ pageSize: 50, showSizeChanger: true, showTotal: (total) => t('common.total', { count: total }) }}
                 scroll={{ x: 2100, y: 620 }}
+                footer={() => (
+                  <Space direction="vertical" size={2}>
+                    <Typography.Text type="secondary">{t('containers.formulas.transportCost', '运输成本 = 运费 × 明细体积 ÷ 装柜数量 ÷ 总体积')}</Typography.Text>
+                    <Typography.Text type="secondary">{t('containers.formulas.importPrice', '进口价格 = ((国内价格 ÷ 汇率 + 运输成本) × 调整浮率 × 10) ÷ 11')}</Typography.Text>
+                  </Space>
+                )}
               />
             </Space>
           </Card>

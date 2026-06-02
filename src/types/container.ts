@@ -38,6 +38,8 @@ export interface ContainerDetail {
   hguid: string
   主表GUID?: string
   商品编码?: string
+  商品名称?: string
+  英文名称?: string
   装柜类型?: string
   商品类型?: string
   套装数量?: number

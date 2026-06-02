@@ -746,7 +746,8 @@ export default function StoreOrderDetailPage() {
       setStores(result.items)
     } catch (error) {
       console.error(error)
-      message.error(error instanceof Error ? error.message : t('storeOrders.loadStoresFailed'))
+      // 分店下拉是辅助数据，加载失败不应误导用户以为订货明细主数据失败。
+      message.warning(t('storeOrders.detail.loadStoreOptionsFailed'))
     } finally {
       setStoresLoading(false)
     }

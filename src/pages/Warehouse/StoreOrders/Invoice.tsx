@@ -98,7 +98,16 @@ async function downloadInvoiceExcel(order: StoreOrderDetail, items: StoreOrderDe
   const url = URL.createObjectURL(blob)
   const link = document.createElement('a')
   link.href = url
-  link.download = buildDocumentFileName(t('warehouse.invoice.fileName'), storeName || order.storeCode, order.orderNo || order.orderGUID, 'xlsx')
+  link.download = buildDocumentFileName(
+    t('warehouse.invoice.fileName'),
+    storeName || order.storeCode,
+    order.orderNo || order.orderGUID,
+    'xlsx',
+    {
+      unknownStore: t('warehouse.invoice.unknownStore'),
+      unknownOrder: t('warehouse.invoice.unknownOrder'),
+    },
+  )
   document.body.appendChild(link)
   link.click()
   document.body.removeChild(link)
@@ -187,7 +196,19 @@ export default function StoreOrderInvoicePage() {
     try {
       await downloadElementAsPdf(
         printRootRef.current,
-        buildDocumentFileName(t('warehouse.invoice.fileName'), store?.storeName || order.storeCode, order.orderNo || order.orderGUID, 'pdf'),
+        buildDocumentFileName(
+          t('warehouse.invoice.fileName'),
+          store?.storeName || order.storeCode,
+          order.orderNo || order.orderGUID,
+          'pdf',
+          {
+            unknownStore: t('warehouse.invoice.unknownStore'),
+            unknownOrder: t('warehouse.invoice.unknownOrder'),
+          },
+        ),
+        {
+          createCanvasContextErrorMessage: t('warehouse.invoice.createPdfCanvasFailed'),
+        },
       )
     } catch (error) {
       console.error(error)

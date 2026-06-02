@@ -65,6 +65,33 @@ try {
     'HQ container translation should send container numbers in the request body',
   )
 
+  globalThis.fetch = (async () => new Response(JSON.stringify({
+    success: true,
+    data: {
+      totalCandidates: 9,
+      totalTranslated: 7,
+      totalSkipped: 1,
+      totalFailed: 1,
+      samples: { 大草莓: 'Large Strawberry' },
+    },
+  }), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' },
+  })) as typeof fetch
+
+  const camelCaseTranslation = await translateHqProductNamesByContainerNumber('CSGU7149907')
+  assertDeepEqual(
+    camelCaseTranslation,
+    {
+      TotalCandidates: 9,
+      TotalTranslated: 7,
+      TotalSkipped: 1,
+      TotalFailed: 1,
+      Samples: { 大草莓: 'Large Strawberry' },
+    },
+    'HQ container translation should normalize camelCase backend statistics',
+  )
+
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     capturedUrl = String(input)
     capturedInit = init

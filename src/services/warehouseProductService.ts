@@ -11,6 +11,7 @@ export interface DomesticProductNotInWarehouseItem {
   englishName?: string
   itemNumber: string
   barcode?: string
+  productImage?: string
   productType: number
   domesticPrice?: number
   oemPrice?: number

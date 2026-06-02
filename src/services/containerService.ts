@@ -17,6 +17,14 @@ import request from '../utils/request'
 
 const API_BASE = '/api/react/v1/containers'
 
+type RawHqTranslationResult = HqTranslationResult & {
+  totalCandidates?: number
+  totalTranslated?: number
+  totalSkipped?: number
+  totalFailed?: number
+  samples?: Record<string, string>
+}
+
 interface ContainerListApiResponse {
   success?: boolean
   message?: string
@@ -42,6 +50,16 @@ function addDays(date: Date, days: number) {
   const next = new Date(date)
   next.setDate(next.getDate() + days)
   return next
+}
+
+function normalizeHqTranslationResult(result: RawHqTranslationResult = {}): HqTranslationResult {
+  return {
+    TotalCandidates: result.TotalCandidates ?? result.totalCandidates,
+    TotalTranslated: result.TotalTranslated ?? result.totalTranslated,
+    TotalSkipped: result.TotalSkipped ?? result.totalSkipped,
+    TotalFailed: result.TotalFailed ?? result.totalFailed,
+    Samples: result.Samples ?? result.samples,
+  }
 }
 
 function toTimestamp(value?: string) {
@@ -220,7 +238,7 @@ export async function syncContainersFromHq(startDate?: string): Promise<SyncResu
 }
 
 export async function translateHqProductNamesByContainerNumber(containerNumber: string): Promise<HqTranslationResult> {
-  const response = await request<{ success?: boolean; message?: string; data?: HqTranslationResult }>(
+  const response = await request<{ success?: boolean; message?: string; data?: RawHqTranslationResult } & RawHqTranslationResult>(
     '/api/react/v1/hq-products/translate-names/by-container-number',
     {
       method: 'POST',
@@ -232,7 +250,7 @@ export async function translateHqProductNamesByContainerNumber(containerNumber: 
   )
 
   ensureSuccess(response.success, response.message, '翻译HQ数据失败')
-  return response.data ?? {}
+  return normalizeHqTranslationResult(response.data ?? response)
 }
 
 export async function pushContainersToHbSales(containerGuids: string[]): Promise<SyncResult> {

@@ -1,5 +1,3 @@
-import html2canvas from 'html2canvas'
-import jsPDF from 'jspdf'
 import type { StoreDto } from '../../../types/store'
 
 export interface StorePrintInfo {
@@ -10,33 +8,66 @@ export interface StorePrintInfo {
   contactEmail?: string
 }
 
-export function formatPrintDate(value?: string, withTime = true) {
+interface DocumentFileNameFallbackTexts {
+  unknownOrder: string
+  unknownStore: string
+}
+
+interface DownloadPdfOptions {
+  createCanvasContextErrorMessage?: string
+}
+
+export const PDF_IMAGE_FORMAT = 'JPEG'
+export const PDF_IMAGE_MIME_TYPE = 'image/jpeg'
+export const PDF_IMAGE_QUALITY = 0.95
+
+export interface PdfSlicePlanItem {
+  offsetY: number
+  height: number
+}
+
+function normalizePrintLocale(locale?: string) {
+  // 打印只需要当前需求中的中英文格式，其他语种先按中文兜底，避免输出不一致。
+  return locale?.toLowerCase().startsWith('en') ? 'en-US' : 'zh-CN'
+}
+
+export function formatPrintDate(value?: string, withTime = true, locale?: string) {
   const target = value ? new Date(value) : new Date()
   if (Number.isNaN(target.getTime())) {
     return value || '--'
   }
 
-  return withTime ? target.toLocaleString('zh-CN', { hour12: false }) : target.toLocaleDateString('zh-CN')
+  const printLocale = normalizePrintLocale(locale)
+  return withTime ? target.toLocaleString(printLocale, { hour12: false }) : target.toLocaleDateString(printLocale)
 }
 
 export function formatCurrency(value?: number) {
   return `$${Number(value ?? 0).toFixed(2)}`
 }
 
-export function sanitizeFileNamePart(value?: string) {
+export function sanitizeFileNamePart(value: string) {
   const normalized = (value || '')
     .replace(/[\\/:*?"<>|]/g, '_')
     .replace(/\s+/g, ' ')
     .trim()
     .replace(/[\s_]+/g, '_')
 
-  return normalized || '未知分店'
+  return normalized
 }
 
-export function buildDocumentFileName(prefix: string, storeName: string | undefined, orderNo: string | undefined, extension: string) {
+export function buildDocumentFileName(
+  prefix: string,
+  storeName: string | undefined,
+  orderNo: string | undefined,
+  extension: string,
+  fallbackTexts: DocumentFileNameFallbackTexts,
+) {
+  // 文件名中的未知文案交给调用方注入翻译，工具函数只负责清洗与拼接。
+  const unknownStoreText = fallbackTexts.unknownStore
+  const unknownOrderText = fallbackTexts.unknownOrder
   const safePrefix = sanitizeFileNamePart(prefix)
-  const safeStoreName = sanitizeFileNamePart(storeName)
-  const safeOrderNo = sanitizeFileNamePart(orderNo || '未知订单')
+  const safeStoreName = sanitizeFileNamePart(storeName || unknownStoreText)
+  const safeOrderNo = sanitizeFileNamePart(orderNo || unknownOrderText)
   return `${safePrefix}_${safeStoreName}_${safeOrderNo}.${extension}`
 }
 
@@ -50,7 +81,53 @@ export function resolveStorePrintInfo(storeCode?: string, store?: StoreDto | nul
   }
 }
 
-export async function downloadElementAsPdf(element: HTMLElement, fileName: string) {
+export function buildPdfSlicePlan(imageHeight: number, pageHeightInPx: number): PdfSlicePlanItem[] {
+  const normalizedImageHeight = Math.max(0, Math.floor(imageHeight))
+  if (!Number.isFinite(normalizedImageHeight) || normalizedImageHeight <= 0) {
+    return []
+  }
+
+  // 切片高度必须是正整数像素，避免浮点高度造成空切片和损坏的图片数据。
+  const normalizedPageHeight = Math.max(1, Math.floor(pageHeightInPx))
+  const slices: PdfSlicePlanItem[] = []
+
+  let offsetY = 0
+  while (offsetY < normalizedImageHeight) {
+    const height = Math.min(normalizedPageHeight, normalizedImageHeight - offsetY)
+    slices.push({ offsetY, height })
+    offsetY += height
+  }
+
+  return slices
+}
+
+export function paintPdfSlice(
+  context: CanvasRenderingContext2D,
+  sourceCanvas: HTMLCanvasElement,
+  imageWidth: number,
+  slice: PdfSlicePlanItem,
+) {
+  context.fillStyle = '#ffffff'
+  context.fillRect(0, 0, imageWidth, slice.height)
+  context.drawImage(
+    sourceCanvas,
+    0,
+    slice.offsetY,
+    imageWidth,
+    slice.height,
+    0,
+    0,
+    imageWidth,
+    slice.height,
+  )
+}
+
+export function getPdfSliceImageData(sliceCanvas: HTMLCanvasElement) {
+  return sliceCanvas.toDataURL(PDF_IMAGE_MIME_TYPE, PDF_IMAGE_QUALITY)
+}
+
+export async function downloadElementAsPdf(element: HTMLElement, fileName: string, options?: DownloadPdfOptions) {
+  const [{ default: html2canvas }, { default: jsPDF }] = await Promise.all([import('html2canvas'), import('jspdf')])
   const canvas = await html2canvas(element, {
     scale: 2,
     useCORS: true,
@@ -63,47 +140,29 @@ export async function downloadElementAsPdf(element: HTMLElement, fileName: strin
   const pdfHeight = 297
   const imageWidth = canvas.width
   const imageHeight = canvas.height
-  const pageHeightInPx = (pdfHeight * imageWidth) / pdfWidth
+  const slicePlan = buildPdfSlicePlan(imageHeight, (pdfHeight * imageWidth) / pdfWidth)
 
-  let renderedHeight = 0
-  let pageIndex = 0
-
-  while (renderedHeight < imageHeight) {
-    const currentSliceHeight = Math.min(pageHeightInPx, imageHeight - renderedHeight)
+  slicePlan.forEach((slice, pageIndex) => {
     const sliceCanvas = document.createElement('canvas')
     sliceCanvas.width = imageWidth
-    sliceCanvas.height = currentSliceHeight
+    sliceCanvas.height = slice.height
 
     const context = sliceCanvas.getContext('2d')
     if (!context) {
-      throw new Error('创建 PDF 临时画布失败')
+      // 这里允许页面传入国际化错误文案，避免工具层写死提示语言。
+      throw new Error(options?.createCanvasContextErrorMessage || '创建 PDF 临时画布失败')
     }
 
-    context.fillStyle = '#ffffff'
-    context.fillRect(0, 0, sliceCanvas.width, sliceCanvas.height)
-    context.drawImage(
-      canvas,
-      0,
-      renderedHeight,
-      imageWidth,
-      currentSliceHeight,
-      0,
-      0,
-      imageWidth,
-      currentSliceHeight,
-    )
+    paintPdfSlice(context, canvas, imageWidth, slice)
 
-    const imageData = sliceCanvas.toDataURL('image/png')
+    const imageData = getPdfSliceImageData(sliceCanvas)
     if (pageIndex > 0) {
       pdf.addPage()
     }
 
-    const imageHeightInPdf = (currentSliceHeight * pdfWidth) / imageWidth
-    pdf.addImage(imageData, 'PNG', 0, 0, pdfWidth, imageHeightInPdf)
-
-    renderedHeight += currentSliceHeight
-    pageIndex += 1
-  }
+    const imageHeightInPdf = (slice.height * pdfWidth) / imageWidth
+    pdf.addImage(imageData, PDF_IMAGE_FORMAT, 0, 0, pdfWidth, imageHeightInPdf)
+  })
 
   pdf.save(fileName)
 }

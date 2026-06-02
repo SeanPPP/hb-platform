@@ -1,6 +1,15 @@
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
-import { ensureHqProducts, syncInvoicesFromHq, updateToStorePrices } from '../../../services/localSupplierInvoiceService'
+import { ensureHqProducts, syncInvoicesFromHq, updateHqProducts, updateToStorePrices } from '../../../services/localSupplierInvoiceService'
+import {
+  filterInvoiceDetails,
+  getBarcodeStatusFilter,
+  getDetailStatusStats,
+  getProductStatusFilter,
+  toggleStatusFilter,
+} from './InvoiceEdit/statusFilters'
+import { parsePasteText } from './InvoiceEdit/pasteDetails'
+import type { LocalSupplierInvoiceItemDto } from '../../../types/localSupplierInvoice'
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) {
@@ -95,7 +104,12 @@ async function main() {
     assert(typeSource.includes('EnsureHqProductsResult'), '应声明 EnsureHqProductsResult')
     assert(typeSource.includes('hqPurchasePricesUpdated: number'), '商品同步结果应包含 HQ 分店进货价更新计数')
     assert(typeSource.includes('errors: EnsureHqProductError[]'), '商品同步结果应包含逐行错误列表')
-    assert(typeSource.includes('updateHqProduct?: boolean'), '更新到分店请求应支持手动勾选同步 HQ')
+    assert(!typeSource.includes('updateHqProduct?: boolean'), '更新到分店请求不应再携带同步 HQ 开关')
+    assert(typeSource.includes('UpdateHqProductsRequest'), '应声明字段级更新 HQ 请求类型')
+    assert(typeSource.includes('updateFields: UpdateToStorePricesFields'), '字段级更新 HQ 请求应复用字段选择契约')
+    assert(typeSource.includes('UpdateHqProductsResult'), '应声明字段级更新 HQ 结果类型')
+    assert(typeSource.includes('hqRetailPricesUpdated?: number'), '字段级更新 HQ 结果应包含零售价更新计数')
+    assert(typeSource.includes('hqDiscountRatesUpdated?: number'), '字段级更新 HQ 结果应包含折扣率更新计数')
   })
   if (ensureHqTypeFailure) failures.push(ensureHqTypeFailure)
 
@@ -114,31 +128,144 @@ async function main() {
   })
   if (pagePayloadFailure) failures.push(pagePayloadFailure)
 
-  const editPageButtonFailure = await runTest('编辑页应使用专用权限显示同步商品到HQ按钮', () => {
+  const editPageButtonFailure = await runTest('编辑页应使用专用权限显示更新HQ商品按钮', () => {
     assert(editPageSource.includes('canWriteLocalPurchaseToHq'), '编辑页应使用可编辑本地进货 + PushToHq 的组合权限控制写 HQ 入口')
-    assert(editPageSource.includes("t('posAdmin.invoiceDetail.syncProductsToHqBtn', '同步商品到HQ')"), '编辑页应显示同步商品到HQ按钮文案')
-    assert(editPageSource.includes('handleEnsureHqProducts'), '编辑页应实现同步商品到HQ处理函数')
-    assert(editPageSource.includes('selectedRowKeys.length > 0 ? selectedRowKeys.map(String) : details.map((item) => item.detailGUID)'), '编辑页应实现选中优先、未选中则全部明细')
-    assert(editPageSource.includes('ensureHqProducts(invoiceGuid'), '编辑页应调用商品级 ensureHqProducts 接口，不复用进货单推送接口')
-    assert(editPageSource.includes('if (ensuringHqProducts) return'), '同步商品到HQ应阻止重复确认框和重复请求')
-    assert(editPageSource.includes('!_invoice?.storeCode'), '同步商品到HQ应要求进货单分店存在')
-    assert(editPageSource.includes('isStoreCodeInManagedScope(_invoice.storeCode, managedStoreCodes)'), '同步商品到HQ应复核进货单分店范围')
-    assert(editPageSource.includes('ensureHqIdempotencyKeyRef.current'), '同步商品到HQ应在请求周期内复用稳定 idempotencyKey')
+    assert(editPageSource.includes("t('posAdmin.invoiceDetail.updateHqProductsBtn', '更新HQ商品')"), '编辑页应显示更新HQ商品按钮文案')
+    assert(editPageSource.includes('setHqUpdateVisible(true)'), '更新HQ商品按钮应打开独立弹窗')
+    assert(editPageSource.includes('disabled={hqUpdateLoading || !selectedRowKeys.length}'), '更新HQ商品按钮必须要求已选择明细')
+    assert(editPageSource.includes('handleUpdateHqProducts'), '编辑页应实现字段级更新HQ处理函数')
+    assert(editPageSource.includes('updateHqProducts(invoiceGuid'), '编辑页应调用字段级更新 HQ 专用接口')
+    assert(editPageSource.includes('if (hqUpdateLoading) return'), '更新HQ商品应阻止重复请求')
+    assert(editPageSource.includes('hqUpdateIdempotencyKeyRef.current'), '更新HQ商品应在请求周期内复用稳定 idempotencyKey')
   })
   if (editPageButtonFailure) failures.push(editPageButtonFailure)
 
-  const updateToStoreHqFailure = await runTest('更新到分店应默认不勾选并手动传递 updateHqProduct', () => {
-    assert(editPageSource.includes('name="updateHqProduct"'), '更新到分店弹窗应包含 updateHqProduct 复选框')
-    assert(editPageSource.includes("storePriceForm.setFieldsValue({ updateHqProduct: false })"), '打开弹窗时应显式默认不勾选同步 HQ')
-    assert(editPageSource.includes('updateHqProduct: values.updateHqProduct ?? false'), '提交更新到分店时应传递手动勾选值')
-    assert(editPageSource.includes('confirmUpdateToStorePrices'), '勾选同步 HQ 时应二次确认')
-    assert(editPageSource.includes('getUpdateToStorePricesFailure'), '更新到分店失败时应解析后端统计 payload')
+  const updateToStoreHqFailure = await runTest('更新到分店应移除同步HQ耦合并保留独立HQ弹窗', () => {
+    assert(!editPageSource.includes('name="updateHqProduct"'), '更新到分店弹窗不应再包含 updateHqProduct 复选框')
+    assert(!editPageSource.includes('confirmUpdateToStorePrices'), '更新到分店不应再包含同时更新 HQ 的二次确认')
+    assert(!editPageSource.includes('showUpdateToStoreHqResult'), '更新到分店不应再展示 HQ 混合结果')
+    assert(!editPageSource.includes('updateHqProduct:'), '更新到分店请求不应再传递 updateHqProduct')
+    assert(editPageSource.includes('hqUpdateForm.validateFields()'), '更新HQ商品应校验独立弹窗表单')
+    assert(editPageSource.includes('name="targetStoreCodes"'), '更新HQ商品弹窗应选择目标分店')
+    assert(editPageSource.includes("t('posAdmin.invoiceDetail.updateHqProductsTitle'"), '更新HQ商品应有独立弹窗标题')
+    assert(editPageSource.includes("t('posAdmin.invoiceDetail.updateHqProductsResultTitle'"), '更新HQ商品应有独立结果弹窗')
   })
   if (updateToStoreHqFailure) failures.push(updateToStoreHqFailure)
+
+  const editPageStatsFailure = await runTest('编辑页应提供状态统计栏并支持点击叠加过滤', () => {
+    assert(editPageSource.includes("useState<StatusFilterValue<ProductStatusFilter>>('all')"), '编辑页应维护商品状态过滤状态')
+    assert(editPageSource.includes("useState<StatusFilterValue<BarcodeStatusFilter>>('all')"), '编辑页应维护条码状态过滤状态')
+    assert(editPageSource.includes('getDetailStatusStats(details)'), '编辑页应基于全部 details 计算状态统计')
+    assert(editPageSource.includes('filterInvoiceDetails(details'), '编辑页过滤链应委托行为级纯函数')
+    assert(editPageSource.includes('[details, searchText, priceFilter, productStatusFilter, barcodeStatusFilter]'), '过滤结果应依赖搜索、涨跌和状态过滤，按 AND 叠加')
+    assert(editPageSource.includes("toggleStatusFilter(productStatusFilter, 'exists')"), '再次点击同一商品状态标签应取消过滤')
+    assert(editPageSource.includes("toggleStatusFilter(barcodeStatusFilter, 'normal')"), '再次点击同一条码状态标签应取消过滤')
+    assert(editPageSource.includes("t('posAdmin.invoiceDetail.statusStatsTitle', '状态统计')"), '页面应显示状态统计栏标题')
+    assert(editPageSource.includes("t('posAdmin.invoiceDetail.statusStatsAll', '全部 {{count}}'"), '页面应提供全部状态标签以清除状态过滤')
+    assert(editPageSource.includes("t('posAdmin.invoiceDetail.productStatusLabel', '商品状态')"), '页面应显示商品状态分组标题')
+    assert(editPageSource.includes("t('posAdmin.invoiceDetail.barcodeStatusLabel', '条码状态')"), '页面应显示条码状态分组标题')
+    assert(editPageSource.includes('statusStatsTagColors'), '状态统计标签应使用显式语义色配置')
+    assert(editPageSource.includes("product: { all: 'blue', notDetected: 'purple', exists: 'green', notExists: 'red' }"), '商品状态标签应使用不同颜色')
+    assert(editPageSource.includes("barcode: { all: 'geekblue', notDetected: 'purple', normal: 'cyan', noMatch: 'volcano', multiMatch: 'orange' }"), '条码状态标签应使用不同颜色')
+    assert(editPageSource.includes('getStatusStatsTagStyle('), '状态统计标签应使用独立选中态样式')
+    assert(editPageSource.includes('/* 状态统计栏：数量按全部明细计算，点击后与搜索和涨跌筛选叠加。 */'), '状态统计栏应位于明细卡片内容区、工具栏按钮上方')
+    assert(editPageSource.includes('productNameCellStyle'), '商品名称列应使用专用换行样式')
+    assert(editPageSource.includes('WebkitLineClamp: 2'), '商品名称列应最多自动换行 2 行')
+  })
+  if (editPageStatsFailure) failures.push(editPageStatsFailure)
+
+  const editPageStatsBehaviorFailure = await runTest('状态统计和过滤应按真实明细行为计算', () => {
+    const details: LocalSupplierInvoiceItemDto[] = [
+      {
+        detailGUID: 'not-detected',
+        itemNumber: 'CARD-001',
+        barcode: '111',
+        productName: 'Birthday Card',
+        lastPurchasePrice: 1,
+        purchasePrice: 2,
+      },
+      {
+        detailGUID: 'exists-normal',
+        itemNumber: 'BAG-002',
+        barcode: '222',
+        productName: 'Gift Bag',
+        storeProductCode: 'STORE-002',
+        existingProductCount: 2,
+        barcodeStatus: 1,
+        barcodeMatchCount: 1,
+        lastPurchasePrice: 5,
+        purchasePrice: 4,
+      },
+      {
+        detailGUID: 'not-exists-no-match',
+        itemNumber: 'WRAP-003',
+        barcode: '333',
+        productName: 'Wrap',
+        existingProductCount: 0,
+        barcodeStatus: 2,
+        barcodeMatchCount: 0,
+        lastPurchasePrice: 1,
+        purchasePrice: 1.5,
+      },
+      {
+        detailGUID: 'exists-multi-match',
+        itemNumber: 'CARD-004',
+        barcode: '444',
+        productName: 'Birthday Card Multi',
+        existingProductCount: 1,
+        barcodeStatus: 2,
+        barcodeMatchCount: 3,
+        lastPurchasePrice: 2,
+        purchasePrice: 3,
+      },
+    ]
+
+    assertEqual(getProductStatusFilter(details[0]), 'notDetected', '未检测商品状态应来自空 existingProductCount')
+    assertEqual(getProductStatusFilter(details[1]), 'exists', '已存在商品状态应来自 existingProductCount > 0')
+    assertEqual(getProductStatusFilter(details[2]), 'notExists', '不存在商品状态应来自 existingProductCount = 0')
+    assertEqual(getBarcodeStatusFilter(details[0]), 'notDetected', '未检测条码状态应来自空 barcodeStatus')
+    assertEqual(getBarcodeStatusFilter(details[1]), 'normal', '正常条码状态应来自 barcodeStatus = 1')
+    assertEqual(getBarcodeStatusFilter(details[2]), 'noMatch', '无匹配条码状态应来自异常且匹配数为 0')
+    assertEqual(getBarcodeStatusFilter(details[3]), 'multiMatch', '多匹配条码状态应来自异常且匹配数大于 0')
+
+    assertDeepEqual(
+      getDetailStatusStats(details),
+      {
+        product: { notDetected: 1, exists: 2, notExists: 1 },
+        barcode: { notDetected: 1, normal: 1, noMatch: 1, multiMatch: 1 },
+      },
+      '状态统计应基于全部明细计算',
+    )
+
+    const filtered = filterInvoiceDetails(details, {
+      searchText: 'card',
+      priceFilter: 'up',
+      productStatusFilter: 'exists',
+      barcodeStatusFilter: 'multiMatch',
+    })
+    assertDeepEqual(filtered.map((item) => item.detailGUID), ['exists-multi-match'], '搜索、涨价、商品状态、条码状态应按 AND 叠加')
+    assertEqual(getDetailStatusStats(filtered).product.exists, 1, '过滤结果可单独统计，但页面全量统计不应依赖过滤结果')
+    assertEqual(toggleStatusFilter('exists', 'exists'), 'all', '再次点击同一商品状态应取消过滤')
+    assertEqual(toggleStatusFilter('all', 'normal'), 'normal', '从全部点击某个条码状态应启用过滤')
+  })
+  if (editPageStatsBehaviorFailure) failures.push(editPageStatsBehaviorFailure)
+
+  const pastePriceParseFailure = await runTest('粘贴解析应识别带货币符号的本次进货价', () => {
+    const [row] = parsePasteText('WEW1272\t9313559661518\tFolded Wrap\t15\tA$1.25\t$3.50\tAUD 2.99')
+
+    assertEqual(row.itemNumber, 'WEW1272', '应保留货号')
+    assertEqual(row.quantity, 15, '应解析数量')
+    assertEqual(row.purchasePrice, 1.25, '应解析带 A$ 的本次进货价')
+    assertEqual(row.newAutoRetailPrice, 3.5, '应解析带 $ 的新自动零售价')
+    assertEqual(row.retailPrice, 2.99, '应解析带 AUD 的零售价')
+  })
+  if (pastePriceParseFailure) failures.push(pastePriceParseFailure)
 
   const serviceContractFailure = await runTest('服务层应显式识别业务失败并保留 payload', () => {
     assert(serviceSource.includes('ensureHqProducts('), '服务层应导出 ensureHqProducts')
     assert(serviceSource.includes('/details/ensure-hq-products'), '服务层应调用商品级同步到 HQ 接口')
+    assert(serviceSource.includes('updateHqProducts('), '服务层应导出字段级更新 HQ 接口')
+    assert(serviceSource.includes('/details/update-hq-products'), '服务层应调用字段级更新 HQ 专用接口')
     assert(serviceSource.includes('assertApiSuccess'), '服务层应复用业务失败检查 helper')
     assert(serviceSource.includes("response.success === false || response.isSuccess === false"), '服务层应识别 success false')
   })
@@ -275,7 +402,7 @@ async function main() {
   })
   if (ensureHqServiceSuccessFailure) failures.push(ensureHqServiceSuccessFailure)
 
-  const updateToStorePayloadFailure = await runTest('updateToStorePrices 应传递 updateHqProduct 并保留结果', async () => {
+  const updateToStorePayloadFailure = await runTest('updateToStorePrices 不应传递 updateHqProduct', async () => {
     globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
       capturedUrl = String(input)
       capturedInit = init
@@ -285,9 +412,6 @@ async function main() {
           inserted: 0,
           updated: 1,
           failed: 0,
-          hqPurchasePricesUpdated: 1,
-          hqFailed: 0,
-          hqErrors: [],
         },
       }), {
         status: 200,
@@ -306,7 +430,6 @@ async function main() {
         updateIsSpecialProduct: false,
         updateDiscountRate: false,
       },
-      updateHqProduct: true,
     })
 
     assertEqual(capturedUrl, '/api/react/v1/local-supplier-invoices/update-to-store-prices', '更新到分店接口地址应保持不变')
@@ -323,25 +446,82 @@ async function main() {
           updateIsSpecialProduct: false,
           updateDiscountRate: false,
         },
-        updateHqProduct: true,
       },
-      '更新到分店应保留 updateHqProduct payload',
+      '更新到分店不应携带 updateHqProduct payload',
     )
-    assertEqual(result.hqPurchasePricesUpdated, 1, '更新到分店结果应保留 HQ 更新统计')
+    assertEqual(result.updated, 1, '更新到分店结果应保留分店更新统计')
   })
   if (updateToStorePayloadFailure) failures.push(updateToStorePayloadFailure)
 
-  const updateToStoreFailurePayload = await runTest('updateToStorePrices 业务失败应保留 HQ 错误 payload', async () => {
+  const updateHqProductsPayloadFailure = await runTest('updateHqProducts 应调用字段级更新 HQ 专用接口并保留 payload', async () => {
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      capturedUrl = String(input)
+      capturedInit = init
+      return new Response(JSON.stringify({
+        success: true,
+        data: {
+          total: 2,
+          updated: 2,
+          failed: 0,
+          hqPurchasePricesUpdated: 2,
+          hqRetailPricesUpdated: 2,
+          hqAutoPricingUpdated: 0,
+          hqSpecialProductsUpdated: 0,
+          hqDiscountRatesUpdated: 0,
+          errors: [],
+        },
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }) as typeof fetch
+
+    const result = await updateHqProducts('invoice-1', {
+      detailGuids: ['detail-1', 'detail-2'],
+      targetStoreCodes: ['1033', '1005'],
+      updateFields: {
+        updatePurchasePrice: true,
+        updateRetailPrice: true,
+        updateIsAutoPricing: false,
+        updateIsSpecialProduct: false,
+        updateDiscountRate: false,
+      },
+      idempotencyKey: 'hq-update-1',
+    })
+
+    assertEqual(capturedUrl, '/api/react/v1/local-supplier-invoices/invoice-1/details/update-hq-products', '应调用字段级更新 HQ 专用接口')
+    assertEqual(capturedInit?.method, 'POST', '字段级更新 HQ 应使用 POST')
+    assertDeepEqual(
+      JSON.parse(String(capturedInit?.body)),
+      {
+        detailGuids: ['detail-1', 'detail-2'],
+        targetStoreCodes: ['1033', '1005'],
+        updateFields: {
+          updatePurchasePrice: true,
+          updateRetailPrice: true,
+          updateIsAutoPricing: false,
+          updateIsSpecialProduct: false,
+          updateDiscountRate: false,
+        },
+        idempotencyKey: 'hq-update-1',
+      },
+      '字段级更新 HQ 应保留请求 payload',
+    )
+    assertEqual(result.hqRetailPricesUpdated, 2, '字段级更新 HQ 应保留零售价更新统计')
+  })
+  if (updateHqProductsPayloadFailure) failures.push(updateHqProductsPayloadFailure)
+
+  const updateHqProductsFailurePayload = await runTest('updateHqProducts 业务失败应保留 HQ 错误 payload', async () => {
     globalThis.fetch = (async () => new Response(JSON.stringify({
       success: false,
-      message: '更新到分店部分失败',
+      message: '更新HQ商品部分失败',
       data: {
-        inserted: 0,
+        total: 2,
         updated: 1,
         failed: 1,
         hqPurchasePricesUpdated: 1,
-        hqFailed: 1,
-        hqErrors: [{ detailGuid: 'detail-2', storeCode: '1033', message: '条码多匹配' }],
+        hqRetailPricesUpdated: 0,
+        errors: [{ detailGuid: 'detail-2', storeCode: '1033', message: '条码多匹配' }],
       },
     }), {
       status: 200,
@@ -349,8 +529,7 @@ async function main() {
     })) as typeof fetch
 
     try {
-      await updateToStorePrices({
-        invoiceGuid: 'invoice-1',
+      await updateHqProducts('invoice-1', {
         detailGuids: ['detail-1', 'detail-2'],
         targetStoreCodes: ['1033'],
         updateFields: {
@@ -360,16 +539,15 @@ async function main() {
           updateIsSpecialProduct: false,
           updateDiscountRate: false,
         },
-        updateHqProduct: true,
       })
-      throw new Error('Expected updateToStorePrices to reject')
+      throw new Error('Expected updateHqProducts to reject')
     } catch (error: any) {
-      assertEqual(error.message, '更新到分店部分失败', '业务失败应透传后端消息')
-      assertEqual(error.payload?.data?.hqFailed, 1, '业务失败应保留 HQ 失败统计')
-      assertEqual(error.payload?.data?.hqErrors?.[0]?.message, '条码多匹配', '业务失败应保留 HQ 逐行错误')
+      assertEqual(error.message, '更新HQ商品部分失败', '业务失败应透传后端消息')
+      assertEqual(error.payload?.data?.failed, 1, '业务失败应保留 HQ 失败统计')
+      assertEqual(error.payload?.data?.errors?.[0]?.message, '条码多匹配', '业务失败应保留 HQ 逐行错误')
     }
   })
-  if (updateToStoreFailurePayload) failures.push(updateToStoreFailurePayload)
+  if (updateHqProductsFailurePayload) failures.push(updateHqProductsFailurePayload)
 
   const ensureHqServiceFailure = await runTest('ensureHqProducts 遇到业务失败应抛出后端消息并保留 payload', async () => {
     globalThis.fetch = (async () => new Response(JSON.stringify({

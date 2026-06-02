@@ -5,9 +5,6 @@
 }
 
 .store-order-print-toolbar {
-  position: sticky;
-  top: 16px;
-  z-index: 10;
   display: flex;
   justify-content: flex-end;
   gap: 12px;

@@ -139,7 +139,6 @@ export interface UpdateToStorePricesRequest {
   detailGuids: string[]
   targetStoreCodes: string[]
   updateFields: UpdateToStorePricesFields
-  updateHqProduct?: boolean
 }
 
 export interface BatchResultDto {
@@ -148,15 +147,7 @@ export interface BatchResultDto {
   failed: number
 }
 
-export interface UpdateToStorePricesResult extends BatchResultDto {
-  hqExisting?: number
-  hbwebCreated?: number
-  hqCreated?: number
-  hqSynced?: number
-  hqPurchasePricesUpdated?: number
-  hqFailed?: number
-  hqErrors?: EnsureHqProductError[]
-}
+export type UpdateToStorePricesResult = BatchResultDto
 
 export interface EnsureHqProductError {
   detailGuid: string
@@ -179,6 +170,29 @@ export interface EnsureHqProductsResult {
   hqPurchasePricesUpdated: number
   skipped: number
   failed: number
+  errors: EnsureHqProductError[]
+}
+
+export interface UpdateHqProductsRequest {
+  detailGuids: string[]
+  targetStoreCodes: string[]
+  updateFields: UpdateToStorePricesFields
+  idempotencyKey?: string
+}
+
+export interface UpdateHqProductsResult {
+  total: number
+  updated: number
+  failed: number
+  hqExisting?: number
+  hbwebCreated?: number
+  hqCreated?: number
+  hqSynced?: number
+  hqPurchasePricesUpdated?: number
+  hqRetailPricesUpdated?: number
+  hqAutoPricingUpdated?: number
+  hqSpecialProductsUpdated?: number
+  hqDiscountRatesUpdated?: number
   errors: EnsureHqProductError[]
 }
 

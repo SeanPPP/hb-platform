@@ -1,0 +1,28 @@
+.container-detail-table .ant-table-thead > tr > th,
+.container-detail-table .ant-table-tbody > tr > td {
+  vertical-align: middle;
+}
+
+.container-detail-table .ant-table-thead > tr > th {
+  line-height: 1.35;
+  white-space: nowrap;
+}
+
+.container-detail-table .ant-table-tbody > tr > td {
+  line-height: 1.35;
+}
+
+.container-detail-table .ant-table-tbody > tr > td .ant-space {
+  align-items: center;
+}
+
+.container-detail-table .ant-table-tbody > tr > td .ant-input,
+.container-detail-table .ant-table-tbody > tr > td .ant-input-number,
+.container-detail-table .ant-table-tbody > tr > td .ant-tag {
+  vertical-align: middle;
+}
+
+.container-detail-table .ant-table-tbody > tr > td .ant-image {
+  display: inline-flex;
+  align-items: center;
+}

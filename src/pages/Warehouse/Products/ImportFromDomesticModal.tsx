@@ -1,5 +1,5 @@
 import { CheckCircleOutlined } from '@ant-design/icons'
-import { Button, Checkbox, Input, InputNumber, Modal, Result, Space, Table, Tag, message } from 'antd'
+import { Button, Checkbox, Image, Input, InputNumber, Modal, Result, Space, Table, Tag, message } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -104,6 +104,21 @@ export default function ImportFromDomesticModal({
 
   const columns = useMemo<ColumnsType<DomesticProductNotInWarehouseItem>>(
     () => [
+      {
+        title: t('warehouse.importDomestic.image', '图片'),
+        dataIndex: 'productImage',
+        width: 90,
+        render: (value: string | undefined, record) => (
+          <Image
+            src={value}
+            alt={record.productName}
+            width={44}
+            height={44}
+            style={{ borderRadius: 4, objectFit: 'cover' }}
+            fallback="data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs="
+          />
+        ),
+      },
       {
         title: t('productImport.hbProductNoCol', '货号'),
         dataIndex: 'itemNumber',
@@ -388,7 +403,7 @@ export default function ImportFromDomesticModal({
             showSizeChanger: true,
             onChange: (nextPage, nextPageSize) => void loadItems({ page: nextPage, pageSize: nextPageSize }),
           }}
-          scroll={{ x: 1250, y: 520 }}
+          scroll={{ x: 1340, y: 520 }}
         />
       </Space>
     </Modal>

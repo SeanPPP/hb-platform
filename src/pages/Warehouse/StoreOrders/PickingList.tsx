@@ -1,5 +1,6 @@
-import { DownloadOutlined, PrinterOutlined, RollbackOutlined } from '@ant-design/icons'
+import { DownloadOutlined, FileExcelOutlined, PrinterOutlined, RollbackOutlined } from '@ant-design/icons'
 import { Button, Empty, Space, Spin, message } from 'antd'
+import ExcelJS from 'exceljs'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useNavigate } from 'react-router-dom'
@@ -11,21 +12,8 @@ import type { StoreDto } from '../../../types/store'
 import type { StoreOrderDetail } from '../../../types/storeOrder'
 import { useDynamicTabTitle } from '../../../hooks/useDynamicTabTitle'
 import { buildDocumentFileName, downloadElementAsPdf, formatCurrency, formatPrintDate } from './printUtils'
+import { buildPickingListExcelData, formatInnerPackCount } from './pickingListLogic'
 import './print.css'
-
-function getInnerPack(orderQty: number, sendQty: number, minQty: number) {
-  if (!minQty) {
-    return '-'
-  }
-
-  const baseQty = orderQty > 0 ? orderQty : sendQty
-  if (!baseQty) {
-    return '-'
-  }
-
-  const packs = baseQty / minQty
-  return Number.isInteger(packs) ? `${packs} pk` : `${packs.toFixed(1)} pk`
-}
 
 function formatVolume(value?: number) {
   if (value === undefined || value === null) {
@@ -36,7 +24,7 @@ function formatVolume(value?: number) {
 }
 
 export default function PickingListPage() {
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
   const route = useStableRouteContext()
   const id = route?.params.id || ''
   const navigate = useNavigate()
@@ -44,8 +32,11 @@ export default function PickingListPage() {
   const [loading, setLoading] = useState(false)
   const [printing, setPrinting] = useState(false)
   const [downloading, setDownloading] = useState(false)
+  const [exportingExcel, setExportingExcel] = useState(false)
   const [order, setOrder] = useState<StoreOrderDetail | null>(null)
   const [store, setStore] = useState<StoreDto | null>(null)
+  // 打印页日期格式跟随当前语言，但只限定本次需求中的中英文区域设置。
+  const printLocale = i18n.resolvedLanguage?.toLowerCase().startsWith('en') ? 'en-US' : 'zh-CN'
 
   useDynamicTabTitle(
     order?.orderNo
@@ -174,13 +165,141 @@ export default function PickingListPage() {
       await handleBeforePrint()
       await downloadElementAsPdf(
         printRootRef.current,
-        buildDocumentFileName(t('warehouse.pickingList.fileName'), store?.storeName || order.storeCode, order.orderNo || order.orderGUID, 'pdf'),
+        buildDocumentFileName(
+          t('warehouse.pickingList.fileName'),
+          store?.storeName || order.storeCode,
+          order.orderNo || order.orderGUID,
+          'pdf',
+          {
+            unknownStore: t('warehouse.pickingList.unknownStore'),
+            unknownOrder: t('warehouse.pickingList.unknownOrder'),
+          },
+        ),
+        {
+          createCanvasContextErrorMessage: t('warehouse.pickingList.createPdfCanvasFailed'),
+        },
       )
     } catch (error) {
       console.error(error)
       message.error(error instanceof Error ? error.message : t('warehouse.pickingList.downloadPdfFailed'))
     } finally {
       setDownloading(false)
+    }
+  }
+
+  const handleExportExcel = async () => {
+    if (!order) {
+      return
+    }
+
+    setExportingExcel(true)
+    try {
+      const workbook = new ExcelJS.Workbook()
+      const excelData = buildPickingListExcelData(
+        order,
+        sortedItems,
+        {
+          sheetName: t('warehouse.pickingList.excel.sheetName'),
+          orderNoLabel: t('warehouse.pickingList.excel.orderNo'),
+          storeLabel: t('warehouse.pickingList.excel.store'),
+          orderDateLabel: t('warehouse.pickingList.excel.orderDate'),
+          printTimeLabel: t('warehouse.pickingList.excel.printTime'),
+          remarksLabel: t('warehouse.pickingList.excel.remarks'),
+          totalSKULabel: t('warehouse.pickingList.excel.totalSKU'),
+          totalOrderQtyLabel: t('warehouse.pickingList.excel.totalOrderQty'),
+          totalShipQtyLabel: t('warehouse.pickingList.excel.totalShipQty'),
+          totalOrderVolumeLabel: t('warehouse.pickingList.excel.totalOrderVolume'),
+          detailHeaders: {
+            index: '#',
+            itemNumber: t('column.itemNumber'),
+            location: t('column.location'),
+            productName: t('column.productName'),
+            importPrice: t('column.importPrice'),
+            rrp: t('column.rrp'),
+            innerPackCount: t('column.innerPackCount'),
+            orderQuantity: t('column.orderQuantity'),
+            allocQuantity: t('column.allocQuantity'),
+          },
+        },
+        {
+          orderNoText: orderNoText,
+          storeText: displayStoreText,
+          orderDateText: formatPrintDate(order.orderDate, false, printLocale),
+          printTimeText: formatPrintDate(undefined, true, printLocale),
+          totalOrderVolumeText: formatVolume(totalOrderVolume),
+        },
+      )
+
+      const worksheet = workbook.addWorksheet(excelData.sheetName)
+      worksheet.columns = [
+        { width: 8 },
+        { width: 18 },
+        { width: 14 },
+        { width: 32 },
+        { width: 14 },
+        { width: 14 },
+        { width: 16 },
+        { width: 14 },
+        { width: 14 },
+      ]
+
+      excelData.overviewRows.forEach(([label, value]) => {
+        const row = worksheet.addRow([label, value])
+        row.getCell(1).font = { bold: true }
+      })
+
+      worksheet.addRow([])
+
+      const detailHeaderRow = worksheet.addRow(excelData.detailHeader)
+      detailHeaderRow.font = { bold: true }
+
+      excelData.detailRows.forEach((row) => {
+        worksheet.addRow(row)
+      })
+
+      if (excelData.remarksRow || excelData.totalRows.length > 0) {
+        worksheet.addRow([])
+      }
+
+      if (excelData.remarksRow) {
+        const remarksRow = worksheet.addRow(excelData.remarksRow)
+        remarksRow.getCell(1).font = { bold: true }
+      }
+
+      excelData.totalRows.forEach(([label, value]) => {
+        const row = worksheet.addRow([label, value])
+        row.getCell(1).font = { bold: true }
+      })
+
+      worksheet.getColumn(5).numFmt = '$#,##0.00'
+      worksheet.getColumn(6).numFmt = '$#,##0.00'
+
+      const buffer = await workbook.xlsx.writeBuffer()
+      const blob = new Blob([buffer], {
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      })
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = buildDocumentFileName(
+        t('warehouse.pickingList.fileName'),
+        store?.storeName || order.storeCode,
+        order.orderNo || order.orderGUID,
+        'xlsx',
+        {
+          unknownStore: t('warehouse.pickingList.unknownStore'),
+          unknownOrder: t('warehouse.pickingList.unknownOrder'),
+        },
+      )
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
+      URL.revokeObjectURL(url)
+    } catch (error) {
+      console.error(error)
+      message.error(error instanceof Error ? error.message : t('warehouse.pickingList.exportExcelFailed'))
+    } finally {
+      setExportingExcel(false)
     }
   }
 
@@ -192,10 +311,11 @@ export default function PickingListPage() {
     return <Empty description={t('storeOrders.detail.orderDataNotFound')} style={{ marginTop: 120 }} />
   }
 
-  const displayStoreName = store?.storeName || order.storeCode || '--'
+  const displayStoreName = store?.storeName || order.storeCode || t('warehouse.pickingList.unknownStore')
   const displayStoreText = store?.storeCode && store.storeCode !== displayStoreName
     ? `${displayStoreName} (${store.storeCode})`
     : displayStoreName
+  const orderNoText = order.orderNo || order.orderGUID || t('warehouse.pickingList.unknownOrder')
 
   return (
     <div className="store-order-print-page">
@@ -203,6 +323,9 @@ export default function PickingListPage() {
         <Space wrap>
           <Button icon={<RollbackOutlined />} onClick={() => navigate(-1)}>
             {t('common.back')}
+          </Button>
+          <Button icon={<FileExcelOutlined />} loading={exportingExcel} onClick={() => void handleExportExcel()}>
+            {t('warehouse.pickingList.exportExcel')}
           </Button>
           <Button icon={<DownloadOutlined />} loading={downloading} onClick={() => void handleDownload()}>
             {t('warehouse.pickingList.downloadPdf')}
@@ -238,11 +361,11 @@ export default function PickingListPage() {
                   >
                     <div>
                       <strong>{t('warehouse.pickingList.orderNoLabel')}</strong>
-                      {order.orderNo || order.orderGUID}
+                      {orderNoText}
                     </div>
                     <div>
                       <strong>{t('warehouse.pickingList.printTime')}</strong>
-                      {formatPrintDate(undefined)}
+                      {formatPrintDate(undefined, true, printLocale)}
                     </div>
                     <div>
                       <strong>{t('warehouse.pickingList.storeLabel')}</strong>
@@ -250,7 +373,7 @@ export default function PickingListPage() {
                     </div>
                     <div>
                       <strong>{t('warehouse.pickingList.orderDate')}</strong>
-                      {formatPrintDate(order.orderDate, false)}
+                      {formatPrintDate(order.orderDate, false, printLocale)}
                     </div>
                   </div>
                 </div>
@@ -261,11 +384,11 @@ export default function PickingListPage() {
               <th className="col-item">{t('column.itemNumber')}</th>
               <th className="col-location">{t('column.location')}</th>
               <th>{t('column.productName')}</th>
-              <th className="col-inner-pack">{t('column.innerPack')}</th>
+              <th className="col-price">{t('column.importPrice')}</th>
+              <th className="col-price">{t('column.rrp')}</th>
+              <th className="col-inner-pack">{t('column.innerPackCount')}</th>
               <th className="col-qty">{t('column.orderQuantity')}</th>
               <th className="col-send-qty">{t('column.allocQuantity')}</th>
-              <th className="col-price">{t('column.importPrice')}</th>
-              <th className="col-price">RRP</th>
             </tr>
           </thead>
           <tbody>
@@ -277,13 +400,14 @@ export default function PickingListPage() {
                 <td>
                   <div className="store-order-picking-name">{item.productName || '--'}</div>
                 </td>
+                <td className="col-price">{formatCurrency(item.importPrice)}</td>
+                <td className="col-price">{item.rrp !== undefined && item.rrp !== null ? formatCurrency(item.rrp) : ''}</td>
                 <td className="col-inner-pack">
-                  {getInnerPack(item.quantity, item.allocQuantity || 0, item.minOrderQuantity)}
+                  {/* 内包装数量严格使用订货数量计算，不再回退发货数。 */}
+                  {formatInnerPackCount(item.quantity, item.minOrderQuantity)}
                 </td>
                 <td className="col-qty">{item.quantity}</td>
                 <td className="col-send-qty">{item.allocQuantity || ''}</td>
-                <td className="col-price">{formatCurrency(item.importPrice)}</td>
-                <td className="col-price">{item.rrp ? formatCurrency(item.rrp) : '-'}</td>
               </tr>
             ))}
           </tbody>
@@ -302,11 +426,11 @@ export default function PickingListPage() {
                 >
                   <div>
                     <strong>{t('warehouse.pickingList.orderNoLabel')}</strong>
-                    {order.orderNo || order.orderGUID}
+                    {orderNoText}
                   </div>
                   <div>
                     <strong>{t('warehouse.pickingList.printTime')}</strong>
-                    {formatPrintDate(undefined)}
+                    {formatPrintDate(undefined, true, printLocale)}
                   </div>
                   <div>
                     <strong>{t('warehouse.pickingList.storeLabel')}</strong>
@@ -314,7 +438,7 @@ export default function PickingListPage() {
                   </div>
                   <div>
                     <strong>{t('warehouse.pickingList.orderDate')}</strong>
-                    {formatPrintDate(order.orderDate, false)}
+                    {formatPrintDate(order.orderDate, false, printLocale)}
                   </div>
                 </div>
               </td>

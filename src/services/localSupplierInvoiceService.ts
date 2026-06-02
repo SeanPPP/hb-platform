@@ -18,6 +18,8 @@ import type {
   LocalSupplierInvoiceItemDto,
   LocalSupplierInvoiceListDto,
   PasteDetailsRequest,
+  UpdateHqProductsRequest,
+  UpdateHqProductsResult,
   UpdateInvoiceRequest,
   UpdateToStorePricesResult,
   UpdateToStorePricesRequest,
@@ -132,6 +134,18 @@ export async function ensureHqProducts(
     data,
   )
   assertApiSuccess(response, '同步商品到HQ失败')
+  return unwrapApiData(response)
+}
+
+export async function updateHqProducts(
+  invoiceGuid: string,
+  data: UpdateHqProductsRequest,
+): Promise<UpdateHqProductsResult> {
+  const response = await request.post<ApiResponse<UpdateHqProductsResult>>(
+    `${API_BASE}/${invoiceGuid}/details/update-hq-products`,
+    data,
+  )
+  assertApiSuccess(response, '更新HQ商品失败')
   return unwrapApiData(response)
 }
 
