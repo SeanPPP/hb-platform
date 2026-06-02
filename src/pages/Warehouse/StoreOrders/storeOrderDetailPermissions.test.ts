@@ -14,17 +14,7 @@ function runTest(name: string, execute: () => void) {
   console.log(`ok - ${name}`)
 }
 
-runTest('购物车和已提交订单应允许编辑明细', () => {
-  assertDeepEqual(
-    deriveStoreOrderDetailPermissions(StoreOrderFlowStatus.ShoppingCart),
-    {
-      canEditOrder: true,
-      canStartPicking: false,
-      canCompleteOrder: false,
-      isReadonlyOrder: false,
-    },
-    '购物车订单权限矩阵不正确',
-  )
+runTest('已提交和配货中订单应允许编辑明细', () => {
   assertDeepEqual(
     deriveStoreOrderDetailPermissions(StoreOrderFlowStatus.Submitted),
     {
@@ -35,9 +25,29 @@ runTest('购物车和已提交订单应允许编辑明细', () => {
     },
     '已提交订单权限矩阵不正确',
   )
+  assertDeepEqual(
+    deriveStoreOrderDetailPermissions(StoreOrderFlowStatus.Picking),
+    {
+      canEditOrder: true,
+      canStartPicking: false,
+      canCompleteOrder: true,
+      isReadonlyOrder: false,
+    },
+    '配货中订单权限矩阵不正确',
+  )
 })
 
-runTest('已完成 配货中 未知状态都应按只读处理', () => {
+runTest('购物车 已完成 未知状态都应按只读处理', () => {
+  assertDeepEqual(
+    deriveStoreOrderDetailPermissions(StoreOrderFlowStatus.ShoppingCart),
+    {
+      canEditOrder: false,
+      canStartPicking: false,
+      canCompleteOrder: false,
+      isReadonlyOrder: true,
+    },
+    '购物车订单权限矩阵不正确',
+  )
   assertDeepEqual(
     deriveStoreOrderDetailPermissions(StoreOrderFlowStatus.Completed),
     {
@@ -47,16 +57,6 @@ runTest('已完成 配货中 未知状态都应按只读处理', () => {
       isReadonlyOrder: true,
     },
     '已完成订单权限矩阵不正确',
-  )
-  assertDeepEqual(
-    deriveStoreOrderDetailPermissions(StoreOrderFlowStatus.Picking),
-    {
-      canEditOrder: false,
-      canStartPicking: false,
-      canCompleteOrder: true,
-      isReadonlyOrder: true,
-    },
-    '配货中订单权限矩阵不正确',
   )
   assertDeepEqual(
     deriveStoreOrderDetailPermissions(undefined),

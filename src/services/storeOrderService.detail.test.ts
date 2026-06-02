@@ -2,6 +2,7 @@ import {
   getStoreOrderDetail,
   getStoreOrderDetailFull,
   getStoreOrderDetailProductCodes,
+  updateStoreOrderStatus,
   updateStoreOrderLine,
 } from './storeOrderService'
 
@@ -215,6 +216,47 @@ try {
       quantity: 7,
     },
     '单行保存应在 service 层把前端 allocQuantity 显式映射为后端 quantity 字段',
+  )
+} finally {
+  globalThis.fetch = originalFetch
+}
+
+try {
+  let capturedUrl = ''
+  let capturedMethod = ''
+  let capturedBody: unknown = null
+
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    capturedUrl = String(input)
+    capturedMethod = String(init?.method)
+    capturedBody = init?.body ? JSON.parse(String(init.body)) : null
+
+    return new Response(
+      JSON.stringify({
+        success: true,
+        data: null,
+      }),
+      {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      },
+    )
+  }) as typeof fetch
+
+  await updateStoreOrderStatus({
+    orderGUID: 'order-1',
+    newStatus: 3,
+  })
+
+  assertEqual(capturedUrl, '/api/react/v1/store-order/status', '详情页状态更改接口路径应保持不变')
+  assertEqual(capturedMethod, 'POST', '详情页状态更改接口应使用 POST')
+  assertDeepEqual(
+    capturedBody,
+    {
+      orderGUID: 'order-1',
+      newStatus: 3,
+    },
+    '详情页状态更改应保持后端兼容 payload',
   )
 } finally {
   globalThis.fetch = originalFetch

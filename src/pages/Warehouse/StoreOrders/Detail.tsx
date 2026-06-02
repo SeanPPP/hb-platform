@@ -58,6 +58,7 @@ import {
   startPickingStoreOrder,
   updateStoreOrderHeader,
   updateStoreOrderLine,
+  updateStoreOrderStatus,
   updateStoreOrderProductStatus,
 } from '../../../services/storeOrderService'
 import type { StoreDto } from '../../../types/store'
@@ -604,6 +605,7 @@ export default function StoreOrderDetailPage() {
   const [stores, setStores] = useState<StoreDto[]>([])
   const [storesLoading, setStoresLoading] = useState(false)
   const [savingHeader, setSavingHeader] = useState(false)
+  const [statusChanging, setStatusChanging] = useState(false)
   const [lineActionLoading, setLineActionLoading] = useState(false)
   const [batchLoading, setBatchLoading] = useState(false)
   const [pickerOpen, setPickerOpen] = useState(false)
@@ -878,6 +880,20 @@ export default function StoreOrderDetailPage() {
       3: t('storeOrders.statusPicking'),
     }),
     [t],
+  )
+
+  const orderStatusChangeOptions = useMemo(
+    () =>
+      [
+        StoreOrderFlowStatus.Submitted,
+        StoreOrderFlowStatus.Picking,
+        StoreOrderFlowStatus.Completed,
+      ].map((value) => ({
+        value,
+        label: statusLabelMap[value],
+        disabled: value === detail?.flowStatus,
+      })),
+    [detail?.flowStatus, statusLabelMap],
   )
 
   const {
@@ -1298,6 +1314,38 @@ export default function StoreOrderDetailPage() {
     })
   }
 
+  const handleChangeOrderStatus = (newStatus: StoreOrderFlowStatus) => {
+    if (!detail || detail.flowStatus === newStatus) {
+      return
+    }
+
+    Modal.confirm({
+      title: t('storeOrders.detail.statusChangeConfirmTitle'),
+      content: t('storeOrders.detail.statusChangeConfirmContent', {
+        orderNo: detail.orderNo || detail.orderGUID,
+        status: statusLabelMap[newStatus],
+      }),
+      okText: t('common.confirm'),
+      cancelText: t('common.cancel'),
+      onOk: async () => {
+        try {
+          setStatusChanging(true)
+          await updateStoreOrderStatus({
+            orderGUID: detail.orderGUID,
+            newStatus,
+          })
+          message.success(t('storeOrders.detail.statusChangeSuccess'))
+          await loadDetail(false)
+        } catch (error) {
+          console.error(error)
+          message.error(error instanceof Error ? error.message : t('storeOrders.detail.statusChangeFailed'))
+        } finally {
+          setStatusChanging(false)
+        }
+      },
+    })
+  }
+
   const handleStartPicking = async () => {
     if (!detail) {
       return
@@ -1668,6 +1716,22 @@ export default function StoreOrderDetailPage() {
                     >
                       {t('storeOrders.completeOrder')}
                     </Button>
+                    <Space size={4}>
+                      <Typography.Text type="secondary">{t('storeOrders.detail.changeOrderStatus')}</Typography.Text>
+                      <Select
+                        style={{ width: 150 }}
+                        placeholder={t('storeOrders.detail.changeOrderStatus')}
+                        value={
+                          orderStatusChangeOptions.some((item) => item.value === detail.flowStatus)
+                            ? detail.flowStatus
+                            : undefined
+                        }
+                        loading={statusChanging}
+                        disabled={statusChanging}
+                        options={orderStatusChangeOptions}
+                        onChange={(value) => handleChangeOrderStatus(value)}
+                      />
+                    </Space>
                   </Space>
                 }
               >

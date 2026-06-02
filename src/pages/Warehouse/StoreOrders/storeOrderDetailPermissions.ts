@@ -9,8 +9,8 @@ export interface StoreOrderDetailPermissions {
 
 export function deriveStoreOrderDetailPermissions(flowStatus?: StoreOrderFlowStatus | null): StoreOrderDetailPermissions {
   const canEditOrder =
-    flowStatus === StoreOrderFlowStatus.ShoppingCart ||
-    flowStatus === StoreOrderFlowStatus.Submitted
+    flowStatus === StoreOrderFlowStatus.Submitted ||
+    flowStatus === StoreOrderFlowStatus.Picking
   const canStartPicking = flowStatus === StoreOrderFlowStatus.Submitted
   const canCompleteOrder =
     flowStatus === StoreOrderFlowStatus.Submitted ||

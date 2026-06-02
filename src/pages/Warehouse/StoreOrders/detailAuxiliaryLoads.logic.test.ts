@@ -100,16 +100,31 @@ async function main() {
   })
   if (disabledUiFailure) failures.push(disabledUiFailure)
 
+  const statusChangeFailure = await runTest('详情页应提供三状态订单状态更改入口', () => {
+    assert(
+      detailSource.includes('updateStoreOrderStatus') &&
+        detailSource.includes('handleChangeOrderStatus') &&
+        detailSource.includes('orderStatusChangeOptions') &&
+        detailSource.includes('StoreOrderFlowStatus.Submitted') &&
+        detailSource.includes('StoreOrderFlowStatus.Picking') &&
+        detailSource.includes('StoreOrderFlowStatus.Completed') &&
+        detailSource.includes("t('storeOrders.detail.changeOrderStatus'") &&
+        detailSource.includes("t('storeOrders.detail.statusChangeSuccess'"),
+      '详情页尚未提供三状态订单状态更改入口',
+    )
+  })
+  if (statusChangeFailure) failures.push(statusChangeFailure)
+
   const readonlyCopyFailure = await runTest('只读状态应提供中英文提示文案', () => {
     assert(
       zhSource.includes('"orderReadonlyTitle": "当前订单为只读状态"') &&
-        zhSource.includes('"orderReadonlyDescription": "已完成/配货中的订单为只读状态"') &&
+        zhSource.includes('"orderReadonlyDescription": "已完成订单不可编辑，请更改状态后再操作。"') &&
         zhSource.includes('"orderReadonlyRefresh": "当前订单状态不可编辑，请刷新确认状态。"'),
       '中文文案缺少订单只读提示',
     )
     assert(
       enSource.includes('"orderReadonlyTitle": "Order is read-only"') &&
-        enSource.includes('"orderReadonlyDescription": "Completed or picking orders are read-only."') &&
+        enSource.includes('"orderReadonlyDescription": "Completed orders cannot be edited. Change the status before editing."') &&
         enSource.includes('"orderReadonlyRefresh": "The current order status is not editable. Please refresh and confirm the status."'),
       '英文文案缺少订单只读提示',
     )
