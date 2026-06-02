@@ -15,6 +15,7 @@ interface DocumentFileNameFallbackTexts {
 
 interface DownloadPdfOptions {
   createCanvasContextErrorMessage?: string
+  avoidBreakOffsets?: number[]
 }
 
 export const PDF_IMAGE_FORMAT = 'JPEG'
@@ -81,7 +82,7 @@ export function resolveStorePrintInfo(storeCode?: string, store?: StoreDto | nul
   }
 }
 
-export function buildPdfSlicePlan(imageHeight: number, pageHeightInPx: number): PdfSlicePlanItem[] {
+export function buildPdfSlicePlan(imageHeight: number, pageHeightInPx: number, avoidBreakOffsets: number[] = []): PdfSlicePlanItem[] {
   const normalizedImageHeight = Math.max(0, Math.floor(imageHeight))
   if (!Number.isFinite(normalizedImageHeight) || normalizedImageHeight <= 0) {
     return []
@@ -89,11 +90,23 @@ export function buildPdfSlicePlan(imageHeight: number, pageHeightInPx: number): 
 
   // 切片高度必须是正整数像素，避免浮点高度造成空切片和损坏的图片数据。
   const normalizedPageHeight = Math.max(1, Math.floor(pageHeightInPx))
+  const normalizedBreakOffsets = Array.from(
+    new Set(
+      avoidBreakOffsets
+        .filter((offset) => Number.isFinite(offset))
+        .map((offset) => Math.floor(offset))
+        .filter((offset) => offset > 0 && offset <= normalizedImageHeight),
+    ),
+  ).sort((left, right) => left - right)
   const slices: PdfSlicePlanItem[] = []
 
   let offsetY = 0
   while (offsetY < normalizedImageHeight) {
-    const height = Math.min(normalizedPageHeight, normalizedImageHeight - offsetY)
+    const defaultEndY = Math.min(offsetY + normalizedPageHeight, normalizedImageHeight)
+    const candidateBreakOffsets = normalizedBreakOffsets.filter((breakOffset) => breakOffset > offsetY && breakOffset <= defaultEndY)
+    const boundaryEndY = candidateBreakOffsets[candidateBreakOffsets.length - 1]
+    const endY = boundaryEndY ?? defaultEndY
+    const height = Math.max(1, endY - offsetY)
     slices.push({ offsetY, height })
     offsetY += height
   }
@@ -126,6 +139,21 @@ export function getPdfSliceImageData(sliceCanvas: HTMLCanvasElement) {
   return sliceCanvas.toDataURL(PDF_IMAGE_MIME_TYPE, PDF_IMAGE_QUALITY)
 }
 
+export function collectElementBreakOffsets(root: HTMLElement, rowSelector: string, footerSelector?: string) {
+  const rootTop = root.getBoundingClientRect().top
+  const rows = Array.from(root.querySelectorAll<HTMLElement>(rowSelector))
+  const footer = footerSelector ? root.querySelector<HTMLElement>(footerSelector) : null
+
+  // 这些偏移会被换算到 canvas 像素，用来让 PDF 切页尽量落在完整内容块之间。
+  const offsets = rows.map((row) => row.getBoundingClientRect().top - rootTop)
+  if (footer) {
+    offsets.push(footer.getBoundingClientRect().top - rootTop)
+  }
+
+  offsets.push(root.scrollHeight)
+  return offsets.filter((offset) => Number.isFinite(offset) && offset > 0)
+}
+
 export async function downloadElementAsPdf(element: HTMLElement, fileName: string, options?: DownloadPdfOptions) {
   const [{ default: html2canvas }, { default: jsPDF }] = await Promise.all([import('html2canvas'), import('jspdf')])
   const canvas = await html2canvas(element, {
@@ -140,7 +168,9 @@ export async function downloadElementAsPdf(element: HTMLElement, fileName: strin
   const pdfHeight = 297
   const imageWidth = canvas.width
   const imageHeight = canvas.height
-  const slicePlan = buildPdfSlicePlan(imageHeight, (pdfHeight * imageWidth) / pdfWidth)
+  const canvasScaleY = element.scrollHeight > 0 ? canvas.height / element.scrollHeight : 1
+  const avoidBreakOffsets = options?.avoidBreakOffsets?.map((offset) => offset * canvasScaleY) ?? []
+  const slicePlan = buildPdfSlicePlan(imageHeight, (pdfHeight * imageWidth) / pdfWidth, avoidBreakOffsets)
 
   slicePlan.forEach((slice, pageIndex) => {
     const sliceCanvas = document.createElement('canvas')

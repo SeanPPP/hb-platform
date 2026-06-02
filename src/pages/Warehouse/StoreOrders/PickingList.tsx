@@ -11,7 +11,7 @@ import { StoreOrderFlowStatus } from '../../../types/storeOrder'
 import type { StoreDto } from '../../../types/store'
 import type { StoreOrderDetail } from '../../../types/storeOrder'
 import { useDynamicTabTitle } from '../../../hooks/useDynamicTabTitle'
-import { buildDocumentFileName, downloadElementAsPdf, formatCurrency, formatPrintDate } from './printUtils'
+import { buildDocumentFileName, collectElementBreakOffsets, downloadElementAsPdf, formatCurrency, formatPrintDate } from './printUtils'
 import { buildPickingListExcelData, formatInnerPackCount } from './pickingListLogic'
 import './print.css'
 
@@ -177,6 +177,11 @@ export default function PickingListPage() {
         ),
         {
           createCanvasContextErrorMessage: t('warehouse.pickingList.createPdfCanvasFailed'),
+          avoidBreakOffsets: collectElementBreakOffsets(
+            printRootRef.current,
+            '.store-order-picking-table tbody tr',
+            '.store-order-picking-footer',
+          ),
         },
       )
     } catch (error) {
@@ -338,27 +343,23 @@ export default function PickingListPage() {
 
       <div ref={printRootRef} className="store-order-print-root store-order-print-paper store-order-picking-paper">
         <table className="store-order-picking-table">
+          <colgroup>
+            <col className="col-index" />
+            <col className="col-item" />
+            <col className="col-location" />
+            <col className="col-product" />
+            <col className="col-price" />
+            <col className="col-price" />
+            <col className="col-inner-pack" />
+            <col className="col-qty" />
+            <col className="col-send-qty" />
+          </colgroup>
           <thead>
             <tr>
-              <td colSpan={9} style={{ border: 'none', padding: 0 }}>
-                <div
-                  style={{
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                    marginBottom: 10,
-                    paddingBottom: 10,
-                    borderBottom: '2px solid #000',
-                  }}
-                >
-                  <div style={{ fontSize: 24, fontWeight: 700 }}>{t('warehouse.pickingList.title')}</div>
-                  <div
-                    style={{
-                      display: 'grid',
-                      gridTemplateColumns: 'auto auto',
-                      gap: '5px 20px',
-                      fontSize: 14,
-                    }}
-                  >
+              <td colSpan={9} className="store-order-picking-header-cell">
+                <div className="store-order-picking-header">
+                  <div className="store-order-picking-title">{t('warehouse.pickingList.title')}</div>
+                  <div className="store-order-picking-meta">
                     <div>
                       <strong>{t('warehouse.pickingList.orderNoLabel')}</strong>
                       {orderNoText}
@@ -383,11 +384,11 @@ export default function PickingListPage() {
               <th className="col-index">#</th>
               <th className="col-item">{t('column.itemNumber')}</th>
               <th className="col-location">{t('column.location')}</th>
-              <th>{t('column.productName')}</th>
+              <th className="col-product">{t('column.productName')}</th>
               <th className="col-price">{t('column.importPrice')}</th>
               <th className="col-price">{t('column.rrp')}</th>
-              <th className="col-inner-pack">{t('column.innerPackCount')}</th>
-              <th className="col-qty">{t('column.orderQuantity')}</th>
+              <th className="col-inner-pack">{t('warehouse.pickingList.innerPackShort')}</th>
+              <th className="col-qty">{t('warehouse.pickingList.orderQtyShort')}</th>
               <th className="col-send-qty">{t('column.allocQuantity')}</th>
             </tr>
           </thead>
@@ -397,7 +398,7 @@ export default function PickingListPage() {
                 <td className="col-index">{index + 1}</td>
                 <td className="col-item">{item.itemNumber || '--'}</td>
                 <td className="col-location">{item.locationCode || '--'}</td>
-                <td>
+                <td className="col-product">
                   <div className="store-order-picking-name">{item.productName || '--'}</div>
                 </td>
                 <td className="col-price">{formatCurrency(item.importPrice)}</td>
@@ -411,48 +412,15 @@ export default function PickingListPage() {
               </tr>
             ))}
           </tbody>
-          <tfoot>
-            <tr>
-              <td colSpan={9} style={{ border: 'none', padding: 0 }}>
-                <div
-                  style={{
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                    marginTop: 10,
-                    paddingTop: 10,
-                    borderTop: '2px solid #000',
-                    fontSize: 12,
-                  }}
-                >
-                  <div>
-                    <strong>{t('warehouse.pickingList.orderNoLabel')}</strong>
-                    {orderNoText}
-                  </div>
-                  <div>
-                    <strong>{t('warehouse.pickingList.printTime')}</strong>
-                    {formatPrintDate(undefined, true, printLocale)}
-                  </div>
-                  <div>
-                    <strong>{t('warehouse.pickingList.storeLabel')}</strong>
-                    {displayStoreText}
-                  </div>
-                  <div>
-                    <strong>{t('warehouse.pickingList.orderDate')}</strong>
-                    {formatPrintDate(order.orderDate, false, printLocale)}
-                  </div>
-                </div>
-              </td>
-            </tr>
-          </tfoot>
         </table>
 
         <div className="store-order-picking-footer">
           {order.remarks ? (
-            <div style={{ fontSize: 16, fontWeight: 700, paddingBottom: 10, borderBottom: '1px dashed #ccc' }}>
+            <div className="store-order-picking-remarks">
               {t('warehouse.pickingList.remarks', { remarks: order.remarks })}
             </div>
           ) : null}
-          <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+          <div className="store-order-picking-totals">
             <div>{t('warehouse.pickingList.totalSKU', { count: order.totalSKU ?? order.items.length })}</div>
             <div>{t('warehouse.pickingList.totalOrderQty', { count: order.totalQuantity })}</div>
             <div>{t('warehouse.pickingList.totalShipQty', { count: order.totalAllocQuantity ?? 0 })}</div>

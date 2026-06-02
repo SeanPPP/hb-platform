@@ -21,21 +21,51 @@
 }
 
 .store-order-picking-paper {
-  padding: 15mm;
+  padding: 8mm 6mm;
+}
+
+.store-order-picking-header-cell {
+  padding: 0 !important;
+  border: none !important;
+}
+
+.store-order-picking-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 6px;
+  padding-bottom: 6px;
+  border-bottom: 2px solid #000;
+}
+
+.store-order-picking-title {
+  flex: 0 0 auto;
+  font-size: 21px;
+  font-weight: 700;
+  line-height: 1.1;
+}
+
+.store-order-picking-meta {
+  display: grid;
+  grid-template-columns: auto auto;
+  gap: 3px 14px;
+  font-size: 12px;
+  line-height: 1.15;
+  text-align: left;
 }
 
 .store-order-picking-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 12px;
+  table-layout: fixed;
+  font-size: 15px;
+  line-height: 1.35;
+  print-color-adjust: exact;
+  -webkit-print-color-adjust: exact;
 }
 
 .store-order-picking-table thead {
   display: table-header-group;
-}
-
-.store-order-picking-table tfoot {
-  display: table-footer-group;
 }
 
 .store-order-picking-table tr {
@@ -44,69 +74,124 @@
 }
 
 .store-order-picking-table th {
-  padding: 5px;
+  padding: 6px 2px;
   text-align: left;
   font-weight: 700;
   background: #f0f0f0;
   border-bottom: 1px solid #000;
+  line-height: 1.35;
 }
 
 .store-order-picking-table td {
-  padding: 5px;
+  padding: 6px 2px;
   vertical-align: top;
   border-bottom: 1px solid #ddd;
+  line-height: 1.35;
+}
+
+.store-order-picking-table tbody tr:nth-child(even) td {
+  background: #eef2f7;
 }
 
 .store-order-picking-table .col-index {
-  width: 40px;
+  width: 3%;
+  padding-right: 8px;
   text-align: center;
+  font-size: 14.5px;
+  font-weight: 700;
 }
 
 .store-order-picking-table .col-item {
-  width: 100px;
+  width: 16%;
+  padding-left: 10px;
+  text-align: center;
   white-space: nowrap;
+  overflow: visible;
+  font-size: 14.5px;
 }
 
 .store-order-picking-table .col-location {
-  width: 80px;
+  width: 15%;
+  padding-left: 5px;
+  padding-right: 5px;
   white-space: nowrap;
+  overflow: visible;
   font-weight: 800;
-  font-size: 16px;
+  font-size: 14.5px;
 }
 
-.store-order-picking-table .col-inner-pack,
-.store-order-picking-table .col-qty,
-.store-order-picking-table .col-send-qty {
-  width: 80px;
+.store-order-picking-table .col-product {
+  width: 34%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 12.5px;
+}
+
+.store-order-picking-table .col-inner-pack {
+  width: 5%;
+  padding-left: 1px;
+  padding-right: 1px;
   text-align: center;
+  font-size: 13px;
+}
+
+.store-order-picking-table .col-qty {
+  width: 5.5%;
+  padding-left: 1px;
+  padding-right: 1px;
+  text-align: center;
+  font-size: 13px;
+  font-weight: 700;
 }
 
 .store-order-picking-table .col-send-qty {
+  width: 5.5%;
+  padding-left: 1px;
+  padding-right: 1px;
+  text-align: center;
+  font-size: 13px;
   border-left: 1px solid #eee;
-  background: #fafafa;
 }
 
 .store-order-picking-table .col-price {
-  width: 80px;
+  width: 6%;
+  padding-left: 1px;
+  padding-right: 1px;
   text-align: right;
+  font-size: 13px;
 }
 
 .store-order-picking-name {
-  max-width: 200px;
-  display: -webkit-box;
+  display: block;
+  width: 100%;
+  white-space: nowrap;
   overflow: hidden;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
+  text-overflow: ellipsis;
 }
 
 .store-order-picking-footer {
-  margin-top: 20px;
+  margin-top: 8px;
   border-top: 1px solid #000;
-  padding-top: 10px;
+  padding-top: 6px;
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  font-size: 12px;
+  gap: 6px;
+  font-size: 13px;
+  line-height: 1.15;
+}
+
+.store-order-picking-remarks {
+  padding-bottom: 6px;
+  border-bottom: 1px dashed #ccc;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.store-order-picking-totals {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
 }
 
 .store-order-invoice-paper {
@@ -291,6 +376,11 @@
     margin: 10mm 6mm;
   }
 
+  @page store-order-picking {
+    size: A4;
+    margin: 6mm 5mm;
+  }
+
   body {
     background: #fff;
   }
@@ -334,6 +424,10 @@
   .store-order-picking-paper,
   .store-order-invoice-paper {
     padding: 0;
+  }
+
+  .store-order-picking-paper {
+    page: store-order-picking;
   }
 
   .store-order-print-footer {

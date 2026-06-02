@@ -51,7 +51,7 @@ export function formatInnerPackCount(orderQuantity: number, minOrderQuantity?: n
     return ''
   }
 
-  if (typeof minOrderQuantity !== 'number' || !Number.isFinite(minOrderQuantity) || minOrderQuantity <= 0) {
+  if (typeof minOrderQuantity !== 'number' || !Number.isFinite(minOrderQuantity) || minOrderQuantity <= 1) {
     return ''
   }
 

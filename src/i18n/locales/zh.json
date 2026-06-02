@@ -1216,6 +1216,8 @@
       "printTime": "打印时间：",
       "storeLabel": "分店：",
       "orderDate": "订货日期：",
+      "innerPackShort": "包数",
+      "orderQtyShort": "订货数",
       "remarks": "备注：{{remarks}}",
       "totalSKU": "总 SKU：{{count}}",
       "totalOrderQty": "订货总数：{{count}}",

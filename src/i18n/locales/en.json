@@ -1216,6 +1216,8 @@
       "printTime": "Print Time: ",
       "storeLabel": "Store: ",
       "orderDate": "Order Date: ",
+      "innerPackShort": "Packs",
+      "orderQtyShort": "Order Qty",
       "remarks": "Remarks: {{remarks}}",
       "totalSKU": "Total SKU: {{count}}",
       "totalOrderQty": "Total Order Qty: {{count}}",

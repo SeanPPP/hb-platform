@@ -3,6 +3,7 @@ import {
   PDF_IMAGE_MIME_TYPE,
   PDF_IMAGE_QUALITY,
   buildPdfSlicePlan,
+  collectElementBreakOffsets,
   getPdfSliceImageData,
   paintPdfSlice,
 } from './printUtils'
@@ -44,6 +45,44 @@ runTest('页高小于 1 像素时也不应生成空切片', () => {
     { offsetY: 2, height: 1 },
   ], '极小页高时应回退到 1 像素切片')
   assertEqual(slices.reduce((sum, item) => sum + item.height, 0), 3, '所有切片高度之和应等于原图高度')
+})
+
+runTest('PDF 切片应优先贴合行边界，避免把表格行切成两半', () => {
+  const slices = buildPdfSlicePlan(260, 100, [30, 90, 150, 210, 260])
+  assertDeepEqual(slices, [
+    { offsetY: 0, height: 90 },
+    { offsetY: 90, height: 60 },
+    { offsetY: 150, height: 60 },
+    { offsetY: 210, height: 50 },
+  ], '切片结束位置应优先选择当前页内容范围内的最后一个行边界')
+})
+
+runTest('没有可用行边界时 PDF 切片应回退到标准页高', () => {
+  const slices = buildPdfSlicePlan(260, 100, [140, 260])
+  assertDeepEqual(slices, [
+    { offsetY: 0, height: 100 },
+    { offsetY: 100, height: 40 },
+    { offsetY: 140, height: 100 },
+    { offsetY: 240, height: 20 },
+  ], '行边界不在当前页范围内时应保持前进，避免死循环')
+})
+
+runTest('PDF 避免切断偏移应从明细行、页脚和滚动高度收集', () => {
+  const createElement = (top: number) => ({
+    getBoundingClientRect: () => ({ top }),
+  })
+  const root = {
+    scrollHeight: 260,
+    getBoundingClientRect: () => ({ top: 10 }),
+    querySelectorAll: (selector: string) => selector === 'tbody tr' ? [createElement(20), createElement(80), createElement(140)] : [],
+    querySelector: (selector: string) => selector === '.footer' ? createElement(220) : null,
+  } as unknown as HTMLElement
+
+  assertDeepEqual(
+    collectElementBreakOffsets(root, 'tbody tr', '.footer'),
+    [10, 70, 130, 210, 260],
+    '应返回相对根元素的行顶部、页脚顶部和根滚动高度',
+  )
 })
 
 runTest('PDF 图片输出应锁定 JPEG 格式，避免回退到 PNG', () => {
