@@ -50,6 +50,7 @@
     <Compile Include="ReactStoreOrderAuthorizationTests.cs" />
     <Compile Include="StoreOrderProductListTests.cs" />
     <Compile Include="AdvertisementReactServiceTests.cs" />
+    <Compile Include="ProductPushToHqServiceTests.cs" />
     <Compile Include="SqliteTempFileCleanup.cs" />
   </ItemGroup>
 </Project>

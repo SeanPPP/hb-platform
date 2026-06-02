@@ -362,6 +362,53 @@ namespace BlazorApp.Shared.DTOs
     #region 从HQ同步商品DTO
 
     /// <summary>
+    /// POS 商品推送到 HQ 请求。
+    /// </summary>
+    public class PushProductsToHqRequest
+    {
+        /// <summary>
+        /// 需要推送的商品编码列表。
+        /// </summary>
+        [Required(ErrorMessage = "商品编码列表不能为空")]
+        public List<string> ProductCodes { get; set; } = new();
+    }
+
+    /// <summary>
+    /// POS 商品推送到 HQ 结果。
+    /// SuccessCount/FailedCount 按商品编码统计，明细表写入量通过 AffectedRowCount 和各明细字段统计。
+    /// </summary>
+    public class PushProductsToHqResult : HqProductSyncResult
+    {
+        /// <summary>
+        /// 成功推送的商品数。
+        /// </summary>
+        public int SuccessCount { get; set; }
+
+        /// <summary>
+        /// 推送失败或未找到的商品数。
+        /// </summary>
+        public int FailedCount { get; set; }
+
+        /// <summary>
+        /// 请求推送的商品总数。
+        /// </summary>
+        public int TotalCount { get; set; }
+
+        /// <summary>
+        /// HQ 商品、分店价格、多码表实际新增或更新的记录总数。
+        /// </summary>
+        public int AffectedRowCount =>
+            ProductsAdded
+            + ProductsUpdated
+            + StoreRetailPricesCreated
+            + StoreRetailPricesUpdated
+            + ProductSetCodesCreated
+            + ProductSetCodesUpdated
+            + StoreMultiCodesCreated
+            + StoreMultiCodesUpdated;
+    }
+
+    /// <summary>
     /// 从HQ同步商品的结果DTO
     /// </summary>
     public class HqProductSyncResult
@@ -392,9 +439,23 @@ namespace BlazorApp.Shared.DTOs
         public int ProductsDeleted { get; set; }
 
         /// <summary>
+        /// 软删除商品数
+        /// </summary>
+        public int ProductsSoftDeleted
+        {
+            get => ProductsDeleted;
+            set => ProductsDeleted = value;
+        }
+
+        /// <summary>
         /// 新增分店零售价数
         /// </summary>
         public int StoreRetailPricesCreated { get; set; }
+
+        /// <summary>
+        /// 更新分店零售价数
+        /// </summary>
+        public int StoreRetailPricesUpdated { get; set; }
 
         /// <summary>
         /// 删除分店零售价数
@@ -407,14 +468,42 @@ namespace BlazorApp.Shared.DTOs
         public int ProductSetCodesCreated { get; set; }
 
         /// <summary>
+        /// 新增套装编码数
+        /// </summary>
+        public int ProductSetCodesAdded
+        {
+            get => ProductSetCodesCreated;
+            set => ProductSetCodesCreated = value;
+        }
+
+        /// <summary>
+        /// 更新套装编码数
+        /// </summary>
+        public int ProductSetCodesUpdated { get; set; }
+
+        /// <summary>
         /// 删除套装编码数
         /// </summary>
         public int ProductSetCodesDeleted { get; set; }
 
         /// <summary>
+        /// 软删除套装编码数
+        /// </summary>
+        public int ProductSetCodesSoftDeleted
+        {
+            get => ProductSetCodesDeleted;
+            set => ProductSetCodesDeleted = value;
+        }
+
+        /// <summary>
         /// 新增分店多码商品数
         /// </summary>
         public int StoreMultiCodesCreated { get; set; }
+
+        /// <summary>
+        /// 更新分店多码商品数
+        /// </summary>
+        public int StoreMultiCodesUpdated { get; set; }
 
         /// <summary>
         /// 删除分店多码商品数
@@ -430,8 +519,32 @@ namespace BlazorApp.Shared.DTOs
         /// 执行耗时（毫秒）
         /// </summary>
         public long DurationMs { get; set; }
+
+        /// <summary>
+        /// 全量同步运行ID
+        /// </summary>
+        public long? SyncRunId { get; set; }
+
+        /// <summary>
+        /// HQ来源行数
+        /// </summary>
+        public long SourceRowCount { get; set; }
+
+        /// <summary>
+        /// 影子表行数
+        /// </summary>
+        public long ShadowRowCount { get; set; }
+
+        /// <summary>
+        /// Product是否完成切换
+        /// </summary>
+        public bool ProductsSwapped { get; set; }
+
+        /// <summary>
+        /// 切换前备份表名
+        /// </summary>
+        public string? BackupTableName { get; set; }
     }
 
     #endregion
 }
-

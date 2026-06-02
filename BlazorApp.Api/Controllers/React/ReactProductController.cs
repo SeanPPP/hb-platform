@@ -1,5 +1,6 @@
 using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Api.Services;
+using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.DTOs;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -17,16 +18,19 @@ namespace BlazorApp.Api.Controllers.React
     {
         private readonly IProductReactService _service;
         private readonly IProductStoreSyncService _productStoreSyncService;
+        private readonly IProductHqSyncService _productHqSyncService;
         private readonly ILogger<ReactProductController> _logger;
 
         public ReactProductController(
             IProductReactService service,
             IProductStoreSyncService productStoreSyncService,
+            IProductHqSyncService productHqSyncService,
             ILogger<ReactProductController> logger
         )
         {
             _service = service;
             _productStoreSyncService = productStoreSyncService;
+            _productHqSyncService = productHqSyncService;
             _logger = logger;
         }
 
@@ -423,7 +427,7 @@ namespace BlazorApp.Api.Controllers.React
         #endregion
 
         /// <summary>
-        /// 从HQ同步商品到本地（含增删改 + 关联表同步）
+        /// 从HQ增量同步商品到本地（先商品主表，再全局一品多码）
         /// </summary>
         [HttpPost("sync-from-hq")]
         [Authorize(Roles = "Admin")]
@@ -432,7 +436,7 @@ namespace BlazorApp.Api.Controllers.React
             try
             {
                 _logger.LogInformation("收到从HQ同步商品的请求");
-                var result = await _service.SyncProductsFromHqAsync();
+                var result = await _productHqSyncService.SyncIncrementalAsync();
                 if (result.Success)
                 {
                     return Ok(new
@@ -448,6 +452,47 @@ namespace BlazorApp.Api.Controllers.React
             {
                 _logger.LogError(ex, "从HQ同步商品失败");
                 return StatusCode(500, new { success = false, message = "从HQ同步商品失败：" + ex.Message });
+            }
+        }
+
+        /// <summary>
+        /// 将选中的 POS 商品推送到 HQ，只执行 upsert，不删除 HQ 旧记录。
+        /// </summary>
+        [HttpPost("push-to-hq")]
+        [Authorize(Policy = Permissions.PosProducts.Manage)]
+        public async Task<IActionResult> PushToHq([FromBody] PushProductsToHqRequest request)
+        {
+            try
+            {
+                if (request?.ProductCodes == null || !request.ProductCodes.Any())
+                {
+                    return BadRequest(new { success = false, message = "请选择要推送的商品" });
+                }
+
+                var productCodes = request.ProductCodes
+                    .Where(code => !string.IsNullOrWhiteSpace(code))
+                    .Select(code => code.Trim())
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                if (!productCodes.Any())
+                {
+                    return BadRequest(new { success = false, message = "请选择有效的商品编码" });
+                }
+
+                _logger.LogInformation("推送商品到HQ: {Count} 件", productCodes.Count);
+                var result = await _productHqSyncService.PushToHqAsync(productCodes);
+                return result.Success ? Ok(result) : BadRequest(result);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "推送商品到HQ失败");
+                return StatusCode(
+                    500,
+                    ApiResponse<PushProductsToHqResult>.Error(
+                        $"推送商品到HQ失败: {ex.Message}",
+                        "PRODUCT_HQ_PUSH_ERROR"
+                    )
+                );
             }
         }
 
