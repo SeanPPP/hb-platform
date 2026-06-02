@@ -8,6 +8,7 @@ using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Api.Services;
 using BlazorApp.Api.Services.React;
+using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Configuration;
@@ -42,7 +43,9 @@ namespace BlazorApp.Api.Tests
                 typeof(Product),
                 typeof(WarehouseProduct),
                 typeof(DomesticProduct),
+                typeof(DomesticSetProduct),
                 typeof(ChinaSupplier),
+                typeof(StoreMultiCodeProduct),
                 typeof(ProductLocation),
                 typeof(Location),
                 typeof(ProductGrade)
@@ -132,6 +135,40 @@ namespace BlazorApp.Api.Tests
             Assert.Equal(33, item.StockQuantity);
             Assert.Equal("A-01-01-01", item.LocationCode);
             Assert.Equal("https://cdn.example.com/fallback.png", item.ProductImage);
+        }
+
+        [Fact]
+        public async Task GetDomesticProductsNotInWarehouseAsync_ReturnsProductImageForImportModal()
+        {
+            await _db.Insertable(new DomesticProduct
+            {
+                ProductCode = "DP-IMG-001",
+                HBProductNo = "HB022-109",
+                Barcode = "9525810220074",
+                ProductName = "圆球",
+                ProductImage = null,
+                ProductType = 0,
+                IsActive = true,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+
+            var service = CreateService();
+
+            var result = await service.GetDomesticProductsNotInWarehouseAsync(
+                new GetDomesticProductsNotInWarehouseRequestDto
+                {
+                    Page = 1,
+                    PageSize = 20,
+                    GlobalSearch = "HB022-109",
+                }
+            );
+
+            var item = Assert.Single(result.Items);
+            Assert.Equal("HB022-109", item.ItemNumber);
+            Assert.Equal(
+                "https://hotbargain-yw-2023-1300114625.cos.ap-shanghai.myqcloud.com/YW200/HB022-109.jpg",
+                item.ProductImage
+            );
         }
 
         public void Dispose()

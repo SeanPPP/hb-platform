@@ -141,6 +141,12 @@ namespace BlazorApp.Api.Data
                 if (entityInfo.EntityValue is not BaseEntity)
                     return;
 
+                if (
+                    SqlSugarAuditScope.ShouldPreserveExplicitAuditFields
+                    && IsAuditField(entityInfo.PropertyName)
+                )
+                    return;
+
                 var username = currentUserService.GetCurrentUsername();
 
                 switch (entityInfo.OperationType)
@@ -194,6 +200,11 @@ namespace BlazorApp.Api.Data
                     }
                 });
             }
+        }
+
+        private static bool IsAuditField(string? propertyName)
+        {
+            return propertyName is "CreatedAt" or "UpdatedAt" or "CreatedBy" or "UpdatedBy";
         }
 
         public ISqlSugarClient Db => _db;
@@ -1088,6 +1099,8 @@ namespace BlazorApp.Api.Data
                     "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_ProductSetCode_ProductCode_SetType_Active' AND object_id = OBJECT_ID('ProductSetCode')) CREATE INDEX IX_ProductSetCode_ProductCode_SetType_Active ON [ProductSetCode]([ProductCode], [SetType]) WHERE [IsDeleted] = 0",
                 ["IX_StoreMultiCodeProduct_StoreCode_MultiCodeProductCode"] =
                     "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_StoreMultiCodeProduct_StoreCode_MultiCodeProductCode' AND object_id = OBJECT_ID('StoreMultiCodeProduct')) CREATE INDEX IX_StoreMultiCodeProduct_StoreCode_MultiCodeProductCode ON [StoreMultiCodeProduct]([StoreCode], [MultiCodeProductCode]) WHERE [StoreCode] IS NOT NULL AND [MultiCodeProductCode] IS NOT NULL AND [IsDeleted] = 0",
+                ["IX_StoreMultiCodeProduct_StoreCode_MultiBarcode"] =
+                    "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_StoreMultiCodeProduct_StoreCode_MultiBarcode' AND object_id = OBJECT_ID('StoreMultiCodeProduct')) CREATE INDEX IX_StoreMultiCodeProduct_StoreCode_MultiBarcode ON [StoreMultiCodeProduct]([StoreCode], [MultiBarcode]) WHERE [StoreCode] IS NOT NULL AND [MultiBarcode] IS NOT NULL AND [IsDeleted] = 0",
                 ["IX_StoreClearancePrice_ClearanceBarcode_Lookup"] =
                     "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_StoreClearancePrice_ClearanceBarcode_Lookup' AND object_id = OBJECT_ID('StoreClearancePrice')) CREATE INDEX IX_StoreClearancePrice_ClearanceBarcode_Lookup ON [StoreClearancePrice]([ClearanceBarcode]) INCLUDE([ProductCode], [StoreCode]) WHERE [ClearanceBarcode] IS NOT NULL AND [IsDeleted] = 0",
             };
@@ -1261,6 +1274,9 @@ namespace BlazorApp.Api.Data
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_Product_Barcode' AND object_id = OBJECT_ID('Product')) CREATE INDEX IX_Product_Barcode ON [Product]([Barcode]) WHERE [Barcode] IS NOT NULL",
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_Product_ItemNumber_Lookup' AND object_id = OBJECT_ID('Product')) CREATE INDEX IX_Product_ItemNumber_Lookup ON [Product]([ItemNumber]) INCLUDE([ProductCode], [Barcode]) WHERE [ItemNumber] IS NOT NULL AND [IsDeleted] = 0",
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_Product_Barcode_Lookup' AND object_id = OBJECT_ID('Product')) CREATE INDEX IX_Product_Barcode_Lookup ON [Product]([Barcode]) INCLUDE([ProductCode], [ItemNumber]) WHERE [Barcode] IS NOT NULL AND [IsDeleted] = 0",
+                "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_Product_Active_ItemNumber_Lookup' AND object_id = OBJECT_ID('Product')) CREATE INDEX IX_Product_Active_ItemNumber_Lookup ON [Product]([IsDeleted], [IsActive], [ItemNumber]) INCLUDE([ProductCode], [Barcode], [LocalSupplierCode]) WHERE [ItemNumber] IS NOT NULL",
+                "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_Product_Active_Barcode_Lookup' AND object_id = OBJECT_ID('Product')) CREATE INDEX IX_Product_Active_Barcode_Lookup ON [Product]([IsDeleted], [IsActive], [Barcode]) INCLUDE([ProductCode], [ItemNumber], [LocalSupplierCode]) WHERE [Barcode] IS NOT NULL",
+                "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_Product_Active_LocalSupplier_ItemNumber' AND object_id = OBJECT_ID('Product')) CREATE INDEX IX_Product_Active_LocalSupplier_ItemNumber ON [Product]([IsDeleted], [IsActive], [LocalSupplierCode], [ItemNumber]) INCLUDE([ProductCode], [Barcode]) WHERE [LocalSupplierCode] IS NOT NULL",
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_Product_ProductName' AND object_id = OBJECT_ID('Product')) CREATE INDEX IX_Product_ProductName ON [Product](ProductName)",
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_Product_IsActive' AND object_id = OBJECT_ID('Product')) CREATE INDEX IX_Product_IsActive ON [Product](IsActive)",
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_Product_IsSpecialProduct' AND object_id = OBJECT_ID('Product')) CREATE INDEX IX_Product_IsSpecialProduct ON [Product](IsSpecialProduct)",
@@ -1271,6 +1287,7 @@ namespace BlazorApp.Api.Data
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_Product_Search' AND object_id = OBJECT_ID('Product')) CREATE INDEX IX_Product_Search ON [Product](ProductName, ProductCode, ItemNumber, Barcode)",
                 // WarehouseProduct表的普通索引
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_WarehouseProduct_ProductCode' AND object_id = OBJECT_ID('WarehouseProduct')) CREATE UNIQUE INDEX IX_WarehouseProduct_ProductCode ON [WarehouseProduct]([ProductCode])",
+                "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_WarehouseProduct_ProductCode_NotDeleted' AND object_id = OBJECT_ID('WarehouseProduct')) CREATE INDEX IX_WarehouseProduct_ProductCode_NotDeleted ON [WarehouseProduct]([ProductCode]) WHERE [IsDeleted] = 0",
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_WarehouseProduct_IsActive' AND object_id = OBJECT_ID('WarehouseProduct')) CREATE INDEX IX_WarehouseProduct_IsActive ON [WarehouseProduct]([IsActive])",
                 // ProductSetCode表的普通索引
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_ProductSetCode_SetBarcode' AND object_id = OBJECT_ID('ProductSetCode')) CREATE INDEX IX_ProductSetCode_SetBarcode ON [ProductSetCode]([SetBarcode]) WHERE [SetBarcode] IS NOT NULL",
@@ -1284,6 +1301,7 @@ namespace BlazorApp.Api.Data
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_ProductSetCode_IsActive' AND object_id = OBJECT_ID('ProductSetCode')) CREATE INDEX IX_ProductSetCode_IsActive ON [ProductSetCode]([IsActive])",
                 // StoreMultiCodeProduct表的普通索引
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_StoreMultiCodeProduct_StoreCode_MultiCodeProductCode' AND object_id = OBJECT_ID('StoreMultiCodeProduct')) CREATE INDEX IX_StoreMultiCodeProduct_StoreCode_MultiCodeProductCode ON [StoreMultiCodeProduct]([StoreCode], [MultiCodeProductCode]) WHERE [StoreCode] IS NOT NULL AND [MultiCodeProductCode] IS NOT NULL AND [IsDeleted] = 0",
+                "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_StoreMultiCodeProduct_StoreCode_MultiBarcode' AND object_id = OBJECT_ID('StoreMultiCodeProduct')) CREATE INDEX IX_StoreMultiCodeProduct_StoreCode_MultiBarcode ON [StoreMultiCodeProduct]([StoreCode], [MultiBarcode]) WHERE [StoreCode] IS NOT NULL AND [MultiBarcode] IS NOT NULL AND [IsDeleted] = 0",
                 // StoreClearancePrice表的普通索引
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_StoreClearancePrice_ClearanceBarcode' AND object_id = OBJECT_ID('StoreClearancePrice')) CREATE INDEX IX_StoreClearancePrice_ClearanceBarcode ON [StoreClearancePrice]([ClearanceBarcode]) WHERE [ClearanceBarcode] IS NOT NULL",
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_StoreClearancePrice_ClearanceBarcode_Lookup' AND object_id = OBJECT_ID('StoreClearancePrice')) CREATE INDEX IX_StoreClearancePrice_ClearanceBarcode_Lookup ON [StoreClearancePrice]([ClearanceBarcode]) INCLUDE([ProductCode], [StoreCode]) WHERE [ClearanceBarcode] IS NOT NULL AND [IsDeleted] = 0",

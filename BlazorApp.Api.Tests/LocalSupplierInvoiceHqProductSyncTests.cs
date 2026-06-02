@@ -1,5 +1,6 @@
 using System.Reflection;
 using System.Runtime.CompilerServices;
+using System.ComponentModel.DataAnnotations;
 using BlazorApp.Api.Controllers.React;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Services.React;
@@ -53,11 +54,14 @@ public sealed class LocalSupplierInvoiceHqProductSyncTests : IDisposable
     [Fact]
     public void EnsureHqProducts_后端契约与前端一致()
     {
-        Assert.NotNull(typeof(UpdateToStorePricesRequest).GetProperty("UpdateHqProduct"));
+        Assert.Null(typeof(UpdateToStorePricesRequest).GetProperty("UpdateHqProduct"));
         Assert.True(typeof(UpdateToStorePricesResultDto).IsSubclassOf(typeof(BatchResultDto)));
         Assert.NotNull(typeof(EnsureHqProductsRequest).GetProperty("DetailGuids"));
         Assert.NotNull(typeof(EnsureHqProductsRequest).GetProperty("TargetStoreCodes"));
         Assert.NotNull(typeof(EnsureHqProductsResult).GetProperty("HqPurchasePricesUpdated"));
+        AssertRequiredProperty<UpdateHqProductsRequest>("DetailGuids");
+        AssertRequiredProperty<UpdateHqProductsRequest>("TargetStoreCodes");
+        AssertRequiredProperty<UpdateHqProductsRequest>("UpdateFields");
 
         var method = typeof(ReactLocalSupplierInvoicesController).GetMethod("EnsureHqProducts");
         Assert.NotNull(method);
@@ -67,6 +71,287 @@ public sealed class LocalSupplierInvoiceHqProductSyncTests : IDisposable
 
         var auth = Assert.Single(method.GetCustomAttributes<AuthorizeAttribute>());
         Assert.Equal(Permissions.LocalPurchase.Edit, auth.Policy);
+
+        var updateMethod = typeof(ReactLocalSupplierInvoicesController).GetMethod("UpdateHqProducts");
+        Assert.NotNull(updateMethod);
+
+        var updateRoute = Assert.Single(updateMethod!.GetCustomAttributes<HttpPostAttribute>());
+        Assert.Equal("{invoiceGuid}/details/update-hq-products", updateRoute.Template);
+
+        var updatePolicies = updateMethod
+            .GetCustomAttributes<AuthorizeAttribute>()
+            .Select(x => x.Policy)
+            .ToArray();
+        Assert.Contains(Permissions.LocalPurchase.Edit, updatePolicies);
+        Assert.Contains(Permissions.LocalPurchase.PushToHq, updatePolicies);
+    }
+
+    [Fact]
+    public async Task UpdateHqProductsAsync_空请求字段_返回稳定校验错误()
+    {
+        var service = CreateSyncService();
+
+        var nullRequestResult = await service.UpdateHqProductsAsync("invoice-1", null, "tester");
+        Assert.False(nullRequestResult.Success);
+        Assert.Equal("VALIDATION_ERROR", nullRequestResult.Code);
+
+        var nullDetailResult = await service.UpdateHqProductsAsync(
+            "invoice-1",
+            new UpdateHqProductsRequest
+            {
+                DetailGuids = null!,
+                TargetStoreCodes = new List<string> { "S01" },
+                UpdateFields = new UpdateToStorePricesFields { UpdateRetailPrice = true },
+            },
+            "tester"
+        );
+        Assert.False(nullDetailResult.Success);
+        Assert.Equal("VALIDATION_ERROR", nullDetailResult.Code);
+
+        var nullFieldsResult = await service.UpdateHqProductsAsync(
+            "invoice-1",
+            new UpdateHqProductsRequest
+            {
+                DetailGuids = new List<string> { "detail-1" },
+                TargetStoreCodes = new List<string> { "S01" },
+                UpdateFields = null!,
+            },
+            "tester"
+        );
+        Assert.False(nullFieldsResult.Success);
+        Assert.Equal("VALIDATION_ERROR", nullFieldsResult.Code);
+    }
+
+    [Fact]
+    public async Task UpdateHqProductsAsync_只更新勾选字段_未勾选字段保持不变()
+    {
+        await SeedStoreAsync("S01", true);
+        await SeedStoreAsync("S02", true);
+        await SeedInvoiceAsync("invoice-1", "S01", "SUP01");
+        await SeedExistingProductAsync("P-001", "SUP01");
+        await SeedHqProductAsync("P-001", 5m, 10m);
+        await SeedHqPriceAsync("S01", "P-001", 5m, 10m);
+        await SeedHqPriceAsync("S02", "P-001", 6m, 12m);
+        await SeedDetailAsync(new StoreLocalSupplierInvoiceDetails
+        {
+            DetailGUID = "detail-1",
+            InvoiceGUID = "invoice-1",
+            StoreCode = "S01",
+            SupplierCode = "SUP01",
+            ProductCode = "P-001",
+            PurchasePrice = 8m,
+            RetailPrice = 18m,
+            AutoPricing = true,
+            IsSpecialProduct = true,
+            DiscountRate = 0.25m,
+            IsDeleted = false,
+        });
+
+        var result = await CreateSyncService().UpdateHqProductsAsync(
+            "invoice-1",
+            new UpdateHqProductsRequest
+            {
+                DetailGuids = new List<string> { "detail-1" },
+                TargetStoreCodes = new List<string> { "S01" },
+                UpdateFields = new UpdateToStorePricesFields
+                {
+                    UpdateIsAutoPricing = true,
+                },
+            },
+            "tester"
+        );
+
+        Assert.True(result.Success, BuildFailureMessage(result));
+        Assert.Equal(1, result.Data!.Updated);
+        Assert.Equal(1, result.Data.HqAutoPricingUpdated);
+        Assert.Equal(0, result.Data.HqPurchasePricesUpdated);
+        Assert.Equal(0, result.Data.HqRetailPricesUpdated);
+        Assert.Equal(0, result.Data.HqSpecialProductsUpdated);
+        Assert.Equal(0, result.Data.HqDiscountRatesUpdated);
+
+        var hqS01 = await _hqDb.Queryable<DIC_商品零售价表>()
+            .FirstAsync(x => x.H分店代码 == "S01" && x.H商品编码 == "P-001");
+        var hqS02 = await _hqDb.Queryable<DIC_商品零售价表>()
+            .FirstAsync(x => x.H分店代码 == "S02" && x.H商品编码 == "P-001");
+
+        Assert.True(hqS01.H是否自动定价);
+        Assert.Equal(5m, hqS01.H进货价);
+        Assert.Equal(10m, hqS01.H分店零售价);
+        Assert.False(hqS01.H是否特殊商品);
+        Assert.Equal(0m, hqS01.H折扣率);
+        Assert.False(hqS02.H是否自动定价);
+        Assert.Equal(6m, hqS02.H进货价);
+        Assert.Equal(12m, hqS02.H分店零售价);
+    }
+
+    [Fact]
+    public async Task UpdateHqProductsAsync_未选择字段_拒绝写入()
+    {
+        await SeedStoreAsync("S01", true);
+
+        var result = await CreateSyncService().UpdateHqProductsAsync(
+            "invoice-1",
+            new UpdateHqProductsRequest
+            {
+                DetailGuids = new List<string> { "detail-1" },
+                TargetStoreCodes = new List<string> { "S01" },
+                UpdateFields = new UpdateToStorePricesFields(),
+            },
+            "tester"
+        );
+
+        Assert.False(result.Success);
+        Assert.Equal("VALIDATION_ERROR", result.ErrorCode);
+        Assert.Equal(0, result.Data?.Updated ?? 0);
+    }
+
+    [Fact]
+    public async Task UpdateHqProductsAsync_货号仅大小写不同且已存在时_绑定已有商品不重复创建()
+    {
+        await SeedStoreAsync("S01", true);
+        await SeedInvoiceAsync("invoice-1", "S01", "SUP01");
+        await SeedExistingProductAsync("P-001", "SUP01");
+        await SeedLocalPriceAsync("S01", "P-001", 5m, 10m);
+        await SeedHqProductAsync("P-001", 5m, 10m);
+        await SeedHqPriceAsync("S01", "P-001", 5m, 10m);
+        await SeedDetailAsync(new StoreLocalSupplierInvoiceDetails
+        {
+            DetailGUID = "detail-case",
+            InvoiceGUID = "invoice-1",
+            StoreCode = "S01",
+            SupplierCode = "SUP01",
+            ItemNumber = "item-old",
+            Barcode = "930000001111",
+            ProductName = "大小写绑定测试",
+            PurchasePrice = 7m,
+            RetailPrice = 17m,
+            IsDeleted = false,
+        });
+
+        var result = await CreateSyncService().UpdateHqProductsAsync(
+            "invoice-1",
+            new UpdateHqProductsRequest
+            {
+                DetailGuids = new List<string> { "detail-case" },
+                TargetStoreCodes = new List<string> { "S01" },
+                UpdateFields = new UpdateToStorePricesFields
+                {
+                    UpdatePurchasePrice = true,
+                },
+            },
+            "tester"
+        );
+
+        Assert.True(result.Success, BuildFailureMessage(result));
+        Assert.Equal(0, result.Data!.HbwebCreated);
+        Assert.Equal(1, await _localDb.Queryable<Product>().CountAsync());
+
+        var detail = await _localDb.Queryable<StoreLocalSupplierInvoiceDetails>()
+            .FirstAsync(x => x.DetailGUID == "detail-case");
+        Assert.Equal("P-001", detail.ProductCode);
+
+        var hqPrice = await _hqDb.Queryable<DIC_商品零售价表>()
+            .FirstAsync(x => x.H分店代码 == "S01" && x.H商品编码 == "P-001");
+        Assert.Equal(7m, hqPrice.H进货价);
+    }
+
+    [Fact]
+    public async Task UpdateHqProductsAsync_明细商品编码失效但货号已存在_绑定已有本地商品不重复创建()
+    {
+        await SeedStoreAsync("S01", true);
+        await SeedInvoiceAsync("invoice-1", "S01", "SUP01");
+        await SeedExistingProductAsync("P-001", "SUP01");
+        await SeedLocalPriceAsync("S01", "P-001", 5m, 10m);
+        await SeedHqProductAsync("P-001", 5m, 10m);
+        await SeedHqPriceAsync("S01", "P-001", 5m, 10m);
+        await SeedDetailAsync(new StoreLocalSupplierInvoiceDetails
+        {
+            DetailGUID = "detail-stale-code",
+            InvoiceGUID = "invoice-1",
+            StoreCode = "S01",
+            SupplierCode = "SUP01",
+            ProductCode = "STALE-PRODUCT",
+            ItemNumber = "item-old",
+            Barcode = "930000001111",
+            ProductName = "失效编码绑定测试",
+            PurchasePrice = 7m,
+            RetailPrice = 17m,
+            IsDeleted = false,
+        });
+
+        var result = await CreateSyncService().UpdateHqProductsAsync(
+            "invoice-1",
+            new UpdateHqProductsRequest
+            {
+                DetailGuids = new List<string> { "detail-stale-code" },
+                TargetStoreCodes = new List<string> { "S01" },
+                UpdateFields = new UpdateToStorePricesFields
+                {
+                    UpdatePurchasePrice = true,
+                },
+            },
+            "tester"
+        );
+
+        Assert.True(result.Success, BuildFailureMessage(result));
+        Assert.Equal(0, result.Data!.HbwebCreated);
+        Assert.Equal(1, await _localDb.Queryable<Product>().CountAsync());
+
+        var detail = await _localDb.Queryable<StoreLocalSupplierInvoiceDetails>()
+            .FirstAsync(x => x.DetailGUID == "detail-stale-code");
+        Assert.Equal("P-001", detail.ProductCode);
+    }
+
+    [Fact]
+    public async Task UpdateHqProductsAsync_Hq已有大小写货号但编码不同_复用Hq商品不重复创建()
+    {
+        await SeedStoreAsync("S01", true);
+        await SeedInvoiceAsync("invoice-1", "S01", "SUP01");
+        await SeedExistingProductAsync("P-001", "SUP01");
+        await SeedLocalPriceAsync("S01", "P-001", 5m, 10m);
+        await SeedHqProductAsync("P-HQ-OLD", 5m, 10m, itemNumber: "ITEM-OLD", barcode: "930000000000");
+        await SeedHqPriceAsync("S01", "P-HQ-OLD", 5m, 10m);
+        await SeedDetailAsync(new StoreLocalSupplierInvoiceDetails
+        {
+            DetailGUID = "detail-hq-case",
+            InvoiceGUID = "invoice-1",
+            StoreCode = "S01",
+            SupplierCode = "SUP01",
+            ProductCode = "P-001",
+            ItemNumber = "item-old",
+            Barcode = "930000001111",
+            ProductName = "HQ大小写绑定测试",
+            PurchasePrice = 7m,
+            RetailPrice = 17m,
+            IsDeleted = false,
+        });
+
+        var result = await CreateSyncService().UpdateHqProductsAsync(
+            "invoice-1",
+            new UpdateHqProductsRequest
+            {
+                DetailGuids = new List<string> { "detail-hq-case" },
+                TargetStoreCodes = new List<string> { "S01" },
+                UpdateFields = new UpdateToStorePricesFields
+                {
+                    UpdatePurchasePrice = true,
+                },
+            },
+            "tester"
+        );
+
+        Assert.True(result.Success, BuildFailureMessage(result));
+        Assert.Equal(0, result.Data!.HqCreated);
+        Assert.Equal(1, result.Data.HqExisting);
+        Assert.Equal(1, await _hqDb.Queryable<DIC_商品信息字典表>().CountAsync());
+
+        var oldHqPrice = await _hqDb.Queryable<DIC_商品零售价表>()
+            .FirstAsync(x => x.H分店代码 == "S01" && x.H商品编码 == "P-HQ-OLD");
+        Assert.Equal(7m, oldHqPrice.H进货价);
+
+        var newCodePriceCount = await _hqDb.Queryable<DIC_商品零售价表>()
+            .CountAsync(x => x.H商品编码 == "P-001");
+        Assert.Equal(0, newCodePriceCount);
     }
 
     [Fact]
@@ -365,6 +650,14 @@ public sealed class LocalSupplierInvoiceHqProductSyncTests : IDisposable
             : $"{result.Message}: {string.Join("; ", errors.Select(x => $"{x.DetailGuid}/{x.StoreCode}: {x.Message}"))}";
     }
 
+    private static string BuildFailureMessage(ApiResponse<UpdateHqProductsResult> result)
+    {
+        var errors = result.Data?.Errors ?? (result.Details as UpdateHqProductsResult)?.Errors;
+        return errors == null
+            ? result.Message
+            : $"{result.Message}: {string.Join("; ", errors.Select(x => $"{x.DetailGuid}/{x.StoreCode}: {x.Message}"))}";
+    }
+
     private async Task SeedStoreAsync(string storeCode, bool active)
     {
         await _localDb.Insertable(new Store
@@ -394,15 +687,20 @@ public sealed class LocalSupplierInvoiceHqProductSyncTests : IDisposable
         await _localDb.Insertable(detail).ExecuteCommandAsync();
     }
 
-    private async Task SeedExistingProductAsync(string productCode, string supplierCode)
+    private async Task SeedExistingProductAsync(
+        string productCode,
+        string supplierCode,
+        string itemNumber = "ITEM-OLD",
+        string barcode = "930000000000"
+    )
     {
         await _localDb.Insertable(new Product
         {
             UUID = productCode,
             ProductCode = productCode,
             LocalSupplierCode = supplierCode,
-            ItemNumber = "ITEM-OLD",
-            Barcode = "930000000000",
+            ItemNumber = itemNumber,
+            Barcode = barcode,
             ProductName = "旧商品",
             PurchasePrice = 5m,
             RetailPrice = 10m,
@@ -427,7 +725,13 @@ public sealed class LocalSupplierInvoiceHqProductSyncTests : IDisposable
         }).ExecuteCommandAsync();
     }
 
-    private async Task SeedHqProductAsync(string productCode, decimal purchasePrice, decimal retailPrice)
+    private async Task SeedHqProductAsync(
+        string productCode,
+        decimal purchasePrice,
+        decimal retailPrice,
+        string itemNumber = "ITEM-OLD",
+        string barcode = "930000000000"
+    )
     {
         await _hqDb.Insertable(new DIC_商品信息字典表
         {
@@ -436,8 +740,8 @@ public sealed class LocalSupplierInvoiceHqProductSyncTests : IDisposable
             H商品分类码GUID = string.Empty,
             H供货商编码 = "SUP01",
             H商品编码 = productCode,
-            H货号 = "ITEM-OLD",
-            H主条形码 = "930000000000",
+            H货号 = itemNumber,
+            H主条形码 = barcode,
             H商品名称 = "旧商品",
             H大写名称 = "旧商品",
             H规格 = string.Empty,
@@ -508,6 +812,13 @@ public sealed class LocalSupplierInvoiceHqProductSyncTests : IDisposable
             .GetField("_db", BindingFlags.Instance | BindingFlags.NonPublic)!
             .SetValue(context, db);
         return context;
+    }
+
+    private static void AssertRequiredProperty<T>(string propertyName)
+    {
+        var property = typeof(T).GetProperty(propertyName);
+        Assert.NotNull(property);
+        Assert.NotNull(property!.GetCustomAttribute<RequiredAttribute>());
     }
 
     public void Dispose()

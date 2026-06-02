@@ -1,4 +1,5 @@
 using System.ComponentModel.DataAnnotations;
+using System.Text.Json.Serialization;
 
 namespace BlazorApp.Shared.DTOs
 {
@@ -665,6 +666,11 @@ public class SyncMissingOrdersResultDto
     public string? Mode { get; set; }
 
     /// <summary>
+    /// HQ 冲突处理策略；旧缺失订单同步为空。
+    /// </summary>
+    public StoreOrderHqSyncConflictStrategy? ConflictStrategy { get; set; }
+
+    /// <summary>
     /// 同步任务标识。
     /// </summary>
     public string? RunId { get; set; }
@@ -680,6 +686,16 @@ public class SyncMissingOrdersResultDto
     public int OrdersSoftDeleted { get; set; }
 
     public int DetailsSoftDeleted { get; set; }
+
+    /// <summary>
+    /// LatestWins 下因本地时间更新而跳过的订单数。
+    /// </summary>
+    public int SkippedOrdersBecauseLocalNewer { get; set; }
+
+    /// <summary>
+    /// LatestWins 下因本地时间更新而跳过的明细数。
+    /// </summary>
+    public int SkippedDetailsBecauseLocalNewer { get; set; }
 
     public int HqOrderCount { get; set; }
 
@@ -718,6 +734,16 @@ public enum StoreOrderHqSyncMode
 }
 
 /// <summary>
+/// 分店订货 HQ 同步冲突策略。
+/// </summary>
+[JsonConverter(typeof(JsonStringEnumConverter))]
+public enum StoreOrderHqSyncConflictStrategy
+{
+    HqWins = 1,
+    LatestWins = 2,
+}
+
+/// <summary>
 /// 分店订货 HQ 同步请求。
 /// </summary>
 public class StoreOrderHqSyncRequestDto
@@ -741,6 +767,12 @@ public class StoreOrderHqSyncRequestDto
     /// 增量同步结束时间；为空时后端默认当前时间。
     /// </summary>
     public DateTime? EndDate { get; set; }
+
+    /// <summary>
+    /// 增量同步冲突策略；默认使用 LatestWins。
+    /// </summary>
+    public StoreOrderHqSyncConflictStrategy ConflictStrategy { get; set; } =
+        StoreOrderHqSyncConflictStrategy.LatestWins;
 }
 
 /// <summary>
@@ -780,6 +812,11 @@ public class StoreOrderSyncJobDto
     /// HQ 同步模式；旧缺失订单同步为空。
     /// </summary>
     public string? Mode { get; set; }
+
+    /// <summary>
+    /// HQ 冲突处理策略；旧缺失订单同步为空。
+    /// </summary>
+    public StoreOrderHqSyncConflictStrategy? ConflictStrategy { get; set; }
 
     /// <summary>
     /// 参与同步的分店集合

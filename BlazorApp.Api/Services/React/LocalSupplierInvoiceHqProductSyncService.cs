@@ -155,6 +155,222 @@ namespace BlazorApp.Api.Services.React
             }
         }
 
+        public async Task<ApiResponse<UpdateHqProductsResult>> UpdateHqProductsAsync(
+            string invoiceGuid,
+            UpdateHqProductsRequest? request,
+            string updatedBy
+        )
+        {
+            var result = new UpdateHqProductsResult();
+            // HQ字段更新直接写总部价格表，入口先兜底空payload，避免异常绕过可展示的失败结果。
+            if (request == null)
+                return ApiResponse<UpdateHqProductsResult>.Error("请求参数不能为空", "VALIDATION_ERROR", result);
+
+            var updateFields = request.UpdateFields;
+            var detailGuids = (request.DetailGuids ?? new List<string>())
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .Distinct()
+                .ToList();
+            var targetStoreCodes = (request.TargetStoreCodes ?? new List<string>())
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .Distinct()
+                .ToList();
+
+            if (detailGuids.Count == 0)
+                return ApiResponse<UpdateHqProductsResult>.Error("请选择要更新的明细", "VALIDATION_ERROR", result);
+            if (targetStoreCodes.Count == 0)
+                return ApiResponse<UpdateHqProductsResult>.Error("请选择目标分店", "VALIDATION_ERROR", result);
+            if (updateFields == null || !HasAnyUpdateField(updateFields))
+                return ApiResponse<UpdateHqProductsResult>.Error("请选择要更新的HQ字段", "VALIDATION_ERROR", result);
+
+            result.Total = detailGuids.Count;
+
+            try
+            {
+                var db = _context.Db;
+                var header = await db.Queryable<StoreLocalSupplierInvoice>()
+                    .Where(x => x.InvoiceGUID == invoiceGuid && x.IsDeleted == false)
+                    .FirstAsync();
+                if (header == null)
+                    return ApiResponse<UpdateHqProductsResult>.Error("进货单不存在", "NOT_FOUND", result);
+
+                var details = await db.Queryable<StoreLocalSupplierInvoiceDetails>()
+                    .Where(x =>
+                        x.InvoiceGUID == invoiceGuid
+                        && detailGuids.Contains(x.DetailGUID)
+                        && x.IsDeleted == false
+                    )
+                    .ToListAsync();
+                if (details.Count == 0)
+                    return ApiResponse<UpdateHqProductsResult>.Error("未找到要更新的明细", "NOT_FOUND", result);
+
+                var activeStoreCodes = await db.Queryable<Store>()
+                    .Where(x => x.IsActive && x.IsDeleted == false)
+                    .Select(x => x.StoreCode)
+                    .ToListAsync();
+                activeStoreCodes = activeStoreCodes
+                    .Where(x => !string.IsNullOrWhiteSpace(x))
+                    .Distinct()
+                    .ToList();
+                if (activeStoreCodes.Count == 0)
+                    return ApiResponse<UpdateHqProductsResult>.Error("未找到启用分店", "NO_ACTIVE_STORE", result);
+
+                var invalidTargetStores = targetStoreCodes
+                    .Where(storeCode => !activeStoreCodes.Contains(storeCode))
+                    .ToList();
+                if (invalidTargetStores.Count > 0)
+                {
+                    return ApiResponse<UpdateHqProductsResult>.Error(
+                        $"目标分店不存在或未启用：{string.Join(", ", invalidTargetStores)}",
+                        "INVALID_TARGET_STORE",
+                        result
+                    );
+                }
+
+                var updateItems = new List<PreparedSyncItem>();
+                await db.Ado.BeginTranAsync();
+                try
+                {
+                    foreach (var detail in details)
+                    {
+                        var prepared = await PrepareLocalProductForHqUpdateAsync(
+                            header,
+                            detail,
+                            updatedBy,
+                            result
+                        );
+                        if (prepared != null)
+                            updateItems.Add(prepared);
+                    }
+
+                    await db.Ado.CommitTranAsync();
+                }
+                catch
+                {
+                    await db.Ado.RollbackTranAsync();
+                    throw;
+                }
+
+                foreach (var item in updateItems)
+                {
+                    try
+                    {
+                        await UpdateHqStorePricesAsync(
+                            item,
+                            targetStoreCodes,
+                            updateFields,
+                            updatedBy,
+                            result
+                        );
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(
+                            ex,
+                            "更新HQ商品字段失败 DetailGuid={DetailGuid}",
+                            item.Detail.DetailGUID
+                        );
+                        AddError(result, item.Detail.DetailGUID, null, $"更新HQ商品失败：{ex.Message}");
+                    }
+                }
+
+                if (result.Failed > 0)
+                {
+                    return ApiResponse<UpdateHqProductsResult>.Error(
+                        "更新HQ商品部分失败",
+                        "HQ_UPDATE_PARTIAL_FAILED",
+                        result
+                    );
+                }
+
+                return ApiResponse<UpdateHqProductsResult>.OK(result, "更新HQ商品完成");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "更新HQ商品异常");
+                return ApiResponse<UpdateHqProductsResult>.Error(
+                    $"更新HQ商品失败: {ex.Message}",
+                    "HQ_UPDATE_ERROR",
+                    result
+                );
+            }
+        }
+
+        private async Task<PreparedSyncItem?> PrepareLocalProductForHqUpdateAsync(
+            StoreLocalSupplierInvoice header,
+            StoreLocalSupplierInvoiceDetails detail,
+            string updatedBy,
+            UpdateHqProductsResult result
+        )
+        {
+            var db = _context.Db;
+            var now = DateTime.UtcNow;
+            var product = await FindExistingProductAsync(
+                db,
+                detail.ProductCode,
+                header.SupplierCode ?? detail.SupplierCode,
+                detail.ItemNumber,
+                detail.Barcode
+            );
+
+            var isNewProduct = product == null;
+            if (product == null)
+            {
+                if (string.IsNullOrWhiteSpace(detail.ItemNumber))
+                {
+                    AddError(result, detail.DetailGUID, detail.StoreCode, "新建商品货号不能为空");
+                    return null;
+                }
+                if (string.IsNullOrWhiteSpace(detail.Barcode))
+                {
+                    AddError(result, detail.DetailGUID, detail.StoreCode, "新建商品条码不能为空");
+                    return null;
+                }
+                if (detail.PurchasePrice == null || detail.PurchasePrice <= 0)
+                {
+                    AddError(result, detail.DetailGUID, detail.StoreCode, "新建商品进货价必须大于0");
+                    return null;
+                }
+
+                var productCode = UuidHelper.GenerateUuid7();
+                product = new Product
+                {
+                    UUID = productCode,
+                    ProductCode = productCode,
+                    ProductCategoryGUID = detail.ProductCategoryGUID,
+                    LocalSupplierCode = header.SupplierCode ?? detail.SupplierCode,
+                    ItemNumber = detail.ItemNumber,
+                    Barcode = detail.Barcode,
+                    ProductName = detail.ProductName ?? string.Empty,
+                    ProductType = 0,
+                    PurchasePrice = detail.PurchasePrice,
+                    RetailPrice = ResolveRetailPrice(detail),
+                    IsAutoPricing = detail.AutoPricing ?? true,
+                    IsSpecialProduct = detail.IsSpecialProduct ?? false,
+                    ProductImage = detail.ProductImage,
+                    IsActive = true,
+                    IsDeleted = false,
+                    CreatedAt = now,
+                    UpdatedAt = now,
+                    CreatedBy = updatedBy,
+                    UpdatedBy = updatedBy,
+                };
+
+                await db.Insertable(product).ExecuteCommandAsync();
+                result.HbwebCreated++;
+            }
+
+            // HQ字段更新只需要绑定明细到商品，不能顺带更新本地分店价格。
+            detail.ProductCode = product.ProductCode;
+            detail.StoreProductCode ??= BuildStoreProductCode(detail.StoreCode, product.ProductCode!);
+            detail.LastPurchasePrice = detail.PurchasePrice ?? product.PurchasePrice;
+            detail.UpdatedAt = now;
+            detail.UpdatedBy = updatedBy;
+            await db.Updateable(detail).ExecuteCommandAsync();
+
+            return new PreparedSyncItem(detail, product, isNewProduct);
+        }
+
         private async Task<PreparedSyncItem?> PrepareLocalProductAsync(
             StoreLocalSupplierInvoice header,
             StoreLocalSupplierInvoiceDetails detail,
@@ -172,31 +388,13 @@ namespace BlazorApp.Api.Services.React
 
             var db = _context.Db;
             var now = DateTime.UtcNow;
-            Product? product = null;
-
-            if (!string.IsNullOrWhiteSpace(detail.ProductCode))
-            {
-                product = await db.Queryable<Product>()
-                    .Where(x => x.ProductCode == detail.ProductCode && x.IsDeleted == false)
-                    .FirstAsync();
-            }
-            else if (!string.IsNullOrWhiteSpace(detail.ItemNumber) || !string.IsNullOrWhiteSpace(detail.Barcode))
-            {
-                var supplierCode = header.SupplierCode ?? detail.SupplierCode;
-                var itemNumber = detail.ItemNumber;
-                var barcode = detail.Barcode;
-                var productQuery = db.Queryable<Product>()
-                    .Where(x => x.IsDeleted == false && x.LocalSupplierCode == supplierCode);
-
-                if (!string.IsNullOrWhiteSpace(itemNumber) && !string.IsNullOrWhiteSpace(barcode))
-                    productQuery = productQuery.Where(x => x.ItemNumber == itemNumber || x.Barcode == barcode);
-                else if (!string.IsNullOrWhiteSpace(itemNumber))
-                    productQuery = productQuery.Where(x => x.ItemNumber == itemNumber);
-                else
-                    productQuery = productQuery.Where(x => x.Barcode == barcode);
-
-                product = await productQuery.FirstAsync();
-            }
+            var product = await FindExistingProductAsync(
+                db,
+                detail.ProductCode,
+                header.SupplierCode ?? detail.SupplierCode,
+                detail.ItemNumber,
+                detail.Barcode
+            );
 
             var isNewProduct = product == null;
             if (product == null)
@@ -384,6 +582,105 @@ namespace BlazorApp.Api.Services.React
             await UpsertHqStorePricesAsync(detail, product, hqPriceScope, updatedBy, result);
         }
 
+        private async Task UpdateHqStorePricesAsync(
+            PreparedSyncItem item,
+            List<string> targetStoreCodes,
+            UpdateToStorePricesFields updateFields,
+            string updatedBy,
+            UpdateHqProductsResult result
+        )
+        {
+            var hqDb = _hqContext.Db;
+            var detail = item.Detail;
+            var product = item.Product;
+            var productCode = product.ProductCode!;
+            var now = DateTime.UtcNow;
+
+            if (!TryValidateSelectedFieldValues(detail, product, updateFields, result))
+                return;
+
+            var hqProduct = await FindExistingHqProductAsync(
+                hqDb,
+                productCode,
+                product.LocalSupplierCode ?? detail.SupplierCode,
+                product.ItemNumber ?? detail.ItemNumber,
+                product.Barcode ?? detail.Barcode
+            );
+            var hqProductCode = hqProduct?.H商品编码 ?? productCode;
+            if (hqProduct == null)
+            {
+                await hqDb.Insertable(new DIC_商品信息字典表
+                {
+                    HGUID = product.UUID,
+                    H商品标签GUID = detail.ProductTagGUID ?? string.Empty,
+                    H商品分类码GUID = product.ProductCategoryGUID ?? string.Empty,
+                    H供货商编码 = product.LocalSupplierCode ?? string.Empty,
+                    H商品编码 = productCode,
+                    H货号 = product.ItemNumber ?? string.Empty,
+                    H主条形码 = product.Barcode ?? string.Empty,
+                    H商品名称 = product.ProductName ?? string.Empty,
+                    H商品类型 = product.ProductType ?? 0,
+                    H大写名称 = product.ProductName ?? string.Empty,
+                    H规格 = detail.Specification ?? string.Empty,
+                    H单位 = detail.Unit ?? string.Empty,
+                    H进货价 = product.PurchasePrice ?? 0,
+                    H零售价 = product.RetailPrice ?? ResolveRetailPrice(detail),
+                    H是否自动定价 = product.IsAutoPricing,
+                    H商品图片 = product.ProductImage ?? string.Empty,
+                    中包数量 = product.MiddlePackageQuantity ?? 0,
+                    H腾讯云图地址 = string.Empty,
+                    H使用状态 = product.IsActive,
+                    H是否特殊商品 = product.IsSpecialProduct,
+                    H进货单主表GUID = detail.InvoiceGUID ?? string.Empty,
+                    H进货单详情GUID = detail.DetailGUID,
+                    CBP商品中文名称 = product.ProductName ?? string.Empty,
+                    CBP供应商编码 = product.LocalSupplierCode ?? string.Empty,
+                    CBP商品分类码GUID = product.WarehouseCategoryGUID ?? string.Empty,
+                    FGC_Creator = updatedBy,
+                    FGC_CreateDate = now,
+                    FGC_LastModifier = updatedBy,
+                    FGC_LastModifyDate = now,
+                    FGC_UpdateHelp = string.Empty,
+                }).IgnoreColumns(x => x.ID).ExecuteCommandAsync();
+                result.HqCreated++;
+            }
+            else
+            {
+                result.HqExisting++;
+                result.HqSynced++;
+            }
+
+            var existingPrices = await hqDb.Queryable<DIC_商品零售价表>()
+                .Where(x => targetStoreCodes.Contains(x.H分店代码) && x.H商品编码 == hqProductCode)
+                .ToListAsync();
+            var existingByStore = existingPrices.ToDictionary(x => x.H分店代码, x => x);
+
+            foreach (var storeCode in targetStoreCodes)
+            {
+                try
+                {
+                    if (!existingByStore.TryGetValue(storeCode, out var price))
+                    {
+                        price = BuildHqStorePrice(detail, product, storeCode, updatedBy, now, hqProductCode);
+                        ApplySelectedHqFields(price, detail, product, updateFields, result);
+                        await hqDb.Insertable(price).IgnoreColumns(x => x.ID).ExecuteCommandAsync();
+                        result.Updated++;
+                        continue;
+                    }
+
+                    ApplySelectedHqFields(price, detail, product, updateFields, result);
+                    price.FGC_LastModifier = updatedBy;
+                    price.FGC_LastModifyDate = now;
+                    await hqDb.Updateable(price).ExecuteCommandAsync();
+                    result.Updated++;
+                }
+                catch (Exception ex)
+                {
+                    AddError(result, detail.DetailGUID, storeCode, $"更新HQ分店价格失败：{ex.Message}");
+                }
+            }
+        }
+
         private async Task UpsertHqStorePricesAsync(
             StoreLocalSupplierInvoiceDetails detail,
             Product product,
@@ -478,6 +775,177 @@ namespace BlazorApp.Api.Services.React
             }
         }
 
+        private static DIC_商品零售价表 BuildHqStorePrice(
+            StoreLocalSupplierInvoiceDetails detail,
+            Product product,
+            string storeCode,
+            string updatedBy,
+            DateTime now,
+            string? hqProductCode = null
+        )
+        {
+            var productCode = hqProductCode ?? product.ProductCode!;
+            return new DIC_商品零售价表
+            {
+                HGUID = UuidHelper.GenerateUuid7(),
+                H分店代码 = storeCode,
+                H商品编码 = productCode,
+                H分店商品编码 = BuildStoreProductCode(storeCode, productCode),
+                H供应商编码 = product.LocalSupplierCode ?? detail.SupplierCode ?? string.Empty,
+                H分店供应商编码 = BuildStoreSupplierCode(
+                    storeCode,
+                    product.LocalSupplierCode ?? detail.SupplierCode
+                ),
+                H进货价 = detail.PurchasePrice ?? product.PurchasePrice ?? 0,
+                H分店零售价 = ResolveRetailPrice(detail),
+                H库存 = 0,
+                H库存金额 = 0,
+                H库存预警数 = 0,
+                H商品缺货日期 = DateTime.MinValue,
+                H是否缺货状态 = false,
+                H最小订货量 = 0,
+                H最小订货量合计金额 = 0,
+                H活动类型 = string.Empty,
+                H满减活动代码 = string.Empty,
+                H活动开始日期 = DateTime.MinValue,
+                H活动结束日期 = DateTime.MinValue,
+                H折扣率 = detail.DiscountRate ?? 0,
+                H满减数量 = 0,
+                H满减金额 = 0,
+                H多码数量 = 0,
+                H使用状态 = true,
+                H是否自动定价 = detail.AutoPricing ?? true,
+                H自动新价格 = detail.NewAutoRetailPrice ?? 0,
+                H盘点入库记录数 = 0,
+                H是否特殊商品 = detail.IsSpecialProduct ?? false,
+                H动态销售数量 = 0,
+                H动态销售额 = 0,
+                H动态成本 = 0,
+                H动态毛利 = 0,
+                H动态毛利率 = 0,
+                H动态销售占比 = 0,
+                FGC_Creator = updatedBy,
+                FGC_CreateDate = now,
+                FGC_LastModifier = updatedBy,
+                FGC_LastModifyDate = now,
+            };
+        }
+
+        private static void ApplySelectedHqFields(
+            DIC_商品零售价表 price,
+            StoreLocalSupplierInvoiceDetails detail,
+            Product product,
+            UpdateToStorePricesFields updateFields,
+            UpdateHqProductsResult result
+        )
+        {
+            if (updateFields.UpdatePurchasePrice)
+            {
+                price.H进货价 = ResolvePurchasePriceForUpdate(detail, product, updateFields)!.Value;
+                result.HqPurchasePricesUpdated++;
+            }
+
+            if (updateFields.UpdateRetailPrice)
+            {
+                price.H分店零售价 = ResolveRetailPriceForUpdate(detail, updateFields)!.Value;
+                result.HqRetailPricesUpdated++;
+            }
+
+            if (updateFields.UpdateIsAutoPricing)
+            {
+                price.H是否自动定价 = ResolveAutoPricingForUpdate(detail, updateFields)!.Value;
+                result.HqAutoPricingUpdated++;
+            }
+
+            if (updateFields.UpdateIsSpecialProduct)
+            {
+                price.H是否特殊商品 = ResolveSpecialProductForUpdate(detail, updateFields)!.Value;
+                result.HqSpecialProductsUpdated++;
+            }
+
+            if (updateFields.UpdateDiscountRate)
+            {
+                price.H折扣率 = ResolveDiscountRateForUpdate(detail, updateFields)!.Value;
+                result.HqDiscountRatesUpdated++;
+            }
+        }
+
+        private static bool TryValidateSelectedFieldValues(
+            StoreLocalSupplierInvoiceDetails detail,
+            Product product,
+            UpdateToStorePricesFields updateFields,
+            UpdateHqProductsResult result
+        )
+        {
+            var messages = new List<string>();
+            if (updateFields.UpdatePurchasePrice && ResolvePurchasePriceForUpdate(detail, product, updateFields) == null)
+                messages.Add("进货价为空");
+            if (updateFields.UpdateRetailPrice && ResolveRetailPriceForUpdate(detail, updateFields) == null)
+                messages.Add("零售价为空");
+            if (updateFields.UpdateIsAutoPricing && ResolveAutoPricingForUpdate(detail, updateFields) == null)
+                messages.Add("自动定价为空");
+            if (updateFields.UpdateIsSpecialProduct && ResolveSpecialProductForUpdate(detail, updateFields) == null)
+                messages.Add("特殊商品为空");
+            if (updateFields.UpdateDiscountRate && ResolveDiscountRateForUpdate(detail, updateFields) == null)
+                messages.Add("折扣率为空");
+
+            if (messages.Count == 0)
+                return true;
+
+            AddError(result, detail.DetailGUID, detail.StoreCode, string.Join("，", messages));
+            return false;
+        }
+
+        private static bool HasAnyUpdateField(UpdateToStorePricesFields updateFields)
+        {
+            return updateFields.UpdatePurchasePrice
+                || updateFields.UpdateRetailPrice
+                || updateFields.UpdateIsAutoPricing
+                || updateFields.UpdateIsSpecialProduct
+                || updateFields.UpdateDiscountRate;
+        }
+
+        private static decimal? ResolvePurchasePriceForUpdate(
+            StoreLocalSupplierInvoiceDetails detail,
+            Product product,
+            UpdateToStorePricesFields updateFields
+        )
+        {
+            return updateFields.PurchasePrice ?? detail.PurchasePrice ?? product.PurchasePrice;
+        }
+
+        private static decimal? ResolveRetailPriceForUpdate(
+            StoreLocalSupplierInvoiceDetails detail,
+            UpdateToStorePricesFields updateFields
+        )
+        {
+            return updateFields.RetailPrice ?? detail.RetailPrice ?? detail.NewAutoRetailPrice;
+        }
+
+        private static bool? ResolveAutoPricingForUpdate(
+            StoreLocalSupplierInvoiceDetails detail,
+            UpdateToStorePricesFields updateFields
+        )
+        {
+            return updateFields.IsAutoPricing ?? detail.AutoPricing;
+        }
+
+        private static bool? ResolveSpecialProductForUpdate(
+            StoreLocalSupplierInvoiceDetails detail,
+            UpdateToStorePricesFields updateFields
+        )
+        {
+            return updateFields.IsSpecialProduct ?? detail.IsSpecialProduct;
+        }
+
+        private static decimal? ResolveDiscountRateForUpdate(
+            StoreLocalSupplierInvoiceDetails detail,
+            UpdateToStorePricesFields updateFields
+        )
+        {
+            return updateFields.DiscountRate ?? detail.DiscountRate;
+        }
+
         private static decimal ResolveRetailPrice(StoreLocalSupplierInvoiceDetails detail)
         {
             if (detail.AutoPricing == true && detail.NewAutoRetailPrice.GetValueOrDefault() > 0)
@@ -497,6 +965,128 @@ namespace BlazorApp.Api.Services.React
         private static string BuildStoreSupplierCode(string storeCode, string? supplierCode)
         {
             return $"{storeCode}{supplierCode ?? string.Empty}";
+        }
+
+        private static string? NormalizeCaseInsensitiveValue(string? value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+                return null;
+
+            return value.Trim().ToUpperInvariant();
+        }
+
+        private static ISugarQueryable<Product> ApplySupplierFilter(
+            ISugarQueryable<Product> query,
+            string? supplierCode
+        )
+        {
+            if (string.IsNullOrWhiteSpace(supplierCode))
+                return query;
+
+            return query.Where(product => product.LocalSupplierCode == supplierCode);
+        }
+
+        private static ISugarQueryable<Product> ApplyCaseInsensitiveCodeFilter(
+            ISugarQueryable<Product> query,
+            string? itemNumber,
+            string? barcode
+        )
+        {
+            var normalizedItemNumber = NormalizeCaseInsensitiveValue(itemNumber);
+            var normalizedBarcode = NormalizeCaseInsensitiveValue(barcode);
+
+            if (normalizedItemNumber != null && normalizedBarcode != null)
+            {
+                return query.Where(product =>
+                    SqlFunc.ToUpper(product.ItemNumber) == normalizedItemNumber
+                    || SqlFunc.ToUpper(product.Barcode) == normalizedBarcode
+                );
+            }
+
+            if (normalizedItemNumber != null)
+            {
+                return query.Where(product =>
+                    SqlFunc.ToUpper(product.ItemNumber) == normalizedItemNumber
+                );
+            }
+
+            return query.Where(product => SqlFunc.ToUpper(product.Barcode) == normalizedBarcode);
+        }
+
+        private static async Task<Product?> FindExistingProductAsync(
+            ISqlSugarClient db,
+            string? productCode,
+            string? supplierCode,
+            string? itemNumber,
+            string? barcode
+        )
+        {
+            if (!string.IsNullOrWhiteSpace(productCode))
+            {
+                var productByCode = await db.Queryable<Product>()
+                    .Where(product => product.ProductCode == productCode && product.IsDeleted == false)
+                    .FirstAsync();
+                if (productByCode != null)
+                    return productByCode;
+            }
+
+            if (string.IsNullOrWhiteSpace(itemNumber) && string.IsNullOrWhiteSpace(barcode))
+                return null;
+
+            var productQuery = ApplySupplierFilter(
+                db.Queryable<Product>().Where(product => product.IsDeleted == false),
+                supplierCode
+            );
+
+            productQuery = ApplyCaseInsensitiveCodeFilter(productQuery, itemNumber, barcode);
+            return await productQuery.FirstAsync();
+        }
+
+        private static async Task<DIC_商品信息字典表?> FindExistingHqProductAsync(
+            ISqlSugarClient hqDb,
+            string? productCode,
+            string? supplierCode,
+            string? itemNumber,
+            string? barcode
+        )
+        {
+            if (!string.IsNullOrWhiteSpace(productCode))
+            {
+                var productByCode = await hqDb.Queryable<DIC_商品信息字典表>()
+                    .Where(product => product.H商品编码 == productCode)
+                    .FirstAsync();
+                if (productByCode != null)
+                    return productByCode;
+            }
+
+            if (string.IsNullOrWhiteSpace(itemNumber) && string.IsNullOrWhiteSpace(barcode))
+                return null;
+
+            var normalizedItemNumber = NormalizeCaseInsensitiveValue(itemNumber);
+            var normalizedBarcode = NormalizeCaseInsensitiveValue(barcode);
+            var query = hqDb.Queryable<DIC_商品信息字典表>();
+
+            if (!string.IsNullOrWhiteSpace(supplierCode))
+                query = query.Where(product => product.H供货商编码 == supplierCode);
+
+            // HQ 商品编码可能与本地编码不同，插入前按业务唯一字段兜底避免大小写重复。
+            if (normalizedItemNumber != null && normalizedBarcode != null)
+            {
+                query = query.Where(product =>
+                    SqlFunc.ToUpper(product.H货号) == normalizedItemNumber
+                    || SqlFunc.ToUpper(product.H主条形码) == normalizedBarcode
+                );
+            }
+            else if (normalizedItemNumber != null)
+            {
+                query = query.Where(product => SqlFunc.ToUpper(product.H货号) == normalizedItemNumber);
+            }
+            else
+            {
+                query = query.Where(product => SqlFunc.ToUpper(product.H主条形码) == normalizedBarcode);
+            }
+
+            return await query.FirstAsync();
         }
 
         private static void AddError(

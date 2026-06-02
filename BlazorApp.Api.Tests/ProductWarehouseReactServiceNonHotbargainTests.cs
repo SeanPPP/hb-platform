@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Linq;
 using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Threading.Tasks;
@@ -80,6 +81,140 @@ namespace BlazorApp.Api.Tests
             Assert.Equal("P200", item.ProductCode);
             Assert.Equal("200", item.LocalSupplierCode);
             Assert.Equal("默认供应商", item.LocalSupplierName);
+        }
+
+        [Fact]
+        public async Task GetNonHotbargainProductsNotInWarehouseAsync_UsesStableItemNumberOrderAndExcludesExistingWarehouseRows()
+        {
+            await SeedProductAsync(
+                "P-OLD",
+                "HB022-204",
+                "4 pack mini bun",
+                "9527902200754",
+                "200",
+                new DateTime(2026, 1, 1),
+                purchasePrice: 1.6m,
+                retailPrice: 4.99m
+            );
+            await SeedProductAsync(
+                "P-NEW",
+                "ZZZ-999",
+                "晚更新商品",
+                "9999999999999",
+                "200",
+                new DateTime(2026, 6, 1)
+            );
+            await SeedProductAsync(
+                "P-IN-WAREHOUSE",
+                "AAA-001",
+                "已有仓库商品",
+                "1111111111111",
+                "200",
+                new DateTime(2026, 6, 2)
+            );
+            await SeedProductAsync(
+                "P-SOFT-DELETED",
+                "CCC-001",
+                "软删除仓库商品",
+                "3333333333333",
+                "200",
+                new DateTime(2026, 5, 1)
+            );
+            await SeedWarehouseProductAsync("P-IN-WAREHOUSE", isDeleted: false);
+            await SeedWarehouseProductAsync("P-SOFT-DELETED", isDeleted: true);
+
+            var result = await CreateService().GetNonHotbargainProductsNotInWarehouseAsync(
+                new GetNonHotbargainProductsNotInWarehouseRequestDto { Page = 1, PageSize = 20 }
+            );
+
+            Assert.Equal(3, result.Total);
+            Assert.Equal(
+                new[] { "CCC-001", "HB022-204", "ZZZ-999" },
+                result.Items.Select(item => item.ItemNumber).ToArray()
+            );
+            Assert.DoesNotContain(result.Items, item => item.ProductCode == "P-IN-WAREHOUSE");
+
+            var hbItem = Assert.Single(result.Items, item => item.ProductCode == "P-OLD");
+            Assert.Equal("9527902200754", hbItem.Barcode);
+            Assert.Equal(1.6m, hbItem.PurchasePrice);
+            Assert.Equal(4.99m, hbItem.RetailPrice);
+        }
+
+        [Fact]
+        public async Task GetNonHotbargainProductsNotInWarehouseAsync_SearchesByItemNumberAndReturnsSupplierName()
+        {
+            await SeedSupplierAsync("200", "Hot Bargain");
+            await SeedProductAsync(
+                "P-HB",
+                "HB022-204",
+                "4 pack mini bun",
+                "9527902200754",
+                "200",
+                new DateTime(2026, 1, 1),
+                purchasePrice: 1.6m,
+                retailPrice: 4.99m
+            );
+            await SeedProductAsync(
+                "P-OTHER",
+                "HB999-999",
+                "其它商品",
+                "9999999999999",
+                "200",
+                new DateTime(2026, 1, 2)
+            );
+
+            var result = await CreateService().GetNonHotbargainProductsNotInWarehouseAsync(
+                new GetNonHotbargainProductsNotInWarehouseRequestDto
+                {
+                    Page = 1,
+                    PageSize = 20,
+                    GlobalSearch = "HB022-204",
+                }
+            );
+
+            var item = Assert.Single(result.Items);
+            Assert.Equal("P-HB", item.ProductCode);
+            Assert.Equal("Hot Bargain", item.LocalSupplierName);
+            Assert.Equal("9527902200754", item.Barcode);
+            Assert.Equal(1.6m, item.PurchasePrice);
+            Assert.Equal(4.99m, item.RetailPrice);
+        }
+
+        [Fact]
+        public async Task GetNonHotbargainProductsNotInWarehouseAsync_FiltersByLocalSupplierCode()
+        {
+            await SeedSupplierAsync("200", "Hot Bargain");
+            await SeedSupplierAsync("201", "Other Supplier");
+            await SeedProductAsync(
+                "P-200",
+                "HB022-204",
+                "供应商200商品",
+                "9527902200754",
+                "200",
+                new DateTime(2026, 1, 1)
+            );
+            await SeedProductAsync(
+                "P-201",
+                "AB001",
+                "供应商201商品",
+                "2012012012012",
+                "201",
+                new DateTime(2026, 1, 2)
+            );
+
+            var result = await CreateService().GetNonHotbargainProductsNotInWarehouseAsync(
+                new GetNonHotbargainProductsNotInWarehouseRequestDto
+                {
+                    Page = 1,
+                    PageSize = 20,
+                    Filters = new() { ["localSupplierCode"] = new[] { "200" } },
+                }
+            );
+
+            var item = Assert.Single(result.Items);
+            Assert.Equal("P-200", item.ProductCode);
+            Assert.Equal("200", item.LocalSupplierCode);
+            Assert.Equal("Hot Bargain", item.LocalSupplierName);
         }
 
         [Fact]
@@ -221,6 +356,55 @@ namespace BlazorApp.Api.Tests
             dbField!.SetValue(context, new Mock<ISqlSugarClient>().Object);
 
             return context;
+        }
+
+        private async Task SeedProductAsync(
+            string productCode,
+            string itemNumber,
+            string productName,
+            string barcode,
+            string localSupplierCode,
+            DateTime updatedAt,
+            decimal? purchasePrice = null,
+            decimal? retailPrice = null
+        )
+        {
+            await _db.Insertable(new Product
+            {
+                UUID = $"{productCode}-uuid",
+                ProductCode = productCode,
+                ItemNumber = itemNumber,
+                ProductName = productName,
+                Barcode = barcode,
+                LocalSupplierCode = localSupplierCode,
+                PurchasePrice = purchasePrice,
+                RetailPrice = retailPrice,
+                UpdatedAt = updatedAt,
+                IsActive = true,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+        }
+
+        private async Task SeedSupplierAsync(string localSupplierCode, string name)
+        {
+            await _db.Insertable(new HBLocalSupplier
+            {
+                Guid = $"{localSupplierCode}-guid",
+                LocalSupplierCode = localSupplierCode,
+                Name = name,
+                Status = 1,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+        }
+
+        private async Task SeedWarehouseProductAsync(string productCode, bool isDeleted)
+        {
+            await _db.Insertable(new WarehouseProduct
+            {
+                ProductCode = productCode,
+                IsActive = true,
+                IsDeleted = isDeleted,
+            }).ExecuteCommandAsync();
         }
     }
 }

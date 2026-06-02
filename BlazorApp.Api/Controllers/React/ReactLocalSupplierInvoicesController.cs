@@ -138,6 +138,143 @@ namespace BlazorApp.Api.Controllers.React
             return activeStoreCodes.All(userStoreCodes.Contains);
         }
 
+        private async Task<ApiResponse<BatchExecuteConfirmationDetailsDto>?> ValidateBatchExecuteConfirmationAsync(
+            string invoiceGuid,
+            BatchExecuteActionsRequestDto dto
+        )
+        {
+            var selectedDetailGuids = dto.DetailGuids
+                .Where(detailGuid => !string.IsNullOrWhiteSpace(detailGuid))
+                .Distinct()
+                .ToList();
+
+            if (selectedDetailGuids.Count == 0)
+                return null;
+
+            var expectedActions = dto.ExpectedActions
+                .Where(item => !string.IsNullOrWhiteSpace(item.DetailGuid))
+                .GroupBy(item => item.DetailGuid)
+                .Select(group => group.First())
+                .ToList();
+
+            if (expectedActions.Count == 0 || dto.ConfirmedCreateProductCount == null)
+            {
+                return ApiResponse<BatchExecuteConfirmationDetailsDto>.Error(
+                    "批量执行确认已失效：缺少确认动作快照，请刷新后重试",
+                    "VALIDATION_ERROR",
+                    new BatchExecuteConfirmationDetailsDto
+                    {
+                        RequestedDetailCount = selectedDetailGuids.Count,
+                        CurrentDetailCount = 0,
+                        ConfirmedCreateProductCount = dto.ConfirmedCreateProductCount,
+                        CurrentCreateProductCount = 0,
+                    }
+                );
+            }
+
+            var currentDetails = await _dbContext.Db.Queryable<StoreLocalSupplierInvoiceDetails>()
+                .Where(detail =>
+                    detail.InvoiceGUID == invoiceGuid
+                    && selectedDetailGuids.Contains(detail.DetailGUID)
+                    && detail.IsDeleted == false
+                )
+                .Select(detail => new { detail.DetailGUID, detail.ActivityType })
+                .ToListAsync();
+
+            var currentByDetailGuid = currentDetails.ToDictionary(detail => detail.DetailGUID);
+            var mismatchDetails = new List<BatchExecuteConfirmationMismatchDetailDto>();
+
+            if (expectedActions.Count != selectedDetailGuids.Count)
+            {
+                mismatchDetails.Add(new BatchExecuteConfirmationMismatchDetailDto
+                {
+                    Message = "确认动作数量与当前选中明细数量不一致",
+                });
+            }
+
+            foreach (var detailGuid in selectedDetailGuids.Where(detailGuid =>
+                         expectedActions.All(item => item.DetailGuid != detailGuid)))
+            {
+                mismatchDetails.Add(new BatchExecuteConfirmationMismatchDetailDto
+                {
+                    DetailGuid = detailGuid,
+                    Message = "缺少该明细的确认动作",
+                });
+            }
+
+            foreach (var expectedAction in expectedActions)
+            {
+                var expectedValue = expectedAction.GetActionValue();
+                if (!currentByDetailGuid.TryGetValue(expectedAction.DetailGuid, out var currentDetail))
+                {
+                    mismatchDetails.Add(new BatchExecuteConfirmationMismatchDetailDto
+                    {
+                        DetailGuid = expectedAction.DetailGuid,
+                        ExpectedAction = expectedValue,
+                        Message = "明细不存在、已删除或不属于当前进货单",
+                    });
+                    continue;
+                }
+
+                var currentValue = currentDetail.ActivityType ?? (int)DetailAction.None;
+                if (expectedValue == null)
+                {
+                    mismatchDetails.Add(new BatchExecuteConfirmationMismatchDetailDto
+                    {
+                        DetailGuid = expectedAction.DetailGuid,
+                        CurrentAction = currentValue,
+                        Message = "缺少确认动作值",
+                    });
+                    continue;
+                }
+
+                if (expectedValue.Value != currentValue)
+                {
+                    mismatchDetails.Add(new BatchExecuteConfirmationMismatchDetailDto
+                    {
+                        DetailGuid = expectedAction.DetailGuid,
+                        ExpectedAction = expectedValue,
+                        CurrentAction = currentValue,
+                        Message = "确认动作与数据库当前动作不一致",
+                    });
+                }
+            }
+
+            var currentCreateProductCount = currentDetails.Count(detail =>
+                (detail.ActivityType ?? (int)DetailAction.None) == (int)DetailAction.CreateProduct
+            );
+
+            if (dto.ConfirmedCreateProductCount.Value != currentCreateProductCount)
+            {
+                mismatchDetails.Add(new BatchExecuteConfirmationMismatchDetailDto
+                {
+                    Message = "确认的新建商品数量与数据库当前数量不一致",
+                });
+            }
+
+            if (mismatchDetails.Count == 0)
+                return null;
+
+            var details = new BatchExecuteConfirmationDetailsDto
+            {
+                RequestedDetailCount = selectedDetailGuids.Count,
+                CurrentDetailCount = currentDetails.Count,
+                ConfirmedCreateProductCount = dto.ConfirmedCreateProductCount,
+                CurrentCreateProductCount = currentCreateProductCount,
+                MismatchedDetails = mismatchDetails,
+            };
+
+            var message = dto.ConfirmedCreateProductCount.Value != currentCreateProductCount
+                ? "批量执行确认已失效：创建商品数量已变化，请刷新后重试"
+                : "批量执行确认已失效：明细动作已变化，请刷新后重试";
+
+            return ApiResponse<BatchExecuteConfirmationDetailsDto>.Error(
+                message,
+                "VALIDATION_ERROR",
+                details
+            );
+        }
+
         [HttpPost("grid")]
         [Authorize(Policy = Permissions.LocalPurchase.View)]
         public async Task<IActionResult> Grid([FromBody] GridRequestDto request)
@@ -385,8 +522,6 @@ namespace BlazorApp.Api.Controllers.React
                 return Forbid();
             if (dto.TargetStoreCodes == null || !await CanAccessAllStoresAsync(dto.TargetStoreCodes))
                 return Forbid();
-            if (dto.UpdateHqProduct && !await CanAccessAllEnabledStoresAsync())
-                return Forbid();
 
             var user = User.Identity?.Name ?? "system";
             var result = await _service.UpdateDetailsToStorePricesAsync(dto, user);
@@ -447,6 +582,44 @@ namespace BlazorApp.Api.Controllers.React
 
             var user = User.Identity?.Name ?? "system";
             var result = await _hqProductSyncService.EnsureHqProductsAsync(invoiceGuid, dto, user);
+            if (result.Success)
+                return Ok(
+                    new
+                    {
+                        success = true,
+                        data = result.Data,
+                        message = result.Message,
+                    }
+                );
+            return BadRequest(
+                new
+                {
+                    success = false,
+                    message = result.Message,
+                    details = result.Details ?? result.Data,
+                }
+            );
+        }
+
+        [HttpPost("{invoiceGuid}/details/update-hq-products")]
+        [Authorize(Policy = Permissions.LocalPurchase.Edit)]
+        [Authorize(Policy = Permissions.LocalPurchase.PushToHq)]
+        public async Task<IActionResult> UpdateHqProducts(
+            [FromRoute] string invoiceGuid,
+            [FromBody] UpdateHqProductsRequest? dto
+        )
+        {
+            if (dto == null)
+                return BadRequest(new { success = false, message = "请求参数不能为空" });
+            if (!await CanAccessInvoiceAsync(invoiceGuid))
+                return Forbid();
+            if (dto.TargetStoreCodes == null || !await CanAccessAllStoresAsync(dto.TargetStoreCodes))
+                return Forbid();
+            if (_hqProductSyncService == null)
+                return BadRequest(new { success = false, message = "HQ商品更新服务未注册" });
+
+            var user = User.Identity?.Name ?? "system";
+            var result = await _hqProductSyncService.UpdateHqProductsAsync(invoiceGuid, dto, user);
             if (result.Success)
                 return Ok(
                     new
@@ -527,6 +700,9 @@ namespace BlazorApp.Api.Controllers.React
         )
         {
             if (!await CanAccessInvoiceAsync(invoiceGuid))
+                return Forbid();
+            // 批量动作最终可能触发全启用分店写入，入口必须具备全店访问能力。
+            if (!await CanAccessAllEnabledStoresAsync())
                 return Forbid();
 
             var result = await _service.BatchUpdateDetailActionAsync(invoiceGuid, dto);
@@ -654,6 +830,23 @@ namespace BlazorApp.Api.Controllers.React
         {
             if (!await CanAccessInvoiceAsync(invoiceGuid))
                 return Forbid();
+            // 新建商品/多码执行会影响所有启用分店，不能只按当前进货单分店授权。
+            if (!await CanAccessAllEnabledStoresAsync())
+                return Forbid();
+
+            var confirmationValidation = await ValidateBatchExecuteConfirmationAsync(invoiceGuid, dto);
+            if (confirmationValidation != null)
+            {
+                return BadRequest(
+                    new
+                    {
+                        success = false,
+                        message = confirmationValidation.Message,
+                        code = confirmationValidation.Code,
+                        details = confirmationValidation.Details,
+                    }
+                );
+            }
 
             var user = User.Identity?.Name ?? "system";
             var result = await _service.BatchExecuteActionsAsync(invoiceGuid, dto.DetailGuids, user);

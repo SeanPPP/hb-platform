@@ -1,5 +1,6 @@
 using System.Reflection;
 using System.Security.Claims;
+using System.Text.Json;
 using BlazorApp.Api.Cache;
 using BlazorApp.Api.Controllers.React;
 using BlazorApp.Api.Interfaces;
@@ -1080,6 +1081,170 @@ public class ReactStoreOrderAuthorizationTests
 public class StoreOrderSyncJobServiceTests
 {
     [Fact]
+    public void StoreOrderHqSyncConflictStrategy_Json合同使用字符串枚举()
+    {
+        var options = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+        var request = JsonSerializer.Deserialize<StoreOrderHqSyncRequestDto>(
+            """
+            {
+              "conflictStrategy": "HqWins"
+            }
+            """,
+            options
+        );
+
+        Assert.NotNull(request);
+        Assert.Equal(StoreOrderHqSyncConflictStrategy.HqWins, request!.ConflictStrategy);
+
+        var json = JsonSerializer.Serialize(
+            new StoreOrderSyncJobDto
+            {
+                JobId = "job-json-contract",
+                Status = StoreOrderSyncJobStatusConstants.Succeeded,
+                Mode = StoreOrderHqSyncMode.Incremental.ToString(),
+                ConflictStrategy = StoreOrderHqSyncConflictStrategy.LatestWins,
+                Result = new SyncMissingOrdersResultDto
+                {
+                    Success = true,
+                    ConflictStrategy = StoreOrderHqSyncConflictStrategy.HqWins,
+                },
+            },
+            options
+        );
+
+        Assert.Contains("\"conflictStrategy\":\"LatestWins\"", json);
+        Assert.Contains("\"conflictStrategy\":\"HqWins\"", json);
+    }
+
+    [Fact]
+    public async Task StartHqSyncJobAsync_未传策略时归一为LatestWins并回显到任务快照()
+    {
+        var invoked = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var completion = new TaskCompletionSource<SyncMissingOrdersResultDto>(
+            TaskCreationOptions.RunContinuationsAsynchronously
+        );
+        StoreOrderHqSyncRequestDto? capturedRequest = null;
+        var syncService = new Mock<IStoreOrderHqSyncService>(MockBehavior.Strict);
+        syncService
+            .Setup(item =>
+                item.SyncAsync(
+                    StoreOrderHqSyncMode.Incremental,
+                    It.IsAny<StoreOrderHqSyncRequestDto?>(),
+                    It.IsAny<string?>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Callback<StoreOrderHqSyncMode, StoreOrderHqSyncRequestDto?, string?, CancellationToken>(
+                (_, request, _, _) =>
+                {
+                    capturedRequest = request;
+                    invoked.TrySetResult();
+                }
+            )
+            .Returns(() => completion.Task);
+
+        var jobService = CreateHqJobService(syncService.Object);
+        var job = await jobService.StartHqSyncJobAsync(
+            "user-1",
+            StoreOrderHqSyncMode.Incremental,
+            new StoreOrderHqSyncRequestDto
+            {
+                StoreCodes = new List<string> { "S002", "S001", "S001" },
+            }
+        );
+
+        await invoked.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.Equal(StoreOrderHqSyncConflictStrategy.LatestWins, job.ConflictStrategy);
+        Assert.Equal(new List<string> { "S001", "S002" }, job.StoreCodes);
+        Assert.NotNull(capturedRequest);
+        Assert.Equal(
+            StoreOrderHqSyncConflictStrategy.LatestWins,
+            capturedRequest!.ConflictStrategy
+        );
+
+        completion.SetResult(
+            new SyncMissingOrdersResultDto
+            {
+                Success = true,
+                Message = "ok",
+                ConflictStrategy = StoreOrderHqSyncConflictStrategy.LatestWins,
+            }
+        );
+
+        var completedJob = await WaitForJobStatusAsync(
+            jobService,
+            job.JobId,
+            StoreOrderSyncJobStatusConstants.Succeeded
+        );
+        Assert.Equal(StoreOrderHqSyncConflictStrategy.LatestWins, completedJob.ConflictStrategy);
+        Assert.Equal(
+            StoreOrderHqSyncConflictStrategy.LatestWins,
+            completedJob.Result?.ConflictStrategy
+        );
+    }
+
+    [Fact]
+    public async Task StartHqSyncJobAsync_不同冲突策略运行中时不复用同一个任务()
+    {
+        var invoked = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var completion = new TaskCompletionSource<SyncMissingOrdersResultDto>(
+            TaskCreationOptions.RunContinuationsAsynchronously
+        );
+        var syncService = new Mock<IStoreOrderHqSyncService>(MockBehavior.Strict);
+        syncService
+            .Setup(item =>
+                item.SyncAsync(
+                    StoreOrderHqSyncMode.Incremental,
+                    It.IsAny<StoreOrderHqSyncRequestDto?>(),
+                    It.IsAny<string?>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Returns(() =>
+            {
+                invoked.TrySetResult();
+                return completion.Task;
+            });
+
+        var jobService = CreateHqJobService(syncService.Object);
+        var firstJob = await jobService.StartHqSyncJobAsync(
+            "user-1",
+            StoreOrderHqSyncMode.Incremental,
+            new StoreOrderHqSyncRequestDto
+            {
+                StoreCodes = new List<string> { "S001" },
+                ConflictStrategy = StoreOrderHqSyncConflictStrategy.HqWins,
+            }
+        );
+        await invoked.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            jobService.StartHqSyncJobAsync(
+                "user-1",
+                StoreOrderHqSyncMode.Incremental,
+                new StoreOrderHqSyncRequestDto
+                {
+                    StoreCodes = new List<string> { "S001" },
+                    ConflictStrategy = StoreOrderHqSyncConflictStrategy.LatestWins,
+                }
+            )
+        );
+
+        Assert.Equal("已有分店订货同步任务正在运行，请稍后再试", exception.Message);
+        Assert.False(string.IsNullOrWhiteSpace(firstJob.JobId));
+
+        completion.SetResult(
+            new SyncMissingOrdersResultDto
+            {
+                Success = true,
+                Message = "ok",
+                ConflictStrategy = StoreOrderHqSyncConflictStrategy.HqWins,
+            }
+        );
+    }
+
+    [Fact]
     public async Task StartJobAsync_相同用户与门店集合在运行中时_返回同一个任务()
     {
         var invoked = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -1269,6 +1434,32 @@ public class StoreOrderSyncJobServiceTests
         var serviceProvider = new Mock<IServiceProvider>(MockBehavior.Strict);
         serviceProvider
             .Setup(item => item.GetService(typeof(IStoreOrderReactService)))
+            .Returns(syncService);
+
+        var scope = new Mock<IServiceScope>(MockBehavior.Strict);
+        scope.SetupGet(item => item.ServiceProvider).Returns(serviceProvider.Object);
+        scope.Setup(item => item.Dispose());
+
+        var scopeFactory = new Mock<IServiceScopeFactory>(MockBehavior.Strict);
+        scopeFactory.Setup(item => item.CreateScope()).Returns(scope.Object);
+
+        return new StoreOrderSyncJobService(
+            scopeFactory.Object,
+            Mock.Of<ILogger<StoreOrderSyncJobService>>(),
+            timeProvider ?? TimeProvider.System,
+            completedRetention ?? TimeSpan.FromMinutes(45)
+        );
+    }
+
+    private static StoreOrderSyncJobService CreateHqJobService(
+        IStoreOrderHqSyncService syncService,
+        TimeProvider? timeProvider = null,
+        TimeSpan? completedRetention = null
+    )
+    {
+        var serviceProvider = new Mock<IServiceProvider>(MockBehavior.Strict);
+        serviceProvider
+            .Setup(item => item.GetService(typeof(IStoreOrderHqSyncService)))
             .Returns(syncService);
 
         var scope = new Mock<IServiceScope>(MockBehavior.Strict);

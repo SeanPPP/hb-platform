@@ -773,6 +773,7 @@ namespace BlazorApp.Api.Services.React
                                 {
                                     SetCodeId = sp.SetProductCode!,
                                     ProductCode = code,
+                                    SetProductCode = sp.SetProductCode!,
                                     SetItemNumber = sp.SetProductNo,
                                     SetBarcode = sp.SetBarcode,
                                     SetPurchasePrice = sp.ImportPrice ?? item.ImportPrice,
@@ -2008,6 +2009,7 @@ namespace BlazorApp.Api.Services.React
                             ProductCode = dp.ProductCode,
                             ItemNumber = dp.HBProductNo,
                             Barcode = dp.Barcode,
+                            ProductImage = dp.ProductImage,
                             ProductName = dp.ProductName,
                             EnglishName = dp.EnglishProductName,
                             ProductType = (ProductTypeEnum)dp.ProductType,
@@ -2039,6 +2041,11 @@ namespace BlazorApp.Api.Services.React
                         ProductCode = item.ProductCode,
                         ItemNumber = item.ItemNumber,
                         Barcode = item.Barcode,
+                        // 国内导入弹窗需要图片；原始图片为空时按货号生成默认图片地址。
+                        ProductImage = ProductImageUrlHelper.EnsureImageUrl(
+                            item.ProductImage,
+                            item.ItemNumber ?? string.Empty
+                        ),
                         ProductName = item.ProductName,
                         EnglishName = item.EnglishName,
                         ProductType = item.ProductType,
@@ -2892,37 +2899,38 @@ namespace BlazorApp.Api.Services.React
         )
         {
             var resp = new ReactTableResponseDto<NonHotbargainProductNotInWarehouseDto>();
+            // 用未删除仓库记录的左连接反查未入仓商品，避免大表相关子查询超时。
             var query = _context
                 .Db.Queryable<Product>()
-                .LeftJoin<HBLocalSupplier>((p, s) => p.LocalSupplierCode == s.LocalSupplierCode)
+                .LeftJoin<WarehouseProduct>(
+                    (p, wp) => p.ProductCode == wp.ProductCode && !wp.IsDeleted
+                )
+                .LeftJoin<HBLocalSupplier>(
+                    (p, wp, s) => p.LocalSupplierCode == s.LocalSupplierCode && !s.IsDeleted
+                )
                 .Where(
-                    (p, s) =>
+                    (p, wp, s) =>
                         !p.IsDeleted
                         && p.IsActive
                         && p.ProductCode != null
-                )
-                .Where(
-                    (p, s) =>
-                        !SqlFunc
-                            .Subqueryable<WarehouseProduct>()
-                            .Where(wp => wp.ProductCode == p.ProductCode && !wp.IsDeleted)
-                            .Any()
+                        && wp.ProductCode == null
                 );
 
             if (!string.IsNullOrWhiteSpace(request.GlobalSearch))
             {
-                var keyword = request.GlobalSearch.Trim().ToLower();
+                var keyword = request.GlobalSearch.Trim();
                 query = query.Where(
-                    (p, s) =>
-                        (p.ProductName != null && p.ProductName.ToLower().Contains(keyword))
-                        || (p.EnglishName != null && p.EnglishName.ToLower().Contains(keyword))
-                        || (p.ItemNumber != null && p.ItemNumber.ToLower().Contains(keyword))
-                        || (p.Barcode != null && p.Barcode.ToLower().Contains(keyword))
+                    (p, wp, s) =>
+                        (p.ItemNumber != null && p.ItemNumber.Contains(keyword))
+                        || (p.Barcode != null && p.Barcode.Contains(keyword))
+                        || (p.ProductCode != null && p.ProductCode.Contains(keyword))
+                        || (p.ProductName != null && p.ProductName.Contains(keyword))
+                        || (p.EnglishName != null && p.EnglishName.Contains(keyword))
                         || (
                             p.LocalSupplierCode != null
-                            && p.LocalSupplierCode.ToLower().Contains(keyword)
+                            && p.LocalSupplierCode.Contains(keyword)
                         )
-                        || (s.Name != null && s.Name.ToLower().Contains(keyword))
+                        || (s.Name != null && s.Name.Contains(keyword))
                 );
             }
 
@@ -2941,34 +2949,32 @@ namespace BlazorApp.Api.Services.React
                     {
                         case "itemnumber":
                             {
-                                var lowers = values.Select(v => v.ToLower()).ToList();
+                                var filters = values.Select(v => v.Trim()).ToList();
                                 query = query.Where(
-                                    (p, s) =>
+                                    (p, wp, s) =>
                                         p.ItemNumber != null
-                                        && lowers.Any(v => p.ItemNumber.ToLower().Contains(v))
+                                        && filters.Any(v => p.ItemNumber.Contains(v))
                                 );
                             }
                             break;
                         case "localsuppliercode":
                         case "suppliercode":
                             {
-                                var lowers = values.Select(v => v.ToLower()).ToList();
+                                var filters = values.Select(v => v.Trim()).ToList();
                                 query = query.Where(
-                                    (p, s) =>
+                                    (p, wp, s) =>
                                         p.LocalSupplierCode != null
-                                        && lowers.Any(v =>
-                                            p.LocalSupplierCode.ToLower().Contains(v)
-                                        )
+                                        && filters.Contains(p.LocalSupplierCode)
                                 );
                             }
                             break;
                         case "localsuppliername":
                             {
-                                var lowers = values.Select(v => v.ToLower()).ToList();
+                                var filters = values.Select(v => v.Trim()).ToList();
                                 query = query.Where(
-                                    (p, s) =>
+                                    (p, wp, s) =>
                                         s.Name != null
-                                        && lowers.Any(v => s.Name.ToLower().Contains(v))
+                                        && filters.Any(v => s.Name.Contains(v))
                                 );
                             }
                             break;
@@ -2978,9 +2984,10 @@ namespace BlazorApp.Api.Services.React
 
             var total = await query.Clone().CountAsync();
             var list = await query
-                .OrderByDescending((p, s) => p.UpdatedAt)
+                .OrderBy((p, wp, s) => p.ItemNumber, OrderByType.Asc)
+                .OrderBy((p, wp, s) => p.ProductCode, OrderByType.Asc)
                 .Select(
-                    (p, s) =>
+                    (p, wp, s) =>
                         new NonHotbargainProductNotInWarehouseDto
                         {
                             ProductCode = p.ProductCode!,

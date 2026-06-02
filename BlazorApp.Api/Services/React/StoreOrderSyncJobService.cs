@@ -114,7 +114,8 @@ namespace BlazorApp.Api.Services.React
                 mode.ToString(),
                 normalizedRequest.StoreCodes,
                 normalizedRequest.StartDate,
-                normalizedRequest.EndDate
+                normalizedRequest.EndDate,
+                mode == StoreOrderHqSyncMode.Full ? null : normalizedRequest.ConflictStrategy
             );
             var now = _timeProvider.GetUtcNow().UtcDateTime;
             var jobState = new StoreOrderSyncJobState
@@ -127,6 +128,9 @@ namespace BlazorApp.Api.Services.React
                 StoreCodes = normalizedRequest.StoreCodes?.ToList() ?? new List<string>(),
                 StartDate = normalizedRequest.StartDate,
                 EndDate = normalizedRequest.EndDate,
+                ConflictStrategy = mode == StoreOrderHqSyncMode.Full
+                    ? null
+                    : normalizedRequest.ConflictStrategy,
                 CreatedAt = now,
                 Status = StoreOrderSyncJobStatusConstants.Running,
             };
@@ -349,9 +353,7 @@ namespace BlazorApp.Api.Services.React
             };
         }
 
-        private static StoreOrderHqSyncRequestDto NormalizeHqRequest(
-            StoreOrderHqSyncRequestDto? request
-        )
+        private static StoreOrderHqSyncRequestDto NormalizeHqRequest(StoreOrderHqSyncRequestDto? request)
         {
             var normalizedStoreCodes = (request?.StoreCodes ?? new List<string>())
                 .Where(item => !string.IsNullOrWhiteSpace(item))
@@ -368,12 +370,16 @@ namespace BlazorApp.Api.Services.React
                 normalizedStoreCodes.Add(request.StoreCode.Trim());
             }
 
+            var normalizedConflictStrategy = NormalizeConflictStrategy(request?.ConflictStrategy);
+
             return new StoreOrderHqSyncRequestDto
             {
                 StoreCode = normalizedStoreCodes.Count == 1 ? normalizedStoreCodes[0] : null,
                 StoreCodes = normalizedStoreCodes,
                 StartDate = request?.StartDate,
                 EndDate = request?.EndDate,
+                // 关键位置：全量同步行为和去重忽略策略，归一化值仅用于保留请求快照。
+                ConflictStrategy = normalizedConflictStrategy,
             };
         }
 
@@ -382,7 +388,8 @@ namespace BlazorApp.Api.Services.React
             string? mode,
             List<string>? storeCodes,
             DateTime? startDate,
-            DateTime? endDate
+            DateTime? endDate,
+            StoreOrderHqSyncConflictStrategy? conflictStrategy = null
         )
         {
             var normalizedUserId = string.IsNullOrWhiteSpace(userId) ? "anonymous" : userId.Trim();
@@ -390,7 +397,8 @@ namespace BlazorApp.Api.Services.React
             var normalizedMode = string.IsNullOrWhiteSpace(mode) ? "Missing" : mode.Trim();
             var normalizedStart = startDate?.ToUniversalTime().ToString("O") ?? "__NO_START__";
             var normalizedEnd = endDate?.ToUniversalTime().ToString("O") ?? "__NO_END__";
-            return $"{normalizedUserId}::{normalizedMode}::{normalizedStores}::{normalizedStart}::{normalizedEnd}";
+            var normalizedConflictStrategy = conflictStrategy?.ToString() ?? "__NO_CONFLICT_STRATEGY__";
+            return $"{normalizedUserId}::{normalizedMode}::{normalizedStores}::{normalizedStart}::{normalizedEnd}::{normalizedConflictStrategy}";
         }
 
         private static StoreOrderSyncJobDto CreateSnapshot(
@@ -405,6 +413,7 @@ namespace BlazorApp.Api.Services.React
                     JobId = jobState.JobId,
                     Status = jobState.Status,
                     Mode = jobState.HqMode?.ToString(),
+                    ConflictStrategy = jobState.ConflictStrategy,
                     StoreCodes = jobState.StoreCodes.ToList(),
                     StartDate = jobState.StartDate,
                     EndDate = jobState.EndDate,
@@ -424,16 +433,29 @@ namespace BlazorApp.Api.Services.React
                             DetailsUpdated = jobState.Result.DetailsUpdated,
                             OrdersSoftDeleted = jobState.Result.OrdersSoftDeleted,
                             DetailsSoftDeleted = jobState.Result.DetailsSoftDeleted,
+                            SkippedOrdersBecauseLocalNewer = jobState.Result.SkippedOrdersBecauseLocalNewer,
+                            SkippedDetailsBecauseLocalNewer = jobState.Result.SkippedDetailsBecauseLocalNewer,
                             HqOrderCount = jobState.Result.HqOrderCount,
                             HqDetailCount = jobState.Result.HqDetailCount,
                             ShadowRowCount = jobState.Result.ShadowRowCount,
                             DurationMs = jobState.Result.DurationMs,
                             Mode = jobState.Result.Mode,
+                            ConflictStrategy = jobState.Result.ConflictStrategy,
                             RunId = jobState.Result.RunId,
                             Errors = jobState.Result.Errors.ToList(),
                         },
                 };
             }
+        }
+
+        private static StoreOrderHqSyncConflictStrategy NormalizeConflictStrategy(
+            StoreOrderHqSyncConflictStrategy? conflictStrategy
+        )
+        {
+            return conflictStrategy.HasValue
+                && Enum.IsDefined(typeof(StoreOrderHqSyncConflictStrategy), conflictStrategy.Value)
+                ? conflictStrategy.Value
+                : StoreOrderHqSyncConflictStrategy.LatestWins;
         }
 
         private sealed class StoreOrderSyncJobState
@@ -458,6 +480,8 @@ namespace BlazorApp.Api.Services.React
             public DateTime? StartDate { get; set; }
 
             public DateTime? EndDate { get; set; }
+
+            public StoreOrderHqSyncConflictStrategy? ConflictStrategy { get; set; }
 
             public string Status { get; set; } = StoreOrderSyncJobStatusConstants.Running;
 

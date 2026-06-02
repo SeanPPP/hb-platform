@@ -171,8 +171,10 @@ namespace BlazorApp.Api.Services.React
             var hasStoreFilter = storeCodes.Count > 0;
             var endDate = request?.EndDate ?? DateTime.UtcNow;
             var startDate = request?.StartDate ?? endDate.AddDays(-30);
+            var conflictStrategy = NormalizeConflictStrategy(request?.ConflictStrategy);
             var stage = "开始";
             var stageStopwatch = Stopwatch.StartNew();
+            result.ConflictStrategy = conflictStrategy;
 
             void LogStage(string completedStage)
             {
@@ -271,7 +273,8 @@ namespace BlazorApp.Api.Services.React
                     softDeleteMissingOrders: false,
                     softDeleteMissingDetails: false,
                     result,
-                    cancellationToken
+                    cancellationToken,
+                    conflictStrategy
                 );
                 LogStage(stage);
 
@@ -306,6 +309,7 @@ namespace BlazorApp.Api.Services.React
             bool softDeleteMissingDetails,
             SyncMissingOrdersResultDto result,
             CancellationToken cancellationToken,
+            StoreOrderHqSyncConflictStrategy? conflictStrategy = null,
             HashSet<string>? currentHqOrderGuids = null,
             HashSet<string>? currentHqDetailGuids = null
         )
@@ -368,9 +372,23 @@ namespace BlazorApp.Api.Services.React
                 {
                     ordersToInsert.Add(mapped);
                 }
-                else if (local.IsDeleted || IsOrderChanged(mapped, local))
+                else
                 {
-                    ordersToUpdate.Add(mapped);
+                    var action = DecideOrderSyncAction(
+                        hqOrder,
+                        mapped,
+                        local,
+                        conflictStrategy,
+                        softDeleteMissingOrders
+                    );
+                    if (action == SnapshotApplyAction.Update)
+                    {
+                        ordersToUpdate.Add(mapped);
+                    }
+                    else if (action == SnapshotApplyAction.SkipBecauseLocalNewer)
+                    {
+                        result.SkippedOrdersBecauseLocalNewer++;
+                    }
                 }
             }
 
@@ -384,9 +402,23 @@ namespace BlazorApp.Api.Services.React
                 {
                     detailsToInsert.Add(mapped);
                 }
-                else if (local.IsDeleted || IsDetailChanged(mapped, local))
+                else
                 {
-                    detailsToUpdate.Add(mapped);
+                    var action = DecideDetailSyncAction(
+                        hqDetail,
+                        mapped,
+                        local,
+                        conflictStrategy,
+                        softDeleteMissingDetails
+                    );
+                    if (action == SnapshotApplyAction.Update)
+                    {
+                        detailsToUpdate.Add(mapped);
+                    }
+                    else if (action == SnapshotApplyAction.SkipBecauseLocalNewer)
+                    {
+                        result.SkippedDetailsBecauseLocalNewer++;
+                    }
                 }
             }
 
@@ -413,10 +445,14 @@ namespace BlazorApp.Api.Services.React
 
             var transactionResult = await _db.Ado.UseTranAsync(async () =>
             {
-                await ExecuteInsertInBatchesAsync(ordersToInsert, BatchSize);
-                await ExecuteUpdateInBatchesAsync(ordersToUpdate, BatchSize);
-                await ExecuteInsertInBatchesAsync(detailsToInsert, BatchSize);
-                await ExecuteUpdateInBatchesAsync(detailsToUpdate, BatchSize);
+                // 关键位置：HQ 覆盖写入必须保留 HQ 原始审计时间，不能让通用审计 AOP 改成同步执行时间。
+                await ExecutePreservingHqAuditTimestampsAsync(async () =>
+                {
+                    await ExecuteInsertInBatchesAsync(ordersToInsert, BatchSize);
+                    await ExecuteUpdateInBatchesAsync(ordersToUpdate, BatchSize);
+                    await ExecuteInsertInBatchesAsync(detailsToInsert, BatchSize);
+                    await ExecuteUpdateInBatchesAsync(detailsToUpdate, BatchSize);
+                });
 
                 var now = DateTime.Now;
                 foreach (var order in ordersToSoftDelete)
@@ -699,8 +735,10 @@ namespace BlazorApp.Api.Services.React
         {
             var order = _mapper.Map<WareHouseOrder>(hqOrder);
             order.IsDeleted = false;
-            order.CreatedAt = hqOrder.FGC_CreateDate ?? DateTime.Now;
-            order.UpdatedAt = hqOrder.FGC_LastModifyDate ?? DateTime.Now;
+            // 关键位置：禁止使用当前时间伪造 HQ 时间，避免 LatestWins 误判 HQ 更新更“新”。
+            order.CreatedAt =
+                hqOrder.FGC_CreateDate ?? hqOrder.FGC_LastModifyDate ?? DateTime.MinValue;
+            order.UpdatedAt = hqOrder.FGC_LastModifyDate ?? hqOrder.FGC_CreateDate;
             order.CreatedBy = hqOrder.FGC_Creator ?? "HQ同步";
             order.UpdatedBy = hqOrder.FGC_LastModifier ?? "HQ同步";
             return order;
@@ -710,14 +748,64 @@ namespace BlazorApp.Api.Services.React
         {
             var detail = _mapper.Map<WareHouseOrderDetails>(hqDetail);
             detail.IsDeleted = false;
-            detail.CreatedAt = hqDetail.FGC_CreateDate ?? DateTime.Now;
-            detail.UpdatedAt = hqDetail.FGC_LastModifyDate ?? DateTime.Now;
+            // 关键位置：禁止使用当前时间伪造 HQ 时间，避免 LatestWins 误判 HQ 更新更“新”。
+            detail.CreatedAt =
+                hqDetail.FGC_CreateDate ?? hqDetail.FGC_LastModifyDate ?? DateTime.MinValue;
+            detail.UpdatedAt = hqDetail.FGC_LastModifyDate ?? hqDetail.FGC_CreateDate;
             detail.CreatedBy = hqDetail.FGC_Creator ?? "HQ同步";
             detail.UpdatedBy = hqDetail.FGC_LastModifier ?? "HQ同步";
             return detail;
         }
 
-        private static bool IsOrderChanged(WareHouseOrder source, WareHouseOrder local)
+        private static SnapshotApplyAction DecideOrderSyncAction(
+            CBP_RED_分店订货单主表Store hqOrder,
+            WareHouseOrder source,
+            WareHouseOrder local,
+            StoreOrderHqSyncConflictStrategy? conflictStrategy,
+            bool softDeleteMissingOrders
+        )
+        {
+            var changed = HasOrderBusinessDifference(source, local);
+            if (conflictStrategy != StoreOrderHqSyncConflictStrategy.LatestWins || softDeleteMissingOrders)
+            {
+                return local.IsDeleted || changed ? SnapshotApplyAction.Update : SnapshotApplyAction.None;
+            }
+
+            if (!local.IsDeleted && !changed)
+            {
+                return SnapshotApplyAction.None;
+            }
+
+            return IsHqStrictlyNewer(GetHqOrderTimestamp(hqOrder), GetLocalOrderTimestamp(local))
+                ? SnapshotApplyAction.Update
+                : SnapshotApplyAction.SkipBecauseLocalNewer;
+        }
+
+        private static SnapshotApplyAction DecideDetailSyncAction(
+            CBP_RED_分店订单详情表Store hqDetail,
+            WareHouseOrderDetails source,
+            WareHouseOrderDetails local,
+            StoreOrderHqSyncConflictStrategy? conflictStrategy,
+            bool softDeleteMissingDetails
+        )
+        {
+            var changed = HasDetailBusinessDifference(source, local);
+            if (conflictStrategy != StoreOrderHqSyncConflictStrategy.LatestWins || softDeleteMissingDetails)
+            {
+                return local.IsDeleted || changed ? SnapshotApplyAction.Update : SnapshotApplyAction.None;
+            }
+
+            if (!local.IsDeleted && !changed)
+            {
+                return SnapshotApplyAction.None;
+            }
+
+            return IsHqStrictlyNewer(GetHqDetailTimestamp(hqDetail), GetLocalDetailTimestamp(local))
+                ? SnapshotApplyAction.Update
+                : SnapshotApplyAction.SkipBecauseLocalNewer;
+        }
+
+        private static bool HasOrderBusinessDifference(WareHouseOrder source, WareHouseOrder local)
         {
             return !SameText(source.StoreCode, local.StoreCode)
                 || !SameText(source.OrderNo, local.OrderNo)
@@ -728,11 +816,10 @@ namespace BlazorApp.Api.Services.React
                 || source.OEMTotalAmount != local.OEMTotalAmount
                 || !SameText(source.Remarks, local.Remarks)
                 || source.FlowStatus != local.FlowStatus
-                || source.InboundStatus != local.InboundStatus
-                || (source.UpdatedAt.HasValue && (!local.UpdatedAt.HasValue || source.UpdatedAt > local.UpdatedAt));
+                || source.InboundStatus != local.InboundStatus;
         }
 
-        private static bool IsDetailChanged(WareHouseOrderDetails source, WareHouseOrderDetails local)
+        private static bool HasDetailBusinessDifference(WareHouseOrderDetails source, WareHouseOrderDetails local)
         {
             return !SameText(source.OrderGUID, local.OrderGUID)
                 || !SameText(source.StoreCode, local.StoreCode)
@@ -744,8 +831,42 @@ namespace BlazorApp.Api.Services.React
                 || source.ImportPrice != local.ImportPrice
                 || source.ImportAmount != local.ImportAmount
                 || source.OEMPrice != local.OEMPrice
-                || source.OEMAmount != local.OEMAmount
-                || (source.UpdatedAt.HasValue && (!local.UpdatedAt.HasValue || source.UpdatedAt > local.UpdatedAt));
+                || source.OEMAmount != local.OEMAmount;
+        }
+
+        private static DateTime? GetHqOrderTimestamp(CBP_RED_分店订货单主表Store hqOrder)
+        {
+            return hqOrder.FGC_LastModifyDate ?? hqOrder.FGC_CreateDate;
+        }
+
+        private static DateTime? GetHqDetailTimestamp(CBP_RED_分店订单详情表Store hqDetail)
+        {
+            return hqDetail.FGC_LastModifyDate ?? hqDetail.FGC_CreateDate;
+        }
+
+        private static DateTime? GetLocalOrderTimestamp(WareHouseOrder local)
+        {
+            return local.UpdatedAt ?? local.CreatedAt;
+        }
+
+        private static DateTime? GetLocalDetailTimestamp(WareHouseOrderDetails local)
+        {
+            return local.UpdatedAt ?? local.CreatedAt;
+        }
+
+        private static bool IsHqStrictlyNewer(DateTime? hqTimestamp, DateTime? localTimestamp)
+        {
+            return hqTimestamp.HasValue && localTimestamp.HasValue && hqTimestamp.Value > localTimestamp.Value;
+        }
+
+        private static StoreOrderHqSyncConflictStrategy NormalizeConflictStrategy(
+            StoreOrderHqSyncConflictStrategy? conflictStrategy
+        )
+        {
+            return conflictStrategy.HasValue
+                && Enum.IsDefined(typeof(StoreOrderHqSyncConflictStrategy), conflictStrategy.Value)
+                ? conflictStrategy.Value
+                : StoreOrderHqSyncConflictStrategy.LatestWins;
         }
 
         private async Task ExecuteInsertInBatchesAsync<T>(List<T> entities, int size)
@@ -764,6 +885,12 @@ namespace BlazorApp.Api.Services.React
             {
                 await _db.Updateable(batch.ToList()).ExecuteCommandAsync();
             }
+        }
+
+        private async Task ExecutePreservingHqAuditTimestampsAsync(Func<Task> writeAction)
+        {
+            using var auditScope = SqlSugarAuditScope.PreserveExplicitAuditFields();
+            await writeAction();
         }
 
         private static List<CBP_RED_分店订货单主表Store> DeduplicateOrders(
@@ -832,7 +959,8 @@ namespace BlazorApp.Api.Services.React
         private static string BuildIncrementalResultMessage(SyncMissingOrdersResultDto result)
         {
             return $"增量同步完成：新增/恢复订单 {result.OrdersSynced} 条、更新订单 {result.OrdersUpdated} 条；"
-                + $"新增/恢复明细 {result.DetailsSynced} 条、更新明细 {result.DetailsUpdated} 条";
+                + $"新增/恢复明细 {result.DetailsSynced} 条、更新明细 {result.DetailsUpdated} 条；"
+                + $"因本地较新或时间无法判定跳过订单 {result.SkippedOrdersBecauseLocalNewer} 条、跳过明细 {result.SkippedDetailsBecauseLocalNewer} 条";
         }
 
         private static bool SameText(string? left, string? right)
@@ -849,6 +977,13 @@ namespace BlazorApp.Api.Services.React
             public int OrderCount { get; set; }
 
             public int DetailCount { get; set; }
+        }
+
+        private enum SnapshotApplyAction
+        {
+            None = 0,
+            Update = 1,
+            SkipBecauseLocalNewer = 2,
         }
     }
 }

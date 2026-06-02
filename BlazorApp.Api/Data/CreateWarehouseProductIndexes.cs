@@ -181,6 +181,10 @@ namespace BlazorApp.Api.Data
                 ["IX_Product_Barcode"] = ("Product", "CREATE NONCLUSTERED INDEX [IX_Product_Barcode] ON [Product] ([Barcode]) WHERE [Barcode] IS NOT NULL"),
                 ["IX_Product_ItemNumber"] = ("Product", "CREATE NONCLUSTERED INDEX [IX_Product_ItemNumber] ON [Product] ([ItemNumber]) WHERE [ItemNumber] IS NOT NULL"),
                 ["IX_Product_LocalSupplierCode"] = ("Product", "CREATE NONCLUSTERED INDEX [IX_Product_LocalSupplierCode] ON [Product] ([LocalSupplierCode]) WHERE [LocalSupplierCode] IS NOT NULL"),
+                ["IX_Product_Active_ItemNumber_Lookup"] = ("Product", "CREATE NONCLUSTERED INDEX [IX_Product_Active_ItemNumber_Lookup] ON [Product] ([IsDeleted], [IsActive], [ItemNumber]) INCLUDE ([ProductCode], [Barcode], [LocalSupplierCode]) WHERE [ItemNumber] IS NOT NULL"),
+                ["IX_Product_Active_Barcode_Lookup"] = ("Product", "CREATE NONCLUSTERED INDEX [IX_Product_Active_Barcode_Lookup] ON [Product] ([IsDeleted], [IsActive], [Barcode]) INCLUDE ([ProductCode], [ItemNumber], [LocalSupplierCode]) WHERE [Barcode] IS NOT NULL"),
+                ["IX_Product_Active_LocalSupplier_ItemNumber"] = ("Product", "CREATE NONCLUSTERED INDEX [IX_Product_Active_LocalSupplier_ItemNumber] ON [Product] ([IsDeleted], [IsActive], [LocalSupplierCode], [ItemNumber]) INCLUDE ([ProductCode], [Barcode]) WHERE [LocalSupplierCode] IS NOT NULL"),
+                ["IX_WarehouseProduct_ProductCode_NotDeleted"] = ("WarehouseProduct", "CREATE NONCLUSTERED INDEX [IX_WarehouseProduct_ProductCode_NotDeleted] ON [WarehouseProduct] ([ProductCode]) WHERE [IsDeleted] = 0"),
                 ["IX_Product_ProductCategoryGUID"] = ("Product", "CREATE NONCLUSTERED INDEX [IX_Product_ProductCategoryGUID] ON [Product] ([ProductCategoryGUID]) WHERE [ProductCategoryGUID] IS NOT NULL"),
                 ["IX_Product_IsActive"] = ("Product", "CREATE NONCLUSTERED INDEX [IX_Product_IsActive] ON [Product] ([IsActive])"),
                 ["IX_Product_Search"] = ("Product", "CREATE NONCLUSTERED INDEX [IX_Product_Search] ON [Product] ([ProductName], [ProductCode], [Barcode], [ItemNumber], [LocalSupplierCode], [IsActive])")

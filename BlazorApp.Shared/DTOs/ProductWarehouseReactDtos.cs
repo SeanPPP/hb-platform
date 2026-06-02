@@ -229,6 +229,7 @@ namespace BlazorApp.Shared.DTOs
         public string ProductCode { get; set; } = string.Empty;
         public string ItemNumber { get; set; } = string.Empty;
         public string? Barcode { get; set; }
+        public string? ProductImage { get; set; }
         public string ProductName { get; set; } = string.Empty;
         public string? EnglishName { get; set; }
         public ProductTypeEnum ProductType { get; set; }

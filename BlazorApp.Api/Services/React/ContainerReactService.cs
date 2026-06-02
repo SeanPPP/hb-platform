@@ -533,6 +533,7 @@ namespace BlazorApp.Api.Services.React
                 // 构建明细编码到明细实体的映射，便于快速查找
                 var detailMap = details.ToDictionary(d => d.DetailCode, d => d);
                 var changedDetails = new List<ContainerDetail>();
+                var updatedRequestGuids = new HashSet<string>();
 
                 // 遍历更新请求，逐个应用变更
                 foreach (var update in updates)
@@ -573,110 +574,139 @@ namespace BlazorApp.Api.Services.React
                     if (changed)
                     {
                         changedDetails.Add(detail);
+                        updatedRequestGuids.Add(update.HGUID);
                     }
                 }
 
-                var totalUpdated = 0;
+                // 提前整理有效明细请求，名称回写不能依赖价格/状态字段是否变化。
+                var validDetailUpdates = updates
+                    .Select(u =>
+                    {
+                        if (detailMap.TryGetValue(u.HGUID, out var detail))
+                        {
+                            return new
+                            {
+                                Update = u,
+                                Detail = detail,
+                                ProductCode = detail.ProductCode,
+                            };
+                        }
+                        return null;
+                    })
+                    .Where(x => x != null && !string.IsNullOrWhiteSpace(x.ProductCode))
+                    .Select(x => x!)
+                    .ToList();
+
+                var productCodes = validDetailUpdates
+                    .Select(x => x.ProductCode!)
+                    .Distinct()
+                    .ToList();
+
+                // 预加载商品数据：既用于名称回写，也用于判断价格同步是否是已有商品。
+                var productMap = new Dictionary<string, DomesticProduct>();
+                if (productCodes.Count > 0)
+                {
+                    var products = await _context
+                        .Db.Queryable<DomesticProduct>()
+                        .Where(p => productCodes.Contains(p.ProductCode))
+                        .ToListAsync();
+                    productMap = products.ToDictionary(p => p.ProductCode, p => p);
+                }
+
+                var productNameUpdates = validDetailUpdates
+                    .Where(x =>
+                        !string.IsNullOrWhiteSpace(x.Update.商品名称)
+                        || !string.IsNullOrWhiteSpace(x.Update.英文名称)
+                    )
+                    .GroupBy(x => x.ProductCode!)
+                    .Select(group => new
+                    {
+                        ProductCode = group.Key,
+                        商品名称 = group
+                            .Select(x => x.Update.商品名称)
+                            .LastOrDefault(value => !string.IsNullOrWhiteSpace(value)),
+                        英文名称 = group
+                            .Select(x => x.Update.英文名称)
+                            .LastOrDefault(value => !string.IsNullOrWhiteSpace(value)),
+                    })
+                    .ToList();
+
+                var changedProducts = new List<DomesticProduct>();
+                var changedProductCodes = new HashSet<string>();
+                foreach (var productUpdate in productNameUpdates)
+                {
+                    if (!productMap.TryGetValue(productUpdate.ProductCode, out var product))
+                    {
+                        continue;
+                    }
+
+                    var productChanged = false;
+                    if (
+                        !string.IsNullOrWhiteSpace(productUpdate.商品名称)
+                        && product.ProductName != productUpdate.商品名称
+                    )
+                    {
+                        product.ProductName = productUpdate.商品名称;
+                        productChanged = true;
+                    }
+                    if (
+                        !string.IsNullOrWhiteSpace(productUpdate.英文名称)
+                        && product.EnglishProductName != productUpdate.英文名称
+                    )
+                    {
+                        product.EnglishProductName = productUpdate.英文名称;
+                        productChanged = true;
+                    }
+
+                    if (productChanged)
+                    {
+                        changedProducts.Add(product);
+                        changedProductCodes.Add(productUpdate.ProductCode);
+                    }
+                }
+
+                foreach (var item in validDetailUpdates)
+                {
+                    var hasNameUpdate =
+                        !string.IsNullOrWhiteSpace(item.Update.商品名称)
+                        || !string.IsNullOrWhiteSpace(item.Update.英文名称);
+                    if (hasNameUpdate && changedProductCodes.Contains(item.ProductCode!))
+                    {
+                        updatedRequestGuids.Add(item.Update.HGUID);
+                    }
+                }
 
                 // 开启事务，确保多表更新的原子性
-                if (changedDetails.Count > 0)
+                if (changedDetails.Count > 0 || changedProducts.Count > 0)
                 {
                     await _context.Db.Ado.BeginTranAsync();
                     try
                     {
                         // 第二步：更新货柜明细表
-                        var rows = await _context
-                            .Db.Updateable(changedDetails)
-                            .UpdateColumns(x => new
-                            {
-                                x.AdjustmentRate,
-                                x.ImportPrice,
-                                x.TransportCost,
-                                x.OEMPrice,
-                                x.IsActive,
-                            })
-                            .WhereColumns(x => new { x.DetailCode })
-                            .ExecuteCommandAsync();
-                        totalUpdated = rows;
+                        if (changedDetails.Count > 0)
+                        {
+                            await _context
+                                .Db.Updateable(changedDetails)
+                                .UpdateColumns(x => new
+                                {
+                                    x.AdjustmentRate,
+                                    x.ImportPrice,
+                                    x.TransportCost,
+                                    x.OEMPrice,
+                                    x.IsActive,
+                                })
+                                .WhereColumns(x => new { x.DetailCode })
+                                .ExecuteCommandAsync();
+                        }
 
                         // 第三步：同步更新国内商品表的名称信息
-                        // 提取需要更新商品的请求
-                        var productUpdates = updates
-                            .Select(u =>
-                            {
-                                if (detailMap.TryGetValue(u.HGUID, out var d))
-                                {
-                                    return new
-                                    {
-                                        d.ProductCode,
-                                        u.商品名称,
-                                        u.英文名称,
-                                    };
-                                }
-                                return null;
-                            })
-                            .Where(x => x != null && !string.IsNullOrEmpty(x.ProductCode))
-                            .ToList();
-
-                        // 获取涉及的商品编码
-                        var productCodes = productUpdates
-                            .Select(x => x!.ProductCode!)
-                            .Distinct()
-                            .ToList();
-
-                        // 预加载商品数据，用于判断是否为已有商品以及更新名称
-                        var productMap = new Dictionary<string, DomesticProduct>();
-                        if (productCodes.Count > 0)
+                        if (changedProducts.Count > 0)
                         {
-                            var products = await _context
-                                .Db.Queryable<DomesticProduct>()
-                                .Where(p => productCodes.Contains(p.ProductCode))
-                                .ToListAsync();
-
-                            // 构建商品编码到商品实体的映射
-                            productMap = products.ToDictionary(p => p.ProductCode, p => p);
-                            var changedProducts = new List<DomesticProduct>();
-
-                            // 遍历更新商品名称
-                            foreach (var u in productUpdates)
-                            {
-                                if (u == null)
-                                    continue;
-                                if (!productMap.TryGetValue(u.ProductCode!, out var p))
-                                    continue;
-
-                                var pChanged = false;
-                                if (
-                                    !string.IsNullOrEmpty(u.商品名称)
-                                    && p.ProductName != u.商品名称
-                                )
-                                {
-                                    p.ProductName = u.商品名称;
-                                    pChanged = true;
-                                }
-                                if (
-                                    !string.IsNullOrEmpty(u.英文名称)
-                                    && p.EnglishProductName != u.英文名称
-                                )
-                                {
-                                    p.EnglishProductName = u.英文名称;
-                                    pChanged = true;
-                                }
-                                if (pChanged)
-                                {
-                                    changedProducts.Add(p);
-                                }
-                            }
-
-                            // 批量更新国内商品表
-                            if (changedProducts.Count > 0)
-                            {
-                                await _context
-                                    .Db.Updateable(changedProducts)
-                                    .UpdateColumns(x => new { x.ProductName, x.EnglishProductName })
-                                    .WhereColumns(x => new { x.ProductCode })
-                                    .ExecuteCommandAsync();
-                            }
+                            await _context
+                                .Db.Updateable(changedProducts)
+                                .UpdateColumns(x => new { x.ProductName, x.EnglishProductName })
+                                .WhereColumns(x => new { x.ProductCode })
+                                .ExecuteCommandAsync();
                         }
 
                         // 第四步：同步已有商品的价格和上下架状态到关联表
@@ -697,11 +727,6 @@ namespace BlazorApp.Api.Services.React
 
                         if (existingProductUpdates.Count > 0)
                         {
-                            var productCodesToUpdate = existingProductUpdates
-                                .Select(x => x.Detail.ProductCode!)
-                                .Distinct()
-                                .ToList();
-
                             // 4.1 批量更新 WarehouseProduct 表（进口价格、贴牌价格、上下架状态）
                             // 使用 CASE WHEN 语句批量更新，避免 N+1 查询问题
                             var warehouseUpdates = existingProductUpdates
@@ -860,6 +885,8 @@ namespace BlazorApp.Api.Services.React
                         throw;
                     }
                 }
+
+                var totalUpdated = updatedRequestGuids.Count;
 
                 _logger.LogInformation(
                     "[React] 批量更新货柜明细完成，成功更新: {TotalUpdated}/{Total}",

@@ -220,26 +220,12 @@ namespace BlazorApp.Shared.DTOs
         /// </summary>
         [Required]
         public UpdateToStorePricesFields UpdateFields { get; set; } = new();
-
-        /// <summary>
-        /// 是否在更新本地分店价格后同步商品和价格到HQ
-        /// </summary>
-        public bool UpdateHqProduct { get; set; }
     }
 
     /// <summary>
     /// 更新到分店价格结果DTO
     /// </summary>
-    public class UpdateToStorePricesResultDto : BatchResultDto
-    {
-        public int HqExisting { get; set; }
-        public int HbwebCreated { get; set; }
-        public int HqCreated { get; set; }
-        public int HqSynced { get; set; }
-        public int HqPurchasePricesUpdated { get; set; }
-        public int HqFailed { get; set; }
-        public List<EnsureHqProductError> HqErrors { get; set; } = new();
-    }
+    public class UpdateToStorePricesResultDto : BatchResultDto { }
 
     /// <summary>
     /// 同步本地进货单明细商品到HQ请求DTO
@@ -276,6 +262,47 @@ namespace BlazorApp.Shared.DTOs
         public int Skipped { get; set; }
         public int Failed { get; set; }
         public List<EnsureHqProductError> Errors { get; set; } = new();
+    }
+
+    /// <summary>
+    /// 按指定字段更新HQ商品分店价格请求DTO
+    /// </summary>
+    public class UpdateHqProductsRequest
+    {
+        /// <summary>
+        /// 要更新的明细GUID列表
+        /// </summary>
+        [Required]
+        public List<string> DetailGuids { get; set; } = new();
+
+        /// <summary>
+        /// 目标分店代码列表
+        /// </summary>
+        [Required]
+        public List<string> TargetStoreCodes { get; set; } = new();
+
+        /// <summary>
+        /// 要写入HQ的字段配置；只写入为true的字段
+        /// </summary>
+        [Required]
+        public UpdateToStorePricesFields UpdateFields { get; set; } = new();
+
+        /// <summary>
+        /// 幂等键，当前后端保留字段以兼容前端请求
+        /// </summary>
+        public string? IdempotencyKey { get; set; }
+    }
+
+    /// <summary>
+    /// 按指定字段更新HQ商品分店价格结果DTO
+    /// </summary>
+    public class UpdateHqProductsResult : EnsureHqProductsResult
+    {
+        public int Updated { get; set; }
+        public int HqRetailPricesUpdated { get; set; }
+        public int HqAutoPricingUpdated { get; set; }
+        public int HqSpecialProductsUpdated { get; set; }
+        public int HqDiscountRatesUpdated { get; set; }
     }
 
     /// <summary>
@@ -659,6 +686,107 @@ namespace BlazorApp.Shared.DTOs
         /// 要执行的明细GUID列表
         /// </summary>
         public List<string> DetailGuids { get; set; } = new();
+
+        /// <summary>
+        /// 用户确认时看到的明细动作快照
+        /// </summary>
+        public List<BatchExecuteExpectedActionDto> ExpectedActions { get; set; } = new();
+
+        /// <summary>
+        /// 用户确认时的新建商品数量
+        /// </summary>
+        public int? ConfirmedCreateProductCount { get; set; }
+
+        /// <summary>
+        /// 用户确认时间
+        /// </summary>
+        public DateTime? ConfirmedAt { get; set; }
+    }
+
+    /// <summary>
+    /// 批量执行时前端确认的明细动作
+    /// </summary>
+    public class BatchExecuteExpectedActionDto
+    {
+        /// <summary>
+        /// 明细GUID
+        /// </summary>
+        public string DetailGuid { get; set; } = string.Empty;
+
+        /// <summary>
+        /// 明细操作类型
+        /// </summary>
+        public int? ActivityType { get; set; }
+
+        /// <summary>
+        /// 兼容前端 action 字段命名
+        /// </summary>
+        public int? Action { get; set; }
+
+        /// <summary>
+        /// 取前端传入的动作值，优先使用 ActivityType
+        /// </summary>
+        public int? GetActionValue()
+        {
+            return ActivityType ?? Action;
+        }
+    }
+
+    /// <summary>
+    /// 批量执行确认契约不一致详情
+    /// </summary>
+    public class BatchExecuteConfirmationDetailsDto
+    {
+        /// <summary>
+        /// 请求中的明细数量
+        /// </summary>
+        public int RequestedDetailCount { get; set; }
+
+        /// <summary>
+        /// 数据库当前明细数量
+        /// </summary>
+        public int CurrentDetailCount { get; set; }
+
+        /// <summary>
+        /// 请求确认的新建商品数量
+        /// </summary>
+        public int? ConfirmedCreateProductCount { get; set; }
+
+        /// <summary>
+        /// 数据库当前新建商品数量
+        /// </summary>
+        public int CurrentCreateProductCount { get; set; }
+
+        /// <summary>
+        /// 不一致的明细列表
+        /// </summary>
+        public List<BatchExecuteConfirmationMismatchDetailDto> MismatchedDetails { get; set; } = new();
+    }
+
+    /// <summary>
+    /// 批量执行确认契约不一致的明细项
+    /// </summary>
+    public class BatchExecuteConfirmationMismatchDetailDto
+    {
+        /// <summary>
+        /// 明细GUID
+        /// </summary>
+        public string DetailGuid { get; set; } = string.Empty;
+
+        /// <summary>
+        /// 请求确认的动作
+        /// </summary>
+        public int? ExpectedAction { get; set; }
+
+        /// <summary>
+        /// 数据库当前动作
+        /// </summary>
+        public int? CurrentAction { get; set; }
+
+        /// <summary>
+        /// 不一致原因
+        /// </summary>
+        public string Message { get; set; } = string.Empty;
     }
 
     /// <summary>

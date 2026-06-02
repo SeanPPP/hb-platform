@@ -1843,6 +1843,11 @@ namespace BlazorApp.Api.Services.React
                                     {
                                         retailPriceToUpdate = detail.RetailPrice;
                                     }
+                                    // 明细零售价为空时，才回退使用商品检测计算出的新自动零售价
+                                    if (retailPriceToUpdate == null)
+                                    {
+                                        retailPriceToUpdate = detail.NewAutoRetailPrice;
+                                    }
 
                                     if (retailPriceToUpdate != null)
                                     {
@@ -1938,44 +1943,6 @@ namespace BlazorApp.Api.Services.React
                     Failed = 0,
                 };
 
-                if (dto.UpdateHqProduct)
-                {
-                    if (_hqProductSyncService == null)
-                    {
-                        result.HqFailed = details.Count;
-                        result.Failed += details.Count;
-                        result.HqErrors.Add(new EnsureHqProductError
-                        {
-                            Message = "HQ商品同步服务未注册",
-                        });
-                        return ApiResponse<UpdateToStorePricesResultDto>.Error(
-                            "更新到分店价格完成，但同步HQ商品失败",
-                            "HQ_SYNC_SERVICE_MISSING",
-                            result
-                        );
-                    }
-
-                    var hqResult = await _hqProductSyncService.EnsureHqProductsAsync(
-                        dto.InvoiceGuid,
-                        new EnsureHqProductsRequest
-                        {
-                            DetailGuids = dto.DetailGuids,
-                            TargetStoreCodes = dto.TargetStoreCodes,
-                        },
-                        updatedBy
-                    );
-                    MergeHqResult(result, hqResult.Data ?? hqResult.Details as EnsureHqProductsResult);
-                    if (!hqResult.Success)
-                    {
-                        result.Failed += result.HqFailed;
-                        return ApiResponse<UpdateToStorePricesResultDto>.Error(
-                            hqResult.Message,
-                            hqResult.ErrorCode,
-                            result
-                        );
-                    }
-                }
-
                 return ApiResponse<UpdateToStorePricesResultDto>.OK(result);
             }
             catch (Exception ex)
@@ -1984,23 +1951,6 @@ namespace BlazorApp.Api.Services.React
                 var msg = ex.InnerException?.Message ?? ex.Message ?? "更新失败";
                 return ApiResponse<UpdateToStorePricesResultDto>.Error(msg, "UPDATE_ERROR");
             }
-        }
-
-        private static void MergeHqResult(
-            UpdateToStorePricesResultDto target,
-            EnsureHqProductsResult? source
-        )
-        {
-            if (source == null)
-                return;
-
-            target.HqExisting = source.HqExisting;
-            target.HbwebCreated = source.HbwebCreated;
-            target.HqCreated = source.HqCreated;
-            target.HqSynced = source.HqSynced;
-            target.HqPurchasePricesUpdated = source.HqPurchasePricesUpdated;
-            target.HqFailed = source.Failed;
-            target.HqErrors = source.Errors;
         }
 
         /// <summary>
@@ -2042,7 +1992,7 @@ namespace BlazorApp.Api.Services.React
                     .Select(x => x.ItemNumber?.Trim())
                     .Where(x => !string.IsNullOrWhiteSpace(x))
                     .Cast<string>()
-                    .Distinct()
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
                     .ToList();
 
                 var barcodes = details
@@ -2053,29 +2003,59 @@ namespace BlazorApp.Api.Services.React
                     .ToList();
 
                 // 第四步：根据货号查询商品（按供应商过滤）
-                var productByItemNumber = new Dictionary<string, Product>();
+                var productByItemNumber = new Dictionary<string, Product>(
+                    StringComparer.OrdinalIgnoreCase
+                );
                 if (itemNumbers.Count > 0)
                 {
+                    // 先走精确匹配，避免在 ItemNumber 上套 UPPER 导致索引失效。
                     var products = await QueryInChunksParallelAsync<Product, string>(
                         itemNumbers,
                         200,
-                        (db, chunk) =>
-                        {
-                            var upperChunk = chunk.Select(x => x.ToUpper()).ToList();
-                            return db.Queryable<Product>()
-                                .Where(p =>
-                                    p.LocalSupplierCode == header.SupplierCode
-                                    && p.ItemNumber != null
-                                    && upperChunk.Contains(p.ItemNumber.ToUpper())
-                                    && p.IsDeleted == false
-                                )
-                                .ToListAsync();
-                        }
+                        (db, chunk) => db.Queryable<Product>()
+                            .Where(p =>
+                                p.LocalSupplierCode == header.SupplierCode
+                                && p.ItemNumber != null
+                                && chunk.Contains(p.ItemNumber)
+                                && p.IsDeleted == false
+                            )
+                            .ToListAsync()
                     );
                     foreach (var p in products)
                     {
                         if (!string.IsNullOrWhiteSpace(p.ItemNumber))
-                            productByItemNumber[p.ItemNumber.ToUpper()] = p;
+                            productByItemNumber[p.ItemNumber] = p;
+                    }
+
+                    var missingItemNumbers = itemNumbers
+                        .Where(itemNumber => !productByItemNumber.ContainsKey(itemNumber))
+                        .ToList();
+
+                    if (missingItemNumbers.Count > 0)
+                    {
+                        // 仅对未命中的货号回退大小写无关匹配，兼容历史数据大小写不一致。
+                        var fallbackProducts = await QueryInChunksParallelAsync<Product, string>(
+                            missingItemNumbers,
+                            200,
+                            (db, chunk) =>
+                            {
+                                var upperChunk = chunk.Select(x => x.ToUpper()).ToList();
+                                return db.Queryable<Product>()
+                                    .Where(p =>
+                                        p.LocalSupplierCode == header.SupplierCode
+                                        && p.ItemNumber != null
+                                        && upperChunk.Contains(p.ItemNumber.ToUpper())
+                                        && p.IsDeleted == false
+                                    )
+                                    .ToListAsync();
+                            }
+                        );
+
+                        foreach (var p in fallbackProducts)
+                        {
+                            if (!string.IsNullOrWhiteSpace(p.ItemNumber))
+                                productByItemNumber[p.ItemNumber] = p;
+                        }
                     }
                 }
 
@@ -2204,7 +2184,7 @@ namespace BlazorApp.Api.Services.React
                     // 检测货号是否匹配商品
                     if (!string.IsNullOrWhiteSpace(itemNumber))
                     {
-                        if (productByItemNumber.TryGetValue(itemNumber.ToUpper(), out var product))
+                        if (productByItemNumber.TryGetValue(itemNumber, out var product))
                         {
                             // 货号匹配成功，标记商品存在
                             result.ProductStatus = 1;
@@ -3401,9 +3381,9 @@ namespace BlazorApp.Api.Services.React
         {
             var db = _context.Db;
             var errors = new List<string>();
-            var createItemNumbers = new HashSet<string>();
-            var createBarcodes = new HashSet<string>();
-            var multiCodeKeys = new HashSet<string>();
+            var createItemNumbers = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var createBarcodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var multiCodeKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
             foreach (var detail in details)
             {
@@ -3439,12 +3419,12 @@ namespace BlazorApp.Api.Services.React
                             errors.Add($"明细 {detail.DetailGUID} 新建商品失败：进货价必须大于0");
                         if (
                             !string.IsNullOrWhiteSpace(detail.ItemNumber)
-                            && !createItemNumbers.Add(detail.ItemNumber)
+                            && !createItemNumbers.Add(detail.ItemNumber.Trim())
                         )
                             errors.Add($"明细 {detail.DetailGUID} 新建商品失败：本次执行内货号重复");
                         if (
                             !string.IsNullOrWhiteSpace(detail.Barcode)
-                            && !createBarcodes.Add(detail.Barcode)
+                            && !createBarcodes.Add(detail.Barcode.Trim())
                         )
                             errors.Add($"明细 {detail.DetailGUID} 新建商品失败：本次执行内条码重复");
                         if (
@@ -3452,18 +3432,22 @@ namespace BlazorApp.Api.Services.React
                             || !string.IsNullOrWhiteSpace(detail.Barcode)
                         )
                         {
+                            var normalizedItemNumber = NormalizeCaseInsensitiveValue(
+                                detail.ItemNumber
+                            );
+                            var normalizedBarcode = NormalizeCaseInsensitiveValue(detail.Barcode);
                             var duplicateProduct = await db.Queryable<Product>()
                                 .AnyAsync(p =>
                                     p.IsDeleted == false
                                     && p.LocalSupplierCode == header.SupplierCode
                                     && (
                                         (
-                                            !string.IsNullOrWhiteSpace(detail.ItemNumber)
-                                            && p.ItemNumber == detail.ItemNumber
+                                            normalizedItemNumber != null
+                                            && SqlFunc.ToUpper(p.ItemNumber) == normalizedItemNumber
                                         )
                                         || (
-                                            !string.IsNullOrWhiteSpace(detail.Barcode)
-                                            && p.Barcode == detail.Barcode
+                                            normalizedBarcode != null
+                                            && SqlFunc.ToUpper(p.Barcode) == normalizedBarcode
                                         )
                                     )
                                 );
@@ -3513,14 +3497,15 @@ namespace BlazorApp.Api.Services.React
                             errors.Add($"明细 {detail.DetailGUID} 添加多码失败：商品不存在");
                         if (!string.IsNullOrWhiteSpace(detail.Barcode))
                         {
-                            var key = $"{detail.ProductCode}|{detail.Barcode}";
+                            var normalizedBarcode = NormalizeCaseInsensitiveValue(detail.Barcode);
+                            var key = $"{detail.ProductCode}|{normalizedBarcode}";
                             if (!multiCodeKeys.Add(key))
                                 errors.Add($"明细 {detail.DetailGUID} 添加多码失败：本次执行内多码重复");
 
                             var duplicateMultiCode = await db.Queryable<StoreMultiCodeProduct>()
                                 .AnyAsync(x =>
                                     x.ProductCode == detail.ProductCode
-                                    && x.MultiBarcode == detail.Barcode
+                                    && SqlFunc.ToUpper(x.MultiBarcode) == normalizedBarcode
                                     && x.IsDeleted == false
                                 );
                             if (duplicateMultiCode)
@@ -3529,7 +3514,7 @@ namespace BlazorApp.Api.Services.React
                             var duplicateProductSetCode = await db.Queryable<ProductSetCode>()
                                 .AnyAsync(x =>
                                     x.ProductCode == detail.ProductCode
-                                    && x.SetBarcode == detail.Barcode
+                                    && SqlFunc.ToUpper(x.SetBarcode) == normalizedBarcode
                                     && x.IsDeleted == false
                                 );
                             if (duplicateProductSetCode)
@@ -3540,6 +3525,14 @@ namespace BlazorApp.Api.Services.React
             }
 
             return errors;
+        }
+
+        private static string? NormalizeCaseInsensitiveValue(string? value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+                return null;
+
+            return value.Trim().ToUpperInvariant();
         }
 
         private async Task<bool> ProductExistsByCodeAsync(string productCode)

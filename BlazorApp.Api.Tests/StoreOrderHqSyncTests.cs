@@ -575,6 +575,364 @@ public sealed class StoreOrderHqSyncTests : IDisposable
     }
 
     [Fact]
+    public async Task StoreOrderHqSyncService_增量默认LatestWins_本地较新时跳过明细覆盖()
+    {
+        var hqTime = new DateTime(2026, 5, 2, 0, 0, 0, DateTimeKind.Utc);
+        var localTime = hqTime.AddDays(1);
+        await SeedLocalOrderAsync("order-latest-default", "S001", localTime, isDeleted: false);
+        await SeedLocalDetailAsync(
+            "detail-latest-default",
+            "order-latest-default",
+            "S001",
+            localTime,
+            quantity: 1,
+            isDeleted: false
+        );
+        await SeedHqOrderAsync("order-latest-default", "S001", hqTime);
+        await SeedHqDetailAsync(
+            "detail-latest-default",
+            "order-latest-default",
+            "S001",
+            hqTime,
+            quantity: 8
+        );
+
+        var result = await CreateHqSyncService().SyncAsync(
+            StoreOrderHqSyncMode.Incremental,
+            new StoreOrderHqSyncRequestDto
+            {
+                StoreCodes = new List<string> { "S001" },
+                StartDate = hqTime.AddDays(-1),
+                EndDate = hqTime.AddDays(1),
+            },
+            "job-inc-latest-default"
+        );
+
+        Assert.True(result.Success, result.Message);
+        Assert.Equal(0, result.DetailsUpdated);
+        Assert.Equal(1, result.SkippedDetailsBecauseLocalNewer);
+
+        var detail = await _localDb.Queryable<WareHouseOrderDetails>()
+            .FirstAsync(item => item.DetailGUID == "detail-latest-default");
+        Assert.Equal(1, detail.Quantity);
+        Assert.Equal(localTime, detail.UpdatedAt);
+    }
+
+    [Fact]
+    public async Task StoreOrderHqSyncService_增量LatestWins_Hq较新时覆盖明细()
+    {
+        var localTime = new DateTime(2026, 5, 1, 0, 0, 0, DateTimeKind.Utc);
+        var hqTime = localTime.AddDays(1);
+        await SeedLocalOrderAsync("order-latest-hq", "S001", localTime, isDeleted: false);
+        await SeedLocalDetailAsync(
+            "detail-latest-hq",
+            "order-latest-hq",
+            "S001",
+            localTime,
+            quantity: 1,
+            isDeleted: false
+        );
+        await SeedHqOrderAsync("order-latest-hq", "S001", hqTime);
+        await SeedHqDetailAsync("detail-latest-hq", "order-latest-hq", "S001", hqTime, quantity: 8);
+
+        var result = await CreateHqSyncService().SyncAsync(
+            StoreOrderHqSyncMode.Incremental,
+            new StoreOrderHqSyncRequestDto
+            {
+                StoreCodes = new List<string> { "S001" },
+                StartDate = hqTime.AddDays(-1),
+                EndDate = hqTime.AddDays(1),
+                ConflictStrategy = StoreOrderHqSyncConflictStrategy.LatestWins,
+            },
+            "job-inc-latest-hq"
+        );
+
+        Assert.True(result.Success, result.Message);
+        Assert.Equal(1, result.DetailsUpdated);
+        Assert.Equal(0, result.SkippedDetailsBecauseLocalNewer);
+
+        var detail = await _localDb.Queryable<WareHouseOrderDetails>()
+            .FirstAsync(item => item.DetailGUID == "detail-latest-hq");
+        Assert.Equal(8, detail.Quantity);
+        Assert.Equal(hqTime, detail.UpdatedAt);
+    }
+
+    [Fact]
+    public async Task StoreOrderHqSyncService_增量LatestWins_时间相等时跳过明细覆盖()
+    {
+        var sameTime = new DateTime(2026, 5, 2, 0, 0, 0, DateTimeKind.Utc);
+        await SeedLocalOrderAsync("order-latest-tie", "S001", sameTime, isDeleted: false);
+        await SeedLocalDetailAsync(
+            "detail-latest-tie",
+            "order-latest-tie",
+            "S001",
+            sameTime,
+            quantity: 1,
+            isDeleted: false
+        );
+        await SeedHqOrderAsync("order-latest-tie", "S001", sameTime);
+        await SeedHqDetailAsync("detail-latest-tie", "order-latest-tie", "S001", sameTime, quantity: 8);
+
+        var result = await CreateHqSyncService().SyncAsync(
+            StoreOrderHqSyncMode.Incremental,
+            new StoreOrderHqSyncRequestDto
+            {
+                StoreCodes = new List<string> { "S001" },
+                StartDate = sameTime.AddDays(-1),
+                EndDate = sameTime.AddDays(1),
+                ConflictStrategy = StoreOrderHqSyncConflictStrategy.LatestWins,
+            },
+            "job-inc-latest-tie"
+        );
+
+        Assert.True(result.Success, result.Message);
+        Assert.Equal(0, result.DetailsUpdated);
+        Assert.Equal(1, result.SkippedDetailsBecauseLocalNewer);
+
+        var detail = await _localDb.Queryable<WareHouseOrderDetails>()
+            .FirstAsync(item => item.DetailGUID == "detail-latest-tie");
+        Assert.Equal(1, detail.Quantity);
+    }
+
+    [Fact]
+    public async Task StoreOrderHqSyncService_增量LatestWins_Hq时间缺失时跳过明细覆盖()
+    {
+        var localTime = new DateTime(2026, 5, 2, 0, 0, 0, DateTimeKind.Utc);
+        await SeedLocalOrderAsync("order-latest-missing-hq", "S001", localTime, isDeleted: false);
+        await SeedLocalDetailAsync(
+            "detail-latest-missing-hq",
+            "order-latest-missing-hq",
+            "S001",
+            localTime,
+            quantity: 1,
+            isDeleted: false
+        );
+        await SeedHqOrderAsync("order-latest-missing-hq", "S001", localTime);
+        await SeedHqDetailAsync(
+            "detail-latest-missing-hq",
+            "order-latest-missing-hq",
+            "S001",
+            null,
+            quantity: 8
+        );
+
+        var result = await CreateHqSyncService().SyncAsync(
+            StoreOrderHqSyncMode.Incremental,
+            new StoreOrderHqSyncRequestDto
+            {
+                StoreCodes = new List<string> { "S001" },
+                StartDate = localTime.AddDays(-1),
+                EndDate = localTime.AddDays(1),
+                ConflictStrategy = StoreOrderHqSyncConflictStrategy.LatestWins,
+            },
+            "job-inc-latest-missing-hq"
+        );
+
+        Assert.True(result.Success, result.Message);
+        Assert.Equal(0, result.DetailsUpdated);
+        Assert.Equal(1, result.SkippedDetailsBecauseLocalNewer);
+
+        var detail = await _localDb.Queryable<WareHouseOrderDetails>()
+            .FirstAsync(item => item.DetailGUID == "detail-latest-missing-hq");
+        Assert.Equal(1, detail.Quantity);
+    }
+
+    [Fact]
+    public async Task StoreOrderHqSyncService_增量HqWins_时间相等字段不同仍覆盖明细()
+    {
+        var sameTime = new DateTime(2026, 5, 2, 0, 0, 0, DateTimeKind.Utc);
+        await SeedLocalOrderAsync("order-hq-wins", "S001", sameTime, isDeleted: false);
+        await SeedLocalDetailAsync(
+            "detail-hq-wins",
+            "order-hq-wins",
+            "S001",
+            sameTime,
+            quantity: 1,
+            isDeleted: false
+        );
+        await SeedHqOrderAsync("order-hq-wins", "S001", sameTime);
+        await SeedHqDetailAsync("detail-hq-wins", "order-hq-wins", "S001", sameTime, quantity: 8);
+
+        var result = await CreateHqSyncService().SyncAsync(
+            StoreOrderHqSyncMode.Incremental,
+            new StoreOrderHqSyncRequestDto
+            {
+                StoreCodes = new List<string> { "S001" },
+                StartDate = sameTime.AddDays(-1),
+                EndDate = sameTime.AddDays(1),
+                ConflictStrategy = StoreOrderHqSyncConflictStrategy.HqWins,
+            },
+            "job-inc-hq-wins"
+        );
+
+        Assert.True(result.Success, result.Message);
+        Assert.Equal(1, result.DetailsUpdated);
+        Assert.Equal(0, result.SkippedDetailsBecauseLocalNewer);
+
+        var detail = await _localDb.Queryable<WareHouseOrderDetails>()
+            .FirstAsync(item => item.DetailGUID == "detail-hq-wins");
+        Assert.Equal(8, detail.Quantity);
+    }
+
+    [Fact]
+    public async Task StoreOrderHqSyncService_Hq覆盖写入时保留Hq审计时间不被通用Aop覆盖()
+    {
+        var hqTime = new DateTime(2026, 5, 2, 3, 4, 5, DateTimeKind.Utc);
+        await SeedHqOrderAsync("order-aop-preserve", "S001", hqTime);
+        await SeedHqDetailAsync(
+            "detail-aop-preserve",
+            "order-aop-preserve",
+            "S001",
+            hqTime,
+            quantity: 8
+        );
+        ConfigureProductionAuditAop(_localDb);
+
+        var result = await CreateHqSyncService().SyncAsync(
+            StoreOrderHqSyncMode.Incremental,
+            new StoreOrderHqSyncRequestDto
+            {
+                StoreCodes = new List<string> { "S001" },
+                StartDate = hqTime.AddDays(-1),
+                EndDate = hqTime.AddDays(1),
+                ConflictStrategy = StoreOrderHqSyncConflictStrategy.LatestWins,
+            },
+            "job-inc-aop-preserve"
+        );
+
+        Assert.True(result.Success, result.Message);
+        Assert.Equal(1, result.OrdersSynced);
+        Assert.Equal(1, result.DetailsSynced);
+
+        var order = await _localDb.Queryable<WareHouseOrder>()
+            .FirstAsync(item => item.OrderGUID == "order-aop-preserve");
+        var detail = await _localDb.Queryable<WareHouseOrderDetails>()
+            .FirstAsync(item => item.DetailGUID == "detail-aop-preserve");
+        Assert.Equal(hqTime.AddDays(-1), order.CreatedAt);
+        Assert.Equal(hqTime, order.UpdatedAt);
+        Assert.Equal(hqTime.AddDays(-1), detail.CreatedAt);
+        Assert.Equal(hqTime, detail.UpdatedAt);
+    }
+
+    [Fact]
+    public async Task StoreOrderHqSyncService_LatestWins_本地时间更新时不恢复软删并累计跳过计数()
+    {
+        var hqTime = new DateTime(2026, 5, 2, 0, 0, 0, DateTimeKind.Utc);
+        var localNewerTime = hqTime.AddHours(6);
+        await SeedLocalOrderAsync("order-latest-soft-delete", "S001", localNewerTime, isDeleted: true);
+        await SeedLocalDetailAsync(
+            "detail-latest-soft-delete",
+            "order-latest-soft-delete",
+            "S001",
+            localNewerTime,
+            quantity: 2,
+            isDeleted: true,
+            storeProductCode: "S001-LOCAL",
+            productCode: "P-LOCAL",
+            allocQuantity: 3,
+            lastCost: 5,
+            importPrice: 6,
+            importAmount: 12,
+            oemPrice: 7,
+            oemAmount: 14
+        );
+        await SeedHqOrderAsync("order-latest-soft-delete", "S001", hqTime);
+        await SeedHqDetailAsync(
+            "detail-latest-soft-delete",
+            "order-latest-soft-delete",
+            "S001",
+            hqTime,
+            quantity: 9
+        );
+
+        var result = await CreateHqSyncService().SyncAsync(
+            StoreOrderHqSyncMode.Incremental,
+            new StoreOrderHqSyncRequestDto
+            {
+                StoreCodes = new List<string> { "S001" },
+                StartDate = hqTime.AddDays(-1),
+                EndDate = hqTime.AddDays(1),
+                ConflictStrategy = StoreOrderHqSyncConflictStrategy.LatestWins,
+            },
+            "job-inc-latest-soft-delete"
+        );
+
+        Assert.True(result.Success, result.Message);
+        Assert.Equal(0, result.OrdersSynced);
+        Assert.Equal(0, result.OrdersUpdated);
+        Assert.Equal(0, result.DetailsSynced);
+        Assert.Equal(0, result.DetailsUpdated);
+        Assert.Equal(1, result.SkippedOrdersBecauseLocalNewer);
+        Assert.Equal(1, result.SkippedDetailsBecauseLocalNewer);
+
+        var localOrder = await _localDb.Queryable<WareHouseOrder>()
+            .FirstAsync(item => item.OrderGUID == "order-latest-soft-delete");
+        var localDetail = await _localDb.Queryable<WareHouseOrderDetails>()
+            .FirstAsync(item => item.DetailGUID == "detail-latest-soft-delete");
+        Assert.True(localOrder.IsDeleted);
+        Assert.True(localDetail.IsDeleted);
+        Assert.Equal(localNewerTime, localOrder.UpdatedAt);
+        Assert.Equal(localNewerTime, localDetail.UpdatedAt);
+        Assert.Equal(2, localDetail.Quantity);
+        Assert.Equal("S001-LOCAL", localDetail.StoreProductCode);
+    }
+
+    [Fact]
+    public async Task StoreOrderHqSyncService_LatestWins_Hq缺少LastModify且时间相等时不覆盖本地明细()
+    {
+        var sameTime = new DateTime(2026, 5, 2, 0, 0, 0, DateTimeKind.Utc);
+        await SeedLocalOrderAsync("order-latest-equal", "S001", sameTime, isDeleted: false);
+        await SeedLocalDetailAsync(
+            "detail-latest-equal",
+            "order-latest-equal",
+            "S001",
+            sameTime,
+            quantity: 2,
+            isDeleted: false,
+            storeProductCode: "S001-LOCAL",
+            productCode: "P-LOCAL",
+            allocQuantity: 4,
+            lastCost: 5,
+            importPrice: 6,
+            importAmount: 12,
+            oemPrice: 7,
+            oemAmount: 14
+        );
+        await SeedHqOrderAsync("order-latest-equal", "S001", sameTime);
+        await SeedHqDetailAsync(
+            "detail-latest-equal",
+            "order-latest-equal",
+            "S001",
+            lastModifyAt: null,
+            quantity: 9,
+            createDate: sameTime
+        );
+
+        var result = await CreateHqSyncService().SyncAsync(
+            StoreOrderHqSyncMode.Incremental,
+            new StoreOrderHqSyncRequestDto
+            {
+                StoreCodes = new List<string> { "S001" },
+                StartDate = sameTime.AddDays(-1),
+                EndDate = sameTime.AddDays(1),
+                ConflictStrategy = StoreOrderHqSyncConflictStrategy.LatestWins,
+            },
+            "job-inc-latest-equal"
+        );
+
+        Assert.True(result.Success, result.Message);
+        Assert.Equal(0, result.DetailsSynced);
+        Assert.Equal(0, result.DetailsUpdated);
+        Assert.Equal(1, result.SkippedDetailsBecauseLocalNewer);
+
+        var localDetail = await _localDb.Queryable<WareHouseOrderDetails>()
+            .FirstAsync(item => item.DetailGUID == "detail-latest-equal");
+        Assert.Equal(2, localDetail.Quantity);
+        Assert.Equal("S001-LOCAL", localDetail.StoreProductCode);
+        Assert.Equal(sameTime, localDetail.UpdatedAt);
+    }
+
+    [Fact]
     public async Task GetUsedBranchesAsync_同时返回本地分店和外购客户()
     {
         var externalCustomerGuid = "669C0A86-31BC-4EDF-9D4C-216E9E312CB1";
@@ -722,6 +1080,48 @@ public sealed class StoreOrderHqSyncTests : IDisposable
         return $"{sql} || {formattedParameters}";
     }
 
+    private static void ConfigureProductionAuditAop(SqlSugarClient db)
+    {
+        db.Aop.DataExecuting = (oldValue, entityInfo) =>
+        {
+            if (entityInfo.EntityValue is not BaseEntity)
+            {
+                return;
+            }
+
+            if (
+                SqlSugarAuditScope.ShouldPreserveExplicitAuditFields
+                && entityInfo.PropertyName is "CreatedAt" or "UpdatedAt" or "CreatedBy" or "UpdatedBy"
+            )
+            {
+                return;
+            }
+
+            switch (entityInfo.OperationType)
+            {
+                case DataFilterType.InsertByObject:
+                    if (entityInfo.PropertyName == "CreatedAt")
+                    {
+                        entityInfo.SetValue(DateTime.UtcNow);
+                    }
+
+                    if (entityInfo.PropertyName == "UpdatedAt")
+                    {
+                        entityInfo.SetValue(DateTime.UtcNow);
+                    }
+
+                    break;
+                case DataFilterType.UpdateByObject:
+                    if (entityInfo.PropertyName == "UpdatedAt")
+                    {
+                        entityInfo.SetValue(DateTime.UtcNow);
+                    }
+
+                    break;
+            }
+        };
+    }
+
     private async Task SeedLocalOrderAsync(
         string orderGuid,
         string storeCode,
@@ -839,8 +1239,9 @@ public sealed class StoreOrderHqSyncTests : IDisposable
         string detailGuid,
         string orderGuid,
         string storeCode,
-        DateTime? updatedAt,
-        decimal quantity
+        DateTime? lastModifyAt,
+        decimal quantity,
+        DateTime? createDate = null
     )
     {
         await _hqDb.Insertable(
@@ -859,9 +1260,9 @@ public sealed class StoreOrderHqSyncTests : IDisposable
                 贴牌价格 = 4,
                 合计贴牌金额 = quantity * 4,
                 FGC_Creator = "hq",
-                FGC_CreateDate = updatedAt?.AddDays(-1),
+                FGC_CreateDate = createDate ?? lastModifyAt?.AddDays(-1),
                 FGC_LastModifier = "hq",
-                FGC_LastModifyDate = updatedAt,
+                FGC_LastModifyDate = lastModifyAt,
             }
         ).ExecuteCommandAsync();
     }

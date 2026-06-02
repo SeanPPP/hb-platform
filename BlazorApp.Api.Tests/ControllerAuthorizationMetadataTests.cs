@@ -51,7 +51,19 @@ public class ControllerAuthorizationMetadataTests
             Permissions.LocalPurchase.Edit
         );
         yield return Policy<ReactLocalSupplierInvoicesController>(
+            nameof(ReactLocalSupplierInvoicesController.BatchUpdateDetailAction),
+            Permissions.LocalPurchase.Edit
+        );
+        yield return Policy<ReactLocalSupplierInvoicesController>(
             nameof(ReactLocalSupplierInvoicesController.PushInvoicesToHq),
+            LocalPurchasePushToHq
+        );
+        yield return Policy<ReactLocalSupplierInvoicesController>(
+            nameof(ReactLocalSupplierInvoicesController.UpdateHqProducts),
+            Permissions.LocalPurchase.Edit
+        );
+        yield return Policy<ReactLocalSupplierInvoicesController>(
+            nameof(ReactLocalSupplierInvoicesController.UpdateHqProducts),
             LocalPurchasePushToHq
         );
 
@@ -216,6 +228,23 @@ public class ControllerAuthorizationMetadataTests
         yield return Policy<ReactProductsController>(
             nameof(ReactProductsController.CreateWithPrices),
             Permissions.StoreProducts.Create
+        );
+
+        yield return Policy<ReactContainerProductsController>(
+            nameof(ReactContainerProductsController.StartCreateNewProductsJob),
+            Permissions.Container.Edit
+        );
+        yield return Policy<ReactContainerProductsController>(
+            nameof(ReactContainerProductsController.StartCreateNewProductsJob),
+            Permissions.PosProducts.Manage
+        );
+        yield return Policy<ReactContainerProductsController>(
+            nameof(ReactContainerProductsController.GetCreateNewProductsJob),
+            Permissions.Container.Edit
+        );
+        yield return Policy<ReactContainerProductsController>(
+            nameof(ReactContainerProductsController.GetCreateNewProductsJob),
+            Permissions.PosProducts.Manage
         );
 
         yield return Policy<DomesticProductCreationController>(

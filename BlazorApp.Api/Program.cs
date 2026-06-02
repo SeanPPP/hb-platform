@@ -463,6 +463,11 @@ builder.Services.AddScoped<TencentCloudUploadService>();
 
 // ===================== React 专用服务注册（与原有服务解耦） =====================
 builder.Services.AddScoped<IContainerReactService, ContainerReactService>();
+builder.Services.AddScoped<
+    IContainerProductCreationExecutorService,
+    ContainerProductCreationExecutorService
+>();
+builder.Services.AddSingleton<IContainerProductCreationJobService, ContainerProductCreationJobService>();
 builder.Services.Configure<ContainerHqSyncOptions>(
     builder.Configuration.GetSection("ContainerHqSync")
 );
