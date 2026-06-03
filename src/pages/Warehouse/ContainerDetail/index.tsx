@@ -35,7 +35,7 @@ import type { ColumnsType } from 'antd/es/table'
 import type { TFunction } from 'i18next'
 import type { Dayjs } from 'dayjs'
 import dayjs from 'dayjs'
-import { useEffect, useMemo, useRef, useState, type Key } from 'react'
+import { useEffect, useMemo, useRef, useState, type Key, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useNavigate } from 'react-router-dom'
 import BarcodePreview from '../../../components/BarcodePreview'
@@ -146,27 +146,46 @@ function CopyableText({ value, maxWidth }: { value?: string; maxWidth?: number }
   }
 
   return (
-    <Space size={4} wrap={false}>
+    <Space size={4} wrap={false} className="container-detail-nowrap container-detail-copyable">
       <Typography.Text style={maxWidth ? { maxWidth } : undefined} ellipsis={maxWidth ? { tooltip: value } : false}>
         {value}
       </Typography.Text>
       <Tooltip title="复制">
         <Button
           size="small"
-          type="link"
+          type="text"
           aria-label={`复制 ${value}`}
           icon={<CopyOutlined />}
-          style={{ paddingInline: 0 }}
+          className="container-detail-copy-button"
           onClick={(event) => {
             event.stopPropagation()
             void copyTextToClipboard(value)
           }}
-        >
-          复制
-        </Button>
+        />
       </Tooltip>
     </Space>
   )
+}
+
+// 表格密集显示专用：关键文本限制两行，数字列保持单行便于快速扫读。
+function TwoLineText({ value }: { value?: string }) {
+  if (!value) {
+    return <>--</>
+  }
+
+  return (
+    <Tooltip title={value}>
+      <span className="container-detail-two-line-text">{value}</span>
+    </Tooltip>
+  )
+}
+
+function renderNumericCell(value: ReactNode) {
+  return <span className="container-detail-nowrap container-detail-numeric-cell">{value}</span>
+}
+
+function renderCompactHeader(value: ReactNode) {
+  return <span className="container-detail-header-title">{value}</span>
 }
 
 export default function ContainerDetailPage() {
@@ -836,90 +855,89 @@ export default function ContainerDetailPage() {
   }
 
   const columns: ColumnsType<ContainerDetail> = [
-    { title: t('containers.columns.index'), width: 70, fixed: 'left', render: (_v, _r, index) => index + 1 },
+    { title: renderCompactHeader(t('containers.columns.index')), width: 56, fixed: 'left', render: (_v, _r, index) => renderNumericCell(index + 1) },
     {
-      title: t('containers.columns.image'),
-      width: 80,
+      title: renderCompactHeader(t('containers.columns.image')),
+      width: 64,
       fixed: 'left',
       render: (_, row) =>
         row.商品信息?.商品图片 ? (
-          <Image width={48} height={48} src={row.商品信息.商品图片} style={{ objectFit: 'cover', borderRadius: 4 }} />
+          <Image width={40} height={40} src={row.商品信息.商品图片} style={{ objectFit: 'cover', borderRadius: 4 }} />
         ) : (
           <span style={{ color: '#999' }}>{t('containers.empty.noImage')}</span>
         ),
     },
-    { title: t('containers.fields.itemNumber'), width: 160, fixed: 'left', sorter: (a, b) => (a.商品信息?.货号 || '').localeCompare(b.商品信息?.货号 || ''), render: (_, row) => <CopyableText value={row.商品信息?.货号} maxWidth={118} /> },
+    { title: t('containers.fields.itemNumber'), width: 130, fixed: 'left', sorter: (a, b) => (a.商品信息?.货号 || '').localeCompare(b.商品信息?.货号 || ''), render: (_, row) => <CopyableText value={row.商品信息?.货号} maxWidth={90} /> },
     {
-      title: t('containers.fields.barcode'),
-      width: 190,
+      title: renderCompactHeader(t('containers.fields.barcode')),
+      width: 170,
       render: (_, row) => {
         const barcode = row.商品信息?.条形码
 
         return barcode ? (
-          <Space size={4} wrap={false}>
-            <BarcodePreview value={barcode} showText={false} showCopy={false} />
+          <Space size={4} wrap={false} className="container-detail-barcode-cell">
+            <BarcodePreview value={barcode} showText showCopy={false} options={{ height: 24 }} />
             <Tooltip title="复制">
               <Button
                 size="small"
-                type="link"
+                type="text"
                 aria-label={`复制 ${barcode}`}
                 icon={<CopyOutlined />}
-                style={{ paddingInline: 0 }}
+                className="container-detail-icon-button"
                 onClick={(event) => {
                   event.stopPropagation()
                   void copyTextToClipboard(barcode)
                 }}
-              >
-                复制
-              </Button>
+              />
             </Tooltip>
           </Space>
         ) : '--'
       },
     },
-    { title: t('containers.fields.productName'), width: 240, render: (_, row) => getContainerDetailProductName(row) || '--' },
+    { title: renderCompactHeader(t('containers.fields.productName')), width: 180, render: (_, row) => <TwoLineText value={getContainerDetailProductName(row)} /> },
     {
-      title: t('containers.fields.englishName'),
-      width: 220,
+      title: renderCompactHeader(t('containers.fields.englishName')),
+      width: 180,
       render: (_, row) => access.canEditContainer ? (
         <Input.TextArea
+          className="container-detail-english-name-input"
           value={getContainerDetailEnglishName(row) ?? ''}
           autoSize={{ minRows: 1, maxRows: 2 }}
           style={{ resize: 'none' }}
           onChange={(event) => patchRow(rowKey(row), { 英文名称: event.target.value })}
           onBlur={(event) => void saveRowPatch(row, { 英文名称: event.target.value })}
         />
-      ) : getContainerDetailEnglishName(row) || '--',
+      ) : <TwoLineText value={getContainerDetailEnglishName(row)} />,
     },
-    { title: t('containers.fields.productType'), width: 110, render: (_, row) => getProductTypeLabel(row.商品类型 || row.商品信息?.商品类型, t) },
-    { title: t('containers.fields.newProduct'), width: 90, render: (_, row) => (row.是否新商品 ? <Tag color="blue">{t('containers.tags.new')}</Tag> : <Tag>{t('containers.tags.existing')}</Tag>) },
-    { title: t('containers.fields.containerPieces'), dataIndex: '装柜件数', width: 100, align: 'right' },
-    { title: t('containers.fields.containerQuantity'), dataIndex: '装柜数量', width: 100, align: 'right' },
-    { title: t('containers.fields.domesticPrice'), dataIndex: '国内价格', width: 110, align: 'right', render: (v) => formatNumber(v) },
+    { title: renderCompactHeader(t('containers.fields.productType')), width: 92, render: (_, row) => getProductTypeLabel(row.商品类型 || row.商品信息?.商品类型, t) },
+    { title: renderCompactHeader(t('containers.fields.newProduct')), width: 72, render: (_, row) => (row.是否新商品 ? <Tag color="blue">{t('containers.tags.new')}</Tag> : <Tag>{t('containers.tags.existing')}</Tag>) },
+    { title: renderCompactHeader(t('containers.fields.containerPieces')), dataIndex: '装柜件数', width: 76, align: 'right', render: (v) => renderNumericCell(v ?? '--') },
+    { title: renderCompactHeader(t('containers.fields.containerQuantity')), dataIndex: '装柜数量', width: 76, align: 'right', render: (v) => renderNumericCell(v ?? '--') },
+    { title: renderCompactHeader(t('containers.fields.domesticPrice')), dataIndex: '国内价格', width: 86, align: 'right', render: (v) => renderNumericCell(formatNumber(v)) },
     {
-      title: t('containers.fields.floatRate'),
+      title: renderCompactHeader(t('containers.fields.floatRate')),
       dataIndex: '调整浮率',
-      width: 120,
+      width: 96,
       align: 'right',
       render: (_value, row) =>
         access.canEditContainer ? (
           <InputNumber
             value={row.调整浮率}
             precision={4}
-            style={{ width: 96 }}
+            style={{ width: 78 }}
             onChange={(value) => patchRow(rowKey(row), { 调整浮率: value == null ? undefined : Number(value) })}
             onBlur={(event) => {
               const value = event.target.value ? Number(event.target.value) : undefined
               void saveFloatRatePatch(row, value)
             }}
           />
-        ) : formatNumber(row.调整浮率, 4),
+        ) : renderNumericCell(formatNumber(row.调整浮率, 4)),
     },
-    { title: t('containers.fields.transportCost'), dataIndex: '运输成本', width: 110, align: 'right', render: (v) => formatNumber(v) },
+    { title: renderCompactHeader(t('containers.fields.transportCost')), dataIndex: '运输成本', width: 86, align: 'right', render: (v) => renderNumericCell(formatNumber(v)) },
     {
-      title: t('containers.fields.importPrice'),
+      title: renderCompactHeader(t('containers.fields.importPrice')),
       dataIndex: '进口价格',
-      width: 120,
+      width: 96,
       align: 'right',
       render: (_value, row) =>
         access.canEditContainer ? (
@@ -927,24 +945,24 @@ export default function ContainerDetailPage() {
             value={row.进口价格}
             min={0}
             precision={2}
-            style={{ width: 100 }}
+            style={{ width: 78 }}
             onChange={(value) => patchRow(rowKey(row), { 进口价格: value == null ? undefined : Number(value) })}
             onBlur={(event) => void saveRowPatch(row, { 进口价格: event.target.value ? Number(event.target.value) : undefined })}
           />
-        ) : formatNumber(row.进口价格),
+        ) : renderNumericCell(formatNumber(row.进口价格)),
     },
     {
-      title: t('containers.fields.oemPrice'),
+      title: renderCompactHeader(t('containers.fields.oemPrice')),
       dataIndex: '贴牌价格',
-      width: 120,
+      width: 96,
       align: 'right',
       render: (_value, row) =>
-        access.canEditContainer ? <InputNumber defaultValue={row.贴牌价格} min={0} precision={2} style={{ width: 100 }} onBlur={(event) => void saveRowPatch(row, { 贴牌价格: event.target.value ? Number(event.target.value) : undefined })} /> : formatNumber(row.贴牌价格),
+        access.canEditContainer ? <InputNumber defaultValue={row.贴牌价格} min={0} precision={2} style={{ width: 78 }} onBlur={(event) => void saveRowPatch(row, { 贴牌价格: event.target.value ? Number(event.target.value) : undefined })} /> : renderNumericCell(formatNumber(row.贴牌价格)),
     },
-    { title: t('containers.fields.warehouseStatus'), width: 100, render: (_, row) => <Tag color={row.warehouseIsActive ? 'success' : 'default'}>{row.warehouseIsActive ? t('common.activeUpper') : t('common.inactiveUpper')}</Tag> },
+    { title: renderCompactHeader(t('containers.fields.warehouseStatus')), width: 86, render: (_, row) => <Tag color={row.warehouseIsActive ? 'success' : 'default'}>{row.warehouseIsActive ? t('common.activeUpper') : t('common.inactiveUpper')}</Tag> },
     {
-      title: t('containers.fields.remark'),
-      width: 220,
+      title: renderCompactHeader(t('containers.fields.remark')),
+      width: 160,
       render: (_, row) =>
         access.canEditContainer ? <Input defaultValue={row.备注} onBlur={(event) => void saveRowPatch(row, { 备注: event.target.value })} /> : row.备注 || '--',
     },
@@ -1106,7 +1124,7 @@ export default function ContainerDetailPage() {
                 dataSource={filteredRows}
                 rowSelection={{ selectedRowKeys, onChange: setSelectedRowKeys, fixed: true }}
                 pagination={{ pageSize: 50, showSizeChanger: true, showTotal: (total) => t('common.total', { count: total }) }}
-                scroll={{ x: 2100, y: 620 }}
+                scroll={{ x: 1840, y: 620 }}
                 footer={() => (
                   <Space direction="vertical" size={2}>
                     <Typography.Text type="secondary">{t('containers.formulas.transportCost', '运输成本 = 运费 × 明细体积 ÷ 装柜数量 ÷ 总体积')}</Typography.Text>

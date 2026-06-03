@@ -484,7 +484,7 @@ assertEqual(pageSource.includes('loading={recalculateCostsLoading}'), true, '重
 assertEqual(pageSource.includes('onClick={() => void handleRecalculateCosts()}'), true, '重算成本按钮应调用手动重算入口')
 assertEqual(pageSource.includes('>重算成本</Button>'), true, '货柜明细应显示重算成本按钮文案')
 assertEqual(
-  pageSource.includes("title: t('containers.fields.itemNumber'), width: 160, fixed: 'left'"),
+  pageSource.includes("title: t('containers.fields.itemNumber'), width: 130, fixed: 'left'"),
   true,
   '货号列应固定在左侧，横向滚动时保持可见',
 )
@@ -503,6 +503,66 @@ assertEqual(
   pageStyleSource.includes('.container-detail-table .ant-table-tbody > tr > td'),
   true,
   '货柜明细正文单元格应通过专属样式保持垂直居中',
+)
+assertEqual(
+  pageSource.includes('className="container-detail-nowrap container-detail-copyable"'),
+  true,
+  '货号复制区域应使用专属 nowrap 样式保持单行紧凑显示',
+)
+assertEqual(
+  pageSource.includes('className="container-detail-copy-button"'),
+  true,
+  '货号复制按钮应使用图标按钮样式，不显示复制文字',
+)
+assertEqual(
+  pageSource.includes('className="container-detail-barcode-cell"'),
+  true,
+  '条码列应使用专属紧凑容器避免条码和复制按钮换行',
+)
+assertEqual(
+  pageSource.includes('<BarcodePreview value={barcode} showText showCopy={false} options={{ height: 24 }} />'),
+  true,
+  '条码列应显示条码文本，不能隐藏条码文本',
+)
+assertEqual(
+  pageStyleSource.includes('.container-detail-barcode-cell .ant-typography'),
+  true,
+  '条码文本应使用专属样式保持完整显示',
+)
+assertEqual(
+  pageStyleSource.includes('overflow: visible'),
+  true,
+  '条码文本不应被省略或折叠隐藏',
+)
+assertEqual(
+  pageSource.includes('className="container-detail-two-line-text"'),
+  true,
+  '商品名称应使用两行截断样式避免长名称撑高整行',
+)
+assertEqual(
+  pageSource.includes('className="container-detail-english-name-input"'),
+  true,
+  '英文名称输入框应使用专属两行紧凑样式',
+)
+assertEqual(
+  pageSource.includes('renderNumericCell('),
+  true,
+  '数字列应通过统一 helper 保持单行和等宽数字显示',
+)
+assertEqual(
+  pageStyleSource.includes('-webkit-line-clamp: 2'),
+  true,
+  '名称和表头应通过 CSS 限制最多两行显示',
+)
+assertEqual(
+  pageStyleSource.includes('font-variant-numeric: tabular-nums'),
+  true,
+  '数字列应使用等宽数字视觉以便扫读',
+)
+assertEqual(
+  pageStyleSource.includes('.container-detail-table .ant-table-cell'),
+  true,
+  '货柜明细表格应压缩单元格 padding 提升密度',
 )
 
 console.log('containerDetailLogic.test: ok')
