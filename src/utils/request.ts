@@ -49,7 +49,7 @@ function buildQueryString(params?: Record<string, unknown>) {
   return query ? `?${query}` : ''
 }
 
-const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').trim()
+const API_BASE_URL = (((import.meta as ImportMeta & { env?: ImportMetaEnv }).env?.VITE_API_BASE_URL) || '').trim()
 const LOGIN_PATH = '/login'
 export const AUTH_EXPIRED_EVENT = 'hbweb:auth-expired'
 const AUTH_WHITELIST = new Set([

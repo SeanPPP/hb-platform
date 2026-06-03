@@ -91,6 +91,10 @@ export interface PushProductsToHqRequest {
   productCodes: string[]
 }
 
+export interface SyncSelectedProductsFromHqRequest {
+  productCodes: string[]
+}
+
 export interface PushProductsToHqResult {
   successCount: number
   failedCount: number

@@ -64,6 +64,7 @@ import {
   getProducts,
   HqProductSyncPollingTimeoutError,
   pushProductsToHq,
+  syncSelectedProductsFromHq,
   syncProductsToStores,
   updateProduct,
 } from '../../../services/posProductService'
@@ -82,6 +83,7 @@ import type { ProductCategoryDto } from '../../../types/productCategory'
 import type { ProductIntegrityCheckResultDto, ProductIntegrityFixResultDto } from '../../../types/productIntegrity'
 import type { MulticodeSetItem } from '../../../types/multiCodeSet'
 import type { StoreOption } from '../../../services/storeService'
+import { compareProductStoreRecordsByName } from './storeRecordSorting'
 
 type ProductRow = PosProductDto & { key: string }
 type HqSyncMode = Parameters<typeof buildProductHqSyncOperationId>[0]
@@ -250,6 +252,8 @@ export default function ProductManagementPage() {
   const [syncSelectAll, setSyncSelectAll] = useState(false)
   const [pushToHqLoading, setPushToHqLoading] = useState(false)
   const pushToHqLoadingRef = useRef(false)
+  const [selectedFromHqLoading, setSelectedFromHqLoading] = useState(false)
+  const selectedFromHqLoadingRef = useRef(false)
 
   const productTypeWatch = Form.useWatch('productType', editForm)
   const [editSetCodes, setEditSetCodes] = useState<any[]>([])
@@ -680,6 +684,35 @@ export default function ProductManagementPage() {
     })
   }, [t])
 
+  const showSelectedFromHqResult = useCallback((result: HqProductSyncResult) => {
+    const content = (
+      <Space direction="vertical" size={6}>
+        {result.message && <div>{result.message}</div>}
+        {buildHqSyncResultLines(result).map((line) => (
+          <div key={line}>{line}</div>
+        ))}
+        {result.errors?.length ? (
+          <div style={{ whiteSpace: 'pre-wrap' }}>
+            {t('posAdmin.products.partialSyncError', '部分同步错误')}：{result.errors.join('\n')}
+          </div>
+        ) : null}
+      </Space>
+    )
+
+    if (result.errors?.length) {
+      Modal.warning({
+        title: t('posAdmin.products.syncSelectedFromHqPartialSucceeded', '从 HQ 同步选中商品部分成功'),
+        content,
+      })
+      return
+    }
+
+    Modal.success({
+      title: t('posAdmin.products.syncSelectedFromHqSucceeded', '从 HQ 同步选中商品完成'),
+      content,
+    })
+  }, [buildHqSyncResultLines, t])
+
   const ensureCanSyncProductsFromHq = () => {
     if (isAdmin) return true
     setHqSyncVisible(false)
@@ -1054,6 +1087,32 @@ export default function ProductManagementPage() {
     } finally {
       pushToHqLoadingRef.current = false
       setPushToHqLoading(false)
+    }
+  }
+
+  const handleSyncSelectedFromHq = async () => {
+    if (!ensureCanSyncProductsFromHq()) return
+    if (!selectedRowKeys.length) {
+      message.warning(t('posAdmin.products.selectProductsFirst', '请先选择商品'))
+      return
+    }
+    // 使用 ref 作为即时锁，避免连续点击在状态刷新前重复提交同一批商品。
+    if (selectedFromHqLoadingRef.current) return
+
+    try {
+      selectedFromHqLoadingRef.current = true
+      setSelectedFromHqLoading(true)
+      const result = await syncSelectedProductsFromHq({
+        productCodes: selectedRowKeys.map(String),
+      })
+      showSelectedFromHqResult(result)
+      setSelectedRowKeys([])
+      await loadData()
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : t('posAdmin.products.syncSelectedFromHqFailed', '从 HQ 同步选中商品失败'))
+    } finally {
+      selectedFromHqLoadingRef.current = false
+      setSelectedFromHqLoading(false)
     }
   }
 
@@ -1688,6 +1747,14 @@ export default function ProductManagementPage() {
                 >
                   {activeHqSyncJob ? t('posAdmin.products.hqSyncInProgress', '同步中') : t('posAdmin.products.incrementalSyncFromHQ', '增量同步')}
                 </Button>
+                <Button
+                  icon={<CloudDownloadOutlined />}
+                  loading={selectedFromHqLoading}
+                  disabled={!selectedRowKeys.length || selectedFromHqLoading}
+                  onClick={handleSyncSelectedFromHq}
+                >
+                  {t('posAdmin.products.syncSelectedFromHq', '从HQ同步选中')}
+                </Button>
               </>
             )}
             {canManagePosProducts && (
@@ -2127,7 +2194,13 @@ export default function ProductManagementPage() {
           scroll={{ x: 1000, y: 420 }}
           columns={[
             { title: t('common.storeCode', '分店代码'), dataIndex: 'storeCode', width: 110 },
-            { title: t('common.storeName', '分店名称'), dataIndex: 'storeName', width: 160, render: (value: string) => value || '-' },
+            {
+              title: t('common.storeName', '分店名称'),
+              dataIndex: 'storeName',
+              width: 160,
+              sorter: compareProductStoreRecordsByName,
+              render: (value: string) => value || '-',
+            },
             { title: t('posAdmin.products.storeProductCode', '分店商品编码'), dataIndex: 'storeProductCode', width: 160, render: (value: string) => value || '-' },
             { title: t('posAdmin.invoiceDetail.purchasePrice', '进货价'), dataIndex: 'purchasePrice', width: 100, align: 'right' as const, render: (value: number) => value != null ? Number(value).toFixed(2) : '-' },
             { title: t('posAdmin.invoiceDetail.retailPrice', '零售价'), dataIndex: 'storeRetailPriceValue', width: 100, align: 'right' as const, render: (value: number) => value != null ? Number(value).toFixed(2) : '-' },

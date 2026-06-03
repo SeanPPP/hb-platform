@@ -12,6 +12,7 @@ import type {
   ProductStoreRecordDto,
   PushProductsToHqRequest,
   PushProductsToHqResult,
+  SyncSelectedProductsFromHqRequest,
   SyncProductsToStoresRequest,
   SyncProductsToStoresResult,
 } from '../types/posProduct'
@@ -411,6 +412,17 @@ export async function syncProductsFromHqIncremental(
 export async function syncProductsFromHq(): Promise<HqProductSyncResult> {
   const response = await request.post<ApiResponse<HqProductSyncResult>>(`${API_BASE}/sync-from-hq`)
   assertApiSuccess(response, 'HQ 商品同步失败')
+  return normalizeHqProductSyncResult(unwrapApiData(response))
+}
+
+export async function syncSelectedProductsFromHq(
+  data: SyncSelectedProductsFromHqRequest,
+): Promise<HqProductSyncResult> {
+  const response = await request.post<ApiResponse<HqProductSyncResult>>(
+    `${API_BASE}/sync-selected-from-hq`,
+    data,
+  )
+  assertApiSuccess(response, '选中商品 HQ 同步失败')
   return normalizeHqProductSyncResult(unwrapApiData(response))
 }
 
