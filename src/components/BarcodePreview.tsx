@@ -14,6 +14,9 @@ interface BarcodePreviewProps {
   showText?: boolean
   showCopy?: boolean
   compactCopy?: boolean
+  className?: string
+  gap?: number
+  textNoWrap?: boolean
 }
 
 export default function BarcodePreview({
@@ -24,6 +27,9 @@ export default function BarcodePreview({
   showText = true,
   showCopy = true,
   compactCopy = false,
+  className,
+  gap = 4,
+  textNoWrap = false,
 }: BarcodePreviewProps) {
   const { t } = useTranslation()
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
@@ -54,18 +60,22 @@ export default function BarcodePreview({
 
   return (
     <div
+      className={className}
       style={{
         display: 'flex',
         flexDirection: 'column',
         alignItems: align === 'left' ? 'flex-start' : 'center',
-        gap: 4,
+        gap,
       }}
     >
       <canvas ref={canvasRef} />
       {showText ? (
-        <Space size={4} wrap>
+        <Space size={4} wrap={!textNoWrap}>
           <Typography.Text
-            style={textMaxWidth ? { maxWidth: textMaxWidth } : undefined}
+            style={{
+              ...(textMaxWidth ? { maxWidth: textMaxWidth } : {}),
+              ...(textNoWrap ? { whiteSpace: 'nowrap' } : {}),
+            }}
             ellipsis={Boolean(textMaxWidth) ? { tooltip: value } : false}
           >
             {value}
