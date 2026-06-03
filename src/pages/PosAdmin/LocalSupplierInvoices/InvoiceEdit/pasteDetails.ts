@@ -8,6 +8,26 @@ export interface ParsedPasteRow {
   retailPrice?: number
 }
 
+export type PasteFieldKey =
+  | 'itemNumber'
+  | 'barcode'
+  | 'productName'
+  | 'quantity'
+  | 'purchasePrice'
+  | 'newAutoRetailPrice'
+  | 'retailPrice'
+  | 'skip'
+
+export const defaultPasteFieldOrder: PasteFieldKey[] = [
+  'itemNumber',
+  'barcode',
+  'productName',
+  'quantity',
+  'purchasePrice',
+  'newAutoRetailPrice',
+  'retailPrice',
+]
+
 function parsePastedNumber(value?: string) {
   if (!value?.trim()) return undefined
 
@@ -26,19 +46,25 @@ function parsePastedNumber(value?: string) {
 }
 
 /** 粘贴数据解析：兼容 Excel 价格列中的 $, A$, AUD 等货币格式。 */
-export function parsePasteText(text: string): ParsedPasteRow[] {
+export function parsePasteText(text: string, fieldOrder: PasteFieldKey[] = defaultPasteFieldOrder): ParsedPasteRow[] {
   if (!text.trim()) return []
   const lines = text.split('\n').filter((line) => line.trim())
   return lines.map((line) => {
     const cols = line.split('\t')
-    return {
-      itemNumber: cols[0]?.trim() || undefined,
-      barcode: cols[1]?.trim() || undefined,
-      productName: cols[2]?.trim() || undefined,
-      quantity: parsePastedNumber(cols[3]),
-      purchasePrice: parsePastedNumber(cols[4]),
-      newAutoRetailPrice: parsePastedNumber(cols[5]),
-      retailPrice: parsePastedNumber(cols[6]),
-    }
+    const row: ParsedPasteRow = {}
+
+    fieldOrder.forEach((field, index) => {
+      if (field === 'skip') return
+
+      const value = cols[index]
+      if (field === 'quantity' || field === 'purchasePrice' || field === 'newAutoRetailPrice' || field === 'retailPrice') {
+        row[field] = parsePastedNumber(value)
+        return
+      }
+
+      row[field] = value?.trim() || undefined
+    })
+
+    return row
   })
 }

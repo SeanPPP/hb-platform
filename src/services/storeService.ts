@@ -9,6 +9,7 @@ import type {
   UpdateStoreDto,
 } from '../types/store'
 import request, { unwrapApiData, unwrapPagedResult } from '../utils/request'
+import { sortStoreOptionsByName } from '../utils/managedStoreScope'
 
 export interface StoreOption {
   label: string
@@ -52,10 +53,12 @@ export async function getActiveStores(): Promise<StoreOption[]> {
       ? response.data
       : []
 
-  return stores.map((store) => ({
-    label: store.storeName || store.storeCode,
-    value: store.storeCode,
-  }))
+  return sortStoreOptionsByName(
+    stores.map((store) => ({
+      label: store.storeName || store.storeCode,
+      value: store.storeCode,
+    })),
+  )
 }
 
 export async function getStoreByGuid(guid: string): Promise<StoreDetailDto> {

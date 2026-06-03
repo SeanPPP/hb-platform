@@ -2745,3 +2745,62 @@ body {
   padding-left: 6px !important;
   padding-right: 6px !important;
 }
+
+.invoice-detail-compact-table .ant-table-thead > tr > th {
+  padding: 4px 6px !important;
+  line-height: 16px;
+  vertical-align: middle;
+  white-space: normal;
+}
+
+.invoice-detail-compact-table .ant-table-tbody > tr > td {
+  padding: 4px 6px !important;
+  vertical-align: middle;
+}
+
+.invoice-detail-compact-table .ant-table-column-sorters {
+  gap: 2px;
+  align-items: center;
+}
+
+.invoice-detail-compact-table .ant-table-column-title {
+  min-width: 0;
+  overflow: visible;
+}
+
+.invoice-detail-compact-table .ant-table-filter-column {
+  gap: 2px;
+}
+
+.invoice-detail-compact-table .ant-tag {
+  margin-inline-end: 0;
+  padding-inline: 4px;
+  line-height: 18px;
+}
+
+.invoice-detail-compact-table .ant-btn-sm {
+  padding-inline: 2px;
+}
+
+.invoice-detail-compact-table-header {
+  display: inline-block;
+  line-height: 16px;
+  white-space: normal;
+  word-break: normal;
+}
+
+.invoice-detail-nowrap {
+  white-space: nowrap;
+}
+
+.invoice-detail-compact-table .invoice-detail-nowrap .ant-space {
+  flex-wrap: nowrap !important;
+}
+
+.invoice-detail-compact-table .invoice-detail-nowrap .ant-typography {
+  white-space: nowrap;
+}
+
+.invoice-detail-numeric-cell {
+  font-variant-numeric: tabular-nums;
+}

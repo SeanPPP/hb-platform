@@ -147,7 +147,10 @@ export interface BatchResultDto {
   failed: number
 }
 
-export type UpdateToStorePricesResult = BatchResultDto
+export interface UpdateToStorePricesResult extends BatchResultDto {
+  skipped?: number
+  errors?: string[]
+}
 
 export interface EnsureHqProductError {
   detailGuid: string
@@ -184,6 +187,7 @@ export interface UpdateHqProductsResult {
   total: number
   updated: number
   failed: number
+  skipped?: number
   hqExisting?: number
   hbwebCreated?: number
   hqCreated?: number
@@ -317,6 +321,11 @@ export interface BarcodeAbnormalDetailDto {
   productName: string
   productStatus: number
   matchedProductCode?: string
+  matchedProducts: BarcodeAbnormalMatchedProductDto[]
+}
+
+export interface ProductsByBarcodeResponse {
+  barcode: string
   matchedProducts: BarcodeAbnormalMatchedProductDto[]
 }
 

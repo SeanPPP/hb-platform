@@ -18,6 +18,7 @@ import type {
   LocalSupplierInvoiceItemDto,
   LocalSupplierInvoiceListDto,
   PasteDetailsRequest,
+  ProductsByBarcodeResponse,
   UpdateHqProductsRequest,
   UpdateHqProductsResult,
   UpdateInvoiceRequest,
@@ -83,6 +84,7 @@ export async function batchUpsertDetails(invoiceGuid: string, items: InvoiceDeta
     `${API_BASE}/${invoiceGuid}/details/batch-upsert`,
     items,
   )
+  assertApiSuccess(response, '保存明细失败')
   return unwrapApiData(response)
 }
 
@@ -160,6 +162,7 @@ export async function batchUpdateDetails(
     items,
     editFields,
   })
+  assertApiSuccess(response, '批量编辑明细失败')
   return unwrapApiData(response)
 }
 
@@ -168,8 +171,8 @@ export async function getBarcodeAbnormalDetails(invoiceGuid: string) {
   return unwrapApiData(response)
 }
 
-export async function getProductsByBarcode(invoiceGuid: string, barcode: string) {
-  const response = await request.get<ApiResponse<{ barcode: string; matchedProducts: any[] }>>(
+export async function getProductsByBarcode(invoiceGuid: string, barcode: string): Promise<ProductsByBarcodeResponse> {
+  const response = await request.get<ApiResponse<ProductsByBarcodeResponse>>(
     `${API_BASE}/${invoiceGuid}/products-by-barcode`,
     { params: { barcode } },
   )

@@ -7,6 +7,7 @@ import {
 
   PlusOutlined,
   RollbackOutlined,
+  SearchOutlined,
   SendOutlined,
   SnippetsOutlined,
   ThunderboltOutlined,
@@ -32,10 +33,11 @@ import {
   Tag,
   Tooltip,
   message,
+  notification,
 } from 'antd'
-import type { ColumnsType } from 'antd/es/table'
+import type { ColumnType, ColumnsType, TableProps } from 'antd/es/table'
 import dayjs from 'dayjs'
-import type { CSSProperties } from 'react'
+import type { CSSProperties, KeyboardEvent, MouseEvent as ReactMouseEvent, ReactNode } from 'react'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
@@ -44,9 +46,11 @@ import BarcodePreview from '../../../../components/BarcodePreview'
 import {
   batchExecuteActions,
   batchUpdateDetailAction,
+  batchUpdateDetails,
   batchUpsertDetails,
   checkProducts,
   deleteDetails,
+  getProductsByBarcode,
   getInvoice,
   getInvoiceDetails,
   pasteDetails,
@@ -61,6 +65,7 @@ import type {
   BatchEditFields,
   BatchExecuteActionsResult,
   CheckProductsResponse,
+  BarcodeAbnormalMatchedProductDto,
   DetailAction,
   EnsureHqProductError,
   InvoiceDetailUpsertItemDto,
@@ -69,9 +74,10 @@ import type {
   UpdateHqProductsResult,
   UpdateToStorePricesFields,
   UpdateToStorePricesRequest,
+  UpdateToStorePricesResult,
 } from '../../../../types/localSupplierInvoice'
 import { copyTextToClipboard } from '../../../../utils/clipboard'
-import { discountRateToDecimal, formatDiscountRate } from '../../../../utils/discountRate'
+import { discountRateToDecimal, discountRateToPercent, formatDiscountRate } from '../../../../utils/discountRate'
 import { RequestError } from '../../../../utils/request'
 import { DetailAction as DetailActionEnum } from '../../../../types/localSupplierInvoice'
 import {
@@ -86,13 +92,28 @@ import {
   getProductStatusFilter,
   toggleStatusFilter,
 } from './statusFilters'
-import { parsePasteText } from './pasteDetails'
+import {
+  compareNullableNumbers,
+  compareNullableText,
+  filterBarcodeStatusColumn,
+  filterBooleanColumn,
+  filterProductStatusColumn,
+  matchesTextColumnFilter,
+  type TextFilterField,
+} from './tableColumnFilters'
+import { defaultPasteFieldOrder, parsePasteText, type PasteFieldKey } from './pasteDetails'
 import {
   buildBatchExecuteConfirmText,
   buildBatchExecuteSnapshot,
   constrainSelectedRowKeysToVisibleDetails,
   getBatchExecuteErrorFeedback,
 } from './batchExecuteConfirm'
+import {
+  applyInvoiceDetailInlineEdit,
+  buildInvoiceDetailSaveItems,
+  normalizeInvoiceDetailInlineValue,
+  type InvoiceDetailInlineEditableField,
+} from './inlineEdit'
 import type {
   BarcodeStatusFilter,
   PriceFilter,
@@ -110,10 +131,63 @@ function formatAmount(value?: number) {
   return value.toFixed(2)
 }
 
+function formatPricingFloatRate(value?: number) {
+  if (value === undefined || value === null) return '--'
+  return value.toFixed(2)
+}
+
 const statusStatsTagColors = {
   product: { all: 'blue', notDetected: 'purple', exists: 'green', notExists: 'red' },
   barcode: { all: 'geekblue', notDetected: 'purple', normal: 'cyan', noMatch: 'volcano', multiMatch: 'orange' },
 } as const
+
+const pasteFieldOrderStorageKey = 'hbweb_rv.localSupplierInvoice.pasteFieldOrder.v1'
+const validPasteFieldKeys = new Set<PasteFieldKey>([
+  'itemNumber',
+  'barcode',
+  'productName',
+  'quantity',
+  'purchasePrice',
+  'newAutoRetailPrice',
+  'retailPrice',
+  'skip',
+])
+
+function normalizePasteFieldOrder(value: unknown): PasteFieldKey[] {
+  if (!Array.isArray(value) || !value.length) {
+    return [...defaultPasteFieldOrder]
+  }
+
+  const fields = value.filter((item): item is PasteFieldKey => typeof item === 'string' && validPasteFieldKeys.has(item as PasteFieldKey))
+  return fields.length === value.length && !hasDuplicatePasteFields(fields) ? fields : [...defaultPasteFieldOrder]
+}
+
+function hasDuplicatePasteFields(fieldOrder: PasteFieldKey[]) {
+  const fields = fieldOrder.filter((field) => field !== 'skip')
+  return new Set(fields).size !== fields.length
+}
+
+function loadSavedPasteFieldOrder() {
+  if (typeof window === 'undefined') return [...defaultPasteFieldOrder]
+
+  try {
+    const saved = window.localStorage.getItem(pasteFieldOrderStorageKey)
+    return saved ? normalizePasteFieldOrder(JSON.parse(saved)) : [...defaultPasteFieldOrder]
+  } catch {
+    return [...defaultPasteFieldOrder]
+  }
+}
+
+function getPasteTextMaxColumnCount(text: string) {
+  if (!text.trim()) return 0
+
+  return Math.max(
+    ...text
+      .split('\n')
+      .filter((line) => line.trim())
+      .map((line) => line.split('\t').length),
+  )
+}
 
 function getStatusStatsTagStyle(selected: boolean): CSSProperties {
   return {
@@ -131,6 +205,25 @@ const productNameCellStyle: CSSProperties = {
   whiteSpace: 'normal',
   wordBreak: 'break-word',
   lineHeight: '20px',
+}
+
+function renderCompactHeader(label: ReactNode) {
+  return <span className="invoice-detail-compact-table-header">{label}</span>
+}
+
+function renderNowrapText(value: ReactNode) {
+  return <span className="invoice-detail-nowrap">{value}</span>
+}
+
+function renderNumericCell(value: ReactNode) {
+  return <span className="invoice-detail-nowrap invoice-detail-numeric-cell">{value}</span>
+}
+
+type ActiveFilterTag = {
+  key: string
+  label: ReactNode
+  color?: string
+  onClose: () => void
 }
 
 function normalizeEnsureHqErrors(value: unknown): EnsureHqProductError[] {
@@ -163,6 +256,7 @@ function getUpdateHqProductsFailure(error: unknown): UpdateHqProductsResult | un
     total: Number(candidate.total ?? 0),
     updated: Number(candidate.updated ?? 0),
     failed: Number(candidate.failed ?? 0),
+    skipped: Number(candidate.skipped ?? 0),
     hqExisting: Number(candidate.hqExisting ?? 0),
     hbwebCreated: Number(candidate.hbwebCreated ?? 0),
     hqCreated: Number(candidate.hqCreated ?? 0),
@@ -229,85 +323,178 @@ const ACTION_MENU_ITEMS = (t: ReturnType<typeof useTranslation>['t']) => [
   { key: '5', label: <Tag color="cyan">{t('posAdmin.invoiceDetail.addMultiCode', '添加多码')}</Tag> },
 ]
 
+type InlineCellSaveHandler = (
+  detailGuid: string,
+  field: InvoiceDetailInlineEditableField,
+  value: unknown,
+) => void
+
 /* ------------------------------------------------------------------ */
-/*  可编辑本次进货价单元格                                              */
+/*  双击行内编辑单元格                                                  */
 /* ------------------------------------------------------------------ */
 
-function EditablePriceCell({
+function EditableTextCell({
   value,
-  lastPurchasePrice,
   detailGuid,
-  invoiceGuid: _invoiceGuid,
+  field,
   onSave,
+  display,
+  style,
 }: {
-  value?: number
-  lastPurchasePrice?: number
+  value?: string
   detailGuid: string
-  invoiceGuid: string
-  onSave: (guid: string, newPrice: number) => void
+  field: InvoiceDetailInlineEditableField
+  onSave: InlineCellSaveHandler
+  display?: ReactNode
+  style?: CSSProperties
 }) {
   const [editing, setEditing] = useState(false)
-  const { t } = useTranslation()
-  const [inputValue, setInputValue] = useState<string>(value?.toFixed(2) ?? '')
-  const [_saving, setSaving] = useState(false)
-  const inputRef = useRef<HTMLInputElement>(null)
+  const [inputValue, setInputValue] = useState(value ?? '')
 
   useEffect(() => {
-    setInputValue(value?.toFixed(2) ?? '')
+    setInputValue(value ?? '')
   }, [value])
 
-  useEffect(() => {
-    if (editing && inputRef.current) {
-      inputRef.current?.focus()
-      inputRef.current?.select()
-    }
-  }, [editing])
+  const commit = () => {
+    onSave(detailGuid, field, inputValue)
+    setEditing(false)
+  }
 
-  const handleSave = useCallback(async () => {
-    const newPrice = Number(inputValue)
-    if (Number.isNaN(newPrice) || newPrice < 0) {
-      message.error(t('posAdmin.invoiceDetail.invalidPrice', '请输入有效的价格'))
-      return
+  const handleKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === 'Enter') {
+      event.preventDefault()
+      commit()
     }
-    if (newPrice === value) {
+    if (event.key === 'Escape') {
+      setInputValue(value ?? '')
       setEditing(false)
-      return
     }
-    setSaving(true)
-    try {
-      onSave(detailGuid, newPrice)
-      setEditing(false)
-    } finally {
-      setSaving(false)
-    }
-  }, [inputValue, value, detailGuid, onSave])
-
-  const bg = getPriceChangeBg(lastPurchasePrice, value)
-  const bgStyle = bg ? { backgroundColor: bg, padding: '2px 6px', borderRadius: 4 } : undefined
+  }
 
   if (editing) {
     return (
-      <InputNumber
-        ref={inputRef as any}
+      <Input
+        autoFocus
         size="small"
-        min={0}
-        precision={2}
-        value={Number(inputValue)}
-        onChange={(v) => setInputValue(v?.toFixed(2) ?? '')}
-        onPressEnter={() => void handleSave()}
-        onBlur={() => void handleSave()}
-        style={{ width: 90 }}
+        value={inputValue}
+        onChange={(event) => setInputValue(event.target.value)}
+        onBlur={commit}
+        onKeyDown={handleKeyDown}
       />
     )
   }
 
   return (
-    <span
-      style={{ ...bgStyle, cursor: 'pointer' }}
-      onClick={() => setEditing(true)}
-    >
-      {formatAmount(value)}
+    <span style={{ ...style, cursor: 'pointer' }} onDoubleClick={() => setEditing(true)}>
+      {display ?? value ?? '--'}
     </span>
+  )
+}
+
+function EditableNumberCell({
+  value,
+  detailGuid,
+  field,
+  onSave,
+  displayValue,
+  style,
+  min = 0,
+  max,
+  precision = 2,
+  addonAfter,
+}: {
+  value?: number | null
+  detailGuid: string
+  field: InvoiceDetailInlineEditableField
+  onSave: InlineCellSaveHandler
+  displayValue?: ReactNode
+  style?: CSSProperties
+  min?: number
+  max?: number
+  precision?: number
+  addonAfter?: ReactNode
+}) {
+  const [editing, setEditing] = useState(false)
+  const [inputValue, setInputValue] = useState<number | null>(value ?? null)
+
+  useEffect(() => {
+    setInputValue(value ?? null)
+  }, [value])
+
+  const commit = () => {
+    if (inputValue == null) {
+      setEditing(false)
+      return
+    }
+    onSave(detailGuid, field, inputValue)
+    setEditing(false)
+  }
+
+  const handleKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === 'Enter') {
+      event.preventDefault()
+      commit()
+    }
+    if (event.key === 'Escape') {
+      setInputValue(value ?? null)
+      setEditing(false)
+    }
+  }
+
+  if (editing) {
+    return (
+      <InputNumber
+        autoFocus
+        size="small"
+        min={min}
+        max={max}
+        precision={precision}
+        addonAfter={addonAfter}
+        value={inputValue}
+        onChange={(nextValue) => setInputValue(nextValue)}
+        onBlur={commit}
+        onKeyDown={handleKeyDown}
+        style={{ width: addonAfter ? 110 : 90 }}
+      />
+    )
+  }
+
+  return (
+    <span style={{ ...style, cursor: 'pointer' }} onDoubleClick={() => setEditing(true)}>
+      {displayValue ?? formatAmount(value ?? undefined)}
+    </span>
+  )
+}
+
+function EditableBooleanCell({
+  value,
+  detailGuid,
+  field,
+  onSave,
+  trueLabel,
+  falseLabel,
+  trueColor,
+}: {
+  value?: boolean | null
+  detailGuid: string
+  field: InvoiceDetailInlineEditableField
+  onSave: InlineCellSaveHandler
+  trueLabel: string
+  falseLabel: string
+  trueColor: string
+}) {
+  const actualValue = Boolean(value)
+
+  return (
+    <Tooltip title="双击切换">
+      <Tag
+        color={actualValue ? trueColor : 'default'}
+        style={{ cursor: 'pointer' }}
+        onDoubleClick={() => onSave(detailGuid, field, !actualValue)}
+      >
+        {actualValue ? trueLabel : falseLabel}
+      </Tag>
+    </Tooltip>
   )
 }
 
@@ -354,12 +541,14 @@ export default function InvoiceEditPage() {
 
   /* ---- 分店选项 ---- */
   const [storeOptions, setStoreOptions] = useState<{ label: string; value: string }[]>([])
+  const allStoreCodes = useMemo(() => storeOptions.map((item) => item.value), [storeOptions])
 
   /* ---- 粘贴数据 Modal ---- */
   const [pasteVisible, setPasteVisible] = useState(false)
   const [pasteMode, setPasteMode] = useState<'append' | 'replace'>('append')
   const [pasteText, setPasteText] = useState('')
   const [pasteLoading, setPasteLoading] = useState(false)
+  const [pasteFieldOrder, setPasteFieldOrder] = useState<PasteFieldKey[]>(loadSavedPasteFieldOrder)
 
   /* ---- 批量编辑 Modal ---- */
   const [batchEditVisible, setBatchEditVisible] = useState(false)
@@ -369,6 +558,13 @@ export default function InvoiceEditPage() {
   /* ---- 更新到分店价格 Modal ---- */
   const [storePriceVisible, setStorePriceVisible] = useState(false)
   const [storePriceForm] = Form.useForm()
+  const selectedStorePriceTargetCodes = (Form.useWatch('targetStoreCodes', storePriceForm) ?? []) as string[]
+  const selectedStorePriceTargetCodeSet = useMemo(
+    () => new Set<string>(selectedStorePriceTargetCodes),
+    [selectedStorePriceTargetCodes],
+  )
+  const allStorePriceStoresSelected = allStoreCodes.length > 0 && allStoreCodes.every((storeCode) => selectedStorePriceTargetCodeSet.has(storeCode))
+  const hasPartialStorePriceStoreSelection = selectedStorePriceTargetCodes.length > 0 && !allStorePriceStoresSelected
   const [storePriceLoading, setStorePriceLoading] = useState(false)
 
   /* ---- 更新 HQ 商品 Modal ---- */
@@ -466,6 +662,17 @@ export default function InvoiceEditPage() {
     }
   }, [currentUser?.stores, loadInvoice, loadDetails, managedStoreCodeKey])
 
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+
+    try {
+      // 只在前端记住 Excel 列和业务字段的对应关系，提交给后端的契约仍然是字段名 payload。
+      window.localStorage.setItem(pasteFieldOrderStorageKey, JSON.stringify(pasteFieldOrder))
+    } catch {
+      // localStorage 不可用时不影响粘贴提交，继续使用当前页面内的列配置。
+    }
+  }, [pasteFieldOrder])
+
   const ensureCanAccessInvoice = useCallback(() => {
     if (canAccessInvoice) {
       return true
@@ -523,6 +730,124 @@ export default function InvoiceEditPage() {
     [details, searchText, priceFilter, productStatusFilter, barcodeStatusFilter],
   )
 
+  const productStatusFilterLabels: Record<ProductStatusFilter, string> = useMemo(
+    () => ({
+      notDetected: t('posAdmin.invoiceDetail.notDetected', '未检测'),
+      exists: t('posAdmin.invoiceDetail.exists', '已存在'),
+      notExists: t('posAdmin.invoiceDetail.notExistsShort', '不存在'),
+    }),
+    [t],
+  )
+
+  const barcodeStatusFilterLabels: Record<BarcodeStatusFilter, string> = useMemo(
+    () => ({
+      notDetected: t('posAdmin.invoiceDetail.notDetected', '未检测'),
+      normal: t('posAdmin.invoiceDetail.normal', '正常'),
+      noMatch: t('posAdmin.invoiceDetail.noMatch', '无匹配'),
+      multiMatch: t('posAdmin.invoiceDetail.multiMatchShort', '多匹配({{count}})', { count: detailStatusStats.barcode.multiMatch }),
+    }),
+    [detailStatusStats.barcode.multiMatch, t],
+  )
+
+  const pasteFieldLabels: Record<PasteFieldKey, string> = useMemo(
+    () => ({
+      itemNumber: t('posAdmin.invoiceDetail.itemNumber', '货号'),
+      barcode: t('posAdmin.invoiceDetail.barcode', '条码'),
+      productName: t('posAdmin.invoiceDetail.productName', '商品名称'),
+      quantity: t('posAdmin.invoiceDetail.quantity', '数量'),
+      purchasePrice: t('posAdmin.invoiceDetail.currentPurchasePrice', '本次进货价'),
+      newAutoRetailPrice: t('posAdmin.invoiceDetail.newAutoRetailPrice', '新自动零售价'),
+      retailPrice: t('posAdmin.invoiceDetail.retailPrice', '零售价'),
+      skip: t('posAdmin.invoiceDetail.pasteFieldSkip', '跳过此列'),
+    }),
+    [t],
+  )
+  const pasteFieldOptions = useMemo(
+    () => Array.from(validPasteFieldKeys).map((field) => ({ label: pasteFieldLabels[field], value: field })),
+    [pasteFieldLabels],
+  )
+  const pasteColumnCount = useMemo(() => getPasteTextMaxColumnCount(pasteText), [pasteText])
+  const hasDuplicatePasteField = useMemo(() => hasDuplicatePasteFields(pasteFieldOrder), [pasteFieldOrder])
+
+  useEffect(() => {
+    if (pasteColumnCount <= pasteFieldOrder.length) return
+
+    setPasteFieldOrder((prev) => [
+      ...prev,
+      ...Array<PasteFieldKey>(pasteColumnCount - prev.length).fill('skip'),
+    ])
+  }, [pasteColumnCount, pasteFieldOrder.length])
+
+  const handleClearAllOuterFilters = useCallback(() => {
+    setSearchText('')
+    setPriceFilter('all')
+    setProductStatusFilter('all')
+    setBarcodeStatusFilter('all')
+  }, [])
+
+  // 当前过滤栏：只展示页面外层过滤，不包含表格列头自带过滤。
+  const activeFilterTags = useMemo<ActiveFilterTag[]>(() => {
+    const tags: ActiveFilterTag[] = []
+    const keyword = searchText.trim()
+
+    if (keyword) {
+      tags.push({
+        key: 'search',
+        color: 'blue',
+        label: t('posAdmin.invoiceDetail.activeSearchFilter', '搜索：{{value}}', { value: keyword }),
+        onClose: () => setSearchText(''),
+      })
+    }
+
+    if (priceFilter === 'up') {
+      tags.push({
+        key: 'price-up',
+        color: 'red',
+        label: t('posAdmin.invoiceDetail.activePriceUpFilter', '涨价'),
+        onClose: () => setPriceFilter('all'),
+      })
+    } else if (priceFilter === 'down') {
+      tags.push({
+        key: 'price-down',
+        color: 'green',
+        label: t('posAdmin.invoiceDetail.activePriceDownFilter', '降价'),
+        onClose: () => setPriceFilter('all'),
+      })
+    }
+
+    if (productStatusFilter !== 'all') {
+      tags.push({
+        key: 'product-status',
+        color: statusStatsTagColors.product[productStatusFilter],
+        label: t('posAdmin.invoiceDetail.activeProductStatusFilter', '商品状态：{{value}}', {
+          value: productStatusFilterLabels[productStatusFilter],
+        }),
+        onClose: () => setProductStatusFilter('all'),
+      })
+    }
+
+    if (barcodeStatusFilter !== 'all') {
+      tags.push({
+        key: 'barcode-status',
+        color: statusStatsTagColors.barcode[barcodeStatusFilter],
+        label: t('posAdmin.invoiceDetail.activeBarcodeStatusFilter', '条码状态：{{value}}', {
+          value: barcodeStatusFilterLabels[barcodeStatusFilter],
+        }),
+        onClose: () => setBarcodeStatusFilter('all'),
+      })
+    }
+
+    return tags
+  }, [
+    barcodeStatusFilter,
+    barcodeStatusFilterLabels,
+    priceFilter,
+    productStatusFilter,
+    productStatusFilterLabels,
+    searchText,
+    t,
+  ])
+
   useEffect(() => {
     setSelectedRowKeys((prev) => constrainSelectedRowKeysToVisibleDetails(prev, filteredDetails))
   }, [filteredDetails])
@@ -551,38 +876,23 @@ export default function InvoiceEditPage() {
     }
   }
 
-  // ---- 行内编辑进货价 ----
-  const handlePriceSave = useCallback(
-    (detailGuid: string, newPrice: number) => {
-      setDetails((prev) =>
-        prev.map((d) =>
-          d.detailGUID === detailGuid
-            ? { ...d, purchasePrice: newPrice, amount: (d.quantity ?? 0) * newPrice }
-            : d,
-        ),
-      )
+  // ---- 行内双击编辑，先更新本地明细，统一由“保存明细”落库 ----
+  const handleInlineDetailSave = useCallback(
+    (detailGuid: string, field: InvoiceDetailInlineEditableField, value: unknown) => {
+      try {
+        const normalizedValue = normalizeInvoiceDetailInlineValue(field, value)
+        setDetails((prev) => applyInvoiceDetailInlineEdit(prev, detailGuid, field, normalizedValue))
+      } catch {
+        message.error(t('posAdmin.invoiceDetail.invalidInlineValue', '请输入有效的明细内容'))
+      }
     },
-    [],
+    [t],
   )
 
   // ---- 批量保存明细（含行内价格编辑） ----
   const handleSaveDetails = async () => {
     if (!invoiceGuid || !ensureCanAccessInvoice()) return
-    const items: InvoiceDetailUpsertItemDto[] = details.map((d) => ({
-      detailGUID: d.detailGUID,
-      itemNumber: d.itemNumber,
-      barcode: d.barcode,
-      productName: d.productName,
-      quantity: d.quantity,
-      purchasePrice: d.purchasePrice,
-      retailPrice: d.retailPrice,
-      amount: d.amount,
-      autoPricing: d.autoPricing,
-      pricingFloatRate: d.pricingFloatRate,
-      newAutoRetailPrice: d.newAutoRetailPrice,
-      isSpecialProduct: d.isSpecialProduct,
-      discountRate: d.discountRate,
-    }))
+    const items: InvoiceDetailUpsertItemDto[] = buildInvoiceDetailSaveItems(details)
     setDetailLoading(true)
     try {
       await batchUpsertDetails(invoiceGuid, items)
@@ -598,7 +908,12 @@ export default function InvoiceEditPage() {
   // ---- 粘贴数据 ----
   const handlePaste = async () => {
     if (!invoiceGuid || !ensureCanAccessInvoice()) return
-    const parsed = parsePasteText(pasteText)
+    if (hasDuplicatePasteField) {
+      message.warning(t('posAdmin.invoiceDetail.pasteFieldDuplicateWarning', '同一个字段不能选择多次，请把多余列设置为“跳过此列”'))
+      return
+    }
+
+    const parsed = parsePasteText(pasteText, pasteFieldOrder)
     if (!parsed.length) {
       message.warning(t('posAdmin.invoiceDetail.noValidData', '未检测到有效数据'))
       return
@@ -661,36 +976,12 @@ export default function InvoiceEditPage() {
       const items = selectedRowKeys.map((key) => ({
         detailGUID: String(key),
       }))
-      await batchUpsertDetails(invoiceGuid, items)
-      // 使用 batchUpdateDetails 的替代方案：先 upert 再 reload
-      // 这里实际应该用 batchUpdateDetails，但由于 batchUpsertDetails 不支持 editFields
-      // 改用本地更新方式
-      const updatedDetails = details.map((d) => {
-        if (!selectedRowKeys.includes(d.detailGUID)) return d
-        const updated = { ...d }
-        if (editFields.updatePurchasePrice && editFields.purchasePrice !== undefined) {
-          updated.purchasePrice = editFields.purchasePrice
-          updated.amount = (updated.quantity ?? 0) * editFields.purchasePrice
-        }
-        if (editFields.updateRetailPrice && editFields.retailPrice !== undefined) {
-          updated.retailPrice = editFields.retailPrice
-        }
-        if (editFields.updateIsAutoPricing && editFields.isAutoPricing !== undefined) {
-          updated.autoPricing = editFields.isAutoPricing
-        }
-        if (editFields.updateIsSpecialProduct && editFields.isSpecialProduct !== undefined) {
-          updated.isSpecialProduct = editFields.isSpecialProduct
-        }
-        if (editFields.updateDiscountRate && editFields.discountRate !== undefined) {
-          updated.discountRate = editFields.discountRate
-        }
-        return updated
-      })
-      setDetails(updatedDetails)
+      await batchUpdateDetails(invoiceGuid, items, editFields)
       message.success(t('posAdmin.invoiceDetail.batchUpdateSuccess', '批量更新成功'))
       setBatchEditVisible(false)
       batchEditForm.resetFields()
       setSelectedRowKeys([])
+      await loadDetails()
     } catch {
       message.error(t('posAdmin.invoiceDetail.batchUpdateFailed', '批量更新失败'))
     } finally {
@@ -720,6 +1011,7 @@ export default function InvoiceEditPage() {
         <Space direction="vertical" size={4} style={{ width: '100%' }}>
           <div>{t('posAdmin.invoiceDetail.updateHqProductsTotal', '总处理：{{count}} 条', { count: result.total ?? 0 })}</div>
           <div>{t('posAdmin.invoiceDetail.updateHqProductsUpdated', '成功更新：{{count}} 条', { count: result.updated ?? 0 })}</div>
+          <div>{t('posAdmin.invoiceDetail.updateHqProductsSkipped', '跳过：{{count}} 条', { count: result.skipped ?? 0 })}</div>
           <div>{t('posAdmin.invoiceDetail.updateHqProductsFailedCount', '失败：{{count}} 条', { count: result.failed ?? 0 })}</div>
           <div>{t('posAdmin.invoiceDetail.ensureHqExisting', 'HQ已存在：{{count}} 条', { count: result.hqExisting ?? 0 })}</div>
           <div>{t('posAdmin.invoiceDetail.ensureHqHbwebCreated', 'HBweb新建：{{count}} 条', { count: result.hbwebCreated ?? 0 })}</div>
@@ -740,6 +1032,73 @@ export default function InvoiceEditPage() {
             </div>
           )}
         </Space>
+      ),
+    })
+  }
+
+  const renderBackgroundTaskDetailsButton = (onClick: () => void) => (
+    <Button type="link" size="small" style={{ padding: 0 }} onClick={onClick}>
+      {t('posAdmin.invoiceDetail.backgroundTaskViewDetails', '查看详情')}
+    </Button>
+  )
+
+  const notifyBackgroundTaskSubmitted = (messageText: string) => {
+    notification.info({
+      message: messageText,
+      description: t('posAdmin.invoiceDetail.backgroundTaskSubmitted', '已提交到后台执行，完成后会在右上角通知结果。'),
+      duration: 3,
+    })
+  }
+
+  const formatUpdateToStoreResult = (result: UpdateToStorePricesResult) => {
+    return t(
+      'posAdmin.invoiceDetail.updateToStoreResultWithSkipped',
+      '更新完成：成功 {{updated}} 条，跳过 {{skipped}} 条，失败 {{failed}} 条',
+      { updated: result.updated ?? 0, skipped: result.skipped ?? 0, failed: result.failed ?? 0 },
+    )
+  }
+
+  const showUpdateToStoreErrors = (result: UpdateToStorePricesResult) => {
+    Modal.error({
+      title: t('posAdmin.invoiceDetail.updateToStoreResultTitle', '更新到分店价格结果'),
+      content: (
+        <Space direction="vertical" size={8} style={{ width: '100%' }}>
+          <div>{formatUpdateToStoreResult(result)}</div>
+          {!!result.errors?.length && (
+            <div style={{ maxHeight: 240, overflow: 'auto' }}>
+              {result.errors.map((err, i) => (
+                <div key={i} style={{ color: '#ff4d4f', fontSize: 12 }}>{err}</div>
+              ))}
+            </div>
+          )}
+        </Space>
+      ),
+    })
+  }
+
+  const formatBatchExecuteResultParts = (result: BatchExecuteActionsResult) => {
+    const parts: string[] = []
+    if (result.createdProducts > 0) parts.push(t('posAdmin.invoiceDetail.createdProducts', '新建商品{{count}}条', { count: result.createdProducts }))
+    if (result.updatedPurchasePrices > 0) parts.push(t('posAdmin.invoiceDetail.updatedPurchasePrices', '更新进货价{{count}}条', { count: result.updatedPurchasePrices }))
+    if (result.updatedItemNumbers > 0) parts.push(t('posAdmin.invoiceDetail.updatedItemNumbers', '更新货号{{count}}条', { count: result.updatedItemNumbers }))
+    if (result.addedMultiCodes > 0) parts.push(t('posAdmin.invoiceDetail.addedMultiCodes', '添加多码{{count}}条', { count: result.addedMultiCodes }))
+    if (result.skipped > 0) parts.push(t('posAdmin.invoiceDetail.skipped', '跳过{{count}}条', { count: result.skipped }))
+    if (result.failed > 0) parts.push(t('posAdmin.invoiceDetail.failed', '失败{{count}}条', { count: result.failed }))
+    return parts.join('，') || t('posAdmin.invoiceDetail.noOperation', '无操作')
+  }
+
+  const showBatchExecuteResultDetails = (result: BatchExecuteActionsResult) => {
+    Modal.error({
+      title: t('posAdmin.invoiceDetail.partialFailed', '部分操作失败'),
+      content: (
+        <div>
+          <p>{formatBatchExecuteResultParts(result)}</p>
+          <div style={{ maxHeight: 200, overflow: 'auto', marginTop: 8 }}>
+            {result.errors.map((err, i) => (
+              <div key={i} style={{ color: '#ff4d4f', fontSize: 12 }}>{err}</div>
+            ))}
+          </div>
+        </div>
       ),
     })
   }
@@ -767,26 +1126,43 @@ export default function InvoiceEditPage() {
       return
     }
 
-    setStorePriceLoading(true)
-    try {
-      const request: UpdateToStorePricesRequest = {
-        invoiceGuid,
-        detailGuids: selectedRowKeys.map(String),
-        targetStoreCodes: values.targetStoreCodes,
-        updateFields,
-      }
-      const result = await updateToStorePrices(request)
-      message.success(
-        t('posAdmin.invoiceDetail.updateToStoreResult', '更新完成：成功 {{updated}} 条，失败 {{failed}} 条', { updated: result?.updated ?? 0, failed: result?.failed ?? 0 }),
-      )
-      setStorePriceVisible(false)
-      storePriceForm.resetFields()
-      setSelectedRowKeys([])
-    } catch (error) {
-      message.error(error instanceof Error ? error.message : t('posAdmin.invoiceDetail.updateToStoreFailed', '更新到分店价格失败'))
-    } finally {
-      setStorePriceLoading(false)
+    const request: UpdateToStorePricesRequest = {
+      invoiceGuid,
+      detailGuids: selectedRowKeys.map(String),
+      targetStoreCodes: values.targetStoreCodes,
+      updateFields,
     }
+
+    setStorePriceVisible(false)
+    storePriceForm.resetFields()
+    setStorePriceLoading(true)
+    notifyBackgroundTaskSubmitted(t('posAdmin.invoiceDetail.updateToStoreSubmitted', '更新到分店价格已提交'))
+
+    void (async () => {
+      try {
+        const result = await updateToStorePrices(request)
+        const description = formatUpdateToStoreResult(result)
+        const hasDetails = !!result.errors?.length || (result.skipped ?? 0) > 0 || (result.failed ?? 0) > 0
+        notification[result.failed > 0 || result.errors?.length ? 'warning' : 'success']({
+          message: t('posAdmin.invoiceDetail.updateToStoreCompleted', '更新到分店价格完成'),
+          description: hasDetails ? (
+            <Space direction="vertical" size={4}>
+              <span>{description}</span>
+              {renderBackgroundTaskDetailsButton(() => showUpdateToStoreErrors(result))}
+            </Space>
+          ) : description,
+          duration: hasDetails ? 0 : 4,
+        })
+      } catch (error) {
+        notification.error({
+          message: t('posAdmin.invoiceDetail.updateToStoreFailed', '更新到分店价格失败'),
+          description: error instanceof Error ? error.message : t('posAdmin.invoiceDetail.updateToStoreFailed', '更新到分店价格失败'),
+          duration: 0,
+        })
+      } finally {
+        setStorePriceLoading(false)
+      }
+    })()
   }
 
   // ---- 更新 HQ 商品 ----
@@ -820,36 +1196,56 @@ export default function InvoiceEditPage() {
     const detailGuids = selectedRowKeys.map(String)
     const targetStoreCodes = values.targetStoreCodes
 
+    // 同一轮提交使用稳定幂等键，避免用户重复点击造成 HQ 重复写入。
+    hqUpdateIdempotencyKeyRef.current =
+      hqUpdateIdempotencyKeyRef.current ??
+      (typeof crypto !== 'undefined' && 'randomUUID' in crypto
+        ? crypto.randomUUID()
+        : `${invoiceGuid}-${detailGuids.join(',')}-${targetStoreCodes.join(',')}`)
+    const idempotencyKey = hqUpdateIdempotencyKeyRef.current
+
+    setHqUpdateVisible(false)
+    hqUpdateForm.resetFields()
     setHqUpdateLoading(true)
-    try {
-      // 同一轮提交使用稳定幂等键，避免用户重复点击造成 HQ 重复写入。
-      hqUpdateIdempotencyKeyRef.current =
-        hqUpdateIdempotencyKeyRef.current ??
-        (typeof crypto !== 'undefined' && 'randomUUID' in crypto
-          ? crypto.randomUUID()
-          : `${invoiceGuid}-${detailGuids.join(',')}-${targetStoreCodes.join(',')}`)
-      const result = await updateHqProducts(invoiceGuid, {
-        detailGuids,
-        targetStoreCodes,
-        updateFields,
-        idempotencyKey: hqUpdateIdempotencyKeyRef.current,
-      })
-      showUpdateHqProductsResult(result)
-      setHqUpdateVisible(false)
-      hqUpdateForm.resetFields()
-      setSelectedRowKeys([])
-      await loadDetails()
-    } catch (error) {
-      const failure = getUpdateHqProductsFailure(error)
-      if (failure) {
-        showUpdateHqProductsResult(failure)
-      } else {
-        message.error(error instanceof Error ? error.message : t('posAdmin.invoiceDetail.updateHqProductsFailed', '更新HQ商品失败'))
+    notifyBackgroundTaskSubmitted(t('posAdmin.invoiceDetail.updateHqProductsSubmitted', '更新HQ商品已提交'))
+
+    void (async () => {
+      try {
+        const result = await updateHqProducts(invoiceGuid, {
+          detailGuids,
+          targetStoreCodes,
+          updateFields,
+          idempotencyKey,
+        })
+        const hasDetails = result.failed > 0 || (result.skipped ?? 0) > 0 || !!result.errors?.length
+        notification[result.failed > 0 || result.errors?.length ? 'warning' : 'success']({
+          message: t('posAdmin.invoiceDetail.updateHqProductsCompleted', '更新HQ商品完成'),
+          description: (
+            <Space direction="vertical" size={4}>
+              <span>{t('posAdmin.invoiceDetail.updateHqProductsUpdated', '成功更新：{{count}} 条', { count: result.updated ?? 0 })}</span>
+              {hasDetails && renderBackgroundTaskDetailsButton(() => showUpdateHqProductsResult(result))}
+            </Space>
+          ),
+          duration: hasDetails ? 0 : 4,
+        })
+        await loadDetails()
+      } catch (error) {
+        const failure = getUpdateHqProductsFailure(error)
+        notification.error({
+          message: t('posAdmin.invoiceDetail.updateHqProductsFailed', '更新HQ商品失败'),
+          description: failure ? (
+            <Space direction="vertical" size={4}>
+              <span>{t('posAdmin.invoiceDetail.updateHqProductsFailedCount', '失败：{{count}} 条', { count: failure.failed ?? 0 })}</span>
+              {renderBackgroundTaskDetailsButton(() => showUpdateHqProductsResult(failure))}
+            </Space>
+          ) : (error instanceof Error ? error.message : t('posAdmin.invoiceDetail.updateHqProductsFailed', '更新HQ商品失败')),
+          duration: 0,
+        })
+      } finally {
+        hqUpdateIdempotencyKeyRef.current = null
+        setHqUpdateLoading(false)
       }
-    } finally {
-      hqUpdateIdempotencyKeyRef.current = null
-      setHqUpdateLoading(false)
-    }
+    })()
   }
 
   // ---- 商品检测 ----
@@ -910,6 +1306,10 @@ export default function InvoiceEditPage() {
   // ---- 行操作类型变更 ----
   const handleRowActionChange = async (detailGuid: string, actionKey: string) => {
     if (!ensureCanAccessInvoice()) return
+    if (!isAdmin) {
+      message.error(t('message.noPermission', '无权操作该数据'))
+      return
+    }
     const action = Number(actionKey) as DetailAction
 
     if (invoiceGuid) {
@@ -930,6 +1330,7 @@ export default function InvoiceEditPage() {
   const executeSelectedBatchActions = async (snapshot: ReturnType<typeof buildBatchExecuteSnapshot>) => {
     if (!invoiceGuid || !ensureCanAccessInvoice()) return
     setExecuting(true)
+    notifyBackgroundTaskSubmitted(t('posAdmin.invoiceDetail.batchExecuteSubmitted', '批量执行操作已提交'))
     try {
       const result: BatchExecuteActionsResult = await batchExecuteActions({
         invoiceGuid,
@@ -938,62 +1339,31 @@ export default function InvoiceEditPage() {
         confirmedCreateProductCount: snapshot.confirmedCreateProductCount,
         confirmedAt: snapshot.confirmedAt ?? new Date().toISOString(),
       })
-      const parts: string[] = []
-      if (result.createdProducts > 0) parts.push(t('posAdmin.invoiceDetail.createdProducts', '新建商品{{count}}条', { count: result.createdProducts }))
-      if (result.updatedPurchasePrices > 0) parts.push(t('posAdmin.invoiceDetail.updatedPurchasePrices', '更新进货价{{count}}条', { count: result.updatedPurchasePrices }))
-      if (result.updatedItemNumbers > 0) parts.push(t('posAdmin.invoiceDetail.updatedItemNumbers', '更新货号{{count}}条', { count: result.updatedItemNumbers }))
-      if (result.addedMultiCodes > 0) parts.push(t('posAdmin.invoiceDetail.addedMultiCodes', '添加多码{{count}}条', { count: result.addedMultiCodes }))
-      if (result.skipped > 0) parts.push(t('posAdmin.invoiceDetail.skipped', '跳过{{count}}条', { count: result.skipped }))
-      if (result.failed > 0) parts.push(t('posAdmin.invoiceDetail.failed', '失败{{count}}条', { count: result.failed }))
-      if (result.errors?.length) {
-        Modal.error({
-          title: t('posAdmin.invoiceDetail.partialFailed', '部分操作失败'),
-          content: (
-            <div>
-              <p>{parts.join('，')}</p>
-              <div style={{ maxHeight: 200, overflow: 'auto', marginTop: 8 }}>
-                {result.errors.map((err, i) => (
-                  <div key={i} style={{ color: '#ff4d4f', fontSize: 12 }}>{err}</div>
-                ))}
-              </div>
-            </div>
-          ),
-        })
-      } else {
-        message.success(t('posAdmin.invoiceDetail.executeResultMsg', '执行完成：{{parts}}', { parts: parts.join('，') || t('posAdmin.invoiceDetail.noOperation', '无操作') }))
-      }
-      setSelectedRowKeys([])
-      loadDetails()
+      const parts = formatBatchExecuteResultParts(result)
+      const hasDetails = !!result.errors?.length || result.failed > 0 || result.skipped > 0
+      notification[result.failed > 0 || result.errors?.length ? 'warning' : 'success']({
+        message: t('posAdmin.invoiceDetail.batchExecuteCompleted', '批量执行操作完成'),
+        description: hasDetails ? (
+          <Space direction="vertical" size={4}>
+            <span>{t('posAdmin.invoiceDetail.executeResultMsg', '执行完成：{{parts}}', { parts })}</span>
+            {renderBackgroundTaskDetailsButton(() => showBatchExecuteResultDetails(result))}
+          </Space>
+        ) : t('posAdmin.invoiceDetail.executeResultMsg', '执行完成：{{parts}}', { parts }),
+        duration: hasDetails ? 0 : 4,
+      })
+      void loadDetails()
     } catch (error) {
       const feedback = getBatchExecuteErrorFeedback(error, t('posAdmin.invoiceDetail.executeFailed', '批量执行操作失败'))
-      if (feedback.details.length) {
-        Modal.error({
-          title: feedback.message,
-          content: (
-            <Space direction="vertical" size={8} style={{ width: '100%' }}>
-              {feedback.failure && (
-                <div>
-                  {[
-                    feedback.failure.createdProducts > 0 ? t('posAdmin.invoiceDetail.createdProducts', '新建商品{{count}}条', { count: feedback.failure.createdProducts }) : '',
-                    feedback.failure.updatedPurchasePrices > 0 ? t('posAdmin.invoiceDetail.updatedPurchasePrices', '更新进货价{{count}}条', { count: feedback.failure.updatedPurchasePrices }) : '',
-                    feedback.failure.updatedItemNumbers > 0 ? t('posAdmin.invoiceDetail.updatedItemNumbers', '更新货号{{count}}条', { count: feedback.failure.updatedItemNumbers }) : '',
-                    feedback.failure.addedMultiCodes > 0 ? t('posAdmin.invoiceDetail.addedMultiCodes', '添加多码{{count}}条', { count: feedback.failure.addedMultiCodes }) : '',
-                    feedback.failure.skipped > 0 ? t('posAdmin.invoiceDetail.skipped', '跳过{{count}}条', { count: feedback.failure.skipped }) : '',
-                    feedback.failure.failed > 0 ? t('posAdmin.invoiceDetail.failed', '失败{{count}}条', { count: feedback.failure.failed }) : '',
-                  ].filter(Boolean).join('，')}
-                </div>
-              )}
-              <div style={{ maxHeight: 240, overflow: 'auto' }}>
-                {feedback.details.map((err, i) => (
-                  <div key={i} style={{ color: '#ff4d4f', fontSize: 12 }}>{err}</div>
-                ))}
-              </div>
-            </Space>
-          ),
-        })
-      } else {
-        message.error(feedback.message)
-      }
+      notification.error({
+        message: feedback.message,
+        description: feedback.details.length ? (
+          <Space direction="vertical" size={4}>
+            {feedback.failure && <span>{formatBatchExecuteResultParts(feedback.failure)}</span>}
+            {feedback.failure && renderBackgroundTaskDetailsButton(() => showBatchExecuteResultDetails(feedback.failure!))}
+          </Space>
+        ) : feedback.message,
+        duration: 0,
+      })
     } finally {
       setExecuting(false)
     }
@@ -1040,13 +1410,15 @@ export default function InvoiceEditPage() {
       okText: confirmText.okText,
       cancelText: confirmText.cancelText,
       okButtonProps: { danger: previewSnapshot.confirmedCreateProductCount > 0 },
-      onOk: () => executeSelectedBatchActions(buildBatchExecuteSnapshot({
-        selectedRowKeys: previewSnapshot.detailGuids,
-        details,
-        rowActions,
-        // 真正提交的确认时间在用户点击确认时生成。
-        confirmedAt: new Date().toISOString(),
-      })),
+      onOk: () => {
+        void executeSelectedBatchActions(buildBatchExecuteSnapshot({
+          selectedRowKeys: previewSnapshot.detailGuids,
+          details,
+          rowActions,
+          // 真正提交的确认时间在用户点击确认时生成。
+          confirmedAt: new Date().toISOString(),
+        }))
+      },
     })
   }
 
@@ -1099,33 +1471,164 @@ export default function InvoiceEditPage() {
   /*  表格列定义                                                       */
   /* ================================================================ */
 
+  const getTextColumnSearchProps = (
+    field: TextFilterField,
+    label: string,
+  ): ColumnType<LocalSupplierInvoiceItemDto> => ({
+    filterDropdown: ({ setSelectedKeys, selectedKeys, confirm, clearFilters }) => (
+      <div style={{ padding: 8 }} onKeyDown={(event) => event.stopPropagation()}>
+        <Input
+          autoFocus
+          allowClear
+          size="small"
+          placeholder={t('posAdmin.invoiceDetail.columnSearchPlaceholder', '搜索{{label}}', { label })}
+          value={String(selectedKeys[0] ?? '')}
+          onChange={(event) => {
+            const value = event.target.value
+            setSelectedKeys(value ? [value] : [])
+          }}
+          onPressEnter={() => confirm()}
+          style={{ width: 180, marginBottom: 8, display: 'block' }}
+        />
+        <Space size={8}>
+          <Button
+            type="primary"
+            size="small"
+            icon={<SearchOutlined />}
+            onClick={() => confirm()}
+          >
+            {t('common.search', '搜索')}
+          </Button>
+          <Button
+            size="small"
+            onClick={() => {
+              clearFilters?.()
+              confirm()
+            }}
+          >
+            {t('common.reset', '重置')}
+          </Button>
+        </Space>
+      </div>
+    ),
+    filterIcon: (filtered) => (
+      <SearchOutlined style={{ color: filtered ? '#1677ff' : undefined }} />
+    ),
+    onFilter: (value, record) => matchesTextColumnFilter(record, field, value),
+  })
+
+  const handleTableChange: TableProps<LocalSupplierInvoiceItemDto>['onChange'] = (
+    _pagination,
+    _filters,
+    _sorter,
+    extra,
+  ) => {
+    setSelectedRowKeys((prev) => constrainSelectedRowKeysToVisibleDetails(prev, extra.currentDataSource))
+  }
+
+  const showBarcodeMatchedProducts = async (record: LocalSupplierInvoiceItemDto) => {
+    if (!invoiceGuid || !record.barcode) {
+      message.warning(t('posAdmin.invoiceDetail.noBarcodeToQuery', '当前行没有条码'))
+      return
+    }
+
+    const barcode = record.barcode
+    const modal = Modal.info({
+      title: t('posAdmin.invoiceDetail.barcodeMatchedProductsTitle', '条码匹配商品：{{barcode}}', { barcode }),
+      width: 760,
+      okText: t('common.close', '关闭'),
+      content: <div>{t('common.loading', '加载中...')}</div>,
+    })
+
+    try {
+      const result = await getProductsByBarcode(invoiceGuid, barcode)
+      const matchedProducts = result?.matchedProducts ?? []
+      const matchedProductColumns: ColumnsType<BarcodeAbnormalMatchedProductDto> = [
+        {
+          title: t('posAdmin.invoiceDetail.itemNumber', '货号'),
+          dataIndex: 'itemNumber',
+          width: 110,
+          render: (value?: string) => value || '--',
+        },
+        {
+          title: t('posAdmin.invoiceDetail.barcode', '条码'),
+          dataIndex: 'barcode',
+          width: 130,
+          render: (value?: string) => value || '--',
+        },
+        {
+          title: t('posAdmin.invoiceDetail.productName', '商品名称'),
+          dataIndex: 'productName',
+          render: (value?: string) => value || '--',
+        },
+        {
+          title: t('posAdmin.invoiceDetail.supplierName', '供应商名称'),
+          dataIndex: 'supplierName',
+          width: 150,
+          render: (value?: string) => value || '--',
+        },
+        {
+          title: t('posAdmin.invoiceDetail.matchSource', '来源'),
+          dataIndex: 'isMultiCode',
+          width: 100,
+          render: (isMultiCode?: boolean) => (
+            <Tag color={isMultiCode ? 'orange' : 'blue'}>
+              {isMultiCode
+                ? t('posAdmin.invoiceDetail.multiBarcode', '分店多条码')
+                : t('posAdmin.invoiceDetail.mainBarcode', '商品主条码')}
+            </Tag>
+          ),
+        },
+      ]
+
+      modal.update({
+        content: matchedProducts.length ? (
+          <Table<BarcodeAbnormalMatchedProductDto>
+            size="small"
+            rowKey={(item, index) => `${item.productCode || 'product'}-${item.barcode || barcode}-${index ?? 0}`}
+            columns={matchedProductColumns}
+            dataSource={matchedProducts}
+            pagination={false}
+            scroll={{ y: 320 }}
+          />
+        ) : (
+          <div>{t('posAdmin.invoiceDetail.noBarcodeMatchedProducts', '没有匹配到商品')}</div>
+        ),
+      })
+    } catch {
+      modal.destroy()
+      message.error(t('posAdmin.invoiceDetail.queryBarcodeMatchedProductsFailed', '查询条码匹配商品失败'))
+    }
+  }
+
   const columns: ColumnsType<LocalSupplierInvoiceItemDto> = [
     {
-      title: t('posAdmin.invoiceDetail.seqNo', '序号'),
-      width: 50,
+      title: renderCompactHeader(t('posAdmin.invoiceDetail.seqNo', '序号')),
+      width: 44,
       align: 'right',
       fixed: 'left',
-      render: (_, __, index) => index + 1,
+      render: (_, __, index) => renderNumericCell(index + 1),
     },
     {
-      title: t('posAdmin.invoiceDetail.image', '图片'),
+      title: renderCompactHeader(t('posAdmin.invoiceDetail.image', '图片')),
       dataIndex: 'productImage',
-      width: 70,
+      width: 48,
+      fixed: 'left',
       render: (v: string) =>
         v ? (
-          <Image src={v} width={44} height={44} style={{ objectFit: 'cover', borderRadius: 4 }} />
+          <Image src={v} width={36} height={36} style={{ objectFit: 'cover', borderRadius: 4 }} />
         ) : (
           <div
             style={{
-              width: 44,
-              height: 44,
+              width: 36,
+              height: 36,
               background: '#f5f5f5',
               borderRadius: 4,
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
               color: '#ccc',
-              fontSize: 12,
+              fontSize: 10,
             }}
           >
             {t('posAdmin.invoiceDetail.noImage', '无图')}
@@ -1133,19 +1636,32 @@ export default function InvoiceEditPage() {
         ),
     },
     {
-      title: t('posAdmin.invoiceDetail.itemNumber', '货号'),
+      title: renderCompactHeader(t('posAdmin.invoiceDetail.itemNumber', '货号')),
       dataIndex: 'itemNumber',
-      width: 130,
-      render: (v: string) => (
-        <Space size={4}>
-          <span>{v || '--'}</span>
+      width: 108,
+      fixed: 'left',
+      sorter: (a, b) => compareNullableText(a.itemNumber, b.itemNumber),
+      ...getTextColumnSearchProps('itemNumber', t('posAdmin.invoiceDetail.itemNumber', '货号')),
+      render: (v: string, record) => (
+        <Space size={2} className="invoice-detail-nowrap">
+          <EditableTextCell
+            value={v}
+            detailGuid={record.detailGUID}
+            field="itemNumber"
+            onSave={handleInlineDetailSave}
+            display={renderNowrapText(v || '--')}
+          />
           {v && (
             <Tooltip title={t('posAdmin.invoiceDetail.copyItemNumber', '复制货号')}>
               <Button
                 type="text"
                 size="small"
                 icon={<CopyOutlined />}
-                onClick={() => void copyTextToClipboard(v)}
+                onDoubleClick={(event) => event.stopPropagation()}
+                onClick={(event) => {
+                  event.stopPropagation()
+                  void copyTextToClipboard(v)
+                }}
               />
             </Tooltip>
           )}
@@ -1153,105 +1669,216 @@ export default function InvoiceEditPage() {
       ),
     },
     {
-      title: t('posAdmin.invoiceDetail.barcode', '条码'),
+      title: renderCompactHeader(t('posAdmin.invoiceDetail.barcode', '条码')),
       dataIndex: 'barcode',
-      width: 170,
-      render: (v: string) => <BarcodePreview value={v} compactCopy textMaxWidth={120} />,
+      width: 138,
+      sorter: (a, b) => compareNullableText(a.barcode, b.barcode),
+      ...getTextColumnSearchProps('barcode', t('posAdmin.invoiceDetail.barcode', '条码')),
+      render: (v: string, record) => (
+        <div className="invoice-detail-nowrap">
+          <EditableTextCell
+            value={v}
+            detailGuid={record.detailGUID}
+            field="barcode"
+            onSave={handleInlineDetailSave}
+            display={<BarcodePreview value={v} compactCopy />}
+          />
+        </div>
+      ),
     },
     {
-      title: t('posAdmin.invoiceDetail.productName', '商品名称'),
+      title: renderCompactHeader(t('posAdmin.invoiceDetail.productName', '商品名称')),
       dataIndex: 'productName',
-      width: 180,
-      render: (v: string) => <div style={productNameCellStyle}>{v || '--'}</div>,
-    },
-    {
-      title: t('posAdmin.invoiceDetail.quantity', '数量'),
-      dataIndex: 'quantity',
-      width: 70,
-      align: 'right',
-      render: (v: number) => v ?? '--',
-    },
-    {
-      title: t('posAdmin.invoiceDetail.lastPurchasePrice', '上次进货价'),
-      dataIndex: 'lastPurchasePrice',
-      width: 100,
-      align: 'right',
-      render: (v: number) => formatAmount(v),
-    },
-    {
-      title: t('posAdmin.invoiceDetail.currentPurchasePrice', '本次进货价'),
-      dataIndex: 'purchasePrice',
-      width: 110,
-      align: 'right',
-      render: (v: number, record) => (
-        <EditablePriceCell
+      width: 190,
+      sorter: (a, b) => compareNullableText(a.productName, b.productName),
+      ...getTextColumnSearchProps('productName', t('posAdmin.invoiceDetail.productName', '商品名称')),
+      render: (v: string, record) => (
+        <EditableTextCell
           value={v}
-          lastPurchasePrice={record.lastPurchasePrice}
           detailGuid={record.detailGUID}
-          invoiceGuid={invoiceGuid!}
-          onSave={handlePriceSave}
+          field="productName"
+          onSave={handleInlineDetailSave}
+          display={<div style={productNameCellStyle}>{v || '--'}</div>}
         />
       ),
     },
     {
-      title: t('posAdmin.invoiceDetail.retailPrice', '零售价'),
+      title: renderCompactHeader(t('posAdmin.invoiceDetail.quantity', '数量')),
+      dataIndex: 'quantity',
+      width: 58,
+      align: 'right',
+      sorter: (a, b) => compareNullableNumbers(a.quantity, b.quantity),
+      render: (v: number, record) => (
+        <EditableNumberCell
+          value={v}
+          detailGuid={record.detailGUID}
+          field="quantity"
+          onSave={handleInlineDetailSave}
+          precision={0}
+          displayValue={renderNumericCell(v ?? '--')}
+        />
+      ),
+    },
+    {
+      title: renderCompactHeader(t('posAdmin.invoiceDetail.lastPurchasePrice', '上次进货价')),
+      dataIndex: 'lastPurchasePrice',
+      width: 82,
+      align: 'right',
+      sorter: (a, b) => compareNullableNumbers(a.lastPurchasePrice, b.lastPurchasePrice),
+      render: (v: number) => renderNumericCell(formatAmount(v)),
+    },
+    {
+      title: renderCompactHeader(t('posAdmin.invoiceDetail.currentPurchasePrice', '本次进货价')),
+      dataIndex: 'purchasePrice',
+      width: 86,
+      align: 'right',
+      sorter: (a, b) => compareNullableNumbers(a.purchasePrice, b.purchasePrice),
+      render: (v: number, record) => {
+        const bg = getPriceChangeBg(record.lastPurchasePrice, v)
+        const bgStyle = bg ? { backgroundColor: bg, padding: '2px 6px', borderRadius: 4 } : undefined
+        return (
+          <span className="invoice-detail-nowrap invoice-detail-numeric-cell">
+            <EditableNumberCell
+              value={v}
+              detailGuid={record.detailGUID}
+              field="purchasePrice"
+              onSave={handleInlineDetailSave}
+              style={bgStyle}
+            />
+          </span>
+        )
+      },
+    },
+    {
+      title: renderCompactHeader(t('posAdmin.invoiceDetail.retailPrice', '零售价')),
       dataIndex: 'retailPrice',
-      width: 90,
+      width: 72,
       align: 'right',
-      render: (v: number) => formatAmount(v),
+      sorter: (a, b) => compareNullableNumbers(a.retailPrice, b.retailPrice),
+      render: (v: number, record) => (
+        <EditableNumberCell
+          value={v}
+          detailGuid={record.detailGUID}
+          field="retailPrice"
+          onSave={handleInlineDetailSave}
+          displayValue={renderNumericCell(formatAmount(v))}
+        />
+      ),
     },
     {
-      title: t('posAdmin.invoiceDetail.pricingRate', '定价浮率'),
+      title: renderCompactHeader(t('posAdmin.invoiceDetail.pricingRate', '定价浮率')),
       dataIndex: 'pricingFloatRate',
-      width: 90,
+      width: 76,
       align: 'right',
-      render: (v: number) =>
-        v !== undefined && v !== null ? `${(v * 100).toFixed(1)}%` : '--',
+      sorter: (a, b) => compareNullableNumbers(a.pricingFloatRate, b.pricingFloatRate),
+      render: (v: number, record) => (
+        <EditableNumberCell
+          value={v}
+          detailGuid={record.detailGUID}
+          field="pricingFloatRate"
+          onSave={handleInlineDetailSave}
+          displayValue={renderNumericCell(formatPricingFloatRate(v))}
+        />
+      ),
     },
     {
-      title: t('posAdmin.invoiceDetail.newAutoRetailPrice', '新自动零售价'),
+      title: renderCompactHeader(t('posAdmin.invoiceDetail.newAutoRetailPrice', '新自动零售价')),
       dataIndex: 'newAutoRetailPrice',
-      width: 110,
+      width: 92,
       align: 'right',
-      render: (v: number) => formatAmount(v),
+      sorter: (a, b) => compareNullableNumbers(a.newAutoRetailPrice, b.newAutoRetailPrice),
+      render: (v: number, record) => (
+        <EditableNumberCell
+          value={v}
+          detailGuid={record.detailGUID}
+          field="newAutoRetailPrice"
+          onSave={handleInlineDetailSave}
+          displayValue={renderNumericCell(formatAmount(v))}
+        />
+      ),
     },
     {
-      title: t('posAdmin.invoiceDetail.autoPricingLabel', '自动定价'),
+      title: renderCompactHeader(t('posAdmin.invoiceDetail.autoPricingLabel', '自动定价')),
       dataIndex: 'autoPricing',
-      width: 80,
+      width: 68,
       align: 'center',
-      render: (v: boolean) => (
-        <Tag color={v ? 'green' : 'default'}>{v ? t('posAdmin.invoiceDetail.auto', '自动') : t('posAdmin.invoiceDetail.manual', '手动')}</Tag>
+      filters: [
+        { text: t('posAdmin.invoiceDetail.auto', '自动'), value: true },
+        { text: t('posAdmin.invoiceDetail.manual', '手动'), value: false },
+      ],
+      onFilter: (value, record) => filterBooleanColumn(record.autoPricing, value),
+      render: (v: boolean, record) => (
+        <EditableBooleanCell
+          value={v}
+          detailGuid={record.detailGUID}
+          field="autoPricing"
+          onSave={handleInlineDetailSave}
+          trueLabel={t('posAdmin.invoiceDetail.auto', '自动')}
+          falseLabel={t('posAdmin.invoiceDetail.manual', '手动')}
+          trueColor="green"
+        />
       ),
     },
     {
-      title: t('posAdmin.invoiceDetail.specialProductLabel', '特殊商品'),
+      title: renderCompactHeader(t('posAdmin.invoiceDetail.specialProductLabel', '特殊商品')),
       dataIndex: 'isSpecialProduct',
-      width: 80,
+      width: 68,
       align: 'center',
-      render: (v: boolean) => (
-        <Tag color={v ? 'orange' : 'default'}>{v ? t('posAdmin.invoiceDetail.yes', '是') : t('posAdmin.invoiceDetail.no', '否')}</Tag>
+      filters: [
+        { text: t('posAdmin.invoiceDetail.yes', '是'), value: true },
+        { text: t('posAdmin.invoiceDetail.no', '否'), value: false },
+      ],
+      onFilter: (value, record) => filterBooleanColumn(record.isSpecialProduct, value),
+      render: (v: boolean, record) => (
+        <EditableBooleanCell
+          value={v}
+          detailGuid={record.detailGUID}
+          field="isSpecialProduct"
+          onSave={handleInlineDetailSave}
+          trueLabel={t('posAdmin.invoiceDetail.yes', '是')}
+          falseLabel={t('posAdmin.invoiceDetail.no', '否')}
+          trueColor="orange"
+        />
       ),
     },
     {
-      title: t('posAdmin.invoiceDetail.discountRate', '折扣率'),
+      title: renderCompactHeader(t('posAdmin.invoiceDetail.discountRate', '折扣率')),
       dataIndex: 'discountRate',
-      width: 80,
+      width: 68,
       align: 'right',
-      render: (v: number) => formatDiscountRate(v),
+      sorter: (a, b) => compareNullableNumbers(a.discountRate, b.discountRate),
+      render: (v: number, record) => (
+        <EditableNumberCell
+          value={discountRateToPercent(v)}
+          detailGuid={record.detailGUID}
+          field="discountRate"
+          onSave={handleInlineDetailSave}
+          max={100}
+          precision={1}
+          addonAfter="%"
+          displayValue={renderNumericCell(formatDiscountRate(v))}
+        />
+      ),
     },
     {
-      title: t('posAdmin.invoiceDetail.amount', '金额'),
+      title: renderCompactHeader(t('posAdmin.invoiceDetail.amount', '金额')),
       dataIndex: 'amount',
-      width: 100,
+      width: 82,
       align: 'right',
-      render: (v: number) => formatAmount(v),
+      sorter: (a, b) => compareNullableNumbers(a.amount, b.amount),
+      render: (v: number) => renderNumericCell(formatAmount(v)),
     },
     {
-      title: t('posAdmin.invoiceDetail.productStatus', '商品状态'),
+      title: renderCompactHeader(t('posAdmin.invoiceDetail.productStatus', '商品状态')),
       dataIndex: 'existingProductCount',
-      width: 90,
+      width: 78,
       align: 'center',
+      filters: [
+        { text: t('posAdmin.invoiceDetail.notDetected', '未检测'), value: 'notDetected' },
+        { text: t('posAdmin.invoiceDetail.exists', '已存在'), value: 'exists' },
+        { text: t('posAdmin.invoiceDetail.notExistsShort', '不存在'), value: 'notExists' },
+      ],
+      onFilter: (value, record) => filterProductStatusColumn(record, value),
       render: (_: number, record) => {
         const count = record.existingProductCount
         const status = getProductStatusFilter(record)
@@ -1265,35 +1892,47 @@ export default function InvoiceEditPage() {
       },
     },
     {
-      title: t('posAdmin.invoiceDetail.barcodeStatus', '条码状态'),
+      title: renderCompactHeader(t('posAdmin.invoiceDetail.barcodeStatus', '条码状态')),
       dataIndex: 'barcodeMatchCount',
-      width: 90,
+      width: 84,
       align: 'center',
+      filters: [
+        { text: t('posAdmin.invoiceDetail.notDetected', '未检测'), value: 'notDetected' },
+        { text: t('posAdmin.invoiceDetail.normal', '正常'), value: 'normal' },
+        { text: t('posAdmin.invoiceDetail.noMatch', '无匹配'), value: 'noMatch' },
+        { text: t('posAdmin.invoiceDetail.multiMatchShort', '多匹配'), value: 'multiMatch' },
+      ],
+      onFilter: (value, record) => filterBarcodeStatusColumn(record, value),
       render: (_: number, record) => {
         const count = record.barcodeMatchCount ?? 0
         const status = getBarcodeStatusFilter(record)
+        const openMatchedProducts = (event: ReactMouseEvent) => {
+          event.stopPropagation()
+          void showBarcodeMatchedProducts(record)
+        }
+        const clickableStyle: CSSProperties | undefined = status === 'notDetected' ? undefined : { cursor: 'pointer' }
         if (status === 'notDetected') {
           return <Tag color="default">{t('posAdmin.invoiceDetail.notDetected', '未检测')}</Tag>
         }
         if (status === 'normal') {
-          return <Tag color="green">{t('posAdmin.invoiceDetail.normal', '正常')}</Tag>
+          return <Tag color="green" style={clickableStyle} onClick={openMatchedProducts}>{t('posAdmin.invoiceDetail.normal', '正常')}</Tag>
         }
         if (status === 'noMatch') {
-          return <Tag color="red">{t('posAdmin.invoiceDetail.noMatch', '无匹配')}</Tag>
+          return <Tag color="red" style={clickableStyle} onClick={openMatchedProducts}>{t('posAdmin.invoiceDetail.noMatch', '无匹配')}</Tag>
         }
-        return <Tag color="orange">{t('posAdmin.invoiceDetail.multiMatchShort', '多匹配({{count}})', { count })}</Tag>
+        return <Tag color="orange" style={clickableStyle} onClick={openMatchedProducts}>{t('posAdmin.invoiceDetail.multiMatchShort', '多匹配({{count}})', { count })}</Tag>
       },
     },
     {
-      title: t('posAdmin.invoiceDetail.action', '操作'),
+      title: renderCompactHeader(t('posAdmin.invoiceDetail.action', '操作')),
       key: 'action',
-      width: 110,
+      width: 98,
       fixed: 'right',
       render: (_, record) => {
         const currentAction = rowActions[record.detailGUID] ?? record.activityType ?? 0
         const actionConfig = DETAIL_ACTION_CONFIG(t)
         const config = actionConfig[currentAction] || actionConfig[0]
-        return (
+        return isAdmin ? (
           <Dropdown
             menu={{
               items: ACTION_MENU_ITEMS(t),
@@ -1308,6 +1947,8 @@ export default function InvoiceEditPage() {
               </Tag>
             </Button>
           </Dropdown>
+        ) : (
+          <Tag color={config.color}>{config.label}</Tag>
         )
       },
     },
@@ -1491,6 +2132,31 @@ export default function InvoiceEditPage() {
           </Space>
         </div>
 
+        <div style={{ marginBottom: 12 }}>
+          <Space wrap size={8}>
+            <span style={{ fontWeight: 500 }}>{t('posAdmin.invoiceDetail.activeFiltersTitle', '当前过滤')}</span>
+            {activeFilterTags.length ? (
+              <>
+                {activeFilterTags.map((filterTag) => (
+                  <Tag
+                    key={filterTag.key}
+                    color={filterTag.color}
+                    closable
+                    onClose={filterTag.onClose}
+                  >
+                    {filterTag.label}
+                  </Tag>
+                ))}
+                <Button size="small" type="link" onClick={handleClearAllOuterFilters}>
+                  {t('posAdmin.invoiceDetail.clearActiveFilters', '清空过滤')}
+                </Button>
+              </>
+            ) : (
+              <Tag>{t('posAdmin.invoiceDetail.noActiveFilters', '无')}</Tag>
+            )}
+          </Space>
+        </div>
+
         {/* 工具栏按钮 */}
         <div style={{ marginBottom: 12 }}>
           <Space wrap>
@@ -1543,7 +2209,7 @@ export default function InvoiceEditPage() {
               <Button
                 icon={<ThunderboltOutlined />}
                 loading={executing}
-                disabled={!selectedRowKeys.length}
+                disabled={executing || !selectedRowKeys.length}
                 onClick={() => void handleBatchExecute()}
               >
                 {t('posAdmin.invoiceDetail.batchExecuteBtn', '批量执行操作')}
@@ -1599,14 +2265,17 @@ export default function InvoiceEditPage() {
           dataSource={filteredDetails}
           columns={columns}
           pagination={false}
-          scroll={{ x: 2200, y: tableScrollY }}
+          onChange={handleTableChange}
+          scroll={{ x: 1600, y: tableScrollY }}
+          className="invoice-detail-compact-table"
           rowSelection={{
+            fixed: true,
+            columnWidth: 36,
             selectedRowKeys,
             onChange: (keys) => setSelectedRowKeys(keys),
           }}
           rowClassName={(_, index) => (index % 2 === 1 ? 'table-row-striped' : '')}
           size="small"
-          bordered
         />
       </Card>
 
@@ -1639,7 +2308,40 @@ export default function InvoiceEditPage() {
           </span>
         </div>
         <div style={{ marginBottom: 8, color: '#666', fontSize: 12 }}>
-          {t('posAdmin.invoiceDetail.pasteHint', '请从 Excel 复制数据后粘贴到下方文本框。每行一条记录，列顺序为：货号 / 条码 / 商品名称 / 数量 / 进货价 / 新自动零售价 / 零售价（Tab 分隔）')}
+          {t('posAdmin.invoiceDetail.pasteHint', '请从 Excel 复制数据后粘贴到下方文本框。每行一条记录，可在下方调整列对应字段（Tab 分隔）')}
+        </div>
+        <div style={{ marginBottom: 12 }}>
+          <Space style={{ marginBottom: 8, width: '100%', justifyContent: 'space-between' }}>
+            <span style={{ color: '#666', fontSize: 12 }}>
+              {t('posAdmin.invoiceDetail.pasteFieldOrderTitle', '列对应字段')}
+            </span>
+            <Button size="small" onClick={() => setPasteFieldOrder([...defaultPasteFieldOrder])}>
+              {t('posAdmin.invoiceDetail.pasteRestoreDefaultOrder', '恢复默认')}
+            </Button>
+          </Space>
+          <Row gutter={[8, 8]}>
+            {pasteFieldOrder.map((field, index) => (
+              <Col span={8} key={`paste-field-${index}`}>
+                <div style={{ color: '#999', fontSize: 12, marginBottom: 4 }}>
+                  {t('posAdmin.invoiceDetail.pasteColumnLabel', '第 {{index}} 列', { index: index + 1 })}
+                </div>
+                <Select<PasteFieldKey>
+                  size="small"
+                  value={field}
+                  options={pasteFieldOptions}
+                  style={{ width: '100%' }}
+                  onChange={(nextField) => {
+                    setPasteFieldOrder((prev) => prev.map((item, itemIndex) => (itemIndex === index ? nextField : item)))
+                  }}
+                />
+              </Col>
+            ))}
+          </Row>
+          {hasDuplicatePasteField && (
+            <div style={{ color: '#cf1322', fontSize: 12, marginTop: 8 }}>
+              {t('posAdmin.invoiceDetail.pasteFieldDuplicateWarning', '同一个字段不能选择多次，请把多余列设置为“跳过此列”')}
+            </div>
+          )}
         </div>
         <Input.TextArea
           rows={12}
@@ -1650,7 +2352,7 @@ export default function InvoiceEditPage() {
         />
         {pasteText.trim() && (
           <div style={{ marginTop: 8, color: '#999', fontSize: 12 }}>
-            {t('posAdmin.invoiceDetail.parsedRows', '已识别 {{count}} 行数据', { count: parsePasteText(pasteText).length })}
+            {t('posAdmin.invoiceDetail.parsedRows', '已识别 {{count}} 行数据', { count: parsePasteText(pasteText, pasteFieldOrder).length })}
           </div>
         )}
       </Modal>
@@ -1792,9 +2494,28 @@ export default function InvoiceEditPage() {
             <Select
               mode="multiple"
               showSearch
+              allowClear
               optionFilterProp="label"
               placeholder={t('posAdmin.invoiceDetail.selectTargetStore', '请选择目标分店')}
               options={storeOptions}
+              popupRender={(menu) => (
+                <>
+                  <div style={{ padding: '4px 8px 8px', borderBottom: '1px solid #f0f0f0' }}>
+                    {/* 全选只写入当前可选分店编码，提交和权限校验仍走原来的 targetStoreCodes 数组。 */}
+                    <Checkbox
+                      checked={allStorePriceStoresSelected}
+                      indeterminate={hasPartialStorePriceStoreSelection}
+                      disabled={!allStoreCodes.length}
+                      onChange={(event) => {
+                        storePriceForm.setFieldValue('targetStoreCodes', event.target.checked ? allStoreCodes : [])
+                      }}
+                    >
+                      {t('posAdmin.invoiceDetail.selectAllStores', '全选所有分店 ({{count}} 个)', { count: allStoreCodes.length })}
+                    </Checkbox>
+                  </div>
+                  {menu}
+                </>
+              )}
             />
           </Form.Item>
 
