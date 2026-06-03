@@ -374,6 +374,18 @@ namespace BlazorApp.Shared.DTOs
     }
 
     /// <summary>
+    /// 从 HQ 按选中商品同步到本地请求。
+    /// </summary>
+    public class SyncSelectedProductsFromHqRequest
+    {
+        /// <summary>
+        /// 商品管理页选中的本地商品编码列表。
+        /// </summary>
+        [Required(ErrorMessage = "商品编码列表不能为空")]
+        public List<string> ProductCodes { get; set; } = new();
+    }
+
+    /// <summary>
     /// POS 商品推送到 HQ 结果。
     /// SuccessCount/FailedCount 按商品编码统计，明细表写入量通过 AffectedRowCount 和各明细字段统计。
     /// </summary>

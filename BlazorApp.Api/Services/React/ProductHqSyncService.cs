@@ -155,6 +155,498 @@ namespace BlazorApp.Api.Services.React
             }
         }
 
+        public async Task<ApiResponse<HqProductSyncResult>> SyncSelectedFromHqAsync(
+            List<string> productCodes
+        )
+        {
+            if (productCodes == null || productCodes.Count == 0)
+            {
+                return ApiResponse<HqProductSyncResult>.Error(
+                    "商品编码列表不能为空",
+                    "PRODUCT_HQ_SELECTED_SYNC_EMPTY_CODES"
+                );
+            }
+
+            if (!await SyncLock.WaitAsync(0))
+            {
+                return ApiResponse<HqProductSyncResult>.Error(
+                    "已有商品HQ同步任务正在执行，请稍后再试",
+                    "PRODUCT_HQ_SYNC_CONFLICT"
+                );
+            }
+
+            var startedAt = DateTime.UtcNow;
+            var result = new HqProductSyncResult();
+            var db = _localContext.Db;
+            var originalTimeout = db.Ado.CommandTimeOut;
+            db.Ado.CommandTimeOut = 1800;
+
+            try
+            {
+                _hqContext.CheckConnection();
+                var requestedCodes = productCodes
+                    .Select(NormalizeCode)
+                    .Where(code => code != null)
+                    .Select(code => code!)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+
+                if (requestedCodes.Count == 0)
+                {
+                    return ApiResponse<HqProductSyncResult>.Error(
+                        "商品编码列表不能为空",
+                        "PRODUCT_HQ_SELECTED_SYNC_EMPTY_CODES"
+                    );
+                }
+
+                var selectedLocalProducts = await db.Queryable<Product>()
+                    .Where(row =>
+                        row.ProductCode != null
+                        && requestedCodes.Contains(row.ProductCode)
+                        && !row.IsDeleted
+                    )
+                    .ToListAsync();
+                selectedLocalProducts = DeduplicateByBusinessKey(
+                    selectedLocalProducts,
+                    row => row.ProductCode
+                );
+                result.TotalLocalProducts = selectedLocalProducts.Count;
+
+                var selectedLocalByCode = selectedLocalProducts
+                    .Where(row => NormalizeCode(row.ProductCode) != null)
+                    .ToDictionary(row => NormalizeCode(row.ProductCode)!, StringComparer.OrdinalIgnoreCase);
+                foreach (var requestedCode in requestedCodes)
+                {
+                    if (!selectedLocalByCode.ContainsKey(requestedCode))
+                    {
+                        result.Errors.Add($"本地商品不存在或已删除: {requestedCode}");
+                    }
+                }
+
+                if (selectedLocalProducts.Count == 0)
+                {
+                    result.DurationMs = (long)(DateTime.UtcNow - startedAt).TotalMilliseconds;
+                    return ApiResponse<HqProductSyncResult>.Error(
+                        "未找到有效的本地商品",
+                        "PRODUCT_HQ_SELECTED_SYNC_NO_PRODUCTS",
+                        result
+                    );
+                }
+
+                var selectedLocalCodes = selectedLocalByCode.Keys.ToList();
+                var directHqRows = await _hqContext.Db.Queryable<DIC_商品信息字典表>()
+                    .Where(row =>
+                        row.H商品编码 != null
+                        && selectedLocalCodes.Contains(row.H商品编码)
+                        && row.H使用状态 == true
+                    )
+                    .ToListAsync();
+                var directHqCodes = directHqRows
+                    .Select(row => NormalizeCode(row.H商品编码))
+                    .Where(code => code != null)
+                    .Select(code => code!)
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+                var resolvedHqCodes = new HashSet<string>(directHqCodes, StringComparer.OrdinalIgnoreCase);
+                var needFallback = selectedLocalProducts
+                    .Where(row =>
+                        NormalizeCode(row.ProductCode) is { } code
+                        && !directHqCodes.Contains(code)
+                    )
+                    .ToList();
+
+                if (needFallback.Count > 0)
+                {
+                    // 兜底只用于找 HQ 商品编码：分店零售价表提供供应商，商品字典表提供货号。
+                    var fallbackMatches = await ResolveHqCodesBySupplierItemAsync(needFallback);
+                    foreach (var localProduct in needFallback)
+                    {
+                        var localCode = NormalizeCode(localProduct.ProductCode);
+                        var key = BuildSupplierItemKey(localProduct.LocalSupplierCode, localProduct.ItemNumber);
+                        if (localCode == null || key == null)
+                        {
+                            result.Errors.Add($"商品缺少供应商或货号，无法兜底匹配: {localCode ?? "(空编码)"}");
+                            continue;
+                        }
+
+                        if (!fallbackMatches.TryGetValue(key, out var matchedCodes) || matchedCodes.Count == 0)
+                        {
+                            result.Errors.Add($"HQ未找到供应商+货号匹配: {localProduct.LocalSupplierCode}/{localProduct.ItemNumber}");
+                            continue;
+                        }
+
+                        if (matchedCodes.Count > 1)
+                        {
+                            result.Errors.Add($"HQ供应商+货号匹配到多个商品，已跳过: {localProduct.LocalSupplierCode}/{localProduct.ItemNumber}");
+                            continue;
+                        }
+
+                        resolvedHqCodes.Add(matchedCodes[0]);
+                    }
+                }
+
+                if (resolvedHqCodes.Count == 0)
+                {
+                    result.DurationMs = (long)(DateTime.UtcNow - startedAt).TotalMilliseconds;
+                    return ApiResponse<HqProductSyncResult>.Error(
+                        "未匹配到可同步的HQ商品",
+                        "PRODUCT_HQ_SELECTED_SYNC_NO_HQ_MATCH",
+                        result
+                    );
+                }
+
+                var resolvedHqCodeList = resolvedHqCodes.ToList();
+                var hqProducts = await _hqContext.Db.Queryable<DIC_商品信息字典表>()
+                    .Where(row =>
+                        row.H商品编码 != null
+                        && resolvedHqCodeList.Contains(row.H商品编码)
+                        && row.H使用状态 == true
+                    )
+                    .ToListAsync();
+                hqProducts = hqProducts
+                    .GroupBy(row => row.H商品编码!)
+                    .Select(group => group.OrderByDescending(row => row.FGC_LastModifyDate).First())
+                    .ToList();
+                result.TotalHqProducts = hqProducts.Count;
+
+                db.Ado.BeginTran();
+                try
+                {
+                    var activeProductCodes = await UpsertSelectedProductsFromHqAsync(db, hqProducts, result);
+                    await SyncSelectedProductSetCodesFromHqAsync(db, activeProductCodes, result);
+                    await SyncSelectedStoreRetailPricesFromHqAsync(db, activeProductCodes, result);
+                    await SyncSelectedStoreMultiCodesFromHqAsync(db, activeProductCodes, result);
+                    db.Ado.CommitTran();
+                }
+                catch
+                {
+                    db.Ado.RollbackTran();
+                    throw;
+                }
+
+                result.DurationMs = (long)(DateTime.UtcNow - startedAt).TotalMilliseconds;
+                return ApiResponse<HqProductSyncResult>.OK(result, "选中商品HQ同步完成");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "选中商品HQ同步失败");
+                result.DurationMs = (long)(DateTime.UtcNow - startedAt).TotalMilliseconds;
+                result.Errors.Add(ex.Message);
+                return ApiResponse<HqProductSyncResult>.Error(
+                    $"选中商品HQ同步失败: {ex.Message}",
+                    "PRODUCT_HQ_SELECTED_SYNC_ERROR",
+                    result
+                );
+            }
+            finally
+            {
+                db.Ado.CommandTimeOut = originalTimeout;
+                SyncLock.Release();
+            }
+        }
+
+        private async Task<Dictionary<string, List<string>>> ResolveHqCodesBySupplierItemAsync(
+            List<Product> localProducts
+        )
+        {
+            var supplierCodes = localProducts
+                .Select(row => NormalizeCode(row.LocalSupplierCode))
+                .Where(code => code != null)
+                .Select(code => code!)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            var itemNumbers = localProducts
+                .Select(row => NormalizeCode(row.ItemNumber))
+                .Where(code => code != null)
+                .Select(code => code!)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            if (supplierCodes.Count == 0 || itemNumbers.Count == 0)
+            {
+                return new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+            }
+
+            var candidates = await _hqContext.Db.Queryable<DIC_商品零售价表, DIC_商品信息字典表>(
+                    (retail, product) => new JoinQueryInfos(
+                        JoinType.Inner,
+                        retail.H商品编码 == product.H商品编码
+                    )
+                )
+                .Where((retail, product) =>
+                    retail.H使用状态 == true
+                    && product.H使用状态 == true
+                    && supplierCodes.Contains(retail.H供应商编码)
+                    && itemNumbers.Contains(product.H货号)
+                    && !string.IsNullOrEmpty(product.H商品编码)
+                )
+                .Select((retail, product) => new SupplierItemHqProductMatch
+                {
+                    SupplierCode = retail.H供应商编码,
+                    ItemNumber = product.H货号,
+                    ProductCode = product.H商品编码,
+                })
+                .ToListAsync();
+
+            return candidates
+                .Select(row => new
+                {
+                    Key = BuildSupplierItemKey(row.SupplierCode, row.ItemNumber),
+                    ProductCode = NormalizeCode(row.ProductCode),
+                })
+                .Where(row => row.Key != null && row.ProductCode != null)
+                .GroupBy(row => row.Key!, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(
+                    group => group.Key,
+                    group => group
+                        .Select(row => row.ProductCode!)
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .ToList(),
+                    StringComparer.OrdinalIgnoreCase
+                );
+        }
+
+        private async Task<List<string>> UpsertSelectedProductsFromHqAsync(
+            ISqlSugarClient db,
+            List<DIC_商品信息字典表> hqProducts,
+            HqProductSyncResult result
+        )
+        {
+            var productCodes = hqProducts
+                .Select(row => NormalizeCode(row.H商品编码))
+                .Where(code => code != null)
+                .Select(code => code!)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            var localRows = await db.Queryable<Product>()
+                .Where(row => row.ProductCode != null && productCodes.Contains(row.ProductCode))
+                .ToListAsync();
+            var localByCode = localRows
+                .Where(row => NormalizeCode(row.ProductCode) != null)
+                .GroupBy(row => NormalizeCode(row.ProductCode)!, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
+
+            foreach (var hqRow in hqProducts)
+            {
+                var code = NormalizeCode(hqRow.H商品编码);
+                if (code == null)
+                {
+                    continue;
+                }
+
+                if (localByCode.TryGetValue(code, out var local))
+                {
+                    ApplyProductUpdate(hqRow, local);
+                    await db.Updateable(local).ExecuteCommandAsync();
+                    result.ProductsUpdated++;
+                    continue;
+                }
+
+                var product = MapNewProduct(hqRow);
+                await db.Insertable(product).ExecuteCommandAsync();
+                localByCode[code] = product;
+                result.ProductsAdded++;
+            }
+
+            return productCodes;
+        }
+
+        private async Task SyncSelectedProductSetCodesFromHqAsync(
+            ISqlSugarClient db,
+            List<string> productCodes,
+            HqProductSyncResult result
+        )
+        {
+            if (productCodes.Count == 0)
+            {
+                return;
+            }
+
+            var hqRows = await _hqContext.Db.Queryable<DIC_一品多码表>()
+                .Where(row =>
+                    row.H使用状态 == true
+                    && row.H商品编码 != null
+                    && productCodes.Contains(row.H商品编码)
+                    && !string.IsNullOrEmpty(row.H多码商品编号)
+                )
+                .ToListAsync();
+            if (hqRows.Count == 0)
+            {
+                return;
+            }
+
+            var localRows = await db.Queryable<ProductSetCode>()
+                .Where(row => productCodes.Contains(row.ProductCode))
+                .ToListAsync();
+            var byGuid = localRows
+                .Where(row => !string.IsNullOrWhiteSpace(row.SetCodeId))
+                .GroupBy(row => row.SetCodeId)
+                .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
+            var byBusinessKey = localRows
+                .Select(row => new
+                {
+                    Key = BuildProductSetCodeBusinessKey(row.ProductCode, row.SetProductCode),
+                    Row = row,
+                })
+                .Where(item => item.Key != null)
+                .GroupBy(item => item.Key!)
+                .ToDictionary(group => group.Key, group => group.First().Row, StringComparer.OrdinalIgnoreCase);
+
+            foreach (var hqRow in hqRows)
+            {
+                var local = FindProductSetCode(hqRow, byGuid, byBusinessKey);
+                if (local == null)
+                {
+                    local = MapNewProductSetCode(hqRow);
+                    await db.Insertable(local).ExecuteCommandAsync();
+                    result.ProductSetCodesAdded++;
+                    byGuid[local.SetCodeId] = local;
+                    var businessKey = BuildProductSetCodeBusinessKey(local.ProductCode, local.SetProductCode);
+                    if (businessKey != null)
+                    {
+                        byBusinessKey[businessKey] = local;
+                    }
+                    continue;
+                }
+
+                await NormalizeProductSetCodeIdAsync(db, local, hqRow.HGUID, byGuid);
+                ApplyProductSetCodeUpdate(hqRow, local);
+                await db.Updateable(local).ExecuteCommandAsync();
+                result.ProductSetCodesUpdated++;
+            }
+        }
+
+        private async Task SyncSelectedStoreRetailPricesFromHqAsync(
+            ISqlSugarClient db,
+            List<string> productCodes,
+            HqProductSyncResult result
+        )
+        {
+            var activeStoreCodes = await GetActiveLocalStoreCodesAsync(db);
+            if (productCodes.Count == 0 || activeStoreCodes.Count == 0)
+            {
+                return;
+            }
+
+            var hqRows = await _hqContext.Db.Queryable<DIC_商品零售价表>()
+                .Where(row =>
+                    row.H使用状态 == true
+                    && productCodes.Contains(row.H商品编码)
+                    && activeStoreCodes.Contains(row.H分店代码)
+                )
+                .ToListAsync();
+            if (hqRows.Count == 0)
+            {
+                return;
+            }
+
+            var localRows = await db.Queryable<StoreRetailPrice>()
+                .Where(row => row.ProductCode != null && productCodes.Contains(row.ProductCode))
+                .ToListAsync();
+            var localByKey = localRows
+                .Select(row => new
+                {
+                    Key = BuildStoreProductKey(row.StoreCode, row.ProductCode),
+                    Row = row,
+                })
+                .Where(item => item.Key != null)
+                .GroupBy(item => item.Key!)
+                .ToDictionary(group => group.Key, group => group.First().Row, StringComparer.OrdinalIgnoreCase);
+
+            foreach (var hqRow in hqRows)
+            {
+                var key = BuildStoreProductKey(hqRow.H分店代码, hqRow.H商品编码);
+                if (key == null)
+                {
+                    continue;
+                }
+
+                if (localByKey.TryGetValue(key, out var local))
+                {
+                    ApplyStoreRetailPriceUpdate(hqRow, local);
+                    await db.Updateable(local).ExecuteCommandAsync();
+                    result.StoreRetailPricesUpdated++;
+                    continue;
+                }
+
+                local = MapNewStoreRetailPrice(hqRow);
+                await db.Insertable(local).ExecuteCommandAsync();
+                localByKey[key] = local;
+                result.StoreRetailPricesCreated++;
+            }
+        }
+
+        private async Task SyncSelectedStoreMultiCodesFromHqAsync(
+            ISqlSugarClient db,
+            List<string> productCodes,
+            HqProductSyncResult result
+        )
+        {
+            var activeStoreCodes = await GetActiveLocalStoreCodesAsync(db);
+            if (productCodes.Count == 0 || activeStoreCodes.Count == 0)
+            {
+                return;
+            }
+
+            var hqRows = await _hqContext.Db.Queryable<DIC_分店一品多码表>()
+                .Where(row =>
+                    row.H使用状态 == true
+                    && row.H商品编码 != null
+                    && productCodes.Contains(row.H商品编码)
+                    && row.H分店代码 != null
+                    && activeStoreCodes.Contains(row.H分店代码)
+                    && !string.IsNullOrEmpty(row.H多码商品编码)
+                )
+                .ToListAsync();
+            if (hqRows.Count == 0)
+            {
+                return;
+            }
+
+            var localRows = await db.Queryable<StoreMultiCodeProduct>()
+                .Where(row => row.ProductCode != null && productCodes.Contains(row.ProductCode))
+                .ToListAsync();
+            var localByKey = localRows
+                .Select(row => new
+                {
+                    Key = BuildStoreMultiCodeKey(
+                        row.StoreCode,
+                        row.ProductCode,
+                        row.MultiCodeProductCode
+                    ),
+                    Row = row,
+                })
+                .Where(item => item.Key != null)
+                .GroupBy(item => item.Key!)
+                .ToDictionary(group => group.Key, group => group.First().Row, StringComparer.OrdinalIgnoreCase);
+
+            foreach (var hqRow in hqRows)
+            {
+                var key = BuildStoreMultiCodeKey(
+                    hqRow.H分店代码,
+                    hqRow.H商品编码,
+                    hqRow.H多码商品编码
+                );
+                if (key == null)
+                {
+                    continue;
+                }
+
+                if (localByKey.TryGetValue(key, out var local))
+                {
+                    ApplyStoreMultiCodeUpdate(hqRow, local);
+                    await db.Updateable(local).ExecuteCommandAsync();
+                    result.StoreMultiCodesUpdated++;
+                    continue;
+                }
+
+                local = MapNewStoreMultiCode(hqRow);
+                await db.Insertable(local).ExecuteCommandAsync();
+                localByKey[key] = local;
+                result.StoreMultiCodesCreated++;
+            }
+        }
+
         public async Task<ApiResponse<PushProductsToHqResult>> PushToHqAsync(List<string> productCodes)
         {
             if (productCodes == null || productCodes.Count == 0)
@@ -1333,6 +1825,71 @@ namespace BlazorApp.Api.Services.React
             };
         }
 
+        private static StoreRetailPrice MapNewStoreRetailPrice(DIC_商品零售价表 hqRow)
+        {
+            var row = new StoreRetailPrice
+            {
+                UUID = NormalizeCode(hqRow.HGUID) ?? UuidHelper.GenerateUuid7(),
+                CreatedAt = hqRow.FGC_CreateDate == default ? DateTime.UtcNow : hqRow.FGC_CreateDate,
+                CreatedBy = hqRow.FGC_Creator,
+            };
+            ApplyStoreRetailPriceUpdate(hqRow, row);
+            return row;
+        }
+
+        private static void ApplyStoreRetailPriceUpdate(
+            DIC_商品零售价表 hqRow,
+            StoreRetailPrice local
+        )
+        {
+            local.StoreCode = NormalizeCode(hqRow.H分店代码);
+            local.ProductCode = NormalizeCode(hqRow.H商品编码);
+            local.StoreProductCode = NormalizeCode(hqRow.H分店商品编码);
+            local.SupplierCode = NormalizeCode(hqRow.H供应商编码);
+            local.PurchasePrice = hqRow.H进货价;
+            local.StoreRetailPriceValue = hqRow.H分店零售价;
+            local.DiscountRate = hqRow.H折扣率;
+            local.IsActive = hqRow.H使用状态;
+            local.IsAutoPricing = hqRow.H是否自动定价;
+            local.IsSpecialProduct = hqRow.H是否特殊商品;
+            local.IsDeleted = false;
+            local.UpdatedAt = DateTime.UtcNow;
+            local.UpdatedBy = hqRow.FGC_LastModifier;
+        }
+
+        private static StoreMultiCodeProduct MapNewStoreMultiCode(DIC_分店一品多码表 hqRow)
+        {
+            var row = new StoreMultiCodeProduct
+            {
+                UUID = NormalizeCode(hqRow.HGUID) ?? UuidHelper.GenerateUuid7(),
+                CreatedAt = hqRow.FGC_CreateDate ?? DateTime.UtcNow,
+                CreatedBy = hqRow.FGC_Creator,
+            };
+            ApplyStoreMultiCodeUpdate(hqRow, row);
+            return row;
+        }
+
+        private static void ApplyStoreMultiCodeUpdate(
+            DIC_分店一品多码表 hqRow,
+            StoreMultiCodeProduct local
+        )
+        {
+            local.StoreCode = NormalizeCode(hqRow.H分店代码);
+            local.ProductCode = NormalizeCode(hqRow.H商品编码);
+            local.MultiCodeProductCode = NormalizeCode(hqRow.H多码商品编码);
+            local.StoreMultiCodeProductCode = NormalizeCode(hqRow.H分店多码商品编码);
+            local.MultiBarcode = NormalizeCode(hqRow.H多条形码);
+            local.PurchasePrice = hqRow.H进货价;
+            local.MultiCodeRetailPrice = hqRow.H一品多码零售价;
+            local.DiscountRate = hqRow.H折扣率;
+            local.IsAutoPricing = hqRow.H是否自动定价 ?? false;
+            local.IsSpecialProduct = hqRow.H是否特殊商品 ?? false;
+            local.IsActive = hqRow.H使用状态 ?? true;
+            local.IsDeleted = false;
+            local.UpdatedAt = DateTime.UtcNow;
+            local.UpdatedBy = hqRow.FGC_LastModifier;
+        }
+
         private static DIC_一品多码表 MapProductSetCodeToHq(
             ProductSetCode setCode,
             Product product
@@ -1356,6 +1913,20 @@ namespace BlazorApp.Api.Services.React
                 FGC_LastModifier = "HBweb",
                 FGC_LastModifyDate = now,
             };
+        }
+
+        private static async Task<List<string>> GetActiveLocalStoreCodesAsync(ISqlSugarClient db)
+        {
+            var activeStoreCodes = await db.Queryable<Store>()
+                .Where(row => row.IsActive && !row.IsDeleted && row.StoreCode != null)
+                .Select(row => row.StoreCode)
+                .ToListAsync();
+            return activeStoreCodes
+                .Select(NormalizeCode)
+                .Where(code => code != null)
+                .Select(code => code!)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
         }
 
         private static DIC_分店一品多码表 MapStoreMultiCodeToHq(
@@ -1449,6 +2020,15 @@ namespace BlazorApp.Api.Services.React
                 : $"{normalizedStoreCode}\u001F{normalizedProductCode}\u001F{normalizedMultiCode}";
         }
 
+        private static string? BuildSupplierItemKey(string? supplierCode, string? itemNumber)
+        {
+            var normalizedSupplierCode = NormalizeCode(supplierCode);
+            var normalizedItemNumber = NormalizeCode(itemNumber);
+            return normalizedSupplierCode == null || normalizedItemNumber == null
+                ? null
+                : $"{normalizedSupplierCode}\u001F{normalizedItemNumber}";
+        }
+
         private static string? NormalizeCode(string? value)
         {
             return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
@@ -1471,6 +2051,13 @@ namespace BlazorApp.Api.Services.React
             int StoreRetailPricesDeleted,
             int StoreMultiCodesDeleted
         );
+
+        private sealed class SupplierItemHqProductMatch
+        {
+            public string? SupplierCode { get; set; }
+            public string? ItemNumber { get; set; }
+            public string? ProductCode { get; set; }
+        }
 
         private sealed class ProductShadowRunRow
         {

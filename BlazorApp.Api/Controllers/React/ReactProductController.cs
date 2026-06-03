@@ -1,3 +1,4 @@
+using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Api.Services;
 using BlazorApp.Shared.Constants;
@@ -19,18 +20,21 @@ namespace BlazorApp.Api.Controllers.React
         private readonly IProductReactService _service;
         private readonly IProductStoreSyncService _productStoreSyncService;
         private readonly IProductHqSyncService _productHqSyncService;
+        private readonly ICurrentUserManageableStoreScopeService _storeScopeService;
         private readonly ILogger<ReactProductController> _logger;
 
         public ReactProductController(
             IProductReactService service,
             IProductStoreSyncService productStoreSyncService,
             IProductHqSyncService productHqSyncService,
+            ICurrentUserManageableStoreScopeService storeScopeService,
             ILogger<ReactProductController> logger
         )
         {
             _service = service;
             _productStoreSyncService = productStoreSyncService;
             _productHqSyncService = productHqSyncService;
+            _storeScopeService = storeScopeService;
             _logger = logger;
         }
 
@@ -40,6 +44,7 @@ namespace BlazorApp.Api.Controllers.React
         /// <param name="query">查询条件</param>
         /// <returns>分页列表</returns>
         [HttpPost("list")]
+        [Authorize(Policy = Permissions.PosProducts.View)]
         public async Task<IActionResult> GetPagedList([FromBody] ProductReactFilterDto query)
         {
             try
@@ -64,11 +69,42 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         /// <summary>
+        /// 获取商品对应的分店价格记录
+        /// </summary>
+        /// <param name="productCode">商品编码</param>
+        /// <returns>分店价格记录列表</returns>
+        [HttpGet("{productCode}/store-records")]
+        [Authorize(Policy = Permissions.StoreProducts.View)]
+        public async Task<IActionResult> GetStoreRecords(string productCode)
+        {
+            try
+            {
+                var scope = await _storeScopeService.GetScopeAsync();
+                IReadOnlyCollection<string>? accessibleStoreCodes = scope.IsAllowed
+                    ? scope.IsAdmin ? null : scope.StoreCodes
+                    : Array.Empty<string>();
+                var result = await _service.GetStoreRecordsAsync(productCode, accessibleStoreCodes);
+                if (result.Success)
+                {
+                    return Ok(new { success = true, data = result.Data ?? new List<ProductStoreRecordDto>() });
+                }
+
+                return BadRequest(new { success = false, message = result.Message });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "获取商品分店记录失败: {ProductCode}", productCode);
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
+        /// <summary>
         /// 获取商品详情
         /// </summary>
         /// <param name="productCode">商品编码</param>
         /// <returns>商品详情</returns>
         [HttpGet("{productCode}")]
+        [Authorize(Policy = Permissions.PosProducts.View)]
         public async Task<IActionResult> GetById(string productCode)
         {
             try
@@ -452,6 +488,49 @@ namespace BlazorApp.Api.Controllers.React
             {
                 _logger.LogError(ex, "从HQ同步商品失败");
                 return StatusCode(500, new { success = false, message = "从HQ同步商品失败：" + ex.Message });
+            }
+        }
+
+        /// <summary>
+        /// 从HQ按选中商品同步到本地，只处理请求中的商品范围。
+        /// </summary>
+        [HttpPost("sync-selected-from-hq")]
+        [Authorize(Roles = "Admin")]
+        public async Task<IActionResult> SyncSelectedFromHq(
+            [FromBody] SyncSelectedProductsFromHqRequest request
+        )
+        {
+            try
+            {
+                if (request?.ProductCodes == null || !request.ProductCodes.Any())
+                {
+                    return BadRequest(new { success = false, message = "请选择要同步的商品" });
+                }
+
+                var productCodes = request.ProductCodes
+                    .Where(code => !string.IsNullOrWhiteSpace(code))
+                    .Select(code => code.Trim())
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                if (!productCodes.Any())
+                {
+                    return BadRequest(new { success = false, message = "请选择有效的商品编码" });
+                }
+
+                _logger.LogInformation("从HQ同步选中商品: {Count} 件", productCodes.Count);
+                var result = await _productHqSyncService.SyncSelectedFromHqAsync(productCodes);
+                return result.Success ? Ok(result) : BadRequest(result);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "从HQ同步选中商品失败");
+                return StatusCode(
+                    500,
+                    ApiResponse<HqProductSyncResult>.Error(
+                        $"从HQ同步选中商品失败: {ex.Message}",
+                        "PRODUCT_HQ_SELECTED_SYNC_ERROR"
+                    )
+                );
             }
         }
 

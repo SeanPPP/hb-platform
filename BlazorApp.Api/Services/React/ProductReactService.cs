@@ -370,6 +370,43 @@ namespace BlazorApp.Api.Services.React
                     })
                     .ToListAsync();
 
+                var productCodes = items
+                    .Select(item => item.ProductCode)
+                    .Where(code => !string.IsNullOrWhiteSpace(code))
+                    .Distinct()
+                    .ToList();
+
+                if (productCodes.Count > 0)
+                {
+                    // 只按当前页商品批量查询分店记录，避免列表页逐行请求。
+                    var storeRecordCounts = await _db.Queryable<StoreRetailPrice>()
+                        .Where(record =>
+                            productCodes.Contains(record.ProductCode)
+                            && record.IsDeleted == false
+                        )
+                        .GroupBy(record => record.ProductCode)
+                        .Select(record => new
+                        {
+                            record.ProductCode,
+                            StoreRecordCount = SqlFunc.AggregateCount(record.ProductCode),
+                        })
+                        .ToListAsync();
+                    var storeRecordCountMap = storeRecordCounts
+                        .Where(record => !string.IsNullOrWhiteSpace(record.ProductCode))
+                        .GroupBy(record => record.ProductCode!)
+                        .ToDictionary(group => group.Key, group => group.Sum(record => record.StoreRecordCount));
+
+                    foreach (var item in items)
+                    {
+                        item.StoreRecordCount = storeRecordCountMap.TryGetValue(
+                            item.ProductCode,
+                            out var count
+                        )
+                            ? count
+                            : 0;
+                    }
+                }
+
                 return new PagedListReactDto<ProductDto>
                 {
                     Items = items,
@@ -382,6 +419,99 @@ namespace BlazorApp.Api.Services.React
             {
                 _logger.LogError(ex, "分页查询商品失败");
                 throw;
+            }
+        }
+
+        /// <summary>
+        /// 获取商品对应的分店价格记录
+        /// </summary>
+        public async Task<ApiResponse<List<ProductStoreRecordDto>>> GetStoreRecordsAsync(
+            string productCode,
+            IReadOnlyCollection<string>? accessibleStoreCodes
+        )
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(productCode))
+                {
+                    return new ApiResponse<List<ProductStoreRecordDto>>
+                    {
+                        Success = false,
+                        Message = "商品编码不能为空",
+                        Data = new List<ProductStoreRecordDto>(),
+                    };
+                }
+
+                var trimmedProductCode = productCode.Trim();
+                var query = _db.Queryable<StoreRetailPrice>()
+                    .LeftJoin<Store>((price, store) =>
+                        price.StoreCode == store.StoreCode && store.IsDeleted == false
+                    )
+                    .Where((price, store) =>
+                        price.ProductCode == trimmedProductCode && price.IsDeleted == false
+                    );
+
+                if (accessibleStoreCodes is not null)
+                {
+                    var storeCodes = accessibleStoreCodes
+                        .Where(item => !string.IsNullOrWhiteSpace(item))
+                        .Select(item => item.Trim())
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .ToList();
+
+                    if (!storeCodes.Any())
+                    {
+                        return new ApiResponse<List<ProductStoreRecordDto>>
+                        {
+                            Success = true,
+                            Data = new List<ProductStoreRecordDto>(),
+                        };
+                    }
+
+                    query = query.Where((price, store) => storeCodes.Contains(price.StoreCode));
+                }
+
+                var records = await query
+                    .OrderBy(
+                        (price, store) => SqlFunc.IIF(
+                            SqlFunc.IsNullOrEmpty(store.StoreName),
+                            price.StoreCode,
+                            store.StoreName
+                        ),
+                        OrderByType.Asc
+                    )
+                    .OrderBy((price, store) => price.StoreCode, OrderByType.Asc)
+                    .Select((price, store) => new ProductStoreRecordDto
+                    {
+                        StoreCode = price.StoreCode,
+                        StoreName = store.StoreName,
+                        StoreProductCode = price.StoreProductCode,
+                        PurchasePrice = price.PurchasePrice,
+                        StoreRetailPriceValue = price.StoreRetailPriceValue,
+                        DiscountRate = price.DiscountRate,
+                        IsActive = price.IsActive,
+                        IsAutoPricing = price.IsAutoPricing,
+                        IsSpecialProduct = price.IsSpecialProduct,
+                        UpdatedAt = price.UpdatedAt,
+                        UpdatedBy = price.UpdatedBy,
+                    })
+                    .ToListAsync();
+
+                return new ApiResponse<List<ProductStoreRecordDto>>
+                {
+                    Success = true,
+                    Data = records,
+                };
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "获取商品分店记录失败: {ProductCode}", productCode);
+                return new ApiResponse<List<ProductStoreRecordDto>>
+                {
+                    Success = false,
+                    Message = "获取商品分店记录失败",
+                    Data = new List<ProductStoreRecordDto>(),
+                };
             }
         }
 

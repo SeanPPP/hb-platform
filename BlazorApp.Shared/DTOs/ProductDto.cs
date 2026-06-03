@@ -90,6 +90,30 @@ namespace BlazorApp.Shared.DTOs
         /// 仓库类别GUID
         /// </summary>
         public string? WarehouseCategoryGUID { get; set; }
+
+        /// <summary>
+        /// 已存在的分店价格记录数量
+        /// </summary>
+        public int StoreRecordCount { get; set; }
+
+        public DateTime? UpdatedAt { get; set; }
+        public string? UpdatedBy { get; set; }
+    }
+
+    /// <summary>
+    /// 商品对应的分店价格记录
+    /// </summary>
+    public class ProductStoreRecordDto
+    {
+        public string? StoreCode { get; set; }
+        public string? StoreName { get; set; }
+        public string? StoreProductCode { get; set; }
+        public decimal? PurchasePrice { get; set; }
+        public decimal? StoreRetailPriceValue { get; set; }
+        public decimal? DiscountRate { get; set; }
+        public bool IsActive { get; set; }
+        public bool IsAutoPricing { get; set; }
+        public bool IsSpecialProduct { get; set; }
         public DateTime? UpdatedAt { get; set; }
         public string? UpdatedBy { get; set; }
     }

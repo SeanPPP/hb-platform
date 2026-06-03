@@ -25,6 +25,17 @@ namespace BlazorApp.Api.Interfaces.React
         Task<ApiResponse<ProductDto>> GetByIdAsync(string productCode);
 
         /// <summary>
+        /// 获取商品对应的分店价格记录
+        /// </summary>
+        /// <param name="productCode">商品编码</param>
+        /// <param name="accessibleStoreCodes">当前用户可访问分店代码；null 表示不限制</param>
+        /// <returns>分店价格记录列表</returns>
+        Task<ApiResponse<List<ProductStoreRecordDto>>> GetStoreRecordsAsync(
+            string productCode,
+            IReadOnlyCollection<string>? accessibleStoreCodes
+        );
+
+        /// <summary>
         /// 创建商品
         /// </summary>
         /// <param name="dto">创建DTO</param>

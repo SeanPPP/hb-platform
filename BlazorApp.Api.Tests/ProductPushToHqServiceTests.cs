@@ -3,6 +3,7 @@ using System.Runtime.CompilerServices;
 using AutoMapper;
 using BlazorApp.Api.Controllers.React;
 using BlazorApp.Api.Data;
+using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Api.Services;
 using BlazorApp.Api.Services.React;
@@ -21,6 +22,7 @@ using Xunit;
 
 namespace BlazorApp.Api.Tests;
 
+[Collection("ProductHqSyncServiceTests")]
 public sealed class ProductPushToHqServiceTests : IDisposable
 {
     private readonly string _localDbPath;
@@ -194,6 +196,7 @@ public sealed class ProductPushToHqServiceTests : IDisposable
             Mock.Of<IProductReactService>(),
             Mock.Of<IProductStoreSyncService>(),
             service.Object,
+            Mock.Of<ICurrentUserManageableStoreScopeService>(),
             Mock.Of<ILogger<ReactProductController>>()
         );
 
