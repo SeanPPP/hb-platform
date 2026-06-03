@@ -127,6 +127,38 @@ async function main() {
   })
   if (syncFieldsRequestFailure) failures.push(syncFieldsRequestFailure)
 
+  const storeRecordsFailure = await runTest('商品管理应显示分店记录数量并点击查看分店记录明细', () => {
+    assert(
+      typeSource.includes('storeRecordCount?: number') &&
+        typeSource.includes('ProductStoreRecordDto'),
+      '前端商品类型应包含分店记录数量和分店记录明细 DTO',
+    )
+    assert(
+      serviceSource.includes('getProductStoreRecords') &&
+        serviceSource.includes('/store-records'),
+      '商品服务应提供按商品编码读取分店记录明细的接口',
+    )
+    assert(
+      pageSource.includes('storeRecordCount') &&
+        pageSource.includes('openStoreRecords') &&
+        pageSource.includes('storeRecordsRequestSeqRef') &&
+        pageSource.includes('requestSeq === storeRecordsRequestSeqRef.current') &&
+        pageSource.includes('storeRecordsVisible') &&
+        pageSource.includes('storeRecordsLoading') &&
+        pageSource.includes('canManageStoreProducts') &&
+        pageSource.includes('count > 0 && canManageStoreProducts') &&
+        pageSource.includes('getProductStoreRecords(record.productCode)'),
+      '商品管理页面应新增分店记录数量列、点击处理、加载状态、请求竞态保护，并仅允许有分店商品权限时点击',
+    )
+    assert(
+      pageSource.includes("t('posAdmin.products.storeRecords', '分店记录')") &&
+        pageSource.includes("t('posAdmin.products.noStoreRecords', '暂无分店记录')") &&
+        pageSource.includes("t('posAdmin.products.loadStoreRecordsFailed', '加载分店记录失败')"),
+      '分店记录列和弹窗应有中文兜底文案',
+    )
+  })
+  if (storeRecordsFailure) failures.push(storeRecordsFailure)
+
   const pushToHqFailure = await runTest('选中商品发送到 HQ 应复用选择、权限和防重复提交保护', () => {
     assert(
       typeSource.includes('PushProductsToHqRequest') &&

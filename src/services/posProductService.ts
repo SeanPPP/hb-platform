@@ -9,6 +9,7 @@ import type {
   HqProductSyncResult,
   PosProductDto,
   PosProductFilterParams,
+  ProductStoreRecordDto,
   PushProductsToHqRequest,
   PushProductsToHqResult,
   SyncProductsToStoresRequest,
@@ -172,6 +173,13 @@ export async function getProductById(productCode: string): Promise<PosProductDto
 export async function getProductByBarcode(barcode: string): Promise<PosProductDto> {
   const response = await request.get<ApiResponse<PosProductDto>>(`${API_BASE}/by-barcode/${barcode}`)
   return unwrapApiData(response)
+}
+
+export async function getProductStoreRecords(productCode: string): Promise<ProductStoreRecordDto[]> {
+  const response = await request.get<ApiResponse<ProductStoreRecordDto[]>>(
+    `${API_BASE}/${encodeURIComponent(productCode)}/store-records`,
+  )
+  return unwrapApiData(response) ?? []
 }
 
 export async function createProduct(data: Partial<PosProductDto> & Record<string, unknown>) {

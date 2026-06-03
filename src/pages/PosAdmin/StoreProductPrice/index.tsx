@@ -370,19 +370,21 @@ export default function StoreProductPricePage() {
     {
       title: t('posAdmin.productPrice.rowIndex', '序号'),
       key: 'rowIndex',
-      width: 30,
+      width: 42,
+      align: 'right',
       render: (_: unknown, __: DataType, index: number) => index + 1,
     },
     {
       title: t('posAdmin.productPrice.productImage', '商品图片'),
       dataIndex: 'productImage',
       key: 'productImage',
-      width: 80,
+      width: 50,
+      align: 'center',
       render: (url: string) =>
         url ? (
-          <Image src={url} width={48} height={48} style={{ objectFit: 'cover', borderRadius: 4 }} />
+          <Image className="store-product-price-image-cell" src={url} width={34} height={34} style={{ objectFit: 'cover', borderRadius: 4 }} />
         ) : (
-          <div style={{ width: 48, height: 48, background: '#f5f5f5', borderRadius: 4, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#ccc', fontSize: 12 }}>
+          <div className="store-product-price-image-cell">
             {t('posAdmin.productPrice.noImage', '无图')}
           </div>
         ),
@@ -391,14 +393,15 @@ export default function StoreProductPricePage() {
       title: t('posAdmin.productPrice.itemNumber', '货号'),
       dataIndex: 'itemNumber',
       key: 'itemNumber',
-      width: 100,
+      width: 96,
       sorter: true,
+      render: (v: string) => <span className="store-product-price-code-cell">{v || '-'}</span>,
     },
     {
       title: t('posAdmin.productPrice.productCode', '商品代码'),
       dataIndex: 'productCode',
       key: 'productCode',
-      width: 50,  
+      width: 48,
       fixed: 'left',
       sorter: true,
       render: (v: string) => (
@@ -411,17 +414,11 @@ export default function StoreProductPricePage() {
       title: t('posAdmin.productPrice.productName', '商品名称'),
       dataIndex: 'productName',
       key: 'productName',
-      width: 100,
+      width: 180,
       sorter: true,
       render: (v: string) => (
         <div
-          style={{
-            display: '-webkit-box',
-            WebkitLineClamp: 2,
-            WebkitBoxOrient: 'vertical',
-            overflow: 'hidden',
-            wordBreak: 'break-all',
-          }}
+          className="store-product-price-name-cell"
           title={v}
         >
           {v}
@@ -433,21 +430,35 @@ export default function StoreProductPricePage() {
       title: t('posAdmin.productPrice.barcode', '条码'),
       dataIndex: 'barcode',
       key: 'barcode',
-      width: 160,
-      render: (v: string) => <BarcodePreview value={v} compactCopy />,
+      width: 132,
+      render: (v: string) => (
+        <div className="store-product-price-barcode-cell">
+          <BarcodePreview
+            value={v}
+            compactCopy
+            align="left"
+            className="store-product-price-barcode-preview"
+            gap={2}
+            options={{ height: 22, width: 1, margin: 0 }}
+            textMaxWidth={104}
+            textNoWrap
+          />
+        </div>
+      ),
     },
     {
       title: t('posAdmin.productPrice.supplier', '供应商'),
       dataIndex: 'localSupplierName',
       key: 'localSupplierName',
-      width: 100,
-      ellipsis: { showTitle: false },
+      width: 110,
+      render: (v: string) => <div className="store-product-price-supplier-cell" title={v}>{v || '-'}</div>,
     },
     {
       title: t('posAdmin.productPrice.productType', '商品类型'),
       dataIndex: 'productType',
       key: 'productType',
-      width: 90,
+      width: 76,
+      align: 'center',
       render: (v: number) => {
         const info = productTypeMap[v] || { labelKey: String(v), color: 'default' }
         return <Tag color={info.color}>{t(info.labelKey)}</Tag>
@@ -458,60 +469,72 @@ export default function StoreProductPricePage() {
       title: t('posAdmin.productPrice.purchasePrice', '采购价'),
       dataIndex: 'storePurchasePrice',
       key: 'storePurchasePrice',
-      width: 100,
+      width: 72,
+      align: 'right',
       sorter: true,
-      render: (v: number) => (v != null ? v.toFixed(2) : '-'),
+      render: (v: number) => <span className="store-product-price-numeric-cell">{v != null ? v.toFixed(2) : '-'}</span>,
     },
     {
       title: t('posAdmin.productPrice.retailPrice', '零售价'),
       dataIndex: 'storeRetailPrice',
       key: 'storeRetailPrice',
-      width: 100,
+      width: 72,
+      align: 'right',
       sorter: true,
-      render: (v: number) => (v != null ? v.toFixed(2) : '-'),
+      render: (v: number) => <span className="store-product-price-numeric-cell">{v != null ? v.toFixed(2) : '-'}</span>,
     },
     {
       title: t('posAdmin.productPrice.autoPricing', '自动定价'),
       dataIndex: 'isStoreAutoPricing',
       key: 'isStoreAutoPricing',
-      width: 90,
+      width: 70,
+      align: 'center',
       render: (v: boolean) => <Tag color={v ? 'green' : 'default'}>{v ? t('posAdmin.invoiceDetail.yes', '是') : t('posAdmin.invoiceDetail.no', '否')}</Tag>,
     },
     {
       title: t('posAdmin.productPrice.specialProduct', '特殊商品'),
       dataIndex: 'isStoreSpecialProduct',
       key: 'isStoreSpecialProduct',
-      width: 90,
+      width: 70,
+      align: 'center',
       render: (v: boolean) => <Tag color={v ? 'orange' : 'default'}>{v ? t('posAdmin.invoiceDetail.yes', '是') : t('posAdmin.invoiceDetail.no', '否')}</Tag>,
     },
     {
       title: t('posAdmin.productPrice.discountRate', '折扣率'),
       dataIndex: 'discountRate',
       key: 'discountRate',
-      width: 90,
+      width: 72,
+      align: 'right',
       sorter: true,
-      render: (v: number) => formatDiscountRate(v),
+      render: (v: number) => <span className="store-product-price-numeric-cell">{formatDiscountRate(v)}</span>,
     },
     {
       title: t('posAdmin.productPrice.enabled', '启用'),
       dataIndex: 'isActive',
       key: 'isActive',
-      width: 70,
+      width: 56,
+      align: 'center',
       render: (v: boolean) => <Tag color={v ? 'success' : 'error'}>{v ? t('posAdmin.invoiceDetail.yes', '是') : t('posAdmin.invoiceDetail.no', '否')}</Tag>,
     },
     {
       title: t('posAdmin.productPrice.updatedAt', '更新时间'),
       dataIndex: 'updatedAt',
       key: 'updatedAt',
-      width: 160,
+      width: 92,
       sorter: true,
-      render: (v: string) => (v ? dayjs(v).format('YYYY-MM-DD HH:mm') : '-'),
+      render: (v: string) => v ? (
+        <span className="store-product-price-date-cell">
+          <span>{dayjs(v).format('YYYY-MM-DD')}</span>
+          <span>{dayjs(v).format('HH:mm')}</span>
+        </span>
+      ) : '-',
     },
     {
       title: t('posAdmin.productPrice.updatedBy', '更新人'),
       dataIndex: 'updatedBy',
       key: 'updatedBy',
-      width: 100,
+      width: 80,
+      render: (v: string) => <span className="store-product-price-code-cell">{v || '-'}</span>,
     },
   ], [t])
 
@@ -580,11 +603,12 @@ export default function StoreProductPricePage() {
         </div>
 
         <Table
+          className="store-product-price-compact-table"
           rowKey="key"
           loading={loading}
           dataSource={data}
           columns={columns}
-          scroll={{ x: 2200, y: 600 }}
+          scroll={{ x: 1520, y: 600 }}
           virtual
           rowSelection={{
             selectedRowKeys,

@@ -2804,3 +2804,114 @@ body {
 .invoice-detail-numeric-cell {
   font-variant-numeric: tabular-nums;
 }
+
+.pos-products-compact-table .ant-table-thead > tr > th,
+.store-product-price-compact-table .ant-table-thead > tr > th {
+  padding: 4px 6px !important;
+  line-height: 16px;
+  vertical-align: middle;
+  white-space: normal;
+}
+
+.pos-products-compact-table .ant-table-tbody > tr > td,
+.store-product-price-compact-table .ant-table-tbody > tr > td {
+  padding: 3px 6px !important;
+  line-height: 18px;
+  vertical-align: middle;
+}
+
+.pos-products-compact-table .ant-table-column-sorters,
+.store-product-price-compact-table .ant-table-column-sorters {
+  gap: 2px;
+  align-items: center;
+}
+
+.pos-products-compact-table .ant-table-column-title,
+.store-product-price-compact-table .ant-table-column-title {
+  min-width: 0;
+  overflow: visible;
+}
+
+.pos-products-compact-table .ant-tag,
+.store-product-price-compact-table .ant-tag {
+  margin-inline-end: 0;
+  padding-inline: 4px;
+  line-height: 18px;
+}
+
+.pos-products-compact-table .ant-btn-sm,
+.store-product-price-compact-table .ant-btn-sm {
+  padding-inline: 2px;
+}
+
+.pos-products-code-cell,
+.store-product-price-code-cell,
+.pos-products-numeric-cell,
+.store-product-price-numeric-cell {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.pos-products-code-cell .ant-space,
+.store-product-price-code-cell .ant-space,
+.pos-products-barcode-cell .ant-space,
+.store-product-price-barcode-cell .ant-space {
+  flex-wrap: nowrap !important;
+}
+
+.pos-products-name-cell,
+.store-product-price-name-cell {
+  display: -webkit-box;
+  overflow: hidden;
+  line-height: 18px;
+  word-break: break-word;
+  white-space: normal;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.pos-products-supplier-cell,
+.store-product-price-supplier-cell {
+  display: -webkit-box;
+  overflow: hidden;
+  line-height: 18px;
+  word-break: break-word;
+  white-space: normal;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.pos-products-date-cell,
+.store-product-price-date-cell {
+  display: inline-flex;
+  flex-direction: column;
+  line-height: 16px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.pos-products-barcode-preview,
+.store-product-price-barcode-preview {
+  overflow: hidden;
+}
+
+.pos-products-barcode-preview canvas,
+.store-product-price-barcode-preview canvas {
+  max-width: 112px;
+  max-height: 22px;
+  height: auto !important;
+}
+
+.pos-products-image-cell,
+.store-product-price-image-cell {
+  width: 34px;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border-radius: 4px;
+  background: #f5f5f5;
+  color: #bfbfbf;
+  font-size: 12px;
+}
