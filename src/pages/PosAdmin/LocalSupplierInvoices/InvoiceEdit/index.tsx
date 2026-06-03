@@ -570,6 +570,13 @@ export default function InvoiceEditPage() {
   /* ---- 更新 HQ 商品 Modal ---- */
   const [hqUpdateVisible, setHqUpdateVisible] = useState(false)
   const [hqUpdateForm] = Form.useForm()
+  const selectedHqUpdateTargetCodes = (Form.useWatch('targetStoreCodes', hqUpdateForm) ?? []) as string[]
+  const selectedHqUpdateTargetCodeSet = useMemo(
+    () => new Set<string>(selectedHqUpdateTargetCodes),
+    [selectedHqUpdateTargetCodes],
+  )
+  const allHqUpdateStoresSelected = allStoreCodes.length > 0 && allStoreCodes.every((storeCode) => selectedHqUpdateTargetCodeSet.has(storeCode))
+  const hasPartialHqUpdateStoreSelection = selectedHqUpdateTargetCodes.length > 0 && !allHqUpdateStoresSelected
   const [hqUpdateLoading, setHqUpdateLoading] = useState(false)
   const hqUpdateIdempotencyKeyRef = useRef<string | null>(null)
 
@@ -2560,9 +2567,28 @@ export default function InvoiceEditPage() {
             <Select
               mode="multiple"
               showSearch
+              allowClear
               optionFilterProp="label"
               placeholder={t('posAdmin.invoiceDetail.selectTargetStore', '请选择目标分店')}
               options={storeOptions}
+              popupRender={(menu) => (
+                <>
+                  <div style={{ padding: '4px 8px 8px', borderBottom: '1px solid #f0f0f0' }}>
+                    {/* 全选只写入当前可选分店编码，提交和权限校验仍走原来的 targetStoreCodes 数组。 */}
+                    <Checkbox
+                      checked={allHqUpdateStoresSelected}
+                      indeterminate={hasPartialHqUpdateStoreSelection}
+                      disabled={!allStoreCodes.length}
+                      onChange={(event) => {
+                        hqUpdateForm.setFieldValue('targetStoreCodes', event.target.checked ? allStoreCodes : [])
+                      }}
+                    >
+                      {t('posAdmin.invoiceDetail.selectAllStores', '全选所有分店 ({{count}} 个)', { count: allStoreCodes.length })}
+                    </Checkbox>
+                  </div>
+                  {menu}
+                </>
+              )}
             />
           </Form.Item>
 
