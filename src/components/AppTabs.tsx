@@ -73,7 +73,7 @@ export default function AppTabs({
 }: AppTabsProps) {
   const { t } = useTranslation()
   const navigate = useNavigate()
-  const { tabs, activeKey, pinTabsBar, setActiveKey, setPinTabsBar, moveTab } = useTabsStore()
+  const { tabs, activeKey, pinTabsBar, setPinTabsBar, moveTab } = useTabsStore()
   const sensors = useSensors(
     useSensor(PointerSensor, {
       activationConstraint: {
@@ -172,7 +172,6 @@ export default function AppTabs({
           closable: tab.closable !== false,
         }))}
         onChange={(key) => {
-          setActiveKey(key)
           navigate(key)
         }}
         onEdit={(targetKey, action) => {
