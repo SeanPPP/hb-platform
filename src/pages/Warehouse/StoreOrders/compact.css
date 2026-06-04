@@ -8,14 +8,11 @@
 }
 
 .store-order-list-table .store-order-list-order-no {
-  min-width: 0;
-  max-width: calc(100% - 22px);
+  flex: 0 0 auto;
   height: 22px;
   padding: 0;
-  overflow: hidden;
   line-height: 22px;
   white-space: nowrap;
-  text-overflow: ellipsis;
 }
 
 .store-order-list-table .store-order-copy-button {
@@ -23,6 +20,32 @@
   width: 20px;
   height: 22px;
   padding: 0;
+}
+
+.store-order-list-table .store-order-store-tag {
+  display: -webkit-box;
+  max-width: 100%;
+  overflow: hidden;
+  line-height: 1.25;
+  white-space: normal;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  word-break: break-word;
+}
+
+.store-order-list-table .store-order-two-line-text {
+  display: -webkit-box;
+  max-width: 100%;
+  overflow: hidden;
+  line-height: 1.25;
+  white-space: normal;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  word-break: break-word;
+}
+
+.store-order-list-table .store-order-store-tag {
+  margin-inline-end: 0;
 }
 
 .store-order-detail-table .ant-table-cell {

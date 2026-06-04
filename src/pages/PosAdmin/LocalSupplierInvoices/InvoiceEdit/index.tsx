@@ -77,6 +77,7 @@ import type {
   UpdateToStorePricesResult,
 } from '../../../../types/localSupplierInvoice'
 import { copyTextToClipboard } from '../../../../utils/clipboard'
+import { shouldShowDetailInitialLoading } from '../../../../utils/detailLoadState'
 import { discountRateToDecimal, discountRateToPercent, formatDiscountRate } from '../../../../utils/discountRate'
 import { RequestError } from '../../../../utils/request'
 import { DetailAction as DetailActionEnum } from '../../../../types/localSupplierInvoice'
@@ -513,6 +514,9 @@ export default function InvoiceEditPage() {
   const canRunGlobalLocalPurchaseBatchActions = access.canEditLocalPurchase && (access.isAdmin || access.isWarehouseManager)
   const managedStoreCodes = access.managedStoreCodes()
   const managedStoreCodeKey = managedStoreCodes?.join(',') ?? 'all'
+  // 记录当前发票已完成首次加载，保活 Tab 恢复时保留订单头和明细表。
+  const loadedInvoiceGuidRef = useRef<string | null>(null)
+  const visibleInvoiceGuidRef = useRef<string | null>(null)
 
   /* ---- 主表数据 ---- */
   const [_invoice, setInvoice] = useState<LocalSupplierInvoiceDetailDto | null>(null)
@@ -595,12 +599,16 @@ export default function InvoiceEditPage() {
   /*  数据加载                                                         */
   /* ================================================================ */
 
-  const loadInvoice = useCallback(async () => {
+  const loadInvoice = useCallback(async (showLoading = true) => {
     if (!invoiceGuid) return false
-    setLoading(true)
+    if (showLoading) {
+      setLoading(true)
+    }
     try {
       const data = await getInvoice(invoiceGuid)
       if (!isStoreCodeInManagedScope(data.storeCode, managedStoreCodes)) {
+        loadedInvoiceGuidRef.current = null
+        visibleInvoiceGuidRef.current = null
         setCanAccessInvoice(false)
         setInvoice(null)
         setDetails([])
@@ -610,6 +618,8 @@ export default function InvoiceEditPage() {
         message.error(t('message.noPermission', '无权查看该数据'))
         return false
       }
+      loadedInvoiceGuidRef.current = invoiceGuid
+      visibleInvoiceGuidRef.current = invoiceGuid
       setCanAccessInvoice(true)
       setInvoice(data)
       form.setFieldsValue({
@@ -625,10 +635,15 @@ export default function InvoiceEditPage() {
       })
       return true
     } catch {
+      if (showLoading) {
+        visibleInvoiceGuidRef.current = null
+      }
       message.error(t('posAdmin.invoiceDetail.loadInvoiceFailed', '加载进货单失败'))
       return false
     } finally {
-      setLoading(false)
+      if (showLoading) {
+        setLoading(false)
+      }
     }
   }, [invoiceGuid, form, managedStoreCodeKey, t])
 
@@ -652,12 +667,19 @@ export default function InvoiceEditPage() {
     }
   }, [invoiceGuid, t])
 
+  const loadInvoiceAndDetails = useCallback(async (showLoading = true) => {
+    if (await loadInvoice(showLoading)) {
+      await loadDetails()
+    }
+  }, [loadInvoice, loadDetails])
+
   useEffect(() => {
-    void (async () => {
-      if (await loadInvoice()) {
-        await loadDetails()
-      }
-    })()
+    const shouldShowInitialLoading = shouldShowDetailInitialLoading({
+      requestedDetailId: invoiceGuid || '',
+      loadedDetailId: loadedInvoiceGuidRef.current,
+      visibleDetailId: visibleInvoiceGuidRef.current,
+    })
+    void loadInvoiceAndDetails(shouldShowInitialLoading)
     if (managedStoreCodes === null) {
       getActiveStores()
         .then((stores) => {
@@ -667,7 +689,7 @@ export default function InvoiceEditPage() {
     } else {
       setStoreOptions(buildStoreOptionsFromUserStores(currentUser?.stores, { manageableOnly: true }))
     }
-  }, [currentUser?.stores, loadInvoice, loadDetails, managedStoreCodeKey])
+  }, [currentUser?.stores, invoiceGuid, loadInvoiceAndDetails, managedStoreCodeKey])
 
   useEffect(() => {
     if (typeof window === 'undefined') return
@@ -1970,58 +1992,63 @@ export default function InvoiceEditPage() {
       {/* ============================================================ */}
       {/* 顶部 Card - 订单头信息                                         */}
       {/* ============================================================ */}
-      <Card title={t('posAdmin.invoiceDetail.orderHeaderInfo', '订单头信息')} loading={loading} size="small">
+      <Card
+        title={t('posAdmin.invoiceDetail.orderHeaderInfo', '订单头信息')}
+        loading={loading}
+        size="small"
+        className="invoice-header-compact-card"
+      >
         <Form form={form} layout="vertical">
-          <Row gutter={16}>
-            <Col span={4}>
+          <Row gutter={[12, 8]} align="bottom">
+            <Col flex="150px">
               <Form.Item name="invoiceNo" label={t('posAdmin.invoiceDetail.orderNoLabel', '订单号')}>
                 <Input disabled />
               </Form.Item>
             </Col>
-            <Col span={4}>
+            <Col flex="150px">
               <Form.Item name="storeName" label={t('posAdmin.invoiceDetail.storeLabel', '分店')}>
                 <Input disabled />
               </Form.Item>
             </Col>
-            <Col span={4}>
+            <Col flex="170px">
               <Form.Item name="supplierName" label={t('posAdmin.invoiceDetail.supplierLabel', '供应商')}>
                 <Input disabled />
               </Form.Item>
             </Col>
-            <Col span={3}>
+            <Col flex="130px">
               <Form.Item name="orderDate" label={t('posAdmin.invoiceDetail.orderDate', '订单日期')}>
                 <DatePicker style={{ width: '100%' }} />
               </Form.Item>
             </Col>
-            <Col span={3}>
+            <Col flex="130px">
               <Form.Item name="inboundDate" label={t('posAdmin.invoiceDetail.inboundDate', '入库日期')}>
                 <DatePicker style={{ width: '100%' }} />
               </Form.Item>
             </Col>
-            <Col span={3}>
+            <Col flex="110px">
               <Form.Item name="totalAmount" label={t('posAdmin.invoiceDetail.totalAmountLabel', '总金额')}>
                 <Input disabled />
               </Form.Item>
             </Col>
-            <Col span={3}>
+            <Col flex="160px">
               <Form.Item name="remarks" label={t('posAdmin.invoiceDetail.remarksLabel', '备注')}>
                 <Input placeholder={t('posAdmin.invoiceDetail.remarksPlaceholder', '备注')} />
               </Form.Item>
             </Col>
-          </Row>
-          <Row gutter={16}>
-            <Col>
-              <Button type="primary" loading={saving} onClick={() => void handleSave()}>
-                {t('posAdmin.invoiceDetail.saveBtn', '保存')}
-              </Button>
-            </Col>
-            <Col>
-              <Button
-                icon={<RollbackOutlined />}
-                onClick={() => navigate('/pos-admin/local-supplier-invoices')}
-              >
-                {t('posAdmin.invoiceDetail.returnToList', '返回列表')}
-              </Button>
+            <Col flex="none" className="invoice-header-compact-card__actions">
+              <Form.Item label=" " className="invoice-header-compact-card__actions-item">
+                <Space size={8} wrap className="invoice-header-compact-card__actions-space">
+                  <Button type="primary" loading={saving} onClick={() => void handleSave()}>
+                    {t('posAdmin.invoiceDetail.saveBtn', '保存')}
+                  </Button>
+                  <Button
+                    icon={<RollbackOutlined />}
+                    onClick={() => navigate('/pos-admin/local-supplier-invoices')}
+                  >
+                    {t('posAdmin.invoiceDetail.returnToList', '返回列表')}
+                  </Button>
+                </Space>
+              </Form.Item>
             </Col>
           </Row>
         </Form>

@@ -78,6 +78,7 @@ import { StoreOrderFlowStatus, StoreOrderStatusColorMap } from '../../../types/s
 import { copyTextToClipboard } from '../../../utils/clipboard'
 import { useDynamicTabTitle } from '../../../hooks/useDynamicTabTitle'
 import { deriveStoreOrderDetailPermissions } from './storeOrderDetailPermissions'
+import { shouldShowStoreOrderDetailInitialLoading } from './detailLoadState'
 import './compact.css'
 
 function formatDateTime(value?: string) {
@@ -591,8 +592,8 @@ function BatchEditModal({ open, loading, selectedCount, onCancel, onConfirm }: B
           <Select
             value={isActive ? 'active' : 'inactive'}
             options={[
-              { value: 'active', label: t('common.active') },
-              { value: 'inactive', label: t('common.inactive') },
+              { value: 'active', label: t('common.activeUpper') },
+              { value: 'inactive', label: t('common.inactiveUpper') },
             ]}
             onChange={(value) => setIsActive(value === 'active')}
           />
@@ -612,6 +613,9 @@ export default function StoreOrderDetailPage() {
   const id = route?.params.id || ''
   const isDesktop = Boolean(screens.xl)
   const detailRequestControllerRef = useRef<AbortController | null>(null)
+  // 记录当前订单已完成首次加载，保活 Tab 恢复时保留旧内容并静默刷新。
+  const loadedDetailIdRef = useRef<string | null>(null)
+  const visibleDetailIdRef = useRef<string | null>(null)
   const [detailLoadStatus, setDetailLoadStatus] = useState<DetailLoadStatus>('idle')
   const [detailErrorMessage, setDetailErrorMessage] = useState('')
   const [detail, setDetail] = useState<StoreOrderDetail | null>(null)
@@ -703,6 +707,8 @@ export default function StoreOrderDetailPage() {
       }
 
       if (!result) {
+        loadedDetailIdRef.current = null
+        visibleDetailIdRef.current = null
         setDetail(null)
         setDetailLoadStatus('notFound')
         setDetailErrorMessage('')
@@ -716,6 +722,8 @@ export default function StoreOrderDetailPage() {
         return
       }
 
+      loadedDetailIdRef.current = result.orderGUID || id
+      visibleDetailIdRef.current = result.orderGUID || id
       setDetail(result)
       setHeaderForm({
         storeCode: result?.storeCode,
@@ -736,10 +744,16 @@ export default function StoreOrderDetailPage() {
       }
 
       console.error(error)
-      setDetail(null)
-      setDetailLoadStatus('error')
-      setDetailErrorMessage(error instanceof Error ? error.message : t('storeOrders.detail.loadDetailFailed'))
-      message.error(error instanceof Error ? error.message : t('storeOrders.detail.loadDetailFailed'))
+      const errorMessage = error instanceof Error ? error.message : t('storeOrders.detail.loadDetailFailed')
+      if (showLoading) {
+        visibleDetailIdRef.current = null
+        setDetail(null)
+        setDetailLoadStatus('error')
+        setDetailErrorMessage(errorMessage)
+      } else {
+        setDetailErrorMessage(errorMessage)
+      }
+      message.error(errorMessage)
     } finally {
       if (detailRequestControllerRef.current === currentController) {
         detailRequestControllerRef.current = null
@@ -773,7 +787,12 @@ export default function StoreOrderDetailPage() {
     if (!id) {
       return
     }
-    void loadDetail()
+    const shouldShowInitialLoading = shouldShowStoreOrderDetailInitialLoading({
+      requestedOrderId: id,
+      loadedOrderId: loadedDetailIdRef.current,
+      visibleDetailId: visibleDetailIdRef.current,
+    })
+    void loadDetail(shouldShowInitialLoading)
     return () => {
       detailRequestControllerRef.current?.abort()
     }
@@ -1111,7 +1130,7 @@ export default function StoreOrderDetailPage() {
         productCode: line.productCode,
         isActive: !line.isActive,
       })
-      message.success(t('storeOrders.detail.productStatusUpdated', { status: line.isActive ? t('common.inactive') : t('common.active') }))
+      message.success(t('storeOrders.detail.productStatusUpdated', { status: line.isActive ? t('common.inactiveUpper') : t('common.activeUpper') }))
       await loadDetail(false)
     } catch (error) {
       console.error(error)
@@ -1595,7 +1614,7 @@ export default function StoreOrderDetailPage() {
       title: t('column.status'),
       dataIndex: 'isActive',
       width: 50,
-      render: (value: boolean) => <Tag color={value ? 'success' : 'default'}>{value ? t('common.active') : t('common.inactive')}</Tag>,
+      render: (value: boolean) => <Tag color={value ? 'success' : 'default'}>{value ? t('common.activeUpper') : t('common.inactiveUpper')}</Tag>,
     },
     {
       title: t('column.action'),
@@ -1615,12 +1634,12 @@ export default function StoreOrderDetailPage() {
               onClick={() => void handleSaveLine(record)}
             />
           </Tooltip>
-          <Tooltip title={record.isActive ? t('common.inactive') : t('common.active')}>
+          <Tooltip title={record.isActive ? t('common.inactiveUpper') : t('common.activeUpper')}>
             <Button
               size="small"
               type="text"
               icon={<EditOutlined />}
-              aria-label={record.isActive ? t('common.inactive') : t('common.active')}
+              aria-label={record.isActive ? t('common.inactiveUpper') : t('common.activeUpper')}
               className="store-order-detail-action-button"
               disabled={isReadonlyOrder}
               onClick={() => void handleToggleLineStatus(record)}

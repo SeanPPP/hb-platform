@@ -77,11 +77,27 @@ async function main() {
     assert(storeOrdersSource.includes('className="store-order-list-order-cell"'), '订单号列应挂载专属布局 class')
     assert(/width:\s*100%/.test(orderCellRule), '订单号布局容器应占满单元格宽度')
     assert(/min-width:\s*0/.test(orderCellRule), '订单号布局容器应允许内容收缩')
-    assert(/max-width:\s*calc\(100%\s*-\s*22px\)/.test(orderButtonRule), '订单号文本应给复制按钮预留固定宽度')
-    assert(/overflow:\s*hidden/.test(orderButtonRule), '订单号文本不应把复制按钮推出列外')
+    assert(/flex:\s*0\s+0\s+auto/.test(orderButtonRule), '订单号文本应完整显示，不应被压缩省略')
+    assert(!/text-overflow:\s*ellipsis/.test(orderButtonRule), '订单号文本不应省略显示')
+    assert(!/overflow:\s*hidden/.test(orderButtonRule), '订单号文本不应被隐藏截断')
     assert(/flex:\s*0\s+0\s+20px/.test(copyButtonRule), '复制按钮应固定宽度，避免被挤出列')
   })
   if (listOrderNoFailure) failures.push(listOrderNoFailure)
+
+  const listTwoLineFailure = await runTest('列表页分店和备注应最多显示两行', () => {
+    const storeTagRule = readCssRule(compactCssSource, '.store-order-list-table .store-order-store-tag')
+    const twoLineRule = readCssRule(compactCssSource, '.store-order-list-table .store-order-two-line-text')
+
+    assert(storeOrdersSource.includes('className="store-order-store-tag"'), '分店列应挂载专属两行样式 class')
+    assert(storeOrdersSource.includes('renderStoreOrderTwoLineText(value)'), '备注列应使用两行文本 helper')
+    assert(/-webkit-line-clamp:\s*2/.test(storeTagRule), '分店名称应最多显示两行')
+    assert(/overflow:\s*hidden/.test(storeTagRule), '分店名称超过两行应隐藏')
+    assert(/white-space:\s*normal/.test(storeTagRule), '分店名称应允许换行')
+    assert(/-webkit-line-clamp:\s*2/.test(twoLineRule), '备注应最多显示两行')
+    assert(/overflow:\s*hidden/.test(twoLineRule), '备注超过两行应隐藏')
+    assert(/white-space:\s*normal/.test(twoLineRule), '备注应允许换行')
+  })
+  if (listTwoLineFailure) failures.push(listTwoLineFailure)
 
   const detailContentFailure = await runTest('详情页货号条码名称应保留业务可读性', () => {
     assert(detailMainTableSource.includes('width={30}') && detailMainTableSource.includes('height={30}'), '详情页主明细图片应缩到 30x30')
@@ -96,6 +112,16 @@ async function main() {
     assert(detailMainTableSource.includes('className="store-order-detail-action-button"'), '详情页操作列应使用紧凑图标按钮样式')
   })
   if (detailContentFailure) failures.push(detailContentFailure)
+
+  const detailProductStatusCopyFailure = await runTest('详情页商品状态应使用上下架文案', () => {
+    const statusColumn = readColumnBlock(detailMainTableSource, 'isActive')
+
+    assert(statusColumn.includes("t('common.activeUpper')") && statusColumn.includes("t('common.inactiveUpper')"), '详情页商品状态列应显示上架/下架')
+    assert(detailMainTableSource.includes("record.isActive ? t('common.inactiveUpper') : t('common.activeUpper')"), '详情页商品状态切换按钮应提示上架/下架')
+    assert(detailSource.includes("status: line.isActive ? t('common.inactiveUpper') : t('common.activeUpper')"), '详情页商品状态切换成功提示应使用上架/下架')
+    assert(detailSource.includes("{ value: 'active', label: t('common.activeUpper') }") && detailSource.includes("{ value: 'inactive', label: t('common.inactiveUpper') }"), '批量修改状态下拉应使用上架/下架')
+  })
+  if (detailProductStatusCopyFailure) failures.push(detailProductStatusCopyFailure)
 
   const densityFailure = await runTest('详情页主明细表关键字段应压缩到首屏优先显示', () => {
     const imageColumn = readColumnBlock(detailMainTableSource, 'productImage')
@@ -127,6 +153,8 @@ async function main() {
 
     assert(compactCssSource.includes('.store-order-detail-table .ant-table-cell'), '详情表格缺少局部 cell padding 规则')
     assert(compactCssSource.includes('.store-order-list-table .store-order-list-order-cell'), '列表订单号列缺少局部防溢出样式')
+    assert(compactCssSource.includes('.store-order-list-table .store-order-store-tag'), '列表分店列缺少两行截断样式')
+    assert(compactCssSource.includes('.store-order-list-table .store-order-two-line-text'), '列表备注列缺少两行截断样式')
     assert(!/^\\.store-order-nowrap/m.test(compactCssSource), 'nowrap 工具类必须限定到详情主表下')
     assert(!/^\\.store-order-numeric-cell/m.test(compactCssSource), '数字工具类必须限定到详情主表下')
     assert(!/^\\.store-order-two-line-text/m.test(compactCssSource), '两行文本工具类必须限定到详情主表下')

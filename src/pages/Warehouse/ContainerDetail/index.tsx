@@ -70,6 +70,7 @@ import {
 import { useAuthStore } from '../../../store/auth'
 import type { ContainerDetail, ContainerMain, HqTranslationResult, UpdateContainerDetailRequest, UpdateContainerRequest } from '../../../types/container'
 import { copyTextToClipboard } from '../../../utils/clipboard'
+import { shouldShowDetailInitialLoading } from '../../../utils/detailLoadState'
 import {
   applyContainerDetailEnglishNameUpdates,
   buildContainerDetailTagStats,
@@ -79,7 +80,7 @@ import {
   extractPushToHqErrorResult,
   getContainerDetailEnglishName,
   getContainerDetailProductName,
-  matchesContainerDetailTagFilter,
+  matchesContainerDetailSelectedTags,
   mergeContainerDetailPatch,
   type ContainerDetailTagFilter,
 } from './containerDetailLogic'
@@ -194,6 +195,9 @@ export default function ContainerDetailPage() {
   const route = useStableRouteContext()
   const [containerGuid] = useState(() => route?.params.containerGuid || '')
   const access = useAuthStore((state) => state.access)
+  // 记录当前货柜已完成首次加载，保活 Tab 恢复时保留旧内容并静默刷新。
+  const loadedContainerGuidRef = useRef<string | null>(null)
+  const visibleContainerGuidRef = useRef<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [savingHeader, setSavingHeader] = useState(false)
   const [container, setContainer] = useState<ContainerMain | null>(null)
@@ -201,7 +205,7 @@ export default function ContainerDetailPage() {
   const [selectedRowKeys, setSelectedRowKeys] = useState<Key[]>([])
   const [itemNumberFilter, setItemNumberFilter] = useState('')
   const [productTypeFilter, setProductTypeFilter] = useState<ProductTypeFilter>('all')
-  const [tagFilter, setTagFilter] = useState<ContainerDetailTagFilter>('all')
+  const [selectedTagFilters, setSelectedTagFilters] = useState<ContainerDetailTagFilter[]>([])
   const [batchFloatRate, setBatchFloatRate] = useState<number | null>(null)
   const [batchImportPrice, setBatchImportPrice] = useState<number | null>(null)
   const [batchOemPrice, setBatchOemPrice] = useState<number | null>(null)
@@ -223,16 +227,20 @@ export default function ContainerDetailPage() {
 
   useDynamicTabTitle(container?.货柜编号 ? t('containers.detailTitleWithNumber', { number: container.货柜编号 }) : undefined)
 
-  const loadData = async () => {
+  const loadData = async (showLoading = true) => {
     if (!containerGuid) {
       return
     }
-    setLoading(true)
+    if (showLoading) {
+      setLoading(true)
+    }
     try {
       const [info, products] = await Promise.all([
         getContainerDetail(containerGuid),
         getContainerProducts(containerGuid),
       ])
+      loadedContainerGuidRef.current = containerGuid
+      visibleContainerGuidRef.current = containerGuid
       setContainer(info)
       setHeaderForm({
         实际到货日期: info.实际到货日期 ? dayjs(info.实际到货日期) : null,
@@ -244,20 +252,30 @@ export default function ContainerDetailPage() {
       setSelectedRowKeys([])
     } catch (error) {
       console.error(error)
+      if (showLoading) {
+        visibleContainerGuidRef.current = null
+      }
       message.error(error instanceof Error ? error.message : t('containers.messages.loadDetailFailed'))
     } finally {
-      setLoading(false)
+      if (showLoading) {
+        setLoading(false)
+      }
     }
   }
 
   useEffect(() => {
-    void loadData()
+    const shouldShowInitialLoading = shouldShowDetailInitialLoading({
+      requestedDetailId: containerGuid,
+      loadedDetailId: loadedContainerGuidRef.current,
+      visibleDetailId: visibleContainerGuidRef.current,
+    })
+    void loadData(shouldShowInitialLoading)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [containerGuid])
 
   useEffect(() => {
     setSelectedRowKeys([])
-  }, [itemNumberFilter, productTypeFilter, tagFilter])
+  }, [itemNumberFilter, productTypeFilter, selectedTagFilters])
 
   const baseFilteredRows = useMemo(() => {
     return rows.filter((row) => {
@@ -269,18 +287,47 @@ export default function ContainerDetailPage() {
   }, [itemNumberFilter, productTypeFilter, rows])
 
   const filteredRows = useMemo(() => {
-    return baseFilteredRows.filter((row) => matchesContainerDetailTagFilter(row, tagFilter))
-  }, [baseFilteredRows, tagFilter])
+    return baseFilteredRows.filter((row) => matchesContainerDetailSelectedTags(row, selectedTagFilters))
+  }, [baseFilteredRows, selectedTagFilters])
 
   const tagStats = useMemo(() => buildContainerDetailTagStats(baseFilteredRows), [baseFilteredRows])
 
   const tagStatOptions = useMemo<Array<{ value: ContainerDetailTagFilter; label: string; color?: string }>>(() => [
     { value: 'all', label: t('containers.filters.allTags') },
     { value: 'new', label: t('containers.tags.newProduct'), color: 'blue' },
-    { value: 'existing', label: t('containers.tags.existingProduct') },
+    { value: 'existing', label: t('containers.tags.existingProduct'), color: 'purple' },
     { value: 'noOemPrice', label: t('containers.filters.missingOemPrice'), color: 'orange' },
     { value: 'abnormalImport', label: t('containers.filters.abnormalImportPrice'), color: 'red' },
+    { value: 'active', label: t('common.activeUpper'), color: 'success' },
+    { value: 'inactive', label: t('common.inactiveUpper'), color: 'default' },
   ], [t])
+
+  const selectedTagOptions = useMemo(
+    () => tagStatOptions.filter((option) => option.value !== 'all' && selectedTagFilters.includes(option.value)),
+    [selectedTagFilters, tagStatOptions],
+  )
+
+  const tagSelectOptions = useMemo(
+    () => tagStatOptions.filter((option) => option.value !== 'all').map(({ value, label }) => ({ value, label })),
+    [tagStatOptions],
+  )
+
+  const setTagFiltersFromSelect = (values: ContainerDetailTagFilter[]) => {
+    setSelectedTagFilters(values.includes('all') ? [] : values)
+  }
+
+  const toggleTagFilter = (value: ContainerDetailTagFilter) => {
+    if (value === 'all') {
+      setSelectedTagFilters([])
+      return
+    }
+
+    setSelectedTagFilters((current) => (
+      current.includes(value)
+        ? current.filter((item) => item !== value)
+        : [...current, value]
+    ))
+  }
 
   const selectedRows = useMemo(
     () => filteredRows.filter((row) => selectedRowKeys.includes(rowKey(row))),
@@ -1020,10 +1067,14 @@ export default function ContainerDetailPage() {
                     options={(['all', 'normal', 'set', 'setChild'] as ProductTypeFilter[]).map((value) => ({ value, label: getProductTypeFilterLabel(value, t) }))}
                   />
                   <Select
-                    value={tagFilter}
-                    style={{ width: 150 }}
-                    onChange={setTagFilter}
-                    options={tagStatOptions.map(({ value, label }) => ({ value, label }))}
+                    mode="multiple"
+                    value={selectedTagFilters}
+                    allowClear
+                    maxTagCount="responsive"
+                    placeholder={t('containers.filters.allTags')}
+                    style={{ width: 220 }}
+                    onChange={setTagFiltersFromSelect}
+                    options={tagSelectOptions}
                   />
                   <Typography.Text type="secondary">{t('containers.text.showingRows', { filtered: filteredRows.length, total: rows.length })}</Typography.Text>
                 </Space>
@@ -1088,7 +1139,7 @@ export default function ContainerDetailPage() {
 
               <Space className="container-detail-stats" wrap size={[8, 8]}>
                 {tagStatOptions.map((option) => {
-                  const active = tagFilter === option.value
+                  const active = option.value === 'all' ? !selectedTagFilters.length : selectedTagFilters.includes(option.value)
                   return (
                     <Tag
                       key={option.value}
@@ -1097,11 +1148,11 @@ export default function ContainerDetailPage() {
                       role="button"
                       tabIndex={0}
                       aria-pressed={active}
-                      onClick={() => setTagFilter(option.value)}
+                      onClick={() => toggleTagFilter(option.value)}
                       onKeyDown={(event) => {
                         if (event.key === 'Enter' || event.key === ' ') {
                           event.preventDefault()
-                          setTagFilter(option.value)
+                          toggleTagFilter(option.value)
                         }
                       }}
                     >
@@ -1113,6 +1164,28 @@ export default function ContainerDetailPage() {
                   )
                 })}
               </Space>
+
+              {selectedTagOptions.length ? (
+                <Space className="container-detail-selected-filters" wrap size={[6, 6]}>
+                  <Typography.Text type="secondary">{t('containers.text.selectedFilters')}</Typography.Text>
+                  {selectedTagOptions.map((option) => (
+                    <Tag
+                      key={option.value}
+                      color={option.color}
+                      closable
+                      onClose={(event) => {
+                        event.preventDefault()
+                        toggleTagFilter(option.value)
+                      }}
+                    >
+                      {option.label}
+                    </Tag>
+                  ))}
+                  <Button type="link" size="small" onClick={() => setSelectedTagFilters([])}>
+                    {t('containers.actions.clearFilters')}
+                  </Button>
+                </Space>
+              ) : null}
 
               {exporting ? <Progress percent={exportProgress} size="small" /> : null}
 

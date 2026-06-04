@@ -763,7 +763,7 @@ export default function StoreOrdersPage() {
       {
         title: t('column.orderNo'),
         dataIndex: 'orderNo',
-        width: 126,
+        width: 146,
         sorter: true,
         fixed: 'left',
         render: (value: string, record) => (

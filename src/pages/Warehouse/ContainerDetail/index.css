@@ -119,3 +119,19 @@
 .container-detail-stat-count {
   line-height: 1;
 }
+
+.container-detail-selected-filters {
+  min-height: 24px;
+  padding: 0 0 4px;
+}
+
+.container-detail-selected-filters .ant-tag {
+  display: inline-flex;
+  align-items: center;
+  margin-inline-end: 0;
+}
+
+.container-detail-selected-filters .ant-btn-link {
+  height: 22px;
+  padding: 0 4px;
+}

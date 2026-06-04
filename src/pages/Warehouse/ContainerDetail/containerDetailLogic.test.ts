@@ -10,6 +10,7 @@ import {
   calculateContainerDetailTransportCost,
   extractPushToHqErrorResult,
   getContainerDetailEnglishName,
+  matchesContainerDetailSelectedTags,
   matchesContainerDetailTagFilter,
   normalizeContainerDetailPushToHqPayload,
 } from './containerDetailLogic'
@@ -77,10 +78,10 @@ assertEqual(updatedRows[0].商品信息?.英文名称, 'Large Strawberry', '本�
 assertEqual(updatedRows[1].商品信息?.英文名称, 'TPR Shark', '未命中的行应保持原值')
 
 const tagRows: ContainerDetail[] = [
-  { id: 31, hguid: 'tag-31', 是否新商品: true, 贴牌价格: 0, 进口价格: 1 },
-  { id: 32, hguid: 'tag-32', 是否新商品: true, 贴牌价格: 2, 进口价格: 0 },
-  { id: 33, hguid: 'tag-33', 是否新商品: false, 贴牌价格: 3, 进口价格: 4 },
-  { id: 34, hguid: 'tag-34', 是否新商品: false, 贴牌价格: 0, 进口价格: undefined },
+  { id: 31, hguid: 'tag-31', 是否新商品: true, 贴牌价格: 0, 进口价格: 1, warehouseIsActive: true },
+  { id: 32, hguid: 'tag-32', 是否新商品: true, 贴牌价格: 2, 进口价格: 0, warehouseIsActive: false },
+  { id: 33, hguid: 'tag-33', 是否新商品: false, 贴牌价格: 3, 进口价格: 4, warehouseIsActive: true },
+  { id: 34, hguid: 'tag-34', 是否新商品: false, 贴牌价格: 0, 进口价格: undefined, warehouseIsActive: undefined },
 ]
 
 assertDeepEqual(
@@ -91,8 +92,10 @@ assertDeepEqual(
     existing: 2,
     noOemPrice: 1,
     abnormalImport: 2,
+    active: 2,
+    inactive: 2,
   },
-  '统计栏应按当前基础结果统计全部、新商品、已有商品、缺贴牌价和进口价异常数量',
+  '统计栏应按当前基础结果统计全部、新商品、已有商品、缺贴牌价、进口价异常和上下架数量',
 )
 assertEqual(matchesContainerDetailTagFilter(tagRows[0], 'new'), true, '新商品 tag 应匹配是否新商品行')
 assertEqual(matchesContainerDetailTagFilter(tagRows[2], 'new'), false, '新商品 tag 不应匹配已有商品行')
@@ -100,6 +103,15 @@ assertEqual(matchesContainerDetailTagFilter(tagRows[0], 'noOemPrice'), true, '�
 assertEqual(matchesContainerDetailTagFilter(tagRows[3], 'noOemPrice'), false, '已有商品缺贴牌价不进入缺贴牌价 tag')
 assertEqual(matchesContainerDetailTagFilter(tagRows[1], 'abnormalImport'), true, '进口价为 0 应进入进口价异常 tag')
 assertEqual(matchesContainerDetailTagFilter(tagRows[2], 'all'), true, '全部 tag 应匹配所有行')
+assertEqual(matchesContainerDetailTagFilter(tagRows[2], 'active'), true, '上架 tag 应匹配 warehouseIsActive 为 true 的行')
+assertEqual(matchesContainerDetailTagFilter(tagRows[3], 'inactive'), true, '下架 tag 应匹配 warehouseIsActive 非 true 的行')
+assertEqual(matchesContainerDetailSelectedTags(tagRows[0], []), true, '未选择 tag 时应显示全部行')
+assertEqual(matchesContainerDetailSelectedTags(tagRows[1], ['new', 'inactive']), true, '新商品与下架属于不同分组，应同时满足')
+assertEqual(matchesContainerDetailSelectedTags(tagRows[0], ['new', 'inactive']), false, '新商品但已上架时不应命中新商品加下架组合')
+assertEqual(matchesContainerDetailSelectedTags(tagRows[2], ['new', 'existing']), true, '新商品和已有商品同组多选应按 OR 匹配')
+assertEqual(matchesContainerDetailSelectedTags(tagRows[3], ['noOemPrice', 'abnormalImport']), true, '异常类 tag 同组多选应按 OR 匹配')
+assertEqual(matchesContainerDetailSelectedTags(tagRows[1], ['noOemPrice', 'abnormalImport', 'inactive']), true, '异常类 OR 后应继续与上下架分组 AND')
+assertEqual(matchesContainerDetailSelectedTags(tagRows[0], ['noOemPrice', 'abnormalImport', 'inactive']), false, '命中异常类但未命中下架时应被过滤')
 
 const pageSource = readFileSync('src/pages/Warehouse/ContainerDetail/index.tsx', 'utf8')
 const pageStyleSource = readFileSync('src/pages/Warehouse/ContainerDetail/index.css', 'utf8')
@@ -129,7 +141,7 @@ assertEqual(
   '筛选条件变化时应清空已选明细，避免隐藏选中行后批量操作退回作用于当前全部可见行',
 )
 assertEqual(
-  pageSource.includes('[itemNumberFilter, productTypeFilter, tagFilter]'),
+  pageSource.includes('[itemNumberFilter, productTypeFilter, selectedTagFilters]'),
   true,
   '清空已选明细的 effect 应监听货号、商品类型和统计 tag 筛选',
 )

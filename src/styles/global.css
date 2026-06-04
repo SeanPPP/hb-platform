@@ -2915,3 +2915,81 @@ body {
   color: #bfbfbf;
   font-size: 12px;
 }
+
+.invoice-header-compact-card .ant-card-head {
+  min-height: 40px;
+  padding: 0 12px;
+}
+
+.invoice-header-compact-card .ant-card-head-title {
+  padding: 10px 0;
+}
+
+.invoice-header-compact-card .ant-card-body {
+  padding: 12px;
+}
+
+.invoice-header-compact-card .ant-form-item {
+  margin-bottom: 8px;
+}
+
+.invoice-header-compact-card .ant-form-item-label {
+  padding-bottom: 2px;
+}
+
+.invoice-header-compact-card .ant-form-item-label > label {
+  min-height: 20px;
+  line-height: 20px;
+  font-size: 12px;
+}
+
+.invoice-header-compact-card .ant-input,
+.invoice-header-compact-card .ant-input-affix-wrapper,
+.invoice-header-compact-card .ant-picker,
+.invoice-header-compact-card .ant-btn {
+  min-height: 32px;
+}
+
+.invoice-header-compact-card .ant-input,
+.invoice-header-compact-card .ant-input-affix-wrapper,
+.invoice-header-compact-card .ant-picker {
+  padding-top: 4px;
+  padding-bottom: 4px;
+}
+
+.invoice-header-compact-card .ant-picker-input > input,
+.invoice-header-compact-card .ant-input {
+  font-size: 13px;
+}
+
+.invoice-header-compact-card__actions {
+  margin-left: auto;
+}
+
+.invoice-header-compact-card__actions-item.ant-form-item {
+  margin-bottom: 8px;
+}
+
+.invoice-header-compact-card__actions-item .ant-form-item-label {
+  visibility: hidden;
+}
+
+.invoice-header-compact-card__actions-item .ant-form-item-control-input {
+  min-height: 32px;
+}
+
+.invoice-header-compact-card__actions-space {
+  display: flex;
+  justify-content: flex-end;
+  width: 100%;
+}
+
+@media (max-width: 1199px) {
+  .invoice-header-compact-card__actions {
+    margin-left: 0;
+  }
+
+  .invoice-header-compact-card__actions-space {
+    justify-content: flex-start;
+  }
+}

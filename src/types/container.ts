@@ -121,6 +121,14 @@ export interface SyncResult {
   Message?: string
   details?: string
   Details?: string
+  addedCount?: number
+  AddedCount?: number
+  updatedCount?: number
+  UpdatedCount?: number
+  deletedCount?: number
+  DeletedCount?: number
+  errorCount?: number
+  ErrorCount?: number
 }
 
 export interface HqTranslationResult {
