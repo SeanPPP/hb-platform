@@ -210,6 +210,7 @@ export interface StoreOrderDetail {
   shippingFee?: number
   orderDate?: string
   storeAddress?: string
+  storeContactEmail?: string
   flowStatus?: StoreOrderFlowStatus
   totalAllocQuantity?: number
   totalSKU?: number
@@ -293,6 +294,7 @@ export interface StoreOrderCart {
   shippingFee?: number
   orderDate?: string
   storeAddress?: string
+  storeContactEmail?: string
   flowStatus?: StoreOrderFlowStatus
   items: StoreOrderCartItem[]
 }
@@ -377,6 +379,22 @@ export interface UpdateStoreOrderHeaderPayload {
   shippingFee?: number
   storeCode?: string
   orderDate?: string
+}
+
+export interface UpdateStoreOrderStoreContactPayload {
+  orderGUID: string
+  storeCode: string
+  address?: string
+  contactEmail?: string
+}
+
+export interface SendStoreOrderInvoiceEmailPayload {
+  orderGUID: string
+  toEmail: string
+  subject?: string
+  body?: string
+  pdfFileName: string
+  pdfBase64: string
 }
 
 export interface StoreOrderBatchLookupPayload {

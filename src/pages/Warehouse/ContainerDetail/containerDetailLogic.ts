@@ -5,6 +5,54 @@ export type ContainerDetailTagFilter = 'all' | 'new' | 'existing' | 'noOemPrice'
 
 export type ContainerDetailTagStats = Record<ContainerDetailTagFilter, number>
 type ContainerDetailSelectableTagFilter = Exclude<ContainerDetailTagFilter, 'all'>
+export type ContainerDetailProductTypeFilter = 'normal' | 'set' | 'setChild'
+export type ContainerDetailNewProductFilter = 'new' | 'existing'
+export type ContainerDetailWarehouseStatusFilter = 'active' | 'inactive'
+export type ContainerDetailSortOrder = 'ascend' | 'descend'
+export type ContainerDetailSortField =
+  | 'itemNumber'
+  | 'barcode'
+  | 'productName'
+  | 'englishName'
+  | 'productType'
+  | 'newProduct'
+  | 'containerPieces'
+  | 'containerQuantity'
+  | 'domesticPrice'
+  | 'floatRate'
+  | 'transportCost'
+  | 'importPrice'
+  | 'oemPrice'
+  | 'warehouseStatus'
+  | 'remark'
+
+export interface ContainerDetailNumberRangeFilter {
+  min?: number
+  max?: number
+}
+
+export interface ContainerDetailColumnFilters {
+  itemNumber?: string
+  barcode?: string
+  productName?: string
+  englishName?: string
+  productTypes?: ContainerDetailProductTypeFilter[]
+  newProductStates?: ContainerDetailNewProductFilter[]
+  containerPieces?: ContainerDetailNumberRangeFilter
+  containerQuantity?: ContainerDetailNumberRangeFilter
+  domesticPrice?: ContainerDetailNumberRangeFilter
+  floatRate?: ContainerDetailNumberRangeFilter
+  transportCost?: ContainerDetailNumberRangeFilter
+  importPrice?: ContainerDetailNumberRangeFilter
+  oemPrice?: ContainerDetailNumberRangeFilter
+  warehouseStatus?: ContainerDetailWarehouseStatusFilter[]
+  remark?: string
+}
+
+export interface ContainerDetailSortState {
+  field: ContainerDetailSortField
+  order: ContainerDetailSortOrder
+}
 
 export function getContainerDetailProductName(row: ContainerDetail) {
   return row.商品名称 ?? row.商品信息?.商品名称
@@ -12,6 +60,29 @@ export function getContainerDetailProductName(row: ContainerDetail) {
 
 export function getContainerDetailEnglishName(row: ContainerDetail) {
   return row.英文名称 ?? row.商品信息?.英文名称
+}
+
+export function getContainerDetailItemNumber(row: ContainerDetail) {
+  return row.商品信息?.货号
+}
+
+export function getContainerDetailBarcode(row: ContainerDetail) {
+  return row.商品信息?.条形码
+}
+
+export function getContainerDetailProductCode(row: ContainerDetail) {
+  return row.商品编码?.trim() || row.商品信息?.商品编码?.trim() || undefined
+}
+
+export function getContainerDetailProductTypeFilterKey(row: ContainerDetail): ContainerDetailProductTypeFilter {
+  const type = row.商品类型 || row.商品信息?.商品类型 || '普通商品'
+  if (type === '套装商品') return 'set'
+  if (type === '套装子商品') return 'setChild'
+  return 'normal'
+}
+
+export function getContainerDetailWarehouseStatusFilterKey(row: ContainerDetail): ContainerDetailWarehouseStatusFilter {
+  return row.warehouseIsActive === true ? 'active' : 'inactive'
 }
 
 export function withContainerDetailEnglishName(row: ContainerDetail, englishName?: string): ContainerDetail {
@@ -24,9 +95,23 @@ export function withContainerDetailEnglishName(row: ContainerDetail, englishName
 
 export function mergeContainerDetailPatch(row: ContainerDetail, patch: Partial<ContainerDetail>): ContainerDetail {
   const next = { ...row, ...patch }
+  const productInfoPatch: Partial<NonNullable<ContainerDetail['商品信息']>> = {}
 
   if ('英文名称' in patch) {
-    return withContainerDetailEnglishName(next, patch.英文名称)
+    productInfoPatch.英文名称 = patch.英文名称
+  }
+  if ('商品名称' in patch) {
+    productInfoPatch.商品名称 = patch.商品名称
+  }
+  if ('单件装箱数' in patch) {
+    productInfoPatch.单件装箱数 = patch.单件装箱数
+  }
+  if ('单件体积' in patch) {
+    productInfoPatch.单件体积 = patch.单件体积
+  }
+
+  if (Object.keys(productInfoPatch).length > 0 && next.商品信息) {
+    return { ...next, 商品信息: { ...next.商品信息, ...productInfoPatch } }
   }
 
   return next
@@ -82,6 +167,155 @@ export function buildContainerDetailTagStats(rows: ContainerDetail[]): Container
   })
 
   return stats
+}
+
+function normalizeText(value?: string) {
+  return (value ?? '').trim().toLowerCase()
+}
+
+function matchesTextFilter(value: string | undefined, filter: string | undefined) {
+  const normalizedFilter = normalizeText(filter)
+  if (!normalizedFilter) return true
+  return normalizeText(value).includes(normalizedFilter)
+}
+
+function isEmptyNumberRange(filter: ContainerDetailNumberRangeFilter | undefined) {
+  return filter?.min == null && filter?.max == null
+}
+
+function matchesNumberRange(value: number | undefined, filter: ContainerDetailNumberRangeFilter | undefined) {
+  if (isEmptyNumberRange(filter)) return true
+  if (value == null) return false
+  if (filter?.min != null && value < filter.min) return false
+  if (filter?.max != null && value > filter.max) return false
+  return true
+}
+
+function matchesOneOf<T extends string>(value: T, selected: T[] | undefined) {
+  return !selected?.length || selected.includes(value)
+}
+
+function getColumnSortValue(row: ContainerDetail, field: ContainerDetailSortField): string | number | undefined {
+  switch (field) {
+    case 'itemNumber':
+      return getContainerDetailItemNumber(row)
+    case 'barcode':
+      return getContainerDetailBarcode(row)
+    case 'productName':
+      return getContainerDetailProductName(row)
+    case 'englishName':
+      return getContainerDetailEnglishName(row)
+    case 'productType':
+      return getContainerDetailProductTypeFilterKey(row)
+    case 'newProduct':
+      return row.是否新商品 ? 1 : 0
+    case 'containerPieces':
+      return row.装柜件数
+    case 'containerQuantity':
+      return row.装柜数量
+    case 'domesticPrice':
+      return row.国内价格
+    case 'floatRate':
+      return row.调整浮率
+    case 'transportCost':
+      return row.运输成本
+    case 'importPrice':
+      return row.进口价格
+    case 'oemPrice':
+      return row.贴牌价格
+    case 'warehouseStatus':
+      return row.warehouseIsActive === true ? 1 : 0
+    case 'remark':
+      return row.备注
+    default:
+      return undefined
+  }
+}
+
+function compareColumnValues(a: string | number | undefined, b: string | number | undefined) {
+  const aEmpty = a == null || (typeof a === 'string' && !a.trim())
+  const bEmpty = b == null || (typeof b === 'string' && !b.trim())
+  if (aEmpty && bEmpty) return 0
+  if (aEmpty) return 1
+  if (bEmpty) return -1
+  if (typeof a === 'number' && typeof b === 'number') return a - b
+  return String(a).localeCompare(String(b), 'zh-CN', { numeric: true, sensitivity: 'base' })
+}
+
+export function applyContainerDetailColumnState(
+  rows: ContainerDetail[],
+  filters: ContainerDetailColumnFilters,
+  sortState?: ContainerDetailSortState,
+) {
+  const filtered = rows.filter((row) => (
+    matchesTextFilter(getContainerDetailItemNumber(row), filters.itemNumber) &&
+    matchesTextFilter(getContainerDetailBarcode(row), filters.barcode) &&
+    matchesTextFilter(getContainerDetailProductName(row), filters.productName) &&
+    matchesTextFilter(getContainerDetailEnglishName(row), filters.englishName) &&
+    matchesTextFilter(row.备注, filters.remark) &&
+    matchesOneOf(getContainerDetailProductTypeFilterKey(row), filters.productTypes) &&
+    matchesOneOf(row.是否新商品 ? 'new' : 'existing', filters.newProductStates) &&
+    matchesOneOf(getContainerDetailWarehouseStatusFilterKey(row), filters.warehouseStatus) &&
+    matchesNumberRange(row.装柜件数, filters.containerPieces) &&
+    matchesNumberRange(row.装柜数量, filters.containerQuantity) &&
+    matchesNumberRange(row.国内价格, filters.domesticPrice) &&
+    matchesNumberRange(row.调整浮率, filters.floatRate) &&
+    matchesNumberRange(row.运输成本, filters.transportCost) &&
+    matchesNumberRange(row.进口价格, filters.importPrice) &&
+    matchesNumberRange(row.贴牌价格, filters.oemPrice)
+  ))
+
+  if (!sortState) return filtered
+
+  return filtered
+    .map((row, index) => ({ row, index }))
+    .sort((left, right) => {
+      const result = compareColumnValues(
+        getColumnSortValue(left.row, sortState.field),
+        getColumnSortValue(right.row, sortState.field),
+      )
+      if (result === 0) return left.index - right.index
+      return sortState.order === 'ascend' ? result : -result
+    })
+    .map((item) => item.row)
+}
+
+export function applyContainerDetailWarehouseStatusByProductCodes(
+  rows: ContainerDetail[],
+  productCodes: string[],
+  isActive: boolean,
+) {
+  const productCodeSet = new Set(productCodes.map((value) => value.trim()).filter(Boolean))
+
+  return rows.map((row) => {
+    const productCode = getContainerDetailProductCode(row)
+    return productCode && productCodeSet.has(productCode)
+      ? { ...row, warehouseIsActive: isActive }
+      : row
+  })
+}
+
+export interface ContainerDetailWarehouseActionResultLike {
+  success?: boolean
+  isSuccess?: boolean
+  failedCount?: number
+  FailedCount?: number
+  errors?: string[]
+  Errors?: string[]
+  message?: string
+  Message?: string
+}
+
+export function getContainerDetailWarehouseActionFailureMessage(
+  result: ContainerDetailWarehouseActionResultLike,
+  fallback: string,
+) {
+  const failedCount = Number(result.failedCount ?? result.FailedCount ?? 0)
+  const errors = result.errors ?? result.Errors ?? []
+  if (result.success === false || result.isSuccess === false || failedCount > 0) {
+    return result.message ?? result.Message ?? errors.join('；') ?? fallback
+  }
+  return undefined
 }
 
 export function buildContainerDetailTranslationUpdates(
@@ -241,6 +475,188 @@ export function buildContainerDetailFloatRateUpdates(
         运输成本: transportCost,
         进口价格: importPrice,
       }
+    })
+    .filter((update): update is UpdateContainerDetailRequest => update !== null)
+}
+
+interface ContainerDetailDetectedPrice {
+  ProductCode?: string
+  productCode?: string
+  ItemNumber?: string
+  itemNumber?: string
+  Barcode?: string
+  barcode?: string
+  ProductName?: string
+  productName?: string
+  name?: string
+  EnglishName?: string
+  englishName?: string
+  nameEn?: string
+  DomesticPrice?: number
+  domesticPrice?: number
+  WarehouseDomesticPrice?: number
+  warehouseDomesticPrice?: number
+  OEMPrice?: number
+  oemPrice?: number
+  WarehouseOEMPrice?: number
+  warehouseOEMPrice?: number
+  labelPrice?: number
+  WarehouseVolume?: number
+  warehouseVolume?: number
+  PackingQuantity?: number
+  packingQuantity?: number
+  packingQty?: number
+  UnitVolume?: number
+  unitVolume?: number
+  Volume?: number
+  volume?: number
+}
+
+function isMissingPrice(value?: number) {
+  return value == null || value <= 0
+}
+
+function normalizeMatchKey(value?: string) {
+  return value?.trim().toUpperCase()
+}
+
+function getDetectedDomesticPrice(item: ContainerDetailDetectedPrice) {
+  return item.WarehouseDomesticPrice ?? item.warehouseDomesticPrice ?? item.domesticPrice ?? item.DomesticPrice
+}
+
+function getDetectedOemPrice(item: ContainerDetailDetectedPrice) {
+  return item.WarehouseOEMPrice ?? item.warehouseOEMPrice ?? item.labelPrice ?? item.oemPrice ?? item.OEMPrice
+}
+
+function getDetectedProductName(item: ContainerDetailDetectedPrice) {
+  return item.productName ?? item.ProductName ?? item.name
+}
+
+function getDetectedEnglishName(item: ContainerDetailDetectedPrice) {
+  return item.englishName ?? item.EnglishName ?? item.nameEn
+}
+
+function getDetectedPackingQuantity(item: ContainerDetailDetectedPrice) {
+  return item.PackingQuantity ?? item.packingQuantity ?? item.packingQty
+}
+
+function getDetectedUnitVolume(item: ContainerDetailDetectedPrice) {
+  return item.WarehouseVolume ?? item.warehouseVolume ?? item.volume ?? item.Volume ?? item.unitVolume ?? item.UnitVolume
+}
+
+function calculateContainerDetailTotalAmount(row: ContainerDetail) {
+  if (row.装柜数量 == null || row.国内价格 == null) return row.合计装柜金额
+  return roundToDigits(row.装柜数量 * row.国内价格 * (row.调整浮率 ?? 1), 2)
+}
+
+function buildDetectedPriceMaps(items: ContainerDetailDetectedPrice[]) {
+  const productCodeMap = new Map<string, ContainerDetailDetectedPrice>()
+  const itemNumberMap = new Map<string, ContainerDetailDetectedPrice>()
+  const barcodeMap = new Map<string, ContainerDetailDetectedPrice>()
+
+  items.forEach((item) => {
+    const productCode = normalizeMatchKey(item.productCode ?? item.ProductCode)
+    const itemNumber = normalizeMatchKey(item.itemNumber ?? item.ItemNumber)
+    const barcode = normalizeMatchKey(item.barcode ?? item.Barcode)
+    if (productCode) productCodeMap.set(productCode, item)
+    if (itemNumber) itemNumberMap.set(itemNumber, item)
+    if (barcode) barcodeMap.set(barcode, item)
+  })
+
+  return { productCodeMap, itemNumberMap, barcodeMap }
+}
+
+export function buildContainerDetailMatchedPriceUpdates(
+  rows: ContainerDetail[],
+  detectedItems: ContainerDetailDetectedPrice[],
+  container?: Pick<ContainerMain, '汇率' | '运费' | '总体积'> | null,
+): UpdateContainerDetailRequest[] {
+  return buildContainerDetailMatchedDomesticDataUpdates(rows, detectedItems, container)
+}
+
+export function buildContainerDetailMatchedDomesticDataUpdates(
+  rows: ContainerDetail[],
+  detectedItems: ContainerDetailDetectedPrice[],
+  container?: Pick<ContainerMain, '汇率' | '运费' | '总体积'> | null,
+): UpdateContainerDetailRequest[] {
+  const { productCodeMap, itemNumberMap, barcodeMap } = buildDetectedPriceMaps(detectedItems)
+
+  return rows
+    .map((row): UpdateContainerDetailRequest | null => {
+      if (!row.hguid) return null
+
+      const productCode = normalizeMatchKey(row.商品编码 ?? row.商品信息?.商品编码)
+      const itemNumber = normalizeMatchKey(row.商品信息?.货号)
+      const barcode = normalizeMatchKey(row.商品信息?.条形码)
+      const match =
+        (productCode ? productCodeMap.get(productCode) : undefined) ??
+        (itemNumber ? itemNumberMap.get(itemNumber) : undefined) ??
+        (barcode ? barcodeMap.get(barcode) : undefined)
+
+      if (!match) return null
+
+      const update: UpdateContainerDetailRequest = { hguid: row.hguid }
+      const domesticPrice = getDetectedDomesticPrice(match)
+      const oemPrice = getDetectedOemPrice(match)
+      const productName = getDetectedProductName(match)
+      const englishName = getDetectedEnglishName(match)
+      const packingQuantity = getDetectedPackingQuantity(match)
+      const unitVolume = getDetectedUnitVolume(match)
+
+      if (isMissingPrice(row.国内价格) && domesticPrice != null && domesticPrice > 0) {
+        update.国内价格 = domesticPrice
+      }
+      if (isMissingPrice(row.贴牌价格) && oemPrice != null && oemPrice > 0) {
+        update.贴牌价格 = oemPrice
+      }
+      if (productName && productName !== getContainerDetailProductName(row)) {
+        update.商品名称 = productName
+      }
+      if (englishName && englishName !== getContainerDetailEnglishName(row)) {
+        update.英文名称 = englishName
+      }
+      if (packingQuantity != null && packingQuantity > 0 && packingQuantity !== row.单件装箱数) {
+        update.单件装箱数 = packingQuantity
+        if (row.装柜件数 != null) {
+          update.装柜数量 = roundToDigits(row.装柜件数 * packingQuantity, 2)
+        }
+      }
+      if (unitVolume != null && unitVolume >= 0 && unitVolume !== row.单件体积) {
+        update.单件体积 = unitVolume
+        if (row.装柜件数 != null) {
+          update.合计装柜体积 = roundToDigits(row.装柜件数 * unitVolume, 3)
+        }
+      }
+
+      if (
+        update.国内价格 != null ||
+        update.装柜数量 != null ||
+        update.单件装箱数 != null
+      ) {
+        const amountRow = mergeContainerDetailPatch(row, update as Partial<ContainerDetail>)
+        const totalAmount = calculateContainerDetailTotalAmount(amountRow)
+        if (totalAmount !== row.合计装柜金额) update.合计装柜金额 = totalAmount
+      }
+
+      if (
+        update.国内价格 != null ||
+        update.装柜数量 != null ||
+        update.单件体积 != null ||
+        update.合计装柜体积 != null
+      ) {
+        const pricedRow = mergeContainerDetailPatch(row, update as Partial<ContainerDetail>)
+        const transportCost = calculateContainerDetailTransportCost(pricedRow, container)
+        const importPrice = calculateContainerDetailImportPrice(
+          { ...pricedRow, 运输成本: transportCost },
+          container,
+          pricedRow.调整浮率 ?? 1,
+          transportCost,
+        )
+        if (transportCost !== row.运输成本) update.运输成本 = transportCost
+        if (importPrice !== row.进口价格) update.进口价格 = importPrice
+      }
+
+      return Object.keys(update).length > 1 ? update : null
     })
     .filter((update): update is UpdateContainerDetailRequest => update !== null)
 }

@@ -146,6 +146,97 @@ function formatPricingFloatRate(value?: number) {
   return value.toFixed(2)
 }
 
+function buildInvoiceHeaderFormValues(data: LocalSupplierInvoiceDetailDto) {
+  return {
+    invoiceNo: data.invoiceNo,
+    storeName: data.storeName ? `${data.storeCode} - ${data.storeName}` : data.storeCode,
+    supplierName: data.supplierName
+      ? `${data.supplierCode} - ${data.supplierName}`
+      : data.supplierCode,
+    orderDate: data.orderDate ? dayjs(data.orderDate) : undefined,
+    inboundDate: data.inboundDate ? dayjs(data.inboundDate) : undefined,
+    totalAmount: formatAmount(data.totalAmount),
+    remarks: data.remarks,
+  }
+}
+
+function normalizeInvoiceSnapshot(data: LocalSupplierInvoiceDetailDto | null) {
+  if (!data) return null
+  return {
+    invoiceGUID: data.invoiceGUID,
+    appGUID: data.appGUID,
+    pcGUID: data.pcGUID,
+    storeCode: data.storeCode,
+    storeName: data.storeName,
+    supplierCode: data.supplierCode,
+    supplierName: data.supplierName,
+    invoiceNo: data.invoiceNo,
+    orderDate: data.orderDate,
+    inboundDate: data.inboundDate,
+    totalAmount: data.totalAmount,
+    remarks: data.remarks,
+  }
+}
+
+function areLocalSupplierInvoicesEqual(
+  current: LocalSupplierInvoiceDetailDto | null,
+  next: LocalSupplierInvoiceDetailDto | null,
+) {
+  return JSON.stringify(normalizeInvoiceSnapshot(current)) === JSON.stringify(normalizeInvoiceSnapshot(next))
+}
+
+function normalizeInvoiceDetailSnapshot(item: LocalSupplierInvoiceItemDto) {
+  return {
+    detailGUID: item.detailGUID,
+    invoiceGUID: item.invoiceGUID,
+    storeCode: item.storeCode,
+    supplierCode: item.supplierCode,
+    productTagGUID: item.productTagGUID,
+    productCategoryGUID: item.productCategoryGUID,
+    storeProductCode: item.storeProductCode,
+    productCode: item.productCode,
+    itemNumber: item.itemNumber,
+    barcode: item.barcode,
+    productName: item.productName,
+    specification: item.specification,
+    unit: item.unit,
+    quantity: item.quantity,
+    lastPurchasePrice: item.lastPurchasePrice,
+    purchasePrice: item.purchasePrice,
+    retailPrice: item.retailPrice,
+    amount: item.amount,
+    existingProductCount: item.existingProductCount,
+    barcodeStatus: item.barcodeStatus,
+    barcodeMatchCount: item.barcodeMatchCount,
+    productImage: item.productImage,
+    activityType: item.activityType,
+    discountRate: item.discountRate,
+    autoPricing: item.autoPricing,
+    pricingFloatRate: item.pricingFloatRate,
+    newAutoRetailPrice: item.newAutoRetailPrice,
+    isSpecialProduct: item.isSpecialProduct,
+    oldStoreProductCode: item.oldStoreProductCode,
+  }
+}
+
+function areLocalSupplierInvoiceDetailsEqual(
+  current: LocalSupplierInvoiceItemDto[],
+  next: LocalSupplierInvoiceItemDto[],
+) {
+  if (current.length !== next.length) return false
+  return current.every((item, index) => (
+    JSON.stringify(normalizeInvoiceDetailSnapshot(item)) === JSON.stringify(normalizeInvoiceDetailSnapshot(next[index]))
+  ))
+}
+
+function buildInvoiceRowActions(data: LocalSupplierInvoiceItemDto[]) {
+  return Object.fromEntries(
+    data
+      .filter((item) => item.activityType !== undefined && item.activityType !== null)
+      .map((item) => [item.detailGUID, item.activityType as number]),
+  )
+}
+
 const statusStatsTagColors = {
   product: { all: 'blue', notDetected: 'purple', exists: 'green', notExists: 'red' },
   barcode: { all: 'geekblue', notDetected: 'purple', normal: 'cyan', noMatch: 'volcano', multiMatch: 'orange' },
@@ -526,6 +617,8 @@ export default function InvoiceEditPage() {
   // 记录当前发票已完成首次加载，保活 Tab 恢复时保留订单头和明细表。
   const loadedInvoiceGuidRef = useRef<string | null>(null)
   const visibleInvoiceGuidRef = useRef<string | null>(null)
+  const invoiceSnapshotRef = useRef<LocalSupplierInvoiceDetailDto | null>(null)
+  const detailsSnapshotRef = useRef<LocalSupplierInvoiceItemDto[]>([])
 
   /* ---- 主表数据 ---- */
   const [_invoice, setInvoice] = useState<LocalSupplierInvoiceDetailDto | null>(null)
@@ -619,6 +712,8 @@ export default function InvoiceEditPage() {
       if (!isStoreCodeInManagedScope(data.storeCode, managedStoreCodes)) {
         loadedInvoiceGuidRef.current = null
         visibleInvoiceGuidRef.current = null
+        invoiceSnapshotRef.current = null
+        detailsSnapshotRef.current = []
         setCanAccessInvoice(false)
         setInvoice(null)
         setDetails([])
@@ -631,18 +726,11 @@ export default function InvoiceEditPage() {
       loadedInvoiceGuidRef.current = invoiceGuid
       visibleInvoiceGuidRef.current = invoiceGuid
       setCanAccessInvoice(true)
-      setInvoice(data)
-      form.setFieldsValue({
-        invoiceNo: data.invoiceNo,
-        storeName: data.storeName ? `${data.storeCode} - ${data.storeName}` : data.storeCode,
-        supplierName: data.supplierName
-          ? `${data.supplierCode} - ${data.supplierName}`
-          : data.supplierCode,
-        orderDate: data.orderDate ? dayjs(data.orderDate) : undefined,
-        inboundDate: data.inboundDate ? dayjs(data.inboundDate) : undefined,
-        totalAmount: formatAmount(data.totalAmount),
-        remarks: data.remarks,
-      })
+      if (!areLocalSupplierInvoicesEqual(invoiceSnapshotRef.current, data)) {
+        invoiceSnapshotRef.current = data
+        setInvoice(data)
+        form.setFieldsValue(buildInvoiceHeaderFormValues(data))
+      }
       return true
     } catch {
       if (showLoading) {
@@ -657,29 +745,30 @@ export default function InvoiceEditPage() {
     }
   }, [invoiceGuid, form, managedStoreCodeKey, t])
 
-  const loadDetails = useCallback(async () => {
+  const loadDetails = useCallback(async (showLoading = true) => {
     if (!invoiceGuid) return
-    setDetailLoading(true)
+    if (showLoading) {
+      setDetailLoading(true)
+    }
     try {
       const data = await getInvoiceDetails(invoiceGuid)
-      setDetails(data)
-      setRowActions(
-        Object.fromEntries(
-          data
-            .filter((item) => item.activityType !== undefined && item.activityType !== null)
-            .map((item) => [item.detailGUID, item.activityType as number]),
-        ),
-      )
+      if (!areLocalSupplierInvoiceDetailsEqual(detailsSnapshotRef.current, data)) {
+        detailsSnapshotRef.current = data
+        setDetails(data)
+        setRowActions(buildInvoiceRowActions(data))
+      }
     } catch {
       message.error(t('posAdmin.invoiceDetail.loadDetailsFailed', '加载明细失败'))
     } finally {
-      setDetailLoading(false)
+      if (showLoading) {
+        setDetailLoading(false)
+      }
     }
   }, [invoiceGuid, t])
 
   const loadInvoiceAndDetails = useCallback(async (showLoading = true) => {
     if (await loadInvoice(showLoading)) {
-      await loadDetails()
+      await loadDetails(showLoading)
     }
   }, [loadInvoice, loadDetails])
 

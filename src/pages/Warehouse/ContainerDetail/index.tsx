@@ -32,6 +32,7 @@ import {
   message,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
+import type { FilterDropdownProps, SorterResult } from 'antd/es/table/interface'
 import type { TFunction } from 'i18next'
 import type { Dayjs } from 'dayjs'
 import dayjs from 'dayjs'
@@ -73,21 +74,39 @@ import { copyTextToClipboard } from '../../../utils/clipboard'
 import { shouldShowDetailInitialLoading } from '../../../utils/detailLoadState'
 import {
   applyContainerDetailEnglishNameUpdates,
+  applyContainerDetailWarehouseStatusByProductCodes,
+  applyContainerDetailColumnState,
+  buildContainerDetailMatchedDomesticDataUpdates,
   buildContainerDetailTagStats,
   buildContainerDetailFloatRateUpdates,
   buildContainerDetailHqPushSelection,
   buildContainerDetailTranslationUpdates,
   extractPushToHqErrorResult,
+  getContainerDetailBarcode,
   getContainerDetailEnglishName,
+  getContainerDetailItemNumber,
+  getContainerDetailProductCode,
   getContainerDetailProductName,
+  getContainerDetailWarehouseActionFailureMessage,
+  getContainerDetailWarehouseStatusFilterKey,
   matchesContainerDetailSelectedTags,
   mergeContainerDetailPatch,
+  type ContainerDetailColumnFilters,
+  type ContainerDetailNewProductFilter,
+  type ContainerDetailNumberRangeFilter,
+  type ContainerDetailProductTypeFilter,
+  type ContainerDetailSortField,
+  type ContainerDetailSortState,
   type ContainerDetailTagFilter,
+  type ContainerDetailWarehouseStatusFilter,
 } from './containerDetailLogic'
 import type { PushProductsToHqResult } from '../../../types/posProduct'
 import './index.css'
 
 type ProductTypeFilter = 'all' | 'normal' | 'set' | 'setChild'
+type TextColumnFilterKey = 'itemNumber' | 'barcode' | 'productName' | 'englishName' | 'remark'
+type NumberColumnFilterKey = 'containerPieces' | 'containerQuantity' | 'domesticPrice' | 'floatRate' | 'transportCost' | 'importPrice' | 'oemPrice'
+type EnumColumnFilterKey = 'productTypes' | 'newProductStates' | 'warehouseStatus'
 
 function formatDate(value?: string) {
   return value ? dayjs(value).format('YYYY-MM-DD') : '--'
@@ -189,6 +208,10 @@ function renderCompactHeader(value: ReactNode) {
   return <span className="container-detail-header-title">{value}</span>
 }
 
+function renderColumnTitle(key: ContainerDetailSortField, value: ReactNode) {
+  return <span data-column-key={key} className="container-detail-header-title">{value}</span>
+}
+
 export default function ContainerDetailPage() {
   const { t } = useTranslation()
   const navigate = useNavigate()
@@ -206,6 +229,8 @@ export default function ContainerDetailPage() {
   const [itemNumberFilter, setItemNumberFilter] = useState('')
   const [productTypeFilter, setProductTypeFilter] = useState<ProductTypeFilter>('all')
   const [selectedTagFilters, setSelectedTagFilters] = useState<ContainerDetailTagFilter[]>([])
+  const [columnFilters, setColumnFilters] = useState<ContainerDetailColumnFilters>({})
+  const [sortState, setSortState] = useState<ContainerDetailSortState | undefined>()
   const [batchFloatRate, setBatchFloatRate] = useState<number | null>(null)
   const [batchImportPrice, setBatchImportPrice] = useState<number | null>(null)
   const [batchOemPrice, setBatchOemPrice] = useState<number | null>(null)
@@ -214,6 +239,7 @@ export default function ContainerDetailPage() {
   const [hqTranslating, setHqTranslating] = useState(false)
   const [pushToHqLoading, setPushToHqLoading] = useState(false)
   const [recalculateCostsLoading, setRecalculateCostsLoading] = useState(false)
+  const [matchDomesticDataLoading, setMatchDomesticDataLoading] = useState(false)
   const [createProductsLoading, setCreateProductsLoading] = useState(false)
   const pushToHqLoadingRef = useRef(false)
   const createProductsLoadingRef = useRef(false)
@@ -275,7 +301,7 @@ export default function ContainerDetailPage() {
 
   useEffect(() => {
     setSelectedRowKeys([])
-  }, [itemNumberFilter, productTypeFilter, selectedTagFilters])
+  }, [itemNumberFilter, productTypeFilter, selectedTagFilters, columnFilters, sortState])
 
   const baseFilteredRows = useMemo(() => {
     return rows.filter((row) => {
@@ -289,6 +315,11 @@ export default function ContainerDetailPage() {
   const filteredRows = useMemo(() => {
     return baseFilteredRows.filter((row) => matchesContainerDetailSelectedTags(row, selectedTagFilters))
   }, [baseFilteredRows, selectedTagFilters])
+
+  const displayRows = useMemo(
+    () => applyContainerDetailColumnState(filteredRows, columnFilters, sortState),
+    [columnFilters, filteredRows, sortState],
+  )
 
   const tagStats = useMemo(() => buildContainerDetailTagStats(baseFilteredRows), [baseFilteredRows])
 
@@ -330,12 +361,12 @@ export default function ContainerDetailPage() {
   }
 
   const selectedRows = useMemo(
-    () => filteredRows.filter((row) => selectedRowKeys.includes(rowKey(row))),
-    [filteredRows, selectedRowKeys],
+    () => displayRows.filter((row) => selectedRowKeys.includes(rowKey(row))),
+    [displayRows, selectedRowKeys],
   )
 
-  const hasHiddenSelectedRows = selectedRowKeys.length > 0 && selectedRows.length === 0
-  const targetRows = selectedRowKeys.length ? selectedRows : filteredRows
+  const hasHiddenSelectedRows = selectedRowKeys.length > 0 && selectedRows.length < selectedRowKeys.length
+  const targetRows = selectedRowKeys.length ? selectedRows : displayRows
 
   const ensureTargetRowsVisible = () => {
     if (!hasHiddenSelectedRows) return true
@@ -445,16 +476,59 @@ export default function ContainerDetailPage() {
     }
   }
 
+  const handleMatchDomesticData = async () => {
+    if (!access.canEditContainer) return
+    if (!ensureTargetRowsVisible()) return
+    if (!targetRows.length) {
+      message.warning('没有可匹配的明细')
+      return
+    }
+
+    const detectionItems = targetRows
+      .map((row) => ({
+        ProductCode: getContainerDetailProductCode(row),
+        ItemNumber: row.商品信息?.货号,
+        Barcode: row.商品信息?.条形码,
+      }))
+      .filter((item) => item.ProductCode || item.ItemNumber || item.Barcode)
+
+    if (!detectionItems.length) {
+      message.warning('当前明细缺少可匹配的商品编码、货号或条码')
+      return
+    }
+
+    setMatchDomesticDataLoading(true)
+    try {
+      const detected = await detectProducts(detectionItems)
+      const updates = buildContainerDetailMatchedDomesticDataUpdates(targetRows, detected, container)
+        .map((update) => ({ ...update, SkipRelatedProductSync: true }))
+      if (!updates.length) {
+        message.info('没有需要更新的国内数据')
+        return
+      }
+
+      await batchUpdateDetails(updates)
+      applyDetailUpdatesToRows(updates)
+      const pricePatchCount = updates.filter((update) => update.国内价格 != null || update.贴牌价格 != null).length
+      message.success(`已更新 ${updates.length} 条明细，补齐价格 ${pricePatchCount} 条`)
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '匹配国内数据失败')
+    } finally {
+      setMatchDomesticDataLoading(false)
+    }
+  }
+
   const applyPrices = async () => {
+    if (!ensureTargetRowsVisible()) return
     if (batchImportPrice == null && batchOemPrice == null) {
       message.warning(t('containers.messages.enterImportOrOemPrice'))
       return
     }
-    if (!selectedRows.length) {
+    if (!targetRows.length) {
       message.warning(t('containers.messages.selectProducts'))
       return
     }
-    const updates = selectedRows
+    const updates = targetRows
       .filter((row) => row.hguid)
       .map((row) => ({ hguid: row.hguid, 进口价格: batchImportPrice ?? row.进口价格, 贴牌价格: batchOemPrice ?? row.贴牌价格 }))
     await batchUpdateDetails(updates)
@@ -471,25 +545,25 @@ export default function ContainerDetailPage() {
   }
 
   const applyActive = async (isActive: boolean) => {
-    if (!selectedRows.length) {
+    if (!ensureTargetRowsVisible()) return
+    if (!targetRows.length) {
       message.warning(t('containers.messages.selectProducts'))
       return
     }
-    const productCodes = selectedRows
-      .map((row) => row.商品编码 || row.商品信息?.商品编码)
+    const productCodes = targetRows
+      .map(getContainerDetailProductCode)
       .filter((value): value is string => Boolean(value))
     if (!productCodes.length) {
       message.warning(t('containers.messages.selectedProductsMissingCode'))
       return
     }
     const result = await bulkSetStatus(productCodes, isActive)
-    if (result.success === false) {
-      message.error(result.message || t('containers.messages.batchActiveFailed'))
+    const failureMessage = getContainerDetailWarehouseActionFailureMessage(result, t('containers.messages.batchActiveFailed'))
+    if (failureMessage) {
+      message.error(failureMessage)
       return
     }
-    setRows((items) =>
-      items.map((item) => (productCodes.includes(item.商品编码 || item.商品信息?.商品编码 || '') ? { ...item, warehouseIsActive: isActive } : item)),
-    )
+    setRows((items) => applyContainerDetailWarehouseStatusByProductCodes(items, productCodes, isActive))
     setSelectedRowKeys([])
     message.success(t(isActive ? 'containers.messages.productsActivated' : 'containers.messages.productsDeactivated', { count: productCodes.length }))
   }
@@ -890,6 +964,150 @@ export default function ContainerDetailPage() {
     }
   }
 
+  const clearColumnFilter = (key: keyof ContainerDetailColumnFilters) => {
+    setColumnFilters((current) => {
+      const next = { ...current }
+      delete next[key]
+      return next
+    })
+  }
+
+  const hasNumberRangeFilter = (value?: ContainerDetailNumberRangeFilter) => value?.min != null || value?.max != null
+  const hasActiveColumnState = Object.values(columnFilters).some((value) => {
+    if (Array.isArray(value)) return value.length > 0
+    if (value && typeof value === 'object') return hasNumberRangeFilter(value as ContainerDetailNumberRangeFilter)
+    return typeof value === 'string' ? Boolean(value.trim()) : value != null
+  }) || Boolean(sortState)
+
+  const filterIcon = (active?: boolean) => <SearchOutlined style={{ color: active ? '#1677ff' : undefined }} />
+
+  const makeTextFilterDropdown = (key: TextColumnFilterKey, placeholder: string) => ({ confirm }: FilterDropdownProps) => (
+    <div className="container-detail-column-filter" onKeyDown={(event) => event.stopPropagation()}>
+      <Input
+        value={(columnFilters[key] as string | undefined) ?? ''}
+        allowClear
+        placeholder={placeholder}
+        onChange={(event) => setColumnFilters((current) => ({ ...current, [key]: event.target.value }))}
+        onPressEnter={() => confirm()}
+      />
+      <Space>
+        <Button size="small" type="primary" onClick={() => confirm()}>{t('containers.actions.applyColumnFilter', '应用')}</Button>
+        <Button size="small" onClick={() => {
+          clearColumnFilter(key)
+          confirm()
+        }}>{t('containers.actions.resetColumnFilter', '重置')}</Button>
+      </Space>
+    </div>
+  )
+
+  const makeNumberRangeFilterDropdown = (key: NumberColumnFilterKey) => ({ confirm }: FilterDropdownProps) => {
+    const value = (columnFilters[key] as ContainerDetailNumberRangeFilter | undefined) ?? {}
+    const updateRange = (patch: ContainerDetailNumberRangeFilter) => {
+      const next = { ...value, ...patch }
+      setColumnFilters((current) => ({ ...current, [key]: next }))
+    }
+
+    return (
+      <div className="container-detail-column-filter" onKeyDown={(event) => event.stopPropagation()}>
+        <Space.Compact>
+          <InputNumber
+            value={value.min}
+            placeholder={t('containers.placeholders.minValue', '最小值')}
+            controls={false}
+            onChange={(nextValue) => updateRange({ min: nextValue == null ? undefined : Number(nextValue) })}
+          />
+          <InputNumber
+            value={value.max}
+            placeholder={t('containers.placeholders.maxValue', '最大值')}
+            controls={false}
+            onChange={(nextValue) => updateRange({ max: nextValue == null ? undefined : Number(nextValue) })}
+          />
+        </Space.Compact>
+        <Space>
+          <Button size="small" type="primary" onClick={() => confirm()}>{t('containers.actions.applyColumnFilter', '应用')}</Button>
+          <Button size="small" onClick={() => {
+            clearColumnFilter(key)
+            confirm()
+          }}>{t('containers.actions.resetColumnFilter', '重置')}</Button>
+        </Space>
+      </div>
+    )
+  }
+
+  const makeEnumFilterDropdown = (key: EnumColumnFilterKey, options: { value: string; label: string }[]) => ({ confirm }: FilterDropdownProps) => (
+    <div className="container-detail-column-filter" onKeyDown={(event) => event.stopPropagation()}>
+      <Select
+        mode="multiple"
+        value={(columnFilters[key] as string[] | undefined) ?? []}
+        allowClear
+        style={{ minWidth: 180 }}
+        options={options}
+        onChange={(values) => setColumnFilters((current) => ({ ...current, [key]: values } as ContainerDetailColumnFilters))}
+      />
+      <Space>
+        <Button size="small" type="primary" onClick={() => confirm()}>{t('containers.actions.applyColumnFilter', '应用')}</Button>
+        <Button size="small" onClick={() => {
+          clearColumnFilter(key)
+          confirm()
+        }}>{t('containers.actions.resetColumnFilter', '重置')}</Button>
+      </Space>
+    </div>
+  )
+
+  const makeSortProps = (field: ContainerDetailSortField) => ({
+    columnKey: field,
+    sorter: true,
+    sortOrder: sortState?.field === field ? sortState.order : null,
+  })
+
+  const textFilterProps = (key: TextColumnFilterKey, placeholder: string) => ({
+    filterDropdown: makeTextFilterDropdown(key, placeholder),
+    filterIcon,
+    filtered: Boolean((columnFilters[key] as string | undefined)?.trim()),
+  })
+
+  const numberFilterProps = (key: NumberColumnFilterKey) => ({
+    filterDropdown: makeNumberRangeFilterDropdown(key),
+    filterIcon,
+    filtered: hasNumberRangeFilter(columnFilters[key] as ContainerDetailNumberRangeFilter | undefined),
+  })
+
+  const enumFilterProps = (key: EnumColumnFilterKey, options: { value: string; label: string }[]) => ({
+    filterDropdown: makeEnumFilterDropdown(key, options),
+    filterIcon,
+    filtered: Boolean((columnFilters[key] as string[] | undefined)?.length),
+  })
+
+  const handleTableChange = (_pagination: unknown, _filters: Record<string, unknown>, sorter: SorterResult<ContainerDetail> | SorterResult<ContainerDetail>[]) => {
+    const nextSorter = Array.isArray(sorter) ? sorter[0] : sorter
+    const field = typeof nextSorter?.columnKey === 'string' ? nextSorter.columnKey as ContainerDetailSortField : undefined
+
+    if (field && (nextSorter.order === 'ascend' || nextSorter.order === 'descend')) {
+      setSortState({ field, order: nextSorter.order })
+      return
+    }
+
+    setSortState(undefined)
+  }
+
+  const handleWarehouseStatusChange = async (row: ContainerDetail, isActive: boolean) => {
+    if (!access.canEditContainer) return
+    const productCode = getContainerDetailProductCode(row)
+    if (!productCode) {
+      message.warning(t('containers.messages.selectedProductsMissingCode'))
+      return
+    }
+
+    const result = await bulkSetStatus([productCode], isActive)
+    const failureMessage = getContainerDetailWarehouseActionFailureMessage(result, t('containers.messages.batchActiveFailed'))
+    if (failureMessage) {
+      message.error(failureMessage)
+      return
+    }
+    setRows((items) => applyContainerDetailWarehouseStatusByProductCodes(items, [productCode], isActive))
+    message.success(t(isActive ? 'containers.messages.productsActivated' : 'containers.messages.productsDeactivated', { count: 1 }))
+  }
+
   const columns: ColumnsType<ContainerDetail> = [
     { title: renderCompactHeader(t('containers.columns.index')), width: 56, fixed: 'left', render: (_v, _r, index) => renderNumericCell(index + 1) },
     {
@@ -903,12 +1121,21 @@ export default function ContainerDetailPage() {
           <span style={{ color: '#999' }}>{t('containers.empty.noImage')}</span>
         ),
     },
-    { title: t('containers.fields.itemNumber'), width: 130, fixed: 'left', sorter: (a, b) => (a.商品信息?.货号 || '').localeCompare(b.商品信息?.货号 || ''), render: (_, row) => <CopyableText value={row.商品信息?.货号} maxWidth={90} /> },
     {
-      title: renderCompactHeader(t('containers.fields.barcode')),
+      title: renderColumnTitle('itemNumber', t('containers.fields.itemNumber')),
+      width: 130,
+      fixed: 'left',
+      ...makeSortProps('itemNumber'),
+      ...textFilterProps('itemNumber', t('containers.placeholders.filterItemNumber')),
+      render: (_, row) => <CopyableText value={getContainerDetailItemNumber(row)} maxWidth={90} />,
+    },
+    {
+      title: renderColumnTitle('barcode', t('containers.fields.barcode')),
       width: 170,
+      ...makeSortProps('barcode'),
+      ...textFilterProps('barcode', t('containers.placeholders.filterBarcode', '条码过滤')),
       render: (_, row) => {
-        const barcode = row.商品信息?.条形码
+        const barcode = getContainerDetailBarcode(row)
 
         return barcode ? (
           <Space size={4} wrap={false} className="container-detail-barcode-cell">
@@ -930,10 +1157,18 @@ export default function ContainerDetailPage() {
         ) : '--'
       },
     },
-    { title: renderCompactHeader(t('containers.fields.productName')), width: 180, render: (_, row) => <TwoLineText value={getContainerDetailProductName(row)} /> },
     {
-      title: renderCompactHeader(t('containers.fields.englishName')),
+      title: renderColumnTitle('productName', t('containers.fields.productName')),
       width: 180,
+      ...makeSortProps('productName'),
+      ...textFilterProps('productName', t('containers.placeholders.filterProductName', '商品名称过滤')),
+      render: (_, row) => <TwoLineText value={getContainerDetailProductName(row)} />,
+    },
+    {
+      title: renderColumnTitle('englishName', t('containers.fields.englishName')),
+      width: 180,
+      ...makeSortProps('englishName'),
+      ...textFilterProps('englishName', t('containers.placeholders.filterEnglishName', '英文名称过滤')),
       render: (_, row) => access.canEditContainer ? (
         <Input.TextArea
           className="container-detail-english-name-input"
@@ -945,16 +1180,57 @@ export default function ContainerDetailPage() {
         />
       ) : <TwoLineText value={getContainerDetailEnglishName(row)} />,
     },
-    { title: renderCompactHeader(t('containers.fields.productType')), width: 92, render: (_, row) => getProductTypeLabel(row.商品类型 || row.商品信息?.商品类型, t) },
-    { title: renderCompactHeader(t('containers.fields.newProduct')), width: 72, render: (_, row) => (row.是否新商品 ? <Tag color="blue">{t('containers.tags.new')}</Tag> : <Tag>{t('containers.tags.existing')}</Tag>) },
-    { title: renderCompactHeader(t('containers.fields.containerPieces')), dataIndex: '装柜件数', width: 76, align: 'right', render: (v) => renderNumericCell(v ?? '--') },
-    { title: renderCompactHeader(t('containers.fields.containerQuantity')), dataIndex: '装柜数量', width: 76, align: 'right', render: (v) => renderNumericCell(v ?? '--') },
-    { title: renderCompactHeader(t('containers.fields.domesticPrice')), dataIndex: '国内价格', width: 86, align: 'right', render: (v) => renderNumericCell(formatNumber(v)) },
     {
-      title: renderCompactHeader(t('containers.fields.floatRate')),
+      title: renderColumnTitle('productType', t('containers.fields.productType')),
+      width: 92,
+      ...makeSortProps('productType'),
+      ...enumFilterProps('productTypes', (['normal', 'set', 'setChild'] as ContainerDetailProductTypeFilter[]).map((value) => ({ value, label: getProductTypeFilterLabel(value, t) }))),
+      render: (_, row) => getProductTypeLabel(row.商品类型 || row.商品信息?.商品类型, t),
+    },
+    {
+      title: renderColumnTitle('newProduct', t('containers.fields.newProduct')),
+      width: 72,
+      ...makeSortProps('newProduct'),
+      ...enumFilterProps('newProductStates', (['new', 'existing'] as ContainerDetailNewProductFilter[]).map((value) => ({
+        value,
+        label: value === 'new' ? t('containers.tags.newProduct') : t('containers.tags.existingProduct'),
+      }))),
+      render: (_, row) => (row.是否新商品 ? <Tag color="blue">{t('containers.tags.new')}</Tag> : <Tag>{t('containers.tags.existing')}</Tag>),
+    },
+    {
+      title: renderColumnTitle('containerPieces', t('containers.fields.containerPieces')),
+      dataIndex: '装柜件数',
+      width: 76,
+      align: 'right',
+      ...makeSortProps('containerPieces'),
+      ...numberFilterProps('containerPieces'),
+      render: (v) => renderNumericCell(v ?? '--'),
+    },
+    {
+      title: renderColumnTitle('containerQuantity', t('containers.fields.containerQuantity')),
+      dataIndex: '装柜数量',
+      width: 76,
+      align: 'right',
+      ...makeSortProps('containerQuantity'),
+      ...numberFilterProps('containerQuantity'),
+      render: (v) => renderNumericCell(v ?? '--'),
+    },
+    {
+      title: renderColumnTitle('domesticPrice', t('containers.fields.domesticPrice')),
+      dataIndex: '国内价格',
+      width: 86,
+      align: 'right',
+      ...makeSortProps('domesticPrice'),
+      ...numberFilterProps('domesticPrice'),
+      render: (v) => renderNumericCell(formatNumber(v)),
+    },
+    {
+      title: renderColumnTitle('floatRate', t('containers.fields.floatRate')),
       dataIndex: '调整浮率',
       width: 96,
       align: 'right',
+      ...makeSortProps('floatRate'),
+      ...numberFilterProps('floatRate'),
       render: (_value, row) =>
         access.canEditContainer ? (
           <InputNumber
@@ -969,12 +1245,22 @@ export default function ContainerDetailPage() {
           />
         ) : renderNumericCell(formatNumber(row.调整浮率, 4)),
     },
-    { title: renderCompactHeader(t('containers.fields.transportCost')), dataIndex: '运输成本', width: 86, align: 'right', render: (v) => renderNumericCell(formatNumber(v)) },
     {
-      title: renderCompactHeader(t('containers.fields.importPrice')),
+      title: renderColumnTitle('transportCost', t('containers.fields.transportCost')),
+      dataIndex: '运输成本',
+      width: 86,
+      align: 'right',
+      ...makeSortProps('transportCost'),
+      ...numberFilterProps('transportCost'),
+      render: (v) => renderNumericCell(formatNumber(v)),
+    },
+    {
+      title: renderColumnTitle('importPrice', t('containers.fields.importPrice')),
       dataIndex: '进口价格',
       width: 96,
       align: 'right',
+      ...makeSortProps('importPrice'),
+      ...numberFilterProps('importPrice'),
       render: (_value, row) =>
         access.canEditContainer ? (
           <InputNumber
@@ -988,17 +1274,48 @@ export default function ContainerDetailPage() {
         ) : renderNumericCell(formatNumber(row.进口价格)),
     },
     {
-      title: renderCompactHeader(t('containers.fields.oemPrice')),
+      title: renderColumnTitle('oemPrice', t('containers.fields.oemPrice')),
       dataIndex: '贴牌价格',
       width: 96,
       align: 'right',
+      ...makeSortProps('oemPrice'),
+      ...numberFilterProps('oemPrice'),
       render: (_value, row) =>
         access.canEditContainer ? <InputNumber defaultValue={row.贴牌价格} min={0} precision={2} style={{ width: 78 }} onBlur={(event) => void saveRowPatch(row, { 贴牌价格: event.target.value ? Number(event.target.value) : undefined })} /> : renderNumericCell(formatNumber(row.贴牌价格)),
     },
-    { title: renderCompactHeader(t('containers.fields.warehouseStatus')), width: 86, render: (_, row) => <Tag color={row.warehouseIsActive ? 'success' : 'default'}>{row.warehouseIsActive ? t('common.activeUpper') : t('common.inactiveUpper')}</Tag> },
     {
-      title: renderCompactHeader(t('containers.fields.remark')),
+      title: renderColumnTitle('warehouseStatus', t('containers.fields.warehouseStatus')),
+      width: 100,
+      ...makeSortProps('warehouseStatus'),
+      ...enumFilterProps('warehouseStatus', (['active', 'inactive'] as ContainerDetailWarehouseStatusFilter[]).map((value) => ({
+        value,
+        label: value === 'active' ? t('common.activeUpper') : t('common.inactiveUpper'),
+      }))),
+      render: (_, row) => {
+        const isActive = getContainerDetailWarehouseStatusFilterKey(row) === 'active'
+        const productCode = getContainerDetailProductCode(row)
+
+        return access.canEditContainer ? (
+          <Tooltip title={!productCode ? t('containers.messages.selectedProductsMissingCode') : ''}>
+            <Switch
+              size="small"
+              checked={isActive}
+              checkedChildren={t('common.activeUpper')}
+              unCheckedChildren={t('common.inactiveUpper')}
+              disabled={!productCode}
+              onChange={(checked) => void handleWarehouseStatusChange(row, checked)}
+            />
+          </Tooltip>
+        ) : (
+          <Tag color={isActive ? 'success' : 'default'}>{isActive ? t('common.activeUpper') : t('common.inactiveUpper')}</Tag>
+        )
+      },
+    },
+    {
+      title: renderColumnTitle('remark', t('containers.fields.remark')),
       width: 160,
+      ...makeSortProps('remark'),
+      ...textFilterProps('remark', t('containers.placeholders.filterRemark', '备注过滤')),
       render: (_, row) =>
         access.canEditContainer ? <Input defaultValue={row.备注} onBlur={(event) => void saveRowPatch(row, { 备注: event.target.value })} /> : row.备注 || '--',
     },
@@ -1065,7 +1382,15 @@ export default function ContainerDetailPage() {
                     onChange={setTagFiltersFromSelect}
                     options={tagSelectOptions}
                   />
-                  <Typography.Text type="secondary">{t('containers.text.showingRows', { filtered: filteredRows.length, total: rows.length })}</Typography.Text>
+                  <Typography.Text type="secondary">{t('containers.text.showingRows', { filtered: displayRows.length, total: rows.length })}</Typography.Text>
+                  {hasActiveColumnState ? (
+                    <Button size="small" onClick={() => {
+                      setColumnFilters({})
+                      setSortState(undefined)
+                    }}>
+                      {t('containers.actions.clearColumnFilters', '清空列过滤')}
+                    </Button>
+                  ) : null}
                 </Space>
                 <Space wrap>
                   <Button icon={<DownloadOutlined />} loading={exporting} onClick={() => void exportExcel()}>{t('common.export')}</Button>
@@ -1119,6 +1444,7 @@ export default function ContainerDetailPage() {
                   <InputNumber value={batchFloatRate} placeholder={t('containers.fields.floatRate')} precision={4} onChange={setBatchFloatRate} />
                   <Button onClick={() => void applyFloatRate()}>{t('containers.actions.applyFloatRate')}</Button>
                   <Button loading={recalculateCostsLoading} onClick={() => void handleRecalculateCosts()}>重算成本</Button>
+                  <Button loading={matchDomesticDataLoading} onClick={() => void handleMatchDomesticData()}>匹配国内数据</Button>
                   <InputNumber value={batchImportPrice} placeholder={t('containers.fields.importPrice')} min={0} precision={2} onChange={setBatchImportPrice} />
                   <InputNumber value={batchOemPrice} placeholder={t('containers.fields.oemPrice')} min={0} precision={2} onChange={setBatchOemPrice} />
                   <Button onClick={() => void applyPrices()}>{t('containers.actions.applyPrices')}</Button>
@@ -1183,10 +1509,11 @@ export default function ContainerDetailPage() {
                 rowKey={rowKey}
                 size="small"
                 columns={columns}
-                dataSource={filteredRows}
+                dataSource={displayRows}
                 rowSelection={{ selectedRowKeys, onChange: setSelectedRowKeys, fixed: true }}
                 pagination={{ pageSize: 50, showSizeChanger: true, showTotal: (total) => t('common.total', { count: total }) }}
                 scroll={{ x: 1840, y: 620 }}
+                onChange={handleTableChange}
                 footer={() => (
                   <Space direction="vertical" size={2}>
                     <Typography.Text type="secondary">{t('containers.formulas.transportCost', '运输成本 = 运费 × 明细体积 ÷ 装柜数量 ÷ 总体积')}</Typography.Text>

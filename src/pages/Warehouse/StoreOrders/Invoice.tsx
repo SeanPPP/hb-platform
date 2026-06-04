@@ -1,5 +1,5 @@
-import { DownloadOutlined, FileExcelOutlined, PrinterOutlined, RollbackOutlined } from '@ant-design/icons'
-import { Button, Empty, Image, Space, Spin, message } from 'antd'
+import { DownloadOutlined, FileExcelOutlined, MailOutlined, PrinterOutlined, RollbackOutlined } from '@ant-design/icons'
+import { Button, Empty, Image, Input, Modal, Space, Spin, Switch, message } from 'antd'
 import ExcelJS from 'exceljs'
 import type { TFunction } from 'i18next'
 import { useEffect, useMemo, useRef, useState } from 'react'
@@ -9,14 +9,21 @@ import BarcodePreview from '../../../components/BarcodePreview'
 import { useDynamicTabTitle } from '../../../hooks/useDynamicTabTitle'
 import { useStableRouteContext } from '../../../hooks/useStableRouteContext'
 import { getStores } from '../../../services/storeService'
-import { getStoreOrderDetail } from '../../../services/storeOrderService'
+import { getStoreOrderDetail, sendStoreOrderInvoiceEmail, updateStoreOrderStoreContact } from '../../../services/storeOrderService'
 import type { StoreDto } from '../../../types/store'
 import type { StoreOrderDetail, StoreOrderDetailLine } from '../../../types/storeOrder'
 import { shouldShowStoreOrderDetailInitialLoading } from './detailLoadState'
-import { buildDocumentFileName, downloadElementAsPdf, formatCurrency, formatPrintDate } from './printUtils'
+import {
+  buildDocumentFileName,
+  createElementPdfBase64,
+  downloadElementAsPdf,
+  formatCurrency,
+  formatPrintDate,
+} from './printUtils'
 import './print.css'
 
 const TRANSPARENT_IMAGE_FALLBACK = 'data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs='
+const EMAIL_REGEXP = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
 function sortInvoiceItems(items: StoreOrderDetailLine[]) {
   return [...items].sort((left, right) => {
@@ -127,8 +134,14 @@ export default function StoreOrderInvoicePage() {
   const [loading, setLoading] = useState(false)
   const [downloading, setDownloading] = useState(false)
   const [exportingExcel, setExportingExcel] = useState(false)
+  const [emailModalOpen, setEmailModalOpen] = useState(false)
+  const [sendingEmail, setSendingEmail] = useState(false)
   const [order, setOrder] = useState<StoreOrderDetail | null>(null)
   const [store, setStore] = useState<StoreDto | null>(null)
+  const [recipientEmail, setRecipientEmail] = useState('')
+  const [emailSubject, setEmailSubject] = useState('')
+  const [emailBody, setEmailBody] = useState('')
+  const [saveAsStoreDefault, setSaveAsStoreDefault] = useState(true)
 
   useDynamicTabTitle(
     order?.orderNo
@@ -209,6 +222,42 @@ export default function StoreOrderInvoicePage() {
   }, [order?.shippingFee, order?.totalImportAmount])
 
   const sortedItems = useMemo(() => sortInvoiceItems(order?.items || []), [order?.items])
+  const defaultRecipientEmail = order ? order.storeContactEmail || store?.contactEmail || '' : ''
+  const defaultEmailSubject = order
+    ? t('warehouse.invoice.defaultEmailSubject', {
+        storeName: store?.storeName || order.storeCode || t('warehouse.invoice.unknownStore'),
+        orderNo: order.orderNo || order.orderGUID,
+      })
+    : ''
+  const defaultEmailBody = order
+    ? t('warehouse.invoice.defaultEmailBody', {
+        storeName: store?.storeName || order.storeCode || t('warehouse.invoice.unknownStore'),
+        orderNo: order.orderNo || order.orderGUID,
+      })
+    : ''
+
+  const resolveInvoicePdfFileName = () =>
+    buildDocumentFileName(
+      t('warehouse.invoice.fileName'),
+      store?.storeName || order?.storeCode,
+      order?.orderNo || order?.orderGUID,
+      'pdf',
+      {
+        unknownStore: t('warehouse.invoice.unknownStore'),
+        unknownOrder: t('warehouse.invoice.unknownOrder'),
+      },
+    )
+
+  // 发邮件与下载 PDF 共用同一份页面渲染逻辑，避免两套导出内容逐渐漂移。
+  const createStoreOrderInvoicePdfBase64 = async () => {
+    if (!printRootRef.current) {
+      throw new Error(t('warehouse.invoice.createPdfCanvasFailed'))
+    }
+
+    return createElementPdfBase64(printRootRef.current, {
+      createCanvasContextErrorMessage: t('warehouse.invoice.createPdfCanvasFailed'),
+    })
+  }
 
   const handlePrint = () => {
     window.print()
@@ -223,16 +272,7 @@ export default function StoreOrderInvoicePage() {
     try {
       await downloadElementAsPdf(
         printRootRef.current,
-        buildDocumentFileName(
-          t('warehouse.invoice.fileName'),
-          store?.storeName || order.storeCode,
-          order.orderNo || order.orderGUID,
-          'pdf',
-          {
-            unknownStore: t('warehouse.invoice.unknownStore'),
-            unknownOrder: t('warehouse.invoice.unknownOrder'),
-          },
-        ),
+        resolveInvoicePdfFileName(),
         {
           createCanvasContextErrorMessage: t('warehouse.invoice.createPdfCanvasFailed'),
         },
@@ -242,6 +282,64 @@ export default function StoreOrderInvoicePage() {
       message.error(error instanceof Error ? error.message : t('warehouse.invoice.downloadPdfFailed'))
     } finally {
       setDownloading(false)
+    }
+  }
+
+  const handleOpenEmailModal = () => {
+    setRecipientEmail(defaultRecipientEmail)
+    setEmailSubject(defaultEmailSubject)
+    setEmailBody(defaultEmailBody)
+    setSaveAsStoreDefault(true)
+    setEmailModalOpen(true)
+  }
+
+  const handleSendInvoiceEmail = async () => {
+    if (!order) {
+      return
+    }
+
+    const normalizedRecipientEmail = recipientEmail.trim()
+    if (!normalizedRecipientEmail) {
+      message.warning(t('warehouse.invoice.emailRequired'))
+      return
+    }
+    if (!EMAIL_REGEXP.test(normalizedRecipientEmail)) {
+      message.warning(t('warehouse.invoice.invalidEmail'))
+      return
+    }
+
+    setSendingEmail(true)
+    try {
+      const pdfBase64 = await createStoreOrderInvoicePdfBase64()
+      const pdfFileName = resolveInvoicePdfFileName()
+
+      await sendStoreOrderInvoiceEmail({
+        orderGUID: order.orderGUID,
+        toEmail: normalizedRecipientEmail,
+        subject: emailSubject.trim() || undefined,
+        body: emailBody.trim() || undefined,
+        pdfFileName,
+        pdfBase64,
+      })
+
+      if (saveAsStoreDefault && order.storeCode) {
+        await updateStoreOrderStoreContact({
+          orderGUID: order.orderGUID,
+          storeCode: order.storeCode,
+          contactEmail: normalizedRecipientEmail,
+        })
+
+        setStore((current) => (current ? { ...current, contactEmail: normalizedRecipientEmail } : current))
+        setOrder((current) => (current ? { ...current, storeContactEmail: normalizedRecipientEmail } : current))
+      }
+
+      message.success(t('warehouse.invoice.emailSendSuccess'))
+      setEmailModalOpen(false)
+    } catch (error) {
+      console.error(error)
+      message.error(error instanceof Error ? error.message : t('warehouse.invoice.emailSendFailed'))
+    } finally {
+      setSendingEmail(false)
     }
   }
 
@@ -278,6 +376,9 @@ export default function StoreOrderInvoicePage() {
         <Space wrap>
           <Button icon={<RollbackOutlined />} onClick={() => navigate(-1)}>
             {t('common.back')}
+          </Button>
+          <Button icon={<MailOutlined />} loading={sendingEmail} onClick={handleOpenEmailModal}>
+            {t('warehouse.invoice.sendEmail')}
           </Button>
           <Button icon={<FileExcelOutlined />} loading={exportingExcel} onClick={() => void handleExportExcel()}>
             {t('warehouse.invoice.exportExcel')}
@@ -335,7 +436,7 @@ export default function StoreOrderInvoicePage() {
               <th className="col-image">{t('column.image')}</th>
               <th className="col-item">{t('column.itemNumber')}</th>
               <th className="col-barcode">{t('column.barcode')}</th>
-              <th>{t('column.name')}</th>
+              <th className="col-name">{t('column.name')}</th>
               <th className="col-cost">{t('column.cost')}</th>
               <th className="col-qty">{t('column.orderQuantity')}</th>
               <th className="col-qty">{t('column.shipQuantity')}</th>
@@ -354,8 +455,8 @@ export default function StoreOrderInvoicePage() {
                       <Image
                         src={item.productImage}
                         alt=""
-                        width={40}
-                        height={40}
+                        width={36}
+                        height={36}
                         preview={false}
                         fallback={TRANSPARENT_IMAGE_FALLBACK}
                         style={{ objectFit: 'contain' }}
@@ -370,14 +471,14 @@ export default function StoreOrderInvoicePage() {
                       <BarcodePreview
                         value={item.barcode}
                         showCopy={false}
-                        textMaxWidth={110}
-                        options={{ width: 1, height: 24, margin: 0 }}
+                        textMaxWidth={92}
+                        options={{ width: 0.9, height: 20, margin: 0 }}
                       />
                     ) : (
                       item.productCode
                     )}
                   </td>
-                  <td>{item.productName || '--'}</td>
+                  <td className="col-name">{item.productName || '--'}</td>
                   <td className="col-cost">{formatCurrency(item.importPrice)}</td>
                   <td className="col-qty">{orderQuantity}</td>
                   <td className="col-qty">{allocQuantity}</td>
@@ -434,6 +535,43 @@ export default function StoreOrderInvoicePage() {
           <div>{t('warehouse.invoice.dateLabel')} {formatPrintDate(undefined)}</div>
         </div>
       </div>
+
+      <Modal
+        title={t('warehouse.invoice.emailModalTitle')}
+        open={emailModalOpen}
+        destroyOnClose
+        okText={t('warehouse.invoice.sendEmail')}
+        cancelText={t('common.cancel')}
+        confirmLoading={sendingEmail}
+        onCancel={() => setEmailModalOpen(false)}
+        onOk={() => void handleSendInvoiceEmail()}
+      >
+        <Space direction="vertical" size={12} style={{ width: '100%' }}>
+          <Input
+            type="email"
+            value={recipientEmail}
+            onChange={(event) => setRecipientEmail(event.target.value)}
+            placeholder={t('warehouse.invoice.recipientEmail')}
+          />
+          <Input
+            value={emailSubject}
+            onChange={(event) => setEmailSubject(event.target.value)}
+            placeholder={t('warehouse.invoice.emailSubject')}
+          />
+          <Input.TextArea
+            rows={5}
+            value={emailBody}
+            onChange={(event) => setEmailBody(event.target.value)}
+            placeholder={t('warehouse.invoice.emailBody')}
+          />
+          <Switch
+            checked={saveAsStoreDefault}
+            checkedChildren={t('warehouse.invoice.saveAsStoreDefault')}
+            unCheckedChildren={t('warehouse.invoice.saveAsStoreDefault')}
+            onChange={setSaveAsStoreDefault}
+          />
+        </Space>
+      </Modal>
     </div>
   )
 }

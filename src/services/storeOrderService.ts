@@ -31,6 +31,8 @@ import type {
   StoreOrderProductListResult,
   StoreOrderProductQuery,
   StoreOrderStatusUpdatePayload,
+  SendStoreOrderInvoiceEmailPayload,
+  UpdateStoreOrderStoreContactPayload,
   UpdateStoreOrderHeaderPayload,
   UpdateStoreOrderLinePayload,
   UpdateStoreOrderProductStatusPayload,
@@ -552,6 +554,20 @@ export async function updateStoreOrderHeader(payload: UpdateStoreOrderHeaderPayl
       ...payload,
       orderGuid: payload.orderGUID,
     },
+  })
+}
+
+export async function updateStoreOrderStoreContact(payload: UpdateStoreOrderStoreContactPayload) {
+  await request<ApiResponse<unknown> | unknown>(`${API_BASE}/store-contact/update`, {
+    method: 'POST',
+    data: payload,
+  })
+}
+
+export async function sendStoreOrderInvoiceEmail(payload: SendStoreOrderInvoiceEmailPayload) {
+  await request<ApiResponse<unknown> | unknown>(`${API_BASE}/invoice/email`, {
+    method: 'POST',
+    data: payload,
   })
 }
 

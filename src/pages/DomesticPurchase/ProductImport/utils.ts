@@ -1,4 +1,47 @@
 import type { ProductImportItem, Statistics, DuplicateGroup } from './types'
+import type { AssignContainerItem } from '../../../services/containerService'
+
+interface AssignProductsFailedItem {
+  productCode?: string
+  error?: string
+}
+
+interface AssignProductsResponseLike {
+  success: boolean
+  message?: string
+  data?: {
+    created?: number
+    updated?: number
+    failed?: AssignProductsFailedItem[]
+  }
+}
+
+export interface InvalidAssignContainerItem {
+  hbProductNo?: string
+  productCode?: string
+  fields: string[]
+  reasons: string[]
+}
+
+export interface AssignProductsResultSummary {
+  status: 'success' | 'partial' | 'failed' | 'apiError'
+  success: boolean
+  message?: string
+  created: number
+  updated: number
+  succeeded: number
+  failedCount: number
+  failed: Array<{
+    hbProductNo?: string
+    productCode?: string
+    reason: string
+  }>
+}
+
+export type AssignContainerValidationItem = AssignContainerItem & {
+  domesticPrice?: number
+  oemPrice?: number
+}
 
 export function generateImageUrl(productCode: string): string {
   if (!productCode) return ''
@@ -97,4 +140,139 @@ export function validateProduct(product: ProductImportItem, mode: string): { [fi
   if (!product.newProduct.productCode?.trim()) errors.productCode = '货号不能为空'
   if (mode === 'import' && !product.newProduct.productName?.trim()) errors.productName = '商品名称不能为空'
   return errors
+}
+
+function firstDefinedNumber(...values: Array<number | undefined>) {
+  return values.find((value) => value !== undefined)
+}
+
+function firstPositiveNumber(...values: Array<number | undefined>) {
+  return values.find((value) => value !== undefined && value > 0)
+}
+
+function isPositiveNumber(value: number | undefined) {
+  return value !== undefined && Number.isFinite(value) && value > 0
+}
+
+function isMissingText(value: string | undefined) {
+  return !value?.trim()
+}
+
+export function buildAssignContainerItems(products: ProductImportItem[], notes?: string): AssignContainerValidationItem[] {
+  return products.map((product) => ({
+    hbProductNo: product.newProduct.productCode,
+    productCode: product.matchedProduct?.productCode,
+    quantity: product.newProduct.quantity,
+    packingQuantity: firstPositiveNumber(product.newProduct.casePackQuantity, product.matchedProduct?.packingQuantity),
+    unitVolume: firstPositiveNumber(product.newProduct.volume, product.matchedProduct?.unitVolume),
+    domesticPrice: firstDefinedNumber(product.newProduct.domesticPrice, product.matchedProduct?.domesticPrice),
+    oemPrice: firstDefinedNumber(product.newProduct.oemPrice, product.matchedProduct?.oemPrice),
+    notes,
+  }))
+}
+
+export function stripAssignContainerItemsForRequest(items: AssignContainerValidationItem[]): AssignContainerItem[] {
+  return items.map(({ hbProductNo, productCode, quantity, packingQuantity, unitVolume, notes }) => ({
+    hbProductNo,
+    productCode,
+    quantity,
+    packingQuantity,
+    unitVolume,
+    notes,
+  }))
+}
+
+export function findInvalidAssignContainerItems(items: AssignContainerValidationItem[]): InvalidAssignContainerItem[] {
+  return items
+    .map((item) => {
+      const fields: string[] = []
+      const reasons: string[] = []
+      if (isMissingText(item.productCode)) {
+        fields.push('本地商品编码')
+        reasons.push('未匹配本地商品编码')
+      }
+      if (!isPositiveNumber(item.quantity)) fields.push('件数')
+      if (!isPositiveNumber(item.domesticPrice)) fields.push('国内价格')
+      if (!isPositiveNumber(item.packingQuantity)) fields.push('装箱数')
+      if (!isPositiveNumber(item.unitVolume)) fields.push('体积')
+      return { hbProductNo: item.hbProductNo, productCode: item.productCode, fields, reasons }
+    })
+    .filter((item) => item.fields.length > 0)
+}
+
+export function summarizeAssignProductsResult(
+  response: AssignProductsResponseLike,
+  items: AssignContainerItem[] = [],
+): AssignProductsResultSummary {
+  const created = response.data?.created ?? 0
+  const updated = response.data?.updated ?? 0
+  const failedItems = response.data?.failed ?? []
+  const succeeded = created + updated
+  const failedCount = failedItems.length
+  const hbProductNoByProductCode = new Map<string, string>()
+
+  // 用本次发送的 payload 补齐失败明细里的货号，便于页面直接展示。
+  items.forEach((item) => {
+    const productCode = item.productCode?.trim()
+    const hbProductNo = item.hbProductNo?.trim()
+    if (productCode && hbProductNo) {
+      hbProductNoByProductCode.set(productCode, hbProductNo)
+    }
+  })
+
+  const failed = failedItems.map((item) => ({
+    hbProductNo: item.productCode ? hbProductNoByProductCode.get(item.productCode.trim()) : undefined,
+    productCode: item.productCode,
+    reason: item.error || '未知原因',
+  }))
+
+  if (!response.success) {
+    return {
+      status: 'apiError',
+      success: false,
+      message: response.message,
+      created,
+      updated,
+      succeeded,
+      failedCount,
+      failed,
+    }
+  }
+
+  if (failedCount > 0 && succeeded === 0) {
+    return {
+      status: 'failed',
+      success: false,
+      message: response.message,
+      created,
+      updated,
+      succeeded,
+      failedCount,
+      failed,
+    }
+  }
+
+  if (failedCount > 0) {
+    return {
+      status: 'partial',
+      success: true,
+      message: response.message,
+      created,
+      updated,
+      succeeded,
+      failedCount,
+      failed,
+    }
+  }
+
+  return {
+    status: 'success',
+    success: true,
+    message: response.message,
+    created,
+    updated,
+    succeeded,
+    failedCount,
+    failed,
+  }
 }

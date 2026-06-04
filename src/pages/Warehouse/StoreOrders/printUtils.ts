@@ -154,7 +154,7 @@ export function collectElementBreakOffsets(root: HTMLElement, rowSelector: strin
   return offsets.filter((offset) => Number.isFinite(offset) && offset > 0)
 }
 
-export async function downloadElementAsPdf(element: HTMLElement, fileName: string, options?: DownloadPdfOptions) {
+async function createPdfDocumentFromElement(element: HTMLElement, options?: DownloadPdfOptions) {
   const [{ default: html2canvas }, { default: jsPDF }] = await Promise.all([import('html2canvas'), import('jspdf')])
   const canvas = await html2canvas(element, {
     scale: 2,
@@ -193,6 +193,19 @@ export async function downloadElementAsPdf(element: HTMLElement, fileName: strin
     const imageHeightInPdf = (slice.height * pdfWidth) / imageWidth
     pdf.addImage(imageData, PDF_IMAGE_FORMAT, 0, 0, pdfWidth, imageHeightInPdf)
   })
+
+  return pdf
+}
+
+export async function createElementPdfBase64(element: HTMLElement, options?: DownloadPdfOptions) {
+  const pdf = await createPdfDocumentFromElement(element, options)
+  const pdfDataUri = pdf.output('datauristring') as string
+  const separatorIndex = pdfDataUri.indexOf(',')
+  return separatorIndex >= 0 ? pdfDataUri.slice(separatorIndex + 1) : pdfDataUri
+}
+
+export async function downloadElementAsPdf(element: HTMLElement, fileName: string, options?: DownloadPdfOptions) {
+  const pdf = await createPdfDocumentFromElement(element, options)
 
   pdf.save(fileName)
 }

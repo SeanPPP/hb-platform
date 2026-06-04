@@ -99,11 +99,13 @@ async function runTest(name: string, execute: () => void | Promise<void>): Promi
 
 const pageFile = path.resolve(process.cwd(), 'src/pages/PosAdmin/LocalSupplierInvoices/index.tsx')
 const editPageFile = path.resolve(process.cwd(), 'src/pages/PosAdmin/LocalSupplierInvoices/InvoiceEdit/index.tsx')
+const detailPageFile = path.resolve(process.cwd(), 'src/pages/PosAdmin/LocalSupplierInvoiceDetailPage/index.tsx')
 const serviceFile = path.resolve(process.cwd(), 'src/services/localSupplierInvoiceService.ts')
 const typeFile = path.resolve(process.cwd(), 'src/types/localSupplierInvoice.ts')
 const globalStyleFile = path.resolve(process.cwd(), 'src/styles/global.css')
 const pageSource = readFileSync(pageFile, 'utf8')
 const editPageSource = readFileSync(editPageFile, 'utf8')
+const detailPageSource = readFileSync(detailPageFile, 'utf8')
 const serviceSource = readFileSync(serviceFile, 'utf8')
 const typeSource = readFileSync(typeFile, 'utf8')
 const globalStyleSource = readFileSync(globalStyleFile, 'utf8')
@@ -141,6 +143,38 @@ async function main() {
     assert(typeSource.includes('isDuplicateRequest?: boolean'), '后台任务结果应支持重复提交标记')
   })
   if (ensureHqTypeFailure) failures.push(ensureHqTypeFailure)
+
+  const invoiceDetailKeepAliveFailure = await runTest('分店进货单详情 Tab 切回已有进货单时应静默刷新且跳过相同数据写入', () => {
+    for (const [pageName, source] of [
+      ['编辑页', editPageSource],
+      ['只读详情页', detailPageSource],
+    ] as const) {
+      assert(
+        source.includes('loadedInvoiceGuidRef') &&
+          source.includes('visibleInvoiceGuidRef') &&
+          source.includes('shouldShowDetailInitialLoading({') &&
+          source.includes('void loadInvoiceAndDetails(shouldShowInitialLoading)'),
+        `${pageName} 缺少按发票 id 区分首次加载和保活恢复刷新，切回 Tab 会重新进入主 loading`,
+      )
+      assert(
+        source.includes('const loadDetails') &&
+          source.includes('showLoading = true') &&
+          source.includes('if (showLoading)') &&
+          source.includes('setDetailLoading(true)') &&
+          source.includes('setDetailLoading(false)') &&
+          source.includes('await loadDetails(showLoading)'),
+        `${pageName} 明细加载应跟随 showLoading 静默刷新；同进货单 Tab 恢复不应让表格进入 loading 闪白`,
+      )
+      assert(
+        source.includes('invoiceSnapshotRef') &&
+          source.includes('detailsSnapshotRef') &&
+          source.includes('areLocalSupplierInvoicesEqual(invoiceSnapshotRef.current, data)') &&
+          source.includes('areLocalSupplierInvoiceDetailsEqual(detailsSnapshotRef.current, data)'),
+        `${pageName} 后台返回相同订单头和明细时应跳过 setFieldsValue/setDetails，避免相同数据重绘一闪`,
+      )
+    }
+  })
+  if (invoiceDetailKeepAliveFailure) failures.push(invoiceDetailKeepAliveFailure)
 
   const jobTypeFailure = await runTest('更新到分店和更新HQ商品应声明后台 Job 契约字段', () => {
     assert(typeSource.includes('export interface LocalSupplierInvoiceJobBase'), '应声明本地进货单后台 Job 基础类型')

@@ -401,11 +401,34 @@ export default function LocalSupplierInvoicesPage() {
       width: 160,
       sorter: true,
       sortOrder: sortBy === 'storeCode' ? sortOrder : undefined,
-      render: (_: string, record) => (
-        <Tag color={getStableTagColor(record.storeCode || '')}>
-          {record.storeName ? `${record.storeCode} - ${record.storeName}` : record.storeCode || '--'}
-        </Tag>
-      ),
+      render: (_: string, record) => {
+        const storeText = record.storeName ? `${record.storeCode} - ${record.storeName}` : record.storeCode || '--'
+
+        return (
+          <Tag
+            color={getStableTagColor(record.storeCode || '')}
+            style={{
+              maxWidth: '100%',
+              whiteSpace: 'normal',
+            }}
+            title={storeText}
+          >
+            {/* 分店名称较长时允许自动换行，最多展示两行，避免挤压后续列。 */}
+            <span
+              style={{
+                display: '-webkit-box',
+                overflow: 'hidden',
+                lineHeight: '18px',
+                overflowWrap: 'anywhere',
+                WebkitBoxOrient: 'vertical',
+                WebkitLineClamp: 2,
+              }}
+            >
+              {storeText}
+            </span>
+          </Tag>
+        )
+      },
     },
     {
       title: t('column.supplier'),

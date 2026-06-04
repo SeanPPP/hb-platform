@@ -231,13 +231,22 @@ export interface DetectionResult {
   ItemNumber?: string
   Exists?: boolean
   MatchType?: string
+  ProductName?: string
+  EnglishName?: string
   WarehouseDomesticPrice?: number
   WarehouseOEMPrice?: number
   WarehouseImportPrice?: number
   WarehouseVolume?: number
+  PackingQuantity?: number
   WarehouseIsActive?: boolean
   productCode?: string
+  productName?: string
+  englishName?: string
+  warehouseDomesticPrice?: number
+  warehouseOEMPrice?: number
   warehouseImportPrice?: number
+  warehouseVolume?: number
+  packingQuantity?: number
   importPrice?: number
 }
 

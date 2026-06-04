@@ -99,12 +99,19 @@ export interface UpdateContainerRequest {
 export interface UpdateContainerDetailRequest {
   hguid: string
   调整浮率?: number
+  国内价格?: number
   进口价格?: number
   运输成本?: number
   商品名称?: string
   英文名称?: string
   贴牌价格?: number
+  单件装箱数?: number
+  单件体积?: number
+  装柜数量?: number
+  合计装柜体积?: number
+  合计装柜金额?: number
   IsActive?: boolean
+  SkipRelatedProductSync?: boolean
 }
 
 export interface CreateContainerRequest {

@@ -8,7 +8,7 @@ import { getActiveChinaSuppliers } from '../../../services/chinaSupplierService'
 import { assignProductsToContainer, checkContainerConflicts, getContainerList } from '../../../services/containerService'
 import { batchDetectProducts, batchImportConfirm, batchUpdateDomesticProducts, fixProductImage, sendToHq, syncToHBSales } from '../../../services/domesticProductImportService'
 import type { ProductImportItem, DuplicateGroup, PageState } from './types'
-import { calculateStatistics, createEmptyProduct, detectDuplicates, generateImageUrl, mergeDuplicateProducts, updateCalculatedFields, validateProduct } from './utils'
+import { buildAssignContainerItems, calculateStatistics, createEmptyProduct, detectDuplicates, findInvalidAssignContainerItems, generateImageUrl, mergeDuplicateProducts, stripAssignContainerItemsForRequest, summarizeAssignProductsResult, updateCalculatedFields, validateProduct } from './utils'
 import { ConflictResolutionDialog } from './ConflictResolutionDialog'
 import { DuplicateDialog } from './DuplicateDialog'
 import './styles.css'
@@ -254,10 +254,99 @@ export default function ProductImportPage() {
     } catch { message.error(t('productImport.batchUpdateFailed', '批量更新失败，请重试')); setState((prev) => ({ ...prev, saving: false })) }
   }, [state.products, state.supplier, handleDetect])
 
+  const formatInvalidAssignItems = useCallback((products: ReturnType<typeof buildAssignContainerItems>) => (
+    findInvalidAssignContainerItems(products)
+      .map((item) => `${item.hbProductNo || item.productCode || '(无货号)'}(${item.fields.join('/')})`)
+      .join(', ')
+  ), [])
+
+  const formatAssignFailedItems = useCallback((failed: Array<{ hbProductNo?: string; productCode?: string; reason: string }>) => (
+    failed
+      .map((item) => `${t('productImport.failedItemHbProductNo', '货号')}: ${item.hbProductNo || 'N/A'} / ${t('productImport.failedItemProductCode', '本地编码')}: ${item.productCode || 'N/A'} / ${item.reason}`)
+      .join(', ')
+  ), [t])
+
+  const getMissingProductCodeError = useCallback((items: ReturnType<typeof buildAssignContainerItems>) => {
+    const invalidItems = findInvalidAssignContainerItems(items)
+    const missingProductCodeItems = invalidItems.filter((item) => item.reasons.includes('未匹配本地商品编码'))
+    if (missingProductCodeItems.length === 0) return ''
+    return missingProductCodeItems
+      .map((item) => `${item.hbProductNo || 'N/A'}(${item.reasons.join('/')})`)
+      .join(', ')
+  }, [])
+
+  const mergeAssignSummaries = useCallback((
+    summaries: Array<ReturnType<typeof summarizeAssignProductsResult>>,
+  ) => {
+    const created = summaries.reduce((sum, item) => sum + item.created, 0)
+    const updated = summaries.reduce((sum, item) => sum + item.updated, 0)
+    const succeeded = summaries.reduce((sum, item) => sum + item.succeeded, 0)
+    const failedCount = summaries.reduce((sum, item) => sum + item.failedCount, 0)
+    const failed = summaries.flatMap((item) => item.failed)
+    const messageText = summaries.map((item) => item.message).filter(Boolean).join('; ')
+
+    if (summaries.some((item) => item.status === 'apiError')) {
+      return { status: 'apiError' as const, created, updated, succeeded, failedCount, failed, message: messageText }
+    }
+    if (failedCount > 0 && succeeded === 0) {
+      return { status: 'failed' as const, created, updated, succeeded, failedCount, failed, message: messageText }
+    }
+    if (failedCount > 0) {
+      return { status: 'partial' as const, created, updated, succeeded, failedCount, failed, message: messageText }
+    }
+    return { status: 'success' as const, created, updated, succeeded, failedCount, failed, message: messageText }
+  }, [])
+
+  const showAssignSummaryMessage = useCallback((summary: ReturnType<typeof mergeAssignSummaries>) => {
+    const failedDetails = summary.failedCount > 0
+      ? t('productImport.assignFailedDetails', '失败明细：{{items}}', { items: formatAssignFailedItems(summary.failed) })
+      : ''
+
+    if (summary.status === 'success') {
+      message.success(t('productImport.sendResultDetail', '发送完成：新建 {{created}}，更新 {{updated}}', { created: summary.created, updated: summary.updated }))
+      return
+    }
+
+    if (summary.status === 'partial') {
+      message.warning(t('productImport.sendPartialSuccess', '部分发送成功：新建 {{created}}，更新 {{updated}}，失败 {{failedCount}}。{{details}}', {
+        created: summary.created,
+        updated: summary.updated,
+        failedCount: summary.failedCount,
+        details: failedDetails,
+      }))
+      return
+    }
+
+    const fallbackMessage = t('productImport.sendFailedWithDetails', '发送失败：新建 {{created}}，更新 {{updated}}，失败 {{failedCount}}。{{details}}', {
+      created: summary.created,
+      updated: summary.updated,
+      failedCount: summary.failedCount,
+      details: failedDetails,
+    })
+    message.error([summary.message, failedDetails].filter(Boolean).join(' ') || fallbackMessage)
+  }, [formatAssignFailedItems, t])
+
+  const markProductsSentToContainer = useCallback((productIds: string[]) => {
+    if (productIds.length === 0) return
+    setState((prev) => ({
+      ...prev,
+      // 只有整批成功时才标记为已发送，避免局部失败时出现假成功状态。
+      products: prev.products.map((product) => productIds.includes(product.id) ? { ...product, sentToContainer: true } : product),
+    }))
+  }, [])
+
   const handleSendToContainer = useCallback(async (containerId: string, notes: string) => {
     const selectedProducts = state.products.filter((p) => state.selectedIds.includes(p.id))
     const invalid = selectedProducts.filter((p) => !p.newProduct.quantity || p.newProduct.quantity <= 0)
     if (invalid.length > 0) { message.error(t('productImport.invalidQuantity', '以下商品件数不能为空且必须>0：{{items}}', { items: invalid.map((p) => p.newProduct.productCode || '(无货号)').join(', ') })); return }
+    const assignItems = buildAssignContainerItems(selectedProducts, notes)
+    const missingProductCodeError = getMissingProductCodeError(assignItems)
+    if (missingProductCodeError) {
+      message.error(t('productImport.missingContainerProductCodes', '以下商品未匹配本地商品编码，无法发送到货柜：{{items}}', { items: missingProductCodeError }))
+      return
+    }
+    const invalidAssignItems = formatInvalidAssignItems(assignItems)
+    if (invalidAssignItems) { message.error(t('productImport.invalidContainerBusinessFields', '发送货柜商品业务字段不能为空或为 0：{{items}}', { items: invalidAssignItems })); return }
     try {
       const checkResp = await checkContainerConflicts(containerId, selectedProducts.filter((p) => p.newProduct.productCode || p.matchedProduct?.productCode).map((p) => ({ hbProductNo: p.newProduct.productCode || undefined, productCode: p.matchedProduct?.productCode || undefined })))
       if (checkResp?.data && checkResp.data.length > 0) {
@@ -266,13 +355,14 @@ export default function ProductImportPage() {
         setConflictDialogOpen(true)
         return
       }
-      const assignResp = await assignProductsToContainer(containerId, selectedProducts.map((p) => ({ hbProductNo: p.newProduct.productCode, productCode: p.matchedProduct?.productCode, quantity: p.newProduct.quantity, packingQuantity: p.newProduct.casePackQuantity, unitVolume: p.newProduct.volume, notes })), 'increase', notes)
-      if (assignResp.success) {
-        message.success(t('productImport.sendResultDetail', '发送完成：新建 {{created}}，更新 {{updated}}', { created: assignResp.data?.created || 0, updated: assignResp.data?.updated || 0 }))
-        setState((prev) => ({ ...prev, products: prev.products.map((p) => prev.selectedIds.includes(p.id) ? { ...p, sentToContainer: true } : p) }))
-      } else { message.error(assignResp.message || t('productImport.sendFailed', '发送失败')) }
+      const assignResp = await assignProductsToContainer(containerId, stripAssignContainerItemsForRequest(assignItems), 'increase', notes)
+      const summary = mergeAssignSummaries([summarizeAssignProductsResult(assignResp, assignItems)])
+      showAssignSummaryMessage(summary)
+      if (summary.status === 'success') {
+        markProductsSentToContainer(selectedProducts.map((product) => product.id))
+      }
     } catch (error: any) { message.error(error?.response?.data?.message || error?.message || t('productImport.sendFailed', '发送失败')) }
-  }, [state.products, state.selectedIds])
+  }, [formatInvalidAssignItems, getMissingProductCodeError, markProductsSentToContainer, mergeAssignSummaries, showAssignSummaryMessage, state.products, state.selectedIds, t])
 
   const handleSyncToHBSales = async () => {
     if (state.selectedIds.length === 0) { message.warning(t('productImport.selectSyncProductsFirst', '请先选择要同步的商品')); return }
@@ -342,17 +432,31 @@ export default function ProductImportPage() {
       increaseItems = products.filter((p) => perItem[p.newProduct.productCode] !== 'override')
     }
     try {
-      let totalCreated = 0, totalUpdated = 0
+      const summaries: Array<ReturnType<typeof summarizeAssignProductsResult>> = []
+      const overrideAssignItems = buildAssignContainerItems(overrideItems, notes)
+      const increaseAssignItems = buildAssignContainerItems(increaseItems, notes)
+      const allAssignItems = [...overrideAssignItems, ...increaseAssignItems]
+      const missingProductCodeError = getMissingProductCodeError(allAssignItems)
+      if (missingProductCodeError) { message.error(t('productImport.missingContainerProductCodes', '以下商品未匹配本地商品编码，无法发送到货柜：{{items}}', { items: missingProductCodeError })); return }
+      const invalidAssignItems = formatInvalidAssignItems(allAssignItems)
+      if (invalidAssignItems) { message.error(t('productImport.invalidContainerBusinessFields', '发送货柜商品业务字段不能为空或为 0：{{items}}', { items: invalidAssignItems })); return }
       if (overrideItems.length > 0) {
-        const resp = await assignProductsToContainer(containerId, overrideItems.map((p) => ({ hbProductNo: p.newProduct.productCode, productCode: p.matchedProduct?.productCode, quantity: p.newProduct.quantity, packingQuantity: p.newProduct.casePackQuantity, unitVolume: p.newProduct.volume, notes })), 'override', notes)
-        if (resp.success) { totalCreated += resp.data?.created || 0; totalUpdated += resp.data?.updated || 0 }
+        const resp = await assignProductsToContainer(containerId, stripAssignContainerItemsForRequest(overrideAssignItems), 'override', notes)
+        summaries.push(summarizeAssignProductsResult(resp, overrideAssignItems))
       }
       if (increaseItems.length > 0) {
-        const resp = await assignProductsToContainer(containerId, increaseItems.map((p) => ({ hbProductNo: p.newProduct.productCode, productCode: p.matchedProduct?.productCode, quantity: p.newProduct.quantity, packingQuantity: p.newProduct.casePackQuantity, unitVolume: p.newProduct.volume, notes })), 'increase', notes)
-        if (resp.success) { totalCreated += resp.data?.created || 0; totalUpdated += resp.data?.updated || 0 }
+        const resp = await assignProductsToContainer(containerId, stripAssignContainerItemsForRequest(increaseAssignItems), 'increase', notes)
+        summaries.push(summarizeAssignProductsResult(resp, increaseAssignItems))
       }
-      message.success(t('productImport.sendResult', '发送完成：新建 {{created}}，更新 {{updated}}', { created: totalCreated, updated: totalUpdated }))
-      setState((prev) => ({ ...prev, products: prev.products.map((p) => prev.selectedIds.includes(p.id) ? { ...p, sentToContainer: true } : p) }))
+      if (summaries.length === 0) {
+        message.warning(t('productImport.selectProductsFirst', '请先选择商品'))
+        return
+      }
+      const summary = mergeAssignSummaries(summaries)
+      showAssignSummaryMessage(summary)
+      if (summary.status === 'success') {
+        markProductsSentToContainer(products.map((product) => product.id))
+      }
       setPendingSend(null)
       setConflictDialogOpen(false)
     } catch (error: any) { message.error(error?.response?.data?.message || error?.message || t('productImport.sendFailed', '发送失败')) }

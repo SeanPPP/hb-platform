@@ -194,12 +194,19 @@ export async function batchUpdateDetails(
     data: updates.map((item) => ({
       HGUID: item.hguid,
       调整浮率: item.调整浮率,
+      国内价格: item.国内价格,
       进口价格: item.进口价格,
       运输成本: item.运输成本,
       商品名称: item.商品名称,
       英文名称: item.英文名称,
       贴牌价格: item.贴牌价格,
+      单件装箱数: item.单件装箱数,
+      单件体积: item.单件体积,
+      装柜数量: item.装柜数量,
+      合计装柜体积: item.合计装柜体积,
+      合计装柜金额: item.合计装柜金额,
       IsActive: item.IsActive,
+      SkipRelatedProductSync: item.SkipRelatedProductSync,
     })),
   })
 
@@ -274,7 +281,7 @@ interface CheckConflictsResponse {
   message?: string
 }
 
-interface AssignContainerItem {
+export interface AssignContainerItem {
   hbProductNo?: string
   productCode?: string
   quantity: number

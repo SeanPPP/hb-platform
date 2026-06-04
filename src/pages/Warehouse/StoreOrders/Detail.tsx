@@ -60,6 +60,7 @@ import {
   updateStoreOrderHeader,
   updateStoreOrderLine,
   updateStoreOrderStatus,
+  updateStoreOrderStoreContact,
   updateStoreOrderProductStatus,
 } from '../../../services/storeOrderService'
 import type { StoreDto } from '../../../types/store'
@@ -79,6 +80,7 @@ import { copyTextToClipboard } from '../../../utils/clipboard'
 import { useDynamicTabTitle } from '../../../hooks/useDynamicTabTitle'
 import { deriveStoreOrderDetailPermissions } from './storeOrderDetailPermissions'
 import { shouldShowStoreOrderDetailInitialLoading } from './detailLoadState'
+import { resolveStoreContactDraftValue } from './storeOrderStoreContact'
 import './compact.css'
 
 function formatDateTime(value?: string) {
@@ -654,12 +656,20 @@ export default function StoreOrderDetailPage() {
     storeCode?: string
     orderDate?: string
     shippingFee?: number
+    address: string
+    contactEmail: string
     remarks: string
   }>({
     storeCode: undefined,
     orderDate: undefined,
     shippingFee: undefined,
+    address: '',
+    contactEmail: '',
     remarks: '',
+  })
+  const [storeContactBaseline, setStoreContactBaseline] = useState({
+    address: '',
+    contactEmail: '',
   })
   const [selectedLineKeys, setSelectedLineKeys] = useState<React.Key[]>([])
   const [editingRows, setEditingRows] = useState<Record<string, { allocQuantity?: number; importPrice?: number }>>({})
@@ -729,7 +739,13 @@ export default function StoreOrderDetailPage() {
         storeCode: result?.storeCode,
         orderDate: result?.orderDate,
         shippingFee: result?.shippingFee,
+        address: result?.storeAddress || '',
+        contactEmail: result?.storeContactEmail || '',
         remarks: result?.remarks || '',
+      })
+      setStoreContactBaseline({
+        address: result?.storeAddress || '',
+        contactEmail: result?.storeContactEmail || '',
       })
       setEditingRows({})
       setDetailLoadStatus('loaded')
@@ -851,11 +867,6 @@ export default function StoreOrderDetailPage() {
     [headerForm.storeCode, stores],
   )
 
-  const currentStore = useMemo(
-    () => stores.find((item) => item.storeCode === headerForm.storeCode),
-    [headerForm.storeCode, stores],
-  )
-
   const totalAllocQuantity =
     detail?.totalAllocQuantity ?? detail?.items?.reduce((sum, item) => sum + (item.allocQuantity || 0), 0) ?? 0
 
@@ -960,6 +971,25 @@ export default function StoreOrderDetailPage() {
         shippingFee: headerForm.shippingFee,
         remarks: headerForm.remarks,
       })
+      const nextStoreAddress = headerForm.address.trim() ? headerForm.address : ''
+      const nextStoreContactEmail = headerForm.contactEmail.trim() ? headerForm.contactEmail : ''
+      const hasStoreContactChanged =
+        (nextStoreAddress || '') !== storeContactBaseline.address ||
+        (nextStoreContactEmail || '') !== storeContactBaseline.contactEmail
+
+      if (hasStoreContactChanged && detail.orderGUID && headerForm.storeCode) {
+        await updateStoreOrderStoreContact({
+          orderGUID: detail.orderGUID,
+          storeCode: headerForm.storeCode,
+          address: nextStoreAddress,
+          contactEmail: nextStoreContactEmail,
+        })
+        // 保存成功后把当前编辑值视为这家分店的最新默认值，避免继续误判成旧默认值。
+        setStoreContactBaseline({
+          address: nextStoreAddress,
+          contactEmail: nextStoreContactEmail,
+        })
+      }
       message.success(t('storeOrders.detail.headerSaveSuccess'))
       await loadDetail(false)
     } catch (error) {
@@ -1779,7 +1809,30 @@ export default function StoreOrderDetailPage() {
                     value={headerForm.storeCode}
                     options={storeOptions}
                     optionFilterProp="label"
-                    onChange={(value) => setHeaderForm((current) => ({ ...current, storeCode: value }))}
+                    onChange={(value) => {
+                      const nextStore = stores.find((item) => item.storeCode === value)
+                      const nextStoreAddress = nextStore?.address || ''
+                      const nextStoreContactEmail = nextStore?.contactEmail || ''
+
+                      setHeaderForm((current) => ({
+                        ...current,
+                        storeCode: value,
+                        address: resolveStoreContactDraftValue({
+                          currentValue: current.address,
+                          previousStoreValue: storeContactBaseline.address,
+                          nextStoreValue: nextStoreAddress,
+                        }),
+                        contactEmail: resolveStoreContactDraftValue({
+                          currentValue: current.contactEmail,
+                          previousStoreValue: storeContactBaseline.contactEmail,
+                          nextStoreValue: nextStoreContactEmail,
+                        }),
+                      }))
+                      setStoreContactBaseline({
+                        address: nextStoreAddress,
+                        contactEmail: nextStoreContactEmail,
+                      })
+                    }}
                   />
                 </Descriptions.Item>
                 <Descriptions.Item label={t('storeOrders.statusLabel')}>
@@ -1822,7 +1875,32 @@ export default function StoreOrderDetailPage() {
                   />
                 </Descriptions.Item>
                 <Descriptions.Item label={t('storeOrders.addressLabel')} span={2}>
-                  {currentStore?.address || detail.storeAddress || '--'}
+                  <Input.TextArea
+                    rows={2}
+                    disabled={isReadonlyOrder}
+                    value={headerForm.address}
+                    onChange={(event) =>
+                      setHeaderForm((current) => ({
+                        ...current,
+                        address: event.target.value,
+                      }))
+                    }
+                    placeholder={t('storeOrders.addressLabel')}
+                  />
+                </Descriptions.Item>
+                <Descriptions.Item label={t('storeOrders.contactEmailLabel')}>
+                  <Input
+                    type="email"
+                    disabled={isReadonlyOrder}
+                    value={headerForm.contactEmail}
+                    onChange={(event) =>
+                      setHeaderForm((current) => ({
+                        ...current,
+                        contactEmail: event.target.value,
+                      }))
+                    }
+                    placeholder={t('storeOrders.contactEmailLabel')}
+                  />
                 </Descriptions.Item>
                 <Descriptions.Item label={t('storeOrders.skuCountLabel')}>{detail.totalSKU ?? detail.items.length}</Descriptions.Item>
                 <Descriptions.Item label={t('storeOrders.remarksLabel')} span={3}>

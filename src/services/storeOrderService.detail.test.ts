@@ -2,7 +2,9 @@ import {
   getStoreOrderDetail,
   getStoreOrderDetailFull,
   getStoreOrderDetailProductCodes,
+  sendStoreOrderInvoiceEmail,
   updateStoreOrderStatus,
+  updateStoreOrderStoreContact,
   updateStoreOrderLine,
 } from './storeOrderService'
 
@@ -257,6 +259,100 @@ try {
       newStatus: 3,
     },
     '详情页状态更改应保持后端兼容 payload',
+  )
+} finally {
+  globalThis.fetch = originalFetch
+}
+
+try {
+  let capturedUrl = ''
+  let capturedMethod = ''
+  let capturedBody: unknown = null
+
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    capturedUrl = String(input)
+    capturedMethod = String(init?.method)
+    capturedBody = init?.body ? JSON.parse(String(init.body)) : null
+
+    return new Response(
+      JSON.stringify({
+        success: true,
+        data: null,
+      }),
+      {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      },
+    )
+  }) as typeof fetch
+
+  await updateStoreOrderStoreContact({
+    orderGUID: 'order-1',
+    storeCode: 'S001',
+    address: '1 Test Street',
+    contactEmail: 'store@example.com',
+  })
+
+  assertEqual(capturedUrl, '/api/react/v1/store-order/store-contact/update', '分店地址邮箱更新接口路径应保持契约一致')
+  assertEqual(capturedMethod, 'POST', '分店地址邮箱更新接口应使用 POST')
+  assertDeepEqual(
+    capturedBody,
+    {
+      orderGUID: 'order-1',
+      storeCode: 'S001',
+      address: '1 Test Street',
+      contactEmail: 'store@example.com',
+    },
+    '分店地址邮箱更新应原样发送前后端约定 payload',
+  )
+} finally {
+  globalThis.fetch = originalFetch
+}
+
+try {
+  let capturedUrl = ''
+  let capturedMethod = ''
+  let capturedBody: unknown = null
+
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    capturedUrl = String(input)
+    capturedMethod = String(init?.method)
+    capturedBody = init?.body ? JSON.parse(String(init.body)) : null
+
+    return new Response(
+      JSON.stringify({
+        success: true,
+        data: null,
+      }),
+      {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      },
+    )
+  }) as typeof fetch
+
+  await sendStoreOrderInvoiceEmail({
+    orderGUID: 'order-1',
+    toEmail: 'invoice@example.com',
+    subject: 'Store Order Invoice',
+    body: 'Please check the attached invoice.',
+    pdfFileName: 'invoice.pdf',
+    pdfBase64: 'JVBERi0xLjQK',
+  })
+
+  assertEqual(capturedUrl, '/api/react/v1/store-order/invoice/email', '发票邮件接口路径应保持契约一致')
+  assertEqual(capturedMethod, 'POST', '发票邮件接口应使用 POST')
+  assertDeepEqual(
+    capturedBody,
+    {
+      orderGUID: 'order-1',
+      toEmail: 'invoice@example.com',
+      subject: 'Store Order Invoice',
+      body: 'Please check the attached invoice.',
+      pdfFileName: 'invoice.pdf',
+      pdfBase64: 'JVBERi0xLjQK',
+    },
+    '发票邮件接口应原样发送邮件与 PDF payload',
   )
 } finally {
   globalThis.fetch = originalFetch
