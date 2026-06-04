@@ -9,10 +9,19 @@ import BarcodePreview from '../../../components/BarcodePreview'
 import { useDynamicTabTitle } from '../../../hooks/useDynamicTabTitle'
 import { useStableRouteContext } from '../../../hooks/useStableRouteContext'
 import { getStores } from '../../../services/storeService'
-import { getStoreOrderDetail, sendStoreOrderInvoiceEmail, updateStoreOrderStoreContact } from '../../../services/storeOrderService'
+import {
+  getStoreOrderDetail,
+  getStoreOrderInvoiceEmailJob,
+  sendStoreOrderInvoiceEmail,
+  updateStoreOrderStoreContact,
+} from '../../../services/storeOrderService'
 import type { StoreDto } from '../../../types/store'
 import type { StoreOrderDetail, StoreOrderDetailLine } from '../../../types/storeOrder'
 import { shouldShowStoreOrderDetailInitialLoading } from './detailLoadState'
+import {
+  StoreOrderInvoiceEmailPollingTimeoutError,
+  createStoreOrderInvoiceEmailJobPoller,
+} from './invoiceEmailJobPolling'
 import {
   buildDocumentFileName,
   createElementPdfBase64,
@@ -131,6 +140,7 @@ export default function StoreOrderInvoicePage() {
   // 记录当前发票已完成首次加载，保活 Tab 恢复时保留打印内容并静默刷新。
   const loadedOrderIdRef = useRef<string | null>(null)
   const visibleOrderIdRef = useRef<string | null>(null)
+  const stopInvoiceEmailPollingRef = useRef<(() => void) | null>(null)
   const [loading, setLoading] = useState(false)
   const [downloading, setDownloading] = useState(false)
   const [exportingExcel, setExportingExcel] = useState(false)
@@ -208,6 +218,13 @@ export default function StoreOrderInvoicePage() {
     })
     void load(shouldShowInitialLoading)
   }, [id])
+
+  useEffect(() => {
+    return () => {
+      stopInvoiceEmailPollingRef.current?.()
+      stopInvoiceEmailPollingRef.current = null
+    }
+  }, [])
 
   const totals = useMemo(() => {
     const subTotal = Number(order?.totalImportAmount || 0)
@@ -293,6 +310,40 @@ export default function StoreOrderInvoicePage() {
     setEmailModalOpen(true)
   }
 
+  const pollInvoiceEmailJob = async (jobId: string) => {
+    stopInvoiceEmailPollingRef.current?.()
+
+    const poller = createStoreOrderInvoiceEmailJobPoller({
+      jobId,
+      getJob: getStoreOrderInvoiceEmailJob,
+    })
+    stopInvoiceEmailPollingRef.current = poller.stop
+
+    try {
+      const result = await poller.promise
+      if (result.status === 'Succeeded') {
+        message.success(result.message || t('warehouse.invoice.emailSendSuccess'))
+        return
+      }
+
+      if (result.status === 'Failed') {
+        message.error(result.message || t('warehouse.invoice.emailSendFailed'))
+      }
+    } catch (error) {
+      if (error instanceof StoreOrderInvoiceEmailPollingTimeoutError) {
+        message.warning(t('warehouse.invoice.emailJobPollingTimeout'))
+        return
+      }
+
+      console.error(error)
+      message.error(t('warehouse.invoice.emailJobPollingFailed'))
+    } finally {
+      if (stopInvoiceEmailPollingRef.current === poller.stop) {
+        stopInvoiceEmailPollingRef.current = null
+      }
+    }
+  }
+
   const handleSendInvoiceEmail = async () => {
     if (!order) {
       return
@@ -313,7 +364,7 @@ export default function StoreOrderInvoicePage() {
       const pdfBase64 = await createStoreOrderInvoicePdfBase64()
       const pdfFileName = resolveInvoicePdfFileName()
 
-      await sendStoreOrderInvoiceEmail({
+      const job = await sendStoreOrderInvoiceEmail({
         orderGUID: order.orderGUID,
         toEmail: normalizedRecipientEmail,
         subject: emailSubject.trim() || undefined,
@@ -321,6 +372,12 @@ export default function StoreOrderInvoicePage() {
         pdfFileName,
         pdfBase64,
       })
+
+      message.success(t('warehouse.invoice.emailJobSubmitted'))
+      setEmailModalOpen(false)
+      if (job.jobId) {
+        void pollInvoiceEmailJob(job.jobId)
+      }
 
       if (saveAsStoreDefault && order.storeCode) {
         await updateStoreOrderStoreContact({
@@ -332,9 +389,6 @@ export default function StoreOrderInvoicePage() {
         setStore((current) => (current ? { ...current, contactEmail: normalizedRecipientEmail } : current))
         setOrder((current) => (current ? { ...current, storeContactEmail: normalizedRecipientEmail } : current))
       }
-
-      message.success(t('warehouse.invoice.emailSendSuccess'))
-      setEmailModalOpen(false)
     } catch (error) {
       console.error(error)
       message.error(error instanceof Error ? error.message : t('warehouse.invoice.emailSendFailed'))

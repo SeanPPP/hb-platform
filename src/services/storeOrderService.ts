@@ -14,6 +14,7 @@ import type {
   SyncMissingStoreOrdersResult,
   StoreOrderSyncJobResult,
   StoreOrderSyncJobStatus,
+  StoreOrderInvoiceEmailJobResult,
   StoreOrderBatchStatusUpdatePayload,
   StoreOrderBranchOption,
   StoreOrderDetail,
@@ -275,6 +276,31 @@ function normalizeStoreOrderSyncJobResult(
       : Array.isArray(result.errors)
         ? result.errors.filter((item): item is string => typeof item === 'string')
         : undefined,
+  }
+}
+
+function normalizeStoreOrderInvoiceEmailJobResult(
+  payload: unknown,
+  fallbackJobId = '',
+): StoreOrderInvoiceEmailJobResult {
+  const rawPayload = isRecord(payload) ? payload : null
+  const result = normalizeResult<Record<string, unknown> | null>(payload)
+  const job = isRecord(result) ? result : {}
+  const message =
+    typeof job.message === 'string'
+      ? job.message
+      : rawPayload && typeof rawPayload.message === 'string'
+        ? rawPayload.message
+        : undefined
+
+  return {
+    jobId: typeof job.jobId === 'string' ? job.jobId : fallbackJobId,
+    status: normalizeStoreOrderSyncJobStatus(job.status),
+    message,
+    orderGUID: typeof job.orderGUID === 'string' ? job.orderGUID : undefined,
+    toEmail: typeof job.toEmail === 'string' ? job.toEmail : undefined,
+    createdAt: typeof job.createdAt === 'string' ? job.createdAt : undefined,
+    completedAt: typeof job.completedAt === 'string' ? job.completedAt : undefined,
   }
 }
 
@@ -565,10 +591,23 @@ export async function updateStoreOrderStoreContact(payload: UpdateStoreOrderStor
 }
 
 export async function sendStoreOrderInvoiceEmail(payload: SendStoreOrderInvoiceEmailPayload) {
-  await request<ApiResponse<unknown> | unknown>(`${API_BASE}/invoice/email`, {
+  const response = await request<ApiResponse<unknown> | unknown>(`${API_BASE}/invoice/email`, {
     method: 'POST',
     data: payload,
   })
+
+  return normalizeStoreOrderInvoiceEmailJobResult(response)
+}
+
+export async function getStoreOrderInvoiceEmailJob(jobId: string) {
+  const response = await request<ApiResponse<unknown> | unknown>(
+    `${API_BASE}/invoice/email/jobs/${encodeURIComponent(jobId)}`,
+    {
+      method: 'GET',
+    },
+  )
+
+  return normalizeStoreOrderInvoiceEmailJobResult(response, jobId)
 }
 
 export async function completeStoreOrder(orderGuid: string) {

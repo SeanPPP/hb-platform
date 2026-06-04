@@ -2,6 +2,7 @@ import {
   getStoreOrderDetail,
   getStoreOrderDetailFull,
   getStoreOrderDetailProductCodes,
+  getStoreOrderInvoiceEmailJob,
   sendStoreOrderInvoiceEmail,
   updateStoreOrderStatus,
   updateStoreOrderStoreContact,
@@ -322,7 +323,14 @@ try {
     return new Response(
       JSON.stringify({
         success: true,
-        data: null,
+        data: {
+          jobId: 'job-1',
+          status: 'Queued',
+          message: '发票邮件发送任务已提交',
+          orderGUID: 'order-1',
+          toEmail: 'invoice@example.com',
+          createdAt: '2026-06-05T00:00:00Z',
+        },
       }),
       {
         status: 200,
@@ -331,7 +339,7 @@ try {
     )
   }) as typeof fetch
 
-  await sendStoreOrderInvoiceEmail({
+  const result = await sendStoreOrderInvoiceEmail({
     orderGUID: 'order-1',
     toEmail: 'invoice@example.com',
     subject: 'Store Order Invoice',
@@ -343,6 +351,19 @@ try {
   assertEqual(capturedUrl, '/api/react/v1/store-order/invoice/email', '发票邮件接口路径应保持契约一致')
   assertEqual(capturedMethod, 'POST', '发票邮件接口应使用 POST')
   assertDeepEqual(
+    result,
+    {
+      jobId: 'job-1',
+      status: 'Queued',
+      message: '发票邮件发送任务已提交',
+      orderGUID: 'order-1',
+      toEmail: 'invoice@example.com',
+      createdAt: '2026-06-05T00:00:00Z',
+      completedAt: undefined,
+    },
+    '发票邮件接口应返回归一化 job 状态',
+  )
+  assertDeepEqual(
     capturedBody,
     {
       orderGUID: 'order-1',
@@ -353,6 +374,56 @@ try {
       pdfBase64: 'JVBERi0xLjQK',
     },
     '发票邮件接口应原样发送邮件与 PDF payload',
+  )
+} finally {
+  globalThis.fetch = originalFetch
+}
+
+try {
+  let capturedUrl = ''
+  let capturedMethod = ''
+
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    capturedUrl = String(input)
+    capturedMethod = String(init?.method)
+
+    return new Response(
+      JSON.stringify({
+        success: true,
+        data: {
+          jobId: 'job/with spaces',
+          status: 'Succeeded',
+          message: '发票邮件发送成功',
+          completedAt: '2026-06-05T00:01:00Z',
+        },
+      }),
+      {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      },
+    )
+  }) as typeof fetch
+
+  const result = await getStoreOrderInvoiceEmailJob('job/with spaces')
+
+  assertEqual(
+    capturedUrl,
+    '/api/react/v1/store-order/invoice/email/jobs/job%2Fwith%20spaces',
+    '发票邮件 job 查询接口应编码 jobId',
+  )
+  assertEqual(capturedMethod, 'GET', '发票邮件 job 查询接口应使用 GET')
+  assertDeepEqual(
+    result,
+    {
+      jobId: 'job/with spaces',
+      status: 'Succeeded',
+      message: '发票邮件发送成功',
+      orderGUID: undefined,
+      toEmail: undefined,
+      createdAt: undefined,
+      completedAt: '2026-06-05T00:01:00Z',
+    },
+    '发票邮件 job 查询接口应归一化成功状态',
   )
 } finally {
   globalThis.fetch = originalFetch

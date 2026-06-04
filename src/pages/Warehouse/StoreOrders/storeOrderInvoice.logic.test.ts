@@ -41,6 +41,12 @@ async function main() {
 
   const emailEntryFailure = await runTest('发票页应提供发送邮件入口并锁定接口调用字符串', () => {
     assert(invoiceSource.includes('sendStoreOrderInvoiceEmail'), '发票页应接入发送邮件 service')
+    assert(invoiceSource.includes('getStoreOrderInvoiceEmailJob'), '发票页应接入发票邮件 job 查询 service')
+    assert(invoiceSource.includes('createStoreOrderInvoiceEmailJobPoller'), '发票页应使用发票邮件 job 轮询器')
+    assert(invoiceSource.includes('stopInvoiceEmailPollingRef.current?.()'), '发票页卸载时应清理邮件 job 轮询')
+    assert(invoiceSource.includes("result.status === 'Succeeded'"), '发票页应处理邮件发送成功终态')
+    assert(invoiceSource.includes("result.status === 'Failed'"), '发票页应处理邮件发送失败终态')
+    assert(invoiceSource.includes("t('warehouse.invoice.emailJobSubmitted')"), '发票页提交 job 后应立即提示任务已提交')
     assert(invoiceSource.includes('updateStoreOrderStoreContact'), '发票页应可把编辑后的邮箱保存为分店默认邮箱')
     assert(invoiceSource.includes('createStoreOrderInvoicePdfBase64'), '发票页应复用当前页面 PDF 生成逻辑输出 base64')
     assert(invoiceSource.includes("t('warehouse.invoice.sendEmail')"), '发票页应提供发送邮件按钮文案')
@@ -80,7 +86,19 @@ async function main() {
   if (invoiceCssFailure) failures.push(invoiceCssFailure)
 
   const translationFailure = await runTest('发票邮件文案应提供中英文翻译', () => {
-    for (const key of ['sendEmail', 'emailModalTitle', 'recipientEmail', 'emailSubject', 'emailBody', 'saveAsStoreDefault']) {
+    for (const key of [
+      'sendEmail',
+      'emailModalTitle',
+      'recipientEmail',
+      'emailSubject',
+      'emailBody',
+      'saveAsStoreDefault',
+      'emailJobSubmitted',
+      'emailSendSuccess',
+      'emailSendFailed',
+      'emailJobPollingFailed',
+      'emailJobPollingTimeout',
+    ]) {
       assert(zhSource.includes(`\"${key}\"`), `中文翻译缺少 ${key}`)
       assert(enSource.includes(`\"${key}\"`), `英文翻译缺少 ${key}`)
     }

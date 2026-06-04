@@ -397,6 +397,18 @@ export interface SendStoreOrderInvoiceEmailPayload {
   pdfBase64: string
 }
 
+export type StoreOrderInvoiceEmailJobStatus = 'Queued' | 'Running' | 'Succeeded' | 'Failed'
+
+export interface StoreOrderInvoiceEmailJobResult {
+  jobId: string
+  status: StoreOrderInvoiceEmailJobStatus
+  message?: string
+  orderGUID?: string
+  toEmail?: string
+  createdAt?: string
+  completedAt?: string
+}
+
 export interface StoreOrderBatchLookupPayload {
   codes: string[]
 }
