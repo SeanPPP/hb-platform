@@ -4,7 +4,7 @@ import { VitePWA } from 'vite-plugin-pwa';
 export default defineConfig(function (_a) {
     var mode = _a.mode;
     var env = loadEnv(mode, '.', '');
-    var proxyTarget = env.VITE_DEV_PROXY_TARGET || 'http://localhost:5001';
+    var proxyTarget = env.VITE_DEV_PROXY_TARGET || 'http://localhost:5002';
     return {
         plugins: [
             react(),
