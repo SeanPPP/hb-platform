@@ -48,12 +48,35 @@ async function main() {
     assert(invoiceSource.includes("result.status === 'Failed'"), '发票页应处理邮件发送失败终态')
     assert(invoiceSource.includes("t('warehouse.invoice.emailJobSubmitted')"), '发票页提交 job 后应立即提示任务已提交')
     assert(invoiceSource.includes('updateStoreOrderStoreContact'), '发票页应可把编辑后的邮箱保存为分店默认邮箱')
-    assert(invoiceSource.includes('createStoreOrderInvoicePdfBase64'), '发票页应复用当前页面 PDF 生成逻辑输出 base64')
+    assert(invoiceSource.includes('downloadElementAsPdf'), '发票页下载 PDF 按钮应保留前端导出逻辑')
+    assert(invoiceSource.includes('downloadInvoiceExcel'), '发票页导出 Excel 按钮应保留前端导出逻辑')
+    assert(!invoiceSource.includes('createStoreOrderInvoicePdfBase64'), '发票邮件不应保留前端邮件 PDF 生成 helper')
+    assert(
+      !invoiceSource.includes('const pdfBase64 = await createStoreOrderInvoicePdfBase64()'),
+      '发送邮件时不应再由前端生成 PDF base64',
+    )
+    assert(!invoiceSource.includes('pdfBase64,'), '发送邮件 payload 不应包含 pdfBase64')
+    assert(!invoiceSource.includes('pdfFileName,'), '发送邮件 payload 不应包含 pdfFileName')
     assert(invoiceSource.includes("t('warehouse.invoice.sendEmail')"), '发票页应提供发送邮件按钮文案')
     assert(invoiceSource.includes("t('warehouse.invoice.emailModalTitle')"), '发票页应提供发送邮件弹窗标题')
     assert(invoiceSource.includes("t('warehouse.invoice.saveAsStoreDefault')"), '发票页应提供保存为分店默认邮箱开关')
   })
   if (emailEntryFailure) failures.push(emailEntryFailure)
+
+  const invoicePdfBreakFailure = await runTest('发票 PDF 导出应按明细行和页脚边界切页', () => {
+    assert(invoiceSource.includes('collectElementBreakOffsets'), '发票页应引入 PDF 行边界收集工具')
+    assert(
+      invoiceSource.includes("'.store-order-invoice-table tbody tr'"),
+      '发票 PDF 应收集明细表格行边界',
+    )
+    assert(
+      invoiceSource.includes("'.store-order-invoice-footer'"),
+      '发票 PDF 应收集发票页脚边界',
+    )
+    assert(invoiceSource.includes('avoidBreakOffsets: getInvoicePdfBreakOffsets()'), '下载 PDF 应传入发票切页边界')
+    assert(!invoiceSource.includes('createElementPdfBase64(printRootRef.current'), '邮件链路不应再生成 PDF base64')
+  })
+  if (invoicePdfBreakFailure) failures.push(invoicePdfBreakFailure)
 
   const emailDefaultFailure = await runTest('发票页默认邮箱与地址读取顺序应保持业务约束', () => {
     assert(

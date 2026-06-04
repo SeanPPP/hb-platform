@@ -393,8 +393,6 @@ export interface SendStoreOrderInvoiceEmailPayload {
   toEmail: string
   subject?: string
   body?: string
-  pdfFileName: string
-  pdfBase64: string
 }
 
 export type StoreOrderInvoiceEmailJobStatus = 'Queued' | 'Running' | 'Succeeded' | 'Failed'

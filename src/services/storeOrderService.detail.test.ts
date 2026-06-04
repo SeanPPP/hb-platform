@@ -344,8 +344,6 @@ try {
     toEmail: 'invoice@example.com',
     subject: 'Store Order Invoice',
     body: 'Please check the attached invoice.',
-    pdfFileName: 'invoice.pdf',
-    pdfBase64: 'JVBERi0xLjQK',
   })
 
   assertEqual(capturedUrl, '/api/react/v1/store-order/invoice/email', '发票邮件接口路径应保持契约一致')
@@ -370,10 +368,8 @@ try {
       toEmail: 'invoice@example.com',
       subject: 'Store Order Invoice',
       body: 'Please check the attached invoice.',
-      pdfFileName: 'invoice.pdf',
-      pdfBase64: 'JVBERi0xLjQK',
     },
-    '发票邮件接口应原样发送邮件与 PDF payload',
+    '发票邮件接口应只发送确认信息，不上传前端附件',
   )
 } finally {
   globalThis.fetch = originalFetch

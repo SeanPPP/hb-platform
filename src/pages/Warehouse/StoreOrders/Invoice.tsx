@@ -24,7 +24,7 @@ import {
 } from './invoiceEmailJobPolling'
 import {
   buildDocumentFileName,
-  createElementPdfBase64,
+  collectElementBreakOffsets,
   downloadElementAsPdf,
   formatCurrency,
   formatPrintDate,
@@ -265,15 +265,16 @@ export default function StoreOrderInvoicePage() {
       },
     )
 
-  // 发邮件与下载 PDF 共用同一份页面渲染逻辑，避免两套导出内容逐渐漂移。
-  const createStoreOrderInvoicePdfBase64 = async () => {
+  const getInvoicePdfBreakOffsets = () => {
     if (!printRootRef.current) {
-      throw new Error(t('warehouse.invoice.createPdfCanvasFailed'))
+      return []
     }
 
-    return createElementPdfBase64(printRootRef.current, {
-      createCanvasContextErrorMessage: t('warehouse.invoice.createPdfCanvasFailed'),
-    })
+    return collectElementBreakOffsets(
+      printRootRef.current,
+      '.store-order-invoice-table tbody tr',
+      '.store-order-invoice-footer',
+    )
   }
 
   const handlePrint = () => {
@@ -292,6 +293,7 @@ export default function StoreOrderInvoicePage() {
         resolveInvoicePdfFileName(),
         {
           createCanvasContextErrorMessage: t('warehouse.invoice.createPdfCanvasFailed'),
+          avoidBreakOffsets: getInvoicePdfBreakOffsets(),
         },
       )
     } catch (error) {
@@ -361,16 +363,11 @@ export default function StoreOrderInvoicePage() {
 
     setSendingEmail(true)
     try {
-      const pdfBase64 = await createStoreOrderInvoicePdfBase64()
-      const pdfFileName = resolveInvoicePdfFileName()
-
       const job = await sendStoreOrderInvoiceEmail({
         orderGUID: order.orderGUID,
         toEmail: normalizedRecipientEmail,
         subject: emailSubject.trim() || undefined,
         body: emailBody.trim() || undefined,
-        pdfFileName,
-        pdfBase64,
       })
 
       message.success(t('warehouse.invoice.emailJobSubmitted'))
