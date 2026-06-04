@@ -1,0 +1,532 @@
+using System.Collections.Concurrent;
+using BlazorApp.Api.Interfaces.React;
+using BlazorApp.Shared.DTOs;
+
+namespace BlazorApp.Api.Services.React
+{
+    public class LocalSupplierInvoiceBatchUpdateJobConflictException : InvalidOperationException
+    {
+        public LocalSupplierInvoiceBatchUpdateJobConflictException(
+            string message,
+            string existingJobId,
+            string operationId
+        )
+            : base(message)
+        {
+            ExistingJobId = existingJobId;
+            OperationId = operationId;
+        }
+
+        public string ExistingJobId { get; }
+        public string OperationId { get; }
+    }
+
+    /// <summary>
+    /// 本地进货单批量更新后台任务服务。
+    /// </summary>
+    public class LocalSupplierInvoiceBatchUpdateJobService : ILocalSupplierInvoiceBatchUpdateJobService
+    {
+        private static readonly TimeSpan DefaultCompletedRetention = TimeSpan.FromMinutes(45);
+
+        private readonly ConcurrentDictionary<string, JobState<UpdateToStorePricesResultDto>> _storePriceJobs = new();
+        private readonly ConcurrentDictionary<string, JobState<UpdateHqProductsResult>> _hqProductJobs = new();
+        private readonly ConcurrentDictionary<string, string> _runningOperationJobIds = new();
+        private readonly ConcurrentDictionary<string, string> _runningInvoiceFamilyJobIds = new();
+        private readonly IServiceScopeFactory _serviceScopeFactory;
+        private readonly ILogger<LocalSupplierInvoiceBatchUpdateJobService> _logger;
+        private readonly TimeProvider _timeProvider;
+        private readonly TimeSpan _completedRetention;
+        private readonly object _jobStartSyncRoot = new();
+
+        public LocalSupplierInvoiceBatchUpdateJobService(
+            IServiceScopeFactory serviceScopeFactory,
+            ILogger<LocalSupplierInvoiceBatchUpdateJobService> logger
+        )
+            : this(serviceScopeFactory, logger, TimeProvider.System, DefaultCompletedRetention) { }
+
+        public LocalSupplierInvoiceBatchUpdateJobService(
+            IServiceScopeFactory serviceScopeFactory,
+            ILogger<LocalSupplierInvoiceBatchUpdateJobService> logger,
+            TimeProvider? timeProvider = null,
+            TimeSpan? completedRetention = null
+        )
+        {
+            _serviceScopeFactory = serviceScopeFactory;
+            _logger = logger;
+            _timeProvider = timeProvider ?? TimeProvider.System;
+            _completedRetention = completedRetention ?? DefaultCompletedRetention;
+        }
+
+        public Task<LocalSupplierInvoiceUpdateToStorePricesJobDto> StartUpdateToStorePricesJobAsync(
+            UpdateToStorePricesRequest request,
+            string updatedBy,
+            CancellationToken cancellationToken = default
+        )
+        {
+            CleanupExpiredJobs();
+
+            var operationId = BuildUpdateToStoreOperationId(request);
+            var duplicate = GetRunningStorePriceJob(operationId);
+            if (duplicate != null)
+            {
+                duplicate.IsDuplicateRequest = true;
+                return Task.FromResult(duplicate);
+            }
+
+            var familyKey = BuildInvoiceFamilyKey("update-to-store", request.InvoiceGuid);
+            var jobState = CreateJobState<UpdateToStorePricesResultDto>(
+                request.InvoiceGuid,
+                NormalizeStoreCodes(request.TargetStoreCodes),
+                operationId,
+                familyKey,
+                "更新到分店价格任务已提交"
+            );
+            lock (_jobStartSyncRoot)
+            {
+                duplicate = GetRunningStorePriceJob(operationId);
+                if (duplicate != null)
+                {
+                    duplicate.IsDuplicateRequest = true;
+                    return Task.FromResult(duplicate);
+                }
+                ThrowIfInvoiceFamilyRunning(familyKey, operationId, _storePriceJobs);
+
+                // 关键位置：先登记 job 和 operation，再启动后台任务，避免重复点击创建多个写入任务。
+                _storePriceJobs[jobState.JobId] = jobState;
+                _runningOperationJobIds[operationId] = jobState.JobId;
+                _runningInvoiceFamilyJobIds[familyKey] = jobState.JobId;
+            }
+
+            // 关键位置：后台任务重新创建作用域，避免复用请求结束后的 scoped 服务。
+            _ = Task.Run(() => ExecuteUpdateToStorePricesJobAsync(jobState, CloneUpdateToStoreRequest(request), updatedBy), CancellationToken.None);
+            return Task.FromResult(CreateStorePriceSnapshot(jobState, false));
+        }
+
+        public Task<LocalSupplierInvoiceUpdateToStorePricesJobDto?> GetUpdateToStorePricesJobAsync(
+            string jobId,
+            CancellationToken cancellationToken = default
+        )
+        {
+            CleanupExpiredJobs();
+            return Task.FromResult(
+                _storePriceJobs.TryGetValue(jobId, out var jobState)
+                    ? CreateStorePriceSnapshot(jobState, false)
+                    : null
+            );
+        }
+
+        public Task<LocalSupplierInvoiceUpdateHqProductsJobDto> StartUpdateHqProductsJobAsync(
+            string invoiceGuid,
+            UpdateHqProductsRequest request,
+            string updatedBy,
+            CancellationToken cancellationToken = default
+        )
+        {
+            CleanupExpiredJobs();
+
+            var operationId = BuildUpdateHqProductsOperationId(invoiceGuid, request);
+            var duplicate = GetRunningHqProductJob(operationId);
+            if (duplicate != null)
+            {
+                duplicate.IsDuplicateRequest = true;
+                return Task.FromResult(duplicate);
+            }
+
+            var familyKey = BuildInvoiceFamilyKey("update-hq-products", invoiceGuid);
+            var jobState = CreateJobState<UpdateHqProductsResult>(
+                invoiceGuid,
+                NormalizeStoreCodes(request.TargetStoreCodes),
+                operationId,
+                familyKey,
+                "更新HQ商品任务已提交"
+            );
+            lock (_jobStartSyncRoot)
+            {
+                duplicate = GetRunningHqProductJob(operationId);
+                if (duplicate != null)
+                {
+                    duplicate.IsDuplicateRequest = true;
+                    return Task.FromResult(duplicate);
+                }
+                ThrowIfInvoiceFamilyRunning(familyKey, operationId, _hqProductJobs);
+
+                // 关键位置：operationId 包含幂等键，确保同一轮前端重试接管同一个后台任务。
+                _hqProductJobs[jobState.JobId] = jobState;
+                _runningOperationJobIds[operationId] = jobState.JobId;
+                _runningInvoiceFamilyJobIds[familyKey] = jobState.JobId;
+            }
+
+            _ = Task.Run(() => ExecuteUpdateHqProductsJobAsync(jobState, invoiceGuid, CloneUpdateHqProductsRequest(request), updatedBy), CancellationToken.None);
+            return Task.FromResult(CreateHqProductSnapshot(jobState, false));
+        }
+
+        public Task<LocalSupplierInvoiceUpdateHqProductsJobDto?> GetUpdateHqProductsJobAsync(
+            string jobId,
+            CancellationToken cancellationToken = default
+        )
+        {
+            CleanupExpiredJobs();
+            return Task.FromResult(
+                _hqProductJobs.TryGetValue(jobId, out var jobState)
+                    ? CreateHqProductSnapshot(jobState, false)
+                    : null
+            );
+        }
+
+        private async Task ExecuteUpdateToStorePricesJobAsync(
+            JobState<UpdateToStorePricesResultDto> jobState,
+            UpdateToStorePricesRequest request,
+            string updatedBy
+        )
+        {
+            try
+            {
+                using var scope = _serviceScopeFactory.CreateScope();
+                var service = scope.ServiceProvider.GetRequiredService<ILocalSupplierInvoicesReactService>();
+                var response = await service.UpdateDetailsToStorePricesAsync(request, updatedBy);
+                var result = response.Data ?? response.Details as UpdateToStorePricesResultDto;
+                CompleteJob(
+                    jobState,
+                    response.Success
+                        ? LocalSupplierInvoiceBatchUpdateJobStatusConstants.Succeeded
+                        : LocalSupplierInvoiceBatchUpdateJobStatusConstants.Failed,
+                    result,
+                    response.Message
+                );
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "执行更新到分店价格 job 失败: {JobId}", jobState.JobId);
+                CompleteJob(
+                    jobState,
+                    LocalSupplierInvoiceBatchUpdateJobStatusConstants.Failed,
+                    new UpdateToStorePricesResultDto
+                    {
+                        Failed = 1,
+                        Errors = [ex.Message],
+                    },
+                    ex.Message
+                );
+            }
+        }
+
+        private async Task ExecuteUpdateHqProductsJobAsync(
+            JobState<UpdateHqProductsResult> jobState,
+            string invoiceGuid,
+            UpdateHqProductsRequest request,
+            string updatedBy
+        )
+        {
+            try
+            {
+                using var scope = _serviceScopeFactory.CreateScope();
+                var service = scope.ServiceProvider.GetRequiredService<ILocalSupplierInvoiceHqProductSyncService>();
+                var response = await service.UpdateHqProductsAsync(invoiceGuid, request, updatedBy);
+                var result = response.Data ?? response.Details as UpdateHqProductsResult;
+                CompleteJob(
+                    jobState,
+                    response.Success
+                        ? LocalSupplierInvoiceBatchUpdateJobStatusConstants.Succeeded
+                        : LocalSupplierInvoiceBatchUpdateJobStatusConstants.Failed,
+                    result,
+                    response.Message
+                );
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "执行更新HQ商品 job 失败: {JobId}", jobState.JobId);
+                CompleteJob(
+                    jobState,
+                    LocalSupplierInvoiceBatchUpdateJobStatusConstants.Failed,
+                    new UpdateHqProductsResult
+                    {
+                        Failed = 1,
+                        Errors = [new EnsureHqProductError { Message = ex.Message }],
+                    },
+                    ex.Message
+                );
+            }
+        }
+
+        private void CompleteJob<T>(
+            JobState<T> jobState,
+            string status,
+            T? result,
+            string? message
+        )
+        {
+            lock (_jobStartSyncRoot)
+            {
+                lock (jobState.SyncRoot)
+                {
+                    var completedAt = _timeProvider.GetUtcNow().UtcDateTime;
+                    jobState.Status = status;
+                    jobState.CompletedAt = completedAt;
+                    jobState.ExpiresAt = completedAt.Add(_completedRetention);
+                    jobState.Result = result;
+                    jobState.Message = message;
+                }
+
+                _runningOperationJobIds.TryRemove(jobState.OperationId, out _);
+                _runningInvoiceFamilyJobIds.TryRemove(jobState.FamilyKey, out _);
+            }
+        }
+
+        private void CleanupExpiredJobs()
+        {
+            var now = _timeProvider.GetUtcNow().UtcDateTime;
+            CleanupExpiredJobs(_storePriceJobs, now);
+            CleanupExpiredJobs(_hqProductJobs, now);
+        }
+
+        private void CleanupExpiredJobs<T>(
+            ConcurrentDictionary<string, JobState<T>> jobs,
+            DateTime now
+        )
+        {
+            foreach (var pair in jobs)
+            {
+                var state = pair.Value;
+                if (state.ExpiresAt.HasValue && state.ExpiresAt.Value <= now)
+                {
+                    jobs.TryRemove(pair.Key, out _);
+                }
+            }
+        }
+
+        private void ThrowIfInvoiceFamilyRunning<T>(
+            string familyKey,
+            string operationId,
+            ConcurrentDictionary<string, JobState<T>> jobs
+        )
+        {
+            if (!_runningInvoiceFamilyJobIds.TryGetValue(familyKey, out var existingJobId))
+                return;
+            if (!jobs.TryGetValue(existingJobId, out var existingState) || !IsRunning(existingState))
+            {
+                _runningInvoiceFamilyJobIds.TryRemove(familyKey, out _);
+                return;
+            }
+
+            throw new LocalSupplierInvoiceBatchUpdateJobConflictException(
+                "同一张本地进货单已有同类后台任务正在执行，请等待完成后再提交新的批量写入",
+                existingJobId,
+                operationId
+            );
+        }
+
+        private LocalSupplierInvoiceUpdateToStorePricesJobDto? GetRunningStorePriceJob(string operationId)
+        {
+            return _runningOperationJobIds.TryGetValue(operationId, out var jobId)
+                && _storePriceJobs.TryGetValue(jobId, out var jobState)
+                && IsRunning(jobState)
+                    ? CreateStorePriceSnapshot(jobState, true)
+                    : null;
+        }
+
+        private LocalSupplierInvoiceUpdateHqProductsJobDto? GetRunningHqProductJob(string operationId)
+        {
+            return _runningOperationJobIds.TryGetValue(operationId, out var jobId)
+                && _hqProductJobs.TryGetValue(jobId, out var jobState)
+                && IsRunning(jobState)
+                    ? CreateHqProductSnapshot(jobState, true)
+                    : null;
+        }
+
+        private static bool IsRunning<T>(JobState<T> jobState)
+        {
+            lock (jobState.SyncRoot)
+            {
+                return jobState.Status == LocalSupplierInvoiceBatchUpdateJobStatusConstants.Running;
+            }
+        }
+
+        private JobState<T> CreateJobState<T>(
+            string invoiceGuid,
+            List<string> targetStoreCodes,
+            string operationId,
+            string familyKey,
+            string message
+        )
+        {
+            return new JobState<T>
+            {
+                JobId = Guid.NewGuid().ToString("N"),
+                InvoiceGuid = invoiceGuid,
+                TargetStoreCodes = targetStoreCodes,
+                OperationId = operationId,
+                FamilyKey = familyKey,
+                CreatedAt = _timeProvider.GetUtcNow().UtcDateTime,
+                Message = message,
+            };
+        }
+
+        private static LocalSupplierInvoiceUpdateToStorePricesJobDto CreateStorePriceSnapshot(
+            JobState<UpdateToStorePricesResultDto> jobState,
+            bool isDuplicateRequest
+        )
+        {
+            lock (jobState.SyncRoot)
+            {
+                return new LocalSupplierInvoiceUpdateToStorePricesJobDto
+                {
+                    JobId = jobState.JobId,
+                    InvoiceGuid = jobState.InvoiceGuid,
+                    TargetStoreCodes = jobState.TargetStoreCodes.ToList(),
+                    OperationId = jobState.OperationId,
+                    Status = jobState.Status,
+                    IsDuplicateRequest = isDuplicateRequest,
+                    CreatedAt = jobState.CreatedAt,
+                    CompletedAt = jobState.CompletedAt,
+                    ExpiresAt = jobState.ExpiresAt,
+                    Message = jobState.Message,
+                    Result = jobState.Result,
+                };
+            }
+        }
+
+        private static LocalSupplierInvoiceUpdateHqProductsJobDto CreateHqProductSnapshot(
+            JobState<UpdateHqProductsResult> jobState,
+            bool isDuplicateRequest
+        )
+        {
+            lock (jobState.SyncRoot)
+            {
+                return new LocalSupplierInvoiceUpdateHqProductsJobDto
+                {
+                    JobId = jobState.JobId,
+                    InvoiceGuid = jobState.InvoiceGuid,
+                    TargetStoreCodes = jobState.TargetStoreCodes.ToList(),
+                    OperationId = jobState.OperationId,
+                    Status = jobState.Status,
+                    IsDuplicateRequest = isDuplicateRequest,
+                    CreatedAt = jobState.CreatedAt,
+                    CompletedAt = jobState.CompletedAt,
+                    ExpiresAt = jobState.ExpiresAt,
+                    Message = jobState.Message,
+                    Result = jobState.Result,
+                };
+            }
+        }
+
+        private static string BuildUpdateToStoreOperationId(UpdateToStorePricesRequest request)
+        {
+            return string.Join(
+                "|",
+                "update-to-store",
+                request.InvoiceGuid,
+                JoinSorted(request.DetailGuids),
+                JoinSorted(request.TargetStoreCodes),
+                BuildUpdateFieldsKey(request.UpdateFields)
+            );
+        }
+
+        private static string BuildUpdateHqProductsOperationId(
+            string invoiceGuid,
+            UpdateHqProductsRequest request
+        )
+        {
+            return string.Join(
+                "|",
+                "update-hq-products",
+                invoiceGuid,
+                JoinSorted(request.DetailGuids),
+                JoinSorted(request.TargetStoreCodes),
+                BuildUpdateFieldsKey(request.UpdateFields),
+                request.IdempotencyKey ?? string.Empty
+            );
+        }
+
+        private static string BuildInvoiceFamilyKey(string family, string invoiceGuid)
+        {
+            return string.Join("|", family, invoiceGuid);
+        }
+
+        private static List<string> NormalizeStoreCodes(IEnumerable<string>? values)
+        {
+            return (values ?? [])
+                .Where(value => !string.IsNullOrWhiteSpace(value))
+                .Select(value => value.Trim())
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(value => value)
+                .ToList();
+        }
+
+        private static string JoinSorted(IEnumerable<string>? values)
+        {
+            return string.Join(",", NormalizeStoreCodes(values));
+        }
+
+        private static string BuildUpdateFieldsKey(UpdateToStorePricesFields fields)
+        {
+            return string.Join(
+                ",",
+                fields.UpdatePurchasePrice,
+                fields.PurchasePrice,
+                fields.UpdateRetailPrice,
+                fields.RetailPrice,
+                fields.UpdateIsAutoPricing,
+                fields.IsAutoPricing,
+                fields.UpdateIsSpecialProduct,
+                fields.IsSpecialProduct,
+                fields.UpdateDiscountRate,
+                fields.DiscountRate
+            );
+        }
+
+        private static UpdateToStorePricesRequest CloneUpdateToStoreRequest(UpdateToStorePricesRequest request)
+        {
+            return new UpdateToStorePricesRequest
+            {
+                InvoiceGuid = request.InvoiceGuid,
+                DetailGuids = request.DetailGuids?.ToList() ?? new List<string>(),
+                TargetStoreCodes = request.TargetStoreCodes?.ToList() ?? new List<string>(),
+                UpdateFields = CloneUpdateFields(request.UpdateFields),
+            };
+        }
+
+        private static UpdateHqProductsRequest CloneUpdateHqProductsRequest(UpdateHqProductsRequest request)
+        {
+            return new UpdateHqProductsRequest
+            {
+                DetailGuids = request.DetailGuids?.ToList() ?? new List<string>(),
+                TargetStoreCodes = request.TargetStoreCodes?.ToList() ?? new List<string>(),
+                UpdateFields = CloneUpdateFields(request.UpdateFields),
+                IdempotencyKey = request.IdempotencyKey,
+            };
+        }
+
+        private static UpdateToStorePricesFields CloneUpdateFields(UpdateToStorePricesFields fields)
+        {
+            return new UpdateToStorePricesFields
+            {
+                UpdatePurchasePrice = fields.UpdatePurchasePrice,
+                PurchasePrice = fields.PurchasePrice,
+                UpdateRetailPrice = fields.UpdateRetailPrice,
+                RetailPrice = fields.RetailPrice,
+                UpdateIsAutoPricing = fields.UpdateIsAutoPricing,
+                IsAutoPricing = fields.IsAutoPricing,
+                UpdateIsSpecialProduct = fields.UpdateIsSpecialProduct,
+                IsSpecialProduct = fields.IsSpecialProduct,
+                UpdateDiscountRate = fields.UpdateDiscountRate,
+                DiscountRate = fields.DiscountRate,
+            };
+        }
+
+        private sealed class JobState<T>
+        {
+            public object SyncRoot { get; } = new();
+            public string JobId { get; init; } = string.Empty;
+            public string InvoiceGuid { get; init; } = string.Empty;
+            public List<string> TargetStoreCodes { get; init; } = new();
+            public string OperationId { get; init; } = string.Empty;
+            public string FamilyKey { get; init; } = string.Empty;
+            public string Status { get; set; } = LocalSupplierInvoiceBatchUpdateJobStatusConstants.Running;
+            public DateTime CreatedAt { get; init; }
+            public DateTime? CompletedAt { get; set; }
+            public DateTime? ExpiresAt { get; set; }
+            public string? Message { get; set; }
+            public T? Result { get; set; }
+        }
+    }
+}

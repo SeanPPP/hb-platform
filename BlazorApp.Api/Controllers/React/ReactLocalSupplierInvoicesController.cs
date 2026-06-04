@@ -1,5 +1,6 @@
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces.React;
+using BlazorApp.Api.Services.React;
 using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
@@ -17,19 +18,22 @@ namespace BlazorApp.Api.Controllers.React
         private readonly ILocalSupplierInvoicesReactService _service;
         private readonly ILocalSupplierInvoiceHqSyncService _hqSyncService;
         private readonly ILocalSupplierInvoiceHqProductSyncService? _hqProductSyncService;
+        private readonly ILocalSupplierInvoiceBatchUpdateJobService? _batchUpdateJobService;
         private readonly SqlSugarContext _dbContext;
 
         public ReactLocalSupplierInvoicesController(
             ILocalSupplierInvoicesReactService service,
             SqlSugarContext dbContext,
             ILocalSupplierInvoiceHqSyncService hqSyncService,
-            ILocalSupplierInvoiceHqProductSyncService? hqProductSyncService = null
+            ILocalSupplierInvoiceHqProductSyncService? hqProductSyncService = null,
+            ILocalSupplierInvoiceBatchUpdateJobService? batchUpdateJobService = null
         )
         {
             _service = service;
             _dbContext = dbContext;
             _hqSyncService = hqSyncService;
             _hqProductSyncService = hqProductSyncService;
+            _batchUpdateJobService = batchUpdateJobService;
         }
 
         private bool IsFullStoreAccessUser()
@@ -544,6 +548,62 @@ namespace BlazorApp.Api.Controllers.React
             );
         }
 
+        [HttpPost("update-to-store-prices/jobs")]
+        [Authorize(Policy = Permissions.LocalPurchase.Edit)]
+        public async Task<IActionResult> StartUpdateToStorePricesJob(
+            [FromBody] UpdateToStorePricesRequest? dto,
+            CancellationToken cancellationToken
+        )
+        {
+            if (dto == null)
+                return BadRequest(new { success = false, message = "请求参数不能为空" });
+            if (_batchUpdateJobService == null)
+                return BadRequest(new { success = false, message = "本地进货单后台任务服务未注册" });
+            if (!await CanAccessInvoiceAsync(dto.InvoiceGuid))
+                return Forbid();
+            if (dto.TargetStoreCodes == null || !await CanAccessAllStoresAsync(dto.TargetStoreCodes))
+                return Forbid();
+
+            var user = User.Identity?.Name ?? "system";
+            try
+            {
+                var job = await _batchUpdateJobService.StartUpdateToStorePricesJobAsync(
+                    dto,
+                    user,
+                    cancellationToken
+                );
+                return Ok(new { success = true, data = job, message = "更新到分店价格任务已提交" });
+            }
+            catch (LocalSupplierInvoiceBatchUpdateJobConflictException ex)
+            {
+                return Conflict(new { success = false, message = ex.Message, data = new { ex.ExistingJobId } });
+            }
+        }
+
+        [HttpGet("update-to-store-prices/jobs/{jobId}")]
+        [Authorize(Policy = Permissions.LocalPurchase.Edit)]
+        public async Task<IActionResult> GetUpdateToStorePricesJob(
+            [FromRoute] string jobId,
+            CancellationToken cancellationToken
+        )
+        {
+            if (_batchUpdateJobService == null)
+                return BadRequest(new { success = false, message = "本地进货单后台任务服务未注册" });
+            if (string.IsNullOrWhiteSpace(jobId))
+                return BadRequest(new { success = false, message = "jobId 不能为空" });
+
+            var job = await _batchUpdateJobService.GetUpdateToStorePricesJobAsync(jobId, cancellationToken);
+            if (job == null)
+                return NotFound(new { success = false, message = "更新到分店价格任务不存在或已过期" });
+
+            if (!await CanAccessInvoiceAsync(job.InvoiceGuid))
+                return Forbid();
+            if (!await CanAccessAllStoresAsync(job.TargetStoreCodes))
+                return Forbid();
+
+            return Ok(new { success = true, data = job, message = "查询成功" });
+        }
+
         [HttpPost("check-products")]
         [Authorize(Policy = Permissions.LocalPurchase.Edit)]
         public async Task<IActionResult> CheckProducts([FromBody] CheckProductsRequest dto)
@@ -637,6 +697,68 @@ namespace BlazorApp.Api.Controllers.React
                     details = result.Details ?? result.Data,
                 }
             );
+        }
+
+        [HttpPost("{invoiceGuid}/details/update-hq-products/jobs")]
+        [Authorize(Policy = Permissions.LocalPurchase.Edit)]
+        [Authorize(Policy = Permissions.LocalPurchase.PushToHq)]
+        public async Task<IActionResult> StartUpdateHqProductsJob(
+            [FromRoute] string invoiceGuid,
+            [FromBody] UpdateHqProductsRequest? dto,
+            CancellationToken cancellationToken
+        )
+        {
+            if (dto == null)
+                return BadRequest(new { success = false, message = "请求参数不能为空" });
+            if (_batchUpdateJobService == null)
+                return BadRequest(new { success = false, message = "本地进货单后台任务服务未注册" });
+            if (!await CanAccessInvoiceAsync(invoiceGuid))
+                return Forbid();
+            if (dto.TargetStoreCodes == null || !await CanAccessAllStoresAsync(dto.TargetStoreCodes))
+                return Forbid();
+
+            var user = User.Identity?.Name ?? "system";
+            try
+            {
+                var job = await _batchUpdateJobService.StartUpdateHqProductsJobAsync(
+                    invoiceGuid,
+                    dto,
+                    user,
+                    cancellationToken
+                );
+                return Ok(new { success = true, data = job, message = "更新HQ商品任务已提交" });
+            }
+            catch (LocalSupplierInvoiceBatchUpdateJobConflictException ex)
+            {
+                return Conflict(new { success = false, message = ex.Message, data = new { ex.ExistingJobId } });
+            }
+        }
+
+        [HttpGet("{invoiceGuid}/details/update-hq-products/jobs/{jobId}")]
+        [Authorize(Policy = Permissions.LocalPurchase.Edit)]
+        [Authorize(Policy = Permissions.LocalPurchase.PushToHq)]
+        public async Task<IActionResult> GetUpdateHqProductsJob(
+            [FromRoute] string invoiceGuid,
+            [FromRoute] string jobId,
+            CancellationToken cancellationToken
+        )
+        {
+            if (_batchUpdateJobService == null)
+                return BadRequest(new { success = false, message = "本地进货单后台任务服务未注册" });
+            if (string.IsNullOrWhiteSpace(jobId))
+                return BadRequest(new { success = false, message = "jobId 不能为空" });
+            if (!await CanAccessInvoiceAsync(invoiceGuid))
+                return Forbid();
+
+            var job = await _batchUpdateJobService.GetUpdateHqProductsJobAsync(jobId, cancellationToken);
+            if (job == null)
+                return NotFound(new { success = false, message = "更新HQ商品任务不存在或已过期" });
+            if (!string.Equals(job.InvoiceGuid, invoiceGuid, StringComparison.OrdinalIgnoreCase))
+                return NotFound(new { success = false, message = "更新HQ商品任务不存在或已过期" });
+            if (!await CanAccessAllStoresAsync(job.TargetStoreCodes))
+                return Forbid();
+
+            return Ok(new { success = true, data = job, message = "查询成功" });
         }
 
         [HttpPost("{invoiceGuid}/details/paste")]

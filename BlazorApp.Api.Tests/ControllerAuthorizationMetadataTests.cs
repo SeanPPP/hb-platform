@@ -70,6 +70,30 @@ public class ControllerAuthorizationMetadataTests
             nameof(ReactLocalSupplierInvoicesController.UpdateHqProducts),
             LocalPurchasePushToHq
         );
+        yield return Policy<ReactLocalSupplierInvoicesController>(
+            nameof(ReactLocalSupplierInvoicesController.StartUpdateToStorePricesJob),
+            Permissions.LocalPurchase.Edit
+        );
+        yield return Policy<ReactLocalSupplierInvoicesController>(
+            nameof(ReactLocalSupplierInvoicesController.GetUpdateToStorePricesJob),
+            Permissions.LocalPurchase.Edit
+        );
+        yield return Policy<ReactLocalSupplierInvoicesController>(
+            nameof(ReactLocalSupplierInvoicesController.StartUpdateHqProductsJob),
+            Permissions.LocalPurchase.Edit
+        );
+        yield return Policy<ReactLocalSupplierInvoicesController>(
+            nameof(ReactLocalSupplierInvoicesController.StartUpdateHqProductsJob),
+            LocalPurchasePushToHq
+        );
+        yield return Policy<ReactLocalSupplierInvoicesController>(
+            nameof(ReactLocalSupplierInvoicesController.GetUpdateHqProductsJob),
+            Permissions.LocalPurchase.Edit
+        );
+        yield return Policy<ReactLocalSupplierInvoicesController>(
+            nameof(ReactLocalSupplierInvoicesController.GetUpdateHqProductsJob),
+            LocalPurchasePushToHq
+        );
 
         yield return Policy<DomesticProductsController>(
             nameof(DomesticProductsController.GetDomesticProducts),

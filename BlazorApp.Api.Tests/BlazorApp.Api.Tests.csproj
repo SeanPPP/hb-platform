@@ -66,6 +66,7 @@
     <Compile Include="StoreRetailPriceHqSyncContractTests.cs" />
     <Compile Include="LocalSupplierInvoiceHqSyncContractTests.cs" />
     <Compile Include="LocalSupplierInvoiceHqProductSyncTests.cs" />
+    <Compile Include="LocalSupplierInvoiceBatchUpdateJobServiceTests.cs" />
     <Compile Include="ContainerHqSyncServiceTests.cs" />
     <Compile Include="ContainerReactServiceBatchUpdateDetailsTests.cs" />
     <Compile Include="ContainerProductCreationServiceTests.cs" />

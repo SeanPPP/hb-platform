@@ -248,6 +248,48 @@ namespace BlazorApp.Shared.DTOs
         public int Skipped { get; set; }
     }
 
+    public static class LocalSupplierInvoiceBatchUpdateJobStatusConstants
+    {
+        public const string Running = "Running";
+        public const string Succeeded = "Succeeded";
+        public const string Failed = "Failed";
+    }
+
+    /// <summary>
+    /// 本地进货单批量后台任务基础字段。
+    /// </summary>
+    public abstract class LocalSupplierInvoiceBatchUpdateJobDtoBase
+    {
+        public string JobId { get; set; } = string.Empty;
+        public string InvoiceGuid { get; set; } = string.Empty;
+        public List<string> TargetStoreCodes { get; set; } = new();
+        public string OperationId { get; set; } = string.Empty;
+        public string Status { get; set; } = LocalSupplierInvoiceBatchUpdateJobStatusConstants.Running;
+        public bool IsDuplicateRequest { get; set; }
+        public DateTime CreatedAt { get; set; }
+        public DateTime? CompletedAt { get; set; }
+        public DateTime? ExpiresAt { get; set; }
+        public string? Message { get; set; }
+    }
+
+    /// <summary>
+    /// 更新到分店价格后台任务状态。
+    /// </summary>
+    public class LocalSupplierInvoiceUpdateToStorePricesJobDto
+        : LocalSupplierInvoiceBatchUpdateJobDtoBase
+    {
+        public UpdateToStorePricesResultDto? Result { get; set; }
+    }
+
+    /// <summary>
+    /// 更新HQ商品后台任务状态。
+    /// </summary>
+    public class LocalSupplierInvoiceUpdateHqProductsJobDto
+        : LocalSupplierInvoiceBatchUpdateJobDtoBase
+    {
+        public UpdateHqProductsResult? Result { get; set; }
+    }
+
     /// <summary>
     /// 同步本地进货单明细商品到HQ请求DTO
     /// </summary>

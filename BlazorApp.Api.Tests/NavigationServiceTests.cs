@@ -715,6 +715,8 @@ public class NavigationServiceTests
     [InlineData(nameof(ReactLocalSupplierInvoicesController.DetectSupplierItem))]
     [InlineData(nameof(ReactLocalSupplierInvoicesController.DetectBarcode))]
     [InlineData(nameof(ReactLocalSupplierInvoicesController.UpdateToStorePrices))]
+    [InlineData(nameof(ReactLocalSupplierInvoicesController.StartUpdateToStorePricesJob))]
+    [InlineData(nameof(ReactLocalSupplierInvoicesController.GetUpdateToStorePricesJob))]
     [InlineData(nameof(ReactLocalSupplierInvoicesController.CheckProducts))]
     [InlineData(nameof(ReactLocalSupplierInvoicesController.PasteDetails))]
     [InlineData(nameof(ReactLocalSupplierInvoicesController.UpdateDetailAction))]

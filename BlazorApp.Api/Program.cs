@@ -509,6 +509,10 @@ builder.Services.AddScoped<
     ILocalSupplierInvoiceHqProductSyncService,
     LocalSupplierInvoiceHqProductSyncService
 >();
+builder.Services.AddSingleton<
+    ILocalSupplierInvoiceBatchUpdateJobService,
+    LocalSupplierInvoiceBatchUpdateJobService
+>();
 builder.Services.AddScoped<ILocalSupplierInvoicesReactService, LocalSupplierInvoicesReactService>();
 builder.Services.AddScoped<IPricingStrategyReactService, PricingStrategyReactService>();
 builder.Services.AddScoped<IPromotionReactService, PromotionReactService>();
