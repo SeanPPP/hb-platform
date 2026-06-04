@@ -55,11 +55,17 @@ import {
   getInvoice,
   getInvoiceDetails,
   pasteDetails,
+  getUpdateHqProductsJob,
+  getUpdateToStorePricesJob,
+  startUpdateHqProductsJob,
+  startUpdateToStorePricesJob,
   updateDetailAction,
-  updateHqProducts,
   updateInvoice,
-  updateToStorePrices,
 } from '../../../../services/localSupplierInvoiceService'
+import {
+  createHqSyncJobPoller,
+  HqProductSyncPollingTimeoutError,
+} from '../../../../services/productHqSyncPolling'
 import { getActiveStores } from '../../../../services/storeService'
 import { useAuthStore } from '../../../../store/auth'
 import type {
@@ -73,9 +79,11 @@ import type {
   LocalSupplierInvoiceDetailDto,
   LocalSupplierInvoiceItemDto,
   UpdateHqProductsResult,
+  UpdateHqProductsJobResult,
   UpdateToStorePricesFields,
   UpdateToStorePricesRequest,
   UpdateToStorePricesResult,
+  UpdateToStorePricesJobResult,
 } from '../../../../types/localSupplierInvoice'
 import { copyTextToClipboard } from '../../../../utils/clipboard'
 import { shouldShowDetailInitialLoading } from '../../../../utils/detailLoadState'
@@ -1085,6 +1093,32 @@ export default function InvoiceEditPage() {
     })
   }
 
+  const notifyBatchJobTimeout = () => {
+    notification.warning({
+      message: t('posAdmin.invoiceDetail.localSupplierInvoiceBatchJobTimeoutTitle', '本地进货单批量任务仍在后台执行'),
+      description: t('posAdmin.invoiceDetail.localSupplierInvoiceBatchJobTimeout', '前端已停止轮询该任务。你可以稍后刷新页面查看结果，或使用相同条件重新提交以接管后台任务。'),
+      duration: 0,
+    })
+  }
+
+  const pollUpdateToStorePricesJob = async (jobId: string) => {
+    // 关键位置：长任务只轮询后台 job，避免把浏览器请求保持到网关超时。
+    const poller = createHqSyncJobPoller<UpdateToStorePricesJobResult>({
+      jobId,
+      getJob: () => getUpdateToStorePricesJob(jobId),
+    })
+    return poller.promise
+  }
+
+  const pollUpdateHqProductsJob = async (jobId: string) => {
+    // 关键位置：更新 HQ 商品可能跨库写入，必须通过后台 job 查询最终结果。
+    const poller = createHqSyncJobPoller<UpdateHqProductsJobResult>({
+      jobId,
+      getJob: () => getUpdateHqProductsJob(invoiceGuid!, jobId),
+    })
+    return poller.promise
+  }
+
   const formatUpdateToStoreResult = (result: UpdateToStorePricesResult) => {
     return t(
       'posAdmin.invoiceDetail.updateToStoreResultWithSkipped',
@@ -1175,9 +1209,27 @@ export default function InvoiceEditPage() {
 
     void (async () => {
       try {
-        const result = await updateToStorePrices(request)
+        const job = await startUpdateToStorePricesJob(request)
+        const completedJob = await pollUpdateToStorePricesJob(job.jobId)
+        const result = completedJob.result
+        if (!result) {
+          throw new Error(completedJob.message || t('posAdmin.invoiceDetail.updateToStoreFailed', '更新到分店价格失败'))
+        }
         const description = formatUpdateToStoreResult(result)
         const hasDetails = !!result.errors?.length || (result.skipped ?? 0) > 0 || (result.failed ?? 0) > 0
+        if (completedJob.status === 'Failed') {
+          notification.error({
+            message: t('posAdmin.invoiceDetail.updateToStoreFailed', '更新到分店价格失败'),
+            description: hasDetails ? (
+              <Space direction="vertical" size={4}>
+                <span>{completedJob.message || description}</span>
+                {renderBackgroundTaskDetailsButton(() => showUpdateToStoreErrors(result))}
+              </Space>
+            ) : (completedJob.message || description),
+            duration: 0,
+          })
+          return
+        }
         notification[result.failed > 0 || result.errors?.length ? 'warning' : 'success']({
           message: t('posAdmin.invoiceDetail.updateToStoreCompleted', '更新到分店价格完成'),
           description: hasDetails ? (
@@ -1189,6 +1241,10 @@ export default function InvoiceEditPage() {
           duration: hasDetails ? 0 : 4,
         })
       } catch (error) {
+        if (error instanceof HqProductSyncPollingTimeoutError) {
+          notifyBatchJobTimeout()
+          return
+        }
         notification.error({
           message: t('posAdmin.invoiceDetail.updateToStoreFailed', '更新到分店价格失败'),
           description: error instanceof Error ? error.message : t('posAdmin.invoiceDetail.updateToStoreFailed', '更新到分店价格失败'),
@@ -1245,14 +1301,33 @@ export default function InvoiceEditPage() {
     notifyBackgroundTaskSubmitted(t('posAdmin.invoiceDetail.updateHqProductsSubmitted', '更新HQ商品已提交'))
 
     void (async () => {
+      let shouldClearIdempotencyKey = true
       try {
-        const result = await updateHqProducts(invoiceGuid, {
+        const job = await startUpdateHqProductsJob(invoiceGuid, {
           detailGuids,
           targetStoreCodes,
           updateFields,
           idempotencyKey,
         })
+        const completedJob = await pollUpdateHqProductsJob(job.jobId)
+        const result = completedJob.result
+        if (!result) {
+          throw new Error(completedJob.message || t('posAdmin.invoiceDetail.updateHqProductsFailed', '更新HQ商品失败'))
+        }
         const hasDetails = result.failed > 0 || (result.skipped ?? 0) > 0 || !!result.errors?.length
+        if (completedJob.status === 'Failed') {
+          notification.error({
+            message: t('posAdmin.invoiceDetail.updateHqProductsFailed', '更新HQ商品失败'),
+            description: (
+              <Space direction="vertical" size={4}>
+                <span>{completedJob.message || t('posAdmin.invoiceDetail.updateHqProductsFailedCount', '失败：{{count}} 条', { count: result.failed ?? 0 })}</span>
+                {hasDetails && renderBackgroundTaskDetailsButton(() => showUpdateHqProductsResult(result))}
+              </Space>
+            ),
+            duration: 0,
+          })
+          return
+        }
         notification[result.failed > 0 || result.errors?.length ? 'warning' : 'success']({
           message: t('posAdmin.invoiceDetail.updateHqProductsCompleted', '更新HQ商品完成'),
           description: (
@@ -1265,6 +1340,11 @@ export default function InvoiceEditPage() {
         })
         await loadDetails()
       } catch (error) {
+        if (error instanceof HqProductSyncPollingTimeoutError) {
+          shouldClearIdempotencyKey = false
+          notifyBatchJobTimeout()
+          return
+        }
         const failure = getUpdateHqProductsFailure(error)
         notification.error({
           message: t('posAdmin.invoiceDetail.updateHqProductsFailed', '更新HQ商品失败'),
@@ -1277,7 +1357,9 @@ export default function InvoiceEditPage() {
           duration: 0,
         })
       } finally {
-        hqUpdateIdempotencyKeyRef.current = null
+        if (shouldClearIdempotencyKey) {
+          hqUpdateIdempotencyKeyRef.current = null
+        }
         setHqUpdateLoading(false)
       }
     })()

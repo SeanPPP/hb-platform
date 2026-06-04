@@ -152,6 +152,28 @@ export interface UpdateToStorePricesResult extends BatchResultDto {
   errors?: string[]
 }
 
+export type LocalSupplierInvoiceBatchJobStatus = 'Running' | 'Succeeded' | 'Failed' | string
+
+export interface LocalSupplierInvoiceJobBase {
+  jobId: string
+  invoiceGuid?: string
+  targetStoreCodes?: string[]
+  operationId: string
+  status: LocalSupplierInvoiceBatchJobStatus
+  isDuplicateRequest?: boolean
+  createdAt?: string
+  completedAt?: string
+  expiresAt?: string
+  message?: string
+}
+
+export interface UpdateToStorePricesJobDto extends LocalSupplierInvoiceJobBase {
+  result?: UpdateToStorePricesResult
+}
+
+export type LocalSupplierInvoiceBatchJobBase = LocalSupplierInvoiceJobBase
+export type UpdateToStorePricesJobResult = UpdateToStorePricesJobDto
+
 export interface EnsureHqProductError {
   detailGuid: string
   storeCode?: string
@@ -199,6 +221,12 @@ export interface UpdateHqProductsResult {
   hqDiscountRatesUpdated?: number
   errors: EnsureHqProductError[]
 }
+
+export interface UpdateHqProductsJobDto extends LocalSupplierInvoiceJobBase {
+  result?: UpdateHqProductsResult
+}
+
+export type UpdateHqProductsJobResult = UpdateHqProductsJobDto
 
 export interface LocalSupplierInvoiceHqSyncRequest {
   selectedStoreCodes?: string[]

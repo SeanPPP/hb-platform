@@ -19,9 +19,11 @@ import type {
   LocalSupplierInvoiceListDto,
   PasteDetailsRequest,
   ProductsByBarcodeResponse,
+  UpdateHqProductsJobResult,
   UpdateHqProductsRequest,
   UpdateHqProductsResult,
   UpdateInvoiceRequest,
+  UpdateToStorePricesJobResult,
   UpdateToStorePricesResult,
   UpdateToStorePricesRequest,
 } from '../types/localSupplierInvoice'
@@ -129,6 +131,20 @@ export async function updateToStorePrices(data: UpdateToStorePricesRequest): Pro
   return unwrapApiData(response)
 }
 
+export async function startUpdateToStorePricesJob(data: UpdateToStorePricesRequest): Promise<UpdateToStorePricesJobResult> {
+  const response = await request.post<ApiResponse<UpdateToStorePricesJobResult>>(`${API_BASE}/update-to-store-prices/jobs`, data)
+  assertApiSuccess(response, '创建更新到分店价格任务失败')
+  return unwrapApiData(response)
+}
+
+export async function getUpdateToStorePricesJob(jobId: string): Promise<UpdateToStorePricesJobResult> {
+  const response = await request.get<ApiResponse<UpdateToStorePricesJobResult>>(
+    `${API_BASE}/update-to-store-prices/jobs/${encodeURIComponent(jobId)}`,
+  )
+  assertApiSuccess(response, '查询更新到分店价格任务失败')
+  return unwrapApiData(response)
+}
+
 export async function ensureHqProducts(
   invoiceGuid: string,
   data: EnsureHqProductsRequest,
@@ -150,6 +166,29 @@ export async function updateHqProducts(
     data,
   )
   assertApiSuccess(response, '更新HQ商品失败')
+  return unwrapApiData(response)
+}
+
+export async function startUpdateHqProductsJob(
+  invoiceGuid: string,
+  data: UpdateHqProductsRequest,
+): Promise<UpdateHqProductsJobResult> {
+  const response = await request.post<ApiResponse<UpdateHqProductsJobResult>>(
+    `${API_BASE}/${invoiceGuid}/details/update-hq-products/jobs`,
+    data,
+  )
+  assertApiSuccess(response, '创建更新HQ商品任务失败')
+  return unwrapApiData(response)
+}
+
+export async function getUpdateHqProductsJob(
+  invoiceGuid: string,
+  jobId: string,
+): Promise<UpdateHqProductsJobResult> {
+  const response = await request.get<ApiResponse<UpdateHqProductsJobResult>>(
+    `${API_BASE}/${invoiceGuid}/details/update-hq-products/jobs/${encodeURIComponent(jobId)}`,
+  )
+  assertApiSuccess(response, '查询更新HQ商品任务失败')
   return unwrapApiData(response)
 }
 

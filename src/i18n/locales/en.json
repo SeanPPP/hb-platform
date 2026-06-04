@@ -2267,6 +2267,8 @@
       "updateToStoreFailed": "Update to store price failed",
       "backgroundTaskSubmitted": "Submitted to run in the background. The result will appear in the top-right notification when it finishes.",
       "backgroundTaskViewDetails": "View Details",
+      "localSupplierInvoiceBatchJobTimeoutTitle": "Local invoice batch task is still running",
+      "localSupplierInvoiceBatchJobTimeout": "The frontend stopped polling this task. Refresh the page later to check the result, or submit again with the same scope to reconnect to the background task.",
       "updateToStoreSubmitted": "Update to store price submitted",
       "updateToStoreCompleted": "Update to store price completed",
       "updateHqProductsSubmitted": "Update HQ products submitted",

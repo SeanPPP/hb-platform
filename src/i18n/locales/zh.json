@@ -2266,6 +2266,8 @@
       "updateToStoreFailed": "更新到分店价格失败",
       "backgroundTaskSubmitted": "已提交到后台执行，完成后会在右上角通知结果。",
       "backgroundTaskViewDetails": "查看详情",
+      "localSupplierInvoiceBatchJobTimeoutTitle": "本地进货单批量任务仍在后台执行",
+      "localSupplierInvoiceBatchJobTimeout": "前端已停止轮询该任务。你可以稍后刷新页面查看结果，或使用相同条件重新提交以接管后台任务。",
       "updateToStoreSubmitted": "更新到分店价格已提交",
       "updateToStoreCompleted": "更新到分店价格完成",
       "updateHqProductsSubmitted": "更新HQ商品已提交",
