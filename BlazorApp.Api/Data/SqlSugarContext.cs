@@ -354,6 +354,7 @@ namespace BlazorApp.Api.Data
                 // 智能初始化：只在需要时创建或更新表
                 InitializeTablesIfNeeded();
                 EnsureEmployeeProfilePhoneColumn();
+                EnsureLocalSupplierImageBaseUrlColumn();
                 CreateNormalIndexes();
 
                 Console.WriteLine("数据库表检查完成！");
@@ -563,6 +564,45 @@ namespace BlazorApp.Api.Data
             {
                 _db.Ado.ExecuteCommand($"ALTER TABLE [{tableName}] ADD COLUMN [Phone] varchar(50) NULL");
                 Console.WriteLine($"✓ {tableName}.Phone 列已补齐");
+            }
+        }
+
+        private void EnsureLocalSupplierImageBaseUrlColumn()
+        {
+            var tableName = _db.EntityMaintenance.GetTableName(typeof(HBLocalSupplier));
+            if (!_db.DbMaintenance.IsAnyTable(tableName))
+            {
+                return;
+            }
+
+            var columns = _db.DbMaintenance.GetColumnInfosByTableName(tableName, false);
+            if (columns.Any(column => string.Equals(column.DbColumnName, "ImageBaseUrl", StringComparison.OrdinalIgnoreCase)))
+            {
+                return;
+            }
+
+            if (_db.CurrentConnectionConfig.DbType == DbType.SqlServer)
+            {
+                _db.Ado.ExecuteCommand(
+                    $"IF COL_LENGTH('{tableName}', 'ImageBaseUrl') IS NULL ALTER TABLE [{tableName}] ADD [ImageBaseUrl] nvarchar(512) NULL"
+                );
+                Console.WriteLine($"✓ {tableName}.ImageBaseUrl 列已补齐");
+                return;
+            }
+
+            if (_db.CurrentConnectionConfig.DbType == DbType.PostgreSQL)
+            {
+                _db.Ado.ExecuteCommand(
+                    $"ALTER TABLE \"{tableName}\" ADD COLUMN IF NOT EXISTS \"ImageBaseUrl\" varchar(512) NULL"
+                );
+                Console.WriteLine($"✓ {tableName}.ImageBaseUrl 列已补齐");
+                return;
+            }
+
+            if (_db.CurrentConnectionConfig.DbType == DbType.Sqlite)
+            {
+                _db.Ado.ExecuteCommand($"ALTER TABLE [{tableName}] ADD COLUMN [ImageBaseUrl] varchar(512) NULL");
+                Console.WriteLine($"✓ {tableName}.ImageBaseUrl 列已补齐");
             }
         }
 

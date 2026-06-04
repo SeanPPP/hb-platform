@@ -14,6 +14,6 @@ namespace BlazorApp.Api.Interfaces.React
 
         Task<ApiResponse<HqProductSyncResult>> SyncSelectedFromHqAsync(List<string> productCodes);
 
-        Task<ApiResponse<PushProductsToHqResult>> PushToHqAsync(List<string> productCodes);
+        Task<ApiResponse<PushProductsToHqResult>> PushToHqAsync(PushProductsToHqRequest request);
     }
 }

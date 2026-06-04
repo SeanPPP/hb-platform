@@ -164,6 +164,16 @@ namespace BlazorApp.Shared.DTOs
         /// </summary>
         public NumberFilterType MiddlePackageQuantityFilterType { get; set; } = NumberFilterType.between;
 
+        /// <summary>
+        /// 分店记录数量最小值
+        /// </summary>
+        public int? StoreRecordCountMin { get; set; }
+
+        /// <summary>
+        /// 分店记录数量最大值
+        /// </summary>
+        public int? StoreRecordCountMax { get; set; }
+
         #endregion
 
         #region 原有筛选参数
@@ -279,6 +289,73 @@ namespace BlazorApp.Shared.DTOs
     }
 
     /// <summary>
+    /// 商品分店记录批量更新请求
+    /// </summary>
+    public class BatchUpdateProductStoreRecordsRequest
+    {
+        /// <summary>
+        /// 需要更新的分店代码列表
+        /// </summary>
+        [Required(ErrorMessage = "至少选择一个分店")]
+        public string[] StoreCodes { get; set; } = Array.Empty<string>();
+
+        /// <summary>
+        /// 批量修改内容
+        /// </summary>
+        [Required(ErrorMessage = "修改内容不能为空")]
+        public BatchUpdateProductStoreRecordChangesDto Changes { get; set; } = new();
+    }
+
+    /// <summary>
+    /// 商品分店记录可修改字段
+    /// </summary>
+    public class BatchUpdateProductStoreRecordChangesDto
+    {
+        /// <summary>
+        /// 采购价
+        /// </summary>
+        public decimal? PurchasePrice { get; set; }
+
+        /// <summary>
+        /// 分店零售价
+        /// </summary>
+        public decimal? StoreRetailPriceValue { get; set; }
+
+        /// <summary>
+        /// 折扣率
+        /// </summary>
+        public decimal? DiscountRate { get; set; }
+
+        /// <summary>
+        /// 是否自动定价
+        /// </summary>
+        public bool? IsAutoPricing { get; set; }
+
+        /// <summary>
+        /// 是否特殊商品
+        /// </summary>
+        public bool? IsSpecialProduct { get; set; }
+
+        /// <summary>
+        /// 是否启用
+        /// </summary>
+        public bool? IsActive { get; set; }
+
+        /// <summary>
+        /// 是否至少提供了一个要修改的字段
+        /// </summary>
+        public bool HasAnyChanges()
+        {
+            return PurchasePrice.HasValue
+                || StoreRetailPriceValue.HasValue
+                || DiscountRate.HasValue
+                || IsAutoPricing.HasValue
+                || IsSpecialProduct.HasValue
+                || IsActive.HasValue;
+        }
+    }
+
+    /// <summary>
     /// React专用：批量操作结果
     /// </summary>
     public class BatchOperationReactResult
@@ -297,6 +374,56 @@ namespace BlazorApp.Shared.DTOs
         /// 错误信息列表
         /// </summary>
         public List<string> Errors { get; set; } = new();
+    }
+
+    public class BatchUpdateSupplierImagesRequest
+    {
+        public string LocalSupplierCode { get; set; } = string.Empty;
+        public string UrlTemplate { get; set; } = string.Empty;
+        public bool UpdateHbweb { get; set; }
+        public bool UpdateHq { get; set; }
+        public bool SaveSupplierImageBaseUrl { get; set; }
+    }
+
+    public class BatchUpdateSupplierImagesResult
+    {
+        public int TotalCount { get; set; }
+        public int HbwebUpdatedCount { get; set; }
+        public int HbwebSkippedExistingImageCount { get; set; }
+        public int HqUpdatedCount { get; set; }
+        public int HqSkippedExistingImageCount { get; set; }
+        public int SkippedCount { get; set; }
+        public int HqFailedCount { get; set; }
+        public List<string> Errors { get; set; } = new();
+    }
+
+    public static class BatchUpdateSupplierImagesJobStatusConstants
+    {
+        public const string Queued = "Queued";
+        public const string Running = "Running";
+        public const string Succeeded = "Succeeded";
+        public const string Failed = "Failed";
+    }
+
+    public class BatchUpdateSupplierImagesJobRequest : BatchUpdateSupplierImagesRequest
+    {
+        public string? OperationId { get; set; }
+    }
+
+    public class BatchUpdateSupplierImagesJobDto
+    {
+        public string JobId { get; set; } = string.Empty;
+        public string OperationId { get; set; } = string.Empty;
+        public string Status { get; set; } = BatchUpdateSupplierImagesJobStatusConstants.Queued;
+        public bool IsDuplicateRequest { get; set; }
+        public BatchUpdateSupplierImagesRequest Request { get; set; } = new();
+        public BatchUpdateSupplierImagesResult? Result { get; set; }
+        public string? Message { get; set; }
+        public string? ErrorMessage { get; set; }
+        public DateTime CreatedAt { get; set; }
+        public DateTime? StartedAt { get; set; }
+        public DateTime? CompletedAt { get; set; }
+        public DateTime? ExpiresAt { get; set; }
     }
 
     /// <summary>

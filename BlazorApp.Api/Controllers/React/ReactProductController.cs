@@ -21,6 +21,7 @@ namespace BlazorApp.Api.Controllers.React
         private readonly IProductStoreSyncService _productStoreSyncService;
         private readonly IProductHqSyncService _productHqSyncService;
         private readonly ICurrentUserManageableStoreScopeService _storeScopeService;
+        private readonly IProductSupplierImageBatchUpdateJobService? _supplierImageJobService;
         private readonly ILogger<ReactProductController> _logger;
 
         public ReactProductController(
@@ -28,13 +29,15 @@ namespace BlazorApp.Api.Controllers.React
             IProductStoreSyncService productStoreSyncService,
             IProductHqSyncService productHqSyncService,
             ICurrentUserManageableStoreScopeService storeScopeService,
-            ILogger<ReactProductController> logger
+            ILogger<ReactProductController> logger,
+            IProductSupplierImageBatchUpdateJobService? supplierImageJobService = null
         )
         {
             _service = service;
             _productStoreSyncService = productStoreSyncService;
             _productHqSyncService = productHqSyncService;
             _storeScopeService = storeScopeService;
+            _supplierImageJobService = supplierImageJobService;
             _logger = logger;
         }
 
@@ -94,6 +97,61 @@ namespace BlazorApp.Api.Controllers.React
             catch (Exception ex)
             {
                 _logger.LogError(ex, "获取商品分店记录失败: {ProductCode}", productCode);
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
+        /// <summary>
+        /// 批量更新商品分店业务字段
+        /// </summary>
+        /// <param name="productCode">商品编码</param>
+        /// <param name="request">批量更新请求</param>
+        /// <returns>批量更新结果</returns>
+        [HttpPost("{productCode}/store-records/batch-update")]
+        [Authorize(Policy = Permissions.StoreProducts.Edit)]
+        public async Task<IActionResult> BatchUpdateStoreRecords(
+            string productCode,
+            [FromBody] BatchUpdateProductStoreRecordsRequest request
+        )
+        {
+            try
+            {
+                if (request == null)
+                {
+                    return BadRequest(new { success = false, message = "请求数据不能为空" });
+                }
+
+                var scope = await _storeScopeService.GetScopeAsync();
+                IReadOnlyCollection<string>? accessibleStoreCodes = scope.IsAllowed
+                    ? scope.IsAdmin ? null : scope.StoreCodes
+                    : Array.Empty<string>();
+
+                var result = await _service.BatchUpdateStoreRecordsAsync(
+                    productCode,
+                    request,
+                    accessibleStoreCodes
+                );
+
+                if (result.Success)
+                {
+                    return Ok(
+                        new
+                        {
+                            success = true,
+                            data = result.Data,
+                            successCount = result.Data?.SuccessCount ?? 0,
+                            failedCount = result.Data?.FailedCount ?? 0,
+                            errors = result.Data?.Errors ?? new List<string>(),
+                            message = result.Message,
+                        }
+                    );
+                }
+
+                return BadRequest(new { success = false, message = result.Message });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "批量更新商品分店记录失败: {ProductCode}", productCode);
                 return StatusCode(500, new { success = false, message = "服务器内部错误" });
             }
         }
@@ -263,6 +321,88 @@ namespace BlazorApp.Api.Controllers.React
             }
         }
 
+        [HttpPost("batch-update-supplier-images")]
+        [Authorize(Policy = Permissions.PosProducts.Manage)]
+        public async Task<IActionResult> BatchUpdateSupplierImages(
+            [FromBody] BatchUpdateSupplierImagesRequest request
+        )
+        {
+            try
+            {
+                if (request == null)
+                {
+                    return BadRequest(new { success = false, message = "请求参数不能为空" });
+                }
+
+                // 兼容入口也统一进入后台任务，避免绕过同供应商互斥。
+                var jobService = ResolveSupplierImageJobService();
+                var job = await jobService.StartJobAsync(new BatchUpdateSupplierImagesJobRequest
+                {
+                    LocalSupplierCode = request.LocalSupplierCode,
+                    UrlTemplate = request.UrlTemplate,
+                    UpdateHbweb = request.UpdateHbweb,
+                    UpdateHq = request.UpdateHq,
+                    SaveSupplierImageBaseUrl = request.SaveSupplierImageBaseUrl,
+                });
+                return Ok(new { success = true, data = job, message = "供应商商品图片批量更新任务已提交" });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "批量更新供应商商品图片失败");
+                return StatusCode(500, new { success = false, message = "批量更新供应商商品图片失败" });
+            }
+        }
+
+        [HttpPost("batch-update-supplier-images/job")]
+        [Authorize(Policy = Permissions.PosProducts.Manage)]
+        public async Task<IActionResult> StartBatchUpdateSupplierImagesJob(
+            [FromBody] BatchUpdateSupplierImagesJobRequest request,
+            CancellationToken cancellationToken
+        )
+        {
+            try
+            {
+                if (request == null)
+                {
+                    return BadRequest(new { success = false, message = "请求参数不能为空" });
+                }
+
+                var jobService = ResolveSupplierImageJobService();
+                var job = await jobService.StartJobAsync(request, cancellationToken);
+                return Ok(new { success = true, data = job, message = "供应商商品图片批量更新任务已提交" });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "创建供应商商品图片批量更新任务失败");
+                return StatusCode(500, new { success = false, message = "创建供应商商品图片批量更新任务失败" });
+            }
+        }
+
+        [HttpGet("batch-update-supplier-images/job/{jobId}")]
+        [Authorize(Policy = Permissions.PosProducts.Manage)]
+        public async Task<IActionResult> GetBatchUpdateSupplierImagesJob(
+            string jobId,
+            CancellationToken cancellationToken
+        )
+        {
+            try
+            {
+                var jobService = ResolveSupplierImageJobService();
+                var job = await jobService.GetJobAsync(jobId, cancellationToken);
+                if (job == null)
+                {
+                    return NotFound(new { success = false, message = "供应商商品图片批量更新任务不存在或已过期" });
+                }
+
+                return Ok(new { success = true, data = job });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "查询供应商商品图片批量更新任务失败: {JobId}", jobId);
+                return StatusCode(500, new { success = false, message = "查询供应商商品图片批量更新任务失败" });
+            }
+        }
+
         /// <summary>
         /// 批量删除商品（使用事务，支持软删除和物理删除）
         /// </summary>
@@ -302,6 +442,12 @@ namespace BlazorApp.Api.Controllers.React
                 _logger.LogError(ex, "批量删除商品失败");
                 return StatusCode(500, new { success = false, message = "服务器内部错误" });
             }
+        }
+
+        private IProductSupplierImageBatchUpdateJobService ResolveSupplierImageJobService()
+        {
+            return _supplierImageJobService
+                ?? throw new InvalidOperationException("供应商商品图片批量更新任务服务未注册");
         }
 
         /// <summary>
@@ -543,23 +689,37 @@ namespace BlazorApp.Api.Controllers.React
         {
             try
             {
-                if (request?.ProductCodes == null || !request.ProductCodes.Any())
+                var productCodes = request?.ProductCodes ?? new List<string>();
+                var items = request?.Items ?? new List<PushProductsToHqItem>();
+                if (
+                    request == null
+                    || (!productCodes.Any() && !items.Any())
+                )
                 {
                     return BadRequest(new { success = false, message = "请选择要推送的商品" });
                 }
 
-                var productCodes = request.ProductCodes
-                    .Where(code => !string.IsNullOrWhiteSpace(code))
-                    .Select(code => code.Trim())
-                    .Distinct(StringComparer.OrdinalIgnoreCase)
-                    .ToList();
-                if (!productCodes.Any())
+                var hasLegacyCodes = productCodes.Any(code => !string.IsNullOrWhiteSpace(code));
+                var hasItems = items
+                    .Any(item =>
+                        item != null
+                        && (
+                            !string.IsNullOrWhiteSpace(item.ProductCode)
+                            || !string.IsNullOrWhiteSpace(item.LocalSupplierCode)
+                            || !string.IsNullOrWhiteSpace(item.ItemNumber)
+                        )
+                    );
+                if (!hasLegacyCodes && !hasItems)
                 {
-                    return BadRequest(new { success = false, message = "请选择有效的商品编码" });
+                    return BadRequest(new { success = false, message = "请选择有效的推送商品" });
                 }
 
-                _logger.LogInformation("推送商品到HQ: {Count} 件", productCodes.Count);
-                var result = await _productHqSyncService.PushToHqAsync(productCodes);
+                _logger.LogInformation(
+                    "推送商品到HQ: legacyCodes={CodeCount}, items={ItemCount}",
+                    productCodes.Count,
+                    items.Count
+                );
+                var result = await _productHqSyncService.PushToHqAsync(request);
                 return result.Success ? Ok(result) : BadRequest(result);
             }
             catch (Exception ex)

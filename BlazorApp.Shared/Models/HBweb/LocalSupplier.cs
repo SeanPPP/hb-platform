@@ -33,5 +33,8 @@ namespace BlazorApp.Shared.Models
 
         [SugarColumn(IsNullable = true, Length = 256)]
         public string? Remark { get; set; }
+
+        [SugarColumn(IsNullable = true, Length = 512)]
+        public string? ImageBaseUrl { get; set; }
     }
 }

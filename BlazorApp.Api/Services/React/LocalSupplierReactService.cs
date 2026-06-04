@@ -59,6 +59,7 @@ namespace BlazorApp.Api.Services.React
                 "phone" => $"Phone {dir}",
                 "email" => $"Email {dir}",
                 "remark" => $"Remark {dir}",
+                "imagebaseurl" => $"ImageBaseUrl {dir}",
                 "createdat" => $"CreatedAt {dir}",
                 "updatedat" => $"UpdatedAt {dir}",
                 _ => $"Name asc",
@@ -77,6 +78,7 @@ namespace BlazorApp.Api.Services.React
                     Phone = x.Phone,
                     Email = x.Email,
                     Remark = x.Remark,
+                    ImageBaseUrl = x.ImageBaseUrl,
                     CreatedAt = x.CreatedAt,
                     UpdatedAt = x.UpdatedAt,
                 })
@@ -106,6 +108,7 @@ namespace BlazorApp.Api.Services.React
                     Phone = x.Phone,
                     Email = x.Email,
                     Remark = x.Remark,
+                    ImageBaseUrl = x.ImageBaseUrl,
                     CreatedAt = x.CreatedAt,
                     UpdatedAt = x.UpdatedAt,
                 })
@@ -154,6 +157,7 @@ namespace BlazorApp.Api.Services.React
                             Status = 1,
                             ContactPerson = d.H联系人,
                             Email = d.HEMAIL地址,
+                            ImageBaseUrl = null,
                             CreatedAt = d.FGC_CreateDate,
                             UpdatedAt = d.FGC_LastModifyDate,
                             CreatedBy = "System",
@@ -210,34 +214,20 @@ namespace BlazorApp.Api.Services.React
 
                 if (toUpdate.Count > 0)
                 {
-                    if (
-                        db.CurrentConnectionConfig.DbType == DbType.SqlServer
-                        && toUpdate.Count > batchSize
-                    )
+                    for (int i = 0; i < toUpdate.Count; i += batchSize)
                     {
-                        for (int i = 0; i < toUpdate.Count; i += batchSize)
-                        {
-                            var slice = toUpdate.Skip(i).Take(batchSize).ToList();
-                            db.Fastest<HBLocalSupplier>().BulkUpdate(slice);
-                        }
-                    }
-                    else
-                    {
-                        for (int i = 0; i < toUpdate.Count; i += batchSize)
-                        {
-                            var slice = toUpdate.Skip(i).Take(batchSize).ToList();
-                            await db.Updateable(slice)
-                                .UpdateColumns(x => new
-                                {
-                                    x.Name,
-                                    x.ContactPerson,
-                                    x.Email,
-                                    x.Status,
-                                    x.UpdatedAt,
-                                    x.UpdatedBy,
-                                })
-                                .ExecuteCommandAsync();
-                        }
+                        var slice = toUpdate.Skip(i).Take(batchSize).ToList();
+                        await db.Updateable(slice)
+                            .UpdateColumns(x => new
+                            {
+                                x.Name,
+                                x.ContactPerson,
+                                x.Email,
+                                x.Status,
+                                x.UpdatedAt,
+                                x.UpdatedBy,
+                            })
+                            .ExecuteCommandAsync();
                     }
                 }
 
@@ -305,6 +295,7 @@ namespace BlazorApp.Api.Services.React
                         Phone = dto.Phone,
                         Email = dto.Email,
                         Remark = dto.Remark,
+                        ImageBaseUrl = dto.ImageBaseUrl,
                         CreatedAt = now,
                         UpdatedAt = now,
                         CreatedBy = "System",
@@ -325,6 +316,7 @@ namespace BlazorApp.Api.Services.React
                             Phone = entity.Phone,
                             Email = entity.Email,
                             Remark = entity.Remark,
+                            ImageBaseUrl = entity.ImageBaseUrl,
                             CreatedAt = entity.CreatedAt,
                             UpdatedAt = entity.UpdatedAt,
                         };
@@ -371,6 +363,7 @@ namespace BlazorApp.Api.Services.React
             entity.Phone = dto.Phone;
             entity.Email = dto.Email;
             entity.Remark = dto.Remark;
+            entity.ImageBaseUrl = dto.ImageBaseUrl;
             entity.UpdatedAt = DateTime.UtcNow;
             entity.UpdatedBy = "System";
             await db.Updateable(entity).ExecuteCommandAsync();
@@ -384,6 +377,7 @@ namespace BlazorApp.Api.Services.React
                 Phone = entity.Phone,
                 Email = entity.Email,
                 Remark = entity.Remark,
+                ImageBaseUrl = entity.ImageBaseUrl,
                 CreatedAt = entity.CreatedAt,
                 UpdatedAt = entity.UpdatedAt,
             };

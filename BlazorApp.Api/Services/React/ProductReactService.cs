@@ -28,6 +28,8 @@ namespace BlazorApp.Api.Services.React
         private readonly IMapper _mapper;
         private readonly ILogger<ProductReactService> _logger;
         private readonly Microsoft.AspNetCore.Http.IHttpContextAccessor _httpContextAccessor;
+        private const int ProductImageMaxLength = 200;
+        private const int BatchImageMaxErrorDetails = 100;
         private const int ProductHqSyncReadBatchSize = 1000;
         private const int ProductHqSyncWriteBatchSize = 200;
         private const string ProductHqSyncLockResource = "HB:ProductReactService:SyncProductsFromHq";
@@ -46,6 +48,32 @@ namespace BlazorApp.Api.Services.React
             _mapper = mapper;
             _logger = logger;
             _httpContextAccessor = httpContextAccessor;
+        }
+
+        /// <summary>
+        /// 商品列表查询投影，承接分页前的分店记录数量筛选和排序。
+        /// </summary>
+        private sealed class ProductListQueryRow
+        {
+            public string ProductCode { get; set; } = string.Empty;
+            public string ProductCategoryGUID { get; set; } = string.Empty;
+            public string? LocalSupplierCode { get; set; }
+            public string? ItemNumber { get; set; }
+            public string? Barcode { get; set; }
+            public string? ProductName { get; set; }
+            public int? ProductType { get; set; }
+            public int? MiddlePackageQuantity { get; set; }
+            public decimal? PurchasePrice { get; set; }
+            public decimal? RetailPrice { get; set; }
+            public bool IsAutoPricing { get; set; }
+            public string? ProductImage { get; set; }
+            public bool IsActive { get; set; }
+            public bool IsSpecialProduct { get; set; }
+            public string? WarehouseCategoryGUID { get; set; }
+            public DateTime? CreatedAt { get; set; }
+            public DateTime? UpdatedAt { get; set; }
+            public string? UpdatedBy { get; set; }
+            public int StoreRecordCount { get; set; }
         }
 
         #region 筛选辅助方法
@@ -289,6 +317,51 @@ namespace BlazorApp.Api.Services.React
 
                 #endregion
 
+                // 关键位置：先把未软删分店记录数量投影到查询列里，再做数量筛选、排序和分页，
+                // 这样总数与分页结果都基于完整商品集，而不是只统计当前页。
+                var projectedQuery = q
+                    .Select(p => new ProductListQueryRow
+                    {
+                        ProductCode = p.ProductCode ?? string.Empty,
+                        ProductCategoryGUID = p.ProductCategoryGUID ?? string.Empty,
+                        LocalSupplierCode = p.LocalSupplierCode,
+                        ItemNumber = p.ItemNumber,
+                        Barcode = p.Barcode,
+                        ProductName = p.ProductName,
+                        ProductType = p.ProductType,
+                        MiddlePackageQuantity = p.MiddlePackageQuantity,
+                        PurchasePrice = p.PurchasePrice,
+                        RetailPrice = p.RetailPrice,
+                        IsAutoPricing = p.IsAutoPricing,
+                        ProductImage = p.ProductImage,
+                        IsActive = p.IsActive,
+                        IsSpecialProduct = p.IsSpecialProduct,
+                        WarehouseCategoryGUID = p.WarehouseCategoryGUID,
+                        CreatedAt = p.CreatedAt,
+                        UpdatedAt = p.UpdatedAt,
+                        UpdatedBy = p.UpdatedBy,
+                        StoreRecordCount = SqlFunc.Subqueryable<StoreRetailPrice>()
+                            .Where(record =>
+                                record.ProductCode == p.ProductCode && record.IsDeleted == false
+                            )
+                            .Count(),
+                    })
+                    .MergeTable();
+
+                if (query.StoreRecordCountMin.HasValue)
+                {
+                    projectedQuery = projectedQuery.Where(item =>
+                        item.StoreRecordCount >= query.StoreRecordCountMin.Value
+                    );
+                }
+
+                if (query.StoreRecordCountMax.HasValue)
+                {
+                    projectedQuery = projectedQuery.Where(item =>
+                        item.StoreRecordCount <= query.StoreRecordCountMax.Value
+                    );
+                }
+
                 // 应用排序
                 if (!string.IsNullOrWhiteSpace(query.SortBy))
                 {
@@ -298,55 +371,67 @@ namespace BlazorApp.Api.Services.React
                     switch (sortField)
                     {
                         case "productname":
-                            q = isDesc
-                                ? q.OrderBy(p => p.ProductName, OrderByType.Desc)
-                                : q.OrderBy(p => p.ProductName, OrderByType.Asc);
+                            projectedQuery = isDesc
+                                ? projectedQuery.OrderBy(p => p.ProductName, OrderByType.Desc)
+                                : projectedQuery.OrderBy(p => p.ProductName, OrderByType.Asc);
                             break;
                         case "itemnumber":
-                            q = isDesc
-                                ? q.OrderBy(p => p.ItemNumber, OrderByType.Desc)
-                                : q.OrderBy(p => p.ItemNumber, OrderByType.Asc);
+                            projectedQuery = isDesc
+                                ? projectedQuery.OrderBy(p => p.ItemNumber, OrderByType.Desc)
+                                : projectedQuery.OrderBy(p => p.ItemNumber, OrderByType.Asc);
                             break;
                         case "retailprice":
-                            q = isDesc
-                                ? q.OrderBy(p => p.RetailPrice, OrderByType.Desc)
-                                : q.OrderBy(p => p.RetailPrice, OrderByType.Asc);
+                            projectedQuery = isDesc
+                                ? projectedQuery.OrderBy(p => p.RetailPrice, OrderByType.Desc)
+                                : projectedQuery.OrderBy(p => p.RetailPrice, OrderByType.Asc);
                             break;
                         case "purchaseprice":
-                            q = isDesc
-                                ? q.OrderBy(p => p.PurchasePrice, OrderByType.Desc)
-                                : q.OrderBy(p => p.PurchasePrice, OrderByType.Asc);
+                            projectedQuery = isDesc
+                                ? projectedQuery.OrderBy(p => p.PurchasePrice, OrderByType.Desc)
+                                : projectedQuery.OrderBy(p => p.PurchasePrice, OrderByType.Asc);
                             break;
                         case "producttype":
-                            q = isDesc
-                                ? q.OrderBy(p => p.ProductType, OrderByType.Desc)
-                                : q.OrderBy(p => p.ProductType, OrderByType.Asc);
+                            projectedQuery = isDesc
+                                ? projectedQuery.OrderBy(p => p.ProductType, OrderByType.Desc)
+                                : projectedQuery.OrderBy(p => p.ProductType, OrderByType.Asc);
+                            break;
+                        case "storerecordcount":
+                            projectedQuery = isDesc
+                                ? projectedQuery
+                                    .OrderBy(p => p.StoreRecordCount, OrderByType.Desc)
+                                    .OrderBy(p => p.ProductCode, OrderByType.Asc)
+                                : projectedQuery
+                                    .OrderBy(p => p.StoreRecordCount, OrderByType.Asc)
+                                    .OrderBy(p => p.ProductCode, OrderByType.Asc);
                             break;
                         case "createdat":
-                            q = isDesc
-                                ? q.OrderBy(p => p.CreatedAt, OrderByType.Desc)
-                                : q.OrderBy(p => p.CreatedAt, OrderByType.Asc);
+                            projectedQuery = isDesc
+                                ? projectedQuery.OrderBy(p => p.CreatedAt, OrderByType.Desc)
+                                : projectedQuery.OrderBy(p => p.CreatedAt, OrderByType.Asc);
                             break;
                         case "updatedat":
-                            q = isDesc
-                                ? q.OrderBy(p => p.UpdatedAt, OrderByType.Desc)
-                                : q.OrderBy(p => p.UpdatedAt, OrderByType.Asc);
+                            projectedQuery = isDesc
+                                ? projectedQuery.OrderBy(p => p.UpdatedAt, OrderByType.Desc)
+                                : projectedQuery.OrderBy(p => p.UpdatedAt, OrderByType.Asc);
                             break;
                         default:
-                            q = q.OrderBy(p => p.UpdatedAt, OrderByType.Desc);
+                            projectedQuery = projectedQuery.OrderBy(
+                                p => p.UpdatedAt,
+                                OrderByType.Desc
+                            );
                             break;
                     }
                 }
                 else
                 {
-                    q = q.OrderBy(p => p.UpdatedAt, OrderByType.Desc);
+                    projectedQuery = projectedQuery.OrderBy(p => p.UpdatedAt, OrderByType.Desc);
                 }
 
                 // 获取总数
-                var total = await q.CountAsync();
+                var total = await projectedQuery.CountAsync();
 
                 // 分页
-                var items = await q.Skip((query.PageNumber - 1) * query.PageSize)
+                var items = await projectedQuery.Skip((query.PageNumber - 1) * query.PageSize)
                     .Take(query.PageSize)
                     .Select(p => new ProductDto
                     {
@@ -367,45 +452,9 @@ namespace BlazorApp.Api.Services.React
                         WarehouseCategoryGUID = p.WarehouseCategoryGUID,
                         UpdatedAt = p.UpdatedAt,
                         UpdatedBy = p.UpdatedBy,
+                        StoreRecordCount = p.StoreRecordCount,
                     })
                     .ToListAsync();
-
-                var productCodes = items
-                    .Select(item => item.ProductCode)
-                    .Where(code => !string.IsNullOrWhiteSpace(code))
-                    .Distinct()
-                    .ToList();
-
-                if (productCodes.Count > 0)
-                {
-                    // 只按当前页商品批量查询分店记录，避免列表页逐行请求。
-                    var storeRecordCounts = await _db.Queryable<StoreRetailPrice>()
-                        .Where(record =>
-                            productCodes.Contains(record.ProductCode)
-                            && record.IsDeleted == false
-                        )
-                        .GroupBy(record => record.ProductCode)
-                        .Select(record => new
-                        {
-                            record.ProductCode,
-                            StoreRecordCount = SqlFunc.AggregateCount(record.ProductCode),
-                        })
-                        .ToListAsync();
-                    var storeRecordCountMap = storeRecordCounts
-                        .Where(record => !string.IsNullOrWhiteSpace(record.ProductCode))
-                        .GroupBy(record => record.ProductCode!)
-                        .ToDictionary(group => group.Key, group => group.Sum(record => record.StoreRecordCount));
-
-                    foreach (var item in items)
-                    {
-                        item.StoreRecordCount = storeRecordCountMap.TryGetValue(
-                            item.ProductCode,
-                            out var count
-                        )
-                            ? count
-                            : 0;
-                    }
-                }
 
                 return new PagedListReactDto<ProductDto>
                 {
@@ -512,6 +561,114 @@ namespace BlazorApp.Api.Services.React
                     Message = "获取商品分店记录失败",
                     Data = new List<ProductStoreRecordDto>(),
                 };
+            }
+        }
+
+        /// <summary>
+        /// 批量更新商品分店业务字段
+        /// </summary>
+        public async Task<ApiResponse<BatchOperationReactResult>> BatchUpdateStoreRecordsAsync(
+            string productCode,
+            BatchUpdateProductStoreRecordsRequest request,
+            IReadOnlyCollection<string>? accessibleStoreCodes
+        )
+        {
+            var result = new BatchOperationReactResult();
+
+            try
+            {
+                if (string.IsNullOrWhiteSpace(productCode))
+                {
+                    return ApiResponse<BatchOperationReactResult>.Error("商品编码不能为空");
+                }
+
+                if (request == null)
+                {
+                    return ApiResponse<BatchOperationReactResult>.Error("请求数据不能为空");
+                }
+
+                var targetStoreCodes = NormalizeStoreCodes(request.StoreCodes);
+                if (!targetStoreCodes.Any())
+                {
+                    return ApiResponse<BatchOperationReactResult>.Error("至少选择一个分店");
+                }
+
+                if (request.Changes == null || !request.Changes.HasAnyChanges())
+                {
+                    return ApiResponse<BatchOperationReactResult>.Error("至少指定一个需要修改的字段");
+                }
+
+                var trimmedProductCode = productCode.Trim();
+                var accessibleStoreCodeSet = BuildStoreCodeSet(accessibleStoreCodes);
+                var currentUser = _httpContextAccessor.HttpContext?.User?.Identity?.Name ?? "System";
+
+                // 先按商品 + 分店 + 软删状态收敛记录，再逐个处理失败原因，保证前端能拿到逐分店反馈。
+                var query = _db.Queryable<StoreRetailPrice>()
+                    .Where(item =>
+                        item.ProductCode == trimmedProductCode
+                        && item.IsDeleted == false
+                        && targetStoreCodes.Contains(item.StoreCode!)
+                    );
+
+                if (accessibleStoreCodeSet != null)
+                {
+                    if (accessibleStoreCodeSet.Count == 0)
+                    {
+                        foreach (var storeCode in targetStoreCodes)
+                        {
+                            result.FailedCount++;
+                            result.Errors.Add($"{storeCode}: 当前用户不可修改该分店");
+                        }
+
+                        return ApiResponse<BatchOperationReactResult>.OK(
+                            result,
+                            BuildBatchUpdateStoreRecordsMessage(result)
+                        );
+                    }
+
+                    query = query.Where(item => accessibleStoreCodeSet.Contains(item.StoreCode!));
+                }
+
+                var existingRecords = await query.ToListAsync();
+                var recordMap = existingRecords
+                    .Where(item => !string.IsNullOrWhiteSpace(item.StoreCode))
+                    .GroupBy(item => item.StoreCode!.Trim(), StringComparer.OrdinalIgnoreCase)
+                    .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
+
+                foreach (var storeCode in targetStoreCodes)
+                {
+                    if (accessibleStoreCodeSet != null && !accessibleStoreCodeSet.Contains(storeCode))
+                    {
+                        result.FailedCount++;
+                        result.Errors.Add($"{storeCode}: 当前用户不可修改该分店");
+                        continue;
+                    }
+
+                    if (!recordMap.TryGetValue(storeCode, out var record))
+                    {
+                        result.FailedCount++;
+                        result.Errors.Add($"{storeCode}: 分店记录不存在或已删除");
+                        continue;
+                    }
+
+                    await ExecuteStoreRecordPartialUpdateAsync(
+                        trimmedProductCode,
+                        storeCode,
+                        request.Changes,
+                        currentUser
+                    );
+                    result.SuccessCount++;
+                }
+
+                return ApiResponse<BatchOperationReactResult>.OK(
+                    result,
+                    BuildBatchUpdateStoreRecordsMessage(result)
+                );
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "批量更新商品分店记录失败: {ProductCode}", productCode);
+                return ApiResponse<BatchOperationReactResult>.Error($"批量更新商品分店记录失败: {ex.Message}");
             }
         }
 
@@ -925,6 +1082,65 @@ namespace BlazorApp.Api.Services.React
             }
         }
 
+        private static List<string> NormalizeStoreCodes(IEnumerable<string>? storeCodes)
+        {
+            return storeCodes?
+                .Where(item => !string.IsNullOrWhiteSpace(item))
+                .Select(item => item.Trim())
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList()
+                ?? new List<string>();
+        }
+
+        private static HashSet<string>? BuildStoreCodeSet(IReadOnlyCollection<string>? storeCodes)
+        {
+            if (storeCodes == null)
+            {
+                return null;
+            }
+
+            return NormalizeStoreCodes(storeCodes).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        }
+
+        private async Task ExecuteStoreRecordPartialUpdateAsync(
+            string productCode,
+            string storeCode,
+            BatchUpdateProductStoreRecordChangesDto changes,
+            string updatedBy
+        )
+        {
+            var now = DateTime.Now;
+            var update = _db.Updateable<StoreRetailPrice>()
+                .SetColumns(record => record.UpdatedBy == updatedBy)
+                .SetColumns(record => record.UpdatedAt == now)
+                .Where(record =>
+                    record.ProductCode == productCode
+                    && record.StoreCode == storeCode
+                    && record.IsDeleted == false
+                );
+
+            // 只写入请求显式勾选的业务字段，避免整实体更新覆盖未传字段。
+            if (changes.PurchasePrice.HasValue)
+                update = update.SetColumns(record => record.PurchasePrice == changes.PurchasePrice.Value);
+            if (changes.StoreRetailPriceValue.HasValue)
+                update = update.SetColumns(record => record.StoreRetailPriceValue == changes.StoreRetailPriceValue.Value);
+            if (changes.DiscountRate.HasValue)
+                update = update.SetColumns(record => record.DiscountRate == changes.DiscountRate.Value);
+            if (changes.IsAutoPricing.HasValue)
+                update = update.SetColumns(record => record.IsAutoPricing == changes.IsAutoPricing.Value);
+            if (changes.IsSpecialProduct.HasValue)
+                update = update.SetColumns(record => record.IsSpecialProduct == changes.IsSpecialProduct.Value);
+            if (changes.IsActive.HasValue)
+                update = update.SetColumns(record => record.IsActive == changes.IsActive.Value);
+
+            await update.ExecuteCommandAsync();
+        }
+
+        private static string BuildBatchUpdateStoreRecordsMessage(BatchOperationReactResult result)
+        {
+            return $"批量更新分店记录完成: 成功{result.SuccessCount}条，失败{result.FailedCount}条";
+        }
+
         /// <summary>
         /// 批量更新商品（使用事务）
         /// </summary>
@@ -1026,6 +1242,267 @@ namespace BlazorApp.Api.Services.React
             }
         }
 
+        public async Task<ApiResponse<BatchUpdateSupplierImagesResult>> BatchUpdateSupplierImagesAsync(
+            BatchUpdateSupplierImagesRequest request
+        )
+        {
+            var result = new BatchUpdateSupplierImagesResult();
+            var supplierCode = request.LocalSupplierCode?.Trim();
+            var template = request.UrlTemplate?.Trim();
+
+            if (string.IsNullOrWhiteSpace(supplierCode))
+                return ApiResponse<BatchUpdateSupplierImagesResult>.Error("请选择供应商", "SUPPLIER_REQUIRED", result);
+            if (string.IsNullOrWhiteSpace(template) || !template.Contains("{itemNumber}"))
+                return ApiResponse<BatchUpdateSupplierImagesResult>.Error("图片基础 URL 必须包含 {itemNumber}", "IMAGE_TEMPLATE_INVALID", result);
+            if (!request.UpdateHbweb && !request.UpdateHq && !request.SaveSupplierImageBaseUrl)
+                return ApiResponse<BatchUpdateSupplierImagesResult>.Error("请选择写入目标", "IMAGE_TARGET_REQUIRED", result);
+
+            var supplier = await _db.Queryable<HBLocalSupplier>()
+                .FirstAsync(row => row.LocalSupplierCode == supplierCode && !row.IsDeleted);
+            if (supplier == null)
+                return ApiResponse<BatchUpdateSupplierImagesResult>.Error("供应商不存在", "SUPPLIER_NOT_FOUND", result);
+
+            var products = await _db.Queryable<Product>()
+                .Where(row => row.LocalSupplierCode == supplierCode && !row.IsDeleted)
+                .Select(row => new Product
+                {
+                    UUID = row.UUID,
+                    ProductCode = row.ProductCode,
+                    ItemNumber = row.ItemNumber,
+                    ProductImage = row.ProductImage,
+                })
+                .ToListAsync();
+            result.TotalCount = products.Count;
+            if (products.Count == 0 && !request.SaveSupplierImageBaseUrl)
+                return ApiResponse<BatchUpdateSupplierImagesResult>.OK(result, "该供应商没有可更新商品");
+
+            var now = DateTime.UtcNow;
+            var currentUser = _httpContextAccessor.HttpContext?.User?.Identity?.Name ?? "System";
+            var validProducts = new List<(Product Product, string ImageUrl)>();
+            foreach (var product in products)
+            {
+                if (string.IsNullOrWhiteSpace(product.ItemNumber))
+                {
+                    result.SkippedCount++;
+                    result.Errors.Add($"{product.ProductCode}: 货号为空，已跳过");
+                    continue;
+                }
+
+                var imageUrl = BuildSupplierImageUrl(template, supplierCode, product.ItemNumber);
+                if (imageUrl.Length > ProductImageMaxLength)
+                {
+                    result.SkippedCount++;
+                    result.Errors.Add($"{product.ProductCode}: 图片地址超过 {ProductImageMaxLength} 字符，已跳过");
+                    continue;
+                }
+
+                validProducts.Add((product, imageUrl));
+            }
+
+            if (request.UpdateHbweb || request.SaveSupplierImageBaseUrl)
+            {
+                await _db.Ado.BeginTranAsync();
+                try
+                {
+                    if (request.SaveSupplierImageBaseUrl)
+                    {
+                        supplier.ImageBaseUrl = template;
+                        supplier.UpdatedAt = now;
+                        supplier.UpdatedBy = currentUser;
+                        await _db.Updateable(supplier)
+                            .UpdateColumns(row => new
+                            {
+                                row.ImageBaseUrl,
+                                row.UpdatedAt,
+                                row.UpdatedBy,
+                            })
+                            .ExecuteCommandAsync();
+                    }
+
+                    if (request.UpdateHbweb)
+                    {
+                        var hbwebCandidates = validProducts
+                            .Where(item => string.IsNullOrWhiteSpace(item.Product.ProductImage))
+                            .ToList();
+                        result.HbwebSkippedExistingImageCount += validProducts.Count - hbwebCandidates.Count;
+
+                        // 关键位置：Hbweb 只补空图片，已有图的商品保持原图片和原审计字段不动。
+                        foreach (var item in hbwebCandidates)
+                        {
+                            // 写入条件再次限制“图片仍为空”，避免读写间被其他任务补图后又被本任务覆盖。
+                            var affected = await _db.Updateable<Product>()
+                                .SetColumns(row => new Product
+                                {
+                                    ProductImage = item.ImageUrl,
+                                    UpdatedAt = now,
+                                    UpdatedBy = currentUser,
+                                })
+                                .Where(row =>
+                                    row.UUID == item.Product.UUID
+                                    && (row.ProductImage == null || row.ProductImage.Trim() == string.Empty))
+                                .ExecuteCommandAsync();
+
+                            if (affected > 0)
+                            {
+                                result.HbwebUpdatedCount += affected;
+                            }
+                            else
+                            {
+                                result.HbwebSkippedExistingImageCount++;
+                            }
+                        }
+                    }
+
+                    await _db.Ado.CommitTranAsync();
+                }
+                catch (Exception ex)
+                {
+                    await _db.Ado.RollbackTranAsync();
+                    _logger.LogError(ex, "批量更新供应商商品图片到 Hbweb 失败: {SupplierCode}", supplierCode);
+                    AddBatchImageError(result, ex.Message);
+                    LimitBatchImageErrors(result);
+                    return ApiResponse<BatchUpdateSupplierImagesResult>.Error("更新 Hbweb 商品图片失败", "HBWEB_IMAGE_UPDATE_ERROR", result);
+                }
+            }
+
+            if (request.UpdateHq && validProducts.Count > 0)
+            {
+                var hqDb = _hqContext.Db;
+                try
+                {
+                    foreach (var batch in validProducts.Chunk(ProductHqSyncReadBatchSize))
+                    {
+                        var batchList = batch.ToList();
+                        var productCodes = batchList
+                            .Select(item => item.Product.ProductCode)
+                            .Where(code => !string.IsNullOrWhiteSpace(code))
+                            .Distinct(StringComparer.OrdinalIgnoreCase)
+                            .ToList();
+                        var hqRows = await hqDb.Queryable<DIC_商品信息字典表>()
+                            .Where(row => productCodes.Contains(row.H商品编码))
+                            .Select(row => new DIC_商品信息字典表
+                            {
+                                ID = row.ID,
+                                H商品编码 = row.H商品编码,
+                                H商品图片 = row.H商品图片,
+                            })
+                            .ToListAsync();
+                        var hqRowsByProductCode = hqRows
+                            .Where(row => !string.IsNullOrWhiteSpace(row.H商品编码))
+                            .GroupBy(row => row.H商品编码!, StringComparer.OrdinalIgnoreCase)
+                            .ToDictionary(group => group.Key, group => group.ToList(), StringComparer.OrdinalIgnoreCase);
+
+                        foreach (var item in batchList)
+                        {
+                            if (!hqRowsByProductCode.TryGetValue(item.Product.ProductCode, out var matchedRows))
+                            {
+                                result.HqFailedCount++;
+                                AddBatchImageError(result, $"{item.Product.ProductCode}: HQ 商品不存在，未更新图片");
+                                continue;
+                            }
+
+                            if (matchedRows.Count != 1)
+                            {
+                                result.HqFailedCount++;
+                                AddBatchImageError(result, $"{item.Product.ProductCode}: HQ 商品编码重复 {matchedRows.Count} 条，未更新图片");
+                                continue;
+                            }
+
+                            var target = matchedRows[0];
+                            // 关键位置：HQ 和 Hbweb 独立判断，这里只要 HQ 为空就补图，不受 Hbweb 是否已有图影响。
+                            if (!string.IsNullOrWhiteSpace(target.H商品图片))
+                            {
+                                result.HqSkippedExistingImageCount++;
+                                continue;
+                            }
+
+                            var affected = await hqDb.Updateable<DIC_商品信息字典表>()
+                                .SetColumns(row => new DIC_商品信息字典表
+                                {
+                                    H商品图片 = item.ImageUrl,
+                                    FGC_LastModifier = currentUser,
+                                    FGC_LastModifyDate = now,
+                                })
+                                .Where(row =>
+                                    row.ID == target.ID
+                                    && (row.H商品图片 == null || row.H商品图片.Trim() == string.Empty))
+                                .ExecuteCommandAsync();
+                            if (affected > 0)
+                            {
+                                result.HqUpdatedCount += affected;
+                            }
+                            else
+                            {
+                                var currentImage = await hqDb.Queryable<DIC_商品信息字典表>()
+                                    .Where(row => row.ID == target.ID)
+                                    .Select(row => row.H商品图片)
+                                    .FirstAsync();
+                                if (!string.IsNullOrWhiteSpace(currentImage))
+                                {
+                                    result.HqSkippedExistingImageCount++;
+                                }
+                                else
+                                {
+                                    result.HqFailedCount++;
+                                    AddBatchImageError(result, $"{item.Product.ProductCode}: HQ 商品不存在，未更新图片");
+                                }
+                            }
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "批量更新供应商商品图片到 HQ 失败: {SupplierCode}", supplierCode);
+                    AddBatchImageError(result, ex.Message);
+                    if (request.UpdateHbweb || request.SaveSupplierImageBaseUrl)
+                    {
+                        result.HqFailedCount += Math.Max(
+                            0,
+                            validProducts.Count
+                                - result.HqUpdatedCount
+                                - result.HqSkippedExistingImageCount
+                                - result.HqFailedCount
+                        );
+                        LimitBatchImageErrors(result);
+                        return ApiResponse<BatchUpdateSupplierImagesResult>.OK(result, "批量更新供应商商品图片部分完成，HQ 更新失败");
+                    }
+
+                    LimitBatchImageErrors(result);
+                    return ApiResponse<BatchUpdateSupplierImagesResult>.Error("更新 HQ 商品图片失败", "HQ_IMAGE_UPDATE_ERROR", result);
+                }
+            }
+
+            LimitBatchImageErrors(result);
+            return ApiResponse<BatchUpdateSupplierImagesResult>.OK(result, "批量更新供应商商品图片完成");
+        }
+
+        private static void AddBatchImageError(BatchUpdateSupplierImagesResult result, string message)
+        {
+            result.Errors.Add(message);
+        }
+
+        private static void LimitBatchImageErrors(BatchUpdateSupplierImagesResult result)
+        {
+            if (result.Errors.Count <= BatchImageMaxErrorDetails)
+            {
+                return;
+            }
+
+            var hiddenCount = result.Errors.Count - (BatchImageMaxErrorDetails - 1);
+            result.Errors = result.Errors
+                .Take(BatchImageMaxErrorDetails - 1)
+                .ToList();
+            result.Errors.Add($"还有 {hiddenCount} 条错误未显示");
+        }
+
+        private static string BuildSupplierImageUrl(string template, string supplierCode, string itemNumber)
+        {
+            // 图片模板只替换明确允许的占位符，避免误改供应商自定义 URL 的其他内容。
+            return template
+                .Replace("{supplierCode}", Uri.EscapeDataString(supplierCode))
+                .Replace("{itemNumber}", Uri.EscapeDataString(itemNumber));
+        }
+
         /// <summary>
         /// 批量删除商品（使用事务，支持软删除和物理删除）
         /// </summary>
@@ -1084,7 +1561,7 @@ namespace BlazorApp.Api.Services.React
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "批量{deleteType}商品事务失败");
+                _logger.LogError(ex, "批量{DeleteType}商品事务失败", deleteType);
                 return new ApiResponse<BatchOperationReactResult>
                 {
                     Success = false,

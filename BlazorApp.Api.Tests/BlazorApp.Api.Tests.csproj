@@ -60,6 +60,7 @@
     <Compile Include="ProductReactServiceHqSyncTests.cs" />
     <Compile Include="ProductStoreRecordsTests.cs" />
     <Compile Include="ProductPushToHqServiceTests.cs" />
+    <Compile Include="ProductSupplierImageBatchUpdateTests.cs" />
     <Compile Include="ProductHqSyncSplitTests.cs" />
     <Compile Include="ProductSetCodeHqIncrementalSyncTests.cs" />
     <Compile Include="ReactProductHqSyncContractTests.cs" />
@@ -69,6 +70,7 @@
     <Compile Include="LocalSupplierInvoiceBatchUpdateJobServiceTests.cs" />
     <Compile Include="ContainerHqSyncServiceTests.cs" />
     <Compile Include="ContainerReactServiceBatchUpdateDetailsTests.cs" />
+    <Compile Include="ContainerReactServiceLocalSupplierCodeTests.cs" />
     <Compile Include="ContainerProductCreationServiceTests.cs" />
     <Compile Include="ReactContainerControllerSyncContractTests.cs" />
     <Compile Include="DataSyncReactControllerLocationSyncContractTests.cs" />

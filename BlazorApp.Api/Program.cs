@@ -482,6 +482,10 @@ builder.Services.AddScoped<ILocalSuppliersReactService, LocalSupplierReactServic
 builder.Services.AddScoped<IWarehouseCategoryReactService, WarehouseCategoryReactService>();
 builder.Services.AddScoped<IProductCategoryReactService, ProductCategoryReactService>();
 builder.Services.AddScoped<IProductReactService, ProductReactService>(); // Product CRUD和批量操作服务
+builder.Services.AddSingleton<
+    IProductSupplierImageBatchUpdateJobService,
+    ProductSupplierImageBatchUpdateJobService
+>();
 builder.Services.AddScoped<IProductHqSyncService, ProductHqSyncService>(); // 商品HQ解耦同步服务
 builder.Services.AddScoped<IProductSetCodeReactService, ProductSetCodeReactService>();
 builder.Services.Configure<StoreRetailPriceHqSyncOptions>(

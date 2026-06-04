@@ -115,6 +115,11 @@ namespace BlazorApp.Shared.DTOs
         public string? 商品编码 { get; set; }
 
         /// <summary>
+        /// 本地供应商编码
+        /// </summary>
+        public string? LocalSupplierCode { get; set; }
+
+        /// <summary>
         /// 装柜类型
         /// </summary>
         public string? 装柜类型 { get; set; }
@@ -221,6 +226,11 @@ namespace BlazorApp.Shared.DTOs
         /// 商品编码
         /// </summary>
         public string? 商品编码 { get; set; }
+
+        /// <summary>
+        /// 本地供应商编码
+        /// </summary>
+        public string? LocalSupplierCode { get; set; }
 
         /// <summary>
         /// 货号

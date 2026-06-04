@@ -12,6 +12,7 @@ namespace BlazorApp.Shared.DTOs
         public string? Phone { get; set; }
         public string? Email { get; set; }
         public string? Remark { get; set; }
+        public string? ImageBaseUrl { get; set; }
         public DateTime CreatedAt { get; set; }
         public DateTime? UpdatedAt { get; set; }
     }
@@ -25,6 +26,7 @@ namespace BlazorApp.Shared.DTOs
         public string? Phone { get; set; }
         public string? Email { get; set; }
         public string? Remark { get; set; }
+        public string? ImageBaseUrl { get; set; }
     }
 
     public class UpdateLocalSupplierDto
@@ -35,6 +37,7 @@ namespace BlazorApp.Shared.DTOs
         public string? Phone { get; set; }
         public string? Email { get; set; }
         public string? Remark { get; set; }
+        public string? ImageBaseUrl { get; set; }
     }
 
     public class LocalSupplierSyncResultDto

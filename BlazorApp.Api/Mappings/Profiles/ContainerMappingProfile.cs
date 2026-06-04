@@ -94,6 +94,13 @@ namespace BlazorApp.Api.Mappings.Profiles
                 .ForMember(dest => dest.HGUID, opt => opt.MapFrom(src => src.DetailCode))
                 .ForMember(dest => dest.主表GUID, opt => opt.MapFrom(src => src.ContainerCode))
                 .ForMember(dest => dest.商品编码, opt => opt.MapFrom(src => src.ProductCode))
+                .ForMember(
+                    dest => dest.LocalSupplierCode,
+                    opt =>
+                        opt.MapFrom(src =>
+                            src.LocalProduct != null ? src.LocalProduct.LocalSupplierCode : null
+                        )
+                )
                 .ForMember(dest => dest.商品信息, opt => opt.MapFrom(src => src.Product))
                 .ForMember(
                     dest => dest.是否新商品,
@@ -114,7 +121,17 @@ namespace BlazorApp.Api.Mappings.Profiles
                 .ForMember(dest => dest.合计装柜体积, opt => opt.MapFrom(src => src.TotalVolume))
                 .ForMember(dest => dest.运输成本, opt => opt.MapFrom(src => src.TransportCost))
                 .ForMember(dest => dest.备注, opt => opt.MapFrom(src => src.Remarks))
-                .ForMember(dest => dest.商品信息, opt => opt.MapFrom(src => src.Product));
+                .ForMember(dest => dest.商品信息, opt => opt.MapFrom(src => src.Product))
+                .AfterMap(
+                    (src, dest) =>
+                    {
+                        // 货柜明细的本地供应商编码来自本地 Product 表。
+                        if (dest.商品信息 != null)
+                        {
+                            dest.商品信息.LocalSupplierCode = src.LocalProduct?.LocalSupplierCode;
+                        }
+                    }
+                );
 
             // DomesticProduct -> ContainerProductInfoDto 映射（本地数据库）
             CreateMap<DomesticProduct, ContainerProductInfoDto>()
@@ -124,6 +141,7 @@ namespace BlazorApp.Api.Mappings.Profiles
                     dest => dest.商品名称,
                     opt => opt.MapFrom(src => src.ProductName ?? src.EnglishProductName)
                 ) // 优先显示英文名称
+                .ForMember(dest => dest.LocalSupplierCode, opt => opt.Ignore())
                 .ForMember(dest => dest.英文名称, opt => opt.MapFrom(src => src.EnglishProductName))
                 .ForMember(dest => dest.条形码, opt => opt.MapFrom(src => src.Barcode))
                 .ForMember(dest => dest.商品图片, opt => opt.MapFrom(src => src.ProductImage))

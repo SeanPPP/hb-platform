@@ -156,12 +156,23 @@ namespace BlazorApp.Api.Services.React
         {
             try
             {
-                // 根据货柜编码查询，预加载明细
+                // 先取主表，再单独补齐明细导航，确保 AutoMapper 能拿到本地供应商编码。
                 var container = await _context
                     .Db.Queryable<Container>()
-                    .Includes(x => x.Details)
                     .Where(x => x.ContainerCode == containerGuid)
                     .FirstAsync();
+
+                if (container == null)
+                {
+                    return null;
+                }
+
+                container.Details = await _context
+                    .Db.Queryable<ContainerDetail>()
+                    .Includes(x => x.Product)
+                    .Includes(x => x.LocalProduct)
+                    .Where(x => x.ContainerCode == containerGuid)
+                    .ToListAsync();
 
                 return _mapper.Map<ContainerMainDto>(container);
             }
@@ -271,6 +282,7 @@ namespace BlazorApp.Api.Services.React
                                 HGUID = cd.DetailCode,
                                 主表GUID = cd.ContainerCode,
                                 商品编码 = cd.ProductCode,
+                                LocalSupplierCode = lp.LocalSupplierCode,
                                 装柜类型 = cd.LoadingType,
                                 商品类型 = cd.ProductType,
                                 套装数量 = cd.SetQuantity,
@@ -291,6 +303,7 @@ namespace BlazorApp.Api.Services.React
                                 商品信息 = new ContainerProductInfoDto
                                 {
                                     商品编码 = dp.ProductCode,
+                                    LocalSupplierCode = lp.LocalSupplierCode,
                                     货号 = dp.HBProductNo,
                                     商品名称 = dp.ProductName,
                                     英文名称 = dp.EnglishProductName,
@@ -363,6 +376,7 @@ namespace BlazorApp.Api.Services.React
                 var productsQuery = _context
                     .Db.Queryable<ContainerDetail>()
                     .Includes(x => x.Product)
+                    .Includes(x => x.LocalProduct)
                     .Where(x => containerCodes.Contains(x.ContainerCode))
                     .Where(x => x.ProductCode != null);
 

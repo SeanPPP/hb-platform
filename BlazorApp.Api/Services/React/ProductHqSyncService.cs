@@ -647,12 +647,20 @@ namespace BlazorApp.Api.Services.React
             }
         }
 
-        public async Task<ApiResponse<PushProductsToHqResult>> PushToHqAsync(List<string> productCodes)
+        public async Task<ApiResponse<PushProductsToHqResult>> PushToHqAsync(
+            PushProductsToHqRequest request
+        )
         {
-            if (productCodes == null || productCodes.Count == 0)
+            if (
+                request == null
+                || (
+                    (request.ProductCodes == null || request.ProductCodes.Count == 0)
+                    && (request.Items == null || request.Items.Count == 0)
+                )
+            )
             {
                 return ApiResponse<PushProductsToHqResult>.Error(
-                    "商品编码列表不能为空",
+                    "推送商品列表不能为空",
                     "PRODUCT_HQ_PUSH_EMPTY_CODES"
                 );
             }
@@ -675,52 +683,42 @@ namespace BlazorApp.Api.Services.React
             try
             {
                 _hqContext.CheckConnection();
-
-                var normalizedCodes = productCodes
-                    .Where(code => !string.IsNullOrWhiteSpace(code))
-                    .Select(code => code.Trim())
-                    .Distinct(StringComparer.OrdinalIgnoreCase)
-                    .ToList();
-                result.TotalCount = normalizedCodes.Count;
-                if (normalizedCodes.Count == 0)
+                var resolvedSelection = await ResolvePushSelectionAsync(localDb, request, result);
+                var products = resolvedSelection.Products;
+                var inventoryCandidates = resolvedSelection.InventoryCandidates;
+                if (result.TotalCount == 0)
                 {
                     return ApiResponse<PushProductsToHqResult>.Error(
-                        "商品编码列表不能为空",
+                        "推送商品列表不能为空",
                         "PRODUCT_HQ_PUSH_EMPTY_CODES"
                     );
                 }
-
-                var products = await localDb.Queryable<Product>()
-                    .Where(row =>
-                        row.ProductCode != null
-                        && normalizedCodes.Contains(row.ProductCode)
-                        && !row.IsDeleted
-                    )
-                    .ToListAsync();
-                products = DeduplicateByBusinessKey(products, row => row.ProductCode);
                 result.TotalLocalProducts = products.Count;
-                var foundCodes = products
-                    .Select(row => NormalizeCode(row.ProductCode))
-                    .Where(code => code != null)
-                    .Select(code => code!)
-                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
-                var missingCodes = normalizedCodes
-                    .Where(code => !foundCodes.Contains(code))
-                    .ToList();
-                foreach (var missingCode in missingCodes)
-                {
-                    result.Errors.Add($"商品不存在或已删除: {missingCode}");
-                }
 
                 if (products.Count == 0)
                 {
-                    result.FailedCount = normalizedCodes.Count;
+                    result.FailedCount = result.TotalCount;
                     result.DurationMs = (long)(DateTime.UtcNow - startedAt).TotalMilliseconds;
                     return new ApiResponse<PushProductsToHqResult>
                     {
                         Success = false,
                         Message = "未找到有效的本地商品",
                         ErrorCode = "PRODUCT_HQ_PUSH_NO_PRODUCTS",
+                        Data = result,
+                        Details = result,
+                    };
+                }
+
+                if (resolvedSelection.ItemFailureCount > 0)
+                {
+                    result.SuccessCount = 0;
+                    result.FailedCount = result.TotalCount;
+                    result.DurationMs = (long)(DateTime.UtcNow - startedAt).TotalMilliseconds;
+                    return new ApiResponse<PushProductsToHqResult>
+                    {
+                        Success = false,
+                        Message = "推送候选包含错误，未写入HQ",
+                        ErrorCode = "PRODUCT_HQ_PUSH_ITEM_ERRORS",
                         Data = result,
                         Details = result,
                     };
@@ -736,7 +734,6 @@ namespace BlazorApp.Api.Services.React
                 var productSetCodes = await localDb.Queryable<ProductSetCode>()
                     .Where(row =>
                         activeProductCodes.Contains(row.ProductCode)
-                        && row.IsActive
                         && !row.IsDeleted
                     )
                     .ToListAsync();
@@ -761,7 +758,6 @@ namespace BlazorApp.Api.Services.React
                             && activeProductCodes.Contains(row.ProductCode)
                             && row.StoreCode != null
                             && activeStoreCodes.Contains(row.StoreCode)
-                            && row.IsActive
                             && !row.IsDeleted
                         )
                         .ToListAsync();
@@ -784,6 +780,12 @@ namespace BlazorApp.Api.Services.React
                         activeStoreCodes,
                         result
                     );
+                    await UpsertHqWarehouseInventoriesAsync(
+                        hqDb,
+                        products,
+                        inventoryCandidates,
+                        result
+                    );
                     hqDb.Ado.CommitTran();
                 }
                 catch
@@ -802,8 +804,7 @@ namespace BlazorApp.Api.Services.React
                 _logger.LogError(ex, "商品推送HQ失败");
                 result.DurationMs = (long)(DateTime.UtcNow - startedAt).TotalMilliseconds;
                 result.Errors.Add(ex.Message);
-                result.FailedCount = result.TotalCount > 0 ? result.TotalCount : productCodes.Count;
-                result.TotalCount = result.TotalCount > 0 ? result.TotalCount : productCodes.Count;
+                result.FailedCount = result.TotalCount;
                 return new ApiResponse<PushProductsToHqResult>
                 {
                     Success = false,
@@ -818,6 +819,272 @@ namespace BlazorApp.Api.Services.React
                 hqDb.Ado.CommandTimeOut = originalTimeout;
                 SyncLock.Release();
             }
+        }
+
+        private async Task<PushToHqSelection> ResolvePushSelectionAsync(
+            ISqlSugarClient localDb,
+            PushProductsToHqRequest request,
+            PushProductsToHqResult result
+        )
+        {
+            var rawRequestItems = (request.Items ?? new List<PushProductsToHqItem>())
+                .Where(item =>
+                    item != null
+                    && (
+                        item.IsNewProduct
+                        || !string.IsNullOrWhiteSpace(item.ProductCode)
+                        || !string.IsNullOrWhiteSpace(item.LocalSupplierCode)
+                        || !string.IsNullOrWhiteSpace(item.ItemNumber)
+                    )
+                )
+                .ToList();
+            var itemProductCodeSet = rawRequestItems
+                .Select(item => NormalizeCode(item.ProductCode))
+                .Where(code => code != null)
+                .Select(code => code!)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var normalizedCodes = (request.ProductCodes ?? new List<string>())
+                .Where(code => !string.IsNullOrWhiteSpace(code))
+                .Select(code => code.Trim())
+                // items 是新契约主来源；productCodes 只补充旧入口或额外编码，避免同一商品被重复统计为失败。
+                .Where(code => !itemProductCodeSet.Contains(code))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            var requestItems = rawRequestItems;
+
+            var requestedProductCodes = normalizedCodes
+                .Concat(
+                    requestItems
+                        .Select(item => NormalizeCode(item.ProductCode))
+                        .Where(code => code != null)
+                        .Select(code => code!)
+                )
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            var requestedSupplierCodes = requestItems
+                .Where(item => string.IsNullOrWhiteSpace(item.ProductCode))
+                .Select(item => NormalizeCode(item.LocalSupplierCode))
+                .Where(code => code != null)
+                .Select(code => code!)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            var requestedItemNumbers = requestItems
+                .Where(item => string.IsNullOrWhiteSpace(item.ProductCode))
+                .Select(item => NormalizeCode(item.ItemNumber))
+                .Where(code => code != null)
+                .Select(code => code!)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            var queriedProducts =
+                requestedProductCodes.Count == 0
+                && requestedSupplierCodes.Count == 0
+                && requestedItemNumbers.Count == 0
+                    ? new List<Product>()
+                    : await localDb.Queryable<Product>()
+                        .Where(row =>
+                            !row.IsDeleted
+                            && (
+                                (row.ProductCode != null && requestedProductCodes.Contains(row.ProductCode))
+                                || (
+                                    row.LocalSupplierCode != null
+                                    && requestedSupplierCodes.Contains(row.LocalSupplierCode)
+                                    && row.ItemNumber != null
+                                    && requestedItemNumbers.Contains(row.ItemNumber)
+                                )
+                            )
+                        )
+                        .ToListAsync();
+            var deduplicatedProducts = queriedProducts
+                .Select(row => new
+                {
+                    Key = NormalizeCode(row.ProductCode) ?? NormalizeCode(row.UUID),
+                    Row = row,
+                })
+                .Where(item => item.Key != null)
+                .GroupBy(item => item.Key!, StringComparer.OrdinalIgnoreCase)
+                .Select(group => group
+                    .OrderByDescending(item => item.Row.UpdatedAt ?? item.Row.CreatedAt)
+                    .ThenByDescending(item => item.Row.CreatedAt)
+                    .First()
+                    .Row)
+                .ToList();
+            var productsByCode = deduplicatedProducts
+                .Where(row => NormalizeCode(row.ProductCode) != null)
+                .ToDictionary(row => NormalizeCode(row.ProductCode)!, StringComparer.OrdinalIgnoreCase);
+            var productsBySupplierItem = deduplicatedProducts
+                .Select(row => new
+                {
+                    Key = BuildSupplierItemKey(row.LocalSupplierCode, row.ItemNumber),
+                    Row = row,
+                })
+                .Where(item => item.Key != null)
+                .GroupBy(item => item.Key!, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(
+                    group => group.Key,
+                    group => group.Select(item => item.Row).ToList(),
+                    StringComparer.OrdinalIgnoreCase
+                );
+
+            var resolvedProductCodes = new List<string>();
+            var inventoryCandidates = new Dictionary<string, PushProductsToHqItem>(
+                StringComparer.OrdinalIgnoreCase
+            );
+            var failedCandidateCount = 0;
+            var itemFailureCount = 0;
+
+            foreach (var productCode in normalizedCodes)
+            {
+                if (productsByCode.TryGetValue(productCode, out var product))
+                {
+                    AppendResolvedProductCode(resolvedProductCodes, product.ProductCode);
+                    continue;
+                }
+
+                result.Errors.Add($"商品不存在或已删除: {productCode}");
+                failedCandidateCount++;
+            }
+
+            foreach (var item in requestItems)
+            {
+                if (item.IsNewProduct)
+                {
+                    result.Errors.Add($"新商品候选不推送: {DescribePushItem(item)}");
+                    failedCandidateCount++;
+                    itemFailureCount++;
+                    continue;
+                }
+
+                var errorCountBeforeResolve = result.Errors.Count;
+                var matchedProduct = ResolveMatchedProduct(productsByCode, productsBySupplierItem, item, result);
+                var finalProductCode = NormalizeCode(matchedProduct?.ProductCode);
+                if (matchedProduct == null)
+                {
+                    if (result.Errors.Count > errorCountBeforeResolve)
+                    {
+                        failedCandidateCount++;
+                        itemFailureCount++;
+                    }
+                    continue;
+                }
+
+                if (finalProductCode == null)
+                {
+                    result.Errors.Add($"匹配成功但最终商品编码为空: {DescribePushItem(item)}");
+                    failedCandidateCount++;
+                    itemFailureCount++;
+                    continue;
+                }
+
+                AppendResolvedProductCode(resolvedProductCodes, finalProductCode);
+                if (!inventoryCandidates.ContainsKey(finalProductCode))
+                {
+                    inventoryCandidates[finalProductCode] = new PushProductsToHqItem
+                    {
+                        ProductCode = finalProductCode,
+                        LocalSupplierCode = NormalizeCode(item.LocalSupplierCode),
+                        ItemNumber = NormalizeCode(item.ItemNumber),
+                        DomesticPrice = item.DomesticPrice,
+                        ImportPrice = item.ImportPrice,
+                        OemPrice = item.OemPrice,
+                        WarehouseIsActive = item.WarehouseIsActive,
+                        IsNewProduct = false,
+                    };
+                }
+            }
+
+            // 旧 ProductCodes 入口没有候选价格/状态时，补一个仅带商品启用状态的库存候选，
+            // 这样既能同步 H使用状态，也不会抢走 items 已明确给出的价格候选。
+            foreach (var resolvedProductCode in resolvedProductCodes)
+            {
+                if (
+                    inventoryCandidates.ContainsKey(resolvedProductCode)
+                    || !productsByCode.TryGetValue(resolvedProductCode, out var resolvedProduct)
+                )
+                {
+                    continue;
+                }
+
+                inventoryCandidates[resolvedProductCode] = new PushProductsToHqItem
+                {
+                    ProductCode = resolvedProductCode,
+                    WarehouseIsActive = resolvedProduct.IsActive,
+                    IsNewProduct = false,
+                };
+            }
+
+            result.TotalCount = resolvedProductCodes.Count + failedCandidateCount;
+            var products = resolvedProductCodes
+                .Where(productsByCode.ContainsKey)
+                .Select(code => productsByCode[code])
+                .ToList();
+            return new PushToHqSelection(products, inventoryCandidates, itemFailureCount);
+        }
+
+        private static Product? ResolveMatchedProduct(
+            IReadOnlyDictionary<string, Product> productsByCode,
+            IReadOnlyDictionary<string, List<Product>> productsBySupplierItem,
+            PushProductsToHqItem item,
+            PushProductsToHqResult result
+        )
+        {
+            var productCode = NormalizeCode(item.ProductCode);
+            if (productCode != null)
+            {
+                if (productsByCode.TryGetValue(productCode, out var matchedByCode))
+                {
+                    return matchedByCode;
+                }
+
+                result.Errors.Add($"商品不存在或已删除: {productCode}");
+                return null;
+            }
+
+            var supplierItemKey = BuildSupplierItemKey(item.LocalSupplierCode, item.ItemNumber);
+            if (supplierItemKey == null)
+            {
+                result.Errors.Add($"商品候选缺少有效匹配键: {DescribePushItem(item)}");
+                return null;
+            }
+
+            if (!productsBySupplierItem.TryGetValue(supplierItemKey, out var matchedProducts))
+            {
+                result.Errors.Add($"未找到匹配商品: {DescribePushItem(item)}");
+                return null;
+            }
+
+            if (matchedProducts.Count != 1)
+            {
+                result.Errors.Add($"匹配到多条本地商品: {DescribePushItem(item)}");
+                return null;
+            }
+
+            return matchedProducts[0];
+        }
+
+        private static void AppendResolvedProductCode(List<string> productCodes, string? productCode)
+        {
+            var normalizedProductCode = NormalizeCode(productCode);
+            if (
+                normalizedProductCode == null
+                || productCodes.Contains(normalizedProductCode, StringComparer.OrdinalIgnoreCase)
+            )
+            {
+                return;
+            }
+
+            productCodes.Add(normalizedProductCode);
+        }
+
+        private static string DescribePushItem(PushProductsToHqItem item)
+        {
+            var productCode = NormalizeCode(item.ProductCode);
+            if (productCode != null)
+            {
+                return $"商品编码={productCode}";
+            }
+
+            return $"供应商={NormalizeCode(item.LocalSupplierCode) ?? "NULL"}, 货号={NormalizeCode(item.ItemNumber) ?? "NULL"}";
         }
 
         private static async Task UpsertHqProductsAsync(
@@ -890,6 +1157,97 @@ namespace BlazorApp.Api.Services.React
                     .ExecuteCommandAsync();
                 result.ProductsAdded += inserts.Count;
             }
+        }
+
+        private static async Task UpsertHqWarehouseInventoriesAsync(
+            ISqlSugarClient hqDb,
+            List<Product> products,
+            IReadOnlyDictionary<string, PushProductsToHqItem> inventoryCandidates,
+            PushProductsToHqResult result
+        )
+        {
+            var inventoryProductCodes = products
+                .Select(row => NormalizeCode(row.ProductCode))
+                .Where(code => code != null && inventoryCandidates.ContainsKey(code))
+                .Select(code => code!)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            if (inventoryProductCodes.Count == 0)
+            {
+                return;
+            }
+
+            var productByCode = products
+                .Where(row => NormalizeCode(row.ProductCode) != null)
+                .ToDictionary(row => NormalizeCode(row.ProductCode)!, StringComparer.OrdinalIgnoreCase);
+            var existingInventories = await hqDb.Queryable<CBP_DIC_商品库存表>()
+                .Where(row => row.H商品编码 != null && inventoryProductCodes.Contains(row.H商品编码))
+                .ToListAsync();
+            var existingInventoryByCode = existingInventories
+                .Where(row => !string.IsNullOrWhiteSpace(row.H商品编码))
+                .ToDictionary(row => row.H商品编码!, StringComparer.OrdinalIgnoreCase);
+            var now = DateTime.Now;
+            var inserts = new List<CBP_DIC_商品库存表>();
+
+            foreach (var productCode in inventoryProductCodes)
+            {
+                var candidate = inventoryCandidates[productCode];
+                if (!productByCode.TryGetValue(productCode, out var product))
+                {
+                    continue;
+                }
+
+                var inventoryStatus = ResolveInventoryStatus(candidate, product);
+                if (existingInventoryByCode.TryGetValue(productCode, out var existingInventory))
+                {
+                    await hqDb.Updateable<CBP_DIC_商品库存表>()
+                        .SetColumns(row => new CBP_DIC_商品库存表
+                        {
+                            H国内价格 = candidate.DomesticPrice ?? existingInventory.H国内价格,
+                            H进口价格 = candidate.ImportPrice ?? existingInventory.H进口价格,
+                            H贴牌价格 = candidate.OemPrice ?? existingInventory.H贴牌价格,
+                            H使用状态 = inventoryStatus,
+                            FGC_LastModifier = "HBweb",
+                            FGC_LastModifyDate = now,
+                        })
+                        .Where(row => row.H商品编码 == productCode)
+                        .ExecuteCommandAsync();
+                    result.WarehouseInventoriesUpdated++;
+                    continue;
+                }
+
+                inserts.Add(new CBP_DIC_商品库存表
+                {
+                    HGUID = Guid.NewGuid().ToString(),
+                    H商品编码 = productCode,
+                    H国内价格 = candidate.DomesticPrice,
+                    H进口价格 = candidate.ImportPrice,
+                    H贴牌价格 = candidate.OemPrice,
+                    H库存 = 0,
+                    H最小订货量 = 0,
+                    H库存金额 = 0,
+                    H库存预警数 = 0,
+                    H使用状态 = inventoryStatus,
+                    FGC_Creator = "HBweb",
+                    FGC_CreateDate = now,
+                    FGC_LastModifier = "HBweb",
+                    FGC_LastModifyDate = now,
+                });
+            }
+
+            if (inserts.Count > 0)
+            {
+                await hqDb.Insertable(inserts)
+                    .IgnoreColumns(row => row.ID)
+                    .ExecuteCommandAsync();
+                result.WarehouseInventoriesCreated += inserts.Count;
+            }
+        }
+
+        private static int ResolveInventoryStatus(PushProductsToHqItem candidate, Product product)
+        {
+            // 新候选优先带自己的仓库启用状态；旧 ProductCodes 入口没有该字段时回退本地商品状态。
+            return (candidate.WarehouseIsActive ?? product.IsActive) ? 1 : 0;
         }
 
         private static async Task UpsertHqRetailPricesAsync(
@@ -2050,6 +2408,12 @@ namespace BlazorApp.Api.Services.React
         private sealed record ProductAssociationDeleteResult(
             int StoreRetailPricesDeleted,
             int StoreMultiCodesDeleted
+        );
+
+        private sealed record PushToHqSelection(
+            List<Product> Products,
+            Dictionary<string, PushProductsToHqItem> InventoryCandidates,
+            int ItemFailureCount
         );
 
         private sealed class SupplierItemHqProductMatch

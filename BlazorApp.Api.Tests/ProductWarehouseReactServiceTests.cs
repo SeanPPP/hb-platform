@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Reflection;
 using System.Runtime.CompilerServices;
@@ -427,6 +428,43 @@ namespace BlazorApp.Api.Tests
                     Assert.Equal("MobileWarehousePricePatch", s02.UpdatedBy);
                 }
             );
+        }
+
+        [Fact]
+        public async Task BatchUpdateAsync_WhenImportPriceChanges_UpdatesWarehouseProductProductAndStoreRetailPrices()
+        {
+            await SeedPriceSyncProductAsync(
+                "P-BATCH-IMPORT-SYNC",
+                purchasePrice: 4.28m,
+                retailPrice: 11.99m,
+                importPrice: 4.28m,
+                oemPrice: 11.99m
+            );
+            await SeedStoreRetailPriceAsync("S01", "P-BATCH-IMPORT-SYNC", purchasePrice: 4.28m, retailPrice: 11.99m);
+            var service = CreateService();
+
+            var result = await service.BatchUpdateAsync(
+                new List<UpdateItemDto>
+                {
+                    new()
+                    {
+                        ProductCode = "P-BATCH-IMPORT-SYNC",
+                        ImportPrice = 6.66m,
+                        IsActive = true,
+                    },
+                }
+            );
+
+            var product = await _db.Queryable<Product>().SingleAsync(x => x.ProductCode == "P-BATCH-IMPORT-SYNC");
+            var warehouseProduct = await _db.Queryable<WarehouseProduct>().SingleAsync(x => x.ProductCode == "P-BATCH-IMPORT-SYNC");
+            var storePrice = await _db.Queryable<StoreRetailPrice>().SingleAsync(x => x.ProductCode == "P-BATCH-IMPORT-SYNC");
+
+            Assert.True(result.Success);
+            Assert.Equal(1, result.SuccessCount);
+            Assert.Equal(6.66m, warehouseProduct.ImportPrice);
+            Assert.Equal(6.66m, product.PurchasePrice);
+            Assert.Equal(6.66m, storePrice.PurchasePrice);
+            Assert.Equal(11.99m, storePrice.StoreRetailPriceValue);
         }
 
         [Fact]

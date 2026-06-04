@@ -36,6 +36,19 @@ namespace BlazorApp.Api.Interfaces.React
         );
 
         /// <summary>
+        /// 批量更新商品分店业务字段
+        /// </summary>
+        /// <param name="productCode">商品编码</param>
+        /// <param name="request">批量更新请求</param>
+        /// <param name="accessibleStoreCodes">当前用户可管理分店代码；null 表示不限制</param>
+        /// <returns>批量操作结果</returns>
+        Task<ApiResponse<BatchOperationReactResult>> BatchUpdateStoreRecordsAsync(
+            string productCode,
+            BatchUpdateProductStoreRecordsRequest request,
+            IReadOnlyCollection<string>? accessibleStoreCodes
+        );
+
+        /// <summary>
         /// 创建商品
         /// </summary>
         /// <param name="dto">创建DTO</param>
@@ -64,6 +77,10 @@ namespace BlazorApp.Api.Interfaces.React
         /// <param name="items">批量更新项</param>
         /// <returns>批量操作结果</returns>
         Task<ApiResponse<BatchOperationReactResult>> BatchUpdateAsync(List<BatchUpdateProductReactDto> items);
+
+        Task<ApiResponse<BatchUpdateSupplierImagesResult>> BatchUpdateSupplierImagesAsync(
+            BatchUpdateSupplierImagesRequest request
+        );
 
         /// <summary>
         /// 批量删除商品（使用事务，支持软删除和物理删除）

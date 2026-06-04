@@ -369,8 +369,61 @@ namespace BlazorApp.Shared.DTOs
         /// <summary>
         /// 需要推送的商品编码列表。
         /// </summary>
-        [Required(ErrorMessage = "商品编码列表不能为空")]
         public List<string> ProductCodes { get; set; } = new();
+
+        /// <summary>
+        /// 带价格与候选信息的推送明细。
+        /// 兼容旧调用：当前端仍只传 ProductCodes 时，这里可以为空。
+        /// </summary>
+        public List<PushProductsToHqItem> Items { get; set; } = new();
+    }
+
+    /// <summary>
+    /// POS 商品推送到 HQ 的单项明细。
+    /// </summary>
+    public class PushProductsToHqItem
+    {
+        /// <summary>
+        /// 商品编码，优先用于命中本地商品。
+        /// </summary>
+        public string? ProductCode { get; set; }
+
+        /// <summary>
+        /// 本地供应商编码，当 ProductCode 缺失时参与候选匹配。
+        /// </summary>
+        public string? LocalSupplierCode { get; set; }
+
+        /// <summary>
+        /// 货号，当 ProductCode 缺失时参与候选匹配。
+        /// </summary>
+        public string? ItemNumber { get; set; }
+
+        /// <summary>
+        /// 国内价格。
+        /// </summary>
+        public decimal? DomesticPrice { get; set; }
+
+        /// <summary>
+        /// 进口价格。
+        /// </summary>
+        public decimal? ImportPrice { get; set; }
+
+        /// <summary>
+        /// 贴牌价格。
+        /// </summary>
+        public decimal? OemPrice { get; set; }
+
+        /// <summary>
+        /// 仓库启用状态。
+        /// true 写入 HQ 启用，false 写入 HQ 停用；为空时按旧链路回退。
+        /// </summary>
+        public bool? WarehouseIsActive { get; set; }
+
+        /// <summary>
+        /// 是否为新商品候选。
+        /// 新商品不参与推送，只保留旧商品 upsert。
+        /// </summary>
+        public bool IsNewProduct { get; set; }
     }
 
     /// <summary>
@@ -407,6 +460,16 @@ namespace BlazorApp.Shared.DTOs
         public int TotalCount { get; set; }
 
         /// <summary>
+        /// HQ 商品库存表新增数量。
+        /// </summary>
+        public int WarehouseInventoriesCreated { get; set; }
+
+        /// <summary>
+        /// HQ 商品库存表更新数量。
+        /// </summary>
+        public int WarehouseInventoriesUpdated { get; set; }
+
+        /// <summary>
         /// HQ 商品、分店价格、多码表实际新增或更新的记录总数。
         /// </summary>
         public int AffectedRowCount =>
@@ -417,7 +480,9 @@ namespace BlazorApp.Shared.DTOs
             + ProductSetCodesCreated
             + ProductSetCodesUpdated
             + StoreMultiCodesCreated
-            + StoreMultiCodesUpdated;
+            + StoreMultiCodesUpdated
+            + WarehouseInventoriesCreated
+            + WarehouseInventoriesUpdated;
     }
 
     /// <summary>
