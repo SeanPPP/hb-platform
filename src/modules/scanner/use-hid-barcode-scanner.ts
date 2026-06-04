@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { AppState } from "react-native";
 import type { NativeSyntheticEvent, TextInputSubmitEditingEventData, TextInput } from "react-native";
 import { getItemAsync, setItemAsync } from "expo-secure-store";
+import { createHiddenInputFocusController, type HiddenInputFocusController } from "./hid-hidden-input-focus";
 
 interface UseHidBarcodeScannerOptions {
   enabled?: boolean;
@@ -77,10 +78,23 @@ export function useHidBarcodeScanner({
   const [textInputValue, setTextInputValue] = useState("");
   const textInputTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const textInputRef = useRef<TextInput>(null);
+  const focusTargetRef = useRef<() => void>(() => {});
+  const focusControllerRef = useRef<HiddenInputFocusController | null>(null);
 
   const [forceTextInput, setForceTextInput] = useState<boolean>(cachedForceTextInput === true);
   const lastSubmittedRef = useRef("");
   const lastSubmittedTimeRef = useRef(0);
+
+  // 隐藏输入框只在扫码场景抢焦点，避免覆盖用户正在编辑的可见输入框。
+  focusTargetRef.current = () => {
+    if (enabled) {
+      textInputRef.current?.focus();
+    }
+  };
+
+  if (!focusControllerRef.current) {
+    focusControllerRef.current = createHiddenInputFocusController(() => focusTargetRef.current());
+  }
 
   const submitBarcode = useCallback(
     (rawValue: string) => {
@@ -129,10 +143,16 @@ export function useHidBarcodeScanner({
   );
 
   const focusHiddenInput = useCallback(() => {
-    if (enabled) {
-      textInputRef.current?.focus();
-    }
-  }, [enabled]);
+    focusControllerRef.current?.focusIfAllowed();
+  }, []);
+
+  const pauseHiddenInputFocus = useCallback(() => {
+    focusControllerRef.current?.pauseHiddenInputFocus();
+  }, []);
+
+  const resumeHiddenInputFocus = useCallback((options?: { refocus?: boolean }) => {
+    focusControllerRef.current?.resumeHiddenInputFocus(options);
+  }, []);
 
   useEffect(() => {
     if (cachedForceTextInput === null) {
@@ -150,12 +170,12 @@ export function useHidBarcodeScanner({
     }
 
     const interval = setInterval(() => {
-      textInputRef.current?.focus();
+      focusHiddenInput();
     }, 3000);
 
     const subscription = AppState.addEventListener("change", (state) => {
       if (state === "active") {
-        setTimeout(() => textInputRef.current?.focus(), 100);
+        setTimeout(() => focusHiddenInput(), 100);
       }
     });
 
@@ -163,13 +183,13 @@ export function useHidBarcodeScanner({
       clearInterval(interval);
       subscription.remove();
     };
-  }, [enabled]);
+  }, [enabled, focusHiddenInput]);
 
   useEffect(() => {
     if (forceTextInput && enabled) {
-      setTimeout(() => textInputRef.current?.focus(), 50);
+      setTimeout(() => focusHiddenInput(), 50);
     }
-  }, [forceTextInput, enabled]);
+  }, [forceTextInput, enabled, focusHiddenInput]);
 
   useEffect(() => {
     return () => {
@@ -235,6 +255,8 @@ export function useHidBarcodeScanner({
       mode: "native" as const,
       textInputProps: null,
       focusHiddenInput: null,
+      pauseHiddenInputFocus,
+      resumeHiddenInputFocus,
     };
   }
 
@@ -253,5 +275,7 @@ export function useHidBarcodeScanner({
       contextMenuHidden: true,
     },
     focusHiddenInput,
+    pauseHiddenInputFocus,
+    resumeHiddenInputFocus,
   };
 }
