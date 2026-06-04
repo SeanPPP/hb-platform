@@ -21,6 +21,11 @@ namespace BlazorApp.Api.Services.React
         public bool UseSsl { get; set; } = true;
 
         /// <summary>
+        /// 是否检查 SMTP 证书吊销状态
+        /// </summary>
+        public bool CheckCertificateRevocation { get; set; } = true;
+
+        /// <summary>
         /// SMTP 用户名
         /// </summary>
         public string? Username { get; set; }

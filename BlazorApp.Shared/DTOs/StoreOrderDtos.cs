@@ -997,6 +997,58 @@ public class SendStoreOrderInvoiceEmailDto
 }
 
 /// <summary>
+/// 分店订货发票邮件 job 状态常量
+/// </summary>
+public static class StoreOrderInvoiceEmailJobStatusConstants
+{
+    public const string Queued = "Queued";
+    public const string Running = "Running";
+    public const string Succeeded = "Succeeded";
+    public const string Failed = "Failed";
+}
+
+/// <summary>
+/// 分店订货发票邮件 job 状态
+/// </summary>
+public class StoreOrderInvoiceEmailJobDto
+{
+    /// <summary>
+    /// job 标识
+    /// </summary>
+    public string JobId { get; set; } = string.Empty;
+
+    /// <summary>
+    /// job 状态
+    /// </summary>
+    public string Status { get; set; } = StoreOrderInvoiceEmailJobStatusConstants.Queued;
+
+    /// <summary>
+    /// 后端执行消息
+    /// </summary>
+    public string Message { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 订单 GUID
+    /// </summary>
+    public string OrderGUID { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 收件邮箱
+    /// </summary>
+    public string ToEmail { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 创建时间
+    /// </summary>
+    public DateTime CreatedAt { get; set; }
+
+    /// <summary>
+    /// 完成时间
+    /// </summary>
+    public DateTime? CompletedAt { get; set; }
+}
+
+/// <summary>
 /// 发票邮件发送消息
 /// </summary>
 public class StoreOrderInvoiceEmailMessage

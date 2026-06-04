@@ -8,9 +8,12 @@ using BlazorApp.Api.Services;
 using BlazorApp.Api.Services.React;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
+using MailKit.Net.Smtp;
+using MailKit.Security;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Moq;
@@ -167,6 +170,122 @@ public sealed class StoreOrderContactAndInvoiceTests : IDisposable
         Assert.Equal("未配置发票邮件 SMTP，请先完成 InvoiceEmail 配置", result.Message);
     }
 
+    [Fact]
+    public async Task StoreOrderInvoiceEmailJobService_StartsJobAndMarksSucceeded()
+    {
+        var request = new SendStoreOrderInvoiceEmailDto
+        {
+            OrderGUID = "order-1",
+            ToEmail = "customer@example.com",
+            PdfFileName = "invoice.pdf",
+            PdfBase64 = Convert.ToBase64String(new byte[] { 1, 2, 3, 4 }),
+        };
+        var storeOrderService = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        storeOrderService
+            .Setup(item =>
+                item.SendInvoiceEmailAsync(
+                    It.Is<SendStoreOrderInvoiceEmailDto>(dto =>
+                        dto.OrderGUID == "order-1" && dto.ToEmail == "customer@example.com"
+                    )
+                )
+            )
+            .ReturnsAsync(ApiResponse<bool>.OK(true, "发票邮件发送成功"));
+        var jobService = CreateInvoiceEmailJobService(storeOrderService);
+
+        var started = await jobService.StartJobAsync(request);
+        var completed = await WaitForInvoiceEmailJobAsync(jobService, started.JobId);
+
+        Assert.False(string.IsNullOrWhiteSpace(started.JobId));
+        Assert.Equal(StoreOrderInvoiceEmailJobStatusConstants.Succeeded, completed.Status);
+        Assert.Equal("发票邮件发送成功", completed.Message);
+        Assert.Equal("order-1", completed.OrderGUID);
+        Assert.Equal("customer@example.com", completed.ToEmail);
+        Assert.NotNull(completed.CompletedAt);
+        storeOrderService.Verify(
+            item => item.SendInvoiceEmailAsync(It.IsAny<SendStoreOrderInvoiceEmailDto>()),
+            Times.Once
+        );
+    }
+
+    [Fact]
+    public async Task StoreOrderInvoiceEmailJobService_WhenSendFails_MarksFailedWithMessage()
+    {
+        var request = new SendStoreOrderInvoiceEmailDto
+        {
+            OrderGUID = "order-1",
+            ToEmail = "customer@example.com",
+            PdfFileName = "invoice.pdf",
+            PdfBase64 = Convert.ToBase64String(new byte[] { 1, 2, 3, 4 }),
+        };
+        var storeOrderService = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        storeOrderService
+            .Setup(item => item.SendInvoiceEmailAsync(It.IsAny<SendStoreOrderInvoiceEmailDto>()))
+            .ReturnsAsync(ApiResponse<bool>.Error("SMTP 发送失败"));
+        var jobService = CreateInvoiceEmailJobService(storeOrderService);
+
+        var started = await jobService.StartJobAsync(request);
+        var completed = await WaitForInvoiceEmailJobAsync(jobService, started.JobId);
+
+        Assert.Equal(StoreOrderInvoiceEmailJobStatusConstants.Failed, completed.Status);
+        Assert.Equal("SMTP 发送失败", completed.Message);
+        Assert.NotNull(completed.CompletedAt);
+    }
+
+    [Fact]
+    public void InvoiceEmailOptions_DefaultsToCheckingCertificateRevocation()
+    {
+        var options = new InvoiceEmailOptions();
+
+        Assert.True(options.CheckCertificateRevocation);
+    }
+
+    [Fact]
+    public void InvoiceEmailService_CreateSmtpClient_AppliesRevocationOption()
+    {
+        var service = new TestableInvoiceEmailService(
+            Options.Create(new InvoiceEmailOptions
+            {
+                CheckCertificateRevocation = false,
+            })
+        );
+
+        using var client = service.CreateConfiguredClientForTest();
+
+        Assert.False(client.CheckCertificateRevocation);
+    }
+
+    [Fact]
+    public async Task InvoiceEmailService_WhenTlsHandshakeFails_ReturnsClearFailure()
+    {
+        var service = new TlsFailingInvoiceEmailService(
+            Options.Create(new InvoiceEmailOptions
+            {
+                Host = "mail.hotbargain.com.au",
+                Port = 465,
+                UseSsl = true,
+                FromEmail = "sean@hotbargain.com.au",
+            })
+        );
+
+        var result = await service.SendInvoiceAsync(
+            new StoreOrderInvoiceEmailMessage
+            {
+                ToEmail = "customer@example.com",
+                Subject = "invoice",
+                Body = "body",
+                PdfFileName = "invoice.pdf",
+                PdfBytes = new byte[] { 1, 2, 3, 4 },
+            }
+        );
+
+        Assert.False(result.Success);
+        Assert.Equal("INVOICE_EMAIL_TLS_HANDSHAKE_FAILED", result.ErrorCode);
+        Assert.Equal(
+            "发票邮件 TLS 握手失败，请检查 SMTP 证书或 InvoiceEmail.CheckCertificateRevocation 配置",
+            result.Message
+        );
+    }
+
     public void Dispose()
     {
         _db.Dispose();
@@ -206,6 +325,42 @@ public sealed class StoreOrderContactAndInvoiceTests : IDisposable
         );
     }
 
+    private static StoreOrderInvoiceEmailJobService CreateInvoiceEmailJobService(
+        Mock<IStoreOrderReactService> storeOrderService
+    )
+    {
+        var services = new ServiceCollection();
+        services.AddSingleton(storeOrderService.Object);
+        var provider = services.BuildServiceProvider();
+
+        return new StoreOrderInvoiceEmailJobService(
+            provider.GetRequiredService<IServiceScopeFactory>(),
+            NullLogger<StoreOrderInvoiceEmailJobService>.Instance
+        );
+    }
+
+    private static async Task<StoreOrderInvoiceEmailJobDto> WaitForInvoiceEmailJobAsync(
+        StoreOrderInvoiceEmailJobService jobService,
+        string jobId
+    )
+    {
+        for (var attempt = 0; attempt < 50; attempt++)
+        {
+            var job = await jobService.GetJobAsync(jobId);
+            if (
+                job?.Status == StoreOrderInvoiceEmailJobStatusConstants.Succeeded
+                || job?.Status == StoreOrderInvoiceEmailJobStatusConstants.Failed
+            )
+            {
+                return job;
+            }
+
+            await Task.Delay(20);
+        }
+
+        throw new TimeoutException("发票邮件发送 job 未在测试时间内完成");
+    }
+
     private static SqlSugarContext CreateSqlSugarContext(ISqlSugarClient db)
     {
         var context = (SqlSugarContext)RuntimeHelpers.GetUninitializedObject(typeof(SqlSugarContext));
@@ -215,6 +370,35 @@ public sealed class StoreOrderContactAndInvoiceTests : IDisposable
         );
         dbField!.SetValue(context, db);
         return context;
+    }
+
+    private sealed class TestableInvoiceEmailService : InvoiceEmailService
+    {
+        public TestableInvoiceEmailService(IOptions<InvoiceEmailOptions> options)
+            : base(NullLogger<InvoiceEmailService>.Instance, options)
+        {
+        }
+
+        public SmtpClient CreateConfiguredClientForTest()
+        {
+            return CreateSmtpClient();
+        }
+    }
+
+    private sealed class TlsFailingInvoiceEmailService : InvoiceEmailService
+    {
+        public TlsFailingInvoiceEmailService(IOptions<InvoiceEmailOptions> options)
+            : base(NullLogger<InvoiceEmailService>.Instance, options)
+        {
+        }
+
+        protected override Task ConnectSmtpClientAsync(
+            SmtpClient smtpClient,
+            SecureSocketOptions secureSocketOptions
+        )
+        {
+            throw new SslHandshakeException("handshake failed");
+        }
     }
 
     private async Task SeedStoreOrderGraphAsync()

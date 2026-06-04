@@ -64,12 +64,12 @@ namespace BlazorApp.Api.Services.React
                 builder.Attachments.Add(message.PdfFileName, message.PdfBytes, ContentType.Parse("application/pdf"));
                 email.Body = builder.ToMessageBody();
 
-                using var smtpClient = new SmtpClient();
+                using var smtpClient = CreateSmtpClient();
                 var secureSocketOptions = _options.UseSsl
                     ? SecureSocketOptions.SslOnConnect
                     : SecureSocketOptions.StartTls;
 
-                await smtpClient.ConnectAsync(_options.Host, _options.Port, secureSocketOptions);
+                await ConnectSmtpClientAsync(smtpClient, secureSocketOptions);
 
                 if (!string.IsNullOrWhiteSpace(_options.Username))
                 {
@@ -84,11 +84,36 @@ namespace BlazorApp.Api.Services.React
 
                 return ApiResponse<bool>.OK(true, "发票邮件发送成功");
             }
+            catch (SslHandshakeException ex)
+            {
+                _logger.LogError(ex, "发票邮件 TLS 握手失败，收件人：{ToEmail}", message.ToEmail);
+                return ApiResponse<bool>.Error(
+                    "发票邮件 TLS 握手失败，请检查 SMTP 证书或 InvoiceEmail.CheckCertificateRevocation 配置",
+                    "INVOICE_EMAIL_TLS_HANDSHAKE_FAILED"
+                );
+            }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "发送发票邮件失败，收件人：{ToEmail}", message.ToEmail);
                 return ApiResponse<bool>.Error("发票邮件发送失败，请检查 SMTP 配置或稍后重试", "INVOICE_EMAIL_SEND_FAILED");
             }
+        }
+
+        protected virtual SmtpClient CreateSmtpClient()
+        {
+            // 部分服务器无法完成 CRL/OCSP 查询时，只允许通过配置关闭吊销检查，仍保留证书主体校验。
+            return new SmtpClient
+            {
+                CheckCertificateRevocation = _options.CheckCertificateRevocation,
+            };
+        }
+
+        protected virtual Task ConnectSmtpClientAsync(
+            SmtpClient smtpClient,
+            SecureSocketOptions secureSocketOptions
+        )
+        {
+            return smtpClient.ConnectAsync(_options.Host, _options.Port, secureSocketOptions);
         }
 
         private string? GetConfigurationError()

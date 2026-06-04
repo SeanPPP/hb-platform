@@ -1041,24 +1041,73 @@ public class ReactStoreOrderAuthorizationTests
             PdfFileName = "invoice.pdf",
             PdfBase64 = Convert.ToBase64String(new byte[] { 1, 2, 3 }),
         };
-        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
-        service
-            .Setup(item => item.SendInvoiceEmailAsync(request))
-            .ReturnsAsync(ApiResponse<bool>.OK(true, "发票邮件发送成功"));
+        var invoiceEmailJobService = new Mock<IStoreOrderInvoiceEmailJobService>(
+            MockBehavior.Strict
+        );
+        invoiceEmailJobService
+            .Setup(item => item.StartJobAsync(request, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new StoreOrderInvoiceEmailJobDto
+            {
+                JobId = "job-1",
+                Status = StoreOrderInvoiceEmailJobStatusConstants.Queued,
+                Message = "发票邮件发送任务已提交",
+                OrderGUID = "order-1",
+                ToEmail = "customer@example.com",
+            });
 
         var scopeService = CreateScopeService();
         scopeService.Setup(item => item.CanAccessOrderAsync("order-1")).ReturnsAsync(true);
 
         var controller = CreateController(
-            service,
+            new Mock<IStoreOrderReactService>(MockBehavior.Strict),
             CreateAuthorizationService(Permissions.Orders.Edit),
-            scopeService
+            scopeService,
+            invoiceEmailJobService: invoiceEmailJobService
         );
 
         var result = await controller.SendInvoiceEmail(request);
 
         Assert.IsType<OkObjectResult>(result);
-        service.Verify(item => item.SendInvoiceEmailAsync(request), Times.Once);
+        invoiceEmailJobService.Verify(
+            item => item.StartJobAsync(request, It.IsAny<CancellationToken>()),
+            Times.Once
+        );
+    }
+
+    [Fact]
+    public async Task GetInvoiceEmailJob_UsesEditPermissionAndOrderScope()
+    {
+        var invoiceEmailJobService = new Mock<IStoreOrderInvoiceEmailJobService>(
+            MockBehavior.Strict
+        );
+        invoiceEmailJobService
+            .Setup(item => item.GetJobAsync("job-1", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new StoreOrderInvoiceEmailJobDto
+            {
+                JobId = "job-1",
+                Status = StoreOrderInvoiceEmailJobStatusConstants.Succeeded,
+                Message = "发票邮件发送成功",
+                OrderGUID = "order-1",
+                ToEmail = "customer@example.com",
+            });
+
+        var scopeService = CreateScopeService();
+        scopeService.Setup(item => item.CanAccessOrderAsync("order-1")).ReturnsAsync(true);
+
+        var controller = CreateController(
+            new Mock<IStoreOrderReactService>(MockBehavior.Strict),
+            CreateAuthorizationService(Permissions.Orders.Edit),
+            scopeService,
+            invoiceEmailJobService: invoiceEmailJobService
+        );
+
+        var result = await controller.GetInvoiceEmailJob("job-1");
+
+        Assert.IsType<OkObjectResult>(result);
+        invoiceEmailJobService.Verify(
+            item => item.GetJobAsync("job-1", It.IsAny<CancellationToken>()),
+            Times.Once
+        );
     }
 
     private static ReactStoreOrderController CreateController(
@@ -1067,6 +1116,7 @@ public class ReactStoreOrderAuthorizationTests
         Mock<ICurrentUserManageableStoreScopeService> scopeService,
         IReadOnlyCollection<string>? roleNames = null,
         Mock<IStoreOrderSyncJobService>? jobService = null,
+        Mock<IStoreOrderInvoiceEmailJobService>? invoiceEmailJobService = null,
         Mock<IUserService>? userService = null
     )
     {
@@ -1078,7 +1128,11 @@ public class ReactStoreOrderAuthorizationTests
             Mock.Of<BlazorApp.Api.Interfaces.IStoreService>(),
             authorizationService.Object,
             scopeService.Object,
-            (jobService ?? new Mock<IStoreOrderSyncJobService>(MockBehavior.Strict)).Object
+            (jobService ?? new Mock<IStoreOrderSyncJobService>(MockBehavior.Strict)).Object,
+            (
+                invoiceEmailJobService
+                ?? new Mock<IStoreOrderInvoiceEmailJobService>(MockBehavior.Strict)
+            ).Object
         );
 
         controller.ControllerContext = new ControllerContext

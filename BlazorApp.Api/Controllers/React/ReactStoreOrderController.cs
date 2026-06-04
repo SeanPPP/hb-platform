@@ -26,6 +26,7 @@ namespace BlazorApp.Api.Controllers.React
         private readonly IAuthorizationService _authorizationService;
         private readonly ICurrentUserManageableStoreScopeService _storeScopeService;
         private readonly IStoreOrderSyncJobService _storeOrderSyncJobService;
+        private readonly IStoreOrderInvoiceEmailJobService _invoiceEmailJobService;
 
         private static readonly TimeSpan CACHE_DURATION = TimeSpan.FromMinutes(10);
         private static readonly TimeSpan AuthorizationSuccessCacheDuration = TimeSpan.FromSeconds(30);
@@ -107,7 +108,8 @@ namespace BlazorApp.Api.Controllers.React
             IStoreService storeService,
             IAuthorizationService authorizationService,
             ICurrentUserManageableStoreScopeService storeScopeService,
-            IStoreOrderSyncJobService storeOrderSyncJobService
+            IStoreOrderSyncJobService storeOrderSyncJobService,
+            IStoreOrderInvoiceEmailJobService invoiceEmailJobService
         )
         {
             _service = service;
@@ -117,6 +119,7 @@ namespace BlazorApp.Api.Controllers.React
             _authorizationService = authorizationService;
             _storeScopeService = storeScopeService;
             _storeOrderSyncJobService = storeOrderSyncJobService;
+            _invoiceEmailJobService = invoiceEmailJobService;
         }
 
         private async Task<bool> HasAnyPermissionAsync(params string[] permissions)
@@ -1108,17 +1111,49 @@ namespace BlazorApp.Api.Controllers.React
                     return forbidden;
                 }
 
-                var result = await _service.SendInvoiceEmailAsync(request);
-                if (result.Success)
-                {
-                    return Ok(new { success = true, message = result.Message });
-                }
-
-                return BadRequest(new { success = false, message = result.Message });
+                var job = await _invoiceEmailJobService.StartJobAsync(
+                    request,
+                    HttpContext.RequestAborted
+                );
+                return Ok(new { success = true, message = job.Message, data = job });
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "SendInvoiceEmail failed");
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
+        /// <summary>
+        /// 获取订单发票邮件发送 job 状态。
+        /// </summary>
+        [HttpGet("invoice/email/jobs/{jobId}")]
+        public async Task<IActionResult> GetInvoiceEmailJob(string jobId)
+        {
+            try
+            {
+                var job = await _invoiceEmailJobService.GetJobAsync(
+                    jobId,
+                    HttpContext.RequestAborted
+                );
+                if (job == null)
+                {
+                    return NotFound(new { success = false, message = "任务不存在" });
+                }
+
+                var forbidden =
+                    await RequireAnyPermissionAsync(OrderEditPermissions)
+                    ?? await RequireOrderScopeAsync(job.OrderGUID);
+                if (forbidden != null)
+                {
+                    return forbidden;
+                }
+
+                return Ok(new { success = true, data = job });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "GetInvoiceEmailJob failed");
                 return StatusCode(500, new { success = false, message = "服务器内部错误" });
             }
         }
