@@ -588,7 +588,16 @@ export async function batchUpdateWarehouseProducts(items: WarehouseProductBatchU
     method: 'POST',
     data: { Items: items },
   })
-  return unwrapResponse(response, { success: false })
+  const raw = response as { success?: boolean; isSuccess?: boolean; message?: string } | undefined
+  ensureApiSuccess(raw?.success ?? raw?.isSuccess, raw?.message, '仓库批量更新失败')
+  const result = unwrapResponse<WarehouseImportActionResult>(response, { success: false })
+  ensureApiSuccess(result.success, result.message, '仓库批量更新失败')
+  const failedCount = Number(result.failedCount ?? result.FailedCount ?? result.failed ?? result.Failed ?? 0)
+  const errors = result.errors ?? result.Errors ?? []
+  if (failedCount > 0) {
+    throw new Error(result.message || errors.join('；') || '仓库批量更新部分失败')
+  }
+  return result
 }
 
 export async function getWarehouseProductsTable(

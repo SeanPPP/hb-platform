@@ -49,6 +49,8 @@ export interface PosProductFilterParams {
   categoryGuid?: string
   isActive?: boolean
   isSet?: boolean
+  storeRecordCountMin?: number
+  storeRecordCountMax?: number
   storeCode?: string
   sortBy?: string
   sortOrder?: 'ascend' | 'descend'
@@ -87,8 +89,40 @@ export interface SyncProductsToStoresResult {
   errors: string[]
 }
 
+export interface BatchUpdateProductStoreRecordsChanges {
+  purchasePrice?: number
+  storeRetailPriceValue?: number
+  discountRate?: number
+  isAutoPricing?: boolean
+  isSpecialProduct?: boolean
+  isActive?: boolean
+}
+
+export interface BatchUpdateProductStoreRecordsRequest {
+  storeCodes: string[]
+  changes: BatchUpdateProductStoreRecordsChanges
+}
+
+export interface BatchUpdateProductStoreRecordsResult {
+  successCount: number
+  failedCount: number
+  errors: string[]
+}
+
+export interface PushProductsToHqItem {
+  productCode?: string
+  localSupplierCode?: string
+  itemNumber?: string
+  domesticPrice: number
+  importPrice: number
+  oemPrice: number
+  isNewProduct: boolean
+  warehouseIsActive?: boolean
+}
+
 export interface PushProductsToHqRequest {
   productCodes: string[]
+  items?: PushProductsToHqItem[]
 }
 
 export interface SyncSelectedProductsFromHqRequest {
@@ -102,6 +136,8 @@ export interface PushProductsToHqResult {
   affectedRowCount?: number
   productsAdded?: number
   productsUpdated?: number
+  warehouseInventoriesCreated?: number
+  warehouseInventoriesUpdated?: number
   storeRetailPricesCreated?: number
   storeRetailPricesUpdated?: number
   productSetCodesCreated?: number
@@ -110,6 +146,46 @@ export interface PushProductsToHqResult {
   storeMultiCodesUpdated?: number
   errors: string[]
   message?: string
+}
+
+export interface BatchUpdateSupplierImagesRequest {
+  localSupplierCode: string
+  urlTemplate: string
+  updateHbweb: boolean
+  updateHq: boolean
+  saveSupplierImageBaseUrl?: boolean
+}
+
+export interface BatchUpdateSupplierImagesJobRequest extends BatchUpdateSupplierImagesRequest {
+  operationId: string
+}
+
+export interface BatchUpdateSupplierImagesResult {
+  totalCount: number
+  hbwebUpdatedCount: number
+  hqUpdatedCount: number
+  hbwebSkippedExistingImageCount?: number
+  hqSkippedExistingImageCount?: number
+  skippedCount: number
+  hqFailedCount: number
+  errors: string[]
+  message?: string
+}
+
+export type BatchUpdateSupplierImagesJobStatus = 'Queued' | 'Running' | 'Succeeded' | 'Failed'
+
+export interface BatchUpdateSupplierImagesJobResult {
+  jobId: string
+  operationId?: string
+  status: BatchUpdateSupplierImagesJobStatus
+  request?: Partial<BatchUpdateSupplierImagesJobRequest>
+  result?: BatchUpdateSupplierImagesResult
+  message?: string
+  errorMessage?: string
+  errors?: string[]
+  createdAt?: string
+  startedAt?: string
+  completedAt?: string
 }
 
 export interface HqProductSyncResult {

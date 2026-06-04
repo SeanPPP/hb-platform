@@ -115,6 +115,7 @@ assertEqual(matchesContainerDetailSelectedTags(tagRows[0], ['noOemPrice', 'abnor
 
 const pageSource = readFileSync('src/pages/Warehouse/ContainerDetail/index.tsx', 'utf8')
 const pageStyleSource = readFileSync('src/pages/Warehouse/ContainerDetail/index.css', 'utf8')
+const warehouseProductServiceSource = readFileSync('src/services/warehouseProductService.ts', 'utf8')
 assertEqual(
   pageSource.includes('value={getContainerDetailEnglishName(row) ?? \'\'}'),
   true,
@@ -144,6 +145,21 @@ assertEqual(
   pageSource.includes('[itemNumberFilter, productTypeFilter, selectedTagFilters]'),
   true,
   '清空已选明细的 effect 应监听货号、商品类型和统计 tag 筛选',
+)
+assertEqual(
+  pageSource.includes("{ value: 'all', label: t('containers.filters.allTags'), color: 'blue' }"),
+  true,
+  '全部标签统计项应保持蓝色，作为总览入口',
+)
+assertEqual(
+  pageSource.includes("{ value: 'new', label: t('containers.tags.newProduct'), color: 'cyan' }"),
+  true,
+  '新商品统计项应使用不同于全部标签的颜色',
+)
+assertEqual(
+  pageSource.includes('color={option.color}'),
+  true,
+  '统计标签应始终按各自语义色显示，不只在选中时显示蓝色',
 )
 assertEqual(
   pageSource.includes('const targetRows = selectedRowKeys.length ? selectedRows : filteredRows'),
@@ -181,6 +197,28 @@ assertDeepEqual(
   buildContainerDetailHqPushSelection(hqSelectionRows),
   {
     productCodes: ['HB001', 'HB003'],
+    items: [
+      {
+        productCode: 'HB001',
+        localSupplierCode: undefined,
+        itemNumber: undefined,
+        domesticPrice: 0,
+        importPrice: 0,
+        oemPrice: 0,
+        isNewProduct: false,
+        warehouseIsActive: undefined,
+      },
+      {
+        productCode: 'HB003',
+        localSupplierCode: undefined,
+        itemNumber: undefined,
+        domesticPrice: 0,
+        importPrice: 0,
+        oemPrice: 0,
+        isNewProduct: false,
+        warehouseIsActive: undefined,
+      },
+    ],
     skippedNewProductCount: 1,
     missingProductCodeCount: 1,
   },
@@ -189,29 +227,131 @@ assertDeepEqual(
 
 assertDeepEqual(
   buildContainerDetailHqPushSelection([
-    { id: 15, hguid: 'detail-15', 商品编码: ' HB015 ', 是否新商品: 1 as unknown as boolean },
-    { id: 16, hguid: 'detail-16', 商品编码: '   ', 商品信息: { 商品编码: ' HB016 ' }, 是否新商品: false },
-    { id: 17, hguid: 'detail-17', 商品编码: 'HB017', 是否新商品: true },
+    {
+      id: 15,
+      hguid: 'detail-15',
+      商品编码: ' HB015 ',
+      是否新商品: 1 as unknown as boolean,
+      国内价格: 4.2,
+      进口价格: 1.55,
+      贴牌价格: 1.72,
+      localSupplierCode: 'DATS',
+      商品信息: { 货号: '72653' },
+    },
+    {
+      id: 16,
+      hguid: 'detail-16',
+      商品编码: '   ',
+      商品信息: { 商品编码: ' HB016 ', 货号: '72654', localSupplierCode: 'COS' },
+      是否新商品: false,
+      国内价格: 5.1,
+      进口价格: 1.88,
+      贴牌价格: 2.01,
+      warehouseIsActive: false,
+    },
+    { id: 17, hguid: 'detail-17', 商品编码: 'HB017', 是否新商品: true, warehouseIsActive: true },
   ]),
   {
-    productCodes: ['HB015', 'HB016'],
-    skippedNewProductCount: 1,
+    productCodes: ['HB016'],
+    items: [
+      {
+        productCode: 'HB016',
+        localSupplierCode: 'COS',
+        itemNumber: '72654',
+        domesticPrice: 5.1,
+        importPrice: 1.88,
+        oemPrice: 2.01,
+        isNewProduct: false,
+        warehouseIsActive: false,
+      },
+    ],
+    skippedNewProductCount: 2,
     missingProductCodeCount: 0,
   },
-  '发送到 HQ 只有是否新商品严格为 true 时才跳过，明细编码为空白时应回退商品信息编码',
+  '发送到 HQ 应把 1 也视为新商品跳过，并在明细编码为空白时回退商品信息编码',
 )
 
 assertDeepEqual(
   buildContainerDetailHqPushSelection([
     { id: 20, hguid: 'detail-20', 商品编码: 'HB020', 是否新商品: true },
-    { id: 21, hguid: 'detail-21', 是否新商品: false },
+    {
+      id: 21,
+      hguid: 'detail-21',
+      是否新商品: false,
+      localSupplierCode: 'DATS',
+      商品信息: { 货号: '72655' },
+      国内价格: 6.2,
+      进口价格: 2.11,
+      贴牌价格: 2.34,
+      warehouseIsActive: true,
+    },
   ]),
   {
     productCodes: [],
+    items: [
+      {
+        productCode: undefined,
+        localSupplierCode: 'DATS',
+        itemNumber: '72655',
+        domesticPrice: 6.2,
+        importPrice: 2.11,
+        oemPrice: 2.34,
+        isNewProduct: false,
+        warehouseIsActive: true,
+      },
+    ],
     skippedNewProductCount: 1,
-    missingProductCodeCount: 1,
+    missingProductCodeCount: 0,
   },
-  '全部不可发送时应返回空商品编码并保留跳过统计',
+  '缺商品编码但有供应商和货号时，发送到 HQ 仍应携带候选项',
+)
+
+assertDeepEqual(
+  buildContainerDetailHqPushSelection([
+    {
+      id: 22,
+      hguid: 'detail-22',
+      商品编码: 'HB022',
+      是否新商品: false,
+      warehouseIsActive: true,
+      国内价格: 3.2,
+      进口价格: 1.08,
+      贴牌价格: 1.2,
+    },
+    {
+      id: 23,
+      hguid: 'detail-23',
+      商品编码: 'HB023',
+      是否新商品: false,
+      warehouseIsActive: false,
+      国内价格: 3.5,
+      进口价格: 1.18,
+      贴牌价格: 1.3,
+    },
+  ]).items,
+  [
+    {
+      productCode: 'HB022',
+      localSupplierCode: undefined,
+      itemNumber: undefined,
+      domesticPrice: 3.2,
+      importPrice: 1.08,
+      oemPrice: 1.2,
+      isNewProduct: false,
+      warehouseIsActive: true,
+    },
+    {
+      productCode: 'HB023',
+      localSupplierCode: undefined,
+      itemNumber: undefined,
+      domesticPrice: 3.5,
+      importPrice: 1.18,
+      oemPrice: 1.3,
+      isNewProduct: false,
+      warehouseIsActive: false,
+    },
+  ],
+  '发送到 HQ 的候选项应保留上下架状态，供 HQ 按明细同步仓库状态',
 )
 
 const normalizedPushFailure = normalizeContainerDetailPushToHqPayload({
@@ -234,9 +374,12 @@ assertEqual(rootPayloadPushFailure?.message, '后端明确返回失败', '发送
 
 assertEqual(pageSource.includes('pushProductsToHq({'), true, '页面应调用现有商品发送到 HQ 接口')
 assertEqual(pageSource.includes('buildContainerDetailHqPushSelection(selectedRows)'), true, '页面应只基于手动选中的明细构建发送范围')
+assertEqual(pageSource.includes('items: selection.items'), true, '页面发送到 HQ 时应把候选 items 一并发送给后端')
 assertEqual(pageSource.includes('const pushToHqLoadingRef = useRef(false)'), true, '页面应使用 ref 锁防止连续点击重复发送')
 assertEqual(pageSource.includes("showPushToHqResult(errorResult, selection, 'failed')"), true, '后端明确失败时应进入失败结果弹窗路径')
 assertEqual(pageSource.includes("title: t('posAdmin.products.pushToHqFailed', '发送到 HQ 失败')"), true, '后端明确失败时应展示失败弹窗而不是部分成功')
+assertEqual(pageSource.includes('result.warehouseInventoriesCreated'), true, '结果弹窗应展示仓库库存新增统计')
+assertEqual(pageSource.includes('result.warehouseInventoriesUpdated'), true, '结果弹窗应展示仓库库存更新统计')
 assertEqual(pageSource.includes('result.storeRetailPricesCreated'), true, '结果弹窗应展示分店价格新增统计')
 assertEqual(pageSource.includes('result.productSetCodesCreated'), true, '结果弹窗应展示套装多码新增统计')
 assertEqual(pageSource.includes('result.storeMultiCodesCreated'), true, '结果弹窗应展示分店多码新增统计')
@@ -255,6 +398,41 @@ assertEqual(
   pageSource.includes('waitForContainerProductCreationJob(job.jobId)'),
   true,
   '创建新商品应轮询后台 job 直到终态',
+)
+assertEqual(
+  pageSource.includes("import { pushProductsToHq } from '../../../services/posProductService'"),
+  true,
+  '更新已有商品进货价不应导入普通 POS 商品整对象更新接口',
+)
+assertEqual(
+  pageSource.includes('updateProduct(code, { purchasePrice: row.进口价格 ?? 0 })'),
+  false,
+  '更新已有商品进货价不应调用普通 POS 商品整对象更新接口，避免清空名称、条码和上下架状态',
+)
+assertEqual(
+  pageSource.indexOf('await batchUpdateWarehouseProducts(updates.map') < pageSource.indexOf('await upsertRetailForActiveStores(updates.map'),
+  true,
+  '更新已有商品进货价应先确认仓库商品批量更新成功，再继续分店价格 upsert',
+)
+assertEqual(
+  pageSource.includes("message.error(error instanceof Error ? error.message : t('containers.messages.purchasePricesUpdateFailed', '更新已有商品进货价失败'))"),
+  true,
+  '更新已有商品进货价失败时应给用户可见错误提示',
+)
+assertEqual(
+  pageSource.indexOf('await batchUpdateWarehouseProducts(updates.map') < pageSource.indexOf('await upsertMultiCodeForActiveStores(updates.map'),
+  true,
+  '更新已有商品进货价应先确认仓库商品批量更新成功，再继续多码价格 upsert',
+)
+assertEqual(
+  warehouseProductServiceSource.includes("ensureApiSuccess(raw?.success ?? raw?.isSuccess, raw?.message, '仓库批量更新失败')"),
+  true,
+  '仓库商品批量更新 service 应校验根响应失败，失败时阻断后续写表',
+)
+assertEqual(
+  warehouseProductServiceSource.includes("throw new Error(result.message || errors.join('；') || '仓库批量更新部分失败')"),
+  true,
+  '仓库商品批量更新 service 应在 failedCount/errors 表示部分失败时抛错',
 )
 assertEqual(
   pageSource.includes('!access.canEditContainer || !access.canManagePosProducts'),
@@ -288,8 +466,8 @@ assertEqual(
 )
 assertEqual(
   pageSource.includes('posUpdateFailures'),
-  true,
-  '更新已有商品进货价应汇总 POS 商品更新失败编码',
+  false,
+  '更新已有商品进货价不应再保留 POS 商品整对象更新失败分支',
 )
 
 const priceContainer = {
@@ -575,6 +753,11 @@ assertEqual(
   pageStyleSource.includes('.container-detail-table .ant-table-cell'),
   true,
   '货柜明细表格应压缩单元格 padding 提升密度',
+)
+assertEqual(
+  pageStyleSource.includes('.container-detail-stat-tag-muted'),
+  true,
+  '未选中的统计标签应有弱化样式，保留颜色同时避免和选中态混淆',
 )
 
 console.log('containerDetailLogic.test: ok')

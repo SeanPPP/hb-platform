@@ -1,5 +1,5 @@
 import type { ContainerDetail, ContainerMain, UpdateContainerDetailRequest } from '../../../types/container'
-import type { PushProductsToHqResult } from '../../../types/posProduct'
+import type { PushProductsToHqItem, PushProductsToHqResult } from '../../../types/posProduct'
 
 export type ContainerDetailTagFilter = 'all' | 'new' | 'existing' | 'noOemPrice' | 'abnormalImport' | 'active' | 'inactive'
 
@@ -137,6 +137,8 @@ export function normalizeContainerDetailPushToHqPayload(raw: unknown, fallbackMe
     Number(raw.affectedRowCount ?? 0) ||
     Number(raw.productsAdded ?? 0) +
       Number(raw.productsUpdated ?? 0) +
+      Number(raw.warehouseInventoriesCreated ?? 0) +
+      Number(raw.warehouseInventoriesUpdated ?? 0) +
       Number(raw.storeRetailPricesCreated ?? 0) +
       Number(raw.storeRetailPricesUpdated ?? 0) +
       Number(raw.productSetCodesCreated ?? raw.productSetCodesAdded ?? 0) +
@@ -245,35 +247,63 @@ export function buildContainerDetailFloatRateUpdates(
 
 export interface ContainerDetailHqPushSelection {
   productCodes: string[]
+  items: PushProductsToHqItem[]
   skippedNewProductCount: number
   missingProductCodeCount: number
 }
 
 export function buildContainerDetailHqPushSelection(rows: ContainerDetail[]): ContainerDetailHqPushSelection {
   const productCodes: string[] = []
+  const items: PushProductsToHqItem[] = []
   let skippedNewProductCount = 0
   let missingProductCodeCount = 0
+  const candidateKeys = new Set<string>()
 
   rows.forEach((row) => {
+    const isNewProduct = Boolean(row.是否新商品)
     // 本地没有的新商品不能写 HQ，避免误创建还未补齐资料的商品。
-    if (row.是否新商品 === true) {
+    if (isNewProduct) {
       skippedNewProductCount += 1
       return
     }
 
     const productCode = row.商品编码?.trim() || row.商品信息?.商品编码?.trim()
-    if (!productCode) {
+    const localSupplierCode = row.localSupplierCode?.trim() || row.商品信息?.localSupplierCode?.trim()
+    const itemNumber = row.商品信息?.货号?.trim()
+    if (!productCode && !(localSupplierCode && itemNumber)) {
       missingProductCodeCount += 1
       return
     }
 
-    if (!productCodes.includes(productCode)) {
+    const candidateKey = productCode
+      ? `code:${productCode.toUpperCase()}`
+      : `supplier-item:${localSupplierCode!.toUpperCase()}:${itemNumber!.toUpperCase()}`
+    if (candidateKeys.has(candidateKey)) {
+      return
+    }
+    candidateKeys.add(candidateKey)
+
+    if (productCode && !productCodes.includes(productCode)) {
       productCodes.push(productCode)
     }
+
+    // 发送候选项时保留货柜明细里的供应商、货号和价格，交由后端决定如何定位 HQ 记录。
+    items.push({
+      productCode: productCode || undefined,
+      localSupplierCode,
+      itemNumber,
+      domesticPrice: Number(row.国内价格 ?? 0),
+      importPrice: Number(row.进口价格 ?? 0),
+      oemPrice: Number(row.贴牌价格 ?? 0),
+      isNewProduct,
+      // 保留货柜上下架状态，兼容只传编码的旧链路同时让 HQ 候选契约更完整。
+      warehouseIsActive: row.warehouseIsActive,
+    })
   })
 
   return {
     productCodes,
+    items,
     skippedNewProductCount,
     missingProductCodeCount,
   }

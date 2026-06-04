@@ -5,6 +5,7 @@ import {
   CopyOutlined,
   DeleteOutlined,
   EditOutlined,
+  FileImageOutlined,
   PlusOutlined,
   ReloadOutlined,
   SafetyCertificateOutlined,
@@ -54,11 +55,15 @@ import {
   getGridData,
 } from '../../../services/multiCodeSetService'
 import {
+  batchUpdateProductStoreRecords,
   batchUpdateProducts,
   buildProductHqSyncOperationId,
+  buildSupplierImageBatchUpdateOperationId,
   createProductHqSyncJobPoller,
   createProductFullHqSyncJob,
   createProductIncrementalHqSyncJob,
+  createSupplierImageBatchUpdateJob,
+  getSupplierImageBatchUpdateJob,
   getProductStoreRecords,
   getProductHqSyncJob,
   getProducts,
@@ -68,6 +73,7 @@ import {
   syncProductsToStores,
   updateProduct,
 } from '../../../services/posProductService'
+import { createHqSyncJobPoller } from '../../../services/productHqSyncPolling'
 import {
   createProductCategory,
   deleteProductCategory,
@@ -78,15 +84,45 @@ import { checkIntegrity, fixIntegrity } from '../../../services/productIntegrity
 import { getActiveStores } from '../../../services/storeService'
 import { useAuthStore } from '../../../store/auth'
 import { copyTextToClipboard } from '../../../utils/clipboard'
-import type { BatchUpdatePosProductDto, HqProductSyncJobResult, HqProductSyncJobStatus, HqProductSyncResult, PosProductDto, PosProductFilterParams, ProductStoreRecordDto, PushProductsToHqResult, SyncProductsToStoresField, SyncProductsToStoresRequest, SyncProductsToStoresResult } from '../../../types/posProduct'
+import { RequestError } from '../../../utils/request'
+import type { BatchUpdatePosProductDto, BatchUpdateProductStoreRecordsChanges, BatchUpdateSupplierImagesJobResult, BatchUpdateSupplierImagesResult, HqProductSyncJobResult, HqProductSyncJobStatus, HqProductSyncResult, PosProductDto, PosProductFilterParams, ProductStoreRecordDto, PushProductsToHqResult, SyncProductsToStoresField, SyncProductsToStoresRequest, SyncProductsToStoresResult } from '../../../types/posProduct'
 import type { ProductCategoryDto } from '../../../types/productCategory'
 import type { ProductIntegrityCheckResultDto, ProductIntegrityFixResultDto } from '../../../types/productIntegrity'
 import type { MulticodeSetItem } from '../../../types/multiCodeSet'
 import type { StoreOption } from '../../../services/storeService'
 import { compareProductStoreRecordsByName } from './storeRecordSorting'
+import {
+  clearActiveSupplierImageBatchJob,
+  normalizeSupplierImageBatchJobKey,
+  readActiveSupplierImageBatchJobs,
+  saveActiveSupplierImageBatchJobs,
+  type ActiveSupplierImageBatchJob,
+  type ActiveSupplierImageBatchJobMap,
+} from './activeSupplierImageBatchJobs'
+import {
+  buildSupplierImageUrl,
+  getDefaultSupplierImageTemplate,
+  validateSupplierImageTemplate,
+  type SupplierImageMode,
+} from './productImageTemplate'
 
 type ProductRow = PosProductDto & { key: string }
 type HqSyncMode = Parameters<typeof buildProductHqSyncOperationId>[0]
+type SupplierOption = { label: string; value: string; localSupplierCode: string; name?: string; imageBaseUrl?: string }
+type StoreRecordBatchEditFormValues = {
+  updatePurchasePrice?: boolean
+  purchasePrice?: number
+  updateStoreRetailPriceValue?: boolean
+  storeRetailPriceValue?: number
+  updateDiscountRate?: boolean
+  discountRate?: number
+  updateIsAutoPricing?: boolean
+  isAutoPricing?: boolean
+  updateIsSpecialProduct?: boolean
+  isSpecialProduct?: boolean
+  updateIsActive?: boolean
+  isActive?: boolean
+}
 
 type ActiveProductHqSyncJob = {
   jobId: string
@@ -101,6 +137,8 @@ type ActiveProductHqSyncJob = {
 const PRODUCT_HQ_SYNC_ACTIVE_JOB_STORAGE_KEY = 'posAdmin.products.activeHqSyncJob'
 const PRODUCT_HQ_SYNC_POLL_INTERVAL_MS = 2000
 const PRODUCT_HQ_SYNC_TIMEOUT_MS = 10 * 60 * 1000
+const SUPPLIER_IMAGE_BATCH_POLL_INTERVAL_MS = 2000
+const SUPPLIER_IMAGE_BATCH_TIMEOUT_MS = 30 * 60 * 1000
 
 function readActiveProductHqSyncJob(): ActiveProductHqSyncJob | null {
   if (typeof window === 'undefined') return null
@@ -196,6 +234,7 @@ const SORT_FIELD_MAP: Record<string, string> = {
   purchasePrice: 'purchaseprice',
   retailPrice: 'retailprice',
   isActive: 'isactive',
+  storeRecordCount: 'storerecordcount',
   createdAt: 'createdat',
   updatedAt: 'updatedat',
 }
@@ -205,6 +244,7 @@ export default function ProductManagementPage() {
   const isAdmin = useAuthStore((state) => state.access.isAdmin)
   const canManagePosProducts = useAuthStore((state) => state.access.canManagePosProducts)
   const canManageStoreProducts = useAuthStore((state) => state.access.canManageStoreProducts)
+  const canEditStoreProducts = useAuthStore((state) => state.access.canEditStoreProducts)
 
   const [loading, setLoading] = useState(false)
   const [data, setData] = useState<ProductRow[]>([])
@@ -221,6 +261,12 @@ export default function ProductManagementPage() {
   const [isActiveFilterInput, setIsActiveFilterInput] = useState<boolean | undefined>(undefined)
   const [isSetFilter, setIsSetFilter] = useState<boolean | undefined>(undefined)
   const [isSetFilterInput, setIsSetFilterInput] = useState<boolean | undefined>(undefined)
+  const [storeRecordCountMode, setStoreRecordCountMode] = useState<'all' | 'hasRecords' | 'noRecords' | 'custom'>('all')
+  const [storeRecordCountModeInput, setStoreRecordCountModeInput] = useState<'all' | 'hasRecords' | 'noRecords' | 'custom'>('all')
+  const [storeRecordCountMin, setStoreRecordCountMin] = useState<number | undefined>(undefined)
+  const [storeRecordCountMax, setStoreRecordCountMax] = useState<number | undefined>(undefined)
+  const [storeRecordCountMinInput, setStoreRecordCountMinInput] = useState<number | undefined>(undefined)
+  const [storeRecordCountMaxInput, setStoreRecordCountMaxInput] = useState<number | undefined>(undefined)
   const [queryVersion, setQueryVersion] = useState(0)
   const [sortBy, setSortBy] = useState('productCode')
   const [sortOrder, setSortOrder] = useState<'ascend' | 'descend'>('ascend')
@@ -228,13 +274,15 @@ export default function ProductManagementPage() {
   const [hqSyncSubmitting, setHqSyncSubmitting] = useState(false)
   const hqSyncSubmittingRef = useRef(false)
   const stopHqSyncPollingRef = useRef<(() => void) | null>(null)
+  const stopSupplierImageBatchPollingRef = useRef<Record<string, () => void>>({})
   const isMountedRef = useRef(true)
   const [activeHqSyncJob, setActiveHqSyncJob] = useState<ActiveProductHqSyncJob | null>(() => readActiveProductHqSyncJob())
+  const [activeImageBatchJobs, setActiveImageBatchJobs] = useState<ActiveSupplierImageBatchJobMap>(() => readActiveSupplierImageBatchJobs())
   const [hqSyncMode, setHqSyncMode] = useState<HqSyncMode>('incremental')
   const [hqSyncVisible, setHqSyncVisible] = useState(false)
   const [hqSyncForm] = Form.useForm()
 
-  const [supplierOptions, setSupplierOptions] = useState<{ label: string; value: string; name?: string }[]>([])
+  const [supplierOptions, setSupplierOptions] = useState<SupplierOption[]>([])
   const [categoryTree, setCategoryTree] = useState<ProductCategoryDto[]>([])
   const [categoryLoadFailed, setCategoryLoadFailed] = useState(false)
   const [storeOptions, setStoreOptions] = useState<StoreOption[]>([])
@@ -245,6 +293,9 @@ export default function ProductManagementPage() {
 
   const [batchEditVisible, setBatchEditVisible] = useState(false)
   const [batchEditForm] = Form.useForm()
+  const [imageBatchVisible, setImageBatchVisible] = useState(false)
+  const [imageBatchLoading, setImageBatchLoading] = useState(false)
+  const [imageBatchForm] = Form.useForm()
 
   const [syncToStoreVisible, setSyncToStoreVisible] = useState(false)
   const [syncToStoreForm] = Form.useForm()
@@ -256,6 +307,8 @@ export default function ProductManagementPage() {
   const selectedFromHqLoadingRef = useRef(false)
 
   const productTypeWatch = Form.useWatch('productType', editForm)
+  const imageBatchSupplierCode = Form.useWatch('localSupplierCode', imageBatchForm)
+  const imageBatchTemplate = Form.useWatch('urlTemplate', imageBatchForm)
   const [editSetCodes, setEditSetCodes] = useState<any[]>([])
   const [editSetCodesLoading, setEditSetCodesLoading] = useState(false)
   const [editSetPriceEdits, setEditSetPriceEdits] = useState<Record<string, { setItemNumber?: string; setBarcode?: string; setPurchasePrice?: number; setRetailPrice?: number }>>({})
@@ -271,6 +324,10 @@ export default function ProductManagementPage() {
   const [storeRecordsProduct, setStoreRecordsProduct] = useState<PosProductDto | null>(null)
   const [storeRecordsData, setStoreRecordsData] = useState<ProductStoreRecordDto[]>([])
   const [storeRecordsLoading, setStoreRecordsLoading] = useState(false)
+  const [storeRecordSelectedRowKeys, setStoreRecordSelectedRowKeys] = useState<React.Key[]>([])
+  const [storeRecordBatchEditVisible, setStoreRecordBatchEditVisible] = useState(false)
+  const [storeRecordBatchUpdating, setStoreRecordBatchUpdating] = useState(false)
+  const [storeRecordBatchEditForm] = Form.useForm()
   const storeRecordsRequestSeqRef = useRef(0)
 
   const [categoryModalVisible, setCategoryModalVisible] = useState(false)
@@ -287,11 +344,28 @@ export default function ProductManagementPage() {
     () => new Map(supplierOptions.map((option) => [option.value, option.name || option.label])),
     [supplierOptions],
   )
+  const imageBatchSupplier = useMemo(
+    () => supplierOptions.find((option) => option.value === imageBatchSupplierCode),
+    [imageBatchSupplierCode, supplierOptions],
+  )
+  const imageBatchPreviewUrl = useMemo(() => {
+    if (!imageBatchTemplate || !imageBatchSupplierCode) return ''
+    return buildSupplierImageUrl(imageBatchTemplate, {
+      localSupplierCode: imageBatchSupplierCode,
+      itemNumber: 'HB313-129',
+    })
+  }, [imageBatchSupplierCode, imageBatchTemplate])
+  const isStoreRecordCountCustomMode = storeRecordCountModeInput === 'custom'
+  const hasAppliedStoreRecordCountFilter = storeRecordCountMode !== 'all'
 
   const wrapRef = useRef<HTMLDivElement>(null)
   const toolbarRef = useRef<HTMLDivElement>(null)
   const pagerRef = useRef<HTMLDivElement>(null)
   const [tableScrollY, setTableScrollY] = useState<number | undefined>(undefined)
+  const storeRecordSelectedRows = useMemo(
+    () => storeRecordsData.filter((record) => storeRecordSelectedRowKeys.includes(`${record.storeCode || ''}-${record.storeProductCode || ''}`)),
+    [storeRecordsData, storeRecordSelectedRowKeys],
+  )
 
   const loadData = useCallback(async () => {
     setLoading(true)
@@ -304,6 +378,8 @@ export default function ProductManagementPage() {
         categoryGuid: categoryGuid || undefined,
         isActive: isActiveFilter,
         isSet: isSetFilter,
+        storeRecordCountMin: storeRecordCountMin,
+        storeRecordCountMax: storeRecordCountMax,
         sortBy: SORT_FIELD_MAP[sortBy] || sortBy,
         sortOrder,
       }
@@ -316,7 +392,7 @@ export default function ProductManagementPage() {
     } finally {
       setLoading(false)
     }
-  }, [page, pageSize, keyword, supplierCode, categoryGuid, isActiveFilter, isSetFilter, sortBy, sortOrder, queryVersion])
+  }, [page, pageSize, keyword, supplierCode, categoryGuid, isActiveFilter, isSetFilter, storeRecordCountMin, storeRecordCountMax, sortBy, sortOrder, queryVersion])
 
   const stopHqSyncJobPolling = useCallback(() => {
     stopHqSyncPollingRef.current?.()
@@ -332,6 +408,44 @@ export default function ProductManagementPage() {
     setActiveHqSyncJob(null)
     saveActiveProductHqSyncJob(null)
   }, [])
+
+  const stopSupplierImageBatchPolling = useCallback((localSupplierCode?: string) => {
+    const jobKey = normalizeSupplierImageBatchJobKey(localSupplierCode)
+    if (jobKey) {
+      stopSupplierImageBatchPollingRef.current[jobKey]?.()
+      delete stopSupplierImageBatchPollingRef.current[jobKey]
+      return
+    }
+    Object.values(stopSupplierImageBatchPollingRef.current).forEach((stop) => stop())
+    stopSupplierImageBatchPollingRef.current = {}
+  }, [])
+
+  const saveActiveImageBatchJob = useCallback((job: ActiveSupplierImageBatchJob) => {
+    const jobKey = normalizeSupplierImageBatchJobKey(job.localSupplierCode)
+    if (!jobKey) return
+    setActiveImageBatchJobs((prev) => {
+      const next = { ...prev, [jobKey]: job }
+      saveActiveSupplierImageBatchJobs(next)
+      return next
+    })
+  }, [])
+
+  const clearActiveImageBatchJob = useCallback((localSupplierCode: string) => {
+    const jobKey = normalizeSupplierImageBatchJobKey(localSupplierCode)
+    if (!jobKey) return
+    setActiveImageBatchJobs((prev) => {
+      if (!prev[jobKey]) return prev
+      const next = clearActiveSupplierImageBatchJob(prev, localSupplierCode)
+      saveActiveSupplierImageBatchJobs(next)
+      return next
+    })
+  }, [])
+
+  const getActiveImageBatchJobBySupplier = useCallback((localSupplierCode: string | undefined) => {
+    const jobKey = normalizeSupplierImageBatchJobKey(localSupplierCode)
+    if (!jobKey) return null
+    return activeImageBatchJobs[jobKey] ?? readActiveSupplierImageBatchJobs()[jobKey] ?? null
+  }, [activeImageBatchJobs])
 
   const buildHqSyncResultLines = useCallback((result: HqProductSyncResult) => {
     const lines = [
@@ -403,6 +517,72 @@ export default function ProductManagementPage() {
     })
     void loadData()
   }, [buildHqSyncResultLines, loadData, t])
+
+  const refreshSupplierOptions = useCallback(async () => {
+    try {
+      const suppliers = await getActiveLocalSuppliers()
+      setSupplierOptions(suppliers.map((s) => ({
+        label: `${s.name} (${s.localSupplierCode})`,
+        value: s.localSupplierCode,
+        localSupplierCode: s.localSupplierCode,
+        name: s.name,
+        imageBaseUrl: s.imageBaseUrl,
+      })))
+    } catch { /* ignore */ }
+  }, [])
+
+  const showSupplierImageBatchResult = useCallback((job: BatchUpdateSupplierImagesJobResult) => {
+    const result: BatchUpdateSupplierImagesResult = job.result ?? {
+        totalCount: 0,
+        hbwebUpdatedCount: 0,
+        hqUpdatedCount: 0,
+        hbwebSkippedExistingImageCount: 0,
+        hqSkippedExistingImageCount: 0,
+        skippedCount: 0,
+        hqFailedCount: 0,
+        errors: job.errors ?? [],
+      message: job.message || job.errorMessage,
+    }
+    const errors = result.errors ?? job.errors ?? []
+    const content = (
+      <Space direction="vertical" size={6}>
+        {(job.message || result.message || job.errorMessage) ? <div>{job.message || result.message || job.errorMessage}</div> : null}
+        <div>{t('posAdmin.products.batchImageTotal', '供应商商品: {{count}} 个', { count: result.totalCount ?? 0 })}</div>
+        <div>{t('posAdmin.products.batchImageHbwebUpdated', 'Hbweb 更新: {{count}} 个', { count: result.hbwebUpdatedCount ?? 0 })}</div>
+        <div>{t('posAdmin.products.batchImageHqUpdated', 'HQ 更新: {{count}} 个', { count: result.hqUpdatedCount ?? 0 })}</div>
+        <div>{t('posAdmin.products.batchImageHbwebSkippedExistingImage', 'Hbweb 已有图片跳过: {{count}} 个', { count: result.hbwebSkippedExistingImageCount ?? 0 })}</div>
+        <div>{t('posAdmin.products.batchImageHqSkippedExistingImage', 'HQ 已有图片跳过: {{count}} 个', { count: result.hqSkippedExistingImageCount ?? 0 })}</div>
+        <div>{t('posAdmin.products.batchImageSkipped', '跳过: {{count}} 个', { count: result.skippedCount ?? 0 })}</div>
+        {result.hqFailedCount ? <div>{t('posAdmin.products.batchImageHqFailed', 'HQ 缺失或失败: {{count}} 个', { count: result.hqFailedCount })}</div> : null}
+        {errors.length ? <div style={{ whiteSpace: 'pre-wrap' }}>{errors.join('\n')}</div> : null}
+      </Space>
+    )
+
+    if (job.status === 'Failed') {
+      Modal.error({
+        title: t('posAdmin.products.batchImageUpdateFailed', '图片批量修改失败'),
+        content,
+      })
+      return
+    }
+
+    if (errors.length || (result.hqFailedCount ?? 0) > 0) {
+      Modal.warning({
+        title: t('posAdmin.products.batchImageUpdatePartialSucceeded', '图片批量修改部分完成'),
+        content,
+      })
+      void refreshSupplierOptions()
+      void loadData()
+      return
+    }
+
+    Modal.success({
+      title: t('posAdmin.products.batchImageUpdateComplete', '图片批量修改完成'),
+      content,
+    })
+    void refreshSupplierOptions()
+    void loadData()
+  }, [loadData, refreshSupplierOptions, t])
 
   const startHqSyncJobPolling = useCallback((job: ActiveProductHqSyncJob) => {
     stopHqSyncJobPolling()
@@ -480,11 +660,109 @@ export default function ProductManagementPage() {
       })
   }, [clearActiveHqSyncJob, saveActiveHqSyncJob, showHqSyncJobResult, stopHqSyncJobPolling, t])
 
+  const startSupplierImageBatchPolling = useCallback((job: ActiveSupplierImageBatchJob) => {
+    const jobKey = normalizeSupplierImageBatchJobKey(job.localSupplierCode)
+    if (!jobKey) return
+    stopSupplierImageBatchPolling(job.localSupplierCode)
+    let consecutivePollingFailures = 0
+
+    const showPollingTimeout = () => {
+      clearActiveImageBatchJob(job.localSupplierCode)
+      Modal.warning({
+        title: t('posAdmin.products.batchImageJobTimeoutTitle', '图片批量修改仍在后台执行'),
+        content: t('posAdmin.products.batchImageJobTimeout', '前端已停止轮询该任务。你可以稍后刷新列表，或重新提交同一供应商和模板来接管后端已有任务。'),
+      })
+    }
+
+    saveActiveImageBatchJob(job)
+    const poller = createHqSyncJobPoller<BatchUpdateSupplierImagesJobResult>({
+      jobId: job.jobId,
+      getJob: async (jobId) => {
+        try {
+          const result = await getSupplierImageBatchUpdateJob(jobId)
+          consecutivePollingFailures = 0
+          saveActiveImageBatchJob({
+            ...job,
+            status: result.status,
+            message: result.message || result.errorMessage,
+          })
+          return result
+        } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : ''
+          if (error instanceof RequestError && (error.status === 404 || error.status === 401 || error.status === 403)) {
+            clearActiveImageBatchJob(job.localSupplierCode)
+            throw error
+          }
+          consecutivePollingFailures += 1
+          if (consecutivePollingFailures >= 3) {
+            clearActiveImageBatchJob(job.localSupplierCode)
+            throw error
+          }
+          if (isMountedRef.current) {
+            message.warning(error instanceof Error ? error.message : t('posAdmin.products.batchImageJobPollingFailed', '图片批量修改任务状态获取失败，将继续在后台重试'))
+          }
+          return {
+            jobId,
+            status: 'Running',
+            message: errorMessage,
+          }
+        }
+      },
+      pollIntervalMs: SUPPLIER_IMAGE_BATCH_POLL_INTERVAL_MS,
+      timeoutMs: SUPPLIER_IMAGE_BATCH_TIMEOUT_MS,
+    })
+    stopSupplierImageBatchPollingRef.current[jobKey] = poller.stop
+
+    void poller.promise
+      .then((result) => {
+        if (!isMountedRef.current) return
+        clearActiveImageBatchJob(job.localSupplierCode)
+        showSupplierImageBatchResult(result)
+      })
+      .catch((error) => {
+        if (!isMountedRef.current) return
+
+        const errorMessage = error instanceof Error ? error.message : ''
+        if (error instanceof HqProductSyncPollingTimeoutError) {
+          showPollingTimeout()
+          return
+        }
+        if (error instanceof RequestError && error.status === 404) {
+          Modal.warning({
+            title: t('posAdmin.products.batchImageJobMissingTitle', '图片批量修改任务不存在'),
+            content: error.message || t('posAdmin.products.batchImageJobMissing', '后台任务不存在或已过期，请确认后重新提交。'),
+          })
+          return
+        }
+        if (error instanceof RequestError && (error.status === 401 || error.status === 403)) {
+          Modal.error({
+            title: t('posAdmin.products.batchImageJobAuthFailedTitle', '无法查询图片批量修改任务'),
+            content: error.message || t('posAdmin.products.batchImageJobAuthFailed', '登录状态或权限不足，请重新登录后再查看任务状态。'),
+          })
+          return
+        }
+        if (errorMessage === '商品同步任务轮询已取消' || errorMessage === '供应商图片批量修改任务轮询已取消') {
+          return
+        }
+        Modal.warning({
+          title: t('posAdmin.products.batchImageJobPollingStoppedTitle', '图片批量修改任务状态获取失败'),
+          content: error instanceof Error ? error.message : t('posAdmin.products.batchImageJobPollingStopped', '前端已停止轮询，请稍后刷新列表确认结果。'),
+        })
+      })
+  }, [clearActiveImageBatchJob, saveActiveImageBatchJob, showSupplierImageBatchResult, stopSupplierImageBatchPolling, t])
+
   const restoreActiveHqSyncJob = useCallback(() => {
     const restoredJob = readActiveProductHqSyncJob()
     if (!restoredJob?.jobId) return
     startHqSyncJobPolling(restoredJob)
   }, [startHqSyncJobPolling])
+
+  const restoreActiveSupplierImageBatchJobs = useCallback(() => {
+    Object.values(readActiveSupplierImageBatchJobs()).forEach((restoredJob) => {
+      if (!restoredJob?.jobId) return
+      startSupplierImageBatchPolling(restoredJob)
+    })
+  }, [startSupplierImageBatchPolling])
 
   const showActiveHqSyncJobStatus = useCallback((job: ActiveProductHqSyncJob | null = activeHqSyncJob) => {
     if (!job) return
@@ -511,11 +789,33 @@ export default function ProductManagementPage() {
     message.info(t('posAdmin.products.hqSyncJobStatusContent', '同步任务已在后台执行，请等待完成提示。'))
   }, [activeHqSyncJob, t])
 
+  const showActiveSupplierImageBatchStatus = useCallback((job: ActiveSupplierImageBatchJob | null) => {
+    if (!job) return
+
+    Modal.info({
+      title: t('posAdmin.products.batchImageJobStatusTitle', '图片批量修改正在后台执行'),
+      content: (
+        <Descriptions size="small" column={1}>
+          <Descriptions.Item label={t('posAdmin.products.hqSyncJobId', '任务 ID')}>
+            {job.jobId}
+          </Descriptions.Item>
+          <Descriptions.Item label={t('posAdmin.products.supplier', '供应商')}>
+            {supplierNameMap.get(job.localSupplierCode) || job.localSupplierCode}
+          </Descriptions.Item>
+          <Descriptions.Item label={t('posAdmin.products.hqSyncJobStatus', '任务状态')}>
+            {job.status || t('posAdmin.products.hqSyncJobQueued', '排队中')}
+          </Descriptions.Item>
+          <Descriptions.Item label={t('posAdmin.products.hqSyncJobStartedAt', '提交时间')}>
+            {dayjs(job.createdAt).format('YYYY-MM-DD HH:mm:ss')}
+          </Descriptions.Item>
+        </Descriptions>
+      ),
+    })
+    message.info(t('posAdmin.products.batchImageJobStatusContent', '图片批量修改任务已在后台执行，请等待完成提示。'))
+  }, [supplierNameMap, t])
+
   const loadOptions = useCallback(async () => {
-    try {
-      const suppliers = await getActiveLocalSuppliers()
-      setSupplierOptions(suppliers.map((s) => ({ label: `${s.name} (${s.localSupplierCode})`, value: s.localSupplierCode, name: s.name })))
-    } catch { /* ignore */ }
+    await refreshSupplierOptions()
     try {
       const tree = await getProductCategoryTree()
       setCategoryTree(tree ?? [])
@@ -528,7 +828,7 @@ export default function ProductManagementPage() {
       const stores = await getActiveStores()
       setStoreOptions(stores)
     } catch { /* ignore */ }
-  }, [t])
+  }, [refreshSupplierOptions, t])
 
   useEffect(() => {
     loadOptions()
@@ -546,8 +846,18 @@ export default function ProductManagementPage() {
   }, [stopHqSyncJobPolling])
 
   useEffect(() => {
+    return () => {
+      stopSupplierImageBatchPolling()
+    }
+  }, [stopSupplierImageBatchPolling])
+
+  useEffect(() => {
     restoreActiveHqSyncJob()
   }, [restoreActiveHqSyncJob])
+
+  useEffect(() => {
+    restoreActiveSupplierImageBatchJobs()
+  }, [restoreActiveSupplierImageBatchJobs])
 
   useLayoutEffect(() => {
     const calc = () => {
@@ -563,11 +873,41 @@ export default function ProductManagementPage() {
   }, [pageSize, total])
 
   const handleSearch = () => {
+    // 分店记录筛选保持“输入态”和“生效态”分离，只在查询时折算成后端范围参数。
+    let nextStoreRecordCountMode = storeRecordCountModeInput
+    let nextStoreRecordCountMin = storeRecordCountMinInput
+    let nextStoreRecordCountMax = storeRecordCountMaxInput
+    if (storeRecordCountModeInput === 'all') {
+      nextStoreRecordCountMin = undefined
+      nextStoreRecordCountMax = undefined
+    } else if (storeRecordCountModeInput === 'hasRecords') {
+      nextStoreRecordCountMin = 1
+      nextStoreRecordCountMax = undefined
+    } else if (storeRecordCountModeInput === 'noRecords') {
+      nextStoreRecordCountMin = 0
+      nextStoreRecordCountMax = 0
+    } else if (storeRecordCountModeInput === 'custom') {
+      if (storeRecordCountMinInput === undefined && storeRecordCountMaxInput === undefined) {
+        nextStoreRecordCountMode = 'all'
+        nextStoreRecordCountMin = undefined
+        nextStoreRecordCountMax = undefined
+      } else if (
+        storeRecordCountMinInput !== undefined &&
+        storeRecordCountMaxInput !== undefined &&
+        storeRecordCountMinInput > storeRecordCountMaxInput
+      ) {
+        message.warning(t('posAdmin.products.storeRecordFilterInvalidRange', '最小数量不能大于最大数量'))
+        return
+      }
+    }
     setKeyword(keywordInput.trim())
     setSupplierCode(supplierCodeInput)
     setCategoryGuid(categoryGuidInput)
     setIsActiveFilter(isActiveFilterInput)
     setIsSetFilter(isSetFilterInput)
+    setStoreRecordCountMode(nextStoreRecordCountMode)
+    setStoreRecordCountMin(nextStoreRecordCountMin)
+    setStoreRecordCountMax(nextStoreRecordCountMax)
     setPage(1)
     setSelectedRowKeys([])
     setQueryVersion((value) => value + 1)
@@ -584,6 +924,12 @@ export default function ProductManagementPage() {
     setIsActiveFilter(undefined)
     setIsSetFilterInput(undefined)
     setIsSetFilter(undefined)
+    setStoreRecordCountModeInput('all')
+    setStoreRecordCountMode('all')
+    setStoreRecordCountMinInput(undefined)
+    setStoreRecordCountMaxInput(undefined)
+    setStoreRecordCountMin(undefined)
+    setStoreRecordCountMax(undefined)
     setSortBy('productCode')
     setSortOrder('ascend')
     setPage(1)
@@ -748,6 +1094,10 @@ export default function ProductManagementPage() {
 
     const requestSeq = storeRecordsRequestSeqRef.current + 1
     storeRecordsRequestSeqRef.current = requestSeq
+    setStoreRecordSelectedRowKeys([])
+    storeRecordBatchEditForm.resetFields()
+    setStoreRecordBatchEditVisible(false)
+    setStoreRecordBatchUpdating(false)
     setStoreRecordsProduct(record)
     setStoreRecordsVisible(true)
     setStoreRecordsLoading(true)
@@ -772,6 +1122,92 @@ export default function ProductManagementPage() {
     storeRecordsRequestSeqRef.current += 1
     setStoreRecordsVisible(false)
     setStoreRecordsLoading(false)
+    setStoreRecordsProduct(null)
+    setStoreRecordsData([])
+    setStoreRecordSelectedRowKeys([])
+    storeRecordBatchEditForm.resetFields()
+    setStoreRecordBatchEditVisible(false)
+    setStoreRecordBatchUpdating(false)
+  }
+
+  const openStoreRecordBatchEdit = () => {
+    if (!canEditStoreProducts || !storeRecordSelectedRowKeys.length) return
+    storeRecordBatchEditForm.resetFields()
+    setStoreRecordBatchEditVisible(true)
+  }
+
+  const handleStoreRecordBatchEditSave = async () => {
+    if (!storeRecordsProduct || storeRecordBatchUpdating) return
+    if (!storeRecordSelectedRowKeys.length) {
+      message.warning(t('posAdmin.products.selectStoreRecordsFirst', '请先选择分店记录'))
+      return
+    }
+
+    try {
+      const values = await storeRecordBatchEditForm.validateFields() as StoreRecordBatchEditFormValues
+      const fieldConfigs: Array<{
+        enabled: boolean
+        field: keyof BatchUpdateProductStoreRecordsChanges
+        value: number | boolean | undefined
+      }> = [
+        { enabled: !!values.updatePurchasePrice, field: 'purchasePrice', value: values.purchasePrice },
+        { enabled: !!values.updateStoreRetailPriceValue, field: 'storeRetailPriceValue', value: values.storeRetailPriceValue },
+        { enabled: !!values.updateDiscountRate, field: 'discountRate', value: values.discountRate },
+        { enabled: !!values.updateIsAutoPricing, field: 'isAutoPricing', value: values.isAutoPricing },
+        { enabled: !!values.updateIsSpecialProduct, field: 'isSpecialProduct', value: values.isSpecialProduct },
+        { enabled: !!values.updateIsActive, field: 'isActive', value: values.isActive },
+      ]
+
+      const enabledFieldConfigs = fieldConfigs.filter((config) => config.enabled)
+      if (!enabledFieldConfigs.length) {
+        message.warning(t('posAdmin.products.selectAtLeastOneStoreRecordField', '请至少选择一个要修改的字段'))
+        return
+      }
+
+      if (enabledFieldConfigs.some((config) => config.value === undefined || config.value === null)) {
+        message.warning(t('posAdmin.products.completeStoreRecordFields', '请填写已勾选的字段值'))
+        return
+      }
+
+      // 分店记录行 key 里可能带 storeProductCode，真正提交时只取非空分店代码。
+      const selectedStoreCodes = storeRecordSelectedRows
+        .map((record) => record.storeCode)
+        .filter((storeCode): storeCode is string => !!storeCode)
+      if (!selectedStoreCodes.length) {
+        message.warning(t('posAdmin.products.selectStoreRecordsFirst', '请先选择分店记录'))
+        return
+      }
+
+      const changes = enabledFieldConfigs.reduce<BatchUpdateProductStoreRecordsChanges>((acc, config) => {
+        acc[config.field] = config.value as never
+        return acc
+      }, {})
+
+      setStoreRecordBatchUpdating(true)
+      const result = await batchUpdateProductStoreRecords(storeRecordsProduct.productCode, {
+        storeCodes: selectedStoreCodes,
+        changes,
+      })
+      message.success(t('posAdmin.products.batchUpdateStoreRecordsResult', '批量修改完成：成功 {{success}}，失败 {{failed}}', {
+        success: result.successCount,
+        failed: result.failedCount,
+      }))
+      if (result.errors.length) {
+        Modal.error({
+          title: t('posAdmin.products.batchUpdateStoreRecordsErrors', '批量修改存在失败记录'),
+          content: result.errors.join('\n'),
+        })
+      }
+      setStoreRecordSelectedRowKeys([])
+      storeRecordBatchEditForm.resetFields()
+      setStoreRecordBatchEditVisible(false)
+      await openStoreRecords(storeRecordsProduct)
+      await loadData()
+    } catch {
+      message.error(t('posAdmin.products.batchUpdateStoreRecordsFailed', '批量修改分店记录失败'))
+    } finally {
+      setStoreRecordBatchUpdating(false)
+    }
   }
 
   const handleEditSave = async () => {
@@ -879,6 +1315,76 @@ export default function ProductManagementPage() {
     }
     batchEditForm.resetFields()
     setBatchEditVisible(true)
+  }
+
+  const setImageBatchTemplate = (supplierCode: string | undefined, mode: SupplierImageMode) => {
+    const supplier = supplierOptions.find((option) => option.value === supplierCode)
+    imageBatchForm.setFieldValue('urlTemplate', getDefaultSupplierImageTemplate(supplier, mode))
+  }
+
+  const openImageBatch = () => {
+    if (!ensureCanManagePosProducts()) return
+    const defaultMode: SupplierImageMode = 'supplier'
+    const defaultSupplierCode = supplierCodeInput || supplierCode
+    imageBatchForm.resetFields()
+    imageBatchForm.setFieldsValue({
+      localSupplierCode: defaultSupplierCode,
+      mode: defaultMode,
+      updateTargets: ['hbweb', 'hq'],
+      saveSupplierImageBaseUrl: false,
+    })
+    setImageBatchTemplate(defaultSupplierCode, defaultMode)
+    setImageBatchVisible(true)
+  }
+
+  const handleImageBatchSave = async () => {
+    if (!ensureCanManagePosProducts()) return
+    try {
+      const values = await imageBatchForm.validateFields()
+      const targets: string[] = values.updateTargets || []
+      if (!targets.length && !values.saveSupplierImageBaseUrl) {
+        message.warning(t('posAdmin.products.selectImageUpdateTarget', '请选择写入目标'))
+        return
+      }
+      const existingActiveJob = getActiveImageBatchJobBySupplier(values.localSupplierCode)
+      if (existingActiveJob) {
+        startSupplierImageBatchPolling(existingActiveJob)
+        showActiveSupplierImageBatchStatus(existingActiveJob)
+        return
+      }
+      setImageBatchLoading(true)
+      const request = {
+        localSupplierCode: values.localSupplierCode,
+        urlTemplate: values.urlTemplate.trim(),
+        updateHbweb: targets.includes('hbweb'),
+        updateHq: targets.includes('hq'),
+        saveSupplierImageBaseUrl: values.saveSupplierImageBaseUrl ?? false,
+      }
+      const operationId = buildSupplierImageBatchUpdateOperationId(request)
+      const job = await createSupplierImageBatchUpdateJob({
+        ...request,
+        operationId,
+      })
+      if (!job.jobId) {
+        message.error(job.message || job.errorMessage || t('posAdmin.products.batchImageJobCreateFailed', '创建图片批量修改任务失败'))
+        return
+      }
+      const activeJob: ActiveSupplierImageBatchJob = {
+        jobId: job.jobId,
+        operationId: job.operationId || operationId,
+        localSupplierCode: request.localSupplierCode,
+        createdAt: new Date().toISOString(),
+        status: job.status ?? 'Queued',
+        message: job.message || job.errorMessage,
+      }
+      setImageBatchVisible(false)
+      message.success(t('posAdmin.products.batchImageJobSubmitted', '图片批量修改任务已提交，正在后台执行。完成后会自动提示结果。'))
+      startSupplierImageBatchPolling(activeJob)
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : t('posAdmin.products.batchImageJobCreateFailed', '创建图片批量修改任务失败'))
+    } finally {
+      setImageBatchLoading(false)
+    }
   }
 
   const handleBatchEditSave = async () => {
@@ -1579,6 +2085,8 @@ export default function ProductManagementPage() {
       dataIndex: 'storeRecordCount',
       width: 70,
       align: 'center',
+      sorter: true,
+      sortOrder: sortBy === 'storeRecordCount' ? sortOrder : undefined,
       render: (v: number | undefined, record) => {
         const count = Number(v ?? 0)
         return count > 0 && canManageStoreProducts ? (
@@ -1722,6 +2230,39 @@ export default function ProductManagementPage() {
                 { label: t('posAdmin.products.normalProduct', '单品'), value: false },
               ]}
             />
+            <Select
+              placeholder={t('posAdmin.products.storeRecordFilterPlaceholder', '分店记录')}
+              style={{ width: 120 }}
+              value={storeRecordCountModeInput}
+              className={hasAppliedStoreRecordCountFilter ? 'store-record-filter-active' : undefined}
+              onChange={(value) => setStoreRecordCountModeInput(value)}
+              options={[
+                { label: t('posAdmin.products.storeRecordFilterAll', '全部'), value: 'all' },
+                { label: t('posAdmin.products.storeRecordFilterHasRecords', '有记录'), value: 'hasRecords' },
+                { label: t('posAdmin.products.storeRecordFilterNoRecords', '无记录'), value: 'noRecords' },
+                { label: t('posAdmin.products.storeRecordFilterCustom', '自定义范围'), value: 'custom' },
+              ]}
+            />
+            {isStoreRecordCountCustomMode ? (
+              <Space.Compact>
+                <InputNumber
+                  min={0}
+                  precision={0}
+                  placeholder={t('posAdmin.products.storeRecordFilterMin', '最小数量')}
+                  style={{ width: 110 }}
+                  value={storeRecordCountMinInput}
+                  onChange={(value) => setStoreRecordCountMinInput(value ?? undefined)}
+                />
+                <InputNumber
+                  min={0}
+                  precision={0}
+                  placeholder={t('posAdmin.products.storeRecordFilterMax', '最大数量')}
+                  style={{ width: 110 }}
+                  value={storeRecordCountMaxInput}
+                  onChange={(value) => setStoreRecordCountMaxInput(value ?? undefined)}
+                />
+              </Space.Compact>
+            ) : null}
             <Button type="primary" icon={<SearchOutlined />} onClick={handleSearch}>
               {t('common.query', '查询')}
             </Button>
@@ -1769,6 +2310,9 @@ export default function ProductManagementPage() {
                 </Button>
                 <Button icon={<CloudUploadOutlined />} onClick={openSyncToStoreModal}>
                   {t('posAdmin.products.syncToStore', '同步到分店')}
+                </Button>
+                <Button icon={<FileImageOutlined />} onClick={openImageBatch}>
+                  {t('posAdmin.products.batchImageUpdate', '图片批量修改')}
                 </Button>
                 <Button onClick={openBatchEdit} disabled={!selectedRowKeys.length || categoryLoadFailed}>
                   {t('posAdmin.products.batchEdit', '批量编辑')}
@@ -2053,6 +2597,85 @@ export default function ProductManagementPage() {
       </Modal>
 
       <Modal
+        open={imageBatchVisible}
+        title={t('posAdmin.products.batchImageUpdateTitle', '供应商图片批量修改')}
+        onCancel={() => setImageBatchVisible(false)}
+        onOk={handleImageBatchSave}
+        confirmLoading={imageBatchLoading}
+        width={720}
+        destroyOnHidden
+      >
+        <Form form={imageBatchForm} labelCol={{ span: 6 }} wrapperCol={{ span: 18 }}>
+          <Form.Item name="localSupplierCode" label={t('posAdmin.products.supplier', '供应商')} rules={[{ required: true, message: t('posAdmin.products.selectSupplier', '请选择供应商') }]}>
+            <Select
+              showSearch
+              optionFilterProp="label"
+              options={supplierOptions}
+              placeholder={t('posAdmin.products.selectSupplier', '请选择供应商')}
+              onChange={(value) => {
+                const mode = (imageBatchForm.getFieldValue('mode') || 'supplier') as SupplierImageMode
+                setImageBatchTemplate(value, mode)
+              }}
+            />
+          </Form.Item>
+          <Form.Item name="mode" label={t('posAdmin.products.imageTemplateMode', '模式')} initialValue="supplier">
+            <Radio.Group
+              onChange={(event) => {
+                setImageBatchTemplate(imageBatchForm.getFieldValue('localSupplierCode'), event.target.value)
+              }}
+            >
+              <Radio.Button value="supplier">{t('posAdmin.products.supplierImageTemplate', '供应商图片基础 URL')}</Radio.Button>
+              <Radio.Button value="cos">{t('posAdmin.products.cosImageTemplate', 'COS 地址')}</Radio.Button>
+            </Radio.Group>
+          </Form.Item>
+          <Form.Item
+            name="urlTemplate"
+            label={t('posAdmin.suppliers.imageBaseUrl', '图片基础 URL')}
+            rules={[
+              {
+                validator: async (_, value) => {
+                  const error = validateSupplierImageTemplate(value || '')
+                  if (error) return Promise.reject(new Error(error))
+                  return Promise.resolve()
+                },
+              },
+            ]}
+          >
+            <Input.TextArea
+              rows={2}
+              placeholder="https://www.dats.com.au/images/ProductImages/500/{itemNumber}.jpg"
+            />
+          </Form.Item>
+          <Form.Item name="saveSupplierImageBaseUrl" label=" " colon={false} valuePropName="checked">
+            <Checkbox>{t('posAdmin.products.saveImageBaseUrlToSupplier', '保存到供应商信息')}</Checkbox>
+          </Form.Item>
+          <Form.Item name="updateTargets" label={t('posAdmin.products.imageUpdateTargets', '写入目标')}>
+            <Checkbox.Group
+              options={[
+                { label: 'Hbweb', value: 'hbweb' },
+                { label: 'HQ', value: 'hq' },
+              ]}
+            />
+          </Form.Item>
+          <div style={{ color: '#666', paddingLeft: 150 }}>
+            <p style={{ marginBottom: 4 }}>
+              {t('posAdmin.products.batchImageScopeTip', '仅为该供应商未删除且图片为空的商品补图，Hbweb/HQ 已有图片分别跳过。')}
+            </p>
+            {imageBatchSupplier?.imageBaseUrl ? (
+              <p style={{ marginBottom: 4 }}>
+                {t('posAdmin.products.savedSupplierImageBaseUrl', '已保存供应商图片基础 URL。')}
+              </p>
+            ) : null}
+            {imageBatchPreviewUrl ? (
+              <p style={{ marginBottom: 0, wordBreak: 'break-all' }}>
+                {t('posAdmin.products.imagePreviewUrl', '预览')}：{imageBatchPreviewUrl}
+              </p>
+            ) : null}
+          </div>
+        </Form>
+      </Modal>
+
+      <Modal
         open={batchEditVisible}
         title={t('posAdmin.products.batchEditProduct', '批量编辑 ({{count}} 个商品)', { count: selectedRowKeys.length })}
         onCancel={() => setBatchEditVisible(false)}
@@ -2179,6 +2802,14 @@ export default function ProductManagementPage() {
         })}
         onCancel={closeStoreRecords}
         footer={[
+          <Button
+            key="batch-edit"
+            type="primary"
+            onClick={openStoreRecordBatchEdit}
+            disabled={!canEditStoreProducts || !storeRecordSelectedRowKeys.length}
+          >
+            {t('posAdmin.products.batchUpdateStoreRecords', '批量修改')}
+          </Button>,
           <Button key="close" onClick={closeStoreRecords}>
             {t('common.close', '关闭')}
           </Button>,
@@ -2192,6 +2823,11 @@ export default function ProductManagementPage() {
           pagination={false}
           locale={{ emptyText: t('posAdmin.products.noStoreRecords', '暂无分店记录') }}
           scroll={{ x: 1000, y: 420 }}
+          rowSelection={{
+            selectedRowKeys: storeRecordSelectedRowKeys,
+            onChange: (keys) => setStoreRecordSelectedRowKeys(keys),
+            columnWidth: 40,
+          }}
           columns={[
             { title: t('common.storeCode', '分店代码'), dataIndex: 'storeCode', width: 110 },
             {
@@ -2218,6 +2854,159 @@ export default function ProductManagementPage() {
             { title: t('posAdmin.products.updatedBy', '更新人'), dataIndex: 'updatedBy', width: 120, render: (value: string) => value || '-' },
           ]}
         />
+      </Modal>
+
+      <Modal
+        open={storeRecordBatchEditVisible}
+        title={t('posAdmin.products.batchUpdateStoreRecords', '批量修改')}
+        onCancel={() => {
+          storeRecordBatchEditForm.resetFields()
+          setStoreRecordBatchEditVisible(false)
+        }}
+        onOk={handleStoreRecordBatchEditSave}
+        confirmLoading={storeRecordBatchUpdating}
+        width={720}
+        destroyOnHidden
+      >
+        <Form form={storeRecordBatchEditForm} layout="vertical">
+          <Row gutter={16}>
+            <Col span={12}>
+              <Form.Item label={t('posAdmin.invoiceDetail.purchasePrice', '进货价')} style={{ marginBottom: 16 }}>
+                <Space.Compact style={{ width: '100%' }}>
+                  <Form.Item name="updatePurchasePrice" valuePropName="checked" noStyle>
+                    <Checkbox>{t('posAdmin.products.toggleFieldUpdate', '修改该字段')}</Checkbox>
+                  </Form.Item>
+                  <Form.Item noStyle shouldUpdate={(prev, cur) => prev.updatePurchasePrice !== cur.updatePurchasePrice}>
+                    {({ getFieldValue }) => (
+                      <Form.Item name="purchasePrice" noStyle>
+                        <InputNumber
+                          min={0}
+                          precision={2}
+                          disabled={!getFieldValue('updatePurchasePrice')}
+                          placeholder={t('posAdmin.invoiceDetail.purchasePrice', '进货价')}
+                          style={{ width: '100%' }}
+                        />
+                      </Form.Item>
+                    )}
+                  </Form.Item>
+                </Space.Compact>
+              </Form.Item>
+            </Col>
+            <Col span={12}>
+              <Form.Item label={t('posAdmin.invoiceDetail.retailPrice', '零售价')} style={{ marginBottom: 16 }}>
+                <Space.Compact style={{ width: '100%' }}>
+                  <Form.Item name="updateStoreRetailPriceValue" valuePropName="checked" noStyle>
+                    <Checkbox>{t('posAdmin.products.toggleFieldUpdate', '修改该字段')}</Checkbox>
+                  </Form.Item>
+                  <Form.Item noStyle shouldUpdate={(prev, cur) => prev.updateStoreRetailPriceValue !== cur.updateStoreRetailPriceValue}>
+                    {({ getFieldValue }) => (
+                      <Form.Item name="storeRetailPriceValue" noStyle>
+                        <InputNumber
+                          min={0}
+                          precision={2}
+                          disabled={!getFieldValue('updateStoreRetailPriceValue')}
+                          placeholder={t('posAdmin.invoiceDetail.retailPrice', '零售价')}
+                          style={{ width: '100%' }}
+                        />
+                      </Form.Item>
+                    )}
+                  </Form.Item>
+                </Space.Compact>
+              </Form.Item>
+            </Col>
+            <Col span={12}>
+              <Form.Item label={t('posAdmin.productPrice.discountRate', '折扣率')} style={{ marginBottom: 16 }}>
+                <Space.Compact style={{ width: '100%' }}>
+                  <Form.Item name="updateDiscountRate" valuePropName="checked" noStyle>
+                    <Checkbox>{t('posAdmin.products.toggleFieldUpdate', '修改该字段')}</Checkbox>
+                  </Form.Item>
+                  <Form.Item noStyle shouldUpdate={(prev, cur) => prev.updateDiscountRate !== cur.updateDiscountRate}>
+                    {({ getFieldValue }) => (
+                      <Form.Item name="discountRate" noStyle>
+                        <InputNumber
+                          min={0}
+                          precision={4}
+                          disabled={!getFieldValue('updateDiscountRate')}
+                          placeholder={t('posAdmin.productPrice.discountRate', '折扣率')}
+                          style={{ width: '100%' }}
+                        />
+                      </Form.Item>
+                    )}
+                  </Form.Item>
+                </Space.Compact>
+              </Form.Item>
+            </Col>
+            <Col span={12}>
+              <Form.Item label={t('posAdmin.products.autoPricing', '自动定价')} style={{ marginBottom: 16 }}>
+                <Space.Compact style={{ width: '100%' }}>
+                  <Form.Item name="updateIsAutoPricing" valuePropName="checked" noStyle>
+                    <Checkbox>{t('posAdmin.products.toggleFieldUpdate', '修改该字段')}</Checkbox>
+                  </Form.Item>
+                  <Form.Item noStyle shouldUpdate={(prev, cur) => prev.updateIsAutoPricing !== cur.updateIsAutoPricing}>
+                    {({ getFieldValue }) => (
+                      <Form.Item name="isAutoPricing" noStyle>
+                        <Select
+                          disabled={!getFieldValue('updateIsAutoPricing')}
+                          placeholder={t('posAdmin.products.autoPricing', '自动定价')}
+                          options={[
+                            { value: true, label: t('common.yes', '是') },
+                            { value: false, label: t('common.no', '否') },
+                          ]}
+                        />
+                      </Form.Item>
+                    )}
+                  </Form.Item>
+                </Space.Compact>
+              </Form.Item>
+            </Col>
+            <Col span={12}>
+              <Form.Item label={t('posAdmin.products.specialProduct', '特殊商品')} style={{ marginBottom: 16 }}>
+                <Space.Compact style={{ width: '100%' }}>
+                  <Form.Item name="updateIsSpecialProduct" valuePropName="checked" noStyle>
+                    <Checkbox>{t('posAdmin.products.toggleFieldUpdate', '修改该字段')}</Checkbox>
+                  </Form.Item>
+                  <Form.Item noStyle shouldUpdate={(prev, cur) => prev.updateIsSpecialProduct !== cur.updateIsSpecialProduct}>
+                    {({ getFieldValue }) => (
+                      <Form.Item name="isSpecialProduct" noStyle>
+                        <Select
+                          disabled={!getFieldValue('updateIsSpecialProduct')}
+                          placeholder={t('posAdmin.products.specialProduct', '特殊商品')}
+                          options={[
+                            { value: true, label: t('common.yes', '是') },
+                            { value: false, label: t('common.no', '否') },
+                          ]}
+                        />
+                      </Form.Item>
+                    )}
+                  </Form.Item>
+                </Space.Compact>
+              </Form.Item>
+            </Col>
+            <Col span={12}>
+              <Form.Item label={t('posAdmin.cashierUsers.status', '状态')} style={{ marginBottom: 16 }}>
+                <Space.Compact style={{ width: '100%' }}>
+                  <Form.Item name="updateIsActive" valuePropName="checked" noStyle>
+                    <Checkbox>{t('posAdmin.products.toggleFieldUpdate', '修改该字段')}</Checkbox>
+                  </Form.Item>
+                  <Form.Item noStyle shouldUpdate={(prev, cur) => prev.updateIsActive !== cur.updateIsActive}>
+                    {({ getFieldValue }) => (
+                      <Form.Item name="isActive" noStyle>
+                        <Select
+                          disabled={!getFieldValue('updateIsActive')}
+                          placeholder={t('posAdmin.cashierUsers.status', '状态')}
+                          options={[
+                            { value: true, label: t('common.yes', '是') },
+                            { value: false, label: t('common.no', '否') },
+                          ]}
+                        />
+                      </Form.Item>
+                    )}
+                  </Form.Item>
+                </Space.Compact>
+              </Form.Item>
+            </Col>
+          </Row>
+        </Form>
       </Modal>
 
       <Modal

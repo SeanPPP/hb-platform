@@ -20,6 +20,7 @@ export interface ContainerMain {
 export interface ContainerProductInfo {
   商品编码?: string
   货号?: string
+  localSupplierCode?: string
   条形码?: string
   商品名称?: string
   英文名称?: string
@@ -38,6 +39,7 @@ export interface ContainerDetail {
   hguid: string
   主表GUID?: string
   商品编码?: string
+  localSupplierCode?: string
   商品名称?: string
   英文名称?: string
   装柜类型?: string

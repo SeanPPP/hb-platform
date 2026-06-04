@@ -1,4 +1,4 @@
-import { PlusOutlined, ReloadOutlined } from '@ant-design/icons'
+import { EditOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons'
 import {
   Button,
   Card,
@@ -15,7 +15,7 @@ import {
 } from 'antd'
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { createLocalSupplier, getLocalSuppliers, syncLocalSuppliers } from '../../../services/localSupplierService'
+import { createLocalSupplier, getLocalSuppliers, syncLocalSuppliers, updateLocalSupplier } from '../../../services/localSupplierService'
 import type { LocalSupplierDto } from '../../../types/localSupplier'
 
 const SORT_FIELD_MAP: Record<string, string> = {
@@ -26,6 +26,7 @@ const SORT_FIELD_MAP: Record<string, string> = {
   phone: 'phone',
   email: 'email',
   remark: 'remark',
+  imageBaseUrl: 'imagebaseurl',
 }
 
 export default function SupplierManagementPage() {
@@ -41,6 +42,9 @@ export default function SupplierManagementPage() {
   const [sortOrder, setSortOrder] = useState<'ascend' | 'descend'>('ascend')
   const [createVisible, setCreateVisible] = useState(false)
   const [createForm] = Form.useForm()
+  const [editVisible, setEditVisible] = useState(false)
+  const [editingSupplier, setEditingSupplier] = useState<LocalSupplierDto | null>(null)
+  const [editForm] = Form.useForm()
   const wrapRef = useRef<HTMLDivElement>(null)
   const toolbarRef = useRef<HTMLDivElement>(null)
   const pagerRef = useRef<HTMLDivElement>(null)
@@ -109,6 +113,7 @@ export default function SupplierManagementPage() {
         phone: values.phone,
         email: values.email,
         remark: values.remark,
+        imageBaseUrl: values.imageBaseUrl?.trim() || undefined,
       })
       message.success(t('message.createSuccess'))
       setCreateVisible(false)
@@ -116,6 +121,43 @@ export default function SupplierManagementPage() {
       await loadData()
     } catch {
       message.error(t('message.createFailed'))
+    }
+  }
+
+  const openEdit = (record: LocalSupplierDto) => {
+    setEditingSupplier(record)
+    editForm.setFieldsValue({
+      name: record.name,
+      status: record.status === 1,
+      contactPerson: record.contactPerson,
+      phone: record.phone,
+      email: record.email,
+      remark: record.remark,
+      imageBaseUrl: record.imageBaseUrl,
+    })
+    setEditVisible(true)
+  }
+
+  const handleEdit = async () => {
+    if (!editingSupplier) return
+    const values = await editForm.validateFields()
+    try {
+      await updateLocalSupplier(editingSupplier.localSupplierCode, {
+        name: values.name,
+        status: values.status ? 1 : 0,
+        contactPerson: values.contactPerson,
+        phone: values.phone,
+        email: values.email,
+        remark: values.remark,
+        imageBaseUrl: values.imageBaseUrl?.trim() || undefined,
+      })
+      message.success(t('message.saveSuccess', '保存成功'))
+      setEditVisible(false)
+      setEditingSupplier(null)
+      editForm.resetFields()
+      await loadData()
+    } catch {
+      message.error(t('message.saveFailed', '保存失败'))
     }
   }
 
@@ -226,6 +268,25 @@ export default function SupplierManagementPage() {
                 sorter: true,
                 sortOrder: sortBy === 'remark' ? sortOrder : undefined,
               },
+              {
+                title: t('posAdmin.suppliers.imageBaseUrl', '图片基础 URL'),
+                dataIndex: 'imageBaseUrl',
+                width: 260,
+                ellipsis: true,
+                sorter: true,
+                sortOrder: sortBy === 'imageBaseUrl' ? sortOrder : undefined,
+                render: (value: string | undefined) => value || '-',
+              },
+              {
+                title: t('column.action', '操作'),
+                width: 90,
+                fixed: 'right',
+                render: (_, record) => (
+                  <Button type="link" size="small" icon={<EditOutlined />} onClick={() => openEdit(record)}>
+                    {t('common.edit', '编辑')}
+                  </Button>
+                ),
+              },
             ]}
             onChange={(_pagination, _filters, sorter) => {
               const s = Array.isArray(sorter) ? sorter[0] : sorter
@@ -296,6 +357,44 @@ export default function SupplierManagementPage() {
           </Form.Item>
           <Form.Item name="remark" label={t('column.remarks')} rules={[{ max: 256 }]}>
             <Input />
+          </Form.Item>
+          <Form.Item name="imageBaseUrl" label={t('posAdmin.suppliers.imageBaseUrl', '图片基础 URL')} rules={[{ max: 512 }]}>
+            <Input placeholder="https://www.dats.com.au/images/ProductImages/500/{itemNumber}.jpg" />
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      <Modal
+        open={editVisible}
+        title={t('posAdmin.suppliers.editTitle', '编辑供应商')}
+        onCancel={() => {
+          setEditVisible(false)
+          setEditingSupplier(null)
+          editForm.resetFields()
+        }}
+        onOk={handleEdit}
+      >
+        <Form form={editForm} layout="vertical">
+          <Form.Item name="name" label={t('posAdmin.suppliers.name')} rules={[{ required: true, message: t('posAdmin.suppliers.nameRequired', '请输入名称') }, { max: 128 }]}>
+            <Input />
+          </Form.Item>
+          <Form.Item name="status" label={t('common.active')} valuePropName="checked">
+            <Switch />
+          </Form.Item>
+          <Form.Item name="contactPerson" label={t('posAdmin.suppliers.contactPerson')} rules={[{ max: 64 }]}>
+            <Input />
+          </Form.Item>
+          <Form.Item name="phone" label={t('posAdmin.suppliers.phone')} rules={[{ max: 32 }]}>
+            <Input />
+          </Form.Item>
+          <Form.Item name="email" label="Email" rules={[{ type: 'email' }, { max: 128 }]}>
+            <Input />
+          </Form.Item>
+          <Form.Item name="remark" label={t('column.remarks')} rules={[{ max: 256 }]}>
+            <Input />
+          </Form.Item>
+          <Form.Item name="imageBaseUrl" label={t('posAdmin.suppliers.imageBaseUrl', '图片基础 URL')} rules={[{ max: 512 }]}>
+            <Input placeholder="https://www.dats.com.au/images/ProductImages/500/{itemNumber}.jpg" />
           </Form.Item>
         </Form>
       </Modal>

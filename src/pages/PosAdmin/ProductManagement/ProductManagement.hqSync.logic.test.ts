@@ -163,6 +163,198 @@ async function main() {
   })
   if (storeRecordsFailure) failures.push(storeRecordsFailure)
 
+  const storeRecordFiltersFailure = await runTest('商品管理应支持分店记录数量筛选并把范围参数发送到商品列表接口', () => {
+    assert(
+      typeSource.includes('storeRecordCountMin?: number') &&
+        typeSource.includes('storeRecordCountMax?: number'),
+      'PosProductFilterParams 应声明分店记录数量最小值/最大值',
+    )
+    assert(
+      serviceSource.includes('storeRecordCountMin: params.storeRecordCountMin') &&
+        serviceSource.includes('storeRecordCountMax: params.storeRecordCountMax'),
+      'getProducts 请求体应把分店记录数量范围原样发送给后端列表接口',
+    )
+    assert(
+      pageSource.includes("const [storeRecordCountMode, setStoreRecordCountMode] = useState<'all' | 'hasRecords' | 'noRecords' | 'custom'>('all')") &&
+        pageSource.includes("const [storeRecordCountModeInput, setStoreRecordCountModeInput] = useState<'all' | 'hasRecords' | 'noRecords' | 'custom'>('all')") &&
+        pageSource.includes('const [storeRecordCountMin, setStoreRecordCountMin] = useState<number | undefined>(undefined)') &&
+        pageSource.includes('const [storeRecordCountMax, setStoreRecordCountMax] = useState<number | undefined>(undefined)') &&
+        pageSource.includes('const [storeRecordCountMinInput, setStoreRecordCountMinInput] = useState<number | undefined>(undefined)') &&
+        pageSource.includes('const [storeRecordCountMaxInput, setStoreRecordCountMaxInput] = useState<number | undefined>(undefined)'),
+      '页面应分别维护已生效和输入中的分店记录筛选模式与范围',
+    )
+    assert(
+      pageSource.includes('storeRecordCountMin: storeRecordCountMin') &&
+        pageSource.includes('storeRecordCountMax: storeRecordCountMax'),
+      '查询生效后 loadData 应把当前分店记录筛选条件带入请求参数',
+    )
+    assert(
+      pageSource.includes('let nextStoreRecordCountMin = storeRecordCountMinInput') &&
+        pageSource.includes('let nextStoreRecordCountMax = storeRecordCountMaxInput') &&
+        pageSource.includes("storeRecordCountModeInput === 'hasRecords'") &&
+        pageSource.includes('nextStoreRecordCountMin = 1') &&
+        pageSource.includes("storeRecordCountModeInput === 'noRecords'") &&
+        pageSource.includes('nextStoreRecordCountMin = 0') &&
+        pageSource.includes('nextStoreRecordCountMax = 0') &&
+        pageSource.includes('let nextStoreRecordCountMode = storeRecordCountModeInput') &&
+        pageSource.includes("nextStoreRecordCountMode = 'all'") &&
+        pageSource.includes('setStoreRecordCountMode(nextStoreRecordCountMode)') &&
+        pageSource.includes('setStoreRecordCountMin(nextStoreRecordCountMin)') &&
+        pageSource.includes('setStoreRecordCountMax(nextStoreRecordCountMax)'),
+      '点击查询后应按筛选模式把输入条件折算成真实查询范围，再应用到请求状态',
+    )
+    assert(
+      pageSource.includes("storeRecordCountModeInput === 'custom'") &&
+        pageSource.includes('storeRecordCountMinInput === undefined') &&
+        pageSource.includes('storeRecordCountMaxInput === undefined') &&
+        pageSource.includes("message.warning(t('posAdmin.products.storeRecordFilterInvalidRange', '最小数量不能大于最大数量'))") &&
+        pageSource.includes('return'),
+      '自定义范围两端为空应回到全部，最小值大于最大值时应提示并停止查询',
+    )
+    assert(
+      !pageSource.includes('setStoreRecordCountMin(storeRecordCountMinInput)') &&
+        !pageSource.includes('setStoreRecordCountMax(storeRecordCountMaxInput)'),
+      '查询时不能把输入态范围直接写入生效态，应只写入按模式折算后的范围',
+    )
+    assert(
+      pageSource.includes("setStoreRecordCountModeInput('all')") &&
+        pageSource.includes("setStoreRecordCountMode('all')") &&
+        pageSource.includes('setStoreRecordCountMinInput(undefined)') &&
+        pageSource.includes('setStoreRecordCountMaxInput(undefined)') &&
+        pageSource.includes('setStoreRecordCountMin(undefined)') &&
+        pageSource.includes('setStoreRecordCountMax(undefined)'),
+      '点击重置时应清空分店记录筛选模式与范围',
+    )
+    assert(
+      pageSource.includes("t('posAdmin.products.storeRecordFilterPlaceholder', '分店记录')") &&
+        pageSource.includes("t('posAdmin.products.storeRecordFilterAll', '全部')") &&
+        pageSource.includes("t('posAdmin.products.storeRecordFilterHasRecords', '有记录')") &&
+        pageSource.includes("t('posAdmin.products.storeRecordFilterNoRecords', '无记录')") &&
+        pageSource.includes("t('posAdmin.products.storeRecordFilterCustom', '自定义范围')") &&
+        pageSource.includes("t('posAdmin.products.storeRecordFilterMin', '最小数量')") &&
+        pageSource.includes("t('posAdmin.products.storeRecordFilterMax', '最大数量')"),
+      '页面应提供分店记录筛选模式与范围输入控件',
+    )
+  })
+  if (storeRecordFiltersFailure) failures.push(storeRecordFiltersFailure)
+
+  const storeRecordListSortFailure = await runTest('商品管理主列表分店记录列应启用服务端排序映射', () => {
+    assert(
+      pageSource.includes("storeRecordCount: 'storerecordcount'"),
+      'SORT_FIELD_MAP 应把 storeRecordCount 映射到后端 storerecordcount 排序字段',
+    )
+    assert(
+      pageSource.includes("dataIndex: 'storeRecordCount'") &&
+        pageSource.includes('sorter: true') &&
+        pageSource.includes("sortOrder: sortBy === 'storeRecordCount' ? sortOrder : undefined"),
+      '分店记录主列表列应开启服务端排序，并把当前排序状态绑定到 storeRecordCount',
+    )
+    assert(
+      pageSource.includes('count > 0 && canManageStoreProducts') &&
+        pageSource.includes('compareProductStoreRecordsByName'),
+      '分店记录主列表列仍应保持只有有权限且数量大于 0 时才可点击查看明细',
+    )
+  })
+  if (storeRecordListSortFailure) failures.push(storeRecordListSortFailure)
+
+  const storeRecordsBatchUpdateFailure = await runTest('分店记录弹窗应支持批量修改分店业务字段', () => {
+    assert(
+      typeSource.includes('BatchUpdateProductStoreRecordsRequest') &&
+        typeSource.includes('BatchUpdateProductStoreRecordsResult') &&
+        typeSource.includes('purchasePrice?: number') &&
+        typeSource.includes('storeRetailPriceValue?: number') &&
+        typeSource.includes('discountRate?: number') &&
+        typeSource.includes('isAutoPricing?: boolean') &&
+        typeSource.includes('isSpecialProduct?: boolean') &&
+        typeSource.includes('isActive?: boolean'),
+      '类型层应声明分店记录批量修改请求/结果，以及六个可改字段',
+    )
+    assert(
+      serviceSource.includes('batchUpdateProductStoreRecords') &&
+        serviceSource.includes('/store-records/batch-update'),
+      '服务层应提供分店记录批量修改接口',
+    )
+    assert(
+      pageSource.includes('const canEditStoreProducts = useAuthStore((state) => state.access.canEditStoreProducts)'),
+      '页面应从 auth store 读取 canEditStoreProducts',
+    )
+    assert(
+      pageSource.includes('const [storeRecordSelectedRowKeys, setStoreRecordSelectedRowKeys] = useState<React.Key[]>([])') &&
+        pageSource.includes('const [storeRecordBatchEditVisible, setStoreRecordBatchEditVisible] = useState(false)') &&
+        pageSource.includes('const [storeRecordBatchUpdating, setStoreRecordBatchUpdating] = useState(false)') &&
+        pageSource.includes('const [storeRecordBatchEditForm] = Form.useForm()'),
+      '页面应维护分店记录选择、批量子弹窗可见性、提交态和表单状态',
+    )
+    assert(
+      pageSource.includes('rowSelection={{') &&
+        pageSource.includes('selectedRowKeys: storeRecordSelectedRowKeys') &&
+        pageSource.includes('setStoreRecordSelectedRowKeys(keys)'),
+      '分店记录表格应支持行选择，并单独维护选中 key',
+    )
+    assert(
+      pageSource.includes("t('posAdmin.products.batchUpdateStoreRecords', '批量修改')") &&
+        pageSource.includes('disabled={!canEditStoreProducts || !storeRecordSelectedRowKeys.length}') &&
+        pageSource.includes("t('common.close', '关闭')"),
+      '分店记录弹窗 footer 应提供受编辑权限和选中记录控制的“批量修改/关闭”按钮',
+    )
+    assert(
+      pageSource.includes('batchUpdateProductStoreRecords(storeRecordsProduct.productCode, {') &&
+        pageSource.includes('storeCodes: selectedStoreCodes') &&
+        pageSource.includes('changes,'),
+      '提交时应使用当前商品编码、选中分店代码和 changes 调用批量修改接口',
+    )
+    assert(
+      pageSource.includes('const selectedStoreCodes = storeRecordSelectedRows') &&
+        pageSource.includes('.map((record) => record.storeCode)') &&
+        pageSource.includes('.filter((storeCode): storeCode is string => !!storeCode)'),
+      '提交目标应从已选记录提取非空 storeCode',
+    )
+    assert(
+      pageSource.includes("t('posAdmin.invoiceDetail.purchasePrice', '进货价')") &&
+        pageSource.includes("t('posAdmin.invoiceDetail.retailPrice', '零售价')") &&
+        pageSource.includes("t('posAdmin.productPrice.discountRate', '折扣率')") &&
+        pageSource.includes("t('posAdmin.products.autoPricing', '自动定价')") &&
+        pageSource.includes("t('posAdmin.products.specialProduct', '特殊商品')") &&
+        pageSource.includes("t('posAdmin.cashierUsers.status', '状态')"),
+      '批量修改子弹窗应包含六个业务字段',
+    )
+    assert(
+      pageSource.includes("t('posAdmin.products.toggleFieldUpdate', '修改该字段')") &&
+        pageSource.includes('precision={2}') &&
+        pageSource.includes('precision={4}') &&
+        pageSource.includes("value: true, label: t('common.yes', '是')") &&
+        pageSource.includes("value: false, label: t('common.no', '否')"),
+      '每个字段应由“修改该字段”控制纳入 changes，数字精度与布尔选项要明确',
+    )
+    assert(
+      pageSource.includes('if (!storeRecordSelectedRowKeys.length) {') &&
+        pageSource.includes("message.warning(t('posAdmin.products.selectStoreRecordsFirst', '请先选择分店记录'))") &&
+        pageSource.includes("message.warning(t('posAdmin.products.selectAtLeastOneStoreRecordField', '请至少选择一个要修改的字段'))") &&
+        pageSource.includes("message.warning(t('posAdmin.products.completeStoreRecordFields', '请填写已勾选的字段值'))"),
+      '提交前应校验已选分店、至少一个字段、以及已勾选字段必须有值',
+    )
+    assert(
+      pageSource.includes('message.success(t(\'posAdmin.products.batchUpdateStoreRecordsResult\'') &&
+        pageSource.includes('success: result.successCount') &&
+        pageSource.includes('failed: result.failedCount') &&
+        pageSource.includes('Modal.error({') &&
+        pageSource.includes('result.errors.join'),
+      '提交成功后应提示成功/失败统计，有错误明细时要弹窗展示',
+    )
+    assert(
+      pageSource.includes('await openStoreRecords(storeRecordsProduct)') &&
+        pageSource.includes('await loadData()'),
+      '批量修改成功后应刷新当前分店记录和主列表',
+    )
+    assert(
+      pageSource.includes('setStoreRecordSelectedRowKeys([])') &&
+        pageSource.includes('storeRecordBatchEditForm.resetFields()') &&
+        pageSource.includes('setStoreRecordBatchEditVisible(false)'),
+      '关闭分店记录弹窗时应清理分店记录选择和批量子弹窗状态',
+    )
+  })
+  if (storeRecordsBatchUpdateFailure) failures.push(storeRecordsBatchUpdateFailure)
+
   const storeRecordSorterFailure = await runTest('分店记录名称排序应同名按分店代码兜底', () => {
     const records: ProductStoreRecordDto[] = [
       { storeCode: 'S01', storeName: 'Beta', isActive: true, isAutoPricing: false, isSpecialProduct: false },
@@ -376,6 +568,55 @@ async function main() {
     )
   })
   if (hqSyncArchitectureFailure) failures.push(hqSyncArchitectureFailure)
+
+  const supplierImagePollingFailure = await runTest('供应商图片批量修改 job 轮询不应把 404 和权限错误伪装成 Running', () => {
+    assert(
+      pageSource.includes('error instanceof RequestError') &&
+        pageSource.includes('error.status === 404') &&
+        pageSource.includes('error.status === 401') &&
+        pageSource.includes('error.status === 403'),
+      '图片批量修改 job 轮询应按 RequestError.status 分类处理',
+    )
+    assert(
+      pageSource.includes('clearActiveImageBatchJob(job.localSupplierCode)') &&
+        pageSource.includes('batchImageJobMissingTitle') &&
+        pageSource.includes('batchImageJobAuthFailedTitle'),
+      '404/权限错误应清理 active job 并停止轮询提示用户',
+    )
+  })
+  if (supplierImagePollingFailure) failures.push(supplierImagePollingFailure)
+
+  const supplierImageConcurrentJobFailure = await runTest('供应商图片批量修改应按供应商跟踪 active job', () => {
+    assert(
+      pageSource.includes('type ActiveSupplierImageBatchJobMap') &&
+        pageSource.includes('readActiveSupplierImageBatchJobs') &&
+        pageSource.includes('saveActiveSupplierImageBatchJobs') &&
+        pageSource.includes('activeImageBatchJobs'),
+      '图片批量修改 active job 应保存为按供应商代码索引的 map',
+    )
+    assert(
+      pageSource.includes('stopSupplierImageBatchPolling(job.localSupplierCode)') &&
+        pageSource.includes('stopSupplierImageBatchPollingRef.current[jobKey] = poller.stop') &&
+        pageSource.includes('clearActiveImageBatchJob(job.localSupplierCode)'),
+      '轮询启动、停止和清理应只作用于对应供应商',
+    )
+    assert(
+      pageSource.includes('getActiveImageBatchJobBySupplier(values.localSupplierCode)') &&
+        pageSource.includes('showActiveSupplierImageBatchStatus(existingActiveJob)') &&
+        !pageSource.includes('const storedActiveJob = activeImageBatchJob ?? readActiveSupplierImageBatchJob()'),
+      '提交时只阻止同一供应商已有任务，不应因为其他供应商任务而阻止打开弹窗',
+    )
+    assert(
+      pageSource.indexOf('imageBatchForm.resetFields()') < pageSource.indexOf('getActiveImageBatchJobBySupplier(values.localSupplierCode)'),
+      '打开图片批量修改弹窗时应允许切换到其他供应商，不能先用默认供应商 active job 直接拦截',
+    )
+    assert(
+      pageSource.includes('hbwebSkippedExistingImageCount') &&
+        pageSource.includes('hqSkippedExistingImageCount'),
+      '结果弹窗应展示 Hbweb/HQ 已有图片跳过数量',
+    )
+  })
+  if (supplierImageConcurrentJobFailure) failures.push(supplierImageConcurrentJobFailure)
 
   const existingJobFailure = await runTest('已有 active job 时 HQ 同步按钮只展示状态不新建任务', () => {
     assert(

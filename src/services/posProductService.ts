@@ -1,6 +1,12 @@
 import type { ApiResponse, PagedResult } from '../types/api'
 import type {
+  BatchUpdateProductStoreRecordsRequest,
+  BatchUpdateProductStoreRecordsResult,
   BatchUpdatePosProductDto,
+  BatchUpdateSupplierImagesJobRequest,
+  BatchUpdateSupplierImagesJobResult,
+  BatchUpdateSupplierImagesRequest,
+  BatchUpdateSupplierImagesResult,
   HqProductFullSyncJobRequest,
   HqProductIncrementalSyncRequest,
   HqProductIncrementalSyncJobRequest,
@@ -106,6 +112,8 @@ function normalizePushProductsToHqResult(raw: PushProductsToHqResult): PushProdu
   const relationCount =
     Number(payload.productsAdded ?? 0) +
     Number(payload.productsUpdated ?? 0) +
+    Number(payload.warehouseInventoriesCreated ?? 0) +
+    Number(payload.warehouseInventoriesUpdated ?? 0) +
     Number(payload.storeRetailPricesCreated ?? 0) +
     Number(payload.storeRetailPricesUpdated ?? 0) +
     Number(payload.productSetCodesCreated ?? payload.productSetCodesAdded ?? 0) +
@@ -137,6 +145,8 @@ export async function getProducts(params: PosProductFilterParams) {
     productCategoryGUIDs: params.categoryGuid ? [params.categoryGuid] : undefined,
     isActive: params.isActive,
     isSet: params.isSet,
+    storeRecordCountMin: params.storeRecordCountMin,
+    storeRecordCountMax: params.storeRecordCountMax,
     sortBy: params.sortBy || undefined,
     sortOrder: params.sortOrder ? sortOrderMap[params.sortOrder] || params.sortOrder : undefined,
   }
@@ -201,10 +211,95 @@ export async function batchUpdateProducts(items: BatchUpdatePosProductDto[]) {
   return unwrapApiData(response)
 }
 
+function normalizeSupplierImageBatchUpdateResult(raw: unknown): BatchUpdateSupplierImagesResult | undefined {
+  if (!isRecord(raw)) {
+    return undefined
+  }
+
+  return {
+    totalCount: Number(raw.totalCount ?? 0),
+    hbwebUpdatedCount: Number(raw.hbwebUpdatedCount ?? 0),
+    hqUpdatedCount: Number(raw.hqUpdatedCount ?? 0),
+    hbwebSkippedExistingImageCount: Number(raw.hbwebSkippedExistingImageCount ?? 0),
+    hqSkippedExistingImageCount: Number(raw.hqSkippedExistingImageCount ?? 0),
+    skippedCount: Number(raw.skippedCount ?? 0),
+    hqFailedCount: Number(raw.hqFailedCount ?? 0),
+    errors: Array.isArray(raw.errors) ? raw.errors.filter((item): item is string => typeof item === 'string') : [],
+    message: typeof raw.message === 'string' ? raw.message : undefined,
+  }
+}
+
+function normalizeSupplierImageBatchUpdateJobResult(
+  payload: unknown,
+  fallbackJobId = '',
+): BatchUpdateSupplierImagesJobResult {
+  const result = unwrapApiData(payload) as Record<string, unknown> | null
+  const raw = isRecord(result) ? result : {}
+  const nestedResult = normalizeSupplierImageBatchUpdateResult(raw.result)
+  const success = typeof raw.success === 'boolean' ? raw.success : undefined
+
+  return {
+    jobId: typeof raw.jobId === 'string' ? raw.jobId : fallbackJobId,
+    operationId: typeof raw.operationId === 'string' ? raw.operationId : undefined,
+    status: normalizeHqProductSyncJobStatus(raw.status, success, raw),
+    request: isRecord(raw.request) ? raw.request : undefined,
+    result: nestedResult,
+    message: typeof raw.message === 'string' ? raw.message : undefined,
+    errorMessage: typeof raw.errorMessage === 'string' ? raw.errorMessage : undefined,
+    errors: Array.isArray(raw.errors)
+      ? raw.errors.filter((item): item is string => typeof item === 'string')
+      : nestedResult?.errors ?? [],
+    createdAt: typeof raw.createdAt === 'string' ? raw.createdAt : undefined,
+    startedAt: typeof raw.startedAt === 'string' ? raw.startedAt : undefined,
+    completedAt: typeof raw.completedAt === 'string' ? raw.completedAt : undefined,
+  }
+}
+
+export function buildSupplierImageBatchUpdateOperationId(data: BatchUpdateSupplierImagesRequest) {
+  const targets = [
+    data.updateHbweb ? 'hbweb' : '',
+    data.updateHq ? 'hq' : '',
+    data.saveSupplierImageBaseUrl ? 'save-url' : '',
+  ].filter(Boolean).join('+') || 'none'
+
+  return `supplier-image:${data.localSupplierCode}:${targets}:${data.urlTemplate}`
+}
+
+export async function createSupplierImageBatchUpdateJob(
+  data: BatchUpdateSupplierImagesJobRequest,
+): Promise<BatchUpdateSupplierImagesJobResult> {
+  const response = await request.post<ApiResponse<unknown>>(
+    `${API_BASE}/batch-update-supplier-images/job`,
+    withOperationId(data, buildSupplierImageBatchUpdateOperationId(data)),
+  )
+  assertApiSuccess(response, '创建供应商图片批量修改任务失败')
+  return normalizeSupplierImageBatchUpdateJobResult(response)
+}
+
+export async function getSupplierImageBatchUpdateJob(jobId: string): Promise<BatchUpdateSupplierImagesJobResult> {
+  const response = await request.get<ApiResponse<unknown>>(
+    `${API_BASE}/batch-update-supplier-images/job/${encodeURIComponent(jobId)}`,
+  )
+  assertApiSuccess(response, '查询供应商图片批量修改任务失败')
+  return normalizeSupplierImageBatchUpdateJobResult(response, jobId)
+}
+
 export async function syncProductsToStores(syncRequest: SyncProductsToStoresRequest): Promise<SyncProductsToStoresResult> {
   const response = await request.post<ApiResponse<SyncProductsToStoresResult>>(
     `${API_BASE}/sync-to-stores`,
     syncRequest,
+  )
+  return unwrapApiData(response)
+}
+
+export async function batchUpdateProductStoreRecords(
+  productCode: string,
+  data: BatchUpdateProductStoreRecordsRequest,
+): Promise<BatchUpdateProductStoreRecordsResult> {
+  const response = await request.post<ApiResponse<BatchUpdateProductStoreRecordsResult>>(
+    // 商品编码可能包含空格或斜杠，这里必须编码后再拼路径，避免路由误拆。
+    `${API_BASE}/${encodeURIComponent(productCode)}/store-records/batch-update`,
+    data,
   )
   return unwrapApiData(response)
 }

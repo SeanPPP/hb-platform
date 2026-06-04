@@ -58,7 +58,7 @@ import {
   type ContainerProductCreationResultItem,
 } from '../../../services/containerProductCreationService'
 import { exportContainerDetailsToExcel, type ContainerDetailExportItem } from '../../../services/exportService'
-import { pushProductsToHq, updateProduct } from '../../../services/posProductService'
+import { pushProductsToHq } from '../../../services/posProductService'
 import { upsertForActiveStores as upsertMultiCodeForActiveStores } from '../../../services/storeMultiCodePriceService'
 import { upsertForActiveStores as upsertRetailForActiveStores } from '../../../services/storeRetailPriceService'
 import { batchTranslate } from '../../../services/translationService'
@@ -293,13 +293,13 @@ export default function ContainerDetailPage() {
   const tagStats = useMemo(() => buildContainerDetailTagStats(baseFilteredRows), [baseFilteredRows])
 
   const tagStatOptions = useMemo<Array<{ value: ContainerDetailTagFilter; label: string; color?: string }>>(() => [
-    { value: 'all', label: t('containers.filters.allTags') },
-    { value: 'new', label: t('containers.tags.newProduct'), color: 'blue' },
+    { value: 'all', label: t('containers.filters.allTags'), color: 'blue' },
+    { value: 'new', label: t('containers.tags.newProduct'), color: 'cyan' },
     { value: 'existing', label: t('containers.tags.existingProduct'), color: 'purple' },
     { value: 'noOemPrice', label: t('containers.filters.missingOemPrice'), color: 'orange' },
     { value: 'abnormalImport', label: t('containers.filters.abnormalImportPrice'), color: 'red' },
     { value: 'active', label: t('common.activeUpper'), color: 'success' },
-    { value: 'inactive', label: t('common.inactiveUpper'), color: 'default' },
+    { value: 'inactive', label: t('common.inactiveUpper'), color: 'volcano' },
   ], [t])
 
   const selectedTagOptions = useMemo(
@@ -584,6 +584,8 @@ export default function ContainerDetailPage() {
       { label: t('posAdmin.products.pushToHqAffectedRows', 'HQ影响记录'), value: result.affectedRowCount ?? 0 },
       { label: t('posAdmin.products.productsAdded', '商品新增'), value: result.productsAdded ?? 0 },
       { label: t('posAdmin.products.productsUpdated', '商品更新'), value: result.productsUpdated ?? 0 },
+      { label: t('containers.text.warehouseInventoriesCreated', '仓库库存新增'), value: result.warehouseInventoriesCreated ?? 0 },
+      { label: t('containers.text.warehouseInventoriesUpdated', '仓库库存更新'), value: result.warehouseInventoriesUpdated ?? 0 },
       { label: t('posAdmin.products.storeRetailPricesCreated', '门店零售价新增'), value: result.storeRetailPricesCreated ?? 0 },
       { label: t('posAdmin.products.storeRetailPricesUpdated', '门店零售价更新'), value: result.storeRetailPricesUpdated ?? 0 },
       { label: t('posAdmin.products.productSetCodesCreated', '套装编码新增'), value: result.productSetCodesCreated ?? 0 },
@@ -603,7 +605,7 @@ export default function ContainerDetailPage() {
             total: result.totalCount ?? (result.successCount ?? 0) + (result.failedCount ?? 0),
           })}
         </div>
-        <div>{t('containers.text.pushToHqSelectedLocalProducts', '本次发送本地已有商品：{{count}} 个', { count: selection.productCodes.length })}</div>
+        <div>{t('containers.text.pushToHqSelectedLocalProducts', '本次发送候选商品：{{count}} 个', { count: selection.items.length })}</div>
         {detailStats.map((item) => (
           <div key={item.label}>{item.label}: {item.value}</div>
         ))}
@@ -649,7 +651,7 @@ export default function ContainerDetailPage() {
     }
 
     const selection = buildContainerDetailHqPushSelection(selectedRows)
-    if (!selection.productCodes.length) {
+    if (!selection.items.length) {
       message.warning(t('containers.messages.noExistingLocalProductsToPushHq', '选中明细没有可发送到 HQ 的本地已有商品'))
       return
     }
@@ -660,6 +662,7 @@ export default function ContainerDetailPage() {
       setPushToHqLoading(true)
       const result = await pushProductsToHq({
         productCodes: selection.productCodes,
+        items: selection.items,
       })
       showPushToHqResult(result, selection)
       setSelectedRowKeys([])
@@ -813,40 +816,26 @@ export default function ContainerDetailPage() {
       message.info(t('containers.messages.noPurchasePriceDiff'))
       return
     }
-    await batchUpdateWarehouseProducts(updates.map((row) => ({
-      ProductCode: row.商品编码 || row.商品信息?.商品编码,
-      ImportPrice: row.进口价格,
-      IsActive: true,
-    })))
-    const posUpdateResults = await Promise.allSettled(
-      updates.map((row) => {
-        const code = row.商品编码 || row.商品信息?.商品编码
-        return code ? updateProduct(code, { purchasePrice: row.进口价格 ?? 0 }) : Promise.resolve(null)
-      }),
-    )
-    const posUpdateFailures = posUpdateResults
-      .map((result, index) => (result.status === 'rejected' ? updates[index]?.商品编码 || updates[index]?.商品信息?.商品编码 : undefined))
-      .filter((code): code is string => Boolean(code))
-    await upsertRetailForActiveStores(updates.map((row) => ({
-      ProductCode: row.商品编码 || row.商品信息?.商品编码 || '',
-      PurchasePrice: row.进口价格,
-      IsActive: true,
-    })))
-    await upsertMultiCodeForActiveStores(updates.map((row) => ({
-      ProductCode: row.商品编码 || row.商品信息?.商品编码 || '',
-      PurchasePrice: row.进口价格,
-      IsActive: true,
-    })))
-    if (posUpdateFailures.length) {
-      Modal.warning({
-        title: t('containers.messages.purchasePricesPartiallyUpdated', '进货价部分更新完成'),
-        content: t('containers.messages.posPurchasePriceUpdateFailed', '以下 POS 商品进货价更新失败：{{codes}}', {
-          codes: posUpdateFailures.join(', '),
-        }),
-      })
-      return
+    try {
+      await batchUpdateWarehouseProducts(updates.map((row) => ({
+        ProductCode: row.商品编码 || row.商品信息?.商品编码,
+        ImportPrice: row.进口价格,
+        IsActive: true,
+      })))
+      await upsertRetailForActiveStores(updates.map((row) => ({
+        ProductCode: row.商品编码 || row.商品信息?.商品编码 || '',
+        PurchasePrice: row.进口价格,
+        IsActive: true,
+      })))
+      await upsertMultiCodeForActiveStores(updates.map((row) => ({
+        ProductCode: row.商品编码 || row.商品信息?.商品编码 || '',
+        PurchasePrice: row.进口价格,
+        IsActive: true,
+      })))
+      message.success(t('containers.messages.purchasePricesUpdated', { count: updates.length }))
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : t('containers.messages.purchasePricesUpdateFailed', '更新已有商品进货价失败'))
     }
-    message.success(t('containers.messages.purchasePricesUpdated', { count: updates.length }))
   }
 
   const deleteSelected = () => {
@@ -1143,8 +1132,8 @@ export default function ContainerDetailPage() {
                   return (
                     <Tag
                       key={option.value}
-                      className="container-detail-stat-tag"
-                      color={active ? option.color ?? 'processing' : undefined}
+                      className={`container-detail-stat-tag ${active ? 'container-detail-stat-tag-active' : 'container-detail-stat-tag-muted'}`}
+                      color={option.color}
                       role="button"
                       tabIndex={0}
                       aria-pressed={active}

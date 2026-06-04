@@ -7,6 +7,7 @@ export interface LocalSupplierDto {
   phone?: string
   email?: string
   remark?: string
+  imageBaseUrl?: string
 }
 
 export interface LocalSupplierQueryDto {
@@ -25,7 +26,10 @@ export interface CreateLocalSupplierDto {
   phone?: string
   email?: string
   remark?: string
+  imageBaseUrl?: string
 }
+
+export interface UpdateLocalSupplierDto extends CreateLocalSupplierDto {}
 
 export interface SyncLocalSupplierResult {
   createdCount: number

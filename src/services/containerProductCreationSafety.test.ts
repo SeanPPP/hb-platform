@@ -1,6 +1,6 @@
 import { upsertForActiveStores as upsertMultiCodeForActiveStores } from './storeMultiCodePriceService'
 import { upsertForActiveStores as upsertRetailForActiveStores } from './storeRetailPriceService'
-import { batchCreateProducts } from './warehouseProductService'
+import { batchCreateProducts, batchUpdateWarehouseProducts } from './warehouseProductService'
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) {
@@ -71,6 +71,28 @@ async function main() {
     )
   })
   if (warehouseFailedCountFailure) failures.push(warehouseFailedCountFailure)
+
+  const warehouseUpdateFailure = await runTest('仓库批量更新 success false 应抛出业务错误并阻断后续写表', async () => {
+    await assertRejects(
+      () => withFetch(
+        { success: false, message: '仓库批量更新失败' },
+        () => batchUpdateWarehouseProducts([{ ProductCode: 'P001', ImportPrice: 1.23 }]),
+      ),
+      '仓库批量更新失败',
+    )
+  })
+  if (warehouseUpdateFailure) failures.push(warehouseUpdateFailure)
+
+  const warehouseUpdateFailedCountFailure = await runTest('仓库批量更新 FailedCount 大于 0 应抛出业务错误', async () => {
+    await assertRejects(
+      () => withFetch(
+        { success: true, data: { FailedCount: 1, Errors: ['更新失败'] } },
+        () => batchUpdateWarehouseProducts([{ ProductCode: 'P001', ImportPrice: 1.23 }]),
+      ),
+      '更新失败',
+    )
+  })
+  if (warehouseUpdateFailedCountFailure) failures.push(warehouseUpdateFailedCountFailure)
 
   const retailFailure = await runTest('门店零售价 upsert Failed 大于 0 应抛出业务错误', async () => {
     await assertRejects(

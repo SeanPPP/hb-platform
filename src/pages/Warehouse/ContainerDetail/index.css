@@ -116,6 +116,15 @@
   user-select: none;
 }
 
+.container-detail-stat-tag-muted {
+  opacity: 0.72;
+}
+
+.container-detail-stat-tag-active {
+  box-shadow: inset 0 0 0 1px currentcolor;
+  opacity: 1;
+}
+
 .container-detail-stat-count {
   line-height: 1;
 }

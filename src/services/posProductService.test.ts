@@ -1,6 +1,9 @@
 import {
+  batchUpdateProductStoreRecords,
   createHqProductFullSyncJob,
   createHqProductIncrementalSyncJob,
+  createSupplierImageBatchUpdateJob,
+  getSupplierImageBatchUpdateJob,
   getHqProductSyncJob,
   pushProductsToHq,
   syncProductsFromHqFull,
@@ -196,9 +199,10 @@ try {
       successCount: 2,
       failedCount: 0,
       totalCount: 2,
-      affectedRowCount: 36,
       productsAdded: 1,
       productsUpdated: 2,
+      warehouseInventoriesCreated: 9,
+      warehouseInventoriesUpdated: 10,
       storeRetailPricesCreated: 3,
       storeRetailPricesUpdated: 4,
       productSetCodesCreated: 5,
@@ -209,18 +213,186 @@ try {
     },
   }
 
-  const pushResult = await pushProductsToHq({ productCodes: ['HB001', 'HB002'] })
+  const pushResult = await pushProductsToHq({
+    productCodes: ['HB001', 'HB002'],
+    items: [
+      {
+        productCode: 'HB001',
+        localSupplierCode: 'DATS',
+        itemNumber: '72653',
+        domesticPrice: 3.8,
+        importPrice: 1.21,
+        oemPrice: 1.45,
+        isNewProduct: false,
+        warehouseIsActive: true,
+      },
+      {
+        localSupplierCode: 'DATS',
+        itemNumber: '72654',
+        domesticPrice: 4.2,
+        importPrice: 1.33,
+        oemPrice: 1.58,
+        isNewProduct: false,
+        warehouseIsActive: false,
+      },
+    ],
+  })
   assertEqual(capturedUrl, '/api/react/v1/products/push-to-hq', '选中商品发送 HQ 应调用固定接口')
   assertEqual(capturedInit?.method, 'POST', '选中商品发送 HQ 应使用 POST')
   assertDeepEqual(
     JSON.parse(String(capturedInit?.body)),
-    { productCodes: ['HB001', 'HB002'] },
-    '选中商品发送 HQ 请求应只携带商品编码',
+    {
+      productCodes: ['HB001', 'HB002'],
+      items: [
+        {
+          productCode: 'HB001',
+          localSupplierCode: 'DATS',
+          itemNumber: '72653',
+          domesticPrice: 3.8,
+          importPrice: 1.21,
+          oemPrice: 1.45,
+          isNewProduct: false,
+          warehouseIsActive: true,
+        },
+        {
+          localSupplierCode: 'DATS',
+          itemNumber: '72654',
+          domesticPrice: 4.2,
+          importPrice: 1.33,
+          oemPrice: 1.58,
+          isNewProduct: false,
+          warehouseIsActive: false,
+        },
+      ],
+    },
+    '选中商品发送 HQ 请求应兼容旧 productCodes，并携带 items 与价格字段',
   )
   assertEqual(pushResult.successCount, 2, '发送 HQ 应使用后端返回的商品成功数')
   assertEqual(pushResult.failedCount, 0, '发送 HQ 无错误明细时失败数应为 0')
   assertEqual(pushResult.totalCount, 2, '发送 HQ 应使用后端返回的商品合计数')
-  assertEqual(pushResult.affectedRowCount, 36, '发送 HQ 应保留商品、分店价格和多码影响记录数')
+  assertEqual(pushResult.affectedRowCount, 55, '发送 HQ 缺少后端汇总时应把库存、分店价格和多码统计合并为影响记录数')
+  assertEqual(pushResult.warehouseInventoriesCreated, 9, '发送 HQ 应保留仓库库存新增统计')
+  assertEqual(pushResult.warehouseInventoriesUpdated, 10, '发送 HQ 应保留仓库库存更新统计')
+
+  nextPayload = {
+    success: true,
+    data: {
+      jobId: 'supplier-image-job-1',
+      operationId: 'supplier-image:DATS',
+      status: 'queued',
+      request: {
+        localSupplierCode: 'DATS',
+      },
+    },
+  }
+
+  const imageJob = await createSupplierImageBatchUpdateJob({
+    localSupplierCode: 'DATS',
+    urlTemplate: 'https://www.dats.com.au/images/ProductImages/500/{itemNumber}.jpg',
+    updateHbweb: true,
+    updateHq: false,
+    saveSupplierImageBaseUrl: false,
+    operationId: 'supplier-image:DATS',
+  })
+  assertEqual(
+    capturedUrl,
+    '/api/react/v1/products/batch-update-supplier-images/job',
+    '供应商图片批量修改 job 应调用后台任务创建接口',
+  )
+  assertEqual(capturedInit?.method, 'POST', '供应商图片批量修改 job 应使用 POST')
+  assertDeepEqual(
+    JSON.parse(String(capturedInit?.body)),
+    {
+      localSupplierCode: 'DATS',
+      urlTemplate: 'https://www.dats.com.au/images/ProductImages/500/{itemNumber}.jpg',
+      updateHbweb: true,
+      updateHq: false,
+      saveSupplierImageBaseUrl: false,
+      operationId: 'supplier-image:DATS',
+    },
+    '供应商图片批量修改 job 请求应保留模板、目标库、保存标记和 operationId',
+  )
+  assertEqual(imageJob.status, 'Queued', '供应商图片批量修改 job queued 应归一为 Queued')
+
+  nextPayload = {
+    success: true,
+    data: {
+      jobId: 'supplier-image-job-1',
+      status: 'succeeded',
+      result: {
+        totalCount: 12,
+        hbwebUpdatedCount: 12,
+        hqUpdatedCount: 0,
+        hbwebSkippedExistingImageCount: 3,
+        hqSkippedExistingImageCount: 4,
+        skippedCount: 0,
+        hqFailedCount: 0,
+        errors: [],
+      },
+    },
+  }
+
+  const completedImageJob = await getSupplierImageBatchUpdateJob('supplier-image-job-1')
+  assertEqual(
+    capturedUrl,
+    '/api/react/v1/products/batch-update-supplier-images/job/supplier-image-job-1',
+    '查询供应商图片批量修改 job 应调用任务查询接口',
+  )
+  assertEqual(completedImageJob.status, 'Succeeded', '供应商图片批量修改 job succeeded 应归一为 Succeeded')
+  assertEqual(completedImageJob.result?.hbwebUpdatedCount, 12, '供应商图片批量修改 job 应保留结果统计')
+  assertEqual(completedImageJob.result?.hbwebSkippedExistingImageCount, 3, '供应商图片批量修改 job 应保留 Hbweb 已有图片跳过数量')
+  assertEqual(completedImageJob.result?.hqSkippedExistingImageCount, 4, '供应商图片批量修改 job 应保留 HQ 已有图片跳过数量')
+
+  nextPayload = {
+    success: true,
+    data: {
+      successCount: 2,
+      failedCount: 1,
+      errors: ['S003 更新失败'],
+    },
+  }
+
+  const batchStoreRecordResult = await batchUpdateProductStoreRecords('HB 001/测试', {
+    storeCodes: ['S001', 'S002'],
+    changes: {
+      purchasePrice: 10.5,
+      storeRetailPriceValue: 19.9,
+      discountRate: 0.88,
+      isAutoPricing: true,
+      isSpecialProduct: false,
+      isActive: true,
+    },
+  })
+  assertEqual(
+    capturedUrl,
+    '/api/react/v1/products/HB%20001%2F%E6%B5%8B%E8%AF%95/store-records/batch-update',
+    '分店记录批量修改应对 productCode 做 encode 后再拼接路径',
+  )
+  assertEqual(capturedInit?.method, 'POST', '分店记录批量修改应使用 POST')
+  assertDeepEqual(
+    JSON.parse(String(capturedInit?.body)),
+    {
+      storeCodes: ['S001', 'S002'],
+      changes: {
+        purchasePrice: 10.5,
+        storeRetailPriceValue: 19.9,
+        discountRate: 0.88,
+        isAutoPricing: true,
+        isSpecialProduct: false,
+        isActive: true,
+      },
+    },
+    '分店记录批量修改请求体只应包含 storeCodes 和 changes',
+  )
+  assertDeepEqual(
+    batchStoreRecordResult,
+    {
+      successCount: 2,
+      failedCount: 1,
+      errors: ['S003 更新失败'],
+    },
+    '分店记录批量修改应返回 unwrap 后的统计结果',
+  )
 
   const jobFailurePayload = {
     isSuccess: false,

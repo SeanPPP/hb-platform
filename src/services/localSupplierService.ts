@@ -4,6 +4,7 @@ import type {
   LocalSupplierDto,
   LocalSupplierQueryDto,
   SyncLocalSupplierResult,
+  UpdateLocalSupplierDto,
 } from '../types/localSupplier'
 import request, { unwrapApiData } from '../utils/request'
 
@@ -35,5 +36,13 @@ export async function syncLocalSuppliers(params?: {
 
 export async function createLocalSupplier(data: CreateLocalSupplierDto): Promise<LocalSupplierDto> {
   const response = await request.post<ApiResponse<LocalSupplierDto>>('/api/react/v1/local-suppliers', data)
+  return unwrapApiData(response)
+}
+
+export async function updateLocalSupplier(code: string, data: UpdateLocalSupplierDto): Promise<LocalSupplierDto> {
+  const response = await request.put<ApiResponse<LocalSupplierDto>>(
+    `/api/react/v1/local-suppliers/${encodeURIComponent(code)}`,
+    data,
+  )
   return unwrapApiData(response)
 }
