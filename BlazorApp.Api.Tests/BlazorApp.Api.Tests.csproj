@@ -70,6 +70,7 @@
     <Compile Include="ContainerReactServiceBatchUpdateDetailsTests.cs" />
     <Compile Include="ContainerProductCreationServiceTests.cs" />
     <Compile Include="ReactContainerControllerSyncContractTests.cs" />
+    <Compile Include="DataSyncReactControllerLocationSyncContractTests.cs" />
     <Compile Include="SqliteTempFileCleanup.cs" />
   </ItemGroup>
 </Project>

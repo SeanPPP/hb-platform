@@ -8,7 +8,7 @@ namespace BlazorApp.Api.Controllers.React
 {
     [ApiController]
     [Route("api/react/v1/sync")]
-    [Authorize(Roles = "Admin")]
+    [Authorize]
     public class DataSyncReactController : ControllerBase
     {
         private readonly IDataSyncFullService _fullSyncService;
@@ -33,6 +33,7 @@ namespace BlazorApp.Api.Controllers.React
         /// 全量同步商品信息：DIC_商品信息字典表 → HBweb.Product
         /// </summary>
         [HttpPost("products")]
+        [Authorize(Roles = "Admin")]
         public async Task<IActionResult> SyncProducts()
         {
             try
@@ -66,6 +67,7 @@ namespace BlazorApp.Api.Controllers.React
         /// 全量同步分店零售价：DIC_商品零售价表 → HBweb.StoreRetailPrice（按分店并发）
         /// </summary>
         [HttpPost("store-retail-prices")]
+        [Authorize(Roles = "Admin")]
         public async Task<IActionResult> SyncStoreRetailPrices(
             [FromBody] ReactStoreSyncRequest? request = null
         )
@@ -102,6 +104,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPost("store-multi-code-products")]
+        [Authorize(Roles = "Admin")]
         public async Task<IActionResult> SyncStoreMultiCodeProducts(
             [FromBody] ReactStoreSyncRequest? request = null
         )
@@ -133,6 +136,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPost("product-set-codes")]
+        [Authorize(Roles = "Admin")]
         public async Task<IActionResult> SyncProductSetCodes()
         {
             try
@@ -156,6 +160,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPost("store-clearance-prices")]
+        [Authorize(Roles = "Admin")]
         public async Task<IActionResult> SyncStoreClearancePrices(
             [FromBody] ReactStoreSyncRequest? request = null
         )
@@ -187,6 +192,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPost("domestic-products")]
+        [Authorize(Roles = "Admin")]
         public async Task<IActionResult> SyncDomesticProducts()
         {
             var result = await _fullSyncService.SyncDomesticProductsFromHqAsync();
@@ -194,6 +200,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPost("domestic-set-products")]
+        [Authorize(Roles = "Admin")]
         public async Task<IActionResult> SyncDomesticSetProducts()
         {
             var result = await _fullSyncService.SyncDomesticSetProductsFromHqAsync();
@@ -201,6 +208,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPost("product-prefix-codes")]
+        [Authorize(Roles = "Admin")]
         public async Task<IActionResult> SyncProductPrefixCodes()
         {
             var result = await _fullSyncService.SyncProductPrefixCodesFromHqAsync();
@@ -208,6 +216,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPost("china-suppliers")]
+        [Authorize(Roles = "Admin")]
         public async Task<IActionResult> SyncChinaSuppliers()
         {
             var result = await _fullSyncService.SyncChinaSuppliersFromHqAsync();
@@ -215,6 +224,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPost("warehouse-categories")]
+        [Authorize(Roles = "Admin")]
         public async Task<IActionResult> SyncWarehouseCategories()
         {
             var result = await _fullSyncService.SyncWarehouseCategoriesFromHqAsync();
@@ -233,6 +243,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPost("container-details")]
+        [Authorize(Roles = "Admin")]
         public async Task<IActionResult> SyncContainerDetails(
             [FromBody] ContainerSyncRequest? request = null
         )
@@ -244,6 +255,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPost("containers")]
+        [Authorize(Roles = "Admin")]
         public async Task<IActionResult> SyncContainers()
         {
             var result = await _fullSyncService.SyncContainersFromHqAsync();
@@ -251,6 +263,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPost("warehouse-products")]
+        [Authorize(Roles = "Admin")]
         public async Task<IActionResult> SyncWarehouseProducts()
         {
             var result = await _fullSyncService.SyncWarehouseProductsFromHqAsync();
@@ -258,6 +271,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPost("store-local-supplier-invoices")]
+        [Authorize(Roles = "Admin")]
         public async Task<IActionResult> SyncStoreLocalSupplierInvoices()
         {
             var result = await _fullSyncService.SyncStoreLocalSupplierInvoicesFromHqAsync();
@@ -265,6 +279,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPost("store-local-supplier-invoice-details")]
+        [Authorize(Roles = "Admin")]
         public async Task<IActionResult> SyncStoreLocalSupplierInvoiceDetails()
         {
             var result = await _fullSyncService.SyncStoreLocalSupplierInvoiceDetailsFromHqAsync();
@@ -272,6 +287,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPost("store-local-supplier-invoices-all")]
+        [Authorize(Roles = "Admin")]
         public async Task<IActionResult> SyncStoreLocalSupplierInvoicesAll()
         {
             var result =
@@ -280,6 +296,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPost("warehouse-orders")]
+        [Authorize(Roles = "Admin")]
         public async Task<IActionResult> SyncWareHouseOrders()
         {
             var result = await _fullSyncService.SyncWareHouseOrdersFromHqAsync();
@@ -287,6 +304,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPost("warehouse-order-details")]
+        [Authorize(Roles = "Admin")]
         public async Task<IActionResult> SyncWareHouseOrderDetails()
         {
             var result = await _fullSyncService.SyncWareHouseOrderDetailsFromHqAsync();
@@ -294,6 +312,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPost("warehouse-orders-all")]
+        [Authorize(Roles = "Admin")]
         public async Task<IActionResult> SyncWareHouseOrdersAll()
         {
             var result = await _fullSyncService.SyncWareHouseOrdersAllFromHqAsync();
@@ -301,6 +320,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPost("locations")]
+        [Authorize(Roles = "Admin")]
         public async Task<IActionResult> SyncLocations()
         {
             var result = await _fullSyncService.SyncLocationsFromHqAsync();
@@ -308,6 +328,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPost("product-locations")]
+        [Authorize(Roles = "Admin")]
         public async Task<IActionResult> SyncProductLocations()
         {
             var result = await _fullSyncService.SyncProductLocationsFromHqAsync();
@@ -318,6 +339,7 @@ namespace BlazorApp.Api.Controllers.React
         /// 全量同步收银用户：DIC_收银用户信息表 → HBweb.CashRegisterUser
         /// </summary>
         [HttpPost("cash-register-users")]
+        [Authorize(Roles = "Admin")]
         public async Task<IActionResult> SyncCashRegisterUsers()
         {
             try
@@ -349,6 +371,7 @@ namespace BlazorApp.Api.Controllers.React
         /// 同步商品-供应商映射表：主数据库 → POSM 数据库
         /// </summary>
         [HttpPost("posm-product-supplier-mappings")]
+        [Authorize(Roles = "Admin")]
         public async Task<IActionResult> SyncPosmProductSupplierMappings()
         {
             try
@@ -382,6 +405,7 @@ namespace BlazorApp.Api.Controllers.React
         /// 根据商品的最后更新时间同步变更的数据
         /// </summary>
         [HttpPost("posm-product-supplier-mappings-incremental")]
+        [Authorize(Roles = "Admin")]
         public async Task<IActionResult> SyncPosmProductSupplierMappingsIncremental(
             [FromBody] IncrementalSyncRequest? request = null
         )
@@ -421,6 +445,7 @@ namespace BlazorApp.Api.Controllers.React
         /// 基于最近一次成功同步的时间点，默认100天内
         /// </summary>
         [HttpPost("store-local-supplier-invoices-incremental")]
+        [Authorize(Roles = "Admin")]
         public async Task<IActionResult> SyncStoreLocalSupplierInvoicesIncremental(
             [FromBody] IncrementalSyncRequest? request = null
         )
@@ -458,6 +483,7 @@ namespace BlazorApp.Api.Controllers.React
         /// 基于最近一次成功同步的时间点，默认100天内
         /// </summary>
         [HttpPost("containers-incremental")]
+        [Authorize(Roles = "Admin")]
         public async Task<IActionResult> SyncContainersIncremental(
             [FromBody] IncrementalSyncRequest? request = null
         )
@@ -494,6 +520,7 @@ namespace BlazorApp.Api.Controllers.React
         /// 基于最近一次成功同步的时间点，默认100天内，支持主表GUID筛选
         /// </summary>
         [HttpPost("container-details-incremental")]
+        [Authorize(Roles = "Admin")]
         public async Task<IActionResult> SyncContainerDetailsIncremental(
             [FromBody] ContainerSyncRequest? request = null
         )
@@ -531,6 +558,7 @@ namespace BlazorApp.Api.Controllers.React
         /// 基于最近一次成功同步的时间点，默认100天内
         /// </summary>
         [HttpPost("warehouse-orders-incremental")]
+        [Authorize(Roles = "Admin")]
         public async Task<IActionResult> SyncWareHouseOrdersIncremental(
             [FromBody] IncrementalSyncRequest? request = null
         )
@@ -568,6 +596,7 @@ namespace BlazorApp.Api.Controllers.React
         /// 基于最近一次成功同步的时间点，默认100天内
         /// </summary>
         [HttpPost("products-incremental")]
+        [Authorize(Roles = "Admin")]
         public async Task<IActionResult> SyncProductsIncremental(
             [FromBody] IncrementalSyncRequest? request = null
         )
@@ -630,6 +659,7 @@ namespace BlazorApp.Api.Controllers.React
         /// 基于最近一次成功同步的时间点，默认100天内，支持分店筛选
         /// </summary>
         [HttpPost("store-retail-prices-incremental")]
+        [Authorize(Roles = "Admin")]
         public async Task<IActionResult> SyncStoreRetailPricesIncremental(
             [FromBody] ReactStoreSyncRequest? request = null
         )
@@ -668,6 +698,7 @@ namespace BlazorApp.Api.Controllers.React
         /// 基于最近一次成功同步的时间点，默认100天内，支持分店筛选
         /// </summary>
         [HttpPost("store-multi-code-products-incremental")]
+        [Authorize(Roles = "Admin")]
         public async Task<IActionResult> SyncStoreMultiCodeProductsIncremental(
             [FromBody] ReactStoreSyncRequest? request = null
         )
@@ -708,6 +739,7 @@ namespace BlazorApp.Api.Controllers.React
         /// 基于最近一次成功同步的时间点，默认100天内
         /// </summary>
         [HttpPost("product-set-codes-incremental")]
+        [Authorize(Roles = "Admin")]
         public async Task<IActionResult> SyncProductSetCodesIncremental(
             [FromBody] IncrementalSyncRequest? request = null
         )
@@ -745,6 +777,7 @@ namespace BlazorApp.Api.Controllers.React
         /// 基于最近一次成功同步的时间点，默认100天内，支持分店筛选
         /// </summary>
         [HttpPost("store-clearance-prices-incremental")]
+        [Authorize(Roles = "Admin")]
         public async Task<IActionResult> SyncStoreClearancePricesIncremental(
             [FromBody] ReactStoreSyncRequest? request = null
         )
@@ -783,6 +816,7 @@ namespace BlazorApp.Api.Controllers.React
         /// 基于最近一次成功同步的时间点，默认100天内
         /// </summary>
         [HttpPost("domestic-products-incremental")]
+        [Authorize(Roles = "Admin")]
         public async Task<IActionResult> SyncDomesticProductsIncremental(
             [FromBody] IncrementalSyncRequest? request = null
         )
@@ -820,6 +854,7 @@ namespace BlazorApp.Api.Controllers.React
         /// 基于最近一次成功同步的时间点，默认100天内
         /// </summary>
         [HttpPost("domestic-set-products-incremental")]
+        [Authorize(Roles = "Admin")]
         public async Task<IActionResult> SyncDomesticSetProductsIncremental(
             [FromBody] IncrementalSyncRequest? request = null
         )
@@ -857,6 +892,7 @@ namespace BlazorApp.Api.Controllers.React
         /// 基于最近一次成功同步的时间点，默认100天内
         /// </summary>
         [HttpPost("product-prefix-codes-incremental")]
+        [Authorize(Roles = "Admin")]
         public async Task<IActionResult> SyncProductPrefixCodesIncremental(
             [FromBody] IncrementalSyncRequest? request = null
         )
@@ -894,6 +930,7 @@ namespace BlazorApp.Api.Controllers.React
         /// 基于最近一次成功同步的时间点，默认100天内
         /// </summary>
         [HttpPost("china-suppliers-incremental")]
+        [Authorize(Roles = "Admin")]
         public async Task<IActionResult> SyncChinaSuppliersIncremental(
             [FromBody] IncrementalSyncRequest? request = null
         )
@@ -931,6 +968,7 @@ namespace BlazorApp.Api.Controllers.React
         /// 基于最近一次成功同步的时间点，默认100天内
         /// </summary>
         [HttpPost("warehouse-categories-incremental")]
+        [Authorize(Roles = "Admin")]
         public async Task<IActionResult> SyncWarehouseCategoriesIncremental(
             [FromBody] IncrementalSyncRequest? request = null
         )
@@ -968,6 +1006,7 @@ namespace BlazorApp.Api.Controllers.React
         /// 基于最近一次成功同步的时间点，默认100天内
         /// </summary>
         [HttpPost("warehouse-products-incremental")]
+        [Authorize(Roles = "Admin")]
         public async Task<IActionResult> SyncWarehouseProductsIncremental(
             [FromBody] IncrementalSyncRequest? request = null
         )
@@ -1005,6 +1044,7 @@ namespace BlazorApp.Api.Controllers.React
         /// 基于最近一次成功同步的时间点，默认100天内
         /// </summary>
         [HttpPost("store-local-supplier-invoice-details-incremental")]
+        [Authorize(Roles = "Admin")]
         public async Task<IActionResult> SyncStoreLocalSupplierInvoiceDetailsIncremental(
             [FromBody] IncrementalSyncRequest? request = null
         )
@@ -1042,6 +1082,7 @@ namespace BlazorApp.Api.Controllers.React
         /// 基于最近一次成功同步的时间点，默认100天内
         /// </summary>
         [HttpPost("warehouse-order-details-incremental")]
+        [Authorize(Roles = "Admin")]
         public async Task<IActionResult> SyncWareHouseOrderDetailsIncremental(
             [FromBody] IncrementalSyncRequest? request = null
         )
@@ -1081,6 +1122,7 @@ namespace BlazorApp.Api.Controllers.React
         /// 基于最近一次成功同步的时间点，默认100天内
         /// </summary>
         [HttpPost("locations-incremental")]
+        [Authorize(Roles = "Admin,WarehouseManager")]
         public async Task<IActionResult> SyncLocationsIncremental(
             [FromBody] IncrementalSyncRequest? request = null
         )
@@ -1117,6 +1159,7 @@ namespace BlazorApp.Api.Controllers.React
         /// 基于最近一次成功同步的时间点，默认100天内
         /// </summary>
         [HttpPost("product-locations-incremental")]
+        [Authorize(Roles = "Admin,WarehouseManager")]
         public async Task<IActionResult> SyncProductLocationsIncremental(
             [FromBody] IncrementalSyncRequest? request = null
         )
@@ -1154,6 +1197,7 @@ namespace BlazorApp.Api.Controllers.React
         /// 基于最近一次成功同步的时间点，默认100天内
         /// </summary>
         [HttpPost("cash-register-users-incremental")]
+        [Authorize(Roles = "Admin")]
         public async Task<IActionResult> SyncCashRegisterUsersIncremental(
             [FromBody] IncrementalSyncRequest? request = null
         )
@@ -1190,6 +1234,7 @@ namespace BlazorApp.Api.Controllers.React
         /// 全量同步商品分类：HQ DIC_商品分类码表 → 本地 ProductCategory
         /// </summary>
         [HttpPost("product-categories")]
+        [Authorize(Roles = "Admin")]
         public async Task<IActionResult> SyncProductCategories(
             [FromBody] ReactStoreSyncRequest? request = null
         )
@@ -1223,6 +1268,7 @@ namespace BlazorApp.Api.Controllers.React
         /// 按 FGC_LastModifyDate 字段增量同步
         /// </summary>
         [HttpPost("product-categories-incremental")]
+        [Authorize(Roles = "Admin")]
         public async Task<IActionResult> SyncProductCategoriesIncremental(
             [FromBody] IncrementalSyncRequest? request = null
         )
