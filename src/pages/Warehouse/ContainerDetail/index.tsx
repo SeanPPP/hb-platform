@@ -89,8 +89,10 @@ import {
   getContainerDetailProductName,
   getContainerDetailWarehouseActionFailureMessage,
   getContainerDetailWarehouseStatusFilterKey,
+  isContainerDetailSortField,
   matchesContainerDetailSelectedTags,
   mergeContainerDetailPatch,
+  rollbackContainerDetailWarehouseStatuses,
   type ContainerDetailColumnFilters,
   type ContainerDetailNewProductFilter,
   type ContainerDetailNumberRangeFilter,
@@ -105,7 +107,7 @@ import './index.css'
 
 type ProductTypeFilter = 'all' | 'normal' | 'set' | 'setChild'
 type TextColumnFilterKey = 'itemNumber' | 'barcode' | 'productName' | 'englishName' | 'remark'
-type NumberColumnFilterKey = 'containerPieces' | 'containerQuantity' | 'domesticPrice' | 'floatRate' | 'transportCost' | 'importPrice' | 'oemPrice'
+type NumberColumnFilterKey = 'containerPieces' | 'containerQuantity' | 'domesticPrice' | 'floatRate' | 'transportCost' | 'warehouseImportPrice' | 'importPrice' | 'oemPrice'
 type EnumColumnFilterKey = 'productTypes' | 'newProductStates' | 'warehouseStatus'
 
 function formatDate(value?: string) {
@@ -241,6 +243,7 @@ export default function ContainerDetailPage() {
   const [recalculateCostsLoading, setRecalculateCostsLoading] = useState(false)
   const [matchDomesticDataLoading, setMatchDomesticDataLoading] = useState(false)
   const [createProductsLoading, setCreateProductsLoading] = useState(false)
+  const [pendingWarehouseStatusCodes, setPendingWarehouseStatusCodes] = useState<Set<string>>(() => new Set())
   const pushToHqLoadingRef = useRef(false)
   const createProductsLoadingRef = useRef(false)
   const [headerEditing, setHeaderEditing] = useState(false)
@@ -487,8 +490,8 @@ export default function ContainerDetailPage() {
     const detectionItems = targetRows
       .map((row) => ({
         ProductCode: getContainerDetailProductCode(row),
-        ItemNumber: row.商品信息?.货号,
-        Barcode: row.商品信息?.条形码,
+        ItemNumber: getContainerDetailItemNumber(row),
+        Barcode: getContainerDetailBarcode(row),
       }))
       .filter((item) => item.ProductCode || item.ItemNumber || item.Barcode)
 
@@ -553,8 +556,16 @@ export default function ContainerDetailPage() {
     const productCodes = targetRows
       .map(getContainerDetailProductCode)
       .filter((value): value is string => Boolean(value))
+      .filter((value) => !pendingWarehouseStatusCodes.has(value))
     if (!productCodes.length) {
-      message.warning(t('containers.messages.selectedProductsMissingCode'))
+      message.warning(
+        targetRows.some((row) => {
+          const productCode = getContainerDetailProductCode(row)
+          return productCode ? pendingWarehouseStatusCodes.has(productCode) : false
+        })
+          ? t('containers.messages.warehouseStatusUpdating', '商品上下架正在提交，请稍后再试')
+          : t('containers.messages.selectedProductsMissingCode'),
+      )
       return
     }
     const result = await bulkSetStatus(productCodes, isActive)
@@ -872,9 +883,9 @@ export default function ContainerDetailPage() {
       return
     }
     const detection = await detectProducts(candidates.map((row) => ({
-      ProductCode: row.商品编码 || row.商品信息?.商品编码,
-      ItemNumber: row.商品信息?.货号,
-      Barcode: row.商品信息?.条形码,
+      ProductCode: getContainerDetailProductCode(row),
+      ItemNumber: getContainerDetailItemNumber(row),
+      Barcode: getContainerDetailBarcode(row),
     })))
     const importMap = new Map<string, number | undefined>()
     detection.forEach((item) => {
@@ -1055,7 +1066,7 @@ export default function ContainerDetailPage() {
   )
 
   const makeSortProps = (field: ContainerDetailSortField) => ({
-    columnKey: field,
+    key: field,
     sorter: true,
     sortOrder: sortState?.field === field ? sortState.order : null,
   })
@@ -1080,10 +1091,10 @@ export default function ContainerDetailPage() {
 
   const handleTableChange = (_pagination: unknown, _filters: Record<string, unknown>, sorter: SorterResult<ContainerDetail> | SorterResult<ContainerDetail>[]) => {
     const nextSorter = Array.isArray(sorter) ? sorter[0] : sorter
-    const field = typeof nextSorter?.columnKey === 'string' ? nextSorter.columnKey as ContainerDetailSortField : undefined
+    const nextSortField = nextSorter?.columnKey ?? nextSorter?.field
 
-    if (field && (nextSorter.order === 'ascend' || nextSorter.order === 'descend')) {
-      setSortState({ field, order: nextSorter.order })
+    if (isContainerDetailSortField(nextSortField) && (nextSorter.order === 'ascend' || nextSorter.order === 'descend')) {
+      setSortState({ field: nextSortField, order: nextSorter.order })
       return
     }
 
@@ -1098,14 +1109,32 @@ export default function ContainerDetailPage() {
       return
     }
 
-    const result = await bulkSetStatus([productCode], isActive)
-    const failureMessage = getContainerDetailWarehouseActionFailureMessage(result, t('containers.messages.batchActiveFailed'))
-    if (failureMessage) {
-      message.error(failureMessage)
-      return
-    }
+    const previousStatuses = rows
+      .filter((item) => getContainerDetailProductCode(item) === productCode)
+      .map((item) => ({ key: rowKey(item), warehouseIsActive: item.warehouseIsActive }))
+
+    setPendingWarehouseStatusCodes((codes) => new Set(codes).add(productCode))
     setRows((items) => applyContainerDetailWarehouseStatusByProductCodes(items, [productCode], isActive))
-    message.success(t(isActive ? 'containers.messages.productsActivated' : 'containers.messages.productsDeactivated', { count: 1 }))
+
+    try {
+      const result = await bulkSetStatus([productCode], isActive)
+      const failureMessage = getContainerDetailWarehouseActionFailureMessage(result, t('containers.messages.batchActiveFailed'))
+      if (failureMessage) {
+        setRows((items) => rollbackContainerDetailWarehouseStatuses(items, previousStatuses, rowKey))
+        message.error(failureMessage)
+        return
+      }
+      message.success(t(isActive ? 'containers.messages.productsActivated' : 'containers.messages.productsDeactivated', { count: 1 }))
+    } catch (error) {
+      setRows((items) => rollbackContainerDetailWarehouseStatuses(items, previousStatuses, rowKey))
+      message.error(error instanceof Error ? error.message : t('containers.messages.batchActiveFailed'))
+    } finally {
+      setPendingWarehouseStatusCodes((codes) => {
+        const next = new Set(codes)
+        next.delete(productCode)
+        return next
+      })
+    }
   }
 
   const columns: ColumnsType<ContainerDetail> = [
@@ -1255,6 +1284,15 @@ export default function ContainerDetailPage() {
       render: (v) => renderNumericCell(formatNumber(v)),
     },
     {
+      title: renderColumnTitle('warehouseImportPrice', t('containers.fields.warehouseImportPrice', '仓库当前进货价格')),
+      dataIndex: 'warehouseImportPrice',
+      width: 112,
+      align: 'right',
+      ...makeSortProps('warehouseImportPrice'),
+      ...numberFilterProps('warehouseImportPrice'),
+      render: (v) => renderNumericCell(formatNumber(v)),
+    },
+    {
       title: renderColumnTitle('importPrice', t('containers.fields.importPrice')),
       dataIndex: '进口价格',
       width: 96,
@@ -1294,6 +1332,7 @@ export default function ContainerDetailPage() {
       render: (_, row) => {
         const isActive = getContainerDetailWarehouseStatusFilterKey(row) === 'active'
         const productCode = getContainerDetailProductCode(row)
+        const isWarehouseStatusPending = productCode ? pendingWarehouseStatusCodes.has(productCode) : false
 
         return access.canEditContainer ? (
           <Tooltip title={!productCode ? t('containers.messages.selectedProductsMissingCode') : ''}>
@@ -1302,7 +1341,8 @@ export default function ContainerDetailPage() {
               checked={isActive}
               checkedChildren={t('common.activeUpper')}
               unCheckedChildren={t('common.inactiveUpper')}
-              disabled={!productCode}
+              loading={isWarehouseStatusPending}
+              disabled={!productCode || isWarehouseStatusPending}
               onChange={(checked) => void handleWarehouseStatusChange(row, checked)}
             />
           </Tooltip>
@@ -1507,6 +1547,7 @@ export default function ContainerDetailPage() {
               <Table
                 className="container-detail-table"
                 rowKey={rowKey}
+                rowClassName={(_, index) => index % 2 === 1 ? 'container-detail-row-striped' : ''}
                 size="small"
                 columns={columns}
                 dataSource={displayRows}

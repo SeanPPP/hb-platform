@@ -287,6 +287,8 @@ export interface AssignContainerItem {
   quantity: number
   packingQuantity?: number
   unitVolume?: number
+  domesticPrice?: number
+  oemPrice?: number
   notes?: string
 }
 

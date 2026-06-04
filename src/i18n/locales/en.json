@@ -128,6 +128,7 @@
       "domesticPrice": "Domestic Price",
       "floatRate": "Float Rate",
       "transportCost": "Transport Cost",
+      "warehouseImportPrice": "Warehouse Purchase Price",
       "importPrice": "Import Price",
       "oemPrice": "OEM Price",
       "warehouseStatus": "Warehouse Status"
@@ -196,6 +197,7 @@
       "selectProducts": "Select products first",
       "detailPricesUpdated": "Updated prices for {{count}} details",
       "selectedProductsMissingCode": "Selected products are missing product codes",
+      "warehouseStatusUpdating": "Product status is updating. Please try again later.",
       "batchActiveFailed": "Batch status update failed",
       "productsActivated": "Activated {{count}} products",
       "productsDeactivated": "Deactivated {{count}} products",

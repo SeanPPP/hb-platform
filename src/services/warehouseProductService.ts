@@ -238,6 +238,9 @@ export interface DetectionResult {
   WarehouseImportPrice?: number
   WarehouseVolume?: number
   PackingQuantity?: number
+  DomesticPrice?: number
+  DomesticOEMPrice?: number
+  DomesticImportPrice?: number
   WarehouseIsActive?: boolean
   productCode?: string
   productName?: string
@@ -247,6 +250,9 @@ export interface DetectionResult {
   warehouseImportPrice?: number
   warehouseVolume?: number
   packingQuantity?: number
+  domesticPrice?: number
+  domesticOEMPrice?: number
+  domesticImportPrice?: number
   importPrice?: number
 }
 

@@ -21,10 +21,34 @@ export type ContainerDetailSortField =
   | 'domesticPrice'
   | 'floatRate'
   | 'transportCost'
+  | 'warehouseImportPrice'
   | 'importPrice'
   | 'oemPrice'
   | 'warehouseStatus'
   | 'remark'
+
+const containerDetailSortFields = new Set<string>([
+  'itemNumber',
+  'barcode',
+  'productName',
+  'englishName',
+  'productType',
+  'newProduct',
+  'containerPieces',
+  'containerQuantity',
+  'domesticPrice',
+  'floatRate',
+  'transportCost',
+  'warehouseImportPrice',
+  'importPrice',
+  'oemPrice',
+  'warehouseStatus',
+  'remark',
+])
+
+export function isContainerDetailSortField(value: unknown): value is ContainerDetailSortField {
+  return typeof value === 'string' && containerDetailSortFields.has(value)
+}
 
 export interface ContainerDetailNumberRangeFilter {
   min?: number
@@ -43,6 +67,7 @@ export interface ContainerDetailColumnFilters {
   domesticPrice?: ContainerDetailNumberRangeFilter
   floatRate?: ContainerDetailNumberRangeFilter
   transportCost?: ContainerDetailNumberRangeFilter
+  warehouseImportPrice?: ContainerDetailNumberRangeFilter
   importPrice?: ContainerDetailNumberRangeFilter
   oemPrice?: ContainerDetailNumberRangeFilter
   warehouseStatus?: ContainerDetailWarehouseStatusFilter[]
@@ -63,11 +88,11 @@ export function getContainerDetailEnglishName(row: ContainerDetail) {
 }
 
 export function getContainerDetailItemNumber(row: ContainerDetail) {
-  return row.商品信息?.货号
+  return row.商品信息?.货号?.trim() || undefined
 }
 
 export function getContainerDetailBarcode(row: ContainerDetail) {
-  return row.商品信息?.条形码
+  return row.商品信息?.条形码?.trim() || undefined
 }
 
 export function getContainerDetailProductCode(row: ContainerDetail) {
@@ -219,6 +244,8 @@ function getColumnSortValue(row: ContainerDetail, field: ContainerDetailSortFiel
       return row.调整浮率
     case 'transportCost':
       return row.运输成本
+    case 'warehouseImportPrice':
+      return row.warehouseImportPrice
     case 'importPrice':
       return row.进口价格
     case 'oemPrice':
@@ -261,6 +288,7 @@ export function applyContainerDetailColumnState(
     matchesNumberRange(row.国内价格, filters.domesticPrice) &&
     matchesNumberRange(row.调整浮率, filters.floatRate) &&
     matchesNumberRange(row.运输成本, filters.transportCost) &&
+    matchesNumberRange(row.warehouseImportPrice, filters.warehouseImportPrice) &&
     matchesNumberRange(row.进口价格, filters.importPrice) &&
     matchesNumberRange(row.贴牌价格, filters.oemPrice)
   ))
@@ -291,6 +319,21 @@ export function applyContainerDetailWarehouseStatusByProductCodes(
     const productCode = getContainerDetailProductCode(row)
     return productCode && productCodeSet.has(productCode)
       ? { ...row, warehouseIsActive: isActive }
+      : row
+  })
+}
+
+export function rollbackContainerDetailWarehouseStatuses(
+  rows: ContainerDetail[],
+  previousStatuses: Array<{ key: string; warehouseIsActive?: boolean }>,
+  getRowKey: (row: ContainerDetail) => string,
+) {
+  const previousStatusMap = new Map(previousStatuses.map((item) => [item.key, item.warehouseIsActive]))
+
+  return rows.map((row) => {
+    const key = getRowKey(row)
+    return previousStatusMap.has(key)
+      ? { ...row, warehouseIsActive: previousStatusMap.get(key) }
       : row
   })
 }
@@ -500,6 +543,8 @@ interface ContainerDetailDetectedPrice {
   oemPrice?: number
   WarehouseOEMPrice?: number
   warehouseOEMPrice?: number
+  DomesticOEMPrice?: number
+  domesticOEMPrice?: number
   labelPrice?: number
   WarehouseVolume?: number
   warehouseVolume?: number
@@ -521,11 +566,11 @@ function normalizeMatchKey(value?: string) {
 }
 
 function getDetectedDomesticPrice(item: ContainerDetailDetectedPrice) {
-  return item.WarehouseDomesticPrice ?? item.warehouseDomesticPrice ?? item.domesticPrice ?? item.DomesticPrice
+  return item.DomesticPrice ?? item.domesticPrice ?? item.WarehouseDomesticPrice ?? item.warehouseDomesticPrice
 }
 
 function getDetectedOemPrice(item: ContainerDetailDetectedPrice) {
-  return item.WarehouseOEMPrice ?? item.warehouseOEMPrice ?? item.labelPrice ?? item.oemPrice ?? item.OEMPrice
+  return item.WarehouseOEMPrice ?? item.warehouseOEMPrice ?? item.DomesticOEMPrice ?? item.domesticOEMPrice ?? item.labelPrice ?? item.oemPrice ?? item.OEMPrice
 }
 
 function getDetectedProductName(item: ContainerDetailDetectedPrice) {
@@ -585,9 +630,9 @@ export function buildContainerDetailMatchedDomesticDataUpdates(
     .map((row): UpdateContainerDetailRequest | null => {
       if (!row.hguid) return null
 
-      const productCode = normalizeMatchKey(row.商品编码 ?? row.商品信息?.商品编码)
-      const itemNumber = normalizeMatchKey(row.商品信息?.货号)
-      const barcode = normalizeMatchKey(row.商品信息?.条形码)
+      const productCode = normalizeMatchKey(getContainerDetailProductCode(row))
+      const itemNumber = normalizeMatchKey(getContainerDetailItemNumber(row))
+      const barcode = normalizeMatchKey(getContainerDetailBarcode(row))
       const match =
         (productCode ? productCodeMap.get(productCode) : undefined) ??
         (itemNumber ? itemNumberMap.get(itemNumber) : undefined) ??

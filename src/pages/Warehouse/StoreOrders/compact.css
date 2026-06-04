@@ -54,6 +54,45 @@
   line-height: 1.25;
 }
 
+.store-order-detail-table .ant-table-tbody > tr:nth-child(odd) > td,
+.store-order-detail-table .ant-table-tbody > tr:nth-child(odd) > td.ant-table-cell-fix-left,
+.store-order-detail-table .ant-table-tbody > tr:nth-child(odd) > td.ant-table-cell-fix-right {
+  background: #ffffff;
+}
+
+.store-order-detail-table .ant-table-tbody > tr:nth-child(even) > td,
+.store-order-detail-table .ant-table-tbody > tr:nth-child(even) > td.ant-table-cell-fix-left,
+.store-order-detail-table .ant-table-tbody > tr:nth-child(even) > td.ant-table-cell-fix-right {
+  background: #f8fbff;
+}
+
+.store-order-detail-table .ant-table-tbody > tr:hover > td,
+.store-order-detail-table .ant-table-tbody > tr:hover > td.ant-table-cell-fix-left,
+.store-order-detail-table .ant-table-tbody > tr:hover > td.ant-table-cell-fix-right {
+  background: #eef6ff !important;
+}
+
+.store-order-detail-table .ant-table-tbody > tr.ant-table-row-selected > td,
+.store-order-detail-table .ant-table-tbody > tr.ant-table-row-selected > td.ant-table-cell-fix-left,
+.store-order-detail-table .ant-table-tbody > tr.ant-table-row-selected > td.ant-table-cell-fix-right {
+  background: #e6f4ff;
+}
+
+.store-order-detail-table .ant-table-tbody > tr > td .ant-space,
+.store-order-detail-table .ant-table-tbody > tr > td .ant-image,
+.store-order-detail-table .ant-table-tbody > tr > td .ant-tag,
+.store-order-detail-table .ant-table-tbody > tr > td .ant-input-number,
+.store-order-detail-table .store-order-numeric-cell,
+.store-order-detail-table .store-order-detail-action-button {
+  vertical-align: middle;
+}
+
+.store-order-detail-table .ant-table-tbody > tr > td .ant-space,
+.store-order-detail-table .ant-table-tbody > tr > td .ant-image,
+.store-order-detail-table .store-order-numeric-cell {
+  align-items: center;
+}
+
 .store-order-detail-table .ant-table-thead > tr > th {
   line-height: 1.2;
   white-space: normal;

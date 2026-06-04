@@ -172,12 +172,14 @@ export function buildAssignContainerItems(products: ProductImportItem[], notes?:
 }
 
 export function stripAssignContainerItemsForRequest(items: AssignContainerValidationItem[]): AssignContainerItem[] {
-  return items.map(({ hbProductNo, productCode, quantity, packingQuantity, unitVolume, notes }) => ({
+  return items.map(({ hbProductNo, productCode, quantity, packingQuantity, unitVolume, domesticPrice, oemPrice, notes }) => ({
     hbProductNo,
     productCode,
     quantity,
     packingQuantity,
     unitVolume,
+    domesticPrice,
+    oemPrice,
     notes,
   }))
 }

@@ -16,10 +16,12 @@ import {
   getContainerDetailEnglishName,
   getContainerDetailProductCode,
   getContainerDetailWarehouseActionFailureMessage,
+  isContainerDetailSortField,
   matchesContainerDetailSelectedTags,
   matchesContainerDetailTagFilter,
   normalizeContainerDetailPushToHqPayload,
   type ContainerDetailColumnFilters,
+  type ContainerDetailSortField,
   type ContainerDetailSortState,
 } from './containerDetailLogic'
 
@@ -193,6 +195,32 @@ assertDeepEqual(columnState({ oemPrice: { min: 2 } }, { field: 'containerPieces'
 assertDeepEqual(columnState({}, { field: 'itemNumber', order: 'ascend' }), ['column-201', 'column-203', 'column-202'], '货号排序应按文本升序且保持稳定输出')
 assertDeepEqual(columnState({}, { field: 'transportCost', order: 'ascend' }), ['column-203', 'column-201', 'column-202'], '数字排序应把空值排在最后')
 assertDeepEqual(columnState({}, { field: 'warehouseStatus', order: 'descend' }), ['column-201', 'column-202', 'column-203'], '仓库状态排序应支持上架优先且同值保持原始顺序')
+const sortableFields: ContainerDetailSortField[] = [
+  'itemNumber',
+  'barcode',
+  'productName',
+  'englishName',
+  'productType',
+  'newProduct',
+  'containerPieces',
+  'containerQuantity',
+  'domesticPrice',
+  'floatRate',
+  'transportCost',
+  'warehouseImportPrice',
+  'importPrice',
+  'oemPrice',
+  'warehouseStatus',
+  'remark',
+]
+assertDeepEqual(
+  sortableFields.filter((field) => !isContainerDetailSortField(field)),
+  [],
+  '货柜明细所有可排序字段都应通过运行时白名单校验',
+)
+assertEqual(isContainerDetailSortField('装柜数量'), false, '中文 dataIndex 不应被当作货柜明细排序字段')
+assertEqual(isContainerDetailSortField('unknownField'), false, '未知字段不应被当作货柜明细排序字段')
+assertEqual(isContainerDetailSortField(undefined), false, '空字段不应被当作货柜明细排序字段')
 assertEqual(
   getContainerDetailProductCode({ id: 301, hguid: 'code-301', 商品编码: '   ', 商品信息: { 商品编码: ' HB301 ' } }),
   'HB301',
@@ -277,6 +305,21 @@ const matchedPriceRows: ContainerDetail[] = [
     国内价格: undefined,
     贴牌价格: undefined,
   },
+  {
+    id: 705,
+    hguid: 'match-price-705',
+    商品编码: 'P-CODE-FIRST',
+    商品信息: { 货号: 'ITEM-FALLBACK', 条形码: 'BAR-FALLBACK' },
+    贴牌价格: 0,
+    装柜件数: 4,
+  },
+  {
+    id: 706,
+    hguid: 'match-price-706',
+    商品信息: { 货号: 'HB138-066', 条形码: '9527913800028' },
+    贴牌价格: 0,
+    装柜件数: 12,
+  },
 ]
 
 const matchedPriceUpdates = buildContainerDetailMatchedDomesticDataUpdates(
@@ -285,6 +328,9 @@ const matchedPriceUpdates = buildContainerDetailMatchedDomesticDataUpdates(
     { ProductCode: 'P-MATCH-1', ProductName: '新商品名', EnglishName: 'New English', WarehouseDomesticPrice: 11.6, WarehouseOEMPrice: 6.99, PackingQuantity: 48, WarehouseVolume: 0.118 },
     { ProductCode: 'P-MATCH-2', ProductName: '覆盖名称', EnglishName: 'Override English', WarehouseDomesticPrice: 22.2, WarehouseOEMPrice: 9.9, PackingQuantity: 24, WarehouseVolume: 0.33 },
     { ItemNumber: 'ITEM-703', ProductName: '货号匹配商品', EnglishName: 'Item Matched', WarehouseDomesticPrice: 5.5, WarehouseOEMPrice: 2.2, PackingQuantity: 10, WarehouseVolume: 0.25 },
+    { ProductCode: 'P-CODE-FIRST', ItemNumber: 'OTHER-ITEM', ProductName: '商品编码优先商品', WarehouseOEMPrice: 7.7, PackingQuantity: 8 },
+    { ItemNumber: 'ITEM-FALLBACK', ProductName: '不应使用的货号匹配', WarehouseOEMPrice: 1.1, PackingQuantity: 99 },
+    { ItemNumber: 'HB138-066', ProductName: '金/黑框混30X40', DomesticOEMPrice: 15.5, PackingQuantity: 24 },
   ] satisfies DetectionResult[],
   matchedPriceContainer,
 )
@@ -328,10 +374,30 @@ assertDeepEqual(
       运输成本: 0.25,
       进口价格: 1.34,
     },
+    {
+      hguid: 'match-price-705',
+      贴牌价格: 7.7,
+      商品名称: '商品编码优先商品',
+      单件装箱数: 8,
+      装柜数量: 32,
+    },
+    {
+      hguid: 'match-price-706',
+      贴牌价格: 15.5,
+      商品名称: '金/黑框混30X40',
+      单件装箱数: 24,
+      装柜数量: 288,
+    },
   ],
   '匹配国内数据应只补缺失价格、覆盖名称规格，并同步重算装柜数量、体积、运输成本和进口价格',
 )
 assertEqual(pageSource.includes('匹配国内数据'), true, '页面按钮文案应改为匹配国内数据')
+assertEqual(
+  pageSource.includes("renderColumnTitle('warehouseImportPrice'") &&
+    pageSource.includes("t('containers.fields.warehouseImportPrice'"),
+  true,
+  '货柜明细应独立显示仓库当前进货价格列',
+)
 assertEqual(
   pageSource.includes('buildContainerDetailMatchedDomesticDataUpdates(targetRows, detected, container)'),
   true,
@@ -918,6 +984,26 @@ assertEqual(
   '仓库状态更新应统一检查根失败和部分失败结果',
 )
 assertEqual(
+  pageSource.includes('pendingWarehouseStatusCodes') &&
+    pageSource.includes('loading={isWarehouseStatusPending}') &&
+    pageSource.includes('disabled={!productCode || isWarehouseStatusPending}'),
+  true,
+  '行内仓库状态更新应显示提交中状态并阻止重复点击',
+)
+assertEqual(
+  pageSource.includes('const previousStatuses = rows') &&
+    pageSource.includes('setRows((items) => applyContainerDetailWarehouseStatusByProductCodes(items, [productCode], isActive))') &&
+    pageSource.includes('rollbackContainerDetailWarehouseStatuses'),
+  true,
+  '行内仓库状态应先乐观更新，失败时回滚同商品编码行',
+)
+assertEqual(
+  pageSource.includes('.filter((value) => !pendingWarehouseStatusCodes.has(value))') &&
+    pageSource.includes("t('containers.messages.warehouseStatusUpdating'"),
+  true,
+  '批量上下架应跳过正在行内提交的商品编码，避免失败回滚覆盖批量成功状态',
+)
+assertEqual(
   pageSource.includes('applyContainerDetailWarehouseStatusByProductCodes(items, productCodes, isActive)') &&
     pageSource.includes('applyContainerDetailWarehouseStatusByProductCodes(items, [productCode], isActive)'),
   true,
@@ -972,7 +1058,24 @@ assertEqual(
   true,
   '选择框列应随左侧固定列一起固定，避免横向滚动时列位错开',
 )
+assertEqual(
+  pageSource.includes('key: field') &&
+    pageSource.includes('sorter: true') &&
+    pageSource.includes('sortOrder: sortState?.field === field ? sortState.order : null'),
+  true,
+  '可排序列应使用 AntD 稳定 key 作为排序字段标识，并保留 sorter 与 sortOrder',
+)
+assertEqual(
+  pageSource.includes('isContainerDetailSortField(nextSortField)'),
+  true,
+  '表格排序回调应通过运行时白名单过滤 sorter 字段',
+)
 assertEqual(pageSource.includes('className="container-detail-table"'), true, '货柜明细表格应挂载专属 class 以隔离垂直对齐样式')
+assertEqual(
+  pageSource.includes("rowClassName={(_, index) => index % 2 === 1 ? 'container-detail-row-striped' : ''}"),
+  true,
+  '货柜明细表格应按当前显示顺序给偶数视觉行添加隔行色 class',
+)
 assertEqual(
   pageStyleSource.includes('.container-detail-table .ant-table-thead > tr > th'),
   true,
@@ -982,6 +1085,16 @@ assertEqual(
   pageStyleSource.includes('.container-detail-table .ant-table-tbody > tr > td'),
   true,
   '货柜明细正文单元格应通过专属样式保持垂直居中',
+)
+assertEqual(
+  pageStyleSource.includes('.container-detail-table .container-detail-row-striped:not(.ant-table-row-selected) > td'),
+  true,
+  '货柜明细隔行色应限定在专属表格内且不覆盖选中行',
+)
+assertEqual(
+  pageStyleSource.includes('.container-detail-table .container-detail-row-striped:not(.ant-table-row-selected):hover > td'),
+  true,
+  '货柜明细隔行色应保留 hover 反馈',
 )
 assertEqual(
   pageSource.includes('className="container-detail-nowrap container-detail-copyable"'),

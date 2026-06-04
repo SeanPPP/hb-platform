@@ -150,6 +150,7 @@ async function main() {
     const barcodeCellRule = readCssRule(compactCssSource, '.store-order-detail-table .store-order-barcode-cell')
     const barcodeTextRule = readCssRule(compactCssSource, '.store-order-detail-table .store-order-barcode-cell .ant-typography')
     const inputNumberRule = readCssRule(compactCssSource, '.store-order-detail-table .ant-input-number')
+    const detailCellRule = readCssRule(compactCssSource, '.store-order-detail-table .ant-table-cell')
 
     assert(compactCssSource.includes('.store-order-detail-table .ant-table-cell'), '详情表格缺少局部 cell padding 规则')
     assert(compactCssSource.includes('.store-order-list-table .store-order-list-order-cell'), '列表订单号列缺少局部防溢出样式')
@@ -163,12 +164,54 @@ async function main() {
     assert(compactCssSource.includes('font-variant-numeric: tabular-nums'), '紧凑样式缺少等宽数字规则')
     assert(compactCssSource.includes('.store-order-detail-filter-bar'), '详情筛选统计条缺少紧凑样式')
     assert(compactCssSource.includes('.store-order-detail-table .store-order-barcode-cell .ant-typography'), '条码文本缺少不隐藏不折叠样式')
+    assert(/vertical-align:\s*middle/.test(detailCellRule), '详情主表单元格应垂直居中')
     assert(/white-space:\s*nowrap/.test(barcodeCellRule), '条码容器应强制单行，避免条码图片和文本换行')
     assert(/overflow:\s*visible/.test(barcodeCellRule), '条码容器不应隐藏超出内容')
     assert(/text-overflow:\s*clip/.test(barcodeTextRule), '条码文本不应省略隐藏')
     assert(/white-space:\s*nowrap/.test(inputNumberRule), '详情主表输入型数字列应保持单行')
   })
   if (cssFailure) failures.push(cssFailure)
+
+  const detailTableStripeFailure = await runTest('详情页主明细表应有隔行色并保持固定列和 hover 一致', () => {
+    assert(
+      compactCssSource.includes('.store-order-detail-table .ant-table-tbody > tr:nth-child(even) > td'),
+      '详情主表缺少偶数行隔行色规则',
+    )
+    assert(
+      compactCssSource.includes('.store-order-detail-table .ant-table-tbody > tr:nth-child(odd) > td'),
+      '详情主表缺少奇数行隔行色规则',
+    )
+    assert(
+      compactCssSource.includes('.store-order-detail-table .ant-table-tbody > tr:hover > td'),
+      '详情主表缺少 hover 行背景规则',
+    )
+    assert(compactCssSource.includes('.ant-table-cell-fix-left'), '详情主表固定左列背景应跟随行背景')
+    assert(compactCssSource.includes('.ant-table-cell-fix-right'), '详情主表固定右列背景应跟随行背景')
+    assert(!/^\\.ant-table-tbody\s*>/m.test(compactCssSource), '隔行色规则必须限定在详情主表下')
+  })
+  if (detailTableStripeFailure) failures.push(detailTableStripeFailure)
+
+  const detailTableVerticalAlignFailure = await runTest('详情页主明细表内部元素应垂直居中', () => {
+    assert(
+      compactCssSource.includes('.store-order-detail-table .ant-table-tbody > tr > td .ant-space'),
+      '详情主表 Space 内容应垂直居中',
+    )
+    assert(
+      compactCssSource.includes('.store-order-detail-table .ant-table-tbody > tr > td .ant-image'),
+      '详情主表图片内容应垂直居中',
+    )
+    assert(
+      compactCssSource.includes('.store-order-detail-table .ant-table-tbody > tr > td .ant-tag'),
+      '详情主表状态标签应垂直居中',
+    )
+    assert(
+      compactCssSource.includes('.store-order-detail-table .ant-table-tbody > tr > td .ant-input-number'),
+      '详情主表数字输入框应垂直居中',
+    )
+    assert(compactCssSource.includes('.store-order-detail-table .store-order-two-line-text'), '详情主表两行文本应保留局部样式')
+    assert(compactCssSource.includes('align-items: center'), '详情主表内部 flex 元素缺少居中对齐')
+  })
+  if (detailTableVerticalAlignFailure) failures.push(detailTableVerticalAlignFailure)
 
   const packageScriptFailure = await runTest('订货明细标准测试脚本应包含紧凑 UI 约束', () => {
     assert(packageSource.includes('storeOrderCompactUi.logic.test.ts'), 'test:store-order-detail 应接入 storeOrderCompactUi.logic.test.ts')

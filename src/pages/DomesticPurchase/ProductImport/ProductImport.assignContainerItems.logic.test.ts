@@ -86,10 +86,12 @@ assertDeepEqual(
       quantity: 17,
       packingQuantity: 48,
       unitVolume: 0.118,
+      domesticPrice: 11.6,
+      oemPrice: 6.99,
       notes: '补价格',
     },
   ],
-  '发送 assign-products 前应移除仅用于本地校验的价格字段，保持接口请求结构不变',
+  '发送 assign-products 前应保留后端 DTO 支持的业务字段',
 )
 
 assertDeepEqual(
@@ -122,6 +124,37 @@ assertDeepEqual(
     },
   ],
   '发送货柜业务字段缺失时应使用匹配商品字段兜底',
+)
+
+assertDeepEqual(
+  stripAssignContainerItemsForRequest(buildAssignContainerItems([
+    createProduct({
+      newProduct: {
+        quantity: 2,
+        productCode: 'HB002',
+        productName: '旧装箱数兜底商品',
+      },
+      matchedProduct: {
+        productCode: 'P-HB002',
+        domesticPrice: 3.2,
+        packingQuantity: 24,
+        unitVolume: 0.086,
+      },
+    }),
+  ], '旧字段兜底')),
+  [
+    {
+      hbProductNo: 'HB002',
+      productCode: 'P-HB002',
+      quantity: 2,
+      packingQuantity: 24,
+      unitVolume: 0.086,
+      domesticPrice: 3.2,
+      oemPrice: undefined,
+      notes: '旧字段兜底',
+    },
+  ],
+  '发送 assign-products 请求体应保留旧商品托底后的装箱数，供后端计算装柜数量',
 )
 
 assertDeepEqual(

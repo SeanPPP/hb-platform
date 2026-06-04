@@ -128,6 +128,7 @@
       "domesticPrice": "国内价格",
       "floatRate": "调整浮率",
       "transportCost": "运输成本",
+      "warehouseImportPrice": "仓库当前进货价格",
       "importPrice": "进口价格",
       "oemPrice": "贴牌价格",
       "warehouseStatus": "仓库状态"
@@ -196,6 +197,7 @@
       "selectProducts": "请先选择商品",
       "detailPricesUpdated": "已更新 {{count}} 条明细价格",
       "selectedProductsMissingCode": "选中商品缺少商品编码",
+      "warehouseStatusUpdating": "商品上下架正在提交，请稍后再试",
       "batchActiveFailed": "批量上下架失败",
       "productsActivated": "已上架 {{count}} 个商品",
       "productsDeactivated": "已下架 {{count}} 个商品",
