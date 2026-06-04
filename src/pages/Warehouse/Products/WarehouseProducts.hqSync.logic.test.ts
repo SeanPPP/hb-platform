@@ -1,6 +1,10 @@
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
-import { syncWarehouseProductsFromHq } from '../../../services/warehouseProductService'
+import {
+  createWarehouseProductHqSyncJob,
+  getWarehouseProductHqSyncJob,
+  syncWarehouseProductsFromHq,
+} from '../../../services/warehouseProductService'
 import type { CurrentUser } from '../../../types/auth'
 import { buildAccess } from '../../../utils/access'
 
@@ -105,7 +109,7 @@ async function main() {
   })
   if (adminOnlyButtonFailure) failures.push(adminOnlyButtonFailure)
 
-  const modalConfirmFailure = await runTest('点击同步按钮前应弹出明确提示全量覆盖 WarehouseProduct 的确认框', () => {
+  const modalConfirmFailure = await runTest('点击同步按钮前应弹出明确提示按商品编码新增更新的确认框', () => {
     const syncSection = extractSection(
       pageSource,
       'const handleSyncWarehouseProductsFromHq = () => {',
@@ -115,22 +119,23 @@ async function main() {
     assert(
       syncSection.includes('Modal.confirm({') &&
       syncSection.includes("t('warehouse.hqSyncTitle', '从HQ同步库存')") &&
-      syncSection.includes('全量覆盖 WarehouseProduct'),
-      '同步前应弹出明确提示“全量覆盖 WarehouseProduct”的确认框',
+      syncSection.includes('按商品编码匹配') &&
+      syncSection.includes('不会删除本地缺失商品'),
+      '同步前应弹出明确提示“按商品编码匹配新增/更新且不删除本地缺失商品”的确认框',
     )
   })
   if (modalConfirmFailure) failures.push(modalConfirmFailure)
 
-  const loadingFailure = await runTest('同步按钮应在同步中保持 loading 和 disabled', () => {
+  const loadingFailure = await runTest('同步按钮应在后台任务提交中或运行中展示 loading，提交请求中 disabled', () => {
     assert(
-      pageSource.includes('loading={syncingFromHq}') &&
+      pageSource.includes('loading={syncingFromHq || Boolean(activeHqSyncJob)}') &&
       pageSource.includes('disabled={syncingFromHq}'),
-      '同步按钮应绑定 syncingFromHq 的 loading 与 disabled 状态',
+      '同步按钮应绑定提交中和后台运行中状态，并允许运行中点击查看状态',
     )
   })
   if (loadingFailure) failures.push(loadingFailure)
 
-  const successRefreshFailure = await runTest('同步成功后提示成功并刷新第一页', () => {
+  const jobApiFailure = await runTest('页面应提交后台 job 并轮询查询 job 状态', () => {
     const syncSection = extractSection(
       pageSource,
       'const handleSyncWarehouseProductsFromHq = () => {',
@@ -138,30 +143,82 @@ async function main() {
     )
 
     assert(
-      syncSection.includes('if (success) {') &&
-      syncSection.includes('message.success(successMessage)') &&
-      syncSection.includes('await loadData({ page: 1 })'),
-      '同步成功分支应提示成功并刷新第一页',
+      pageSource.includes('createWarehouseProductHqSyncJob') &&
+      pageSource.includes('getWarehouseProductHqSyncJob') &&
+      pageSource.includes('createWarehouseProductHqSyncJobPoller'),
+      '页面应使用后台 job 创建接口、查询接口和轮询器',
+    )
+
+    assert(
+      syncSection.includes('createWarehouseProductHqSyncJob') &&
+      !syncSection.includes('syncWarehouseProductsFromHq()'),
+      '按钮确认后不应再直接等待旧同步接口完成',
+    )
+  })
+  if (jobApiFailure) failures.push(jobApiFailure)
+
+  const notificationFailure = await runTest('同步提交和完成结果应通过右上角 notification 返回', () => {
+    const syncSection = extractSection(
+      pageSource,
+      'const handleSyncWarehouseProductsFromHq = () => {',
+      'const columns = useMemo',
+    )
+
+    assert(
+      pageSource.includes('notification') &&
+      pageSource.includes('notification.info') &&
+      pageSource.includes('notification.success') &&
+      pageSource.includes('notification.error') &&
+      pageSource.includes('notification.warning'),
+      '页面应使用 notification 展示提交、成功、失败和超时信息',
+    )
+
+    assert(
+      syncSection.includes("t('warehouse.hqSyncJobSubmitted") &&
+      syncSection.includes('startHqSyncJobPolling'),
+      '提交成功后应提示后台执行并启动轮询',
+    )
+  })
+  if (notificationFailure) failures.push(notificationFailure)
+
+  const successRefreshFailure = await runTest('后台同步成功后右上角提示结果并刷新第一页', () => {
+    const descriptionSection = extractSection(
+      pageSource,
+      'const buildHqSyncResultDescription',
+      'const showHqSyncJobResult',
+    )
+    const resultSection = extractSection(
+      pageSource,
+      'const showHqSyncJobResult',
+      'const startHqSyncJobPolling',
+    )
+
+    assert(
+      resultSection.includes('notification.success') &&
+      descriptionSection.includes('addedCount') &&
+      descriptionSection.includes('updatedCount') &&
+      descriptionSection.includes('errorCount') &&
+      resultSection.includes('void loadDataRef.current?.({ page: 1 })'),
+      '后台同步成功应通过 notification 展示新增/更新/错误统计并刷新第一页',
     )
   })
   if (successRefreshFailure) failures.push(successRefreshFailure)
 
-  const failureNoRefreshFailure = await runTest('同步失败时只提示失败且不刷新第一页', () => {
-    const syncSection = extractSection(
+  const failureNoRefreshFailure = await runTest('后台同步失败时只提示失败且不刷新第一页', () => {
+    const resultSection = extractSection(
       pageSource,
-      'const handleSyncWarehouseProductsFromHq = () => {',
-      'const columns = useMemo',
-    )
-    const catchSection = extractSection(syncSection, 'catch (error) {', 'finally {')
-
-    assert(
-      catchSection.includes("message.error(error instanceof Error ? error.message : t('warehouse.hqSyncFailed', '从HQ同步库存失败'))"),
-      '同步失败时应优先展示 error.message',
+      'const showHqSyncJobResult',
+      'const startHqSyncJobPolling',
     )
 
     assert(
-      !catchSection.includes("loadData({ page: 1 })"),
-      '同步失败分支不应刷新第一页',
+      resultSection.includes('notification.error'),
+      '后台同步失败时应使用 notification.error',
+    )
+
+    assert(
+      !extractSection(resultSection, 'if (!success) {', 'const errorCount').includes("loadDataRef.current?.({ page: 1 })"),
+      '后台同步失败分支不应刷新第一页',
     )
   })
   if (failureNoRefreshFailure) failures.push(failureNoRefreshFailure)
@@ -229,6 +286,50 @@ async function main() {
     }
   })
   if (serviceUrlFailure) failures.push(serviceUrlFailure)
+
+  const jobServiceFailure = await runTest('后台 job 服务应使用创建和查询 URL', async () => {
+    const originalFetch = globalThis.fetch
+    const capturedUrls: string[] = []
+    const capturedMethods: Array<string | undefined> = []
+
+    try {
+      globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+        capturedUrls.push(String(input))
+        capturedMethods.push(init?.method)
+
+        return new Response(JSON.stringify({
+          success: true,
+          data: {
+            jobId: 'warehouse-job-1',
+            status: 'Running',
+            createdAt: '2026-06-04T00:00:00Z',
+          },
+        }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }) as typeof fetch
+
+      await createWarehouseProductHqSyncJob({ operationId: 'warehouse-products-hq-sync' })
+      await getWarehouseProductHqSyncJob('warehouse-job-1')
+
+      assertEqual(
+        capturedUrls[0],
+        '/api/react/v1/product-warehouse/sync-from-hq/jobs',
+        '创建后台 job 应命中新接口地址',
+      )
+      assertEqual(capturedMethods[0], 'POST', '创建后台 job 应使用 POST 方法')
+      assertEqual(
+        capturedUrls[1],
+        '/api/react/v1/product-warehouse/sync-from-hq/jobs/warehouse-job-1',
+        '查询后台 job 应命中 job 查询接口地址',
+      )
+      assertEqual(capturedMethods[1], 'GET', '查询后台 job 应使用 GET 方法')
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+  if (jobServiceFailure) failures.push(jobServiceFailure)
 
   if (failures.length > 0) {
     throw new Error(`共有 ${failures.length} 个测试失败\n- ${failures.join('\n- ')}`)

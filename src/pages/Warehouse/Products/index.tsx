@@ -1,15 +1,15 @@
 ﻿import { CloudSyncOutlined, CopyOutlined, DownloadOutlined, EditOutlined, GiftOutlined, PlusOutlined, ReloadOutlined, SearchOutlined, UploadOutlined } from '@ant-design/icons';
-import { Button, Card, Checkbox, Form, Image, Input, InputNumber, Modal, Popconfirm, Select, Space, Switch, Table, Tag, Tooltip, Typography, message, } from 'antd';
+import { Button, Card, Checkbox, Form, Image, Input, InputNumber, Modal, Popconfirm, Select, Space, Switch, Table, Tag, Tooltip, Typography, message, notification, } from 'antd';
 import type { DefaultOptionType } from 'antd/es/select';
 import type { ColumnsType, TablePaginationConfig } from 'antd/es/table';
 import type { SorterResult } from 'antd/es/table/interface';
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import BarcodePreview from '../../../components/BarcodePreview';
 import PageContainer from '../../../components/PageContainer';
 import { getDomesticProductSetItems, getSupplierOptions, updateDomesticProductSetItems, } from '../../../services/domesticProductService';
 import { exportDomesticProductsToExcel, type ExportResult } from '../../../services/exportService';
-import { batchToggleWarehouseProductsActive, getWarehouseProductsTable, syncWarehouseProductsFromHq, updateWarehouseProductFull, type WarehouseProductListItem, type WarehouseProductsTableQuery, } from '../../../services/warehouseProductService';
+import { HqProductSyncPollingCancelledError, HqProductSyncPollingTimeoutError, batchToggleWarehouseProductsActive, createWarehouseProductHqSyncJob, createWarehouseProductHqSyncJobPoller, getWarehouseProductHqSyncJob, getWarehouseProductsTable, updateWarehouseProductFull, type WarehouseProductHqSyncJobResult, type WarehouseProductHqSyncJobStatus, type WarehouseProductListItem, type WarehouseProductsTableQuery, } from '../../../services/warehouseProductService';
 import { useAuthStore } from '../../../store/auth';
 import type { DomesticProductSetItem, ProductType, SupplierOption, } from '../../../types/domesticProduct';
 import { ProductTypeLabels } from '../../../types/domesticProduct';
@@ -136,6 +136,46 @@ function formatPrice(value?: number) {
 type SupplierSelectOption = DefaultOptionType & {
     searchText?: string;
 };
+type ActiveWarehouseProductHqSyncJob = {
+    jobId: string;
+    operationId: string;
+    createdAt: string;
+    status?: WarehouseProductHqSyncJobStatus | string;
+    message?: string;
+};
+const WAREHOUSE_PRODUCT_HQ_SYNC_ACTIVE_JOB_STORAGE_KEY = 'warehouse.products.activeHqSyncJob';
+const WAREHOUSE_PRODUCT_HQ_SYNC_OPERATION_ID = 'warehouse-products-hq-sync';
+const WAREHOUSE_PRODUCT_HQ_SYNC_POLL_INTERVAL_MS = 2000;
+const WAREHOUSE_PRODUCT_HQ_SYNC_TIMEOUT_MS = 10 * 60 * 1000;
+function readActiveWarehouseProductHqSyncJob(): ActiveWarehouseProductHqSyncJob | null {
+    if (typeof window === 'undefined') {
+        return null;
+    }
+    try {
+        const raw = window.localStorage.getItem(WAREHOUSE_PRODUCT_HQ_SYNC_ACTIVE_JOB_STORAGE_KEY);
+        if (!raw) {
+            return null;
+        }
+        const parsed = JSON.parse(raw) as Partial<ActiveWarehouseProductHqSyncJob>;
+        if (!parsed.jobId || !parsed.operationId || !parsed.createdAt) {
+            return null;
+        }
+        return parsed as ActiveWarehouseProductHqSyncJob;
+    }
+    catch {
+        return null;
+    }
+}
+function saveActiveWarehouseProductHqSyncJob(job: ActiveWarehouseProductHqSyncJob | null) {
+    if (typeof window === 'undefined') {
+        return;
+    }
+    if (!job) {
+        window.localStorage.removeItem(WAREHOUSE_PRODUCT_HQ_SYNC_ACTIVE_JOB_STORAGE_KEY);
+        return;
+    }
+    window.localStorage.setItem(WAREHOUSE_PRODUCT_HQ_SYNC_ACTIVE_JOB_STORAGE_KEY, JSON.stringify(job));
+}
 function buildSupplierOptions(suppliers: SupplierOption[]): SupplierSelectOption[] {
     return suppliers.map((item) => ({
         value: item.code,
@@ -346,6 +386,10 @@ export default function WarehouseProductsPage() {
     const [exportFailDetailOpen, setExportFailDetailOpen] = useState(false);
     const [exportFailDetail, setExportFailDetail] = useState<ExportResult['failedProductImages']>([]);
     const [syncingFromHq, setSyncingFromHq] = useState(false);
+    const [activeHqSyncJob, setActiveHqSyncJob] = useState<ActiveWarehouseProductHqSyncJob | null>(null);
+    const stopHqSyncJobPollingRef = useRef<(() => void) | null>(null);
+    const isMountedRef = useRef(true);
+    const loadDataRef = useRef<((overrides?: Partial<WarehouseProductsTableQuery>) => Promise<void>) | null>(null);
     const { access } = useAuthStore();
     const canImportNonHbProducts = access.isAdmin || access.isWarehouseManager;
     const buildGridQuery = (overrides: Partial<WarehouseProductsTableQuery> = {}): WarehouseProductsTableQuery => ({
@@ -378,6 +422,134 @@ export default function WarehouseProductsPage() {
             setLoading(false);
         }
     };
+    loadDataRef.current = loadData;
+    const stopHqSyncJobPolling = useCallback(() => {
+        stopHqSyncJobPollingRef.current?.();
+        stopHqSyncJobPollingRef.current = null;
+    }, []);
+    const saveActiveHqSyncJob = useCallback((job: ActiveWarehouseProductHqSyncJob) => {
+        saveActiveWarehouseProductHqSyncJob(job);
+        if (isMountedRef.current) {
+            setActiveHqSyncJob(job);
+        }
+    }, []);
+    const clearActiveHqSyncJob = useCallback(() => {
+        saveActiveWarehouseProductHqSyncJob(null);
+        if (isMountedRef.current) {
+            setActiveHqSyncJob(null);
+        }
+    }, []);
+    const buildHqSyncResultDescription = useCallback((result: WarehouseProductHqSyncJobResult) => {
+        const syncResult = result.result ?? result;
+        const messageText = syncResult.message ?? syncResult.Message ?? result.message ?? t('warehouse.hqSyncSuccess', '从HQ同步库存成功');
+        const addedCount = syncResult.addedCount ?? syncResult.AddedCount ?? result.addedCount ?? 0;
+        const updatedCount = syncResult.updatedCount ?? syncResult.UpdatedCount ?? result.updatedCount ?? 0;
+        const errorCount = syncResult.errorCount ?? syncResult.ErrorCount ?? result.errorCount ?? 0;
+        return (<Space direction="vertical" size={4}>
+        <div>{messageText}</div>
+        <div>{t('warehouse.hqSyncJobResultStats', '新增 {{added}} 条，更新 {{updated}} 条，错误 {{errors}} 条', { added: addedCount, updated: updatedCount, errors: errorCount })}</div>
+      </Space>);
+    }, [t]);
+    const showHqSyncJobResult = useCallback((result: WarehouseProductHqSyncJobResult) => {
+        const syncResult = result.result ?? result;
+        const success = result.status !== 'Failed' && (syncResult.isSuccess ?? syncResult.IsSuccess ?? true);
+        if (!success) {
+            notification.error({
+                message: t('warehouse.hqSyncJobFailed', '仓库商品 HQ 同步失败'),
+                description: syncResult.message ?? syncResult.Message ?? result.message ?? t('warehouse.hqSyncFailed', '从HQ同步库存失败'),
+                duration: 0,
+                placement: 'topRight',
+            });
+            return;
+        }
+        const errorCount = syncResult.errorCount ?? syncResult.ErrorCount ?? result.errorCount ?? 0;
+        if (errorCount > 0) {
+            notification.warning({
+                message: t('warehouse.hqSyncJobPartialSucceeded', '仓库商品 HQ 同步部分完成'),
+                description: buildHqSyncResultDescription(result),
+                duration: 0,
+                placement: 'topRight',
+            });
+        }
+        else {
+            notification.success({
+                message: t('warehouse.hqSyncJobSucceeded', '仓库商品 HQ 同步完成'),
+                description: buildHqSyncResultDescription(result),
+                duration: 6,
+                placement: 'topRight',
+            });
+        }
+        void loadDataRef.current?.({ page: 1 });
+    }, [buildHqSyncResultDescription, t]);
+    const startHqSyncJobPolling = useCallback((job: ActiveWarehouseProductHqSyncJob) => {
+        stopHqSyncJobPolling();
+        saveActiveHqSyncJob(job);
+        const poller = createWarehouseProductHqSyncJobPoller({
+            jobId: job.jobId,
+            getJob: async (jobId) => {
+                const result = await getWarehouseProductHqSyncJob(jobId);
+                saveActiveHqSyncJob({
+                    ...job,
+                    status: result.status,
+                    message: result.message,
+                });
+                return result;
+            },
+            pollIntervalMs: WAREHOUSE_PRODUCT_HQ_SYNC_POLL_INTERVAL_MS,
+            timeoutMs: WAREHOUSE_PRODUCT_HQ_SYNC_TIMEOUT_MS,
+        });
+        stopHqSyncJobPollingRef.current = poller.stop;
+        void poller.promise
+            .then((result) => {
+            if (!isMountedRef.current) {
+                return;
+            }
+            clearActiveHqSyncJob();
+            stopHqSyncJobPollingRef.current = null;
+            showHqSyncJobResult(result);
+        })
+            .catch((error) => {
+            if (!isMountedRef.current) {
+                return;
+            }
+            if (error instanceof HqProductSyncPollingCancelledError) {
+                return;
+            }
+            clearActiveHqSyncJob();
+            stopHqSyncJobPollingRef.current = null;
+            if (error instanceof HqProductSyncPollingTimeoutError) {
+                notification.warning({
+                    message: t('warehouse.hqSyncJobTimeoutTitle', '仓库商品 HQ 同步仍在后台执行'),
+                    description: t('warehouse.hqSyncJobTimeout', '前端已停止轮询该同步任务。你可以稍后刷新列表，或重新提交以接管后端已有任务。'),
+                    duration: 0,
+                    placement: 'topRight',
+                });
+                return;
+            }
+            notification.error({
+                message: t('warehouse.hqSyncJobFailed', '仓库商品 HQ 同步失败'),
+                description: error instanceof Error ? error.message : t('warehouse.hqSyncFailed', '从HQ同步库存失败'),
+                duration: 0,
+                placement: 'topRight',
+            });
+        });
+    }, [clearActiveHqSyncJob, saveActiveHqSyncJob, showHqSyncJobResult, stopHqSyncJobPolling, t]);
+    const showActiveHqSyncJobStatus = useCallback((job: ActiveWarehouseProductHqSyncJob | null = activeHqSyncJob) => {
+        if (!job) {
+            return;
+        }
+        notification.info({
+            message: t('warehouse.hqSyncJobStatusTitle', '仓库商品 HQ 同步正在后台执行'),
+            description: (<Space direction="vertical" size={4}>
+          <div>{t('warehouse.hqSyncJobId', '任务 ID')}: {job.jobId}</div>
+          <div>{t('warehouse.hqSyncJobStatus', '任务状态')}: {job.status ?? 'Running'}</div>
+          <div>{t('warehouse.hqSyncJobStartedAt', '提交时间')}: {formatDateTime(job.createdAt, i18n.language)}</div>
+          {job.message ? <div>{job.message}</div> : null}
+        </Space>),
+            duration: 5,
+            placement: 'topRight',
+        });
+    }, [activeHqSyncJob, i18n.language, t]);
     useEffect(() => {
         void Promise.all([
             loadData({ page: 1 }),
@@ -389,6 +561,17 @@ export default function WarehouseProductsPage() {
             }),
         ]);
     }, []);
+    useEffect(() => {
+        isMountedRef.current = true;
+        const restoredJob = readActiveWarehouseProductHqSyncJob();
+        if (restoredJob?.jobId) {
+            startHqSyncJobPolling(restoredJob);
+        }
+        return () => {
+            isMountedRef.current = false;
+            stopHqSyncJobPolling();
+        };
+    }, [startHqSyncJobPolling, stopHqSyncJobPolling]);
     const handleOpenCreate = () => {
         setCreateModalOpen(true);
     };
@@ -605,30 +788,56 @@ export default function WarehouseProductsPage() {
         }
     };
     const handleSyncWarehouseProductsFromHq = () => {
+        if (activeHqSyncJob) {
+            showActiveHqSyncJobStatus(activeHqSyncJob);
+            return;
+        }
         Modal.confirm({
             title: t('warehouse.hqSyncTitle', '从HQ同步库存'),
-            content: t('warehouse.hqSyncContent', '该操作会从 HQ 全量覆盖 WarehouseProduct。确认继续同步吗？'),
+            content: t('warehouse.hqSyncContent', '该操作会从 HQ 按商品编码匹配新增/更新库存业务字段，不会删除本地缺失商品。确认继续同步吗？'),
             okText: t('warehouse.hqSyncConfirm', '确认同步'),
             cancelText: t('common.cancel'),
             okButtonProps: { danger: true },
             onOk: async () => {
                 setSyncingFromHq(true);
                 try {
-                    const result = await syncWarehouseProductsFromHq();
-                    const success = result.isSuccess ?? result.IsSuccess ?? true;
-                    const successMessage = result.message ?? result.Message ?? t('warehouse.hqSyncSuccess', '从HQ同步库存成功');
-                    // 只有同步真正成功时才刷新第一页，避免失败时误刷新当前列表。
-                    if (success) {
-                        message.success(successMessage);
-                        await loadData({ page: 1 });
+                    const job = await createWarehouseProductHqSyncJob({
+                        operationId: WAREHOUSE_PRODUCT_HQ_SYNC_OPERATION_ID,
+                    });
+                    if (!job.jobId) {
+                        notification.error({
+                            message: t('warehouse.hqSyncJobCreateFailed', '创建仓库商品 HQ 同步任务失败'),
+                            description: job.message ?? t('warehouse.hqSyncFailed', '从HQ同步库存失败'),
+                            duration: 0,
+                            placement: 'topRight',
+                        });
+                        return;
                     }
-                    else {
-                        message.error(successMessage);
-                    }
+                    const activeJob: ActiveWarehouseProductHqSyncJob = {
+                        jobId: job.jobId,
+                        operationId: job.operationId ?? WAREHOUSE_PRODUCT_HQ_SYNC_OPERATION_ID,
+                        createdAt: job.createdAt ?? new Date().toISOString(),
+                        status: job.status,
+                        message: job.message,
+                    };
+                    notification.info({
+                        message: t('warehouse.hqSyncJobSubmitted', '仓库商品同步任务已提交，正在后台执行。完成后会自动提示结果。'),
+                        description: job.isDuplicateRequest
+                            ? t('warehouse.hqSyncJobStatusContent', '同步任务已在后台执行，请等待完成提示。')
+                            : t('warehouse.hqSyncJobSubmittedDescription', '已提交到后台执行，完成后会在右上角通知结果。'),
+                        duration: 3,
+                        placement: 'topRight',
+                    });
+                    startHqSyncJobPolling(activeJob);
                 }
                 catch (error) {
                     console.error(error);
-                    message.error(error instanceof Error ? error.message : t('warehouse.hqSyncFailed', '从HQ同步库存失败'));
+                    notification.error({
+                        message: t('warehouse.hqSyncJobCreateFailed', '创建仓库商品 HQ 同步任务失败'),
+                        description: error instanceof Error ? error.message : t('warehouse.hqSyncFailed', '从HQ同步库存失败'),
+                        duration: 0,
+                        placement: 'topRight',
+                    });
                 }
                 finally {
                     setSyncingFromHq(false);
@@ -783,9 +992,9 @@ export default function WarehouseProductsPage() {
     return (<>
       <style>{warehouseProductsTableStyle}</style>
       <PageContainer title={t('warehouse.productManagement')} subtitle={t('warehouse.productManagementSubtitle')} extra={<Space wrap>
-          {access.isAdmin ? (<Button icon={<CloudSyncOutlined />} loading={syncingFromHq} disabled={syncingFromHq} onClick={handleSyncWarehouseProductsFromHq}>
-              {t('warehouse.hqSync', '从HQ同步库存')}
-            </Button>) : null}
+          {access.isAdmin ? (<Button icon={<CloudSyncOutlined />} loading={syncingFromHq || Boolean(activeHqSyncJob)} disabled={syncingFromHq} onClick={handleSyncWarehouseProductsFromHq}>
+            {t('warehouse.hqSync', '从HQ同步库存')}
+          </Button>) : null}
           <Button icon={<DownloadOutlined />} loading={exporting} disabled={exporting} onClick={() => setExportConfigOpen(true)}>
             {t('warehouse.exportExcel')}
           </Button>

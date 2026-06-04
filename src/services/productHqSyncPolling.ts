@@ -33,18 +33,27 @@ interface CreateProductHqSyncJobPollerOptions extends HqProductSyncPollingOption
   getJob: (jobId: string) => Promise<HqProductSyncJobResult>
 }
 
-function isTerminalStatus(status: HqProductSyncJobResult['status']) {
+interface HqSyncJobLike {
+  status: 'Queued' | 'Running' | 'Succeeded' | 'Failed' | string
+}
+
+interface CreateHqSyncJobPollerOptions<TJob extends HqSyncJobLike> extends HqProductSyncPollingOptions {
+  jobId: string
+  getJob: (jobId: string) => Promise<TJob>
+}
+
+function isTerminalStatus(status: HqSyncJobLike['status']) {
   return status === 'Succeeded' || status === 'Failed'
 }
 
-export function createProductHqSyncJobPoller({
+export function createHqSyncJobPoller<TJob extends HqSyncJobLike>({
   jobId,
   getJob,
   pollIntervalMs = PRODUCT_HQ_SYNC_POLL_INTERVAL_MS,
   timeoutMs = PRODUCT_HQ_SYNC_TIMEOUT_MS,
   setTimeoutFn = setTimeout,
   clearTimeoutFn = clearTimeout,
-}: CreateProductHqSyncJobPollerOptions) {
+}: CreateHqSyncJobPollerOptions<TJob>) {
   let pollingTimer: HqProductSyncTimerId | null = null
   let timeoutTimer: HqProductSyncTimerId | null = null
   let stopped = false
@@ -61,7 +70,7 @@ export function createProductHqSyncJobPoller({
     }
   }
 
-  const promise = new Promise<HqProductSyncJobResult>((resolve, reject) => {
+  const promise = new Promise<TJob>((resolve, reject) => {
     rejectPromise = reject
 
     const scheduleNextPoll = () => {
@@ -116,4 +125,8 @@ export function createProductHqSyncJobPoller({
     promise,
     stop,
   }
+}
+
+export function createProductHqSyncJobPoller(options: CreateProductHqSyncJobPollerOptions) {
+  return createHqSyncJobPoller<HqProductSyncJobResult>(options)
 }
