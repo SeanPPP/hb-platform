@@ -26,9 +26,13 @@ namespace BlazorApp.Shared.DTOs
         /// 备注
         /// </summary>
         public string? 备注 { get; set; }
+
+        /// <summary>
+        /// 货柜状态
+        /// </summary>
+        public int? 状态 { get; set; }
     }
 }
-
 
 
 

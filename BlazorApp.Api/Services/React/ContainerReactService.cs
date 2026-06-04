@@ -188,7 +188,7 @@ namespace BlazorApp.Api.Services.React
         }
 
         /// <summary>
-        /// 更新货柜基本信息（实际到货日期、汇率、运费、备注）
+        /// 更新货柜基本信息（实际到货日期、汇率、运费、备注、状态）
         /// </summary>
         public async Task<bool> UpdateContainerAsync(string containerGuid, UpdateContainerDto dto)
         {
@@ -227,6 +227,11 @@ namespace BlazorApp.Api.Services.React
                     container.Remarks = dto.备注;
                 }
 
+                if (dto.状态.HasValue)
+                {
+                    container.Status = dto.状态.Value;
+                }
+
                 // 保存并限制更新列，避免覆盖其他字段
                 var rowsAffected = await _context
                     .Db.Updateable(container)
@@ -236,6 +241,7 @@ namespace BlazorApp.Api.Services.React
                         x.ExchangeRate,
                         x.ShippingFee,
                         x.Remarks,
+                        x.Status,
                     })
                     .Where(x => x.ContainerCode == containerGuid)
                     .ExecuteCommandAsync();

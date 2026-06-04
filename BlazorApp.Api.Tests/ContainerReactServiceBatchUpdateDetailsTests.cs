@@ -36,12 +36,52 @@ public sealed class ContainerReactServiceBatchUpdateDetailsTests : IDisposable
         _hbSalesDb = new SqlSugarScope(CreateConnectionConfig(_hbSalesConnection.ConnectionString));
 
         _localDb.CodeFirst.InitTables(
+            typeof(Container),
             typeof(ContainerDetail),
             typeof(DomesticProduct),
             typeof(WarehouseProduct),
             typeof(Product),
             typeof(StoreRetailPrice)
         );
+    }
+
+    [Fact]
+    public async Task UpdateContainerAsync_状态变化_应更新货柜主表状态并保留头部字段更新()
+    {
+        await _localDb.Insertable(
+            new Container
+            {
+                ContainerCode = "OOCU5568972",
+                ContainerNumber = "OOCU5568972",
+                ActualArrivalDate = new DateTime(2026, 6, 15),
+                ExchangeRate = 4.5m,
+                ShippingFee = 100m,
+                Status = 0,
+                Remarks = "旧备注",
+            }
+        ).ExecuteCommandAsync();
+        var service = CreateService();
+
+        var success = await service.UpdateContainerAsync(
+            "OOCU5568972",
+            new UpdateContainerDto
+            {
+                实际到货日期 = new DateTime(2026, 6, 16),
+                汇率 = 4.6m,
+                运费 = 1280m,
+                备注 = "运输中",
+                状态 = 1,
+            }
+        );
+
+        var container = await _localDb.Queryable<Container>()
+            .SingleAsync(x => x.ContainerCode == "OOCU5568972");
+        Assert.True(success);
+        Assert.Equal(1, container.Status);
+        Assert.Equal(new DateTime(2026, 6, 16), container.ActualArrivalDate);
+        Assert.Equal(4.6m, container.ExchangeRate);
+        Assert.Equal(1280m, container.ShippingFee);
+        Assert.Equal("运输中", container.Remarks);
     }
 
     [Fact]

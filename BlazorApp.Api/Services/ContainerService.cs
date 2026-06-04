@@ -323,9 +323,14 @@ namespace BlazorApp.Api.Services
                     container.Remarks = dto.备注;
                 }
 
+                if (dto.状态.HasValue)
+                {
+                    container.Status = dto.状态.Value;
+                }
+
                 // 保存更改
                 var rowsAffected = await _localContext.Db.Updateable(container)
-                    .UpdateColumns(x => new { x.ActualArrivalDate, x.ExchangeRate, x.ShippingFee, x.Remarks })
+                    .UpdateColumns(x => new { x.ActualArrivalDate, x.ExchangeRate, x.ShippingFee, x.Remarks, x.Status })
                     .Where(x => x.ContainerCode == containerGuid)
                     .ExecuteCommandAsync();
 
