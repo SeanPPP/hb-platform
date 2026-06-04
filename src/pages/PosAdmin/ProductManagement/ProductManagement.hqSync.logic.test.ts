@@ -172,7 +172,7 @@ async function main() {
       { storeCode: 'S02', storeName: 'Gamma', isActive: true, isAutoPricing: false, isSpecialProduct: false },
     ]
 
-    const sortedCodes = records.toSorted(compareProductStoreRecordsByName).map((item) => item.storeCode)
+    const sortedCodes = records.slice().sort(compareProductStoreRecordsByName).map((item) => item.storeCode)
 
     assertEqual(sortedCodes.join(','), 'S03,S04,S01,S02,S99', '分店记录排序应先按分店名称，再按分店代码稳定排序')
   })
