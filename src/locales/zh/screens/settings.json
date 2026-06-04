@@ -13,6 +13,21 @@
   "language": {
     "description": "切换 App 显示语言，立即生效。"
   },
+  "updates": {
+    "title": "应用更新",
+    "description": "App 会静默下载可用更新，并在下次重新打开时生效。",
+    "version": "应用版本",
+    "runtime": "运行时版本",
+    "channel": "更新渠道",
+    "source": "当前来源",
+    "updateId": "更新 ID",
+    "sourceEmbedded": "内置安装包",
+    "sourceOta": "OTA 更新",
+    "unknown": "未知",
+    "noChannel": "未配置渠道",
+    "noUpdateId": "当前无更新 ID",
+    "check": "检查更新"
+  },
   "device": {
     "title": "设备注册",
     "description": "只有店长账号可以发起设备注册。注册提交后，需要后台确认启用；启用后这台设备再次打开 App 时可直接进入系统。",
@@ -92,7 +107,17 @@
     "printerTestSuccessTitle": "测试打印成功",
     "printerTestSuccessMessage": "标签打印机已经收到测试任务。",
     "printerClearedTitle": "已清除打印机",
-    "printerClearedMessage": "已移除已保存的标签打印机。"
+    "printerClearedMessage": "已移除已保存的标签打印机。",
+    "updateDownloadedTitle": "更新已下载",
+    "updateDownloadedMessage": "新的 App 更新已经下载完成，下次重新打开 App 时会自动生效。",
+    "updateNotAvailableTitle": "已是最新版本",
+    "updateNotAvailableMessage": "当前没有可用更新。",
+    "updateDisabledTitle": "当前不可检查更新",
+    "updateDisabledMessage": "开发模式不能检查 OTA 更新，请使用 preview 或 production 构建验证。",
+    "updateConfigurationDisabledTitle": "OTA 配置未启用",
+    "updateConfigurationDisabledMessage": "当前安装包未启用 OTA 更新，请检查 updates.url、runtimeVersion 和原生配置后重新构建。",
+    "updateCheckFailedTitle": "检查更新失败",
+    "updateCheckFailedMessage": "检查更新失败，请稍后重试。"
   },
   "messages": {
     "profileLoginRequired": "请先使用账号登录，再打开个人信息。"

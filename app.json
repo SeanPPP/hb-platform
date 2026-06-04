@@ -8,10 +8,14 @@
     "scheme": "hbwebexpo",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
+    "runtimeVersion": "1.0.1",
+    "updates": {
+      "url": "https://u.expo.dev/3b37541e-6191-460d-9a57-fe6691e206cf"
+    },
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",
-      "backgroundColor": "#ffffff"
+      "backgroundColor": "#F8FBFF"
     },
     "assetBundlePatterns": [
       "**/*"
@@ -59,6 +63,15 @@
         "expo-screen-orientation",
         {
           "initialOrientation": "DEFAULT"
+        }
+      ],
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/splash-logo.png",
+          "backgroundColor": "#F8FBFF",
+          "imageWidth": 210,
+          "resizeMode": "contain"
         }
       ],
       "expo-font"

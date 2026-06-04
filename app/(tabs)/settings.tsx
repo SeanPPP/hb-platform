@@ -23,6 +23,11 @@ import { useDeviceStore } from "@/store/device-store";
 import { useStores } from "@/modules/shop/use-stores";
 import { resolveSettingsAuthMode, shouldShowProfileAction } from "@/modules/device/settings-mode";
 import { resolveDeviceStoreDisplayName } from "@/modules/device/store-display";
+import { buildAppUpdateInfoRows } from "@/modules/updates/app-update-info";
+import {
+  checkAndDownloadAppUpdate,
+  getCurrentAppUpdateInfo,
+} from "@/modules/updates/app-update-runtime";
 
 function resolveDeviceStatusText(
   status: number | undefined,
@@ -71,6 +76,8 @@ export default function Settings() {
   const [rawPrinters, setRawPrinters] = useState<PrinterDevice[]>([]);
   const [printerBusy, setPrinterBusy] = useState(false);
   const [filterXPOnly, setFilterXPOnly] = useState(true);
+  const [updateBusy, setUpdateBusy] = useState(false);
+  const [updateInfo, setUpdateInfo] = useState(() => getCurrentAppUpdateInfo());
 
   const canRegisterDevice = access.canManageDeviceRegistration;
   const settingsAuthMode = resolveSettingsAuthMode({
@@ -116,6 +123,7 @@ export default function Settings() {
     stores: sortedStores,
     fallback: t("device.selectStore"),
   });
+  const updateInfoRows = useMemo(() => buildAppUpdateInfoRows(updateInfo), [updateInfo]);
 
   const visiblePrinters = useMemo(() => {
     if (!filterXPOnly) {
@@ -234,6 +242,31 @@ export default function Settings() {
   const handleLanguageChange = async (nextLanguage: AppLanguage) => {
     setLanguageMenuVisible(false);
     await setAppLanguage(nextLanguage);
+  };
+
+  const handleCheckUpdates = async () => {
+    setUpdateBusy(true);
+    try {
+      // 手动检查只负责下载更新，避免在扫码、保存等操作中主动重载 App。
+      const result = await checkAndDownloadAppUpdate();
+      if (result.status === "downloaded") {
+        Alert.alert(t("dialogs.updateDownloadedTitle"), t("dialogs.updateDownloadedMessage"));
+      } else if (result.status === "not-available") {
+        Alert.alert(t("dialogs.updateNotAvailableTitle"), t("dialogs.updateNotAvailableMessage"));
+      } else if (result.status === "configuration-disabled") {
+        Alert.alert(t("dialogs.updateConfigurationDisabledTitle"), t("dialogs.updateConfigurationDisabledMessage"));
+      } else {
+        Alert.alert(t("dialogs.updateDisabledTitle"), t("dialogs.updateDisabledMessage"));
+      }
+    } catch (error) {
+      Alert.alert(
+        t("dialogs.updateCheckFailedTitle"),
+        getErrorMessage(error, "dialogs.updateCheckFailedMessage")
+      );
+    } finally {
+      setUpdateInfo(getCurrentAppUpdateInfo());
+      setUpdateBusy(false);
+    }
   };
 
   const handleRegisterDevice = async () => {
@@ -443,6 +476,35 @@ export default function Settings() {
             <Menu.Item title={t("common:language.zh")} onPress={() => void handleLanguageChange("zh")} />
             <Menu.Item title={t("common:language.en")} onPress={() => void handleLanguageChange("en")} />
           </Menu>
+        </Surface>
+
+        <Surface style={styles.card} elevation={1}>
+          <Text variant="titleMedium">{t("updates.title")}</Text>
+          <Text variant="bodyMedium" style={styles.meta}>
+            {t("updates.description")}
+          </Text>
+          <View style={styles.updateInfoList}>
+            {updateInfoRows.map((row) => (
+              <View key={row.key} style={styles.updateInfoRow}>
+                <Text variant="bodySmall" style={styles.updateInfoLabel}>
+                  {t(row.labelKey)}
+                </Text>
+                <Text variant="bodySmall" style={styles.updateInfoValue}>
+                  {row.value ?? t(row.valueKey ?? "updates.unknown")}
+                </Text>
+              </View>
+            ))}
+          </View>
+          <Button
+            mode="outlined"
+            icon="cloud-download-outline"
+            onPress={handleCheckUpdates}
+            loading={updateBusy}
+            disabled={updateBusy}
+            style={styles.secondaryButton}
+          >
+            {t("updates.check")}
+          </Button>
         </Surface>
 
         {canViewDeviceCard ? (
@@ -698,6 +760,14 @@ const styles = StyleSheet.create({
   card: { padding: 22, borderRadius: 18, gap: 12 },
   value: { marginTop: 8, fontWeight: "600" },
   meta: { color: "#666" },
+  updateInfoList: { gap: 8 },
+  updateInfoRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+  updateInfoLabel: { color: "#666", flexShrink: 0 },
+  updateInfoValue: { flex: 1, textAlign: "right", fontWeight: "600" },
   statusBlock: { gap: 6, marginTop: 4 },
   storePickerWrap: {
     marginTop: 4,

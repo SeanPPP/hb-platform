@@ -1,11 +1,14 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { Stack } from "expo-router";
+import * as SplashScreen from "expo-splash-screen";
+import { Image, StyleSheet, Text, View } from "react-native";
 import { PaperProvider, MD3LightTheme } from "react-native-paper";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { I18nextProvider } from "react-i18next";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { StatusBar } from "expo-status-bar";
 import { usePrinterAutoConnect } from "@/modules/printer/use-printer-auto-connect";
+import { waitForStartupReadiness } from "@/modules/startup/startup-readiness";
 import { i18n, initI18n } from "@/shared/i18n/i18n";
 import { useDeviceStore } from "@/store/device-store";
 
@@ -16,6 +19,17 @@ const queryClient = new QueryClient({
       retry: 1,
     },
   },
+});
+
+const MIN_SPLASH_VISIBLE_MS = 900;
+
+SplashScreen.preventAutoHideAsync().catch(() => {
+  // 启动画面可能已经被系统隐藏，忽略即可，避免启动流程被异常打断。
+});
+
+SplashScreen.setOptions({
+  duration: 700,
+  fade: true,
 });
 
 const theme = {
@@ -29,15 +43,81 @@ const theme = {
 };
 
 export default function RootLayout() {
+  const [appReady, setAppReady] = useState(false);
+  const [startupError, setStartupError] = useState<unknown>(null);
+
   usePrinterAutoConnect();
 
   useEffect(() => {
-    void initI18n();
+    let mounted = true;
+
+    async function prepareApp() {
+      // 等待语言与设备缓存完成，避免启动页过早消失后露出空白过渡。
+      const result = await waitForStartupReadiness(
+        [
+          initI18n(),
+          useDeviceStore.getState().hydrate(),
+        ],
+        MIN_SPLASH_VISIBLE_MS,
+      );
+
+      if (!mounted) {
+        return;
+      }
+
+      if (result.ok) {
+        setAppReady(true);
+      } else {
+        console.warn("[startup] prepare app before splash hide failed", result.error);
+        setStartupError(result.error);
+      }
+    }
+
+    void prepareApp();
+
+    return () => {
+      mounted = false;
+    };
   }, []);
 
   useEffect(() => {
-    void useDeviceStore.getState().hydrate();
-  }, []);
+    if (!appReady && !startupError) {
+      return;
+    }
+
+    const frame = requestAnimationFrame(() => {
+      void SplashScreen.hideAsync();
+    });
+
+    return () => {
+      cancelAnimationFrame(frame);
+    };
+  }, [appReady, startupError]);
+
+  if (startupError) {
+    return (
+      <View style={styles.splashFallback}>
+        <Image
+          source={require("../assets/splash-logo.png")}
+          style={styles.splashLogo}
+          resizeMode="contain"
+        />
+        <Text style={styles.startupErrorText}>启动失败，请重新打开应用</Text>
+      </View>
+    );
+  }
+
+  if (!appReady) {
+    return (
+      <View style={styles.splashFallback}>
+        <Image
+          source={require("../assets/splash-logo.png")}
+          style={styles.splashLogo}
+          resizeMode="contain"
+        />
+      </View>
+    );
+  }
 
   return (
     <SafeAreaProvider>
@@ -56,3 +136,22 @@ export default function RootLayout() {
     </SafeAreaProvider>
   );
 }
+
+const styles = StyleSheet.create({
+  splashFallback: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#F8FBFF",
+  },
+  splashLogo: {
+    width: 210,
+    height: 210,
+  },
+  startupErrorText: {
+    marginTop: 16,
+    color: "#334155",
+    fontSize: 15,
+    lineHeight: 22,
+  },
+});

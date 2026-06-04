@@ -6,6 +6,7 @@
     "start": "expo start",
     "android": "expo run:android",
     "ios": "expo run:ios",
+    "test:ota-config": "node scripts/check-ota-config.js",
     "test:i18n-locales": "node scripts/check-locale-parity.js",
     "test:public-holiday-sync": "npx --yes tsx src/modules/attendance/public-holiday-sync.test.ts",
     "web": "expo start --web"
@@ -34,7 +35,9 @@
     "expo-screen-orientation": "~9.0.9",
     "expo-secure-store": "~15.0.8",
     "expo-sharing": "~14.0.8",
+    "expo-splash-screen": "~31.0.13",
     "expo-status-bar": "~3.0.9",
+    "expo-updates": "~29.0.18",
     "i18next": "^26.2.0",
     "js-sha256": "^0.11.1",
     "react": "19.1.0",

@@ -13,6 +13,21 @@
   "language": {
     "description": "Change the app display language and apply it immediately."
   },
+  "updates": {
+    "title": "App updates",
+    "description": "The app downloads available updates silently and applies them the next time it opens.",
+    "version": "App version",
+    "runtime": "Runtime version",
+    "channel": "Update channel",
+    "source": "Current source",
+    "updateId": "Update ID",
+    "sourceEmbedded": "Embedded build",
+    "sourceOta": "OTA update",
+    "unknown": "Unknown",
+    "noChannel": "No channel configured",
+    "noUpdateId": "No update ID",
+    "check": "Check for updates"
+  },
   "device": {
     "title": "Device registration",
     "description": "Only store manager accounts can submit device registrations. After submission, an admin must enable the device before this device can enter the app directly on the next launch.",
@@ -92,7 +107,17 @@
     "printerTestSuccessTitle": "Test print sent",
     "printerTestSuccessMessage": "The label printer received the test job.",
     "printerClearedTitle": "Printer cleared",
-    "printerClearedMessage": "The saved label printer has been removed."
+    "printerClearedMessage": "The saved label printer has been removed.",
+    "updateDownloadedTitle": "Update downloaded",
+    "updateDownloadedMessage": "The new app update has been downloaded and will apply the next time the app opens.",
+    "updateNotAvailableTitle": "Already up to date",
+    "updateNotAvailableMessage": "No update is available right now.",
+    "updateDisabledTitle": "Updates unavailable",
+    "updateDisabledMessage": "Development mode cannot check OTA updates. Use a preview or production build to verify.",
+    "updateConfigurationDisabledTitle": "OTA is not enabled",
+    "updateConfigurationDisabledMessage": "This build has OTA updates disabled. Check updates.url, runtimeVersion, and native configuration before rebuilding.",
+    "updateCheckFailedTitle": "Update check failed",
+    "updateCheckFailedMessage": "Failed to check for updates. Please try again later."
   },
   "messages": {
     "profileLoginRequired": "Sign in with an account before opening your profile."
