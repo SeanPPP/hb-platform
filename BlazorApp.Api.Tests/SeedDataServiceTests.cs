@@ -125,6 +125,36 @@ namespace BlazorApp.Api.Tests
         }
 
         [Fact]
+        public void RolePermissionTemplates_WarehouseStaff_UseWarehouseProductAndLocationPermissionsOnly()
+        {
+            var template = Assert.Single(
+                PermissionSeedData.RolePermissionTemplates,
+                item => item.RoleName == "WarehouseStaff"
+            );
+            var expectedPermissionCodes = new[]
+            {
+                Permissions.Warehouse.View,
+                Permissions.Warehouse.Manage,
+                Permissions.Warehouse.ManageProducts,
+                Permissions.Warehouse.ManageLocations,
+            };
+
+            Assert.Equal(
+                expectedPermissionCodes.OrderBy(code => code),
+                template.PermissionCodes.OrderBy(code => code)
+            );
+            Assert.DoesNotContain(
+                template.PermissionCodes,
+                code => code.StartsWith("Container.", StringComparison.OrdinalIgnoreCase)
+            );
+            Assert.DoesNotContain(Permissions.Warehouse.ManageCategories, template.PermissionCodes);
+            Assert.DoesNotContain(Permissions.Warehouse.ManageOrders, template.PermissionCodes);
+            Assert.DoesNotContain(Permissions.Reports.View, template.PermissionCodes);
+            Assert.DoesNotContain(Permissions.DomesticPurchase.ManageProducts, template.PermissionCodes);
+            Assert.DoesNotContain(Permissions.Stores.View, template.PermissionCodes);
+        }
+
+        [Fact]
         public void DeprecatedPermissionCodes_AreNotActiveSeeds()
         {
             var activeSeedCodes = PermissionSeedData.AllPermissions
@@ -268,6 +298,7 @@ namespace BlazorApp.Api.Tests
             var storeManagerRole = CreateRole("role-store-manager", "StoreManager", "Store manager");
             var managerRole = CreateRole("role-manager", "Manager", "Manager");
             var userRole = CreateRole("role-user", "User", "User");
+            var warehouseStaffRole = CreateRole("role-warehouse-staff", "WarehouseStaff", "Warehouse staff");
             var storeStaffRole = CreateRole("role-store-staff", "StoreStaff", "Store staff");
             var orderRole = CreateRole("role-order", "Order", "Order");
             var chineseOrderRole = CreateRole("role-order-cn", "订货员", "订货员");
@@ -280,6 +311,7 @@ namespace BlazorApp.Api.Tests
                     storeManagerRole,
                     managerRole,
                     userRole,
+                    warehouseStaffRole,
                     storeStaffRole,
                     orderRole,
                     chineseOrderRole,
@@ -306,6 +338,37 @@ namespace BlazorApp.Api.Tests
                         Id = "store-manager-existing-template",
                         RoleGuid = storeManagerRole.RoleGUID,
                         PermissionCode = Permissions.Attendance.Schedule.ViewSelf,
+                    },
+                    new SysRolePermission
+                    {
+                        Id = "warehouse-staff-existing-template",
+                        RoleGuid = warehouseStaffRole.RoleGUID,
+                        PermissionCode = Permissions.Warehouse.View,
+                    },
+                    new SysRolePermission
+                    {
+                        Id = "warehouse-staff-existing-container",
+                        RoleGuid = warehouseStaffRole.RoleGUID,
+                        PermissionCode = Permissions.Container.Edit,
+                    },
+                    new SysRolePermission
+                    {
+                        Id = "warehouse-staff-soft-deleted-product",
+                        RoleGuid = warehouseStaffRole.RoleGUID,
+                        PermissionCode = Permissions.Warehouse.ManageProducts,
+                        IsDeleted = true,
+                    },
+                    new SysRolePermission
+                    {
+                        Id = "warehouse-staff-existing-order",
+                        RoleGuid = warehouseStaffRole.RoleGUID,
+                        PermissionCode = Permissions.Warehouse.ManageOrders,
+                    },
+                    new SysRolePermission
+                    {
+                        Id = "warehouse-staff-existing-store",
+                        RoleGuid = warehouseStaffRole.RoleGUID,
+                        PermissionCode = Permissions.Stores.View,
                     },
                     new SysRolePermission
                     {
@@ -338,6 +401,7 @@ namespace BlazorApp.Api.Tests
                 .Where(item => PermissionSeedData.AttendancePermissions.Any(seed => seed.Code == item.Code))
                 .ToList();
             var allRolePermissions = await _db.Queryable<SysRolePermission>().ToListAsync();
+            var activeRolePermissions = allRolePermissions.Where(item => !item.IsDeleted).ToList();
             var adminPermissionCodes = allRolePermissions
                 .Where(item => item.RoleGuid == adminRole.RoleGUID)
                 .Select(item => item.PermissionCode)
@@ -372,6 +436,11 @@ namespace BlazorApp.Api.Tests
             );
             AssertRolePermissionsMatchTemplate(
                 allRolePermissions,
+                warehouseStaffRole.RoleGUID,
+                "WarehouseStaff"
+            );
+            AssertRolePermissionsMatchTemplate(
+                allRolePermissions,
                 storeStaffRole.RoleGUID,
                 "StoreStaff"
             );
@@ -393,7 +462,7 @@ namespace BlazorApp.Api.Tests
                 "订货员"
             );
             Assert.DoesNotContain(
-                allRolePermissions,
+                activeRolePermissions,
                 item =>
                     (item.RoleGuid == orderRole.RoleGUID || item.RoleGuid == chineseOrderRole.RoleGUID)
                     && item.PermissionCode.StartsWith("Attendance.", StringComparison.OrdinalIgnoreCase)
@@ -412,8 +481,8 @@ namespace BlazorApp.Api.Tests
 
             Assert.Equal(expectedStoreManagerPermissions, actualStoreManagerPermissions);
             Assert.Equal(
-                allRolePermissions.Count,
-                allRolePermissions
+                activeRolePermissions.Count,
+                activeRolePermissions
                     .Select(item => $"{item.RoleGuid}:{item.PermissionCode}".ToLowerInvariant())
                     .Distinct()
                     .Count()
@@ -670,6 +739,7 @@ namespace BlazorApp.Api.Tests
 
             Assert.Contains("User", roleNames);
             Assert.Contains("Order", roleNames);
+            Assert.Contains("WarehouseStaff", roleNames);
             Assert.Contains("StoreManager", roleNames);
             Assert.Contains("StoreStaff", roleNames);
             Assert.Equal("custom admin", adminRole.Description);
@@ -721,6 +791,7 @@ namespace BlazorApp.Api.Tests
         {
             return allRolePermissions
                 .Where(item => item.RoleGuid == roleGuid)
+                .Where(item => !item.IsDeleted)
                 .Select(item => item.PermissionCode)
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToList();

@@ -4,6 +4,7 @@ using BlazorApp.Shared.DTOs;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using System.Security.Claims;
+using System.Text.Json;
 
 namespace BlazorApp.Api.Controllers.React
 {
@@ -196,11 +197,20 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPost("{locationGuid}/products/{productCode}")]
-        [Authorize(Roles = "Admin,WarehouseManager")]
+        [AllowAnonymous]
         public async Task<IActionResult> BindProduct(string locationGuid, string productCode)
         {
             try
             {
+                var access = await ResolveWriteAccessAsync();
+                if (!access.IsAllowed)
+                {
+                    Console.WriteLine(
+                        $"[ReactLocation.BindProduct] 授权失败 LocationGuid={locationGuid}, ProductCode={productCode}, Message={access.Message}"
+                    );
+                    return Unauthorized(new { success = false, message = access.Message });
+                }
+
                 var result = await _locationService.BindProductAsync(locationGuid, productCode);
                 if (!result.Success)
                 {
@@ -248,7 +258,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPost("{locationGuid}/products/bind")]
-        [Authorize(Roles = "Admin,WarehouseManager")]
+        [AllowAnonymous]
         public async Task<IActionResult> BindProductByIdentifier(
             string locationGuid,
             [FromBody] BindLocationProductReactDto dto
@@ -256,6 +266,15 @@ namespace BlazorApp.Api.Controllers.React
         {
             try
             {
+                var access = await ResolveWriteAccessAsync();
+                if (!access.IsAllowed)
+                {
+                    Console.WriteLine(
+                        $"[ReactLocation.BindProduct] 授权失败 LocationGuid={locationGuid}, Message={access.Message}"
+                    );
+                    return Unauthorized(new { success = false, message = access.Message });
+                }
+
                 if (dto == null)
                 {
                     return BadRequest(new { success = false, message = "请求参数不能为空" });
@@ -266,9 +285,17 @@ namespace BlazorApp.Api.Controllers.React
                     ?? dto.ItemNumber
                     ?? dto.Barcode;
 
+                Console.WriteLine(
+                    $"[ReactLocation.BindProduct] 收到绑定请求 LocationGuid={locationGuid}, ProductIdentifier={dto.ProductIdentifier}, ProductCode={dto.ProductCode}, ItemNumber={dto.ItemNumber}, Barcode={dto.Barcode}, SelectedIdentifier={productIdentifier}"
+                );
+
                 var result = await _locationService.BindProductAsync(locationGuid, productIdentifier ?? string.Empty);
                 if (!result.Success)
                 {
+                    Console.WriteLine(
+                        $"[ReactLocation.BindProduct] 绑定失败 LocationGuid={locationGuid}, SelectedIdentifier={productIdentifier}, ErrorCode={result.ErrorCode}, Message={result.Message}, Details={JsonSerializer.Serialize(result.Details)}"
+                    );
+
                     if (result.ErrorCode == "NOT_FOUND")
                     {
                         return NotFound(ToErrorBody(result));
@@ -277,24 +304,48 @@ namespace BlazorApp.Api.Controllers.React
                     return BadRequest(ToErrorBody(result));
                 }
 
+                Console.WriteLine(
+                    $"[ReactLocation.BindProduct] 绑定成功 LocationGuid={locationGuid}, SelectedIdentifier={productIdentifier}"
+                );
+
                 return Ok(new { success = true, data = result.Data, message = result.Message });
             }
             catch (Exception ex)
             {
+                Console.WriteLine(
+                    $"[ReactLocation.BindProduct] 绑定异常 LocationGuid={locationGuid}, Error={ex}"
+                );
                 _logger.LogError(ex, "绑定货位商品失败: {LocationGuid}", locationGuid);
                 return StatusCode(500, new { success = false, message = "服务器内部错误" });
             }
         }
 
         [HttpDelete("{locationGuid}/products/{productCode}")]
-        [Authorize(Roles = "Admin,WarehouseManager")]
+        [AllowAnonymous]
         public async Task<IActionResult> UnbindProduct(string locationGuid, string productCode)
         {
             try
             {
+                var access = await ResolveWriteAccessAsync();
+                if (!access.IsAllowed)
+                {
+                    Console.WriteLine(
+                        $"[ReactLocation.UnbindProduct] 授权失败 LocationGuid={locationGuid}, ProductCode={productCode}, Message={access.Message}"
+                    );
+                    return Unauthorized(new { success = false, message = access.Message });
+                }
+
+                Console.WriteLine(
+                    $"[ReactLocation.UnbindProduct] 收到解绑请求 LocationGuid={locationGuid}, ProductCode={productCode}"
+                );
+
                 var result = await _locationService.UnbindProductAsync(locationGuid, productCode);
                 if (!result.Success)
                 {
+                    Console.WriteLine(
+                        $"[ReactLocation.UnbindProduct] 解绑失败 LocationGuid={locationGuid}, ProductCode={productCode}, ErrorCode={result.ErrorCode}, Message={result.Message}, Details={JsonSerializer.Serialize(result.Details)}"
+                    );
+
                     if (result.ErrorCode == "NOT_FOUND")
                     {
                         return NotFound(ToErrorBody(result));
@@ -303,10 +354,17 @@ namespace BlazorApp.Api.Controllers.React
                     return BadRequest(ToErrorBody(result));
                 }
 
+                Console.WriteLine(
+                    $"[ReactLocation.UnbindProduct] 解绑成功 LocationGuid={locationGuid}, ProductCode={productCode}"
+                );
+
                 return Ok(new { success = true, data = result.Data, message = result.Message });
             }
             catch (Exception ex)
             {
+                Console.WriteLine(
+                    $"[ReactLocation.UnbindProduct] 解绑异常 LocationGuid={locationGuid}, ProductCode={productCode}, Error={ex}"
+                );
                 _logger.LogError(ex, "解绑货位商品失败: {LocationGuid} {ProductCode}", locationGuid, productCode);
                 return StatusCode(500, new { success = false, message = "服务器内部错误" });
             }
@@ -342,6 +400,18 @@ namespace BlazorApp.Api.Controllers.React
             return deviceEntity.设备状态 == 1
                 ? LocationReadAccessContext.Allow()
                 : LocationReadAccessContext.Deny("设备未启用");
+        }
+
+        private async Task<LocationReadAccessContext> ResolveWriteAccessAsync()
+        {
+            if (User?.Identity?.IsAuthenticated == true)
+            {
+                return HasAnyRole("Admin", "WarehouseManager", "WarehouseStaff")
+                    ? LocationReadAccessContext.Allow()
+                    : LocationReadAccessContext.Deny("当前账号没有仓库绑定权限");
+            }
+
+            return await ResolveReadAccessAsync();
         }
 
         private bool HasAnyRole(params string[] roles)

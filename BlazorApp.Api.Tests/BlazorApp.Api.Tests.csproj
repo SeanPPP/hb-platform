@@ -25,6 +25,7 @@
   <ItemGroup>
     <Compile Include="StoreProductMaintenanceSyncHelperTests.cs" />
     <Compile Include="StoreProductMaintenanceClearanceBarcodeHelperTests.cs" />
+    <Compile Include="ReactLocationControllerTests.cs" />
     <Compile Include="ReactProductWarehouseControllerTests.cs" />
     <Compile Include="DeviceRegistrationControllerTests.cs" />
     <Compile Include="DeviceRegistrationReactServiceTests.cs" />
@@ -43,6 +44,7 @@
     <Compile Include="RoleServicePermissionTests.cs" />
     <Compile Include="SeasonalCardRemainingReactServiceTests.cs" />
     <Compile Include="LocalSupplierInvoicesReactServiceTests.cs" />
+    <Compile Include="LocationReactServiceTests.cs" />
     <Compile Include="ProductWarehouseReactServiceTests.cs" />
     <Compile Include="ProductWarehouseReactServiceNonHotbargainTests.cs" />
     <Compile Include="ProductWarehouseReactServiceSyncTests.cs" />

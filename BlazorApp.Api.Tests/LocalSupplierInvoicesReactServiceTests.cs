@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Security.Claims;
@@ -37,6 +38,7 @@ namespace BlazorApp.Api.Tests
                 DbType = DbType.Sqlite,
                 IsAutoCloseConnection = false,
                 InitKeyType = InitKeyType.Attribute,
+                MoreSettings = new ConnMoreSettings(),
             });
 
             _db.CodeFirst.InitTables(
@@ -430,6 +432,34 @@ namespace BlazorApp.Api.Tests
                 sql => sql.Contains("UPPER", StringComparison.OrdinalIgnoreCase)
                     && sql.Contains("ItemNumber", StringComparison.OrdinalIgnoreCase)
             );
+        }
+
+        [Fact]
+        public async Task QueryInChunksParallelAsync_多Chunk查询使用独立连接()
+        {
+            var service = CreateService();
+            var method = typeof(LocalSupplierInvoicesReactService)
+                .GetMethod("QueryInChunksParallelAsync", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .MakeGenericMethod(typeof(string), typeof(string));
+            var keys = Enumerable.Range(1, 6).Select(index => $"K{index:000}").ToList();
+            var clientsByFirstKey = new ConcurrentDictionary<string, ISqlSugarClient>();
+
+            Func<ISqlSugarClient, List<string>, Task<List<string>>> fetch = (db, chunk) =>
+            {
+                clientsByFirstKey[chunk[0]] = db;
+                return Task.FromResult(chunk.ToList());
+            };
+
+            var task = (Task<List<string>>)method.Invoke(
+                service,
+                new object[] { keys, 2, fetch, 3 }
+            )!;
+            var result = await task;
+
+            Assert.Equal(keys, result);
+            Assert.Equal(3, clientsByFirstKey.Count);
+            Assert.NotSame(clientsByFirstKey["K001"], clientsByFirstKey["K003"]);
+            Assert.NotSame(clientsByFirstKey["K003"], clientsByFirstKey["K005"]);
         }
 
         [Fact]

@@ -99,6 +99,12 @@ namespace BlazorApp.Api.Services
             AddRoleIfMissing(
                 existingRoles,
                 rolesToCreate,
+                "WarehouseStaff",
+                "Warehouse staff role for product and location operations"
+            );
+            AddRoleIfMissing(
+                existingRoles,
+                rolesToCreate,
                 "StoreManager",
                 "Store manager role for branch staff maintenance"
             );
@@ -592,7 +598,7 @@ namespace BlazorApp.Api.Services
             var roleByName = roles.ToDictionary(role => role.RoleName, StringComparer.OrdinalIgnoreCase);
             var roleGuids = roles.Select(role => role.RoleGUID).ToList();
             var existingRolePermissions = await db.Queryable<SysRolePermission>()
-                .Where(permission => roleGuids.Contains(permission.RoleGuid))
+                .Where(permission => roleGuids.Contains(permission.RoleGuid) && !permission.IsDeleted)
                 .ToListAsync();
             var orderRoleGuids = roles
                 .Where(role => OrderRoleNames.Contains(role.RoleName, StringComparer.OrdinalIgnoreCase))
@@ -620,6 +626,38 @@ namespace BlazorApp.Api.Services
                 _logger.LogInformation(
                     "已清理 Order/订货员 角色的 {Count} 条历史考勤权限关联",
                     removedOrderAttendanceLinks
+                );
+            }
+
+            var strictRoleTemplatePermissionsByRoleGuid = roleTemplates
+                .Where(template => template.RoleName.Equals("WarehouseStaff", StringComparison.OrdinalIgnoreCase))
+                .Where(template => roleByName.ContainsKey(template.RoleName))
+                .ToDictionary(
+                    template => roleByName[template.RoleName].RoleGUID,
+                    template => template.PermissionCodes.ToHashSet(StringComparer.OrdinalIgnoreCase),
+                    StringComparer.OrdinalIgnoreCase
+                );
+            var staleStrictRolePermissionIds = existingRolePermissions
+                .Where(permission =>
+                    strictRoleTemplatePermissionsByRoleGuid.TryGetValue(permission.RoleGuid, out var allowedCodes)
+                    && !allowedCodes.Contains(permission.PermissionCode)
+                )
+                .Select(permission => permission.Id)
+                .Where(id => !string.IsNullOrWhiteSpace(id))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            if (staleStrictRolePermissionIds.Any())
+            {
+                var removedStrictRoleLinks = await db.Deleteable<SysRolePermission>()
+                    .Where(permission => staleStrictRolePermissionIds.Contains(permission.Id))
+                    .ExecuteCommandAsync();
+                existingRolePermissions = existingRolePermissions
+                    .Where(permission => !staleStrictRolePermissionIds.Contains(permission.Id))
+                    .ToList();
+                _logger.LogInformation(
+                    "已收敛 WarehouseStaff 角色的 {Count} 条非模板权限关联",
+                    removedStrictRoleLinks
                 );
             }
 

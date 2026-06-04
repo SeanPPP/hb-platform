@@ -207,6 +207,16 @@ namespace BlazorApp.Shared.Constants
                     }
                 ),
                 new(
+                    "WarehouseStaff",
+                    new[]
+                    {
+                        Permissions.Warehouse.View,
+                        Permissions.Warehouse.Manage,
+                        Permissions.Warehouse.ManageProducts,
+                        Permissions.Warehouse.ManageLocations,
+                    }
+                ),
+                new(
                     "StoreManager",
                     new[]
                     {

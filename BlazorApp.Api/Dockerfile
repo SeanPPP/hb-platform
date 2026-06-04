@@ -40,6 +40,11 @@ FROM mcr.microsoft.com/dotnet/aspnet:9.0 AS final
 
 WORKDIR /app
 
+# 安装健康检查所需的 curl，避免容器实际可用但 healthcheck 因工具缺失误报异常。
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends curl && \
+    rm -rf /var/lib/apt/lists/*
+
 # 创建非root用户以增强安全性
 RUN adduser --disabled-password --gecos "" appuser && chown -R appuser /app
 USER appuser

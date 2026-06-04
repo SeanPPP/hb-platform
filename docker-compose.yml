@@ -3,8 +3,8 @@ services:
     build:
       context: .
       dockerfile: BlazorApp.Api/Dockerfile
-    image: blazorapphbweb_hb-api:local
-    container_name: hb-platform-api
+    image: blazorapphbweb_hb-api_vite:local
+    container_name: hb-platform-vite-api
     ports:
       - "5002:5002"
     environment:
@@ -36,7 +36,7 @@ services:
     networks:
       - hb-network
     healthcheck:
-      test: ["CMD-SHELL", "wget  -f http://localhost:5002/api/health || exit 1"]
+      test: ["CMD-SHELL", "curl -f http://localhost:5002/api/health || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3

@@ -1445,7 +1445,7 @@ namespace BlazorApp.Api.Services.React
 
         /// <summary>
         /// 并行分块查询，用于提升大数据量查询性能
-        /// 使用事务控制连接生命周期，确保并发查询时连接不会被提前关闭
+        /// 多 chunk 使用独立查询连接，避免并发共享 SqlSugarClient 初始化映射缓存时修改集合
         /// 参考：https://www.donet5.com/home/doc?masterId=1&amp;typeId=2349
         /// </summary>
         private async Task<List<T>> QueryInChunksParallelAsync<T, TKey>(
@@ -1481,49 +1481,41 @@ namespace BlazorApp.Api.Services.React
                 return singleResult ?? new List<T>();
             }
 
-            db.Ado.BeginTran();
-            try
-            {
-                var result = new List<T>[chunks.Count];
-                var semaphore = new SemaphoreSlim(maxConcurrency, maxConcurrency);
+            var result = new List<T>[chunks.Count];
+            var semaphore = new SemaphoreSlim(maxConcurrency, maxConcurrency);
 
-                var tasks = chunks
-                    .Select(
-                        (chunk, index) =>
+            var tasks = chunks
+                .Select(
+                    (chunk, index) =>
+                    {
+                        return Task.Run(async () =>
                         {
-                            return Task.Run(async () =>
+                            await semaphore.WaitAsync();
+                            try
                             {
-                                await semaphore.WaitAsync();
-                                try
-                                {
-                                    var part = await fetch(db, chunk);
-                                    result[index] = part ?? new List<T>();
-                                }
-                                finally
-                                {
-                                    semaphore.Release();
-                                }
-                            });
-                        }
-                    )
-                    .ToArray();
+                                // 并发 chunk 不能共享同一个 SqlSugarClient，避免 Queryable 初始化映射缓存时互相修改集合。
+                                using var queryDb = _context.CreateConcurrentQueryConnection();
+                                var part = await fetch(queryDb, chunk);
+                                result[index] = part ?? new List<T>();
+                            }
+                            finally
+                            {
+                                semaphore.Release();
+                            }
+                        });
+                    }
+                )
+                .ToArray();
 
-                await Task.WhenAll(tasks);
-                db.Ado.CommitTran();
+            await Task.WhenAll(tasks);
 
-                var finalResult = new List<T>(result.Sum(r => r?.Count ?? 0));
-                foreach (var r in result)
-                {
-                    if (r != null && r.Count > 0)
-                        finalResult.AddRange(r);
-                }
-                return finalResult;
-            }
-            catch
+            var finalResult = new List<T>(result.Sum(r => r?.Count ?? 0));
+            foreach (var r in result)
             {
-                db.Ado.RollbackTran();
-                throw;
+                if (r != null && r.Count > 0)
+                    finalResult.AddRange(r);
             }
+            return finalResult;
         }
 
         private static bool IsLikelyBarcode(string? s)

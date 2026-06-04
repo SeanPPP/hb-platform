@@ -374,7 +374,7 @@ namespace BlazorApp.Api.Services.React
             }
 
             var lowered = trimmed.ToLower();
-            var locations = await _context
+            var locationMatches = await _context
                 .Db.Queryable<Location>()
                 .Where(l =>
                     !l.IsDeleted
@@ -387,6 +387,41 @@ namespace BlazorApp.Api.Services.React
                 .Take(20)
                 .ToListAsync();
 
+            var productMatches = await _context
+                .Db.Queryable<ProductLocation>()
+                .InnerJoin<Product>((pl, p) => pl.ProductCode == p.ProductCode && !p.IsDeleted)
+                .InnerJoin<Location>((pl, p, l) => pl.LocationGuid == l.LocationGuid && !l.IsDeleted)
+                .Where((pl, p, l) =>
+                    !pl.IsDeleted
+                    && pl.LocationGuid != null
+                    && (
+                        (p.ProductCode != null && p.ProductCode.ToLower().Contains(lowered))
+                        || (p.ItemNumber != null && p.ItemNumber.ToLower().Contains(lowered))
+                        || (p.Barcode != null && p.Barcode.ToLower().Contains(lowered))
+                    )
+                )
+                .Select((pl, p, l) => new Location
+                {
+                    LocationGuid = l.LocationGuid,
+                    LocationCode = l.LocationCode,
+                    LocationBarcode = l.LocationBarcode,
+                    Status = l.Status,
+                    LocationType = l.LocationType,
+                })
+                .Distinct()
+                .MergeTable()
+                .OrderBy(l => l.LocationCode)
+                .Take(20)
+                .ToListAsync();
+
+            var locations = locationMatches
+                .Concat(productMatches)
+                .GroupBy(location => location.LocationGuid)
+                .Select(group => group.First())
+                .OrderBy(location => location.LocationCode)
+                .Take(20)
+                .ToList();
+
             if (locations.Count == 0)
             {
                 return new List<LocationLookupItemDto>();
@@ -395,9 +430,10 @@ namespace BlazorApp.Api.Services.React
             var locationGuids = locations.Select(item => item.LocationGuid).ToList();
             var counts = await _context
                 .Db.Queryable<ProductLocation>()
-                .Where(pl => !pl.IsDeleted && locationGuids.Contains(pl.LocationGuid!))
-                .GroupBy(pl => pl.LocationGuid)
-                .Select(pl => new { LocationGuid = pl.LocationGuid, Count = SqlFunc.AggregateCount(pl.Guid) })
+                .InnerJoin<Product>((pl, p) => pl.ProductCode == p.ProductCode && !p.IsDeleted)
+                .Where((pl, p) => !pl.IsDeleted && locationGuids.Contains(pl.LocationGuid!))
+                .GroupBy((pl, p) => pl.LocationGuid)
+                .Select((pl, p) => new { LocationGuid = pl.LocationGuid, Count = SqlFunc.AggregateCount(pl.Guid) })
                 .ToListAsync();
 
             var countMap = counts.ToDictionary(item => item.LocationGuid ?? string.Empty, item => item.Count);
@@ -421,18 +457,32 @@ namespace BlazorApp.Api.Services.React
             var transactionStarted = false;
             try
             {
+                Console.WriteLine(
+                    $"[LocationReactService.BindProduct] 开始绑定 LocationGuid={locationGuid}, ProductIdentifier={productIdentifier}"
+                );
+
                 var location = await _context
                     .Db.Queryable<Location>()
                     .Where(l => l.LocationGuid == locationGuid && !l.IsDeleted)
                     .FirstAsync();
                 if (location == null)
                 {
+                    Console.WriteLine(
+                        $"[LocationReactService.BindProduct] 绑定失败：货位不存在 LocationGuid={locationGuid}, ProductIdentifier={productIdentifier}"
+                    );
                     return ApiResponse<LocationReactDto>.Error("货位不存在", "NOT_FOUND");
                 }
+
+                Console.WriteLine(
+                    $"[LocationReactService.BindProduct] 命中货位 LocationGuid={locationGuid}, LocationCode={location.LocationCode}, LocationBarcode={location.LocationBarcode}, LocationType={location.LocationType}"
+                );
 
                 var productResult = await ResolveProductAsync(productIdentifier);
                 if (!productResult.Success || productResult.Data == null)
                 {
+                    Console.WriteLine(
+                        $"[LocationReactService.BindProduct] 绑定失败：商品解析失败 LocationGuid={locationGuid}, ProductIdentifier={productIdentifier}, ErrorCode={productResult.ErrorCode}, Message={productResult.Message}"
+                    );
                     return ApiResponse<LocationReactDto>.Error(
                         productResult.Message,
                         productResult.ErrorCode,
@@ -441,12 +491,19 @@ namespace BlazorApp.Api.Services.React
                 }
 
                 var productCode = productResult.Data.ProductCode;
+                Console.WriteLine(
+                    $"[LocationReactService.BindProduct] 命中商品 LocationGuid={locationGuid}, ProductIdentifier={productIdentifier}, ProductCode={productCode}, MatchedBy={productResult.Data.MatchedBy}, MatchedValue={productResult.Data.MatchedValue}"
+                );
+
                 var warehouseProduct = await _context
                     .Db.Queryable<WarehouseProduct>()
                     .Where(w => w.ProductCode == productCode && !w.IsDeleted)
                     .FirstAsync();
                 if (warehouseProduct == null)
                 {
+                    Console.WriteLine(
+                        $"[LocationReactService.BindProduct] 绑定失败：仓库商品不存在 LocationGuid={locationGuid}, ProductCode={productCode}"
+                    );
                     return ApiResponse<LocationReactDto>.Error("仓库商品不存在", "NOT_FOUND");
                 }
 
@@ -459,6 +516,9 @@ namespace BlazorApp.Api.Services.React
                     );
                 if (existingSameBinding)
                 {
+                    Console.WriteLine(
+                        $"[LocationReactService.BindProduct] 已存在相同绑定，直接返回 LocationGuid={locationGuid}, ProductCode={productCode}"
+                    );
                     return await GetByIdAsync(locationGuid);
                 }
 
@@ -471,6 +531,9 @@ namespace BlazorApp.Api.Services.React
 
                     if (existingLocationProduct != null)
                     {
+                        Console.WriteLine(
+                            $"[LocationReactService.BindProduct] 绑定失败：配货位已有商品 LocationGuid={locationGuid}, LocationCode={location.LocationCode}, ExistingProductCode={existingLocationProduct.ProductCode}, NewProductCode={productCode}"
+                        );
                         return ApiResponse<LocationReactDto>.Error(
                             "该配货位已绑定商品，请解绑后继续绑定新的货位",
                             "PICKING_LOCATION_ALREADY_BOUND",
@@ -498,6 +561,9 @@ namespace BlazorApp.Api.Services.React
 
                     if (existingPickingLocation != null)
                     {
+                        Console.WriteLine(
+                            $"[LocationReactService.BindProduct] 绑定失败：商品已绑定配货位 ProductCode={productCode}, ExistingLocationGuid={existingPickingLocation.LocationGuid}, ExistingLocationCode={existingPickingLocation.LocationCode}, NewLocationGuid={locationGuid}, NewLocationCode={location.LocationCode}"
+                        );
                         return ApiResponse<LocationReactDto>.Error(
                             "该商品已绑定配货位，请解绑后继续绑定新的货位",
                             "PRODUCT_PICKING_LOCATION_ALREADY_BOUND",
@@ -512,6 +578,9 @@ namespace BlazorApp.Api.Services.React
                 }
                 else if (location.LocationType != StorageLocationType)
                 {
+                    Console.WriteLine(
+                        $"[LocationReactService.BindProduct] 绑定失败：货位类型无效 LocationGuid={locationGuid}, LocationCode={location.LocationCode}, LocationType={location.LocationType}, ProductCode={productCode}"
+                    );
                     return ApiResponse<LocationReactDto>.Error(
                         "货位类型只能是1=配货位或2=存货位",
                         "INVALID_LOCATION_TYPE"
@@ -536,6 +605,9 @@ namespace BlazorApp.Api.Services.React
                     .ExecuteCommandAsync();
 
                 await _context.Db.Ado.CommitTranAsync();
+                Console.WriteLine(
+                    $"[LocationReactService.BindProduct] 写入绑定成功 LocationGuid={locationGuid}, LocationCode={location.LocationCode}, LocationType={location.LocationType}, ProductCode={productCode}, CreatedBy={username}"
+                );
                 return await GetByIdAsync(locationGuid);
             }
             catch (Exception ex)
@@ -544,6 +616,9 @@ namespace BlazorApp.Api.Services.React
                 {
                     await _context.Db.Ado.RollbackTranAsync();
                 }
+                Console.WriteLine(
+                    $"[LocationReactService.BindProduct] 绑定异常 LocationGuid={locationGuid}, ProductIdentifier={productIdentifier}, TransactionStarted={transactionStarted}, Error={ex}"
+                );
                 _logger.LogError(ex, "绑定货位商品失败: {LocationGuid} {ProductIdentifier}", locationGuid, productIdentifier);
                 return ApiResponse<LocationReactDto>.Error("绑定商品失败", "DATABASE_ERROR", ex.Message);
             }
