@@ -1,11 +1,17 @@
 import { AppAsyncStorage } from "@/shared/storage/async-storage";
 
 const API_HOST_STORAGE_KEY = "hbweb_api_host";
-export const DEFAULT_API_HOST = normalizeApiHost(process.env.EXPO_PUBLIC_API_BASE_URL) || "192.168.31.247";
+export const DEFAULT_API_HOST = normalizeApiHost(process.env.EXPO_PUBLIC_API_BASE_URL) || "hotbargain.vip";
 export const API_PROTOCOL = "http";
-export const API_PORT = "5001";
+export const API_PORT = "5002";
 export const API_PATH = "/api";
+const PRODUCTION_API_HOST = "hotbargain.vip";
 export const DEFAULT_API_BASE_URL = buildApiBaseUrl(DEFAULT_API_HOST);
+// 服务器设置弹窗使用的预设地址，线上地址必须放在首位作为发布默认选项。
+export const API_HOST_PRESETS = [
+  { key: "production", host: "hotbargain.vip", labelKey: "apiHost.presets.production" },
+  { key: "local", host: "192.168.31.247", labelKey: "apiHost.presets.local" },
+] as const;
 
 let cachedApiHost = DEFAULT_API_HOST;
 
@@ -29,6 +35,10 @@ export function normalizeApiHost(input?: string | null) {
 }
 
 export function buildApiBaseUrl(host: string) {
+  // 生产域名通过 Nginx HTTPS 代理进入 5002，移动端不再直连明文端口。
+  if (host === PRODUCTION_API_HOST) {
+    return `https://${host}${API_PATH}`;
+  }
   return `${API_PROTOCOL}://${host}:${API_PORT}${API_PATH}`;
 }
 
@@ -48,4 +58,3 @@ export async function setStoredApiHost(input: string) {
   await AppAsyncStorage.setString(API_HOST_STORAGE_KEY, host);
   return host;
 }
-

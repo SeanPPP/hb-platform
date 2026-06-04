@@ -37,7 +37,13 @@ import { useAppNavigationStore } from "@/modules/navigation/store";
 import { i18n, setAppLanguage } from "@/shared/i18n/i18n";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 import { AppAsyncStorage } from "@/shared/storage/async-storage";
-import { getCurrentApiHost, getStoredApiHost, normalizeApiHost, setStoredApiHost } from "@/shared/api/config";
+import {
+  API_HOST_PRESETS,
+  getCurrentApiHost,
+  getStoredApiHost,
+  normalizeApiHost,
+  setStoredApiHost,
+} from "@/shared/api/config";
 
 const REMEMBERED_USERNAME_KEY = "remembered_username";
 const BRAND_RED = "#E53935";
@@ -524,6 +530,25 @@ export default function Login() {
             <Text style={styles.apiHostLabel}>{t("apiHost.current")}</Text>
             <Text style={styles.apiHostValue} numberOfLines={1}>{apiHost}</Text>
           </View>
+          <Text style={styles.apiHostLabel}>{t("apiHost.presets.label")}</Text>
+          <View style={styles.apiHostPresetList}>
+            {API_HOST_PRESETS.map((preset) => {
+              const selected = normalizeApiHost(apiHostDraft) === preset.host;
+              return (
+                <Button
+                  key={preset.key}
+                  compact
+                  mode={selected ? "contained" : "outlined"}
+                  buttonColor={selected ? BRAND_RED : undefined}
+                  textColor={selected ? "#FFFFFF" : BRAND_RED}
+                  style={styles.apiHostPresetButton}
+                  onPress={() => setApiHostDraft(preset.host)}
+                >
+                  {t(preset.labelKey)}
+                </Button>
+              );
+            })}
+          </View>
           <TextInput
             label={t("apiHost.inputLabel")}
             value={apiHostDraft}
@@ -699,6 +724,17 @@ const styles = StyleSheet.create({
   },
   apiHostLabel: { color: "#777", fontSize: 12, marginBottom: 2 },
   apiHostValue: { color: "#333", fontSize: 14, fontWeight: "700" },
+  apiHostPresetList: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    marginBottom: 14,
+    marginTop: 8,
+  },
+  apiHostPresetButton: {
+    borderColor: BRAND_RED,
+    borderRadius: 12,
+  },
   apiHostModal: {
     backgroundColor: "#FFFFFF",
     borderRadius: 16,

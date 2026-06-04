@@ -48,6 +48,11 @@
     "title": "Server address settings",
     "description": "Enter only an IP or domain.",
     "inputLabel": "IP or domain",
+    "presets": {
+      "label": "Quick select",
+      "production": "Production server",
+      "local": "Local server"
+    },
     "empty": "Enter a backend IP or domain.",
     "saved": "Backend address saved: {{host}}"
   },

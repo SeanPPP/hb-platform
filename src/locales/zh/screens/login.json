@@ -48,6 +48,11 @@
     "title": "服务器地址设置",
     "description": "只输入 IP 或域名即可。",
     "inputLabel": "IP 或域名",
+    "presets": {
+      "label": "快速选择",
+      "production": "线上服务器",
+      "local": "本地服务器"
+    },
     "empty": "请输入后端 IP 或域名",
     "saved": "后端地址已保存：{{host}}"
   },
