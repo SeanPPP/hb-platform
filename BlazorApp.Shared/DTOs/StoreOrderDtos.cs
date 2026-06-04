@@ -981,19 +981,6 @@ public class SendStoreOrderInvoiceEmailDto
     /// </summary>
     [StringLength(10000, ErrorMessage = "邮件正文长度不能超过10000个字符")]
     public string? Body { get; set; }
-
-    /// <summary>
-    /// PDF 文件名
-    /// </summary>
-    [Required]
-    [StringLength(255, ErrorMessage = "PDF 文件名长度不能超过255个字符")]
-    public string PdfFileName { get; set; } = string.Empty;
-
-    /// <summary>
-    /// PDF Base64 内容
-    /// </summary>
-    [Required]
-    public string PdfBase64 { get; set; } = string.Empty;
 }
 
 /// <summary>
@@ -1069,12 +1056,39 @@ public class StoreOrderInvoiceEmailMessage
     public string Body { get; set; } = string.Empty;
 
     /// <summary>
-    /// PDF 附件文件名
+    /// 邮件附件集合
     /// </summary>
-    public string PdfFileName { get; set; } = string.Empty;
+    public List<StoreOrderInvoiceEmailAttachment> Attachments { get; set; } = new();
+}
+
+/// <summary>
+/// 发票邮件附件
+/// </summary>
+public class StoreOrderInvoiceEmailAttachment
+{
+    /// <summary>
+    /// 附件文件名
+    /// </summary>
+    public string FileName { get; set; } = string.Empty;
 
     /// <summary>
-    /// PDF 附件内容
+    /// 附件 MIME 类型
     /// </summary>
-    public byte[] PdfBytes { get; set; } = Array.Empty<byte>();
+    public string ContentType { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 附件内容
+    /// </summary>
+    public byte[] Bytes { get; set; } = Array.Empty<byte>();
+}
+
+/// <summary>
+/// 发票邮件附件生成结果
+/// </summary>
+public class StoreOrderInvoiceAttachmentBundle
+{
+    public string OrderGUID { get; set; } = string.Empty;
+    public string? OrderNo { get; set; }
+    public string? StoreCode { get; set; }
+    public List<StoreOrderInvoiceEmailAttachment> Attachments { get; set; } = new();
 }

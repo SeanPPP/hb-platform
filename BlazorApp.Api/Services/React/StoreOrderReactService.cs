@@ -2078,69 +2078,6 @@ namespace BlazorApp.Api.Services.React
             );
         }
 
-        public async Task<ApiResponse<bool>> SendInvoiceEmailAsync(SendStoreOrderInvoiceEmailDto request)
-        {
-            var normalizedOrderGuid = request.OrderGUID.Trim();
-            var order = await _db.Queryable<WareHouseOrder>()
-                .Where(o => o.OrderGUID == normalizedOrderGuid && !o.IsDeleted)
-                .FirstAsync();
-
-            if (order == null)
-            {
-                return ApiResponse<bool>.Error("订单不存在", "STORE_ORDER_NOT_FOUND");
-            }
-
-            var toEmail = request.ToEmail.Trim();
-            if (!new EmailAddressAttribute().IsValid(toEmail))
-            {
-                return ApiResponse<bool>.Error("收件邮箱格式不正确", "INVOICE_EMAIL_INVALID_TO");
-            }
-
-            if (string.IsNullOrWhiteSpace(request.PdfBase64))
-            {
-                return ApiResponse<bool>.Error("PDF 附件不能为空", "INVOICE_EMAIL_EMPTY_PDF");
-            }
-
-            byte[] pdfBytes;
-            try
-            {
-                pdfBytes = Convert.FromBase64String(request.PdfBase64.Trim());
-            }
-            catch (FormatException)
-            {
-                return ApiResponse<bool>.Error(
-                    "PDF 附件内容不是有效的 Base64",
-                    "INVOICE_EMAIL_INVALID_BASE64"
-                );
-            }
-
-            if (pdfBytes.Length == 0)
-            {
-                return ApiResponse<bool>.Error("PDF 附件不能为空", "INVOICE_EMAIL_EMPTY_PDF");
-            }
-
-            var subject = string.IsNullOrWhiteSpace(request.Subject)
-                ? $"分店订货发票 {order.OrderNo ?? normalizedOrderGuid}"
-                : request.Subject.Trim();
-            var body = string.IsNullOrWhiteSpace(request.Body)
-                ? "您好，附件为本次分店订货发票，请查收。"
-                : request.Body.Trim();
-            var pdfFileName = string.IsNullOrWhiteSpace(request.PdfFileName)
-                ? "invoice.pdf"
-                : request.PdfFileName.Trim();
-
-            return await _invoiceEmailService.SendInvoiceAsync(
-                new StoreOrderInvoiceEmailMessage
-                {
-                    ToEmail = toEmail,
-                    Subject = subject,
-                    Body = body,
-                    PdfFileName = pdfFileName,
-                    PdfBytes = pdfBytes,
-                }
-            );
-        }
-
         public async Task<ApiResponse<List<string>>> GetOrderDetailProductCodesAsync(string orderGuid)
         {
             var accessibleStoreCodes = await GetAccessibleStoreCodesAsync();

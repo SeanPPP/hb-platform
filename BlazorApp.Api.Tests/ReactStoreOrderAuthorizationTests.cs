@@ -1038,8 +1038,6 @@ public class ReactStoreOrderAuthorizationTests
         {
             OrderGUID = "order-1",
             ToEmail = "customer@example.com",
-            PdfFileName = "invoice.pdf",
-            PdfBase64 = Convert.ToBase64String(new byte[] { 1, 2, 3 }),
         };
         var invoiceEmailJobService = new Mock<IStoreOrderInvoiceEmailJobService>(
             MockBehavior.Strict

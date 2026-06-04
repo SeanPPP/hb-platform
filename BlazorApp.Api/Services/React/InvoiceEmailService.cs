@@ -32,37 +32,25 @@ namespace BlazorApp.Api.Services.React
                 return ApiResponse<bool>.Error(configError, "INVOICE_EMAIL_NOT_CONFIGURED");
             }
 
-            if (message.PdfBytes.Length == 0)
+            if (message.Attachments.Count == 0)
             {
-                return ApiResponse<bool>.Error("PDF 附件不能为空", "INVOICE_EMAIL_EMPTY_PDF");
+                return ApiResponse<bool>.Error("发票附件不能为空", "INVOICE_EMAIL_EMPTY_ATTACHMENT");
             }
 
-            if (message.PdfBytes.LongLength > _options.MaxAttachmentBytes)
+            if (message.Attachments.Any(attachment => attachment.Bytes.Length == 0))
             {
-                return ApiResponse<bool>.Error(
-                    $"PDF 附件不能超过 {_options.MaxAttachmentBytes} 字节",
-                    "INVOICE_EMAIL_ATTACHMENT_TOO_LARGE"
-                );
+                return ApiResponse<bool>.Error("发票附件不能为空", "INVOICE_EMAIL_EMPTY_ATTACHMENT");
+            }
+
+            var totalAttachmentBytes = message.Attachments.Sum(attachment => attachment.Bytes.LongLength);
+            if (totalAttachmentBytes > _options.MaxAttachmentBytes)
+            {
+                return ApiResponse<bool>.Error("发票附件不能超过配置限制", "INVOICE_EMAIL_ATTACHMENT_TOO_LARGE");
             }
 
             try
             {
-                var email = new MimeMessage();
-                email.From.Add(
-                    new MailboxAddress(
-                        _options.FromName ?? _options.FromEmail!,
-                        _options.FromEmail!
-                    )
-                );
-                email.To.Add(MailboxAddress.Parse(message.ToEmail));
-                email.Subject = message.Subject;
-
-                var builder = new BodyBuilder
-                {
-                    TextBody = message.Body,
-                };
-                builder.Attachments.Add(message.PdfFileName, message.PdfBytes, ContentType.Parse("application/pdf"));
-                email.Body = builder.ToMessageBody();
+                var email = BuildMimeMessage(message);
 
                 using var smtpClient = CreateSmtpClient();
                 var secureSocketOptions = _options.UseSsl
@@ -106,6 +94,31 @@ namespace BlazorApp.Api.Services.React
             {
                 CheckCertificateRevocation = _options.CheckCertificateRevocation,
             };
+        }
+
+        protected virtual MimeMessage BuildMimeMessage(StoreOrderInvoiceEmailMessage message)
+        {
+            var email = new MimeMessage();
+            email.From.Add(
+                new MailboxAddress(_options.FromName ?? _options.FromEmail!, _options.FromEmail!)
+            );
+            email.To.Add(MailboxAddress.Parse(message.ToEmail));
+            email.Subject = message.Subject;
+
+            var builder = new BodyBuilder
+            {
+                TextBody = message.Body,
+            };
+            foreach (var attachment in message.Attachments)
+            {
+                var contentType = string.IsNullOrWhiteSpace(attachment.ContentType)
+                    ? ContentType.Parse("application/octet-stream")
+                    : ContentType.Parse(attachment.ContentType);
+                builder.Attachments.Add(attachment.FileName, attachment.Bytes, contentType);
+            }
+
+            email.Body = builder.ToMessageBody();
+            return email;
         }
 
         protected virtual Task ConnectSmtpClientAsync(

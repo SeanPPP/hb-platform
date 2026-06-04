@@ -88,8 +88,40 @@ namespace BlazorApp.Api.Services.React
                 SetRunning(jobState);
 
                 using var scope = _serviceScopeFactory.CreateScope();
-                var service = scope.ServiceProvider.GetRequiredService<IStoreOrderReactService>();
-                var result = await service.SendInvoiceEmailAsync(jobState.Request);
+                var attachmentService =
+                    scope.ServiceProvider.GetRequiredService<IStoreOrderInvoiceAttachmentService>();
+                var invoiceEmailService = scope.ServiceProvider.GetRequiredService<IInvoiceEmailService>();
+                var attachmentResult = await attachmentService.GenerateAttachmentsAsync(
+                    jobState.Request.OrderGUID
+                );
+                if (!attachmentResult.Success || attachmentResult.Data == null)
+                {
+                    CompleteJob(
+                        jobState,
+                        StoreOrderInvoiceEmailJobStatusConstants.Failed,
+                        string.IsNullOrWhiteSpace(attachmentResult.Message)
+                            ? "生成发票附件失败"
+                            : attachmentResult.Message
+                    );
+                    return;
+                }
+
+                var bundle = attachmentResult.Data;
+                var subject = string.IsNullOrWhiteSpace(jobState.Request.Subject)
+                    ? $"分店订货发票 {bundle.OrderNo ?? bundle.OrderGUID}"
+                    : jobState.Request.Subject.Trim();
+                var body = string.IsNullOrWhiteSpace(jobState.Request.Body)
+                    ? "您好，附件为本次分店订货发票，请查收。"
+                    : jobState.Request.Body.Trim();
+                var result = await invoiceEmailService.SendInvoiceAsync(
+                    new StoreOrderInvoiceEmailMessage
+                    {
+                        ToEmail = jobState.Request.ToEmail.Trim(),
+                        Subject = subject,
+                        Body = body,
+                        Attachments = bundle.Attachments,
+                    }
+                );
 
                 CompleteJob(
                     jobState,
@@ -158,8 +190,6 @@ namespace BlazorApp.Api.Services.React
                 ToEmail = request.ToEmail,
                 Subject = request.Subject,
                 Body = request.Body,
-                PdfFileName = request.PdfFileName,
-                PdfBase64 = request.PdfBase64,
             };
         }
 

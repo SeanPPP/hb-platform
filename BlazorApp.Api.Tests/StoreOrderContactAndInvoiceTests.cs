@@ -8,6 +8,7 @@ using BlazorApp.Api.Services;
 using BlazorApp.Api.Services.React;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
+using ClosedXML.Excel;
 using MailKit.Net.Smtp;
 using MailKit.Security;
 using Microsoft.AspNetCore.Http;
@@ -146,23 +147,34 @@ public sealed class StoreOrderContactAndInvoiceTests : IDisposable
     }
 
     [Fact]
-    public async Task SendInvoiceEmailAsync_WhenSmtpNotConfigured_ReturnsClearFailure()
+    public async Task InvoiceEmailService_WhenSmtpNotConfigured_ReturnsClearFailure()
     {
-        await SeedStoreOrderGraphAsync();
-        var service = CreateStoreOrderService(
-            invoiceEmailService: new InvoiceEmailService(
-                NullLogger<InvoiceEmailService>.Instance,
-                Options.Create(new InvoiceEmailOptions())
-            )
+        var service = new InvoiceEmailService(
+            NullLogger<InvoiceEmailService>.Instance,
+            Options.Create(new InvoiceEmailOptions())
         );
 
-        var result = await service.SendInvoiceEmailAsync(
-            new SendStoreOrderInvoiceEmailDto
+        var result = await service.SendInvoiceAsync(
+            new StoreOrderInvoiceEmailMessage
             {
-                OrderGUID = "order-1",
                 ToEmail = "customer@example.com",
-                PdfFileName = "invoice.pdf",
-                PdfBase64 = Convert.ToBase64String(new byte[] { 1, 2, 3, 4 }),
+                Subject = "Invoice SO001",
+                Body = "Hello",
+                Attachments =
+                {
+                    new StoreOrderInvoiceEmailAttachment
+                    {
+                        FileName = "Invoice_S001_SO001.pdf",
+                        ContentType = "application/pdf",
+                        Bytes = new byte[] { 1, 2, 3, 4 },
+                    },
+                    new StoreOrderInvoiceEmailAttachment
+                    {
+                        FileName = "Invoice_S001_SO001.xlsx",
+                        ContentType = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        Bytes = new byte[] { 5, 6, 7, 8 },
+                    },
+                },
             }
         );
 
@@ -177,20 +189,42 @@ public sealed class StoreOrderContactAndInvoiceTests : IDisposable
         {
             OrderGUID = "order-1",
             ToEmail = "customer@example.com",
-            PdfFileName = "invoice.pdf",
-            PdfBase64 = Convert.ToBase64String(new byte[] { 1, 2, 3, 4 }),
         };
-        var storeOrderService = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
-        storeOrderService
-            .Setup(item =>
-                item.SendInvoiceEmailAsync(
-                    It.Is<SendStoreOrderInvoiceEmailDto>(dto =>
-                        dto.OrderGUID == "order-1" && dto.ToEmail == "customer@example.com"
-                    )
-                )
-            )
+        var pdfAttachment = new StoreOrderInvoiceEmailAttachment
+        {
+            FileName = "Invoice_S001_SO001.pdf",
+            ContentType = "application/pdf",
+            Bytes = new byte[] { 1, 2, 3, 4 },
+        };
+        var excelAttachment = new StoreOrderInvoiceEmailAttachment
+        {
+            FileName = "Invoice_S001_SO001.xlsx",
+            ContentType = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            Bytes = new byte[] { 5, 6, 7, 8 },
+        };
+        var attachmentService = new Mock<IStoreOrderInvoiceAttachmentService>(MockBehavior.Strict);
+        attachmentService
+            .Setup(item => item.GenerateAttachmentsAsync("order-1", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(ApiResponse<StoreOrderInvoiceAttachmentBundle>.OK(
+                new StoreOrderInvoiceAttachmentBundle
+                {
+                    OrderGUID = "order-1",
+                    OrderNo = "SO001",
+                    StoreCode = "S001",
+                    Attachments = new List<StoreOrderInvoiceEmailAttachment>
+                    {
+                        pdfAttachment,
+                        excelAttachment,
+                    },
+                }
+            ));
+        StoreOrderInvoiceEmailMessage? capturedMessage = null;
+        var invoiceEmailService = new Mock<IInvoiceEmailService>(MockBehavior.Strict);
+        invoiceEmailService
+            .Setup(item => item.SendInvoiceAsync(It.IsAny<StoreOrderInvoiceEmailMessage>()))
+            .Callback<StoreOrderInvoiceEmailMessage>(message => capturedMessage = message)
             .ReturnsAsync(ApiResponse<bool>.OK(true, "发票邮件发送成功"));
-        var jobService = CreateInvoiceEmailJobService(storeOrderService);
+        var jobService = CreateInvoiceEmailJobService(attachmentService, invoiceEmailService);
 
         var started = await jobService.StartJobAsync(request);
         var completed = await WaitForInvoiceEmailJobAsync(jobService, started.JobId);
@@ -201,34 +235,137 @@ public sealed class StoreOrderContactAndInvoiceTests : IDisposable
         Assert.Equal("order-1", completed.OrderGUID);
         Assert.Equal("customer@example.com", completed.ToEmail);
         Assert.NotNull(completed.CompletedAt);
-        storeOrderService.Verify(
-            item => item.SendInvoiceEmailAsync(It.IsAny<SendStoreOrderInvoiceEmailDto>()),
+        attachmentService.Verify(
+            item => item.GenerateAttachmentsAsync("order-1", It.IsAny<CancellationToken>()),
             Times.Once
+        );
+        invoiceEmailService.Verify(
+            item => item.SendInvoiceAsync(It.IsAny<StoreOrderInvoiceEmailMessage>()),
+            Times.Once
+        );
+        Assert.NotNull(capturedMessage);
+        Assert.Equal("customer@example.com", capturedMessage!.ToEmail);
+        Assert.Collection(
+            capturedMessage.Attachments,
+            attachment => Assert.Equal("application/pdf", attachment.ContentType),
+            attachment => Assert.Equal(
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                attachment.ContentType
+            )
         );
     }
 
     [Fact]
-    public async Task StoreOrderInvoiceEmailJobService_WhenSendFails_MarksFailedWithMessage()
+    public async Task StoreOrderInvoiceEmailJobService_WhenAttachmentGenerationFails_MarksFailedWithMessage()
     {
         var request = new SendStoreOrderInvoiceEmailDto
         {
             OrderGUID = "order-1",
             ToEmail = "customer@example.com",
-            PdfFileName = "invoice.pdf",
-            PdfBase64 = Convert.ToBase64String(new byte[] { 1, 2, 3, 4 }),
         };
-        var storeOrderService = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
-        storeOrderService
-            .Setup(item => item.SendInvoiceEmailAsync(It.IsAny<SendStoreOrderInvoiceEmailDto>()))
-            .ReturnsAsync(ApiResponse<bool>.Error("SMTP 发送失败"));
-        var jobService = CreateInvoiceEmailJobService(storeOrderService);
+        var attachmentService = new Mock<IStoreOrderInvoiceAttachmentService>(MockBehavior.Strict);
+        attachmentService
+            .Setup(item => item.GenerateAttachmentsAsync("order-1", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(ApiResponse<StoreOrderInvoiceAttachmentBundle>.Error("生成发票附件失败"));
+        var invoiceEmailService = new Mock<IInvoiceEmailService>(MockBehavior.Strict);
+        var jobService = CreateInvoiceEmailJobService(attachmentService, invoiceEmailService);
 
         var started = await jobService.StartJobAsync(request);
         var completed = await WaitForInvoiceEmailJobAsync(jobService, started.JobId);
 
         Assert.Equal(StoreOrderInvoiceEmailJobStatusConstants.Failed, completed.Status);
-        Assert.Equal("SMTP 发送失败", completed.Message);
+        Assert.Equal("生成发票附件失败", completed.Message);
         Assert.NotNull(completed.CompletedAt);
+        invoiceEmailService.Verify(
+            item => item.SendInvoiceAsync(It.IsAny<StoreOrderInvoiceEmailMessage>()),
+            Times.Never
+        );
+    }
+
+    [Fact]
+    public async Task StoreOrderInvoiceAttachmentService_GeneratesPdfAndExcel()
+    {
+        var orderService = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        orderService
+            .Setup(item => item.GetOrderDetailFullAsync("order-1"))
+            .ReturnsAsync(ApiResponse<StoreOrderCartDto?>.OK(CreateInvoiceOrder()));
+        var service = new StoreOrderInvoiceAttachmentService(
+            orderService.Object,
+            NullLogger<StoreOrderInvoiceAttachmentService>.Instance
+        );
+
+        var result = await service.GenerateAttachmentsAsync("order-1");
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        Assert.Equal("order-1", result.Data!.OrderGUID);
+        Assert.Equal("SO001", result.Data.OrderNo);
+        Assert.Equal("S001", result.Data.StoreCode);
+        Assert.Collection(
+            result.Data.Attachments,
+            pdf =>
+            {
+                Assert.EndsWith(".pdf", pdf.FileName);
+                Assert.Equal("application/pdf", pdf.ContentType);
+                Assert.NotEmpty(pdf.Bytes);
+                Assert.Equal("%PDF", System.Text.Encoding.ASCII.GetString(pdf.Bytes.Take(4).ToArray()));
+            },
+            excel =>
+            {
+                Assert.EndsWith(".xlsx", excel.FileName);
+                Assert.Equal(
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    excel.ContentType
+                );
+                using var workbook = new XLWorkbook(new MemoryStream(excel.Bytes));
+                var sheet = workbook.Worksheet("Invoice");
+                Assert.Equal("Item No", sheet.Cell(1, 2).GetString());
+                Assert.Equal("HB001", sheet.Cell(2, 2).GetString());
+                Assert.Equal(2m, sheet.Cell(2, 6).GetValue<decimal>());
+                Assert.Equal(1m, sheet.Cell(2, 7).GetValue<decimal>());
+                Assert.Equal(8.5m, sheet.Cell(2, 8).GetValue<decimal>());
+            }
+        );
+    }
+
+    [Fact]
+    public void InvoiceEmailService_BuildsMessageWithPdfAndExcelAttachments()
+    {
+        var service = new TestableInvoiceEmailService(
+            Options.Create(new InvoiceEmailOptions
+            {
+                Host = "smtp.example.com",
+                Port = 465,
+                FromEmail = "warehouse@example.com",
+            })
+        );
+
+        var email = service.BuildMimeMessageForTest(
+            new StoreOrderInvoiceEmailMessage
+            {
+                ToEmail = "customer@example.com",
+                Subject = "invoice",
+                Body = "body",
+                Attachments = new List<StoreOrderInvoiceEmailAttachment>
+                {
+                    new()
+                    {
+                        FileName = "invoice.pdf",
+                        ContentType = "application/pdf",
+                        Bytes = new byte[] { 1, 2, 3 },
+                    },
+                    new()
+                    {
+                        FileName = "invoice.xlsx",
+                        ContentType = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        Bytes = new byte[] { 4, 5, 6 },
+                    },
+                },
+            }
+        );
+
+        var multipart = Assert.IsType<MimeKit.Multipart>(email.Body);
+        Assert.Equal(3, multipart.Count);
     }
 
     [Fact]
@@ -273,8 +410,15 @@ public sealed class StoreOrderContactAndInvoiceTests : IDisposable
                 ToEmail = "customer@example.com",
                 Subject = "invoice",
                 Body = "body",
-                PdfFileName = "invoice.pdf",
-                PdfBytes = new byte[] { 1, 2, 3, 4 },
+                Attachments = new List<StoreOrderInvoiceEmailAttachment>
+                {
+                    new()
+                    {
+                        FileName = "invoice.pdf",
+                        ContentType = "application/pdf",
+                        Bytes = new byte[] { 1, 2, 3, 4 },
+                    },
+                },
             }
         );
 
@@ -326,17 +470,47 @@ public sealed class StoreOrderContactAndInvoiceTests : IDisposable
     }
 
     private static StoreOrderInvoiceEmailJobService CreateInvoiceEmailJobService(
-        Mock<IStoreOrderReactService> storeOrderService
+        Mock<IStoreOrderInvoiceAttachmentService> attachmentService,
+        Mock<IInvoiceEmailService> invoiceEmailService
     )
     {
         var services = new ServiceCollection();
-        services.AddSingleton(storeOrderService.Object);
+        services.AddSingleton(attachmentService.Object);
+        services.AddSingleton(invoiceEmailService.Object);
         var provider = services.BuildServiceProvider();
 
         return new StoreOrderInvoiceEmailJobService(
             provider.GetRequiredService<IServiceScopeFactory>(),
             NullLogger<StoreOrderInvoiceEmailJobService>.Instance
         );
+    }
+
+    private static StoreOrderCartDto CreateInvoiceOrder()
+    {
+        return new StoreOrderCartDto
+        {
+            OrderGUID = "order-1",
+            OrderNo = "SO001",
+            StoreCode = "S001",
+            StoreAddress = "1 Test Street",
+            StoreContactEmail = "customer@example.com",
+            TotalImportAmount = 8.5m,
+            ShippingFee = 1.5m,
+            Items = new List<StoreOrderCartItemDto>
+            {
+                new()
+                {
+                    DetailGUID = "detail-1",
+                    ProductCode = "P001",
+                    ItemNumber = "HB001",
+                    Barcode = "930000000001",
+                    ProductName = "Test Product",
+                    Quantity = 2m,
+                    AllocQuantity = 1m,
+                    ImportPrice = 8.5m,
+                },
+            },
+        };
     }
 
     private static async Task<StoreOrderInvoiceEmailJobDto> WaitForInvoiceEmailJobAsync(
@@ -382,6 +556,11 @@ public sealed class StoreOrderContactAndInvoiceTests : IDisposable
         public SmtpClient CreateConfiguredClientForTest()
         {
             return CreateSmtpClient();
+        }
+
+        public MimeKit.MimeMessage BuildMimeMessageForTest(StoreOrderInvoiceEmailMessage message)
+        {
+            return BuildMimeMessage(message);
         }
     }
 
