@@ -42,6 +42,7 @@
     "noDescription": "暂无描述",
     "noFileSelected": "未选择文件",
     "noStoreSelected": "未选择分店",
+    "allStores": "全部门店",
     "noStore": "未配置分店"
   },
   "actions": {
@@ -54,6 +55,8 @@
     "selectAllStores": "全选分店",
     "clearStores": "清空分店",
     "pickAndUpload": "选择并上传",
+    "capturePhoto": "拍照上传",
+    "recordVideo": "录像上传",
     "resetFilters": "重置筛选"
   },
   "editor": {
@@ -76,6 +79,7 @@
     "uploadSuccess": "素材上传成功。",
     "uploadFailed": "素材上传失败。",
     "permissionDenied": "需要媒体库访问权限。",
+    "cameraPermissionDenied": "需要相机权限。",
     "validationFailed": "请完善必填字段。"
   },
   "validation": {

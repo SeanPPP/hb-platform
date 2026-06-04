@@ -42,6 +42,7 @@
     "noDescription": "No description",
     "noFileSelected": "No file selected",
     "noStoreSelected": "No store selected",
+    "allStores": "All stores",
     "noStore": "No store"
   },
   "actions": {
@@ -54,6 +55,8 @@
     "selectAllStores": "Select all stores",
     "clearStores": "Clear stores",
     "pickAndUpload": "Pick and upload",
+    "capturePhoto": "Take photo",
+    "recordVideo": "Record video",
     "resetFilters": "Reset filters"
   },
   "editor": {
@@ -76,6 +79,7 @@
     "uploadSuccess": "Asset uploaded.",
     "uploadFailed": "Failed to upload asset.",
     "permissionDenied": "Media library permission is required.",
+    "cameraPermissionDenied": "Camera permission is required.",
     "validationFailed": "Please complete the required fields."
   },
   "validation": {

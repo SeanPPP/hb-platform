@@ -161,7 +161,7 @@ export default function StaffDetailScreen() {
       router.back();
       return;
     }
-    router.replace("/(tabs)/users");
+    router.replace("/(tabs)/users" as unknown as Parameters<typeof router.replace>[0]);
   }, [router]);
 
   const handleResetPassword = useCallback(async () => {
@@ -737,7 +737,7 @@ export default function StaffDetailScreen() {
           <Text variant="titleLarge">{t("detail.title")}</Text>
           <IconButton
             icon="pencil-outline"
-            onPress={() => router.replace("/(tabs)/users")}
+            onPress={() => router.replace("/(tabs)/users" as unknown as Parameters<typeof router.replace>[0])}
           />
         </View>
 

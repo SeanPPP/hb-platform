@@ -54,6 +54,7 @@ import { useAuthStore } from "@/store/auth-store";
 const PAGE_SIZE = 20;
 
 type FilterEnabledValue = "all" | "enabled" | "disabled";
+type UploadSource = "library" | "cameraPhoto" | "cameraVideo";
 
 function createEmptyDraft(): AdvertisementDraft {
   return {
@@ -150,7 +151,10 @@ function buildPayloadFromDraft(draft: AdvertisementDraft): AdvertisementUpsertPa
   };
 }
 
-function validateDraft(draft: AdvertisementDraft) {
+function validateDraft(
+  draft: AdvertisementDraft,
+  options: { allowAllStoreScope: boolean }
+) {
   const errors: Partial<Record<keyof AdvertisementDraft, string>> = {};
   if (!draft.title.trim()) {
     errors.title = "title";
@@ -164,7 +168,7 @@ function validateDraft(draft: AdvertisementDraft) {
   if (!draft.effectiveEnd.trim()) {
     errors.effectiveEnd = "effectiveEnd";
   }
-  if (draft.storeCodes.length === 0) {
+  if (draft.storeCodes.length === 0 && !options.allowAllStoreScope) {
     errors.storeCodes = "storeCodes";
   }
   const startTime = new Date(draft.effectiveStart).getTime();
@@ -233,6 +237,7 @@ export function AdvertisementsScreen() {
   const [snackbar, setSnackbar] = useState("");
   const deviceBoundStoreCode = getDeviceBoundStoreCode({ isDeviceMode, selectedStoreCode });
   const effectiveFilterStoreCode = deviceBoundStoreCode ?? filterStoreCode;
+  const canUseAllStoreScope = !deviceBoundStoreCode && managedStoreCodes === null;
 
   const advertisementsQuery = useQuery({
     queryKey: [
@@ -334,19 +339,30 @@ export function AdvertisementsScreen() {
   });
 
   const uploadMutation = useMutation({
-    mutationFn: async () => {
+    mutationFn: async (source: UploadSource) => {
       const ImagePicker = await import("expo-image-picker");
-      const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      const permission =
+        source === "library"
+          ? await ImagePicker.requestMediaLibraryPermissionsAsync()
+          : await ImagePicker.requestCameraPermissionsAsync();
       if (!permission.granted) {
-        throw new Error("permission-denied");
+        throw new Error(source === "library" ? "permission-denied" : "camera-permission-denied");
       }
 
-      const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ["images", "videos"],
-        allowsEditing: false,
-        quality: 1,
-        selectionLimit: 1,
-      });
+      const result =
+        source === "library"
+          ? await ImagePicker.launchImageLibraryAsync({
+              mediaTypes: ["images", "videos"],
+              allowsEditing: false,
+              quality: 1,
+              selectionLimit: 1,
+            })
+          : await ImagePicker.launchCameraAsync({
+              mediaTypes: source === "cameraVideo" ? ["videos"] : ["images"],
+              allowsEditing: false,
+              quality: 1,
+              videoMaxDuration: 30,
+            });
 
       if (result.canceled || !result.assets?.[0]) {
         return null;
@@ -404,12 +420,17 @@ export function AdvertisementsScreen() {
       const message =
         error instanceof Error && error.message === "permission-denied"
           ? t("messages.permissionDenied")
-          : t("messages.uploadFailed");
+          : error instanceof Error && error.message === "camera-permission-denied"
+            ? t("messages.cameraPermissionDenied")
+            : t("messages.uploadFailed");
       setSnackbar(message);
     },
   });
 
-  const errors = useMemo(() => validateDraft(draft), [draft]);
+  const errors = useMemo(
+    () => validateDraft(draft, { allowAllStoreScope: canUseAllStoreScope }),
+    [canUseAllStoreScope, draft]
+  );
   const selectedFilterStore =
     stores.find((store) => store.storeCode === effectiveFilterStoreCode) ?? null;
   const selectedDraftStores = useMemo(
@@ -482,9 +503,10 @@ export function AdvertisementsScreen() {
       return;
     }
 
+    // 只有总部/管理员范围允许清空门店，空门店会提交为“全部门店”广告。
     setDraft((current) => ({
       ...current,
-      storeCodes: allDraftStoresSelected
+      storeCodes: allDraftStoresSelected && canUseAllStoreScope
         ? []
         : stores.map((store) => store.storeCode).filter(Boolean),
     }));
@@ -492,7 +514,7 @@ export function AdvertisementsScreen() {
 
   function onSubmit() {
     setSubmitAttempted(true);
-    const nextErrors = validateDraft(draft);
+    const nextErrors = validateDraft(draft, { allowAllStoreScope: canUseAllStoreScope });
     if (Object.keys(nextErrors).length > 0) {
       setSnackbar(t("messages.validationFailed"));
       return;
@@ -633,7 +655,7 @@ export function AdvertisementsScreen() {
                   </Text>
 
                   <View style={styles.chipsRow}>
-                    {(item.stores.length > 0 ? item.stores : [{ storeCode: t("labels.noStore") }]).map((store) => (
+                    {(item.stores.length > 0 ? item.stores : [{ storeCode: t("labels.allStores") }]).map((store) => (
                       <Chip key={`${item.id}-${store.storeCode}`} compact>
                         {store.storeCode}
                       </Chip>
@@ -772,11 +794,27 @@ export function AdvertisementsScreen() {
               <Button
                 mode="contained"
                 icon="upload"
-                onPress={() => uploadMutation.mutate()}
+                onPress={() => uploadMutation.mutate("library")}
                 loading={uploadMutation.isPending}
                 disabled={uploadMutation.isPending}
               >
                 {t("actions.pickAndUpload")}
+              </Button>
+              <Button
+                mode="outlined"
+                icon="camera"
+                onPress={() => uploadMutation.mutate("cameraPhoto")}
+                disabled={uploadMutation.isPending}
+              >
+                {t("actions.capturePhoto")}
+              </Button>
+              <Button
+                mode="outlined"
+                icon="video"
+                onPress={() => uploadMutation.mutate("cameraVideo")}
+                disabled={uploadMutation.isPending}
+              >
+                {t("actions.recordVideo")}
               </Button>
               <Text variant="bodySmall" style={styles.cardMeta}>
                 {draft.originalFileName || t("labels.noFileSelected")}

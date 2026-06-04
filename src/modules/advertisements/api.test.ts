@@ -88,6 +88,35 @@ assertDeepEqual(
   "save payload trims fields and omits blank store scopes"
 );
 
+assertDeepEqual(
+  buildAdvertisementPayload({
+    title: "All stores",
+    mediaType: "video",
+    mediaUrl: "https://cdn.example.com/all.mp4",
+    effectiveStart: "2026-06-01T00:00:00Z",
+    effectiveEnd: "2026-06-30T23:59:59Z",
+    isEnabled: true,
+    stores: [],
+  }),
+  {
+    title: "All stores",
+    description: "",
+    mediaType: "video",
+    mediaUrl: "https://cdn.example.com/all.mp4",
+    thumbnailUrl: "",
+    objectKey: "",
+    originalFileName: "",
+    contentType: "",
+    fileSize: 0,
+    effectiveStart: "2026-06-01T00:00:00Z",
+    effectiveEnd: "2026-06-30T23:59:59Z",
+    isEnabled: true,
+    sortOrder: 0,
+    stores: [],
+  },
+  "empty store scopes are preserved for all-store advertisements"
+);
+
 const list = normalizeAdvertisementsResponse({
   success: true,
   data: {

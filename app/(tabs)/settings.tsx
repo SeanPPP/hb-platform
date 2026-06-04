@@ -406,7 +406,7 @@ export default function Settings() {
                 mode="outlined"
                 icon="account-circle-outline"
                 onPress={() => {
-                  router.push("/(tabs)/employee-profile");
+                  router.push("/(tabs)/employee-profile" as unknown as Parameters<typeof router.push>[0]);
                 }}
                 style={styles.secondaryButton}
               >
