@@ -174,7 +174,7 @@ builder.Services.AddCors(options =>
                         // 🔧 开发环境默认域名
                         "http://localhost:8000", // 前端开发服务器
                         "http://localhost:3000", // 备用前端端口
-                        "http://localhost:5001", // 后端 API 端口
+                        "http://localhost:5002", // 后端 API 端口
                         "https://localhost", // 支持 HTTPS localhost（宝塔面板）
                         // 🌐 生产环境域名
                         "https://www.dats.com.au",
@@ -447,6 +447,7 @@ builder.Services.AddScoped<
     BlazorApp.Api.Interfaces.React.IProductWarehouseReactService,
     BlazorApp.Api.Services.React.ProductWarehouseReactService
 >();
+builder.Services.AddSingleton<IWarehouseProductHqSyncJobService, WarehouseProductHqSyncJobService>();
 builder.Services.AddScoped<IDeviceRegistrationService, DeviceRegistrationService>(); // POSM设备注册管理服务
 builder.Services.AddScoped<IProductSyncService, ProductSyncService>(); // 货柜商品同步服务（检测、批量创建、批量更新）
 builder.Services.AddScoped<IProductIntegrityService, ProductIntegrityService>(); // 商品数据一致性校验与修复服务

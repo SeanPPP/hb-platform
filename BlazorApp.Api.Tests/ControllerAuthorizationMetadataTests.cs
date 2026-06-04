@@ -55,6 +55,10 @@ public class ControllerAuthorizationMetadataTests
             Permissions.LocalPurchase.Edit
         );
         yield return Policy<ReactLocalSupplierInvoicesController>(
+            nameof(ReactLocalSupplierInvoicesController.BatchUpdateDetails),
+            Permissions.LocalPurchase.Edit
+        );
+        yield return Policy<ReactLocalSupplierInvoicesController>(
             nameof(ReactLocalSupplierInvoicesController.PushInvoicesToHq),
             LocalPurchasePushToHq
         );
@@ -228,6 +232,18 @@ public class ControllerAuthorizationMetadataTests
         yield return Policy<ReactProductsController>(
             nameof(ReactProductsController.CreateWithPrices),
             Permissions.StoreProducts.Create
+        );
+        yield return Policy<ReactProductController>(
+            nameof(ReactProductController.GetPagedList),
+            Permissions.PosProducts.View
+        );
+        yield return Policy<ReactProductController>(
+            nameof(ReactProductController.GetById),
+            Permissions.PosProducts.View
+        );
+        yield return Policy<ReactProductController>(
+            nameof(ReactProductController.GetStoreRecords),
+            Permissions.StoreProducts.View
         );
 
         yield return Policy<ReactContainerProductsController>(

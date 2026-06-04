@@ -76,7 +76,7 @@ namespace BlazorApp.Api.Tests
                 PageSize = 999,
             });
 
-            Assert.True(result.Success);
+            Assert.True(result.Success, result.Message);
             Assert.Equal(25, result.Total);
             Assert.Equal(20, result.Items?.Count);
             Assert.Equal("INV-25", result.Items?.First().InvoiceNo);
@@ -107,7 +107,7 @@ namespace BlazorApp.Api.Tests
                 },
             });
 
-            Assert.True(result.Success);
+            Assert.True(result.Success, result.Message);
             Assert.Equal(2, result.Total);
             Assert.Equal(new[] { "INV-3", "INV-2" }, result.Items?.Select(item => item.InvoiceNo).ToArray());
         }
@@ -142,14 +142,14 @@ namespace BlazorApp.Api.Tests
                 PageSize = 999,
             });
 
-            Assert.True(result.Success);
+            Assert.True(result.Success, result.Message);
             Assert.Equal(55, result.Total);
             Assert.Equal(50, result.Items?.Count);
             Assert.Equal("detail-55", result.Items?.First().DetailGUID);
         }
 
         [Fact]
-        public async Task CheckProductsAsync_WhenProductNoLongerMatches_ClearsStaleDetectionFields()
+        public async Task CheckProductsAsync_WhenProductNoLongerMatches_ClearsProductFieldsAndRecalculatesAutoPricingPreview()
         {
             await SeedStoreAndSupplierAsync();
             await InsertInvoiceAsync("invoice-check", "INV-CHECK", new DateTime(2026, 1, 8));
@@ -192,15 +192,148 @@ namespace BlazorApp.Api.Tests
             Assert.Null(detail.ProductCode);
             Assert.Null(detail.StoreProductCode);
             Assert.Null(detail.LastPurchasePrice);
-            Assert.Null(detail.AutoPricing);
+            Assert.True(detail.AutoPricing);
             Assert.Null(detail.IsSpecialProduct);
             Assert.Null(detail.DiscountRate);
-            Assert.Null(detail.PricingFloatRate);
-            Assert.Null(detail.NewAutoRetailPrice);
+            Assert.Equal(250m, detail.PricingFloatRate);
+            Assert.Equal(5.00m, detail.NewAutoRetailPrice);
             Assert.Equal(0, detail.ExistingProductCount);
             Assert.Equal(1, detail.BarcodeStatus);
             Assert.Equal(0, detail.BarcodeMatchCount);
             Assert.Equal((int)DetailAction.CreateProduct, detail.ActivityType);
+        }
+
+        [Fact]
+        public async Task CheckProductsAsync_商品不存在且有进货价_应计算定价浮率和新自动零售价()
+        {
+            await SeedStoreAndSupplierAsync();
+            await InsertInvoiceAsync("invoice-check-missing-auto", "INV-CHECK-MISSING-AUTO", new DateTime(2026, 1, 16));
+            await _db.Insertable(new StoreLocalSupplierInvoiceDetails
+            {
+                DetailGUID = "detail-check-missing-auto",
+                InvoiceGUID = "invoice-check-missing-auto",
+                StoreCode = "S01",
+                SupplierCode = "SUP01",
+                ItemNumber = "NEW-AUTO-001",
+                Barcode = "9300000000012",
+                ProductName = "Missing Auto Product",
+                Quantity = 1,
+                PurchasePrice = 4.00m,
+                Amount = 4.00m,
+                AutoPricing = true,
+                ExistingProductCount = 0,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+
+            var result = await CreateService().CheckProductsAsync(new CheckProductsRequest
+            {
+                InvoiceGuid = "invoice-check-missing-auto",
+                DetailGuids = new List<string> { "detail-check-missing-auto" },
+            });
+
+            var detail = await _db.Queryable<StoreLocalSupplierInvoiceDetails>()
+                .SingleAsync(x => x.DetailGUID == "detail-check-missing-auto");
+
+            Assert.True(result.Success, result.Message);
+            Assert.Equal(0, detail.ExistingProductCount);
+            Assert.Equal(250m, detail.PricingFloatRate);
+            Assert.Equal(10.00m, detail.NewAutoRetailPrice);
+        }
+
+        [Fact]
+        public async Task CheckProductsAsync_新商品明细自动定价为空_检测后默认自动()
+        {
+            await SeedStoreAndSupplierAsync();
+            await InsertInvoiceAsync("invoice-check-new-auto-default", "INV-CHECK-NEW-AUTO-DEFAULT", new DateTime(2026, 1, 18));
+            await _db.Insertable(new StoreLocalSupplierInvoiceDetails
+            {
+                DetailGUID = "detail-new-auto-default",
+                InvoiceGUID = "invoice-check-new-auto-default",
+                StoreCode = "S01",
+                SupplierCode = "SUP01",
+                ItemNumber = "NEW-AUTO-DEFAULT",
+                Barcode = "9300000000014",
+                ProductName = "New Auto Default Product",
+                Quantity = 1,
+                PurchasePrice = 3.00m,
+                Amount = 3.00m,
+                AutoPricing = null,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+
+            var result = await CreateService().CheckProductsAsync(new CheckProductsRequest
+            {
+                InvoiceGuid = "invoice-check-new-auto-default",
+                DetailGuids = new List<string> { "detail-new-auto-default" },
+            });
+
+            var detail = await _db.Queryable<StoreLocalSupplierInvoiceDetails>()
+                .SingleAsync(x => x.DetailGUID == "detail-new-auto-default");
+
+            Assert.True(result.Success, result.Message);
+            Assert.Equal(0, detail.ExistingProductCount);
+            Assert.True(detail.AutoPricing);
+            Assert.Equal(250m, detail.PricingFloatRate);
+            Assert.Equal(7.50m, detail.NewAutoRetailPrice);
+        }
+
+        [Fact]
+        public async Task CheckProductsAsync_明细已改自动定价_不应被分店价格覆盖为否()
+        {
+            await SeedStoreAndSupplierAsync();
+            await InsertInvoiceAsync("invoice-check-existing-auto", "INV-CHECK-EXISTING-AUTO", new DateTime(2026, 1, 17));
+            await _db.Insertable(new Product
+            {
+                UUID = "product-existing-auto",
+                ProductCode = "P-AUTO-001",
+                ItemNumber = "AUTO-001",
+                Barcode = "9300000000013",
+                ProductName = "Existing Auto Product",
+                LocalSupplierCode = "SUP01",
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new StoreRetailPrice
+            {
+                UUID = "store-price-existing-auto",
+                StoreCode = "S01",
+                SupplierCode = "SUP01",
+                ProductCode = "P-AUTO-001",
+                StoreProductCode = "S01-AUTO-001",
+                PurchasePrice = 1.00m,
+                StoreRetailPriceValue = 2.00m,
+                IsAutoPricing = false,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new StoreLocalSupplierInvoiceDetails
+            {
+                DetailGUID = "detail-existing-auto",
+                InvoiceGUID = "invoice-check-existing-auto",
+                StoreCode = "S01",
+                SupplierCode = "SUP01",
+                ItemNumber = "AUTO-001",
+                Barcode = "9300000000013",
+                ProductName = "Existing Auto Product",
+                Quantity = 1,
+                PurchasePrice = 4.00m,
+                Amount = 4.00m,
+                AutoPricing = true,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+
+            var result = await CreateService().CheckProductsAsync(new CheckProductsRequest
+            {
+                InvoiceGuid = "invoice-check-existing-auto",
+                DetailGuids = new List<string> { "detail-existing-auto" },
+            });
+
+            var detail = await _db.Queryable<StoreLocalSupplierInvoiceDetails>()
+                .SingleAsync(x => x.DetailGUID == "detail-existing-auto");
+
+            Assert.True(result.Success, result.Message);
+            Assert.Equal(1, detail.ExistingProductCount);
+            Assert.True(detail.AutoPricing);
+            Assert.Equal(250m, detail.PricingFloatRate);
+            Assert.Equal(10.00m, detail.NewAutoRetailPrice);
         }
 
         [Fact]
@@ -398,6 +531,45 @@ namespace BlazorApp.Api.Tests
         public async Task BatchExecuteActionsAsync_UsesSavedActivityTypeAndUpdatesByProductCode()
         {
             await SeedExecutablePriceUpdateAsync();
+            await SeedSecondExecutablePriceUpdateDetailAsync();
+
+            var result = await CreateService().BatchExecuteActionsAsync(
+                "invoice-execute",
+                new List<string> { "detail-price", "detail-price-2" },
+                "tester"
+            );
+
+            Assert.True(result.Success);
+            Assert.Equal(2, result.Data?.UpdatedPurchasePrices);
+            Assert.Equal(0, result.Data?.AddedMultiCodes);
+
+            var product = await _db.Queryable<Product>().FirstAsync(x => x.ProductCode == "P001");
+            var secondProduct = await _db.Queryable<Product>().FirstAsync(x => x.ProductCode == "P002");
+            var price = await _db.Queryable<StoreRetailPrice>().FirstAsync(x => x.ProductCode == "P001");
+            var secondPrice = await _db.Queryable<StoreRetailPrice>().FirstAsync(x => x.ProductCode == "P002");
+            var detail = await _db.Queryable<StoreLocalSupplierInvoiceDetails>()
+                .FirstAsync(x => x.DetailGUID == "detail-price");
+            var secondDetail = await _db.Queryable<StoreLocalSupplierInvoiceDetails>()
+                .FirstAsync(x => x.DetailGUID == "detail-price-2");
+            var multiCodeCount = await _db.Queryable<StoreMultiCodeProduct>().CountAsync();
+
+            Assert.Equal(5.55m, product.PurchasePrice);
+            Assert.Equal(6.66m, secondProduct.PurchasePrice);
+            Assert.Equal(5.55m, price.PurchasePrice);
+            Assert.Equal(6.66m, secondPrice.PurchasePrice);
+            Assert.Equal(99, detail.ActivityType);
+            Assert.Equal(99, secondDetail.ActivityType);
+            Assert.Equal(0, multiCodeCount);
+        }
+
+        [Fact]
+        public async Task BatchExecuteActionsAsync_更新进货价为0时跳过()
+        {
+            await SeedExecutablePriceUpdateAsync();
+            await _db.Updateable<StoreLocalSupplierInvoiceDetails>()
+                .SetColumns(x => x.PurchasePrice == 0m)
+                .Where(x => x.DetailGUID == "detail-price")
+                .ExecuteCommandAsync();
 
             var result = await CreateService().BatchExecuteActionsAsync(
                 "invoice-execute",
@@ -405,20 +577,43 @@ namespace BlazorApp.Api.Tests
                 "tester"
             );
 
-            Assert.True(result.Success);
-            Assert.Equal(1, result.Data?.UpdatedPurchasePrices);
-            Assert.Equal(0, result.Data?.AddedMultiCodes);
-
             var product = await _db.Queryable<Product>().FirstAsync(x => x.ProductCode == "P001");
             var price = await _db.Queryable<StoreRetailPrice>().FirstAsync(x => x.ProductCode == "P001");
             var detail = await _db.Queryable<StoreLocalSupplierInvoiceDetails>()
                 .FirstAsync(x => x.DetailGUID == "detail-price");
-            var multiCodeCount = await _db.Queryable<StoreMultiCodeProduct>().CountAsync();
 
-            Assert.Equal(5.55m, product.PurchasePrice);
-            Assert.Equal(5.55m, price.PurchasePrice);
-            Assert.Equal(99, detail.ActivityType);
-            Assert.Equal(0, multiCodeCount);
+            Assert.True(result.Success, $"{result.ErrorCode} {result.Message}");
+            Assert.Equal(0, result.Data?.UpdatedPurchasePrices);
+            Assert.Equal(1, result.Data?.Skipped);
+            Assert.Equal(0, result.Data?.Failed);
+            Assert.Equal(1.11m, product.PurchasePrice);
+            Assert.Equal(1.11m, price.PurchasePrice);
+            Assert.Equal((int)DetailAction.UpdatePurchasePrice, detail.ActivityType);
+        }
+
+        [Fact]
+        public async Task BatchExecuteActionsAsync_UpdateItemNumber_BatchUpdatesProducts()
+        {
+            await SeedExecutableItemNumberUpdatesAsync();
+
+            var result = await CreateService().BatchExecuteActionsAsync(
+                "invoice-item-update",
+                new List<string> { "detail-item-1", "detail-item-2" },
+                "tester"
+            );
+
+            Assert.True(result.Success);
+            Assert.Equal(2, result.Data?.UpdatedItemNumbers);
+
+            var firstProduct = await _db.Queryable<Product>().FirstAsync(x => x.ProductCode == "PITEM1");
+            var secondProduct = await _db.Queryable<Product>().FirstAsync(x => x.ProductCode == "PITEM2");
+            var completedDetails = await _db.Queryable<StoreLocalSupplierInvoiceDetails>()
+                .Where(x => new[] { "detail-item-1", "detail-item-2" }.Contains(x.DetailGUID))
+                .ToListAsync();
+
+            Assert.Equal("ITEM-NEW-1", firstProduct.ItemNumber);
+            Assert.Equal("ITEM-NEW-2", secondProduct.ItemNumber);
+            Assert.All(completedDetails, detail => Assert.Equal(99, detail.ActivityType));
         }
 
         [Fact]
@@ -736,6 +931,202 @@ namespace BlazorApp.Api.Tests
         }
 
         [Fact]
+        public async Task BatchUpdateDetailsAsync_只更新勾选字段并允许False和0持久化()
+        {
+            await SeedStoreAndSupplierAsync();
+            await InsertInvoiceAsync("invoice-batch-edit", "INV-BATCH-EDIT", new DateTime(2026, 1, 13));
+            await _db.Insertable(new StoreLocalSupplierInvoiceDetails
+            {
+                DetailGUID = "detail-batch-edit",
+                InvoiceGUID = "invoice-batch-edit",
+                StoreCode = "S01",
+                SupplierCode = "SUP01",
+                ProductName = "Batch Edit Product",
+                Quantity = 3,
+                PurchasePrice = 1.50m,
+                RetailPrice = 9.99m,
+                Amount = 4.50m,
+                AutoPricing = true,
+                IsSpecialProduct = true,
+                DiscountRate = 0.25m,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+
+            var result = await CreateService().BatchUpdateDetailsAsync(
+                "invoice-batch-edit",
+                new BatchUpdateInvoiceDetailsRequest
+                {
+                    Items = new List<InvoiceDetailUpsertItemDto>
+                    {
+                        new() { DetailGUID = "detail-batch-edit" },
+                    },
+                    EditFields = new UpdateToStorePricesFields
+                    {
+                        UpdatePurchasePrice = true,
+                        PurchasePrice = 2.00m,
+                        UpdateIsAutoPricing = true,
+                        IsAutoPricing = false,
+                        UpdateIsSpecialProduct = true,
+                        IsSpecialProduct = false,
+                        UpdateDiscountRate = true,
+                        DiscountRate = 0m,
+                    },
+                },
+                "tester"
+            );
+
+            var detail = await _db.Queryable<StoreLocalSupplierInvoiceDetails>()
+                .SingleAsync(x => x.DetailGUID == "detail-batch-edit");
+            var invoice = await _db.Queryable<StoreLocalSupplierInvoice>()
+                .SingleAsync(x => x.InvoiceGUID == "invoice-batch-edit");
+
+            Assert.True(result.Success, result.Message);
+            Assert.Equal(1, result.Data?.Updated);
+            Assert.Equal(2.00m, detail.PurchasePrice);
+            Assert.Equal(9.99m, detail.RetailPrice);
+            Assert.Equal(6.00m, detail.Amount);
+            Assert.False(detail.AutoPricing);
+            Assert.False(detail.IsSpecialProduct);
+            Assert.Equal(0m, detail.DiscountRate);
+            Assert.Equal(6.00m, invoice.TotalAmount);
+        }
+
+        [Fact]
+        public async Task BatchUpdateDetailsAsync_商品不存在明细_自动定价False改True后刷新保持True()
+        {
+            await SeedStoreAndSupplierAsync();
+            await InsertInvoiceAsync("invoice-batch-edit-missing-product", "INV-BATCH-EDIT-MISSING-PRODUCT", new DateTime(2026, 1, 15));
+            await _db.Insertable(new StoreLocalSupplierInvoiceDetails
+            {
+                DetailGUID = "detail-missing-product-auto",
+                InvoiceGUID = "invoice-batch-edit-missing-product",
+                StoreCode = "S01",
+                SupplierCode = "SUP01",
+                ItemNumber = "NEW-001",
+                Barcode = "9300000000011",
+                ProductName = "Missing Product Auto Pricing",
+                Quantity = 1,
+                PurchasePrice = 2.00m,
+                Amount = 2.00m,
+                ExistingProductCount = 0,
+                BarcodeStatus = 1,
+                BarcodeMatchCount = 1,
+                AutoPricing = false,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+
+            var result = await CreateService().BatchUpdateDetailsAsync(
+                "invoice-batch-edit-missing-product",
+                new BatchUpdateInvoiceDetailsRequest
+                {
+                    Items = new List<InvoiceDetailUpsertItemDto>
+                    {
+                        new() { DetailGUID = "detail-missing-product-auto" },
+                    },
+                    EditFields = new UpdateToStorePricesFields
+                    {
+                        UpdateIsAutoPricing = true,
+                        IsAutoPricing = true,
+                    },
+                },
+                "tester"
+            );
+
+            var details = await CreateService().GetDetailsAsync("invoice-batch-edit-missing-product");
+            var detail = Assert.Single(details.Data!);
+
+            Assert.True(result.Success, result.Message);
+            Assert.Equal(1, result.Data?.Updated);
+            Assert.Equal(0, detail.ExistingProductCount);
+            Assert.True(detail.AutoPricing);
+            Assert.Equal(250m, detail.PricingFloatRate);
+            Assert.Equal(5.00m, detail.NewAutoRetailPrice);
+        }
+
+        [Fact]
+        public async Task BatchUpdateDetailsAsync_勾选字段缺少值_返回校验错误且不更新时间戳()
+        {
+            await SeedStoreAndSupplierAsync();
+            await InsertInvoiceAsync("invoice-batch-edit-missing", "INV-BATCH-EDIT-MISSING", new DateTime(2026, 1, 14));
+            var originalUpdatedAt = new DateTime(2026, 1, 1, 10, 0, 0, DateTimeKind.Utc);
+            await _db.Insertable(new StoreLocalSupplierInvoiceDetails
+            {
+                DetailGUID = "detail-batch-edit-missing",
+                InvoiceGUID = "invoice-batch-edit-missing",
+                StoreCode = "S01",
+                SupplierCode = "SUP01",
+                ProductName = "Batch Edit Missing Value Product",
+                Quantity = 3,
+                PurchasePrice = 1.50m,
+                Amount = 4.50m,
+                AutoPricing = true,
+                UpdatedAt = originalUpdatedAt,
+                UpdatedBy = "seed",
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+
+            var result = await CreateService().BatchUpdateDetailsAsync(
+                "invoice-batch-edit-missing",
+                new BatchUpdateInvoiceDetailsRequest
+                {
+                    Items = new List<InvoiceDetailUpsertItemDto>
+                    {
+                        new() { DetailGUID = "detail-batch-edit-missing" },
+                    },
+                    EditFields = new UpdateToStorePricesFields
+                    {
+                        UpdatePurchasePrice = true,
+                    },
+                },
+                "tester"
+            );
+
+            var detail = await _db.Queryable<StoreLocalSupplierInvoiceDetails>()
+                .SingleAsync(x => x.DetailGUID == "detail-batch-edit-missing");
+
+            Assert.False(result.Success);
+            Assert.Equal("VALIDATION_ERROR", result.ErrorCode);
+            Assert.Equal(1.50m, detail.PurchasePrice);
+            Assert.Equal(4.50m, detail.Amount);
+            Assert.Equal(originalUpdatedAt, detail.UpdatedAt);
+            Assert.Equal("seed", detail.UpdatedBy);
+        }
+
+        [Fact]
+        public async Task PasteDetailsAsync_新商品默认自动定价为True()
+        {
+            await SeedStoreAndSupplierAsync();
+            await InsertInvoiceAsync("invoice-paste-auto-default", "INV-PASTE-AUTO-DEFAULT", new DateTime(2026, 1, 19));
+
+            var result = await CreateService().PasteDetailsAsync(
+                new PasteDetailsRequest
+                {
+                    InvoiceGuid = "invoice-paste-auto-default",
+                    Items = new List<PastedDetailItemDto>
+                    {
+                        new()
+                        {
+                            ItemNumber = "PASTE-AUTO-001",
+                            Barcode = "9300000000015",
+                            ProductName = "Paste Auto Default Product",
+                            Quantity = 1,
+                            PurchasePrice = 2.00m,
+                            RetailPrice = 9.99m,
+                        },
+                    },
+                },
+                "tester"
+            );
+
+            var detail = await _db.Queryable<StoreLocalSupplierInvoiceDetails>()
+                .SingleAsync(x => x.InvoiceGUID == "invoice-paste-auto-default");
+
+            Assert.True(result.Success, result.Message);
+            Assert.True(detail.AutoPricing);
+            Assert.Equal(9.99m, detail.RetailPrice);
+        }
+
+        [Fact]
         public async Task UpdateDetailsToStorePricesAsync_只更新分店价格_不调用Hq商品同步服务()
         {
             await SeedExecutablePriceUpdateAsync();
@@ -830,6 +1221,302 @@ namespace BlazorApp.Api.Tests
             Assert.True(result.Success);
             Assert.Equal(1, result.Data?.Updated);
             Assert.Equal(5.55m, storePrice.StoreRetailPriceValue);
+        }
+
+        [Fact]
+        public async Task UpdateDetailsToStorePricesAsync_重复分店商品只更新一次()
+        {
+            await SeedExecutablePriceUpdateAsync();
+            await _db.Insertable(new StoreLocalSupplierInvoiceDetails
+            {
+                DetailGUID = "detail-price-duplicate",
+                InvoiceGUID = "invoice-execute",
+                StoreCode = "S01",
+                SupplierCode = "SUP01",
+                ItemNumber = "ITEM-OLD-DUP",
+                ProductName = "Existing Product Duplicate",
+                Quantity = 1,
+                PurchasePrice = 7.77m,
+                ProductCode = "P001",
+                StoreProductCode = "S01P001",
+                ExistingProductCount = 1,
+                BarcodeStatus = 2,
+                ActivityType = (int)DetailAction.UpdatePurchasePrice,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+
+            var result = await CreateService().UpdateDetailsToStorePricesAsync(
+                new UpdateToStorePricesRequest
+                {
+                    InvoiceGuid = "invoice-execute",
+                    DetailGuids = new List<string> { "detail-price", "detail-price-duplicate" },
+                    TargetStoreCodes = new List<string> { "S01", "S01" },
+                    UpdateFields = new UpdateToStorePricesFields
+                    {
+                        UpdatePurchasePrice = true,
+                    },
+                },
+                "tester"
+            );
+
+            var storePrice = await _db.Queryable<StoreRetailPrice>()
+                .FirstAsync(x => x.UUID == "SRP-001");
+
+            Assert.True(result.Success);
+            Assert.Equal(1, result.Data?.Updated);
+            Assert.Equal(7.77m, storePrice.PurchasePrice);
+        }
+
+        [Fact]
+        public async Task UpdateDetailsToStorePricesAsync_数值为0时跳过且不更新时间戳()
+        {
+            await SeedExecutablePriceUpdateAsync();
+            var originalUpdatedAt = new DateTime(2026, 1, 1, 10, 0, 0, DateTimeKind.Utc);
+            await _db.Updateable<StoreRetailPrice>()
+                .SetColumns(x => x.PurchasePrice == 1.11m)
+                .SetColumns(x => x.UpdatedAt == originalUpdatedAt)
+                .SetColumns(x => x.UpdatedBy == "seed")
+                .Where(x => x.UUID == "SRP-001")
+                .ExecuteCommandAsync();
+            await _db.Updateable<StoreLocalSupplierInvoiceDetails>()
+                .SetColumns(x => x.PurchasePrice == 0m)
+                .Where(x => x.DetailGUID == "detail-price")
+                .ExecuteCommandAsync();
+
+            var result = await CreateService().UpdateDetailsToStorePricesAsync(
+                new UpdateToStorePricesRequest
+                {
+                    InvoiceGuid = "invoice-execute",
+                    DetailGuids = new List<string> { "detail-price" },
+                    TargetStoreCodes = new List<string> { "S01" },
+                    UpdateFields = new UpdateToStorePricesFields
+                    {
+                        UpdatePurchasePrice = true,
+                    },
+                },
+                "tester"
+            );
+
+            var storePrice = await _db.Queryable<StoreRetailPrice>()
+                .FirstAsync(x => x.UUID == "SRP-001");
+
+            Assert.True(result.Success);
+            Assert.Equal(0, result.Data?.Updated);
+            Assert.Equal(1, result.Data?.Skipped);
+            Assert.Equal(1.11m, storePrice.PurchasePrice);
+            Assert.Equal(originalUpdatedAt, storePrice.UpdatedAt);
+            Assert.Equal("seed", storePrice.UpdatedBy);
+        }
+
+        [Fact]
+        public async Task UpdateDetailsToStorePricesAsync_布尔False仍然写入()
+        {
+            await SeedExecutablePriceUpdateAsync();
+            await _db.Updateable<StoreRetailPrice>()
+                .SetColumns(x => x.IsAutoPricing == true)
+                .SetColumns(x => x.IsSpecialProduct == true)
+                .Where(x => x.UUID == "SRP-001")
+                .ExecuteCommandAsync();
+            await _db.Updateable<StoreLocalSupplierInvoiceDetails>()
+                .SetColumns(x => x.AutoPricing == false)
+                .SetColumns(x => x.IsSpecialProduct == false)
+                .Where(x => x.DetailGUID == "detail-price")
+                .ExecuteCommandAsync();
+
+            var result = await CreateService().UpdateDetailsToStorePricesAsync(
+                new UpdateToStorePricesRequest
+                {
+                    InvoiceGuid = "invoice-execute",
+                    DetailGuids = new List<string> { "detail-price" },
+                    TargetStoreCodes = new List<string> { "S01" },
+                    UpdateFields = new UpdateToStorePricesFields
+                    {
+                        UpdateIsAutoPricing = true,
+                        UpdateIsSpecialProduct = true,
+                    },
+                },
+                "tester"
+            );
+
+            var storePrice = await _db.Queryable<StoreRetailPrice>()
+                .FirstAsync(x => x.UUID == "SRP-001");
+
+            Assert.True(result.Success);
+            Assert.Equal(1, result.Data?.Updated);
+            Assert.Equal(0, result.Data?.Skipped);
+        Assert.False(storePrice.IsAutoPricing);
+        Assert.False(storePrice.IsSpecialProduct);
+    }
+
+        [Fact]
+        public async Task UpdateDetailsToStorePricesAsync_自动定价为空时按否写入()
+        {
+            await SeedExecutablePriceUpdateAsync();
+            await _db.Updateable<StoreRetailPrice>()
+                .SetColumns(x => x.IsAutoPricing == true)
+                .Where(x => x.UUID == "SRP-001")
+                .ExecuteCommandAsync();
+            await _db.Updateable<StoreLocalSupplierInvoiceDetails>()
+                .SetColumns(x => x.AutoPricing == null)
+                .Where(x => x.DetailGUID == "detail-price")
+                .ExecuteCommandAsync();
+
+            var result = await CreateService().UpdateDetailsToStorePricesAsync(
+                new UpdateToStorePricesRequest
+                {
+                    InvoiceGuid = "invoice-execute",
+                    DetailGuids = new List<string> { "detail-price" },
+                    TargetStoreCodes = new List<string> { "S01" },
+                    UpdateFields = new UpdateToStorePricesFields
+                    {
+                        UpdateIsAutoPricing = true,
+                    },
+                },
+                "tester"
+            );
+
+            var storePrice = await _db.Queryable<StoreRetailPrice>()
+                .FirstAsync(x => x.UUID == "SRP-001");
+
+            Assert.True(result.Success);
+            Assert.Equal(1, result.Data?.Updated);
+            Assert.Equal(0, result.Data?.Skipped);
+            Assert.False(storePrice.IsAutoPricing);
+            Assert.DoesNotContain(result.Data?.Errors ?? new List<string>(), error => error.Contains("自动定价为空"));
+        }
+
+        [Fact]
+        public async Task UpdateDetailsToStorePricesAsync_分店价格不存在时按勾选字段新建记录()
+        {
+            await SeedExecutablePriceUpdateAsync();
+            await _db.Deleteable<StoreRetailPrice>()
+                .Where(x => x.UUID == "SRP-001")
+                .ExecuteCommandAsync();
+            await _db.Updateable<StoreLocalSupplierInvoiceDetails>()
+                .SetColumns(x => x.RetailPrice == 6.66m)
+                .Where(x => x.DetailGUID == "detail-price")
+                .ExecuteCommandAsync();
+
+            var result = await CreateService().UpdateDetailsToStorePricesAsync(
+                new UpdateToStorePricesRequest
+                {
+                    InvoiceGuid = "invoice-execute",
+                    DetailGuids = new List<string> { "detail-price" },
+                    TargetStoreCodes = new List<string> { "S01" },
+                    UpdateFields = new UpdateToStorePricesFields
+                    {
+                        UpdatePurchasePrice = true,
+                        UpdateRetailPrice = true,
+                        UpdateIsAutoPricing = true,
+                    },
+                },
+                "tester"
+            );
+
+            var storePrice = await _db.Queryable<StoreRetailPrice>()
+                .SingleAsync(x => x.StoreCode == "S01" && x.ProductCode == "P001");
+
+            Assert.True(result.Success, result.Message);
+            Assert.Equal(1, result.Data?.Inserted);
+            Assert.Equal(0, result.Data?.Updated);
+            Assert.Equal(0, result.Data?.Skipped);
+            Assert.Equal("S01P001", storePrice.StoreProductCode);
+            Assert.Equal("SUP01", storePrice.SupplierCode);
+            Assert.Equal(5.55m, storePrice.PurchasePrice);
+            Assert.Equal(6.66m, storePrice.StoreRetailPriceValue);
+            Assert.False(storePrice.IsAutoPricing);
+            Assert.True(storePrice.IsActive);
+            Assert.False(storePrice.IsDeleted);
+            Assert.Equal("tester", storePrice.CreatedBy);
+            Assert.Equal("tester", storePrice.UpdatedBy);
+        }
+
+        [Fact]
+        public async Task UpdateDetailsToStorePricesAsync_重复明细缺分店价格时只插入最后一次结果()
+        {
+            await SeedExecutablePriceUpdateAsync();
+            await _db.Deleteable<StoreRetailPrice>()
+                .Where(x => x.UUID == "SRP-001")
+                .ExecuteCommandAsync();
+            await _db.Insertable(new StoreLocalSupplierInvoiceDetails
+            {
+                DetailGUID = "detail-price-duplicate",
+                InvoiceGUID = "invoice-execute",
+                StoreCode = "S01",
+                SupplierCode = "SUP01",
+                ItemNumber = "ITEM-OLD-DUP",
+                ProductName = "Existing Product Duplicate",
+                Quantity = 1,
+                PurchasePrice = 7.77m,
+                ProductCode = "P001",
+                StoreProductCode = "S01P001",
+                ExistingProductCount = 1,
+                BarcodeStatus = 2,
+                ActivityType = (int)DetailAction.UpdatePurchasePrice,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+
+            var result = await CreateService().UpdateDetailsToStorePricesAsync(
+                new UpdateToStorePricesRequest
+                {
+                    InvoiceGuid = "invoice-execute",
+                    DetailGuids = new List<string> { "detail-price", "detail-price-duplicate" },
+                    TargetStoreCodes = new List<string> { "S01" },
+                    UpdateFields = new UpdateToStorePricesFields
+                    {
+                        UpdatePurchasePrice = true,
+                    },
+                },
+                "tester"
+            );
+
+            var storePrices = await _db.Queryable<StoreRetailPrice>()
+                .Where(x => x.StoreCode == "S01" && x.ProductCode == "P001")
+                .ToListAsync();
+
+            Assert.True(result.Success, result.Message);
+            Assert.Equal(1, result.Data?.Inserted);
+            Assert.Equal(0, result.Data?.Updated);
+            var storePrice = Assert.Single(storePrices);
+            Assert.Equal(7.77m, storePrice.PurchasePrice);
+        }
+
+        [Fact]
+        public async Task UpdateDetailsToStorePricesAsync_缺分店价格且无有效字段时不插入并返回跳过原因()
+        {
+            await SeedExecutablePriceUpdateAsync();
+            await _db.Deleteable<StoreRetailPrice>()
+                .Where(x => x.UUID == "SRP-001")
+                .ExecuteCommandAsync();
+            await _db.Updateable<StoreLocalSupplierInvoiceDetails>()
+                .SetColumns(x => x.PurchasePrice == 0m)
+                .Where(x => x.DetailGUID == "detail-price")
+                .ExecuteCommandAsync();
+
+            var result = await CreateService().UpdateDetailsToStorePricesAsync(
+                new UpdateToStorePricesRequest
+                {
+                    InvoiceGuid = "invoice-execute",
+                    DetailGuids = new List<string> { "detail-price" },
+                    TargetStoreCodes = new List<string> { "S01" },
+                    UpdateFields = new UpdateToStorePricesFields
+                    {
+                        UpdatePurchasePrice = true,
+                    },
+                },
+                "tester"
+            );
+
+            var storePriceCount = await _db.Queryable<StoreRetailPrice>()
+                .Where(x => x.StoreCode == "S01" && x.ProductCode == "P001")
+                .CountAsync();
+
+            Assert.True(result.Success, result.Message);
+            Assert.Equal(0, result.Data?.Inserted);
+            Assert.Equal(0, result.Data?.Updated);
+            Assert.Equal(1, result.Data?.Skipped);
+            Assert.Equal(0, storePriceCount);
+            Assert.Contains(result.Data?.Errors ?? new List<string>(), error => error.Contains("进货价为空或为0"));
         }
 
         [Fact]
@@ -1009,6 +1696,121 @@ namespace BlazorApp.Api.Tests
             }).ExecuteCommandAsync();
         }
 
+        private async Task SeedSecondExecutablePriceUpdateDetailAsync()
+        {
+            await _db.Insertable(new Product
+            {
+                UUID = "UUID-DIFFERENT-2",
+                ProductCode = "P002",
+                ItemNumber = "ITEM-OLD-2",
+                Barcode = "BAR-OLD-2",
+                ProductName = "Second Existing Product",
+                LocalSupplierCode = "SUP01",
+                PurchasePrice = 2.22m,
+                RetailPrice = 3.33m,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new StoreRetailPrice
+            {
+                UUID = "SRP-002",
+                StoreCode = "S01",
+                ProductCode = "P002",
+                StoreProductCode = "S01P002",
+                SupplierCode = "SUP01",
+                PurchasePrice = 2.22m,
+                StoreRetailPriceValue = 3.33m,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new StoreLocalSupplierInvoiceDetails
+            {
+                DetailGUID = "detail-price-2",
+                InvoiceGUID = "invoice-execute",
+                StoreCode = "S01",
+                SupplierCode = "SUP01",
+                ItemNumber = "ITEM-OLD-2",
+                Barcode = "BAR-CONFLICT-2",
+                ProductName = "Second Existing Product",
+                Quantity = 1,
+                PurchasePrice = 6.66m,
+                ProductCode = "P002",
+                StoreProductCode = "S01P002",
+                ExistingProductCount = 1,
+                BarcodeStatus = 2,
+                ActivityType = (int)DetailAction.UpdatePurchasePrice,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+        }
+
+        private async Task SeedExecutableItemNumberUpdatesAsync()
+        {
+            await SeedStoreAndSupplierAsync();
+            await InsertInvoiceAsync("invoice-item-update", "INV-ITEM-UPD", new DateTime(2026, 1, 12));
+            await _db.Insertable(new List<Product>
+            {
+                new()
+                {
+                    UUID = "UUID-ITEM-1",
+                    ProductCode = "PITEM1",
+                    ItemNumber = "ITEM-OLD-1",
+                    Barcode = "BAR-ITEM-1",
+                    ProductName = "Item Product 1",
+                    LocalSupplierCode = "SUP01",
+                    PurchasePrice = 1.11m,
+                    RetailPrice = 2.22m,
+                    IsDeleted = false,
+                },
+                new()
+                {
+                    UUID = "UUID-ITEM-2",
+                    ProductCode = "PITEM2",
+                    ItemNumber = "ITEM-OLD-2",
+                    Barcode = "BAR-ITEM-2",
+                    ProductName = "Item Product 2",
+                    LocalSupplierCode = "SUP01",
+                    PurchasePrice = 1.22m,
+                    RetailPrice = 2.44m,
+                    IsDeleted = false,
+                },
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new List<StoreLocalSupplierInvoiceDetails>
+            {
+                new()
+                {
+                    DetailGUID = "detail-item-1",
+                    InvoiceGUID = "invoice-item-update",
+                    StoreCode = "S01",
+                    SupplierCode = "SUP01",
+                    ItemNumber = "ITEM-NEW-1",
+                    Barcode = "BAR-ITEM-1",
+                    ProductName = "Item Product 1",
+                    Quantity = 1,
+                    PurchasePrice = 1.11m,
+                    ProductCode = "PITEM1",
+                    ExistingProductCount = 1,
+                    BarcodeStatus = 1,
+                    ActivityType = (int)DetailAction.UpdateItemNumber,
+                    IsDeleted = false,
+                },
+                new()
+                {
+                    DetailGUID = "detail-item-2",
+                    InvoiceGUID = "invoice-item-update",
+                    StoreCode = "S01",
+                    SupplierCode = "SUP01",
+                    ItemNumber = "ITEM-NEW-2",
+                    Barcode = "BAR-ITEM-2",
+                    ProductName = "Item Product 2",
+                    Quantity = 1,
+                    PurchasePrice = 1.22m,
+                    ProductCode = "PITEM2",
+                    ExistingProductCount = 1,
+                    BarcodeStatus = 1,
+                    ActivityType = (int)DetailAction.UpdateItemNumber,
+                    IsDeleted = false,
+                },
+            }).ExecuteCommandAsync();
+        }
+
         private LocalSupplierInvoicesReactService CreateService(
             ILocalSupplierInvoiceHqProductSyncService? hqProductSyncService = null
         )
@@ -1016,6 +1818,8 @@ namespace BlazorApp.Api.Tests
             var autoPricing = new Mock<IAutoPricingService>();
             autoPricing.Setup(x => x.GetAllActiveStrategiesAsync())
                 .ReturnsAsync(new List<BlazorApp.Shared.Models.HBweb.PricingStrategy>());
+            autoPricing.Setup(x => x.FindStrategyForPriceAsync(It.IsAny<decimal>(), It.IsAny<string?>(), It.IsAny<string?>()))
+                .ReturnsAsync((BlazorApp.Shared.Models.HBweb.PricingStrategy?)null);
             autoPricing.Setup(x => x.CalculateRate(It.IsAny<decimal>(), It.IsAny<BlazorApp.Shared.Models.HBweb.PricingStrategy?>()))
                 .Returns(250m);
             autoPricing.Setup(x => x.CalculateRetailPrice(It.IsAny<decimal>(), It.IsAny<BlazorApp.Shared.Models.HBweb.PricingStrategy?>()))

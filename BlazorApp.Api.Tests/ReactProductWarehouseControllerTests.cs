@@ -35,6 +35,34 @@ namespace BlazorApp.Api.Tests
         }
 
         [Fact]
+        public void StartSyncFromHqJob_仅允许Admin调用()
+        {
+            var method = typeof(ReactProductWarehouseController).GetMethod(
+                nameof(ReactProductWarehouseController.StartSyncFromHqJob)
+            );
+
+            var authorizeAttribute = Assert.Single(
+                method!.GetCustomAttributes(typeof(AuthorizeAttribute), inherit: false)
+            );
+
+            Assert.Equal("Admin", ((AuthorizeAttribute)authorizeAttribute).Roles);
+        }
+
+        [Fact]
+        public void GetSyncFromHqJob_仅允许Admin调用()
+        {
+            var method = typeof(ReactProductWarehouseController).GetMethod(
+                nameof(ReactProductWarehouseController.GetSyncFromHqJob)
+            );
+
+            var authorizeAttribute = Assert.Single(
+                method!.GetCustomAttributes(typeof(AuthorizeAttribute), inherit: false)
+            );
+
+            Assert.Equal("Admin", ((AuthorizeAttribute)authorizeAttribute).Roles);
+        }
+
+        [Fact]
         public async Task SyncFromHq_成功时_返回统一响应()
         {
             var expected = new SyncResult
@@ -77,6 +105,77 @@ namespace BlazorApp.Api.Tests
         }
 
         [Fact]
+        public async Task StartSyncFromHqJob_空OperationId_返回400()
+        {
+            var controller = CreateController(Mock.Of<IProductWarehouseReactService>());
+
+            var result = await controller.StartSyncFromHqJob(
+                new WarehouseProductHqSyncJobRequestDto { OperationId = "" },
+                CancellationToken.None
+            );
+
+            var badRequest = Assert.IsType<BadRequestObjectResult>(result);
+            Assert.Contains("operationId 不能为空", badRequest.Value?.ToString());
+        }
+
+        [Fact]
+        public async Task StartSyncFromHqJob_成功时_返回后台任务()
+        {
+            var expected = new WarehouseProductHqSyncJobDto
+            {
+                JobId = "warehouse-job-1",
+                Status = WarehouseProductHqSyncJobStatusConstants.Running,
+                CreatedAt = new DateTime(2026, 6, 4, 1, 2, 3, DateTimeKind.Utc),
+            };
+            var jobServiceMock = new Mock<IWarehouseProductHqSyncJobService>();
+            jobServiceMock
+                .Setup(service =>
+                    service.StartJobAsync(
+                        It.Is<WarehouseProductHqSyncJobRequestDto>(request =>
+                            request.OperationId == "warehouse-sync"
+                        ),
+                        It.IsAny<CancellationToken>()
+                    )
+                )
+                .ReturnsAsync(expected);
+
+            var controller = CreateController(
+                Mock.Of<IProductWarehouseReactService>(),
+                jobService: jobServiceMock.Object
+            );
+
+            var result = await controller.StartSyncFromHqJob(
+                new WarehouseProductHqSyncJobRequestDto { OperationId = "warehouse-sync" },
+                CancellationToken.None
+            );
+
+            var ok = Assert.IsType<OkObjectResult>(result);
+            Assert.Contains("仓库商品同步任务已提交", ok.Value?.ToString());
+            var data = ok.Value!.GetType().GetProperty("data")!.GetValue(ok.Value);
+            var job = Assert.IsType<WarehouseProductHqSyncJobDto>(data);
+            Assert.Equal("warehouse-job-1", job.JobId);
+        }
+
+        [Fact]
+        public async Task GetSyncFromHqJob_不存在时_返回404()
+        {
+            var jobServiceMock = new Mock<IWarehouseProductHqSyncJobService>();
+            jobServiceMock
+                .Setup(service => service.GetJobAsync("missing", It.IsAny<CancellationToken>()))
+                .ReturnsAsync((WarehouseProductHqSyncJobDto?)null);
+
+            var controller = CreateController(
+                Mock.Of<IProductWarehouseReactService>(),
+                jobService: jobServiceMock.Object
+            );
+
+            var result = await controller.GetSyncFromHqJob("missing", CancellationToken.None);
+
+            var notFound = Assert.IsType<NotFoundObjectResult>(result);
+            Assert.Contains("同步任务不存在或已过期", notFound.Value?.ToString());
+        }
+
+        [Fact]
         public async Task SetMobileProductLocation_WhenLocationIsInvalid_ReturnsBadRequest()
         {
             var serviceMock = new Mock<IProductWarehouseReactService>();
@@ -104,11 +203,13 @@ namespace BlazorApp.Api.Tests
 
         private static ReactProductWarehouseController CreateController(
             IProductWarehouseReactService service,
-            TencentCloudUploadService? uploadService = null
+            TencentCloudUploadService? uploadService = null,
+            IWarehouseProductHqSyncJobService? jobService = null
         )
         {
             return new ReactProductWarehouseController(
                 service,
+                jobService ?? Mock.Of<IWarehouseProductHqSyncJobService>(),
                 Mock.Of<ILogger<ReactProductWarehouseController>>(),
                 Mock.Of<IDeviceRegistrationService>(),
                 Mock.Of<IMapper>(),

@@ -46,6 +46,8 @@
     <Compile Include="ProductWarehouseReactServiceTests.cs" />
     <Compile Include="ProductWarehouseReactServiceNonHotbargainTests.cs" />
     <Compile Include="ProductWarehouseReactServiceSyncTests.cs" />
+    <Compile Include="WarehouseProductHqSyncJobServiceTests.cs" />
+    <Compile Include="DataSyncFullServiceWarehouseProductsTests.cs" />
     <Compile Include="AuthServiceTests.cs" />
     <Compile Include="AuthSessionControllerTests.cs" />
     <Compile Include="StoreVoucherReactRouteTests.cs" />

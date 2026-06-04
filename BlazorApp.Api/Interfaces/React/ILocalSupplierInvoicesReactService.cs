@@ -28,6 +28,11 @@ namespace BlazorApp.Api.Interfaces.React
             List<InvoiceDetailUpsertItemDto> items,
             string updatedBy
         );
+        Task<ApiResponse<BatchResultDto>> BatchUpdateDetailsAsync(
+            string invoiceGuid,
+            BatchUpdateInvoiceDetailsRequest request,
+            string updatedBy
+        );
         Task<ApiResponse<UpdateToStorePricesResultDto>> UpdateDetailsToStorePricesAsync(
             UpdateToStorePricesRequest dto,
             string updatedBy

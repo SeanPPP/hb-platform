@@ -236,6 +236,7 @@ namespace BlazorApp.Api.Services.React
                         var prepared = await PrepareLocalProductForHqUpdateAsync(
                             header,
                             detail,
+                            activeStoreCodes,
                             updatedBy,
                             result
                         );
@@ -257,6 +258,7 @@ namespace BlazorApp.Api.Services.React
                     {
                         await UpdateHqStorePricesAsync(
                             item,
+                            activeStoreCodes,
                             targetStoreCodes,
                             updateFields,
                             updatedBy,
@@ -299,6 +301,7 @@ namespace BlazorApp.Api.Services.React
         private async Task<PreparedSyncItem?> PrepareLocalProductForHqUpdateAsync(
             StoreLocalSupplierInvoice header,
             StoreLocalSupplierInvoiceDetails detail,
+            List<string> activeStoreCodes,
             string updatedBy,
             UpdateHqProductsResult result
         )
@@ -360,13 +363,19 @@ namespace BlazorApp.Api.Services.React
                 result.HbwebCreated++;
             }
 
-            // HQ字段更新只需要绑定明细到商品，不能顺带更新本地分店价格。
+            // 已有商品只绑定明细；新建商品会在绑定后补齐所有启用分店价格。
             detail.ProductCode = product.ProductCode;
             detail.StoreProductCode ??= BuildStoreProductCode(detail.StoreCode, product.ProductCode!);
             detail.LastPurchasePrice = detail.PurchasePrice ?? product.PurchasePrice;
             detail.UpdatedAt = now;
             detail.UpdatedBy = updatedBy;
             await db.Updateable(detail).ExecuteCommandAsync();
+
+            // 更新HQ商品时，只有新建本地商品才需要补齐所有启用分店价格。
+            if (isNewProduct)
+            {
+                await UpsertLocalStorePricesAsync(detail, product, activeStoreCodes, updatedBy);
+            }
 
             return new PreparedSyncItem(detail, product, isNewProduct);
         }
@@ -584,6 +593,7 @@ namespace BlazorApp.Api.Services.React
 
         private async Task UpdateHqStorePricesAsync(
             PreparedSyncItem item,
+            List<string> activeStoreCodes,
             List<string> targetStoreCodes,
             UpdateToStorePricesFields updateFields,
             string updatedBy,
@@ -595,9 +605,6 @@ namespace BlazorApp.Api.Services.React
             var product = item.Product;
             var productCode = product.ProductCode!;
             var now = DateTime.UtcNow;
-
-            if (!TryValidateSelectedFieldValues(detail, product, updateFields, result))
-                return;
 
             var hqProduct = await FindExistingHqProductAsync(
                 hqDb,
@@ -650,25 +657,33 @@ namespace BlazorApp.Api.Services.React
                 result.HqSynced++;
             }
 
+            // 新建HQ商品后要补齐所有启用分店价格；已有HQ商品只更新用户选择的目标分店。
+            var hqPriceScope = hqProduct == null ? activeStoreCodes : targetStoreCodes;
             var existingPrices = await hqDb.Queryable<DIC_商品零售价表>()
-                .Where(x => targetStoreCodes.Contains(x.H分店代码) && x.H商品编码 == hqProductCode)
+                .Where(x => hqPriceScope.Contains(x.H分店代码) && x.H商品编码 == hqProductCode)
                 .ToListAsync();
             var existingByStore = existingPrices.ToDictionary(x => x.H分店代码, x => x);
 
-            foreach (var storeCode in targetStoreCodes)
+            foreach (var storeCode in hqPriceScope)
             {
                 try
                 {
                     if (!existingByStore.TryGetValue(storeCode, out var price))
                     {
                         price = BuildHqStorePrice(detail, product, storeCode, updatedBy, now, hqProductCode);
-                        ApplySelectedHqFields(price, detail, product, updateFields, result);
+                        if (!ApplyAllHqFieldsForInsert(price, detail, product, updateFields, result, storeCode))
+                        {
+                            continue;
+                        }
                         await hqDb.Insertable(price).IgnoreColumns(x => x.ID).ExecuteCommandAsync();
                         result.Updated++;
                         continue;
                     }
 
-                    ApplySelectedHqFields(price, detail, product, updateFields, result);
+                    if (!ApplySelectedHqFields(price, detail, product, updateFields, result, storeCode))
+                    {
+                        continue;
+                    }
                     price.FGC_LastModifier = updatedBy;
                     price.FGC_LastModifyDate = now;
                     await hqDb.Updateable(price).ExecuteCommandAsync();
@@ -751,7 +766,7 @@ namespace BlazorApp.Api.Services.React
                         H满减金额 = 0,
                         H多码数量 = 0,
                         H使用状态 = true,
-                        H是否自动定价 = detail.AutoPricing ?? true,
+                        H是否自动定价 = detail.AutoPricing ?? false,
                         H自动新价格 = detail.NewAutoRetailPrice ?? 0,
                         H盘点入库记录数 = 0,
                         H是否特殊商品 = detail.IsSpecialProduct ?? false,
@@ -814,7 +829,7 @@ namespace BlazorApp.Api.Services.React
                 H满减金额 = 0,
                 H多码数量 = 0,
                 H使用状态 = true,
-                H是否自动定价 = detail.AutoPricing ?? true,
+                H是否自动定价 = detail.AutoPricing ?? false,
                 H自动新价格 = detail.NewAutoRetailPrice ?? 0,
                 H盘点入库记录数 = 0,
                 H是否特殊商品 = detail.IsSpecialProduct ?? false,
@@ -831,69 +846,111 @@ namespace BlazorApp.Api.Services.React
             };
         }
 
-        private static void ApplySelectedHqFields(
+        private static bool ApplySelectedHqFields(
             DIC_商品零售价表 price,
             StoreLocalSupplierInvoiceDetails detail,
             Product product,
             UpdateToStorePricesFields updateFields,
-            UpdateHqProductsResult result
+            UpdateHqProductsResult result,
+            string storeCode
         )
         {
+            var updated = false;
+            var skippedFields = new List<string>();
             if (updateFields.UpdatePurchasePrice)
             {
-                price.H进货价 = ResolvePurchasePriceForUpdate(detail, product, updateFields)!.Value;
-                result.HqPurchasePricesUpdated++;
+                var value = ResolvePurchasePriceForUpdate(detail, product, updateFields);
+                if (IsPositiveValue(value))
+                {
+                    price.H进货价 = value!.Value;
+                    result.HqPurchasePricesUpdated++;
+                    updated = true;
+                }
+                else
+                {
+                    skippedFields.Add("进货价为空或为0");
+                }
             }
 
             if (updateFields.UpdateRetailPrice)
             {
-                price.H分店零售价 = ResolveRetailPriceForUpdate(detail, updateFields)!.Value;
-                result.HqRetailPricesUpdated++;
+                var value = ResolveRetailPriceForUpdate(detail, updateFields);
+                if (IsPositiveValue(value))
+                {
+                    price.H分店零售价 = value!.Value;
+                    result.HqRetailPricesUpdated++;
+                    updated = true;
+                }
+                else
+                {
+                    skippedFields.Add("零售价为空或为0");
+                }
             }
 
             if (updateFields.UpdateIsAutoPricing)
             {
-                price.H是否自动定价 = ResolveAutoPricingForUpdate(detail, updateFields)!.Value;
-                result.HqAutoPricingUpdated++;
+                var value = ResolveAutoPricingForUpdate(detail, updateFields);
+                if (value.HasValue)
+                {
+                    price.H是否自动定价 = value.Value;
+                    result.HqAutoPricingUpdated++;
+                    updated = true;
+                }
+                else
+                {
+                    skippedFields.Add("自动定价为空");
+                }
             }
 
             if (updateFields.UpdateIsSpecialProduct)
             {
-                price.H是否特殊商品 = ResolveSpecialProductForUpdate(detail, updateFields)!.Value;
-                result.HqSpecialProductsUpdated++;
+                var value = ResolveSpecialProductForUpdate(detail, updateFields);
+                if (value.HasValue)
+                {
+                    price.H是否特殊商品 = value.Value;
+                    result.HqSpecialProductsUpdated++;
+                    updated = true;
+                }
+                else
+                {
+                    skippedFields.Add("特殊商品为空");
+                }
             }
 
             if (updateFields.UpdateDiscountRate)
             {
-                price.H折扣率 = ResolveDiscountRateForUpdate(detail, updateFields)!.Value;
-                result.HqDiscountRatesUpdated++;
+                var value = ResolveDiscountRateForUpdate(detail, updateFields);
+                if (IsPositiveValue(value))
+                {
+                    price.H折扣率 = value!.Value;
+                    result.HqDiscountRatesUpdated++;
+                    updated = true;
+                }
+                else
+                {
+                    skippedFields.Add("折扣率为空或为0");
+                }
             }
+
+            if (!updated)
+            {
+                AddSkipped(result, detail.DetailGUID, storeCode, string.Join("，", skippedFields));
+            }
+
+            return updated;
         }
 
-        private static bool TryValidateSelectedFieldValues(
+        private static bool ApplyAllHqFieldsForInsert(
+            DIC_商品零售价表 price,
             StoreLocalSupplierInvoiceDetails detail,
             Product product,
             UpdateToStorePricesFields updateFields,
-            UpdateHqProductsResult result
+            UpdateHqProductsResult result,
+            string storeCode
         )
         {
-            var messages = new List<string>();
-            if (updateFields.UpdatePurchasePrice && ResolvePurchasePriceForUpdate(detail, product, updateFields) == null)
-                messages.Add("进货价为空");
-            if (updateFields.UpdateRetailPrice && ResolveRetailPriceForUpdate(detail, updateFields) == null)
-                messages.Add("零售价为空");
-            if (updateFields.UpdateIsAutoPricing && ResolveAutoPricingForUpdate(detail, updateFields) == null)
-                messages.Add("自动定价为空");
-            if (updateFields.UpdateIsSpecialProduct && ResolveSpecialProductForUpdate(detail, updateFields) == null)
-                messages.Add("特殊商品为空");
-            if (updateFields.UpdateDiscountRate && ResolveDiscountRateForUpdate(detail, updateFields) == null)
-                messages.Add("折扣率为空");
-
-            if (messages.Count == 0)
-                return true;
-
-            AddError(result, detail.DetailGUID, detail.StoreCode, string.Join("，", messages));
-            return false;
+            // 新插入价格行没有旧值可保留，使用本次更新字段优先补齐整条HQ分店价格记录。
+            return ApplySelectedHqFields(price, detail, product, updateFields, result, storeCode);
         }
 
         private static bool HasAnyUpdateField(UpdateToStorePricesFields updateFields)
@@ -911,7 +968,7 @@ namespace BlazorApp.Api.Services.React
             UpdateToStorePricesFields updateFields
         )
         {
-            return updateFields.PurchasePrice ?? detail.PurchasePrice ?? product.PurchasePrice;
+            return NormalizePositiveValue(updateFields.PurchasePrice ?? detail.PurchasePrice ?? product.PurchasePrice);
         }
 
         private static decimal? ResolveRetailPriceForUpdate(
@@ -919,7 +976,7 @@ namespace BlazorApp.Api.Services.React
             UpdateToStorePricesFields updateFields
         )
         {
-            return updateFields.RetailPrice ?? detail.RetailPrice ?? detail.NewAutoRetailPrice;
+            return NormalizePositiveValue(updateFields.RetailPrice ?? detail.RetailPrice ?? detail.NewAutoRetailPrice);
         }
 
         private static bool? ResolveAutoPricingForUpdate(
@@ -927,7 +984,7 @@ namespace BlazorApp.Api.Services.React
             UpdateToStorePricesFields updateFields
         )
         {
-            return updateFields.IsAutoPricing ?? detail.AutoPricing;
+            return updateFields.IsAutoPricing ?? detail.AutoPricing ?? false;
         }
 
         private static bool? ResolveSpecialProductForUpdate(
@@ -943,7 +1000,58 @@ namespace BlazorApp.Api.Services.React
             UpdateToStorePricesFields updateFields
         )
         {
-            return updateFields.DiscountRate ?? detail.DiscountRate;
+            return NormalizePositiveValue(updateFields.DiscountRate ?? detail.DiscountRate);
+        }
+
+        private static decimal? NormalizePositiveValue(decimal? value)
+        {
+            return IsPositiveValue(value) ? value : null;
+        }
+
+        private static bool IsPositiveValue(decimal? value)
+        {
+            return value.HasValue && value.Value > 0;
+        }
+
+        private static decimal ResolvePurchasePriceForInsert(
+            StoreLocalSupplierInvoiceDetails detail,
+            Product product,
+            UpdateToStorePricesFields updateFields
+        )
+        {
+            return updateFields.PurchasePrice ?? detail.PurchasePrice ?? product.PurchasePrice ?? 0;
+        }
+
+        private static decimal ResolveRetailPriceForInsert(
+            StoreLocalSupplierInvoiceDetails detail,
+            UpdateToStorePricesFields updateFields
+        )
+        {
+            return updateFields.RetailPrice ?? ResolveRetailPrice(detail);
+        }
+
+        private static bool ResolveAutoPricingForInsert(
+            StoreLocalSupplierInvoiceDetails detail,
+            UpdateToStorePricesFields updateFields
+        )
+        {
+            return updateFields.IsAutoPricing ?? detail.AutoPricing ?? false;
+        }
+
+        private static bool ResolveSpecialProductForInsert(
+            StoreLocalSupplierInvoiceDetails detail,
+            UpdateToStorePricesFields updateFields
+        )
+        {
+            return updateFields.IsSpecialProduct ?? detail.IsSpecialProduct ?? false;
+        }
+
+        private static decimal ResolveDiscountRateForInsert(
+            StoreLocalSupplierInvoiceDetails detail,
+            UpdateToStorePricesFields updateFields
+        )
+        {
+            return updateFields.DiscountRate ?? detail.DiscountRate ?? 0;
         }
 
         private static decimal ResolveRetailPrice(StoreLocalSupplierInvoiceDetails detail)
@@ -1102,6 +1210,22 @@ namespace BlazorApp.Api.Services.React
                 DetailGuid = detailGuid,
                 StoreCode = storeCode,
                 Message = message,
+            });
+        }
+
+        private static void AddSkipped(
+            EnsureHqProductsResult result,
+            string detailGuid,
+            string? storeCode,
+            string message
+        )
+        {
+            result.Skipped++;
+            result.Errors.Add(new EnsureHqProductError
+            {
+                DetailGuid = detailGuid,
+                StoreCode = storeCode,
+                Message = $"{message}，已跳过",
             });
         }
 

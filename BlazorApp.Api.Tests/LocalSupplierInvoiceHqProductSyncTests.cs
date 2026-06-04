@@ -185,6 +185,182 @@ public sealed class LocalSupplierInvoiceHqProductSyncTests : IDisposable
     }
 
     [Fact]
+    public async Task UpdateHqProductsAsync_目标分店HQ价格不存在_插入时使用更新字段完整建价()
+    {
+        await SeedStoreAsync("S01", true);
+        await SeedStoreAsync("S02", true);
+        await SeedInvoiceAsync("invoice-1", "S01", "SUP01");
+        await SeedExistingProductAsync("P-001", "SUP01");
+        await SeedHqProductAsync("P-001", 5m, 10m);
+        await SeedHqPriceAsync("S01", "P-001", 5m, 10m);
+        await SeedDetailAsync(new StoreLocalSupplierInvoiceDetails
+        {
+            DetailGUID = "detail-missing-price",
+            InvoiceGUID = "invoice-1",
+            StoreCode = "S01",
+            SupplierCode = "SUP01",
+            ProductCode = "P-001",
+            PurchasePrice = 8m,
+            RetailPrice = 18m,
+            AutoPricing = true,
+            IsSpecialProduct = false,
+            DiscountRate = 0.10m,
+            IsDeleted = false,
+        });
+
+        var result = await CreateSyncService().UpdateHqProductsAsync(
+            "invoice-1",
+            new UpdateHqProductsRequest
+            {
+                DetailGuids = new List<string> { "detail-missing-price" },
+                TargetStoreCodes = new List<string> { "S01", "S02" },
+                UpdateFields = new UpdateToStorePricesFields
+                {
+                    UpdatePurchasePrice = true,
+                    UpdateRetailPrice = true,
+                    UpdateIsAutoPricing = true,
+                    UpdateIsSpecialProduct = true,
+                    UpdateDiscountRate = true,
+                    PurchasePrice = 9m,
+                    RetailPrice = 19m,
+                    IsAutoPricing = false,
+                    IsSpecialProduct = true,
+                    DiscountRate = 0.30m,
+                },
+            },
+            "tester"
+        );
+
+        Assert.True(result.Success, BuildFailureMessage(result));
+        Assert.Equal(2, result.Data!.Updated);
+
+        var existingPrice = await _hqDb.Queryable<DIC_商品零售价表>()
+            .FirstAsync(x => x.H分店代码 == "S01" && x.H商品编码 == "P-001");
+        Assert.Equal(9m, existingPrice.H进货价);
+        Assert.Equal(19m, existingPrice.H分店零售价);
+        Assert.False(existingPrice.H是否自动定价);
+        Assert.True(existingPrice.H是否特殊商品);
+        Assert.Equal(0.30m, existingPrice.H折扣率);
+
+        var insertedPrice = await _hqDb.Queryable<DIC_商品零售价表>()
+            .FirstAsync(x => x.H分店代码 == "S02" && x.H商品编码 == "P-001");
+        Assert.Equal(9m, insertedPrice.H进货价);
+        Assert.Equal(19m, insertedPrice.H分店零售价);
+        Assert.False(insertedPrice.H是否自动定价);
+        Assert.True(insertedPrice.H是否特殊商品);
+        Assert.Equal(0.30m, insertedPrice.H折扣率);
+    }
+
+    [Fact]
+    public async Task UpdateHqProductsAsync_数值为0时跳过且布尔False仍然写入()
+    {
+        await SeedStoreAsync("S01", true);
+        await SeedInvoiceAsync("invoice-1", "S01", "SUP01");
+        await SeedExistingProductAsync("P-001", "SUP01");
+        await SeedHqProductAsync("P-001", 5m, 10m);
+        await SeedHqPriceAsync("S01", "P-001", 5m, 10m);
+        await SeedDetailAsync(new StoreLocalSupplierInvoiceDetails
+        {
+            DetailGUID = "detail-zero-skip",
+            InvoiceGUID = "invoice-1",
+            StoreCode = "S01",
+            SupplierCode = "SUP01",
+            ProductCode = "P-001",
+            PurchasePrice = 0m,
+            RetailPrice = 0m,
+            AutoPricing = false,
+            IsSpecialProduct = false,
+            DiscountRate = 0m,
+            IsDeleted = false,
+        });
+
+        var result = await CreateSyncService().UpdateHqProductsAsync(
+            "invoice-1",
+            new UpdateHqProductsRequest
+            {
+                DetailGuids = new List<string> { "detail-zero-skip" },
+                TargetStoreCodes = new List<string> { "S01" },
+                UpdateFields = new UpdateToStorePricesFields
+                {
+                    UpdatePurchasePrice = true,
+                    UpdateRetailPrice = true,
+                    UpdateIsAutoPricing = true,
+                    UpdateIsSpecialProduct = true,
+                    UpdateDiscountRate = true,
+                },
+            },
+            "tester"
+        );
+
+        var hqPrice = await _hqDb.Queryable<DIC_商品零售价表>()
+            .FirstAsync(x => x.H分店代码 == "S01" && x.H商品编码 == "P-001");
+
+        Assert.True(result.Success, BuildFailureMessage(result));
+        Assert.Equal(1, result.Data!.Updated);
+        Assert.Equal(0, result.Data.HqPurchasePricesUpdated);
+        Assert.Equal(0, result.Data.HqRetailPricesUpdated);
+        Assert.Equal(1, result.Data.HqAutoPricingUpdated);
+        Assert.Equal(1, result.Data.HqSpecialProductsUpdated);
+        Assert.Equal(0, result.Data.HqDiscountRatesUpdated);
+        Assert.Equal(5m, hqPrice.H进货价);
+        Assert.Equal(10m, hqPrice.H分店零售价);
+        Assert.False(hqPrice.H是否自动定价);
+        Assert.False(hqPrice.H是否特殊商品);
+        Assert.Equal(0m, hqPrice.H折扣率);
+    }
+
+    [Fact]
+    public async Task UpdateHqProductsAsync_自动定价为空时按否写入HQ价格()
+    {
+        await SeedStoreAsync("S01", true);
+        await SeedInvoiceAsync("invoice-1", "S01", "SUP01");
+        await SeedExistingProductAsync("P-001", "SUP01");
+        await SeedHqProductAsync("P-001", 5m, 10m);
+        await SeedHqPriceAsync("S01", "P-001", 5m, 10m);
+        await SeedDetailAsync(new StoreLocalSupplierInvoiceDetails
+        {
+            DetailGUID = "detail-null-auto-pricing",
+            InvoiceGUID = "invoice-1",
+            StoreCode = "S01",
+            SupplierCode = "SUP01",
+            ProductCode = "P-001",
+            PurchasePrice = 8m,
+            RetailPrice = 18m,
+            AutoPricing = null,
+            IsDeleted = false,
+        });
+
+        await _hqDb.Updateable<DIC_商品零售价表>()
+            .SetColumns(x => x.H是否自动定价 == true)
+            .Where(x => x.H分店代码 == "S01" && x.H商品编码 == "P-001")
+            .ExecuteCommandAsync();
+
+        var result = await CreateSyncService().UpdateHqProductsAsync(
+            "invoice-1",
+            new UpdateHqProductsRequest
+            {
+                DetailGuids = new List<string> { "detail-null-auto-pricing" },
+                TargetStoreCodes = new List<string> { "S01" },
+                UpdateFields = new UpdateToStorePricesFields
+                {
+                    UpdateIsAutoPricing = true,
+                },
+            },
+            "tester"
+        );
+
+        var hqPrice = await _hqDb.Queryable<DIC_商品零售价表>()
+            .FirstAsync(x => x.H分店代码 == "S01" && x.H商品编码 == "P-001");
+
+        Assert.True(result.Success, BuildFailureMessage(result));
+        Assert.Equal(1, result.Data!.Updated);
+        Assert.Equal(0, result.Data.Skipped);
+        Assert.Equal(1, result.Data.HqAutoPricingUpdated);
+        Assert.False(hqPrice.H是否自动定价);
+        Assert.DoesNotContain(result.Data.Errors, error => error.Message.Contains("自动定价为空"));
+    }
+
+    [Fact]
     public async Task UpdateHqProductsAsync_未选择字段_拒绝写入()
     {
         await SeedStoreAsync("S01", true);
@@ -352,6 +528,188 @@ public sealed class LocalSupplierInvoiceHqProductSyncTests : IDisposable
         var newCodePriceCount = await _hqDb.Queryable<DIC_商品零售价表>()
             .CountAsync(x => x.H商品编码 == "P-001");
         Assert.Equal(0, newCodePriceCount);
+    }
+
+    [Fact]
+    public async Task UpdateHqProductsAsync_HQ商品不存在_新建商品并为所有启用分店处理价格()
+    {
+        await SeedStoreAsync("S01", true);
+        await SeedStoreAsync("S02", true);
+        await SeedStoreAsync("S03", false);
+        await SeedInvoiceAsync("invoice-1", "S01", "SUP01");
+        await SeedExistingProductAsync("P-001", "SUP01");
+        await SeedDetailAsync(new StoreLocalSupplierInvoiceDetails
+        {
+            DetailGUID = "detail-new-hq",
+            InvoiceGUID = "invoice-1",
+            StoreCode = "S01",
+            SupplierCode = "SUP01",
+            ProductCode = "P-001",
+            ItemNumber = "ITEM-NEW-HQ",
+            Barcode = "930000001234",
+            ProductName = "HQ不存在测试",
+            PurchasePrice = 7.50m,
+            RetailPrice = 15.00m,
+            AutoPricing = true,
+            IsDeleted = false,
+        });
+
+        var result = await CreateSyncService().UpdateHqProductsAsync(
+            "invoice-1",
+            new UpdateHqProductsRequest
+            {
+                DetailGuids = new List<string> { "detail-new-hq" },
+                TargetStoreCodes = new List<string> { "S01" },
+                UpdateFields = new UpdateToStorePricesFields
+                {
+                    UpdatePurchasePrice = true,
+                },
+            },
+            "tester"
+        );
+
+        Assert.True(result.Success, BuildFailureMessage(result));
+        Assert.Equal(1, result.Data!.HqCreated);
+        Assert.Equal(2, result.Data.Updated);
+
+        var hqProduct = await _hqDb.Queryable<DIC_商品信息字典表>()
+            .FirstAsync(x => x.H商品编码 == "P-001");
+        Assert.Equal("P-001", hqProduct.H商品编码);
+
+        var hqPrices = await _hqDb.Queryable<DIC_商品零售价表>()
+            .Where(x => x.H商品编码 == "P-001")
+            .OrderBy(x => x.H分店代码)
+            .ToListAsync();
+        Assert.Equal(new[] { "S01", "S02" }, hqPrices.Select(x => x.H分店代码).ToArray());
+        Assert.All(hqPrices, price => Assert.Equal(7.50m, price.H进货价));
+        Assert.DoesNotContain(hqPrices, price => price.H分店代码 == "S03");
+    }
+
+    [Fact]
+    public async Task UpdateHqProductsAsync_本地商品不存在_新建本地商品并为所有启用分店创建本地价格()
+    {
+        await SeedStoreAsync("S01", true);
+        await SeedStoreAsync("S02", true);
+        await SeedStoreAsync("S03", false);
+        await SeedInvoiceAsync("invoice-1", "S01", "SUP01");
+        await SeedDetailAsync(new StoreLocalSupplierInvoiceDetails
+        {
+            DetailGUID = "detail-new-local-product",
+            InvoiceGUID = "invoice-1",
+            StoreCode = "S01",
+            SupplierCode = "SUP01",
+            ItemNumber = "ITEM-NEW-LOCAL",
+            Barcode = "930000009999",
+            ProductName = "本地不存在测试",
+            PurchasePrice = 4.20m,
+            RetailPrice = 9.90m,
+            AutoPricing = false,
+            IsSpecialProduct = true,
+            DiscountRate = 0.15m,
+            IsDeleted = false,
+        });
+
+        var result = await CreateSyncService().UpdateHqProductsAsync(
+            "invoice-1",
+            new UpdateHqProductsRequest
+            {
+                DetailGuids = new List<string> { "detail-new-local-product" },
+                TargetStoreCodes = new List<string> { "S01" },
+                UpdateFields = new UpdateToStorePricesFields
+                {
+                    UpdatePurchasePrice = true,
+                },
+            },
+            "tester"
+        );
+
+        Assert.True(result.Success, BuildFailureMessage(result));
+        Assert.Equal(1, result.Data!.HbwebCreated);
+
+        var detail = await _localDb.Queryable<StoreLocalSupplierInvoiceDetails>()
+            .FirstAsync(x => x.DetailGUID == "detail-new-local-product");
+        Assert.False(string.IsNullOrWhiteSpace(detail.ProductCode));
+
+        var product = await _localDb.Queryable<Product>()
+            .FirstAsync(x => x.ProductCode == detail.ProductCode);
+        Assert.Equal("ITEM-NEW-LOCAL", product.ItemNumber);
+        Assert.Equal("930000009999", product.Barcode);
+
+        var localPrices = await _localDb.Queryable<StoreRetailPrice>()
+            .Where(x => x.ProductCode == detail.ProductCode)
+            .OrderBy(x => x.StoreCode)
+            .ToListAsync();
+        Assert.Equal(new[] { "S01", "S02" }, localPrices.Select(x => x.StoreCode).ToArray());
+        Assert.DoesNotContain(localPrices, price => price.StoreCode == "S03");
+        Assert.All(localPrices, price =>
+        {
+            Assert.Equal(4.20m, price.PurchasePrice);
+            Assert.Equal(9.90m, price.StoreRetailPriceValue);
+            Assert.Equal(0.15m, price.DiscountRate);
+            Assert.False(price.IsAutoPricing);
+            Assert.True(price.IsSpecialProduct);
+            Assert.Equal($"{price.StoreCode}{detail.ProductCode}", price.StoreProductCode);
+        });
+    }
+
+    [Fact]
+    public async Task UpdateHqProductsAsync_本地商品已存在_不更新本地分店价格()
+    {
+        await SeedStoreAsync("S01", true);
+        await SeedStoreAsync("S02", true);
+        await SeedInvoiceAsync("invoice-1", "S01", "SUP01");
+        await SeedExistingProductAsync("P-001", "SUP01");
+        await SeedLocalPriceAsync("S01", "P-001", 5m, 10m);
+        await SeedLocalPriceAsync("S02", "P-001", 6m, 12m);
+        await SeedHqProductAsync("P-001", 5m, 10m);
+        await SeedHqPriceAsync("S01", "P-001", 5m, 10m);
+        await SeedDetailAsync(new StoreLocalSupplierInvoiceDetails
+        {
+            DetailGUID = "detail-existing-local-product",
+            InvoiceGUID = "invoice-1",
+            StoreCode = "S01",
+            SupplierCode = "SUP01",
+            ProductCode = "P-001",
+            ItemNumber = "ITEM-NEW",
+            Barcode = "930000000002",
+            ProductName = "已有本地商品",
+            PurchasePrice = 8m,
+            RetailPrice = 18m,
+            AutoPricing = true,
+            IsSpecialProduct = true,
+            DiscountRate = 0.05m,
+            IsDeleted = false,
+        });
+
+        var result = await CreateSyncService().UpdateHqProductsAsync(
+            "invoice-1",
+            new UpdateHqProductsRequest
+            {
+                DetailGuids = new List<string> { "detail-existing-local-product" },
+                TargetStoreCodes = new List<string> { "S01" },
+                UpdateFields = new UpdateToStorePricesFields
+                {
+                    UpdatePurchasePrice = true,
+                    UpdateRetailPrice = true,
+                    UpdateDiscountRate = true,
+                    UpdateIsAutoPricing = true,
+                    UpdateIsSpecialProduct = true,
+                },
+            },
+            "tester"
+        );
+
+        Assert.True(result.Success, BuildFailureMessage(result));
+        Assert.Equal(0, result.Data!.HbwebCreated);
+
+        var localS01 = await _localDb.Queryable<StoreRetailPrice>()
+            .FirstAsync(x => x.StoreCode == "S01" && x.ProductCode == "P-001");
+        var localS02 = await _localDb.Queryable<StoreRetailPrice>()
+            .FirstAsync(x => x.StoreCode == "S02" && x.ProductCode == "P-001");
+        Assert.Equal(5m, localS01.PurchasePrice);
+        Assert.Equal(10m, localS01.StoreRetailPriceValue);
+        Assert.Equal(6m, localS02.PurchasePrice);
+        Assert.Equal(12m, localS02.StoreRetailPriceValue);
     }
 
     [Fact]

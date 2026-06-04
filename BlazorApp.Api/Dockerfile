@@ -47,10 +47,10 @@ USER appuser
 # 从发布阶段复制应用程序文件
 COPY --from=publish /app/publish .
 
-# 配置环境变量 - 容器内部使用 5001 端口
+# 配置环境变量 - 容器内部使用 5002 端口
 ENV ASPNETCORE_ENVIRONMENT=Production
-ENV ASPNETCORE_URLS=http://+:5001
-ENV ASPNETCORE_HTTP_PORTS=5001
+ENV ASPNETCORE_URLS=http://+:5002
+ENV ASPNETCORE_HTTP_PORTS=5002
 
 # 配置环境变量占位符（通过 Docker Compose 或 docker run 注入实际值）
 ENV ConnectionString=REDACTED
@@ -62,12 +62,12 @@ ENV ConnectionString=REDACTED
 ENV Jwt__Key=""
 ENV Translation__Kimi__ApiKey=REDACTED
 
-# 健康检查配置 - 使用容器内部 80 端口
+# 健康检查配置 - 使用容器内部 5002 端口
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:5001/api/health || exit 1
+    CMD curl -f http://localhost:5002/api/health || exit 1
 
-# 暴露容器内部 80 端口（通过 docker-compose 映射到 5001）
-EXPOSE 5001
+# 暴露容器内部 5002 端口（通过 docker-compose 映射到 5002）
+EXPOSE 5002
 
 # 应用程序入口点 - 使用环境变量 ASPNETCORE_ENVIRONMENT 控制环境
 ENTRYPOINT ["dotnet", "BlazorApp.Api.dll"]
@@ -77,14 +77,14 @@ ENTRYPOINT ["dotnet", "BlazorApp.Api.dll"]
 # docker build -t hb-platform-api:latest -f BlazorApp.Api/Dockerfile .
 #
 # 运行容器命令：
-# docker run -d -p 5001:5001 --name hb-api \
+# docker run -d -p 5002:5002 --name hb-api \
 #   -e "ConnectionString=REDACTED
 #   -e "Jwt__Key=your-jwt-secret-key" \
 #   -e "Translation__Kimi__ApiKey=REDACTED
 #   hb-platform-api:latest
 #
 # 端口说明：
-# - 容器内部：5001 端口（非特权端口，非 root 用户可绑定）
-# - 宿主机映射：5001 端口（与开发环境一致）
-# - 外部访问：http://localhost:5001
+# - 容器内部：5002 端口（非特权端口，非 root 用户可绑定）
+# - 宿主机映射：5002 端口（与开发环境一致）
+# - 外部访问：http://localhost:5002
 # =============================================================================

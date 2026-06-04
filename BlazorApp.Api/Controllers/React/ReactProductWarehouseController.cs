@@ -23,6 +23,7 @@ namespace BlazorApp.Api.Controllers.React
     public class ReactProductWarehouseController : ControllerBase
     {
         private readonly IProductWarehouseReactService _service;
+        private readonly IWarehouseProductHqSyncJobService _hqSyncJobService;
         private readonly ILogger<ReactProductWarehouseController> _logger;
         private readonly IDeviceRegistrationService _deviceRegistrationService;
         private readonly IMapper _mapper;
@@ -30,6 +31,7 @@ namespace BlazorApp.Api.Controllers.React
 
         public ReactProductWarehouseController(
             IProductWarehouseReactService service,
+            IWarehouseProductHqSyncJobService hqSyncJobService,
             ILogger<ReactProductWarehouseController> logger,
             IDeviceRegistrationService deviceRegistrationService,
             IMapper mapper,
@@ -37,6 +39,7 @@ namespace BlazorApp.Api.Controllers.React
         )
         {
             _service = service;
+            _hqSyncJobService = hqSyncJobService;
             _logger = logger;
             _deviceRegistrationService = deviceRegistrationService;
             _mapper = mapper;
@@ -649,6 +652,70 @@ namespace BlazorApp.Api.Controllers.React
                     500,
                     ApiResponse<SyncResult>.Error("仓库商品同步异常", "INTERNAL_ERROR")
                 );
+            }
+        }
+
+        /// <summary>
+        /// 创建从 HQ 同步仓库商品库存的后台任务
+        /// </summary>
+        [HttpPost("sync-from-hq/jobs")]
+        [Authorize(Roles = "Admin")]
+        public async Task<IActionResult> StartSyncFromHqJob(
+            [FromBody] WarehouseProductHqSyncJobRequestDto request,
+            CancellationToken cancellationToken
+        )
+        {
+            try
+            {
+                if (request == null)
+                {
+                    return BadRequest(new { success = false, message = "请求参数不能为空" });
+                }
+
+                if (string.IsNullOrWhiteSpace(request.OperationId))
+                {
+                    return BadRequest(new { success = false, message = "operationId 不能为空" });
+                }
+
+                var job = await _hqSyncJobService.StartJobAsync(request, cancellationToken);
+                return Ok(new { success = true, data = job, message = "仓库商品同步任务已提交" });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "提交仓库商品 HQ 同步 job 失败");
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
+        /// <summary>
+        /// 查询从 HQ 同步仓库商品库存的后台任务
+        /// </summary>
+        [HttpGet("sync-from-hq/jobs/{jobId}")]
+        [Authorize(Roles = "Admin")]
+        public async Task<IActionResult> GetSyncFromHqJob(
+            string jobId,
+            CancellationToken cancellationToken
+        )
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(jobId))
+                {
+                    return BadRequest(new { success = false, message = "jobId 不能为空" });
+                }
+
+                var job = await _hqSyncJobService.GetJobAsync(jobId, cancellationToken);
+                if (job == null)
+                {
+                    return NotFound(new { success = false, message = "同步任务不存在或已过期" });
+                }
+
+                return Ok(new { success = true, data = job, message = "查询成功" });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "查询仓库商品 HQ 同步 job 失败: {JobId}", jobId);
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
             }
         }
 

@@ -664,6 +664,23 @@ namespace BlazorApp.Api.Controllers.React
             return BadRequest(new { success = false, message = result.Message });
         }
 
+        [HttpPost("{invoiceGuid}/details/batch-update")]
+        [Authorize(Policy = Permissions.LocalPurchase.Edit)]
+        public async Task<IActionResult> BatchUpdateDetails(
+            [FromRoute] string invoiceGuid,
+            [FromBody] BatchUpdateInvoiceDetailsRequest dto
+        )
+        {
+            if (!await CanAccessInvoiceAsync(invoiceGuid))
+                return Forbid();
+
+            var user = User.Identity?.Name ?? "system";
+            var result = await _service.BatchUpdateDetailsAsync(invoiceGuid, dto, user);
+            if (result.Success)
+                return Ok(new { success = true, data = result.Data, message = result.Message });
+            return BadRequest(new { success = false, message = result.Message });
+        }
+
         [HttpPut("{invoiceGuid}/details/{detailGuid}/action")]
         [Authorize(Policy = Permissions.LocalPurchase.Edit)]
         public async Task<IActionResult> UpdateDetailAction(

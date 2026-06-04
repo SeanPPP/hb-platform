@@ -6,11 +6,11 @@ services:
     image: blazorapphbweb_hb-api:local
     container_name: hb-platform-api
     ports:
-      - "5001:5001"
+      - "5002:5002"
     environment:
       - ASPNETCORE_ENVIRONMENT=Production
-      - ASPNETCORE_URLS=http://+:5001
-      - ASPNETCORE_HTTP_PORTS=5001
+      - ASPNETCORE_URLS=http://+:5002
+      - ASPNETCORE_HTTP_PORTS=5002
       - ConnectionString=REDACTED
       - ConnectionString=REDACTED
       - ConnectionString=REDACTED
@@ -36,7 +36,7 @@ services:
     networks:
       - hb-network
     healthcheck:
-      test: ["CMD-SHELL", "wget  -f http://localhost:5001/api/health || exit 1"]
+      test: ["CMD-SHELL", "wget  -f http://localhost:5002/api/health || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3

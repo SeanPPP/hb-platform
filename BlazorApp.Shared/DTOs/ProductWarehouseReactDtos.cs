@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using BlazorApp.Shared.Models;
 
 namespace BlazorApp.Shared.DTOs
 {
@@ -408,6 +409,40 @@ namespace BlazorApp.Shared.DTOs
     public class ImportNonHotbargainRequestDto
     {
         public List<string> ProductCodes { get; set; } = new List<string>();
+    }
+
+    /// <summary>
+    /// 仓库商品 HQ 同步后台任务状态常量。
+    /// </summary>
+    public static class WarehouseProductHqSyncJobStatusConstants
+    {
+        public const string Running = "Running";
+        public const string Succeeded = "Succeeded";
+        public const string Failed = "Failed";
+    }
+
+    /// <summary>
+    /// 创建仓库商品 HQ 同步后台任务请求。
+    /// </summary>
+    public class WarehouseProductHqSyncJobRequestDto
+    {
+        public string OperationId { get; set; } = string.Empty;
+    }
+
+    /// <summary>
+    /// 仓库商品 HQ 同步后台任务状态。
+    /// </summary>
+    public class WarehouseProductHqSyncJobDto
+    {
+        public string JobId { get; set; } = string.Empty;
+        public string OperationId { get; set; } = string.Empty;
+        public string Status { get; set; } = WarehouseProductHqSyncJobStatusConstants.Running;
+        public bool IsDuplicateRequest { get; set; }
+        public DateTime CreatedAt { get; set; }
+        public DateTime? CompletedAt { get; set; }
+        public DateTime? ExpiresAt { get; set; }
+        public string? Message { get; set; }
+        public SyncResult? Result { get; set; }
     }
 
     public class WarehouseMobileProductDto

@@ -193,6 +193,24 @@ namespace BlazorApp.Shared.DTOs
     }
 
     /// <summary>
+    /// 批量编辑进货单明细请求DTO
+    /// </summary>
+    public class BatchUpdateInvoiceDetailsRequest
+    {
+        /// <summary>
+        /// 要更新的明细列表，批量编辑只需要 DetailGUID。
+        /// </summary>
+        [Required]
+        public List<InvoiceDetailUpsertItemDto> Items { get; set; } = new();
+
+        /// <summary>
+        /// 要更新的字段配置；只写入勾选字段。
+        /// </summary>
+        [Required]
+        public UpdateToStorePricesFields EditFields { get; set; } = new();
+    }
+
+    /// <summary>
     /// 更新到分店价格请求DTO
     /// </summary>
     public class UpdateToStorePricesRequest
@@ -225,7 +243,10 @@ namespace BlazorApp.Shared.DTOs
     /// <summary>
     /// 更新到分店价格结果DTO
     /// </summary>
-    public class UpdateToStorePricesResultDto : BatchResultDto { }
+    public class UpdateToStorePricesResultDto : BatchResultDto
+    {
+        public int Skipped { get; set; }
+    }
 
     /// <summary>
     /// 同步本地进货单明细商品到HQ请求DTO
@@ -537,7 +558,7 @@ namespace BlazorApp.Shared.DTOs
         public decimal? PurchasePrice { get; set; }
         public decimal? NewAutoRetailPrice { get; set; }
         /// <summary>
-        /// 零售价（如果有值，则写入并关闭自动定价）
+        /// 零售价（新商品仍默认开启自动定价）
         /// </summary>
         public decimal? RetailPrice { get; set; }
     }

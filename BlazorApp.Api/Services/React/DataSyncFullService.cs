@@ -2762,7 +2762,7 @@ namespace BlazorApp.Api.Services.React
 
         /// <summary>
         /// 全量同步仓库商品：HQ `CBP_DIC_商品库存表` → 本地 `WarehouseProduct`
-        /// 使用分页读取+批量写入，事务保障一致性。
+        /// 按商品编码新增/更新库存业务字段，保留本地库位、体积、装箱数等人工维护字段。
         /// </summary>
         public async Task<SyncResult> SyncWarehouseProductsFromHqAsync(
             int hqBatchSize = 50000,
@@ -2778,12 +2778,33 @@ namespace BlazorApp.Api.Services.React
                     .Where(x => SqlFunc.HasValue(x.H商品编码))
                     .CountAsync();
                 var pages = (int)Math.Ceiling(total / (double)hqBatchSize);
+                var existingCodes = await _localContext
+                    .Db.Queryable<WarehouseProduct>()
+                    .Select(x => x.ProductCode)
+                    .ToListAsync();
+                var existingCodeMap = existingCodes
+                    .Select(code => new
+                    {
+                        Original = code,
+                        Normalized = NormalizeWarehouseProductCode(code),
+                    })
+                    .Where(x => x.Normalized != null)
+                    .GroupBy(x => x.Normalized!, StringComparer.OrdinalIgnoreCase)
+                    .ToDictionary(
+                        group => group.Key,
+                        group => group.First().Original,
+                        StringComparer.OrdinalIgnoreCase
+                    );
+                var initiallyExistingCodes = new HashSet<string>(
+                    existingCodeMap.Keys,
+                    StringComparer.OrdinalIgnoreCase
+                );
+                var countedAddedCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                var countedUpdatedCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 var added = 0;
+                var updated = 0;
                 var transactionResult = await _localContext.Db.Ado.UseTranAsync(async () =>
                 {
-                    // 使用 DELETE 而不是 TRUNCATE，确保事务失败时可以完整回滚。
-                    await _localContext.Db.Ado.ExecuteCommandAsync("DELETE FROM WarehouseProduct");
-
                     for (var page = 1; page <= pages; page++)
                     {
                         var skip = (page - 1) * hqBatchSize;
@@ -2799,19 +2820,101 @@ namespace BlazorApp.Api.Services.React
 
                         var localBatch = _mapper
                             .Map<List<WarehouseProduct>>(batch)
-                            .Where(x => !string.IsNullOrWhiteSpace(x.ProductCode))
+                            .Select(item => new
+                            {
+                                Item = item,
+                                NormalizedCode = NormalizeWarehouseProductCode(item.ProductCode),
+                            })
+                            .Where(x => x.NormalizedCode != null)
+                            .GroupBy(x => x.NormalizedCode!, StringComparer.OrdinalIgnoreCase)
+                            .Select(group => group.Last())
                             .ToList();
                         if (!localBatch.Any())
                             continue;
 
-                        // 分页插入继续复用当前事务连接，任一批失败都能整次回滚。
-                        await _localContext
-                            .Db.Insertable(localBatch)
-                            .AS("WarehouseProduct")
-                            .PageSize(writePageSize)
-                            .ExecuteCommandAsync();
+                        var now = DateTime.UtcNow;
+                        var toInsert = new List<WarehouseProduct>();
+                        var toUpdate = new List<WarehouseProduct>();
+                        foreach (var entry in localBatch)
+                        {
+                            var item = entry.Item;
+                            var normalizedCode = entry.NormalizedCode!;
+                            item.UpdatedAt = now;
+                            item.UpdatedBy = "System";
+                            if (existingCodeMap.TryGetValue(normalizedCode, out var existingCode))
+                            {
+                                item.ProductCode = existingCode;
+                                toUpdate.Add(item);
+                            }
+                            else
+                            {
+                                item.ProductCode = normalizedCode;
+                                item.CreatedAt = now;
+                                item.CreatedBy = "System";
+                                toInsert.Add(item);
+                            }
+                        }
 
-                        added += localBatch.Count;
+                        if (toUpdate.Any())
+                        {
+                            // 只更新 HQ 库存业务字段，避免覆盖本地维护的体积、装箱数、库位等信息。
+                            await _localContext
+                                .Db.Updateable(toUpdate)
+                                .AS("WarehouseProduct")
+                                .UpdateColumns(w => new
+                                {
+                                    w.DomesticPrice,
+                                    w.OEMPrice,
+                                    w.ImportPrice,
+                                    w.StockQuantity,
+                                    w.MinOrderQuantity,
+                                    w.StockValue,
+                                    w.StockAlertQuantity,
+                                    w.IsActive,
+                                    w.UpdatedAt,
+                                    w.UpdatedBy,
+                                })
+                                .ExecuteCommandAsync();
+                            foreach (var item in toUpdate)
+                            {
+                                var normalizedCode = NormalizeWarehouseProductCode(item.ProductCode);
+                                if (
+                                    normalizedCode != null
+                                    && initiallyExistingCodes.Contains(normalizedCode)
+                                    && countedUpdatedCodes.Add(normalizedCode)
+                                )
+                                {
+                                    updated++;
+                                }
+                            }
+                        }
+
+                        if (toInsert.Any())
+                        {
+                            await _localContext
+                                .Db.Insertable(toInsert)
+                                .AS("WarehouseProduct")
+                                .PageSize(writePageSize)
+                                .ExecuteCommandAsync();
+                            foreach (var item in toInsert)
+                            {
+                                var normalizedCode = NormalizeWarehouseProductCode(item.ProductCode);
+                                if (normalizedCode == null)
+                                    continue;
+                                existingCodeMap[normalizedCode] = item.ProductCode;
+                                if (countedAddedCodes.Add(normalizedCode))
+                                {
+                                    added++;
+                                }
+                            }
+                        }
+
+                        _logger.LogInformation(
+                            "[ReactSync] WarehouseProduct 全量更新页{Page}: 新增{Added}, 更新{Updated}",
+                            page,
+                            toInsert.Count,
+                            toUpdate.Count
+                        );
                     }
                 });
 
@@ -2828,15 +2931,17 @@ namespace BlazorApp.Api.Services.React
                 }
 
                 result.AddedCount = added;
+                result.UpdatedCount = updated;
                 result.ErrorCount = 0;
                 result.IsSuccess = true;
-                result.Message = "WarehouseProduct 同步成功";
+                result.Message = $"WarehouseProduct 同步成功，新增 {added} 条，更新 {updated} 条";
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "[ReactSync] WarehouseProduct 同步异常");
                 result.IsSuccess = false;
                 result.Message = "WarehouseProduct 同步异常";
+                result.ErrorCount = 1;
             }
             finally
             {
@@ -2844,6 +2949,12 @@ namespace BlazorApp.Api.Services.React
                 result.Duration = result.EndTime - result.StartTime;
             }
             return result;
+        }
+
+        private static string? NormalizeWarehouseProductCode(string? productCode)
+        {
+            var normalized = productCode?.Trim();
+            return string.IsNullOrWhiteSpace(normalized) ? null : normalized;
         }
 
         public async Task<SyncResult> SyncStoreLocalSupplierInvoicesFromHqAsync(
