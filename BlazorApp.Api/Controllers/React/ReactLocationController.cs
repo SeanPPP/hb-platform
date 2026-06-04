@@ -123,11 +123,17 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPost]
-        [Authorize(Roles = "Admin,WarehouseManager")]
+        [Authorize(Roles = "Admin,WarehouseManager,WarehouseStaff")]
         public async Task<IActionResult> Create([FromBody] CreateLocationReactDto dto)
         {
             try
             {
+                var access = ResolveLocationMaintenanceAccess();
+                if (!access.IsAllowed)
+                {
+                    return Unauthorized(new { success = false, message = access.Message });
+                }
+
                 if (dto == null)
                 {
                     return BadRequest(new { success = false, message = "请求参数不能为空" });
@@ -148,11 +154,17 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPut("{locationGuid}")]
-        [Authorize(Roles = "Admin,WarehouseManager")]
+        [Authorize(Roles = "Admin,WarehouseManager,WarehouseStaff")]
         public async Task<IActionResult> Update(string locationGuid, [FromBody] UpdateLocationReactDto dto)
         {
             try
             {
+                var access = ResolveLocationMaintenanceAccess();
+                if (!access.IsAllowed)
+                {
+                    return Unauthorized(new { success = false, message = access.Message });
+                }
+
                 if (dto == null)
                 {
                     return BadRequest(new { success = false, message = "请求参数不能为空" });
@@ -175,11 +187,17 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpDelete("{locationGuid}")]
-        [Authorize(Roles = "Admin,WarehouseManager")]
+        [Authorize(Roles = "Admin,WarehouseManager,WarehouseStaff")]
         public async Task<IActionResult> Delete(string locationGuid)
         {
             try
             {
+                var access = ResolveLocationMaintenanceAccess();
+                if (!access.IsAllowed)
+                {
+                    return Unauthorized(new { success = false, message = access.Message });
+                }
+
                 var result = await _locationService.DeleteAsync(locationGuid);
                 if (!result.Success)
                 {
@@ -412,6 +430,18 @@ namespace BlazorApp.Api.Controllers.React
             }
 
             return await ResolveReadAccessAsync();
+        }
+
+        private LocationReadAccessContext ResolveLocationMaintenanceAccess()
+        {
+            // 货位新增、编辑、删除只能走账号角色授权；设备授权保留给查询和绑定流程。
+            if (User?.Identity?.IsAuthenticated == true
+                && HasAnyRole("Admin", "WarehouseManager", "WarehouseStaff"))
+            {
+                return LocationReadAccessContext.Allow();
+            }
+
+            return LocationReadAccessContext.Deny("当前账号没有货位维护权限");
         }
 
         private bool HasAnyRole(params string[] roles)
