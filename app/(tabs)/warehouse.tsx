@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Image, Pressable, ScrollView, StyleSheet, TextInput as NativeTextInput, useWindowDimensions, View } from "react-native";
+import { Image, Keyboard, Platform, Pressable, ScrollView, StyleSheet, TextInput as NativeTextInput, useWindowDimensions, View } from "react-native";
 import { useFocusEffect } from "@react-navigation/native";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import { useRouter } from "expo-router";
@@ -44,11 +44,17 @@ import {
 } from "@/modules/warehouse/location-code-options";
 import {
   canBindMoreProductsToWarehouseLocation,
+  getProductLocationCandidateAction,
   getProductLocationLookupAction,
   getProductLocationScanBindDecision,
   getWarehouseProductPdaLayout,
+  getWarehouseProductSummaryVisualRows,
   getWarehouseProductSections,
+  isProductLocationCandidateDisabled,
+  type WarehouseProductSummaryField,
 } from "@/modules/warehouse/pda-layout";
+import { toggleWarehouseProductGradeSelection } from "@/modules/warehouse/product-grade";
+import { buildWarehouseProductPatchRequest, isWarehouseStatusOnlyPatch, type WarehouseProductPatchField } from "@/modules/warehouse/product-patch";
 import { printWarehouseLocationLabel, printWarehouseProductLabel } from "@/modules/printer/api";
 
 type SegmentValue = "product" | "location";
@@ -71,7 +77,7 @@ interface NumericInputModalState {
   allowDecimal: boolean;
 }
 
-type ProductChoiceModalState = "grade" | "active" | null;
+type ProductChoiceModalState = "grade" | "warehouseStatus" | null;
 type BoundLocationProduct = WarehouseLocationDetail["products"][number];
 interface PendingUnbindProductState {
   locationGuid: string;
@@ -82,6 +88,10 @@ interface PendingUnbindProductState {
 interface PendingProductLocationUnbindState {
   productCode: string;
   locationCode?: string | null;
+}
+
+interface PendingRetailPriceSyncState {
+  retailPrice: string;
 }
 
 const LOCATION_LETTER_OPTIONS = Array.from({ length: 26 }, (_, index) => String.fromCharCode(65 + index));
@@ -191,6 +201,7 @@ function InfoTile({
   emphasize = false,
   dense = false,
   singleColumn = false,
+  valueLines,
   onPress,
 }: {
   label: string;
@@ -198,6 +209,7 @@ function InfoTile({
   emphasize?: boolean;
   dense?: boolean;
   singleColumn?: boolean;
+  valueLines?: number;
   onPress?: () => void;
 }) {
   const content = (
@@ -205,7 +217,7 @@ function InfoTile({
       <Text variant="labelSmall" style={styles.infoTileLabel} numberOfLines={1}>
         {label}
       </Text>
-      <Text variant={emphasize ? "titleMedium" : "bodyMedium"} style={styles.infoTileValue} numberOfLines={2}>
+      <Text variant={emphasize ? "titleMedium" : "bodyMedium"} style={styles.infoTileValue} numberOfLines={valueLines ?? (dense ? 1 : 2)}>
         {value}
       </Text>
     </>
@@ -300,11 +312,12 @@ export default function WarehouseScreen() {
   const [product, setProduct] = useState<WarehouseProduct | null>(null);
   const [hasProductLookup, setHasProductLookup] = useState(false);
   const [productChoiceModal, setProductChoiceModal] = useState<ProductChoiceModalState>(null);
-  const [productChoiceDraft, setProductChoiceDraft] = useState({ grade: "", isActive: true });
+  const [productChoiceDraft, setProductChoiceDraft] = useState({ grade: "", warehouseIsActive: true });
   const [productLocationModalVisible, setProductLocationModalVisible] = useState(false);
   const [unbindLocationConfirmVisible, setUnbindLocationConfirmVisible] = useState(false);
   const [pendingProductLocationUnbind, setPendingProductLocationUnbind] = useState<PendingProductLocationUnbindState | null>(null);
   const [pendingStorageLocationBind, setPendingStorageLocationBind] = useState<WarehouseLocation | null>(null);
+  const [productLocationBindFeedback, setProductLocationBindFeedback] = useState("");
   const [productForm, setProductForm] = useState({
     purchasePrice: "",
     retailPrice: "",
@@ -314,9 +327,10 @@ export default function WarehouseScreen() {
     packingQuantity: "",
     volume: "",
     grade: "",
-    isActive: true,
+    warehouseIsActive: true,
   });
   const [numericInputModal, setNumericInputModal] = useState<NumericInputModalState | null>(null);
+  const [pendingRetailPriceSync, setPendingRetailPriceSync] = useState<PendingRetailPriceSyncState | null>(null);
   const [locationLookupKeyword, setLocationLookupKeyword] = useState("");
   const [locationMatches, setLocationMatches] = useState<WarehouseLocation[]>([]);
 
@@ -363,7 +377,8 @@ export default function WarehouseScreen() {
       "warehouse"
     );
   const notAvailableText = t("messages.notAvailable");
-  const productLayoutMode = getWarehouseProductPdaLayout(windowWidth);
+  const shouldForcePdaLayout = Platform.OS === "ios" && !Platform.isPad;
+  const productLayoutMode = getWarehouseProductPdaLayout(windowWidth, { forcePda: shouldForcePdaLayout });
   const productSectionConfig = getWarehouseProductSections(productLayoutMode);
   const isPdaProductLayout = productLayoutMode === "pda";
   const getErrorMessage = useCallback((error: unknown, fallbackKey: string) => (
@@ -444,7 +459,7 @@ export default function WarehouseScreen() {
       packingQuantity: item?.packingQuantity?.toString() ?? "",
       volume: formatNumber(item?.volume, 3),
       grade: item?.grade?.trim().toUpperCase() ?? "",
-      isActive: item?.isActive ?? true,
+      warehouseIsActive: item?.warehouseIsActive ?? true,
     });
   }, []);
 
@@ -472,10 +487,10 @@ export default function WarehouseScreen() {
   const openProductChoiceModal = useCallback((choice: Exclude<ProductChoiceModalState, null>) => {
     setProductChoiceDraft({
       grade: productForm.grade.trim().toUpperCase(),
-      isActive: productForm.isActive,
+      warehouseIsActive: productForm.warehouseIsActive,
     });
     setProductChoiceModal(choice);
-  }, [productForm.grade, productForm.isActive]);
+  }, [productForm.grade, productForm.warehouseIsActive]);
 
   const applyProduct = useCallback((item: WarehouseProduct | null) => {
     currentProductCodeRef.current = item?.productCode ?? null;
@@ -549,27 +564,25 @@ export default function WarehouseScreen() {
     }
   }, [applyProduct, t]);
 
-  const handleSaveProductPatch = useCallback(async (patch: Partial<typeof productForm>) => {
+  const handleSaveProductPatch = useCallback(async (
+    patch: Partial<typeof productForm>,
+    options?: { field?: WarehouseProductPatchField; syncStoreRetailPrices?: boolean }
+  ) => {
     if (!product) {
       return;
     }
 
     const nextForm = { ...productForm, ...patch };
+    const patchField = options?.field ?? (isWarehouseStatusOnlyPatch(patch) ? "warehouseIsActive" : undefined);
     setBusy(true);
     try {
-      const saved = await patchWarehouseProduct(product.productCode, {
-        purchasePrice: parseNullableNumber(nextForm.purchasePrice),
-        importPrice: parseNullableNumber(nextForm.purchasePrice),
-        retailPrice: parseNullableNumber(nextForm.retailPrice),
-        oemPrice: parseNullableNumber(nextForm.retailPrice),
-        domesticPrice: parseNullableNumber(nextForm.domesticPrice),
-        stockQuantity: parseNullableNumber(nextForm.stockQuantity),
-        middlePackageQuantity: parseNullableNumber(nextForm.middlePackageQuantity),
-        packingQuantity: parseNullableNumber(nextForm.packingQuantity),
-        volume: parseNullableNumber(nextForm.volume),
-        grade: nextForm.grade || null,
-        isActive: nextForm.isActive,
-      });
+      const saved = await patchWarehouseProduct(
+        product.productCode,
+        buildWarehouseProductPatchRequest(nextForm, parseNullableNumber, {
+          field: patchField,
+          syncStoreRetailPrices: options?.syncStoreRetailPrices,
+        })
+      );
       applyProduct(saved);
       setProductChoiceModal(null);
       setSnackbar(t("messages.saved"));
@@ -586,12 +599,44 @@ export default function WarehouseScreen() {
       return;
     }
 
-    void handleSaveProductPatch({ [numericInputModal.field]: numericInputModal.value });
+    if (numericInputModal.field === "retailPrice") {
+      setPendingRetailPriceSync({ retailPrice: numericInputModal.value });
+      dismissNumericInputModal();
+      return;
+    }
+
+    void handleSaveProductPatch(
+      { [numericInputModal.field]: numericInputModal.value },
+      { field: numericInputModal.field }
+    );
     dismissNumericInputModal();
   }, [dismissNumericInputModal, handleSaveProductPatch, numericInputModal]);
 
+  const closeRetailPriceSyncConfirm = useCallback(() => {
+    if (busy) {
+      return;
+    }
+    setPendingRetailPriceSync(null);
+  }, [busy]);
+
+  const handleConfirmRetailPriceSync = useCallback(async (syncStoreRetailPrices: boolean) => {
+    if (!pendingRetailPriceSync) {
+      return;
+    }
+
+    try {
+      await handleSaveProductPatch(
+        { retailPrice: pendingRetailPriceSync.retailPrice },
+        { field: "retailPrice", syncStoreRetailPrices }
+      );
+    } finally {
+      setPendingRetailPriceSync(null);
+    }
+  }, [handleSaveProductPatch, pendingRetailPriceSync]);
+
   const openProductLocationModal = useCallback(() => {
     updateProductLocationLookupKeyword("");
+    setProductLocationBindFeedback("");
     setProductLocationModalVisible(true);
   }, [updateProductLocationLookupKeyword]);
 
@@ -654,7 +699,9 @@ export default function WarehouseScreen() {
       return;
     }
     if (location && !canBindMoreProductsToWarehouseLocation(location.locationType, location.productCount)) {
-      setSnackbar(t("location.pickLocationSingleProductHint"));
+      const message = t("location.pickLocationSingleProductHint");
+      setProductLocationBindFeedback(message);
+      setSnackbar(message);
       return;
     }
 
@@ -662,13 +709,21 @@ export default function WarehouseScreen() {
     productLocationBindRequestRef.current = requestId;
     productLocationBindingRef.current = true;
     const productCode = product.productCode;
+    setProductLocationBindFeedback("");
     setBusy(true);
     try {
       const saved = await setWarehouseProductLocation(productCode, location?.locationGuid ?? null);
-      if (requestId !== productLocationBindRequestRef.current || currentProductCodeRef.current !== productCode) {
+      const refreshed = await getWarehouseProduct(productCode).catch(() => saved);
+      if (requestId !== productLocationBindRequestRef.current) {
         return;
       }
-      applyProduct(saved);
+      if (currentProductCodeRef.current && currentProductCodeRef.current !== productCode) {
+        const staleMessage = t("messages.locationBindFailed");
+        setProductLocationBindFeedback(staleMessage);
+        setSnackbar(staleMessage);
+        return;
+      }
+      applyProduct(refreshed);
       setLocationMatches([]);
       updateProductLocationLookupKeyword("");
       setPendingStorageLocationBind(null);
@@ -677,7 +732,9 @@ export default function WarehouseScreen() {
       setSnackbar(t("messages.locationSaved"));
     } catch (error) {
       if (requestId === productLocationBindRequestRef.current) {
-        setSnackbar(getErrorMessage(error, "messages.locationBindFailed"));
+        const message = getErrorMessage(error, "messages.locationBindFailed");
+        setProductLocationBindFeedback(message);
+        setSnackbar(message);
       }
     } finally {
       if (requestId === productLocationBindRequestRef.current) {
@@ -690,7 +747,9 @@ export default function WarehouseScreen() {
   const handleRequestBindLocation = useCallback(async (location: WarehouseLocation) => {
     const decision = getProductLocationScanBindDecision(location.locationType, location.productCount);
     if (decision === "block") {
-      setSnackbar(t("location.pickLocationOccupiedHint"));
+      const message = t("location.pickLocationOccupiedHint");
+      setProductLocationBindFeedback(message);
+      setSnackbar(message);
       return;
     }
     if (decision === "confirm") {
@@ -700,6 +759,11 @@ export default function WarehouseScreen() {
 
     await handleBindLocation(location);
   }, [handleBindLocation, t]);
+
+  const handlePressProductLocationCandidate = useCallback((location: WarehouseLocation) => {
+    Keyboard.dismiss();
+    void handleRequestBindLocation(location);
+  }, [handleRequestBindLocation]);
 
   const closeStorageLocationBindConfirm = useCallback(() => {
     if (busy) {
@@ -722,6 +786,7 @@ export default function WarehouseScreen() {
     productLocationLookupRequestRef.current = requestId;
     productLocationLookupKeywordRef.current = keyword;
     setBusy(true);
+    let autoBindLocation: WarehouseLocation | null = null;
     try {
       const items = await lookupLocations(keyword);
       if (requestId !== productLocationLookupRequestRef.current || productLocationLookupKeywordRef.current.trim() !== keyword) {
@@ -737,7 +802,7 @@ export default function WarehouseScreen() {
         productCount: matchedLocation?.productCount,
       });
       if (action !== "showResults" && matchedLocation) {
-        await handleRequestBindLocation(items[0]);
+        autoBindLocation = matchedLocation;
       }
     } catch (error) {
       if (requestId === productLocationLookupRequestRef.current) {
@@ -747,6 +812,9 @@ export default function WarehouseScreen() {
       if (requestId === productLocationLookupRequestRef.current) {
         setBusy(false);
       }
+    }
+    if (autoBindLocation && requestId === productLocationLookupRequestRef.current) {
+      await handleRequestBindLocation(autoBindLocation);
     }
   }, [getErrorMessage, handleRequestBindLocation, t]);
 
@@ -1221,7 +1289,7 @@ export default function WarehouseScreen() {
   const savedProductGrade = product?.grade?.trim().toUpperCase() ?? "";
   const editableProductGrade = productForm.grade.trim().toUpperCase();
   const displayProductGrade = isPdaProductLayout ? savedProductGrade : editableProductGrade;
-  const displayProductActive = isPdaProductLayout ? product?.isActive ?? true : productForm.isActive;
+  const displayWarehouseIsActive = isPdaProductLayout ? product?.warehouseIsActive ?? true : productForm.warehouseIsActive;
   const productGradeColor = displayProductGrade
     ? PRODUCT_GRADE_CONFIG[displayProductGrade]?.color ?? "#98A2B3"
     : "#98A2B3";
@@ -1280,6 +1348,94 @@ export default function WarehouseScreen() {
     }
     return t("product.stockStates.inStock");
   }, [t]);
+  const productSummaryVisualRows = getWarehouseProductSummaryVisualRows(productLayoutMode);
+  const getProductSummaryFieldConfig = useCallback((field: WarehouseProductSummaryField) => {
+    switch (field) {
+      case "itemNumber":
+        return {
+          label: t("product.fields.itemNumber"),
+          value: formatDisplayValue(product?.itemNumber || product?.productCode),
+          valueLines: 2,
+        };
+      case "barcode":
+        return {
+          label: t("product.fields.barcode"),
+          value: formatDisplayValue(product?.barcode),
+          valueLines: 2,
+        };
+      case "stockQuantity":
+        return {
+          label: t("product.fields.stockQuantity"),
+          value: formatDisplayValue(product?.stockQuantity),
+          emphasize: true,
+          onPress: () => openNumericInputModal("stockQuantity", t("product.fields.stockQuantity"), false),
+        };
+      case "location":
+        return {
+          label: t("product.fields.location"),
+          value: formatDisplayValue(product?.locationCode || t("product.noLocation")),
+          emphasize: true,
+          valueLines: 2,
+          onPress: openProductLocationModal,
+        };
+      case "domesticPrice":
+        return {
+          label: t("product.fields.domesticPrice"),
+          value: formatPrice(product?.domesticPrice),
+          onPress: () => openNumericInputModal("domesticPrice", t("product.fields.domesticPrice"), true),
+        };
+      case "purchaseImportPrice":
+        return {
+          label: t("product.fields.purchaseImportPrice"),
+          value: formatPrice(product?.purchasePrice ?? product?.importPrice),
+          onPress: () => openNumericInputModal("purchasePrice", t("product.fields.purchaseImportPrice"), true),
+        };
+      case "retailOemPrice":
+        return {
+          label: t("product.fields.retailOemPrice"),
+          value: formatPrice(product?.retailPrice ?? product?.oemPrice),
+          onPress: () => openNumericInputModal("retailPrice", t("product.fields.retailOemPrice"), true),
+        };
+      case "volume":
+        return {
+          label: t("product.fields.volume"),
+          value: formatDisplayValue(product?.volume),
+          onPress: () => openNumericInputModal("volume", t("product.fields.volume"), true),
+        };
+      case "middlePackageQuantity":
+        return {
+          label: t("product.fields.middlePackageQuantity"),
+          value: formatDisplayValue(product?.middlePackageQuantity),
+          onPress: () => openNumericInputModal("middlePackageQuantity", t("product.fields.middlePackageQuantity"), false),
+        };
+      case "packingQuantity":
+        return {
+          label: t("product.fields.packingQuantity"),
+          value: formatDisplayValue(product?.packingQuantity),
+          onPress: () => openNumericInputModal("packingQuantity", t("product.fields.packingQuantity"), false),
+        };
+      case "grade":
+        return {
+          label: t("product.fields.grade"),
+          value: displayProductGrade || "--",
+          onPress: () => openProductChoiceModal("grade"),
+        };
+      case "warehouseStatus":
+        return {
+          label: t("product.fields.warehouseStatus"),
+          value: displayWarehouseIsActive ? t("product.onShelf") : t("product.offShelf"),
+          onPress: () => openProductChoiceModal("warehouseStatus"),
+        };
+    }
+  }, [
+    displayWarehouseIsActive,
+    displayProductGrade,
+    openNumericInputModal,
+    openProductChoiceModal,
+    openProductLocationModal,
+    product,
+    t,
+  ]);
 
   if (!hasWarehouseAccess) {
     return (
@@ -1426,9 +1582,9 @@ export default function WarehouseScreen() {
                         {t("product.fields.supplier")}: {formatDisplayValue(product.supplierName || product.localSupplierCode)}
                       </Text>
                       <View style={styles.heroBadgeRow}>
-                        <View style={[styles.statusPill, { backgroundColor: displayProductActive ? "#DCFCE7" : "#F1F5F9", borderColor: displayProductActive ? "#BBF7D0" : "#E2E8F0" }]}>
-                          <Text variant="labelSmall" style={[styles.statusPillText, { color: displayProductActive ? "#166534" : "#475569" }]}>
-                            {displayProductActive ? t("product.active") : t("product.inactive")}
+                        <View style={[styles.statusPill, { backgroundColor: displayWarehouseIsActive ? "#DCFCE7" : "#F1F5F9", borderColor: displayWarehouseIsActive ? "#BBF7D0" : "#E2E8F0" }]}>
+                          <Text variant="labelSmall" style={[styles.statusPillText, { color: displayWarehouseIsActive ? "#166534" : "#475569" }]}>
+                            {displayWarehouseIsActive ? t("product.onShelf") : t("product.offShelf")}
                           </Text>
                         </View>
                         <View style={[styles.statusPill, { backgroundColor: productStockColors.background, borderColor: productStockColors.border }]}>
@@ -1451,19 +1607,27 @@ export default function WarehouseScreen() {
                       ) : null}
                     </View>
                   </Card.Content>
-                  <Card.Content style={[styles.infoGrid, isPdaProductLayout ? styles.infoGridCompact : null]}>
-                    <InfoTile label={t("product.fields.itemNumber")} value={formatDisplayValue(product.itemNumber || product.productCode)} dense={isPdaProductLayout} singleColumn={productSectionConfig.productSummaryColumns === 1} />
-                    <InfoTile label={t("product.fields.barcode")} value={formatDisplayValue(product.barcode)} dense={isPdaProductLayout} singleColumn={productSectionConfig.productSummaryColumns === 1} />
-                    <InfoTile label={t("product.fields.stockQuantity")} value={formatDisplayValue(product.stockQuantity)} emphasize dense={isPdaProductLayout} singleColumn={productSectionConfig.productSummaryColumns === 1} onPress={() => openNumericInputModal("stockQuantity", t("product.fields.stockQuantity"), false)} />
-                    <InfoTile label={t("product.fields.location")} value={formatDisplayValue(product.locationCode || t("product.noLocation"))} emphasize dense={isPdaProductLayout} singleColumn={productSectionConfig.productSummaryColumns === 1} onPress={openProductLocationModal} />
-                    <InfoTile label={t("product.fields.purchaseImportPrice")} value={formatPrice(product.purchasePrice ?? product.importPrice)} dense={isPdaProductLayout} singleColumn={productSectionConfig.productSummaryColumns === 1} onPress={() => openNumericInputModal("purchasePrice", t("product.fields.purchaseImportPrice"), true)} />
-                    <InfoTile label={t("product.fields.retailOemPrice")} value={formatPrice(product.retailPrice ?? product.oemPrice)} dense={isPdaProductLayout} singleColumn={productSectionConfig.productSummaryColumns === 1} onPress={() => openNumericInputModal("retailPrice", t("product.fields.retailOemPrice"), true)} />
-                    <InfoTile label={t("product.fields.domesticPrice")} value={formatPrice(product.domesticPrice)} dense={isPdaProductLayout} singleColumn={productSectionConfig.productSummaryColumns === 1} onPress={() => openNumericInputModal("domesticPrice", t("product.fields.domesticPrice"), true)} />
-                    <InfoTile label={t("product.fields.middlePackageQuantity")} value={formatDisplayValue(product.middlePackageQuantity)} dense={isPdaProductLayout} singleColumn={productSectionConfig.productSummaryColumns === 1} onPress={() => openNumericInputModal("middlePackageQuantity", t("product.fields.middlePackageQuantity"), false)} />
-                    <InfoTile label={t("product.fields.packingQuantity")} value={formatDisplayValue(product.packingQuantity)} dense={isPdaProductLayout} singleColumn={productSectionConfig.productSummaryColumns === 1} onPress={() => openNumericInputModal("packingQuantity", t("product.fields.packingQuantity"), false)} />
-                    <InfoTile label={t("product.fields.volume")} value={formatDisplayValue(product.volume)} dense={isPdaProductLayout} singleColumn={productSectionConfig.productSummaryColumns === 1} onPress={() => openNumericInputModal("volume", t("product.fields.volume"), true)} />
-                    <InfoTile label={t("product.fields.grade")} value={displayProductGrade || "--"} dense={isPdaProductLayout} singleColumn={productSectionConfig.productSummaryColumns === 1} onPress={() => openProductChoiceModal("grade")} />
-                    <InfoTile label={t("product.fields.isActive")} value={displayProductActive ? t("product.active") : t("product.inactive")} dense={isPdaProductLayout} singleColumn={productSectionConfig.productSummaryColumns === 1} onPress={() => openProductChoiceModal("active")} />
+                  <Card.Content style={[styles.infoGridRows, isPdaProductLayout ? styles.infoGridCompact : null]}>
+                    {productSummaryVisualRows.map((row, rowIndex) => (
+                      <View key={`${row.join("-")}-${rowIndex}`} style={styles.infoGridRow}>
+                        {row.map((field) => {
+                          const config = getProductSummaryFieldConfig(field);
+                          return (
+                            <View key={field} style={styles.infoGridCell}>
+                              <InfoTile
+                                label={config.label}
+                                value={config.value}
+                                emphasize={config.emphasize}
+                                dense={isPdaProductLayout}
+                                valueLines={config.valueLines}
+                                singleColumn
+                                onPress={config.onPress}
+                              />
+                            </View>
+                          );
+                        })}
+                      </View>
+                    ))}
                   </Card.Content>
                 </Card>
 
@@ -1717,35 +1881,71 @@ export default function WarehouseScreen() {
           <Text variant="titleMedium" style={styles.modalTitle}>{t("product.fields.grade")}</Text>
           <SegmentedButtons
             value={productChoiceDraft.grade}
-            onValueChange={(value) => setProductChoiceDraft((current) => ({ ...current, grade: value }))}
+            onValueChange={(value) =>
+              setProductChoiceDraft((current) => ({
+                ...current,
+                grade: toggleWarehouseProductGradeSelection(current.grade, value),
+              }))
+            }
             buttons={PRODUCT_GRADE_OPTIONS.map((grade) => ({ value: grade, label: grade }))}
             style={styles.gradeSegmented}
           />
           <View style={styles.modalActionRow}>
             <Button onPress={() => setProductChoiceModal(null)}>{t("common:actions.cancel")}</Button>
-            <Button mode="contained" onPress={() => void handleSaveProductPatch({ grade: productChoiceDraft.grade })}>
+            <Button mode="contained" onPress={() => void handleSaveProductPatch({ grade: productChoiceDraft.grade }, { field: "grade" })}>
               {t("common:actions.save")}
             </Button>
           </View>
         </Modal>
 
         <Modal
-          visible={productChoiceModal === "active"}
+          visible={productChoiceModal === "warehouseStatus"}
           onDismiss={() => setProductChoiceModal(null)}
           contentContainerStyle={styles.modal}
         >
-          <Text variant="titleMedium" style={styles.modalTitle}>{t("product.fields.isActive")}</Text>
+          <Text variant="titleMedium" style={styles.modalTitle}>{t("product.fields.warehouseStatus")}</Text>
           <View style={[styles.switchRow, styles.modalSwitchRow]}>
-            <Text variant="bodyMedium">{productChoiceDraft.isActive ? t("product.active") : t("product.inactive")}</Text>
+            <Text variant="bodyMedium">{productChoiceDraft.warehouseIsActive ? t("product.onShelf") : t("product.offShelf")}</Text>
             <Switch
-              value={productChoiceDraft.isActive}
-              onValueChange={(value) => setProductChoiceDraft((current) => ({ ...current, isActive: value }))}
+              value={productChoiceDraft.warehouseIsActive}
+              onValueChange={(value) => setProductChoiceDraft((current) => ({ ...current, warehouseIsActive: value }))}
             />
           </View>
           <View style={styles.modalActionRow}>
             <Button onPress={() => setProductChoiceModal(null)}>{t("common:actions.cancel")}</Button>
-            <Button mode="contained" onPress={() => void handleSaveProductPatch({ isActive: productChoiceDraft.isActive })}>
+            <Button
+              mode="contained"
+              onPress={() =>
+                void handleSaveProductPatch(
+                  { warehouseIsActive: productChoiceDraft.warehouseIsActive },
+                  { field: "warehouseIsActive" }
+                )
+              }
+            >
               {t("common:actions.save")}
+            </Button>
+          </View>
+        </Modal>
+
+        <Modal
+          visible={Boolean(pendingRetailPriceSync)}
+          onDismiss={closeRetailPriceSyncConfirm}
+          contentContainerStyle={styles.modal}
+        >
+          <Text variant="titleMedium" style={styles.modalTitle}>{t("product.retailSyncConfirmTitle")}</Text>
+          <Text variant="bodyMedium" style={styles.secondaryText}>
+            {t("product.retailSyncConfirmDescription")}
+          </Text>
+          <View style={styles.sheetFooter}>
+            <Button onPress={() => void handleConfirmRetailPriceSync(false)} disabled={busy}>
+              {t("product.retailSyncProductOnly")}
+            </Button>
+            <Button
+              mode="contained"
+              onPress={() => void handleConfirmRetailPriceSync(true)}
+              disabled={busy}
+            >
+              {t("product.retailSyncStores")}
             </Button>
           </View>
         </Modal>
@@ -1767,7 +1967,7 @@ export default function WarehouseScreen() {
             <IconButton icon="close" size={20} onPress={() => setProductLocationModalVisible(false)} />
           </View>
 
-          <ScrollView contentContainerStyle={styles.sheetContent} keyboardShouldPersistTaps="handled">
+          <ScrollView contentContainerStyle={styles.sheetContent} keyboardShouldPersistTaps="always">
             <View style={styles.searchRow}>
               <Searchbar
                 placeholder={t("location.searchPlaceholder")}
@@ -1788,32 +1988,51 @@ export default function WarehouseScreen() {
               />
             </View>
 
+            {productLocationBindFeedback ? (
+              <Text variant="bodySmall" style={styles.productLocationBindFeedback}>
+                {productLocationBindFeedback}
+              </Text>
+            ) : null}
+
             {locationMatches.length ? (
               <View style={styles.compactCardList}>
                 {locationMatches.map((item) => {
-                  const canBindCandidate = canBindMoreProductsToWarehouseLocation(item.locationType, item.productCount);
+                  const candidateAction = getProductLocationCandidateAction({
+                    locationType: item.locationType,
+                    productCount: item.productCount,
+                  });
+                  const isCandidateDisabled = isProductLocationCandidateDisabled(candidateAction, busy);
                   return (
-                    <Pressable
+                    <View
                       key={item.locationGuid}
-                      disabled={!canBindCandidate}
-                      onPress={() => void handleRequestBindLocation(item)}
-                      style={[styles.locationCandidateCard, !canBindCandidate ? styles.locationCandidateCardDisabled : null]}
+                      style={[styles.locationCandidateCard, isCandidateDisabled ? styles.locationCandidateCardDisabled : null]}
                     >
                       <View style={styles.locationCandidateMeta}>
                         <Text variant="titleSmall">{item.locationCode || item.locationGuid}</Text>
                         <Text variant="bodySmall" style={styles.mutedText}>
                           {item.locationBarcode || notAvailableText}
                         </Text>
-                        {!canBindCandidate ? (
+                        {candidateAction === "block" ? (
                           <Text variant="bodySmall" style={styles.secondaryText}>
                             {t("location.pickLocationOccupiedHint")}
                           </Text>
                         ) : null}
                       </View>
-                      <Text variant="bodySmall" style={styles.mutedText}>
-                        {t("location.productCountValue", { count: item.productCount })}
-                      </Text>
-                    </Pressable>
+                      <View style={styles.locationCandidateAction}>
+                        <Text variant="bodySmall" style={styles.mutedText}>
+                          {t("location.productCountValue", { count: item.productCount })}
+                        </Text>
+                        <Button
+                          compact
+                          mode={candidateAction !== "block" ? "contained" : "outlined"}
+                          disabled={isCandidateDisabled}
+                          loading={busy && candidateAction !== "block"}
+                          onPress={() => handlePressProductLocationCandidate(item)}
+                        >
+                          {candidateAction === "confirm" ? t("location.storageBindConfirmAction") : t("location.bindLocationAction")}
+                        </Button>
+                      </View>
+                    </View>
                   );
                 })}
               </View>
@@ -2224,9 +2443,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "space-between",
   },
-  infoGrid: {
-    flexDirection: "row",
-    flexWrap: "wrap",
+  infoGridRows: {
     gap: 10,
     paddingTop: 14,
   },
@@ -2235,6 +2452,14 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingTop: 8,
     paddingBottom: 10,
+  },
+  infoGridRow: {
+    flexDirection: "row",
+    gap: 6,
+  },
+  infoGridCell: {
+    flex: 1,
+    minWidth: 0,
   },
   infoTile: {
     width: "48%",
@@ -2267,6 +2492,7 @@ const styles = StyleSheet.create({
   infoTileValue: {
     color: "#0F172A",
     fontWeight: "600",
+    minWidth: 0,
   },
   fieldGrid: {
     gap: 10,
@@ -2483,6 +2709,16 @@ const styles = StyleSheet.create({
   locationCandidateMeta: {
     flex: 1,
     gap: 2,
+    minWidth: 0,
+  },
+  locationCandidateAction: {
+    alignItems: "flex-end",
+    gap: 6,
+    flexShrink: 0,
+  },
+  productLocationBindFeedback: {
+    color: "#B91C1C",
+    fontWeight: "600",
   },
   binCardList: {
     gap: 12,
@@ -2543,10 +2779,12 @@ const styles = StyleSheet.create({
     backgroundColor: "#FFFFFF",
     borderTopLeftRadius: 24,
     borderTopRightRadius: 24,
+    alignSelf: "stretch",
+    height: "54%",
     paddingHorizontal: 16,
     paddingTop: 8,
     paddingBottom: 20,
-    maxHeight: "82%",
+    maxHeight: "92%",
   },
   bottomSheetHandle: {
     alignSelf: "center",

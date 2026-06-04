@@ -1,3 +1,5 @@
+export type WarehouseShelfStatus = "onShelf" | "offShelf";
+
 export interface WarehouseProduct {
   productCode: string;
   productName: string;
@@ -10,6 +12,8 @@ export interface WarehouseProduct {
   supplierCode?: string | null;
   supplierName?: string | null;
   grade?: string | null;
+  warehouseIsActive: boolean;
+  warehouseStatus: WarehouseShelfStatus;
   isActive: boolean;
   purchasePrice?: number | null;
   retailPrice?: number | null;
@@ -27,9 +31,11 @@ export interface WarehouseProduct {
 }
 
 export interface WarehouseProductPatchRequest {
+  warehouseIsActive?: boolean;
   isActive?: boolean;
   purchasePrice?: number | null;
   retailPrice?: number | null;
+  syncStoreRetailPrices?: boolean;
   domesticPrice?: number | null;
   oemPrice?: number | null;
   importPrice?: number | null;

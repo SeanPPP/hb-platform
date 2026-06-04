@@ -1,6 +1,7 @@
 import type { AxiosRequestConfig } from "axios";
 import { apiClient } from "@/shared/api/client";
 import { useDeviceStore } from "@/store/device-store";
+import { normalizeWarehouseProduct } from "@/modules/warehouse/api-normalization";
 import type {
   DirectUploadSignature,
   WarehouseLocationBindRequest,
@@ -39,37 +40,6 @@ function toNumber(value: unknown): number | null {
     return Number.isFinite(parsed) ? parsed : null;
   }
   return null;
-}
-
-function normalizeWarehouseProduct(payload: unknown): WarehouseProduct {
-  const data = (payload && typeof payload === "object" ? payload : {}) as Record<string, unknown>;
-  return {
-    productCode: String(data.productCode ?? data.ProductCode ?? ""),
-    productName: String(data.productName ?? data.ProductName ?? ""),
-    itemNumber: (data.itemNumber ?? data.ItemNumber ?? null) as string | null,
-    barcode: (data.barcode ?? data.Barcode ?? null) as string | null,
-    productImage: (data.productImage ?? data.ProductImage ?? null) as string | null,
-    productType: toNumber(data.productType ?? data.ProductType),
-    productTypeLabel: (data.productTypeLabel ?? data.ProductTypeLabel ?? null) as string | null,
-    localSupplierCode: (data.localSupplierCode ?? data.LocalSupplierCode ?? null) as string | null,
-    supplierCode: (data.supplierCode ?? data.SupplierCode ?? null) as string | null,
-    supplierName: (data.supplierName ?? data.SupplierName ?? null) as string | null,
-    grade: (data.grade ?? data.Grade ?? null) as string | null,
-    isActive: Boolean(data.isActive ?? data.IsActive),
-    purchasePrice: toNumber(data.purchasePrice ?? data.PurchasePrice),
-    retailPrice: toNumber(data.retailPrice ?? data.RetailPrice),
-    domesticPrice: toNumber(data.domesticPrice ?? data.DomesticPrice),
-    oemPrice: toNumber(data.oEMPrice ?? data.OEMPrice ?? data.oemPrice ?? data.OemPrice),
-    importPrice: toNumber(data.importPrice ?? data.ImportPrice),
-    stockQuantity: toNumber(data.stockQuantity ?? data.StockQuantity),
-    middlePackageQuantity: toNumber(data.middlePackageQuantity ?? data.MiddlePackageQuantity),
-    packingQuantity: toNumber(data.packingQuantity ?? data.PackingQuantity),
-    volume: toNumber(data.volume ?? data.Volume),
-    locationGuid: (data.locationGuid ?? data.LocationGuid ?? null) as string | null,
-    locationCode: (data.locationCode ?? data.LocationCode ?? null) as string | null,
-    locationBarcode: (data.locationBarcode ?? data.LocationBarcode ?? null) as string | null,
-    updatedAt: (data.updatedAt ?? data.UpdatedAt ?? null) as string | null,
-  };
 }
 
 function normalizeWarehouseLocation(payload: unknown): WarehouseLocation {
