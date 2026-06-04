@@ -38,6 +38,12 @@ namespace BlazorApp.Api.Authorization
                 return;
             }
 
+            if (Permissions.IsAttendanceSelfServiceGranted(requirement.Permission))
+            {
+                context.Succeed(requirement);
+                return;
+            }
+
             try
             {
                 using var scope = _serviceScopeFactory.CreateScope();
@@ -49,11 +55,14 @@ namespace BlazorApp.Api.Authorization
                     return;
                 }
 
-                var result = await roleService.UserHasPermissionAsync(userId, requirement.Permission);
-                if (result.Data)
+                foreach (var permission in Permissions.GetEquivalentPermissionCodes(requirement.Permission))
                 {
-                    context.Succeed(requirement);
-                    return;
+                    var result = await roleService.UserHasPermissionAsync(userId, permission);
+                    if (result.Data)
+                    {
+                        context.Succeed(requirement);
+                        return;
+                    }
                 }
             }
             catch (Exception ex)

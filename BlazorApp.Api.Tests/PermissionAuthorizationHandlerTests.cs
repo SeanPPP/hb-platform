@@ -42,7 +42,7 @@ public class PermissionAuthorizationHandlerTests
     }
 
     [Fact]
-    public async Task LocalPurchaseViewPolicy_DelegatesOnlyCanonicalPermissionToRoleService()
+    public async Task LocalPurchaseViewPolicy_AllowsLegacyDatabasePermissionAlias()
     {
         var roleService = new Mock<IRoleService>();
         roleService
@@ -61,14 +61,14 @@ public class PermissionAuthorizationHandlerTests
 
         await handler.HandleAsync(context);
 
-        Assert.False(context.HasSucceeded);
+        Assert.True(context.HasSucceeded);
         roleService.Verify(
             service => service.UserHasPermissionAsync("user-1", Permissions.LocalPurchase.View),
             Times.Once
         );
         roleService.Verify(
             service => service.UserHasPermissionAsync("user-1", "LocalInvocie.View"),
-            Times.Never
+            Times.Once
         );
     }
 
@@ -96,7 +96,7 @@ public class PermissionAuthorizationHandlerTests
         );
         roleService.Verify(
             service => service.UserHasPermissionAsync("user-1", "LocalInvocie.View"),
-            Times.Never
+            Times.Once
         );
     }
 
@@ -280,6 +280,27 @@ public class PermissionAuthorizationHandlerTests
 
         Assert.Contains(Permissions.DeviceRegistration.View, permissionCodes);
         Assert.Contains(Permissions.DeviceRegistration.Manage, permissionCodes);
+    }
+
+    [Fact]
+    public async Task AttendanceSelfServicePermission_AllowsAuthenticatedUserWithoutDatabasePermission()
+    {
+        var roleService = new Mock<IRoleService>();
+        var handler = CreateHandler(roleService);
+        var requirement = new PermissionRequirement(Permissions.Attendance.Punch.Self);
+        var context = new AuthorizationHandlerContext(
+            new[] { requirement },
+            CreateUser(),
+            resource: null
+        );
+
+        await handler.HandleAsync(context);
+
+        Assert.True(context.HasSucceeded);
+        roleService.Verify(
+            service => service.UserHasPermissionAsync("user-1", It.IsAny<string>()),
+            Times.Never
+        );
     }
 
     private static PermissionAuthorizationHandler CreateHandler(Mock<IRoleService> roleService)

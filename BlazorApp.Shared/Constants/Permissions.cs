@@ -260,6 +260,15 @@ namespace BlazorApp.Shared.Constants
             return PermissionAliases;
         }
 
+        public static bool IsAttendanceSelfServiceGranted(string? permission)
+        {
+            return permission is
+                Attendance.Schedule.ViewSelf
+                or Attendance.Availability.SubmitSelf
+                or Attendance.Punch.Self
+                or Attendance.Leave.ApplySelf;
+        }
+
         public static IReadOnlyCollection<string> GetEquivalentPermissionCodes(string? permission)
         {
             if (string.IsNullOrWhiteSpace(permission))
