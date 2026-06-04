@@ -78,8 +78,27 @@ async function main() {
   })
   if (normalizeFailure) failures.push(normalizeFailure)
 
+  const hqSyncServiceFailure = await runTest('仓库标签服务应顺序增量同步货位和商品货位', () => {
+    const serviceFunctionStart = locationServiceSource.indexOf('export async function syncLocationsFromHq')
+    assert(serviceFunctionStart >= 0, 'locationService 缺少 syncLocationsFromHq')
+
+    const serviceFunction = locationServiceSource.slice(serviceFunctionStart)
+    const locationsEndpointPosition = serviceFunction.indexOf('/api/react/v1/sync/locations-incremental')
+    const productLocationsEndpointPosition = serviceFunction.indexOf('/api/react/v1/sync/product-locations-incremental')
+
+    assert(locationsEndpointPosition >= 0, '货位同步应调用 locations-incremental')
+    assert(productLocationsEndpointPosition >= 0, '商品货位同步应调用 product-locations-incremental')
+    assert(
+      locationsEndpointPosition < productLocationsEndpointPosition,
+      '商品货位同步必须在货位同步之后执行',
+    )
+    assert(serviceFunction.includes('locationResult') && serviceFunction.includes('productLocationResult'), '应返回两段同步结果')
+  })
+  if (hqSyncServiceFailure) failures.push(hqSyncServiceFailure)
+
   const pageWiringFailure = await runTest('仓库标签页应挂载局部紧凑表格样式和商品条码列', () => {
     assert(locationsPageSource.includes("import './compact.css'"), '页面应引入局部 compact.css')
+    assert(locationsPageSource.includes('CloudSyncOutlined'), '页面应引入 HQ 同步图标')
     assert(locationsPageSource.includes('className="warehouse-locations-compact-table"'), 'Table 缺少局部紧凑 class')
     assert(locationsPageSource.includes('size="small"'), 'Table 应使用 small 尺寸')
     assert(locationsPageSource.includes("title: t('column.productBarcode')"), '表格缺少商品条码列')
@@ -87,6 +106,22 @@ async function main() {
     assert(locationsPageSource.includes('renderLocationProductName'), '商品名称应走两行展示 helper')
   })
   if (pageWiringFailure) failures.push(pageWiringFailure)
+
+  const hqSyncPageFailure = await runTest('仓库标签页应提供一键从HQ更新货位入口', () => {
+    assert(locationsPageSource.includes('syncLocationsFromHq'), '页面应调用 syncLocationsFromHq')
+    assert(locationsPageSource.includes('const [syncingFromHq, setSyncingFromHq] = useState(false)'), '页面应维护 HQ 同步 loading 状态')
+    assert(locationsPageSource.includes('const canSyncLocationsFromHq = access.isAdmin || access.isWarehouseManager'), '页面应按后端 Admin/WarehouseManager 角色显示同步按钮')
+    assert(locationsPageSource.includes('const handleSyncFromHq = () => {'), '页面缺少 HQ 同步处理函数')
+    assert(locationsPageSource.includes('Modal.confirm'), 'HQ 同步应二次确认')
+    assert(locationsPageSource.includes('setSyncingFromHq(true)'), '确认同步后应进入 loading 状态')
+    assert(locationsPageSource.includes('await syncLocationsFromHq()'), '页面应等待一键同步完成')
+    assert(locationsPageSource.includes('await loadData(1, pageSize)'), '同步成功后应刷新第一页')
+    assert(locationsPageSource.includes('loading={syncingFromHq}'), '同步按钮应绑定 loading 状态')
+    assert(locationsPageSource.includes('disabled={syncingFromHq || loading}'), '同步按钮应在同步或列表加载中禁用')
+    assert(locationsPageSource.includes("t('warehouseLocations.syncFromHq'"), '同步按钮应使用仓库标签文案')
+    assert(locationsPageSource.includes("t('warehouseLocations.syncFromHqSuccessTitle'"), '同步成功应展示专属结果标题')
+  })
+  if (hqSyncPageFailure) failures.push(hqSyncPageFailure)
 
   const barcodeColumnFailure = await runTest('商品条码列应显示文本和复制图标且不回退货号', () => {
     const barcodeColumn = readColumnBlock(locationsPageSource, "title: t('column.productBarcode')")
@@ -172,8 +207,13 @@ async function main() {
   const localeAndScriptFailure = await runTest('商品条码文案和测试脚本应接入项目', () => {
     assert(zhLocaleSource.includes('"productBarcode": "商品条码"'), '中文列名缺少商品条码')
     assert(enLocaleSource.includes('"productBarcode": "Product Barcode"'), '英文列名缺少 Product Barcode')
+    assert(zhLocaleSource.includes('"syncFromHq": "从HQ更新货位"'), '中文文案缺少从HQ更新货位')
+    assert(enLocaleSource.includes('"syncFromHq": "Update Locations from HQ"'), '英文文案缺少 Update Locations from HQ')
+    assert(zhLocaleSource.includes('"syncResultStats": "新增 {{added}}，更新 {{updated}}，错误 {{errors}}"'), '中文文案缺少同步结果统计')
+    assert(enLocaleSource.includes('"syncResultStats": "Added {{added}}, updated {{updated}}, errors {{errors}}"'), '英文文案缺少同步结果统计')
     assert(packageSource.includes('"test:warehouse-locations"'), 'package.json 缺少 test:warehouse-locations 脚本')
     assert(packageSource.includes('warehouseLocationsCompactUi.logic.test.ts'), '测试脚本未运行仓库标签紧凑 UI 约束')
+    assert(packageSource.includes('locationService.hqSync.test.ts'), '测试脚本未运行仓库标签 HQ 同步服务行为测试')
   })
   if (localeAndScriptFailure) failures.push(localeAndScriptFailure)
 

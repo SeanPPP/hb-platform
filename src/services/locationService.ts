@@ -1,12 +1,14 @@
 import type { ApiResponse } from '../types/api'
 import type {
   CreateLocationParams,
+  LocationHqSyncResult,
+  LocationHqSyncSummary,
   LocationFilterParams,
   LocationItem,
   LocationListResponse,
   UpdateLocationParams,
 } from '../types/location'
-import request, { unwrapApiData } from '../utils/request'
+import request, { RequestError, unwrapApiData } from '../utils/request'
 
 const API_BASE = '/api/react/v1/locations'
 
@@ -94,4 +96,39 @@ export async function updateLocation(locationGuid: string, data: UpdateLocationP
 export async function deleteLocation(locationGuid: string): Promise<boolean> {
   const response = await request.delete<ApiResponse<boolean>>(`${API_BASE}/${locationGuid}`)
   return unwrapApiData(response)
+}
+
+function assertSyncSuccess(response: ApiResponse<LocationHqSyncResult>, fallbackMessage: string) {
+  if (response.success === false || response.isSuccess === false) {
+    throw new RequestError(response.message || fallbackMessage, 200, response)
+  }
+
+  const result = unwrapApiData(response)
+  if (result?.isSuccess === false || result?.IsSuccess === false) {
+    throw new RequestError(result.message ?? result.Message ?? response.message ?? fallbackMessage, 200, response)
+  }
+
+  return result ?? {
+    isSuccess: response.success ?? response.isSuccess,
+    message: response.message,
+  }
+}
+
+export async function syncLocationsFromHq(): Promise<LocationHqSyncSummary> {
+  const locationResponse = await request.post<ApiResponse<LocationHqSyncResult>>(
+    '/api/react/v1/sync/locations-incremental',
+    {},
+  )
+  const locationResult = assertSyncSuccess(locationResponse, '从HQ同步货位失败')
+
+  const productLocationResponse = await request.post<ApiResponse<LocationHqSyncResult>>(
+    '/api/react/v1/sync/product-locations-incremental',
+    {},
+  )
+  const productLocationResult = assertSyncSuccess(productLocationResponse, '从HQ同步商品货位失败')
+
+  return {
+    locationResult,
+    productLocationResult,
+  }
 }

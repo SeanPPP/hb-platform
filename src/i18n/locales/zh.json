@@ -3288,7 +3288,16 @@
     "enterLocationCode": "请输入标签代码",
     "enterLocationBarcode": "请输入标签条码",
     "selectLocationType": "请选择标签类型",
-    "selectLocationStatus": "请选择标签状态"
+    "selectLocationStatus": "请选择标签状态",
+    "syncFromHq": "从HQ更新货位",
+    "syncFromHqTitle": "从HQ更新货位",
+    "syncFromHqContent": "将先从HQ增量更新货位信息，再更新商品货位关联。确认继续吗？",
+    "syncFromHqConfirm": "确认同步",
+    "syncFromHqSuccessTitle": "HQ货位同步完成",
+    "syncFromHqFailed": "从HQ更新货位失败",
+    "locationSyncResult": "货位信息",
+    "productLocationSyncResult": "商品货位",
+    "syncResultStats": "新增 {{added}}，更新 {{updated}}，错误 {{errors}}"
   },
   "productGrade": {
     "allGrades": "全部等级",

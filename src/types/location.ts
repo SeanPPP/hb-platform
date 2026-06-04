@@ -51,3 +51,21 @@ export interface UpdateLocationParams {
   locationType?: number | null
   status?: number | null
 }
+
+export interface LocationHqSyncResult {
+  isSuccess?: boolean
+  IsSuccess?: boolean
+  message?: string
+  Message?: string
+  addedCount?: number
+  AddedCount?: number
+  updatedCount?: number
+  UpdatedCount?: number
+  errorCount?: number
+  ErrorCount?: number
+}
+
+export interface LocationHqSyncSummary {
+  locationResult: LocationHqSyncResult
+  productLocationResult: LocationHqSyncResult
+}

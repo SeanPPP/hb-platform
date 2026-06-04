@@ -1,4 +1,5 @@
 import {
+  CloudSyncOutlined,
   CopyOutlined,
   DeleteOutlined,
   EditOutlined,
@@ -23,6 +24,7 @@ import {
   message,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
+import type { TFunction } from 'i18next'
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import PageContainer from '../../../components/PageContainer'
@@ -31,12 +33,14 @@ import {
   createLocation,
   deleteLocation,
   getLocationList,
+  syncLocationsFromHq,
   updateLocation,
 } from '../../../services/locationService'
 import { useAuthStore } from '../../../store/auth'
 import BarcodePreview from '../../../components/BarcodePreview'
 import type {
   CreateLocationParams,
+  LocationHqSyncResult,
   LocationItem,
   LocationProduct,
   UpdateLocationParams,
@@ -93,6 +97,13 @@ function formatDateTime(value?: string) {
   }
 
   return date.toLocaleString('zh-CN', { hour12: false })
+}
+
+function formatSyncResult(result: LocationHqSyncResult, t: TFunction) {
+  const added = result.addedCount ?? result.AddedCount ?? 0
+  const updated = result.updatedCount ?? result.UpdatedCount ?? 0
+  const errors = result.errorCount ?? result.ErrorCount ?? 0
+  return t('warehouseLocations.syncResultStats', { added, updated, errors })
 }
 
 type ProductTextField = 'itemNumber' | 'productName'
@@ -238,6 +249,7 @@ export default function WarehouseLocationsPage() {
   const [saving, setSaving] = useState(false)
   const [modalOpen, setModalOpen] = useState(false)
   const [editingItem, setEditingItem] = useState<LocationItem | null>(null)
+  const [syncingFromHq, setSyncingFromHq] = useState(false)
   const [data, setData] = useState<LocationItem[]>([])
   const [locationCodeKeyword, setLocationCodeKeyword] = useState('')
   const [locationBarcodeKeyword, setLocationBarcodeKeyword] = useState('')
@@ -251,6 +263,7 @@ export default function WarehouseLocationsPage() {
   const locationTypeOptions = getLocationTypeOptions(t)
   const statusOptions = getStatusOptions(t)
   const usageOptions = getUsageOptions(t)
+  const canSyncLocationsFromHq = access.isAdmin || access.isWarehouseManager
 
   const loadData = async (
     nextPage = page,
@@ -350,6 +363,36 @@ export default function WarehouseLocationsPage() {
       console.error(error)
       message.error(error instanceof Error ? error.message : t('warehouseLocations.deleteFailed'))
     }
+  }
+
+  const handleSyncFromHq = () => {
+    Modal.confirm({
+      title: t('warehouseLocations.syncFromHqTitle'),
+      content: t('warehouseLocations.syncFromHqContent'),
+      okText: t('warehouseLocations.syncFromHqConfirm'),
+      cancelText: t('common.cancel'),
+      onOk: async () => {
+        setSyncingFromHq(true)
+        try {
+          const result = await syncLocationsFromHq()
+          Modal.success({
+            title: t('warehouseLocations.syncFromHqSuccessTitle'),
+            content: (
+              <Space direction="vertical">
+                <Typography.Text>{t('warehouseLocations.locationSyncResult')}: {formatSyncResult(result.locationResult, t)}</Typography.Text>
+                <Typography.Text>{t('warehouseLocations.productLocationSyncResult')}: {formatSyncResult(result.productLocationResult, t)}</Typography.Text>
+              </Space>
+            ),
+          })
+          await loadData(1, pageSize)
+        } catch (error) {
+          console.error(error)
+          message.error(error instanceof Error ? error.message : t('warehouseLocations.syncFromHqFailed'))
+        } finally {
+          setSyncingFromHq(false)
+        }
+      },
+    })
   }
 
   const columns: ColumnsType<LocationItem> = [
@@ -465,10 +508,24 @@ export default function WarehouseLocationsPage() {
       title={t('warehouseLocations.title')}
       subtitle={t('warehouseLocations.subtitle')}
       extra={
-        access.canManageWarehouse ? (
-          <Button type="primary" icon={<PlusOutlined />} onClick={handleCreate}>
-            {t('warehouseLocations.newLocation')}
-          </Button>
+        access.canManageWarehouse || canSyncLocationsFromHq ? (
+          <Space>
+            {canSyncLocationsFromHq ? (
+              <Button
+                icon={<CloudSyncOutlined />}
+                loading={syncingFromHq}
+                disabled={syncingFromHq || loading}
+                onClick={handleSyncFromHq}
+              >
+                {t('warehouseLocations.syncFromHq')}
+              </Button>
+            ) : null}
+            {access.canManageWarehouse ? (
+              <Button type="primary" icon={<PlusOutlined />} onClick={handleCreate}>
+                {t('warehouseLocations.newLocation')}
+              </Button>
+            ) : null}
+          </Space>
         ) : null
       }
     >

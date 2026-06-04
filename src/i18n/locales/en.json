@@ -3288,7 +3288,16 @@
     "enterLocationCode": "Enter tag code",
     "enterLocationBarcode": "Enter tag barcode",
     "selectLocationType": "Select tag type",
-    "selectLocationStatus": "Select tag status"
+    "selectLocationStatus": "Select tag status",
+    "syncFromHq": "Update Locations from HQ",
+    "syncFromHqTitle": "Update Locations from HQ",
+    "syncFromHqContent": "This will incrementally update locations from HQ first, then product-location links. Continue?",
+    "syncFromHqConfirm": "Sync",
+    "syncFromHqSuccessTitle": "HQ location sync complete",
+    "syncFromHqFailed": "Failed to update locations from HQ",
+    "locationSyncResult": "Locations",
+    "productLocationSyncResult": "Product locations",
+    "syncResultStats": "Added {{added}}, updated {{updated}}, errors {{errors}}"
   },
   "productGrade": {
     "allGrades": "All Grades",
