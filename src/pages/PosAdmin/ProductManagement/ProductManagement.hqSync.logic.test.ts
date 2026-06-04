@@ -1,7 +1,9 @@
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import type { CurrentUser } from '../../../types/auth'
+import type { ProductStoreRecordDto } from '../../../types/posProduct'
 import { buildAccess } from '../../../utils/access'
+import { compareProductStoreRecordsByName } from './storeRecordSorting'
 
 function createCurrentUser(overrides: Partial<CurrentUser> = {}): CurrentUser {
   return {
@@ -127,6 +129,55 @@ async function main() {
   })
   if (syncFieldsRequestFailure) failures.push(syncFieldsRequestFailure)
 
+  const storeRecordsFailure = await runTest('商品管理应显示分店记录数量并点击查看分店记录明细', () => {
+    assert(
+      typeSource.includes('storeRecordCount?: number') &&
+        typeSource.includes('ProductStoreRecordDto'),
+      '前端商品类型应包含分店记录数量和分店记录明细 DTO',
+    )
+    assert(
+      serviceSource.includes('getProductStoreRecords') &&
+        serviceSource.includes('/store-records'),
+      '商品服务应提供按商品编码读取分店记录明细的接口',
+    )
+    assert(
+      pageSource.includes('storeRecordCount') &&
+        pageSource.includes('openStoreRecords') &&
+        pageSource.includes('storeRecordsRequestSeqRef') &&
+        pageSource.includes('requestSeq === storeRecordsRequestSeqRef.current') &&
+        pageSource.includes('storeRecordsVisible') &&
+        pageSource.includes('storeRecordsLoading') &&
+        pageSource.includes('canManageStoreProducts') &&
+        pageSource.includes('count > 0 && canManageStoreProducts') &&
+        pageSource.includes('getProductStoreRecords(record.productCode)') &&
+        pageSource.includes("dataIndex: 'storeName'") &&
+        pageSource.includes('sorter: compareProductStoreRecordsByName'),
+      '商品管理页面应新增分店记录数量列、点击处理、加载状态、请求竞态保护、分店名称排序器，并仅允许有分店商品权限时点击',
+    )
+    assert(
+      pageSource.includes("t('posAdmin.products.storeRecords', '分店记录')") &&
+        pageSource.includes("t('posAdmin.products.noStoreRecords', '暂无分店记录')") &&
+        pageSource.includes("t('posAdmin.products.loadStoreRecordsFailed', '加载分店记录失败')"),
+      '分店记录列和弹窗应有中文兜底文案',
+    )
+  })
+  if (storeRecordsFailure) failures.push(storeRecordsFailure)
+
+  const storeRecordSorterFailure = await runTest('分店记录名称排序应同名按分店代码兜底', () => {
+    const records: ProductStoreRecordDto[] = [
+      { storeCode: 'S01', storeName: 'Beta', isActive: true, isAutoPricing: false, isSpecialProduct: false },
+      { storeCode: 'S99', storeName: '', isActive: true, isAutoPricing: false, isSpecialProduct: false },
+      { storeCode: 'S04', storeName: 'Alpha', isActive: true, isAutoPricing: false, isSpecialProduct: false },
+      { storeCode: 'S03', storeName: 'Alpha', isActive: true, isAutoPricing: false, isSpecialProduct: false },
+      { storeCode: 'S02', storeName: 'Gamma', isActive: true, isAutoPricing: false, isSpecialProduct: false },
+    ]
+
+    const sortedCodes = records.toSorted(compareProductStoreRecordsByName).map((item) => item.storeCode)
+
+    assertEqual(sortedCodes.join(','), 'S03,S04,S01,S02,S99', '分店记录排序应先按分店名称，再按分店代码稳定排序')
+  })
+  if (storeRecordSorterFailure) failures.push(storeRecordSorterFailure)
+
   const pushToHqFailure = await runTest('选中商品发送到 HQ 应复用选择、权限和防重复提交保护', () => {
     assert(
       typeSource.includes('PushProductsToHqRequest') &&
@@ -176,6 +227,42 @@ async function main() {
     )
   })
   if (pushToHqFailure) failures.push(pushToHqFailure)
+
+  const selectedFromHqFailure = await runTest('选中商品从 HQ 同步应复用选择、Admin 权限和防重复提交保护', () => {
+    assert(
+      typeSource.includes('SyncSelectedProductsFromHqRequest') &&
+        typeSource.includes('productCodes: string[]'),
+      '类型层应声明选中商品从 HQ 同步的请求契约',
+    )
+    assert(
+      serviceSource.includes('syncSelectedProductsFromHq') &&
+        serviceSource.includes("`${API_BASE}/sync-selected-from-hq`") &&
+        serviceSource.includes('normalizeHqProductSyncResult'),
+      '服务层应提供选中商品从 HQ 同步接口，并复用 HQ 同步结果归一化',
+    )
+    assert(
+      pageSource.includes('handleSyncSelectedFromHq') &&
+        pageSource.includes('selectedRowKeys.map(String)') &&
+        pageSource.includes('syncSelectedProductsFromHq({') &&
+        pageSource.includes('showSelectedFromHqResult(result)'),
+      '页面应把当前选中商品编码发送给从 HQ 选中同步接口，并展示结果明细',
+    )
+    assert(
+      pageSource.includes('const selectedFromHqLoadingRef = useRef(false)') &&
+        pageSource.includes('if (selectedFromHqLoadingRef.current) return') &&
+        pageSource.includes('selectedFromHqLoadingRef.current = true') &&
+        pageSource.includes('selectedFromHqLoadingRef.current = false'),
+      '选中商品从 HQ 同步应使用 ref 锁防止连续点击重复提交',
+    )
+    assert(
+      pageSource.includes('ensureCanSyncProductsFromHq') &&
+        pageSource.includes('isAdmin') &&
+        pageSource.includes("t('posAdmin.products.syncSelectedFromHq', '从HQ同步选中')") &&
+        pageSource.includes('disabled={!selectedRowKeys.length || selectedFromHqLoading}'),
+      '从 HQ 同步选中按钮应只对 Admin 显示，并在未选择或 loading 时禁用',
+    )
+  })
+  if (selectedFromHqFailure) failures.push(selectedFromHqFailure)
 
   const jobEndpointFailure = await runTest('全量和增量应创建后台 job 而不是直接等待长同步请求', () => {
     assert(

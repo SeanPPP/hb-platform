@@ -22,8 +22,23 @@ export interface PosProductDto {
   middlePackageQuantity?: number
   isAutoPricing?: boolean
   isSpecialProduct?: boolean
+  storeRecordCount?: number
   createdAt?: string
   updatedAt?: string
+}
+
+export interface ProductStoreRecordDto {
+  storeCode?: string
+  storeName?: string
+  storeProductCode?: string
+  purchasePrice?: number
+  storeRetailPriceValue?: number
+  discountRate?: number
+  isActive: boolean
+  isAutoPricing: boolean
+  isSpecialProduct: boolean
+  updatedAt?: string
+  updatedBy?: string
 }
 
 export interface PosProductFilterParams {
@@ -73,6 +88,10 @@ export interface SyncProductsToStoresResult {
 }
 
 export interface PushProductsToHqRequest {
+  productCodes: string[]
+}
+
+export interface SyncSelectedProductsFromHqRequest {
   productCodes: string[]
 }
 

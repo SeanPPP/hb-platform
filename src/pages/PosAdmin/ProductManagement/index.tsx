@@ -59,10 +59,12 @@ import {
   createProductHqSyncJobPoller,
   createProductFullHqSyncJob,
   createProductIncrementalHqSyncJob,
+  getProductStoreRecords,
   getProductHqSyncJob,
   getProducts,
   HqProductSyncPollingTimeoutError,
   pushProductsToHq,
+  syncSelectedProductsFromHq,
   syncProductsToStores,
   updateProduct,
 } from '../../../services/posProductService'
@@ -76,11 +78,12 @@ import { checkIntegrity, fixIntegrity } from '../../../services/productIntegrity
 import { getActiveStores } from '../../../services/storeService'
 import { useAuthStore } from '../../../store/auth'
 import { copyTextToClipboard } from '../../../utils/clipboard'
-import type { BatchUpdatePosProductDto, HqProductSyncJobResult, HqProductSyncJobStatus, HqProductSyncResult, PosProductDto, PosProductFilterParams, PushProductsToHqResult, SyncProductsToStoresField, SyncProductsToStoresRequest, SyncProductsToStoresResult } from '../../../types/posProduct'
+import type { BatchUpdatePosProductDto, HqProductSyncJobResult, HqProductSyncJobStatus, HqProductSyncResult, PosProductDto, PosProductFilterParams, ProductStoreRecordDto, PushProductsToHqResult, SyncProductsToStoresField, SyncProductsToStoresRequest, SyncProductsToStoresResult } from '../../../types/posProduct'
 import type { ProductCategoryDto } from '../../../types/productCategory'
 import type { ProductIntegrityCheckResultDto, ProductIntegrityFixResultDto } from '../../../types/productIntegrity'
 import type { MulticodeSetItem } from '../../../types/multiCodeSet'
 import type { StoreOption } from '../../../services/storeService'
+import { compareProductStoreRecordsByName } from './storeRecordSorting'
 
 type ProductRow = PosProductDto & { key: string }
 type HqSyncMode = Parameters<typeof buildProductHqSyncOperationId>[0]
@@ -201,6 +204,7 @@ export default function ProductManagementPage() {
   const { t } = useTranslation()
   const isAdmin = useAuthStore((state) => state.access.isAdmin)
   const canManagePosProducts = useAuthStore((state) => state.access.canManagePosProducts)
+  const canManageStoreProducts = useAuthStore((state) => state.access.canManageStoreProducts)
 
   const [loading, setLoading] = useState(false)
   const [data, setData] = useState<ProductRow[]>([])
@@ -248,6 +252,8 @@ export default function ProductManagementPage() {
   const [syncSelectAll, setSyncSelectAll] = useState(false)
   const [pushToHqLoading, setPushToHqLoading] = useState(false)
   const pushToHqLoadingRef = useRef(false)
+  const [selectedFromHqLoading, setSelectedFromHqLoading] = useState(false)
+  const selectedFromHqLoadingRef = useRef(false)
 
   const productTypeWatch = Form.useWatch('productType', editForm)
   const [editSetCodes, setEditSetCodes] = useState<any[]>([])
@@ -260,6 +266,12 @@ export default function ProductManagementPage() {
   const [setCodeData, setSetCodeData] = useState<MulticodeSetItem[]>([])
   const [setCodeLoading, setSetCodeLoading] = useState(false)
   const [setCodeEditingKey, setSetCodeEditingKey] = useState<string | null>(null)
+
+  const [storeRecordsVisible, setStoreRecordsVisible] = useState(false)
+  const [storeRecordsProduct, setStoreRecordsProduct] = useState<PosProductDto | null>(null)
+  const [storeRecordsData, setStoreRecordsData] = useState<ProductStoreRecordDto[]>([])
+  const [storeRecordsLoading, setStoreRecordsLoading] = useState(false)
+  const storeRecordsRequestSeqRef = useRef(0)
 
   const [categoryModalVisible, setCategoryModalVisible] = useState(false)
   const [categoryEditForm] = Form.useForm()
@@ -672,6 +684,35 @@ export default function ProductManagementPage() {
     })
   }, [t])
 
+  const showSelectedFromHqResult = useCallback((result: HqProductSyncResult) => {
+    const content = (
+      <Space direction="vertical" size={6}>
+        {result.message && <div>{result.message}</div>}
+        {buildHqSyncResultLines(result).map((line) => (
+          <div key={line}>{line}</div>
+        ))}
+        {result.errors?.length ? (
+          <div style={{ whiteSpace: 'pre-wrap' }}>
+            {t('posAdmin.products.partialSyncError', '部分同步错误')}：{result.errors.join('\n')}
+          </div>
+        ) : null}
+      </Space>
+    )
+
+    if (result.errors?.length) {
+      Modal.warning({
+        title: t('posAdmin.products.syncSelectedFromHqPartialSucceeded', '从 HQ 同步选中商品部分成功'),
+        content,
+      })
+      return
+    }
+
+    Modal.success({
+      title: t('posAdmin.products.syncSelectedFromHqSucceeded', '从 HQ 同步选中商品完成'),
+      content,
+    })
+  }, [buildHqSyncResultLines, t])
+
   const ensureCanSyncProductsFromHq = () => {
     if (isAdmin) return true
     setHqSyncVisible(false)
@@ -700,6 +741,37 @@ export default function ProductManagementPage() {
       categoryGuid: getCategoryValueFromGuid(record.categoryGuid, categoryTree),
     })
     setEditVisible(true)
+  }
+
+  const openStoreRecords = async (record: PosProductDto) => {
+    if (!canManageStoreProducts) return
+
+    const requestSeq = storeRecordsRequestSeqRef.current + 1
+    storeRecordsRequestSeqRef.current = requestSeq
+    setStoreRecordsProduct(record)
+    setStoreRecordsVisible(true)
+    setStoreRecordsLoading(true)
+    setStoreRecordsData([])
+    try {
+      const records = await getProductStoreRecords(record.productCode)
+      if (requestSeq === storeRecordsRequestSeqRef.current) {
+        setStoreRecordsData(records)
+      }
+    } catch {
+      if (requestSeq === storeRecordsRequestSeqRef.current) {
+        message.error(t('posAdmin.products.loadStoreRecordsFailed', '加载分店记录失败'))
+      }
+    } finally {
+      if (requestSeq === storeRecordsRequestSeqRef.current) {
+        setStoreRecordsLoading(false)
+      }
+    }
+  }
+
+  const closeStoreRecords = () => {
+    storeRecordsRequestSeqRef.current += 1
+    setStoreRecordsVisible(false)
+    setStoreRecordsLoading(false)
   }
 
   const handleEditSave = async () => {
@@ -1018,6 +1090,32 @@ export default function ProductManagementPage() {
     }
   }
 
+  const handleSyncSelectedFromHq = async () => {
+    if (!ensureCanSyncProductsFromHq()) return
+    if (!selectedRowKeys.length) {
+      message.warning(t('posAdmin.products.selectProductsFirst', '请先选择商品'))
+      return
+    }
+    // 使用 ref 作为即时锁，避免连续点击在状态刷新前重复提交同一批商品。
+    if (selectedFromHqLoadingRef.current) return
+
+    try {
+      selectedFromHqLoadingRef.current = true
+      setSelectedFromHqLoading(true)
+      const result = await syncSelectedProductsFromHq({
+        productCodes: selectedRowKeys.map(String),
+      })
+      showSelectedFromHqResult(result)
+      setSelectedRowKeys([])
+      await loadData()
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : t('posAdmin.products.syncSelectedFromHqFailed', '从 HQ 同步选中商品失败'))
+    } finally {
+      selectedFromHqLoadingRef.current = false
+      setSelectedFromHqLoading(false)
+    }
+  }
+
   useEffect(() => {
     if (editVisible && (productTypeWatch === 1 || productTypeWatch === 2) && editingProduct) {
       setEditSetCodesLoading(true)
@@ -1317,7 +1415,7 @@ export default function ProductManagementPage() {
   const columns: ColumnsType<ProductRow> = [
     {
       title: t('posAdmin.invoiceDetail.seqNo', '序号'),
-      width: 60,
+      width: 48,
       align: 'right',
       fixed: 'left',
       render: (_, __, index) => (page - 1) * pageSize + index + 1,
@@ -1326,12 +1424,12 @@ export default function ProductManagementPage() {
       title: t('posAdmin.invoiceDetail.itemNumber', '货号'),
       dataIndex: 'itemNumber',
       key: 'productCode',
-      width: 180,
+      width: 116,
       fixed: 'left',
       sorter: true,
       sortOrder: sortBy === 'productCode' ? sortOrder : undefined,
       render: (v: string, record) => (
-        <Space size={4}>
+        <Space size={4} className="pos-products-code-cell">
           <a onClick={() => copyTextToClipboard(v || record.productCode)}>{v || record.productCode}</a>
           <Tooltip title={t('common.copy')}>
             <Button size="small" type="text" icon={<CopyOutlined />} onClick={() => copyTextToClipboard(v || record.productCode)} />
@@ -1342,29 +1440,42 @@ export default function ProductManagementPage() {
     {
       title: t('posAdmin.invoiceDetail.image', '图片'),
       dataIndex: 'productImage',
-      width: 70,
+      width: 52,
       align: 'center',
       render: (v: string) =>
         v ? (
-          <Image src={v} width={40} height={40} style={{ objectFit: 'contain' }} preview={{ mask: '' }} fallback="data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNDAiIGhlaWdodD0iNDAiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+PHJlY3Qgd2lkdGg9IjQwIiBoZWlnaHQ9IjQwIiBmaWxsPSIjZjBmMGYwIi8+PHRleHQgeD0iMjAiIHk9IjI0IiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBmb250LXNpemU9IjEwIiBmaWxsPSIjY2NjIj7ml6DnvKk8L3RleHQ+PC9zdmc+" />
+          <Image className="pos-products-image-cell" src={v} width={34} height={34} style={{ objectFit: 'contain' }} preview={{ mask: '' }} fallback="data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNDAiIGhlaWdodD0iNDAiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+PHJlY3Qgd2lkdGg9IjQwIiBoZWlnaHQ9IjQwIiBmaWxsPSIjZjBmMGYwIi8+PHRleHQgeD0iMjAiIHk9IjI0IiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBmb250LXNpemU9IjEwIiBmaWxsPSIjY2NjIj7ml6DnvKk8L3RleHQ+PC9zdmc+" />
         ) : (
-          <span style={{ color: '#ccc' }}>-</span>
+          <span className="pos-products-image-cell">-</span>
         ),
     },
     {
       title: t('posAdmin.invoiceDetail.barcode', '条码'),
       dataIndex: 'barcode',
-      width: 180,
-      render: (v: string) => <BarcodePreview value={v} compactCopy />,
+      width: 132,
+      render: (v: string) => (
+        <div className="pos-products-barcode-cell">
+          <BarcodePreview
+            value={v}
+            compactCopy
+            align="left"
+            className="pos-products-barcode-preview"
+            gap={2}
+            options={{ height: 22, width: 1, margin: 0 }}
+            textMaxWidth={104}
+            textNoWrap
+          />
+        </div>
+      ),
     },
     {
       title: t('posAdmin.invoiceDetail.productName', '商品名称'),
       dataIndex: 'productName',
-      width: 200,
+      width: 180,
       sorter: true,
       sortOrder: sortBy === 'productName' ? sortOrder : undefined,
       render: (v: string) => (
-        <div style={{ display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden', lineHeight: '20px' }}>
+        <div className="pos-products-name-cell" title={v}>
           {v}
         </div>
       ),
@@ -1372,7 +1483,7 @@ export default function ProductManagementPage() {
     {
       title: t('posAdmin.products.productCode', '商品编码'),
       dataIndex: 'productCode',
-      width: 60,
+      width: 48,
       align: 'center',
       render: (v: string) => (
         <Tooltip title={t('posAdmin.products.copyProductCode', '复制商品编码')}>
@@ -1383,7 +1494,7 @@ export default function ProductManagementPage() {
     {
       title: t('posAdmin.productPrice.supplier', '供应商'),
       dataIndex: 'localSupplierName',
-      width: 140,
+      width: 110,
       sorter: true,
       sortOrder: sortBy === 'localSupplierCode' ? sortOrder : undefined,
       render: (v: string, record) => {
@@ -1391,12 +1502,8 @@ export default function ProductManagementPage() {
 
         return (
           <div
+            className="pos-products-supplier-cell"
             title={supplierName}
-            style={{
-              lineHeight: '20px',
-              overflowWrap: 'anywhere',
-              whiteSpace: 'normal',
-            }}
           >
             {supplierName}
           </div>
@@ -1406,7 +1513,7 @@ export default function ProductManagementPage() {
     {
       title: t('posAdmin.products.categoryGuid', '分类'),
       dataIndex: 'categoryName',
-      width: 120,
+      width: 90,
       sorter: true,
       sortOrder: sortBy === 'categoryName' ? sortOrder : undefined,
       render: (v: string) => v || '-',
@@ -1414,32 +1521,32 @@ export default function ProductManagementPage() {
     {
       title: t('posAdmin.invoiceDetail.purchasePrice', '进货价'),
       dataIndex: 'purchasePrice',
-      width: 110,
+      width: 76,
       align: 'right',
       sorter: true,
       sortOrder: sortBy === 'purchasePrice' ? sortOrder : undefined,
-      render: (v: number) => (v != null ? Number(v).toFixed(2) : '-'),
+      render: (v: number) => <span className="pos-products-numeric-cell">{v != null ? Number(v).toFixed(2) : '-'}</span>,
     },
     {
       title: t('posAdmin.invoiceDetail.retailPrice', '零售价'),
       dataIndex: 'retailPrice',
-      width: 110,
+      width: 76,
       align: 'right',
       sorter: true,
       sortOrder: sortBy === 'retailPrice' ? sortOrder : undefined,
-      render: (v: number) => (v != null ? Number(v).toFixed(2) : '-'),
+      render: (v: number) => <span className="pos-products-numeric-cell">{v != null ? Number(v).toFixed(2) : '-'}</span>,
     },
     {
       title: t('posAdmin.products.unitWeight', '重量'),
       dataIndex: 'unitWeight',
-      width: 80,
+      width: 64,
       align: 'right',
-      render: (v: number) => v ?? '-',
+      render: (v: number) => <span className="pos-products-numeric-cell">{v ?? '-'}</span>,
     },
     {
       title: t('posAdmin.cashierUsers.status', '状态'),
       dataIndex: 'isActive',
-      width: 80,
+      width: 62,
       align: 'center',
       sorter: true,
       sortOrder: sortBy === 'isActive' ? sortOrder : undefined,
@@ -1448,7 +1555,7 @@ export default function ProductManagementPage() {
     {
       title: t('posAdmin.products.multiBarcodeProduct', '套装'),
       dataIndex: 'isSet',
-      width: 80,
+      width: 64,
       align: 'center',
       render: (v: boolean, record) =>
         v ? (
@@ -1468,25 +1575,51 @@ export default function ProductManagementPage() {
         ),
     },
     {
+      title: t('posAdmin.products.storeRecords', '分店记录'),
+      dataIndex: 'storeRecordCount',
+      width: 70,
+      align: 'center',
+      render: (v: number | undefined, record) => {
+        const count = Number(v ?? 0)
+        return count > 0 && canManageStoreProducts ? (
+          <Button type="link" size="small" onClick={() => openStoreRecords(record)}>
+            {count}
+          </Button>
+        ) : (
+          <span>{count}</span>
+        )
+      },
+    },
+    {
       title: t('column.createTime', '创建时间'),
       dataIndex: 'createdAt',
-      width: 160,
+      width: 92,
       sorter: true,
       sortOrder: sortBy === 'createdAt' ? sortOrder : undefined,
-      render: (v: string) => (v ? dayjs(v).format('YYYY-MM-DD HH:mm') : '-'),
+      render: (v: string) => v ? (
+        <span className="pos-products-date-cell">
+          <span>{dayjs(v).format('YYYY-MM-DD')}</span>
+          <span>{dayjs(v).format('HH:mm')}</span>
+        </span>
+      ) : '-',
     },
     {
       title: t('posAdmin.productPrice.updatedAt', '更新时间'),
       dataIndex: 'updatedAt',
-      width: 160,
+      width: 92,
       sorter: true,
       sortOrder: sortBy === 'updatedAt' ? sortOrder : undefined,
-      render: (v: string) => (v ? dayjs(v).format('YYYY-MM-DD HH:mm') : '-'),
+      render: (v: string) => v ? (
+        <span className="pos-products-date-cell">
+          <span>{dayjs(v).format('YYYY-MM-DD')}</span>
+          <span>{dayjs(v).format('HH:mm')}</span>
+        </span>
+      ) : '-',
     },
     {
       title: t('column.action'),
       key: 'actions',
-      width: 200,
+      width: 140,
       fixed: 'right',
       render: (_, record) => (
         <Space>
@@ -1614,6 +1747,14 @@ export default function ProductManagementPage() {
                 >
                   {activeHqSyncJob ? t('posAdmin.products.hqSyncInProgress', '同步中') : t('posAdmin.products.incrementalSyncFromHQ', '增量同步')}
                 </Button>
+                <Button
+                  icon={<CloudDownloadOutlined />}
+                  loading={selectedFromHqLoading}
+                  disabled={!selectedRowKeys.length || selectedFromHqLoading}
+                  onClick={handleSyncSelectedFromHq}
+                >
+                  {t('posAdmin.products.syncSelectedFromHq', '从HQ同步选中')}
+                </Button>
               </>
             )}
             {canManagePosProducts && (
@@ -1648,16 +1789,18 @@ export default function ProductManagementPage() {
         <div style={{ flex: 1, minHeight: 0 }}>
           <Table
             virtual
+            className="pos-products-compact-table"
+            size="small"
             rowKey="key"
             loading={loading}
             dataSource={data}
             columns={columns}
             pagination={false}
-            scroll={{ x: 1960, y: tableScrollY }}
+            scroll={{ x: 1500, y: tableScrollY }}
             rowSelection={{
               selectedRowKeys,
               onChange: (keys) => setSelectedRowKeys(keys),
-              columnWidth: 48,
+              columnWidth: 40,
             }}
             rowClassName={(_, index) => (index % 2 === 1 ? 'table-row-striped' : '')}
             onChange={(_pagination, _filters, sorter) => {
@@ -2027,6 +2170,54 @@ export default function ProductManagementPage() {
             </ul>
           </div>
         </Form>
+      </Modal>
+
+      <Modal
+        open={storeRecordsVisible}
+        title={t('posAdmin.products.storeRecordsTitle', '分店记录 - {{product}}', {
+          product: storeRecordsProduct?.itemNumber || storeRecordsProduct?.productName || storeRecordsProduct?.productCode || '',
+        })}
+        onCancel={closeStoreRecords}
+        footer={[
+          <Button key="close" onClick={closeStoreRecords}>
+            {t('common.close', '关闭')}
+          </Button>,
+        ]}
+        width={1100}
+      >
+        <Table
+          rowKey={(record) => `${record.storeCode || ''}-${record.storeProductCode || ''}`}
+          loading={storeRecordsLoading}
+          dataSource={storeRecordsData}
+          pagination={false}
+          locale={{ emptyText: t('posAdmin.products.noStoreRecords', '暂无分店记录') }}
+          scroll={{ x: 1000, y: 420 }}
+          columns={[
+            { title: t('common.storeCode', '分店代码'), dataIndex: 'storeCode', width: 110 },
+            {
+              title: t('common.storeName', '分店名称'),
+              dataIndex: 'storeName',
+              width: 160,
+              sorter: compareProductStoreRecordsByName,
+              render: (value: string) => value || '-',
+            },
+            { title: t('posAdmin.products.storeProductCode', '分店商品编码'), dataIndex: 'storeProductCode', width: 160, render: (value: string) => value || '-' },
+            { title: t('posAdmin.invoiceDetail.purchasePrice', '进货价'), dataIndex: 'purchasePrice', width: 100, align: 'right' as const, render: (value: number) => value != null ? Number(value).toFixed(2) : '-' },
+            { title: t('posAdmin.invoiceDetail.retailPrice', '零售价'), dataIndex: 'storeRetailPriceValue', width: 100, align: 'right' as const, render: (value: number) => value != null ? Number(value).toFixed(2) : '-' },
+            { title: t('posAdmin.productPrice.discountRate', '折扣率'), dataIndex: 'discountRate', width: 100, align: 'right' as const, render: (value: number) => value != null ? Number(value).toFixed(4) : '-' },
+            { title: t('posAdmin.products.autoPricing', '自动定价'), dataIndex: 'isAutoPricing', width: 100, align: 'center' as const, render: (value: boolean) => value ? t('common.yes', '是') : t('common.no', '否') },
+            { title: t('posAdmin.products.specialProduct', '特殊商品'), dataIndex: 'isSpecialProduct', width: 100, align: 'center' as const, render: (value: boolean) => value ? t('common.yes', '是') : t('common.no', '否') },
+            {
+              title: t('posAdmin.cashierUsers.status', '状态'),
+              dataIndex: 'isActive',
+              width: 90,
+              align: 'center' as const,
+              render: (value: boolean) => <Tag color={value ? 'green' : 'red'}>{value ? t('posAdmin.products.enable', '启用') : t('posAdmin.products.disable', '禁用')}</Tag>,
+            },
+            { title: t('posAdmin.productPrice.updatedAt', '更新时间'), dataIndex: 'updatedAt', width: 160, render: (value: string) => value ? dayjs(value).format('YYYY-MM-DD HH:mm') : '-' },
+            { title: t('posAdmin.products.updatedBy', '更新人'), dataIndex: 'updatedBy', width: 120, render: (value: string) => value || '-' },
+          ]}
+        />
       </Modal>
 
       <Modal

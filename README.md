@@ -24,7 +24,7 @@ npm run dev
 
 默认开发代理：
 
-- `/api` -> `http://localhost:5001`
-- `/hangfire` -> `http://localhost:5001`
+- `/api` -> `http://localhost:5002`
+- `/hangfire` -> `http://localhost:5002`
 
-如果后端不是本地 5001，请修改 `vite.config.ts`。
+如果后端不是本地 5002，请修改 `vite.config.ts`。

@@ -16,6 +16,16 @@ export interface SetStoreCodeFilter {
 
 export type StoreCodeFilter = TextStoreCodeFilter | SetStoreCodeFilter
 
+export function sortStoreOptionsByName<T extends StoreOption>(stores: T[]): T[] {
+  // 分店下拉统一按显示名称排序，避免不同接口返回顺序导致列表跳动。
+  return [...stores].sort((left, right) =>
+    left.label.localeCompare(right.label, 'zh-CN', {
+      numeric: true,
+      sensitivity: 'base',
+    }),
+  )
+}
+
 export function normalizeManagedStoreCodes(managedStoreCodes: ManagedStoreCodes): string[] | null {
   if (managedStoreCodes === null || managedStoreCodes === undefined) {
     return null
@@ -61,7 +71,7 @@ export function buildStoreOptionsFromUserStores(
   options: { manageableOnly?: boolean } = {},
 ): StoreOption[] {
   const seenStoreCodes = new Set<string>()
-  return (stores ?? [])
+  const storeOptions = (stores ?? [])
     .filter((store) => !options.manageableOnly || store.isManageable)
     .filter((store) => {
       if (!store.storeCode || seenStoreCodes.has(store.storeCode)) {
@@ -74,6 +84,8 @@ export function buildStoreOptionsFromUserStores(
       label: store.storeName || store.storeCode,
       value: store.storeCode,
     }))
+
+  return sortStoreOptionsByName(storeOptions)
 }
 
 export function buildScopedStoreCodeFilter(

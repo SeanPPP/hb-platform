@@ -1,5 +1,7 @@
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
+import { shouldShowDetailInitialLoading } from '../../../utils/detailLoadState'
+import { shouldShowStoreOrderDetailInitialLoading } from './detailLoadState'
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) {
@@ -21,10 +23,24 @@ async function runTest(name: string, execute: () => void | Promise<void>): Promi
 }
 
 const detailFile = path.resolve(process.cwd(), 'src/pages/Warehouse/StoreOrders/Detail.tsx')
+const pickingListFile = path.resolve(process.cwd(), 'src/pages/Warehouse/StoreOrders/PickingList.tsx')
+const invoiceFile = path.resolve(process.cwd(), 'src/pages/Warehouse/StoreOrders/Invoice.tsx')
+const containerDetailFile = path.resolve(process.cwd(), 'src/pages/Warehouse/ContainerDetail/index.tsx')
+const localSupplierInvoiceDetailFile = path.resolve(process.cwd(), 'src/pages/PosAdmin/LocalSupplierInvoiceDetailPage/index.tsx')
+const localSupplierInvoiceEditFile = path.resolve(process.cwd(), 'src/pages/PosAdmin/LocalSupplierInvoices/InvoiceEdit/index.tsx')
+const detailLoadStateFile = path.resolve(process.cwd(), 'src/pages/Warehouse/StoreOrders/detailLoadState.ts')
+const sharedDetailLoadStateFile = path.resolve(process.cwd(), 'src/utils/detailLoadState.ts')
 const zhFile = path.resolve(process.cwd(), 'src/i18n/locales/zh.json')
 const enFile = path.resolve(process.cwd(), 'src/i18n/locales/en.json')
 
 const detailSource = readFileSync(detailFile, 'utf8')
+const pickingListSource = readFileSync(pickingListFile, 'utf8')
+const invoiceSource = readFileSync(invoiceFile, 'utf8')
+const containerDetailSource = readFileSync(containerDetailFile, 'utf8')
+const localSupplierInvoiceDetailSource = readFileSync(localSupplierInvoiceDetailFile, 'utf8')
+const localSupplierInvoiceEditSource = readFileSync(localSupplierInvoiceEditFile, 'utf8')
+const detailLoadStateSource = readFileSync(detailLoadStateFile, 'utf8')
+const sharedDetailLoadStateSource = readFileSync(sharedDetailLoadStateFile, 'utf8')
 const zhSource = readFileSync(zhFile, 'utf8')
 const enSource = readFileSync(enFile, 'utf8')
 
@@ -114,6 +130,144 @@ async function main() {
     )
   })
   if (statusChangeFailure) failures.push(statusChangeFailure)
+
+  const keepAliveSilentReloadFailure = await runTest('详情页 Tab 切回已有数据时应静默刷新', () => {
+    assert(
+      detailSource.includes('loadedDetailIdRef') &&
+        detailSource.includes('visibleDetailIdRef') &&
+        detailSource.includes('shouldShowStoreOrderDetailInitialLoading({') &&
+        detailSource.includes('void loadDetail(shouldShowInitialLoading)'),
+      '详情页缺少按订单 id 区分首次加载和保活恢复刷新，切回 Tab 会重新进入主 loading',
+    )
+    assert(
+      detailSource.includes('loadedDetailIdRef.current = result.orderGUID || id') &&
+        detailSource.includes('visibleDetailIdRef.current = result.orderGUID || id'),
+      '详情页加载成功后应记录已加载订单 id，后续同订单刷新才能保持当前内容',
+    )
+  })
+  if (keepAliveSilentReloadFailure) failures.push(keepAliveSilentReloadFailure)
+
+  const initialLoadingDecisionFailure = await runTest('详情页初始加载判断应覆盖切回和换单边界', () => {
+    assert(
+      sharedDetailLoadStateSource.includes('loadedDetailId !== requestedDetailId || visibleDetailId !== requestedDetailId') &&
+        detailLoadStateSource.includes('shouldShowDetailInitialLoading'),
+      '初始加载判断应沉到通用 helper，并同时检查已加载记录和当前可展示记录',
+    )
+    assert(
+      !shouldShowDetailInitialLoading({
+        requestedDetailId: 'detail-a',
+        loadedDetailId: 'detail-a',
+        visibleDetailId: 'detail-a',
+      }) &&
+      !shouldShowStoreOrderDetailInitialLoading({
+        requestedOrderId: 'order-a',
+        loadedOrderId: 'order-a',
+        visibleDetailId: 'order-a',
+      }),
+      '同订单且当前仍有可展示明细时应静默刷新',
+    )
+    assert(
+      shouldShowStoreOrderDetailInitialLoading({
+        requestedOrderId: 'order-b',
+        loadedOrderId: 'order-a',
+        visibleDetailId: 'order-a',
+      }),
+      '切到新订单时应显示首次主加载',
+    )
+    assert(
+      shouldShowStoreOrderDetailInitialLoading({
+        requestedOrderId: 'order-a',
+        loadedOrderId: 'order-a',
+        visibleDetailId: null,
+      }),
+      '当前没有可展示明细时即使已加载标记命中也应显示主加载',
+    )
+    assert(
+      shouldShowStoreOrderDetailInitialLoading({
+        requestedOrderId: 'order-a',
+        loadedOrderId: 'order-a',
+        visibleDetailId: 'order-b',
+      }),
+      '当前可展示明细属于其他订单时应显示主加载，避免短暂展示错误订单状态',
+    )
+  })
+  if (initialLoadingDecisionFailure) failures.push(initialLoadingDecisionFailure)
+
+  const silentFailurePreserveFailure = await runTest('详情页静默刷新失败不应清空当前明细', () => {
+    assert(
+      detailSource.includes("const errorMessage = error instanceof Error ? error.message : t('storeOrders.detail.loadDetailFailed')") &&
+        detailSource.includes('if (showLoading)') &&
+        detailSource.includes('setDetail(null)') &&
+        detailSource.includes("setDetailLoadStatus('error')") &&
+        detailSource.includes('setDetailErrorMessage(errorMessage)') &&
+        detailSource.includes('message.error(errorMessage)'),
+      '静默刷新失败时应保留旧 detail，只提示错误；首次加载失败才进入 error 空态',
+    )
+  })
+  if (silentFailurePreserveFailure) failures.push(silentFailurePreserveFailure)
+
+  const storeOrderPrintPagesKeepAliveFailure = await runTest('配货单和发票 Tab 切回已有数据时应静默刷新', () => {
+    for (const [pageName, source, loadFailureKey] of [
+      ['配货单', pickingListSource, 'warehouse.pickingList.loadFailed'],
+      ['发票', invoiceSource, 'warehouse.invoice.loadFailed'],
+    ] as const) {
+      assert(
+        source.includes("import { shouldShowStoreOrderDetailInitialLoading } from './detailLoadState'") &&
+          source.includes('loadedOrderIdRef') &&
+          source.includes('visibleOrderIdRef') &&
+          source.includes('const load = async (showLoading = true)') &&
+          source.includes('if (showLoading) {') &&
+          source.includes('setLoading(true)') &&
+          source.includes('shouldShowStoreOrderDetailInitialLoading({') &&
+          source.includes('void load(shouldShowInitialLoading)'),
+        `${pageName}缺少同订单 Tab 恢复静默刷新保护`,
+      )
+      assert(
+        source.includes('loadedOrderIdRef.current = detail.orderGUID || id') &&
+          source.includes('visibleOrderIdRef.current = detail.orderGUID || id') &&
+          source.includes(`const errorMessage = error instanceof Error ? error.message : t('${loadFailureKey}')`) &&
+          source.includes('if (showLoading) {') &&
+          source.includes('setOrder(null)') &&
+          source.includes('setStore(null)'),
+        `${pageName}应在成功后记录可展示订单，且静默失败不清空当前内容`,
+      )
+    }
+  })
+  if (storeOrderPrintPagesKeepAliveFailure) failures.push(storeOrderPrintPagesKeepAliveFailure)
+
+  const lowRiskDetailPagesKeepAliveFailure = await runTest('低风险详情页 Tab 切回应保留已有内容并静默刷新', () => {
+    assert(
+      containerDetailSource.includes("import { shouldShowDetailInitialLoading } from '../../../utils/detailLoadState'") &&
+        containerDetailSource.includes('loadedContainerGuidRef') &&
+        containerDetailSource.includes('visibleContainerGuidRef') &&
+        containerDetailSource.includes('const loadData = async (showLoading = true)') &&
+        containerDetailSource.includes('void loadData(shouldShowInitialLoading)') &&
+        containerDetailSource.includes('loadedContainerGuidRef.current = containerGuid') &&
+        containerDetailSource.includes('visibleContainerGuidRef.current = containerGuid'),
+      '货柜详情缺少同货柜 Tab 恢复静默刷新保护',
+    )
+    assert(
+      localSupplierInvoiceDetailSource.includes("import { shouldShowDetailInitialLoading } from '../../../utils/detailLoadState'") &&
+        localSupplierInvoiceDetailSource.includes('loadedInvoiceGuidRef') &&
+        localSupplierInvoiceDetailSource.includes('visibleInvoiceGuidRef') &&
+        localSupplierInvoiceDetailSource.includes('const loadInvoice = async (showLoading = true)') &&
+        localSupplierInvoiceDetailSource.includes('void loadInvoiceAndDetails(shouldShowInitialLoading)') &&
+        localSupplierInvoiceDetailSource.includes('loadedInvoiceGuidRef.current = invoiceGuid') &&
+        localSupplierInvoiceDetailSource.includes('visibleInvoiceGuidRef.current = invoiceGuid'),
+      '本地供应商发票只读详情缺少同发票 Tab 恢复静默刷新保护',
+    )
+    assert(
+      localSupplierInvoiceEditSource.includes("import { shouldShowDetailInitialLoading } from '../../../../utils/detailLoadState'") &&
+        localSupplierInvoiceEditSource.includes('loadedInvoiceGuidRef') &&
+        localSupplierInvoiceEditSource.includes('visibleInvoiceGuidRef') &&
+        localSupplierInvoiceEditSource.includes('const loadInvoice = useCallback(async (showLoading = true)') &&
+        localSupplierInvoiceEditSource.includes('void loadInvoiceAndDetails(shouldShowInitialLoading)') &&
+        localSupplierInvoiceEditSource.includes('loadedInvoiceGuidRef.current = invoiceGuid') &&
+        localSupplierInvoiceEditSource.includes('visibleInvoiceGuidRef.current = invoiceGuid'),
+      '本地供应商发票编辑页缺少同发票 Tab 恢复静默刷新保护',
+    )
+  })
+  if (lowRiskDetailPagesKeepAliveFailure) failures.push(lowRiskDetailPagesKeepAliveFailure)
 
   const readonlyCopyFailure = await runTest('只读状态应提供中英文提示文案', () => {
     assert(

@@ -1,6 +1,12 @@
 import type { ApiResponse } from '../types/api'
 import type { SyncResult } from '../types/container'
 import request from '../utils/request'
+import {
+  HqProductSyncPollingCancelledError,
+  HqProductSyncPollingTimeoutError,
+  createHqSyncJobPoller,
+  type HqProductSyncPollingOptions,
+} from './productHqSyncPolling'
 
 const API_BASE = '/api/react/v1/product-warehouse'
 const LOCAL_SUPPLIER_API_BASE = '/api/react/v1/local-suppliers'
@@ -155,6 +161,36 @@ export interface WarehouseProductsTableResult {
   page: number
   pageSize: number
 }
+
+export type WarehouseProductHqSyncJobStatus = 'Queued' | 'Running' | 'Succeeded' | 'Failed'
+
+export interface WarehouseProductHqSyncJobRequest {
+  operationId: string
+}
+
+export interface WarehouseProductHqSyncJobResult {
+  jobId: string
+  operationId?: string
+  status: WarehouseProductHqSyncJobStatus
+  isDuplicateRequest?: boolean
+  createdAt?: string
+  completedAt?: string
+  expiresAt?: string
+  message?: string
+  Message?: string
+  isSuccess?: boolean
+  IsSuccess?: boolean
+  result?: SyncResult
+  addedCount?: number
+  AddedCount?: number
+  updatedCount?: number
+  UpdatedCount?: number
+  errorCount?: number
+  ErrorCount?: number
+}
+
+export type WarehouseProductHqSyncPollingOptions = HqProductSyncPollingOptions
+export { HqProductSyncPollingCancelledError, HqProductSyncPollingTimeoutError }
 
 export interface UpdateWarehouseProductFullPayload {
   productName?: string
@@ -599,6 +635,50 @@ export async function syncWarehouseProductsFromHq(): Promise<SyncResult> {
     isSuccess: response.isSuccess ?? response.success,
     message: response.message,
   }
+}
+
+export function createWarehouseProductHqSyncJobPoller({
+  jobId,
+  getJob,
+  ...options
+}: WarehouseProductHqSyncPollingOptions & {
+  jobId: string
+  getJob: (jobId: string) => Promise<WarehouseProductHqSyncJobResult>
+}) {
+  return createHqSyncJobPoller<WarehouseProductHqSyncJobResult>({
+    jobId,
+    getJob,
+    ...options,
+  })
+}
+
+export async function createWarehouseProductHqSyncJob(
+  payload: WarehouseProductHqSyncJobRequest,
+): Promise<WarehouseProductHqSyncJobResult> {
+  const response = await request.post<ApiResponse<WarehouseProductHqSyncJobResult>>(
+    `${API_BASE}/sync-from-hq/jobs`,
+    payload,
+  )
+  ensureApiSuccess(response.success ?? response.isSuccess, response.message, '创建仓库商品 HQ 同步任务失败')
+  return unwrapResponse(response.data, {
+    jobId: '',
+    status: 'Failed',
+    message: response.message,
+  })
+}
+
+export async function getWarehouseProductHqSyncJob(
+  jobId: string,
+): Promise<WarehouseProductHqSyncJobResult> {
+  const response = await request.get<ApiResponse<WarehouseProductHqSyncJobResult>>(
+    `${API_BASE}/sync-from-hq/jobs/${encodeURIComponent(jobId)}`,
+  )
+  ensureApiSuccess(response.success ?? response.isSuccess, response.message, '查询仓库商品 HQ 同步任务失败')
+  return unwrapResponse(response.data, {
+    jobId,
+    status: 'Failed',
+    message: response.message,
+  })
 }
 
 export async function updateWarehouseProductFull(

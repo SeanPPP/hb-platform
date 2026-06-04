@@ -9,8 +9,10 @@ import type {
   HqProductSyncResult,
   PosProductDto,
   PosProductFilterParams,
+  ProductStoreRecordDto,
   PushProductsToHqRequest,
   PushProductsToHqResult,
+  SyncSelectedProductsFromHqRequest,
   SyncProductsToStoresRequest,
   SyncProductsToStoresResult,
 } from '../types/posProduct'
@@ -172,6 +174,13 @@ export async function getProductById(productCode: string): Promise<PosProductDto
 export async function getProductByBarcode(barcode: string): Promise<PosProductDto> {
   const response = await request.get<ApiResponse<PosProductDto>>(`${API_BASE}/by-barcode/${barcode}`)
   return unwrapApiData(response)
+}
+
+export async function getProductStoreRecords(productCode: string): Promise<ProductStoreRecordDto[]> {
+  const response = await request.get<ApiResponse<ProductStoreRecordDto[]>>(
+    `${API_BASE}/${encodeURIComponent(productCode)}/store-records`,
+  )
+  return unwrapApiData(response) ?? []
 }
 
 export async function createProduct(data: Partial<PosProductDto> & Record<string, unknown>) {
@@ -403,6 +412,17 @@ export async function syncProductsFromHqIncremental(
 export async function syncProductsFromHq(): Promise<HqProductSyncResult> {
   const response = await request.post<ApiResponse<HqProductSyncResult>>(`${API_BASE}/sync-from-hq`)
   assertApiSuccess(response, 'HQ 商品同步失败')
+  return normalizeHqProductSyncResult(unwrapApiData(response))
+}
+
+export async function syncSelectedProductsFromHq(
+  data: SyncSelectedProductsFromHqRequest,
+): Promise<HqProductSyncResult> {
+  const response = await request.post<ApiResponse<HqProductSyncResult>>(
+    `${API_BASE}/sync-selected-from-hq`,
+    data,
+  )
+  assertApiSuccess(response, '选中商品 HQ 同步失败')
   return normalizeHqProductSyncResult(unwrapApiData(response))
 }
 

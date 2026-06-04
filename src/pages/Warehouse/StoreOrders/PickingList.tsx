@@ -11,6 +11,7 @@ import { StoreOrderFlowStatus } from '../../../types/storeOrder'
 import type { StoreDto } from '../../../types/store'
 import type { StoreOrderDetail } from '../../../types/storeOrder'
 import { useDynamicTabTitle } from '../../../hooks/useDynamicTabTitle'
+import { shouldShowStoreOrderDetailInitialLoading } from './detailLoadState'
 import { buildDocumentFileName, collectElementBreakOffsets, downloadElementAsPdf, formatCurrency, formatPrintDate } from './printUtils'
 import { buildPickingListExcelData, formatInnerPackCount } from './pickingListLogic'
 import './print.css'
@@ -29,6 +30,9 @@ export default function PickingListPage() {
   const id = route?.params.id || ''
   const navigate = useNavigate()
   const printRootRef = useRef<HTMLDivElement | null>(null)
+  // 记录当前配货单已完成首次加载，保活 Tab 恢复时保留打印内容并静默刷新。
+  const loadedOrderIdRef = useRef<string | null>(null)
+  const visibleOrderIdRef = useRef<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [printing, setPrinting] = useState(false)
   const [downloading, setDownloading] = useState(false)
@@ -49,15 +53,25 @@ export default function PickingListPage() {
       return
     }
 
-    const load = async () => {
-      setLoading(true)
+    const load = async (showLoading = true) => {
+      if (showLoading) {
+        setLoading(true)
+      }
       try {
         const detail = await getStoreOrderDetail(id)
         if (!detail) {
+          if (showLoading) {
+            loadedOrderIdRef.current = null
+            visibleOrderIdRef.current = null
+            setOrder(null)
+            setStore(null)
+          }
           message.error(t('storeOrders.detail.notFound'))
           return
         }
 
+        loadedOrderIdRef.current = detail.orderGUID || id
+        visibleOrderIdRef.current = detail.orderGUID || id
         setOrder(detail)
 
         if (detail.storeCode) {
@@ -72,13 +86,26 @@ export default function PickingListPage() {
         }
       } catch (error) {
         console.error(error)
-        message.error(error instanceof Error ? error.message : t('warehouse.pickingList.loadFailed'))
+        const errorMessage = error instanceof Error ? error.message : t('warehouse.pickingList.loadFailed')
+        if (showLoading) {
+          visibleOrderIdRef.current = null
+          setOrder(null)
+          setStore(null)
+        }
+        message.error(errorMessage)
       } finally {
-        setLoading(false)
+        if (showLoading) {
+          setLoading(false)
+        }
       }
     }
 
-    void load()
+    const shouldShowInitialLoading = shouldShowStoreOrderDetailInitialLoading({
+      requestedOrderId: id,
+      loadedOrderId: loadedOrderIdRef.current,
+      visibleDetailId: visibleOrderIdRef.current,
+    })
+    void load(shouldShowInitialLoading)
   }, [id])
 
   const sortedItems = useMemo(() => {

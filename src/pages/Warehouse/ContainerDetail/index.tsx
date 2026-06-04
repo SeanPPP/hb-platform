@@ -35,7 +35,7 @@ import type { ColumnsType } from 'antd/es/table'
 import type { TFunction } from 'i18next'
 import type { Dayjs } from 'dayjs'
 import dayjs from 'dayjs'
-import { useEffect, useMemo, useRef, useState, type Key } from 'react'
+import { useEffect, useMemo, useRef, useState, type Key, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useNavigate } from 'react-router-dom'
 import BarcodePreview from '../../../components/BarcodePreview'
@@ -70,6 +70,7 @@ import {
 import { useAuthStore } from '../../../store/auth'
 import type { ContainerDetail, ContainerMain, HqTranslationResult, UpdateContainerDetailRequest, UpdateContainerRequest } from '../../../types/container'
 import { copyTextToClipboard } from '../../../utils/clipboard'
+import { shouldShowDetailInitialLoading } from '../../../utils/detailLoadState'
 import {
   applyContainerDetailEnglishNameUpdates,
   buildContainerDetailTagStats,
@@ -79,7 +80,7 @@ import {
   extractPushToHqErrorResult,
   getContainerDetailEnglishName,
   getContainerDetailProductName,
-  matchesContainerDetailTagFilter,
+  matchesContainerDetailSelectedTags,
   mergeContainerDetailPatch,
   type ContainerDetailTagFilter,
 } from './containerDetailLogic'
@@ -146,27 +147,46 @@ function CopyableText({ value, maxWidth }: { value?: string; maxWidth?: number }
   }
 
   return (
-    <Space size={4} wrap={false}>
+    <Space size={4} wrap={false} className="container-detail-nowrap container-detail-copyable">
       <Typography.Text style={maxWidth ? { maxWidth } : undefined} ellipsis={maxWidth ? { tooltip: value } : false}>
         {value}
       </Typography.Text>
       <Tooltip title="复制">
         <Button
           size="small"
-          type="link"
+          type="text"
           aria-label={`复制 ${value}`}
           icon={<CopyOutlined />}
-          style={{ paddingInline: 0 }}
+          className="container-detail-copy-button"
           onClick={(event) => {
             event.stopPropagation()
             void copyTextToClipboard(value)
           }}
-        >
-          复制
-        </Button>
+        />
       </Tooltip>
     </Space>
   )
+}
+
+// 表格密集显示专用：关键文本限制两行，数字列保持单行便于快速扫读。
+function TwoLineText({ value }: { value?: string }) {
+  if (!value) {
+    return <>--</>
+  }
+
+  return (
+    <Tooltip title={value}>
+      <span className="container-detail-two-line-text">{value}</span>
+    </Tooltip>
+  )
+}
+
+function renderNumericCell(value: ReactNode) {
+  return <span className="container-detail-nowrap container-detail-numeric-cell">{value}</span>
+}
+
+function renderCompactHeader(value: ReactNode) {
+  return <span className="container-detail-header-title">{value}</span>
 }
 
 export default function ContainerDetailPage() {
@@ -175,6 +195,9 @@ export default function ContainerDetailPage() {
   const route = useStableRouteContext()
   const [containerGuid] = useState(() => route?.params.containerGuid || '')
   const access = useAuthStore((state) => state.access)
+  // 记录当前货柜已完成首次加载，保活 Tab 恢复时保留旧内容并静默刷新。
+  const loadedContainerGuidRef = useRef<string | null>(null)
+  const visibleContainerGuidRef = useRef<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [savingHeader, setSavingHeader] = useState(false)
   const [container, setContainer] = useState<ContainerMain | null>(null)
@@ -182,7 +205,7 @@ export default function ContainerDetailPage() {
   const [selectedRowKeys, setSelectedRowKeys] = useState<Key[]>([])
   const [itemNumberFilter, setItemNumberFilter] = useState('')
   const [productTypeFilter, setProductTypeFilter] = useState<ProductTypeFilter>('all')
-  const [tagFilter, setTagFilter] = useState<ContainerDetailTagFilter>('all')
+  const [selectedTagFilters, setSelectedTagFilters] = useState<ContainerDetailTagFilter[]>([])
   const [batchFloatRate, setBatchFloatRate] = useState<number | null>(null)
   const [batchImportPrice, setBatchImportPrice] = useState<number | null>(null)
   const [batchOemPrice, setBatchOemPrice] = useState<number | null>(null)
@@ -204,16 +227,20 @@ export default function ContainerDetailPage() {
 
   useDynamicTabTitle(container?.货柜编号 ? t('containers.detailTitleWithNumber', { number: container.货柜编号 }) : undefined)
 
-  const loadData = async () => {
+  const loadData = async (showLoading = true) => {
     if (!containerGuid) {
       return
     }
-    setLoading(true)
+    if (showLoading) {
+      setLoading(true)
+    }
     try {
       const [info, products] = await Promise.all([
         getContainerDetail(containerGuid),
         getContainerProducts(containerGuid),
       ])
+      loadedContainerGuidRef.current = containerGuid
+      visibleContainerGuidRef.current = containerGuid
       setContainer(info)
       setHeaderForm({
         实际到货日期: info.实际到货日期 ? dayjs(info.实际到货日期) : null,
@@ -225,20 +252,30 @@ export default function ContainerDetailPage() {
       setSelectedRowKeys([])
     } catch (error) {
       console.error(error)
+      if (showLoading) {
+        visibleContainerGuidRef.current = null
+      }
       message.error(error instanceof Error ? error.message : t('containers.messages.loadDetailFailed'))
     } finally {
-      setLoading(false)
+      if (showLoading) {
+        setLoading(false)
+      }
     }
   }
 
   useEffect(() => {
-    void loadData()
+    const shouldShowInitialLoading = shouldShowDetailInitialLoading({
+      requestedDetailId: containerGuid,
+      loadedDetailId: loadedContainerGuidRef.current,
+      visibleDetailId: visibleContainerGuidRef.current,
+    })
+    void loadData(shouldShowInitialLoading)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [containerGuid])
 
   useEffect(() => {
     setSelectedRowKeys([])
-  }, [itemNumberFilter, productTypeFilter, tagFilter])
+  }, [itemNumberFilter, productTypeFilter, selectedTagFilters])
 
   const baseFilteredRows = useMemo(() => {
     return rows.filter((row) => {
@@ -250,18 +287,47 @@ export default function ContainerDetailPage() {
   }, [itemNumberFilter, productTypeFilter, rows])
 
   const filteredRows = useMemo(() => {
-    return baseFilteredRows.filter((row) => matchesContainerDetailTagFilter(row, tagFilter))
-  }, [baseFilteredRows, tagFilter])
+    return baseFilteredRows.filter((row) => matchesContainerDetailSelectedTags(row, selectedTagFilters))
+  }, [baseFilteredRows, selectedTagFilters])
 
   const tagStats = useMemo(() => buildContainerDetailTagStats(baseFilteredRows), [baseFilteredRows])
 
   const tagStatOptions = useMemo<Array<{ value: ContainerDetailTagFilter; label: string; color?: string }>>(() => [
     { value: 'all', label: t('containers.filters.allTags') },
     { value: 'new', label: t('containers.tags.newProduct'), color: 'blue' },
-    { value: 'existing', label: t('containers.tags.existingProduct') },
+    { value: 'existing', label: t('containers.tags.existingProduct'), color: 'purple' },
     { value: 'noOemPrice', label: t('containers.filters.missingOemPrice'), color: 'orange' },
     { value: 'abnormalImport', label: t('containers.filters.abnormalImportPrice'), color: 'red' },
+    { value: 'active', label: t('common.activeUpper'), color: 'success' },
+    { value: 'inactive', label: t('common.inactiveUpper'), color: 'default' },
   ], [t])
+
+  const selectedTagOptions = useMemo(
+    () => tagStatOptions.filter((option) => option.value !== 'all' && selectedTagFilters.includes(option.value)),
+    [selectedTagFilters, tagStatOptions],
+  )
+
+  const tagSelectOptions = useMemo(
+    () => tagStatOptions.filter((option) => option.value !== 'all').map(({ value, label }) => ({ value, label })),
+    [tagStatOptions],
+  )
+
+  const setTagFiltersFromSelect = (values: ContainerDetailTagFilter[]) => {
+    setSelectedTagFilters(values.includes('all') ? [] : values)
+  }
+
+  const toggleTagFilter = (value: ContainerDetailTagFilter) => {
+    if (value === 'all') {
+      setSelectedTagFilters([])
+      return
+    }
+
+    setSelectedTagFilters((current) => (
+      current.includes(value)
+        ? current.filter((item) => item !== value)
+        : [...current, value]
+    ))
+  }
 
   const selectedRows = useMemo(
     () => filteredRows.filter((row) => selectedRowKeys.includes(rowKey(row))),
@@ -836,90 +902,89 @@ export default function ContainerDetailPage() {
   }
 
   const columns: ColumnsType<ContainerDetail> = [
-    { title: t('containers.columns.index'), width: 70, fixed: 'left', render: (_v, _r, index) => index + 1 },
+    { title: renderCompactHeader(t('containers.columns.index')), width: 56, fixed: 'left', render: (_v, _r, index) => renderNumericCell(index + 1) },
     {
-      title: t('containers.columns.image'),
-      width: 80,
+      title: renderCompactHeader(t('containers.columns.image')),
+      width: 64,
       fixed: 'left',
       render: (_, row) =>
         row.商品信息?.商品图片 ? (
-          <Image width={48} height={48} src={row.商品信息.商品图片} style={{ objectFit: 'cover', borderRadius: 4 }} />
+          <Image width={40} height={40} src={row.商品信息.商品图片} style={{ objectFit: 'cover', borderRadius: 4 }} />
         ) : (
           <span style={{ color: '#999' }}>{t('containers.empty.noImage')}</span>
         ),
     },
-    { title: t('containers.fields.itemNumber'), width: 160, fixed: 'left', sorter: (a, b) => (a.商品信息?.货号 || '').localeCompare(b.商品信息?.货号 || ''), render: (_, row) => <CopyableText value={row.商品信息?.货号} maxWidth={118} /> },
+    { title: t('containers.fields.itemNumber'), width: 130, fixed: 'left', sorter: (a, b) => (a.商品信息?.货号 || '').localeCompare(b.商品信息?.货号 || ''), render: (_, row) => <CopyableText value={row.商品信息?.货号} maxWidth={90} /> },
     {
-      title: t('containers.fields.barcode'),
-      width: 190,
+      title: renderCompactHeader(t('containers.fields.barcode')),
+      width: 170,
       render: (_, row) => {
         const barcode = row.商品信息?.条形码
 
         return barcode ? (
-          <Space size={4} wrap={false}>
-            <BarcodePreview value={barcode} showText={false} showCopy={false} />
+          <Space size={4} wrap={false} className="container-detail-barcode-cell">
+            <BarcodePreview value={barcode} showText showCopy={false} options={{ height: 24 }} />
             <Tooltip title="复制">
               <Button
                 size="small"
-                type="link"
+                type="text"
                 aria-label={`复制 ${barcode}`}
                 icon={<CopyOutlined />}
-                style={{ paddingInline: 0 }}
+                className="container-detail-icon-button"
                 onClick={(event) => {
                   event.stopPropagation()
                   void copyTextToClipboard(barcode)
                 }}
-              >
-                复制
-              </Button>
+              />
             </Tooltip>
           </Space>
         ) : '--'
       },
     },
-    { title: t('containers.fields.productName'), width: 240, render: (_, row) => getContainerDetailProductName(row) || '--' },
+    { title: renderCompactHeader(t('containers.fields.productName')), width: 180, render: (_, row) => <TwoLineText value={getContainerDetailProductName(row)} /> },
     {
-      title: t('containers.fields.englishName'),
-      width: 220,
+      title: renderCompactHeader(t('containers.fields.englishName')),
+      width: 180,
       render: (_, row) => access.canEditContainer ? (
         <Input.TextArea
+          className="container-detail-english-name-input"
           value={getContainerDetailEnglishName(row) ?? ''}
           autoSize={{ minRows: 1, maxRows: 2 }}
           style={{ resize: 'none' }}
           onChange={(event) => patchRow(rowKey(row), { 英文名称: event.target.value })}
           onBlur={(event) => void saveRowPatch(row, { 英文名称: event.target.value })}
         />
-      ) : getContainerDetailEnglishName(row) || '--',
+      ) : <TwoLineText value={getContainerDetailEnglishName(row)} />,
     },
-    { title: t('containers.fields.productType'), width: 110, render: (_, row) => getProductTypeLabel(row.商品类型 || row.商品信息?.商品类型, t) },
-    { title: t('containers.fields.newProduct'), width: 90, render: (_, row) => (row.是否新商品 ? <Tag color="blue">{t('containers.tags.new')}</Tag> : <Tag>{t('containers.tags.existing')}</Tag>) },
-    { title: t('containers.fields.containerPieces'), dataIndex: '装柜件数', width: 100, align: 'right' },
-    { title: t('containers.fields.containerQuantity'), dataIndex: '装柜数量', width: 100, align: 'right' },
-    { title: t('containers.fields.domesticPrice'), dataIndex: '国内价格', width: 110, align: 'right', render: (v) => formatNumber(v) },
+    { title: renderCompactHeader(t('containers.fields.productType')), width: 92, render: (_, row) => getProductTypeLabel(row.商品类型 || row.商品信息?.商品类型, t) },
+    { title: renderCompactHeader(t('containers.fields.newProduct')), width: 72, render: (_, row) => (row.是否新商品 ? <Tag color="blue">{t('containers.tags.new')}</Tag> : <Tag>{t('containers.tags.existing')}</Tag>) },
+    { title: renderCompactHeader(t('containers.fields.containerPieces')), dataIndex: '装柜件数', width: 76, align: 'right', render: (v) => renderNumericCell(v ?? '--') },
+    { title: renderCompactHeader(t('containers.fields.containerQuantity')), dataIndex: '装柜数量', width: 76, align: 'right', render: (v) => renderNumericCell(v ?? '--') },
+    { title: renderCompactHeader(t('containers.fields.domesticPrice')), dataIndex: '国内价格', width: 86, align: 'right', render: (v) => renderNumericCell(formatNumber(v)) },
     {
-      title: t('containers.fields.floatRate'),
+      title: renderCompactHeader(t('containers.fields.floatRate')),
       dataIndex: '调整浮率',
-      width: 120,
+      width: 96,
       align: 'right',
       render: (_value, row) =>
         access.canEditContainer ? (
           <InputNumber
             value={row.调整浮率}
             precision={4}
-            style={{ width: 96 }}
+            style={{ width: 78 }}
             onChange={(value) => patchRow(rowKey(row), { 调整浮率: value == null ? undefined : Number(value) })}
             onBlur={(event) => {
               const value = event.target.value ? Number(event.target.value) : undefined
               void saveFloatRatePatch(row, value)
             }}
           />
-        ) : formatNumber(row.调整浮率, 4),
+        ) : renderNumericCell(formatNumber(row.调整浮率, 4)),
     },
-    { title: t('containers.fields.transportCost'), dataIndex: '运输成本', width: 110, align: 'right', render: (v) => formatNumber(v) },
+    { title: renderCompactHeader(t('containers.fields.transportCost')), dataIndex: '运输成本', width: 86, align: 'right', render: (v) => renderNumericCell(formatNumber(v)) },
     {
-      title: t('containers.fields.importPrice'),
+      title: renderCompactHeader(t('containers.fields.importPrice')),
       dataIndex: '进口价格',
-      width: 120,
+      width: 96,
       align: 'right',
       render: (_value, row) =>
         access.canEditContainer ? (
@@ -927,24 +992,24 @@ export default function ContainerDetailPage() {
             value={row.进口价格}
             min={0}
             precision={2}
-            style={{ width: 100 }}
+            style={{ width: 78 }}
             onChange={(value) => patchRow(rowKey(row), { 进口价格: value == null ? undefined : Number(value) })}
             onBlur={(event) => void saveRowPatch(row, { 进口价格: event.target.value ? Number(event.target.value) : undefined })}
           />
-        ) : formatNumber(row.进口价格),
+        ) : renderNumericCell(formatNumber(row.进口价格)),
     },
     {
-      title: t('containers.fields.oemPrice'),
+      title: renderCompactHeader(t('containers.fields.oemPrice')),
       dataIndex: '贴牌价格',
-      width: 120,
+      width: 96,
       align: 'right',
       render: (_value, row) =>
-        access.canEditContainer ? <InputNumber defaultValue={row.贴牌价格} min={0} precision={2} style={{ width: 100 }} onBlur={(event) => void saveRowPatch(row, { 贴牌价格: event.target.value ? Number(event.target.value) : undefined })} /> : formatNumber(row.贴牌价格),
+        access.canEditContainer ? <InputNumber defaultValue={row.贴牌价格} min={0} precision={2} style={{ width: 78 }} onBlur={(event) => void saveRowPatch(row, { 贴牌价格: event.target.value ? Number(event.target.value) : undefined })} /> : renderNumericCell(formatNumber(row.贴牌价格)),
     },
-    { title: t('containers.fields.warehouseStatus'), width: 100, render: (_, row) => <Tag color={row.warehouseIsActive ? 'success' : 'default'}>{row.warehouseIsActive ? t('common.activeUpper') : t('common.inactiveUpper')}</Tag> },
+    { title: renderCompactHeader(t('containers.fields.warehouseStatus')), width: 86, render: (_, row) => <Tag color={row.warehouseIsActive ? 'success' : 'default'}>{row.warehouseIsActive ? t('common.activeUpper') : t('common.inactiveUpper')}</Tag> },
     {
-      title: t('containers.fields.remark'),
-      width: 220,
+      title: renderCompactHeader(t('containers.fields.remark')),
+      width: 160,
       render: (_, row) =>
         access.canEditContainer ? <Input defaultValue={row.备注} onBlur={(event) => void saveRowPatch(row, { 备注: event.target.value })} /> : row.备注 || '--',
     },
@@ -1002,10 +1067,14 @@ export default function ContainerDetailPage() {
                     options={(['all', 'normal', 'set', 'setChild'] as ProductTypeFilter[]).map((value) => ({ value, label: getProductTypeFilterLabel(value, t) }))}
                   />
                   <Select
-                    value={tagFilter}
-                    style={{ width: 150 }}
-                    onChange={setTagFilter}
-                    options={tagStatOptions.map(({ value, label }) => ({ value, label }))}
+                    mode="multiple"
+                    value={selectedTagFilters}
+                    allowClear
+                    maxTagCount="responsive"
+                    placeholder={t('containers.filters.allTags')}
+                    style={{ width: 220 }}
+                    onChange={setTagFiltersFromSelect}
+                    options={tagSelectOptions}
                   />
                   <Typography.Text type="secondary">{t('containers.text.showingRows', { filtered: filteredRows.length, total: rows.length })}</Typography.Text>
                 </Space>
@@ -1070,7 +1139,7 @@ export default function ContainerDetailPage() {
 
               <Space className="container-detail-stats" wrap size={[8, 8]}>
                 {tagStatOptions.map((option) => {
-                  const active = tagFilter === option.value
+                  const active = option.value === 'all' ? !selectedTagFilters.length : selectedTagFilters.includes(option.value)
                   return (
                     <Tag
                       key={option.value}
@@ -1079,11 +1148,11 @@ export default function ContainerDetailPage() {
                       role="button"
                       tabIndex={0}
                       aria-pressed={active}
-                      onClick={() => setTagFilter(option.value)}
+                      onClick={() => toggleTagFilter(option.value)}
                       onKeyDown={(event) => {
                         if (event.key === 'Enter' || event.key === ' ') {
                           event.preventDefault()
-                          setTagFilter(option.value)
+                          toggleTagFilter(option.value)
                         }
                       }}
                     >
@@ -1096,6 +1165,28 @@ export default function ContainerDetailPage() {
                 })}
               </Space>
 
+              {selectedTagOptions.length ? (
+                <Space className="container-detail-selected-filters" wrap size={[6, 6]}>
+                  <Typography.Text type="secondary">{t('containers.text.selectedFilters')}</Typography.Text>
+                  {selectedTagOptions.map((option) => (
+                    <Tag
+                      key={option.value}
+                      color={option.color}
+                      closable
+                      onClose={(event) => {
+                        event.preventDefault()
+                        toggleTagFilter(option.value)
+                      }}
+                    >
+                      {option.label}
+                    </Tag>
+                  ))}
+                  <Button type="link" size="small" onClick={() => setSelectedTagFilters([])}>
+                    {t('containers.actions.clearFilters')}
+                  </Button>
+                </Space>
+              ) : null}
+
               {exporting ? <Progress percent={exportProgress} size="small" /> : null}
 
               <Table
@@ -1106,7 +1197,7 @@ export default function ContainerDetailPage() {
                 dataSource={filteredRows}
                 rowSelection={{ selectedRowKeys, onChange: setSelectedRowKeys, fixed: true }}
                 pagination={{ pageSize: 50, showSizeChanger: true, showTotal: (total) => t('common.total', { count: total }) }}
-                scroll={{ x: 2100, y: 620 }}
+                scroll={{ x: 1840, y: 620 }}
                 footer={() => (
                   <Space direction="vertical" size={2}>
                     <Typography.Text type="secondary">{t('containers.formulas.transportCost', '运输成本 = 运费 × 明细体积 ÷ 装柜数量 ÷ 总体积')}</Typography.Text>

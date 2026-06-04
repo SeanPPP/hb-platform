@@ -113,8 +113,8 @@ assertArrayEqual(
       assignedAt: '2026-01-01T00:00:00Z',
     },
   ]).map((store) => store.value),
-  ['M1', 'L1', 'M2'],
-  'Visible store options should include linked and manageable stores',
+  ['L1', 'M1', 'M2'],
+  'Visible store options should include linked and manageable stores sorted by name',
 )
 
 assertArrayEqual(
@@ -142,7 +142,7 @@ assertArrayEqual(
     },
   ], { manageableOnly: true }).map((store) => store.value),
   ['M1', 'M2'],
-  'Editable store options should include only manageable stores',
+  'Editable store options should include only manageable stores sorted by name',
 )
 
 assertArrayEqual(

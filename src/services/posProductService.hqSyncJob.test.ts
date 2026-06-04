@@ -5,6 +5,7 @@ import {
   createProductHqSyncFullJob,
   createProductHqSyncIncrementalJob,
   getProductHqSyncJob,
+  syncSelectedProductsFromHq,
   syncProductsFromHqFull,
   syncProductsFromHqIncremental,
 } from './posProductService'
@@ -240,6 +241,48 @@ async function main() {
     )
   })
   if (incrementalJobFailure) failures.push(incrementalJobFailure)
+
+  const selectedProductsSyncFailure = await runTest('选中商品从 HQ 同步应调用选中商品接口并携带商品编码', async () => {
+    const result = await captureFetch(
+      {
+        success: true,
+        data: {
+          productsUpdated: 2,
+          storeRetailPricesCreated: 3,
+          storeMultiCodesCreated: 1,
+          errors: [],
+        },
+      },
+      () => syncSelectedProductsFromHq({ productCodes: ['EP112', 'EP194'] }),
+    )
+
+    assertDeepEqual(
+      {
+        url: result.capturedUrl,
+        method: result.capturedMethod,
+        body: result.capturedBody,
+        syncResult: result.result,
+      },
+      {
+        url: '/api/react/v1/products/sync-selected-from-hq',
+        method: 'POST',
+        body: { productCodes: ['EP112', 'EP194'] },
+        syncResult: {
+          productsUpdated: 2,
+          storeRetailPricesCreated: 3,
+          storeMultiCodesCreated: 1,
+          errors: [],
+          productsAdded: 0,
+          productsDeleted: 0,
+          productSetCodesCreated: 0,
+          productSetCodesDeleted: 0,
+          durationMs: 0,
+        },
+      },
+      '选中商品 HQ 同步请求不符合预期',
+    )
+  })
+  if (selectedProductsSyncFailure) failures.push(selectedProductsSyncFailure)
 
   const operationIdBuilderFailure = await runTest('商品 HQ 同步 operationId 应由服务层唯一生成', () => {
     assertEqual(

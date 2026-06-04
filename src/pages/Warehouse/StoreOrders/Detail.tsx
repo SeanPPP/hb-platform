@@ -28,12 +28,13 @@ import {
   Spin,
   Table,
   Tag,
+  Tooltip,
   Typography,
   message,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import type { SortOrder, SorterResult } from 'antd/es/table/interface'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useLocation, useNavigate } from 'react-router-dom'
 import BarcodePreview from '../../../components/BarcodePreview'
@@ -77,6 +78,8 @@ import { StoreOrderFlowStatus, StoreOrderStatusColorMap } from '../../../types/s
 import { copyTextToClipboard } from '../../../utils/clipboard'
 import { useDynamicTabTitle } from '../../../hooks/useDynamicTabTitle'
 import { deriveStoreOrderDetailPermissions } from './storeOrderDetailPermissions'
+import { shouldShowStoreOrderDetailInitialLoading } from './detailLoadState'
+import './compact.css'
 
 function formatDateTime(value?: string) {
   if (!value) {
@@ -152,6 +155,17 @@ function renderWarningValue(value: string) {
       {value}
     </span>
   )
+}
+
+function renderStoreOrderDetailNumericCell(value: ReactNode) {
+  return <span className="store-order-numeric-cell">{value}</span>
+}
+
+function renderStoreOrderTwoLineText(value?: string) {
+  if (!value) {
+    return <>--</>
+  }
+  return <span className="store-order-two-line-text" title={value}>{value}</span>
 }
 
 function isOrderedNotShipped(line: StoreOrderDetailLine) {
@@ -578,8 +592,8 @@ function BatchEditModal({ open, loading, selectedCount, onCancel, onConfirm }: B
           <Select
             value={isActive ? 'active' : 'inactive'}
             options={[
-              { value: 'active', label: t('common.active') },
-              { value: 'inactive', label: t('common.inactive') },
+              { value: 'active', label: t('common.activeUpper') },
+              { value: 'inactive', label: t('common.inactiveUpper') },
             ]}
             onChange={(value) => setIsActive(value === 'active')}
           />
@@ -599,6 +613,9 @@ export default function StoreOrderDetailPage() {
   const id = route?.params.id || ''
   const isDesktop = Boolean(screens.xl)
   const detailRequestControllerRef = useRef<AbortController | null>(null)
+  // 记录当前订单已完成首次加载，保活 Tab 恢复时保留旧内容并静默刷新。
+  const loadedDetailIdRef = useRef<string | null>(null)
+  const visibleDetailIdRef = useRef<string | null>(null)
   const [detailLoadStatus, setDetailLoadStatus] = useState<DetailLoadStatus>('idle')
   const [detailErrorMessage, setDetailErrorMessage] = useState('')
   const [detail, setDetail] = useState<StoreOrderDetail | null>(null)
@@ -690,6 +707,8 @@ export default function StoreOrderDetailPage() {
       }
 
       if (!result) {
+        loadedDetailIdRef.current = null
+        visibleDetailIdRef.current = null
         setDetail(null)
         setDetailLoadStatus('notFound')
         setDetailErrorMessage('')
@@ -703,6 +722,8 @@ export default function StoreOrderDetailPage() {
         return
       }
 
+      loadedDetailIdRef.current = result.orderGUID || id
+      visibleDetailIdRef.current = result.orderGUID || id
       setDetail(result)
       setHeaderForm({
         storeCode: result?.storeCode,
@@ -723,10 +744,16 @@ export default function StoreOrderDetailPage() {
       }
 
       console.error(error)
-      setDetail(null)
-      setDetailLoadStatus('error')
-      setDetailErrorMessage(error instanceof Error ? error.message : t('storeOrders.detail.loadDetailFailed'))
-      message.error(error instanceof Error ? error.message : t('storeOrders.detail.loadDetailFailed'))
+      const errorMessage = error instanceof Error ? error.message : t('storeOrders.detail.loadDetailFailed')
+      if (showLoading) {
+        visibleDetailIdRef.current = null
+        setDetail(null)
+        setDetailLoadStatus('error')
+        setDetailErrorMessage(errorMessage)
+      } else {
+        setDetailErrorMessage(errorMessage)
+      }
+      message.error(errorMessage)
     } finally {
       if (detailRequestControllerRef.current === currentController) {
         detailRequestControllerRef.current = null
@@ -760,7 +787,12 @@ export default function StoreOrderDetailPage() {
     if (!id) {
       return
     }
-    void loadDetail()
+    const shouldShowInitialLoading = shouldShowStoreOrderDetailInitialLoading({
+      requestedOrderId: id,
+      loadedOrderId: loadedDetailIdRef.current,
+      visibleDetailId: visibleDetailIdRef.current,
+    })
+    void loadDetail(shouldShowInitialLoading)
     return () => {
       detailRequestControllerRef.current?.abort()
     }
@@ -1098,7 +1130,7 @@ export default function StoreOrderDetailPage() {
         productCode: line.productCode,
         isActive: !line.isActive,
       })
-      message.success(t('storeOrders.detail.productStatusUpdated', { status: line.isActive ? t('common.inactive') : t('common.active') }))
+      message.success(t('storeOrders.detail.productStatusUpdated', { status: line.isActive ? t('common.inactiveUpper') : t('common.activeUpper') }))
       await loadDetail(false)
     } catch (error) {
       console.error(error)
@@ -1409,19 +1441,19 @@ export default function StoreOrderDetailPage() {
       dataIndex: 'index',
       width: 30,
       fixed: isDesktop ? 'left' : undefined,
-      render: (_, __, index) => (detailPage - 1) * detailPageSize + index + 1,
+      render: (_, __, index) => renderStoreOrderDetailNumericCell((detailPage - 1) * detailPageSize + index + 1),
     },
     {
       title: t('column.image'),
       dataIndex: 'productImage',
-      width: 50,
+      width: 42,
       fixed: isDesktop ? 'left' : undefined,
       render: (value: string | undefined, record) => (
         <Image
           src={value}
           alt={record.productName}
-          width={40}
-          height={40}
+          width={30}
+          height={30}
           style={{ borderRadius: 4, objectFit: 'cover' }}
           fallback="data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs="
         />
@@ -1430,17 +1462,23 @@ export default function StoreOrderDetailPage() {
     {
       title: t('column.itemNumber'),
       dataIndex: 'itemNumber',
-      width: 100,
+      width: 78,
       fixed: isDesktop ? 'left' : undefined,
       sorter: true,
       sortOrder: detailSortField === 'itemNumber' ? detailSortOrder : null,
       render: (value: string | undefined) =>
         value ? (
-          <Space size={4} wrap>
+          <Space size={4} wrap={false} className="store-order-nowrap">
             <Typography.Text>{value}</Typography.Text>
-            <Button size="small" type="link" onClick={() => void copyTextToClipboard(value)}>
-              {t('common.copy')}
-            </Button>
+            <Button
+              size="small"
+              type="text"
+              icon={<CopyOutlined />}
+              title={t('common.copy')}
+              aria-label={`${t('common.copy')} ${value}`}
+              className="store-order-detail-copy-button"
+              onClick={() => void copyTextToClipboard(value)}
+            />
           </Space>
         ) : (
           renderDangerValue('--')
@@ -1449,64 +1487,49 @@ export default function StoreOrderDetailPage() {
     {
       title: t('column.productName'),
       dataIndex: 'productName',
-      width: 100,
+      width: 132,
       render: (value: string | undefined) =>
-        value ? (
-          <div
-            style={{
-              display: '-webkit-box',
-              overflow: 'hidden',
-              lineHeight: 1.5,
-              whiteSpace: 'normal',
-              wordBreak: 'break-word',
-              WebkitBoxOrient: 'vertical',
-              WebkitLineClamp: 2,
-            }}
-            title={value}
-          >
-            {value}
-          </div>
-        ) : (
-          '--'
-        ),
+        value ? renderStoreOrderTwoLineText(value) : '--',
     },
     {
       title: t('column.barcode'),
       dataIndex: 'barcode',
-      width: 110,
-      render: (value: string | undefined) => <BarcodePreview value={value} textMaxWidth={150} />,
+      width: 104,
+      render: (value: string | undefined) => (
+        <BarcodePreview value={value} className="store-order-barcode-cell" textNoWrap showCopy={false} />
+      ),
     },
     {
       title: t('column.oemPrice'),
       dataIndex: 'price',
-      width: 80,
-      render: (value: number | undefined) => formatAmount(value),
+      width: 62,
+      render: (value: number | undefined) => renderStoreOrderDetailNumericCell(formatAmount(value)),
     },
     {
       title: t('column.location'),
       dataIndex: 'locationCode',
-      width: 100,
+      width: 82,
       sorter: true,
       sortOrder: detailSortField === 'locationCode' ? detailSortOrder : null,
-      render: (value: string | undefined) => renderZeroOrEmptyCell(value),
+      render: (value: string | undefined) => <span className="store-order-nowrap">{renderZeroOrEmptyCell(value)}</span>,
     },
     {
       title: t('column.orderQuantity'),
       dataIndex: 'quantity',
-      width: 50,
-      render: (_, record) => renderQuantityText(record),
+      width: 58,
+      render: (_, record) => renderStoreOrderDetailNumericCell(renderQuantityText(record)),
     },
     {
       title: t('column.allocQuantity'),
       dataIndex: 'allocQuantity',
-      width: 80,
+      width: 70,
       render: (value: number | undefined, record) => (
         <InputNumber
           min={0}
           precision={0}
           disabled={isReadonlyOrder}
           status={getQuantityHighlight(record)}
-          style={{ width: '100%' }}
+          style={{ width: 60 }}
           value={editingRows[record.detailGUID]?.allocQuantity ?? value ?? 0}
           onChange={(nextValue) =>
             setEditingRows((current) => ({
@@ -1520,18 +1543,17 @@ export default function StoreOrderDetailPage() {
         />
       ),
     },
-    
     {
       title: t('column.importPrice'),
       dataIndex: 'importPrice',
-      width: 80,
+      width: 70,
       render: (value: number | undefined, record) => (
         <InputNumber
           min={0}
           precision={2}
           disabled={isReadonlyOrder}
           status={isZeroOrEmpty(editingRows[record.detailGUID]?.importPrice ?? value) ? 'error' : undefined}
-          style={{ width: '100%' }}
+          style={{ width: 60 }}
           value={editingRows[record.detailGUID]?.importPrice ?? value}
           onChange={(nextValue) =>
             setEditingRows((current) => ({
@@ -1548,14 +1570,14 @@ export default function StoreOrderDetailPage() {
     {
       title: t('column.importAmount'),
       dataIndex: 'importAmount',
-      width: 80,
+      width: 76,
       render: (value: number | undefined) =>
-        value === undefined || value === null ? renderDangerValue('--') : value === 0 ? renderDangerValue('0.00') : formatAmount(value),
+        renderStoreOrderDetailNumericCell(value === undefined || value === null ? renderDangerValue('--') : value === 0 ? renderDangerValue('0.00') : formatAmount(value)),
     },
     {
       title: t('column.orderVolume'),
       dataIndex: 'orderVolume',
-      width: 90,
+      width: 76,
       render: (value: number | undefined, record) => {
         const nextValue =
           value ??
@@ -1564,16 +1586,16 @@ export default function StoreOrderDetailPage() {
             ? undefined
             : Number(record.volume) * Number(record.quantity ?? 0))
         return nextValue === undefined || nextValue === null
-          ? renderDangerValue('--')
+          ? renderStoreOrderDetailNumericCell(renderDangerValue('--'))
           : nextValue === 0
-            ? renderDangerValue('0.0000')
-            : formatVolume(nextValue)
+            ? renderStoreOrderDetailNumericCell(renderDangerValue('0.0000'))
+            : renderStoreOrderDetailNumericCell(formatVolume(nextValue))
       },
     },
     {
       title: t('column.shipVolume'),
       dataIndex: 'allocVolume',
-      width: 90,
+      width: 76,
       render: (value: number | undefined, record) => {
         const allocQuantity = editingRows[record.detailGUID]?.allocQuantity ?? record.allocQuantity ?? 0
         const nextValue =
@@ -1582,52 +1604,64 @@ export default function StoreOrderDetailPage() {
             ? undefined
             : Number(record.volume) * Number(allocQuantity))
         return nextValue === undefined || nextValue === null
-          ? renderDangerValue('--')
+          ? renderStoreOrderDetailNumericCell(renderDangerValue('--'))
           : nextValue === 0
-            ? renderDangerValue('0.0000')
-            : formatVolume(nextValue)
+            ? renderStoreOrderDetailNumericCell(renderDangerValue('0.0000'))
+            : renderStoreOrderDetailNumericCell(formatVolume(nextValue))
       },
     },
     {
       title: t('column.status'),
       dataIndex: 'isActive',
       width: 50,
-      render: (value: boolean) => <Tag color={value ? 'success' : 'default'}>{value ? t('common.active') : t('common.inactive')}</Tag>,
+      render: (value: boolean) => <Tag color={value ? 'success' : 'default'}>{value ? t('common.activeUpper') : t('common.inactiveUpper')}</Tag>,
     },
     {
       title: t('column.action'),
       key: 'actions',
-      width: 100,
+      width: 86,
       fixed: isDesktop ? 'right' : undefined,
       render: (_, record) => (
-        <Space size={4} wrap>
-          <Button
-            size="small"
-            type="link"
-            icon={<SaveOutlined />}
-            disabled={isReadonlyOrder}
-            onClick={() => void handleSaveLine(record)}
-          >
-            {t('common.save')}
-          </Button>
-          <Button
-            size="small"
-            type="link"
-            icon={<EditOutlined />}
-            disabled={isReadonlyOrder}
-            onClick={() => void handleToggleLineStatus(record)}
-          >
-            {record.isActive ? t('common.inactive') : t('common.active')}
-          </Button>
+        <Space size={4} wrap={false}>
+          <Tooltip title={t('common.save')}>
+            <Button
+              size="small"
+              type="text"
+              icon={<SaveOutlined />}
+              aria-label={t('common.save')}
+              className="store-order-detail-action-button"
+              disabled={isReadonlyOrder}
+              onClick={() => void handleSaveLine(record)}
+            />
+          </Tooltip>
+          <Tooltip title={record.isActive ? t('common.inactiveUpper') : t('common.activeUpper')}>
+            <Button
+              size="small"
+              type="text"
+              icon={<EditOutlined />}
+              aria-label={record.isActive ? t('common.inactiveUpper') : t('common.activeUpper')}
+              className="store-order-detail-action-button"
+              disabled={isReadonlyOrder}
+              onClick={() => void handleToggleLineStatus(record)}
+            />
+          </Tooltip>
           <Popconfirm
             title={t('storeOrders.detail.confirmDeleteLine')}
             okText={t('common.delete')}
             cancelText={t('common.cancel')}
             onConfirm={() => void handleRemoveLine(record)}
           >
-            <Button size="small" danger type="link" icon={<DeleteOutlined />} disabled={isReadonlyOrder}>
-              {t('common.delete')}
-            </Button>
+            <Tooltip title={t('common.delete')}>
+              <Button
+                size="small"
+                danger
+                type="text"
+                icon={<DeleteOutlined />}
+                aria-label={t('common.delete')}
+                className="store-order-detail-action-button"
+                disabled={isReadonlyOrder}
+              />
+            </Tooltip>
           </Popconfirm>
         </Space>
       ),
@@ -1877,14 +1911,7 @@ export default function StoreOrderDetailPage() {
                 </Space>
               }
             >
-              <div
-                style={{
-                  marginBottom: 12,
-                  padding: 12,
-                  borderRadius: 8,
-                  background: '#fafafa',
-                }}
-              >
+              <div className="store-order-detail-filter-bar">
                 <Space wrap size={[8, 8]}>
                   <Typography.Text strong>{t('storeOrders.statsFilter')}</Typography.Text>
                   <Input
@@ -1938,6 +1965,7 @@ export default function StoreOrderDetailPage() {
                 </Space>
               </div>
               <Table
+                className="store-order-detail-table"
                 rowKey="detailGUID"
                 virtual
                 loading={lineActionLoading}
@@ -1947,7 +1975,7 @@ export default function StoreOrderDetailPage() {
                   selectedRowKeys: selectedLineKeys,
                   onChange: setSelectedLineKeys,
                   preserveSelectedRowKeys: false,
-                  columnWidth: 40,
+                  columnWidth: 34,
                 }}
                 pagination={{
                   current: detailPage,
@@ -1978,7 +2006,7 @@ export default function StoreOrderDetailPage() {
                   setDetailSortField(null)
                   setDetailSortOrder(null)
                 }}
-                scroll={{ x: 2100, y: 620 }}
+                scroll={{ x: 1290, y: 620 }}
               />
             </Card>
 

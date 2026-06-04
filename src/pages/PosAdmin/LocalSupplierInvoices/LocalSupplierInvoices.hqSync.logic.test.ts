@@ -3,6 +3,8 @@ import path from 'node:path'
 import {
   batchExecuteActions,
   batchUpdateDetailAction,
+  batchUpdateDetails,
+  batchUpsertDetails,
   ensureHqProducts,
   syncInvoicesFromHq,
   updateDetailAction,
@@ -16,7 +18,15 @@ import {
   getProductStatusFilter,
   toggleStatusFilter,
 } from './InvoiceEdit/statusFilters'
-import { parsePasteText } from './InvoiceEdit/pasteDetails'
+import {
+  compareNullableNumbers,
+  compareNullableText,
+  filterBarcodeStatusColumn,
+  filterBooleanColumn,
+  filterProductStatusColumn,
+  matchesTextColumnFilter,
+} from './InvoiceEdit/tableColumnFilters'
+import { defaultPasteFieldOrder, parsePasteText } from './InvoiceEdit/pasteDetails'
 import {
   buildBatchExecuteConfirmText,
   constrainSelectedRowKeysToVisibleDetails,
@@ -91,10 +101,12 @@ const pageFile = path.resolve(process.cwd(), 'src/pages/PosAdmin/LocalSupplierIn
 const editPageFile = path.resolve(process.cwd(), 'src/pages/PosAdmin/LocalSupplierInvoices/InvoiceEdit/index.tsx')
 const serviceFile = path.resolve(process.cwd(), 'src/services/localSupplierInvoiceService.ts')
 const typeFile = path.resolve(process.cwd(), 'src/types/localSupplierInvoice.ts')
+const globalStyleFile = path.resolve(process.cwd(), 'src/styles/global.css')
 const pageSource = readFileSync(pageFile, 'utf8')
 const editPageSource = readFileSync(editPageFile, 'utf8')
 const serviceSource = readFileSync(serviceFile, 'utf8')
 const typeSource = readFileSync(typeFile, 'utf8')
+const globalStyleSource = readFileSync(globalStyleFile, 'utf8')
 
 async function main() {
   const failures: string[] = []
@@ -162,6 +174,19 @@ async function main() {
   })
   if (editPageImportFailure) failures.push(editPageImportFailure)
 
+  const batchEditPersistFailure = await runTest('编辑页批量编辑应通过批量更新接口持久化 editFields', () => {
+    assert(editPageSource.includes('batchUpdateDetails,'), '编辑页应静态导入批量更新明细接口')
+    assert(
+      editPageSource.includes('await batchUpdateDetails(invoiceGuid, items, editFields)'),
+      '批量编辑应把 editFields 发送到后端，避免自动定价只在本地临时变化',
+    )
+    assert(
+      !editPageSource.includes('await batchUpsertDetails(invoiceGuid, items)\n      // 使用 batchUpdateDetails 的替代方案'),
+      '批量编辑不能用空 items 的 batchUpsertDetails 替代批量更新',
+    )
+  })
+  if (batchEditPersistFailure) failures.push(batchEditPersistFailure)
+
   const updateToStoreHqFailure = await runTest('更新到分店应移除同步HQ耦合并保留独立HQ弹窗', () => {
     assert(!editPageSource.includes('name="updateHqProduct"'), '更新到分店弹窗不应再包含 updateHqProduct 复选框')
     assert(!editPageSource.includes('confirmUpdateToStorePrices'), '更新到分店不应再包含同时更新 HQ 的二次确认')
@@ -169,6 +194,9 @@ async function main() {
     assert(!editPageSource.includes('updateHqProduct:'), '更新到分店请求不应再传递 updateHqProduct')
     assert(editPageSource.includes('hqUpdateForm.validateFields()'), '更新HQ商品应校验独立弹窗表单')
     assert(editPageSource.includes('name="targetStoreCodes"'), '更新HQ商品弹窗应选择目标分店')
+    assert(editPageSource.includes('allHqUpdateStoresSelected'), '更新HQ商品目标分店应支持全选选中状态')
+    assert(editPageSource.includes('hasPartialHqUpdateStoreSelection'), '更新HQ商品目标分店应支持半选状态')
+    assert(editPageSource.includes("hqUpdateForm.setFieldValue('targetStoreCodes', event.target.checked ? allStoreCodes : [])"), '更新HQ商品目标分店全选应写入当前可选分店编码')
     assert(editPageSource.includes("t('posAdmin.invoiceDetail.updateHqProductsTitle'"), '更新HQ商品应有独立弹窗标题')
     assert(editPageSource.includes("t('posAdmin.invoiceDetail.updateHqProductsResultTitle'"), '更新HQ商品应有独立结果弹窗')
   })
@@ -179,8 +207,18 @@ async function main() {
     assert(editPageSource.includes('batchExecuteConfirmTitle'), '确认框应有专用标题文案')
     assert(editPageSource.includes('batchExecuteCreateProductNotice'), '确认框应包含新建商品风险提示文案')
     assert(editPageSource.includes('canRunGlobalLocalPurchaseBatchActions'), '批量执行入口应使用与后端全店访问一致的权限条件')
+    assert(editPageSource.includes('if (!isAdmin)') && editPageSource.includes('actionConfig[currentAction] || actionConfig[0]'), '行内操作类型设置应要求管理员权限，但非管理员仍可查看当前状态')
+    assert(
+      editPageSource.includes('onClick: ({ key }) => void handleRowActionChange(record.detailGUID, key)') &&
+      editPageSource.includes('isAdmin ? ('),
+      '行内操作类型下拉只应对管理员可交互',
+    )
     assert(editPageSource.includes('okButtonProps: { danger: previewSnapshot.confirmedCreateProductCount > 0 }'), '存在新建商品时确认按钮应使用确认预览快照的危险态')
     assert(editPageSource.includes('constrainSelectedRowKeysToVisibleDetails(selectedRowKeys, filteredDetails)'), '批量执行前应收敛到当前可见选中明细')
+    assertEqual((editPageSource.match(/await batchExecuteActions\(/g) ?? []).length, 1, '批量执行前端应只发起一次 batchExecuteActions 请求')
+    assert(editPageSource.includes('detailGuids: snapshot.detailGuids'), '批量执行应把选中明细整体交给后端批量处理')
+    assert(!editPageSource.includes('for (const detailGuid of snapshot.detailGuids)'), '批量执行前端不能按 detailGuid 循环拆分请求')
+    assert(!editPageSource.includes('snapshot.detailGuids.map(async'), '批量执行前端不能用 map(async) 拆分请求')
     assert(
       editPageSource.indexOf('await updateDetailAction(invoiceGuid, detailGuid, action)') < editPageSource.indexOf('setRowActions((prev) => ({ ...prev, [detailGuid]: action }))'),
       '行操作类型应在服务端更新成功后再更新本地状态',
@@ -234,6 +272,14 @@ async function main() {
     assert(editPageSource.includes("t('posAdmin.invoiceDetail.statusStatsAll', '全部 {{count}}'"), '页面应提供全部状态标签以清除状态过滤')
     assert(editPageSource.includes("t('posAdmin.invoiceDetail.productStatusLabel', '商品状态')"), '页面应显示商品状态分组标题')
     assert(editPageSource.includes("t('posAdmin.invoiceDetail.barcodeStatusLabel', '条码状态')"), '页面应显示条码状态分组标题')
+    assert(editPageSource.includes("t('posAdmin.invoiceDetail.activeFiltersTitle', '当前过滤')"), '页面应单独显示当前过滤栏标题')
+    assert(editPageSource.includes('activeFilterTags'), '页面应把已启用的搜索、涨跌、状态过滤单独列出')
+    assert(editPageSource.includes('handleClearAllOuterFilters'), '页面应提供清空外层过滤条件入口')
+    assert(editPageSource.includes('closable'), '当前过滤标签应可单独关闭清除')
+    assert(editPageSource.includes("setSearchText('')"), '清空过滤应重置搜索关键词')
+    assert(editPageSource.includes("setPriceFilter('all')"), '清空过滤应重置涨跌过滤')
+    assert(editPageSource.includes("setProductStatusFilter('all')"), '清空过滤应重置商品状态过滤')
+    assert(editPageSource.includes("setBarcodeStatusFilter('all')"), '清空过滤应重置条码状态过滤')
     assert(editPageSource.includes('statusStatsTagColors'), '状态统计标签应使用显式语义色配置')
     assert(editPageSource.includes("product: { all: 'blue', notDetected: 'purple', exists: 'green', notExists: 'red' }"), '商品状态标签应使用不同颜色')
     assert(editPageSource.includes("barcode: { all: 'geekblue', notDetected: 'purple', normal: 'cyan', noMatch: 'volcano', multiMatch: 'orange' }"), '条码状态标签应使用不同颜色')
@@ -243,6 +289,22 @@ async function main() {
     assert(editPageSource.includes('WebkitLineClamp: 2'), '商品名称列应最多自动换行 2 行')
   })
   if (editPageStatsFailure) failures.push(editPageStatsFailure)
+
+  const barcodeMatchModalFailure = await runTest('编辑页条码状态应可点击查看匹配商品', () => {
+    const matchedProductColumnsStart = editPageSource.indexOf('const matchedProductColumns')
+    const matchedProductColumnsEnd = editPageSource.indexOf('modal.update({', matchedProductColumnsStart)
+    assert(matchedProductColumnsStart >= 0 && matchedProductColumnsEnd > matchedProductColumnsStart, '应能定位弹窗匹配商品表格列定义')
+    const matchedProductColumnsSource = editPageSource.slice(matchedProductColumnsStart, matchedProductColumnsEnd)
+
+    assert(editPageSource.includes('getProductsByBarcode'), '编辑页应复用按条码查询匹配商品接口')
+    assert(editPageSource.includes('showBarcodeMatchedProducts'), '编辑页应提供条码匹配商品弹窗入口')
+    assert(editPageSource.includes("t('posAdmin.invoiceDetail.barcodeMatchedProductsTitle'"), '弹窗标题应展示当前条码')
+    assert(matchedProductColumnsSource.includes("t('posAdmin.invoiceDetail.matchSource', '来源')"), '弹窗表格应显示匹配来源')
+    assert(matchedProductColumnsSource.includes("dataIndex: 'supplierName'"), '弹窗表格应显示供应商名称列')
+    assert(!matchedProductColumnsSource.includes("dataIndex: 'productCode'"), '弹窗表格不应显示商品编码列')
+    assert(editPageSource.includes("onClick={openMatchedProducts}"), '条码状态标签应绑定点击事件')
+  })
+  if (barcodeMatchModalFailure) failures.push(barcodeMatchModalFailure)
 
   const editPageStatsBehaviorFailure = await runTest('状态统计和过滤应按真实明细行为计算', () => {
     const details: LocalSupplierInvoiceItemDto[] = [
@@ -320,6 +382,156 @@ async function main() {
   })
   if (editPageStatsBehaviorFailure) failures.push(editPageStatsBehaviorFailure)
 
+  const tableColumnFilterBehaviorFailure = await runTest('明细表列头排序和过滤应只在前端当前数据内生效', () => {
+    const details: LocalSupplierInvoiceItemDto[] = [
+      {
+        detailGUID: 'empty-price',
+        itemNumber: 'cap-003',
+        barcode: '333',
+        productName: 'Cap Birthday',
+        purchasePrice: undefined,
+        amount: undefined,
+        autoPricing: undefined,
+        isSpecialProduct: undefined,
+        existingProductCount: undefined,
+        barcodeStatus: undefined,
+      },
+      {
+        detailGUID: 'cheap-card',
+        itemNumber: 'BINE1001',
+        barcode: '111',
+        productName: 'Birthday Card',
+        purchasePrice: 1.2,
+        amount: 7.2,
+        autoPricing: true,
+        isSpecialProduct: false,
+        existingProductCount: 1,
+        barcodeStatus: 1,
+        barcodeMatchCount: 1,
+      },
+      {
+        detailGUID: 'gift-bag',
+        itemNumber: 'E11988',
+        barcode: '222',
+        productName: 'Gift Bag',
+        purchasePrice: 1.91,
+        amount: 22.92,
+        autoPricing: false,
+        isSpecialProduct: true,
+        existingProductCount: 0,
+        barcodeStatus: 2,
+        barcodeMatchCount: 0,
+      },
+    ]
+
+    assertDeepEqual(
+      [...details].sort((a, b) => compareNullableNumbers(a.purchasePrice, b.purchasePrice)).map((item) => item.detailGUID),
+      ['cheap-card', 'gift-bag', 'empty-price'],
+      '数值列升序应按数字排序，并把空值排在最后',
+    )
+    assertDeepEqual(
+      [...details].sort((a, b) => compareNullableText(a.itemNumber, b.itemNumber)).map((item) => item.detailGUID),
+      ['cheap-card', 'empty-price', 'gift-bag'],
+      '文本列排序应大小写不敏感',
+    )
+    assertDeepEqual(
+      details.filter((item) => matchesTextColumnFilter(item, 'productName', 'birthday')).map((item) => item.detailGUID),
+      ['empty-price', 'cheap-card'],
+      '列头文本过滤应只匹配指定列',
+    )
+    assertDeepEqual(
+      details.filter((item) => filterBooleanColumn(item.autoPricing, true)).map((item) => item.detailGUID),
+      ['cheap-card'],
+      '自动定价列应支持布尔过滤',
+    )
+    assertDeepEqual(
+      details.filter((item) => filterBooleanColumn(item.autoPricing, false)).map((item) => item.detailGUID),
+      ['gift-bag'],
+      '自动定价 false 过滤不应包含未检测空值',
+    )
+    assertDeepEqual(
+      details.filter((item) => filterBooleanColumn(item.isSpecialProduct, true)).map((item) => item.detailGUID),
+      ['gift-bag'],
+      '特殊商品列应支持布尔过滤',
+    )
+    assertDeepEqual(
+      details.filter((item) => filterBooleanColumn(item.isSpecialProduct, false)).map((item) => item.detailGUID),
+      ['cheap-card'],
+      '特殊商品 false 过滤不应包含未检测空值',
+    )
+    assertDeepEqual(
+      details.filter((item) => filterProductStatusColumn(item, 'notExists')).map((item) => item.detailGUID),
+      ['gift-bag'],
+      '商品状态列过滤应复用商品状态规则',
+    )
+    assertDeepEqual(
+      details.filter((item) => filterBarcodeStatusColumn(item, 'noMatch')).map((item) => item.detailGUID),
+      ['gift-bag'],
+      '条码状态列过滤应复用条码状态规则',
+    )
+
+    const topFiltered = filterInvoiceDetails(details, {
+      searchText: 'gift',
+      priceFilter: 'all',
+      productStatusFilter: 'notExists',
+      barcodeStatusFilter: 'all',
+    })
+    assertDeepEqual(
+      topFiltered.filter((item) => filterBooleanColumn(item.isSpecialProduct, true)).map((item) => item.detailGUID),
+      ['gift-bag'],
+      '列头过滤应能与顶部搜索和状态筛选按 AND 叠加',
+    )
+  })
+  if (tableColumnFilterBehaviorFailure) failures.push(tableColumnFilterBehaviorFailure)
+
+  const compactTableDisplayFailure = await runTest('编辑页明细表应紧凑显示并固定关键识别列', () => {
+    assert(editPageSource.includes('function renderCompactHeader'), '编辑页应提供统一列头换行渲染 helper')
+    assert(editPageSource.includes('function renderNowrapText'), '编辑页应提供普通文本 nowrap helper')
+    assert(editPageSource.includes('function renderNumericCell'), '编辑页应提供数字 nowrap helper')
+    assert(editPageSource.includes('className="invoice-detail-compact-table"'), '明细表应使用专用紧凑 className')
+    assert(editPageSource.includes('scroll={{ x: 1600, y: tableScrollY }}'), '明细表横向滚动宽度应按紧凑列宽重新计算')
+    assert(editPageSource.includes('fixed: true') && editPageSource.includes('columnWidth: 36'), '选择列应固定在左侧并压缩宽度')
+    assert(editPageSource.includes("width: 44,\n      align: 'right',\n      fixed: 'left'"), '序号列应固定在左侧并压缩宽度')
+    assert(editPageSource.includes("width: 48,\n      fixed: 'left'"), '图片列应固定在左侧并压缩宽度')
+    assert(editPageSource.includes("width: 108,\n      fixed: 'left'"), '货号列应固定在左侧并压缩宽度')
+    assert(editPageSource.includes('width={36} height={36}'), '图片缩略图应压缩到 36px')
+    assert(editPageSource.includes('<BarcodePreview value={v} compactCopy />'), '条码文本不应设置 textMaxWidth 省略隐藏')
+    assert(editPageSource.includes('formatPricingFloatRate'), '定价浮率应使用专用两位小数格式化')
+    assert(!editPageSource.includes('`${(v * 100).toFixed(1)}%`'), '定价浮率不应按百分比展示')
+    assert(!editPageSource.includes('\n          bordered\n'), '明细表不应继续使用 bordered 边框')
+    assert(editPageSource.includes('invoice-detail-nowrap'), '货号、条码和数字内容应使用 nowrap class')
+    assert(editPageSource.includes('invoice-detail-numeric-cell'), '数字列应使用 tabular nums class')
+    assert(globalStyleSource.includes('.invoice-detail-compact-table .ant-table-thead > tr > th'), '紧凑表格应有 scoped 表头样式')
+    assert(globalStyleSource.includes('white-space: normal'), '列头样式应允许换行')
+    assert(globalStyleSource.includes('.invoice-detail-nowrap') && globalStyleSource.includes('white-space: nowrap'), '内容关键字段应有 nowrap 样式')
+    assert(globalStyleSource.includes('.invoice-detail-numeric-cell') && globalStyleSource.includes('font-variant-numeric: tabular-nums'), '数字列应使用等宽数字视觉')
+  })
+  if (compactTableDisplayFailure) failures.push(compactTableDisplayFailure)
+
+  const inlineBooleanToggleFailure = await runTest('编辑页自动定价和特殊商品应双击本地编辑并随保存明细统一落库', () => {
+    assert(editPageSource.includes('function EditableBooleanCell'), '编辑页应使用行内布尔编辑单元格')
+    assert(editPageSource.includes('onDoubleClick={() => onSave(detailGuid, field, !actualValue)}'), '布尔字段应双击切换本地值')
+    assert(editPageSource.includes('field="autoPricing"'), '自动定价应纳入可编辑字段')
+    assert(editPageSource.includes('field="isSpecialProduct"'), '特殊商品应纳入可编辑字段')
+    assert(editPageSource.includes('const handleInlineDetailSave = useCallback'), '行内编辑应先写入本地明细')
+    assert(editPageSource.includes('applyInvoiceDetailInlineEdit(prev, detailGuid, field, normalizedValue)'), '行内编辑应复用本地明细更新 helper')
+    assert(!editPageSource.includes('handleInlineBooleanToggle'), '布尔字段不应再使用即时落库 handler')
+    assert(!editPageSource.includes('inlineBooleanUpdatingKeys'), '布尔字段不应再维护即时保存中的状态')
+    assert(
+      !editPageSource.includes('await batchUpdateDetails(invoiceGuid, [{ detailGUID: record.detailGUID }], editFields)'),
+      '布尔字段双击不应立即调用批量更新接口',
+    )
+    assert(editPageSource.includes('buildInvoiceDetailSaveItems(details)'), '保存明细应统一构建业务字段 payload')
+    assert(editPageSource.includes('await batchUpsertDetails(invoiceGuid, items)'), '保存明细应统一调用 batchUpsertDetails 落库')
+  })
+  if (inlineBooleanToggleFailure) failures.push(inlineBooleanToggleFailure)
+
+  const emptyDiscountRateFailure = await runTest('折扣率空值双击编辑不应被兜底成 0 落库', () => {
+    assert(editPageSource.includes('value={discountRateToPercent(v)}'), '折扣率编辑值应保留空值，不应把空值兜底成 0')
+    assert(!editPageSource.includes('value={discountRateToPercent(v) ?? 0}'), '折扣率空值不能在进入编辑态时被改成 0')
+  })
+  if (emptyDiscountRateFailure) failures.push(emptyDiscountRateFailure)
+
   const pastePriceParseFailure = await runTest('粘贴解析应识别带货币符号的本次进货价', () => {
     const [row] = parsePasteText('WEW1272\t9313559661518\tFolded Wrap\t15\tA$1.25\t$3.50\tAUD 2.99')
 
@@ -331,6 +543,64 @@ async function main() {
   })
   if (pastePriceParseFailure) failures.push(pastePriceParseFailure)
 
+  const pasteFieldOrderFailure = await runTest('粘贴解析应支持弹窗自定义列对应字段', () => {
+    const [row] = parsePasteText(
+      '9313559661518\tWEW1272\t15\tFolded Wrap\tA$1.25\tAUD 2.99\t$3.50',
+      ['barcode', 'itemNumber', 'quantity', 'productName', 'purchasePrice', 'retailPrice', 'newAutoRetailPrice'],
+    )
+
+    assertDeepEqual(defaultPasteFieldOrder, ['itemNumber', 'barcode', 'productName', 'quantity', 'purchasePrice', 'newAutoRetailPrice', 'retailPrice'], '默认粘贴列顺序应保持旧顺序')
+    assertEqual(row.itemNumber, 'WEW1272', '自定义顺序应解析货号')
+    assertEqual(row.barcode, '9313559661518', '自定义顺序应解析条码')
+    assertEqual(row.productName, 'Folded Wrap', '自定义顺序应解析商品名称')
+    assertEqual(row.quantity, 15, '自定义顺序应解析数量')
+    assertEqual(row.purchasePrice, 1.25, '自定义顺序应解析进货价')
+    assertEqual(row.retailPrice, 2.99, '自定义顺序应解析零售价')
+    assertEqual(row.newAutoRetailPrice, 3.5, '自定义顺序应解析新自动零售价')
+  })
+  if (pasteFieldOrderFailure) failures.push(pasteFieldOrderFailure)
+
+  const pasteSkipFieldFailure = await runTest('粘贴解析应允许跳过 Excel 多余列', () => {
+    const [row] = parsePasteText(
+      'WEW1272\t备注列\t9313559661518\tFolded Wrap\t15',
+      ['itemNumber', 'skip', 'barcode', 'productName', 'quantity'],
+    )
+
+    assertEqual(row.itemNumber, 'WEW1272', '跳过列不应影响后续货号映射')
+    assertEqual(row.barcode, '9313559661518', '跳过列不应影响后续条码映射')
+    assertEqual(row.productName, 'Folded Wrap', '跳过列不应影响后续商品名称映射')
+    assertEqual(row.quantity, 15, '跳过列不应影响后续数量映射')
+  })
+  if (pasteSkipFieldFailure) failures.push(pasteSkipFieldFailure)
+
+  const pasteSkipExtraColumnFailure = await runTest('粘贴解析跳过多余列后仍应保留全部业务字段', () => {
+    const [row] = parsePasteText(
+      'WEW1272\t备注列\t9313559661518\tFolded Wrap\t15\tA$1.25\t$3.50\tAUD 2.99',
+      ['itemNumber', 'skip', 'barcode', 'productName', 'quantity', 'purchasePrice', 'newAutoRetailPrice', 'retailPrice'],
+    )
+
+    assertEqual(row.itemNumber, 'WEW1272', '8 列粘贴应保留货号')
+    assertEqual(row.barcode, '9313559661518', '8 列粘贴应保留条码')
+    assertEqual(row.productName, 'Folded Wrap', '8 列粘贴应保留商品名称')
+    assertEqual(row.quantity, 15, '8 列粘贴应保留数量')
+    assertEqual(row.purchasePrice, 1.25, '8 列粘贴应保留进货价')
+    assertEqual(row.newAutoRetailPrice, 3.5, '8 列粘贴应保留新自动零售价')
+    assertEqual(row.retailPrice, 2.99, '8 列粘贴应保留零售价')
+  })
+  if (pasteSkipExtraColumnFailure) failures.push(pasteSkipExtraColumnFailure)
+
+  const pasteFieldOrderUiFailure = await runTest('编辑页粘贴弹窗应提供列字段映射并本地记住配置', () => {
+    assert(editPageSource.includes('pasteFieldOrder'), '编辑页应维护 pasteFieldOrder 状态')
+    assert(editPageSource.includes('hbweb_rv.localSupplierInvoice.pasteFieldOrder.v1'), '编辑页应使用固定 localStorage key 保存列顺序')
+    assert(editPageSource.includes('parsePasteText(pasteText, pasteFieldOrder)'), '提交和预览应使用当前列字段映射解析')
+    assert(editPageSource.includes('pasteFieldDuplicateWarning'), '编辑页应提供重复字段校验提示')
+    assert(editPageSource.includes('pasteRestoreDefaultOrder'), '编辑页应提供恢复默认列顺序入口')
+    assert(editPageSource.includes('pasteFieldSkip'), '编辑页应提供跳过列选项')
+    assert(editPageSource.includes('getPasteTextMaxColumnCount'), '编辑页应按粘贴内容列数扩展映射位')
+    assert(editPageSource.includes("fill('skip')"), '新增的多余列映射应默认设置为跳过')
+  })
+  if (pasteFieldOrderUiFailure) failures.push(pasteFieldOrderUiFailure)
+
   const serviceContractFailure = await runTest('服务层应显式识别业务失败并保留 payload', () => {
     assert(serviceSource.includes('ensureHqProducts('), '服务层应导出 ensureHqProducts')
     assert(serviceSource.includes('/details/ensure-hq-products'), '服务层应调用商品级同步到 HQ 接口')
@@ -339,6 +609,8 @@ async function main() {
     assert(serviceSource.includes('assertApiSuccess'), '服务层应复用业务失败检查 helper')
     assert(serviceSource.includes("response.success === false || response.isSuccess === false"), '服务层应识别 success false')
     assert(serviceSource.includes("assertApiSuccess(response, '批量执行操作失败')"), '批量执行服务层应识别业务失败')
+    assert(serviceSource.includes("assertApiSuccess(response, '保存明细失败')"), '保存明细服务层应识别业务失败')
+    assert(serviceSource.includes("assertApiSuccess(response, '批量编辑明细失败')"), '批量编辑明细服务层应识别业务失败')
     assert(serviceSource.includes("assertApiSuccess(response, '批量设置操作类型失败')"), '批量设置操作类型服务层应识别业务失败')
     assert(serviceSource.includes("assertApiSuccess(response, '更新操作类型失败')"), '行操作类型服务层应识别业务失败')
   })
@@ -720,6 +992,49 @@ async function main() {
     }
   })
   if (ensureHqServiceFailure) failures.push(ensureHqServiceFailure)
+
+  const batchUpdateDetailsFailure = await runTest('batchUpdateDetails 遇到业务失败应抛出后端消息', async () => {
+    globalThis.fetch = (async () => new Response(JSON.stringify({
+      success: false,
+      message: '自动定价不能为空',
+      code: 'VALIDATION_ERROR',
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })) as typeof fetch
+
+    await assertRejects(
+      () => batchUpdateDetails('invoice-1', [{ detailGUID: 'detail-1' }], {
+        updatePurchasePrice: false,
+        updateRetailPrice: false,
+        updateIsAutoPricing: true,
+        updateIsSpecialProduct: false,
+        updateDiscountRate: false,
+        updateAction: false,
+      }),
+      '自动定价不能为空',
+      '批量编辑业务失败时应透传后端消息',
+    )
+  })
+  if (batchUpdateDetailsFailure) failures.push(batchUpdateDetailsFailure)
+
+  const batchUpsertDetailsFailure = await runTest('batchUpsertDetails 遇到业务失败应抛出后端消息', async () => {
+    globalThis.fetch = (async () => new Response(JSON.stringify({
+      success: false,
+      message: '保存明细业务失败',
+      code: 'VALIDATION_ERROR',
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })) as typeof fetch
+
+    await assertRejects(
+      () => batchUpsertDetails('invoice-1', [{ detailGUID: 'detail-1', purchasePrice: 1.23 }]),
+      '保存明细业务失败',
+      '保存明细业务失败时应透传后端消息',
+    )
+  })
+  if (batchUpsertDetailsFailure) failures.push(batchUpsertDetailsFailure)
 
   globalThis.fetch = originalFetch
 

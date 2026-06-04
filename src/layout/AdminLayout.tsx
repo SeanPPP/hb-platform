@@ -16,6 +16,7 @@ import LanguageSwitch from '../components/LanguageSwitch'
 import RouteKeepAlive, { type RouteKeepAliveRef } from '../components/RouteKeepAlive'
 import { useIsMobile } from '../hooks/useIsMobile'
 import MobileLayout from './MobileLayout'
+import { resolveRouteKeepAliveState } from './adminKeepAlive'
 import {
   buildMenus,
   getBreadcrumbItems,
@@ -41,7 +42,6 @@ function DesktopAdminLayout() {
   const { currentUser, access, navigationMenu, logout } = useAuthStore()
   const {
     tabs,
-    activeKey,
     pinTabsBar,
     setActiveKey,
     ensureTab,
@@ -53,21 +53,26 @@ function DesktopAdminLayout() {
     updateTabTitle,
   } = useTabsStore()
 
+  const routeTab = useMemo(() => toTabItem(location.pathname, access), [access, i18n.language, location.pathname])
   const currentRoute = getCurrentRoute(location.pathname, access)
-  const currentTab = tabs.find((item) => item.key === location.pathname || item.key === currentRoute?.path)
+  const currentTab = tabs.find((item) => item.key === routeTab?.key || item.key === currentRoute?.path) ?? routeTab
   const currentElement = getCurrentElement(location.pathname, access)
   const menus = useMemo(() => buildMenus(access, navigationMenu), [access, navigationMenu, i18n.language])
   const selectedKeys = getSelectedMenuKeys(location.pathname, access)
-  const cacheKeys = tabs.filter((item) => item.keepAlive).map((item) => item.key)
+  // KeepAlive 必须跟随当前 URL，而不是提前变化的 tabs store activeKey。
+  const { activeCacheKey, cacheKeys } = resolveRouteKeepAliveState({
+    routeTab,
+    tabs,
+    fallbackPathname: location.pathname,
+  })
 
   useEffect(() => {
-    const tab = toTabItem(location.pathname, access)
-    if (tab) {
-      ensureTab(tab)
+    if (routeTab) {
+      ensureTab(routeTab)
     }
-    setActiveKey(tab?.key || location.pathname)
+    setActiveKey(routeTab?.key || location.pathname)
     setOpenKeys(getOpenMenuKeys(location.pathname, access))
-  }, [access, ensureTab, location.pathname, setActiveKey])
+  }, [access, ensureTab, location.pathname, routeTab, setActiveKey])
 
   useEffect(() => {
     const currentTabs = useTabsStore.getState().tabs
@@ -115,7 +120,7 @@ function DesktopAdminLayout() {
   }
 
   const handleRefreshCurrent = () => {
-    keepAliveRef.current?.refresh(activeKey)
+    keepAliveRef.current?.refresh(activeCacheKey)
   }
 
   const handleLogout = async () => {
@@ -206,7 +211,7 @@ function DesktopAdminLayout() {
         <Content className="admin-content">
           <RouteKeepAlive
             ref={keepAliveRef}
-            activeKey={activeKey}
+            activeKey={activeCacheKey}
             include={cacheKeys}
             currentElement={currentElement}
           />

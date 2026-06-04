@@ -25,7 +25,7 @@ import {
 } from 'antd'
 import type { Dayjs } from 'dayjs'
 import dayjs from 'dayjs'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useNavigate } from 'react-router-dom'
 import PageContainer from '../../../components/PageContainer'
@@ -72,6 +72,7 @@ import {
   StoreOrderSyncPollingCancelledError,
   StoreOrderSyncPollingTimeoutError,
 } from './syncJobPolling'
+import './compact.css'
 
 type RangeValue = [Dayjs | null, Dayjs | null] | null
 
@@ -134,13 +135,24 @@ function formatVolume(value?: number) {
   return value.toFixed(4)
 }
 
+function renderStoreOrderNumericCell(value: ReactNode) {
+  return <span className="store-order-numeric-cell">{value}</span>
+}
+
+function renderStoreOrderTwoLineText(value?: string) {
+  if (!value) {
+    return <>--</>
+  }
+  return <span className="store-order-two-line-text" title={value}>{value}</span>
+}
+
 function renderDateTag(value?: string, language?: string) {
   const displayValue = formatDate(value, language)
   if (displayValue === '--') {
     return '--'
   }
 
-  return <Tag color={getDateTagColor(displayValue)}>{displayValue}</Tag>
+  return <Tag className="store-order-nowrap" color={getDateTagColor(displayValue)}>{displayValue}</Tag>
 }
 
 const DEFAULT_INCREMENTAL_CONFLICT_STRATEGY: StoreOrderSyncConflictStrategy = 'LatestWins'
@@ -744,25 +756,27 @@ export default function StoreOrdersPage() {
       {
         title: t('column.index'),
         dataIndex: 'index',
-        width: 60,
+        width: 52,
         fixed: 'left',
-        render: (_, __, index) => (page - 1) * pageSize + index + 1,
+        render: (_, __, index) => renderStoreOrderNumericCell((page - 1) * pageSize + index + 1),
       },
       {
         title: t('column.orderNo'),
         dataIndex: 'orderNo',
-        width: 140,
+        width: 146,
         sorter: true,
         fixed: 'left',
         render: (value: string, record) => (
-          <Space size={4}>
-            <Button type="link" style={{ padding: 0 }} onClick={() => openDetail(record)}>
+          <Space size={4} wrap={false} className="store-order-list-order-cell">
+            <Button type="link" className="store-order-list-order-no" onClick={() => openDetail(record)}>
               {value}
             </Button>
             <Button
               type="text"
               size="small"
               icon={<CopyOutlined />}
+              className="store-order-copy-button"
+              aria-label={`${t('common.copy')} ${value}`}
               onClick={() => void handleCopyOrderNo(value)}
             />
           </Space>
@@ -771,14 +785,16 @@ export default function StoreOrdersPage() {
       {
         title: t('column.store'),
         dataIndex: 'storeCode',
-        width: 180,
+        width: 170,
         sorter: true,
         render: (value: string | undefined, record) => {
           const code = value || '--'
           const name = record.storeName || (value ? branchMap[value] : undefined)
           return (
             <Tag
+              className="store-order-store-tag"
               color={getStoreColor(code)}
+              title={name ? `${code} - ${name}` : code}
               style={{ cursor: value ? 'pointer' : 'default' }}
               onClick={() => {
                 if (!value) {
@@ -796,21 +812,21 @@ export default function StoreOrdersPage() {
       {
         title: t('column.orderDate'),
         dataIndex: 'orderDate',
-        width: 130,
+        width: 112,
         sorter: true,
         render: (value: string | undefined) => renderDateTag(value, i18n.language),
       },
       {
         title: t('storeOrders.outboundDate'),
         dataIndex: 'outboundDate',
-        width: 130,
+        width: 112,
         sorter: true,
         render: (value: string | undefined) => renderDateTag(value, i18n.language),
       },
       {
         title: t('column.status'),
         dataIndex: 'flowStatus',
-        width: 110,
+        width: 92,
         sorter: true,
         render: (value: StoreOrderFlowStatus, record) => (
           <Tag
@@ -830,74 +846,75 @@ export default function StoreOrdersPage() {
       {
         title: t('storeOrders.orderQuantity'),
         dataIndex: 'totalQuantity',
-        width: 110,
+        width: 88,
         sorter: true,
+        render: (value: number | undefined) => renderStoreOrderNumericCell(value ?? '--'),
       },
       {
         title: t('storeOrders.orderAmount'),
         dataIndex: 'totalOrderAmount',
-        width: 120,
+        width: 92,
         sorter: true,
-        render: (value: number) => formatAmount(value),
+        render: (value: number) => renderStoreOrderNumericCell(formatAmount(value)),
       },
       {
         title: t('storeOrders.orderVolume'),
         dataIndex: 'totalOrderVolume',
-        width: 120,
-        render: (value: number | undefined) => formatVolume(value),
+        width: 92,
+        render: (value: number | undefined) => renderStoreOrderNumericCell(formatVolume(value)),
       },
       {
         title: t('storeOrders.shipVolume'),
         dataIndex: 'totalAllocVolume',
-        width: 120,
-        render: (value: number | undefined) => formatVolume(value),
+        width: 92,
+        render: (value: number | undefined) => renderStoreOrderNumericCell(formatVolume(value)),
       },
       {
         title: t('storeOrders.shipQuantity'),
         dataIndex: 'totalAllocQuantity',
-        width: 110,
+        width: 88,
         sorter: true,
+        render: (value: number | undefined) => renderStoreOrderNumericCell(value ?? '--'),
       },
       {
         title: t('storeOrders.shipAmount'),
         dataIndex: 'importTotalAmount',
-        width: 120,
+        width: 92,
         sorter: true,
-        render: (value: number) => formatAmount(value),
+        render: (value: number) => renderStoreOrderNumericCell(formatAmount(value)),
       },
       {
         title: t('common.remarks'),
         dataIndex: 'remarks',
-        width: 220,
-        ellipsis: true,
-        render: (value: string | undefined) => value || '--',
+        width: 170,
+        render: (value: string | undefined) => renderStoreOrderTwoLineText(value),
       },
       {
         title: t('column.createTime'),
         dataIndex: 'createdAt',
-        width: 180,
-        render: (value: string | undefined) => formatDateTime(value, i18n.language),
+        width: 150,
+        render: (value: string | undefined) => <span className="store-order-nowrap">{formatDateTime(value, i18n.language)}</span>,
       },
       {
         title: t('column.updater'),
         dataIndex: 'updatedBy',
-        width: 140,
-        render: (value: string | undefined) => value || '--',
+        width: 112,
+        render: (value: string | undefined) => <span className="store-order-nowrap">{value || '--'}</span>,
       },
       {
         title: t('column.updateTime'),
         dataIndex: 'updatedAt',
-        width: 180,
-        render: (value: string | undefined) => formatDateTime(value, i18n.language),
+        width: 150,
+        render: (value: string | undefined) => <span className="store-order-nowrap">{formatDateTime(value, i18n.language)}</span>,
       },
       {
         title: t('column.action'),
         key: 'action',
         fixed: 'right',
-        width: 170,
+        width: 128,
         render: (_, record) => (
-          <Space size={0}>
-            <Button type="link" onClick={() => openDetail(record)}>
+          <Space size={0} wrap={false}>
+            <Button size="small" type="link" onClick={() => openDetail(record)}>
               {t('common.view')}
             </Button>
             {access.canDeleteOrder ? (
@@ -1012,7 +1029,7 @@ export default function StoreOrdersPage() {
       }
     >
       <Card>
-        <Space wrap style={{ marginBottom: 16 }}>
+        <Space wrap className="store-order-list-filter-bar">
           <Input
             value={keyword}
             style={{ width: 260 }}
@@ -1049,6 +1066,7 @@ export default function StoreOrdersPage() {
         </Space>
 
         <Table
+          className="store-order-list-table"
           rowKey="orderGUID"
           loading={loading}
           dataSource={data}
@@ -1057,7 +1075,7 @@ export default function StoreOrdersPage() {
             selectedRowKeys,
             onChange: setSelectedRowKeys,
           }}
-          scroll={{ x: 1900, y: 620 }}
+          scroll={{ x: 1640, y: 620 }}
           pagination={{
             current: page,
             pageSize,

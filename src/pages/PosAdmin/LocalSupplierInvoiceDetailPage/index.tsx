@@ -23,7 +23,7 @@ import {
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import dayjs from 'dayjs'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useStableRouteContext } from '../../../hooks/useStableRouteContext'
 import BarcodePreview from '../../../components/BarcodePreview'
@@ -44,6 +44,7 @@ import type {
   UpdateToStorePricesRequest,
 } from '../../../types/localSupplierInvoice'
 import { copyTextToClipboard } from '../../../utils/clipboard'
+import { shouldShowDetailInitialLoading } from '../../../utils/detailLoadState'
 import { discountRateToDecimal, formatDiscountRate } from '../../../utils/discountRate'
 import {
   buildStoreOptionsFromUserStores,
@@ -76,6 +77,9 @@ export default function LocalSupplierInvoiceDetailPage() {
   const isAdmin = access.isAdmin
   const managedStoreCodes = access.managedStoreCodes()
   const managedStoreCodeKey = managedStoreCodes?.join(',') ?? 'all'
+  // 记录当前发票已完成首次加载，保活 Tab 恢复时保留订单头和明细表。
+  const loadedInvoiceGuidRef = useRef<string | null>(null)
+  const visibleInvoiceGuidRef = useRef<string | null>(null)
 
   // 主表数据
   const [_invoice, setInvoice] = useState<LocalSupplierInvoiceDetailDto | null>(null)
@@ -111,12 +115,16 @@ export default function LocalSupplierInvoiceDetailPage() {
   const [storeOptions, setStoreOptions] = useState<{ label: string; value: string }[]>([])
 
   // 加载数据
-  const loadInvoice = async () => {
+  const loadInvoice = async (showLoading = true) => {
     if (!invoiceGuid) return false
-    setLoading(true)
+    if (showLoading) {
+      setLoading(true)
+    }
     try {
       const data = await getInvoice(invoiceGuid)
       if (!isStoreCodeInManagedScope(data.storeCode, managedStoreCodes)) {
+        loadedInvoiceGuidRef.current = null
+        visibleInvoiceGuidRef.current = null
         setCanAccessInvoice(false)
         setInvoice(null)
         setDetails([])
@@ -125,6 +133,8 @@ export default function LocalSupplierInvoiceDetailPage() {
         message.error(t('message.noPermission', '无权查看该数据'))
         return false
       }
+      loadedInvoiceGuidRef.current = invoiceGuid
+      visibleInvoiceGuidRef.current = invoiceGuid
       setCanAccessInvoice(true)
       setInvoice(data)
       form.setFieldsValue({
@@ -140,10 +150,15 @@ export default function LocalSupplierInvoiceDetailPage() {
       })
       return true
     } catch {
+      if (showLoading) {
+        visibleInvoiceGuidRef.current = null
+      }
       message.error(t('posAdmin.invoiceDetail.loadInvoiceFailed', '加载进货单失败'))
       return false
     } finally {
-      setLoading(false)
+      if (showLoading) {
+        setLoading(false)
+      }
     }
   }
 
@@ -160,12 +175,19 @@ export default function LocalSupplierInvoiceDetailPage() {
     }
   }
 
+  const loadInvoiceAndDetails = async (showLoading = true) => {
+    if (await loadInvoice(showLoading)) {
+      await loadDetails()
+    }
+  }
+
   useEffect(() => {
-    void (async () => {
-      if (await loadInvoice()) {
-        await loadDetails()
-      }
-    })()
+    const shouldShowInitialLoading = shouldShowDetailInitialLoading({
+      requestedDetailId: invoiceGuid || '',
+      loadedDetailId: loadedInvoiceGuidRef.current,
+      visibleDetailId: visibleInvoiceGuidRef.current,
+    })
+    void loadInvoiceAndDetails(shouldShowInitialLoading)
     if (managedStoreCodes === null) {
       getActiveStores()
         .then((stores) => {

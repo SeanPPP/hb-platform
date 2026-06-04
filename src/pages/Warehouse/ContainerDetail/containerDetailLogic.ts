@@ -1,9 +1,10 @@
 import type { ContainerDetail, ContainerMain, UpdateContainerDetailRequest } from '../../../types/container'
 import type { PushProductsToHqResult } from '../../../types/posProduct'
 
-export type ContainerDetailTagFilter = 'all' | 'new' | 'existing' | 'noOemPrice' | 'abnormalImport'
+export type ContainerDetailTagFilter = 'all' | 'new' | 'existing' | 'noOemPrice' | 'abnormalImport' | 'active' | 'inactive'
 
 export type ContainerDetailTagStats = Record<ContainerDetailTagFilter, number>
+type ContainerDetailSelectableTagFilter = Exclude<ContainerDetailTagFilter, 'all'>
 
 export function getContainerDetailProductName(row: ContainerDetail) {
   return row.商品名称 ?? row.商品信息?.商品名称
@@ -36,7 +37,27 @@ export function matchesContainerDetailTagFilter(row: ContainerDetail, filter: Co
   if (filter === 'existing') return !row.是否新商品
   if (filter === 'noOemPrice') return Boolean(row.是否新商品) && (!row.贴牌价格 || row.贴牌价格 <= 0)
   if (filter === 'abnormalImport') return !row.进口价格 || row.进口价格 <= 0
+  if (filter === 'active') return row.warehouseIsActive === true
+  if (filter === 'inactive') return row.warehouseIsActive !== true
   return true
+}
+
+const containerDetailTagFilterGroups: ContainerDetailSelectableTagFilter[][] = [
+  ['new', 'existing'],
+  ['noOemPrice', 'abnormalImport'],
+  ['active', 'inactive'],
+]
+
+export function matchesContainerDetailSelectedTags(row: ContainerDetail, selectedTags: ContainerDetailTagFilter[]) {
+  const selected = selectedTags.filter((tag): tag is ContainerDetailSelectableTagFilter => tag !== 'all')
+  if (!selected.length) return true
+
+  return containerDetailTagFilterGroups.every((group) => {
+    const selectedInGroup = group.filter((tag) => selected.includes(tag))
+    if (!selectedInGroup.length) return true
+    // 同一类标签取并集，不同类标签再取交集，避免“新商品 + 已有商品”互相抵消。
+    return selectedInGroup.some((tag) => matchesContainerDetailTagFilter(row, tag))
+  })
 }
 
 export function buildContainerDetailTagStats(rows: ContainerDetail[]): ContainerDetailTagStats {
@@ -46,6 +67,8 @@ export function buildContainerDetailTagStats(rows: ContainerDetail[]): Container
     existing: 0,
     noOemPrice: 0,
     abnormalImport: 0,
+    active: 0,
+    inactive: 0,
   }
 
   rows.forEach((row) => {
@@ -54,6 +77,8 @@ export function buildContainerDetailTagStats(rows: ContainerDetail[]): Container
     if (matchesContainerDetailTagFilter(row, 'existing')) stats.existing += 1
     if (matchesContainerDetailTagFilter(row, 'noOemPrice')) stats.noOemPrice += 1
     if (matchesContainerDetailTagFilter(row, 'abnormalImport')) stats.abnormalImport += 1
+    if (matchesContainerDetailTagFilter(row, 'active')) stats.active += 1
+    if (matchesContainerDetailTagFilter(row, 'inactive')) stats.inactive += 1
   })
 
   return stats

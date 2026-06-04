@@ -121,6 +121,29 @@ async function main() {
   })
   if (snapshotFailure) failures.push(snapshotFailure)
 
+  const updateItemNumberSnapshotFailure = await runTest('确认快照应正向携带更新货号操作', () => {
+    const snapshot = buildBatchExecuteSnapshot({
+      selectedRowKeys: ['d1'],
+      details: [
+        { detailGUID: 'd1', activityType: DetailAction.UpdateItemNumber },
+      ],
+      rowActions: {
+        d1: DetailAction.UpdateItemNumber,
+      },
+      confirmedAt: '2026-06-02T09:45:00.000Z',
+    })
+
+    assertDeepEqual(
+      snapshot.expectedActions,
+      [
+        { detailGuid: 'd1', action: DetailAction.UpdateItemNumber, activityType: DetailAction.UpdateItemNumber },
+      ],
+      '更新货号应作为当前确认动作进入 expectedActions',
+    )
+    assertEqual(snapshot.confirmedCreateProductCount, 0, '更新货号不应计入新建商品数量')
+  })
+  if (updateItemNumberSnapshotFailure) failures.push(updateItemNumberSnapshotFailure)
+
   const textFailure = await runTest('确认文案应包含执行数量和新建商品风险提示', () => {
     const text = buildBatchExecuteConfirmText({
       selectedCount: 3,
@@ -204,6 +227,59 @@ async function main() {
     )
   })
   if (servicePayloadFailure) failures.push(servicePayloadFailure)
+
+  const updateItemNumberServicePayloadFailure = await runTest('batchExecuteActions 应原样发送更新货号确认动作', async () => {
+    const originalFetch = globalThis.fetch
+    let capturedInit: RequestInit | undefined
+
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      capturedInit = init
+
+      return new Response(JSON.stringify({
+        success: true,
+        data: {
+          createdProducts: 0,
+          updatedPurchasePrices: 0,
+          updatedItemNumbers: 1,
+          addedMultiCodes: 0,
+          skipped: 0,
+          failed: 0,
+          errors: [],
+        },
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }) as typeof fetch
+
+    try {
+      await batchExecuteActions({
+        invoiceGuid: 'invoice-1',
+        detailGuids: ['d1'],
+        expectedActions: [
+          { detailGuid: 'd1', action: DetailAction.UpdateItemNumber, activityType: DetailAction.UpdateItemNumber },
+        ],
+        confirmedCreateProductCount: 0,
+        confirmedAt: '2026-06-02T09:45:00.000Z',
+      })
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+
+    assertDeepEqual(
+      JSON.parse(String(capturedInit?.body)),
+      {
+        detailGuids: ['d1'],
+        expectedActions: [
+          { detailGuid: 'd1', action: DetailAction.UpdateItemNumber, activityType: DetailAction.UpdateItemNumber },
+        ],
+        confirmedCreateProductCount: 0,
+        confirmedAt: '2026-06-02T09:45:00.000Z',
+      },
+      '批量执行服务应原样发送更新货号动作',
+    )
+  })
+  if (updateItemNumberServicePayloadFailure) failures.push(updateItemNumberServicePayloadFailure)
 
   const serviceBusinessFailure = await runTest('batchExecuteActions 遇到 success=false 应保留后端业务消息与 payload', async () => {
     const originalFetch = globalThis.fetch
