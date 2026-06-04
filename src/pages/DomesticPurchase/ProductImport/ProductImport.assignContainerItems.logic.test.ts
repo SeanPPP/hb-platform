@@ -5,6 +5,7 @@ import {
   summarizeAssignProductsResult,
 } from './utils'
 import type { ProductImportItem } from './types'
+import { readFileSync } from 'node:fs'
 
 function assertDeepEqual(actual: unknown, expected: unknown, label: string) {
   const actualJson = JSON.stringify(actual)
@@ -33,6 +34,18 @@ function createProduct(overrides: Partial<ProductImportItem>): ProductImportItem
     ...overrides,
   }
 }
+
+const pageSource = readFileSync('src/pages/DomesticPurchase/ProductImport/index.tsx', 'utf8')
+
+assertDeepEqual(
+  [
+    pageSource.includes('const loadContainers = useCallback(async () => {'),
+    pageSource.includes('onDropdownVisibleChange={(open) => {'),
+    pageSource.includes('if (open) void loadContainers()'),
+  ],
+  [true, true, true],
+  '商品导入货柜下拉打开时应自动刷新货柜列表',
+)
 
 assertDeepEqual(
   buildAssignContainerItems([

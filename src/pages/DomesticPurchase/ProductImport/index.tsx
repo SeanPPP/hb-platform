@@ -63,18 +63,19 @@ export default function ProductImportPage() {
     load()
   }, [])
 
-  useEffect(() => {
-    const fetch = async () => {
-      try {
-        setLoadingContainers(true)
-        const response = await getContainerList({ sortBy: '装柜日期', sortDirection: 'desc', page: 1, pageSize: 50 })
-        const filtered = (response.containers || []).filter((c: any) => c.状态 === 0)
-        setContainers(filtered)
-      } catch { /* ignore */ }
-      finally { setLoadingContainers(false) }
-    }
-    fetch()
+  const loadContainers = useCallback(async () => {
+    try {
+      setLoadingContainers(true)
+      const response = await getContainerList({ sortBy: '装柜日期', sortDirection: 'desc', page: 1, pageSize: 50 })
+      const filtered = (response.containers || []).filter((c: any) => c.状态 === 0)
+      setContainers(filtered)
+    } catch { /* ignore */ }
+    finally { setLoadingContainers(false) }
   }, [])
+
+  useEffect(() => {
+    void loadContainers()
+  }, [loadContainers])
 
   const formatDate = (d?: string) => {
     if (!d) return '-'
@@ -817,7 +818,7 @@ export default function ProductImportPage() {
             </>
           )}
           {state.needsDetection && state.products.length > 0 && <span style={{ color: '#f97316', fontWeight: 600 }}>{t('productImport.dataModifiedDetect', '⚠️ 数据已修改，请先执行"检测匹配"')}</span>}
-          <Select style={{ width: 300 }} placeholder={loadingContainers ? t('common.loading', '加载中...') : t('productImport.selectContainer', '请选择货柜')} value={selectedContainerId || undefined} onChange={(v) => setSelectedContainerId(v)} loading={loadingContainers} showSearch optionFilterProp="label" options={containers.map((c: any) => ({ label: `${c.货柜编号} | 装柜日期: ${formatDate(c.装柜日期)}`, value: c.货柜编号 }))} />
+          <Select style={{ width: 300 }} placeholder={loadingContainers ? t('common.loading', '加载中...') : t('productImport.selectContainer', '请选择货柜')} value={selectedContainerId || undefined} onChange={(v) => setSelectedContainerId(v)} loading={loadingContainers} showSearch optionFilterProp="label" onDropdownVisibleChange={(open) => { if (open) void loadContainers() }} options={containers.map((c: any) => ({ label: `${c.货柜编号} | 装柜日期: ${formatDate(c.装柜日期)}`, value: c.货柜编号 }))} />
           <Button type="primary" onClick={() => { if (state.selectedIds.length === 0) { message.error(t('productImport.selectProductsFirst', '请先选择商品')); return } if (!selectedContainerId) { message.error('请先选择货柜'); return } if (invalidSelectedCount > 0) { message.error('请先修正已选商品的件数'); return } handleSendToContainer(selectedContainerId, '') }} disabled={state.selectedIds.length === 0}>发送货柜({state.selectedIds.length})</Button>
           <Button onClick={handleSyncToHBSales} disabled={state.selectedIds.length === 0}>{t('productImport.syncToHBSales', '同步到HBSales')}</Button>
           <Button style={{ background: '#7c3aed', color: '#fff', borderColor: '#7c3aed' }} onClick={handleSendToHq} disabled={state.selectedIds.length === 0}>{t('productImport.sendToHQ', '发送到HQ')}</Button>

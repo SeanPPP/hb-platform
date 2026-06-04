@@ -1,4 +1,5 @@
-import { syncContainersFromHq, translateHqProductNamesByContainerNumber } from './containerService'
+import { syncContainersFromHq, translateHqProductNamesByContainerNumber, updateContainer } from './containerService'
+import type { UpdateContainerRequest } from '../types/container'
 
 function assertEqual<T>(actual: T, expected: T, label: string) {
   if (actual !== expected) {
@@ -51,6 +52,56 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
 }) as typeof fetch
 
 try {
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    capturedUrl = String(input)
+    capturedInit = init
+
+    return new Response(JSON.stringify({ success: true }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  }) as typeof fetch
+
+  const updatePayload: UpdateContainerRequest = {
+    实际到货日期: '2026-06-16',
+    汇率: 4.5,
+    运费: 1280,
+    备注: '状态切换测试',
+    状态: 1,
+  }
+  await updateContainer('OOCU5568972', updatePayload)
+
+  assertEqual(
+    capturedUrl,
+    '/api/react/v1/containers/OOCU5568972',
+    'updateContainer should keep the React container update URL unchanged',
+  )
+  assertEqual(capturedInit?.method, 'PUT', 'updateContainer should use PUT')
+  assertDeepEqual(
+    JSON.parse(String(capturedInit?.body)),
+    updatePayload,
+    'updateContainer should send container status with the header update payload',
+  )
+
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    capturedUrl = String(input)
+    capturedInit = init
+
+    return new Response(JSON.stringify({
+      success: true,
+      data: {
+        TotalCandidates: 1,
+        TotalTranslated: 1,
+        TotalSkipped: 0,
+        TotalFailed: 0,
+        Samples: { 自动脱毛梳: 'Pet Grooming Comb' },
+      },
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  }) as typeof fetch
+
   await translateHqProductNamesByContainerNumber('CSNU6601647')
 
   assertEqual(
