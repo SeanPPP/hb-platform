@@ -42,6 +42,7 @@ import {
   type WarehouseLocationCodePart as LocationCodePart,
   type WarehouseLocationCodeParts,
 } from "@/modules/warehouse/location-code-options";
+import { canMaintainWarehouseLocations } from "@/modules/warehouse/location-permissions";
 import {
   canBindMoreProductsToWarehouseLocation,
   getProductLocationCandidateAction,
@@ -381,6 +382,7 @@ export default function WarehouseScreen() {
   const productLayoutMode = getWarehouseProductPdaLayout(windowWidth, { forcePda: shouldForcePdaLayout });
   const productSectionConfig = getWarehouseProductSections(productLayoutMode);
   const isPdaProductLayout = productLayoutMode === "pda";
+  const canMaintainLocations = canMaintainWarehouseLocations(access);
   const getErrorMessage = useCallback((error: unknown, fallbackKey: string) => (
     resolveLocalizedErrorMessage(error, {
       language,
@@ -1684,9 +1686,11 @@ export default function WarehouseScreen() {
                 onSubmitEditing={() => void handleLookupLocations()}
                 style={styles.search}
               />
-              <Button mode="contained" icon="plus" onPress={() => void openCreateLocation()}>
-                {t("location.newLocation")}
-              </Button>
+              {canMaintainLocations ? (
+                <Button mode="contained" icon="plus" onPress={() => void openCreateLocation()}>
+                  {t("location.newLocation")}
+                </Button>
+              ) : null}
             </View>
 
             {!selectedLocation && locationResults.length === 0 ? (
@@ -1765,8 +1769,12 @@ export default function WarehouseScreen() {
                           </Text>
                         </View>
                         <IconButton icon="printer-outline" size={20} onPress={() => void handlePrintSelectedLocation()} />
-                        <IconButton icon="pencil-outline" size={20} onPress={() => void openEditLocation(selectedLocation)} />
-                        <IconButton icon="delete-outline" size={20} onPress={() => void handleDeleteLocation()} />
+                        {canMaintainLocations ? (
+                          <>
+                            <IconButton icon="pencil-outline" size={20} onPress={() => void openEditLocation(selectedLocation)} />
+                            <IconButton icon="delete-outline" size={20} onPress={() => void handleDeleteLocation()} />
+                          </>
+                        ) : null}
                       </View>
                     </View>
 
