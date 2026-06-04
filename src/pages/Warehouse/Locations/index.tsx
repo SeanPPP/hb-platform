@@ -26,6 +26,7 @@ import type { ColumnsType } from 'antd/es/table'
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import PageContainer from '../../../components/PageContainer'
+import './compact.css'
 import {
   createLocation,
   deleteLocation,
@@ -94,23 +95,9 @@ function formatDateTime(value?: string) {
   return date.toLocaleString('zh-CN', { hour12: false })
 }
 
-function renderProductsText(products: LocationProduct[], field: 'itemNumber' | 'productName') {
-  if (!products?.length) {
-    return '--'
-  }
+type ProductTextField = 'itemNumber' | 'productName'
 
-  const values = products.map((item) => item[field]).filter((value): value is string => Boolean(value))
-  if (!values.length) {
-    return '--'
-  }
-
-  const display = values.slice(0, 3).join('，')
-  const suffix = values.length > 3 ? ` +${values.length - 3}` : ''
-
-  return <Tooltip title={values.join('，')}>{`${display}${suffix}`}</Tooltip>
-}
-
-function getProductFieldValues(products: LocationProduct[], field: 'itemNumber' | 'productName') {
+function getProductFieldValues(products: LocationProduct[], field: ProductTextField | 'productBarcode') {
   if (!products?.length) {
     return []
   }
@@ -133,19 +120,89 @@ function renderCopyableProducts(
   const fullText = values.join('，')
 
   return (
-    <Space size={4} wrap>
-      <Tooltip title={fullText}>
-        <Typography.Text>{`${display}${suffix}`}</Typography.Text>
-      </Tooltip>
+    <Space size={4} className="warehouse-locations-copyable-cell warehouse-locations-nowrap">
+      <span className="warehouse-locations-copyable-content">
+        <Tooltip title={fullText}>
+          <Typography.Text className="warehouse-locations-nowrap">{`${display}${suffix}`}</Typography.Text>
+        </Tooltip>
+      </span>
       <Tooltip title={t('common.copy')}>
         <Button
           size="small"
           type="text"
+          className="warehouse-locations-copy-button"
           icon={<CopyOutlined />}
           onClick={() => void copyTextToClipboard(fullText)}
         />
       </Tooltip>
     </Space>
+  )
+}
+
+function renderCopyableProductBarcodes(
+  products: LocationProduct[],
+  t: (key: string) => string,
+) {
+  const barcodeProducts = products.filter((product) => Boolean(product.productBarcode))
+  const values = barcodeProducts.map((product) => product.productBarcode).filter((value): value is string => Boolean(value))
+  if (!values.length) {
+    return '--'
+  }
+
+  const suffix = values.length > 3 ? ` +${values.length - 3}` : ''
+  const fullText = values.join('，')
+
+  return (
+    <Space size={4} className="warehouse-locations-barcode-cell warehouse-locations-nowrap">
+      <span className="warehouse-locations-barcode-content">
+        <Tooltip title={fullText}>
+          <Space size={3} className="warehouse-locations-product-barcode-list">
+            {barcodeProducts.slice(0, 3).map((product, index) => (
+              <span
+                key={`${product.productBarcode}-${index}`}
+                className="warehouse-locations-product-barcode-item"
+              >
+                <BarcodePreview
+                  value={product.productBarcode}
+                  align="left"
+                  className="warehouse-locations-product-barcode-preview"
+                  compactCopy={false}
+                  gap={2}
+                  options={{ height: 18, width: 1, margin: 0 }}
+                  showCopy={false}
+                  textNoWrap
+                />
+              </span>
+            ))}
+            {suffix ? <Typography.Text className="warehouse-locations-nowrap">{suffix}</Typography.Text> : null}
+          </Space>
+        </Tooltip>
+      </span>
+      <Tooltip title={t('common.copy')}>
+        <Button
+          size="small"
+          type="text"
+          className="warehouse-locations-copy-button"
+          icon={<CopyOutlined />}
+          onClick={() => void copyTextToClipboard(fullText)}
+        />
+      </Tooltip>
+    </Space>
+  )
+}
+
+function renderLocationProductName(products: LocationProduct[]) {
+  const values = getProductFieldValues(products, 'productName')
+  if (!values.length) {
+    return '--'
+  }
+
+  const fullText = values.join('，')
+
+  return (
+    <Tooltip title={fullText}>
+      <span className="warehouse-locations-two-line-text">{fullText}</span>
+    </Tooltip>
   )
 }
 
@@ -299,78 +356,88 @@ export default function WarehouseLocationsPage() {
     {
       title: t('column.index'),
       key: 'index',
-      width: 80,
+      width: 56,
       render: (_, __, index) => (page - 1) * pageSize + index + 1,
     },
     {
       title: t('column.locationCode'),
       dataIndex: 'locationCode',
-      width: 220,
+      width: 150,
       render: (value: string | undefined) => (
-        <BarcodePreview value={value} align="left" textMaxWidth={140} compactCopy />
+        <BarcodePreview value={value} align="left" compactCopy textNoWrap />
       ),
+    },
+    {
+      title: t('column.locationType'),
+      dataIndex: 'locationType',
+      width: 86,
+      render: (value: number | null | undefined) => formatLocationType(value, locationTypeOptions),
     },
     {
       title: t('column.locationBarcode'),
       dataIndex: 'locationBarcode',
-      width: 220,
+      width: 150,
       render: (value: string | undefined) => (
-        <BarcodePreview value={value} align="left" textMaxWidth={140} compactCopy />
+        <BarcodePreview value={value} align="left" compactCopy textNoWrap />
       ),
     },
     {
       title: t('column.locationStatus'),
       dataIndex: 'status',
-      width: 100,
+      width: 76,
       render: (value: number | null | undefined) => formatStatus(value, t),
-    },
-    {
-      title: t('column.locationType'),
-      dataIndex: 'locationType',
-      width: 120,
-      render: (value: number | null | undefined) => formatLocationType(value, locationTypeOptions),
     },
     {
       title: t('column.usageStatus'),
       key: 'usage',
-      width: 100,
+      width: 86,
       render: (_, record) =>
         record.products?.length ? <Tag color="processing">{t('common.used')}</Tag> : <Tag>{t('common.unused')}</Tag>,
     },
     {
       title: t('column.itemNumber'),
       key: 'itemNumbers',
-      width: 220,
+      width: 118,
       render: (_, record) => renderCopyableProducts(record.products, 'itemNumber', t),
+    },
+    {
+      title: t('column.productBarcode'),
+      key: 'productBarcodes',
+      width: 150,
+      render: (_, record) => renderCopyableProductBarcodes(record.products, t),
     },
     {
       title: t('column.productName'),
       key: 'productNames',
-      width: 220,
-      render: (_, record) => renderProductsText(record.products, 'productName'),
+      width: 190,
+      render: (_, record) => renderLocationProductName(record.products),
     },
     {
       title: t('column.image'),
       key: 'productImages',
-      width: 140,
+      width: 112,
       render: (_, record) => renderProductImages(record.products),
     },
     {
       title: t('column.updateTime'),
       dataIndex: 'updatedAt',
-      width: 180,
-      render: (value: string | undefined) => formatDateTime(value),
+      width: 150,
+      render: (value: string | undefined) => (
+        <span className="warehouse-locations-nowrap">{formatDateTime(value)}</span>
+      ),
     },
     {
       title: t('column.updater'),
       dataIndex: 'updatedBy',
-      width: 140,
-      render: (value: string | undefined) => value || '--',
+      width: 100,
+      render: (value: string | undefined) => (
+        <span className="warehouse-locations-nowrap">{value || '--'}</span>
+      ),
     },
     {
       title: t('column.action'),
       key: 'action',
-      width: 180,
+      width: 132,
       fixed: 'right',
       render: (_, record) => (
         <Space size={4}>
@@ -470,11 +537,13 @@ export default function WarehouseLocationsPage() {
 
         <Table
           rowKey="locationGuid"
+          className="warehouse-locations-compact-table"
           virtual
           loading={loading}
           columns={columns}
           dataSource={data}
-          scroll={{ x: 1280, y: 600 }}
+          size="small"
+          scroll={{ x: 1480, y: 600 }}
           pagination={{
             current: page,
             pageSize,

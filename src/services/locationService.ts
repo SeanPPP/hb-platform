@@ -17,6 +17,34 @@ interface LocationListApiPayload {
   pageSize?: number
 }
 
+interface RawLocationProduct extends Partial<LocationItem['products'][number]> {
+  ProductBarcode?: string
+  barcode?: string
+  Barcode?: string
+}
+
+interface RawLocationItem extends Omit<LocationItem, 'products'> {
+  products?: RawLocationProduct[]
+  Products?: RawLocationProduct[]
+}
+
+function normalizeLocationProduct(raw: RawLocationProduct) {
+  return {
+    ...raw,
+    // 兼容后端不同命名的商品条码字段，统一给页面消费。
+    productBarcode: raw.productBarcode ?? raw.ProductBarcode ?? raw.barcode ?? raw.Barcode,
+  }
+}
+
+function normalizeLocationItem(raw: RawLocationItem): LocationItem {
+  const products = raw.products ?? raw.Products ?? []
+
+  return {
+    ...raw,
+    products: products.map(normalizeLocationProduct),
+  }
+}
+
 export async function getLocationList(params: LocationFilterParams): Promise<LocationListResponse> {
   const response = await request.post<ApiResponse<LocationListApiPayload>>(`${API_BASE}/list`, {
     LocationType: params.locationType ?? undefined,
@@ -34,7 +62,7 @@ export async function getLocationList(params: LocationFilterParams): Promise<Loc
 
   const data = unwrapApiData(response)
   return {
-    items: data?.items ?? [],
+    items: (data?.items ?? []).map(normalizeLocationItem),
     total: data?.total ?? 0,
     pageNumber: data?.pageNumber ?? params.pageNumber ?? 1,
     pageSize: data?.pageSize ?? params.pageSize ?? 20,

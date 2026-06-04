@@ -1,6 +1,7 @@
 export interface LocationProduct {
   productCode?: string
   itemNumber?: string
+  productBarcode?: string
   productName?: string
   productImage?: string
 }
