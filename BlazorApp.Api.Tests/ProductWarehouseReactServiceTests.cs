@@ -56,6 +56,192 @@ namespace BlazorApp.Api.Tests
         }
 
         [Fact]
+        public async Task DetectAsync_ReturnsWarehousePricesNamesVolumeAndPackingQuantity()
+        {
+            await _db.Insertable(new Product
+            {
+                UUID = "product-uuid-detect-1",
+                ProductCode = "P-DETECT-001",
+                ProductName = "检测商品一",
+                EnglishName = "Detect Product One",
+                ItemNumber = "ITEM-DETECT-001",
+                Barcode = "BAR-DETECT-001",
+                IsActive = true,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new Product
+            {
+                UUID = "product-uuid-detect-2",
+                ProductCode = "P-DETECT-002",
+                ProductName = "检测商品二",
+                EnglishName = "Detect Product Two",
+                ItemNumber = "ITEM-DETECT-002",
+                Barcode = "BAR-DETECT-002",
+                IsActive = true,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+
+            await _db.Insertable(new WarehouseProduct
+            {
+                ProductCode = "P-DETECT-001",
+                DomesticPrice = 10.25m,
+                OEMPrice = 20.50m,
+                Volume = 0.125m,
+                PackingQuantity = 24,
+                IsActive = true,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new WarehouseProduct
+            {
+                ProductCode = "P-DETECT-002",
+                DomesticPrice = 11.25m,
+                OEMPrice = 21.50m,
+                Volume = 0.225m,
+                PackingQuantity = null,
+                IsActive = true,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+
+            await _db.Insertable(new DomesticProduct
+            {
+                ProductCode = "P-DETECT-001",
+                ProductName = "检测商品一",
+                PackingQuantity = 48,
+                IsActive = true,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new DomesticProduct
+            {
+                ProductCode = "P-DETECT-002",
+                ProductName = "检测商品二",
+                PackingQuantity = 36,
+                IsActive = true,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+
+            var service = CreateService();
+
+            var result = await service.DetectAsync(new List<DetectionItemDto>
+            {
+                new() { ProductCode = "P-DETECT-001", ItemNumber = "ITEM-DETECT-001" },
+                new() { ProductCode = "P-DETECT-002", ItemNumber = "ITEM-DETECT-002" },
+            });
+
+            Assert.Collection(
+                result,
+                first =>
+                {
+                    Assert.True(first.Exists);
+                    Assert.Equal("检测商品一", first.ProductName);
+                    Assert.Equal("Detect Product One", first.EnglishName);
+                    Assert.Equal(10.25m, first.WarehouseDomesticPrice);
+                    Assert.Equal(20.50m, first.WarehouseOEMPrice);
+                    Assert.Equal(0.125m, first.WarehouseVolume);
+                    Assert.Equal(48, first.PackingQuantity);
+                },
+                second =>
+                {
+                    Assert.True(second.Exists);
+                    Assert.Equal("检测商品二", second.ProductName);
+                    Assert.Equal("Detect Product Two", second.EnglishName);
+                    Assert.Equal(11.25m, second.WarehouseDomesticPrice);
+                    Assert.Equal(21.50m, second.WarehouseOEMPrice);
+                    Assert.Equal(0.225m, second.WarehouseVolume);
+                    Assert.Equal(36, second.PackingQuantity);
+                }
+            );
+        }
+
+        [Fact]
+        public async Task DetectAsync_UsesDomesticProductFallbackForNewProductAndWarehouseOemPriceForExisting()
+        {
+            await _db.Insertable(new Product
+            {
+                UUID = "product-uuid-detect-existing",
+                ProductCode = "P-DETECT-EXISTING",
+                ProductName = "仓库已有商品",
+                EnglishName = "Existing Warehouse Product",
+                ItemNumber = "ITEM-DETECT-EXISTING",
+                Barcode = "BAR-DETECT-EXISTING",
+                IsActive = true,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+
+            await _db.Insertable(new WarehouseProduct
+            {
+                ProductCode = "P-DETECT-EXISTING",
+                ImportPrice = 8.8m,
+                OEMPrice = 19.9m,
+                DomesticPrice = 6.6m,
+                Volume = 0.2m,
+                PackingQuantity = 12,
+                IsActive = true,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+
+            await _db.Insertable(new DomesticProduct
+            {
+                ProductCode = "P-DETECT-EXISTING",
+                HBProductNo = "ITEM-DETECT-EXISTING",
+                Barcode = "BAR-DETECT-EXISTING",
+                ProductName = "国内已有商品名",
+                EnglishProductName = "Domestic Existing Name",
+                OEMPrice = 25.5m,
+                PackingQuantity = 48,
+                UnitVolume = 0.33m,
+                IsActive = true,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+
+            await _db.Insertable(new DomesticProduct
+            {
+                ProductCode = "P-DOMESTIC-CODE",
+                HBProductNo = "HB138-066",
+                Barcode = "9527913800028",
+                ProductName = "金/黑框混30X40",
+                EnglishProductName = "Frame Mixed 30X40",
+                OEMPrice = 15.5m,
+                PackingQuantity = 24,
+                UnitVolume = 0.4m,
+                IsActive = true,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+
+            var service = CreateService();
+
+            var result = await service.DetectAsync(new List<DetectionItemDto>
+            {
+                new() { ProductCode = "P-DETECT-EXISTING", ItemNumber = "ITEM-DETECT-EXISTING", Barcode = "BAR-DETECT-EXISTING" },
+                new() { ItemNumber = "HB138-066", Barcode = "9527913800028" },
+            });
+
+            Assert.Collection(
+                result,
+                existing =>
+                {
+                    Assert.True(existing.Exists);
+                    Assert.Equal("国内已有商品名", existing.ProductName);
+                    Assert.Equal("Domestic Existing Name", existing.EnglishName);
+                    Assert.Equal(8.8m, existing.WarehouseImportPrice);
+                    Assert.Equal(19.9m, existing.WarehouseOEMPrice);
+                    Assert.Equal(48, existing.PackingQuantity);
+                    Assert.Equal(0.33m, existing.WarehouseVolume);
+                },
+                newProduct =>
+                {
+                    Assert.False(newProduct.Exists);
+                    Assert.Equal("none", newProduct.MatchType);
+                    Assert.Equal("P-DOMESTIC-CODE", newProduct.ProductCode);
+                    Assert.Equal("HB138-066", newProduct.ItemNumber);
+                    Assert.Equal("金/黑框混30X40", newProduct.ProductName);
+                    Assert.Equal(15.5m, newProduct.WarehouseOEMPrice);
+                    Assert.Equal(24, newProduct.PackingQuantity);
+                    Assert.Equal(0.4m, newProduct.WarehouseVolume);
+                }
+            );
+        }
+
+        [Fact]
         public async Task LookupMobileProductsAsync_ReturnsWarehouseFieldsUsedByMobileUi()
         {
             await _db.Insertable(new ChinaSupplier
@@ -465,6 +651,178 @@ namespace BlazorApp.Api.Tests
             Assert.Equal(6.66m, product.PurchasePrice);
             Assert.Equal(6.66m, storePrice.PurchasePrice);
             Assert.Equal(11.99m, storePrice.StoreRetailPriceValue);
+        }
+
+        [Fact]
+        public async Task BatchToggleActiveAsync_UpdatesLinkedProductStatusTables()
+        {
+            await SeedPriceSyncProductAsync(
+                "P-TOGGLE-LINKED",
+                purchasePrice: 4.28m,
+                retailPrice: 11.99m,
+                importPrice: 4.28m,
+                oemPrice: 11.99m
+            );
+            await _db.Insertable(new DomesticProduct
+            {
+                ProductCode = "P-TOGGLE-LINKED",
+                ProductName = "Toggle Linked",
+                IsActive = true,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+            await SeedStoreRetailPriceAsync("S01", "P-TOGGLE-LINKED", purchasePrice: 4.28m, retailPrice: 11.99m);
+            await _db.Insertable(new StoreMultiCodeProduct
+            {
+                UUID = "multi-code-toggle-linked",
+                StoreCode = "S01",
+                ProductCode = "P-TOGGLE-LINKED",
+                MultiBarcode = "BAR-MULTI-TOGGLE",
+                IsActive = true,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+            var service = CreateService();
+
+            var result = await service.BatchToggleActiveAsync(
+                new BatchToggleWarehouseProductsActiveRequestDto
+                {
+                    ProductCodes = new List<string> { "P-TOGGLE-LINKED" },
+                    IsActive = false,
+                }
+            );
+
+            var warehouseProduct = await _db.Queryable<WarehouseProduct>().SingleAsync(x => x.ProductCode == "P-TOGGLE-LINKED");
+            var product = await _db.Queryable<Product>().SingleAsync(x => x.ProductCode == "P-TOGGLE-LINKED");
+            var domesticProduct = await _db.Queryable<DomesticProduct>().SingleAsync(x => x.ProductCode == "P-TOGGLE-LINKED");
+            var storeRetailPrice = await _db.Queryable<StoreRetailPrice>().SingleAsync(x => x.ProductCode == "P-TOGGLE-LINKED");
+            var storeMultiCodeProduct = await _db.Queryable<StoreMultiCodeProduct>().SingleAsync(x => x.ProductCode == "P-TOGGLE-LINKED");
+
+            Assert.True(result.Success);
+            Assert.Equal(1, result.SuccessCount);
+            Assert.Equal(0, result.FailedCount);
+            Assert.False(warehouseProduct.IsActive);
+            Assert.False(product.IsActive);
+            Assert.False(domesticProduct.IsActive);
+            Assert.False(storeRetailPrice.IsActive);
+            Assert.False(storeMultiCodeProduct.IsActive);
+            Assert.Equal("System", domesticProduct.UpdatedBy);
+        }
+
+        [Fact]
+        public async Task BatchToggleActiveAsync_WhenWarehouseProductMissing_ReturnsPartialFailure()
+        {
+            await SeedPriceSyncProductAsync(
+                "P-TOGGLE-EXISTS",
+                purchasePrice: 4.28m,
+                retailPrice: 11.99m,
+                importPrice: 4.28m,
+                oemPrice: 11.99m
+            );
+            var service = CreateService();
+
+            var result = await service.BatchToggleActiveAsync(
+                new BatchToggleWarehouseProductsActiveRequestDto
+                {
+                    ProductCodes = new List<string> { "P-TOGGLE-EXISTS", "P-TOGGLE-MISSING" },
+                    IsActive = false,
+                }
+            );
+
+            var warehouseProduct = await _db.Queryable<WarehouseProduct>().SingleAsync(x => x.ProductCode == "P-TOGGLE-EXISTS");
+
+            Assert.False(result.Success);
+            Assert.Equal(1, result.SuccessCount);
+            Assert.Equal(1, result.FailedCount);
+            Assert.Contains("仓库商品不存在: P-TOGGLE-MISSING", result.Errors);
+            Assert.False(warehouseProduct.IsActive);
+        }
+
+        [Fact]
+        public async Task BatchToggleActiveAsync_WhenOnlyLinkedProductExists_DoesNotUpdateLinkedTables()
+        {
+            await _db.Insertable(new Product
+            {
+                UUID = "product-toggle-linked-only",
+                ProductCode = "P-TOGGLE-LINKED-ONLY",
+                ProductName = "Linked Only",
+                IsActive = true,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new DomesticProduct
+            {
+                ProductCode = "P-TOGGLE-LINKED-ONLY",
+                ProductName = "Linked Only Domestic",
+                IsActive = true,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+            await SeedStoreRetailPriceAsync("S01", "P-TOGGLE-LINKED-ONLY", purchasePrice: 4.28m, retailPrice: 11.99m);
+            var service = CreateService();
+
+            var result = await service.BatchToggleActiveAsync(
+                new BatchToggleWarehouseProductsActiveRequestDto
+                {
+                    ProductCodes = new List<string> { "P-TOGGLE-LINKED-ONLY" },
+                    IsActive = false,
+                }
+            );
+
+            var product = await _db.Queryable<Product>().SingleAsync(x => x.ProductCode == "P-TOGGLE-LINKED-ONLY");
+            var domesticProduct = await _db.Queryable<DomesticProduct>().SingleAsync(x => x.ProductCode == "P-TOGGLE-LINKED-ONLY");
+            var storeRetailPrice = await _db.Queryable<StoreRetailPrice>().SingleAsync(x => x.ProductCode == "P-TOGGLE-LINKED-ONLY");
+
+            Assert.False(result.Success);
+            Assert.Equal(0, result.SuccessCount);
+            Assert.Equal(1, result.FailedCount);
+            Assert.Contains("仓库商品不存在: P-TOGGLE-LINKED-ONLY", result.Errors);
+            Assert.True(product.IsActive);
+            Assert.True(domesticProduct.IsActive);
+            Assert.True(storeRetailPrice.IsActive);
+        }
+
+        [Fact]
+        public async Task BatchToggleActiveAsync_WhenWarehouseProductDeleted_DoesNotUpdateLinkedTables()
+        {
+            await SeedPriceSyncProductAsync(
+                "P-TOGGLE-DELETED",
+                purchasePrice: 4.28m,
+                retailPrice: 11.99m,
+                importPrice: 4.28m,
+                oemPrice: 11.99m
+            );
+            await _db.Updateable<WarehouseProduct>()
+                .SetColumns(w => w.IsDeleted == true)
+                .Where(w => w.ProductCode == "P-TOGGLE-DELETED")
+                .ExecuteCommandAsync();
+            await _db.Insertable(new DomesticProduct
+            {
+                ProductCode = "P-TOGGLE-DELETED",
+                ProductName = "Deleted Warehouse Domestic",
+                IsActive = true,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+            await SeedStoreRetailPriceAsync("S01", "P-TOGGLE-DELETED", purchasePrice: 4.28m, retailPrice: 11.99m);
+            var service = CreateService();
+
+            var result = await service.BatchToggleActiveAsync(
+                new BatchToggleWarehouseProductsActiveRequestDto
+                {
+                    ProductCodes = new List<string> { "P-TOGGLE-DELETED" },
+                    IsActive = false,
+                }
+            );
+
+            var warehouseProduct = await _db.Queryable<WarehouseProduct>().SingleAsync(x => x.ProductCode == "P-TOGGLE-DELETED");
+            var product = await _db.Queryable<Product>().SingleAsync(x => x.ProductCode == "P-TOGGLE-DELETED");
+            var domesticProduct = await _db.Queryable<DomesticProduct>().SingleAsync(x => x.ProductCode == "P-TOGGLE-DELETED");
+            var storeRetailPrice = await _db.Queryable<StoreRetailPrice>().SingleAsync(x => x.ProductCode == "P-TOGGLE-DELETED");
+
+            Assert.False(result.Success);
+            Assert.Equal(0, result.SuccessCount);
+            Assert.Equal(1, result.FailedCount);
+            Assert.Contains("仓库商品不存在: P-TOGGLE-DELETED", result.Errors);
+            Assert.True(warehouseProduct.IsActive);
+            Assert.True(product.IsActive);
+            Assert.True(domesticProduct.IsActive);
+            Assert.True(storeRetailPrice.IsActive);
         }
 
         [Fact]

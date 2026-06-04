@@ -53,6 +53,7 @@ namespace BlazorApp.Api.Services
                         BrandName = s.BrandName,
                         Address = s.Address,
                         ContactPhone = s.Phone,
+                        ContactEmail = s.ContactEmail,
                         IsActive = s.IsActive,
                         CreatedAt = s.CreatedAt,
                         UpdatedAt = s.UpdatedAt ?? s.CreatedAt,
@@ -93,6 +94,7 @@ namespace BlazorApp.Api.Services
                         BrandName = s.BrandName,
                         Address = s.Address,
                         ContactPhone = s.Phone,
+                        ContactEmail = s.ContactEmail,
                         IsActive = s.IsActive,
                     })
                     .OrderBy(s => s.StoreCode)
@@ -223,7 +225,7 @@ namespace BlazorApp.Api.Services
                         Description = null,
                         Address = s.Address,
                         ContactPhone = s.Phone,
-                        ContactEmail = null,
+                        ContactEmail = s.ContactEmail,
                         IsActive = s.IsActive,
                         CreatedAt = s.CreatedAt,
                         UpdatedAt = s.UpdatedAt ?? s.CreatedAt,
@@ -318,6 +320,7 @@ namespace BlazorApp.Api.Services
                     BrandName = store.BrandName,
                     Address = store.Address,
                     ContactPhone = store.Phone,
+                    ContactEmail = store.ContactEmail,
                     IsActive = store.IsActive,
                     CreatedAt = store.CreatedAt,
                     UpdatedAt = store.UpdatedAt ?? DateTime.UtcNow,
@@ -379,6 +382,7 @@ namespace BlazorApp.Api.Services
                 store.BrandName = dto.BrandName;
                 store.Address = dto.Address;
                 store.Phone = dto.ContactPhone;
+                store.ContactEmail = dto.ContactEmail;
                 store.IsActive = dto.IsActive;
                 store.UpdatedAt = DateTime.UtcNow;
 
@@ -394,7 +398,7 @@ namespace BlazorApp.Api.Services
                     Description = null,
                     Address = store.Address,
                     ContactPhone = store.Phone,
-                    ContactEmail = null,
+                    ContactEmail = store.ContactEmail,
                     IsActive = store.IsActive,
                     CreatedAt = store.CreatedAt,
                     UpdatedAt = store.UpdatedAt ?? store.CreatedAt,
@@ -870,6 +874,7 @@ namespace BlazorApp.Api.Services
                     ABN = store.ABN,
                     BrandName = store.BrandName,
                     Address = store.Address,
+                    ContactEmail = store.ContactEmail,
                     IsActive = store.IsActive,
                     CreatedAt = store.CreatedAt,
                     UpdatedAt = store.UpdatedAt ?? DateTime.UtcNow,
@@ -903,6 +908,7 @@ namespace BlazorApp.Api.Services
                     Description = string.Empty, // Store实体没有Description属性，使用空字符串
                     Address = store.Address,
                     ContactPhone = store.Phone,
+                    ContactEmail = store.ContactEmail,
                     Users = users,
                     TotalUsers = users.Count,
                     ActiveUsers = users.Count(u => true), // 这里可以根据用户状态进一步筛选
@@ -953,6 +959,7 @@ namespace BlazorApp.Api.Services
                     StoreGUID = Guid.NewGuid().ToString(),
                     IsActive = true,
                     Phone = dto.ContactPhone,
+                    ContactEmail = dto.ContactEmail,
                     CreatedAt = DateTime.UtcNow,
                     UpdatedAt = DateTime.UtcNow,
                 };
@@ -969,6 +976,7 @@ namespace BlazorApp.Api.Services
                     Description = string.Empty,
                     ContactPhone = string.Empty,
                     Address = store.Address,
+                    ContactEmail = store.ContactEmail,
                     IsActive = store.IsActive,
                     CreatedAt = store.CreatedAt,
                     UpdatedAt = store.UpdatedAt ?? DateTime.UtcNow,
@@ -1022,6 +1030,7 @@ namespace BlazorApp.Api.Services
                 store.BrandName = dto.BrandName;
                 store.Address = dto.Address;
                 store.Phone = dto.ContactPhone;
+                store.ContactEmail = dto.ContactEmail;
                 store.IsActive = dto.IsActive;
                 store.UpdatedAt = DateTime.UtcNow;
 
@@ -1037,6 +1046,7 @@ namespace BlazorApp.Api.Services
                     Description = string.Empty,
                     Address = store.Address,
                     ContactPhone = store.Phone,
+                    ContactEmail = store.ContactEmail,
                     IsActive = store.IsActive,
                     CreatedAt = store.CreatedAt,
                     UpdatedAt = store.UpdatedAt ?? DateTime.UtcNow,

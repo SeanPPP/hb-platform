@@ -6,6 +6,7 @@ using BlazorApp.Shared.Helper;
 using BlazorApp.Shared.Models;
 using BlazorApp.Shared.Models.HqEntities;
 using System.Diagnostics;
+using System.ComponentModel.DataAnnotations;
 using System.Security.Claims;
 using Microsoft.Extensions.Configuration;
 using SqlSugar;
@@ -20,6 +21,7 @@ namespace BlazorApp.Api.Services.React
         private readonly IOrderNumberGenerator _orderNumberGenerator;
         private readonly IConfiguration _configuration;
         private readonly IMapper _mapper;
+        private readonly IInvoiceEmailService _invoiceEmailService;
         private Func<ISqlSugarClient> _createHqConnection;
 
         private string GetScanTraceId()
@@ -52,7 +54,8 @@ namespace BlazorApp.Api.Services.React
             Microsoft.AspNetCore.Http.IHttpContextAccessor httpContextAccessor,
             IOrderNumberGenerator orderNumberGenerator,
             IConfiguration configuration,
-            IMapper mapper
+            IMapper mapper,
+            IInvoiceEmailService invoiceEmailService
         )
         {
             _db = context.Db;
@@ -61,6 +64,7 @@ namespace BlazorApp.Api.Services.React
             _orderNumberGenerator = orderNumberGenerator;
             _configuration = configuration;
             _mapper = mapper;
+            _invoiceEmailService = invoiceEmailService;
             _createHqConnection = () => HqSqlSugarContext.CreateConcurrentConnection(_configuration);
         }
 
@@ -840,6 +844,8 @@ namespace BlazorApp.Api.Services.React
                 return new ApiResponse<StoreOrderCartDto?> { Success = true, Data = null };
             }
 
+            var store = await GetStoreByCodeOrGuidAsync(order.StoreCode);
+
             var detailsQuerySw = Stopwatch.StartNew();
             var details = await _db.Queryable<WareHouseOrderDetails>()
                 .LeftJoin<Product>((d, p) => d.ProductCode == p.ProductCode)
@@ -906,7 +912,12 @@ namespace BlazorApp.Api.Services.React
                 TotalOrderVolume = details.Sum(x => x.OrderVolume ?? 0),
                 TotalAllocVolume = details.Sum(x => x.AllocVolume ?? 0),
                 Remarks = order.Remarks,
+                StoreAddress = store?.Address,
+                StoreContactEmail = store?.ContactEmail,
                 ShippingFee = order.ShippingFee,
+                OrderDate = order.OrderDate,
+                TotalAllocQuantity = (int)details.Sum(x => x.AllocQuantity ?? 0),
+                FlowStatus = order.FlowStatus,
                 Items = details,
             };
             buildSw.Stop();
@@ -1991,6 +2002,7 @@ namespace BlazorApp.Api.Services.React
                         ShippingFee = result.Data.ShippingFee,
                         Remarks = result.Data.Remarks,
                         StoreAddress = result.Data.StoreAddress,
+                        StoreContactEmail = result.Data.StoreContactEmail,
                         OrderDate = result.Data.OrderDate,
                         TotalAllocQuantity = result.Data.TotalAllocQuantity,
                         TotalSKU = result.Data.TotalSKU,
@@ -1999,6 +2011,134 @@ namespace BlazorApp.Api.Services.React
                     },
                 Message = result.Message,
             };
+        }
+
+        public async Task<ApiResponse<StoreOrderStoreContactDto>> UpdateStoreContactAsync(
+            UpdateStoreOrderStoreContactDto request
+        )
+        {
+            var normalizedOrderGuid = request.OrderGUID.Trim();
+            var normalizedStoreCode = request.StoreCode.Trim();
+            var order = await _db.Queryable<WareHouseOrder>()
+                .Where(o => o.OrderGUID == normalizedOrderGuid && !o.IsDeleted)
+                .FirstAsync();
+
+            if (order == null)
+            {
+                return ApiResponse<StoreOrderStoreContactDto>.Error(
+                    "订单不存在",
+                    "STORE_ORDER_NOT_FOUND"
+                );
+            }
+
+            var store = await GetStoreByCodeOrGuidAsync(normalizedStoreCode);
+            if (store == null)
+            {
+                return ApiResponse<StoreOrderStoreContactDto>.Error(
+                    "分店不存在",
+                    "STORE_NOT_FOUND"
+                );
+            }
+
+            if (!DoesOrderMatchStore(order, store))
+            {
+                return ApiResponse<StoreOrderStoreContactDto>.Error(
+                    "订单与分店不匹配",
+                    "STORE_ORDER_STORE_MISMATCH"
+                );
+            }
+
+            // 前端未传字段时保留旧值；传空字符串时允许清空对应分店信息。
+            store.Address = request.Address == null ? store.Address : TrimLen(request.Address, 500);
+            store.ContactEmail = request.ContactEmail == null
+                ? store.ContactEmail
+                : NormalizeOptionalEmail(request.ContactEmail);
+            store.UpdatedAt = DateTime.UtcNow;
+            store.UpdatedBy = _httpContextAccessor.HttpContext?.User?.Identity?.Name ?? "System";
+
+            await _db.Updateable(store)
+                .UpdateColumns(s => new
+                {
+                    s.Address,
+                    s.ContactEmail,
+                    s.UpdatedAt,
+                    s.UpdatedBy,
+                })
+                .ExecuteCommandAsync();
+
+            return ApiResponse<StoreOrderStoreContactDto>.OK(
+                new StoreOrderStoreContactDto
+                {
+                    OrderGUID = normalizedOrderGuid,
+                    StoreCode = store.StoreCode,
+                    Address = store.Address,
+                    ContactEmail = store.ContactEmail,
+                },
+                "更新分店联系信息成功"
+            );
+        }
+
+        public async Task<ApiResponse<bool>> SendInvoiceEmailAsync(SendStoreOrderInvoiceEmailDto request)
+        {
+            var normalizedOrderGuid = request.OrderGUID.Trim();
+            var order = await _db.Queryable<WareHouseOrder>()
+                .Where(o => o.OrderGUID == normalizedOrderGuid && !o.IsDeleted)
+                .FirstAsync();
+
+            if (order == null)
+            {
+                return ApiResponse<bool>.Error("订单不存在", "STORE_ORDER_NOT_FOUND");
+            }
+
+            var toEmail = request.ToEmail.Trim();
+            if (!new EmailAddressAttribute().IsValid(toEmail))
+            {
+                return ApiResponse<bool>.Error("收件邮箱格式不正确", "INVOICE_EMAIL_INVALID_TO");
+            }
+
+            if (string.IsNullOrWhiteSpace(request.PdfBase64))
+            {
+                return ApiResponse<bool>.Error("PDF 附件不能为空", "INVOICE_EMAIL_EMPTY_PDF");
+            }
+
+            byte[] pdfBytes;
+            try
+            {
+                pdfBytes = Convert.FromBase64String(request.PdfBase64.Trim());
+            }
+            catch (FormatException)
+            {
+                return ApiResponse<bool>.Error(
+                    "PDF 附件内容不是有效的 Base64",
+                    "INVOICE_EMAIL_INVALID_BASE64"
+                );
+            }
+
+            if (pdfBytes.Length == 0)
+            {
+                return ApiResponse<bool>.Error("PDF 附件不能为空", "INVOICE_EMAIL_EMPTY_PDF");
+            }
+
+            var subject = string.IsNullOrWhiteSpace(request.Subject)
+                ? $"分店订货发票 {order.OrderNo ?? normalizedOrderGuid}"
+                : request.Subject.Trim();
+            var body = string.IsNullOrWhiteSpace(request.Body)
+                ? "您好，附件为本次分店订货发票，请查收。"
+                : request.Body.Trim();
+            var pdfFileName = string.IsNullOrWhiteSpace(request.PdfFileName)
+                ? "invoice.pdf"
+                : request.PdfFileName.Trim();
+
+            return await _invoiceEmailService.SendInvoiceAsync(
+                new StoreOrderInvoiceEmailMessage
+                {
+                    ToEmail = toEmail,
+                    Subject = subject,
+                    Body = body,
+                    PdfFileName = pdfFileName,
+                    PdfBytes = pdfBytes,
+                }
+            );
         }
 
         public async Task<ApiResponse<List<string>>> GetOrderDetailProductCodesAsync(string orderGuid)
@@ -2058,11 +2198,11 @@ namespace BlazorApp.Api.Services.React
             var normalizedQuery = NormalizeStoreOrderDetailQuery(query);
             var accessibleStoreCodes = await GetAccessibleStoreCodesAsync();
             var order = await _db.Queryable<WareHouseOrder>()
-                .InnerJoin<Store>(
+                .LeftJoin<Store>(
                     (o, s) => o.StoreCode == s.StoreCode || o.StoreCode == s.StoreGUID
                 )
                 .Where(o => o.OrderGUID == orderGuid && !o.IsDeleted)
-                .Select((o, s) => new { Order = o, StoreAddress = s.Address })
+                .Select((o, s) => new { Order = o, StoreAddress = s.Address, StoreContactEmail = s.ContactEmail })
                 .FirstAsync();
 
             if (order == null)
@@ -2271,6 +2411,7 @@ namespace BlazorApp.Api.Services.React
                 TotalAllocVolume = summary?.TotalAllocVolume ?? 0,
                 Remarks = order.Order.Remarks,
                 StoreAddress = order.StoreAddress,
+                StoreContactEmail = order.StoreContactEmail,
                 ShippingFee = order.Order.ShippingFee,
                 FlowStatus = order.Order.FlowStatus,
                 Items = pageDetails,
@@ -3916,6 +4057,37 @@ namespace BlazorApp.Api.Services.React
         private static bool SameDecimal(decimal? left, decimal? right)
         {
             return left == right;
+        }
+
+        private async Task<Store?> GetStoreByCodeOrGuidAsync(string? storeCode)
+        {
+            if (string.IsNullOrWhiteSpace(storeCode))
+            {
+                return null;
+            }
+
+            var normalizedStoreCode = storeCode.Trim();
+            return await _db.Queryable<Store>()
+                .Where(s =>
+                    !s.IsDeleted
+                    && (s.StoreCode == normalizedStoreCode || s.StoreGUID == normalizedStoreCode)
+                )
+                .FirstAsync();
+        }
+
+        private static bool DoesOrderMatchStore(WareHouseOrder order, Store store)
+        {
+            return SameText(order.StoreCode, store.StoreCode) || SameText(order.StoreCode, store.StoreGUID);
+        }
+
+        private static string? NormalizeOptionalEmail(string? email)
+        {
+            if (string.IsNullOrWhiteSpace(email))
+            {
+                return null;
+            }
+
+            return email.Trim();
         }
 
         private static string? TrimLen(string? value, int maxLength)

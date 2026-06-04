@@ -306,6 +306,11 @@ namespace BlazorApp.Shared.DTOs
         public decimal? 调整浮率 { get; set; }
 
         /// <summary>
+        /// 国内价格
+        /// </summary>
+        public decimal? 国内价格 { get; set; }
+
+        /// <summary>
         /// 进口价格
         /// </summary>
         public decimal? 进口价格 { get; set; }
@@ -331,9 +336,39 @@ namespace BlazorApp.Shared.DTOs
         public decimal? 贴牌价格 { get; set; }
 
         /// <summary>
+        /// 单件装箱数
+        /// </summary>
+        public decimal? 单件装箱数 { get; set; }
+
+        /// <summary>
+        /// 单件体积
+        /// </summary>
+        public decimal? 单件体积 { get; set; }
+
+        /// <summary>
+        /// 装柜数量
+        /// </summary>
+        public decimal? 装柜数量 { get; set; }
+
+        /// <summary>
+        /// 合计装柜体积
+        /// </summary>
+        public decimal? 合计装柜体积 { get; set; }
+
+        /// <summary>
+        /// 合计装柜金额
+        /// </summary>
+        public decimal? 合计装柜金额 { get; set; }
+
+        /// <summary>
         /// 是否上架
         /// </summary>
         public bool? IsActive { get; set; }
+
+        /// <summary>
+        /// 跳过商品主数据和关联价格表同步，仅更新货柜明细
+        /// </summary>
+        public bool? SkipRelatedProductSync { get; set; }
     }
 
     /// <summary>

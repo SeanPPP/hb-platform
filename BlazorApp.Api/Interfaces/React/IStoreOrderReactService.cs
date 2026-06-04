@@ -79,6 +79,18 @@ namespace BlazorApp.Api.Interfaces.React
         Task<ApiResponse<StoreOrderCartDto?>> GetOrderDetailFullAsync(string orderGuid);
 
         /// <summary>
+        /// 更新订单关联分店的联系信息。
+        /// </summary>
+        Task<ApiResponse<StoreOrderStoreContactDto>> UpdateStoreContactAsync(
+            UpdateStoreOrderStoreContactDto request
+        );
+
+        /// <summary>
+        /// 发送订单发票邮件。
+        /// </summary>
+        Task<ApiResponse<bool>> SendInvoiceEmailAsync(SendStoreOrderInvoiceEmailDto request);
+
+        /// <summary>
         /// 获取订单已包含商品编码，用于远程分页详情页的跨页重复校验。
         /// </summary>
         Task<ApiResponse<List<string>>> GetOrderDetailProductCodesAsync(string orderGuid);

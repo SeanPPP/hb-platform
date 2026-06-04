@@ -1057,6 +1057,73 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         /// <summary>
+        /// 更新订单关联分店的联系信息。
+        /// </summary>
+        [HttpPost("store-contact/update")]
+        public async Task<IActionResult> UpdateStoreContact(
+            [FromBody] UpdateStoreOrderStoreContactDto request
+        )
+        {
+            try
+            {
+                var forbidden =
+                    await RequireAnyPermissionAsync(OrderEditPermissions)
+                    ?? await RequireOrderScopeAsync(request.OrderGUID)
+                    ?? await RequireStoreScopeAsync(request.StoreCode);
+                if (forbidden != null)
+                {
+                    return forbidden;
+                }
+
+                var result = await _service.UpdateStoreContactAsync(request);
+                if (result.Success)
+                {
+                    return Ok(new { success = true, data = result.Data, message = result.Message });
+                }
+
+                return BadRequest(new { success = false, message = result.Message });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "UpdateStoreContact failed");
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
+        /// <summary>
+        /// 发送订单发票邮件。
+        /// </summary>
+        [HttpPost("invoice/email")]
+        public async Task<IActionResult> SendInvoiceEmail(
+            [FromBody] SendStoreOrderInvoiceEmailDto request
+        )
+        {
+            try
+            {
+                var forbidden =
+                    await RequireAnyPermissionAsync(OrderEditPermissions)
+                    ?? await RequireOrderScopeAsync(request.OrderGUID);
+                if (forbidden != null)
+                {
+                    return forbidden;
+                }
+
+                var result = await _service.SendInvoiceEmailAsync(request);
+                if (result.Success)
+                {
+                    return Ok(new { success = true, message = result.Message });
+                }
+
+                return BadRequest(new { success = false, message = result.Message });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "SendInvoiceEmail failed");
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
+        /// <summary>
         /// 获取订单已包含商品编码，供分页明细页跨页去重使用。
         /// </summary>
         [HttpGet("detail/{orderGuid}/product-codes")]

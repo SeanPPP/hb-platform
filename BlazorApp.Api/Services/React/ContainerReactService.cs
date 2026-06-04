@@ -565,6 +565,11 @@ namespace BlazorApp.Api.Services.React
                         detail.AdjustmentRate = update.调整浮率.Value;
                         changed = true;
                     }
+                    if (update.国内价格.HasValue && detail.DomesticPrice != update.国内价格.Value)
+                    {
+                        detail.DomesticPrice = update.国内价格.Value;
+                        changed = true;
+                    }
                     if (update.进口价格.HasValue && detail.ImportPrice != update.进口价格.Value)
                     {
                         detail.ImportPrice = update.进口价格.Value;
@@ -578,6 +583,31 @@ namespace BlazorApp.Api.Services.React
                     if (update.贴牌价格.HasValue && detail.OEMPrice != update.贴牌价格.Value)
                     {
                         detail.OEMPrice = update.贴牌价格.Value;
+                        changed = true;
+                    }
+                    if (update.单件装箱数.HasValue && detail.PackingQuantity != update.单件装箱数.Value)
+                    {
+                        detail.PackingQuantity = update.单件装箱数.Value;
+                        changed = true;
+                    }
+                    if (update.单件体积.HasValue && detail.UnitVolume != update.单件体积.Value)
+                    {
+                        detail.UnitVolume = update.单件体积.Value;
+                        changed = true;
+                    }
+                    if (update.装柜数量.HasValue && detail.LoadingQuantity != update.装柜数量.Value)
+                    {
+                        detail.LoadingQuantity = update.装柜数量.Value;
+                        changed = true;
+                    }
+                    if (update.合计装柜体积.HasValue && detail.TotalVolume != update.合计装柜体积.Value)
+                    {
+                        detail.TotalVolume = update.合计装柜体积.Value;
+                        changed = true;
+                    }
+                    if (update.合计装柜金额.HasValue && detail.TotalAmount != update.合计装柜金额.Value)
+                    {
+                        detail.TotalAmount = update.合计装柜金额.Value;
                         changed = true;
                     }
                     if (update.IsActive.HasValue && detail.IsActive != update.IsActive.Value)
@@ -704,9 +734,15 @@ namespace BlazorApp.Api.Services.React
                                 .UpdateColumns(x => new
                                 {
                                     x.AdjustmentRate,
+                                    x.DomesticPrice,
                                     x.ImportPrice,
                                     x.TransportCost,
                                     x.OEMPrice,
+                                    x.PackingQuantity,
+                                    x.UnitVolume,
+                                    x.LoadingQuantity,
+                                    x.TotalVolume,
+                                    x.TotalAmount,
                                     x.IsActive,
                                 })
                                 .WhereColumns(x => new { x.DetailCode })
@@ -728,6 +764,7 @@ namespace BlazorApp.Api.Services.React
                         var existingProductUpdates = updates
                             .Where(u =>
                                 detailMap.TryGetValue(u.HGUID, out var d)
+                                && u.SkipRelatedProductSync != true
                                 && !string.IsNullOrEmpty(d.ProductCode)
                                 && productMap.ContainsKey(d.ProductCode)
                                 && (

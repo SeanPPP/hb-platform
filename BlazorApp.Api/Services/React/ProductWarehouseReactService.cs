@@ -71,8 +71,13 @@ namespace BlazorApp.Api.Services.React
                 .Where(n => !string.IsNullOrWhiteSpace(n))
                 .Distinct()
                 .ToList();
+            var barcodes = items
+                .Select(i => i.Barcode)
+                .Where(b => !string.IsNullOrWhiteSpace(b))
+                .Distinct()
+                .ToList();
 
-            if (!productCodes.Any() && !itemNumbers.Any())
+            if (!productCodes.Any() && !itemNumbers.Any() && !barcodes.Any())
             {
                 foreach (var item in items)
                 {
@@ -89,45 +94,87 @@ namespace BlazorApp.Api.Services.React
                 return results;
             }
 
-            var query = _context
-                .Db.Queryable<WarehouseProduct>()
-                .LeftJoin<Product>((w, p) => w.ProductCode == p.ProductCode);
-
-            if (productCodes.Any() && itemNumbers.Any())
+            var wpList = new List<DetectionWarehouseSnapshot>();
+            if (productCodes.Any())
             {
-                query = query.Where(
-                    (w, p) =>
-                        productCodes.Contains(w.ProductCode)
-                        || (p.ItemNumber != null && itemNumbers.Contains(p.ItemNumber))
+                wpList.AddRange(
+                    await SelectWarehouseSnapshotsAsync(
+                        BuildWarehouseDetectionQuery()
+                            .Where((w, p) => productCodes.Contains(w.ProductCode))
+                    )
                 );
             }
-            else if (productCodes.Any())
+            if (itemNumbers.Any())
             {
-                query = query.Where((w, p) => productCodes.Contains(w.ProductCode));
-            }
-            else if (itemNumbers.Any())
-            {
-                query = query.Where(
-                    (w, p) => p.ItemNumber != null && itemNumbers.Contains(p.ItemNumber)
+                wpList.AddRange(
+                    await SelectWarehouseSnapshotsAsync(
+                        BuildWarehouseDetectionQuery()
+                            .Where(
+                                (w, p) =>
+                                    p.ItemNumber != null && itemNumbers.Contains(p.ItemNumber)
+                            )
+                    )
                 );
             }
+            if (barcodes.Any())
+            {
+                wpList.AddRange(
+                    await SelectWarehouseSnapshotsAsync(
+                        BuildWarehouseDetectionQuery()
+                            .Where((w, p) => p.Barcode != null && barcodes.Contains(p.Barcode))
+                    )
+                );
+            }
+            wpList = wpList
+                .GroupBy(x => x.ProductCode ?? $"{x.ItemNumber}|{x.Barcode}")
+                .Select(g => g.First())
+                .ToList();
 
-            var wpList = await query
-                .Select(
-                    (w, p) =>
-                        new
-                        {
-                            w.ProductCode,
-                            ItemNumber = p.ItemNumber,
-                            p.EnglishName,
-                            w.DomesticPrice,
-                            w.OEMPrice,
-                            w.ImportPrice,
-                            w.Volume,
-                            w.IsActive,
-                        }
-                )
-                .ToListAsync();
+            var domesticList = new List<DetectionDomesticSnapshot>();
+            if (productCodes.Any())
+            {
+                domesticList.AddRange(
+                    await SelectDomesticSnapshotsAsync(
+                        _context
+                            .Db.Queryable<DomesticProduct>()
+                            .Where(dp => !dp.IsDeleted && productCodes.Contains(dp.ProductCode))
+                    )
+                );
+            }
+            if (itemNumbers.Any())
+            {
+                domesticList.AddRange(
+                    await SelectDomesticSnapshotsAsync(
+                        _context
+                            .Db.Queryable<DomesticProduct>()
+                            .Where(
+                                dp =>
+                                    !dp.IsDeleted
+                                    && dp.HBProductNo != null
+                                    && itemNumbers.Contains(dp.HBProductNo)
+                            )
+                    )
+                );
+            }
+            if (barcodes.Any())
+            {
+                domesticList.AddRange(
+                    await SelectDomesticSnapshotsAsync(
+                        _context
+                            .Db.Queryable<DomesticProduct>()
+                            .Where(
+                                dp =>
+                                    !dp.IsDeleted
+                                    && dp.Barcode != null
+                                    && barcodes.Contains(dp.Barcode)
+                            )
+                    )
+                );
+            }
+            domesticList = domesticList
+                .GroupBy(x => x.ProductCode ?? $"{x.ItemNumber}|{x.Barcode}")
+                .Select(g => g.First())
+                .ToList();
 
             var byCode = wpList
                 .GroupBy(x => x.ProductCode)
@@ -136,10 +183,27 @@ namespace BlazorApp.Api.Services.React
                 .Where(x => !string.IsNullOrWhiteSpace(x.ItemNumber))
                 .GroupBy(x => x.ItemNumber!)
                 .ToDictionary(g => g.Key, g => g.First());
+            var byBarcode = wpList
+                .Where(x => !string.IsNullOrWhiteSpace(x.Barcode))
+                .GroupBy(x => x.Barcode!)
+                .ToDictionary(g => g.Key, g => g.First());
+
+            var domesticByCode = domesticList
+                .Where(x => !string.IsNullOrWhiteSpace(x.ProductCode))
+                .GroupBy(x => x.ProductCode!)
+                .ToDictionary(g => g.Key, g => g.First());
+            var domesticByItem = domesticList
+                .Where(x => !string.IsNullOrWhiteSpace(x.ItemNumber))
+                .GroupBy(x => x.ItemNumber!)
+                .ToDictionary(g => g.Key, g => g.First());
+            var domesticByBarcode = domesticList
+                .Where(x => !string.IsNullOrWhiteSpace(x.Barcode))
+                .GroupBy(x => x.Barcode!)
+                .ToDictionary(g => g.Key, g => g.First());
 
             foreach (var item in items)
             {
-                var codeMatch =
+                DetectionWarehouseSnapshot? codeMatch =
                     (
                         !string.IsNullOrWhiteSpace(item.ProductCode)
                         && byCode.TryGetValue(item.ProductCode!, out var wpByCode)
@@ -153,8 +217,15 @@ namespace BlazorApp.Api.Services.React
                     )
                         ? wpByItem
                         : null;
+                var barcodeMatch =
+                    (
+                        !string.IsNullOrWhiteSpace(item.Barcode)
+                        && byBarcode.TryGetValue(item.Barcode!, out var wpByBarcode)
+                    )
+                        ? wpByBarcode
+                        : null;
 
-                var exists = codeMatch != null || itemMatch != null;
+                var exists = codeMatch != null || itemMatch != null || barcodeMatch != null;
                 var matchType = "none";
                 if (codeMatch != null && itemMatch != null)
                     matchType = "both";
@@ -162,26 +233,166 @@ namespace BlazorApp.Api.Services.React
                     matchType = "product_code";
                 else if (itemMatch != null)
                     matchType = "item_number";
+                else if (barcodeMatch != null)
+                    matchType = "barcode";
 
-                var source = codeMatch ?? itemMatch;
+                var warehouseSource = codeMatch ?? itemMatch ?? barcodeMatch;
+                var domesticSource = FindDomesticMatch(
+                    item,
+                    domesticByCode,
+                    domesticByItem,
+                    domesticByBarcode
+                );
+                var effectiveOemPrice = HasPositivePrice(warehouseSource?.OEMPrice)
+                    ? warehouseSource?.OEMPrice
+                    : domesticSource?.OEMPrice;
                 results.Add(
                     new DetectionResultDto
                     {
-                        ProductCode = item.ProductCode,
-                        ItemNumber = item.ItemNumber,
+                        ProductCode = item.ProductCode ?? warehouseSource?.ProductCode ?? domesticSource?.ProductCode,
+                        ItemNumber = item.ItemNumber ?? warehouseSource?.ItemNumber ?? domesticSource?.ItemNumber,
                         Exists = exists,
                         MatchType = matchType,
-                        WarehouseDomesticPrice = source?.DomesticPrice,
-                        WarehouseOEMPrice = source?.OEMPrice,
-                        WarehouseImportPrice = source?.ImportPrice,
-                        WarehouseVolume = source?.Volume,
-                        WarehouseIsActive = source?.IsActive,
-                        EnglishName = source?.EnglishName,
+                        ProductName = domesticSource?.ProductName ?? warehouseSource?.ProductName,
+                        EnglishName = domesticSource?.EnglishName ?? warehouseSource?.EnglishName,
+                        WarehouseDomesticPrice = warehouseSource?.DomesticPrice,
+                        WarehouseOEMPrice = effectiveOemPrice,
+                        WarehouseImportPrice = warehouseSource?.ImportPrice,
+                        WarehouseVolume = domesticSource?.UnitVolume ?? warehouseSource?.Volume,
+                        PackingQuantity = domesticSource?.PackingQuantity ?? warehouseSource?.PackingQuantity,
+                        DomesticPrice = domesticSource?.DomesticPrice,
+                        DomesticOEMPrice = domesticSource?.OEMPrice,
+                        DomesticImportPrice = domesticSource?.ImportPrice,
+                        WarehouseIsActive = warehouseSource?.IsActive,
                     }
                 );
             }
 
             return results;
+        }
+
+        private ISugarQueryable<WarehouseProduct, Product> BuildWarehouseDetectionQuery()
+        {
+            return _context
+                .Db.Queryable<WarehouseProduct>()
+                .LeftJoin<Product>((w, p) => w.ProductCode == p.ProductCode);
+        }
+
+        private static Task<List<DetectionWarehouseSnapshot>> SelectWarehouseSnapshotsAsync(
+            ISugarQueryable<WarehouseProduct, Product> query
+        )
+        {
+            return query
+                .Select(
+                    (w, p) =>
+                        new DetectionWarehouseSnapshot
+                        {
+                            ProductCode = w.ProductCode,
+                            ItemNumber = p.ItemNumber,
+                            Barcode = p.Barcode,
+                            ProductName = p.ProductName,
+                            EnglishName = p.EnglishName,
+                            DomesticPrice = w.DomesticPrice,
+                            OEMPrice = w.OEMPrice,
+                            ImportPrice = w.ImportPrice,
+                            Volume = w.Volume,
+                            PackingQuantity = w.PackingQuantity,
+                            IsActive = w.IsActive,
+                        }
+                )
+                .ToListAsync();
+        }
+
+        private static Task<List<DetectionDomesticSnapshot>> SelectDomesticSnapshotsAsync(
+            ISugarQueryable<DomesticProduct> query
+        )
+        {
+            return query
+                .Select(
+                    dp =>
+                        new DetectionDomesticSnapshot
+                        {
+                            ProductCode = dp.ProductCode,
+                            ItemNumber = dp.HBProductNo,
+                            Barcode = dp.Barcode,
+                            ProductName = dp.ProductName,
+                            EnglishName = dp.EnglishProductName,
+                            DomesticPrice = dp.DomesticPrice,
+                            OEMPrice = dp.OEMPrice,
+                            ImportPrice = dp.ImportPrice,
+                            UnitVolume = dp.UnitVolume,
+                            PackingQuantity = dp.PackingQuantity,
+                        }
+                )
+                .ToListAsync();
+        }
+
+        private static bool HasPositivePrice(decimal? value)
+        {
+            return value.HasValue && value.Value > 0;
+        }
+
+        private static DetectionDomesticSnapshot? FindDomesticMatch(
+            DetectionItemDto item,
+            Dictionary<string, DetectionDomesticSnapshot> byCode,
+            Dictionary<string, DetectionDomesticSnapshot> byItem,
+            Dictionary<string, DetectionDomesticSnapshot> byBarcode
+        )
+        {
+            if (
+                !string.IsNullOrWhiteSpace(item.ProductCode)
+                && byCode.TryGetValue(item.ProductCode!, out var codeMatch)
+            )
+            {
+                return codeMatch;
+            }
+
+            if (
+                !string.IsNullOrWhiteSpace(item.ItemNumber)
+                && byItem.TryGetValue(item.ItemNumber!, out var itemMatch)
+            )
+            {
+                return itemMatch;
+            }
+
+            if (
+                !string.IsNullOrWhiteSpace(item.Barcode)
+                && byBarcode.TryGetValue(item.Barcode!, out var barcodeMatch)
+            )
+            {
+                return barcodeMatch;
+            }
+
+            return null;
+        }
+
+        private sealed class DetectionWarehouseSnapshot
+        {
+            public string? ProductCode { get; set; }
+            public string? ItemNumber { get; set; }
+            public string? Barcode { get; set; }
+            public string? ProductName { get; set; }
+            public string? EnglishName { get; set; }
+            public decimal? DomesticPrice { get; set; }
+            public decimal? OEMPrice { get; set; }
+            public decimal? ImportPrice { get; set; }
+            public decimal? Volume { get; set; }
+            public decimal? PackingQuantity { get; set; }
+            public bool? IsActive { get; set; }
+        }
+
+        private sealed class DetectionDomesticSnapshot
+        {
+            public string? ProductCode { get; set; }
+            public string? ItemNumber { get; set; }
+            public string? Barcode { get; set; }
+            public string? ProductName { get; set; }
+            public string? EnglishName { get; set; }
+            public decimal? DomesticPrice { get; set; }
+            public decimal? OEMPrice { get; set; }
+            public decimal? ImportPrice { get; set; }
+            public decimal? UnitVolume { get; set; }
+            public decimal? PackingQuantity { get; set; }
         }
 
         /// <summary>
@@ -3223,113 +3434,72 @@ namespace BlazorApp.Api.Services.React
             {
                 _context.Db.Ado.BeginTran();
 
-                var warehouseProducts = await _context
+                var existingCodes = await _context
                     .Db.Queryable<WarehouseProduct>()
-                    .Where(w => productCodes.Contains(w.ProductCode))
-                    .ToListAsync();
-                var products = await _context
-                    .Db.Queryable<Product>()
-                    .Where(p => productCodes.Contains(p.ProductCode))
-                    .ToListAsync();
-                var domesticProducts = await _context
-                    .Db.Queryable<DomesticProduct>()
-                    .Where(dp => productCodes.Contains(dp.ProductCode) && !dp.IsDeleted)
-                    .ToListAsync();
-                var storeRetailPrices = await _context
-                    .Db.Queryable<StoreRetailPrice>()
-                    .Where(srp => productCodes.Contains(srp.ProductCode) && !srp.IsDeleted)
-                    .ToListAsync();
-                var storeMultiCodeProducts = await _context
-                    .Db.Queryable<StoreMultiCodeProduct>()
-                    .Where(mcp => productCodes.Contains(mcp.ProductCode) && !mcp.IsDeleted)
+                    .Where(w => productCodes.Contains(w.ProductCode) && !w.IsDeleted)
+                    .Select(w => w.ProductCode)
                     .ToListAsync();
 
                 var now = DateTime.Now;
-                var existingCodes = warehouseProducts.Select(w => w.ProductCode).ToHashSet();
+                var validWarehouseProductCodes = existingCodes.Distinct().ToList();
+                var existingCodeSet = validWarehouseProductCodes.ToHashSet();
                 var missingCodes = productCodes
-                    .Where(code => !existingCodes.Contains(code))
+                    .Where(code => !existingCodeSet.Contains(code))
                     .ToList();
 
-                foreach (var item in warehouseProducts)
-                {
-                    item.IsActive = request.IsActive;
-                    item.UpdatedAt = now;
-                }
-
-                foreach (var item in products)
-                {
-                    item.IsActive = request.IsActive;
-                    item.UpdatedAt = now;
-                }
-
-                foreach (var item in domesticProducts)
-                {
-                    item.IsActive = request.IsActive;
-                    item.UpdatedAt = now;
-                    item.UpdatedBy = "System";
-                }
-
-                foreach (var item in storeRetailPrices)
-                {
-                    item.IsActive = request.IsActive;
-                    item.UpdatedAt = now;
-                }
-
-                foreach (var item in storeMultiCodeProducts)
-                {
-                    item.IsActive = request.IsActive;
-                    item.UpdatedAt = now;
-                }
-
-                if (warehouseProducts.Any())
+                if (validWarehouseProductCodes.Any())
                 {
                     await _context
-                        .Db.Updateable(warehouseProducts)
-                        .UpdateColumns(w => new { w.IsActive, w.UpdatedAt })
+                        .Db.Updateable<WarehouseProduct>()
+                        .SetColumns(w => w.IsActive == request.IsActive)
+                        .SetColumns(w => w.UpdatedAt == now)
+                        .Where(w => validWarehouseProductCodes.Contains(w.ProductCode) && !w.IsDeleted)
                         .ExecuteCommandAsync();
-                }
 
-                if (products.Any())
-                {
                     await _context
-                        .Db.Updateable(products)
-                        .UpdateColumns(p => new { p.IsActive, p.UpdatedAt })
+                        .Db.Updateable<Product>()
+                        .SetColumns(p => p.IsActive == request.IsActive)
+                        .SetColumns(p => p.UpdatedAt == now)
+                        .Where(p =>
+                            p.ProductCode != null && validWarehouseProductCodes.Contains(p.ProductCode)
+                        )
                         .ExecuteCommandAsync();
-                }
 
-                if (domesticProducts.Any())
-                {
                     await _context
-                        .Db.Updateable(domesticProducts)
-                        .UpdateColumns(dp => new
-                        {
-                            dp.IsActive,
-                            dp.UpdatedAt,
-                            dp.UpdatedBy,
-                        })
+                        .Db.Updateable<DomesticProduct>()
+                        .SetColumns(dp => dp.IsActive == request.IsActive)
+                        .SetColumns(dp => dp.UpdatedAt == now)
+                        .SetColumns(dp => dp.UpdatedBy == "System")
+                        .Where(dp => validWarehouseProductCodes.Contains(dp.ProductCode) && !dp.IsDeleted)
                         .ExecuteCommandAsync();
-                }
 
-                if (storeRetailPrices.Any())
-                {
                     await _context
-                        .Db.Updateable(storeRetailPrices)
-                        .UpdateColumns(srp => new { srp.IsActive, srp.UpdatedAt })
+                        .Db.Updateable<StoreRetailPrice>()
+                        .SetColumns(srp => srp.IsActive == request.IsActive)
+                        .SetColumns(srp => srp.UpdatedAt == now)
+                        .Where(srp =>
+                            srp.ProductCode != null
+                            && validWarehouseProductCodes.Contains(srp.ProductCode)
+                            && !srp.IsDeleted
+                        )
                         .ExecuteCommandAsync();
-                }
 
-                if (storeMultiCodeProducts.Any())
-                {
                     await _context
-                        .Db.Updateable(storeMultiCodeProducts)
-                        .UpdateColumns(mcp => new { mcp.IsActive, mcp.UpdatedAt })
+                        .Db.Updateable<StoreMultiCodeProduct>()
+                        .SetColumns(mcp => mcp.IsActive == request.IsActive)
+                        .SetColumns(mcp => mcp.UpdatedAt == now)
+                        .Where(mcp =>
+                            mcp.ProductCode != null
+                            && validWarehouseProductCodes.Contains(mcp.ProductCode)
+                            && !mcp.IsDeleted
+                        )
                         .ExecuteCommandAsync();
                 }
 
                 _context.Db.Ado.CommitTran();
 
                 result.Success = missingCodes.Count == 0;
-                result.SuccessCount = warehouseProducts.Count;
+                result.SuccessCount = validWarehouseProductCodes.Count;
                 result.FailedCount = missingCodes.Count;
                 if (missingCodes.Any())
                 {

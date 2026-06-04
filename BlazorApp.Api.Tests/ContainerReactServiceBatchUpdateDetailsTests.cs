@@ -129,6 +129,64 @@ public sealed class ContainerReactServiceBatchUpdateDetailsTests : IDisposable
     }
 
     [Fact]
+    public async Task BatchUpdateDetailsAsync_国内价格和贴牌价格变化_应更新货柜明细()
+    {
+        await SeedDetailAndProductAsync("D-DOMESTIC-OEM", "P-DOMESTIC-OEM", englishName: "Old English");
+        var service = CreateService();
+
+        var totalUpdated = await service.BatchUpdateDetailsAsync(
+            new List<UpdateContainerDetailDto>
+            {
+                new()
+                {
+                    HGUID = "D-DOMESTIC-OEM",
+                    国内价格 = 11.60m,
+                    贴牌价格 = 6.99m,
+                },
+            }
+        );
+
+        var detail = await _localDb.Queryable<ContainerDetail>()
+            .SingleAsync(x => x.DetailCode == "D-DOMESTIC-OEM");
+
+        Assert.Equal(1, totalUpdated);
+        Assert.Equal(11.60m, detail.DomesticPrice);
+        Assert.Equal(6.99m, detail.OEMPrice);
+    }
+
+    [Fact]
+    public async Task BatchUpdateDetailsAsync_装箱体积和统计字段变化_应更新货柜明细()
+    {
+        await SeedDetailAndProductAsync("D-PACKING-VOLUME", "P-PACKING-VOLUME", englishName: "Old English");
+        var service = CreateService();
+
+        var totalUpdated = await service.BatchUpdateDetailsAsync(
+            new List<UpdateContainerDetailDto>
+            {
+                new()
+                {
+                    HGUID = "D-PACKING-VOLUME",
+                    单件装箱数 = 48m,
+                    单件体积 = 0.118m,
+                    装柜数量 = 96m,
+                    合计装柜体积 = 0.236m,
+                    合计装柜金额 = 1336.32m,
+                },
+            }
+        );
+
+        var detail = await _localDb.Queryable<ContainerDetail>()
+            .SingleAsync(x => x.DetailCode == "D-PACKING-VOLUME");
+
+        Assert.Equal(1, totalUpdated);
+        Assert.Equal(48m, detail.PackingQuantity);
+        Assert.Equal(0.118m, detail.UnitVolume);
+        Assert.Equal(96m, detail.LoadingQuantity);
+        Assert.Equal(0.236m, detail.TotalVolume);
+        Assert.Equal(1336.32m, detail.TotalAmount);
+    }
+
+    [Fact]
     public async Task BatchUpdateDetailsAsync_价格贴牌和上下架变化_应保持关联表同步()
     {
         await SeedDetailAndProductAsync("D-SYNC-PRICE", "P-SYNC-PRICE", englishName: "Old English");
@@ -167,6 +225,48 @@ public sealed class ContainerReactServiceBatchUpdateDetailsTests : IDisposable
         Assert.False(warehouseProduct.IsActive);
         Assert.Equal(8.88m, product.PurchasePrice);
         Assert.All(storeRetailPrices, row => Assert.Equal(8.88m, row.PurchasePrice));
+    }
+
+    [Fact]
+    public async Task BatchUpdateDetailsAsync_跳过关联同步_应只更新货柜明细()
+    {
+        await SeedDetailAndProductAsync("D-SKIP-SYNC", "P-SKIP-SYNC", englishName: "Old English");
+        await SeedRelatedPriceRowsAsync("P-SKIP-SYNC");
+        var service = CreateService();
+
+        var totalUpdated = await service.BatchUpdateDetailsAsync(
+            new List<UpdateContainerDetailDto>
+            {
+                new()
+                {
+                    HGUID = "D-SKIP-SYNC",
+                    进口价格 = 8.88m,
+                    贴牌价格 = 9.99m,
+                    IsActive = false,
+                    SkipRelatedProductSync = true,
+                },
+            }
+        );
+
+        var detail = await _localDb.Queryable<ContainerDetail>()
+            .SingleAsync(x => x.DetailCode == "D-SKIP-SYNC");
+        var warehouseProduct = await _localDb.Queryable<WarehouseProduct>()
+            .SingleAsync(x => x.ProductCode == "P-SKIP-SYNC");
+        var product = await _localDb.Queryable<Product>()
+            .SingleAsync(x => x.ProductCode == "P-SKIP-SYNC");
+        var storeRetailPrices = await _localDb.Queryable<StoreRetailPrice>()
+            .Where(x => x.ProductCode == "P-SKIP-SYNC")
+            .ToListAsync();
+
+        Assert.Equal(1, totalUpdated);
+        Assert.Equal(8.88m, detail.ImportPrice);
+        Assert.Equal(9.99m, detail.OEMPrice);
+        Assert.False(detail.IsActive);
+        Assert.Equal(1.11m, warehouseProduct.ImportPrice);
+        Assert.Equal(2.22m, warehouseProduct.OEMPrice);
+        Assert.True(warehouseProduct.IsActive);
+        Assert.Equal(1.11m, product.PurchasePrice);
+        Assert.All(storeRetailPrices, row => Assert.Equal(1.11m, row.PurchasePrice));
     }
 
     [Fact]

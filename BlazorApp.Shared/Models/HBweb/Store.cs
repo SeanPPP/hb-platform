@@ -32,6 +32,12 @@ namespace BlazorApp.Shared.Models
         public string? Address { get; set; }
 
         /// <summary>
+        /// 联系邮箱
+        /// </summary>
+        [SugarColumn(IsNullable = true, Length = 100)]
+        public string? ContactEmail { get; set; }
+
+        /// <summary>
         /// 澳大利亚商业号码
         /// </summary>
         [SugarColumn(IsNullable = true, Length = 20)]

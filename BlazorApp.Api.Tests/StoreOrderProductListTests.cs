@@ -537,7 +537,8 @@ public sealed class StoreOrderProductListTests : IDisposable
             new HttpContextAccessor(),
             Mock.Of<IOrderNumberGenerator>(),
             new ConfigurationBuilder().Build(),
-            Mock.Of<IMapper>()
+            Mock.Of<IMapper>(),
+            Mock.Of<IInvoiceEmailService>()
         );
     }
 }

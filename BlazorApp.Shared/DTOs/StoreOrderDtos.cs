@@ -183,6 +183,11 @@ namespace BlazorApp.Shared.DTOs
     /// </summary>
     public string? StoreAddress { get; set; }
 
+    /// <summary>
+    /// 分店联系邮箱
+    /// </summary>
+    public string? StoreContactEmail { get; set; }
+
     public DateTime? OrderDate { get; set; }
 
     public int TotalAllocQuantity { get; set; }
@@ -887,4 +892,137 @@ public class BatchUpdateOrderStatusDto
     /// </summary>
     [Required]
     public int NewStatus { get; set; }
+}
+
+/// <summary>
+/// 更新订单关联分店联系信息请求
+/// </summary>
+public class UpdateStoreOrderStoreContactDto
+{
+    /// <summary>
+    /// 订单 GUID
+    /// </summary>
+    [Required]
+    public string OrderGUID { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 分店代码
+    /// </summary>
+    [Required]
+    public string StoreCode { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 分店地址
+    /// </summary>
+    [StringLength(500, ErrorMessage = "地址长度不能超过500个字符")]
+    public string? Address { get; set; }
+
+    /// <summary>
+    /// 分店联系邮箱
+    /// </summary>
+    [EmailAddress(ErrorMessage = "联系邮箱格式不正确")]
+    [StringLength(100, ErrorMessage = "联系邮箱长度不能超过100个字符")]
+    public string? ContactEmail { get; set; }
+}
+
+/// <summary>
+/// 订单关联分店联系信息
+/// </summary>
+public class StoreOrderStoreContactDto
+{
+    /// <summary>
+    /// 订单 GUID
+    /// </summary>
+    public string OrderGUID { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 分店代码
+    /// </summary>
+    public string StoreCode { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 分店地址
+    /// </summary>
+    public string? Address { get; set; }
+
+    /// <summary>
+    /// 分店联系邮箱
+    /// </summary>
+    public string? ContactEmail { get; set; }
+}
+
+/// <summary>
+/// 发送分店订货发票邮件请求
+/// </summary>
+public class SendStoreOrderInvoiceEmailDto
+{
+    /// <summary>
+    /// 订单 GUID
+    /// </summary>
+    [Required]
+    public string OrderGUID { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 收件邮箱
+    /// </summary>
+    [Required]
+    [EmailAddress(ErrorMessage = "收件邮箱格式不正确")]
+    [StringLength(100, ErrorMessage = "收件邮箱长度不能超过100个字符")]
+    public string ToEmail { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 邮件主题
+    /// </summary>
+    [StringLength(200, ErrorMessage = "邮件主题长度不能超过200个字符")]
+    public string? Subject { get; set; }
+
+    /// <summary>
+    /// 邮件正文
+    /// </summary>
+    [StringLength(10000, ErrorMessage = "邮件正文长度不能超过10000个字符")]
+    public string? Body { get; set; }
+
+    /// <summary>
+    /// PDF 文件名
+    /// </summary>
+    [Required]
+    [StringLength(255, ErrorMessage = "PDF 文件名长度不能超过255个字符")]
+    public string PdfFileName { get; set; } = string.Empty;
+
+    /// <summary>
+    /// PDF Base64 内容
+    /// </summary>
+    [Required]
+    public string PdfBase64 { get; set; } = string.Empty;
+}
+
+/// <summary>
+/// 发票邮件发送消息
+/// </summary>
+public class StoreOrderInvoiceEmailMessage
+{
+    /// <summary>
+    /// 收件邮箱
+    /// </summary>
+    public string ToEmail { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 邮件主题
+    /// </summary>
+    public string Subject { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 邮件正文
+    /// </summary>
+    public string Body { get; set; } = string.Empty;
+
+    /// <summary>
+    /// PDF 附件文件名
+    /// </summary>
+    public string PdfFileName { get; set; } = string.Empty;
+
+    /// <summary>
+    /// PDF 附件内容
+    /// </summary>
+    public byte[] PdfBytes { get; set; } = Array.Empty<byte>();
 }

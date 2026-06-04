@@ -55,6 +55,7 @@
     <Compile Include="StoreVoucherReactRouteTests.cs" />
     <Compile Include="ReactStoreOrderAuthorizationTests.cs" />
     <Compile Include="StoreOrderProductListTests.cs" />
+    <Compile Include="StoreOrderContactAndInvoiceTests.cs" />
     <Compile Include="StoreOrderHqSyncTests.cs" />
     <Compile Include="AdvertisementReactServiceTests.cs" />
     <Compile Include="ProductReactServiceHqSyncTests.cs" />

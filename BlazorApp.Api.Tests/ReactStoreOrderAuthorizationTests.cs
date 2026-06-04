@@ -990,6 +990,77 @@ public class ReactStoreOrderAuthorizationTests
         service.Verify(item => item.GetOrderDetailFullAsync("order-1"), Times.Once);
     }
 
+    [Fact]
+    public async Task UpdateStoreContact_RequiresEditPermissionAndScopesBeforeCallingService()
+    {
+        var request = new UpdateStoreOrderStoreContactDto
+        {
+            OrderGUID = "order-1",
+            StoreCode = "S001",
+            Address = "updated address",
+            ContactEmail = "updated@example.com",
+        };
+        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        service
+            .Setup(item => item.UpdateStoreContactAsync(request))
+            .ReturnsAsync(
+                ApiResponse<StoreOrderStoreContactDto>.OK(
+                    new StoreOrderStoreContactDto
+                    {
+                        OrderGUID = "order-1",
+                        StoreCode = "S001",
+                        Address = "updated address",
+                        ContactEmail = "updated@example.com",
+                    }
+                )
+            );
+
+        var scopeService = CreateScopeService();
+        scopeService.Setup(item => item.CanAccessOrderAsync("order-1")).ReturnsAsync(true);
+        scopeService.Setup(item => item.CanAccessStoreCodeAsync("S001")).ReturnsAsync(true);
+
+        var controller = CreateController(
+            service,
+            CreateAuthorizationService(Permissions.Orders.Edit),
+            scopeService
+        );
+
+        var result = await controller.UpdateStoreContact(request);
+
+        Assert.IsType<OkObjectResult>(result);
+        service.Verify(item => item.UpdateStoreContactAsync(request), Times.Once);
+    }
+
+    [Fact]
+    public async Task SendInvoiceEmail_UsesEditPermissionAndOrderScope()
+    {
+        var request = new SendStoreOrderInvoiceEmailDto
+        {
+            OrderGUID = "order-1",
+            ToEmail = "customer@example.com",
+            PdfFileName = "invoice.pdf",
+            PdfBase64 = Convert.ToBase64String(new byte[] { 1, 2, 3 }),
+        };
+        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        service
+            .Setup(item => item.SendInvoiceEmailAsync(request))
+            .ReturnsAsync(ApiResponse<bool>.OK(true, "发票邮件发送成功"));
+
+        var scopeService = CreateScopeService();
+        scopeService.Setup(item => item.CanAccessOrderAsync("order-1")).ReturnsAsync(true);
+
+        var controller = CreateController(
+            service,
+            CreateAuthorizationService(Permissions.Orders.Edit),
+            scopeService
+        );
+
+        var result = await controller.SendInvoiceEmail(request);
+
+        Assert.IsType<OkObjectResult>(result);
+        service.Verify(item => item.SendInvoiceEmailAsync(request), Times.Once);
+    }
+
     private static ReactStoreOrderController CreateController(
         Mock<IStoreOrderReactService> service,
         Mock<IAuthorizationService> authorizationService,

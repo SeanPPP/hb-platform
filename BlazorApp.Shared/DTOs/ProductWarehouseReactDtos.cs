@@ -27,12 +27,17 @@ namespace BlazorApp.Shared.DTOs
         /// </summary>
         public string MatchType { get; set; } = "none";
 
+        public string? ProductName { get; set; }
+        public string? EnglishName { get; set; }
         public decimal? WarehouseDomesticPrice { get; set; }
         public decimal? WarehouseOEMPrice { get; set; }
         public decimal? WarehouseImportPrice { get; set; }
         public decimal? WarehouseVolume { get; set; }
+        public decimal? PackingQuantity { get; set; }
+        public decimal? DomesticPrice { get; set; }
+        public decimal? DomesticOEMPrice { get; set; }
+        public decimal? DomesticImportPrice { get; set; }
         public bool? WarehouseIsActive { get; set; }
-        public string? EnglishName { get; set; }
     }
 
     /// <summary>

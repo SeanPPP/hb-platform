@@ -12,6 +12,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
+using Moq;
 using SqlSugar;
 using Xunit;
 
@@ -979,7 +980,8 @@ public sealed class StoreOrderHqSyncTests : IDisposable
             new HttpContextAccessor(),
             new StubOrderNumberGenerator(),
             CreateHqConfiguration(_hqConnection.ConnectionString),
-            _mapper
+            _mapper,
+            Mock.Of<IInvoiceEmailService>()
         );
 
         var factoryField = typeof(StoreOrderReactService).GetField(
