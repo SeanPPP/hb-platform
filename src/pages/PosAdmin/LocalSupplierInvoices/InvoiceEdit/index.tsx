@@ -29,6 +29,7 @@ import {
   Row,
   Select,
   Space,
+  Switch,
   Table,
   Tag,
   Tooltip,
@@ -553,6 +554,7 @@ export default function InvoiceEditPage() {
   const [pasteText, setPasteText] = useState('')
   const [pasteLoading, setPasteLoading] = useState(false)
   const [pasteFieldOrder, setPasteFieldOrder] = useState<PasteFieldKey[]>(loadSavedPasteFieldOrder)
+  const [normalizeRetailPriceOnPaste, setNormalizeRetailPriceOnPaste] = useState(true)
 
   /* ---- 批量编辑 Modal ---- */
   const [batchEditVisible, setBatchEditVisible] = useState(false)
@@ -797,6 +799,10 @@ export default function InvoiceEditPage() {
   )
   const pasteColumnCount = useMemo(() => getPasteTextMaxColumnCount(pasteText), [pasteText])
   const hasDuplicatePasteField = useMemo(() => hasDuplicatePasteFields(pasteFieldOrder), [pasteFieldOrder])
+  const pasteParseOptions = useMemo(
+    () => ({ normalizeRetailPrice: normalizeRetailPriceOnPaste }),
+    [normalizeRetailPriceOnPaste],
+  )
 
   useEffect(() => {
     if (pasteColumnCount <= pasteFieldOrder.length) return
@@ -942,7 +948,7 @@ export default function InvoiceEditPage() {
       return
     }
 
-    const parsed = parsePasteText(pasteText, pasteFieldOrder)
+    const parsed = parsePasteText(pasteText, pasteFieldOrder, pasteParseOptions)
     if (!parsed.length) {
       message.warning(t('posAdmin.invoiceDetail.noValidData', '未检测到有效数据'))
       return
@@ -2345,6 +2351,22 @@ export default function InvoiceEditPage() {
           {t('posAdmin.invoiceDetail.pasteHint', '请从 Excel 复制数据后粘贴到下方文本框。每行一条记录，可在下方调整列对应字段（Tab 分隔）')}
         </div>
         <div style={{ marginBottom: 12 }}>
+          <Space size={8} align="center" wrap>
+            {/* 只影响粘贴映射为“零售价”的列，进货价和新自动零售价保持原始粘贴值。 */}
+            <Switch
+              size="small"
+              checked={normalizeRetailPriceOnPaste}
+              onChange={setNormalizeRetailPriceOnPaste}
+            />
+            <span style={{ color: '#666', fontSize: 12 }}>
+              {t('posAdmin.invoiceDetail.normalizeRetailPriceOnPaste', '零售价小数规范化')}
+            </span>
+            <span style={{ color: '#999', fontSize: 12 }}>
+              {t('posAdmin.invoiceDetail.normalizeRetailPriceOnPasteHint', '5→4.99，4.1→4.50，4.6→4.99；1和2不变')}
+            </span>
+          </Space>
+        </div>
+        <div style={{ marginBottom: 12 }}>
           <Space style={{ marginBottom: 8, width: '100%', justifyContent: 'space-between' }}>
             <span style={{ color: '#666', fontSize: 12 }}>
               {t('posAdmin.invoiceDetail.pasteFieldOrderTitle', '列对应字段')}
@@ -2386,7 +2408,7 @@ export default function InvoiceEditPage() {
         />
         {pasteText.trim() && (
           <div style={{ marginTop: 8, color: '#999', fontSize: 12 }}>
-            {t('posAdmin.invoiceDetail.parsedRows', '已识别 {{count}} 行数据', { count: parsePasteText(pasteText, pasteFieldOrder).length })}
+            {t('posAdmin.invoiceDetail.parsedRows', '已识别 {{count}} 行数据', { count: parsePasteText(pasteText, pasteFieldOrder, pasteParseOptions).length })}
           </div>
         )}
       </Modal>

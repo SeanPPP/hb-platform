@@ -592,7 +592,8 @@ async function main() {
   const pasteFieldOrderUiFailure = await runTest('编辑页粘贴弹窗应提供列字段映射并本地记住配置', () => {
     assert(editPageSource.includes('pasteFieldOrder'), '编辑页应维护 pasteFieldOrder 状态')
     assert(editPageSource.includes('hbweb_rv.localSupplierInvoice.pasteFieldOrder.v1'), '编辑页应使用固定 localStorage key 保存列顺序')
-    assert(editPageSource.includes('parsePasteText(pasteText, pasteFieldOrder)'), '提交和预览应使用当前列字段映射解析')
+    assert(editPageSource.includes('normalizeRetailPriceOnPaste'), '编辑页应维护零售价小数规范化开关')
+    assert(editPageSource.includes('parsePasteText(pasteText, pasteFieldOrder, pasteParseOptions)'), '提交和预览应使用当前列字段映射和粘贴解析选项解析')
     assert(editPageSource.includes('pasteFieldDuplicateWarning'), '编辑页应提供重复字段校验提示')
     assert(editPageSource.includes('pasteRestoreDefaultOrder'), '编辑页应提供恢复默认列顺序入口')
     assert(editPageSource.includes('pasteFieldSkip'), '编辑页应提供跳过列选项')
