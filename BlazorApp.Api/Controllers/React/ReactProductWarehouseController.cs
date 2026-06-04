@@ -101,7 +101,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPatch("mobile/{productCode}")]
-        [Authorize(Roles = "Admin,WarehouseManager")]
+        [Authorize(Roles = "Admin,WarehouseManager,WarehouseStaff")]
         public async Task<IActionResult> PatchMobileProduct(
             string productCode,
             [FromBody] WarehouseMobileProductPatchDto dto
@@ -130,7 +130,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPut("mobile/{productCode}/location")]
-        [Authorize(Roles = "Admin,WarehouseManager")]
+        [AllowAnonymous]
         public async Task<IActionResult> SetMobileProductLocation(
             string productCode,
             [FromBody] SetWarehouseProductLocationDto dto
@@ -138,33 +138,61 @@ namespace BlazorApp.Api.Controllers.React
         {
             try
             {
+                var access = await ResolveWriteAccessAsync();
+                if (!access.IsAllowed)
+                {
+                    Console.WriteLine(
+                        $"[ReactProductWarehouse.SetMobileProductLocation] 授权失败 ProductCode={productCode}, Message={access.Message}"
+                    );
+                    return Unauthorized(new { success = false, message = access.Message });
+                }
+
                 if (dto == null)
                 {
+                    Console.WriteLine(
+                        $"[ReactProductWarehouse.SetMobileProductLocation] 请求参数为空 ProductCode={productCode}"
+                    );
                     return BadRequest(new { success = false, message = "请求参数不能为空" });
                 }
+
+                Console.WriteLine(
+                    $"[ReactProductWarehouse.SetMobileProductLocation] 收到绑定请求 ProductCode={productCode}, LocationGuid={dto.LocationGuid}"
+                );
 
                 var item = await _service.SetMobileProductLocationAsync(productCode, dto.LocationGuid);
                 if (item == null)
                 {
+                    Console.WriteLine(
+                        $"[ReactProductWarehouse.SetMobileProductLocation] 绑定失败：商品不存在 ProductCode={productCode}, LocationGuid={dto.LocationGuid}"
+                    );
                     return NotFound(new { success = false, message = "商品不存在" });
                 }
 
+                Console.WriteLine(
+                    $"[ReactProductWarehouse.SetMobileProductLocation] 绑定成功 ProductCode={productCode}, LocationGuid={dto.LocationGuid}, SavedLocationCode={item.LocationCode}"
+                );
                 return Ok(new { success = true, data = item, message = "货位更新成功" });
             }
             catch (InvalidOperationException ex)
             {
+                Console.WriteLine(
+                    $"[ReactProductWarehouse.SetMobileProductLocation] 绑定失败 ProductCode={productCode}, LocationGuid={dto?.LocationGuid}, Message={ex.Message}"
+                );
                 _logger.LogWarning(ex, "更新移动端商品货位参数无效: {ProductCode}", productCode);
                 return BadRequest(new { success = false, message = ex.Message });
             }
             catch (Exception ex)
             {
+                Console.WriteLine(
+                    $"[ReactProductWarehouse.SetMobileProductLocation] 绑定异常 ProductCode={productCode}, LocationGuid={dto?.LocationGuid}, Error={ex}"
+                );
                 _logger.LogError(ex, "更新移动端商品货位失败: {ProductCode}", productCode);
                 return StatusCode(500, new { success = false, message = "服务器内部错误" });
             }
         }
 
         [HttpPost("mobile/{productCode}/image-upload-signature")]
-        [Authorize(Roles = "Admin,WarehouseManager")]
+        [Authorize(Roles = "Admin,WarehouseManager,WarehouseStaff")]
         public IActionResult GetMobileImageUploadSignature(
             string productCode,
             [FromBody] DirectUploadRequest request
@@ -456,6 +484,26 @@ namespace BlazorApp.Api.Controllers.React
                 return new WarehouseReadAccessContext { IsAllowed = false, Message = "当前账号没有仓库访问权限" };
             }
 
+            return await ResolveDeviceAccessAsync();
+        }
+
+        private async Task<WarehouseReadAccessContext> ResolveWriteAccessAsync()
+        {
+            if (User?.Identity?.IsAuthenticated == true)
+            {
+                if (HasAnyRole("Admin", "WarehouseManager", "WarehouseStaff"))
+                {
+                    return new WarehouseReadAccessContext { IsAllowed = true };
+                }
+
+                return new WarehouseReadAccessContext { IsAllowed = false, Message = "当前账号没有仓库绑定权限" };
+            }
+
+            return await ResolveDeviceAccessAsync();
+        }
+
+        private async Task<WarehouseReadAccessContext> ResolveDeviceAccessAsync()
+        {
             var hardwareId = Request.Headers["X-Device-Id"].FirstOrDefault();
             var authCode = Request.Headers["X-Auth-Code"].FirstOrDefault();
             if (string.IsNullOrWhiteSpace(hardwareId) || string.IsNullOrWhiteSpace(authCode))

@@ -1,5 +1,7 @@
 using System;
+using System.Linq;
 using System.Reflection;
+using System.Security.Claims;
 using System.Threading.Tasks;
 using AutoMapper;
 using BlazorApp.Api.Controllers.React;
@@ -9,7 +11,9 @@ using BlazorApp.Api.Models;
 using BlazorApp.Api.Services;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
+using BlazorApp.Shared.Models.POSM;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -176,6 +180,128 @@ namespace BlazorApp.Api.Tests
         }
 
         [Fact]
+        public void PatchMobileProduct_允许WarehouseStaff更新业务字段()
+        {
+            var authorizeAttribute = GetSingleAuthorizeAttribute(
+                nameof(ReactProductWarehouseController.PatchMobileProduct)
+            );
+
+            Assert.Equal("Admin,WarehouseManager,WarehouseStaff", authorizeAttribute.Roles);
+        }
+
+        [Fact]
+        public void GetMobileImageUploadSignature_允许WarehouseStaff更新图片()
+        {
+            var authorizeAttribute = GetSingleAuthorizeAttribute(
+                nameof(ReactProductWarehouseController.GetMobileImageUploadSignature)
+            );
+
+            Assert.Equal("Admin,WarehouseManager,WarehouseStaff", authorizeAttribute.Roles);
+        }
+
+        [Fact]
+        public async Task PatchMobileProduct_WhenWarehouseStaff_CallsPatchService()
+        {
+            var serviceMock = new Mock<IProductWarehouseReactService>();
+            serviceMock
+                .Setup(service =>
+                    service.PatchMobileProductAsync(
+                        "HB313-129",
+                        It.Is<WarehouseMobileProductPatchDto>(dto =>
+                            dto.StockQuantity == 141
+                            && dto.RetailPrice == 12.99m
+                            && dto.SyncStoreRetailPrices == true
+                        )
+                    )
+                )
+                .ReturnsAsync(
+                    new WarehouseMobileProductDto
+                    {
+                        ProductCode = "HB313-129",
+                        StockQuantity = 141,
+                        RetailPrice = 12.99m,
+                    }
+                );
+
+            var controller = CreateController(serviceMock.Object, roles: new[] { "WarehouseStaff" });
+
+            var result = await controller.PatchMobileProduct(
+                "HB313-129",
+                new WarehouseMobileProductPatchDto
+                {
+                    StockQuantity = 141,
+                    RetailPrice = 12.99m,
+                    SyncStoreRetailPrices = true,
+                }
+            );
+
+            Assert.IsType<OkObjectResult>(result);
+            serviceMock.Verify(
+                service =>
+                    service.PatchMobileProductAsync(
+                        "HB313-129",
+                        It.Is<WarehouseMobileProductPatchDto>(dto =>
+                            dto.StockQuantity == 141
+                            && dto.RetailPrice == 12.99m
+                            && dto.SyncStoreRetailPrices == true
+                        )
+                    ),
+                Times.Once
+            );
+        }
+
+        [Fact]
+        public async Task PatchMobileProduct_WhenWarehouseIsActiveProvided_PassesWarehouseIsActiveToService()
+        {
+            var serviceMock = new Mock<IProductWarehouseReactService>();
+            serviceMock
+                .Setup(service =>
+                    service.PatchMobileProductAsync(
+                        "HB313-130",
+                        It.Is<WarehouseMobileProductPatchDto>(dto =>
+                            dto.WarehouseIsActive == false
+                            && dto.IsActive == null
+                            && dto.StockQuantity == 25
+                        )
+                    )
+                )
+                .ReturnsAsync(
+                    new WarehouseMobileProductDto
+                    {
+                        ProductCode = "HB313-130",
+                        WarehouseIsActive = false,
+                        IsActive = false,
+                        StockQuantity = 25,
+                    }
+                );
+
+            var controller = CreateController(serviceMock.Object, roles: new[] { "WarehouseStaff" });
+
+            var result = await controller.PatchMobileProduct(
+                "HB313-130",
+                new WarehouseMobileProductPatchDto
+                {
+                    WarehouseIsActive = false,
+                    StockQuantity = 25,
+                }
+            );
+
+            Assert.IsType<OkObjectResult>(result);
+            serviceMock.Verify(
+                service =>
+                    service.PatchMobileProductAsync(
+                        "HB313-130",
+                        It.Is<WarehouseMobileProductPatchDto>(dto =>
+                            dto.WarehouseIsActive == false
+                            && dto.IsActive == null
+                            && dto.StockQuantity == 25
+                        )
+                    ),
+                Times.Once
+            );
+        }
+
+        [Fact]
         public async Task SetMobileProductLocation_WhenLocationIsInvalid_ReturnsBadRequest()
         {
             var serviceMock = new Mock<IProductWarehouseReactService>();
@@ -201,20 +327,133 @@ namespace BlazorApp.Api.Tests
             Assert.Contains("货位不存在", payload);
         }
 
+        [Fact]
+        public void SetMobileProductLocation_允许设备授权进入方法内校验()
+        {
+            var method = typeof(ReactProductWarehouseController).GetMethod(
+                nameof(ReactProductWarehouseController.SetMobileProductLocation)
+            );
+
+            Assert.Single(method!.GetCustomAttributes(typeof(AllowAnonymousAttribute), inherit: false));
+            Assert.Empty(method.GetCustomAttributes(typeof(AuthorizeAttribute), inherit: false));
+        }
+
+        [Fact]
+        public async Task SetMobileProductLocation_WhenDeviceAuthorized_CallsBindService()
+        {
+            var serviceMock = new Mock<IProductWarehouseReactService>();
+            serviceMock
+                .Setup(service => service.SetMobileProductLocationAsync("HB313-129", "A-00-00-01"))
+                .ReturnsAsync(
+                    new WarehouseMobileProductDto
+                    {
+                        ProductCode = "HB313-129",
+                        LocationGuid = "A-00-00-01",
+                        LocationCode = "A-00-00-01",
+                    }
+                );
+
+            var device = new POSM_设备注册信息表 { 设备硬件识别码 = "device-1", 设备状态 = 1 };
+            var deviceServiceMock = new Mock<IDeviceRegistrationService>();
+            deviceServiceMock
+                .Setup(service => service.ValidateDeviceAuthCodeAsync("device-1", "auth-1"))
+                .ReturnsAsync(true);
+            deviceServiceMock
+                .Setup(service => service.GetDeviceByHardwareIdAsync("device-1"))
+                .ReturnsAsync(device);
+
+            var mapperMock = new Mock<IMapper>();
+            mapperMock
+                .Setup(mapper => mapper.Map<DeviceDataDto>(device))
+                .Returns(new DeviceDataDto { HardwareId = "device-1", Status = 1 });
+
+            var controller = CreateController(
+                serviceMock.Object,
+                deviceService: deviceServiceMock.Object,
+                mapper: mapperMock.Object,
+                roles: null
+            );
+            controller.Request.Headers["X-Device-Id"] = "device-1";
+            controller.Request.Headers["X-Auth-Code"] = "auth-1";
+
+            var result = await controller.SetMobileProductLocation(
+                "HB313-129",
+                new SetWarehouseProductLocationDto { LocationGuid = "A-00-00-01" }
+            );
+
+            Assert.IsType<OkObjectResult>(result);
+            serviceMock.Verify(
+                service => service.SetMobileProductLocationAsync("HB313-129", "A-00-00-01"),
+                Times.Once
+            );
+        }
+
+        [Fact]
+        public async Task SetMobileProductLocation_WhenWarehouseStaff_CallsBindService()
+        {
+            var serviceMock = new Mock<IProductWarehouseReactService>();
+            serviceMock
+                .Setup(service => service.SetMobileProductLocationAsync("HB313-129", "A-00-00-01"))
+                .ReturnsAsync(
+                    new WarehouseMobileProductDto
+                    {
+                        ProductCode = "HB313-129",
+                        LocationGuid = "A-00-00-01",
+                        LocationCode = "A-00-00-01",
+                    }
+                );
+
+            var controller = CreateController(serviceMock.Object, roles: new[] { "WarehouseStaff" });
+
+            var result = await controller.SetMobileProductLocation(
+                "HB313-129",
+                new SetWarehouseProductLocationDto { LocationGuid = "A-00-00-01" }
+            );
+
+            Assert.IsType<OkObjectResult>(result);
+            serviceMock.Verify(
+                service => service.SetMobileProductLocationAsync("HB313-129", "A-00-00-01"),
+                Times.Once
+            );
+        }
+
+        private static AuthorizeAttribute GetSingleAuthorizeAttribute(string methodName)
+        {
+            var method = typeof(ReactProductWarehouseController).GetMethod(methodName);
+            var authorizeAttribute = Assert.Single(
+                method!.GetCustomAttributes(typeof(AuthorizeAttribute), inherit: false)
+            );
+
+            return Assert.IsType<AuthorizeAttribute>(authorizeAttribute);
+        }
+
         private static ReactProductWarehouseController CreateController(
             IProductWarehouseReactService service,
             TencentCloudUploadService? uploadService = null,
-            IWarehouseProductHqSyncJobService? jobService = null
+            IWarehouseProductHqSyncJobService? jobService = null,
+            IDeviceRegistrationService? deviceService = null,
+            IMapper? mapper = null,
+            string[]? roles = null
         )
         {
-            return new ReactProductWarehouseController(
+            roles ??= new[] { "Admin" };
+            var httpContext = new DefaultHttpContext();
+            if (roles.Length > 0)
+            {
+                var claims = roles.Select(role => new Claim(ClaimTypes.Role, role));
+                httpContext.User = new ClaimsPrincipal(new ClaimsIdentity(claims, "TestAuth"));
+            }
+
+            var controller = new ReactProductWarehouseController(
                 service,
                 jobService ?? Mock.Of<IWarehouseProductHqSyncJobService>(),
                 Mock.Of<ILogger<ReactProductWarehouseController>>(),
-                Mock.Of<IDeviceRegistrationService>(),
-                Mock.Of<IMapper>(),
+                deviceService ?? Mock.Of<IDeviceRegistrationService>(),
+                mapper ?? Mock.Of<IMapper>(),
                 uploadService ?? CreateUploadService()
             );
+            controller.ControllerContext = new ControllerContext { HttpContext = httpContext };
+            return controller;
         }
 
         private static TencentCloudUploadService CreateUploadService()

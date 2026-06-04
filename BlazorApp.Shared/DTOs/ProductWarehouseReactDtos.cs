@@ -458,6 +458,13 @@ namespace BlazorApp.Shared.DTOs
         public string? SupplierCode { get; set; }
         public string? SupplierName { get; set; }
         public string? Grade { get; set; }
+        /// <summary>
+        /// 仓库商品上下架状态，移动端优先读取该字段。
+        /// </summary>
+        public bool WarehouseIsActive { get; set; }
+        /// <summary>
+        /// 兼容旧移动端字段，始终返回与 WarehouseIsActive 相同的值。
+        /// </summary>
         public bool IsActive { get; set; }
         public decimal? PurchasePrice { get; set; }
         public decimal? RetailPrice { get; set; }
@@ -476,9 +483,20 @@ namespace BlazorApp.Shared.DTOs
 
     public class WarehouseMobileProductPatchDto
     {
+        /// <summary>
+        /// 仓库商品上下架状态，移动端新字段。
+        /// </summary>
+        public bool? WarehouseIsActive { get; set; }
+        /// <summary>
+        /// 兼容旧移动端字段，服务层会回退读取该值。
+        /// </summary>
         public bool? IsActive { get; set; }
         public decimal? PurchasePrice { get; set; }
         public decimal? RetailPrice { get; set; }
+        /// <summary>
+        /// 零售价保存时是否同步所有启用分店的零售价。
+        /// </summary>
+        public bool? SyncStoreRetailPrices { get; set; }
         public decimal? DomesticPrice { get; set; }
         public decimal? OEMPrice { get; set; }
         public decimal? ImportPrice { get; set; }

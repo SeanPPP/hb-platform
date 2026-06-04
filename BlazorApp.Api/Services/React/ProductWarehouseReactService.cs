@@ -3440,6 +3440,8 @@ namespace BlazorApp.Api.Services.React
                     SupplierCode = row.SupplierCode,
                     SupplierName = row.SupplierName,
                     Grade = row.Grade,
+                    // 兼容新旧字段，移动端新字段与旧字段始终返回同值。
+                    WarehouseIsActive = row.IsActive,
                     IsActive = row.IsActive,
                     PurchasePrice = row.PurchasePrice,
                     RetailPrice = row.RetailPrice,
@@ -3499,60 +3501,113 @@ namespace BlazorApp.Api.Services.React
             var shouldInsertProductGrade = false;
 
             var now = DateTime.UtcNow;
-            if (dto.IsActive.HasValue)
+            var shouldUpdateProduct = false;
+            var shouldUpdateWarehouseProduct = false;
+            var shouldUpdateDomesticProduct = false;
+            var shouldUpdateProductGrade = false;
+            // 仅更新仓库商品状态；优先新字段，旧字段仅作兼容回退。
+            var warehouseIsActive = dto.WarehouseIsActive ?? dto.IsActive;
+            if (warehouseIsActive.HasValue)
             {
-                product.IsActive = dto.IsActive.Value;
-                warehouseProduct.IsActive = dto.IsActive.Value;
-                if (domesticProduct != null)
-                {
-                    domesticProduct.IsActive = dto.IsActive.Value;
-                }
+                warehouseProduct.IsActive = warehouseIsActive.Value;
+                shouldUpdateWarehouseProduct = true;
             }
 
-            if (dto.PurchasePrice.HasValue) product.PurchasePrice = dto.PurchasePrice;
-            if (dto.RetailPrice.HasValue) product.RetailPrice = dto.RetailPrice;
-            if (dto.MiddlePackageQuantity.HasValue) product.MiddlePackageQuantity = dto.MiddlePackageQuantity;
+            var syncedPurchasePrice = ResolveLinkedPrice(
+                dto.PurchasePrice,
+                dto.ImportPrice,
+                "进货价",
+                "进口价"
+            );
+            var syncedRetailPrice = ResolveLinkedPrice(
+                dto.RetailPrice,
+                dto.OEMPrice,
+                "零售价",
+                "OEM价"
+            );
+            var shouldSyncStorePurchasePrice = syncedPurchasePrice.HasValue;
+            var shouldSyncStoreRetailPrice = dto.SyncStoreRetailPrices == true
+                && syncedRetailPrice.HasValue;
+
+            if (syncedPurchasePrice.HasValue)
+            {
+                product.PurchasePrice = syncedPurchasePrice;
+                shouldUpdateProduct = true;
+                warehouseProduct.ImportPrice = syncedPurchasePrice;
+                shouldUpdateWarehouseProduct = true;
+                if (domesticProduct != null)
+                {
+                    domesticProduct.ImportPrice = syncedPurchasePrice;
+                    shouldUpdateDomesticProduct = true;
+                }
+            }
+            if (syncedRetailPrice.HasValue)
+            {
+                product.RetailPrice = syncedRetailPrice;
+                shouldUpdateProduct = true;
+                warehouseProduct.OEMPrice = syncedRetailPrice;
+                shouldUpdateWarehouseProduct = true;
+                if (domesticProduct != null)
+                {
+                    domesticProduct.OEMPrice = syncedRetailPrice;
+                    shouldUpdateDomesticProduct = true;
+                }
+            }
+            if (dto.MiddlePackageQuantity.HasValue)
+            {
+                product.MiddlePackageQuantity = dto.MiddlePackageQuantity;
+                shouldUpdateProduct = true;
+            }
             if (dto.ProductImage != null)
             {
                 product.ProductImage = dto.ProductImage;
+                shouldUpdateProduct = true;
                 if (domesticProduct != null)
                 {
                     domesticProduct.ProductImage = dto.ProductImage;
+                    shouldUpdateDomesticProduct = true;
                 }
             }
 
             if (dto.DomesticPrice.HasValue)
             {
                 warehouseProduct.DomesticPrice = dto.DomesticPrice;
-                if (domesticProduct != null) domesticProduct.DomesticPrice = dto.DomesticPrice;
-            }
-            if (dto.OEMPrice.HasValue)
-            {
-                warehouseProduct.OEMPrice = dto.OEMPrice;
-                if (domesticProduct != null) domesticProduct.OEMPrice = dto.OEMPrice;
-            }
-            if (dto.ImportPrice.HasValue)
-            {
-                warehouseProduct.ImportPrice = dto.ImportPrice;
-                if (domesticProduct != null) domesticProduct.ImportPrice = dto.ImportPrice;
+                shouldUpdateWarehouseProduct = true;
+                if (domesticProduct != null)
+                {
+                    domesticProduct.DomesticPrice = dto.DomesticPrice;
+                    shouldUpdateDomesticProduct = true;
+                }
             }
             if (dto.StockQuantity.HasValue)
             {
                 warehouseProduct.StockQuantity = dto.StockQuantity;
+                shouldUpdateWarehouseProduct = true;
             }
             if (dto.PackingQuantity.HasValue)
             {
                 warehouseProduct.PackingQuantity = dto.PackingQuantity;
-                if (domesticProduct != null) domesticProduct.PackingQuantity = dto.PackingQuantity;
+                shouldUpdateWarehouseProduct = true;
+                if (domesticProduct != null)
+                {
+                    domesticProduct.PackingQuantity = dto.PackingQuantity;
+                    shouldUpdateDomesticProduct = true;
+                }
             }
             if (dto.Volume.HasValue)
             {
                 warehouseProduct.Volume = dto.Volume;
-                if (domesticProduct != null) domesticProduct.UnitVolume = dto.Volume;
+                shouldUpdateWarehouseProduct = true;
+                if (domesticProduct != null)
+                {
+                    domesticProduct.UnitVolume = dto.Volume;
+                    shouldUpdateDomesticProduct = true;
+                }
             }
             if (dto.MiddlePackageQuantity.HasValue && domesticProduct != null)
             {
                 domesticProduct.MiddlePackQuantity = dto.MiddlePackageQuantity;
+                shouldUpdateDomesticProduct = true;
             }
 
             if (dto.Grade != null)
@@ -3564,12 +3619,14 @@ namespace BlazorApp.Api.Services.React
                     {
                         productGrade.IsDeleted = true;
                         productGrade.UpdatedAt = now;
+                        shouldUpdateProductGrade = true;
                     }
                 }
                 else if (productGrade != null)
                 {
                     productGrade.Grade = normalizedGrade;
                     productGrade.UpdatedAt = now;
+                    shouldUpdateProductGrade = true;
                 }
                 else
                 {
@@ -3581,12 +3638,19 @@ namespace BlazorApp.Api.Services.React
                         UpdatedAt = now,
                     };
                     shouldInsertProductGrade = true;
+                    shouldUpdateProductGrade = true;
                 }
             }
 
-            product.UpdatedAt = now;
-            warehouseProduct.UpdatedAt = now;
-            if (domesticProduct != null)
+            if (shouldUpdateProduct)
+            {
+                product.UpdatedAt = now;
+            }
+            if (shouldUpdateWarehouseProduct)
+            {
+                warehouseProduct.UpdatedAt = now;
+            }
+            if (domesticProduct != null && shouldUpdateDomesticProduct)
             {
                 domesticProduct.UpdatedAt = now;
             }
@@ -3594,13 +3658,19 @@ namespace BlazorApp.Api.Services.React
             await _context.Db.Ado.BeginTranAsync();
             try
             {
-                await _context.Db.Updateable(product).ExecuteCommandAsync();
-                await _context.Db.Updateable(warehouseProduct).ExecuteCommandAsync();
-                if (domesticProduct != null)
+                if (shouldUpdateProduct)
+                {
+                    await _context.Db.Updateable(product).ExecuteCommandAsync();
+                }
+                if (shouldUpdateWarehouseProduct)
+                {
+                    await _context.Db.Updateable(warehouseProduct).ExecuteCommandAsync();
+                }
+                if (domesticProduct != null && shouldUpdateDomesticProduct)
                 {
                     await _context.Db.Updateable(domesticProduct).ExecuteCommandAsync();
                 }
-                if (productGrade != null)
+                if (productGrade != null && shouldUpdateProductGrade)
                 {
                     if (shouldInsertProductGrade)
                     {
@@ -3610,6 +3680,24 @@ namespace BlazorApp.Api.Services.React
                     {
                         await _context.Db.Updateable(productGrade).ExecuteCommandAsync();
                     }
+                }
+                if (shouldSyncStorePurchasePrice)
+                {
+                    await UpsertActiveStoreRetailPricesAsync(
+                        product,
+                        purchasePrice: syncedPurchasePrice,
+                        retailPrice: null,
+                        now
+                    );
+                }
+                if (shouldSyncStoreRetailPrice)
+                {
+                    await UpsertActiveStoreRetailPricesAsync(
+                        product,
+                        purchasePrice: null,
+                        retailPrice: syncedRetailPrice,
+                        now
+                    );
                 }
 
                 await _context.Db.Ado.CommitTranAsync();
@@ -3623,6 +3711,124 @@ namespace BlazorApp.Api.Services.React
             return await GetMobileProductAsync(productCode);
         }
 
+        private static decimal? ResolveLinkedPrice(
+            decimal? masterPrice,
+            decimal? warehousePrice,
+            string masterLabel,
+            string warehouseLabel
+        )
+        {
+            if (masterPrice.HasValue && warehousePrice.HasValue && masterPrice.Value != warehousePrice.Value)
+            {
+                throw new InvalidOperationException($"{masterLabel}和{warehouseLabel}不一致");
+            }
+
+            return masterPrice ?? warehousePrice;
+        }
+
+        private async Task UpsertActiveStoreRetailPricesAsync(
+            Product product,
+            decimal? purchasePrice,
+            decimal? retailPrice,
+            DateTime now
+        )
+        {
+            const string updatedBy = "MobileWarehousePricePatch";
+            if (string.IsNullOrWhiteSpace(product.ProductCode))
+            {
+                return;
+            }
+
+            var stores = await _context
+                .Db.Queryable<Store>()
+                .Where(s => s.IsActive && !s.IsDeleted)
+                .Select(s => new { s.StoreCode })
+                .ToListAsync();
+            var activeStoreCodes = stores
+                .Select(s => s.StoreCode)
+                .Where(code => !string.IsNullOrWhiteSpace(code))
+                .Distinct()
+                .ToList();
+            if (!activeStoreCodes.Any())
+            {
+                return;
+            }
+
+            var existingPrices = await _context
+                .Db.Queryable<StoreRetailPrice>()
+                .Where(srp =>
+                    srp.ProductCode == product.ProductCode
+                    && srp.StoreCode != null
+                    && activeStoreCodes.Contains(srp.StoreCode)
+                    && !srp.IsDeleted
+                )
+                .ToListAsync();
+            var existingStoreCodes = existingPrices
+                .Select(price => price.StoreCode)
+                .Where(code => !string.IsNullOrWhiteSpace(code))
+                .ToHashSet();
+
+            foreach (var price in existingPrices)
+            {
+                if (purchasePrice.HasValue)
+                {
+                    price.PurchasePrice = purchasePrice;
+                }
+                if (retailPrice.HasValue)
+                {
+                    price.StoreRetailPriceValue = retailPrice;
+                }
+                price.UpdatedAt = now;
+                price.UpdatedBy = updatedBy;
+            }
+
+            if (existingPrices.Any())
+            {
+                var existingUuids = existingPrices.Select(price => price.UUID).ToList();
+                var update = _context.Db.Updateable<StoreRetailPrice>()
+                    .SetColumns(price => price.UpdatedAt == now)
+                    .SetColumns(price => price.UpdatedBy == updatedBy)
+                    .Where(price => existingUuids.Contains(price.UUID));
+                if (purchasePrice.HasValue)
+                {
+                    update = update.SetColumns(price => price.PurchasePrice == purchasePrice);
+                }
+                if (retailPrice.HasValue)
+                {
+                    update = update.SetColumns(price => price.StoreRetailPriceValue == retailPrice);
+                }
+                await update.ExecuteCommandAsync();
+            }
+
+            var insertPrices = activeStoreCodes
+                .Where(storeCode => !existingStoreCodes.Contains(storeCode))
+                .Select(storeCode => new StoreRetailPrice
+                {
+                    UUID = UuidHelper.GenerateUuid7(),
+                    StoreCode = storeCode,
+                    ProductCode = product.ProductCode,
+                    StoreProductCode = storeCode + product.ProductCode,
+                    SupplierCode = product.LocalSupplierCode,
+                    PurchasePrice = purchasePrice ?? product.PurchasePrice,
+                    StoreRetailPriceValue = retailPrice ?? product.RetailPrice,
+                    DiscountRate = null,
+                    IsActive = product.IsActive,
+                    IsAutoPricing = product.IsAutoPricing,
+                    IsSpecialProduct = product.IsSpecialProduct,
+                    CreatedAt = now,
+                    CreatedBy = updatedBy,
+                    UpdatedAt = now,
+                    UpdatedBy = updatedBy,
+                    IsDeleted = false,
+                })
+                .ToList();
+
+            if (insertPrices.Any())
+            {
+                await _context.Db.Insertable(insertPrices).ExecuteCommandAsync();
+            }
+        }
+
         public async Task<WarehouseMobileProductDto?> SetMobileProductLocationAsync(
             string productCode,
             string? locationGuid
@@ -3631,8 +3837,15 @@ namespace BlazorApp.Api.Services.React
             var trimmedProductCode = productCode?.Trim();
             if (string.IsNullOrWhiteSpace(trimmedProductCode))
             {
+                Console.WriteLine(
+                    $"[ProductWarehouseReactService.SetMobileProductLocation] 绑定失败：商品编码为空 ProductCode={productCode}, LocationGuid={locationGuid}"
+                );
                 return null;
             }
+
+            Console.WriteLine(
+                $"[ProductWarehouseReactService.SetMobileProductLocation] 开始绑定 ProductCode={trimmedProductCode}, LocationGuid={locationGuid}"
+            );
 
             var warehouseProduct = await _context
                 .Db.Queryable<WarehouseProduct>()
@@ -3644,8 +3857,15 @@ namespace BlazorApp.Api.Services.React
                 .FirstAsync();
             if (warehouseProduct == null || product == null)
             {
+                Console.WriteLine(
+                    $"[ProductWarehouseReactService.SetMobileProductLocation] 绑定失败：商品不存在 ProductCode={trimmedProductCode}, WarehouseProductExists={warehouseProduct != null}, ProductExists={product != null}"
+                );
                 return null;
             }
+
+            Console.WriteLine(
+                $"[ProductWarehouseReactService.SetMobileProductLocation] 命中商品 ProductCode={trimmedProductCode}, ItemNumber={product.ItemNumber}, Barcode={product.Barcode}"
+            );
 
             var trimmedLocationGuid = locationGuid?.Trim();
             if (!string.IsNullOrWhiteSpace(trimmedLocationGuid))
@@ -3656,17 +3876,87 @@ namespace BlazorApp.Api.Services.React
                     .FirstAsync();
                 if (location == null)
                 {
+                    Console.WriteLine(
+                        $"[ProductWarehouseReactService.SetMobileProductLocation] 绑定失败：货位不存在 ProductCode={trimmedProductCode}, LocationGuid={trimmedLocationGuid}"
+                    );
                     throw new InvalidOperationException("货位不存在");
                 }
+
+                Console.WriteLine(
+                    $"[ProductWarehouseReactService.SetMobileProductLocation] 命中货位 ProductCode={trimmedProductCode}, LocationGuid={trimmedLocationGuid}, LocationCode={location.LocationCode}, LocationBarcode={location.LocationBarcode}, LocationType={location.LocationType}"
+                );
+
+                var existingSameBinding = await _context
+                    .Db.Queryable<ProductLocation>()
+                    .AnyAsync(pl =>
+                        !pl.IsDeleted
+                        && pl.ProductCode == trimmedProductCode
+                        && pl.LocationGuid == trimmedLocationGuid
+                    );
+                if (existingSameBinding)
+                {
+                    Console.WriteLine(
+                        $"[ProductWarehouseReactService.SetMobileProductLocation] 已存在相同绑定，直接返回 ProductCode={trimmedProductCode}, LocationGuid={trimmedLocationGuid}, LocationCode={location.LocationCode}"
+                    );
+                    return await GetMobileProductAsync(trimmedProductCode);
+                }
+
+                if (location.LocationType != 2)
+                {
+                    var existingLocationProduct = await _context
+                        .Db.Queryable<ProductLocation>()
+                        .Where(pl =>
+                            !pl.IsDeleted
+                            && pl.LocationGuid == trimmedLocationGuid
+                            && pl.ProductCode != trimmedProductCode
+                        )
+                        .FirstAsync();
+                    if (existingLocationProduct != null)
+                    {
+                        Console.WriteLine(
+                            $"[ProductWarehouseReactService.SetMobileProductLocation] 绑定失败：配货位已有商品 ProductCode={trimmedProductCode}, LocationGuid={trimmedLocationGuid}, LocationCode={location.LocationCode}, ExistingProductCode={existingLocationProduct.ProductCode}"
+                        );
+                        throw new InvalidOperationException("该配货位已有商品，不能继续绑定");
+                    }
+
+                    var existingPickingLocation = await _context
+                        .Db.Queryable<ProductLocation, Location>((pl, l) => new JoinQueryInfos(
+                            JoinType.Inner,
+                            pl.LocationGuid == l.LocationGuid
+                        ))
+                        .Where((pl, l) =>
+                            !pl.IsDeleted
+                            && !l.IsDeleted
+                            && pl.ProductCode == trimmedProductCode
+                            && l.LocationType != 2
+                        )
+                        .Select((pl, l) => new { pl.LocationGuid, l.LocationCode })
+                        .FirstAsync();
+                    if (existingPickingLocation != null)
+                    {
+                        Console.WriteLine(
+                            $"[ProductWarehouseReactService.SetMobileProductLocation] 商品已有配货位，将移动到新货位 ProductCode={trimmedProductCode}, ExistingLocationGuid={existingPickingLocation.LocationGuid}, ExistingLocationCode={existingPickingLocation.LocationCode}, NewLocationGuid={trimmedLocationGuid}, NewLocationCode={location.LocationCode}"
+                        );
+                    }
+                }
+            }
+            else
+            {
+                Console.WriteLine(
+                    $"[ProductWarehouseReactService.SetMobileProductLocation] 准备清空商品货位 ProductCode={trimmedProductCode}"
+                );
             }
 
             await _context.Db.Ado.BeginTranAsync();
             try
             {
-                await _context
+                var deletedCount = await _context
                     .Db.Deleteable<ProductLocation>()
                     .Where(pl => pl.ProductCode == trimmedProductCode)
                     .ExecuteCommandAsync();
+                Console.WriteLine(
+                    $"[ProductWarehouseReactService.SetMobileProductLocation] 删除旧绑定 ProductCode={trimmedProductCode}, DeletedCount={deletedCount}"
+                );
 
                 if (!string.IsNullOrWhiteSpace(trimmedLocationGuid))
                 {
@@ -3680,13 +3970,22 @@ namespace BlazorApp.Api.Services.React
                             UpdatedAt = DateTime.UtcNow,
                         })
                         .ExecuteCommandAsync();
+                    Console.WriteLine(
+                        $"[ProductWarehouseReactService.SetMobileProductLocation] 插入新绑定 ProductCode={trimmedProductCode}, LocationGuid={trimmedLocationGuid}"
+                    );
                 }
 
                 await _context.Db.Ado.CommitTranAsync();
+                Console.WriteLine(
+                    $"[ProductWarehouseReactService.SetMobileProductLocation] 事务提交成功 ProductCode={trimmedProductCode}, LocationGuid={trimmedLocationGuid}"
+                );
             }
-            catch
+            catch (Exception ex)
             {
                 await _context.Db.Ado.RollbackTranAsync();
+                Console.WriteLine(
+                    $"[ProductWarehouseReactService.SetMobileProductLocation] 事务回滚 ProductCode={trimmedProductCode}, LocationGuid={trimmedLocationGuid}, Error={ex}"
+                );
                 throw;
             }
 
@@ -3733,6 +4032,8 @@ namespace BlazorApp.Api.Services.React
                     SupplierCode = dp.SupplierCode,
                     SupplierName = s.SupplierName,
                     Grade = pg.Grade,
+                    // 兼容新旧字段，移动端新字段与旧字段始终返回同值。
+                    WarehouseIsActive = w.IsActive,
                     IsActive = w.IsActive,
                     PurchasePrice = p.PurchasePrice,
                     RetailPrice = p.RetailPrice,
