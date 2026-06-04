@@ -94,6 +94,7 @@ export interface UpdateContainerRequest {
   汇率?: number
   运费?: number
   备注?: string
+  状态?: number
 }
 
 export interface UpdateContainerDetailRequest {

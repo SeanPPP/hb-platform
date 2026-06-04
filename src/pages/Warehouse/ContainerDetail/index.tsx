@@ -122,15 +122,16 @@ function rowKey(row: ContainerDetail) {
   return row.hguid || String(row.id)
 }
 
+const containerStatusOptions = [
+  { value: 0, color: 'blue', labelKey: 'loaded' },
+  { value: 1, color: 'orange', labelKey: 'inTransit' },
+  { value: 2, color: 'success', labelKey: 'completed' },
+  { value: 7, color: 'error', labelKey: 'cancelled' },
+] as const
+
 function getStatusTag(status: number | undefined, t: TFunction) {
   if (status == null) return <Tag>{t('containers.status.unknown')}</Tag>
-  const map: Record<number, { color: string; labelKey: string }> = {
-    0: { color: 'blue', labelKey: 'loaded' },
-    1: { color: 'orange', labelKey: 'inTransit' },
-    2: { color: 'success', labelKey: 'completed' },
-    7: { color: 'error', labelKey: 'cancelled' },
-  }
-  const item = map[status]
+  const item = containerStatusOptions.find((option) => option.value === status)
   return item ? <Tag color={item.color}>{t(`containers.status.${item.labelKey}`)}</Tag> : <Tag>{t('containers.status.unknownWithCode', { status })}</Tag>
 }
 
@@ -252,6 +253,7 @@ export default function ContainerDetailPage() {
     汇率?: number
     运费?: number
     备注?: string
+    状态?: number
   }>({})
 
   useDynamicTabTitle(container?.货柜编号 ? t('containers.detailTitleWithNumber', { number: container.货柜编号 }) : undefined)
@@ -276,6 +278,7 @@ export default function ContainerDetailPage() {
         汇率: info.汇率,
         运费: info.运费,
         备注: info.备注,
+        状态: info.状态,
       })
       setRows(products)
       setSelectedRowKeys([])
@@ -405,6 +408,7 @@ export default function ContainerDetailPage() {
       汇率: headerForm.汇率,
       运费: headerForm.运费,
       备注: headerForm.备注,
+      状态: headerForm.状态,
     }
     try {
       await updateContainer(containerGuid, updatePayload)
@@ -1384,7 +1388,19 @@ export default function ContainerDetailPage() {
               <Descriptions.Item label={t('containers.fields.containerNumber')}>{container?.货柜编号 || '--'}</Descriptions.Item>
               <Descriptions.Item label={t('containers.fields.loadingDate')}>{formatDate(container?.装柜日期)}</Descriptions.Item>
               <Descriptions.Item label={t('containers.fields.estimatedArrival')}>{formatDate(container?.预计到岸日期)}</Descriptions.Item>
-              <Descriptions.Item label={t('containers.fields.status')}>{getStatusTag(container?.状态, t)}</Descriptions.Item>
+              <Descriptions.Item label={t('containers.fields.status')}>
+                {headerEditing ? (
+                  <Select
+                    value={headerForm.状态}
+                    style={{ minWidth: 120 }}
+                    options={containerStatusOptions.map((option) => ({
+                      value: option.value,
+                      label: t(`containers.status.${option.labelKey}`),
+                    }))}
+                    onChange={(value) => setHeaderForm((prev) => ({ ...prev, 状态: value }))}
+                  />
+                ) : getStatusTag(container?.状态, t)}
+              </Descriptions.Item>
               <Descriptions.Item label={t('containers.fields.actualArrival')}>
                 {headerEditing ? <DatePicker value={headerForm.实际到货日期} onChange={(value) => setHeaderForm((prev) => ({ ...prev, 实际到货日期: value }))} /> : formatDate(container?.实际到货日期)}
               </Descriptions.Item>
