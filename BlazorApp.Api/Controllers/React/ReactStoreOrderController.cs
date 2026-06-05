@@ -27,6 +27,7 @@ namespace BlazorApp.Api.Controllers.React
         private readonly ICurrentUserManageableStoreScopeService _storeScopeService;
         private readonly IStoreOrderSyncJobService _storeOrderSyncJobService;
         private readonly IStoreOrderInvoiceEmailJobService _invoiceEmailJobService;
+        private readonly IStoreOrderInvoiceEmailTextTranslationService _invoiceEmailTextTranslationService;
 
         private static readonly TimeSpan CACHE_DURATION = TimeSpan.FromMinutes(10);
         private static readonly TimeSpan AuthorizationSuccessCacheDuration = TimeSpan.FromSeconds(30);
@@ -109,7 +110,8 @@ namespace BlazorApp.Api.Controllers.React
             IAuthorizationService authorizationService,
             ICurrentUserManageableStoreScopeService storeScopeService,
             IStoreOrderSyncJobService storeOrderSyncJobService,
-            IStoreOrderInvoiceEmailJobService invoiceEmailJobService
+            IStoreOrderInvoiceEmailJobService invoiceEmailJobService,
+            IStoreOrderInvoiceEmailTextTranslationService invoiceEmailTextTranslationService
         )
         {
             _service = service;
@@ -120,6 +122,7 @@ namespace BlazorApp.Api.Controllers.React
             _storeScopeService = storeScopeService;
             _storeOrderSyncJobService = storeOrderSyncJobService;
             _invoiceEmailJobService = invoiceEmailJobService;
+            _invoiceEmailTextTranslationService = invoiceEmailTextTranslationService;
         }
 
         private async Task<bool> HasAnyPermissionAsync(params string[] permissions)
@@ -1120,6 +1123,42 @@ namespace BlazorApp.Api.Controllers.React
             catch (Exception ex)
             {
                 _logger.LogError(ex, "SendInvoiceEmail failed");
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
+        /// <summary>
+        /// 翻译订单发票邮件弹窗中的主题和正文。
+        /// </summary>
+        [HttpPost("invoice/email/translate-text")]
+        public async Task<IActionResult> TranslateInvoiceEmailText(
+            [FromBody] StoreOrderInvoiceEmailTextTranslationRequestDto request
+        )
+        {
+            try
+            {
+                var forbidden =
+                    await RequireAnyPermissionAsync(OrderEditPermissions)
+                    ?? await RequireOrderScopeAsync(request.OrderGUID);
+                if (forbidden != null)
+                {
+                    return forbidden;
+                }
+
+                var result = await _invoiceEmailTextTranslationService.TranslateAsync(
+                    request,
+                    HttpContext.RequestAborted
+                );
+                if (result.Success)
+                {
+                    return Ok(new { success = true, data = result.Data, message = result.Message });
+                }
+
+                return BadRequest(new { success = false, message = result.Message });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "TranslateInvoiceEmailText failed");
                 return StatusCode(500, new { success = false, message = "服务器内部错误" });
             }
         }

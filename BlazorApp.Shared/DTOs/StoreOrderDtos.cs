@@ -1036,6 +1036,26 @@ public class StoreOrderInvoiceEmailJobDto
 }
 
 /// <summary>
+/// 发票邮件文本翻译请求。
+/// </summary>
+public class StoreOrderInvoiceEmailTextTranslationRequestDto
+{
+    public string OrderGUID { get; set; } = string.Empty;
+    public string TargetLanguage { get; set; } = string.Empty;
+    public string? Subject { get; set; }
+    public string? Body { get; set; }
+}
+
+/// <summary>
+/// 发票邮件文本翻译结果。
+/// </summary>
+public class StoreOrderInvoiceEmailTextTranslationResultDto
+{
+    public string? Subject { get; set; }
+    public string? Body { get; set; }
+}
+
+/// <summary>
 /// 发票邮件发送消息
 /// </summary>
 public class StoreOrderInvoiceEmailMessage

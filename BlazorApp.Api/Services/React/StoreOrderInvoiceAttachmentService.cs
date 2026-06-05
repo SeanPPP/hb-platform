@@ -14,6 +14,17 @@ namespace BlazorApp.Api.Services.React
         private const string PdfContentType = "application/pdf";
         private const string ExcelContentType =
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+        private const string WarehouseAddressTitle = "WAREHOUSE ADDRESS:";
+        private const string WarehouseAddressLine =
+            "3 Rogilla close Maryland, NSW, 2287, Australia";
+        private const string WarehouseAbn = "A.B.N. 35 160 589 793";
+        private const string WarehouseEmail = "WAREHOUSE EMAIL: dong@hotbargain.com.au";
+        private const string PaymentDetailTitle = "PAYMENT DETAIL: DIRECT DEBIT";
+        private const string PaymentName = "HOT BARGAIN INTERNATIONAL";
+        private const string PaymentBsb = "12532";
+        private const string PaymentAccount = "208034605";
+        private const string PaymentDisclaimer =
+            "All products remain the property of Hot Bargain International Pty Ltd until payment is received in full for the invoiced amount. Payment strictly within 30 days of the invoice date.";
 
         private readonly IStoreOrderReactService _storeOrderService;
         private readonly ILogger<StoreOrderInvoiceAttachmentService> _logger;
@@ -148,7 +159,7 @@ namespace BlazorApp.Api.Services.React
             return stream.ToArray();
         }
 
-        private static byte[] GeneratePdf(StoreOrderCartDto order)
+        private byte[] GeneratePdf(StoreOrderCartDto order)
         {
             using var stream = new MemoryStream();
             using var document = new Document(PageSize.A4.Rotate(), 24, 24, 24, 24);
@@ -156,28 +167,48 @@ namespace BlazorApp.Api.Services.React
             document.Open();
 
             var baseFont = BaseFont.CreateFont("STSong-Light", "UniGB-UCS2-H", BaseFont.NOT_EMBEDDED);
-            var titleFont = new iTextSharp.text.Font(baseFont, 16, iTextSharp.text.Font.BOLD);
+            var englishBaseFont = BaseFont.CreateFont(
+                BaseFont.HELVETICA,
+                BaseFont.WINANSI,
+                BaseFont.NOT_EMBEDDED
+            );
             var headerFont = new iTextSharp.text.Font(baseFont, 9, iTextSharp.text.Font.BOLD);
             var bodyFont = new iTextSharp.text.Font(baseFont, 8, iTextSharp.text.Font.NORMAL);
-            var boldFont = new iTextSharp.text.Font(baseFont, 8, iTextSharp.text.Font.BOLD);
+            var englishTitleFont = new iTextSharp.text.Font(
+                englishBaseFont,
+                14,
+                iTextSharp.text.Font.BOLD
+            );
+            var englishHeaderFont = new iTextSharp.text.Font(
+                englishBaseFont,
+                9,
+                iTextSharp.text.Font.BOLD
+            );
+            var englishBodyFont = new iTextSharp.text.Font(
+                englishBaseFont,
+                8,
+                iTextSharp.text.Font.NORMAL
+            );
+            var englishBoldFont = new iTextSharp.text.Font(
+                englishBaseFont,
+                8,
+                iTextSharp.text.Font.BOLD
+            );
 
-            var title = new Paragraph($"INVOICE NO. {order.OrderNo ?? order.OrderGUID}", titleFont)
-            {
-                Alignment = Element.ALIGN_CENTER,
-                SpacingAfter = 12,
-            };
-            document.Add(title);
+            AddInvoiceHeader(document, englishTitleFont, englishHeaderFont, englishBodyFont);
+            AddDivider(document);
+            AddInvoiceSummary(document, order, englishTitleFont);
 
             var infoTable = new PdfPTable(4) { WidthPercentage = 100, SpacingAfter = 10 };
             infoTable.SetWidths(new float[] { 1.2f, 2.2f, 1.2f, 2.2f });
-            AddLabelCell(infoTable, "CUSTOMER:", boldFont);
-            AddValueCell(infoTable, order.StoreCode ?? "--", bodyFont);
-            AddLabelCell(infoTable, "INVOICE DATE:", boldFont);
-            AddValueCell(infoTable, DateTime.Now.ToString("yyyy/M/d"), bodyFont);
-            AddLabelCell(infoTable, "CUSTOMER CONTACT:", boldFont);
-            AddValueCell(infoTable, order.StoreContactEmail ?? "--", bodyFont);
-            AddLabelCell(infoTable, "ADDRESS:", boldFont);
+            AddLabelCell(infoTable, "CUSTOMER:", englishBoldFont);
+            AddValueCell(infoTable, order.StoreCode ?? "--", englishBodyFont);
+            AddLabelCell(infoTable, "CUSTOMER CONTACT:", englishBoldFont);
+            AddValueCell(infoTable, order.StoreContactEmail ?? "--", englishBodyFont);
+            AddLabelCell(infoTable, "ADDRESS:", englishBoldFont);
             AddValueCell(infoTable, order.StoreAddress ?? "--", bodyFont);
+            AddLabelCell(infoTable, string.Empty, englishBoldFont);
+            AddValueCell(infoTable, string.Empty, englishBodyFont);
             document.Add(infoTable);
 
             var detailTable = new PdfPTable(8) { WidthPercentage = 100, SpacingAfter = 10 };
@@ -218,34 +249,219 @@ namespace BlazorApp.Api.Services.React
             var gst = decimal.Round(subTotal * 0.1m, 2);
             var freight = order.ShippingFee ?? 0m;
             var total = decimal.Round(subTotal + gst + freight, 2);
-            var totalTable = new PdfPTable(2)
-            {
-                WidthPercentage = 36,
-                HorizontalAlignment = Element.ALIGN_RIGHT,
-                SpacingAfter = 10,
-            };
-            totalTable.SetWidths(new float[] { 1.5f, 1f });
-            AddLabelCell(totalTable, "Sub-Total:", boldFont);
-            AddValueCell(totalTable, FormatCurrency(subTotal), bodyFont);
-            AddLabelCell(totalTable, "GST 10%:", boldFont);
-            AddValueCell(totalTable, FormatCurrency(gst), bodyFont);
-            AddLabelCell(totalTable, "Freight:", boldFont);
-            AddValueCell(totalTable, FormatCurrency(freight), bodyFont);
-            AddLabelCell(totalTable, "Total Before Discount:", boldFont);
-            AddValueCell(totalTable, FormatCurrency(total), boldFont);
-            document.Add(totalTable);
-
-            document.Add(new Paragraph("PAYMENT DETAIL: DIRECT DEBIT", boldFont));
-            document.Add(
-                new Paragraph(
-                    string.IsNullOrWhiteSpace(order.Remarks)
-                        ? "Image for reference only, actual product may vary"
-                        : $"REMARKS: {order.Remarks.Trim()}",
-                    bodyFont
-                )
+            AddPaymentAndTotalsFooter(
+                document,
+                subTotal,
+                gst,
+                freight,
+                total,
+                englishBoldFont,
+                englishBodyFont
             );
+            if (!string.IsNullOrWhiteSpace(order.Remarks))
+            {
+                document.Add(new Paragraph($"REMARKS: {order.Remarks.Trim()}", bodyFont));
+            }
+
             document.Close();
             return stream.ToArray();
+        }
+
+        private void AddInvoiceHeader(
+            Document document,
+            iTextSharp.text.Font logoFallbackFont,
+            iTextSharp.text.Font headerFont,
+            iTextSharp.text.Font bodyFont
+        )
+        {
+            var headerTable = new PdfPTable(2) { WidthPercentage = 100, SpacingAfter = 6 };
+            headerTable.SetWidths(new float[] { 1.25f, 2f });
+
+            var logoCell = CreateNoBorderCell();
+            var logo = TryCreateInvoiceLogo();
+            if (logo != null)
+            {
+                logoCell.AddElement(logo);
+            }
+            else
+            {
+                logoCell.AddElement(new Paragraph("HOT BARGAIN", logoFallbackFont));
+            }
+            headerTable.AddCell(logoCell);
+
+            var warehouseCell = CreateNoBorderCell();
+            warehouseCell.HorizontalAlignment = Element.ALIGN_RIGHT;
+            warehouseCell.AddElement(
+                new Paragraph(WarehouseAddressTitle, headerFont)
+                {
+                    Alignment = Element.ALIGN_RIGHT,
+                    SpacingAfter = 4,
+                }
+            );
+            foreach (var line in new[] { WarehouseAddressLine, WarehouseAbn, WarehouseEmail })
+            {
+                warehouseCell.AddElement(
+                    new Paragraph(line, bodyFont) { Alignment = Element.ALIGN_RIGHT }
+                );
+            }
+            headerTable.AddCell(warehouseCell);
+
+            document.Add(headerTable);
+        }
+
+        private iTextSharp.text.Image? TryCreateInvoiceLogo()
+        {
+            var logoPath = ResolveInvoiceLogoPath();
+            if (logoPath == null)
+            {
+                _logger.LogWarning("发票邮件 PDF logo 文件不存在，已使用文字抬头继续生成附件");
+                return null;
+            }
+
+            try
+            {
+                var logo = iTextSharp.text.Image.GetInstance(logoPath);
+                logo.ScaleToFit(210f, 112f);
+                logo.Alignment = Element.ALIGN_LEFT;
+                return logo;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "读取发票邮件 PDF logo 失败: {LogoPath}", logoPath);
+                return null;
+            }
+        }
+
+        private static string? ResolveInvoiceLogoPath()
+        {
+            var outputPath = Path.Combine(AppContext.BaseDirectory, "Assets", "invoice-logo.png");
+            if (File.Exists(outputPath))
+            {
+                return outputPath;
+            }
+
+            var directory = new DirectoryInfo(AppContext.BaseDirectory);
+            while (directory != null)
+            {
+                var sourcePath = Path.Combine(
+                    directory.FullName,
+                    "BlazorApp.Shared",
+                    "Helper",
+                    "logo",
+                    "HB_logo(1).png"
+                );
+                if (File.Exists(sourcePath))
+                {
+                    return sourcePath;
+                }
+
+                directory = directory.Parent;
+            }
+
+            return null;
+        }
+
+        private static void AddDivider(Document document)
+        {
+            var divider = new PdfPTable(1) { WidthPercentage = 100, SpacingAfter = 8 };
+            divider.AddCell(
+                new PdfPCell
+                {
+                    Border = Rectangle.TOP_BORDER,
+                    BorderColorTop = new BaseColor(70, 70, 70),
+                    BorderWidthTop = 1.5f,
+                    FixedHeight = 2,
+                    Padding = 0,
+                }
+            );
+            document.Add(divider);
+        }
+
+        private static void AddInvoiceSummary(
+            Document document,
+            StoreOrderCartDto order,
+            iTextSharp.text.Font font
+        )
+        {
+            var summaryTable = new PdfPTable(2) { WidthPercentage = 100, SpacingAfter = 8 };
+            summaryTable.SetWidths(new float[] { 1f, 1f });
+            summaryTable.AddCell(
+                new PdfPCell(new Phrase($"INVOICE NO. {order.OrderNo ?? order.OrderGUID}", font))
+                {
+                    Border = Rectangle.BOTTOM_BORDER,
+                    BorderColorBottom = new BaseColor(130, 130, 130),
+                    PaddingBottom = 8,
+                }
+            );
+            summaryTable.AddCell(
+                new PdfPCell(new Phrase($"INVOICE DATE: {DateTime.Now:yyyy/M/d}", font))
+                {
+                    Border = Rectangle.BOTTOM_BORDER,
+                    BorderColorBottom = new BaseColor(130, 130, 130),
+                    HorizontalAlignment = Element.ALIGN_RIGHT,
+                    PaddingBottom = 8,
+                }
+            );
+            document.Add(summaryTable);
+        }
+
+        private static void AddPaymentAndTotalsFooter(
+            Document document,
+            decimal subTotal,
+            decimal gst,
+            decimal freight,
+            decimal total,
+            iTextSharp.text.Font boldFont,
+            iTextSharp.text.Font bodyFont
+        )
+        {
+            var footerTable = new PdfPTable(2) { WidthPercentage = 100, SpacingAfter = 8 };
+            footerTable.SetWidths(new float[] { 1.55f, 1f });
+
+            var paymentCell = CreateNoBorderCell();
+            paymentCell.AddElement(
+                new Paragraph(PaymentDetailTitle, boldFont) { SpacingAfter = 8 }
+            );
+
+            var paymentTable = new PdfPTable(2)
+            {
+                WidthPercentage = 65,
+                HorizontalAlignment = Element.ALIGN_LEFT,
+            };
+            paymentTable.SetWidths(new float[] { 0.8f, 2f });
+            AddNoBorderLabelCell(paymentTable, "NAME:", boldFont);
+            AddNoBorderValueCell(paymentTable, PaymentName, bodyFont);
+            AddNoBorderLabelCell(paymentTable, "BSB:", boldFont);
+            AddNoBorderValueCell(paymentTable, PaymentBsb, bodyFont);
+            AddNoBorderLabelCell(paymentTable, "ACCOUNT:", boldFont);
+            AddNoBorderValueCell(paymentTable, PaymentAccount, bodyFont);
+            paymentCell.AddElement(paymentTable);
+            paymentCell.AddElement(
+                new Paragraph(PaymentDisclaimer, bodyFont)
+                {
+                    SpacingBefore = 8,
+                    Leading = 11,
+                }
+            );
+            footerTable.AddCell(paymentCell);
+
+            var totalTable = new PdfPTable(2) { WidthPercentage = 100 };
+            totalTable.SetWidths(new float[] { 1.45f, 1f });
+            AddNoBorderLabelCell(totalTable, "Sub-Total:", bodyFont);
+            AddNoBorderRightValueCell(totalTable, FormatCurrency(subTotal), bodyFont);
+            AddNoBorderLabelCell(totalTable, "GST 10%:", bodyFont);
+            AddNoBorderRightValueCell(totalTable, FormatCurrency(gst), bodyFont);
+            AddNoBorderLabelCell(totalTable, "Freight:", bodyFont);
+            AddNoBorderRightValueCell(totalTable, FormatCurrency(freight), bodyFont);
+            AddTotalDividerRow(totalTable);
+            AddNoBorderLabelCell(totalTable, "Total Before Discount:", boldFont);
+            AddNoBorderRightValueCell(totalTable, FormatCurrency(total), boldFont);
+
+            var totalsCell = CreateNoBorderCell();
+            totalsCell.AddElement(totalTable);
+            footerTable.AddCell(totalsCell);
+
+            document.Add(footerTable);
         }
 
         private static List<StoreOrderCartItemDto> SortItems(IEnumerable<StoreOrderCartItemDto>? items)
@@ -306,6 +522,74 @@ namespace BlazorApp.Api.Services.React
                 Padding = 4,
                 BorderColor = new BaseColor(220, 220, 220),
             });
+        }
+
+        private static PdfPCell CreateNoBorderCell()
+        {
+            return new PdfPCell
+            {
+                Border = Rectangle.NO_BORDER,
+                Padding = 4,
+            };
+        }
+
+        private static void AddNoBorderLabelCell(
+            PdfPTable table,
+            string text,
+            iTextSharp.text.Font font
+        )
+        {
+            table.AddCell(
+                new PdfPCell(new Phrase(text, font))
+                {
+                    Border = Rectangle.NO_BORDER,
+                    Padding = 3,
+                }
+            );
+        }
+
+        private static void AddNoBorderValueCell(
+            PdfPTable table,
+            string text,
+            iTextSharp.text.Font font
+        )
+        {
+            table.AddCell(
+                new PdfPCell(new Phrase(text, font))
+                {
+                    Border = Rectangle.NO_BORDER,
+                    Padding = 3,
+                }
+            );
+        }
+
+        private static void AddNoBorderRightValueCell(
+            PdfPTable table,
+            string text,
+            iTextSharp.text.Font font
+        )
+        {
+            table.AddCell(
+                new PdfPCell(new Phrase(text, font))
+                {
+                    Border = Rectangle.NO_BORDER,
+                    HorizontalAlignment = Element.ALIGN_RIGHT,
+                    Padding = 3,
+                }
+            );
+        }
+
+        private static void AddTotalDividerRow(PdfPTable table)
+        {
+            table.AddCell(
+                new PdfPCell(new Phrase(string.Empty))
+                {
+                    Border = Rectangle.TOP_BORDER,
+                    BorderColorTop = new BaseColor(130, 130, 130),
+                    Colspan = 2,
+                    FixedHeight = 6,
+                }
+            );
         }
     }
 }

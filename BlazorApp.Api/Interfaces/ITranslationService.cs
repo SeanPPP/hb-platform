@@ -29,6 +29,14 @@ namespace BlazorApp.Api.Interfaces
         Task<string> TranslateToEnglishAsync(string chineseText);
 
         /// <summary>
+        /// 将文本翻译为目标语言
+        /// </summary>
+        /// <param name="text">要翻译的文本</param>
+        /// <param name="targetLanguage">目标语言，支持 zh/en</param>
+        /// <returns>翻译后的文本</returns>
+        Task<string> TranslateAsync(string text, string targetLanguage);
+
+        /// <summary>
         /// 批量翻译中文文本为英文
         /// </summary>
         /// <param name="chineseTexts">中文文本列表</param>

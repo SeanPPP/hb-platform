@@ -3,12 +3,14 @@ using System.Runtime.CompilerServices;
 using System.Security.Claims;
 using AutoMapper;
 using BlazorApp.Api.Data;
+using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Api.Services;
 using BlazorApp.Api.Services.React;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
 using ClosedXML.Excel;
+using iTextSharp.text.pdf;
 using MailKit.Net.Smtp;
 using MailKit.Security;
 using Microsoft.AspNetCore.Http;
@@ -309,6 +311,21 @@ public sealed class StoreOrderContactAndInvoiceTests : IDisposable
                 Assert.Equal("application/pdf", pdf.ContentType);
                 Assert.NotEmpty(pdf.Bytes);
                 Assert.Equal("%PDF", System.Text.Encoding.ASCII.GetString(pdf.Bytes.Take(4).ToArray()));
+                var pdfText = ExtractPdfText(pdf.Bytes);
+                Assert.Contains("WAREHOUSE ADDRESS", pdfText);
+                Assert.Contains("3 Rogilla close Maryland", pdfText);
+                Assert.Contains("A.B.N. 35 160 589 793", pdfText);
+                Assert.Contains("WAREHOUSE EMAIL", pdfText);
+                Assert.Contains("INVOICE NO. SO001", pdfText);
+                Assert.Contains("PAYMENT DETAIL: DIRECT DEBIT", pdfText);
+                Assert.Contains("NAME:", pdfText);
+                Assert.Contains("HOT BARGAIN INTERNATIONAL", pdfText);
+                Assert.Contains("BSB:", pdfText);
+                Assert.Contains("12532", pdfText);
+                Assert.Contains("ACCOUNT:", pdfText);
+                Assert.Contains("208034605", pdfText);
+                Assert.Contains("All products remain the property of Hot Bargain International Pty Ltd", pdfText);
+                Assert.True(HasPdfImageXObject(pdf.Bytes), "发票邮件 PDF 应嵌入 HOT BARGAIN logo 图片");
             },
             excel =>
             {
@@ -366,6 +383,71 @@ public sealed class StoreOrderContactAndInvoiceTests : IDisposable
 
         var multipart = Assert.IsType<MimeKit.Multipart>(email.Body);
         Assert.Equal(3, multipart.Count);
+    }
+
+    [Fact]
+    public async Task StoreOrderInvoiceEmailTextTranslationService_TranslatesEditedEmailTextBothWays()
+    {
+        var translationService = new Mock<ITranslationService>(MockBehavior.Strict);
+        translationService
+            .Setup(item => item.TranslateAsync("您好，附件请查收。", "en"))
+            .ReturnsAsync("Hello, please find the attachment.");
+        translationService
+            .Setup(item => item.TranslateAsync("Hello, please find the attachment.", "zh"))
+            .ReturnsAsync("您好，请查收附件。");
+        translationService
+            .Setup(item => item.TranslateAsync("Hello, please find the attachment.", "en"))
+            .ReturnsAsync("Hello, please find the attachment.");
+        var service = new StoreOrderInvoiceEmailTextTranslationService(
+            translationService.Object,
+            NullLogger<StoreOrderInvoiceEmailTextTranslationService>.Instance
+        );
+
+        var toEnglish = await service.TranslateAsync(
+            new StoreOrderInvoiceEmailTextTranslationRequestDto
+            {
+                TargetLanguage = "en",
+                Subject = "您好，附件请查收。",
+                Body = "Hello, please find the attachment.",
+            }
+        );
+        var toChinese = await service.TranslateAsync(
+            new StoreOrderInvoiceEmailTextTranslationRequestDto
+            {
+                TargetLanguage = "zh",
+                Subject = "Hello, please find the attachment.",
+            }
+        );
+
+        Assert.True(toEnglish.Success);
+        Assert.Equal("Hello, please find the attachment.", toEnglish.Data!.Subject);
+        Assert.Equal("Hello, please find the attachment.", toEnglish.Data.Body);
+        Assert.True(toChinese.Success);
+        Assert.Equal("您好，请查收附件。", toChinese.Data!.Subject);
+    }
+
+    [Fact]
+    public async Task StoreOrderInvoiceEmailTextTranslationService_WhenProviderFails_ReturnsClearFailure()
+    {
+        var translationService = new Mock<ITranslationService>(MockBehavior.Strict);
+        translationService
+            .Setup(item => item.TranslateAsync("custom subject", "zh"))
+            .ThrowsAsync(new InvalidOperationException("provider failed"));
+        var service = new StoreOrderInvoiceEmailTextTranslationService(
+            translationService.Object,
+            NullLogger<StoreOrderInvoiceEmailTextTranslationService>.Instance
+        );
+
+        var result = await service.TranslateAsync(
+            new StoreOrderInvoiceEmailTextTranslationRequestDto
+            {
+                TargetLanguage = "zh",
+                Subject = "custom subject",
+            }
+        );
+
+        Assert.False(result.Success);
+        Assert.Equal("翻译邮件内容失败，请稍后重试", result.Message);
     }
 
     [Fact]
@@ -511,6 +593,42 @@ public sealed class StoreOrderContactAndInvoiceTests : IDisposable
                 },
             },
         };
+    }
+
+    private static string ExtractPdfText(byte[] pdfBytes)
+    {
+        using var reader = new PdfReader(pdfBytes);
+        return string.Join(
+            "\n",
+            Enumerable
+                .Range(1, reader.NumberOfPages)
+                .Select(page => System.Text.Encoding.Latin1.GetString(reader.GetPageContent(page)))
+        );
+    }
+
+    private static bool HasPdfImageXObject(byte[] pdfBytes)
+    {
+        using var reader = new PdfReader(pdfBytes);
+        for (var page = 1; page <= reader.NumberOfPages; page++)
+        {
+            var resources = reader.GetPageN(page).GetAsDict(new PdfName("Resources"));
+            var xObjects = resources?.GetAsDict(new PdfName("XObject"));
+            if (xObjects == null)
+            {
+                continue;
+            }
+
+            foreach (var name in xObjects.Keys)
+            {
+                var xObject = PdfReader.GetPdfObject(xObjects.Get(name)) as PdfDictionary;
+                if (new PdfName("Image").Equals(xObject?.GetAsName(new PdfName("Subtype"))))
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 
     private static async Task<StoreOrderInvoiceEmailJobDto> WaitForInvoiceEmailJobAsync(

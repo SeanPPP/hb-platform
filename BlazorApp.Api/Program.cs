@@ -526,6 +526,10 @@ builder.Services.AddScoped<IAdvertisementReactService, AdvertisementReactService
 builder.Services.AddSingleton<IStoreOrderSyncJobService, StoreOrderSyncJobService>();
 builder.Services.AddSingleton<IStoreOrderInvoiceEmailJobService, StoreOrderInvoiceEmailJobService>();
 builder.Services.AddScoped<IStoreOrderInvoiceAttachmentService, StoreOrderInvoiceAttachmentService>();
+builder.Services.AddScoped<
+    IStoreOrderInvoiceEmailTextTranslationService,
+    StoreOrderInvoiceEmailTextTranslationService
+>();
 builder.Services.AddScoped<IStoreOrderHqSyncService, StoreOrderHqSyncService>();
 builder.Services.AddScoped<IStoreOrderReactService, StoreOrderReactService>();
 builder.Services.AddScoped<IStoreProductMaintenanceReactService, StoreProductMaintenanceReactService>();

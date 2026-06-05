@@ -101,6 +101,28 @@ namespace BlazorApp.Api.Services
         }
 
         /// <summary>
+        /// 翻译文本为指定目标语言。
+        /// </summary>
+        public async Task<string> TranslateAsync(string text, string targetLanguage)
+        {
+            if (string.IsNullOrWhiteSpace(text))
+                return text;
+
+            var normalizedTargetLanguage = targetLanguage?.Trim().ToLowerInvariant();
+            if (normalizedTargetLanguage is "en" or "en-us" or "en-au")
+            {
+                return await TranslateToEnglishAsync(text);
+            }
+
+            if (normalizedTargetLanguage is not ("zh" or "zh-cn"))
+            {
+                throw new ArgumentException($"不支持的目标语言: {targetLanguage}");
+            }
+
+            return await CallTranslationApiAsync(text, "zh");
+        }
+
+        /// <summary>
         /// 批量翻译中文文本
         /// </summary>
         public async Task<Dictionary<string, string>> BatchTranslateToEnglishAsync(
@@ -255,23 +277,31 @@ namespace BlazorApp.Api.Services
         /// </summary>
         private async Task<string> CallTranslationApiAsync(string text)
         {
+            return await CallTranslationApiAsync(text, "en");
+        }
+
+        /// <summary>
+        /// 调用翻译API并指定目标语言。
+        /// </summary>
+        private async Task<string> CallTranslationApiAsync(string text, string targetLanguage)
+        {
             try
             {
                 var provider = _configuration.GetValue<string>("Translation:Provider") ?? "mock";
 
                 return provider.ToLower() switch
                 {
-                    "kimi" => await CallKimiApiAsync(text),
-                    "baidu" => await CallBaiduApiAsync(text),
-                    "google" => await CallGoogleApiAsync(text),
-                    "azure" => await CallAzureApiAsync(text),
-                    _ => await CallMockApiAsync(text),
+                    "kimi" => await CallKimiApiAsync(text, targetLanguage),
+                    "baidu" when targetLanguage == "en" => await CallBaiduApiAsync(text),
+                    "google" when targetLanguage == "en" => await CallGoogleApiAsync(text),
+                    "azure" when targetLanguage == "en" => await CallAzureApiAsync(text),
+                    _ => await CallMockApiAsync(text, targetLanguage),
                 };
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "调用翻译API失败: {Text}", text);
-                return await CallMockApiAsync(text); // 降级到模拟翻译
+                return await CallMockApiAsync(text, targetLanguage); // 降级到模拟翻译
             }
         }
 
@@ -306,6 +336,14 @@ namespace BlazorApp.Api.Services
         /// 模拟翻译API（开发环境使用）
         /// </summary>
         private async Task<string> CallMockApiAsync(string text)
+        {
+            return await CallMockApiAsync(text, "en");
+        }
+
+        /// <summary>
+        /// 模拟翻译API（开发环境使用），支持中英双向。
+        /// </summary>
+        private async Task<string> CallMockApiAsync(string text, string targetLanguage)
         {
             await Task.Delay(50); // 模拟网络延时
 
@@ -342,7 +380,42 @@ namespace BlazorApp.Api.Services
                 { "书", "Book" },
                 { "笔", "Pen" },
                 { "纸", "Paper" },
+                { "您好", "Hello" },
+                { "附件", "attachment" },
+                { "请查收", "please find attached" },
+                { "谢谢", "Thank you" },
+                { "发票", "invoice" },
             };
+
+            if (targetLanguage == "zh")
+            {
+                var reversedDictionary = mockDictionary
+                    .GroupBy(item => item.Value, StringComparer.OrdinalIgnoreCase)
+                    .ToDictionary(
+                        item => item.Key,
+                        item => item.First().Key,
+                        StringComparer.OrdinalIgnoreCase
+                    );
+                if (reversedDictionary.TryGetValue(text, out var chineseTranslation))
+                {
+                    return chineseTranslation;
+                }
+
+                foreach (var kvp in reversedDictionary)
+                {
+                    if (text.Contains(kvp.Key, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return Regex.Replace(
+                            text,
+                            Regex.Escape(kvp.Key),
+                            kvp.Value,
+                            RegexOptions.IgnoreCase
+                        );
+                    }
+                }
+
+                return text;
+            }
 
             // 尝试完全匹配
             if (mockDictionary.TryGetValue(text, out var translation))
@@ -449,6 +522,14 @@ namespace BlazorApp.Api.Services
         /// </summary>
         private async Task<string> CallKimiApiAsync(string text)
         {
+            return await CallKimiApiAsync(text, "en");
+        }
+
+        /// <summary>
+        /// 调用Kimi翻译API并指定目标语言
+        /// </summary>
+        private async Task<string> CallKimiApiAsync(string text, string targetLanguage)
+        {
             var apiKey = _configuration.GetValue<string>("Translation:Kimi:ApiKey");
             var model =
                 _configuration.GetValue<string>("Translation:Kimi:Model") ?? "moonshot-v1-128k";
@@ -459,7 +540,7 @@ namespace BlazorApp.Api.Services
             if (string.IsNullOrEmpty(apiKey))
             {
                 _logger.LogWarning("Kimi翻译API配置不完整，降级到模拟翻译");
-                return await CallMockApiAsync(text);
+                return await CallMockApiAsync(text, targetLanguage);
             }
 
             try
@@ -476,7 +557,10 @@ namespace BlazorApp.Api.Services
                         new
                         {
                             role = "user",
-                            content = $"把这句话翻译成英文，只返回翻译结果，不要其他说明：{text}",
+                            content =
+                                targetLanguage == "zh"
+                                    ? $"把这段邮件内容翻译成中文，只返回翻译结果，不要其他说明：{text}"
+                                    : $"把这段邮件内容翻译成英文，只返回翻译结果，不要其他说明：{text}",
                         },
                     },
                 };
@@ -495,7 +579,7 @@ namespace BlazorApp.Api.Services
                         response.StatusCode,
                         await response.Content.ReadAsStringAsync()
                     );
-                    return await CallMockApiAsync(text);
+                    return await CallMockApiAsync(text, targetLanguage);
                 }
 
                 var result = await response.Content.ReadAsStringAsync();
@@ -522,12 +606,12 @@ namespace BlazorApp.Api.Services
                 }
 
                 _logger.LogWarning("Kimi API返回空翻译结果");
-                return await CallMockApiAsync(text);
+                return await CallMockApiAsync(text, targetLanguage);
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "调用Kimi API时发生异常: {Text}", text);
-                return await CallMockApiAsync(text);
+                return await CallMockApiAsync(text, targetLanguage);
             }
         }
 

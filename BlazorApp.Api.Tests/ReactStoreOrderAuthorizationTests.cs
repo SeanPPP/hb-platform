@@ -1108,6 +1108,50 @@ public class ReactStoreOrderAuthorizationTests
         );
     }
 
+    [Fact]
+    public async Task TranslateInvoiceEmailText_UsesEditPermissionAndOrderScope()
+    {
+        var request = new StoreOrderInvoiceEmailTextTranslationRequestDto
+        {
+            OrderGUID = "order-1",
+            TargetLanguage = "en",
+            Subject = "自定义主题",
+            Body = "自定义正文",
+        };
+        var translationService = new Mock<IStoreOrderInvoiceEmailTextTranslationService>(
+            MockBehavior.Strict
+        );
+        translationService
+            .Setup(item => item.TranslateAsync(request, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(
+                ApiResponse<StoreOrderInvoiceEmailTextTranslationResultDto>.OK(
+                    new StoreOrderInvoiceEmailTextTranslationResultDto
+                    {
+                        Subject = "Custom subject",
+                        Body = "Custom body",
+                    }
+                )
+            );
+
+        var scopeService = CreateScopeService();
+        scopeService.Setup(item => item.CanAccessOrderAsync("order-1")).ReturnsAsync(true);
+
+        var controller = CreateController(
+            new Mock<IStoreOrderReactService>(MockBehavior.Strict),
+            CreateAuthorizationService(Permissions.Orders.Edit),
+            scopeService,
+            invoiceEmailTextTranslationService: translationService
+        );
+
+        var result = await controller.TranslateInvoiceEmailText(request);
+
+        Assert.IsType<OkObjectResult>(result);
+        translationService.Verify(
+            item => item.TranslateAsync(request, It.IsAny<CancellationToken>()),
+            Times.Once
+        );
+    }
+
     private static ReactStoreOrderController CreateController(
         Mock<IStoreOrderReactService> service,
         Mock<IAuthorizationService> authorizationService,
@@ -1115,6 +1159,7 @@ public class ReactStoreOrderAuthorizationTests
         IReadOnlyCollection<string>? roleNames = null,
         Mock<IStoreOrderSyncJobService>? jobService = null,
         Mock<IStoreOrderInvoiceEmailJobService>? invoiceEmailJobService = null,
+        Mock<IStoreOrderInvoiceEmailTextTranslationService>? invoiceEmailTextTranslationService = null,
         Mock<IUserService>? userService = null
     )
     {
@@ -1130,6 +1175,10 @@ public class ReactStoreOrderAuthorizationTests
             (
                 invoiceEmailJobService
                 ?? new Mock<IStoreOrderInvoiceEmailJobService>(MockBehavior.Strict)
+            ).Object,
+            (
+                invoiceEmailTextTranslationService
+                ?? new Mock<IStoreOrderInvoiceEmailTextTranslationService>(MockBehavior.Strict)
             ).Object
         );
 
