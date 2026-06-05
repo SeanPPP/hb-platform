@@ -43,6 +43,69 @@ namespace BlazorApp.Api.Services.React
         }
 
         /// <summary>
+        /// 按货柜明细重新汇总主表统计字段
+        /// </summary>
+        private async Task RefreshContainerSummariesAsync(IEnumerable<string?> containerCodes)
+        {
+            var codes = containerCodes
+                .Where(code => !string.IsNullOrWhiteSpace(code))
+                .Select(code => code!)
+                .Distinct()
+                .ToList();
+            if (codes.Count == 0)
+            {
+                return;
+            }
+
+            var containers = await _context
+                .Db.Queryable<Container>()
+                .Where(c => codes.Contains(c.ContainerCode))
+                .ToListAsync();
+            if (containers.Count == 0)
+            {
+                return;
+            }
+
+            var allDetails = await _context
+                .Db.Queryable<ContainerDetail>()
+                .Where(d => codes.Contains(d.ContainerCode) && !d.IsDeleted)
+                .ToListAsync();
+            var detailsByContainer = allDetails
+                .GroupBy(d => d.ContainerCode)
+                .ToDictionary(g => g.Key, g => g.ToList());
+
+            foreach (var container in containers)
+            {
+                if (detailsByContainer.TryGetValue(container.ContainerCode, out var details))
+                {
+                    container.TotalPieces = details.Sum(d => d.LoadingPieces ?? 0m);
+                    container.TotalQuantity = details.Sum(d => d.LoadingQuantity ?? 0m);
+                    container.TotalVolume = details.Sum(d => d.TotalVolume ?? 0m);
+                    container.TotalAmount = details.Sum(d => d.TotalAmount ?? 0m);
+                }
+                else
+                {
+                    container.TotalPieces = 0m;
+                    container.TotalQuantity = 0m;
+                    container.TotalVolume = 0m;
+                    container.TotalAmount = 0m;
+                }
+            }
+
+            await _context
+                .Db.Updateable(containers)
+                .UpdateColumns(x => new
+                {
+                    x.TotalPieces,
+                    x.TotalQuantity,
+                    x.TotalVolume,
+                    x.TotalAmount,
+                })
+                .WhereColumns(x => new { x.ContainerCode })
+                .ExecuteCommandAsync();
+        }
+
+        /// <summary>
         /// 获取货柜列表（支持分页、日期过滤、货号筛选）
         /// </summary>
         public async Task<ContainerListResponse> GetContainersAsync(ContainerQueryRequest request)
@@ -753,6 +816,11 @@ namespace BlazorApp.Api.Services.React
                                 })
                                 .WhereColumns(x => new { x.DetailCode })
                                 .ExecuteCommandAsync();
+
+                            // 明细合计变化后，同事务刷新货柜主表汇总，保证列表和详情头部一致。
+                            await RefreshContainerSummariesAsync(
+                                changedDetails.Select(detail => detail.ContainerCode)
+                            );
                         }
 
                         // 第三步：同步更新国内商品表的名称信息

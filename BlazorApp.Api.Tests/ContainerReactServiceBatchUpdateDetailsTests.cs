@@ -46,7 +46,7 @@ public sealed class ContainerReactServiceBatchUpdateDetailsTests : IDisposable
     }
 
     [Fact]
-    public async Task UpdateContainerAsync_状态变化_应更新货柜主表状态并保留头部字段更新()
+    public async Task ContainerReactServiceUpdateContainerAsync_状态变化_应更新货柜主表状态并保留头部字段更新()
     {
         await _localDb.Insertable(
             new Container
@@ -224,6 +224,87 @@ public sealed class ContainerReactServiceBatchUpdateDetailsTests : IDisposable
         Assert.Equal(96m, detail.LoadingQuantity);
         Assert.Equal(0.236m, detail.TotalVolume);
         Assert.Equal(1336.32m, detail.TotalAmount);
+    }
+
+    [Fact]
+    public async Task BatchUpdateDetailsAsync_统计字段变化_应同步刷新货柜主表汇总()
+    {
+        await _localDb.Insertable(
+            new Container
+            {
+                ContainerCode = "C-SUMMARY",
+                ContainerNumber = "C-SUMMARY",
+                TotalPieces = 99m,
+                TotalQuantity = 99m,
+                TotalAmount = 99m,
+                TotalVolume = 99m,
+            }
+        ).ExecuteCommandAsync();
+        await _localDb.Insertable(
+            new List<ContainerDetail>
+            {
+                new()
+                {
+                    DetailCode = "D-SUMMARY-1",
+                    ContainerCode = "C-SUMMARY",
+                    ProductCode = "P-SUMMARY-1",
+                    LoadingPieces = 2m,
+                    LoadingQuantity = 20m,
+                    TotalAmount = 100m,
+                    TotalVolume = 0.5m,
+                    IsDeleted = false,
+                },
+                new()
+                {
+                    DetailCode = "D-SUMMARY-2",
+                    ContainerCode = "C-SUMMARY",
+                    ProductCode = "P-SUMMARY-2",
+                    LoadingPieces = 3m,
+                    LoadingQuantity = 30m,
+                    TotalAmount = 150m,
+                    TotalVolume = 0.75m,
+                    IsDeleted = false,
+                },
+            }
+        ).ExecuteCommandAsync();
+        await _localDb.Insertable(
+            new DomesticProduct
+            {
+                ProductCode = "P-SUMMARY-1",
+                HBProductNo = "P-SUMMARY-1",
+                ProductName = "汇总商品",
+                IsDeleted = false,
+            }
+        ).ExecuteCommandAsync();
+        await SeedRelatedPriceRowsAsync("P-SUMMARY-1");
+        var service = CreateService();
+
+        var totalUpdated = await service.BatchUpdateDetailsAsync(
+            new List<UpdateContainerDetailDto>
+            {
+                new()
+                {
+                    HGUID = "D-SUMMARY-1",
+                    装柜数量 = 48m,
+                    合计装柜体积 = 0.66m,
+                    合计装柜金额 = 464.64m,
+                    进口价格 = 2.10m,
+                    SkipRelatedProductSync = true,
+                },
+            }
+        );
+
+        var container = await _localDb.Queryable<Container>()
+            .SingleAsync(x => x.ContainerCode == "C-SUMMARY");
+        var warehouseProduct = await _localDb.Queryable<WarehouseProduct>()
+            .SingleAsync(x => x.ProductCode == "P-SUMMARY-1");
+
+        Assert.Equal(1, totalUpdated);
+        Assert.Equal(5m, container.TotalPieces);
+        Assert.Equal(78m, container.TotalQuantity);
+        Assert.Equal(614.64m, container.TotalAmount);
+        Assert.Equal(1.41m, container.TotalVolume);
+        Assert.Equal(1.11m, warehouseProduct.ImportPrice);
     }
 
     [Fact]
