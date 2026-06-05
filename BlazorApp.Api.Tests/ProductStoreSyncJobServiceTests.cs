@@ -132,6 +132,7 @@ public sealed class ProductStoreSyncJobServiceTests
         var first = await service.StartJobAsync(BuildRequest());
         await WaitForJobAsync(service, first.JobId);
         var second = await service.StartJobAsync(BuildRequest());
+        await WaitForJobAsync(service, second.JobId);
 
         Assert.NotEqual(first.JobId, second.JobId);
         syncService.Verify(service => service.SyncProductsToStoresAsync(It.IsAny<SyncProductsToStoresRequest>()), Times.Exactly(2));
