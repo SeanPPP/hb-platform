@@ -15,7 +15,9 @@ Thumbs.db
 .sisyphus/
 .trae/
 
-scripts/
+scripts/*
+!scripts/magicpro-download-images.mjs
+!scripts/magicpro-download-images-smoke.mjs
 
 vite.config.js.timestamp-*
 vite.config.d.ts

@@ -2,6 +2,7 @@ import { App as AntdApp, ConfigProvider, Result, Spin, theme } from 'antd'
 import { useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 import { BrowserRouter, Navigate, Route, Routes, useLocation } from 'react-router-dom'
+import GlobalErrorBoundary from './components/GlobalErrorBoundary'
 import AdminLayout from './layout/AdminLayout'
 import ShopLayout from './layout/ShopLayout'
 import LoginPage from './pages/Login'
@@ -103,9 +104,11 @@ export default function App() {
       }}
     >
       <AntdApp>
-        <BrowserRouter>
-          <AppBootstrap />
-        </BrowserRouter>
+        <GlobalErrorBoundary>
+          <BrowserRouter>
+            <AppBootstrap />
+          </BrowserRouter>
+        </GlobalErrorBoundary>
       </AntdApp>
     </ConfigProvider>
   )

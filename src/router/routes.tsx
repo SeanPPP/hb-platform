@@ -55,6 +55,7 @@ import PosAdminAdvertisementsPage from '../pages/PosAdmin/Advertisements'
 import LocalSupplierInvoicesPage from '../pages/PosAdmin/LocalSupplierInvoices'
 import LocalSupplierInvoiceDetailPage from '../pages/PosAdmin/LocalSupplierInvoiceDetailPage'
 import InvoiceEditPage from '../pages/PosAdmin/LocalSupplierInvoices/InvoiceEdit'
+import SystemCenterLogsPage from '../pages/System/CenterLogs'
 import SystemRolesPage from '../pages/System/Roles'
 import SystemStoresPage from '../pages/System/Stores'
 import SystemEmployeeProfilesPage from '../pages/System/EmployeeProfiles'
@@ -155,6 +156,16 @@ export const appRoutes: AppRouteItem[] = [
           accessKey: 'canViewEmployeeProfiles',
         },
         element: <SystemEmployeeProfilesPage />,
+      },
+      {
+        path: '/system/center-logs',
+        meta: {
+          title: 'menu.systemCenterLogs',
+          icon: 'FileTextOutlined',
+          keepAlive: true,
+          accessKey: 'canViewSystemLogs',
+        },
+        element: <SystemCenterLogsPage />,
       },
       {
         path: '/system/users',

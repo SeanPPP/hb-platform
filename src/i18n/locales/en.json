@@ -32,6 +32,7 @@
     "system": "System",
     "systemStores": "Stores",
     "systemEmployeeProfiles": "Employee Profiles",
+    "systemCenterLogs": "Center Logs",
     "employeeProfiles": "Employee Profiles",
     "systemUsers": "Users",
     "systemRoles": "Roles",
@@ -2722,6 +2723,55 @@
         "superannuationCompanyCode": "Enter superannuation company code",
         "superannuationAccountNumber": "Enter superannuation account number",
         "address": "Enter address"
+      }
+    },
+    "centerLogs": {
+      "pageTitle": "Center Logs",
+      "pageSubtitle": "Inspect structured application logs from the shared log center with project, level, time, and keyword filters.",
+      "loadListFailed": "Failed to load log list",
+      "loadDetailFailed": "Failed to load log details",
+      "detailTitle": "Log Details",
+      "loadingDetail": "Loading log details...",
+      "runtimeErrorTitle": "This page hit an error",
+      "runtimeErrorSubtitle": "The app tried to report the error. Refresh the page and try again.",
+      "filters": {
+        "projectCode": "Project",
+        "projectPlaceholder": "Enter project code",
+        "level": "Level",
+        "levelPlaceholder": "Select a log level",
+        "timeRange": "Time Range",
+        "keyword": "Keyword",
+        "keywordPlaceholder": "Search message, exception, or path"
+      },
+      "summary": {
+        "total": "Total Logs",
+        "byLevel": "By Level",
+        "byProject": "By Project"
+      },
+      "columns": {
+        "timestamp": "Timestamp",
+        "project": "Project",
+        "level": "Level",
+        "sourceType": "Source",
+        "message": "Message",
+        "requestPath": "Request Path",
+        "statusCode": "Status",
+        "traceId": "TraceId",
+        "user": "User"
+      },
+      "fields": {
+        "message": "Message",
+        "exception": "Exception",
+        "stackTrace": "Stack Trace",
+        "properties": "Properties"
+      },
+      "pagination": {
+        "total": "{{total}} total"
+      },
+      "presets": {
+        "lastHour": "Last 1 Hour",
+        "last24Hours": "Last 24 Hours",
+        "last7Days": "Last 7 Days"
       }
     },
     "permissions": {

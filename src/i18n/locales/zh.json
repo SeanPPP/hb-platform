@@ -32,6 +32,7 @@
     "system": "系统管理",
     "systemStores": "分店管理",
     "systemEmployeeProfiles": "员工个人信息维护",
+    "systemCenterLogs": "中心日志",
     "employeeProfiles": "员工个人信息维护",
     "systemUsers": "用户管理",
     "systemRoles": "角色管理",
@@ -2722,6 +2723,55 @@
         "superannuationCompanyCode": "请输入公积金公司代码",
         "superannuationAccountNumber": "请输入公积金账号",
         "address": "请输入地址"
+      }
+    },
+    "centerLogs": {
+      "pageTitle": "中心日志",
+      "pageSubtitle": "查看来自接入中心的结构化应用日志，支持按项目、等级、时间和关键词筛选。",
+      "loadListFailed": "加载日志列表失败",
+      "loadDetailFailed": "加载日志详情失败",
+      "detailTitle": "日志详情",
+      "loadingDetail": "正在加载日志详情...",
+      "runtimeErrorTitle": "页面发生异常",
+      "runtimeErrorSubtitle": "系统已尝试上报异常日志，请刷新页面后重试。",
+      "filters": {
+        "projectCode": "项目",
+        "projectPlaceholder": "输入项目编码",
+        "level": "等级",
+        "levelPlaceholder": "选择日志等级",
+        "timeRange": "时间范围",
+        "keyword": "关键词",
+        "keywordPlaceholder": "搜索消息、异常、路径"
+      },
+      "summary": {
+        "total": "日志总数",
+        "byLevel": "按等级汇总",
+        "byProject": "按项目汇总"
+      },
+      "columns": {
+        "timestamp": "时间",
+        "project": "项目",
+        "level": "等级",
+        "sourceType": "来源",
+        "message": "消息",
+        "requestPath": "请求路径",
+        "statusCode": "状态码",
+        "traceId": "TraceId",
+        "user": "用户"
+      },
+      "fields": {
+        "message": "消息内容",
+        "exception": "异常信息",
+        "stackTrace": "堆栈",
+        "properties": "附加属性"
+      },
+      "pagination": {
+        "total": "共 {{total}} 条"
+      },
+      "presets": {
+        "lastHour": "最近1小时",
+        "last24Hours": "最近24小时",
+        "last7Days": "最近7天"
       }
     },
     "permissions": {

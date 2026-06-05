@@ -1,4 +1,5 @@
 import type { ApiResponse, PagedResult } from '../types/api'
+import { isCenterLogIngestRequest, reportRequestError } from './centerLogClient'
 
 export interface RequestOptions {
   method?: 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH'
@@ -149,7 +150,22 @@ async function request<T>(url: string, options: RequestOptions = {}): Promise<T>
   const { skipAuthRedirect = false } = options
   const normalizedUrl = url.replace(API_BASE_URL, '')
 
-  const { response, payload } = await rawFetch<unknown>(url, options)
+  let response: Response
+  let payload: unknown
+
+  try {
+    const result = await rawFetch<unknown>(url, options)
+    response = result.response
+    payload = result.payload
+  } catch (error) {
+    // 网络层异常没有响应体，但仍要异步上报，且不能阻塞原始错误抛出。
+    reportRequestError({
+      url,
+      method: options.method ?? 'GET',
+      error,
+    })
+    throw error
+  }
 
   if (!response.ok) {
     if (response.status === 401 && !skipAuthRedirect && !AUTH_WHITELIST.has(normalizedUrl)) {
@@ -170,6 +186,17 @@ async function request<T>(url: string, options: RequestOptions = {}): Promise<T>
       typeof payload.message === 'string'
         ? payload.message
         : `请求失败 (${response.status})`
+    if (!isCenterLogIngestRequest(url)) {
+      // 业务接口返回非 2xx 时补一条结构化日志，方便后台按项目/等级/时间检索。
+      reportRequestError({
+        url,
+        method: options.method ?? 'GET',
+        statusCode: response.status,
+        error: new RequestError(message, response.status, payload),
+        responsePayload: payload,
+        traceId: response.headers.get('x-trace-id') ?? response.headers.get('trace-id') ?? undefined,
+      })
+    }
     throw new RequestError(message, response.status, payload)
   }
 
