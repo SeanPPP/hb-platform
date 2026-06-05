@@ -1,3 +1,5 @@
+using System.Collections;
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -204,7 +206,11 @@ namespace BlazorApp.Api.Services.Logging
             ApplicationLogQueryDto query
         )
         {
-            if (!string.IsNullOrWhiteSpace(query.ProjectCode))
+            var projectCodes = NormalizeProjectCodes(query);
+            if (projectCodes.Count > 0)
+                // 多选项目过滤供中心日志页面使用；ProjectCode 单值保留给旧入口。
+                dbQuery = dbQuery.Where(x => projectCodes.Contains(x.ProjectCode));
+            else if (!string.IsNullOrWhiteSpace(query.ProjectCode))
                 dbQuery = dbQuery.Where(x => x.ProjectCode == query.ProjectCode);
             if (!string.IsNullOrWhiteSpace(query.Environment))
                 dbQuery = dbQuery.Where(x => x.Environment == query.Environment);
@@ -271,10 +277,7 @@ namespace BlazorApp.Api.Services.Logging
                 UserId = Truncate(item.UserId, 120),
                 UserName = Truncate(item.UserName, 120),
                 ClientIp = Truncate(item.ClientIp, 80),
-                PropertiesJson = Truncate(
-                    item.Properties == null ? null : JsonSerializer.Serialize(item.Properties),
-                    _options.MaxPropertiesLength
-                ),
+                PropertiesJson = Truncate(SerializeSafeProperties(item.Properties), _options.MaxPropertiesLength),
             };
         }
 
@@ -385,6 +388,91 @@ namespace BlazorApp.Api.Services.Logging
             if (string.IsNullOrEmpty(value))
                 return value;
             return value.Length <= maxLength ? value : value[..maxLength];
+        }
+
+        private static List<string> NormalizeProjectCodes(ApplicationLogQueryDto query)
+        {
+            return (query.ProjectCodes ?? new List<string>())
+                .Select(x => x.Trim())
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
+
+        private static string? SerializeSafeProperties(Dictionary<string, object?>? properties)
+        {
+            if (properties == null || properties.Count == 0)
+                return null;
+
+            var safeProperties = properties.ToDictionary(
+                item => item.Key,
+                item => ToJsonSafeValue(item.Value)
+            );
+            return JsonSerializer.Serialize(safeProperties);
+        }
+
+        private static object? ToJsonSafeValue(object? value, int depth = 0)
+        {
+            if (value == null)
+                return null;
+            if (depth >= 4)
+                return value.ToString();
+
+            return value switch
+            {
+                string or bool or char => value,
+                byte or sbyte or short or ushort or int or uint or long or ulong => value,
+                double doubleValue => double.IsFinite(doubleValue)
+                    ? doubleValue
+                    : doubleValue.ToString(CultureInfo.InvariantCulture),
+                float floatValue => float.IsFinite(floatValue)
+                    ? floatValue
+                    : floatValue.ToString(CultureInfo.InvariantCulture),
+                decimal => value,
+                DateTime dateTime => dateTime.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture),
+                DateTimeOffset dateTimeOffset => dateTimeOffset.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture),
+                Guid guid => guid.ToString(),
+                Enum enumValue => enumValue.ToString(),
+                JsonElement jsonElement => ToJsonSafeValueFromElement(jsonElement, depth),
+                IDictionary dictionary => dictionary
+                    .Cast<DictionaryEntry>()
+                    .ToDictionary(
+                        entry => entry.Key?.ToString() ?? string.Empty,
+                        entry => ToJsonSafeValue(entry.Value, depth + 1)
+                    ),
+                IEnumerable enumerable when value is not string => enumerable
+                    .Cast<object?>()
+                    .Select(item => ToJsonSafeValue(item, depth + 1))
+                    .ToList(),
+                _ => value.ToString(),
+            };
+        }
+
+        private static object? ToJsonSafeValueFromElement(JsonElement element, int depth)
+        {
+            if (depth >= 4)
+                return element.ToString();
+
+            return element.ValueKind switch
+            {
+                JsonValueKind.Object => element
+                    .EnumerateObject()
+                    .ToDictionary(
+                        property => property.Name,
+                        property => ToJsonSafeValueFromElement(property.Value, depth + 1)
+                    ),
+                JsonValueKind.Array => element
+                    .EnumerateArray()
+                    .Select(item => ToJsonSafeValueFromElement(item, depth + 1))
+                    .ToList(),
+                JsonValueKind.String => element.GetString(),
+                JsonValueKind.Number when element.TryGetInt64(out var longValue) => longValue,
+                JsonValueKind.Number when element.TryGetDecimal(out var decimalValue) => decimalValue,
+                JsonValueKind.True => true,
+                JsonValueKind.False => false,
+                JsonValueKind.Null => null,
+                _ => element.ToString(),
+            };
         }
     }
 }

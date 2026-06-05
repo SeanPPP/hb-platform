@@ -1,6 +1,7 @@
 using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Api.Services;
+using BlazorApp.Api.Services.React;
 using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.DTOs;
 using Microsoft.AspNetCore.Authorization;
@@ -22,6 +23,7 @@ namespace BlazorApp.Api.Controllers.React
         private readonly IProductHqSyncService _productHqSyncService;
         private readonly ICurrentUserManageableStoreScopeService _storeScopeService;
         private readonly IProductSupplierImageBatchUpdateJobService? _supplierImageJobService;
+        private readonly IProductStoreSyncJobService? _productStoreSyncJobService;
         private readonly ILogger<ReactProductController> _logger;
 
         public ReactProductController(
@@ -30,7 +32,8 @@ namespace BlazorApp.Api.Controllers.React
             IProductHqSyncService productHqSyncService,
             ICurrentUserManageableStoreScopeService storeScopeService,
             ILogger<ReactProductController> logger,
-            IProductSupplierImageBatchUpdateJobService? supplierImageJobService = null
+            IProductSupplierImageBatchUpdateJobService? supplierImageJobService = null,
+            IProductStoreSyncJobService? productStoreSyncJobService = null
         )
         {
             _service = service;
@@ -38,6 +41,7 @@ namespace BlazorApp.Api.Controllers.React
             _productHqSyncService = productHqSyncService;
             _storeScopeService = storeScopeService;
             _supplierImageJobService = supplierImageJobService;
+            _productStoreSyncJobService = productStoreSyncJobService;
             _logger = logger;
         }
 
@@ -450,6 +454,12 @@ namespace BlazorApp.Api.Controllers.React
                 ?? throw new InvalidOperationException("供应商商品图片批量更新任务服务未注册");
         }
 
+        private IProductStoreSyncJobService ResolveProductStoreSyncJobService()
+        {
+            return _productStoreSyncJobService
+                ?? throw new InvalidOperationException("商品同步到分店任务服务未注册");
+        }
+
         /// <summary>
         /// 高级过滤查询商品列表（支持商品信息表与分店价格表的组合过滤）
         /// 所有过滤参数通过 QueryString 传递,支持同时生效
@@ -739,6 +749,7 @@ namespace BlazorApp.Api.Controllers.React
         /// 同步商品到分店
         /// </summary>
         [HttpPost("sync-to-stores")]
+        [Authorize(Policy = Permissions.PosProducts.Manage)]
         public async Task<IActionResult> SyncProductsToStores(
             [FromBody] SyncProductsToStoresRequest request
         )
@@ -748,6 +759,12 @@ namespace BlazorApp.Api.Controllers.React
                 if (request == null)
                 {
                     return BadRequest(new { success = false, message = "请求参数不能为空" });
+                }
+
+                var forbidden = await ValidateAndNormalizeSyncTargetStoresAsync(request);
+                if (forbidden != null)
+                {
+                    return forbidden;
                 }
 
                 _logger.LogInformation(
@@ -777,6 +794,7 @@ namespace BlazorApp.Api.Controllers.React
                             success = false,
                             message = result.Message,
                             errorCode = result.ErrorCode,
+                            data = result.Data ?? result.Details,
                         }
                     );
                 }
@@ -786,6 +804,128 @@ namespace BlazorApp.Api.Controllers.React
                 _logger.LogError(ex, "同步商品到分店失败");
                 return StatusCode(500, new { success = false, message = "同步商品到分店失败" });
             }
+        }
+
+        /// <summary>
+        /// 创建商品同步到分店后台任务
+        /// </summary>
+        [HttpPost("sync-to-stores/jobs")]
+        [Authorize(Policy = Permissions.PosProducts.Manage)]
+        public async Task<IActionResult> StartSyncProductsToStoresJob(
+            [FromBody] SyncProductsToStoresRequest request,
+            CancellationToken cancellationToken
+        )
+        {
+            try
+            {
+                if (request == null)
+                {
+                    return BadRequest(new { success = false, message = "请求参数不能为空" });
+                }
+
+                var forbidden = await ValidateAndNormalizeSyncTargetStoresAsync(request);
+                if (forbidden != null)
+                {
+                    return forbidden;
+                }
+
+                var jobService = ResolveProductStoreSyncJobService();
+                var job = await jobService.StartJobAsync(request, cancellationToken);
+                return Ok(new { success = true, data = job, message = "商品同步到分店任务已提交" });
+            }
+            catch (ProductStoreSyncJobConcurrencyLimitExceededException ex)
+            {
+                _logger.LogWarning(ex, "创建商品同步到分店任务被限流");
+                return StatusCode(
+                    429,
+                    new
+                    {
+                        success = false,
+                        message = ex.Message,
+                        errorCode = ex.ErrorCode,
+                    }
+                );
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "创建商品同步到分店任务失败");
+                return StatusCode(500, new { success = false, message = "创建商品同步到分店任务失败" });
+            }
+        }
+
+        /// <summary>
+        /// 查询商品同步到分店后台任务
+        /// </summary>
+        [HttpGet("sync-to-stores/jobs/{jobId}")]
+        [Authorize(Policy = Permissions.PosProducts.Manage)]
+        public async Task<IActionResult> GetSyncProductsToStoresJob(
+            string jobId,
+            CancellationToken cancellationToken
+        )
+        {
+            try
+            {
+                var jobService = ResolveProductStoreSyncJobService();
+                var job = await jobService.GetJobAsync(jobId, cancellationToken);
+                if (job == null)
+                {
+                    return NotFound(new { success = false, message = "商品同步到分店任务不存在或已过期" });
+                }
+
+                return Ok(new { success = true, data = job });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "查询商品同步到分店任务失败: {JobId}", jobId);
+                return StatusCode(500, new { success = false, message = "查询商品同步到分店任务失败" });
+            }
+        }
+
+        private async Task<IActionResult?> ValidateAndNormalizeSyncTargetStoresAsync(
+            SyncProductsToStoresRequest request
+        )
+        {
+            var scope = await _storeScopeService.GetScopeAsync();
+            if (!scope.IsAllowed)
+            {
+                return Forbid();
+            }
+
+            // 关键位置：控制器统一收口目标分店，避免 job/兼容入口绕过可管理分店范围。
+            var normalizedStoreCodes = NormalizeStoreCodes(request.StoreCodes);
+            request.StoreCodes = normalizedStoreCodes;
+
+            if (scope.IsAdmin || normalizedStoreCodes.Count == 0)
+            {
+                return null;
+            }
+
+            var allowedStoreCodes = NormalizeStoreCodes(scope.StoreCodes).ToHashSet(
+                StringComparer.OrdinalIgnoreCase
+            );
+            return normalizedStoreCodes.All(allowedStoreCodes.Contains) ? null : Forbid();
+        }
+
+        private static List<string> NormalizeStoreCodes(IEnumerable<string>? storeCodes)
+        {
+            var normalized = new List<string>();
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var storeCode in storeCodes ?? Enumerable.Empty<string>())
+            {
+                if (string.IsNullOrWhiteSpace(storeCode))
+                {
+                    continue;
+                }
+
+                var trimmed = storeCode.Trim();
+                if (seen.Add(trimmed))
+                {
+                    normalized.Add(trimmed);
+                }
+            }
+
+            return normalized;
         }
     }
 }

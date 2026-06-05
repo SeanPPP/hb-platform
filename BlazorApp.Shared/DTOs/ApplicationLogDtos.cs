@@ -39,6 +39,7 @@ namespace BlazorApp.Shared.DTOs
     public class ApplicationLogQueryDto
     {
         public string? ProjectCode { get; set; }
+        public List<string>? ProjectCodes { get; set; }
         public string? Environment { get; set; }
         public string? SourceType { get; set; }
         public string? Level { get; set; }

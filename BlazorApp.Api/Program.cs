@@ -505,6 +505,7 @@ builder.Services.AddSingleton<
     IProductSupplierImageBatchUpdateJobService,
     ProductSupplierImageBatchUpdateJobService
 >();
+builder.Services.AddSingleton<IProductStoreSyncJobService, ProductStoreSyncJobService>();
 builder.Services.AddScoped<IProductHqSyncService, ProductHqSyncService>(); // 商品HQ解耦同步服务
 builder.Services.AddScoped<IProductSetCodeReactService, ProductSetCodeReactService>();
 builder.Services.Configure<StoreRetailPriceHqSyncOptions>(
