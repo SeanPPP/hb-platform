@@ -184,6 +184,55 @@ public sealed class ProductStoreRecordsTests : IDisposable
     }
 
     [Fact]
+    public async Task GetPagedListAsync_分店记录数量使用预聚合查询避免逐行相关计数()
+    {
+        await SeedProductAsync("P001", "A001");
+        await SeedProductAsync("P002", "A002");
+        await SeedStoreRetailPriceAsync("price-active-1", "P001", "S01", false);
+        await SeedStoreRetailPriceAsync("price-active-2", "P001", "S02", false);
+        await SeedStoreRetailPriceAsync("price-deleted-1", "P002", "S03", true);
+        await SeedStoreRetailPriceAsync("price-deleted-2", "P002", "S04", true);
+
+        var executedSql = new List<string>();
+        _localDb.Aop.OnLogExecuting = (sql, _) => executedSql.Add(sql);
+
+        try
+        {
+            var result = await CreateService().GetPagedListAsync(new ProductReactFilterDto
+            {
+                PageNumber = 1,
+                PageSize = 20,
+                StoreRecordCountMin = 0,
+                StoreRecordCountMax = 0,
+            });
+
+            Assert.Equal(new[] { "P002" }, result.Items.Select(item => item.ProductCode).ToArray());
+            Assert.Equal(0, result.Items.Single().StoreRecordCount);
+        }
+        finally
+        {
+            _localDb.Aop.OnLogExecuting = null;
+        }
+
+        var storeRecordSql = string.Join(
+            "\n",
+            executedSql.Where(sql => sql.Contains("StoreRetailPrice", StringComparison.OrdinalIgnoreCase))
+        );
+        Assert.Contains("JOIN", storeRecordSql, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("GROUP BY", storeRecordSql, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(
+            "`record`.`ProductCode` = `p`.`ProductCode`",
+            storeRecordSql,
+            StringComparison.OrdinalIgnoreCase
+        );
+        Assert.DoesNotContain(
+            "[record].[ProductCode] = [p].[ProductCode]",
+            storeRecordSql,
+            StringComparison.OrdinalIgnoreCase
+        );
+    }
+
+    [Fact]
     public async Task GetStoreRecordsAsync_只返回指定商品当前用户可访问的未删除分店记录并补充分店名称()
     {
         await SeedProductAsync("P001", "A001");

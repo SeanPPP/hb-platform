@@ -76,6 +76,15 @@ namespace BlazorApp.Api.Services.React
             public int StoreRecordCount { get; set; }
         }
 
+        /// <summary>
+        /// 商品分店记录数预聚合结果，避免商品列表分页时对分店价格表逐行相关计数。
+        /// </summary>
+        private sealed class ProductStoreRecordCountRow
+        {
+            public string ProductCode { get; set; } = string.Empty;
+            public int StoreRecordCount { get; set; }
+        }
+
         #region 筛选辅助方法
 
         /// <summary>
@@ -317,10 +326,20 @@ namespace BlazorApp.Api.Services.React
 
                 #endregion
 
-                // 关键位置：先把未软删分店记录数量投影到查询列里，再做数量筛选、排序和分页，
-                // 这样总数与分页结果都基于完整商品集，而不是只统计当前页。
+                var storeRecordCounts = _db.Queryable<StoreRetailPrice>()
+                    .Where(record => record.IsDeleted == false && record.ProductCode != null)
+                    .GroupBy(record => record.ProductCode)
+                    .Select(record => new ProductStoreRecordCountRow
+                    {
+                        ProductCode = record.ProductCode ?? string.Empty,
+                        StoreRecordCount = SqlFunc.AggregateCount(record.UUID),
+                    })
+                    .MergeTable();
+
+                // 关键位置：分店记录数必须来自预聚合结果，避免分页、筛选和排序反复触发逐行相关计数。
                 var projectedQuery = q
-                    .Select(p => new ProductListQueryRow
+                    .LeftJoin(storeRecordCounts, (p, count) => p.ProductCode == count.ProductCode)
+                    .Select((p, count) => new ProductListQueryRow
                     {
                         ProductCode = p.ProductCode ?? string.Empty,
                         ProductCategoryGUID = p.ProductCategoryGUID ?? string.Empty,
@@ -340,11 +359,7 @@ namespace BlazorApp.Api.Services.React
                         CreatedAt = p.CreatedAt,
                         UpdatedAt = p.UpdatedAt,
                         UpdatedBy = p.UpdatedBy,
-                        StoreRecordCount = SqlFunc.Subqueryable<StoreRetailPrice>()
-                            .Where(record =>
-                                record.ProductCode == p.ProductCode && record.IsDeleted == false
-                            )
-                            .Count(),
+                        StoreRecordCount = SqlFunc.IsNull(count.StoreRecordCount, 0),
                     })
                     .MergeTable();
 
