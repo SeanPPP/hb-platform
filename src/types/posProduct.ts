@@ -84,9 +84,24 @@ export type SyncProductsToStoresField =
   | 'isSpecialProduct'
 
 export interface SyncProductsToStoresResult {
-  successCount: number
+  createdCount: number
+  updatedCount: number
   failedCount: number
+  successCount?: number
   errors: string[]
+  message?: string
+}
+
+export type SyncProductsToStoresJobStatus = 'Queued' | 'Running' | 'Succeeded' | 'Failed' | (string & {})
+
+export interface SyncProductsToStoresJobResult {
+  jobId: string
+  status: SyncProductsToStoresJobStatus
+  operationId?: string
+  result?: SyncProductsToStoresResult
+  message?: string
+  isDuplicateRequest?: boolean
+  errors?: string[]
 }
 
 export interface BatchUpdateProductStoreRecordsChanges {

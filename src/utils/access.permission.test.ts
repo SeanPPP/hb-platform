@@ -129,6 +129,18 @@ assertEqual(
   'Admin should continue to satisfy all permission checks',
 )
 
+const systemLogAccess = buildAccess(
+  createCurrentUser({
+    permissions: [P.System.ViewLogs],
+  }),
+)
+
+assertEqual(
+  systemLogAccess.canViewSystemLogs,
+  true,
+  'System.ViewLogs should unlock center log page visibility',
+)
+
 const legacyAliasAccess = buildAccess(
   createCurrentUser({
     permissions: ['LocalInvocie.View', 'LocalInvocie.Edit'],

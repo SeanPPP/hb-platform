@@ -20,6 +20,8 @@ import type {
   PushProductsToHqResult,
   SyncSelectedProductsFromHqRequest,
   SyncProductsToStoresRequest,
+  SyncProductsToStoresJobResult,
+  SyncProductsToStoresJobStatus,
   SyncProductsToStoresResult,
 } from '../types/posProduct'
 import request, { RequestError, unwrapApiData, unwrapPagedResult } from '../utils/request'
@@ -229,6 +231,103 @@ function normalizeSupplierImageBatchUpdateResult(raw: unknown): BatchUpdateSuppl
   }
 }
 
+function normalizeSyncProductsToStoresResult(raw: unknown): SyncProductsToStoresResult | undefined {
+  if (!isRecord(raw)) {
+    return undefined
+  }
+
+  const errors = Array.isArray(raw.errors) ? raw.errors.filter((item): item is string => typeof item === 'string') : []
+  const createdCount = Number(raw.createdCount ?? raw.successCount ?? 0)
+  const updatedCount = Number(raw.updatedCount ?? 0)
+  const failedCount = Number(raw.failedCount ?? raw.errorCount ?? errors.length)
+
+  return {
+    createdCount,
+    updatedCount,
+    failedCount,
+    // 兼容仍返回 successCount 的旧 payload，便于页面按真实统计展示结果。
+    successCount: Number(raw.successCount ?? createdCount + updatedCount),
+    errors,
+    message: typeof raw.message === 'string' ? raw.message : undefined,
+  }
+}
+
+function normalizeSyncProductsToStoresJobStatus(status: unknown, success: unknown): SyncProductsToStoresJobStatus {
+  if (typeof status === 'string') {
+    switch (status.trim().toLowerCase()) {
+      case 'queued':
+      case 'pending':
+        return 'Queued'
+      case 'running':
+      case 'processing':
+      case 'inprogress':
+      case 'in-progress':
+        return 'Running'
+      case 'succeeded':
+      case 'success':
+      case 'completed':
+        return 'Succeeded'
+      case 'failed':
+      case 'failure':
+      case 'error':
+        return 'Failed'
+      default:
+        // 同步到分店 job 允许保留后端新增状态，页面会继续按非终态处理。
+        return status.trim()
+    }
+  }
+
+  if (success === true) {
+    return 'Succeeded'
+  }
+
+  if (success === false) {
+    return 'Failed'
+  }
+
+  return 'Running'
+}
+
+function normalizeSyncProductsToStoresJobResult(
+  payload: unknown,
+  fallbackJobId = '',
+): SyncProductsToStoresJobResult {
+  const result = unwrapApiData(payload) as Record<string, unknown> | null
+  const raw = isRecord(result) ? result : {}
+  const nestedResult = normalizeSyncProductsToStoresResult(raw.result)
+  const topLevelResult = normalizeSyncProductsToStoresResult(raw)
+  const mergedErrors = Array.isArray(raw.errors)
+    ? raw.errors.filter((item): item is string => typeof item === 'string')
+    : nestedResult?.errors ?? topLevelResult?.errors ?? []
+  const normalizedResult = nestedResult ?? topLevelResult ?? {
+    createdCount: 0,
+    updatedCount: 0,
+    failedCount: mergedErrors.length ? mergedErrors.length : 0,
+    successCount: 0,
+    errors: mergedErrors,
+    message: typeof raw.message === 'string' ? raw.message : undefined,
+  }
+
+  if (!normalizedResult.errors.length && mergedErrors.length) {
+    normalizedResult.errors = mergedErrors
+  }
+
+  const success = typeof raw.success === 'boolean' ? raw.success : raw.isSuccess
+
+  return {
+    jobId: typeof raw.jobId === 'string' ? raw.jobId : fallbackJobId,
+    status: normalizeSyncProductsToStoresJobStatus(raw.status, success),
+    operationId: typeof raw.operationId === 'string' ? raw.operationId : undefined,
+    result: normalizedResult,
+    message:
+      typeof raw.message === 'string'
+        ? raw.message
+        : normalizedResult.message,
+    isDuplicateRequest: typeof raw.isDuplicateRequest === 'boolean' ? raw.isDuplicateRequest : undefined,
+    errors: mergedErrors,
+  }
+}
+
 function normalizeSupplierImageBatchUpdateJobResult(
   payload: unknown,
   fallbackJobId = '',
@@ -290,6 +389,25 @@ export async function syncProductsToStores(syncRequest: SyncProductsToStoresRequ
     syncRequest,
   )
   return unwrapApiData(response)
+}
+
+export async function startSyncProductsToStoresJob(
+  syncRequest: SyncProductsToStoresRequest,
+): Promise<SyncProductsToStoresJobResult> {
+  const response = await request.post<ApiResponse<unknown>>(
+    `${API_BASE}/sync-to-stores/jobs`,
+    syncRequest,
+  )
+  assertApiSuccess(response, '创建同步到分店任务失败')
+  return normalizeSyncProductsToStoresJobResult(response)
+}
+
+export async function getSyncProductsToStoresJob(jobId: string): Promise<SyncProductsToStoresJobResult> {
+  const response = await request.get<ApiResponse<unknown>>(
+    `${API_BASE}/sync-to-stores/jobs/${encodeURIComponent(jobId)}`,
+  )
+  assertApiSuccess(response, '查询同步到分店任务失败')
+  return normalizeSyncProductsToStoresJobResult(response, jobId)
 }
 
 export async function batchUpdateProductStoreRecords(

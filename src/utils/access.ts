@@ -97,6 +97,7 @@ function createEmptyAccess(): AccessControl {
     canEditAttendanceHoliday: false,
     canEditAttendanceSettings: false,
     canViewEmployeeProfiles: false,
+    canViewSystemLogs: false,
     canViewDeviceRegistration: false,
     canManageDeviceRegistration: false,
     canViewPosProducts: false,
@@ -281,6 +282,7 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
     hasPermission(P.Attendance.HolidayEditManagedStore)
   const canEditAttendanceSettings = isAdmin || hasPermission(P.Attendance.SettingsEdit)
   const canViewEmployeeProfiles = isAdmin || hasPermission(P.EmployeeProfiles.View)
+  const canViewSystemLogs = isAdmin || hasPermission(P.System.ViewLogs)
   const canManageDeviceRegistration = isAdmin || hasPermission(P.DeviceRegistration.Manage)
   const canViewDeviceRegistration =
     canManageDeviceRegistration || isAdmin || hasPermission(P.DeviceRegistration.View)
@@ -357,6 +359,7 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
     canEditAttendanceHoliday,
     canEditAttendanceSettings,
     canViewEmployeeProfiles,
+    canViewSystemLogs,
     canViewDeviceRegistration,
     canManageDeviceRegistration,
     canViewPosProducts,

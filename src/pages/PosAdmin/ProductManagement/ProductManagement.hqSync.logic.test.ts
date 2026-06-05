@@ -49,6 +49,15 @@ const pageSource = readFileSync(pageFile, 'utf8')
 const typeSource = readFileSync(typeFile, 'utf8')
 const serviceSource = readFileSync(serviceFile, 'utf8')
 
+function assertSourceOrder(source: string, first: string, second: string, message: string) {
+  const firstIndex = source.indexOf(first)
+  const secondIndex = source.indexOf(second)
+
+  assert(firstIndex >= 0, `${message}：缺少 ${first}`)
+  assert(secondIndex >= 0, `${message}：缺少 ${second}`)
+  assert(firstIndex < secondIndex, message)
+}
+
 async function main() {
   const failures: string[] = []
 
@@ -114,11 +123,26 @@ async function main() {
   })
   if (categoryParentValueFailure) failures.push(categoryParentValueFailure)
 
-  const syncFieldsRequestFailure = await runTest('同步到分店应把用户勾选字段发送给后端', () => {
+  const syncFieldsRequestFailure = await runTest('同步到分店应改为后台 job 提交并轮询结果', () => {
     assert(
       typeSource.includes('SyncProductsToStoresField') &&
         typeSource.includes('fields: SyncProductsToStoresField[]'),
       'SyncProductsToStoresRequest 应声明同步字段列表',
+    )
+    assert(
+      typeSource.includes('SyncProductsToStoresJobResult') &&
+        typeSource.includes('jobId: string') &&
+        typeSource.includes('status: SyncProductsToStoresJobStatus') &&
+        typeSource.includes('operationId?: string') &&
+        typeSource.includes('isDuplicateRequest?: boolean'),
+      '类型层应声明同步到分店后台 job 结果、状态和重复提交标记',
+    )
+    assert(
+      serviceSource.includes('startSyncProductsToStoresJob') &&
+        serviceSource.includes("`${API_BASE}/sync-to-stores/jobs`") &&
+        serviceSource.includes('getSyncProductsToStoresJob') &&
+        serviceSource.includes("`${API_BASE}/sync-to-stores/jobs/${encodeURIComponent(jobId)}`"),
+      '服务层应提供同步到分店 job 的创建与查询接口',
     )
     assert(
       pageSource.includes('buildSyncProductsToStoresFields(values)') &&
@@ -126,8 +150,106 @@ async function main() {
         pageSource.includes('selectSyncFields'),
       '同步到分店应根据复选框构造 fields，并校验至少选择一个字段',
     )
+    assert(
+      pageSource.includes('startSyncProductsToStoresJob(req)') &&
+        pageSource.includes('createHqSyncJobPoller<SyncProductsToStoresJobResult>') &&
+        pageSource.includes('getSyncProductsToStoresJob(jobId)'),
+      '页面提交同步到分店后应创建后台 job，并使用共享轮询器查询任务状态',
+    )
+    assert(
+      pageSource.includes('setSyncToStoreVisible(false)') &&
+        pageSource.includes("t('posAdmin.products.syncToStoreJobSubmitted', '同步任务已提交，正在后台执行。完成后会自动提示结果。')"),
+      '同步到分店 job 创建成功后应立即关闭弹窗并提示后台执行',
+    )
+    assert(
+      pageSource.includes('createdCount') &&
+        pageSource.includes('updatedCount') &&
+        pageSource.includes('failedCount') &&
+        pageSource.includes('result.errors') &&
+        pageSource.includes('job.message'),
+      '同步到分店最终提示应读取 job.result 的创建、更新、失败和错误明细，以及后端 message',
+    )
+    assert(
+      pageSource.includes('error instanceof HqProductSyncPollingTimeoutError') &&
+        pageSource.includes("t('posAdmin.products.syncToStoreJobTimeout', '后台仍在执行，请稍后刷新查看')"),
+      '同步到分店轮询超时时应提示后台仍在执行，而不是误报同步完成',
+    )
+    assert(
+      pageSource.includes('consecutivePollingFailures') &&
+        pageSource.includes('error instanceof RequestError') &&
+        pageSource.includes('error.status === 404') &&
+        pageSource.includes('error.status === 401') &&
+        pageSource.includes('error.status === 403') &&
+        pageSource.includes('syncToStoreJobMissingTitle') &&
+        pageSource.includes('syncToStoreJobAuthFailedTitle') &&
+        pageSource.includes('syncToStoreJobPollingStoppedTitle'),
+      '同步到分店 job 查询失败不应全部伪装成 Running，404/权限/连续失败都要停止轮询并提示用户',
+    )
+    assert(
+      !pageSource.includes('await syncProductsToStores(req)') &&
+        !pageSource.includes("t('posAdmin.products.syncToStoreComplete', '同步完成：成功 {{success}}，失败 {{failed}}'"),
+      '页面不应继续直调同步接口或展示成功 0/失败 0 的旧提示',
+    )
   })
   if (syncFieldsRequestFailure) failures.push(syncFieldsRequestFailure)
+
+  const syncToStoreResultGuardFailure = await runTest('同步到分店 job 结果展示应区分失败、部分成功和成功', () => {
+    const showResultStart = pageSource.indexOf('function showSyncToStoreJobResult(job: SyncProductsToStoresJobResult)')
+    const showResultEnd = pageSource.indexOf('const ensureCanSyncProductsFromHq', showResultStart)
+    assert(showResultStart >= 0 && showResultEnd > showResultStart, '页面应保留 showSyncToStoreJobResult 结果展示函数')
+    const showResultSource = pageSource.slice(showResultStart, showResultEnd)
+
+    assertSourceOrder(
+      showResultSource,
+      "if (job.status === 'Failed')",
+      'if (errors.length || (result.failedCount ?? 0) > 0)',
+      'job.status 为 Failed 时应先进入失败分支，不能被 failedCount/errors 误判为部分成功',
+    )
+    assert(
+      showResultSource.includes("Modal.error({\n        title: t('posAdmin.products.syncToStoreFailed', '同步到分店失败')") &&
+        showResultSource.includes("Modal.warning({\n        title: t('posAdmin.products.syncToStorePartialSucceeded', '同步到分店部分成功')") &&
+        showResultSource.includes("Modal.success({\n      title: t('posAdmin.products.syncToStoreSucceeded', '同步到分店完成')"),
+      '同步到分店 job 结果应分别使用失败、部分成功 warning 和成功弹窗',
+    )
+    assert(
+      showResultSource.includes('const errors = result.errors ?? job.errors ?? []') &&
+        showResultSource.includes('errors.length || (result.failedCount ?? 0) > 0'),
+      'status Succeeded 但存在 failedCount/errors 时应显示部分成功 warning',
+    )
+    const failedBranchStart = showResultSource.indexOf("if (job.status === 'Failed')")
+    const failedBranchReturn = showResultSource.indexOf('      return', failedBranchStart)
+    const partialBranchStart = showResultSource.indexOf('if (errors.length || (result.failedCount ?? 0) > 0)', failedBranchStart)
+    const failedBranch = showResultSource.slice(failedBranchStart, failedBranchReturn)
+    assert(
+      failedBranch.includes("t('posAdmin.products.syncToStoreFailed', '同步到分店失败')") &&
+        !failedBranch.includes('setSelectedRowKeys([])') &&
+        !failedBranch.includes('void loadData()') &&
+        failedBranchReturn < partialBranchStart,
+      'Failed 分支只展示失败结果并立即返回，不应清空选择或刷新成部分成功路径',
+    )
+  })
+  if (syncToStoreResultGuardFailure) failures.push(syncToStoreResultGuardFailure)
+
+  const syncToStorePollingGuardFailure = await runTest('同步到分店 job 轮询异常应停止并给出明确提示', () => {
+    assertSourceOrder(
+      pageSource,
+      'if (error instanceof RequestError && (error.status === 404 || error.status === 401 || error.status === 403))',
+      'consecutivePollingFailures += 1',
+      '404/401/403 应立即抛出停止轮询，不能计入普通连续失败后继续伪装 Running',
+    )
+    assert(
+      pageSource.includes('consecutivePollingFailures >= 3') &&
+        pageSource.includes('throw error') &&
+        pageSource.includes("title: t('posAdmin.products.syncToStoreJobPollingStoppedTitle', '同步到分店任务状态获取失败')"),
+      '连续查询失败达到阈值后应停止轮询，并用 warning 告知用户刷新确认',
+    )
+    assert(
+      pageSource.includes("title: t('posAdmin.products.syncToStoreJobMissingTitle', '同步到分店任务不存在')") &&
+        pageSource.includes("title: t('posAdmin.products.syncToStoreJobAuthFailedTitle', '无法查询同步到分店任务')"),
+      '同步到分店 job 轮询 404 和 401/403 应分别给出任务缺失与权限失败提示',
+    )
+  })
+  if (syncToStorePollingGuardFailure) failures.push(syncToStorePollingGuardFailure)
 
   const storeRecordsFailure = await runTest('商品管理应显示分店记录数量并点击查看分店记录明细', () => {
     assert(

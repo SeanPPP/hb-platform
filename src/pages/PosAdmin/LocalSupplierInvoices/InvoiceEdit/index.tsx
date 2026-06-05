@@ -44,6 +44,7 @@ import { useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { useStableRouteContext } from '../../../../hooks/useStableRouteContext'
 import BarcodePreview from '../../../../components/BarcodePreview'
+import { getProductById, updateProduct } from '../../../../services/posProductService'
 import {
   batchExecuteActions,
   batchUpdateDetailAction,
@@ -97,6 +98,7 @@ import {
 } from '../../../../utils/managedStoreScope'
 import {
   filterInvoiceDetails,
+  actionTypeFilters,
   getBarcodeStatusFilter,
   getDetailStatusStats,
   getProductStatusFilter,
@@ -124,8 +126,13 @@ import {
   normalizeInvoiceDetailInlineValue,
   type InvoiceDetailInlineEditableField,
 } from './inlineEdit'
+import {
+  buildMatchedProductMasterUpdatePayload,
+  getMatchedProductMasterUpdateTarget,
+} from './matchedProductMasterUpdate'
 import type {
   BarcodeStatusFilter,
+  ActionTypeFilterValue,
   PriceFilter,
   ProductStatusFilter,
   StatusFilterValue,
@@ -306,6 +313,25 @@ const productNameCellStyle: CSSProperties = {
   whiteSpace: 'normal',
   wordBreak: 'break-word',
   lineHeight: '20px',
+}
+
+const matchedProductTableScrollX = 900
+
+const matchedProductNameCellStyle: CSSProperties = {
+  minWidth: 240,
+  maxWidth: 280,
+  whiteSpace: 'normal',
+  wordBreak: 'break-word',
+  lineHeight: '20px',
+}
+
+const matchedProductTagStyle: CSSProperties = {
+  marginInlineEnd: 0,
+  whiteSpace: 'nowrap',
+}
+
+const matchedProductActionButtonStyle: CSSProperties = {
+  paddingInline: 0,
 }
 
 function renderCompactHeader(label: ReactNode) {
@@ -610,6 +636,7 @@ export default function InvoiceEditPage() {
   const navigate = useNavigate()
   const { access, currentUser } = useAuthStore()
   const isAdmin = access.isAdmin
+  const canManagePosProducts = access.canManagePosProducts
   const canWriteLocalPurchaseToHq = access.canEditLocalPurchase && access.canPushLocalPurchaseToHq
   const canRunGlobalLocalPurchaseBatchActions = access.canEditLocalPurchase && (access.isAdmin || access.isWarehouseManager)
   const managedStoreCodes = access.managedStoreCodes()
@@ -621,7 +648,7 @@ export default function InvoiceEditPage() {
   const detailsSnapshotRef = useRef<LocalSupplierInvoiceItemDto[]>([])
 
   /* ---- 主表数据 ---- */
-  const [_invoice, setInvoice] = useState<LocalSupplierInvoiceDetailDto | null>(null)
+  const [invoice, setInvoice] = useState<LocalSupplierInvoiceDetailDto | null>(null)
   const [canAccessInvoice, setCanAccessInvoice] = useState(true)
   const [details, setDetails] = useState<LocalSupplierInvoiceItemDto[]>([])
   const [loading, setLoading] = useState(false)
@@ -641,6 +668,7 @@ export default function InvoiceEditPage() {
   const [priceFilter, setPriceFilter] = useState<PriceFilter>('all')
   const [productStatusFilter, setProductStatusFilter] = useState<StatusFilterValue<ProductStatusFilter>>('all')
   const [barcodeStatusFilter, setBarcodeStatusFilter] = useState<StatusFilterValue<BarcodeStatusFilter>>('all')
+  const [actionTypeFilter, setActionTypeFilter] = useState<ActionTypeFilterValue>('all')
 
   /* ---- 表单 ---- */
   const [form] = Form.useForm()
@@ -844,7 +872,7 @@ export default function InvoiceEditPage() {
   }, [details])
 
   // 状态统计始终基于全部明细计算，不受当前搜索和过滤条件影响。
-  const detailStatusStats = useMemo(() => getDetailStatusStats(details), [details])
+  const detailStatusStats = useMemo(() => getDetailStatusStats(details, rowActions), [details, rowActions])
 
   // 过滤后数据
   const filteredDetails = useMemo(
@@ -854,9 +882,13 @@ export default function InvoiceEditPage() {
         priceFilter,
         productStatusFilter,
         barcodeStatusFilter,
+        actionTypeFilter,
+        rowActions,
       }),
-    [details, searchText, priceFilter, productStatusFilter, barcodeStatusFilter],
+    [details, searchText, priceFilter, productStatusFilter, barcodeStatusFilter, actionTypeFilter, rowActions],
   )
+
+  const detailActionConfig = useMemo(() => DETAIL_ACTION_CONFIG(t), [t])
 
   const productStatusFilterLabels: Record<ProductStatusFilter, string> = useMemo(
     () => ({
@@ -915,6 +947,7 @@ export default function InvoiceEditPage() {
     setPriceFilter('all')
     setProductStatusFilter('all')
     setBarcodeStatusFilter('all')
+    setActionTypeFilter('all')
   }, [])
 
   // 当前过滤栏：只展示页面外层过滤，不包含表格列头自带过滤。
@@ -969,10 +1002,23 @@ export default function InvoiceEditPage() {
       })
     }
 
+    if (actionTypeFilter !== 'all') {
+      tags.push({
+        key: 'action-type',
+        color: detailActionConfig[actionTypeFilter]?.color,
+        label: t('posAdmin.invoiceDetail.activeActionTypeFilter', '操作类型：{{value}}', {
+          value: detailActionConfig[actionTypeFilter]?.label ?? detailActionConfig[DetailActionEnum.None].label,
+        }),
+        onClose: () => setActionTypeFilter('all'),
+      })
+    }
+
     return tags
   }, [
+    actionTypeFilter,
     barcodeStatusFilter,
     barcodeStatusFilterLabels,
+    detailActionConfig,
     priceFilter,
     productStatusFilter,
     productStatusFilterLabels,
@@ -1741,31 +1787,118 @@ export default function InvoiceEditPage() {
     const barcode = record.barcode
     const modal = Modal.info({
       title: t('posAdmin.invoiceDetail.barcodeMatchedProductsTitle', '条码匹配商品：{{barcode}}', { barcode }),
-      width: 760,
+      width: 920,
       okText: t('common.close', '关闭'),
       content: <div>{t('common.loading', '加载中...')}</div>,
     })
 
+    const renderMatchedProductsContent = (
+      matchedProducts: BarcodeAbnormalMatchedProductDto[],
+      matchedProductColumns: ColumnsType<BarcodeAbnormalMatchedProductDto>,
+    ) => matchedProducts.length ? (
+      <Table<BarcodeAbnormalMatchedProductDto>
+        size="small"
+        rowKey={(item, index) => `${item.productCode || 'product'}-${item.barcode || barcode}-${index ?? 0}`}
+        columns={matchedProductColumns}
+        dataSource={matchedProducts}
+        pagination={false}
+        tableLayout="fixed"
+        scroll={{ x: matchedProductTableScrollX, y: 320 }}
+      />
+    ) : (
+      <div>{t('posAdmin.invoiceDetail.noBarcodeMatchedProducts', '没有匹配到商品')}</div>
+    )
+
     try {
+      const refreshMatchedProducts = async (
+        matchedProductColumns: ColumnsType<BarcodeAbnormalMatchedProductDto>,
+      ) => {
+        const refreshed = await getProductsByBarcode(invoiceGuid, barcode)
+        modal.update({
+          content: renderMatchedProductsContent(refreshed?.matchedProducts ?? [], matchedProductColumns),
+        })
+      }
+
+      const handleReplaceMatchedProductMaster = (
+        matchedProduct: BarcodeAbnormalMatchedProductDto,
+        matchedProductColumns: ColumnsType<BarcodeAbnormalMatchedProductDto>,
+      ) => {
+        const target = getMatchedProductMasterUpdateTarget(record, invoice)
+        if (!target.itemNumber) {
+          message.warning(t('posAdmin.invoiceDetail.replaceProductMasterMissingItemNumber', '当前明细缺少货号，无法更换'))
+          return
+        }
+        if (!target.supplierCode) {
+          message.warning(t('posAdmin.invoiceDetail.replaceProductMasterMissingSupplier', '当前明细缺少供应商，无法更换'))
+          return
+        }
+        if (!matchedProduct.productCode) {
+          message.warning(t('posAdmin.invoiceDetail.replaceProductMasterMissingProductCode', '匹配商品缺少商品编码，无法更换'))
+          return
+        }
+
+        Modal.confirm({
+          title: t('posAdmin.invoiceDetail.replaceProductMasterConfirmTitle', '确认更换匹配商品主档？'),
+          content: (
+            <Space direction="vertical" size={4}>
+              <span>
+                {t('posAdmin.invoiceDetail.replaceProductMasterSourceLine', '所选商品当前：货号 {{itemNumber}}，供应商 {{supplier}}', {
+                  itemNumber: matchedProduct.itemNumber || '--',
+                  supplier: matchedProduct.supplierName
+                    ? `${matchedProduct.supplierCode || '--'} - ${matchedProduct.supplierName}`
+                    : matchedProduct.supplierCode || '--',
+                })}
+              </span>
+              <span>
+                {t('posAdmin.invoiceDetail.replaceProductMasterTargetLine', '将写入当前明细：货号 {{itemNumber}}，供应商 {{supplier}}', {
+                  itemNumber: target.itemNumber,
+                  supplier: target.supplierCode,
+                })}
+              </span>
+            </Space>
+          ),
+          okText: t('posAdmin.invoiceDetail.replaceProductMaster', '更换货号和供应商'),
+          cancelText: t('common.cancel', '取消'),
+          onOk: async () => {
+            try {
+              const fullProduct = await getProductById(matchedProduct.productCode)
+              // 商品更新接口是完整 DTO 语义，这里先读取详情再覆盖目标字段，避免清空其它主档字段。
+              const payload = buildMatchedProductMasterUpdatePayload(fullProduct, record, invoice)
+              await updateProduct(matchedProduct.productCode, payload)
+              message.success(t('posAdmin.invoiceDetail.replaceProductMasterSuccess', '商品主档已更新'))
+              await refreshMatchedProducts(matchedProductColumns)
+            } catch (error) {
+              message.error(error instanceof Error ? error.message : t('posAdmin.invoiceDetail.replaceProductMasterFailed', '更换商品主档失败'))
+              throw error
+            }
+          },
+        })
+      }
+
       const result = await getProductsByBarcode(invoiceGuid, barcode)
       const matchedProducts = result?.matchedProducts ?? []
       const matchedProductColumns: ColumnsType<BarcodeAbnormalMatchedProductDto> = [
         {
           title: t('posAdmin.invoiceDetail.itemNumber', '货号'),
           dataIndex: 'itemNumber',
-          width: 110,
+          width: 120,
           render: (value?: string) => value || '--',
         },
         {
           title: t('posAdmin.invoiceDetail.barcode', '条码'),
           dataIndex: 'barcode',
-          width: 130,
+          width: 150,
           render: (value?: string) => value || '--',
         },
         {
           title: t('posAdmin.invoiceDetail.productName', '商品名称'),
           dataIndex: 'productName',
-          render: (value?: string) => value || '--',
+          width: 280,
+          render: (value?: string) => (
+            <div style={matchedProductNameCellStyle} title={value || undefined}>
+              {value || '--'}
+            </div>
+          ),
         },
         {
           title: t('posAdmin.invoiceDetail.supplierName', '供应商名称'),
@@ -1778,28 +1911,34 @@ export default function InvoiceEditPage() {
           dataIndex: 'isMultiCode',
           width: 100,
           render: (isMultiCode?: boolean) => (
-            <Tag color={isMultiCode ? 'orange' : 'blue'}>
+            <Tag color={isMultiCode ? 'orange' : 'blue'} style={matchedProductTagStyle}>
               {isMultiCode
                 ? t('posAdmin.invoiceDetail.multiBarcode', '分店多条码')
                 : t('posAdmin.invoiceDetail.mainBarcode', '商品主条码')}
             </Tag>
           ),
         },
+        ...(canManagePosProducts ? [{
+          title: t('posAdmin.invoiceDetail.action', '操作'),
+          key: 'replaceProductMaster',
+          width: 90,
+          render: (_: unknown, matchedProduct: BarcodeAbnormalMatchedProductDto) => (
+            <Tooltip title={t('posAdmin.invoiceDetail.replaceProductMaster', '更换货号和供应商')}>
+              <Button
+                size="small"
+                type="link"
+                style={matchedProductActionButtonStyle}
+                onClick={() => handleReplaceMatchedProductMaster(matchedProduct, matchedProductColumns)}
+              >
+                {t('posAdmin.invoiceDetail.replaceProductMasterShort', '更换')}
+              </Button>
+            </Tooltip>
+          ),
+        } satisfies ColumnType<BarcodeAbnormalMatchedProductDto>] : []),
       ]
 
       modal.update({
-        content: matchedProducts.length ? (
-          <Table<BarcodeAbnormalMatchedProductDto>
-            size="small"
-            rowKey={(item, index) => `${item.productCode || 'product'}-${item.barcode || barcode}-${index ?? 0}`}
-            columns={matchedProductColumns}
-            dataSource={matchedProducts}
-            pagination={false}
-            scroll={{ y: 320 }}
-          />
-        ) : (
-          <div>{t('posAdmin.invoiceDetail.noBarcodeMatchedProducts', '没有匹配到商品')}</div>
-        ),
+        content: renderMatchedProductsContent(matchedProducts, matchedProductColumns),
       })
     } catch {
       modal.destroy()
@@ -2340,6 +2479,27 @@ export default function InvoiceEditPage() {
             >
               {t('posAdmin.invoiceDetail.multiMatch', '多匹配({{count}})', { count: detailStatusStats.barcode.multiMatch })}
             </Tag>
+            <span style={{ color: '#595959' }}>{t('posAdmin.invoiceDetail.actionTypeLabel', '操作类型')}</span>
+            <Tag
+              color="blue"
+              style={getStatusStatsTagStyle(actionTypeFilter === 'all')}
+              onClick={() => setActionTypeFilter('all')}
+            >
+              {t('posAdmin.invoiceDetail.statusStatsAll', '全部 {{count}}', { count: details.length })}
+            </Tag>
+            {actionTypeFilters.map((actionType) => {
+              const config = detailActionConfig[actionType] ?? detailActionConfig[DetailActionEnum.None]
+              return (
+                <Tag
+                  key={actionType}
+                  color={config.color}
+                  style={getStatusStatsTagStyle(actionTypeFilter === actionType)}
+                  onClick={() => setActionTypeFilter(toggleStatusFilter(actionTypeFilter, actionType))}
+                >
+                  {config.label} {detailStatusStats.action[actionType]}
+                </Tag>
+              )
+            })}
           </Space>
         </div>
 

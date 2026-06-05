@@ -42,6 +42,7 @@ const accessKeyPermissionMap: Partial<Record<keyof AccessControl, string[]>> = {
   canAccessOrderFront: [P.OrderFront.View],
   canReadStore: [P.Stores.View],
   canViewEmployeeProfiles: [P.EmployeeProfiles.View],
+  canViewSystemLogs: [P.System.ViewLogs],
   canReadUser: [P.Users.View],
   canReadRole: [P.Roles.View],
   canViewDeviceRegistration: [P.DeviceRegistration.View, P.DeviceRegistration.Manage],
@@ -76,6 +77,7 @@ const webMenuPreviewRoutes: WebMenuPreviewRoute[] = [
     children: [
       { path: '/system/stores', title: 'menu.systemStores', accessKey: 'canReadStore' },
       { path: '/system/employee-profiles', title: 'menu.systemEmployeeProfiles', accessKey: 'canViewEmployeeProfiles' },
+      { path: '/system/center-logs', title: 'menu.systemCenterLogs', accessKey: 'canViewSystemLogs' },
       { path: '/system/users', title: 'menu.systemUsers', accessKey: 'canReadUser' },
       { path: '/system/roles', title: 'menu.systemRoles', accessKey: 'canReadRole' },
       { path: '/system/permissions', title: 'menu.systemPermissions', accessKey: 'canReadRole' },
