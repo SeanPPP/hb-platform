@@ -1077,6 +1077,12 @@ assertEqual(
   '货柜明细表格应按当前显示顺序给偶数视觉行添加隔行色 class',
 )
 assertEqual(
+  pageSource.includes('pageSize: 500') &&
+    pageSource.includes("pageSizeOptions: ['50', '100', '500', '1000']"),
+  true,
+  '货柜明细分页默认应显示 500 条，并保留常用分页大小选项',
+)
+assertEqual(
   pageStyleSource.includes('.container-detail-table .ant-table-thead > tr > th'),
   true,
   '货柜明细表头应通过专属样式保持垂直居中',

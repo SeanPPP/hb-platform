@@ -1568,7 +1568,12 @@ export default function ContainerDetailPage() {
                 columns={columns}
                 dataSource={displayRows}
                 rowSelection={{ selectedRowKeys, onChange: setSelectedRowKeys, fixed: true }}
-                pagination={{ pageSize: 50, showSizeChanger: true, showTotal: (total) => t('common.total', { count: total }) }}
+                pagination={{
+                  pageSize: 500,
+                  pageSizeOptions: ['50', '100', '500', '1000'],
+                  showSizeChanger: true,
+                  showTotal: (total) => t('common.total', { count: total }),
+                }}
                 scroll={{ x: 1840, y: 620 }}
                 onChange={handleTableChange}
                 footer={() => (

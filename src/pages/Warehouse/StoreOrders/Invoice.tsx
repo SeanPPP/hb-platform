@@ -1,5 +1,5 @@
 import { DownloadOutlined, FileExcelOutlined, MailOutlined, PrinterOutlined, RollbackOutlined } from '@ant-design/icons'
-import { Button, Empty, Image, Input, Modal, Space, Spin, Switch, message } from 'antd'
+import { Button, Empty, Image, Input, Modal, Segmented, Space, Spin, Switch, message } from 'antd'
 import ExcelJS from 'exceljs'
 import type { TFunction } from 'i18next'
 import { useEffect, useMemo, useRef, useState } from 'react'
@@ -13,6 +13,7 @@ import {
   getStoreOrderDetail,
   getStoreOrderInvoiceEmailJob,
   sendStoreOrderInvoiceEmail,
+  translateStoreOrderInvoiceEmailText,
   updateStoreOrderStoreContact,
 } from '../../../services/storeOrderService'
 import type { StoreDto } from '../../../types/store'
@@ -33,6 +34,11 @@ import './print.css'
 
 const TRANSPARENT_IMAGE_FALLBACK = 'data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs='
 const EMAIL_REGEXP = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+type InvoiceEmailModalLanguage = 'zh' | 'en'
+
+function normalizeInvoiceEmailModalLanguage(language?: string): InvoiceEmailModalLanguage {
+  return language === 'en' || language?.startsWith('en-') ? 'en' : 'zh'
+}
 
 function sortInvoiceItems(items: StoreOrderDetailLine[]) {
   return [...items].sort((left, right) => {
@@ -132,7 +138,7 @@ async function downloadInvoiceExcel(order: StoreOrderDetail, items: StoreOrderDe
 }
 
 export default function StoreOrderInvoicePage() {
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
   const route = useStableRouteContext()
   const id = route?.params.id || ''
   const navigate = useNavigate()
@@ -152,6 +158,10 @@ export default function StoreOrderInvoicePage() {
   const [emailSubject, setEmailSubject] = useState('')
   const [emailBody, setEmailBody] = useState('')
   const [saveAsStoreDefault, setSaveAsStoreDefault] = useState(true)
+  const [emailModalLanguage, setEmailModalLanguage] = useState<InvoiceEmailModalLanguage>('zh')
+  const [emailSubjectTouched, setEmailSubjectTouched] = useState(false)
+  const [emailBodyTouched, setEmailBodyTouched] = useState(false)
+  const [translatingEmailText, setTranslatingEmailText] = useState(false)
 
   useDynamicTabTitle(
     order?.orderNo
@@ -240,18 +250,24 @@ export default function StoreOrderInvoicePage() {
 
   const sortedItems = useMemo(() => sortInvoiceItems(order?.items || []), [order?.items])
   const defaultRecipientEmail = order ? order.storeContactEmail || store?.contactEmail || '' : ''
-  const defaultEmailSubject = order
-    ? t('warehouse.invoice.defaultEmailSubject', {
-        storeName: store?.storeName || order.storeCode || t('warehouse.invoice.unknownStore'),
-        orderNo: order.orderNo || order.orderGUID,
-      })
-    : ''
-  const defaultEmailBody = order
-    ? t('warehouse.invoice.defaultEmailBody', {
-        storeName: store?.storeName || order.storeCode || t('warehouse.invoice.unknownStore'),
-        orderNo: order.orderNo || order.orderGUID,
-      })
-    : ''
+  const getEmailStoreName = (language: InvoiceEmailModalLanguage) =>
+    store?.storeName || order?.storeCode || t('warehouse.invoice.unknownStore', { lng: language })
+  const buildDefaultEmailSubject = (language: InvoiceEmailModalLanguage) =>
+    order
+      ? t('warehouse.invoice.defaultEmailSubject', {
+          lng: language,
+          storeName: getEmailStoreName(language),
+          orderNo: order.orderNo || order.orderGUID,
+        })
+      : ''
+  const buildDefaultEmailBody = (language: InvoiceEmailModalLanguage) =>
+    order
+      ? t('warehouse.invoice.defaultEmailBody', {
+          lng: language,
+          storeName: getEmailStoreName(language),
+          orderNo: order.orderNo || order.orderGUID,
+        })
+      : ''
 
   const resolveInvoicePdfFileName = () =>
     buildDocumentFileName(
@@ -305,11 +321,49 @@ export default function StoreOrderInvoicePage() {
   }
 
   const handleOpenEmailModal = () => {
+    const initialLanguage = normalizeInvoiceEmailModalLanguage(i18n.language)
+    setEmailModalLanguage(initialLanguage)
     setRecipientEmail(defaultRecipientEmail)
-    setEmailSubject(defaultEmailSubject)
-    setEmailBody(defaultEmailBody)
+    setEmailSubject(buildDefaultEmailSubject(initialLanguage))
+    setEmailBody(buildDefaultEmailBody(initialLanguage))
+    setEmailSubjectTouched(false)
+    setEmailBodyTouched(false)
     setSaveAsStoreDefault(true)
     setEmailModalOpen(true)
+  }
+
+  const handleEmailModalLanguageChange = async (nextLanguage: InvoiceEmailModalLanguage) => {
+    if (!order || nextLanguage === emailModalLanguage || translatingEmailText) {
+      return
+    }
+
+    const nextSubjectTemplate = buildDefaultEmailSubject(nextLanguage)
+    const nextBodyTemplate = buildDefaultEmailBody(nextLanguage)
+    if (!emailSubjectTouched && !emailBodyTouched) {
+      setEmailModalLanguage(nextLanguage)
+      setEmailSubject(nextSubjectTemplate)
+      setEmailBody(nextBodyTemplate)
+      return
+    }
+
+    setTranslatingEmailText(true)
+    try {
+      const translated = await translateStoreOrderInvoiceEmailText({
+        orderGUID: order.orderGUID,
+        targetLanguage: nextLanguage,
+        subject: emailSubjectTouched ? emailSubject : undefined,
+        body: emailBodyTouched ? emailBody : undefined,
+      })
+
+      setEmailModalLanguage(nextLanguage)
+      setEmailSubject(emailSubjectTouched ? translated.subject ?? emailSubject : nextSubjectTemplate)
+      setEmailBody(emailBodyTouched ? translated.body ?? emailBody : nextBodyTemplate)
+    } catch (error) {
+      console.error(error)
+      message.error(error instanceof Error ? error.message : t('warehouse.invoice.emailTranslateFailed', { lng: emailModalLanguage }))
+    } finally {
+      setTranslatingEmailText(false)
+    }
   }
 
   const pollInvoiceEmailJob = async (jobId: string) => {
@@ -588,37 +642,59 @@ export default function StoreOrderInvoicePage() {
       </div>
 
       <Modal
-        title={t('warehouse.invoice.emailModalTitle')}
+        title={t('warehouse.invoice.emailModalTitle', { lng: emailModalLanguage })}
         open={emailModalOpen}
         destroyOnClose
-        okText={t('warehouse.invoice.sendEmail')}
-        cancelText={t('common.cancel')}
-        confirmLoading={sendingEmail}
+        okText={t('warehouse.invoice.sendEmail', { lng: emailModalLanguage })}
+        cancelText={t('common.cancel', { lng: emailModalLanguage })}
+        confirmLoading={sendingEmail || translatingEmailText}
+        okButtonProps={{ disabled: translatingEmailText }}
         onCancel={() => setEmailModalOpen(false)}
         onOk={() => void handleSendInvoiceEmail()}
       >
         <Space direction="vertical" size={12} style={{ width: '100%' }}>
+          <Segmented<InvoiceEmailModalLanguage>
+            aria-label={t('warehouse.invoice.emailLanguage', { lng: emailModalLanguage })}
+            size="small"
+            value={emailModalLanguage}
+            disabled={translatingEmailText}
+            options={[
+              { label: t('warehouse.invoice.emailLanguageChinese', { lng: emailModalLanguage }), value: 'zh' },
+              { label: t('warehouse.invoice.emailLanguageEnglish', { lng: emailModalLanguage }), value: 'en' },
+            ]}
+            onChange={(value) => void handleEmailModalLanguageChange(value)}
+          />
           <Input
             type="email"
             value={recipientEmail}
             onChange={(event) => setRecipientEmail(event.target.value)}
-            placeholder={t('warehouse.invoice.recipientEmail')}
+            disabled={translatingEmailText}
+            placeholder={t('warehouse.invoice.recipientEmail', { lng: emailModalLanguage })}
           />
           <Input
             value={emailSubject}
-            onChange={(event) => setEmailSubject(event.target.value)}
-            placeholder={t('warehouse.invoice.emailSubject')}
+            onChange={(event) => {
+              setEmailSubjectTouched(true)
+              setEmailSubject(event.target.value)
+            }}
+            disabled={translatingEmailText}
+            placeholder={t('warehouse.invoice.emailSubject', { lng: emailModalLanguage })}
           />
           <Input.TextArea
             rows={5}
             value={emailBody}
-            onChange={(event) => setEmailBody(event.target.value)}
-            placeholder={t('warehouse.invoice.emailBody')}
+            onChange={(event) => {
+              setEmailBodyTouched(true)
+              setEmailBody(event.target.value)
+            }}
+            disabled={translatingEmailText}
+            placeholder={t('warehouse.invoice.emailBody', { lng: emailModalLanguage })}
           />
           <Switch
             checked={saveAsStoreDefault}
-            checkedChildren={t('warehouse.invoice.saveAsStoreDefault')}
-            unCheckedChildren={t('warehouse.invoice.saveAsStoreDefault')}
+            disabled={translatingEmailText}
+            checkedChildren={t('warehouse.invoice.saveAsStoreDefault', { lng: emailModalLanguage })}
+            unCheckedChildren={t('warehouse.invoice.saveAsStoreDefault', { lng: emailModalLanguage })}
             onChange={setSaveAsStoreDefault}
           />
         </Space>

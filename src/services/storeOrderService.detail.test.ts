@@ -4,6 +4,7 @@ import {
   getStoreOrderDetailProductCodes,
   getStoreOrderInvoiceEmailJob,
   sendStoreOrderInvoiceEmail,
+  translateStoreOrderInvoiceEmailText,
   updateStoreOrderStatus,
   updateStoreOrderStoreContact,
   updateStoreOrderLine,
@@ -175,6 +176,63 @@ try {
     '跨页去重应读取轻量商品编码接口',
   )
   assertDeepEqual(productCodes, ['P001', 'P002'], '商品编码接口应过滤非字符串值')
+} finally {
+  globalThis.fetch = originalFetch
+}
+
+try {
+  let capturedUrl = ''
+  let capturedMethod = ''
+  let capturedBody: unknown = null
+
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    capturedUrl = String(input)
+    capturedMethod = String(init?.method)
+    capturedBody = JSON.parse(String(init?.body))
+
+    return new Response(
+      JSON.stringify({
+        success: true,
+        data: {
+          subject: 'Custom subject',
+          body: 'Custom body',
+        },
+      }),
+      {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      },
+    )
+  }) as typeof fetch
+
+  const translatedEmailText = await translateStoreOrderInvoiceEmailText({
+    orderGUID: 'order-1',
+    targetLanguage: 'en',
+    subject: '自定义主题',
+    body: '自定义正文',
+  })
+
+  assertEqual(
+    capturedUrl,
+    '/api/react/v1/store-order/invoice/email/translate-text',
+    '发票邮件文本翻译接口路径应保持契约一致',
+  )
+  assertEqual(capturedMethod, 'POST', '发票邮件文本翻译接口应使用 POST')
+  assertDeepEqual(
+    capturedBody,
+    {
+      orderGUID: 'order-1',
+      targetLanguage: 'en',
+      subject: '自定义主题',
+      body: '自定义正文',
+    },
+    '发票邮件文本翻译接口应发送目标语言和当前编辑内容',
+  )
+  assertDeepEqual(
+    translatedEmailText,
+    { subject: 'Custom subject', body: 'Custom body' },
+    '发票邮件文本翻译接口应返回归一化结果',
+  )
 } finally {
   globalThis.fetch = originalFetch
 }

@@ -33,6 +33,8 @@ import type {
   StoreOrderProductQuery,
   StoreOrderStatusUpdatePayload,
   SendStoreOrderInvoiceEmailPayload,
+  TranslateStoreOrderInvoiceEmailTextPayload,
+  TranslateStoreOrderInvoiceEmailTextResult,
   UpdateStoreOrderStoreContactPayload,
   UpdateStoreOrderHeaderPayload,
   UpdateStoreOrderLinePayload,
@@ -597,6 +599,24 @@ export async function sendStoreOrderInvoiceEmail(payload: SendStoreOrderInvoiceE
   })
 
   return normalizeStoreOrderInvoiceEmailJobResult(response)
+}
+
+export async function translateStoreOrderInvoiceEmailText(
+  payload: TranslateStoreOrderInvoiceEmailTextPayload,
+): Promise<TranslateStoreOrderInvoiceEmailTextResult> {
+  const response = await request<ApiResponse<TranslateStoreOrderInvoiceEmailTextResult> | unknown>(
+    `${API_BASE}/invoice/email/translate-text`,
+    {
+      method: 'POST',
+      data: payload,
+    },
+  )
+
+  const result = normalizeResult<Record<string, unknown> | null>(response)
+  return {
+    subject: typeof result?.subject === 'string' ? result.subject : undefined,
+    body: typeof result?.body === 'string' ? result.body : undefined,
+  }
 }
 
 export async function getStoreOrderInvoiceEmailJob(jobId: string) {

@@ -42,6 +42,7 @@ async function main() {
   const emailEntryFailure = await runTest('发票页应提供发送邮件入口并锁定接口调用字符串', () => {
     assert(invoiceSource.includes('sendStoreOrderInvoiceEmail'), '发票页应接入发送邮件 service')
     assert(invoiceSource.includes('getStoreOrderInvoiceEmailJob'), '发票页应接入发票邮件 job 查询 service')
+    assert(invoiceSource.includes('translateStoreOrderInvoiceEmailText'), '发票页应接入发票邮件文本翻译 service')
     assert(invoiceSource.includes('createStoreOrderInvoiceEmailJobPoller'), '发票页应使用发票邮件 job 轮询器')
     assert(invoiceSource.includes('stopInvoiceEmailPollingRef.current?.()'), '发票页卸载时应清理邮件 job 轮询')
     assert(invoiceSource.includes("result.status === 'Succeeded'"), '发票页应处理邮件发送成功终态')
@@ -57,9 +58,24 @@ async function main() {
     )
     assert(!invoiceSource.includes('pdfBase64,'), '发送邮件 payload 不应包含 pdfBase64')
     assert(!invoiceSource.includes('pdfFileName,'), '发送邮件 payload 不应包含 pdfFileName')
+    assert(invoiceSource.includes('emailModalLanguage'), '发票邮件弹窗应维护局部语言状态')
+    assert(invoiceSource.includes('emailSubjectTouched'), '发票邮件弹窗应记录主题是否被手动编辑')
+    assert(invoiceSource.includes('emailBodyTouched'), '发票邮件弹窗应记录正文是否被手动编辑')
+    assert(invoiceSource.includes('translatingEmailText'), '发票邮件弹窗翻译期间应有 loading 状态')
+    assert(invoiceSource.includes('lng: emailModalLanguage'), '弹窗文案应使用局部语言渲染')
+    assert(!invoiceSource.includes('i18n.changeLanguage'), '弹窗语言切换不应改变全站语言')
+    assert(invoiceSource.includes('translateStoreOrderInvoiceEmailText({'), '手动编辑后的主题/正文切换语言应调用翻译接口')
+    assert(invoiceSource.includes('setEmailSubjectTouched(true)'), '用户编辑主题时应标记 touched')
+    assert(invoiceSource.includes('setEmailBodyTouched(true)'), '用户编辑正文时应标记 touched')
     assert(invoiceSource.includes("t('warehouse.invoice.sendEmail')"), '发票页应提供发送邮件按钮文案')
-    assert(invoiceSource.includes("t('warehouse.invoice.emailModalTitle')"), '发票页应提供发送邮件弹窗标题')
-    assert(invoiceSource.includes("t('warehouse.invoice.saveAsStoreDefault')"), '发票页应提供保存为分店默认邮箱开关')
+    assert(
+      invoiceSource.includes("t('warehouse.invoice.emailModalTitle', { lng: emailModalLanguage })"),
+      '发票邮件弹窗标题应使用局部语言',
+    )
+    assert(
+      invoiceSource.includes("t('warehouse.invoice.saveAsStoreDefault', { lng: emailModalLanguage })"),
+      '发票邮件弹窗保存默认邮箱开关应使用局部语言',
+    )
   })
   if (emailEntryFailure) failures.push(emailEntryFailure)
 
@@ -121,6 +137,10 @@ async function main() {
       'emailSendFailed',
       'emailJobPollingFailed',
       'emailJobPollingTimeout',
+      'emailLanguage',
+      'emailLanguageChinese',
+      'emailLanguageEnglish',
+      'emailTranslateFailed',
     ]) {
       assert(zhSource.includes(`\"${key}\"`), `中文翻译缺少 ${key}`)
       assert(enSource.includes(`\"${key}\"`), `英文翻译缺少 ${key}`)

@@ -395,6 +395,18 @@ export interface SendStoreOrderInvoiceEmailPayload {
   body?: string
 }
 
+export interface TranslateStoreOrderInvoiceEmailTextPayload {
+  orderGUID: string
+  targetLanguage: 'zh' | 'en'
+  subject?: string
+  body?: string
+}
+
+export interface TranslateStoreOrderInvoiceEmailTextResult {
+  subject?: string
+  body?: string
+}
+
 export type StoreOrderInvoiceEmailJobStatus = 'Queued' | 'Running' | 'Succeeded' | 'Failed'
 
 export interface StoreOrderInvoiceEmailJobResult {
