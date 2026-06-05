@@ -99,6 +99,17 @@ async function main() {
   })
   if (listTwoLineFailure) failures.push(listTwoLineFailure)
 
+  const listStatusFilterFailure = await runTest('列表页状态筛选应使用多选框并默认勾选已提交和配货中', () => {
+    assert(storeOrdersSource.includes('Checkbox.Group'), '状态筛选应使用 Checkbox.Group')
+    assert(storeOrdersSource.includes('const DEFAULT_STATUS_LIST = [FlowStatus.Submitted, FlowStatus.Picking]'), '默认状态筛选应为已提交和配货中')
+    assert(storeOrdersSource.includes('useState<StoreOrderFlowStatus[]>(DEFAULT_STATUS_LIST)'), '状态筛选初始值应复用默认状态列表')
+    assert(storeOrdersSource.includes('setStatusList(DEFAULT_STATUS_LIST)'), '重置时应恢复默认状态筛选')
+    assert(storeOrdersSource.includes('statusList: DEFAULT_STATUS_LIST'), '重置后查询应按默认状态筛选发起')
+    assert(storeOrdersSource.includes('const STATUS_FILTER_ORDER = [FlowStatus.Submitted, FlowStatus.Picking, FlowStatus.Completed]'), '状态筛选展示顺序应把已完成放在最后')
+    assert(!storeOrdersSource.includes('<Select\n            mode="multiple"\n            value={statusList}'), '状态筛选不应继续使用多选 Select')
+  })
+  if (listStatusFilterFailure) failures.push(listStatusFilterFailure)
+
   const detailContentFailure = await runTest('详情页货号条码名称应保留业务可读性', () => {
     assert(detailMainTableSource.includes('width={30}') && detailMainTableSource.includes('height={30}'), '详情页主明细图片应缩到 30x30')
     assert(detailMainTableSource.includes('className="store-order-detail-copy-button"'), '详情页货号复制按钮应为无文字图标按钮')

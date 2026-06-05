@@ -12,6 +12,7 @@ import {
   App as AntdApp,
   Button,
   Card,
+  Checkbox,
   DatePicker,
   Input,
   Modal,
@@ -57,7 +58,6 @@ import type {
 import {
   StoreOrderFlowStatus as FlowStatus,
   StoreOrderStatusColorMap,
-  StoreOrderStatusOptions,
 } from '../../../types/storeOrder'
 import { getDateTagColor } from '../../../utils/tagColors'
 import { getStoreColor } from '../../../utils/userTableColors'
@@ -156,6 +156,8 @@ function renderDateTag(value?: string, language?: string) {
 }
 
 const DEFAULT_INCREMENTAL_CONFLICT_STRATEGY: StoreOrderSyncConflictStrategy = 'LatestWins'
+const DEFAULT_STATUS_LIST = [FlowStatus.Submitted, FlowStatus.Picking]
+const STATUS_FILTER_ORDER = [FlowStatus.Submitted, FlowStatus.Picking, FlowStatus.Completed]
 
 function StorePickerModal({ open, title, loading, onCancel, onSelect }: StorePickerModalProps) {
   const { t } = useTranslation()
@@ -420,10 +422,7 @@ export default function StoreOrdersPage() {
   const [keyword, setKeyword] = useState('')
   const [dateRange, setDateRange] = useState<RangeValue>(null)
   const [selectedStoreCodes, setSelectedStoreCodes] = useState<string[]>([])
-  const [statusList, setStatusList] = useState<StoreOrderFlowStatus[]>([
-    FlowStatus.Submitted,
-    FlowStatus.Completed,
-  ])
+  const [statusList, setStatusList] = useState<StoreOrderFlowStatus[]>(DEFAULT_STATUS_LIST)
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
   const [total, setTotal] = useState(0)
@@ -462,9 +461,9 @@ export default function StoreOrdersPage() {
 
   const statusOptions = useMemo(
     () =>
-      StoreOrderStatusOptions.map((item) => ({
-        value: item.value,
-        label: statusLabelMap[item.value],
+      STATUS_FILTER_ORDER.map((status) => ({
+        value: status,
+        label: statusLabelMap[status],
       })),
     [statusLabelMap],
   )
@@ -995,7 +994,7 @@ export default function StoreOrdersPage() {
               setKeyword('')
               setDateRange(null)
               setSelectedStoreCodes([])
-              setStatusList([FlowStatus.Submitted, FlowStatus.Completed])
+              setStatusList(DEFAULT_STATUS_LIST)
               setSortField('orderDate')
               setSortOrder('descend')
               void loadData({
@@ -1003,7 +1002,7 @@ export default function StoreOrdersPage() {
                 startDate: undefined,
                 endDate: undefined,
                 storeCodes: undefined,
-                statusList: [FlowStatus.Submitted, FlowStatus.Completed],
+                statusList: DEFAULT_STATUS_LIST,
                 pageNumber: 1,
                 pageSize,
                 sortBy: 'orderDate',
@@ -1051,14 +1050,10 @@ export default function StoreOrdersPage() {
             }))}
             onChange={(value) => setSelectedStoreCodes(value)}
           />
-          <Select
-            mode="multiple"
+          <Checkbox.Group
             value={statusList}
-            allowClear
-            style={{ width: 220 }}
-            placeholder={t('storeOrders.allStatuses')}
             options={statusOptions}
-            onChange={(value) => setStatusList(value)}
+            onChange={(value) => setStatusList(value as StoreOrderFlowStatus[])}
           />
           <Button type="primary" onClick={() => void loadData({ pageNumber: 1 })}>
             {t('common.query')}
