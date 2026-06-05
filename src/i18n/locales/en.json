@@ -187,6 +187,8 @@
       "selectContainersToPush": "Select containers to send first",
       "pushComplete": "Send complete",
       "pushFailed": "Failed to send to HBSales",
+      "statusUpdateSuccess": "Status updated",
+      "statusUpdateFailed": "Failed to update status",
       "missingContainerGuid": "Missing container ID. Cannot load details.",
       "loadDetailFailed": "Failed to load container details",
       "headerSaveSuccess": "Container information saved",

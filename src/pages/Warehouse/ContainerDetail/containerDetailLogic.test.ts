@@ -287,8 +287,13 @@ const matchedPriceRows: ContainerDetail[] = [
     商品编码: 'P-MATCH-2',
     国内价格: 8.8,
     贴牌价格: 3.3,
+    调整浮率: 1.1,
+    装柜件数: 2,
+    装柜数量: 24,
     单件装箱数: 12,
     单件体积: 0.2,
+    合计装柜体积: 0.4,
+    合计装柜金额: 232.32,
     商品名称: '保留价格但更新规格',
   },
   {
@@ -320,6 +325,22 @@ const matchedPriceRows: ContainerDetail[] = [
     贴牌价格: 0,
     装柜件数: 12,
   },
+  {
+    id: 707,
+    hguid: 'match-price-707',
+    商品编码: 'P-STALE-TOTALS',
+    国内价格: 5,
+    调整浮率: undefined,
+    装柜件数: 2,
+    装柜数量: 10,
+    单件装箱数: 5,
+    单件体积: 0.5,
+    合计装柜体积: 0,
+    合计装柜金额: 0,
+    运输成本: 0,
+    进口价格: 0,
+    商品名称: '旧合计商品',
+  },
 ]
 
 const matchedPriceUpdates = buildContainerDetailMatchedDomesticDataUpdates(
@@ -331,6 +352,7 @@ const matchedPriceUpdates = buildContainerDetailMatchedDomesticDataUpdates(
     { ProductCode: 'P-CODE-FIRST', ItemNumber: 'OTHER-ITEM', ProductName: '商品编码优先商品', WarehouseOEMPrice: 7.7, PackingQuantity: 8 },
     { ItemNumber: 'ITEM-FALLBACK', ProductName: '不应使用的货号匹配', WarehouseOEMPrice: 1.1, PackingQuantity: 99 },
     { ItemNumber: 'HB138-066', ProductName: '金/黑框混30X40', DomesticOEMPrice: 15.5, PackingQuantity: 24 },
+    { ProductCode: 'P-STALE-TOTALS', ProductName: '旧合计商品', WarehouseDomesticPrice: 5, PackingQuantity: 5, WarehouseVolume: 0.5 },
   ] satisfies DetectionResult[],
   matchedPriceContainer,
 )
@@ -357,8 +379,12 @@ assertDeepEqual(
       商品名称: '覆盖名称',
       英文名称: 'Override English',
       单件装箱数: 24,
+      装柜数量: 48,
       单件体积: 0.33,
-      进口价格: 1.78,
+      合计装柜体积: 0.66,
+      合计装柜金额: 464.64,
+      运输成本: 0.14,
+      进口价格: 2.1,
     },
     {
       hguid: 'match-price-703',
@@ -387,6 +413,13 @@ assertDeepEqual(
       商品名称: '金/黑框混30X40',
       单件装箱数: 24,
       装柜数量: 288,
+    },
+    {
+      hguid: 'match-price-707',
+      合计装柜体积: 1,
+      合计装柜金额: 50,
+      运输成本: 1,
+      进口价格: 1.92,
     },
   ],
   '匹配国内数据应只补缺失价格、覆盖名称规格，并同步重算装柜数量、体积、运输成本和进口价格',
@@ -1166,6 +1199,28 @@ assertEqual(
   pageStyleSource.includes('.container-detail-stat-tag-muted'),
   true,
   '未选中的统计标签应有弱化样式，保留颜色同时避免和选中态混淆',
+)
+assertEqual(
+  pageSource.includes('const containerDetailLoadRequestIdRef = useRef(0)') &&
+    pageSource.includes('const currentRequestId = containerDetailLoadRequestIdRef.current + 1') &&
+    pageSource.includes('containerDetailLoadRequestIdRef.current = currentRequestId'),
+  true,
+  '货柜详情加载应使用递增 request id 标记当前请求，避免旧请求覆盖新页面',
+)
+assertEqual(
+  pageSource.includes('if (containerDetailLoadRequestIdRef.current !== currentRequestId)') &&
+    pageSource.includes('return'),
+  true,
+  '货柜详情过期请求完成或失败后应直接忽略，不能写入 state 或弹失败提示',
+)
+assertEqual(
+  pageSource.includes("const errorMessage = error instanceof Error ? error.message : t('containers.messages.loadDetailFailed')") &&
+    pageSource.includes('if (showLoading) {') &&
+    pageSource.includes('message.error(errorMessage)') &&
+    pageSource.includes('} else {') &&
+    pageSource.includes("console.error('货柜详情静默刷新失败', error)"),
+  true,
+  '货柜详情静默刷新失败应保留当前内容，不弹明显失败提示；首次加载失败才展示错误',
 )
 
 console.log('containerDetailLogic.test: ok')

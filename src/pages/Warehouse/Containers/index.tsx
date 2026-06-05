@@ -27,6 +27,7 @@ import type { ColumnsType, TablePaginationConfig } from 'antd/es/table'
 import type { TFunction } from 'i18next'
 import type { Dayjs } from 'dayjs'
 import dayjs from 'dayjs'
+import isoWeek from 'dayjs/plugin/isoWeek'
 import { useEffect, useMemo, useState, type Key } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useNavigate } from 'react-router-dom'
@@ -37,11 +38,14 @@ import {
   getDateFilterOptions,
   pushContainersToHbSales,
   syncContainersFromHq,
+  updateContainer,
 } from '../../../services/containerService'
 import { useAuthStore } from '../../../store/auth'
 import type { ContainerMain, CreateContainerRequest, DateFilterOption } from '../../../types/container'
 
 type RangeValue = [Dayjs | null, Dayjs | null] | null
+
+dayjs.extend(isoWeek)
 
 function formatDate(value?: string) {
   return value ? dayjs(value).format('YYYY-MM-DD') : '--'
@@ -55,16 +59,42 @@ function formatNumber(value?: number, digits = 0) {
   return value == null ? '--' : value.toLocaleString('zh-CN', { maximumFractionDigits: digits, minimumFractionDigits: digits })
 }
 
+const containerStatusMeta: Record<number, { color: string; labelKey: string }> = {
+  0: { color: 'blue', labelKey: 'loaded' },
+  1: { color: 'orange', labelKey: 'inTransit' },
+  2: { color: 'success', labelKey: 'completed' },
+  7: { color: 'error', labelKey: 'cancelled' },
+}
+
+const containerStatusValues = [0, 1, 2, 7]
+const CONTAINER_STATUS_SELECT_WIDTH = 104
+const containerDateWeekColors = [
+  { background: '#e6f4ff', border: '#91caff', color: '#0958d9' },
+  { background: '#f6ffed', border: '#b7eb8f', color: '#237804' },
+  { background: '#fff7e6', border: '#ffd591', color: '#ad6800' },
+  { background: '#f9f0ff', border: '#d3adf7', color: '#722ed1' },
+  { background: '#e6fffb', border: '#87e8de', color: '#006d75' },
+  { background: '#fff1f0', border: '#ffa39e', color: '#a8071a' },
+  { background: '#fffbe6', border: '#ffe58f', color: '#ad8b00' },
+  { background: '#f0f5ff', border: '#adc6ff', color: '#1d39c4' },
+]
+
+function getContainerStatusOptionLabel(item: { color: string; labelKey: string }, t: TFunction) {
+  return (
+    <Tag color={item.color} style={{ minWidth: 54, marginInlineEnd: 0, textAlign: 'center' }}>
+      {t(`containers.status.${item.labelKey}`)}
+    </Tag>
+  )
+}
+
+function itemKeyOf(record: ContainerMain) {
+  return record.hguid || String(record.id)
+}
+
 function getStatusTag(status: number | undefined, t: TFunction) {
   if (status == null) return <Tag>{t('containers.status.unknown')}</Tag>
-  const map: Record<number, { color: string; labelKey: string }> = {
-    0: { color: 'blue', labelKey: 'loaded' },
-    1: { color: 'orange', labelKey: 'inTransit' },
-    2: { color: 'success', labelKey: 'completed' },
-    7: { color: 'error', labelKey: 'cancelled' },
-  }
-  const item = map[status]
-  return item ? <Tag color={item.color}>{t(`containers.status.${item.labelKey}`)}</Tag> : <Tag>{t('containers.status.unknownWithCode', { status })}</Tag>
+  const item = containerStatusMeta[status]
+  return item ? getContainerStatusOptionLabel(item, t) : <Tag>{t('containers.status.unknownWithCode', { status })}</Tag>
 }
 
 function getDateOptionLabel(value: string, t: TFunction) {
@@ -74,6 +104,57 @@ function getDateOptionLabel(value: string, t: TFunction) {
     装柜日期: 'containers.fields.loadingDate',
   }
   return map[value] ? t(map[value]) : value
+}
+
+function getContainerDateWeekKey(value?: string) {
+  if (!value) return undefined
+  const date = dayjs(value)
+  if (!date.isValid()) return undefined
+  return `${date.isoWeekYear()}-W${String(date.isoWeek()).padStart(2, '0')}`
+}
+
+function getContainerDateWeekColor(weekKey: string) {
+  let hash = 0
+  for (const char of weekKey) {
+    hash = (hash * 31 + char.charCodeAt(0)) % containerDateWeekColors.length
+  }
+  return containerDateWeekColors[hash]
+}
+
+function renderContainerWeekDate(value?: string) {
+  if (!value) return '--'
+  const weekKey = getContainerDateWeekKey(value)
+  if (!weekKey) return formatDate(value)
+  const color = getContainerDateWeekColor(weekKey)
+
+  return (
+    <Tag
+      title={weekKey}
+      style={{
+        backgroundColor: color.background,
+        borderColor: color.border,
+        color: color.color,
+        fontVariantNumeric: 'tabular-nums',
+        marginInlineEnd: 0,
+      }}
+    >
+      {formatDate(value)}
+    </Tag>
+  )
+}
+
+function getEstimatedArrivalDate(loadingDate?: Dayjs | null) {
+  if (!loadingDate) return undefined
+
+  // 预计到岸按装柜日期四周后计算，落在周末时顺延到下一个周一。
+  let estimatedArrival = loadingDate.add(4, 'week')
+  if (estimatedArrival.day() === 6) {
+    estimatedArrival = estimatedArrival.add(2, 'day')
+  }
+  if (estimatedArrival.day() === 0) {
+    estimatedArrival = estimatedArrival.add(1, 'day')
+  }
+  return estimatedArrival
 }
 
 interface CreateContainerModalProps {
@@ -86,6 +167,9 @@ interface CreateContainerModalProps {
 function CreateContainerModal({ open, loading, onCancel, onSubmit }: CreateContainerModalProps) {
   const { t } = useTranslation()
   const [form] = Form.useForm()
+  const handleLoadingDateChange = (value: Dayjs | null) => {
+    form.setFieldsValue({ 预计到岸日期: getEstimatedArrivalDate(value) })
+  }
 
   return (
     <Modal
@@ -113,12 +197,12 @@ function CreateContainerModal({ open, loading, onCancel, onSubmit }: CreateConta
         form.resetFields()
       }}
     >
-      <Form form={form} layout="vertical" initialValues={{ 汇率: 7 }}>
+      <Form form={form} layout="vertical" initialValues={{ 汇率: 4.7 }}>
         <Form.Item name="货柜编号" label={t('containers.fields.containerNumber')} rules={[{ required: true, message: t('containers.validation.enterContainerNumber') }]}>
           <Input placeholder={t('containers.validation.enterContainerNumber')} />
         </Form.Item>
         <Form.Item name="装柜日期" label={t('containers.fields.loadingDate')} rules={[{ required: true, message: t('containers.validation.selectLoadingDate') }]}>
-          <DatePicker style={{ width: '100%' }} />
+          <DatePicker style={{ width: '100%' }} onChange={handleLoadingDateChange} />
         </Form.Item>
         <Form.Item name="预计到岸日期" label={t('containers.fields.estimatedArrivalDate')}>
           <DatePicker style={{ width: '100%' }} />
@@ -164,6 +248,19 @@ export default function ContainersPage() {
   const [createLoading, setCreateLoading] = useState(false)
   const [syncing, setSyncing] = useState(false)
   const [pushing, setPushing] = useState(false)
+  const [statusUpdatingKeys, setStatusUpdatingKeys] = useState<string[]>([])
+
+  const containerStatusOptions = useMemo(
+    () =>
+      containerStatusValues.map((value) => {
+        const item = containerStatusMeta[value]
+        return {
+          value,
+          label: getContainerStatusOptionLabel(item, t),
+        }
+      }),
+    [t],
+  )
 
   const stats = useMemo(
     () =>
@@ -284,6 +381,34 @@ export default function ContainersPage() {
     })
   }
 
+  const handleContainerStatusChange = async (record: ContainerMain, nextStatus: number) => {
+    const recordKey = itemKeyOf(record)
+    if (record.状态 === nextStatus || statusUpdatingKeys.includes(recordKey)) {
+      return
+    }
+
+    if (!record.hguid) {
+      message.error(t('containers.messages.missingContainerGuid'))
+      return
+    }
+
+    const previousStatus = record.状态
+    // 先更新当前行，让状态切换立即反馈；接口失败时再回滚原值。
+    setStatusUpdatingKeys((keys) => (keys.includes(recordKey) ? keys : [...keys, recordKey]))
+    setContainers((items) => items.map((item) => (itemKeyOf(item) === recordKey ? { ...item, 状态: nextStatus } : item)))
+
+    try {
+      await updateContainer(record.hguid, { 状态: nextStatus })
+      message.success(t('containers.messages.statusUpdateSuccess'))
+    } catch (error) {
+      console.error(error)
+      setContainers((items) => items.map((item) => (itemKeyOf(item) === recordKey ? { ...item, 状态: previousStatus } : item)))
+      message.error(error instanceof Error ? error.message : t('containers.messages.statusUpdateFailed'))
+    } finally {
+      setStatusUpdatingKeys((keys) => keys.filter((key) => key !== recordKey))
+    }
+  }
+
   const columns: ColumnsType<ContainerMain> = [
     {
       title: t('containers.columns.index'),
@@ -300,13 +425,36 @@ export default function ContainersPage() {
         </Button>
       ),
     },
-    { title: t('containers.fields.loadingDate'), dataIndex: '装柜日期', width: 120, render: formatDate },
-    { title: t('containers.fields.estimatedArrivalDate'), dataIndex: '预计到岸日期', width: 130, render: formatDate },
-    { title: t('containers.fields.actualArrivalDate'), dataIndex: '实际到货日期', width: 130, render: formatDate },
+    { title: t('containers.fields.loadingDate'), dataIndex: '装柜日期', width: 120, render: renderContainerWeekDate },
+    { title: t('containers.fields.estimatedArrivalDate'), dataIndex: '预计到岸日期', width: 130, render: renderContainerWeekDate },
+    { title: t('containers.fields.actualArrivalDate'), dataIndex: '实际到货日期', width: 130, render: renderContainerWeekDate },
     { title: t('containers.fields.totalPieces'), dataIndex: '合计件数', width: 100, align: 'right', render: (v) => formatNumber(v) },
     { title: t('containers.fields.totalAmount'), dataIndex: '合计金额', width: 130, align: 'right', render: formatAmount },
     { title: t('containers.fields.totalVolumeCbm'), dataIndex: '总体积', width: 120, align: 'right', render: (v) => formatNumber(v, 2) },
-    { title: t('containers.fields.status'), dataIndex: '状态', width: 100, render: (status) => getStatusTag(status, t) },
+    {
+      title: t('containers.fields.status'),
+      dataIndex: '状态',
+      width: 120,
+      render: (_status, record) => {
+        const recordKey = itemKeyOf(record)
+        const canUpdateStatus = access.canEditContainer && Boolean(record.hguid) && record.状态 != null && Boolean(containerStatusMeta[record.状态])
+        if (!canUpdateStatus) {
+          return getStatusTag(record.状态, t)
+        }
+
+        return (
+          <Select
+            size="small"
+            value={record.状态}
+            options={containerStatusOptions}
+            disabled={statusUpdatingKeys.includes(recordKey)}
+            style={{ width: CONTAINER_STATUS_SELECT_WIDTH }}
+            popupMatchSelectWidth={CONTAINER_STATUS_SELECT_WIDTH}
+            onChange={(nextStatus) => void handleContainerStatusChange(record, nextStatus)}
+          />
+        )
+      },
+    },
     {
       title: t('common.action'),
       width: 120,
@@ -385,7 +533,7 @@ export default function ContainersPage() {
 
         <Card>
           <Table
-            rowKey={(record) => record.hguid || String(record.id)}
+            rowKey={itemKeyOf}
             loading={loading}
             columns={columns}
             dataSource={containers}

@@ -187,6 +187,8 @@
       "selectContainersToPush": "请先选择要发送的货柜",
       "pushComplete": "发送完成",
       "pushFailed": "发送到 HBSales 失败",
+      "statusUpdateSuccess": "状态更新成功",
+      "statusUpdateFailed": "状态更新失败",
       "missingContainerGuid": "缺少货柜编号，无法加载明细",
       "loadDetailFailed": "加载货柜明细失败",
       "headerSaveSuccess": "货柜信息已保存",

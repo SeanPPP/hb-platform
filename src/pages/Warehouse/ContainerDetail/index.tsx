@@ -224,6 +224,7 @@ export default function ContainerDetailPage() {
   // 记录当前货柜已完成首次加载，保活 Tab 恢复时保留旧内容并静默刷新。
   const loadedContainerGuidRef = useRef<string | null>(null)
   const visibleContainerGuidRef = useRef<string | null>(null)
+  const containerDetailLoadRequestIdRef = useRef(0)
   const [loading, setLoading] = useState(false)
   const [savingHeader, setSavingHeader] = useState(false)
   const [container, setContainer] = useState<ContainerMain | null>(null)
@@ -262,6 +263,8 @@ export default function ContainerDetailPage() {
     if (!containerGuid) {
       return
     }
+    const currentRequestId = containerDetailLoadRequestIdRef.current + 1
+    containerDetailLoadRequestIdRef.current = currentRequestId
     if (showLoading) {
       setLoading(true)
     }
@@ -270,6 +273,9 @@ export default function ContainerDetailPage() {
         getContainerDetail(containerGuid),
         getContainerProducts(containerGuid),
       ])
+      if (containerDetailLoadRequestIdRef.current !== currentRequestId) {
+        return
+      }
       loadedContainerGuidRef.current = containerGuid
       visibleContainerGuidRef.current = containerGuid
       setContainer(info)
@@ -283,12 +289,21 @@ export default function ContainerDetailPage() {
       setRows(products)
       setSelectedRowKeys([])
     } catch (error) {
-      console.error(error)
-      if (showLoading) {
-        visibleContainerGuidRef.current = null
+      if (containerDetailLoadRequestIdRef.current !== currentRequestId) {
+        return
       }
-      message.error(error instanceof Error ? error.message : t('containers.messages.loadDetailFailed'))
+      const errorMessage = error instanceof Error ? error.message : t('containers.messages.loadDetailFailed')
+      if (showLoading) {
+        console.error(error)
+        visibleContainerGuidRef.current = null
+        message.error(errorMessage)
+      } else {
+        console.error('货柜详情静默刷新失败', error)
+      }
     } finally {
+      if (containerDetailLoadRequestIdRef.current !== currentRequestId) {
+        return
+      }
       if (showLoading) {
         setLoading(false)
       }
@@ -516,6 +531,7 @@ export default function ContainerDetailPage() {
 
       await batchUpdateDetails(updates)
       applyDetailUpdatesToRows(updates)
+      await loadData(false)
       const pricePatchCount = updates.filter((update) => update.国内价格 != null || update.贴牌价格 != null).length
       message.success(`已更新 ${updates.length} 条明细，补齐价格 ${pricePatchCount} 条`)
     } catch (error) {

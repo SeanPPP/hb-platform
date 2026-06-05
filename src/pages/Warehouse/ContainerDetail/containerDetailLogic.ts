@@ -594,6 +594,12 @@ function calculateContainerDetailTotalAmount(row: ContainerDetail) {
   return roundToDigits(row.装柜数量 * row.国内价格 * (row.调整浮率 ?? 1), 2)
 }
 
+function calculateContainerDetailTotalVolume(row: ContainerDetail) {
+  const unitVolume = row.单件体积 ?? row.商品信息?.单件体积
+  if (row.装柜件数 == null || unitVolume == null) return row.合计装柜体积
+  return roundToDigits(row.装柜件数 * unitVolume, 3)
+}
+
 function buildDetectedPriceMaps(items: ContainerDetailDetectedPrice[]) {
   const productCodeMap = new Map<string, ContainerDetailDetectedPrice>()
   const itemNumberMap = new Map<string, ContainerDetailDetectedPrice>()
@@ -668,38 +674,26 @@ export function buildContainerDetailMatchedDomesticDataUpdates(
       }
       if (unitVolume != null && unitVolume >= 0 && unitVolume !== row.单件体积) {
         update.单件体积 = unitVolume
-        if (row.装柜件数 != null) {
-          update.合计装柜体积 = roundToDigits(row.装柜件数 * unitVolume, 3)
-        }
       }
 
-      if (
-        update.国内价格 != null ||
-        update.装柜数量 != null ||
-        update.单件装箱数 != null
-      ) {
-        const amountRow = mergeContainerDetailPatch(row, update as Partial<ContainerDetail>)
-        const totalAmount = calculateContainerDetailTotalAmount(amountRow)
-        if (totalAmount !== row.合计装柜金额) update.合计装柜金额 = totalAmount
-      }
+      const nextRow = mergeContainerDetailPatch(row, update as Partial<ContainerDetail>)
+      const totalVolume = calculateContainerDetailTotalVolume(nextRow)
+      if (totalVolume !== row.合计装柜体积) update.合计装柜体积 = totalVolume
 
-      if (
-        update.国内价格 != null ||
-        update.装柜数量 != null ||
-        update.单件体积 != null ||
-        update.合计装柜体积 != null
-      ) {
-        const pricedRow = mergeContainerDetailPatch(row, update as Partial<ContainerDetail>)
-        const transportCost = calculateContainerDetailTransportCost(pricedRow, container)
-        const importPrice = calculateContainerDetailImportPrice(
-          { ...pricedRow, 运输成本: transportCost },
-          container,
-          pricedRow.调整浮率 ?? 1,
-          transportCost,
-        )
-        if (transportCost !== row.运输成本) update.运输成本 = transportCost
-        if (importPrice !== row.进口价格) update.进口价格 = importPrice
-      }
+      const amountRow = mergeContainerDetailPatch(row, update as Partial<ContainerDetail>)
+      const totalAmount = calculateContainerDetailTotalAmount(amountRow)
+      if (totalAmount !== row.合计装柜金额) update.合计装柜金额 = totalAmount
+
+      const pricedRow = mergeContainerDetailPatch(row, update as Partial<ContainerDetail>)
+      const transportCost = calculateContainerDetailTransportCost(pricedRow, container)
+      const importPrice = calculateContainerDetailImportPrice(
+        { ...pricedRow, 运输成本: transportCost },
+        container,
+        pricedRow.调整浮率 ?? 1,
+        transportCost,
+      )
+      if (transportCost !== row.运输成本) update.运输成本 = transportCost
+      if (importPrice !== row.进口价格) update.进口价格 = importPrice
 
       return Object.keys(update).length > 1 ? update : null
     })
