@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Net;
 using BlazorApp.Api.Services.Logging;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models.HBweb;
@@ -220,6 +221,81 @@ public class ApplicationLogServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task IngestAsync_复杂属性值不能直接Json序列化_安全转成可查询文本()
+    {
+        var service = CreateService();
+
+        var result = await service.IngestAsync(
+            "HBBBackend",
+            new ApplicationLogIngestRequestDto
+            {
+                Logs =
+                [
+                    new ApplicationLogIngestItemDto
+                    {
+                        Level = "Error",
+                        Message = "包含复杂属性的日志",
+                        TimestampUtc = DateTime.UtcNow,
+                        ProjectCode = "HBBBackend",
+                        Environment = "test",
+                        SourceType = "Backend",
+                        Properties = new Dictionary<string, object?>
+                        {
+                            ["remoteIp"] = IPAddress.Loopback,
+                            ["endpoint"] = new IPEndPoint(IPAddress.Loopback, 5002),
+                            ["tags"] = new[] { "backend", "logging" },
+                        },
+                    },
+                ],
+            }
+        );
+
+        Assert.Equal(1, result.AcceptedCount);
+        var saved = await _db.Queryable<ApplicationLog>().SingleAsync();
+        Assert.Contains("remoteIp", saved.PropertiesJson);
+        Assert.Contains("127.0.0.1", saved.PropertiesJson);
+        Assert.Contains("endpoint", saved.PropertiesJson);
+        Assert.Contains("backend", saved.PropertiesJson);
+    }
+
+    [Fact]
+    public async Task IngestAsync_非有限浮点属性值_安全转成可查询文本()
+    {
+        var service = CreateService();
+
+        var result = await service.IngestAsync(
+            "HBBBackend",
+            new ApplicationLogIngestRequestDto
+            {
+                Logs =
+                [
+                    new ApplicationLogIngestItemDto
+                    {
+                        Level = "Error",
+                        Message = "包含非有限浮点属性的日志",
+                        TimestampUtc = DateTime.UtcNow,
+                        ProjectCode = "HBBBackend",
+                        Environment = "test",
+                        SourceType = "Backend",
+                        Properties = new Dictionary<string, object?>
+                        {
+                            ["ratio"] = double.NaN,
+                            ["positiveInfinity"] = double.PositiveInfinity,
+                            ["negativeInfinity"] = float.NegativeInfinity,
+                        },
+                    },
+                ],
+            }
+        );
+
+        Assert.Equal(1, result.AcceptedCount);
+        var saved = await _db.Queryable<ApplicationLog>().SingleAsync();
+        Assert.Contains("\"ratio\":\"NaN\"", saved.PropertiesJson);
+        Assert.Contains("\"positiveInfinity\":\"Infinity\"", saved.PropertiesJson);
+        Assert.Contains("\"negativeInfinity\":\"-Infinity\"", saved.PropertiesJson);
+    }
+
+    [Fact]
     public async Task QueryAsync_按项目等级路径关键词筛选_返回匹配日志()
     {
         await InsertLogAsync("HBBBackend", "Error", "/api/orders", "订单同步失败", "trace-1");
@@ -243,6 +319,31 @@ public class ApplicationLogServiceTests : IDisposable
         var item = Assert.Single(result.Items);
         Assert.Equal("trace-1", item.TraceId);
         Assert.Equal("订单同步失败", item.Message);
+    }
+
+    [Fact]
+    public async Task QueryAsync_按多个项目筛选_返回所选项目日志()
+    {
+        await InsertLogAsync("HBBBackend", "Error", "/api/orders", "后端错误", "trace-backend");
+        await InsertLogAsync("HbwebExpo", "Error", "/api/mobile", "移动端错误", "trace-mobile");
+        await InsertLogAsync("hbweb_rv", "Error", "/api/web", "前端错误", "trace-web");
+
+        var service = CreateService();
+        var result = await service.QueryAsync(
+            new ApplicationLogQueryDto
+            {
+                ProjectCodes = ["HBBBackend", "HbwebExpo"],
+                PageNumber = 1,
+                PageSize = 20,
+                SortBy = "ProjectCode",
+                SortDirection = "asc",
+            }
+        );
+
+        Assert.Equal(2, result.Total);
+        Assert.DoesNotContain(result.Items, item => item.ProjectCode == "hbweb_rv");
+        Assert.Contains(result.Items, item => item.ProjectCode == "HBBBackend");
+        Assert.Contains(result.Items, item => item.ProjectCode == "HbwebExpo");
     }
 
     [Fact]

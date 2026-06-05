@@ -48,6 +48,9 @@ namespace BlazorApp.Api.Services
         {
             try
             {
+                // 关键位置：兼容前端只传 fields 的新协议，避免 bool 默认值导致误同步。
+                request.NormalizeFieldSelection();
+
                 if (request.ProductCodes == null || request.ProductCodes.Count == 0)
                 {
                     return ApiResponse<SyncProductsToStoresResult>.Error(
@@ -127,11 +130,13 @@ namespace BlazorApp.Api.Services
                     request.StoreCodes.Count
                 );
 
-                var syncTasks = request.StoreCodes.Select(storeCode =>
-                    SyncToSingleStoreAsync(request, storeCode, products, productSetCodes)
-                ).ToList();
+                var syncTasks = request.StoreCodes
+                    .Select<string, Func<Task<StoreSyncResult>>>(storeCode =>
+                        () => SyncToSingleStoreAsync(request, storeCode, products, productSetCodes)
+                    )
+                    .ToList();
 
-                var storeResults = await Task.WhenAll(syncTasks);
+                var storeResults = await RunStoreSyncTasksAsync(syncTasks);
 
                 foreach (var storeResult in storeResults)
                 {
@@ -161,16 +166,72 @@ namespace BlazorApp.Api.Services
                     result.FailedCount
                 );
 
-                return ApiResponse<SyncProductsToStoresResult>.OK(result, "同步成功");
+                return BuildAggregateResponse(result);
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "同步商品到分店失败");
                 return ApiResponse<SyncProductsToStoresResult>.Error(
-                    "同步失败: " + ex.Message,
+                    "商品同步到分店失败，请稍后重试或联系管理员",
                     "DATABASE_ERROR"
                 );
             }
+        }
+
+        public static ApiResponse<SyncProductsToStoresResult> BuildAggregateResponse(
+            SyncProductsToStoresResult result
+        )
+        {
+            if (result.FailedCount > 0 && result.CreatedCount + result.UpdatedCount == 0)
+            {
+                return new ApiResponse<SyncProductsToStoresResult>
+                {
+                    Success = false,
+                    Message = "商品同步到分店失败，请稍后重试或联系管理员",
+                    ErrorCode = "SYNC_PRODUCTS_TO_STORES_FAILED",
+                    Data = result,
+                    Details = result,
+                    Timestamp = DateTime.UtcNow,
+                };
+            }
+
+            var message = result.FailedCount > 0
+                ? "商品同步到分店部分完成，部分分店失败"
+                : "同步成功";
+            return ApiResponse<SyncProductsToStoresResult>.OK(result, message);
+        }
+
+        public static async Task<List<T>> RunStoreSyncTasksAsync<T>(
+            IReadOnlyList<Func<Task<T>>> taskFactories,
+            int maxConcurrency = 3
+        )
+        {
+            if (taskFactories.Count == 0)
+            {
+                return new List<T>();
+            }
+
+            var results = new T[taskFactories.Count];
+            var nextIndex = -1;
+            var workerCount = Math.Min(maxConcurrency, taskFactories.Count);
+
+            async Task WorkerAsync()
+            {
+                while (true)
+                {
+                    var index = Interlocked.Increment(ref nextIndex);
+                    if (index >= taskFactories.Count)
+                    {
+                        return;
+                    }
+
+                    results[index] = await taskFactories[index]();
+                }
+            }
+
+            var workers = Enumerable.Range(0, workerCount).Select(_ => WorkerAsync()).ToList();
+            await Task.WhenAll(workers);
+            return results.ToList();
         }
 
         private async Task<StoreSyncResult> SyncToSingleStoreAsync(
@@ -358,7 +419,7 @@ namespace BlazorApp.Api.Services
                 _logger.LogError(ex, "同步商品到分店 {StoreCode} 失败", storeCode);
                 result.Success = false;
                 result.FailedCount = 1;
-                result.Errors = new List<string> { $"分店 {storeCode} 同步失败: {ex.Message}" };
+                result.Errors = new List<string> { $"分店 {storeCode} 同步失败，请稍后重试或联系管理员" };
             }
             finally
             {

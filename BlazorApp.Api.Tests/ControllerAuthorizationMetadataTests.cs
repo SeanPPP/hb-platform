@@ -273,6 +273,18 @@ public class ControllerAuthorizationMetadataTests
             nameof(ReactProductController.BatchUpdateStoreRecords),
             Permissions.StoreProducts.Edit
         );
+        yield return Policy<ReactProductController>(
+            nameof(ReactProductController.SyncProductsToStores),
+            Permissions.PosProducts.Manage
+        );
+        yield return Policy<ReactProductController>(
+            nameof(ReactProductController.StartSyncProductsToStoresJob),
+            Permissions.PosProducts.Manage
+        );
+        yield return Policy<ReactProductController>(
+            nameof(ReactProductController.GetSyncProductsToStoresJob),
+            Permissions.PosProducts.Manage
+        );
 
         yield return Policy<ReactContainerProductsController>(
             nameof(ReactContainerProductsController.StartCreateNewProductsJob),
