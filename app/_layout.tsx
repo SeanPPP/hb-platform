@@ -10,6 +10,7 @@ import { StatusBar } from "expo-status-bar";
 import { usePrinterAutoConnect } from "@/modules/printer/use-printer-auto-connect";
 import { waitForStartupReadiness } from "@/modules/startup/startup-readiness";
 import { i18n, initI18n } from "@/shared/i18n/i18n";
+import { installGlobalErrorLogging, reportApplicationLog } from "@/shared/logging/log-center-runtime";
 import { useDeviceStore } from "@/store/device-store";
 
 const queryClient = new QueryClient({
@@ -49,6 +50,10 @@ export default function RootLayout() {
   usePrinterAutoConnect();
 
   useEffect(() => {
+    return installGlobalErrorLogging();
+  }, []);
+
+  useEffect(() => {
     let mounted = true;
 
     async function prepareApp() {
@@ -69,6 +74,15 @@ export default function RootLayout() {
         setAppReady(true);
       } else {
         console.warn("[startup] prepare app before splash hide failed", result.error);
+        const startupError = result.error instanceof Error ? result.error : new Error(String(result.error));
+        reportApplicationLog({
+          level: "Critical",
+          message: "移动端启动准备失败",
+          sourceType: "app.startup",
+          exceptionType: startupError.name,
+          exceptionMessage: startupError.message,
+          stackTrace: startupError.stack,
+        });
         setStartupError(result.error);
       }
     }

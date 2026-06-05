@@ -14,6 +14,7 @@ import { useCameraScan } from "@/modules/scanner/use-camera-scan";
 import { useHidBarcodeScanner } from "@/modules/scanner/use-hid-barcode-scanner";
 import { resolveLocalizedErrorMessage } from "@/shared/i18n/error-message";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
+import { reportApplicationLog } from "@/shared/logging/log-center-runtime";
 import { useAuthStore } from "@/store/auth-store";
 import { useDeviceStore } from "@/store/device-store";
 import {
@@ -171,6 +172,23 @@ function getRawErrorMessage(error: unknown) {
     return String((responseData as { message?: unknown }).message ?? "");
   }
   return error instanceof Error ? error.message : "";
+}
+
+function reportWarehouseFailure(
+  action: string,
+  error: unknown,
+  properties?: Record<string, unknown>
+) {
+  const normalizedError = error instanceof Error ? error : new Error(String(error));
+  reportApplicationLog({
+    level: "Error",
+    message: `仓库 PDA 操作失败: ${action}`,
+    sourceType: "warehouse.pda",
+    exceptionType: normalizedError.name,
+    exceptionMessage: normalizedError.message,
+    stackTrace: normalizedError.stack,
+    properties,
+  });
 }
 
 function getLocationVisualState(productCount: number) {
@@ -589,6 +607,10 @@ export default function WarehouseScreen() {
       setProductChoiceModal(null);
       setSnackbar(t("messages.saved"));
     } catch (error) {
+      reportWarehouseFailure("保存商品字段", error, {
+        productCode: product.productCode,
+        patchField: patchField ?? "multiple",
+      });
       syncFormFromProduct(product);
       setSnackbar(getErrorMessage(error, "messages.saveFailed"));
     } finally {
@@ -733,6 +755,11 @@ export default function WarehouseScreen() {
       setUnbindLocationConfirmVisible(false);
       setSnackbar(t("messages.locationSaved"));
     } catch (error) {
+      reportWarehouseFailure("绑定货位到商品", error, {
+        productCode,
+        locationGuid: location?.locationGuid ?? null,
+        locationCode: location?.locationCode ?? null,
+      });
       if (requestId === productLocationBindRequestRef.current) {
         const message = getErrorMessage(error, "messages.locationBindFailed");
         setProductLocationBindFeedback(message);
@@ -912,6 +939,9 @@ export default function WarehouseScreen() {
       setPhotoVisible(false);
       setSnackbar(t("messages.saved"));
     } catch (error) {
+      reportWarehouseFailure("上传商品图片", error, {
+        productCode: product.productCode,
+      });
       setSnackbar(getErrorMessage(error, "messages.uploadFailed"));
     } finally {
       setBusy(false);
@@ -1121,6 +1151,10 @@ export default function WarehouseScreen() {
       setSnackbar(t("messages.saved"));
       await handleLookupLocations();
     } catch (error) {
+      reportWarehouseFailure("保存货位", error, {
+        locationCode,
+        editingLocationGuid: editingLocationGuid ?? null,
+      });
       const status = (error as { response?: { status?: number } } | undefined)?.response?.status;
       const normalizedMessage = getRawErrorMessage(error).trim().toLowerCase();
       const looksLikeDuplicate = status === 409
@@ -1230,6 +1264,11 @@ export default function WarehouseScreen() {
       setHasBindProductLookup(false);
       setSnackbar(t("messages.locationBound"));
     } catch (error) {
+      reportWarehouseFailure("绑定商品到货位", error, {
+        locationGuid: selectedLocation.locationGuid,
+        locationCode: selectedLocation.locationCode,
+        productIdentifier,
+      });
       const responseData = (error as { response?: { data?: unknown } } | undefined)?.response?.data;
       const rawMessage = typeof responseData === "string"
         ? responseData
@@ -1275,6 +1314,11 @@ export default function WarehouseScreen() {
       setPendingUnbindProduct(null);
       setSnackbar(t("messages.locationUnbound"));
     } catch (error) {
+      reportWarehouseFailure("从货位解绑商品", error, {
+        locationGuid: pendingUnbindProduct.locationGuid,
+        locationCode: pendingUnbindProduct.locationCode ?? null,
+        productCode: pendingUnbindProduct.product.productCode,
+      });
       setSnackbar(getErrorMessage(error, "messages.saveFailed"));
     } finally {
       setBusy(false);

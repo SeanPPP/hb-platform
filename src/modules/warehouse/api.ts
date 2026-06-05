@@ -1,5 +1,6 @@
 import type { AxiosRequestConfig } from "axios";
 import { apiClient } from "@/shared/api/client";
+import { reportApplicationLog } from "@/shared/logging/log-center-runtime";
 import { useDeviceStore } from "@/store/device-store";
 import { normalizeWarehouseProduct } from "@/modules/warehouse/api-normalization";
 import type {
@@ -132,16 +133,48 @@ export async function getWarehouseImageUploadSignature(
 }
 
 export async function uploadFileToSignedUrl(uri: string, signature: DirectUploadSignature) {
-  const fileResponse = await fetch(uri);
-  const blob = await fileResponse.blob();
-  const result = await fetch(signature.url, {
-    method: "PUT",
-    headers: signature.headers,
-    body: blob,
-  });
+  try {
+    const fileResponse = await fetch(uri);
+    const blob = await fileResponse.blob();
+    const result = await fetch(signature.url, {
+      method: "PUT",
+      headers: signature.headers,
+      body: blob,
+    });
 
-  if (!result.ok) {
-    throw new Error(`Upload failed with status ${result.status}`);
+    if (!result.ok) {
+      reportApplicationLog({
+        level: "Error",
+        message: "仓库图片上传失败",
+        sourceType: "warehouse.upload",
+        requestMethod: "PUT",
+        requestPath: signature.url.split("?")[0],
+        statusCode: result.status,
+        properties: {
+          objectKey: signature.objectKey,
+          uploadUrl: signature.url.split("?")[0],
+        },
+      });
+      throw new Error(`Upload failed with status ${result.status}`);
+    }
+  } catch (error) {
+    const normalizedError = error instanceof Error ? error : new Error(String(error));
+    reportApplicationLog({
+      level: "Error",
+      message: "仓库图片上传链路异常",
+      sourceType: "warehouse.upload",
+      requestMethod: "PUT",
+      requestPath: signature.url.split("?")[0],
+      exceptionType: normalizedError.name,
+      exceptionMessage: normalizedError.message,
+      stackTrace: normalizedError.stack,
+      properties: {
+        objectKey: signature.objectKey,
+        uploadUrl: signature.url.split("?")[0],
+        fileUriTail: uri.split("/").pop() || uri,
+      },
+    });
+    throw error;
   }
 
   return signature.objectKey;

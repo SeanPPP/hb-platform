@@ -6,6 +6,8 @@ import { emitUnauthenticatedSession } from "@/modules/auth/auth-session-events";
 import { isUnauthenticatedApiPayload } from "@/shared/api/auth-error";
 import { buildApiBaseUrl, DEFAULT_API_BASE_URL, getStoredApiHost } from "@/shared/api/config";
 import { extractApiErrorMessage } from "@/shared/api/error-message";
+import { isLogCenterIngestUrl } from "@/shared/logging/log-center";
+import { reportApplicationLog } from "@/shared/logging/log-center-runtime";
 
 function unwrapEnvelope<T>(payload: unknown): T {
   let current = payload;
@@ -48,6 +50,83 @@ let refreshQueue: Array<{
 
 function isLoginRequest(config?: InternalAxiosRequestConfig | null) {
   return Boolean(config?.url?.includes("/auth/login"));
+}
+
+function shouldSkipCenterLog(config?: InternalAxiosRequestConfig | null) {
+  if (!config) {
+    return false;
+  }
+
+  const rawSkipHeader = config.headers?.["X-Skip-Center-Log"];
+  const skipHeaderValue = Array.isArray(rawSkipHeader) ? rawSkipHeader[0] : rawSkipHeader;
+  return skipHeaderValue === "1" || isLogCenterIngestUrl(resolveRequestUrl(config));
+}
+
+function resolveRequestUrl(config?: InternalAxiosRequestConfig | null) {
+  if (!config?.url) {
+    return "";
+  }
+
+  if (/^https?:\/\//i.test(config.url)) {
+    return config.url;
+  }
+
+  const baseURL = config.baseURL ?? apiClient.defaults.baseURL ?? DEFAULT_API_BASE_URL;
+  try {
+    return new URL(config.url, baseURL).toString();
+  } catch {
+    return `${baseURL.replace(/\/+$/, "")}/${config.url.replace(/^\/+/, "")}`;
+  }
+}
+
+function reportApiErrorLog(
+  error: unknown,
+  config?: InternalAxiosRequestConfig | null,
+  options?: {
+    responseStatus?: number;
+    responseData?: unknown;
+    message?: string;
+  }
+) {
+  if (shouldSkipCenterLog(config)) {
+    return;
+  }
+
+  const responseStatus = options?.responseStatus;
+  const retryableConfig = config as (InternalAxiosRequestConfig & { _retry?: boolean }) | null | undefined;
+  if (responseStatus === 401 && !retryableConfig?._retry) {
+    return;
+  }
+
+  const normalizedError = error instanceof Error ? error : new Error(String(error));
+  const requestUrl = resolveRequestUrl(config);
+  let requestPath = config?.url ?? "";
+
+  if (requestUrl) {
+    try {
+      requestPath = new URL(requestUrl).pathname;
+    } catch {
+      requestPath = config?.url ?? requestUrl;
+    }
+  }
+
+  reportApplicationLog({
+    level: responseStatus && responseStatus >= 500 ? "Error" : "Warning",
+    message: options?.message ?? "移动端 API 请求失败",
+    sourceType: "mobile.api",
+    requestPath: requestPath || undefined,
+    requestMethod: config?.method?.toUpperCase(),
+    statusCode: responseStatus,
+    exceptionType: normalizedError.name,
+    exceptionMessage: normalizedError.message,
+    stackTrace: normalizedError.stack,
+    properties: {
+      url: requestUrl || undefined,
+      axiosCode: (error as { code?: unknown } | undefined)?.code,
+      responseData: options?.responseData,
+      hasResponse: responseStatus != null,
+    },
+  });
 }
 
 async function redirectToLoginAfterUnauthenticated(message?: string) {
@@ -95,7 +174,16 @@ apiClient.interceptors.response.use(
       throw new Error(message);
     }
 
-    response.data = unwrapEnvelope(response.data);
+    try {
+      response.data = unwrapEnvelope(response.data);
+    } catch (error) {
+      reportApiErrorLog(error, response.config as InternalAxiosRequestConfig, {
+        responseStatus: response.status,
+        responseData: response.data,
+        message: "移动端 API 返回业务失败响应",
+      });
+      throw error;
+    }
     return response;
   },
   async (error: AxiosError) => {
@@ -145,6 +233,10 @@ apiClient.interceptors.response.use(
         isRefreshing = false;
       }
     }
+    reportApiErrorLog(error, original, {
+      responseStatus: error.response?.status,
+      responseData: error.response?.data,
+    });
     return Promise.reject(new Error(extractApiErrorMessage(error, error.message)));
   }
 );
