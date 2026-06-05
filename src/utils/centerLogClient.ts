@@ -50,16 +50,22 @@ function sanitizeProperties(properties?: Record<string, unknown>) {
     return undefined
   }
 
-  const sanitizedEntries = Object.entries(properties).flatMap(([key, value]) => {
+  const sanitizedEntries: Array<[string, unknown]> = []
+
+  Object.entries(properties).forEach(([key, value]) => {
     if (value === undefined || value === null || value === '') {
-      return []
+      return
     }
 
     if (typeof value === 'string') {
-      return [[key, trimText(value, MAX_PROPERTY_LENGTH)]]
+      const trimmedValue = trimText(value, MAX_PROPERTY_LENGTH)
+      if (trimmedValue) {
+        sanitizedEntries.push([key, trimmedValue])
+      }
+      return
     }
 
-    return [[key, value]]
+    sanitizedEntries.push([key, value])
   })
 
   return sanitizedEntries.length ? Object.fromEntries(sanitizedEntries) : undefined

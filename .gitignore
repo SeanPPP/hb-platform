@@ -18,6 +18,10 @@ Thumbs.db
 scripts/*
 !scripts/magicpro-download-images.mjs
 !scripts/magicpro-download-images-smoke.mjs
+!scripts/boomup-download-images.mjs
+!scripts/boomup-download-images-smoke.mjs
+!scripts/jemark-download-images.mjs
+!scripts/jemark-download-images-smoke.mjs
 
 vite.config.js.timestamp-*
 vite.config.d.ts

@@ -2727,7 +2727,7 @@
     },
     "centerLogs": {
       "pageTitle": "Center Logs",
-      "pageSubtitle": "Inspect structured application logs from the shared log center with project, level, time, and keyword filters.",
+      "pageSubtitle": "Inspect structured application logs from the shared log center with project, source, category, path, TraceId, time, and keyword filters.",
       "loadListFailed": "Failed to load log list",
       "loadDetailFailed": "Failed to load log details",
       "detailTitle": "Log Details",
@@ -2736,10 +2736,18 @@
       "runtimeErrorSubtitle": "The app tried to report the error. Refresh the page and try again.",
       "filters": {
         "projectCode": "Project",
-        "projectPlaceholder": "Enter project code",
+        "projectPlaceholder": "Select projects",
         "level": "Level",
         "levelPlaceholder": "Select a log level",
+        "sourceType": "Source",
+        "sourceTypePlaceholder": "Select source",
         "timeRange": "Time Range",
+        "category": "Category",
+        "categoryPlaceholder": "Enter category, e.g. OrderSync",
+        "requestPath": "Request Path",
+        "requestPathPlaceholder": "Enter API path",
+        "traceId": "TraceId",
+        "traceIdPlaceholder": "Enter TraceId",
         "keyword": "Keyword",
         "keywordPlaceholder": "Search message, exception, or path"
       },
@@ -2753,10 +2761,14 @@
         "project": "Project",
         "level": "Level",
         "sourceType": "Source",
+        "category": "Category",
+        "serviceName": "Service",
         "message": "Message",
         "requestPath": "Request Path",
+        "requestMethod": "Method",
         "statusCode": "Status",
         "traceId": "TraceId",
+        "clientIp": "Client IP",
         "user": "User"
       },
       "fields": {

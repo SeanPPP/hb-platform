@@ -99,7 +99,7 @@ async function main() {
 
     const payload = buildMatchedProductMasterUpdatePayload(
       productWithBackendCategory,
-      { detailGUID: 'detail-backend-category', itemNumber: 'NEW-BACKEND', supplierCode: 'SUP-BACKEND' },
+      { itemNumber: 'NEW-BACKEND', supplierCode: 'SUP-BACKEND' },
       invoice,
     )
 
@@ -110,7 +110,7 @@ async function main() {
   const missingItemNumberFailure = await runTest('当前明细缺货号时应禁止更换匹配商品主档', () => {
     let threw = false
     try {
-      buildMatchedProductMasterUpdatePayload(matchedProduct, { detailGUID: 'detail-3', supplierCode: 'SUP' }, invoice)
+      buildMatchedProductMasterUpdatePayload(matchedProduct, { supplierCode: 'SUP' }, invoice)
     } catch (error) {
       threw = error instanceof Error && error.message.includes('当前明细缺少货号')
     }
@@ -123,8 +123,8 @@ async function main() {
     try {
       buildMatchedProductMasterUpdatePayload(
         matchedProduct,
-        { detailGUID: 'detail-4', itemNumber: 'ITEM-4' },
-        { invoiceGUID: 'invoice-2', createdAt: '2026-06-05T00:00:00Z' },
+        { itemNumber: 'ITEM-4' },
+        {},
       )
     } catch (error) {
       threw = error instanceof Error && error.message.includes('当前明细缺少供应商')

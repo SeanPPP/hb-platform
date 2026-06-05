@@ -63,14 +63,15 @@ import {
   createProductFullHqSyncJob,
   createProductIncrementalHqSyncJob,
   createSupplierImageBatchUpdateJob,
+  getSyncProductsToStoresJob,
   getSupplierImageBatchUpdateJob,
   getProductStoreRecords,
   getProductHqSyncJob,
   getProducts,
   HqProductSyncPollingTimeoutError,
   pushProductsToHq,
+  startSyncProductsToStoresJob,
   syncSelectedProductsFromHq,
-  syncProductsToStores,
   updateProduct,
 } from '../../../services/posProductService'
 import { createHqSyncJobPoller } from '../../../services/productHqSyncPolling'
@@ -85,7 +86,7 @@ import { getActiveStores } from '../../../services/storeService'
 import { useAuthStore } from '../../../store/auth'
 import { copyTextToClipboard } from '../../../utils/clipboard'
 import { RequestError } from '../../../utils/request'
-import type { BatchUpdatePosProductDto, BatchUpdateProductStoreRecordsChanges, BatchUpdateSupplierImagesJobResult, BatchUpdateSupplierImagesResult, HqProductSyncJobResult, HqProductSyncJobStatus, HqProductSyncResult, PosProductDto, PosProductFilterParams, ProductStoreRecordDto, PushProductsToHqResult, SyncProductsToStoresField, SyncProductsToStoresRequest, SyncProductsToStoresResult } from '../../../types/posProduct'
+import type { BatchUpdatePosProductDto, BatchUpdateProductStoreRecordsChanges, BatchUpdateSupplierImagesJobResult, BatchUpdateSupplierImagesResult, HqProductSyncJobResult, HqProductSyncJobStatus, HqProductSyncResult, PosProductDto, PosProductFilterParams, ProductStoreRecordDto, PushProductsToHqResult, SyncProductsToStoresField, SyncProductsToStoresJobResult, SyncProductsToStoresRequest, SyncProductsToStoresResult } from '../../../types/posProduct'
 import type { ProductCategoryDto } from '../../../types/productCategory'
 import type { ProductIntegrityCheckResultDto, ProductIntegrityFixResultDto } from '../../../types/productIntegrity'
 import type { MulticodeSetItem } from '../../../types/multiCodeSet'
@@ -274,6 +275,7 @@ export default function ProductManagementPage() {
   const [hqSyncSubmitting, setHqSyncSubmitting] = useState(false)
   const hqSyncSubmittingRef = useRef(false)
   const stopHqSyncPollingRef = useRef<(() => void) | null>(null)
+  const stopSyncToStorePollingRef = useRef<(() => void) | null>(null)
   const stopSupplierImageBatchPollingRef = useRef<Record<string, () => void>>({})
   const isMountedRef = useRef(true)
   const [activeHqSyncJob, setActiveHqSyncJob] = useState<ActiveProductHqSyncJob | null>(() => readActiveProductHqSyncJob())
@@ -397,6 +399,11 @@ export default function ProductManagementPage() {
   const stopHqSyncJobPolling = useCallback(() => {
     stopHqSyncPollingRef.current?.()
     stopHqSyncPollingRef.current = null
+  }, [])
+
+  const stopSyncToStorePolling = useCallback(() => {
+    stopSyncToStorePollingRef.current?.()
+    stopSyncToStorePollingRef.current = null
   }, [])
 
   const saveActiveHqSyncJob = useCallback((job: ActiveProductHqSyncJob) => {
@@ -660,6 +667,90 @@ export default function ProductManagementPage() {
       })
   }, [clearActiveHqSyncJob, saveActiveHqSyncJob, showHqSyncJobResult, stopHqSyncJobPolling, t])
 
+  const startSyncToStoreJobPolling = useCallback((job: SyncProductsToStoresJobResult) => {
+    stopSyncToStorePolling()
+    let consecutivePollingFailures = 0
+
+    const showPollingTimeout = () => {
+      Modal.warning({
+        title: t('posAdmin.products.syncToStoreJobTimeoutTitle', '同步到分店仍在后台执行'),
+        content: t('posAdmin.products.syncToStoreJobTimeout', '后台仍在执行，请稍后刷新查看'),
+      })
+    }
+
+    const poller = createHqSyncJobPoller<SyncProductsToStoresJobResult>({
+      jobId: job.jobId,
+      getJob: async (jobId) => {
+        try {
+          const result = await getSyncProductsToStoresJob(jobId)
+          consecutivePollingFailures = 0
+          return result
+        } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : ''
+          if (error instanceof RequestError && (error.status === 404 || error.status === 401 || error.status === 403)) {
+            throw error
+          }
+          consecutivePollingFailures += 1
+          if (consecutivePollingFailures >= 3) {
+            throw error
+          }
+          if (isMountedRef.current) {
+            message.warning(error instanceof Error ? error.message : t('posAdmin.products.syncToStoreJobPollingFailed', '同步到分店任务状态获取失败，将继续在后台重试'))
+          }
+          return {
+            jobId,
+            status: 'Running',
+            result: job.result,
+            message: errorMessage || undefined,
+          }
+        }
+      },
+      pollIntervalMs: PRODUCT_HQ_SYNC_POLL_INTERVAL_MS,
+      timeoutMs: PRODUCT_HQ_SYNC_TIMEOUT_MS,
+    })
+    stopSyncToStorePollingRef.current = poller.stop
+
+    void poller.promise
+      .then((result) => {
+        if (!isMountedRef.current) {
+          return
+        }
+        stopSyncToStorePollingRef.current = null
+        showSyncToStoreJobResult(result)
+      })
+      .catch((error) => {
+        if (!isMountedRef.current) {
+          return
+        }
+        stopSyncToStorePollingRef.current = null
+        if (error instanceof HqProductSyncPollingTimeoutError) {
+          showPollingTimeout()
+          return
+        }
+        if (error instanceof Error && error.message === '商品同步任务轮询已取消') {
+          return
+        }
+        if (error instanceof RequestError && error.status === 404) {
+          Modal.warning({
+            title: t('posAdmin.products.syncToStoreJobMissingTitle', '同步到分店任务不存在'),
+            content: error.message || t('posAdmin.products.syncToStoreJobMissing', '后台任务不存在或已过期，请确认后重新提交。'),
+          })
+          return
+        }
+        if (error instanceof RequestError && (error.status === 401 || error.status === 403)) {
+          Modal.error({
+            title: t('posAdmin.products.syncToStoreJobAuthFailedTitle', '无法查询同步到分店任务'),
+            content: error.message || t('posAdmin.products.syncToStoreJobAuthFailed', '登录状态或权限不足，请重新登录后再查看任务状态。'),
+          })
+          return
+        }
+        Modal.warning({
+          title: t('posAdmin.products.syncToStoreJobPollingStoppedTitle', '同步到分店任务状态获取失败'),
+          content: error instanceof Error ? error.message : t('posAdmin.products.syncToStoreJobPollingStopped', '前端已停止轮询，请稍后刷新列表确认结果。'),
+        })
+      })
+  }, [showSyncToStoreJobResult, stopSyncToStorePolling, t])
+
   const startSupplierImageBatchPolling = useCallback((job: ActiveSupplierImageBatchJob) => {
     const jobKey = normalizeSupplierImageBatchJobKey(job.localSupplierCode)
     if (!jobKey) return
@@ -844,6 +935,12 @@ export default function ProductManagementPage() {
       stopHqSyncJobPolling()
     }
   }, [stopHqSyncJobPolling])
+
+  useEffect(() => {
+    return () => {
+      stopSyncToStorePolling()
+    }
+  }, [stopSyncToStorePolling])
 
   useEffect(() => {
     return () => {
@@ -1058,6 +1155,62 @@ export default function ProductManagementPage() {
       content,
     })
   }, [buildHqSyncResultLines, t])
+
+  function showSyncToStoreJobResult(job: SyncProductsToStoresJobResult) {
+    const result: SyncProductsToStoresResult = job.result ?? {
+      createdCount: 0,
+      updatedCount: 0,
+      failedCount: 0,
+      errors: job.errors ?? [],
+      message: job.message,
+    }
+    const errors = result.errors ?? job.errors ?? []
+    if (!result.errors?.length && errors.length) {
+      result.errors = errors
+    }
+    const content = (
+      <Space direction="vertical" size={6}>
+        {(job.message || result.message) ? <div>{job.message || result.message}</div> : null}
+        <div>
+          {t('posAdmin.products.syncToStoreJobResult', '同步完成：新建 {{created}}，更新 {{updated}}，失败 {{failed}}', {
+            created: result.createdCount ?? 0,
+            updated: result.updatedCount ?? 0,
+            failed: result.failedCount ?? 0,
+          })}
+        </div>
+        {errors.length ? (
+          <div style={{ whiteSpace: 'pre-wrap' }}>
+            {t('posAdmin.products.partialSyncError', '部分同步错误')}：{result.errors.join('\n')}
+          </div>
+        ) : null}
+      </Space>
+    )
+
+    if (job.status === 'Failed') {
+      Modal.error({
+        title: t('posAdmin.products.syncToStoreFailed', '同步到分店失败'),
+        content,
+      })
+      return
+    }
+
+    if (errors.length || (result.failedCount ?? 0) > 0) {
+      Modal.warning({
+        title: t('posAdmin.products.syncToStorePartialSucceeded', '同步到分店部分成功'),
+        content,
+      })
+      setSelectedRowKeys([])
+      void loadData()
+      return
+    }
+
+    Modal.success({
+      title: t('posAdmin.products.syncToStoreSucceeded', '同步到分店完成'),
+      content,
+    })
+    setSelectedRowKeys([])
+    void loadData()
+  }
 
   const ensureCanSyncProductsFromHq = () => {
     if (isAdmin) return true
@@ -1534,20 +1687,22 @@ export default function ProductManagementPage() {
         message.warning(t('posAdmin.productPrice.selectTargetStore', '请选择目标分店'))
         return
       }
-      const result: SyncProductsToStoresResult = await syncProductsToStores(req)
-      message.success(t('posAdmin.products.syncToStoreComplete', '同步完成：成功 {{success}}，失败 {{failed}}', { success: result.successCount ?? 0, failed: result.failedCount ?? 0 }))
-      if (result.errors?.length) {
-        Modal.error({
-          title: t('posAdmin.products.partialSyncError', '部分同步错误'),
-          content: result.errors.join('\n'),
-        })
+      // 同步到分店改为后台 job，避免前端等待长任务后只能拿到不准确的即时统计。
+      const job = await startSyncProductsToStoresJob(req)
+      if (!job.jobId) {
+        message.error(job.message || t('posAdmin.products.syncToStoreFailed', '同步到分店失败'))
+        return
       }
       setSyncToStoreVisible(false)
       syncToStoreForm.resetFields()
-      setSelectedRowKeys([])
-      await loadData()
-    } catch {
-      message.error(t('posAdmin.products.syncToStoreFailed', '同步到分店失败'))
+      if (job.status === 'Succeeded' || job.status === 'Failed') {
+        showSyncToStoreJobResult(job)
+        return
+      }
+      message.success(t('posAdmin.products.syncToStoreJobSubmitted', '同步任务已提交，正在后台执行。完成后会自动提示结果。'))
+      startSyncToStoreJobPolling(job)
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : t('posAdmin.products.syncToStoreFailed', '同步到分店失败'))
     } finally {
       setSyncToStoreLoading(false)
     }

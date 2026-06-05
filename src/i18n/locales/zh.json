@@ -2727,7 +2727,7 @@
     },
     "centerLogs": {
       "pageTitle": "中心日志",
-      "pageSubtitle": "查看来自接入中心的结构化应用日志，支持按项目、等级、时间和关键词筛选。",
+      "pageSubtitle": "查看来自接入中心的结构化应用日志，支持按项目、来源、分类、路径、TraceId、时间和关键词筛选。",
       "loadListFailed": "加载日志列表失败",
       "loadDetailFailed": "加载日志详情失败",
       "detailTitle": "日志详情",
@@ -2736,10 +2736,18 @@
       "runtimeErrorSubtitle": "系统已尝试上报异常日志，请刷新页面后重试。",
       "filters": {
         "projectCode": "项目",
-        "projectPlaceholder": "输入项目编码",
+        "projectPlaceholder": "选择项目，可多选",
         "level": "等级",
         "levelPlaceholder": "选择日志等级",
+        "sourceType": "来源",
+        "sourceTypePlaceholder": "选择来源",
         "timeRange": "时间范围",
+        "category": "分类",
+        "categoryPlaceholder": "输入分类，如 OrderSync",
+        "requestPath": "请求路径",
+        "requestPathPlaceholder": "输入接口路径",
+        "traceId": "TraceId",
+        "traceIdPlaceholder": "输入 TraceId",
         "keyword": "关键词",
         "keywordPlaceholder": "搜索消息、异常、路径"
       },
@@ -2753,10 +2761,14 @@
         "project": "项目",
         "level": "等级",
         "sourceType": "来源",
+        "category": "分类",
+        "serviceName": "服务",
         "message": "消息",
         "requestPath": "请求路径",
+        "requestMethod": "方法",
         "statusCode": "状态码",
         "traceId": "TraceId",
+        "clientIp": "客户端 IP",
         "user": "用户"
       },
       "fields": {

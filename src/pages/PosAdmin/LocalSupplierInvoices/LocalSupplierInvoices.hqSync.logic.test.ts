@@ -13,6 +13,7 @@ import {
 } from '../../../services/localSupplierInvoiceService'
 import {
   filterInvoiceDetails,
+  getActionTypeFilter,
   getBarcodeStatusFilter,
   getDetailStatusStats,
   getProductStatusFilter,
@@ -327,14 +328,17 @@ async function main() {
   const editPageStatsFailure = await runTest('编辑页应提供状态统计栏并支持点击叠加过滤', () => {
     assert(editPageSource.includes("useState<StatusFilterValue<ProductStatusFilter>>('all')"), '编辑页应维护商品状态过滤状态')
     assert(editPageSource.includes("useState<StatusFilterValue<BarcodeStatusFilter>>('all')"), '编辑页应维护条码状态过滤状态')
-    assert(editPageSource.includes('getDetailStatusStats(details)'), '编辑页应基于全部 details 计算状态统计')
+    assert(editPageSource.includes("useState<ActionTypeFilterValue>('all')"), '编辑页应维护操作类型过滤状态')
+    assert(editPageSource.includes('getDetailStatusStats(details, rowActions)'), '编辑页应基于全部 details 和当前操作类型计算状态统计')
     assert(editPageSource.includes('filterInvoiceDetails(details'), '编辑页过滤链应委托行为级纯函数')
-    assert(editPageSource.includes('[details, searchText, priceFilter, productStatusFilter, barcodeStatusFilter]'), '过滤结果应依赖搜索、涨跌和状态过滤，按 AND 叠加')
+    assert(editPageSource.includes('[details, searchText, priceFilter, productStatusFilter, barcodeStatusFilter, actionTypeFilter, rowActions]'), '过滤结果应依赖搜索、涨跌、状态和操作类型过滤，按 AND 叠加')
     assert(editPageSource.includes("toggleStatusFilter(productStatusFilter, 'exists')"), '再次点击同一商品状态标签应取消过滤')
     assert(editPageSource.includes("toggleStatusFilter(barcodeStatusFilter, 'normal')"), '再次点击同一条码状态标签应取消过滤')
+    assert(editPageSource.includes('toggleStatusFilter(actionTypeFilter, actionType)'), '再次点击同一操作类型标签应取消过滤')
     assert(editPageSource.includes("t('posAdmin.invoiceDetail.statusStatsTitle', '状态统计')"), '页面应显示状态统计栏标题')
     assert(editPageSource.includes("t('posAdmin.invoiceDetail.statusStatsAll', '全部 {{count}}'"), '页面应提供全部状态标签以清除状态过滤')
     assert(editPageSource.includes("t('posAdmin.invoiceDetail.productStatusLabel', '商品状态')"), '页面应显示商品状态分组标题')
+    assert(editPageSource.includes("t('posAdmin.invoiceDetail.actionTypeLabel', '操作类型')"), '页面应显示操作类型分组标题')
     assert(editPageSource.includes("t('posAdmin.invoiceDetail.barcodeStatusLabel', '条码状态')"), '页面应显示条码状态分组标题')
     assert(editPageSource.includes("t('posAdmin.invoiceDetail.activeFiltersTitle', '当前过滤')"), '页面应单独显示当前过滤栏标题')
     assert(editPageSource.includes('activeFilterTags'), '页面应把已启用的搜索、涨跌、状态过滤单独列出')
@@ -406,6 +410,7 @@ async function main() {
         barcodeMatchCount: 1,
         lastPurchasePrice: 5,
         purchasePrice: 4,
+        activityType: DetailAction.WaitForOperation,
       },
       {
         detailGUID: 'not-exists-no-match',
@@ -417,6 +422,7 @@ async function main() {
         barcodeMatchCount: 0,
         lastPurchasePrice: 1,
         purchasePrice: 1.5,
+        activityType: DetailAction.UpdatePurchasePrice,
       },
       {
         detailGUID: 'exists-multi-match',
@@ -428,8 +434,12 @@ async function main() {
         barcodeMatchCount: 3,
         lastPurchasePrice: 2,
         purchasePrice: 3,
+        activityType: DetailAction.WaitForOperation,
       },
     ]
+    const rowActions = {
+      'exists-multi-match': DetailAction.CreateProduct,
+    }
 
     assertEqual(getProductStatusFilter(details[0]), 'notDetected', '未检测商品状态应来自空 existingProductCount')
     assertEqual(getProductStatusFilter(details[1]), 'exists', '已存在商品状态应来自 existingProductCount > 0')
@@ -438,12 +448,22 @@ async function main() {
     assertEqual(getBarcodeStatusFilter(details[1]), 'normal', '正常条码状态应来自 barcodeStatus = 1')
     assertEqual(getBarcodeStatusFilter(details[2]), 'noMatch', '无匹配条码状态应来自异常且匹配数为 0')
     assertEqual(getBarcodeStatusFilter(details[3]), 'multiMatch', '多匹配条码状态应来自异常且匹配数大于 0')
+    assertEqual(getActionTypeFilter(details[0], rowActions), DetailAction.None, '空操作类型应按无统计')
+    assertEqual(getActionTypeFilter(details[3], rowActions), DetailAction.CreateProduct, 'rowActions 应覆盖原始操作类型')
 
     assertDeepEqual(
-      getDetailStatusStats(details),
+      getDetailStatusStats(details, rowActions),
       {
         product: { notDetected: 1, exists: 2, notExists: 1 },
         barcode: { notDetected: 1, normal: 1, noMatch: 1, multiMatch: 1 },
+        action: {
+          [DetailAction.None]: 1,
+          [DetailAction.CreateProduct]: 1,
+          [DetailAction.UpdatePurchasePrice]: 1,
+          [DetailAction.WaitForOperation]: 1,
+          [DetailAction.UpdateItemNumber]: 0,
+          [DetailAction.AddMultiCode]: 0,
+        },
       },
       '状态统计应基于全部明细计算',
     )
@@ -453,11 +473,14 @@ async function main() {
       priceFilter: 'up',
       productStatusFilter: 'exists',
       barcodeStatusFilter: 'multiMatch',
+      actionTypeFilter: DetailAction.CreateProduct,
+      rowActions,
     })
-    assertDeepEqual(filtered.map((item) => item.detailGUID), ['exists-multi-match'], '搜索、涨价、商品状态、条码状态应按 AND 叠加')
-    assertEqual(getDetailStatusStats(filtered).product.exists, 1, '过滤结果可单独统计，但页面全量统计不应依赖过滤结果')
+    assertDeepEqual(filtered.map((item) => item.detailGUID), ['exists-multi-match'], '搜索、涨价、商品状态、条码状态、操作类型应按 AND 叠加')
+    assertEqual(getDetailStatusStats(filtered, rowActions).product.exists, 1, '过滤结果可单独统计，但页面全量统计不应依赖过滤结果')
     assertEqual(toggleStatusFilter('exists', 'exists'), 'all', '再次点击同一商品状态应取消过滤')
     assertEqual(toggleStatusFilter('all', 'normal'), 'normal', '从全部点击某个条码状态应启用过滤')
+    assertEqual(toggleStatusFilter(DetailAction.CreateProduct, DetailAction.CreateProduct), 'all', '再次点击同一操作类型应取消过滤')
   })
   if (editPageStatsBehaviorFailure) failures.push(editPageStatsBehaviorFailure)
 

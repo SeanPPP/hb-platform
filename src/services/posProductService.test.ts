@@ -3,9 +3,11 @@ import {
   createHqProductFullSyncJob,
   createHqProductIncrementalSyncJob,
   createSupplierImageBatchUpdateJob,
+  getSyncProductsToStoresJob,
   getSupplierImageBatchUpdateJob,
   getHqProductSyncJob,
   pushProductsToHq,
+  startSyncProductsToStoresJob,
   syncProductsFromHqFull,
 } from './posProductService'
 import { RequestError } from '../utils/request'
@@ -346,6 +348,104 @@ try {
   nextPayload = {
     success: true,
     data: {
+      jobId: 'sync-store-job-1',
+      operationId: 'sync-store:HB001:S001',
+      status: 'pending',
+      isDuplicateRequest: true,
+      message: '任务已存在，继续复用后台执行',
+    },
+  }
+
+  const syncToStoresJob = await startSyncProductsToStoresJob({
+    productCodes: ['HB001'],
+    storeCodes: ['S001'],
+    overwrite: false,
+    fields: ['purchasePrice', 'retailPrice'],
+  })
+  assertEqual(
+    capturedUrl,
+    '/api/react/v1/products/sync-to-stores/jobs',
+    '同步到分店 job 应调用后台任务创建接口',
+  )
+  assertEqual(capturedInit?.method, 'POST', '同步到分店 job 应使用 POST')
+  assertDeepEqual(
+    JSON.parse(String(capturedInit?.body)),
+    {
+      productCodes: ['HB001'],
+      storeCodes: ['S001'],
+      overwrite: false,
+      fields: ['purchasePrice', 'retailPrice'],
+    },
+    '同步到分店 job 请求应保留商品、分店、覆盖开关和字段列表',
+  )
+  assertEqual(syncToStoresJob.status, 'Queued', 'pending 应归一为 Queued')
+  assertEqual(syncToStoresJob.isDuplicateRequest, true, '同步到分店 job 应保留重复提交标记')
+
+  nextPayload = {
+    success: true,
+    data: {
+      jobId: 'sync-store-job-1',
+      operationId: 'sync-store:HB001:S001',
+      status: 'completed',
+      message: '同步完成',
+      result: {
+        createdCount: 2,
+        updatedCount: 3,
+        failedCount: 1,
+        errors: ['S003 同步失败'],
+      },
+    },
+  }
+
+  const completedSyncToStoresJob = await getSyncProductsToStoresJob('sync-store-job-1')
+  assertEqual(
+    capturedUrl,
+    '/api/react/v1/products/sync-to-stores/jobs/sync-store-job-1',
+    '查询同步到分店 job 应调用任务查询接口',
+  )
+  assertEqual(completedSyncToStoresJob.status, 'Succeeded', 'completed 应归一为 Succeeded')
+  assertEqual(completedSyncToStoresJob.result?.createdCount, 2, '同步到分店 job 应保留创建数量')
+  assertEqual(completedSyncToStoresJob.result?.updatedCount, 3, '同步到分店 job 应保留更新数量')
+  assertEqual(completedSyncToStoresJob.result?.failedCount, 1, '同步到分店 job 应保留失败数量')
+  assertDeepEqual(completedSyncToStoresJob.result?.errors, ['S003 同步失败'], '同步到分店 job 应保留错误明细')
+
+  nextPayload = {
+    success: true,
+    data: {
+      jobId: 'sync-store-job-failed-1',
+      operationId: 'sync-store:HB001:S001',
+      status: 'failed',
+      message: '同步到分店任务失败',
+      result: {
+        createdCount: 0,
+        updatedCount: 0,
+        failedCount: 2,
+        errors: ['S001 写入失败', 'S002 写入失败'],
+        message: '全部分店写入失败',
+      },
+      errors: ['后端任务执行失败'],
+    },
+  }
+
+  const failedSyncToStoresJob = await getSyncProductsToStoresJob('sync-store-job-failed-1')
+  assertEqual(failedSyncToStoresJob.status, 'Failed', '同步到分店 job failed payload 应归一为 Failed')
+  assertEqual(failedSyncToStoresJob.message, '同步到分店任务失败', '同步到分店 job Failed payload 应保留顶层 message')
+  assertEqual(failedSyncToStoresJob.result?.message, '全部分店写入失败', '同步到分店 job Failed payload 应保留 result.message')
+  assertEqual(failedSyncToStoresJob.result?.failedCount, 2, '同步到分店 job Failed payload 应保留 result.failedCount')
+  assertDeepEqual(
+    failedSyncToStoresJob.result?.errors,
+    ['S001 写入失败', 'S002 写入失败'],
+    '同步到分店 job Failed payload 应保留 result.errors',
+  )
+  assertDeepEqual(
+    failedSyncToStoresJob.errors,
+    ['后端任务执行失败'],
+    '同步到分店 job Failed payload 应保留顶层 errors',
+  )
+
+  nextPayload = {
+    success: true,
+    data: {
       successCount: 2,
       failedCount: 1,
       errors: ['S003 更新失败'],
@@ -408,6 +508,32 @@ try {
     '创建任务失败',
     jobFailurePayload,
     'job 接口 isSuccess:false',
+  )
+
+  const syncToStoresJobFailurePayload = {
+    success: false,
+    message: '创建同步到分店任务失败',
+    data: {
+      reason: 'duplicate operationId',
+      request: {
+        productCodes: ['HB001'],
+        storeCodes: ['S001'],
+      },
+    },
+  }
+  nextPayload = syncToStoresJobFailurePayload
+
+  await assertRequestError(
+    () =>
+      startSyncProductsToStoresJob({
+        productCodes: ['HB001'],
+        storeCodes: ['S001'],
+        overwrite: false,
+        fields: ['purchasePrice'],
+      }),
+    '创建同步到分店任务失败',
+    syncToStoresJobFailurePayload,
+    '同步到分店 job 接口 success:false',
   )
 } finally {
   globalThis.fetch = originalFetch

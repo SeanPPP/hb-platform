@@ -20,24 +20,21 @@ import {
 import type { ColumnsType } from 'antd/es/table'
 import type { RangePickerProps } from 'antd/es/date-picker'
 import dayjs from 'dayjs'
-import type { Dayjs } from 'dayjs'
 import { useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import PageContainer from '../../../components/PageContainer'
 import { getCenterLogDetail, getCenterLogs, getCenterLogSummary } from '../../../services/centerLogService'
 import type { ApplicationLogItem, ApplicationLogQueryParams, ApplicationLogSummaryGroup } from '../../../types/centerLog'
-
-interface QueryFormValues {
-  projectCode?: string
-  level?: string
-  keyword?: string
-  timeRange?: [Dayjs, Dayjs]
-}
-
-const DEFAULT_PROJECT_CODE = 'hbweb_rv'
-const DEFAULT_PAGE_SIZE = 20
-
-const LEVEL_OPTIONS = ['Trace', 'Debug', 'Information', 'Warning', 'Error', 'Critical']
+import {
+  CENTER_LOG_LEVEL_OPTIONS,
+  CENTER_LOG_PROJECT_OPTIONS,
+  CENTER_LOG_SOURCE_TYPE_OPTIONS,
+  DEFAULT_CENTER_LOG_PAGE_SIZE,
+  DEFAULT_CENTER_LOG_PROJECT_CODE,
+  type CenterLogQueryFormValues,
+  buildCenterLogQueryParams,
+  buildDefaultCenterLogQueryParams,
+} from './query'
 
 function getLevelColor(level: string) {
   switch (level.toLowerCase()) {
@@ -55,20 +52,6 @@ function getLevelColor(level: string) {
       return 'magenta'
     default:
       return 'default'
-  }
-}
-
-function buildQueryParams(values: QueryFormValues, pageNumber = 1, pageSize = DEFAULT_PAGE_SIZE): ApplicationLogQueryParams {
-  return {
-    projectCode: values.projectCode?.trim() || undefined,
-    level: values.level || undefined,
-    keyword: values.keyword?.trim() || undefined,
-    startUtc: values.timeRange?.[0]?.toISOString(),
-    endUtc: values.timeRange?.[1]?.toISOString(),
-    pageNumber,
-    pageSize,
-    sortBy: 'TimestampUtc',
-    sortDirection: 'desc',
   }
 }
 
@@ -122,7 +105,7 @@ function SummaryTagGroup({
 
 export default function SystemCenterLogsPage() {
   const { t } = useTranslation()
-  const [form] = Form.useForm<QueryFormValues>()
+  const [form] = Form.useForm<CenterLogQueryFormValues>()
   const [loading, setLoading] = useState(false)
   const [detailLoading, setDetailLoading] = useState(false)
   const [data, setData] = useState<ApplicationLogItem[]>([])
@@ -130,17 +113,17 @@ export default function SystemCenterLogsPage() {
   const [summaryByLevel, setSummaryByLevel] = useState<ApplicationLogSummaryGroup[]>([])
   const [summaryByProject, setSummaryByProject] = useState<ApplicationLogSummaryGroup[]>([])
   const [pageNumber, setPageNumber] = useState(1)
-  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE)
+  const [pageSize, setPageSize] = useState(DEFAULT_CENTER_LOG_PAGE_SIZE)
   const [total, setTotal] = useState(0)
   const [activeQuery, setActiveQuery] = useState<ApplicationLogQueryParams>(
-    buildQueryParams({ projectCode: DEFAULT_PROJECT_CODE }, 1, DEFAULT_PAGE_SIZE),
+    buildDefaultCenterLogQueryParams(),
   )
   const [detailOpen, setDetailOpen] = useState(false)
   const [detailRecord, setDetailRecord] = useState<ApplicationLogItem | null>(null)
 
   useEffect(() => {
     form.setFieldsValue({
-      projectCode: DEFAULT_PROJECT_CODE,
+      projectCodes: [DEFAULT_CENTER_LOG_PROJECT_CODE],
     })
   }, [form])
 
@@ -172,17 +155,21 @@ export default function SystemCenterLogsPage() {
 
   const handleQuery = () => {
     const values = form.getFieldsValue()
-    setActiveQuery(buildQueryParams(values, 1, pageSize))
+    setActiveQuery(buildCenterLogQueryParams(values, 1, pageSize))
   }
 
   const handleReset = () => {
     form.setFieldsValue({
-      projectCode: DEFAULT_PROJECT_CODE,
+      projectCodes: [DEFAULT_CENTER_LOG_PROJECT_CODE],
       level: undefined,
+      sourceType: undefined,
+      category: undefined,
+      requestPath: undefined,
+      traceId: undefined,
       keyword: undefined,
       timeRange: undefined,
     })
-    setActiveQuery(buildQueryParams({ projectCode: DEFAULT_PROJECT_CODE }, 1, pageSize))
+    setActiveQuery(buildDefaultCenterLogQueryParams(pageSize))
   }
 
   const handleOpenDetail = async (record: ApplicationLogItem) => {
@@ -202,12 +189,13 @@ export default function SystemCenterLogsPage() {
 
   const handleLevelQuickFilter = (level: string) => {
     form.setFieldValue('level', level)
-    setActiveQuery(buildQueryParams({ ...form.getFieldsValue(), level }, 1, pageSize))
+    setActiveQuery(buildCenterLogQueryParams({ ...form.getFieldsValue(), level }, 1, pageSize))
   }
 
   const handleProjectQuickFilter = (projectCode: string) => {
-    form.setFieldValue('projectCode', projectCode)
-    setActiveQuery(buildQueryParams({ ...form.getFieldsValue(), projectCode }, 1, pageSize))
+    const projectCodes = [projectCode]
+    form.setFieldValue('projectCodes', projectCodes)
+    setActiveQuery(buildCenterLogQueryParams({ ...form.getFieldsValue(), projectCodes }, 1, pageSize))
   }
 
   const columns = useMemo<ColumnsType<ApplicationLogItem>>(
@@ -232,7 +220,13 @@ export default function SystemCenterLogsPage() {
       {
         title: t('system.centerLogs.columns.sourceType'),
         dataIndex: 'sourceType',
-        width: 140,
+        width: 110,
+      },
+      {
+        title: t('system.centerLogs.columns.category'),
+        dataIndex: 'category',
+        width: 160,
+        ellipsis: true,
       },
       {
         title: t('system.centerLogs.columns.message'),
@@ -293,8 +287,14 @@ export default function SystemCenterLogsPage() {
           <Form form={form} layout="vertical" onFinish={() => void handleQuery()}>
             <Row gutter={16}>
               <Col xs={24} md={6}>
-                <Form.Item label={t('system.centerLogs.filters.projectCode')} name="projectCode">
-                  <Input placeholder={t('system.centerLogs.filters.projectPlaceholder')} allowClear />
+                <Form.Item label={t('system.centerLogs.filters.projectCode')} name="projectCodes">
+                  <Select
+                    allowClear
+                    mode="tags"
+                    maxTagCount="responsive"
+                    placeholder={t('system.centerLogs.filters.projectPlaceholder')}
+                    options={CENTER_LOG_PROJECT_OPTIONS.map((item) => ({ label: item, value: item }))}
+                  />
                 </Form.Item>
               </Col>
               <Col xs={24} md={4}>
@@ -302,7 +302,16 @@ export default function SystemCenterLogsPage() {
                   <Select
                     allowClear
                     placeholder={t('system.centerLogs.filters.levelPlaceholder')}
-                    options={LEVEL_OPTIONS.map((item) => ({ label: item, value: item }))}
+                    options={CENTER_LOG_LEVEL_OPTIONS.map((item) => ({ label: item, value: item }))}
+                  />
+                </Form.Item>
+              </Col>
+              <Col xs={24} md={4}>
+                <Form.Item label={t('system.centerLogs.filters.sourceType')} name="sourceType">
+                  <Select
+                    allowClear
+                    placeholder={t('system.centerLogs.filters.sourceTypePlaceholder')}
+                    options={CENTER_LOG_SOURCE_TYPE_OPTIONS.map((item) => ({ label: item, value: item }))}
                   />
                 </Form.Item>
               </Col>
@@ -319,6 +328,33 @@ export default function SystemCenterLogsPage() {
                 <Form.Item label={t('system.centerLogs.filters.keyword')} name="keyword">
                   <Input
                     placeholder={t('system.centerLogs.filters.keywordPlaceholder')}
+                    allowClear
+                    onPressEnter={() => void handleQuery()}
+                  />
+                </Form.Item>
+              </Col>
+              <Col xs={24} md={6}>
+                <Form.Item label={t('system.centerLogs.filters.category')} name="category">
+                  <Input
+                    placeholder={t('system.centerLogs.filters.categoryPlaceholder')}
+                    allowClear
+                    onPressEnter={() => void handleQuery()}
+                  />
+                </Form.Item>
+              </Col>
+              <Col xs={24} md={6}>
+                <Form.Item label={t('system.centerLogs.filters.requestPath')} name="requestPath">
+                  <Input
+                    placeholder={t('system.centerLogs.filters.requestPathPlaceholder')}
+                    allowClear
+                    onPressEnter={() => void handleQuery()}
+                  />
+                </Form.Item>
+              </Col>
+              <Col xs={24} md={6}>
+                <Form.Item label={t('system.centerLogs.filters.traceId')} name="traceId">
+                  <Input
+                    placeholder={t('system.centerLogs.filters.traceIdPlaceholder')}
                     allowClear
                     onPressEnter={() => void handleQuery()}
                   />
@@ -357,7 +393,7 @@ export default function SystemCenterLogsPage() {
             loading={loading}
             columns={columns}
             dataSource={data}
-            scroll={{ x: 1200 }}
+            scroll={{ x: 1380 }}
             pagination={{
               current: pageNumber,
               pageSize,
@@ -401,8 +437,20 @@ export default function SystemCenterLogsPage() {
               <Descriptions.Item label={t('system.centerLogs.columns.sourceType')}>
                 {detailRecord.sourceType}
               </Descriptions.Item>
+              <Descriptions.Item label={t('system.centerLogs.columns.category')}>
+                {detailRecord.category || '-'}
+              </Descriptions.Item>
+              <Descriptions.Item label={t('system.centerLogs.columns.serviceName')}>
+                {detailRecord.serviceName || '-'}
+              </Descriptions.Item>
               <Descriptions.Item label={t('system.centerLogs.columns.requestPath')} span={2}>
                 {detailRecord.requestPath || '-'}
+              </Descriptions.Item>
+              <Descriptions.Item label={t('system.centerLogs.columns.requestMethod')}>
+                {detailRecord.requestMethod || '-'}
+              </Descriptions.Item>
+              <Descriptions.Item label={t('system.centerLogs.columns.clientIp')}>
+                {detailRecord.clientIp || '-'}
               </Descriptions.Item>
               <Descriptions.Item label={t('system.centerLogs.columns.traceId')} span={2}>
                 {detailRecord.traceId || '-'}

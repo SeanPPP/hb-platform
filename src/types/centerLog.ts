@@ -33,6 +33,7 @@ export interface ApplicationLogIngestResult {
 
 export interface ApplicationLogQueryParams {
   projectCode?: string
+  projectCodes?: string[]
   environment?: string
   sourceType?: string
   level?: string

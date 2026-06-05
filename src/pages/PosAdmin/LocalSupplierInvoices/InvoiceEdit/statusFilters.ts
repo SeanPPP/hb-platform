@@ -1,21 +1,42 @@
 import type { LocalSupplierInvoiceItemDto } from '../../../../types/localSupplierInvoice'
+import { DetailAction } from '../../../../types/localSupplierInvoice'
 
 export type PriceFilter = 'all' | 'up' | 'down'
 export type ProductStatusFilter = 'notDetected' | 'exists' | 'notExists'
 export type BarcodeStatusFilter = 'notDetected' | 'normal' | 'noMatch' | 'multiMatch'
-export type StatusFilterValue<T extends string> = 'all' | T
+export type ActionTypeFilter =
+  | DetailAction.None
+  | DetailAction.CreateProduct
+  | DetailAction.UpdatePurchasePrice
+  | DetailAction.WaitForOperation
+  | DetailAction.UpdateItemNumber
+  | DetailAction.AddMultiCode
+export type StatusFilterValue<T extends string | number> = 'all' | T
+export type ActionTypeFilterValue = 'all' | ActionTypeFilter
 
 export interface InvoiceDetailFilters {
   searchText: string
   priceFilter: PriceFilter
   productStatusFilter: StatusFilterValue<ProductStatusFilter>
   barcodeStatusFilter: StatusFilterValue<BarcodeStatusFilter>
+  actionTypeFilter?: ActionTypeFilterValue
+  rowActions?: Record<string, number>
 }
 
 export interface DetailStatusStats {
   product: Record<ProductStatusFilter, number>
   barcode: Record<BarcodeStatusFilter, number>
+  action: Record<ActionTypeFilter, number>
 }
+
+export const actionTypeFilters = [
+  DetailAction.None,
+  DetailAction.CreateProduct,
+  DetailAction.UpdatePurchasePrice,
+  DetailAction.WaitForOperation,
+  DetailAction.UpdateItemNumber,
+  DetailAction.AddMultiCode,
+] as const
 
 export function getProductStatusFilter(detail: LocalSupplierInvoiceItemDto): ProductStatusFilter {
   const count = detail.existingProductCount
@@ -33,7 +54,18 @@ export function getBarcodeStatusFilter(detail: LocalSupplierInvoiceItemDto): Bar
   return 'multiMatch'
 }
 
-export function getDetailStatusStats(details: LocalSupplierInvoiceItemDto[]): DetailStatusStats {
+export function getActionTypeFilter(
+  detail: LocalSupplierInvoiceItemDto,
+  rowActions: Record<string, number> = {},
+): ActionTypeFilter {
+  const action = rowActions[detail.detailGUID] ?? detail.activityType ?? DetailAction.None
+  return isActionTypeFilter(action) ? action : DetailAction.None
+}
+
+export function getDetailStatusStats(
+  details: LocalSupplierInvoiceItemDto[],
+  rowActions: Record<string, number> = {},
+): DetailStatusStats {
   const stats: DetailStatusStats = {
     product: {
       notDetected: 0,
@@ -46,17 +78,26 @@ export function getDetailStatusStats(details: LocalSupplierInvoiceItemDto[]): De
       noMatch: 0,
       multiMatch: 0,
     },
+    action: {
+      [DetailAction.None]: 0,
+      [DetailAction.CreateProduct]: 0,
+      [DetailAction.UpdatePurchasePrice]: 0,
+      [DetailAction.WaitForOperation]: 0,
+      [DetailAction.UpdateItemNumber]: 0,
+      [DetailAction.AddMultiCode]: 0,
+    },
   }
 
   details.forEach((item) => {
     stats.product[getProductStatusFilter(item)] += 1
     stats.barcode[getBarcodeStatusFilter(item)] += 1
+    stats.action[getActionTypeFilter(item, rowActions)] += 1
   })
 
   return stats
 }
 
-export function toggleStatusFilter<T extends string>(
+export function toggleStatusFilter<T extends string | number>(
   currentFilter: StatusFilterValue<T>,
   nextFilter: T,
 ): StatusFilterValue<T> {
@@ -96,7 +137,15 @@ export function filterInvoiceDetails(
     result = result.filter((item) => getBarcodeStatusFilter(item) === filters.barcodeStatusFilter)
   }
 
+  if (filters.actionTypeFilter !== undefined && filters.actionTypeFilter !== 'all') {
+    result = result.filter((item) => getActionTypeFilter(item, filters.rowActions) === filters.actionTypeFilter)
+  }
+
   return result
+}
+
+function isActionTypeFilter(value: number): value is ActionTypeFilter {
+  return (actionTypeFilters as readonly number[]).includes(value)
 }
 
 function hasPurchasePriceChanged(item: LocalSupplierInvoiceItemDto, direction: 'up' | 'down') {
