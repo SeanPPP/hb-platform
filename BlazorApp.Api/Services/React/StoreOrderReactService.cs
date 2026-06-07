@@ -765,70 +765,35 @@ namespace BlazorApp.Api.Services.React
                     _db.CurrentConnectionConfig.DbType == DbType.SqlServer;
 
                 var exactQuerySw = Stopwatch.StartNew();
-                var allMatches = await _db.Queryable<Product>()
-                    .InnerJoin<WarehouseProduct>((p, wp) => p.ProductCode == wp.ProductCode)
-                    .LeftJoin<WarehouseCategory>(
-                        (p, wp, wc) => p.WarehouseCategoryGUID == wc.CategoryGUID
-                    )
-                    .LeftJoin<ProductGrade>(
-                        (p, wp, wc, pg) => p.ProductCode == pg.ProductCode && !pg.IsDeleted
-                    )
-                    .Where(
-                        (p, wp, wc, pg) => p.IsActive && !p.IsDeleted && !wp.IsDeleted && wp.IsActive
-                    )
-                    .WhereIF(
-                        useSqlServerCaseInsensitiveCollation,
-                        (p, wp, wc, pg) =>
-                            // SQL Server 明确指定 CI 排序规则，避免字段 ToLower()，同时覆盖混合大小写编码。
-                            (
-                                p.Barcode != null
-                                && SqlFunc.MappingColumn(
-                                    p.Barcode,
-                                    "p.Barcode collate Chinese_PRC_CI_AS"
-                                ) == barcode
-                            )
-                            || (
-                                p.ItemNumber != null
-                                && SqlFunc.MappingColumn(
-                                    p.ItemNumber,
-                                    "p.ItemNumber collate Chinese_PRC_CI_AS"
-                                ) == barcode
-                            )
-                            || (
-                                p.ProductCode != null
-                                && SqlFunc.MappingColumn(
-                                    p.ProductCode,
-                                    "p.ProductCode collate Chinese_PRC_CI_AS"
-                                ) == barcode
-                            )
-                    )
-                    .WhereIF(
-                        !useSqlServerCaseInsensitiveCollation,
-                        (p, wp, wc, pg) =>
-                            (p.Barcode != null && lookupCodes.Contains(p.Barcode))
-                            || (p.ItemNumber != null && lookupCodes.Contains(p.ItemNumber))
-                            || (p.ProductCode != null && lookupCodes.Contains(p.ProductCode))
-                    )
-                    .Select(
-                        (p, wp, wc, pg) =>
-                            new StoreOrderProductDto
-                            {
-                                ProductCode = p.ProductCode ?? string.Empty,
-                                ItemNumber = p.ItemNumber,
-                                Barcode = p.Barcode,
-                                ProductName = p.ProductName,
-                                ProductImage = p.ProductImage,
-                                CategoryName = wc.CategoryName,
-                                WarehouseCategoryGUID = p.WarehouseCategoryGUID,
-                                OEMPrice = wp.OEMPrice,
-                                MinOrderQuantity = wp.MinOrderQuantity ?? 1,
-                                StockQuantity = wp.StockQuantity ?? 0,
-                                PackQty = p.MiddlePackageQuantity,
-                                ImportPrice = wp.ImportPrice,
-                                Grade = pg.Grade,
-                            }
-                    )
-                    .ToListAsync();
+                var allMatches = await QueryScanLookupMatchesAsync(
+                    barcode,
+                    lookupCodes,
+                    "barcode",
+                    useSqlServerCaseInsensitiveCollation
+                );
+                var matchType = allMatches.Count > 0 ? "barcode" : null;
+
+                if (allMatches.Count == 0)
+                {
+                    allMatches = await QueryScanLookupMatchesAsync(
+                        barcode,
+                        lookupCodes,
+                        "itemNumber",
+                        useSqlServerCaseInsensitiveCollation
+                    );
+                    matchType = allMatches.Count > 0 ? "fallback" : null;
+                }
+
+                if (allMatches.Count == 0)
+                {
+                    allMatches = await QueryScanLookupMatchesAsync(
+                        barcode,
+                        lookupCodes,
+                        "productCode",
+                        useSqlServerCaseInsensitiveCollation
+                    );
+                    matchType = allMatches.Count > 0 ? "fallback" : null;
+                }
                 exactQuerySw.Stop();
 
                 // 保持数据库字段可走索引：扫码只做精确匹配，不再对字段执行 ToLower() 兜底。
@@ -841,16 +806,6 @@ namespace BlazorApp.Api.Services.React
                     .Select(group => group.First())
                     .ToList();
 
-                var barcodeItems = distinctMatches
-                    .Where(p =>
-                        p.Barcode?.Equals(barcode, StringComparison.OrdinalIgnoreCase) == true
-                    )
-                    .ToList();
-
-                var matchType =
-                    barcodeItems.Count > 0 ? "barcode"
-                    : distinctMatches.Count > 0 ? "fallback"
-                    : null;
                 buildSw.Stop();
 
                 _logger.LogInformation(
@@ -861,7 +816,7 @@ namespace BlazorApp.Api.Services.React
                     GetBarcodeLength(barcode),
                     matchType ?? "none",
                     allMatches.Count,
-                    (barcodeItems.Count > 0 ? barcodeItems.Count : distinctMatches.Count),
+                    distinctMatches.Count,
                     exactQuerySw.ElapsedMilliseconds,
                     fallbackQueryMs,
                     buildSw.ElapsedMilliseconds,
@@ -875,7 +830,7 @@ namespace BlazorApp.Api.Services.React
                     {
                         Barcode = barcode,
                         MatchType = matchType,
-                        Items = barcodeItems.Count > 0 ? barcodeItems : distinctMatches,
+                        Items = distinctMatches,
                     },
                 };
             }
@@ -897,6 +852,86 @@ namespace BlazorApp.Api.Services.React
                     Message = ex.Message,
                 };
             }
+        }
+
+        private async Task<List<StoreOrderProductDto>> QueryScanLookupMatchesAsync(
+            string barcode,
+            List<string> lookupCodes,
+            string matchField,
+            bool useSqlServerCaseInsensitiveCollation
+        )
+        {
+            var query = _db.Queryable<Product>()
+                .InnerJoin<WarehouseProduct>((p, wp) => p.ProductCode == wp.ProductCode)
+                .LeftJoin<WarehouseCategory>(
+                    (p, wp, wc) => p.WarehouseCategoryGUID == wc.CategoryGUID
+                )
+                .LeftJoin<ProductGrade>(
+                    (p, wp, wc, pg) => p.ProductCode == pg.ProductCode && !pg.IsDeleted
+                )
+                .Where(
+                    (p, wp, wc, pg) => p.IsActive && !p.IsDeleted && !wp.IsDeleted && wp.IsActive
+                );
+
+            query = matchField switch
+            {
+                "barcode" => query
+                    .WhereIF(
+                        useSqlServerCaseInsensitiveCollation,
+                        (p, wp, wc, pg) =>
+                            // 生产库字段本身已是 CI 排序规则，直接等值比较才能稳定走条码索引。
+                            p.Barcode != null && p.Barcode == barcode
+                    )
+                    .WhereIF(
+                        !useSqlServerCaseInsensitiveCollation,
+                        (p, wp, wc, pg) => p.Barcode != null && lookupCodes.Contains(p.Barcode)
+                    ),
+                "itemNumber" => query
+                    .WhereIF(
+                        useSqlServerCaseInsensitiveCollation,
+                        (p, wp, wc, pg) =>
+                            p.ItemNumber != null && p.ItemNumber == barcode
+                    )
+                    .WhereIF(
+                        !useSqlServerCaseInsensitiveCollation,
+                        (p, wp, wc, pg) =>
+                            p.ItemNumber != null && lookupCodes.Contains(p.ItemNumber)
+                    ),
+                "productCode" => query
+                    .WhereIF(
+                        useSqlServerCaseInsensitiveCollation,
+                        (p, wp, wc, pg) =>
+                            p.ProductCode != null && p.ProductCode == barcode
+                    )
+                    .WhereIF(
+                        !useSqlServerCaseInsensitiveCollation,
+                        (p, wp, wc, pg) =>
+                            p.ProductCode != null && lookupCodes.Contains(p.ProductCode)
+                    ),
+                _ => throw new ArgumentOutOfRangeException(nameof(matchField), matchField, null),
+            };
+
+            return await query
+                .Select(
+                    (p, wp, wc, pg) =>
+                        new StoreOrderProductDto
+                        {
+                            ProductCode = p.ProductCode ?? string.Empty,
+                            ItemNumber = p.ItemNumber,
+                            Barcode = p.Barcode,
+                            ProductName = p.ProductName,
+                            ProductImage = p.ProductImage,
+                            CategoryName = wc.CategoryName,
+                            WarehouseCategoryGUID = p.WarehouseCategoryGUID,
+                            OEMPrice = wp.OEMPrice,
+                            MinOrderQuantity = wp.MinOrderQuantity ?? 1,
+                            StockQuantity = wp.StockQuantity ?? 0,
+                            PackQty = p.MiddlePackageQuantity,
+                            ImportPrice = wp.ImportPrice,
+                            Grade = pg.Grade,
+                        }
+                )
+                .ToListAsync();
         }
 
         private List<string> GetAllSubCategoryIds(string categoryGuid)

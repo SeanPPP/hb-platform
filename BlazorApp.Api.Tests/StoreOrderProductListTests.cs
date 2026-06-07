@@ -210,6 +210,76 @@ public sealed class StoreOrderProductListTests : IDisposable
     }
 
     [Fact]
+    public async Task ScanLookupProductsAsync_UsesSingleFieldLookupWhenBarcodeMatches()
+    {
+        await SeedProductAsync("P-BAR", "ITEM-BAR", barcode: "SCAN-001");
+        await SeedWarehouseProductAsync("P-BAR");
+        await SeedProductAsync("P-ITEM", "SCAN-001", barcode: "OTHER-BAR");
+        await SeedWarehouseProductAsync("P-ITEM");
+        _sqlLogs.Clear();
+
+        var result = await CreateService().ScanLookupProductsAsync(new StoreOrderScanLookupRequestDto
+        {
+            Barcode = "SCAN-001",
+        });
+
+        Assert.True(result.Success, result.Message);
+        var item = Assert.Single(result.Data!.Items);
+        Assert.Equal("P-BAR", item.ProductCode);
+        Assert.Equal("barcode", result.Data.MatchType);
+        Assert.DoesNotContain(
+            _sqlLogs,
+            sql => sql.Contains(" OR ", StringComparison.OrdinalIgnoreCase)
+        );
+    }
+
+    [Fact]
+    public async Task ScanLookupProductsAsync_FallsBackToItemNumberAfterBarcodeMiss()
+    {
+        await SeedProductAsync("P-ITEM", "SCAN-002", barcode: "OTHER-BAR");
+        await SeedWarehouseProductAsync("P-ITEM");
+        _sqlLogs.Clear();
+
+        var result = await CreateService().ScanLookupProductsAsync(new StoreOrderScanLookupRequestDto
+        {
+            Barcode = "SCAN-002",
+        });
+
+        Assert.True(result.Success, result.Message);
+        var item = Assert.Single(result.Data!.Items);
+        Assert.Equal("P-ITEM", item.ProductCode);
+        Assert.Equal("fallback", result.Data.MatchType);
+        Assert.Equal(2, _sqlLogs.Count);
+        Assert.DoesNotContain(
+            _sqlLogs,
+            sql => sql.Contains(" OR ", StringComparison.OrdinalIgnoreCase)
+        );
+    }
+
+    [Fact]
+    public async Task ScanLookupProductsAsync_FallsBackToProductCodeAfterBarcodeAndItemNumberMiss()
+    {
+        await SeedProductAsync("SCAN-003", "ITEM-CODE", barcode: "OTHER-BAR");
+        await SeedWarehouseProductAsync("SCAN-003");
+        _sqlLogs.Clear();
+
+        var result = await CreateService().ScanLookupProductsAsync(new StoreOrderScanLookupRequestDto
+        {
+            Barcode = "SCAN-003",
+        });
+
+        Assert.True(result.Success, result.Message);
+        var item = Assert.Single(result.Data!.Items);
+        Assert.Equal("SCAN-003", item.ProductCode);
+        Assert.Equal("fallback", result.Data.MatchType);
+        Assert.Equal(3, _sqlLogs.Count);
+        Assert.DoesNotContain(
+            _sqlLogs,
+            sql => sql.Contains(" OR ", StringComparison.OrdinalIgnoreCase)
+        );
+    }
+
+    [Fact]
     public async Task 首页预热轻量查询_不执行Count且只取首屏商品()
     {
         for (var index = 1; index <= 25; index++)
@@ -460,6 +530,7 @@ public sealed class StoreOrderProductListTests : IDisposable
     private async Task SeedProductAsync(
         string productCode,
         string itemNumber,
+        string? barcode = null,
         string? localSupplierCode = null,
         decimal? purchasePrice = null,
         bool isActive = true
@@ -471,7 +542,7 @@ public sealed class StoreOrderProductListTests : IDisposable
             ProductCode = productCode,
             ProductName = $"商品 {productCode}",
             ItemNumber = itemNumber,
-            Barcode = $"{itemNumber}-BAR",
+            Barcode = barcode ?? $"{itemNumber}-BAR",
             LocalSupplierCode = localSupplierCode,
             PurchasePrice = purchasePrice,
             IsActive = isActive,
