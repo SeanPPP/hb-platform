@@ -624,6 +624,216 @@ public sealed class StoreOrderProductListTests : IDisposable
     }
 
     [Fact]
+    public async Task GetOrderListAsync_FiltersByDetailItemNumber()
+    {
+        await SeedStoreOrderAsync("ORDER-MATCH", flowStatus: 1, insertStore: true);
+        await SeedOrderLineAsync("ORDER-MATCH", "P-MATCH", "HB-ITEM-889", quantity: 3m, allocQuantity: 2m);
+        await SeedStoreOrderAsync("ORDER-OTHER", flowStatus: 1, insertStore: false);
+        await SeedOrderLineAsync("ORDER-OTHER", "P-OTHER", "HB-ITEM-100", quantity: 3m, allocQuantity: 2m);
+
+        var result = await CreateService().GetOrderListAsync(new StoreOrderListFilterDto
+        {
+            Keyword = "ITEM-889",
+            PageNumber = 1,
+            PageSize = 20,
+            StatusList = new List<int> { 1 },
+        });
+
+        var item = Assert.Single(result.Items);
+        Assert.Equal("ORDER-MATCH", item.OrderGUID);
+    }
+
+    [Fact]
+    public async Task GetOrderListAsync_DoesNotDuplicateOrdersWhenMultipleDetailsMatchItemNumber()
+    {
+        await SeedStoreOrderAsync("ORDER-DUP", flowStatus: 1, insertStore: true);
+        await SeedOrderLineAsync("ORDER-DUP", "P-DUP-1", "DUP-ITEM", quantity: 1m, allocQuantity: 1m);
+        await SeedOrderLineAsync("ORDER-DUP", "P-DUP-2", "DUP-ITEM", quantity: 2m, allocQuantity: 2m);
+
+        var result = await CreateService().GetOrderListAsync(new StoreOrderListFilterDto
+        {
+            Keyword = "DUP-ITEM",
+            PageNumber = 1,
+            PageSize = 20,
+            StatusList = new List<int> { 1 },
+        });
+
+        Assert.Equal(1, result.Total);
+        Assert.Equal("ORDER-DUP", Assert.Single(result.Items).OrderGUID);
+    }
+
+    [Fact]
+    public async Task GetOrderListAsync_IgnoresDeletedDetailAndDeletedProductWhenFilteringByItemNumber()
+    {
+        await SeedStoreOrderAsync("ORDER-DELETED-DETAIL", flowStatus: 1, insertStore: true);
+        await SeedOrderLineAsync(
+            "ORDER-DELETED-DETAIL",
+            "P-DELETED-DETAIL",
+            "REMOVED-ITEM",
+            quantity: 1m,
+            allocQuantity: 1m,
+            isDeleted: true
+        );
+        await SeedStoreOrderAsync("ORDER-DELETED-PRODUCT", flowStatus: 1, insertStore: false);
+        await SeedOrderLineAsync(
+            "ORDER-DELETED-PRODUCT",
+            "P-DELETED-PRODUCT",
+            "REMOVED-ITEM",
+            quantity: 1m,
+            allocQuantity: 1m,
+            productIsDeleted: true
+        );
+
+        var result = await CreateService().GetOrderListAsync(new StoreOrderListFilterDto
+        {
+            Keyword = "REMOVED-ITEM",
+            PageNumber = 1,
+            PageSize = 20,
+            StatusList = new List<int> { 1 },
+        });
+
+        Assert.Equal(0, result.Total);
+        Assert.Empty(result.Items);
+    }
+
+    [Fact]
+    public async Task GetUsedBranchesAsync_SortsByStoreNameThenCode()
+    {
+        await SeedStoreAsync("store-z", "S010", "Zulu");
+        await SeedStoreAsync("store-a2", "S002", "Alpha");
+        await SeedStoreAsync("store-a1", "S001", "Alpha");
+        await SeedStoreOrderAsync("ORDER-Z", storeCode: "S010", insertStore: false);
+        await SeedStoreOrderAsync("ORDER-A2", storeCode: "S002", insertStore: false);
+        await SeedStoreOrderAsync("ORDER-A1", storeCode: "S001", insertStore: false);
+
+        var result = await CreateService().GetUsedBranchesAsync();
+
+        Assert.True(result.Success, result.Message);
+        Assert.NotNull(result.Data);
+        Assert.Equal(new[] { "S001", "S002", "S010" }, result.Data.Select(item => item.Code));
+    }
+
+    [Theory]
+    [InlineData("totalOrderAmount", true, "ORDER-HIGH", "ORDER-MID")]
+    [InlineData("totalOrderAmount", false, "ORDER-LOW", "ORDER-MID")]
+    [InlineData("totalQuantity", true, "ORDER-HIGH", "ORDER-MID")]
+    [InlineData("totalQuantity", false, "ORDER-LOW", "ORDER-MID")]
+    [InlineData("totalAllocQuantity", true, "ORDER-HIGH", "ORDER-MID")]
+    [InlineData("totalAllocQuantity", false, "ORDER-LOW", "ORDER-MID")]
+    public async Task GetOrderListAsync_SortsAggregateFieldsWithoutRawSql(
+        string sortBy,
+        bool sortDescending,
+        string firstOrderGuid,
+        string secondOrderGuid
+    )
+    {
+        await SeedStoreOrderAsync("ORDER-LOW", flowStatus: 1, insertStore: true);
+        await SeedOrderLineAsync("ORDER-LOW", "P-LOW", "ITEM-LOW", quantity: 1m, allocQuantity: 1m);
+        await SeedStoreOrderAsync("ORDER-MID", flowStatus: 1, insertStore: false);
+        await SeedOrderLineAsync("ORDER-MID", "P-MID", "ITEM-MID", quantity: 3m, allocQuantity: 2m);
+        await SeedStoreOrderAsync("ORDER-HIGH", flowStatus: 1, insertStore: false);
+        await SeedOrderLineAsync("ORDER-HIGH", "P-HIGH", "ITEM-HIGH", quantity: 5m, allocQuantity: 4m);
+
+        _sqlLogs.Clear();
+        var result = await CreateService().GetOrderListAsync(new StoreOrderListFilterDto
+        {
+            PageNumber = 1,
+            PageSize = 2,
+            StatusList = new List<int> { 1 },
+            SortBy = sortBy,
+            SortDescending = sortDescending,
+        });
+
+        Assert.Equal(3, result.Total);
+        Assert.Collection(
+            result.Items,
+            first => Assert.Equal(firstOrderGuid, first.OrderGUID),
+            second => Assert.Equal(secondOrderGuid, second.OrderGUID)
+        );
+        Assert.DoesNotContain(
+            _sqlLogs,
+            log => log.Contains("WareHouseOrder.OrderGUID", StringComparison.OrdinalIgnoreCase)
+        );
+    }
+
+    [Fact]
+    public async Task GetOrderListAsync_AggregateSortIgnoresDeletedDetails()
+    {
+        await SeedStoreOrderAsync("ORDER-DELETED-TOTAL", flowStatus: 1, insertStore: true);
+        await SeedOrderLineAsync(
+            "ORDER-DELETED-TOTAL",
+            "P-DELETED-TOTAL",
+            "ITEM-DELETED-TOTAL",
+            quantity: 100m,
+            allocQuantity: 100m,
+            isDeleted: true
+        );
+        await SeedOrderLineAsync(
+            "ORDER-DELETED-TOTAL",
+            "P-DELETED-ACTIVE",
+            "ITEM-DELETED-ACTIVE",
+            quantity: 1m,
+            allocQuantity: 1m
+        );
+        await SeedStoreOrderAsync("ORDER-ACTIVE-TOTAL", flowStatus: 1, insertStore: false);
+        await SeedOrderLineAsync(
+            "ORDER-ACTIVE-TOTAL",
+            "P-ACTIVE-TOTAL",
+            "ITEM-ACTIVE-TOTAL",
+            quantity: 3m,
+            allocQuantity: 3m
+        );
+
+        var result = await CreateService().GetOrderListAsync(new StoreOrderListFilterDto
+        {
+            PageNumber = 1,
+            PageSize = 2,
+            StatusList = new List<int> { 1 },
+            SortBy = "totalQuantity",
+            SortDescending = true,
+        });
+
+        Assert.Collection(
+            result.Items,
+            first =>
+            {
+                Assert.Equal("ORDER-ACTIVE-TOTAL", first.OrderGUID);
+                Assert.Equal(3, first.TotalQuantity);
+            },
+            second =>
+            {
+                Assert.Equal("ORDER-DELETED-TOTAL", second.OrderGUID);
+                Assert.Equal(1, second.TotalQuantity);
+            }
+        );
+    }
+
+    [Fact]
+    public async Task GetOrderListAsync_ChunksAggregateDetailLookupForLargeResultSets()
+    {
+        await SeedStoreAsync("STORE-GUID-001", "S001", "测试门店");
+        await SeedStoreOrdersForAggregateSortAsync(1201);
+
+        _sqlLogs.Clear();
+        var result = await CreateService().GetOrderListAsync(new StoreOrderListFilterDto
+        {
+            PageNumber = 1,
+            PageSize = 1,
+            StatusList = new List<int> { 1 },
+            SortBy = "totalQuantity",
+            SortDescending = true,
+        });
+
+        Assert.Equal(1201, result.Total);
+        Assert.Equal("ORDER-1200", Assert.Single(result.Items).OrderGUID);
+        Assert.True(
+            _sqlLogs.Count(log =>
+                log.Contains("FROM `WareHouseOrderDetails`", StringComparison.OrdinalIgnoreCase)
+            ) >= 4
+        );
+    }
+
+    [Fact]
     public async Task GetOrderDetailAsync_ReturnsOutboundDate()
     {
         var outboundDate = new DateTime(2026, 6, 8);
@@ -716,7 +926,8 @@ public sealed class StoreOrderProductListTests : IDisposable
         string? barcode = null,
         string? localSupplierCode = null,
         decimal? purchasePrice = null,
-        bool isActive = true
+        bool isActive = true,
+        bool isDeleted = false
     )
     {
         await _db.Insertable(new Product
@@ -729,7 +940,7 @@ public sealed class StoreOrderProductListTests : IDisposable
             LocalSupplierCode = localSupplierCode,
             PurchasePrice = purchasePrice,
             IsActive = isActive,
-            IsDeleted = false,
+            IsDeleted = isDeleted,
         }).ExecuteCommandAsync();
     }
 
@@ -757,26 +968,19 @@ public sealed class StoreOrderProductListTests : IDisposable
         int flowStatus = 1,
         DateTime? orderDate = null,
         DateTime? outboundDate = null,
-        bool insertStore = true
+        bool insertStore = true,
+        string storeCode = "S001"
     )
     {
         if (insertStore)
         {
-            await _db.Insertable(new Store
-            {
-                StoreGUID = "STORE-GUID-001",
-                StoreCode = "S001",
-                StoreName = "测试门店",
-                Address = "测试地址",
-                IsActive = true,
-                IsDeleted = false,
-            }).ExecuteCommandAsync();
+            await SeedStoreAsync("STORE-GUID-001", storeCode, "测试门店");
         }
 
         await _db.Insertable(new WareHouseOrder
         {
             OrderGUID = orderGuid,
-            StoreCode = "S001",
+            StoreCode = storeCode,
             OrderNo = $"{orderGuid}-NO",
             OrderDate = orderDate ?? new DateTime(2026, 6, 1),
             OutboundDate = outboundDate,
@@ -785,16 +989,66 @@ public sealed class StoreOrderProductListTests : IDisposable
         }).ExecuteCommandAsync();
     }
 
+    private async Task SeedStoreAsync(string storeGuid, string storeCode, string storeName)
+    {
+        await _db.Insertable(new Store
+        {
+            StoreGUID = storeGuid,
+            StoreCode = storeCode,
+            StoreName = storeName,
+            Address = "测试地址",
+            IsActive = true,
+            IsDeleted = false,
+        }).ExecuteCommandAsync();
+    }
+
+    private async Task SeedStoreOrdersForAggregateSortAsync(int count)
+    {
+        var orders = Enumerable.Range(0, count)
+            .Select(index => new WareHouseOrder
+            {
+                OrderGUID = $"ORDER-{index:0000}",
+                StoreCode = "S001",
+                OrderNo = $"ORDER-{index:0000}-NO",
+                OrderDate = new DateTime(2026, 6, 1),
+                FlowStatus = 1,
+                IsDeleted = false,
+            })
+            .ToList();
+
+        var details = Enumerable.Range(0, count)
+            .Select(index => new WareHouseOrderDetails
+            {
+                DetailGUID = $"ORDER-{index:0000}-P{index:0000}",
+                OrderGUID = $"ORDER-{index:0000}",
+                StoreCode = "S001",
+                ProductCode = $"P{index:0000}",
+                Quantity = index,
+                AllocQuantity = index,
+                ImportPrice = 2m,
+                ImportAmount = index * 2m,
+                OEMPrice = 3m,
+                OEMAmount = index * 3m,
+                IsDeleted = false,
+            })
+            .ToList();
+
+        await _db.Insertable(orders).ExecuteCommandAsync();
+        await _db.Insertable(details).ExecuteCommandAsync();
+    }
+
     private async Task SeedOrderLineAsync(
         string orderGuid,
         string productCode,
         string itemNumber,
         decimal quantity,
         decimal allocQuantity,
-        bool isActive = true
+        bool isActive = true,
+        bool isDeleted = false,
+        bool productIsDeleted = false
     )
     {
-        await SeedProductAsync(productCode, itemNumber, isActive: isActive);
+        await SeedProductAsync(productCode, itemNumber, isActive: isActive, isDeleted: productIsDeleted);
         await SeedWarehouseProductAsync(productCode, importPrice: 2m);
         await _db.Insertable(new DomesticProduct
         {
@@ -816,7 +1070,7 @@ public sealed class StoreOrderProductListTests : IDisposable
             ImportAmount = allocQuantity * 2m,
             OEMPrice = 3m,
             OEMAmount = quantity * 3m,
-            IsDeleted = false,
+            IsDeleted = isDeleted,
         }).ExecuteCommandAsync();
     }
 

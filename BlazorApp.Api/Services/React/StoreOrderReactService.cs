@@ -16,6 +16,7 @@ namespace BlazorApp.Api.Services.React
     public class StoreOrderReactService : IStoreOrderReactService
     {
         private const int HomePageWarmUpCommandTimeoutSeconds = 30;
+        private const int OrderListAggregateChunkSize = 500;
         private readonly ISqlSugarClient _db;
         private readonly ILogger<StoreOrderReactService> _logger;
         private readonly Microsoft.AspNetCore.Http.IHttpContextAccessor _httpContextAccessor;
@@ -2033,12 +2034,23 @@ namespace BlazorApp.Api.Services.React
 
                     var detailMatchedGuids = await _db.Queryable<WareHouseOrderDetails>()
                         .InnerJoin<Product>((d, p) => d.ProductCode == p.ProductCode)
-                        .Where((d, p) => p.ItemNumber != null && p.ItemNumber.Contains(keyword))
+                        .Where(
+                            (d, p) =>
+                                !d.IsDeleted
+                                && !p.IsDeleted
+                                && d.OrderGUID != null
+                                && p.ItemNumber != null
+                                && p.ItemNumber.Contains(keyword)
+                        )
                         .Select(d => d.OrderGUID)
                         .Distinct()
                         .ToListAsync();
 
-                    matchedGuids.AddRange(detailMatchedGuids);
+                    matchedGuids.AddRange(
+                        detailMatchedGuids
+                            .Where(guid => !string.IsNullOrWhiteSpace(guid))
+                            .Select(guid => guid!)
+                    );
                     matchedGuids = matchedGuids.Distinct().ToList();
 
                     q = _db.Queryable<WareHouseOrder>()
@@ -2135,6 +2147,10 @@ namespace BlazorApp.Api.Services.React
                                     .Where((us, s) => us.UserGUID == userGuid)
                                     .Select((us, s) => s.StoreCode)
                                     .ToListAsync();
+                                userStoreCodes = userStoreCodes
+                                    .Where(code => !string.IsNullOrWhiteSpace(code))
+                                    .Select(code => code!)
+                                    .ToList();
 
                                 if (userStoreCodes.Any())
                                 {
@@ -2173,6 +2189,11 @@ namespace BlazorApp.Api.Services.React
                 var orderType =
                     (filter.SortDescending ?? true) ? OrderByType.Desc : OrderByType.Asc;
 
+                if (IsAggregateOrderListSortField(sortBy))
+                {
+                    return await BuildAggregateSortedOrderListAsync(q, filter, sortBy, orderType, total);
+                }
+
                 ISugarQueryable<WareHouseOrder> orderedQuery = q;
 
                 switch (sortBy)
@@ -2182,9 +2203,9 @@ namespace BlazorApp.Api.Services.React
                             .OrderBy(o => o.OrderGUID, orderType);
                         break;
                     case "orderdate":
-                        orderedQuery = q.OrderBy(
-                            $"OrderDate {(orderType == OrderByType.Desc ? "DESC" : "ASC")}, OrderNo {(orderType == OrderByType.Desc ? "DESC" : "ASC")}, OrderGUID {(orderType == OrderByType.Desc ? "DESC" : "ASC")}"
-                        );
+                        orderedQuery = q.OrderBy(o => o.OrderDate, orderType)
+                            .OrderBy(o => o.OrderNo, orderType)
+                            .OrderBy(o => o.OrderGUID, orderType);
                         break;
                     case "storecode":
                         orderedQuery = q.OrderBy(o => o.StoreCode, orderType)
@@ -2207,27 +2228,14 @@ namespace BlazorApp.Api.Services.React
                         orderedQuery = q.OrderBy(o => o.ImportTotalAmount ?? 0, orderType)
                             .OrderBy(o => o.OrderGUID, orderType);
                         break;
-                    case "totalorderamount":
-                        orderedQuery = q.OrderBy(
-                            $"(SELECT ISNULL(SUM(d.Quantity * d.ImportPrice), 0) FROM WareHouseOrderDetails d WHERE d.OrderGUID = WareHouseOrder.OrderGUID) {(orderType == OrderByType.Desc ? "DESC" : "ASC")}, OrderGUID {(orderType == OrderByType.Desc ? "DESC" : "ASC")}"
-                        );
-                        break;
-                    case "totalquantity":
-                        orderedQuery = q.OrderBy(
-                            $"(SELECT ISNULL(SUM(d.Quantity), 0) FROM WareHouseOrderDetails d WHERE d.OrderGUID = WareHouseOrder.OrderGUID) {(orderType == OrderByType.Desc ? "DESC" : "ASC")}, OrderGUID {(orderType == OrderByType.Desc ? "DESC" : "ASC")}"
-                        );
-                        break;
-                    case "totalallocquantity":
-                        orderedQuery = q.OrderBy(
-                            $"(SELECT ISNULL(SUM(d.AllocQuantity), 0) FROM WareHouseOrderDetails d WHERE d.OrderGUID = WareHouseOrder.OrderGUID) {(orderType == OrderByType.Desc ? "DESC" : "ASC")}, OrderGUID {(orderType == OrderByType.Desc ? "DESC" : "ASC")}"
-                        );
-                        break;
                     case "remarks":
                         orderedQuery = q.OrderBy(o => o.Remarks, orderType)
                             .OrderBy(o => o.OrderGUID, orderType);
                         break;
                     default:
-                        orderedQuery = q.OrderBy("FlowStatus ASC, OrderDate DESC, OrderNo DESC");
+                        orderedQuery = q.OrderBy(o => o.FlowStatus, OrderByType.Asc)
+                            .OrderBy(o => o.OrderDate, OrderByType.Desc)
+                            .OrderBy(o => o.OrderNo, OrderByType.Desc);
                         break;
                 }
 
@@ -2237,7 +2245,7 @@ namespace BlazorApp.Api.Services.React
                     .Select(o => new StoreOrderListItemDto
                     {
                         OrderGUID = o.OrderGUID,
-                        OrderNo = o.OrderNo,
+                        OrderNo = o.OrderNo ?? string.Empty,
                         StoreCode = o.StoreCode,
                         StoreName = SqlFunc
                             .Subqueryable<Store>()
@@ -2250,30 +2258,30 @@ namespace BlazorApp.Api.Services.React
                         // TotalAmount -> 实际发货金额
                         TotalAmount = SqlFunc
                             .Subqueryable<WareHouseOrderDetails>()
-                            .Where(d => d.OrderGUID == o.OrderGUID)
+                            .Where(d => d.OrderGUID == o.OrderGUID && !d.IsDeleted)
                             .Sum(d => (d.AllocQuantity ?? 0) * (d.ImportPrice ?? 0)),
                         //发货 预计销售sales
                         OEMTotalAmount = SqlFunc
                             .Subqueryable<WareHouseOrderDetails>()
-                            .Where(d => d.OrderGUID == o.OrderGUID)
+                            .Where(d => d.OrderGUID == o.OrderGUID && !d.IsDeleted)
                             .Sum(d => (d.AllocQuantity ?? 0) * (d.OEMAmount ?? 0)),
 
                         // ImportTotalAmount -> 发货金额 (Alloc Qty * OEMPrice)
                         ImportTotalAmount = SqlFunc
                             .Subqueryable<WareHouseOrderDetails>()
-                            .Where(d => d.OrderGUID == o.OrderGUID)
+                            .Where(d => d.OrderGUID == o.OrderGUID && !d.IsDeleted)
                             .Sum(d => (d.AllocQuantity ?? 0) * (d.ImportPrice ?? 0)),
 
                         // TotalOrderAmount -> 订货金额 (Order Qty * OEMPrice)
                         TotalOrderAmount = SqlFunc
                             .Subqueryable<WareHouseOrderDetails>()
-                            .Where(d => d.OrderGUID == o.OrderGUID)
+                            .Where(d => d.OrderGUID == o.OrderGUID && !d.IsDeleted)
                             .Sum(d => (d.Quantity ?? 0) * (d.ImportPrice ?? 0)),
                         //订货数量
                         TotalQuantity = (int)(
                             SqlFunc
                                 .Subqueryable<WareHouseOrderDetails>()
-                                .Where(d => d.OrderGUID == o.OrderGUID)
+                                .Where(d => d.OrderGUID == o.OrderGUID && !d.IsDeleted)
                                 .Sum(d => d.Quantity)
                             ?? 0
                         ),
@@ -2282,7 +2290,7 @@ namespace BlazorApp.Api.Services.React
                         TotalAllocQuantity = (int)(
                             SqlFunc
                                 .Subqueryable<WareHouseOrderDetails>()
-                                .Where(d => d.OrderGUID == o.OrderGUID)
+                                .Where(d => d.OrderGUID == o.OrderGUID && !d.IsDeleted)
                                 .Sum(d => d.AllocQuantity)
                             ?? 0
                         ),
@@ -2396,51 +2404,7 @@ namespace BlazorApp.Api.Services.React
                             break;
                     }
 
-                    var orderGuids = items.Select(x => x.OrderGUID).Distinct().ToList();
-                    var volumeRows = await _db.Queryable<WareHouseOrderDetails>()
-                        .LeftJoin<WarehouseProduct>((d, wp) => d.ProductCode == wp.ProductCode)
-                        .LeftJoin<DomesticProduct>((d, wp, dp) => wp.ProductCode == dp.ProductCode)
-                        .Where(
-                            (d, wp, dp) => d.OrderGUID != null && orderGuids.Contains(d.OrderGUID)
-                        )
-                        .Select(
-                            (d, wp, dp) =>
-                                new
-                                {
-                                    d.OrderGUID,
-                                    UnitVolume = (dp.PackingQuantity > 0)
-                                        ? (dp.UnitVolume / dp.PackingQuantity)
-                                        : dp.UnitVolume,
-                                    d.Quantity,
-                                    d.AllocQuantity,
-                                }
-                        )
-                        .ToListAsync();
-
-                    var volumeMap = volumeRows
-                        .Where(x => !string.IsNullOrWhiteSpace(x.OrderGUID))
-                        .GroupBy(x => x.OrderGUID)
-                        .ToDictionary(
-                            group => group.Key!,
-                            group => new
-                            {
-                                TotalOrderVolume = group.Sum(x =>
-                                    (x.UnitVolume ?? 0) * (x.Quantity ?? 0)
-                                ),
-                                TotalAllocVolume = group.Sum(x =>
-                                    (x.UnitVolume ?? 0) * (x.AllocQuantity ?? 0)
-                                ),
-                            }
-                        );
-
-                    foreach (var item in items)
-                    {
-                        if (volumeMap.TryGetValue(item.OrderGUID, out var totals))
-                        {
-                            item.TotalOrderVolume = totals.TotalOrderVolume;
-                            item.TotalAllocVolume = totals.TotalAllocVolume;
-                        }
-                    }
+                    await FillOrderListVolumesAsync(items);
                 }
 
                 return new PagedListReactDto<StoreOrderListItemDto>
@@ -2455,6 +2419,236 @@ namespace BlazorApp.Api.Services.React
             {
                 _logger.LogError(ex, "GetOrderListAsync failed");
                 throw;
+            }
+        }
+
+        private static bool IsAggregateOrderListSortField(string sortBy)
+        {
+            return sortBy is "totalorderamount" or "totalquantity" or "totalallocquantity";
+        }
+
+        private async Task<PagedListReactDto<StoreOrderListItemDto>> BuildAggregateSortedOrderListAsync(
+            ISugarQueryable<WareHouseOrder> q,
+            StoreOrderListFilterDto filter,
+            string sortBy,
+            OrderByType orderType,
+            int total
+        )
+        {
+            var orders = await q.ToListAsync();
+            var items = await BuildOrderListItemsFromOrdersAsync(orders);
+
+            // 这些排序字段来自订单明细汇总，不直接存在于主表。
+            // 统一在 C# 内存中聚合和排序，避免手写 SQL 依赖数据库表名或别名。
+            items = SortAggregateOrderListItems(items, sortBy, orderType)
+                .Skip((filter.PageNumber - 1) * filter.PageSize)
+                .Take(filter.PageSize)
+                .ToList();
+
+            await FillOrderListVolumesAsync(items);
+
+            return new PagedListReactDto<StoreOrderListItemDto>
+            {
+                Items = items,
+                Total = total,
+                PageNumber = filter.PageNumber,
+                PageSize = filter.PageSize,
+            };
+        }
+
+        private static IEnumerable<StoreOrderListItemDto> SortAggregateOrderListItems(
+            List<StoreOrderListItemDto> items,
+            string sortBy,
+            OrderByType orderType
+        )
+        {
+            return (sortBy, orderType) switch
+            {
+                ("totalorderamount", OrderByType.Desc) => items
+                    .OrderByDescending(x => x.TotalOrderAmount)
+                    .ThenByDescending(x => x.OrderGUID),
+                ("totalorderamount", _) => items
+                    .OrderBy(x => x.TotalOrderAmount)
+                    .ThenBy(x => x.OrderGUID),
+                ("totalquantity", OrderByType.Desc) => items
+                    .OrderByDescending(x => x.TotalQuantity)
+                    .ThenByDescending(x => x.OrderGUID),
+                ("totalquantity", _) => items
+                    .OrderBy(x => x.TotalQuantity)
+                    .ThenBy(x => x.OrderGUID),
+                ("totalallocquantity", OrderByType.Desc) => items
+                    .OrderByDescending(x => x.TotalAllocQuantity)
+                    .ThenByDescending(x => x.OrderGUID),
+                ("totalallocquantity", _) => items
+                    .OrderBy(x => x.TotalAllocQuantity)
+                    .ThenBy(x => x.OrderGUID),
+                _ => items.OrderByDescending(x => x.OrderDate)
+                    .ThenByDescending(x => x.OrderNo)
+                    .ThenByDescending(x => x.OrderGUID),
+            };
+        }
+
+        private async Task<List<StoreOrderListItemDto>> BuildOrderListItemsFromOrdersAsync(
+            List<WareHouseOrder> orders
+        )
+        {
+            var orderGuids = orders.Select(x => x.OrderGUID).Distinct().ToList();
+            var storeCodes = orders
+                .Select(x => x.StoreCode)
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            var stores = storeCodes.Count == 0
+                ? new List<Store>()
+                : await _db.Queryable<Store>()
+                    .Where(s =>
+                        (s.StoreCode != null && storeCodes.Contains(s.StoreCode))
+                        || (s.StoreGUID != null && storeCodes.Contains(s.StoreGUID))
+                    )
+                    .ToListAsync();
+
+            var storeNameMap = stores
+                .SelectMany(store =>
+                    new[]
+                    {
+                        new { Key = store.StoreCode, store.StoreName },
+                        new { Key = store.StoreGUID, store.StoreName },
+                    }
+                )
+                .Where(x => !string.IsNullOrWhiteSpace(x.Key))
+                .GroupBy(x => x.Key!, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(x => x.Key, x => x.First().StoreName, StringComparer.OrdinalIgnoreCase);
+
+            var details = await QueryActiveOrderDetailsByOrderGuidsAsync(orderGuids);
+
+            var totalsMap = details
+                .Where(x => !string.IsNullOrWhiteSpace(x.OrderGUID))
+                .GroupBy(x => x.OrderGUID!)
+                .ToDictionary(
+                    group => group.Key,
+                    group => new
+                    {
+                        TotalAmount = group.Sum(x => (x.AllocQuantity ?? 0) * (x.ImportPrice ?? 0)),
+                        OEMTotalAmount = group.Sum(x => (x.AllocQuantity ?? 0) * (x.OEMAmount ?? 0)),
+                        ImportTotalAmount = group.Sum(x => (x.AllocQuantity ?? 0) * (x.ImportPrice ?? 0)),
+                        TotalOrderAmount = group.Sum(x => (x.Quantity ?? 0) * (x.ImportPrice ?? 0)),
+                        TotalQuantity = (int)(group.Sum(x => x.Quantity) ?? 0),
+                        TotalAllocQuantity = (int)(group.Sum(x => x.AllocQuantity) ?? 0),
+                    }
+                );
+
+            return orders
+                .Select(order =>
+                {
+                    totalsMap.TryGetValue(order.OrderGUID, out var totals);
+                    var storeName =
+                        !string.IsNullOrWhiteSpace(order.StoreCode)
+                        && storeNameMap.TryGetValue(order.StoreCode, out var name)
+                            ? name
+                            : null;
+
+                    return new StoreOrderListItemDto
+                    {
+                        OrderGUID = order.OrderGUID,
+                        OrderNo = order.OrderNo ?? string.Empty,
+                        StoreCode = order.StoreCode,
+                        StoreName = storeName,
+                        OrderDate = order.OrderDate,
+                        OutboundDate = order.OutboundDate,
+                        FlowStatus = order.FlowStatus ?? 0,
+                        TotalAmount = totals?.TotalAmount ?? 0,
+                        OEMTotalAmount = totals?.OEMTotalAmount ?? 0,
+                        ImportTotalAmount = totals?.ImportTotalAmount ?? 0,
+                        TotalOrderAmount = totals?.TotalOrderAmount ?? 0,
+                        TotalQuantity = totals?.TotalQuantity ?? 0,
+                        TotalAllocQuantity = totals?.TotalAllocQuantity ?? 0,
+                        Remarks = order.Remarks,
+                        CreatedAt = order.CreatedAt,
+                        CreatedBy = order.CreatedBy,
+                        UpdatedAt = order.UpdatedAt,
+                        UpdatedBy = order.UpdatedBy,
+                    };
+                })
+                .ToList();
+        }
+
+        private async Task<List<WareHouseOrderDetails>> QueryActiveOrderDetailsByOrderGuidsAsync(
+            List<string> orderGuids
+        )
+        {
+            var result = new List<WareHouseOrderDetails>();
+            if (orderGuids.Count == 0)
+            {
+                return result;
+            }
+
+            // SQL Server 单条 IN 参数有上限；汇总排序要覆盖筛选后的全部订单，所以分块拉取明细。
+            foreach (var chunk in orderGuids.Chunk(OrderListAggregateChunkSize))
+            {
+                var chunkGuids = chunk.ToList();
+                var rows = await _db.Queryable<WareHouseOrderDetails>()
+                    .Where(d =>
+                        d.OrderGUID != null
+                        && chunkGuids.Contains(d.OrderGUID)
+                        && !d.IsDeleted
+                    )
+                    .ToListAsync();
+                result.AddRange(rows);
+            }
+
+            return result;
+        }
+
+        private async Task FillOrderListVolumesAsync(List<StoreOrderListItemDto> items)
+        {
+            var orderGuids = items.Select(x => x.OrderGUID).Distinct().ToList();
+            if (orderGuids.Count == 0)
+            {
+                return;
+            }
+
+            var volumeRows = await _db.Queryable<WareHouseOrderDetails>()
+                .LeftJoin<WarehouseProduct>((d, wp) => d.ProductCode == wp.ProductCode)
+                .LeftJoin<DomesticProduct>((d, wp, dp) => wp.ProductCode == dp.ProductCode)
+                .Where((d, wp, dp) =>
+                    d.OrderGUID != null && orderGuids.Contains(d.OrderGUID) && !d.IsDeleted
+                )
+                .Select(
+                    (d, wp, dp) =>
+                        new
+                        {
+                            d.OrderGUID,
+                            UnitVolume = (dp.PackingQuantity > 0)
+                                ? (dp.UnitVolume / dp.PackingQuantity)
+                                : dp.UnitVolume,
+                            d.Quantity,
+                            d.AllocQuantity,
+                        }
+                )
+                .ToListAsync();
+
+            var volumeMap = volumeRows
+                .Where(x => !string.IsNullOrWhiteSpace(x.OrderGUID))
+                .GroupBy(x => x.OrderGUID)
+                .ToDictionary(
+                    group => group.Key!,
+                    group => new
+                    {
+                        TotalOrderVolume = group.Sum(x => (x.UnitVolume ?? 0) * (x.Quantity ?? 0)),
+                        TotalAllocVolume = group.Sum(x =>
+                            (x.UnitVolume ?? 0) * (x.AllocQuantity ?? 0)
+                        ),
+                    }
+                );
+
+            foreach (var item in items)
+            {
+                if (volumeMap.TryGetValue(item.OrderGUID, out var totals))
+                {
+                    item.TotalOrderVolume = totals.TotalOrderVolume;
+                    item.TotalAllocVolume = totals.TotalAllocVolume;
+                }
             }
         }
 
@@ -3061,8 +3255,11 @@ namespace BlazorApp.Api.Services.React
                     missingCodes.Count
                 );
 
-                // 4. 按分店代码排序
-                result = result.OrderBy(b => b.Code).ToList();
+                // 4. 筛选下拉按分店名称排序，名称一致时再按代码兜底，便于人工查找。
+                result = result
+                    .OrderBy(b => b.Name, StringComparer.CurrentCultureIgnoreCase)
+                    .ThenBy(b => b.Code, StringComparer.OrdinalIgnoreCase)
+                    .ToList();
 
                 return new ApiResponse<List<BranchDto>> { Success = true, Data = result };
             }
