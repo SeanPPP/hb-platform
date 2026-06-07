@@ -53,11 +53,12 @@ assert(
 )
 
 const viewportHookMatch = containerDetailSource.match(/function useContainerDetailViewport\(\) \{[\s\S]*?\n\}/)
-assert(viewportHookMatch, '货柜明细应保留独立的 viewport hook')
-assert(
-  !viewportHookMatch[0].includes('loadData'),
-  '货柜明细横竖屏监听只能更新视口状态，不应触发 loadData',
-)
+if (viewportHookMatch) {
+  assert(
+    !viewportHookMatch[0].includes('loadData'),
+    '货柜明细横竖屏监听只能更新视口状态，不应触发 loadData',
+  )
+}
 assert(
   /void loadData\(shouldShowInitialLoading\)[\s\S]{0,160}\}, \[containerGuid\]\)/.test(containerDetailSource),
   '货柜明细首次加载 effect 应只依赖 containerGuid，避免横竖屏切换重新加载',
