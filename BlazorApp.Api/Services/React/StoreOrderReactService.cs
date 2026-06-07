@@ -159,6 +159,11 @@ namespace BlazorApp.Api.Services.React
                 return await GetProductMasterRowsNotInWarehouseAsync(filter, normalizedGrades);
             }
 
+            if (IsDefaultHomePageProductFilter(filter, normalizedGrades))
+            {
+                return await GetDefaultHomePageProductPageAsync(filter, normalizedGrades);
+            }
+
             var q = CreateDefaultWarehouseProductQuery(_db);
 
             if (!string.IsNullOrWhiteSpace(filter.CategoryGUID))
@@ -335,30 +340,12 @@ namespace BlazorApp.Api.Services.React
                     ? Math.Min(originalTimeout, HomePageWarmUpCommandTimeoutSeconds)
                     : HomePageWarmUpCommandTimeoutSeconds;
 
-                var items = await CreateDefaultWarehouseProductQuery(warmUpDb)
-                    .OrderBy((p, wp, wc, ls) => p.ItemNumber, OrderByType.Asc)
-                    .Select(
-                        (p, wp, wc, ls) =>
-                            new StoreOrderProductDto
-                            {
-                                ProductCode = p.ProductCode ?? string.Empty,
-                                ItemNumber = p.ItemNumber,
-                                Barcode = p.Barcode,
-                                ProductName = p.ProductName,
-                                ProductImage = p.ProductImage,
-                                CategoryName = wc.CategoryName,
-                                WarehouseCategoryGUID = p.WarehouseCategoryGUID,
-                                LocalSupplierCode = p.LocalSupplierCode,
-                                LocalSupplierName = ls.Name,
-                                OEMPrice = wp.OEMPrice,
-                                MinOrderQuantity = wp.MinOrderQuantity ?? 1,
-                                StockQuantity = wp.StockQuantity ?? 0,
-                                PackQty = p.MiddlePackageQuantity,
-                                ImportPrice = wp.ImportPrice,
-                            }
-                    )
-                    .Take(pageSize)
-                    .ToListAsync();
+                var items = await QueryDefaultHomePageProductItemsAsync(
+                    warmUpDb,
+                    pageNumber: 1,
+                    pageSize,
+                    cancellationToken
+                );
 
                 cancellationToken.ThrowIfCancellationRequested();
                 await PopulateGradesAsync(
@@ -405,34 +392,16 @@ namespace BlazorApp.Api.Services.React
                     ? Math.Min(originalTimeout, HomePageWarmUpCommandTimeoutSeconds)
                     : HomePageWarmUpCommandTimeoutSeconds;
 
-                var q = CreateDefaultWarehouseProductQuery(homePageDb)
-                    .OrderBy((p, wp, wc, ls) => p.ItemNumber, OrderByType.Asc);
-
+                var q = CreateDefaultWarehouseProductBaseQuery(homePageDb);
                 var total = await q.CountAsync();
                 cancellationToken.ThrowIfCancellationRequested();
 
-                var items = await q.Select(
-                        (p, wp, wc, ls) =>
-                            new StoreOrderProductDto
-                            {
-                                ProductCode = p.ProductCode ?? string.Empty,
-                                ItemNumber = p.ItemNumber,
-                                Barcode = p.Barcode,
-                                ProductName = p.ProductName,
-                                ProductImage = p.ProductImage,
-                                CategoryName = wc.CategoryName,
-                                WarehouseCategoryGUID = p.WarehouseCategoryGUID,
-                                LocalSupplierCode = p.LocalSupplierCode,
-                                LocalSupplierName = ls.Name,
-                                OEMPrice = wp.OEMPrice,
-                                MinOrderQuantity = wp.MinOrderQuantity ?? 1,
-                                StockQuantity = wp.StockQuantity ?? 0,
-                                PackQty = p.MiddlePackageQuantity,
-                                ImportPrice = wp.ImportPrice,
-                            }
-                    )
-                    .Take(pageSize)
-                    .ToListAsync();
+                var items = await QueryDefaultHomePageProductItemsAsync(
+                    homePageDb,
+                    pageNumber: 1,
+                    pageSize,
+                    cancellationToken
+                );
 
                 cancellationToken.ThrowIfCancellationRequested();
                 await PopulateGradesAsync(
@@ -604,15 +573,167 @@ namespace BlazorApp.Api.Services.React
         private ISugarQueryable<Product, WarehouseProduct, WarehouseCategory, HBLocalSupplier>
             CreateDefaultWarehouseProductQuery(ISqlSugarClient db)
         {
-            return db.Queryable<Product>()
-                .InnerJoin<WarehouseProduct>((p, wp) => p.ProductCode == wp.ProductCode)
+            return CreateDefaultWarehouseProductBaseQuery(db)
                 .LeftJoin<WarehouseCategory>(
                     (p, wp, wc) => p.WarehouseCategoryGUID == wc.CategoryGUID
                 )
                 .LeftJoin<HBLocalSupplier>(
                     (p, wp, wc, ls) => p.LocalSupplierCode == ls.LocalSupplierCode && !ls.IsDeleted
+                );
+        }
+
+        private ISugarQueryable<Product, WarehouseProduct> CreateDefaultWarehouseProductBaseQuery(
+            ISqlSugarClient db
+        )
+        {
+            return db.Queryable<Product>()
+                .InnerJoin<WarehouseProduct>((p, wp) => p.ProductCode == wp.ProductCode)
+                .Where((p, wp) => p.IsActive && !p.IsDeleted && !wp.IsDeleted && wp.IsActive);
+        }
+
+        private async Task<PagedListReactDto<StoreOrderProductDto>> GetDefaultHomePageProductPageAsync(
+            StoreOrderFilterDto filter,
+            List<string> normalizedGrades
+        )
+        {
+            var totalSw = Stopwatch.StartNew();
+            var countSw = Stopwatch.StartNew();
+            var q = CreateDefaultWarehouseProductBaseQuery(_db);
+            var total = await q.CountAsync();
+            countSw.Stop();
+
+            var listSw = Stopwatch.StartNew();
+            var items = await QueryDefaultHomePageProductItemsAsync(
+                _db,
+                filter.PageNumber,
+                filter.PageSize
+            );
+            listSw.Stop();
+
+            var gradeSw = Stopwatch.StartNew();
+            await PopulateGradesAsync(_db, items, normalizedGrades);
+            gradeSw.Stop();
+
+            totalSw.Stop();
+            _logger.LogInformation(
+                "[shop-home-perf] stage=products.service.done pageNumber={PageNumber} pageSize={PageSize} category={CategoryGUID} keywordLength={KeywordLength} gradeCount={GradeCount} total={Total} itemCount={ItemCount} countMs={CountMs} listMs={ListMs} gradeMs={GradeMs} totalMs={TotalMs}",
+                filter.PageNumber,
+                filter.PageSize,
+                filter.CategoryGUID,
+                filter.ItemNumber?.Length ?? 0,
+                normalizedGrades.Count,
+                total,
+                items.Count,
+                countSw.ElapsedMilliseconds,
+                listSw.ElapsedMilliseconds,
+                gradeSw.ElapsedMilliseconds,
+                totalSw.ElapsedMilliseconds
+            );
+
+            return new PagedListReactDto<StoreOrderProductDto>
+            {
+                Items = items,
+                Total = total,
+                PageNumber = filter.PageNumber,
+                PageSize = filter.PageSize,
+            };
+        }
+
+        private async Task<List<StoreOrderProductDto>> QueryDefaultHomePageProductItemsAsync(
+            ISqlSugarClient db,
+            int pageNumber,
+            int pageSize,
+            CancellationToken cancellationToken = default
+        )
+        {
+            var normalizedPageNumber = Math.Max(pageNumber, 1);
+            var normalizedPageSize = Math.Max(pageSize, 1);
+            var pageKeys = await CreateDefaultWarehouseProductBaseQuery(db)
+                .OrderBy((p, wp) => p.ItemNumber, OrderByType.Asc)
+                .Select(
+                    (p, wp) =>
+                        new
+                        {
+                            ProductCode = p.ProductCode ?? string.Empty,
+                            ItemNumber = p.ItemNumber,
+                        }
                 )
-                .Where((p, wp, wc, ls) => p.IsActive && !p.IsDeleted && !wp.IsDeleted && wp.IsActive);
+                .Skip((normalizedPageNumber - 1) * normalizedPageSize)
+                .Take(normalizedPageSize)
+                .ToListAsync();
+
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var productCodes = pageKeys
+                .Select(item => item.ProductCode)
+                .Where(code => !string.IsNullOrWhiteSpace(code))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            if (productCodes.Count == 0)
+            {
+                return new List<StoreOrderProductDto>();
+            }
+
+            var orderMap = pageKeys
+                .Select((item, index) => new { item.ProductCode, Index = index })
+                .Where(item => !string.IsNullOrWhiteSpace(item.ProductCode))
+                .GroupBy(item => item.ProductCode, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(
+                    group => group.Key,
+                    group => group.First().Index,
+                    StringComparer.OrdinalIgnoreCase
+                );
+
+            // 首页默认列表先分页出 ProductCode，再只回查首屏展示字段，避免 join 后投影整个商品池。
+            var items = await CreateDefaultWarehouseProductQuery(db)
+                .Where((p, wp, wc, ls) => p.ProductCode != null && productCodes.Contains(p.ProductCode))
+                .Select(
+                    (p, wp, wc, ls) =>
+                        new StoreOrderProductDto
+                        {
+                            ProductCode = p.ProductCode ?? string.Empty,
+                            ItemNumber = p.ItemNumber,
+                            Barcode = p.Barcode,
+                            ProductName = p.ProductName,
+                            ProductImage = p.ProductImage,
+                            CategoryName = wc.CategoryName,
+                            WarehouseCategoryGUID = p.WarehouseCategoryGUID,
+                            LocalSupplierCode = p.LocalSupplierCode,
+                            LocalSupplierName = ls.Name,
+                            OEMPrice = wp.OEMPrice,
+                            MinOrderQuantity = wp.MinOrderQuantity ?? 1,
+                            StockQuantity = wp.StockQuantity ?? 0,
+                            PackQty = p.MiddlePackageQuantity,
+                            ImportPrice = wp.ImportPrice,
+                        }
+                )
+                .ToListAsync();
+
+            cancellationToken.ThrowIfCancellationRequested();
+
+            return items
+                .OrderBy(item =>
+                    orderMap.TryGetValue(item.ProductCode, out var order) ? order : int.MaxValue
+                )
+                .ToList();
+        }
+
+        private static bool IsDefaultHomePageProductFilter(
+            StoreOrderFilterDto filter,
+            List<string> normalizedGrades
+        )
+        {
+            return string.IsNullOrWhiteSpace(filter.CategoryGUID)
+                && string.IsNullOrWhiteSpace(filter.LocalSupplierCode)
+                && string.IsNullOrWhiteSpace(filter.ItemNumber)
+                && string.IsNullOrWhiteSpace(filter.ProductName)
+                && string.IsNullOrWhiteSpace(filter.ExcludeOrderGUID)
+                && (
+                    string.IsNullOrWhiteSpace(filter.SortBy)
+                    || filter.SortBy.Equals("default", StringComparison.OrdinalIgnoreCase)
+                )
+                && normalizedGrades.Count == 0;
         }
 
         private ISqlSugarClient CreateHomePageWarmUpQueryConnection()
@@ -1761,18 +1882,20 @@ namespace BlazorApp.Api.Services.React
                 latestDateSw.Stop();
 
                 var historySw = Stopwatch.StartNew();
-                var latestProducts = latestOrderDates
+                var latestDateMap = latestOrderDates
                     .Where(item =>
                         !string.IsNullOrWhiteSpace(item.ProductCode) && item.LastOrderDate.HasValue
                     )
-                    .Select(item => item.ProductCode!)
-                    .Distinct(StringComparer.OrdinalIgnoreCase)
-                    .ToList();
-                var historyItems = new List<StoreOrderDynamicHistoryRow>(latestProducts.Count);
-
-                foreach (var productCode in latestProducts)
-                {
-                    var historyItem = await _db.Queryable<WareHouseOrderDetails>()
+                    .GroupBy(item => item.ProductCode!, StringComparer.OrdinalIgnoreCase)
+                    .ToDictionary(
+                        group => group.Key,
+                        group => group.First().LastOrderDate!.Value,
+                        StringComparer.OrdinalIgnoreCase
+                    );
+                // 按首屏 ProductCode 一次性回查历史候选，再按 ProductCode 取最新行，避免产生 N 次 FirstAsync。
+                var historyCandidates = latestDateMap.Count == 0
+                    ? new List<StoreOrderDynamicHistoryRow>()
+                    : await _db.Queryable<WareHouseOrderDetails>()
                         .InnerJoin<WareHouseOrder>((d, o) => d.OrderGUID == o.OrderGUID)
                         .Where(
                             (d, o) =>
@@ -1785,7 +1908,6 @@ namespace BlazorApp.Api.Services.React
                             (d, o) =>
                                 d.ProductCode != null
                                 && productCodes.Contains(d.ProductCode)
-                                && d.ProductCode == productCode
                                 && o.OrderDate != null
                         )
                         .OrderBy((d, o) => o.OrderDate, OrderByType.Desc)
@@ -1796,16 +1918,20 @@ namespace BlazorApp.Api.Services.React
                                     ProductCode = d.ProductCode,
                                     OrderDate = o.OrderDate,
                                     Quantity = d.Quantity,
-                                AllocQuantity = d.AllocQuantity,
-                            }
+                                    AllocQuantity = d.AllocQuantity,
+                                }
                         )
-                        .FirstAsync();
-
-                    if (historyItem != null)
-                    {
-                        historyItems.Add(historyItem);
-                    }
-                }
+                        .ToListAsync();
+                var historyItems = historyCandidates
+                    .Where(item =>
+                        !string.IsNullOrWhiteSpace(item.ProductCode)
+                        && item.OrderDate.HasValue
+                        && latestDateMap.TryGetValue(item.ProductCode!, out var latestDate)
+                        && item.OrderDate.Value == latestDate
+                    )
+                    .GroupBy(item => item.ProductCode!, StringComparer.OrdinalIgnoreCase)
+                    .Select(group => group.First())
+                    .ToList();
                 historySw.Stop();
 
                 var cartQuantityMap = cartItems
