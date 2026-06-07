@@ -29,6 +29,8 @@ function extractFunctionBody(source: string, marker: string, endMarker: string) 
 
 const shopHomeFile = path.resolve(process.cwd(), 'src/pages/ShopHome/index.tsx')
 const shopHomeSource = readFileSync(shopHomeFile, 'utf8')
+const productCardFile = path.resolve(process.cwd(), 'src/pages/ShopHome/components/ProductCard.tsx')
+const productCardSource = readFileSync(productCardFile, 'utf8')
 
 async function main() {
   const failures: string[] = []
@@ -128,6 +130,30 @@ async function main() {
     )
   })
   if (storeScopeDependencyFailure) failures.push(storeScopeDependencyFailure)
+
+  const lazyImageFailure = await runTest('商品卡图片应懒加载避免拖慢首屏', () => {
+    assert(
+      productCardSource.includes('loading="lazy"'),
+      '商品卡图片未设置 loading="lazy"，首屏外图片会抢占首页加载资源',
+    )
+  })
+  if (lazyImageFailure) failures.push(lazyImageFailure)
+
+  const perfLogGateFailure = await runTest('首页性能 console 日志生产环境默认关闭', () => {
+    const helperBody = extractFunctionBody(
+      shopHomeSource,
+      'function logShopHomePerf',
+      'export default function ShopHomePage',
+    )
+
+    assert(
+      helperBody.includes('import.meta.env.DEV') &&
+        helperBody.includes("window.localStorage.getItem('shopHomePerf') === '1'") &&
+        helperBody.includes('if (!isDebugEnabled)'),
+      '首页性能 console 日志缺少开发环境或显式开关保护',
+    )
+  })
+  if (perfLogGateFailure) failures.push(perfLogGateFailure)
 
   if (failures.length > 0) {
     throw new Error(`共有 ${failures.length} 个测试失败\n- ${failures.join('\n- ')}`)

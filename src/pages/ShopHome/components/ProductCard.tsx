@@ -71,6 +71,7 @@ export default function ProductCard({
               <Image
                 alt={product.productName}
                 src={imageSrc}
+                loading="lazy"
                 height="100%"
                 width="100%"
                 style={{ objectFit: 'contain' }}

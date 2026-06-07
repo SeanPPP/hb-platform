@@ -28,6 +28,26 @@ import {
   unlockScanFeedback,
 } from '../../utils/scanFeedback'
 
+function getShopHomePerfNow() {
+  return typeof performance !== 'undefined' ? performance.now() : Date.now()
+}
+
+function logShopHomePerf(stage: string, payload: Record<string, unknown>) {
+  if (typeof console === 'undefined') {
+    return
+  }
+
+  const isDebugEnabled =
+    import.meta.env.DEV ||
+    (typeof window !== 'undefined' && window.localStorage.getItem('shopHomePerf') === '1')
+
+  if (!isDebugEnabled) {
+    return
+  }
+
+  console.info('[shop-home-perf]', stage, payload)
+}
+
 export default function ShopHomePage() {
   const { t } = useTranslation()
   const [searchParams] = useSearchParams()
@@ -108,6 +128,7 @@ export default function ShopHomePage() {
       }
 
       setLoading(true)
+      const startedAt = getShopHomePerfNow()
       try {
         const result = await getStoreOrderProducts({
           storeCode: selectedStore.storeCode,
@@ -125,6 +146,14 @@ export default function ShopHomePage() {
 
         setProducts(result.items)
         setTotal(result.total)
+        logShopHomePerf('products.done', {
+          storeCode: selectedStore.storeCode,
+          pageNumber: currentPage,
+          pageSize,
+          itemCount: result.items.length,
+          total: result.total,
+          elapsedMs: Math.round(getShopHomePerfNow() - startedAt),
+        })
 
         if (categoryId) {
           setCategoryName(result.items[0]?.categoryName || t('shop.categoryProducts'))
@@ -133,6 +162,12 @@ export default function ShopHomePage() {
         }
       } catch (error) {
         if (!cancelled) {
+          logShopHomePerf('products.error', {
+            storeCode: selectedStore.storeCode,
+            pageNumber: currentPage,
+            pageSize,
+            elapsedMs: Math.round(getShopHomePerfNow() - startedAt),
+          })
           message.error(t('shop.loadProductsFailed'))
           setProducts([])
           setTotal(0)
@@ -206,9 +241,16 @@ export default function ShopHomePage() {
       }
 
       try {
+        const startedAt = getShopHomePerfNow()
         const nextMap = await loadDynamicDataMap(products.map((item) => item.productCode))
         if (!cancelled) {
           setDynamicDataMap(nextMap)
+          logShopHomePerf('dynamic-data.done', {
+            storeCode: selectedStore.storeCode,
+            requestCount: products.length,
+            resultCount: Object.keys(nextMap).length,
+            elapsedMs: Math.round(getShopHomePerfNow() - startedAt),
+          })
         }
       } catch (error) {
         if (!cancelled) {
