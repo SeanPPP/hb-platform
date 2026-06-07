@@ -493,13 +493,24 @@ namespace BlazorApp.Api.Controllers.React
         [HttpPost("products")]
         public async Task<IActionResult> GetProducts([FromBody] StoreOrderFilterDto filter)
         {
+            var totalSw = Stopwatch.StartNew();
             try
             {
+                var permissionSw = Stopwatch.StartNew();
                 var forbidden =
                     await RequireAnyPermissionAsync(OrderReadPermissions)
                     ?? await RequireAssignedStoreScopeAsync(filter.StoreCode);
+                permissionSw.Stop();
                 if (forbidden != null)
                 {
+                    _logger.LogInformation(
+                        "[shop-home-perf] stage=products.controller.forbidden storeCode={StoreCode} pageNumber={PageNumber} pageSize={PageSize} permissionMs={PermissionMs} totalMs={TotalMs}",
+                        filter.StoreCode,
+                        filter.PageNumber,
+                        filter.PageSize,
+                        permissionSw.ElapsedMilliseconds,
+                        totalSw.ElapsedMilliseconds
+                    );
                     return forbidden;
                 }
 
@@ -533,12 +544,24 @@ namespace BlazorApp.Api.Controllers.React
                 )
                 {
                     _logger.LogDebug("从缓存获取商品列表: {CacheKey}", cacheKey);
+                    _logger.LogInformation(
+                        "[shop-home-perf] stage=products.controller.cache-hit storeCode={StoreCode} pageNumber={PageNumber} pageSize={PageSize} itemCount={ItemCount} total={Total} permissionMs={PermissionMs} totalMs={TotalMs}",
+                        filter.StoreCode,
+                        filter.PageNumber,
+                        filter.PageSize,
+                        cachedResult?.Items?.Count ?? 0,
+                        cachedResult?.Total ?? 0,
+                        permissionSw.ElapsedMilliseconds,
+                        totalSw.ElapsedMilliseconds
+                    );
                     return Ok(new { success = true, data = cachedResult });
                 }
 
                 // 缓存未命中，从服务获取
                 _logger.LogDebug("缓存未命中，从服务获取商品列表: {CacheKey}", cacheKey);
+                var serviceSw = Stopwatch.StartNew();
                 var result = await _service.GetPagedListAsync(filter);
+                serviceSw.Stop();
 
                 // 将结果存入缓存
                 if (shouldUseProductCache)
@@ -555,11 +578,30 @@ namespace BlazorApp.Api.Controllers.React
                     );
                 }
 
+                _logger.LogInformation(
+                    "[shop-home-perf] stage=products.controller.done storeCode={StoreCode} pageNumber={PageNumber} pageSize={PageSize} cacheHit={CacheHit} itemCount={ItemCount} total={Total} permissionMs={PermissionMs} serviceMs={ServiceMs} totalMs={TotalMs}",
+                    filter.StoreCode,
+                    filter.PageNumber,
+                    filter.PageSize,
+                    false,
+                    result.Items?.Count ?? 0,
+                    result.Total,
+                    permissionSw.ElapsedMilliseconds,
+                    serviceSw.ElapsedMilliseconds,
+                    totalSw.ElapsedMilliseconds
+                );
                 return Ok(new { success = true, data = result });
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "GetProducts failed");
+                _logger.LogError(
+                    ex,
+                    "[shop-home-perf] stage=products.controller.error message=GetProducts failed storeCode={StoreCode} pageNumber={PageNumber} pageSize={PageSize} totalMs={TotalMs}",
+                    filter.StoreCode,
+                    filter.PageNumber,
+                    filter.PageSize,
+                    totalSw.ElapsedMilliseconds
+                );
                 return StatusCode(500, new { success = false, message = "服务器内部错误" });
             }
         }
@@ -930,17 +972,39 @@ namespace BlazorApp.Api.Controllers.React
             [FromBody] StoreOrderDynamicDataRequestDto request
         )
         {
+            var totalSw = Stopwatch.StartNew();
             try
             {
+                var permissionSw = Stopwatch.StartNew();
                 var forbidden =
                     await RequireAnyPermissionAsync(OrderReadPermissions)
                     ?? await RequireAssignedStoreScopeAsync(request.StoreCode);
+                permissionSw.Stop();
                 if (forbidden != null)
                 {
+                    _logger.LogInformation(
+                        "[shop-home-perf] stage=dynamic-data.controller.forbidden storeCode={StoreCode} requestCount={RequestCount} permissionMs={PermissionMs} totalMs={TotalMs}",
+                        request.StoreCode,
+                        request.ProductCodes?.Count ?? 0,
+                        permissionSw.ElapsedMilliseconds,
+                        totalSw.ElapsedMilliseconds
+                    );
                     return forbidden;
                 }
 
+                var serviceSw = Stopwatch.StartNew();
                 var result = await _service.GetProductsDynamicDataAsync(request);
+                serviceSw.Stop();
+                _logger.LogInformation(
+                    "[shop-home-perf] stage=dynamic-data.controller.done storeCode={StoreCode} requestCount={RequestCount} success={Success} resultCount={ResultCount} permissionMs={PermissionMs} serviceMs={ServiceMs} totalMs={TotalMs}",
+                    request.StoreCode,
+                    request.ProductCodes?.Count ?? 0,
+                    result.Success,
+                    result.Data?.Count ?? 0,
+                    permissionSw.ElapsedMilliseconds,
+                    serviceSw.ElapsedMilliseconds,
+                    totalSw.ElapsedMilliseconds
+                );
                 if (result.Success)
                 {
                     return Ok(new { success = true, data = result.Data });
@@ -949,7 +1013,13 @@ namespace BlazorApp.Api.Controllers.React
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "GetDynamicData failed");
+                _logger.LogError(
+                    ex,
+                    "[shop-home-perf] stage=dynamic-data.controller.error message=GetDynamicData failed storeCode={StoreCode} requestCount={RequestCount} totalMs={TotalMs}",
+                    request.StoreCode,
+                    request.ProductCodes?.Count ?? 0,
+                    totalSw.ElapsedMilliseconds
+                );
                 return StatusCode(500, new { success = false, message = "服务器内部错误" });
             }
         }

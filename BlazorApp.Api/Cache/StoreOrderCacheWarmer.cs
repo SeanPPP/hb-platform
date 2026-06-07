@@ -92,20 +92,39 @@ namespace BlazorApp.Api.Cache
             // 真实运行时优先走轻量预热路径；单元测试里的 mock 仍可回退到旧接口，便于验证互斥与取消行为。
             var result = _service is StoreOrderReactService concreteService
                 ? await concreteService.GetHomePageWarmUpPageAsync(pageSize, cancellationToken)
-                : await _service.GetPagedListAsync(filter).WaitAsync(cancellationToken);
+                : await _service.GetPagedListAsync(filter);
             // 轻量预热结果没有真实 Total，必须写入专用键，避免污染正常分页缓存。
-            var cacheKey = StoreOrderCacheKeys.GetHomePageWarmUpCacheKey(pageSize);
+            var warmUpCacheKey = StoreOrderCacheKeys.GetHomePageWarmUpCacheKey(pageSize);
             var cacheOptions = new MemoryCacheEntryOptions()
                 .SetAbsoluteExpiration(CACHE_DURATION)
                 .SetPriority(Microsoft.Extensions.Caching.Memory.CacheItemPriority.High);
 
-            _cache.Set(cacheKey, result, cacheOptions);
+            _cache.Set(warmUpCacheKey, result, cacheOptions);
 
             _logger.LogInformation(
-                "首页商品列表缓存预热完成，PageSize={PageSize}，共 {Count} 条商品，缓存键: {CacheKey}",
+                "首页商品列表轻量预热完成，PageSize={PageSize}，共 {Count} 条商品，缓存键: {CacheKey}",
                 pageSize,
                 result.Items?.Count ?? 0,
-                cacheKey
+                warmUpCacheKey
+            );
+
+            // 商品列表所有分店一致，StoreCode 只用于权限校验；正常首页缓存必须保留准确 Total，供真实 /products 命中。
+            var homePageResult = _service is StoreOrderReactService fullCacheService
+                ? await fullCacheService.GetHomePageCachePageAsync(pageSize, cancellationToken)
+                : await _service.GetPagedListAsync(filter);
+            var homePageCacheKey = StoreOrderCacheKeys.Products(filter);
+            var homePageCacheOptions = new MemoryCacheEntryOptions()
+                .SetAbsoluteExpiration(CACHE_DURATION)
+                .SetPriority(Microsoft.Extensions.Caching.Memory.CacheItemPriority.High);
+
+            _cache.Set(homePageCacheKey, homePageResult, homePageCacheOptions);
+
+            _logger.LogInformation(
+                "首页商品列表正常缓存预热完成，PageSize={PageSize}，共 {Count} 条商品，总数 {Total}，缓存键: {CacheKey}",
+                pageSize,
+                homePageResult.Items?.Count ?? 0,
+                homePageResult.Total,
+                homePageCacheKey
             );
         }
 

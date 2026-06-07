@@ -378,6 +378,112 @@ public sealed class StoreOrderProductListTests : IDisposable
     }
 
     [Fact]
+    public async Task GetProductsDynamicDataAsync_动态数据查询应在数据库侧聚合购物车和最近订单()
+    {
+        await SeedStoreOrderAsync(
+            "ORDER-CART-1",
+            flowStatus: 0,
+            orderDate: new DateTime(2026, 6, 1)
+        );
+        await SeedStoreOrderAsync(
+            "ORDER-CART-2",
+            flowStatus: 0,
+            orderDate: new DateTime(2026, 6, 2),
+            insertStore: false
+        );
+        await SeedOrderDetailOnlyAsync("ORDER-CART-1", "P001", quantity: 2m, allocQuantity: 0m);
+        await SeedOrderDetailOnlyAsync("ORDER-CART-2", "P001", quantity: 3m, allocQuantity: 0m);
+
+        for (var index = 1; index <= 20; index++)
+        {
+            var orderGuid = $"ORDER-HISTORY-{index:D2}";
+            await SeedStoreOrderAsync(
+                orderGuid,
+                flowStatus: 1,
+                orderDate: new DateTime(2026, 5, index),
+                insertStore: false
+            );
+            await SeedOrderDetailOnlyAsync(orderGuid, "P001", quantity: index, allocQuantity: index - 1);
+        }
+
+        _sqlLogs.Clear();
+
+        var result = await CreateService().GetProductsDynamicDataAsync(new StoreOrderDynamicDataRequestDto
+        {
+            StoreCode = "S001",
+            ProductCodes = new List<string> { "P001" },
+        });
+
+        Assert.True(result.Success);
+        var item = Assert.Single(result.Data!);
+        Assert.Equal(5m, item.CartQuantity);
+        Assert.Equal(new DateTime(2026, 5, 20), item.LastOrderDate);
+        Assert.Equal(20m, item.LastQuantity);
+        Assert.Equal(19m, item.LastAllocQuantity);
+        Assert.Contains(
+            _sqlLogs,
+            log =>
+                log.Contains("SUM", StringComparison.OrdinalIgnoreCase)
+                && log.Contains("GROUP BY", StringComparison.OrdinalIgnoreCase)
+        );
+        Assert.Contains(
+            _sqlLogs,
+            log =>
+                log.Contains("MAX", StringComparison.OrdinalIgnoreCase)
+                && log.Contains("GROUP BY", StringComparison.OrdinalIgnoreCase)
+        );
+    }
+
+    [Fact]
+    public async Task GetProductsDynamicDataAsync_最近订单跨度大时不应回查宽日期窗口()
+    {
+        await SeedStoreOrderAsync(
+            "ORDER-P001-OLD",
+            flowStatus: 1,
+            orderDate: new DateTime(2025, 1, 1)
+        );
+        await SeedOrderDetailOnlyAsync("ORDER-P001-OLD", "P001", quantity: 1m, allocQuantity: 1m);
+
+        for (var index = 1; index <= 30; index++)
+        {
+            var orderGuid = $"ORDER-P002-{index:D2}";
+            await SeedStoreOrderAsync(
+                orderGuid,
+                flowStatus: 1,
+                orderDate: new DateTime(2026, 5, index),
+                insertStore: false
+            );
+            await SeedOrderDetailOnlyAsync(orderGuid, "P002", quantity: index, allocQuantity: index);
+        }
+
+        _sqlLogs.Clear();
+
+        var result = await CreateService().GetProductsDynamicDataAsync(new StoreOrderDynamicDataRequestDto
+        {
+            StoreCode = "S001",
+            ProductCodes = new List<string> { "P001", "P002" },
+        });
+
+        Assert.True(result.Success);
+        Assert.Collection(
+            result.Data!,
+            first => Assert.Equal(new DateTime(2025, 1, 1), first.LastOrderDate),
+            second =>
+            {
+                Assert.Equal("P002", second.ProductCode);
+                Assert.Equal(new DateTime(2026, 5, 30), second.LastOrderDate);
+                Assert.Equal(30m, second.LastQuantity);
+            }
+        );
+        Assert.DoesNotContain(
+            _sqlLogs,
+            log =>
+                log.Contains(">=", StringComparison.Ordinal)
+                && log.Contains("OrderDate", StringComparison.OrdinalIgnoreCase)
+        );
+    }
+
+    [Fact]
     public async Task GetPagedListAsync_ExcludeOrderGUID_AlsoAppliesToDefaultWarehouseQuery()
     {
         await SeedProductAsync("P001", "ITEM-001");

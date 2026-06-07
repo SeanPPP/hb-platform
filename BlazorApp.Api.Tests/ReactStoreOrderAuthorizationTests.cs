@@ -159,7 +159,7 @@ public class ReactStoreOrderAuthorizationTests
     }
 
     [Fact]
-    public async Task WarmUpHomePageAsync_轻量结果只写预热专用缓存键_避免污染正常分页总数()
+    public async Task WarmUpHomePageAsync_同时写入轻量预热键和正常首页缓存键()
     {
         StoreOrderCacheKeys.ClearActiveKeys();
 
@@ -175,7 +175,7 @@ public class ReactStoreOrderAuthorizationTests
                         {
                             new() { ProductCode = $"P-{filter.PageSize}" },
                         },
-                        Total = filter.PageSize,
+                        Total = filter.PageSize + 1000,
                         PageNumber = 1,
                         PageSize = filter.PageSize,
                     }
@@ -191,10 +191,16 @@ public class ReactStoreOrderAuthorizationTests
         var warmWebKey = StoreOrderCacheKeys.GetHomePageWarmUpCacheKey(50);
         var warmExpoKey = StoreOrderCacheKeys.GetHomePageWarmUpCacheKey(18);
 
-        Assert.False(cache.TryGetValue(normalWebKey, out _));
-        Assert.False(cache.TryGetValue(normalExpoKey, out _));
+        Assert.True(
+            cache.TryGetValue(normalWebKey, out PagedListReactDto<StoreOrderProductDto>? normalWeb)
+        );
+        Assert.True(
+            cache.TryGetValue(normalExpoKey, out PagedListReactDto<StoreOrderProductDto>? normalExpo)
+        );
         Assert.True(cache.TryGetValue(warmWebKey, out _));
         Assert.True(cache.TryGetValue(warmExpoKey, out _));
+        Assert.Equal(1050, normalWeb!.Total);
+        Assert.Equal(1018, normalExpo!.Total);
     }
 
     [Fact]

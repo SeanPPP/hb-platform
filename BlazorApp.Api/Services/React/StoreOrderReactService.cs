@@ -25,6 +25,14 @@ namespace BlazorApp.Api.Services.React
         private readonly IInvoiceEmailService _invoiceEmailService;
         private Func<ISqlSugarClient> _createHqConnection;
 
+        private sealed class StoreOrderDynamicHistoryRow
+        {
+            public string? ProductCode { get; set; }
+            public DateTime? OrderDate { get; set; }
+            public decimal? Quantity { get; set; }
+            public decimal? AllocQuantity { get; set; }
+        }
+
         private string GetScanTraceId()
         {
             // 同一次扫码的前后端日志使用同一个 traceId，方便按链路聚合耗时。
@@ -140,6 +148,7 @@ namespace BlazorApp.Api.Services.React
             StoreOrderFilterDto filter
         )
         {
+            var totalSw = Stopwatch.StartNew();
             var normalizedGrades = (filter.Grade ?? string.Empty)
                 .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
                 .Distinct(StringComparer.OrdinalIgnoreCase)
@@ -244,8 +253,11 @@ namespace BlazorApp.Api.Services.React
                 q = q.OrderBy((p, wp, wc, ls) => p.ItemNumber, OrderByType.Asc);
             }
 
+            var countSw = Stopwatch.StartNew();
             var total = await q.CountAsync();
+            countSw.Stop();
 
+            var listSw = Stopwatch.StartNew();
             var items = await q.Select(
                     (p, wp, wc, ls) =>
                         new StoreOrderProductDto
@@ -269,8 +281,27 @@ namespace BlazorApp.Api.Services.React
                 .Skip((filter.PageNumber - 1) * filter.PageSize)
                 .Take(filter.PageSize)
                 .ToListAsync();
+            listSw.Stop();
 
+            var gradeSw = Stopwatch.StartNew();
             await PopulateGradesAsync(_db, items, normalizedGrades);
+            gradeSw.Stop();
+
+            totalSw.Stop();
+            _logger.LogInformation(
+                "[shop-home-perf] stage=products.service.done pageNumber={PageNumber} pageSize={PageSize} category={CategoryGUID} keywordLength={KeywordLength} gradeCount={GradeCount} total={Total} itemCount={ItemCount} countMs={CountMs} listMs={ListMs} gradeMs={GradeMs} totalMs={TotalMs}",
+                filter.PageNumber,
+                filter.PageSize,
+                filter.CategoryGUID,
+                filter.ItemNumber?.Length ?? 0,
+                normalizedGrades.Count,
+                total,
+                items.Count,
+                countSw.ElapsedMilliseconds,
+                listSw.ElapsedMilliseconds,
+                gradeSw.ElapsedMilliseconds,
+                totalSw.ElapsedMilliseconds
+            );
 
             return new PagedListReactDto<StoreOrderProductDto>
             {
@@ -349,6 +380,79 @@ namespace BlazorApp.Api.Services.React
             finally
             {
                 warmUpDb.Ado.CommandTimeOut = originalTimeout;
+            }
+        }
+
+        /// <summary>
+        /// 首页正常缓存预热需要准确 Total，使用独立连接和命令超时，避免后台预热占住请求连接。
+        /// </summary>
+        public async Task<PagedListReactDto<StoreOrderProductDto>> GetHomePageCachePageAsync(
+            int pageSize,
+            CancellationToken cancellationToken = default
+        )
+        {
+            if (pageSize <= 0)
+            {
+                throw new ValidationException("首页缓存页大小必须大于 0");
+            }
+
+            using var homePageDb = CreateHomePageWarmUpQueryConnection();
+            var originalTimeout = homePageDb.Ado.CommandTimeOut;
+
+            try
+            {
+                homePageDb.Ado.CommandTimeOut = originalTimeout > 0
+                    ? Math.Min(originalTimeout, HomePageWarmUpCommandTimeoutSeconds)
+                    : HomePageWarmUpCommandTimeoutSeconds;
+
+                var q = CreateDefaultWarehouseProductQuery(homePageDb)
+                    .OrderBy((p, wp, wc, ls) => p.ItemNumber, OrderByType.Asc);
+
+                var total = await q.CountAsync();
+                cancellationToken.ThrowIfCancellationRequested();
+
+                var items = await q.Select(
+                        (p, wp, wc, ls) =>
+                            new StoreOrderProductDto
+                            {
+                                ProductCode = p.ProductCode ?? string.Empty,
+                                ItemNumber = p.ItemNumber,
+                                Barcode = p.Barcode,
+                                ProductName = p.ProductName,
+                                ProductImage = p.ProductImage,
+                                CategoryName = wc.CategoryName,
+                                WarehouseCategoryGUID = p.WarehouseCategoryGUID,
+                                LocalSupplierCode = p.LocalSupplierCode,
+                                LocalSupplierName = ls.Name,
+                                OEMPrice = wp.OEMPrice,
+                                MinOrderQuantity = wp.MinOrderQuantity ?? 1,
+                                StockQuantity = wp.StockQuantity ?? 0,
+                                PackQty = p.MiddlePackageQuantity,
+                                ImportPrice = wp.ImportPrice,
+                            }
+                    )
+                    .Take(pageSize)
+                    .ToListAsync();
+
+                cancellationToken.ThrowIfCancellationRequested();
+                await PopulateGradesAsync(
+                    homePageDb,
+                    items,
+                    new List<string>(capacity: 0),
+                    cancellationToken
+                );
+
+                return new PagedListReactDto<StoreOrderProductDto>
+                {
+                    Items = items,
+                    Total = total,
+                    PageNumber = 1,
+                    PageSize = pageSize,
+                };
+            }
+            finally
+            {
+                homePageDb.Ado.CommandTimeOut = originalTimeout;
             }
         }
 
@@ -1584,6 +1688,7 @@ namespace BlazorApp.Api.Services.React
             StoreOrderDynamicDataRequestDto request
         )
         {
+            var totalSw = Stopwatch.StartNew();
             try
             {
                 var productCodes = (request.ProductCodes ?? new List<string>())
@@ -1601,7 +1706,8 @@ namespace BlazorApp.Api.Services.React
                     };
                 }
 
-                // 1. 获取购物车数量 (FlowStatus = 0)
+                var cartSw = Stopwatch.StartNew();
+                // 1. 获取购物车数量 (FlowStatus = 0)，在数据库侧聚合，避免把整车明细拉回内存。
                 var cartItems = await _db.Queryable<WareHouseOrderDetails>()
                     .InnerJoin<WareHouseOrder>((d, o) => d.OrderGUID == o.OrderGUID)
                     .Where(
@@ -1615,12 +1721,21 @@ namespace BlazorApp.Api.Services.React
                         (d, o) =>
                             d.ProductCode != null && productCodes.Contains(d.ProductCode)
                     )
-                    .Select((d, o) => new { d.ProductCode, d.Quantity })
+                    .GroupBy((d, o) => d.ProductCode)
+                    .Select(
+                        (d, o) =>
+                            new
+                            {
+                                ProductCode = d.ProductCode,
+                                CartQuantity = SqlFunc.AggregateSum(d.Quantity),
+                            }
+                    )
                     .ToListAsync();
+                cartSw.Stop();
 
-                // 2. 获取最近历史订单 (FlowStatus > 0)
-                // 策略: 先取出所有相关明细按时间倒序，然后在内存分组
-                var historyItems = await _db.Queryable<WareHouseOrderDetails>()
+                var latestDateSw = Stopwatch.StartNew();
+                // 2. 先在数据库侧按商品聚合最近历史订单日期，再回查覆盖这些最新日期的历史窗口。
+                var latestOrderDates = await _db.Queryable<WareHouseOrderDetails>()
                     .InnerJoin<WareHouseOrder>((d, o) => d.OrderGUID == o.OrderGUID)
                     .Where(
                         (d, o) =>
@@ -1633,25 +1748,72 @@ namespace BlazorApp.Api.Services.React
                         (d, o) =>
                             d.ProductCode != null && productCodes.Contains(d.ProductCode)
                     )
-                    .OrderBy((d, o) => o.OrderDate, OrderByType.Desc)
+                    .GroupBy((d, o) => d.ProductCode)
                     .Select(
                         (d, o) =>
                             new
                             {
-                                d.ProductCode,
-                                o.OrderDate,
-                                d.Quantity,
-                                d.AllocQuantity,
+                                ProductCode = d.ProductCode,
+                                LastOrderDate = SqlFunc.AggregateMax(o.OrderDate),
                             }
                     )
                     .ToListAsync();
+                latestDateSw.Stop();
+
+                var historySw = Stopwatch.StartNew();
+                var latestProducts = latestOrderDates
+                    .Where(item =>
+                        !string.IsNullOrWhiteSpace(item.ProductCode) && item.LastOrderDate.HasValue
+                    )
+                    .Select(item => item.ProductCode!)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                var historyItems = new List<StoreOrderDynamicHistoryRow>(latestProducts.Count);
+
+                foreach (var productCode in latestProducts)
+                {
+                    var historyItem = await _db.Queryable<WareHouseOrderDetails>()
+                        .InnerJoin<WareHouseOrder>((d, o) => d.OrderGUID == o.OrderGUID)
+                        .Where(
+                            (d, o) =>
+                                o.StoreCode == request.StoreCode
+                                && o.FlowStatus > 0
+                                && !o.IsDeleted
+                                && !d.IsDeleted
+                        )
+                        .Where(
+                            (d, o) =>
+                                d.ProductCode != null
+                                && productCodes.Contains(d.ProductCode)
+                                && d.ProductCode == productCode
+                                && o.OrderDate != null
+                        )
+                        .OrderBy((d, o) => o.OrderDate, OrderByType.Desc)
+                        .Select(
+                            (d, o) =>
+                                new StoreOrderDynamicHistoryRow
+                                {
+                                    ProductCode = d.ProductCode,
+                                    OrderDate = o.OrderDate,
+                                    Quantity = d.Quantity,
+                                AllocQuantity = d.AllocQuantity,
+                            }
+                        )
+                        .FirstAsync();
+
+                    if (historyItem != null)
+                    {
+                        historyItems.Add(historyItem);
+                    }
+                }
+                historySw.Stop();
 
                 var cartQuantityMap = cartItems
                     .Where(item => !string.IsNullOrWhiteSpace(item.ProductCode))
                     .GroupBy(item => item.ProductCode!, StringComparer.OrdinalIgnoreCase)
                     .ToDictionary(
                         group => group.Key,
-                        group => group.Sum(item => item.Quantity ?? 0m),
+                        group => group.Sum(item => item.CartQuantity ?? 0m),
                         StringComparer.OrdinalIgnoreCase
                     );
                 var latestHistoryMap = historyItems
@@ -1665,7 +1827,7 @@ namespace BlazorApp.Api.Services.React
 
                 // 3. 按请求顺序组装结果，字典查找避免页面商品多时反复线性扫描。
                 var result = new List<StoreOrderDynamicDataDto>();
-                foreach (var code in request.ProductCodes)
+                foreach (var code in productCodes)
                 {
                     var dto = new StoreOrderDynamicDataDto { ProductCode = code };
 
@@ -1685,6 +1847,20 @@ namespace BlazorApp.Api.Services.React
 
                     result.Add(dto);
                 }
+
+                totalSw.Stop();
+                _logger.LogInformation(
+                    "[shop-home-perf] stage=dynamic-data.service.done storeCode={StoreCode} requestCount={RequestCount} cartRows={CartRows} latestDateRows={LatestDateRows} historyRows={HistoryRows} cartMs={CartMs} latestDateMs={LatestDateMs} historyMs={HistoryMs} totalMs={TotalMs}",
+                    request.StoreCode,
+                    productCodes.Count,
+                    cartItems.Count,
+                    latestOrderDates.Count,
+                    historyItems.Count,
+                    cartSw.ElapsedMilliseconds,
+                    latestDateSw.ElapsedMilliseconds,
+                    historySw.ElapsedMilliseconds,
+                    totalSw.ElapsedMilliseconds
+                );
 
                 return new ApiResponse<List<StoreOrderDynamicDataDto>>
                 {
