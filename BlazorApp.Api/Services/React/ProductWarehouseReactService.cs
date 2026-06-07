@@ -4,6 +4,7 @@ using System.Linq;
 using System.Threading.Tasks;
 using AutoMapper;
 using BlazorApp.Api.Data;
+using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Api.Services;
 using BlazorApp.Shared.DTOs;
@@ -29,6 +30,7 @@ namespace BlazorApp.Api.Services.React
         private readonly ItemBarcodeService _itemBarcodeService;
         private readonly IMapper _mapper;
         private readonly IDataSyncFullService _dataSyncFullService;
+        private readonly ITranslationService? _translationService;
 
         public ProductWarehouseReactService(
             SqlSugarContext context,
@@ -37,7 +39,8 @@ namespace BlazorApp.Api.Services.React
             IConfiguration configuration,
             ItemBarcodeService itemBarcodeService,
             IMapper mapper,
-            IDataSyncFullService dataSyncFullService
+            IDataSyncFullService dataSyncFullService,
+            ITranslationService? translationService = null
         )
         {
             _context = context;
@@ -47,6 +50,7 @@ namespace BlazorApp.Api.Services.React
             _itemBarcodeService = itemBarcodeService;
             _mapper = mapper;
             _dataSyncFullService = dataSyncFullService;
+            _translationService = translationService;
         }
 
         /// <summary>
@@ -332,6 +336,126 @@ namespace BlazorApp.Api.Services.React
             return value.HasValue && value.Value > 0;
         }
 
+        private async Task<Dictionary<string, ImportProductNameResolution>> ResolveImportProductNamesAsync(
+            IEnumerable<DomesticProduct> domesticProducts
+        )
+        {
+            var products = domesticProducts
+                .Where(p => !string.IsNullOrWhiteSpace(p.ProductCode))
+                .ToList();
+            var resolutions = new Dictionary<string, ImportProductNameResolution>();
+            var needTranslation = new List<DomesticProduct>();
+
+            foreach (var product in products)
+            {
+                var englishName = NormalizeValidEnglishName(product.EnglishProductName);
+                if (!string.IsNullOrWhiteSpace(englishName))
+                {
+                    resolutions[product.ProductCode] = new ImportProductNameResolution(
+                        englishName,
+                        englishName,
+                        false
+                    );
+                    continue;
+                }
+
+                if (!string.IsNullOrWhiteSpace(product.ProductName))
+                {
+                    needTranslation.Add(product);
+                }
+                else
+                {
+                    resolutions[product.ProductCode] = new ImportProductNameResolution(
+                        product.HBProductNo ?? product.ProductCode,
+                        null,
+                        false
+                    );
+                }
+            }
+
+            var translations = new Dictionary<string, string>();
+            if (_translationService != null && needTranslation.Count > 0)
+            {
+                translations = await _translationService.BatchTranslateToEnglishAsync(
+                    needTranslation.Select(p => p.ProductName!).Distinct().ToList()
+                );
+            }
+
+            foreach (var product in needTranslation)
+            {
+                var translatedName = translations.TryGetValue(product.ProductName!, out var value)
+                    ? NormalizeValidEnglishName(value)
+                    : null;
+
+                if (!string.IsNullOrWhiteSpace(translatedName))
+                {
+                    resolutions[product.ProductCode] = new ImportProductNameResolution(
+                        translatedName,
+                        translatedName,
+                        true
+                    );
+                    continue;
+                }
+
+                if (translations.TryGetValue(product.ProductName!, out var invalidTranslation))
+                {
+                    // 翻译服务失败时会返回原文；仍含中文的结果不能写入英文字段。
+                    _logger.LogWarning(
+                        "跳过仍包含中文的国内导入英文名称写回: ProductCode={ProductCode}, ProductName={ProductName}, Translation={Translation}",
+                        product.ProductCode,
+                        product.ProductName,
+                        invalidTranslation
+                    );
+                }
+
+                resolutions[product.ProductCode] = new ImportProductNameResolution(
+                    product.ProductName!.Trim(),
+                    null,
+                    false
+                );
+            }
+
+            return resolutions;
+        }
+
+        private string? NormalizeValidEnglishName(string? value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+                return null;
+
+            var normalized = value.Trim();
+            return ContainsChinese(normalized) ? null : normalized;
+        }
+
+        private bool ContainsChinese(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+                return false;
+
+            return _translationService?.ContainsChinese(value)
+                ?? value.Any(c => c >= '\u4e00' && c <= '\u9fff');
+        }
+
+        private static bool ShouldSmartFillExistingProductName(
+            Product existingProduct,
+            DomesticProduct domesticProduct,
+            ImportProductNameResolution nameResolution
+        )
+        {
+            if (string.IsNullOrWhiteSpace(nameResolution.EnglishName))
+                return false;
+
+            if (string.IsNullOrWhiteSpace(existingProduct.ProductName))
+                return true;
+
+            return !string.IsNullOrWhiteSpace(domesticProduct.ProductName)
+                && string.Equals(
+                    existingProduct.ProductName.Trim(),
+                    domesticProduct.ProductName.Trim(),
+                    StringComparison.Ordinal
+                );
+        }
+
         private static DetectionDomesticSnapshot? FindDomesticMatch(
             DetectionItemDto item,
             Dictionary<string, DetectionDomesticSnapshot> byCode,
@@ -380,6 +504,12 @@ namespace BlazorApp.Api.Services.React
             public decimal? PackingQuantity { get; set; }
             public bool? IsActive { get; set; }
         }
+
+        private sealed record ImportProductNameResolution(
+            string DisplayName,
+            string? EnglishName,
+            bool WasTranslated
+        );
 
         private sealed class DetectionDomesticSnapshot
         {
@@ -2239,6 +2369,40 @@ namespace BlazorApp.Api.Services.React
                 .Take(request.PageSize)
                 .ToListAsync();
 
+            var displayNameSources = items
+                .Select(item => new DomesticProduct
+                {
+                    ProductCode = item.ProductCode,
+                    HBProductNo = item.ItemNumber,
+                    ProductName = item.ProductName,
+                    EnglishProductName = item.EnglishName,
+                })
+                .ToList();
+            var nameResolutions = await ResolveImportProductNamesAsync(displayNameSources);
+            var translatedDisplayNames = displayNameSources
+                .Where(source =>
+                    nameResolutions.TryGetValue(source.ProductCode, out var resolution)
+                    && resolution.WasTranslated
+                    && !string.IsNullOrWhiteSpace(resolution.EnglishName)
+                )
+                .ToList();
+            if (translatedDisplayNames.Count > 0)
+            {
+                var now = DateTime.Now;
+                foreach (var source in translatedDisplayNames)
+                {
+                    var resolution = nameResolutions[source.ProductCode];
+                    source.EnglishProductName = resolution.EnglishName;
+                    source.UpdatedAt = now;
+                }
+
+                await _context
+                    .Db.Updateable(translatedDisplayNames)
+                    .UpdateColumns(dp => new { dp.EnglishProductName, dp.UpdatedAt })
+                    .WhereColumns(dp => new { dp.ProductCode })
+                    .ExecuteCommandAsync();
+            }
+
             var result = new List<DomesticProductNotInWarehouseDto>();
             foreach (var item in items)
             {
@@ -2258,8 +2422,18 @@ namespace BlazorApp.Api.Services.React
                             item.ProductImage,
                             item.ItemNumber ?? string.Empty
                         ),
-                        ProductName = item.ProductName,
-                        EnglishName = item.EnglishName,
+                        ProductName = nameResolutions.TryGetValue(
+                            item.ProductCode,
+                            out var nameResolution
+                        )
+                            ? nameResolution.DisplayName
+                            : item.ProductName,
+                        EnglishName = nameResolutions.TryGetValue(
+                            item.ProductCode,
+                            out var englishResolution
+                        )
+                            ? englishResolution.EnglishName
+                            : item.EnglishName,
                         ProductType = item.ProductType,
                         DomesticPrice = item.DomesticPrice,
                         OEMPrice = item.OEMPrice,
@@ -2337,6 +2511,9 @@ namespace BlazorApp.Api.Services.React
                         .Where(dp => codes.Contains(dp.ProductCode) && !dp.IsDeleted)
                         .ToListAsync()
                 ).ToDictionary(dp => dp.ProductCode);
+                var nameResolutions = await ResolveImportProductNamesAsync(
+                    domesticProductsDict.Values
+                );
 
                 // 2. 批量查询仓库商品
                 var warehouseProductsDict = (
@@ -2428,6 +2605,7 @@ namespace BlazorApp.Api.Services.React
                 var toUpdateWarehouseProducts = new List<WarehouseProduct>();
                 var toInsertWarehouseProducts = new List<WarehouseProduct>();
                 var toInsertProducts = new List<Product>();
+                var toUpdateProducts = new List<Product>();
                 var toUpdateDomesticProducts = new List<DomesticProduct>();
                 var toInsertProductSetCodes = new List<ProductSetCode>();
                 var toInsertStoreMultiCodeProducts = new List<StoreMultiCodeProduct>();
@@ -2447,6 +2625,16 @@ namespace BlazorApp.Api.Services.React
                         response.FailedCount++;
                         continue;
                     }
+                    var nameResolution = nameResolutions.TryGetValue(
+                        productCode,
+                        out var resolvedName
+                    )
+                        ? resolvedName
+                        : new ImportProductNameResolution(
+                            domesticProduct.ProductName ?? domesticProduct.HBProductNo ?? productCode,
+                            null,
+                            false
+                        );
 
                     // 补全图片 URL
                     var finalImageUrl = ProductImageUrlHelper.EnsureImageUrl(
@@ -2525,6 +2713,13 @@ namespace BlazorApp.Api.Services.React
                     domesticProduct.ImportPrice = importPrice;
                     domesticProduct.UnitVolume = unitVolume;
                     domesticProduct.ProductImage = finalImageUrl;
+                    if (
+                        nameResolution.WasTranslated
+                        && !string.IsNullOrWhiteSpace(nameResolution.EnglishName)
+                    )
+                    {
+                        domesticProduct.EnglishProductName = nameResolution.EnglishName;
+                    }
                     domesticProduct.UpdatedAt = now;
                     toUpdateDomesticProducts.Add(domesticProduct);
 
@@ -2538,8 +2733,8 @@ namespace BlazorApp.Api.Services.React
                             Barcode = domesticProduct.Barcode,
                             LocalSupplierCode = "200",
                             ProductType = domesticProduct.ProductType,
-                            ProductName = domesticProduct.ProductName,
-                            EnglishName = domesticProduct.EnglishProductName,
+                            ProductName = nameResolution.DisplayName,
+                            EnglishName = nameResolution.EnglishName,
                             PurchasePrice = wp.ImportPrice,
                             RetailPrice = wp.OEMPrice,
                             ProductImage = ProductImageUrlHelper.EnsureImageUrl(
@@ -2553,6 +2748,19 @@ namespace BlazorApp.Api.Services.React
                             UpdatedAt = now,
                         };
                         toInsertProducts.Add(product);
+                    }
+                    else if (
+                        ShouldSmartFillExistingProductName(
+                            existingProduct,
+                            domesticProduct,
+                            nameResolution
+                        )
+                    )
+                    {
+                        existingProduct.ProductName = nameResolution.EnglishName;
+                        existingProduct.EnglishName = nameResolution.EnglishName;
+                        existingProduct.UpdatedAt = now;
+                        toUpdateProducts.Add(existingProduct);
                     }
 
                     // 处理套装商品（使用内存查找，避免 N+1）
@@ -2695,6 +2903,7 @@ namespace BlazorApp.Api.Services.React
                             dp.ImportPrice,
                             dp.UnitVolume,
                             dp.ProductImage,
+                            dp.EnglishProductName,
                             dp.UpdatedAt,
                         })
                         .ExecuteCommandAsync();
@@ -2702,6 +2911,14 @@ namespace BlazorApp.Api.Services.React
                 if (toInsertProducts.Any())
                 {
                     await _context.Db.Insertable(toInsertProducts).ExecuteCommandAsync();
+                }
+                if (toUpdateProducts.Any())
+                {
+                    await _context
+                        .Db.Updateable(toUpdateProducts)
+                        .UpdateColumns(p => new { p.ProductName, p.EnglishName, p.UpdatedAt })
+                        .WhereColumns(p => new { p.ProductCode })
+                        .ExecuteCommandAsync();
                 }
                 if (toInsertProductSetCodes.Any())
                 {

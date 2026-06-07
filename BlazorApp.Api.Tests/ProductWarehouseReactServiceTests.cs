@@ -6,6 +6,7 @@ using System.Runtime.CompilerServices;
 using System.Threading.Tasks;
 using AutoMapper;
 using BlazorApp.Api.Data;
+using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Api.Services;
 using BlazorApp.Api.Services.React;
@@ -1007,6 +1008,192 @@ namespace BlazorApp.Api.Tests
             Assert.Equal("货位不存在", error.Message);
         }
 
+        [Fact]
+        public async Task ImportFromDomesticAsync_已有英文名_商品主档使用英文名称()
+        {
+            await SeedDomesticImportProductAsync(
+                productCode: "P-IMPORT-EN",
+                productName: "夜光麦芽糖",
+                englishName: "Glow-in-the-Dark Malts"
+            );
+            var service = CreateService();
+
+            var result = await service.ImportFromDomesticAsync(new ImportFromDomesticRequestDto
+            {
+                ProductCodes = new List<string> { "P-IMPORT-EN" },
+            });
+
+            Assert.True(result.Success);
+            Assert.Equal(1, result.SuccessCount);
+            var product = await _db.Queryable<Product>()
+                .Where(p => p.ProductCode == "P-IMPORT-EN")
+                .SingleAsync();
+            Assert.Equal("Glow-in-the-Dark Malts", product.ProductName);
+            Assert.Equal("Glow-in-the-Dark Malts", product.EnglishName);
+        }
+
+        [Fact]
+        public async Task ImportFromDomesticAsync_缺英文名_自动翻译并写回国内商品()
+        {
+            await SeedDomesticImportProductAsync(
+                productCode: "P-IMPORT-TRANSLATE",
+                productName: "光变爆珠5.5",
+                englishName: null
+            );
+            var translationService = new Mock<ITranslationService>();
+            translationService
+                .Setup(x => x.BatchTranslateToEnglishAsync(It.IsAny<List<string>>()))
+                .ReturnsAsync(new Dictionary<string, string>
+                {
+                    ["光变爆珠5.5"] = "Light-Changing Bursting Beads 5.5",
+                });
+            translationService
+                .Setup(x => x.ContainsChinese(It.IsAny<string>()))
+                .Returns<string>(ContainsChineseForTest);
+            var service = CreateService(translationService.Object);
+
+            var result = await service.ImportFromDomesticAsync(new ImportFromDomesticRequestDto
+            {
+                ProductCodes = new List<string> { "P-IMPORT-TRANSLATE" },
+            });
+
+            Assert.True(result.Success);
+            var product = await _db.Queryable<Product>()
+                .Where(p => p.ProductCode == "P-IMPORT-TRANSLATE")
+                .SingleAsync();
+            Assert.Equal("Light-Changing Bursting Beads 5.5", product.ProductName);
+            Assert.Equal("Light-Changing Bursting Beads 5.5", product.EnglishName);
+            var domestic = await _db.Queryable<DomesticProduct>()
+                .Where(p => p.ProductCode == "P-IMPORT-TRANSLATE")
+                .SingleAsync();
+            Assert.Equal("Light-Changing Bursting Beads 5.5", domestic.EnglishProductName);
+            translationService.Verify(x => x.BatchTranslateToEnglishAsync(
+                It.Is<List<string>>(texts => texts.Contains("光变爆珠5.5"))),
+                Times.Once);
+        }
+
+        [Fact]
+        public async Task ImportFromDomesticAsync_翻译仍含中文_不污染英文字段()
+        {
+            await SeedDomesticImportProductAsync(
+                productCode: "P-IMPORT-CHINESE-TRANSLATION",
+                productName: "大黄油",
+                englishName: null
+            );
+            var translationService = new Mock<ITranslationService>();
+            translationService
+                .Setup(x => x.BatchTranslateToEnglishAsync(It.IsAny<List<string>>()))
+                .ReturnsAsync(new Dictionary<string, string> { ["大黄油"] = "大黄油" });
+            translationService
+                .Setup(x => x.ContainsChinese(It.IsAny<string>()))
+                .Returns<string>(ContainsChineseForTest);
+            var service = CreateService(translationService.Object);
+
+            var result = await service.ImportFromDomesticAsync(new ImportFromDomesticRequestDto
+            {
+                ProductCodes = new List<string> { "P-IMPORT-CHINESE-TRANSLATION" },
+            });
+
+            Assert.True(result.Success);
+            var product = await _db.Queryable<Product>()
+                .Where(p => p.ProductCode == "P-IMPORT-CHINESE-TRANSLATION")
+                .SingleAsync();
+            Assert.Equal("大黄油", product.ProductName);
+            Assert.Null(product.EnglishName);
+            var domestic = await _db.Queryable<DomesticProduct>()
+                .Where(p => p.ProductCode == "P-IMPORT-CHINESE-TRANSLATION")
+                .SingleAsync();
+            Assert.Null(domestic.EnglishProductName);
+        }
+
+        [Fact]
+        public async Task ImportFromDomesticAsync_已有商品仍是国内中文名_智能补英文()
+        {
+            await SeedDomesticImportProductAsync(
+                productCode: "P-IMPORT-EXISTING-CHINESE",
+                productName: "5.5果胶",
+                englishName: "5.5 Fruit Gel"
+            );
+            await _db.Insertable(new Product
+            {
+                UUID = "product-existing-chinese",
+                ProductCode = "P-IMPORT-EXISTING-CHINESE",
+                ProductName = "5.5果胶",
+                EnglishName = null,
+                IsActive = true,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+            var service = CreateService();
+
+            var result = await service.ImportFromDomesticAsync(new ImportFromDomesticRequestDto
+            {
+                ProductCodes = new List<string> { "P-IMPORT-EXISTING-CHINESE" },
+            });
+
+            Assert.True(result.Success);
+            var product = await _db.Queryable<Product>()
+                .Where(p => p.ProductCode == "P-IMPORT-EXISTING-CHINESE")
+                .SingleAsync();
+            Assert.Equal("5.5 Fruit Gel", product.ProductName);
+            Assert.Equal("5.5 Fruit Gel", product.EnglishName);
+        }
+
+        [Fact]
+        public async Task ImportFromDomesticAsync_已有商品人工名称_不覆盖商品名称()
+        {
+            await SeedDomesticImportProductAsync(
+                productCode: "P-IMPORT-CUSTOM",
+                productName: "小熊",
+                englishName: "Bear"
+            );
+            await _db.Insertable(new Product
+            {
+                UUID = "product-existing-custom",
+                ProductCode = "P-IMPORT-CUSTOM",
+                ProductName = "Custom Display Name",
+                EnglishName = "Custom English",
+                IsActive = true,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+            var service = CreateService();
+
+            var result = await service.ImportFromDomesticAsync(new ImportFromDomesticRequestDto
+            {
+                ProductCodes = new List<string> { "P-IMPORT-CUSTOM" },
+            });
+
+            Assert.True(result.Success);
+            var product = await _db.Queryable<Product>()
+                .Where(p => p.ProductCode == "P-IMPORT-CUSTOM")
+                .SingleAsync();
+            Assert.Equal("Custom Display Name", product.ProductName);
+            Assert.Equal("Custom English", product.EnglishName);
+        }
+
+        [Fact]
+        public async Task GetDomesticProductsNotInWarehouseAsync_弹窗商品名称优先显示英文()
+        {
+            await SeedDomesticImportProductAsync(
+                productCode: "P-IMPORT-LIST",
+                productName: "夜光5.5",
+                englishName: "Glow-in-the-Dark 5.5"
+            );
+            var service = CreateService();
+
+            var result = await service.GetDomesticProductsNotInWarehouseAsync(
+                new GetDomesticProductsNotInWarehouseRequestDto
+                {
+                    Page = 1,
+                    PageSize = 20,
+                    GlobalSearch = "P-IMPORT-LIST",
+                }
+            );
+
+            var item = Assert.Single(result.Items);
+            Assert.Equal("Glow-in-the-Dark 5.5", item.ProductName);
+            Assert.Equal("Glow-in-the-Dark 5.5", item.EnglishName);
+        }
+
         public void Dispose()
         {
             _db.Dispose();
@@ -1126,7 +1313,31 @@ namespace BlazorApp.Api.Tests
             }).ExecuteCommandAsync();
         }
 
-        private ProductWarehouseReactService CreateService()
+        private async Task SeedDomesticImportProductAsync(
+            string productCode,
+            string productName,
+            string? englishName
+        )
+        {
+            await _db.Insertable(new DomesticProduct
+            {
+                ProductCode = productCode,
+                HBProductNo = productCode,
+                Barcode = $"BAR-{productCode}",
+                ProductName = productName,
+                EnglishProductName = englishName,
+                ProductType = 0,
+                DomesticPrice = 2.1m,
+                OEMPrice = 4.99m,
+                ImportPrice = 1.2m,
+                UnitVolume = 0.069m,
+                ProductImage = $"/{productCode}.jpg",
+                IsActive = true,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+        }
+
+        private ProductWarehouseReactService CreateService(ITranslationService? translationService = null)
         {
             var configuration = new ConfigurationBuilder().Build();
             var context = CreateSqlSugarContext(_db);
@@ -1143,8 +1354,27 @@ namespace BlazorApp.Api.Tests
                 configuration,
                 itemBarcodeService,
                 Mock.Of<IMapper>(),
-                Mock.Of<IDataSyncFullService>()
+                Mock.Of<IDataSyncFullService>(),
+                translationService ?? CreateDefaultTranslationService()
             );
+        }
+
+        private static ITranslationService CreateDefaultTranslationService()
+        {
+            var translationService = new Mock<ITranslationService>();
+            translationService
+                .Setup(x => x.BatchTranslateToEnglishAsync(It.IsAny<List<string>>()))
+                .ReturnsAsync(new Dictionary<string, string>());
+            translationService
+                .Setup(x => x.ContainsChinese(It.IsAny<string>()))
+                .Returns<string>(ContainsChineseForTest);
+            return translationService.Object;
+        }
+
+        private static bool ContainsChineseForTest(string text)
+        {
+            return !string.IsNullOrWhiteSpace(text)
+                && text.Any(c => c >= '\u4e00' && c <= '\u9fff');
         }
 
         private static SqlSugarContext CreateSqlSugarContext(ISqlSugarClient db)
