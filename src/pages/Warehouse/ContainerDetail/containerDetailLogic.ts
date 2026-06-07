@@ -46,6 +46,16 @@ const containerDetailSortFields = new Set<string>([
   'remark',
 ])
 
+const chineseTextPattern = /[\u4e00-\u9fff]/
+
+export function containsChineseText(value?: string) {
+  return Boolean(value && chineseTextPattern.test(value))
+}
+
+export function isValidContainerDetailEnglishTranslation(value?: string) {
+  return Boolean(value?.trim()) && !containsChineseText(value)
+}
+
 export function isContainerDetailSortField(value: unknown): value is ContainerDetailSortField {
   return typeof value === 'string' && containerDetailSortFields.has(value)
 }
@@ -85,6 +95,12 @@ export function getContainerDetailProductName(row: ContainerDetail) {
 
 export function getContainerDetailEnglishName(row: ContainerDetail) {
   return row.英文名称 ?? row.商品信息?.英文名称
+}
+
+export function getContainerDetailTranslationSource(row: ContainerDetail) {
+  const englishName = getContainerDetailEnglishName(row)
+  if (containsChineseText(englishName)) return englishName
+  return getContainerDetailProductName(row)
 }
 
 export function getContainerDetailItemNumber(row: ContainerDetail) {
@@ -368,15 +384,46 @@ export function buildContainerDetailTranslationUpdates(
   const updates: UpdateContainerDetailRequest[] = []
 
   rows.forEach((row) => {
-    const name = getContainerDetailProductName(row)
+    const name = getContainerDetailTranslationSource(row)
     const englishName = name ? translations[name] : undefined
 
-    if (row.hguid && englishName) {
-      updates.push({ hguid: row.hguid, 英文名称: englishName })
+    if (row.hguid && isValidContainerDetailEnglishTranslation(englishName)) {
+      updates.push({ hguid: row.hguid, 英文名称: englishName!.trim() })
     }
   })
 
   return updates
+}
+
+export function countContainerDetailInvalidTranslationResults(
+  rows: ContainerDetail[],
+  translations: Record<string, string>,
+) {
+  return rows.filter((row) => {
+    const name = getContainerDetailTranslationSource(row)
+    const englishName = name ? translations[name] : undefined
+    return Boolean(englishName) && !isValidContainerDetailEnglishTranslation(englishName)
+  }).length
+}
+
+export function buildContainerDetailEnglishNameUpdates(
+  rows: ContainerDetail[],
+  englishName: string,
+): UpdateContainerDetailRequest[] {
+  const normalizedEnglishName = englishName.trim()
+  if (!isValidContainerDetailEnglishTranslation(normalizedEnglishName)) return []
+
+  return rows
+    .filter((row) => Boolean(row.hguid))
+    .map((row) => ({ hguid: row.hguid, 英文名称: normalizedEnglishName }))
+}
+
+export function buildContainerDetailClearEnglishNameUpdates(
+  rows: ContainerDetail[],
+): UpdateContainerDetailRequest[] {
+  return rows
+    .filter((row) => Boolean(row.hguid))
+    .map((row) => ({ hguid: row.hguid, ClearEnglishName: true }))
 }
 
 export function applyContainerDetailEnglishNameUpdates(
@@ -725,6 +772,10 @@ export function buildContainerDetailHqPushSelection(rows: ContainerDetail[]): Co
     const productCode = row.商品编码?.trim() || row.商品信息?.商品编码?.trim()
     const localSupplierCode = row.localSupplierCode?.trim() || row.商品信息?.localSupplierCode?.trim()
     const itemNumber = row.商品信息?.货号?.trim()
+    const productName = getContainerDetailProductName(row)?.trim()
+    const englishName = getContainerDetailEnglishName(row)?.trim()
+    const barcode = row.商品信息?.条形码?.trim()
+    const imageUrl = row.商品图片?.trim() || row.商品信息?.商品图片?.trim()
     if (!productCode && !(localSupplierCode && itemNumber)) {
       missingProductCodeCount += 1
       return
@@ -747,9 +798,13 @@ export function buildContainerDetailHqPushSelection(rows: ContainerDetail[]): Co
       productCode: productCode || undefined,
       localSupplierCode,
       itemNumber,
-      domesticPrice: Number(row.国内价格 ?? 0),
-      importPrice: Number(row.进口价格 ?? 0),
-      oemPrice: Number(row.贴牌价格 ?? 0),
+      productName,
+      englishName,
+      barcode,
+      imageUrl,
+      domesticPrice: row.国内价格 == null ? undefined : Number(row.国内价格),
+      importPrice: row.进口价格 == null ? undefined : Number(row.进口价格),
+      oemPrice: row.贴牌价格 == null ? undefined : Number(row.贴牌价格),
       isNewProduct,
       // 保留货柜上下架状态，兼容只传编码的旧链路同时让 HQ 候选契约更完整。
       warehouseIsActive: row.warehouseIsActive,

@@ -164,3 +164,61 @@
 .container-detail-column-filter .ant-input-number {
   width: 105px;
 }
+
+.container-detail-page-small .ant-card-body {
+  padding: 12px;
+}
+
+.container-detail-page-small .ant-space {
+  row-gap: 8px !important;
+}
+
+.container-detail-page-small .ant-descriptions-view {
+  overflow-x: auto;
+}
+
+.container-detail-page-small .ant-descriptions table {
+  min-width: 720px;
+}
+
+.container-detail-page-small .container-detail-stats {
+  padding: 0 0 2px;
+}
+
+.container-detail-page-small .container-detail-stat-tag {
+  padding: 1px 7px;
+}
+
+.container-detail-page-small .ant-table-pagination {
+  margin: 8px 0 0;
+}
+
+.container-detail-page-small-portrait .container-detail-table .ant-table-cell-fix-left,
+.container-detail-page-small-portrait .container-detail-table .ant-table-cell-fix-left-first,
+.container-detail-page-small-portrait .container-detail-table .ant-table-cell-fix-left-last {
+  position: static !important;
+  left: auto !important;
+  box-shadow: none !important;
+}
+
+.container-detail-page-small-landscape .ant-card-body {
+  padding: 8px 10px;
+}
+
+.container-detail-page-small-landscape .ant-descriptions-wrapper,
+.container-detail-page-small-landscape .ant-descriptions {
+  font-size: 12px;
+}
+
+.container-detail-page-small-landscape .ant-descriptions .ant-descriptions-item-label,
+.container-detail-page-small-landscape .ant-descriptions .ant-descriptions-item-content {
+  padding: 4px 6px;
+}
+
+.container-detail-page-small-landscape .container-detail-table .ant-table-cell {
+  padding: 3px 5px !important;
+}
+
+.container-detail-page-small-landscape .container-detail-table .ant-table-footer {
+  padding: 4px 6px;
+}

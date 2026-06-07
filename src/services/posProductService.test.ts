@@ -1,8 +1,10 @@
 import {
   batchUpdateProductStoreRecords,
+  createPushProductsToHqJob,
   createHqProductFullSyncJob,
   createHqProductIncrementalSyncJob,
   createSupplierImageBatchUpdateJob,
+  getPushProductsToHqJob,
   getSyncProductsToStoresJob,
   getSupplierImageBatchUpdateJob,
   getHqProductSyncJob,
@@ -275,6 +277,96 @@ try {
   assertEqual(pushResult.affectedRowCount, 55, '发送 HQ 缺少后端汇总时应把库存、分店价格和多码统计合并为影响记录数')
   assertEqual(pushResult.warehouseInventoriesCreated, 9, '发送 HQ 应保留仓库库存新增统计')
   assertEqual(pushResult.warehouseInventoriesUpdated, 10, '发送 HQ 应保留仓库库存更新统计')
+
+  nextPayload = {
+    success: true,
+    data: {
+      jobId: 'push-hq-job-1',
+      operationId: 'container-push-hq:container-1:HB001',
+      status: 'queued',
+      message: '任务已提交',
+    },
+  }
+
+  const pushJob = await createPushProductsToHqJob({
+    operationId: 'container-push-hq:container-1:HB001',
+    productCodes: ['HB001'],
+    items: [
+      {
+        productCode: 'HB001',
+        localSupplierCode: 'DATS',
+        itemNumber: '72653',
+        domesticPrice: 3.8,
+        importPrice: 1.21,
+        oemPrice: 1.45,
+        isNewProduct: false,
+        warehouseIsActive: true,
+      },
+    ],
+  })
+  assertEqual(capturedUrl, '/api/react/v1/products/push-to-hq/jobs', '发送 HQ job 应调用后台任务创建接口')
+  assertEqual(capturedInit?.method, 'POST', '发送 HQ job 应使用 POST')
+  assertDeepEqual(
+    JSON.parse(String(capturedInit?.body)),
+    {
+      operationId: 'container-push-hq:container-1:HB001',
+      productCodes: ['HB001'],
+      items: [
+        {
+          productCode: 'HB001',
+          localSupplierCode: 'DATS',
+          itemNumber: '72653',
+          domesticPrice: 3.8,
+          importPrice: 1.21,
+          oemPrice: 1.45,
+          isNewProduct: false,
+          warehouseIsActive: true,
+        },
+      ],
+    },
+    '发送 HQ job 请求应保留 operationId、productCodes 和候选 items',
+  )
+  assertEqual(pushJob.status, 'Queued', '发送 HQ job queued 应归一为 Queued')
+
+  nextPayload = {
+    success: true,
+    data: {
+      jobId: 'push-hq-job-1',
+      status: 'completed',
+      result: {
+        successCount: 1,
+        failedCount: 1,
+        totalCount: 2,
+        productsAdded: 1,
+        productsUpdated: 2,
+        warehouseInventoriesCreated: 3,
+        warehouseInventoriesUpdated: 4,
+        storeRetailPricesCreated: 5,
+        storeRetailPricesUpdated: 6,
+        productSetCodesCreated: 7,
+        productSetCodesUpdated: 8,
+        storeMultiCodesCreated: 9,
+        storeMultiCodesUpdated: 10,
+        errors: ['HB002 写入失败'],
+      },
+      errors: ['后台任务存在错误'],
+    },
+  }
+
+  const completedPushJob = await getPushProductsToHqJob('push-hq-job-1')
+  assertEqual(
+    capturedUrl,
+    '/api/react/v1/products/push-to-hq/jobs/push-hq-job-1',
+    '查询发送 HQ job 应调用任务查询接口',
+  )
+  assertEqual(completedPushJob.status, 'Succeeded', 'completed 应归一为 Succeeded')
+  assertEqual(completedPushJob.result?.productsAdded, 1, '发送 HQ job 应保留商品新增统计')
+  assertEqual(completedPushJob.result?.warehouseInventoriesCreated, 3, '发送 HQ job 应保留库存新增统计')
+  assertEqual(completedPushJob.result?.storeRetailPricesUpdated, 6, '发送 HQ job 应保留零售价更新统计')
+  assertEqual(completedPushJob.result?.productSetCodesCreated, 7, '发送 HQ job 应保留套装编码新增统计')
+  assertEqual(completedPushJob.result?.storeMultiCodesUpdated, 10, '发送 HQ job 应保留多码更新统计')
+  assertDeepEqual(completedPushJob.result?.errors, ['HB002 写入失败'], '发送 HQ job 应保留 result 错误明细')
+  assertDeepEqual(completedPushJob.errors, ['后台任务存在错误'], '发送 HQ job 应保留顶层错误摘要')
 
   nextPayload = {
     success: true,

@@ -5,6 +5,8 @@ import {
   applyContainerDetailEnglishNameUpdates,
   applyContainerDetailWarehouseStatusByProductCodes,
   applyContainerDetailColumnState,
+  buildContainerDetailClearEnglishNameUpdates,
+  buildContainerDetailEnglishNameUpdates,
   buildContainerDetailMatchedDomesticDataUpdates,
   buildContainerDetailTagStats,
   buildContainerDetailFloatRateUpdates,
@@ -12,9 +14,11 @@ import {
   buildContainerDetailTranslationUpdates,
   calculateContainerDetailImportPrice,
   calculateContainerDetailTransportCost,
+  countContainerDetailInvalidTranslationResults,
   extractPushToHqErrorResult,
   getContainerDetailEnglishName,
   getContainerDetailProductCode,
+  getContainerDetailTranslationSource,
   getContainerDetailWarehouseActionFailureMessage,
   isContainerDetailSortField,
   matchesContainerDetailSelectedTags,
@@ -79,6 +83,52 @@ assertDeepEqual(
   '批量翻译应用明细中文名优先生成可保存的英文名称更新',
 )
 
+const englishNameChineseRows: ContainerDetail[] = [
+  {
+    id: 3,
+    hguid: 'detail-3',
+    商品名称: '商品中文名不应优先',
+    英文名称: '草莓玩具',
+  },
+]
+
+assertEqual(
+  getContainerDetailTranslationSource(englishNameChineseRows[0]),
+  '草莓玩具',
+  '英文名称仍含中文时应优先作为翻译源',
+)
+
+assertDeepEqual(
+  buildContainerDetailTranslationUpdates(englishNameChineseRows, {
+    草莓玩具: 'Strawberry Toy',
+    商品中文名不应优先: 'Wrong Source',
+  }),
+  [
+    { hguid: 'detail-3', 英文名称: 'Strawberry Toy' },
+  ],
+  '英文名称为中文时批量翻译应翻译英文名称字段本身',
+)
+
+assertDeepEqual(
+  buildContainerDetailTranslationUpdates(rows, {
+    明细大草莓: 'Large 草莓',
+    TPR鲨鱼: 'TPR Shark Toy',
+  }),
+  [
+    { hguid: 'detail-2', 英文名称: 'TPR Shark Toy' },
+  ],
+  '批量翻译应跳过仍包含中文的英文名称结果',
+)
+
+assertEqual(
+  countContainerDetailInvalidTranslationResults(rows, {
+    明细大草莓: 'Large 草莓',
+    TPR鲨鱼: 'TPR Shark Toy',
+  }),
+  1,
+  '批量翻译应统计仍包含中文的跳过结果',
+)
+
 const updatedRows = applyContainerDetailEnglishNameUpdates(rows, [
   { hguid: 'detail-1', 英文名称: 'Large Strawberry' },
 ])
@@ -86,6 +136,37 @@ const updatedRows = applyContainerDetailEnglishNameUpdates(rows, [
 assertEqual(updatedRows[0].英文名称, 'Large Strawberry', '本地行应写入明细级英文名称')
 assertEqual(updatedRows[0].商品信息?.英文名称, 'Large Strawberry', '本地行应同步商品信息英文名称用于展示兜底')
 assertEqual(updatedRows[1].商品信息?.英文名称, 'TPR Shark', '未命中的行应保持原值')
+
+assertDeepEqual(
+  buildContainerDetailEnglishNameUpdates(rows, '  Unified English Name  '),
+  [
+    { hguid: 'detail-1', 英文名称: 'Unified English Name' },
+    { hguid: 'detail-2', 英文名称: 'Unified English Name' },
+  ],
+  '批量修改英文名称应为所有有效明细生成统一且去空格的英文名称',
+)
+
+assertDeepEqual(
+  buildContainerDetailEnglishNameUpdates(rows, 'Unified 草莓 Name'),
+  [],
+  '手动批量修改英文名称应拒绝仍包含中文的输入',
+)
+
+assertDeepEqual(
+  buildContainerDetailClearEnglishNameUpdates(rows),
+  [
+    { hguid: 'detail-1', ClearEnglishName: true },
+    { hguid: 'detail-2', ClearEnglishName: true },
+  ],
+  '清除英文名称应为所有有效明细生成明确清空标记',
+)
+
+const clearedRows = applyContainerDetailEnglishNameUpdates(rows, [
+  { hguid: 'detail-1', 英文名称: undefined },
+])
+
+assertEqual(clearedRows[0].英文名称, undefined, '清除后本地行明细级英文名称应为空')
+assertEqual(clearedRows[0].商品信息?.英文名称, undefined, '清除后本地行商品信息英文名称应为空')
 
 const tagRows: ContainerDetail[] = [
   { id: 31, hguid: 'tag-31', 是否新商品: true, 贴牌价格: 0, 进口价格: 1, warehouseIsActive: true },
@@ -527,9 +608,13 @@ assertDeepEqual(
         productCode: 'HB001',
         localSupplierCode: undefined,
         itemNumber: undefined,
-        domesticPrice: 0,
-        importPrice: 0,
-        oemPrice: 0,
+        productName: undefined,
+        englishName: undefined,
+        barcode: undefined,
+        imageUrl: undefined,
+        domesticPrice: undefined,
+        importPrice: undefined,
+        oemPrice: undefined,
         isNewProduct: false,
         warehouseIsActive: undefined,
       },
@@ -537,9 +622,13 @@ assertDeepEqual(
         productCode: 'HB003',
         localSupplierCode: undefined,
         itemNumber: undefined,
-        domesticPrice: 0,
-        importPrice: 0,
-        oemPrice: 0,
+        productName: undefined,
+        englishName: undefined,
+        barcode: undefined,
+        imageUrl: undefined,
+        domesticPrice: undefined,
+        importPrice: undefined,
+        oemPrice: undefined,
         isNewProduct: false,
         warehouseIsActive: undefined,
       },
@@ -567,7 +656,9 @@ assertDeepEqual(
       id: 16,
       hguid: 'detail-16',
       商品编码: '   ',
-      商品信息: { 商品编码: ' HB016 ', 货号: '72654', localSupplierCode: 'COS' },
+      商品名称: '货柜商品名',
+      英文名称: 'Container Product',
+      商品信息: { 商品编码: ' HB016 ', 货号: '72654', localSupplierCode: 'COS', 条形码: '9527000016', 商品图片: 'local-product-image.jpg' },
       是否新商品: false,
       国内价格: 5.1,
       进口价格: 1.88,
@@ -583,6 +674,10 @@ assertDeepEqual(
         productCode: 'HB016',
         localSupplierCode: 'COS',
         itemNumber: '72654',
+        productName: '货柜商品名',
+        englishName: 'Container Product',
+        barcode: '9527000016',
+        imageUrl: 'local-product-image.jpg',
         domesticPrice: 5.1,
         importPrice: 1.88,
         oemPrice: 2.01,
@@ -618,6 +713,10 @@ assertDeepEqual(
         productCode: undefined,
         localSupplierCode: 'DATS',
         itemNumber: '72655',
+        productName: undefined,
+        englishName: undefined,
+        barcode: undefined,
+        imageUrl: undefined,
         domesticPrice: 6.2,
         importPrice: 2.11,
         oemPrice: 2.34,
@@ -642,11 +741,13 @@ assertDeepEqual(
       国内价格: 3.2,
       进口价格: 1.08,
       贴牌价格: 1.2,
+      商品图片: 'container-hb022.jpg',
     },
     {
       id: 23,
       hguid: 'detail-23',
       商品编码: 'HB023',
+      商品信息: { 商品图片: 'product-hb023.jpg' },
       是否新商品: false,
       warehouseIsActive: false,
       国内价格: 3.5,
@@ -659,6 +760,10 @@ assertDeepEqual(
       productCode: 'HB022',
       localSupplierCode: undefined,
       itemNumber: undefined,
+      productName: undefined,
+      englishName: undefined,
+      barcode: undefined,
+      imageUrl: 'container-hb022.jpg',
       domesticPrice: 3.2,
       importPrice: 1.08,
       oemPrice: 1.2,
@@ -669,6 +774,10 @@ assertDeepEqual(
       productCode: 'HB023',
       localSupplierCode: undefined,
       itemNumber: undefined,
+      productName: undefined,
+      englishName: undefined,
+      barcode: undefined,
+      imageUrl: 'product-hb023.jpg',
       domesticPrice: 3.5,
       importPrice: 1.18,
       oemPrice: 1.3,
@@ -676,7 +785,7 @@ assertDeepEqual(
       warehouseIsActive: false,
     },
   ],
-  '发送到 HQ 的候选项应保留上下架状态，供 HQ 按明细同步仓库状态',
+  '发送到 HQ 的候选项应保留图片地址和上下架状态，供 HQ 按明细同步',
 )
 
 const normalizedPushFailure = normalizeContainerDetailPushToHqPayload({
@@ -697,10 +806,16 @@ const rootPayloadPushFailure = extractPushToHqErrorResult({
 })
 assertEqual(rootPayloadPushFailure?.message, '后端明确返回失败', '发送到 HQ 失败解析应支持 payload 根对象 message')
 
-assertEqual(pageSource.includes('pushProductsToHq({'), true, '页面应调用现有商品发送到 HQ 接口')
+assertEqual(pageSource.includes('createPushProductsToHqJob({'), true, '页面应先创建发送到 HQ 后台 job')
+assertEqual(pageSource.includes('getPushProductsToHqJob'), true, '页面应通过查询接口轮询发送到 HQ job')
+assertEqual(pageSource.includes('createHqSyncJobPoller({'), true, '页面应复用后台 job 轮询器等待发送到 HQ 终态')
 assertEqual(pageSource.includes('buildContainerDetailHqPushSelection(selectedRows)'), true, '页面应只基于手动选中的明细构建发送范围')
 assertEqual(pageSource.includes('items: selection.items'), true, '页面发送到 HQ 时应把候选 items 一并发送给后端')
 assertEqual(pageSource.includes('const pushToHqLoadingRef = useRef(false)'), true, '页面应使用 ref 锁防止连续点击重复发送')
+assertEqual(pageSource.includes('releasePushToHqLoading()'), true, '发送到 HQ job 提交成功后应立即解除按钮 loading')
+assertEqual(pageSource.includes("notification.info({") && pageSource.includes("key: pushToHqNotificationKey"), true, '发送到 HQ job 提交后应展示后台执行通知')
+assertEqual(pageSource.includes("notification.success({") && pageSource.includes("notification.warning({") && pageSource.includes("notification.error({"), true, '发送到 HQ job 终态应按成功、部分成功和失败展示通知')
+assertEqual(pageSource.includes("message.warning(t('containers.messages.pushToHqSkippedNewProducts'"), true, '选中明细包含新商品时应给出友好 warning')
 assertEqual(pageSource.includes("showPushToHqResult(errorResult, selection, 'failed')"), true, '后端明确失败时应进入失败结果弹窗路径')
 assertEqual(pageSource.includes("title: t('posAdmin.products.pushToHqFailed', '发送到 HQ 失败')"), true, '后端明确失败时应展示失败弹窗而不是部分成功')
 assertEqual(pageSource.includes('result.warehouseInventoriesCreated'), true, '结果弹窗应展示仓库库存新增统计')
@@ -725,29 +840,42 @@ assertEqual(
   '创建新商品应轮询后台 job 直到终态',
 )
 assertEqual(
-  pageSource.includes("import { pushProductsToHq } from '../../../services/posProductService'"),
+  pageSource.includes("createPushProductsToHqJob") && pageSource.includes("getPushProductsToHqJob"),
   true,
-  '更新已有商品进货价不应导入普通 POS 商品整对象更新接口',
+  '发送到 HQ 应导入后台 job 创建和查询接口',
 )
 assertEqual(
   pageSource.includes('updateProduct(code, { purchasePrice: row.进口价格 ?? 0 })'),
   false,
-  '更新已有商品进货价不应调用普通 POS 商品整对象更新接口，避免清空名称、条码和上下架状态',
+  '更新已有商品价格不应调用普通 POS 商品整对象更新接口，避免清空名称、条码和上下架状态',
 )
 assertEqual(
   pageSource.indexOf('await batchUpdateWarehouseProducts(updates.map') < pageSource.indexOf('await upsertRetailForActiveStores(updates.map'),
   true,
-  '更新已有商品进货价应先确认仓库商品批量更新成功，再继续分店价格 upsert',
+  '更新已有商品价格应先确认仓库商品批量更新成功，再继续分店价格 upsert',
 )
 assertEqual(
-  pageSource.includes("message.error(error instanceof Error ? error.message : t('containers.messages.purchasePricesUpdateFailed', '更新已有商品进货价失败'))"),
+  pageSource.includes('OEMPrice: row.贴牌价格') &&
+    pageSource.includes('StoreRetailPriceValue: row.贴牌价格') &&
+    pageSource.includes('MultiCodeRetailPrice: row.贴牌价格'),
   true,
-  '更新已有商品进货价失败时应给用户可见错误提示',
+  '更新已有商品价格应同时提交贴牌价格，补齐商品主表和分店零售价',
+)
+assertEqual(
+  pageSource.includes('((row.进口价格 ?? 0) > 0 || (row.贴牌价格 ?? 0) > 0)') &&
+    !pageSource.includes('hasImportDiff || hasOemDiff'),
+  true,
+  '更新已有商品价格应以货柜明细为准提交有效价格，不应因检测到的仓库价格相同而跳过',
+)
+assertEqual(
+  pageSource.includes("message.error(error instanceof Error ? error.message : t('containers.messages.purchasePricesUpdateFailed', '更新已有商品价格失败'))"),
+  true,
+  '更新已有商品价格失败时应给用户可见错误提示',
 )
 assertEqual(
   pageSource.indexOf('await batchUpdateWarehouseProducts(updates.map') < pageSource.indexOf('await upsertMultiCodeForActiveStores(updates.map'),
   true,
-  '更新已有商品进货价应先确认仓库商品批量更新成功，再继续多码价格 upsert',
+  '更新已有商品价格应先确认仓库商品批量更新成功，再继续多码价格 upsert',
 )
 assertEqual(
   warehouseProductServiceSource.includes("ensureApiSuccess(raw?.success ?? raw?.isSuccess, raw?.message, '仓库批量更新失败')"),
@@ -787,12 +915,12 @@ assertEqual(
 assertEqual(
   pageSource.includes('catch(() => null)'),
   false,
-  '更新已有商品进货价不应吞掉 POS 商品更新失败',
+  '更新已有商品价格不应吞掉 POS 商品更新失败',
 )
 assertEqual(
   pageSource.includes('posUpdateFailures'),
   false,
-  '更新已有商品进货价不应再保留 POS 商品整对象更新失败分支',
+  '更新已有商品价格不应再保留 POS 商品整对象更新失败分支',
 )
 
 const priceContainer = {
@@ -1087,9 +1215,10 @@ assertEqual(
   '货号列应固定在左侧，横向滚动时保持可见',
 )
 assertEqual(
-  pageSource.includes('rowSelection={{ selectedRowKeys, onChange: setSelectedRowKeys, fixed: true }}'),
+  pageSource.includes('rowSelection={{ selectedRowKeys, onChange: setSelectedRowKeys, fixed: !viewport.isSmallPortrait }}') &&
+    pageSource.includes("baseColumns.map((column) => ({ ...column, fixed: undefined }))"),
   true,
-  '选择框列应随左侧固定列一起固定，避免横向滚动时列位错开',
+  '选择框列默认随左侧列固定，小屏竖屏时应随表格列一起取消固定',
 )
 assertEqual(
   pageSource.includes('key: field') &&

@@ -1,5 +1,5 @@
-import { syncContainersFromHq, translateHqProductNamesByContainerNumber, updateContainer } from './containerService'
-import type { UpdateContainerRequest } from '../types/container'
+import { batchUpdateDetails, syncContainersFromHq, translateHqProductNamesByContainerNumber, updateContainer } from './containerService'
+import type { UpdateContainerDetailRequest, UpdateContainerRequest } from '../types/container'
 
 function assertEqual<T>(actual: T, expected: T, label: string) {
   if (actual !== expected) {
@@ -81,6 +81,23 @@ try {
     JSON.parse(String(capturedInit?.body)),
     updatePayload,
     'updateContainer should send container status with the header update payload',
+  )
+
+  const detailUpdates: UpdateContainerDetailRequest[] = [
+    { hguid: 'D-CLEAR-EN', ClearEnglishName: true },
+  ]
+  await batchUpdateDetails(detailUpdates)
+
+  assertEqual(
+    capturedUrl,
+    '/api/react/v1/containers/batch-update-details',
+    'batchUpdateDetails should keep the React detail update URL unchanged',
+  )
+  assertEqual(capturedInit?.method, 'POST', 'batchUpdateDetails should use POST')
+  assertDeepEqual(
+    JSON.parse(String(capturedInit?.body)),
+    [{ HGUID: 'D-CLEAR-EN', ClearEnglishName: true }],
+    'batchUpdateDetails should send the explicit English-name clear marker',
   )
 
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {

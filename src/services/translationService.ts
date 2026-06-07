@@ -7,10 +7,10 @@ export async function batchTranslate(texts: string[]): Promise<Record<string, st
   }
 
   const response = await request<ApiResponse<{ translations?: Record<string, string> }> | { success?: boolean; isSuccess?: boolean; message?: string; data?: { translations?: Record<string, string> } }>(
-    '/api/test/TestTranslation/batch-translate',
+    '/api/Translation/batch-translate',
     {
       method: 'POST',
-      data: texts,
+      data: { texts },
     },
   )
 

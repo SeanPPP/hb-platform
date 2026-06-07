@@ -699,6 +699,116 @@ body {
   }
 }
 
+@media (max-height: 500px) and (orientation: landscape) {
+  .admin-header {
+    height: 48px;
+    padding: 0 10px;
+  }
+
+  .tabs-shell {
+    padding: 6px 8px 0;
+  }
+
+  .tabs-shell-pinned {
+    top: 48px;
+  }
+
+  .tabs-shell::after {
+    height: 6px;
+  }
+
+  .app-tabs {
+    flex-direction: row;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    border-radius: 10px;
+  }
+
+  .app-tabs .ant-tabs-nav {
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .app-tabs .ant-tabs-nav::-webkit-scrollbar {
+    display: none;
+  }
+
+  .app-tabs .ant-tabs-nav-list {
+    flex-wrap: nowrap;
+    gap: 4px;
+  }
+
+  .app-tabs .ant-tabs-tab {
+    padding: 5px 9px;
+    border-radius: 8px 8px 0 0 !important;
+  }
+
+  .app-tabs .ant-tabs-tab-active::before {
+    left: 8px;
+    right: 8px;
+    height: 2px;
+  }
+
+  .app-tabs-actions {
+    padding-left: 8px;
+  }
+
+  .app-tabs-actions::before {
+    top: 4px;
+    bottom: 4px;
+  }
+
+  .app-tabs-actions .ant-btn {
+    height: 28px;
+    padding: 0 8px;
+  }
+
+  .admin-content {
+    padding: 8px;
+    min-height: calc(100vh - 48px - 42px);
+  }
+
+  .page-container {
+    gap: 8px;
+  }
+
+  .page-header {
+    padding: 10px 12px;
+  }
+
+  .mobile-layout .mobile-nav-bar {
+    --adm-nav-bar-height: 40px;
+  }
+
+  .mobile-layout .mobile-content {
+    padding: 8px;
+    padding-bottom: calc(42px + env(safe-area-inset-bottom, 0px) + 8px);
+  }
+
+  .mobile-scroll-tab-bar,
+  .mobile-scroll-tab-item {
+    height: 42px;
+  }
+
+  .mobile-scroll-tab-item {
+    padding: 2px 0;
+  }
+
+  .mobile-scroll-tab-icon {
+    font-size: 16px;
+  }
+
+  .mobile-scroll-tab-icon svg {
+    width: 16px;
+    height: 16px;
+  }
+
+  .mobile-scroll-tab-title {
+    font-size: 9px;
+  }
+}
+
 .shop-layout {
   min-height: 100vh;
   display: flex;

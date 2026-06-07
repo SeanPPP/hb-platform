@@ -39,6 +39,21 @@ export type { HqProductSyncPollingOptions }
 
 const activeHqProductSyncJobs = new Map<string, Promise<HqProductSyncResult>>()
 
+export type PushProductsToHqJobStatus = 'Queued' | 'Running' | 'Succeeded' | 'Failed'
+
+export interface PushProductsToHqJobRequest extends PushProductsToHqRequest {
+  operationId: string
+}
+
+export interface PushProductsToHqJobResult {
+  jobId: string
+  status: PushProductsToHqJobStatus
+  operationId?: string
+  result?: PushProductsToHqResult
+  message?: string
+  errors?: string[]
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
 }
@@ -134,6 +149,59 @@ function normalizePushProductsToHqResult(raw: PushProductsToHqResult): PushProdu
     totalCount,
     affectedRowCount: Number(payload.affectedRowCount ?? relationCount),
     errors: Array.isArray(raw.errors) ? raw.errors : [],
+  }
+}
+
+function normalizePushProductsToHqJobStatus(status: unknown, success: unknown, payload: unknown): PushProductsToHqJobStatus {
+  if (typeof status === 'string') {
+    switch (status.trim().toLowerCase()) {
+      case 'queued':
+      case 'pending':
+        return 'Queued'
+      case 'running':
+        return 'Running'
+      case 'succeeded':
+      case 'success':
+      case 'completed':
+        return 'Succeeded'
+      case 'failed':
+      case 'failure':
+      case 'error':
+        return 'Failed'
+      default:
+        // job 状态不能静默兜底，否则页面会误把未知终态当成仍在执行。
+        throw new RequestError(`未知发送 HQ 任务状态: ${status}`, 200, payload)
+    }
+  }
+
+  if (success === true) {
+    return 'Succeeded'
+  }
+
+  if (success === false) {
+    return 'Failed'
+  }
+
+  return 'Running'
+}
+
+function normalizePushProductsToHqJobResult(payload: unknown, fallbackJobId = ''): PushProductsToHqJobResult {
+  const result = unwrapApiData(payload) as Record<string, unknown> | null
+  const raw = isRecord(result) ? result : {}
+  const nestedResult = isRecord(raw.result)
+    ? normalizePushProductsToHqResult(raw.result as unknown as PushProductsToHqResult)
+    : undefined
+  const success = typeof raw.success === 'boolean' ? raw.success : nestedResult?.failedCount === 0
+
+  return {
+    jobId: typeof raw.jobId === 'string' ? raw.jobId : fallbackJobId,
+    status: normalizePushProductsToHqJobStatus(raw.status, success, raw),
+    operationId: typeof raw.operationId === 'string' ? raw.operationId : undefined,
+    result: nestedResult,
+    message: typeof raw.message === 'string' ? raw.message : nestedResult?.message,
+    errors: Array.isArray(raw.errors)
+      ? raw.errors.filter((item): item is string => typeof item === 'string')
+      : [],
   }
 }
 
@@ -429,6 +497,28 @@ export async function pushProductsToHq(data: PushProductsToHqRequest): Promise<P
   )
   assertApiSuccess(response, '发送商品到 HQ 失败')
   return normalizePushProductsToHqResult(unwrapApiData(response))
+}
+
+export function buildPushProductsToHqOperationId(containerGuid: string, productCodes: string[], itemCount: number) {
+  const stableCodes = productCodes.map((item) => item.trim()).filter(Boolean).sort().join(',')
+  return `container-push-hq:${containerGuid || 'unknown'}:${stableCodes || 'items'}:${itemCount}`
+}
+
+export async function createPushProductsToHqJob(data: PushProductsToHqJobRequest): Promise<PushProductsToHqJobResult> {
+  const response = await request.post<ApiResponse<unknown>>(
+    `${API_BASE}/push-to-hq/jobs`,
+    data,
+  )
+  assertApiSuccess(response, '创建发送商品到 HQ 任务失败')
+  return normalizePushProductsToHqJobResult(response)
+}
+
+export async function getPushProductsToHqJob(jobId: string): Promise<PushProductsToHqJobResult> {
+  const response = await request.get<ApiResponse<unknown>>(
+    `${API_BASE}/push-to-hq/jobs/${encodeURIComponent(jobId)}`,
+  )
+  assertApiSuccess(response, '查询发送商品到 HQ 任务失败')
+  return normalizePushProductsToHqJobResult(response, jobId)
 }
 
 function normalizeHqProductSyncResult(raw: HqProductSyncResult): HqProductSyncResult {

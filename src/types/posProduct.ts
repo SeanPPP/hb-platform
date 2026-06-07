@@ -128,9 +128,13 @@ export interface PushProductsToHqItem {
   productCode?: string
   localSupplierCode?: string
   itemNumber?: string
-  domesticPrice: number
-  importPrice: number
-  oemPrice: number
+  productName?: string
+  englishName?: string
+  barcode?: string
+  imageUrl?: string
+  domesticPrice?: number
+  importPrice?: number
+  oemPrice?: number
   isNewProduct: boolean
   warehouseIsActive?: boolean
 }

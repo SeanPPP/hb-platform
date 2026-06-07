@@ -30,6 +30,7 @@ import {
   Tooltip,
   Typography,
   message,
+  notification,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import type { FilterDropdownProps, SorterResult } from 'antd/es/table/interface'
@@ -59,7 +60,13 @@ import {
   type ContainerProductCreationResultItem,
 } from '../../../services/containerProductCreationService'
 import { exportContainerDetailsToExcel, type ContainerDetailExportItem } from '../../../services/exportService'
-import { pushProductsToHq } from '../../../services/posProductService'
+import {
+  buildPushProductsToHqOperationId,
+  createPushProductsToHqJob,
+  getPushProductsToHqJob,
+  type PushProductsToHqJobResult,
+} from '../../../services/posProductService'
+import { createHqSyncJobPoller } from '../../../services/productHqSyncPolling'
 import { upsertForActiveStores as upsertMultiCodeForActiveStores } from '../../../services/storeMultiCodePriceService'
 import { upsertForActiveStores as upsertRetailForActiveStores } from '../../../services/storeRetailPriceService'
 import { batchTranslate } from '../../../services/translationService'
@@ -76,17 +83,21 @@ import {
   applyContainerDetailEnglishNameUpdates,
   applyContainerDetailWarehouseStatusByProductCodes,
   applyContainerDetailColumnState,
+  buildContainerDetailClearEnglishNameUpdates,
+  buildContainerDetailEnglishNameUpdates,
   buildContainerDetailMatchedDomesticDataUpdates,
   buildContainerDetailTagStats,
   buildContainerDetailFloatRateUpdates,
   buildContainerDetailHqPushSelection,
   buildContainerDetailTranslationUpdates,
+  countContainerDetailInvalidTranslationResults,
   extractPushToHqErrorResult,
   getContainerDetailBarcode,
   getContainerDetailEnglishName,
   getContainerDetailItemNumber,
   getContainerDetailProductCode,
   getContainerDetailProductName,
+  getContainerDetailTranslationSource,
   getContainerDetailWarehouseActionFailureMessage,
   getContainerDetailWarehouseStatusFilterKey,
   isContainerDetailSortField,
@@ -215,11 +226,48 @@ function renderColumnTitle(key: ContainerDetailSortField, value: ReactNode) {
   return <span data-column-key={key} className="container-detail-header-title">{value}</span>
 }
 
+const CONTAINER_DETAIL_TABLE_SCROLL_X = 1840
+const CONTAINER_DETAIL_TABLE_SCROLL_Y = 620
+
+function getContainerDetailViewport() {
+  if (typeof window === 'undefined') {
+    return {
+      height: CONTAINER_DETAIL_TABLE_SCROLL_Y,
+      isSmallLandscape: false,
+      isSmallPortrait: false,
+    }
+  }
+
+  return {
+    height: window.innerHeight,
+    isSmallLandscape: window.matchMedia('(max-height: 500px) and (orientation: landscape)').matches,
+    isSmallPortrait: window.matchMedia('(max-width: 767px) and (orientation: portrait)').matches,
+  }
+}
+
+function useContainerDetailViewport() {
+  const [viewport, setViewport] = useState(getContainerDetailViewport)
+
+  useEffect(() => {
+    const updateViewport = () => setViewport(getContainerDetailViewport())
+
+    window.addEventListener('resize', updateViewport)
+    window.addEventListener('orientationchange', updateViewport)
+    return () => {
+      window.removeEventListener('resize', updateViewport)
+      window.removeEventListener('orientationchange', updateViewport)
+    }
+  }, [])
+
+  return viewport
+}
+
 export default function ContainerDetailPage() {
   const { t } = useTranslation()
   const navigate = useNavigate()
   const route = useStableRouteContext()
   const [containerGuid] = useState(() => route?.params.containerGuid || '')
+  const viewport = useContainerDetailViewport()
   const access = useAuthStore((state) => state.access)
   // 记录当前货柜已完成首次加载，保活 Tab 恢复时保留旧内容并静默刷新。
   const loadedContainerGuidRef = useRef<string | null>(null)
@@ -238,6 +286,9 @@ export default function ContainerDetailPage() {
   const [batchFloatRate, setBatchFloatRate] = useState<number | null>(null)
   const [batchImportPrice, setBatchImportPrice] = useState<number | null>(null)
   const [batchOemPrice, setBatchOemPrice] = useState<number | null>(null)
+  const [batchEnglishName, setBatchEnglishName] = useState('')
+  const [batchEnglishNameModalOpen, setBatchEnglishNameModalOpen] = useState(false)
+  const [batchEnglishNameSaving, setBatchEnglishNameSaving] = useState(false)
   const [exporting, setExporting] = useState(false)
   const [exportProgress, setExportProgress] = useState(0)
   const [hqTranslating, setHqTranslating] = useState(false)
@@ -601,18 +652,83 @@ export default function ContainerDetailPage() {
 
   const translateNames = async () => {
     if (!ensureTargetRowsVisible()) return
-    const names = Array.from(new Set(targetRows.map(getContainerDetailProductName).filter((value): value is string => Boolean(value))))
+    const names = Array.from(new Set(targetRows.map(getContainerDetailTranslationSource).filter((value): value is string => Boolean(value))))
     if (!names.length) {
       message.warning(t('containers.messages.noNamesToTranslate'))
       return
     }
     const translations = await batchTranslate(names)
     const updates = buildContainerDetailTranslationUpdates(targetRows, translations)
+    const skippedInvalidCount = countContainerDetailInvalidTranslationResults(targetRows, translations)
     if (updates.length) {
       await batchUpdateDetails(updates)
       setRows((items) => applyContainerDetailEnglishNameUpdates(items, updates))
+      message.success(t('containers.messages.namesTranslated', { count: updates.length }))
     }
-    message.success(t('containers.messages.namesTranslated', { count: updates.length }))
+    if (skippedInvalidCount > 0) {
+      message.warning(t('containers.messages.invalidTranslatedNamesSkipped', { count: skippedInvalidCount }))
+    }
+    if (!updates.length && skippedInvalidCount === 0) {
+      message.success(t('containers.messages.namesTranslated', { count: 0 }))
+    }
+  }
+
+  const openBatchEditEnglishName = () => {
+    if (!ensureTargetRowsVisible()) return
+    if (!targetRows.length) {
+      message.warning(t('containers.messages.selectProducts'))
+      return
+    }
+    setBatchEnglishName('')
+    setBatchEnglishNameModalOpen(true)
+  }
+
+  const submitBatchEditEnglishName = async () => {
+    const updates = buildContainerDetailEnglishNameUpdates(targetRows, batchEnglishName)
+    if (!updates.length) {
+      message.warning(t('containers.messages.enterEnglishName'))
+      return
+    }
+
+    setBatchEnglishNameSaving(true)
+    try {
+      const result = await batchUpdateDetails(updates)
+      if (result.totalUpdated > 0) {
+        setRows((items) => applyContainerDetailEnglishNameUpdates(items, updates))
+      }
+      setBatchEnglishNameModalOpen(false)
+      setBatchEnglishName('')
+      message.success(t('containers.messages.englishNamesUpdated', { count: result.totalUpdated }))
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : t('containers.messages.englishNamesUpdateFailed'))
+    } finally {
+      setBatchEnglishNameSaving(false)
+    }
+  }
+
+  const clearEnglishNames = () => {
+    if (!ensureTargetRowsVisible()) return
+    const updates = buildContainerDetailClearEnglishNameUpdates(targetRows)
+    if (!updates.length) {
+      message.warning(t('containers.messages.selectProducts'))
+      return
+    }
+
+    Modal.confirm({
+      title: t('containers.modals.clearEnglishNamesTitle'),
+      content: t('containers.modals.clearEnglishNamesContent', { count: updates.length }),
+      okText: t('containers.actions.clearEnglishNames'),
+      okButtonProps: { danger: true },
+      cancelText: t('common.cancel'),
+      onOk: async () => {
+        await batchUpdateDetails(updates)
+        setRows((items) => applyContainerDetailEnglishNameUpdates(
+          items,
+          updates.map((update) => ({ hguid: update.hguid, 英文名称: undefined })),
+        ))
+        message.success(t('containers.messages.englishNamesCleared', { count: updates.length }))
+      },
+    })
   }
 
   const showHqTranslationResult = (result: HqTranslationResult) => {
@@ -684,6 +800,34 @@ export default function ContainerDetailPage() {
     selection: ReturnType<typeof buildContainerDetailHqPushSelection>,
     resultKind: 'success' | 'failed' = 'success',
   ) => {
+    const content = renderPushToHqResultContent(result, selection)
+
+    if (resultKind === 'failed') {
+      Modal.error({
+        title: t('posAdmin.products.pushToHqFailed', '发送到 HQ 失败'),
+        content,
+      })
+      return
+    }
+
+    if ((result.errors ?? []).length || (result.failedCount ?? 0) > 0) {
+      Modal.warning({
+        title: t('posAdmin.products.pushToHqPartialSucceeded', '发送到 HQ 部分成功'),
+        content,
+      })
+      return
+    }
+
+    Modal.success({
+      title: t('posAdmin.products.pushToHqSucceeded', '发送到 HQ 完成'),
+      content,
+    })
+  }
+
+  const renderPushToHqResultContent = (
+    result: PushProductsToHqResult,
+    selection: ReturnType<typeof buildContainerDetailHqPushSelection>,
+  ) => {
     const errors = result.errors ?? []
     const detailStats = [
       { label: t('posAdmin.products.pushToHqAffectedRows', 'HQ影响记录'), value: result.affectedRowCount ?? 0 },
@@ -700,7 +844,7 @@ export default function ContainerDetailPage() {
       { label: t('containers.text.skippedNewProducts', '跳过新商品'), value: selection.skippedNewProductCount },
       { label: t('containers.text.missingProductCodeRows', '缺商品编码'), value: selection.missingProductCodeCount },
     ].filter((item) => item.value > 0)
-    const content = (
+    return (
       <Space direction="vertical" size={6}>
         {result.message ? <div>{result.message}</div> : null}
         <div>
@@ -721,27 +865,101 @@ export default function ContainerDetailPage() {
         ) : null}
       </Space>
     )
+  }
 
-    if (resultKind === 'failed') {
-      Modal.error({
-        title: t('posAdmin.products.pushToHqFailed', '发送到 HQ 失败'),
-        content,
+  const buildPushToHqFallbackResult = (job: PushProductsToHqJobResult): PushProductsToHqResult => ({
+    successCount: 0,
+    failedCount: job.errors?.length || 1,
+    totalCount: job.errors?.length || 1,
+    affectedRowCount: 0,
+    errors: job.errors?.length ? job.errors : [job.message || t('posAdmin.products.pushToHqFailed', '发送到 HQ 失败')],
+    message: job.message,
+  })
+
+  const releasePushToHqLoading = () => {
+    pushToHqLoadingRef.current = false
+    setPushToHqLoading(false)
+  }
+
+  const notifyPushToHqJobFinished = (
+    job: PushProductsToHqJobResult,
+    selection: ReturnType<typeof buildContainerDetailHqPushSelection>,
+    pushToHqNotificationKey: string,
+  ) => {
+    const result = job.result ?? buildPushToHqFallbackResult(job)
+    const hasErrors = (result.errors ?? []).length > 0 || (result.failedCount ?? 0) > 0
+
+    if (job.status === 'Failed') {
+      notification.error({
+        key: pushToHqNotificationKey,
+        message: t('posAdmin.products.pushToHqFailed', '发送到 HQ 失败'),
+        description: renderPushToHqResultContent(result, selection),
+        duration: 0,
       })
+      showPushToHqResult(result, selection, 'failed')
       return
     }
 
-    if (errors.length || (result.failedCount ?? 0) > 0) {
-      Modal.warning({
-        title: t('posAdmin.products.pushToHqPartialSucceeded', '发送到 HQ 部分成功'),
-        content,
+    if (hasErrors) {
+      notification.warning({
+        key: pushToHqNotificationKey,
+        message: t('posAdmin.products.pushToHqPartialSucceeded', '发送到 HQ 部分成功'),
+        description: renderPushToHqResultContent(result, selection),
+        duration: 0,
       })
+      showPushToHqResult(result, selection)
       return
     }
 
-    Modal.success({
-      title: t('posAdmin.products.pushToHqSucceeded', '发送到 HQ 完成'),
-      content,
+    notification.success({
+      key: pushToHqNotificationKey,
+      message: t('posAdmin.products.pushToHqSucceeded', '发送到 HQ 完成'),
+      description: renderPushToHqResultContent(result, selection),
+      duration: 0,
     })
+    showPushToHqResult(result, selection)
+  }
+
+  const pollPushToHqJob = (
+    initialJob: PushProductsToHqJobResult,
+    selection: ReturnType<typeof buildContainerDetailHqPushSelection>,
+    pushToHqNotificationKey: string,
+  ) => {
+    if (initialJob.status === 'Succeeded' || initialJob.status === 'Failed') {
+      notifyPushToHqJobFinished(initialJob, selection, pushToHqNotificationKey)
+      void loadData()
+      return
+    }
+
+    const poller = createHqSyncJobPoller({
+      jobId: initialJob.jobId,
+      getJob: getPushProductsToHqJob,
+    })
+
+    void poller.promise
+      .then((job) => {
+        notifyPushToHqJobFinished(job, selection, pushToHqNotificationKey)
+        return loadData()
+      })
+      .catch((error) => {
+        const errorResult = extractPushToHqErrorResult(error)
+        if (errorResult) {
+          notification.error({
+            key: pushToHqNotificationKey,
+            message: t('posAdmin.products.pushToHqFailed', '发送到 HQ 失败'),
+            description: renderPushToHqResultContent(errorResult, selection),
+            duration: 0,
+          })
+          showPushToHqResult(errorResult, selection, 'failed')
+        } else {
+          notification.error({
+            key: pushToHqNotificationKey,
+            message: t('posAdmin.products.pushToHqFailed', '发送到 HQ 失败'),
+            description: error instanceof Error ? error.message : undefined,
+            duration: 0,
+          })
+        }
+      })
   }
 
   const handlePushSelectedProductsToHq = async () => {
@@ -760,18 +978,31 @@ export default function ContainerDetailPage() {
       message.warning(t('containers.messages.noExistingLocalProductsToPushHq', '选中明细没有可发送到 HQ 的本地已有商品'))
       return
     }
+    if (selection.skippedNewProductCount > 0) {
+      message.warning(t('containers.messages.pushToHqSkippedNewProducts', '选中的新商品不会发送到 HQ，请先创建新商品后再发送。已跳过 {{count}} 条。', {
+        count: selection.skippedNewProductCount,
+      }))
+    }
 
     try {
       // 写 HQ 是跨库操作，使用即时锁防止连续点击造成重复提交。
       pushToHqLoadingRef.current = true
       setPushToHqLoading(true)
-      const result = await pushProductsToHq({
+      const job = await createPushProductsToHqJob({
+        operationId: buildPushProductsToHqOperationId(containerGuid, selection.productCodes, selection.items.length),
         productCodes: selection.productCodes,
         items: selection.items,
       })
-      showPushToHqResult(result, selection)
+      const pushToHqNotificationKey = `container-push-to-hq:${job.jobId}`
+      notification.info({
+        key: pushToHqNotificationKey,
+        message: t('containers.messages.pushToHqJobSubmitted', '发送到 HQ 任务已提交'),
+        description: t('containers.messages.pushToHqJobRunning', '后台正在写入 HQ，完成后会显示各表新增/更新数量和错误摘要。'),
+        duration: 0,
+      })
       setSelectedRowKeys([])
-      await loadData()
+      releasePushToHqLoading()
+      pollPushToHqJob(job, selection, pushToHqNotificationKey)
     } catch (error) {
       const errorResult = extractPushToHqErrorResult(error)
       if (errorResult) {
@@ -780,8 +1011,7 @@ export default function ContainerDetailPage() {
         message.error(error instanceof Error ? error.message : t('posAdmin.products.pushToHqFailed', '发送到 HQ 失败'))
       }
     } finally {
-      pushToHqLoadingRef.current = false
-      setPushToHqLoading(false)
+      releasePushToHqLoading()
     }
   }
 
@@ -902,20 +1132,11 @@ export default function ContainerDetailPage() {
       message.info(t('containers.messages.noExistingProductsToUpdate'))
       return
     }
-    const detection = await detectProducts(candidates.map((row) => ({
-      ProductCode: getContainerDetailProductCode(row),
-      ItemNumber: getContainerDetailItemNumber(row),
-      Barcode: getContainerDetailBarcode(row),
-    })))
-    const importMap = new Map<string, number | undefined>()
-    detection.forEach((item) => {
-      const code = item.ProductCode || item.productCode
-      if (code) importMap.set(code, item.WarehouseImportPrice ?? item.warehouseImportPrice ?? item.importPrice)
-    })
     const updates = candidates.filter((row) => {
       const code = row.商品编码 || row.商品信息?.商品编码 || ''
-      const current = importMap.get(code)
-      return code && (row.进口价格 ?? 0) > 0 && (current == null || Math.abs(current - (row.进口价格 ?? 0)) > 0.000001)
+      // 货柜明细是本次批量修复的价格来源，不能用仓库贴牌价判断是否跳过，
+      // 否则商品主表/分店零售价为 0 时会被误判为“无差异”。
+      return Boolean(code) && ((row.进口价格 ?? 0) > 0 || (row.贴牌价格 ?? 0) > 0)
     })
     if (!updates.length) {
       message.info(t('containers.messages.noPurchasePriceDiff'))
@@ -925,21 +1146,24 @@ export default function ContainerDetailPage() {
       await batchUpdateWarehouseProducts(updates.map((row) => ({
         ProductCode: row.商品编码 || row.商品信息?.商品编码,
         ImportPrice: row.进口价格,
+        OEMPrice: row.贴牌价格,
         IsActive: true,
       })))
       await upsertRetailForActiveStores(updates.map((row) => ({
         ProductCode: row.商品编码 || row.商品信息?.商品编码 || '',
         PurchasePrice: row.进口价格,
+        StoreRetailPriceValue: row.贴牌价格,
         IsActive: true,
       })))
       await upsertMultiCodeForActiveStores(updates.map((row) => ({
         ProductCode: row.商品编码 || row.商品信息?.商品编码 || '',
         PurchasePrice: row.进口价格,
+        MultiCodeRetailPrice: row.贴牌价格,
         IsActive: true,
       })))
       message.success(t('containers.messages.purchasePricesUpdated', { count: updates.length }))
     } catch (error) {
-      message.error(error instanceof Error ? error.message : t('containers.messages.purchasePricesUpdateFailed', '更新已有商品进货价失败'))
+      message.error(error instanceof Error ? error.message : t('containers.messages.purchasePricesUpdateFailed', '更新已有商品价格失败'))
     }
   }
 
@@ -1157,7 +1381,7 @@ export default function ContainerDetailPage() {
     }
   }
 
-  const columns: ColumnsType<ContainerDetail> = [
+  const baseColumns: ColumnsType<ContainerDetail> = [
     { title: renderCompactHeader(t('containers.columns.index')), width: 56, fixed: 'left', render: (_v, _r, index) => renderNumericCell(index + 1) },
     {
       title: renderCompactHeader(t('containers.columns.image')),
@@ -1381,8 +1605,45 @@ export default function ContainerDetailPage() {
     },
   ]
 
+  // 小屏竖屏时取消 AntD 固定列，避免固定选择列和左侧列占掉主要阅读空间。
+  const columns = viewport.isSmallPortrait
+    ? baseColumns.map((column) => ({ ...column, fixed: undefined })) as ColumnsType<ContainerDetail>
+    : baseColumns
+  const isSmallScreen = viewport.isSmallPortrait || viewport.isSmallLandscape
+  const tableScrollY = viewport.isSmallLandscape
+    ? Math.max(180, Math.min(CONTAINER_DETAIL_TABLE_SCROLL_Y, viewport.height - 208))
+    : viewport.isSmallPortrait
+      ? Math.max(320, Math.min(CONTAINER_DETAIL_TABLE_SCROLL_Y, viewport.height - 260))
+      : CONTAINER_DETAIL_TABLE_SCROLL_Y
+  const pageClassName = [
+    'container-detail-page',
+    isSmallScreen ? 'container-detail-page-small' : '',
+    viewport.isSmallPortrait ? 'container-detail-page-small-portrait' : '',
+    viewport.isSmallLandscape ? 'container-detail-page-small-landscape' : '',
+  ].filter(Boolean).join(' ')
+
   return (
     <PageContainer title={container?.货柜编号 ? t('containers.detailTitleWithNumber', { number: container.货柜编号 }) : t('menu.containerDetail')}>
+      <Modal
+        title={t('containers.modals.batchEditEnglishNameTitle')}
+        open={batchEnglishNameModalOpen}
+        okText={t('containers.actions.batchEditEnglishName')}
+        confirmLoading={batchEnglishNameSaving}
+        onOk={() => void submitBatchEditEnglishName()}
+        onCancel={() => {
+          setBatchEnglishNameModalOpen(false)
+          setBatchEnglishName('')
+        }}
+      >
+        <Input
+          autoFocus
+          value={batchEnglishName}
+          placeholder={t('containers.placeholders.batchEnglishName')}
+          onChange={(event) => setBatchEnglishName(event.target.value)}
+          onPressEnter={() => void submitBatchEditEnglishName()}
+        />
+      </Modal>
+      <div className={pageClassName}>
       <Spin spinning={loading}>
         <Space direction="vertical" size={16} style={{ width: '100%' }}>
           {!containerGuid ? <Alert type="warning" showIcon message={t('containers.messages.missingContainerGuid')} /> : null}
@@ -1488,6 +1749,8 @@ export default function ContainerDetailPage() {
                       menu={{
                         items: [
                           { key: 'translate', label: t('containers.actions.batchTranslate') },
+                          { key: 'editEnglishName', label: t('containers.actions.batchEditEnglishName') },
+                          { key: 'clearEnglishName', label: t('containers.actions.clearEnglishNames') },
                           ...(canCreateContainerProducts
                             ? [{ key: 'createNew', label: t('containers.actions.createNewProducts'), disabled: createProductsLoading }]
                             : []),
@@ -1497,6 +1760,8 @@ export default function ContainerDetailPage() {
                         ],
                         onClick: ({ key }) => {
                           if (key === 'translate') void translateNames()
+                          if (key === 'editEnglishName') openBatchEditEnglishName()
+                          if (key === 'clearEnglishName') clearEnglishNames()
                           if (key === 'createNew') void createNewProducts()
                           if (key === 'updatePurchase') void updateExistingPurchase()
                           if (key === 'active') void applyActive(true)
@@ -1583,14 +1848,14 @@ export default function ContainerDetailPage() {
                 size="small"
                 columns={columns}
                 dataSource={displayRows}
-                rowSelection={{ selectedRowKeys, onChange: setSelectedRowKeys, fixed: true }}
+                rowSelection={{ selectedRowKeys, onChange: setSelectedRowKeys, fixed: !viewport.isSmallPortrait }}
                 pagination={{
                   pageSize: 500,
                   pageSizeOptions: ['50', '100', '500', '1000'],
                   showSizeChanger: true,
                   showTotal: (total) => t('common.total', { count: total }),
                 }}
-                scroll={{ x: 1840, y: 620 }}
+                scroll={{ x: CONTAINER_DETAIL_TABLE_SCROLL_X, y: tableScrollY }}
                 onChange={handleTableChange}
                 footer={() => (
                   <Space direction="vertical" size={2}>
@@ -1603,6 +1868,7 @@ export default function ContainerDetailPage() {
           </Card>
         </Space>
       </Spin>
+      </div>
     </PageContainer>
   )
 }

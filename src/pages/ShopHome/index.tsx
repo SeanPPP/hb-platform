@@ -107,7 +107,7 @@ export default function ShopHomePage() {
           pageSize,
           categoryGUID: categoryId || undefined,
           itemNumber: keyword || undefined,
-          sortBy: 'productName',
+          sortBy: 'Default',
           grade: gradeFilter.length ? [...gradeFilter].sort().join(',') : undefined,
         })
 
@@ -264,15 +264,22 @@ export default function ShopHomePage() {
     setDynamicDataMap(nextMap)
   }, [loadDynamicDataMap, products, selectedStore?.storeCode])
 
-  const refreshPickerDynamicData = useCallback(async () => {
-    if (!selectedStore?.storeCode || !scanCandidates.length) {
-      setPickerDynamicDataMap({})
-      return
-    }
+  const refreshDynamicDataForProducts = useCallback(
+    async (productCodes: string[]) => {
+      const normalizedCodes = productCodes
+        .filter((code) => Boolean(code))
+        .filter((code, index, allCodes) => allCodes.indexOf(code) === index)
 
-    const nextMap = await loadDynamicDataMap(scanCandidates.map((item) => item.productCode))
-    setPickerDynamicDataMap(nextMap)
-  }, [loadDynamicDataMap, scanCandidates, selectedStore?.storeCode])
+      if (!selectedStore?.storeCode || !normalizedCodes.length) {
+        return
+      }
+
+      const nextMap = await loadDynamicDataMap(normalizedCodes)
+      setDynamicDataMap((prev) => ({ ...prev, ...nextMap }))
+      setPickerDynamicDataMap((prev) => ({ ...prev, ...nextMap }))
+    },
+    [loadDynamicDataMap, selectedStore?.storeCode],
+  )
 
   const updateScanFeedback = useCallback(
     (
@@ -317,18 +324,14 @@ export default function ShopHomePage() {
       const quantity = product.minOrderQuantity > 0 ? product.minOrderQuantity : 1
 
       try {
-        await addStoreOrderCartItem({
+        const nextCart = await addStoreOrderCartItem({
           storeCode: selectedStore.storeCode,
           productCode: product.productCode,
           quantity,
         })
+        setCart(nextCart)
 
-        let cartTotalQty: number | undefined
-        try {
-          const cart = await getActiveStoreOrderCart(selectedStore.storeCode)
-          setCart(cart)
-          cartTotalQty = cart?.items.find((ci) => ci.productCode === product.productCode)?.quantity
-        } catch {}
+        const cartTotalQty = nextCart?.items.find((ci) => ci.productCode === product.productCode)?.quantity
 
         updateScanFeedback('added', t('shop.scan.addedProduct', { name: product.productName || product.productCode }), {
           barcode,
@@ -339,7 +342,7 @@ export default function ShopHomePage() {
           cartTotalQuantity: cartTotalQty,
           tone: 'success',
         })
-        Promise.all([refreshDynamicData(), refreshPickerDynamicData()]).catch(() => {})
+        refreshDynamicDataForProducts([product.productCode]).catch(() => {})
         return true
       } catch (error) {
         updateScanFeedback('error', t('shop.scan.addItemFailed'), {
@@ -350,7 +353,7 @@ export default function ShopHomePage() {
         return false
       }
     },
-    [refreshCart, refreshDynamicData, refreshPickerDynamicData, selectedStore?.storeCode, t, updateScanFeedback],
+    [refreshDynamicDataForProducts, selectedStore?.storeCode, setCart, t, updateScanFeedback],
   )
 
   const handleBarcodeSubmit = useCallback(
@@ -429,13 +432,14 @@ export default function ShopHomePage() {
     }
 
     try {
-      await addStoreOrderCartItem({
+      const nextCart = await addStoreOrderCartItem({
         storeCode: selectedStore.storeCode,
         productCode: product.productCode,
         quantity,
       })
+      setCart(nextCart)
       message.success(t('shop.addedToCart', { quantity, name: product.productName }))
-      await Promise.all([refreshCart(), refreshDynamicData()])
+      await refreshDynamicDataForProducts([product.productCode])
     } catch (error) {
       message.error(t('shop.addToCartFailed'))
     }

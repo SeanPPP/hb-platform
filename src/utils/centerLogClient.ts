@@ -1,12 +1,13 @@
 import type { ApplicationLogIngestItem } from '../types/centerLog'
 
-const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').trim()
+const importMetaEnv = (import.meta as ImportMeta & { env?: ImportMetaEnv }).env ?? {}
+const API_BASE_URL = (importMetaEnv.VITE_API_BASE_URL || '').trim()
 const CENTER_LOG_INGEST_PATH = '/api/system/logs/ingest'
-const CENTER_LOG_PROJECT = (import.meta.env.VITE_CENTER_LOG_PROJECT || 'hbweb_rv').trim()
-const CENTER_LOG_KEY = (import.meta.env.VITE_CENTER_LOG_KEY || '').trim()
+const CENTER_LOG_PROJECT = (importMetaEnv.VITE_CENTER_LOG_PROJECT || 'hbweb_rv').trim()
+const CENTER_LOG_KEY = (importMetaEnv.VITE_CENTER_LOG_KEY || '').trim()
 const CENTER_LOG_ENVIRONMENT =
-  (import.meta.env.VITE_CENTER_LOG_ENVIRONMENT || import.meta.env.MODE || 'development').trim()
-const CENTER_LOG_SERVICE_NAME = (import.meta.env.VITE_CENTER_LOG_SERVICE_NAME || 'hbweb_rv-web').trim()
+  (importMetaEnv.VITE_CENTER_LOG_ENVIRONMENT || importMetaEnv.MODE || 'development').trim()
+const CENTER_LOG_SERVICE_NAME = (importMetaEnv.VITE_CENTER_LOG_SERVICE_NAME || 'hbweb_rv-web').trim()
 const CENTER_LOG_SOURCE_TYPE = 'Web'
 
 const MAX_MESSAGE_LENGTH = 2000

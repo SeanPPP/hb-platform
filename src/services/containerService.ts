@@ -199,6 +199,7 @@ export async function batchUpdateDetails(
       运输成本: item.运输成本,
       商品名称: item.商品名称,
       英文名称: item.英文名称,
+      ClearEnglishName: item.ClearEnglishName,
       贴牌价格: item.贴牌价格,
       单件装箱数: item.单件装箱数,
       单件体积: item.单件体积,

@@ -42,6 +42,7 @@ export interface ContainerDetail {
   localSupplierCode?: string
   商品名称?: string
   英文名称?: string
+  商品图片?: string
   装柜类型?: string
   商品类型?: string
   套装数量?: number
@@ -105,6 +106,7 @@ export interface UpdateContainerDetailRequest {
   运输成本?: number
   商品名称?: string
   英文名称?: string
+  ClearEnglishName?: boolean
   贴牌价格?: number
   单件装箱数?: number
   单件体积?: number
