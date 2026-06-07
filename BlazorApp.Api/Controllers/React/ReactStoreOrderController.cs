@@ -1035,7 +1035,7 @@ namespace BlazorApp.Api.Controllers.React
                 var forbidden = await RequireAnyPermissionAsync(OrderReadPermissions);
                 if (forbidden == null)
                 {
-                    forbidden = await RequireStoreScopeAsync(filter.StoreCode);
+                    forbidden = await RequireAssignedStoreScopeAsync(filter.StoreCode);
                 }
                 if (forbidden == null && filter.StoreCodes != null)
                 {
