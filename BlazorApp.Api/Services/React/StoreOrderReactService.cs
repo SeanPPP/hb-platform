@@ -1095,18 +1095,20 @@ namespace BlazorApp.Api.Services.React
                 }
                 orderSw.Stop();
 
-                // 2. 获取商品信息 (获取贴牌价)
+                // 2. 一次性获取商品与仓库价格，减少加购链路中的往返查询。
                 var productSw = Stopwatch.StartNew();
-                var warehouseProduct = await _db.Queryable<WarehouseProduct>()
-                    .Where(wp => wp.ProductCode == request.ProductCode)
-                    .FirstAsync();
-
-                var product = await _db.Queryable<Product>()
-                    .Where(p => p.ProductCode == request.ProductCode)
+                var productInfo = await _db.Queryable<Product>()
+                    .InnerJoin<WarehouseProduct>((p, wp) => p.ProductCode == wp.ProductCode)
+                    .Where((p, wp) => p.ProductCode == request.ProductCode)
+                    .Select((p, wp) => new
+                    {
+                        wp.OEMPrice,
+                        wp.ImportPrice,
+                    })
                     .FirstAsync();
                 productSw.Stop();
 
-                if (warehouseProduct == null || product == null)
+                if (productInfo == null)
                 {
                     _logger.LogInformation(
                         "[shop-scan-perf] traceId={TraceId} stage=cart.add.service.product-missing storeCode={StoreCode} productCode={ProductCode} quantity={Quantity} orderMs={OrderMs} productMs={ProductMs} totalMs={TotalMs}",
@@ -1121,8 +1123,8 @@ namespace BlazorApp.Api.Services.React
                     return new ApiResponse<StoreOrderCartDto?> { Success = false, Message = "商品不存在" };
                 }
 
-                decimal price = warehouseProduct.OEMPrice ?? 0;
-                decimal importPrice = warehouseProduct.ImportPrice ?? 0; // 记录ImportPrice以便统计
+                decimal price = productInfo.OEMPrice ?? 0;
+                decimal importPrice = productInfo.ImportPrice ?? 0; // 记录ImportPrice以便统计
 
                 // 3. 检查明细是否已存在
                 var detailLookupSw = Stopwatch.StartNew();
@@ -1519,12 +1521,18 @@ namespace BlazorApp.Api.Services.React
 
         private async Task UpdateOrderTotalAsync(string orderGuid)
         {
-            var details = await _db.Queryable<WareHouseOrderDetails>()
+            // 只需要主表汇总时直接在数据库聚合，避免加购后把整车明细拉回内存。
+            var totals = await _db.Queryable<WareHouseOrderDetails>()
                 .Where(d => d.OrderGUID == orderGuid && !d.IsDeleted)
-                .ToListAsync();
+                .Select(d => new
+                {
+                    TotalOEM = SqlFunc.AggregateSum(d.OEMAmount),
+                    TotalImport = SqlFunc.AggregateSum(d.ImportAmount),
+                })
+                .FirstAsync();
 
-            var totalOEM = details.Sum(d => d.OEMAmount) ?? 0;
-            var totalImport = details.Sum(d => d.ImportAmount) ?? 0;
+            var totalOEM = totals?.TotalOEM ?? 0;
+            var totalImport = totals?.TotalImport ?? 0;
 
             await _db.Updateable<WareHouseOrder>()
                 .SetColumns(o => new WareHouseOrder
@@ -1543,7 +1551,13 @@ namespace BlazorApp.Api.Services.React
         {
             try
             {
-                if (request.ProductCodes == null || !request.ProductCodes.Any())
+                var productCodes = (request.ProductCodes ?? new List<string>())
+                    .Where(code => !string.IsNullOrWhiteSpace(code))
+                    .Select(code => code.Trim())
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+
+                if (productCodes.Count == 0)
                 {
                     return new ApiResponse<List<StoreOrderDynamicDataDto>>
                     {
@@ -1564,7 +1578,7 @@ namespace BlazorApp.Api.Services.React
                     )
                     .Where(
                         (d, o) =>
-                            d.ProductCode != null && request.ProductCodes.Contains(d.ProductCode)
+                            d.ProductCode != null && productCodes.Contains(d.ProductCode)
                     )
                     .Select((d, o) => new { d.ProductCode, d.Quantity })
                     .ToListAsync();
@@ -1582,7 +1596,7 @@ namespace BlazorApp.Api.Services.React
                     )
                     .Where(
                         (d, o) =>
-                            d.ProductCode != null && request.ProductCodes.Contains(d.ProductCode)
+                            d.ProductCode != null && productCodes.Contains(d.ProductCode)
                     )
                     .OrderBy((d, o) => o.OrderDate, OrderByType.Desc)
                     .Select(
@@ -1597,22 +1611,37 @@ namespace BlazorApp.Api.Services.React
                     )
                     .ToListAsync();
 
-                // 3. 组装结果
+                var cartQuantityMap = cartItems
+                    .Where(item => !string.IsNullOrWhiteSpace(item.ProductCode))
+                    .GroupBy(item => item.ProductCode!, StringComparer.OrdinalIgnoreCase)
+                    .ToDictionary(
+                        group => group.Key,
+                        group => group.Sum(item => item.Quantity ?? 0m),
+                        StringComparer.OrdinalIgnoreCase
+                    );
+                var latestHistoryMap = historyItems
+                    .Where(item => !string.IsNullOrWhiteSpace(item.ProductCode))
+                    .GroupBy(item => item.ProductCode!, StringComparer.OrdinalIgnoreCase)
+                    .ToDictionary(
+                        group => group.Key,
+                        group => group.First(),
+                        StringComparer.OrdinalIgnoreCase
+                    );
+
+                // 3. 按请求顺序组装结果，字典查找避免页面商品多时反复线性扫描。
                 var result = new List<StoreOrderDynamicDataDto>();
                 foreach (var code in request.ProductCodes)
                 {
                     var dto = new StoreOrderDynamicDataDto { ProductCode = code };
 
                     // 填充购物车数量
-                    var cartItem = cartItems.FirstOrDefault(x => x.ProductCode == code);
-                    if (cartItem != null)
+                    if (cartQuantityMap.TryGetValue(code, out var cartQuantity))
                     {
-                        dto.CartQuantity = cartItem.Quantity ?? 0m;
+                        dto.CartQuantity = cartQuantity;
                     }
 
                     // 填充历史信息
-                    var historyItem = historyItems.FirstOrDefault(x => x.ProductCode == code);
-                    if (historyItem != null)
+                    if (latestHistoryMap.TryGetValue(code, out var historyItem))
                     {
                         dto.LastOrderDate = historyItem.OrderDate;
                         dto.LastQuantity = historyItem.Quantity;

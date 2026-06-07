@@ -245,6 +245,69 @@ public sealed class StoreOrderProductListTests : IDisposable
     }
 
     [Fact]
+    public async Task AddToCartAsync_加购后应使用聚合重算主表金额并返回最新购物车()
+    {
+        await SeedProductAsync("P001", "ITEM-001");
+        await SeedWarehouseProductAsync("P001", oemPrice: 3m, importPrice: 2m);
+        await SeedDomesticProductAsync("P001", unitVolume: 0.12m, packingQuantity: 12);
+
+        var service = CreateService();
+
+        _sqlLogs.Clear();
+        var result = await service.AddToCartAsync(new AddToCartRequestDto
+        {
+            StoreCode = "S001",
+            ProductCode = "P001",
+            Quantity = 5,
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        Assert.Equal(5, result.Data.TotalQuantity);
+        Assert.Equal(15m, result.Data.TotalAmount);
+        Assert.Equal(10m, result.Data.TotalImportAmount);
+        Assert.Equal(1, result.Data.TotalSKU);
+        Assert.Contains(_sqlLogs, log => log.Contains("SUM", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task GetProductsDynamicDataAsync_返回购物车数量和每个商品最近历史订单()
+    {
+        await SeedStoreOrderAsync("ORDER-OLD", flowStatus: 1, orderDate: new DateTime(2026, 5, 1));
+        await SeedStoreOrderAsync("ORDER-NEW", flowStatus: 1, orderDate: new DateTime(2026, 6, 1), insertStore: false);
+        await SeedStoreOrderAsync("ORDER-CART", flowStatus: 0, orderDate: new DateTime(2026, 6, 2), insertStore: false);
+        await SeedOrderDetailOnlyAsync("ORDER-OLD", "P001", quantity: 2m, allocQuantity: 1m);
+        await SeedOrderDetailOnlyAsync("ORDER-NEW", "P001", quantity: 7m, allocQuantity: 3m);
+        await SeedOrderDetailOnlyAsync("ORDER-CART", "P001", quantity: 5m, allocQuantity: 0m);
+
+        var result = await CreateService().GetProductsDynamicDataAsync(new StoreOrderDynamicDataRequestDto
+        {
+            StoreCode = "S001",
+            ProductCodes = new List<string> { "P001", "P002" },
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        Assert.Collection(
+            result.Data,
+            first =>
+            {
+                Assert.Equal("P001", first.ProductCode);
+                Assert.Equal(5m, first.CartQuantity);
+                Assert.Equal(new DateTime(2026, 6, 1), first.LastOrderDate);
+                Assert.Equal(7m, first.LastQuantity);
+                Assert.Equal(3m, first.LastAllocQuantity);
+            },
+            second =>
+            {
+                Assert.Equal("P002", second.ProductCode);
+                Assert.Equal(0m, second.CartQuantity);
+                Assert.Null(second.LastOrderDate);
+            }
+        );
+    }
+
+    [Fact]
     public async Task GetPagedListAsync_ExcludeOrderGUID_AlsoAppliesToDefaultWarehouseQuery()
     {
         await SeedProductAsync("P001", "ITEM-001");
@@ -435,25 +498,33 @@ public sealed class StoreOrderProductListTests : IDisposable
         }).ExecuteCommandAsync();
     }
 
-    private async Task SeedStoreOrderAsync(string orderGuid)
+    private async Task SeedStoreOrderAsync(
+        string orderGuid,
+        int flowStatus = 1,
+        DateTime? orderDate = null,
+        bool insertStore = true
+    )
     {
-        await _db.Insertable(new Store
+        if (insertStore)
         {
-            StoreGUID = "STORE-GUID-001",
-            StoreCode = "S001",
-            StoreName = "测试门店",
-            Address = "测试地址",
-            IsActive = true,
-            IsDeleted = false,
-        }).ExecuteCommandAsync();
+            await _db.Insertable(new Store
+            {
+                StoreGUID = "STORE-GUID-001",
+                StoreCode = "S001",
+                StoreName = "测试门店",
+                Address = "测试地址",
+                IsActive = true,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+        }
 
         await _db.Insertable(new WareHouseOrder
         {
             OrderGUID = orderGuid,
             StoreCode = "S001",
             OrderNo = $"{orderGuid}-NO",
-            OrderDate = new DateTime(2026, 6, 1),
-            FlowStatus = 1,
+            OrderDate = orderDate ?? new DateTime(2026, 6, 1),
+            FlowStatus = flowStatus,
             IsDeleted = false,
         }).ExecuteCommandAsync();
     }
@@ -489,6 +560,44 @@ public sealed class StoreOrderProductListTests : IDisposable
             ImportAmount = allocQuantity * 2m,
             OEMPrice = 3m,
             OEMAmount = quantity * 3m,
+            IsDeleted = false,
+        }).ExecuteCommandAsync();
+    }
+
+    private async Task SeedOrderDetailOnlyAsync(
+        string orderGuid,
+        string productCode,
+        decimal quantity,
+        decimal allocQuantity
+    )
+    {
+        await _db.Insertable(new WareHouseOrderDetails
+        {
+            DetailGUID = $"{orderGuid}-{productCode}",
+            OrderGUID = orderGuid,
+            StoreCode = "S001",
+            ProductCode = productCode,
+            Quantity = quantity,
+            AllocQuantity = allocQuantity,
+            ImportPrice = 2m,
+            ImportAmount = quantity * 2m,
+            OEMPrice = 3m,
+            OEMAmount = quantity * 3m,
+            IsDeleted = false,
+        }).ExecuteCommandAsync();
+    }
+
+    private async Task SeedDomesticProductAsync(
+        string productCode,
+        decimal unitVolume,
+        int packingQuantity
+    )
+    {
+        await _db.Insertable(new DomesticProduct
+        {
+            ProductCode = productCode,
+            UnitVolume = unitVolume,
+            PackingQuantity = packingQuantity,
             IsDeleted = false,
         }).ExecuteCommandAsync();
     }
