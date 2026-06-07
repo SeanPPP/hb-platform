@@ -25,6 +25,7 @@ import { useTranslation } from 'react-i18next'
 import PageContainer from '../../../components/PageContainer'
 import { getCenterLogDetail, getCenterLogs, getCenterLogSummary } from '../../../services/centerLogService'
 import type { ApplicationLogItem, ApplicationLogQueryParams, ApplicationLogSummaryGroup } from '../../../types/centerLog'
+import { formatCenterLogTimestamp } from './time'
 import {
   CENTER_LOG_LEVEL_OPTIONS,
   CENTER_LOG_PROJECT_OPTIONS,
@@ -53,15 +54,6 @@ function getLevelColor(level: string) {
     default:
       return 'default'
   }
-}
-
-function formatDateTime(value?: string) {
-  if (!value) {
-    return '-'
-  }
-
-  const parsed = dayjs(value)
-  return parsed.isValid() ? parsed.format('YYYY-MM-DD HH:mm:ss') : value
 }
 
 function formatPropertiesJson(value?: string) {
@@ -204,7 +196,7 @@ export default function SystemCenterLogsPage() {
         title: t('system.centerLogs.columns.timestamp'),
         dataIndex: 'timestampUtc',
         width: 180,
-        render: (value: string) => formatDateTime(value),
+        render: (value: string) => formatCenterLogTimestamp(value),
       },
       {
         title: t('system.centerLogs.columns.project'),
@@ -426,7 +418,7 @@ export default function SystemCenterLogsPage() {
           <Space direction="vertical" size={16} style={{ width: '100%' }}>
             <Descriptions bordered column={2} size="small">
               <Descriptions.Item label={t('system.centerLogs.columns.timestamp')}>
-                {formatDateTime(detailRecord.timestampUtc)}
+                {formatCenterLogTimestamp(detailRecord.timestampUtc)}
               </Descriptions.Item>
               <Descriptions.Item label={t('system.centerLogs.columns.level')}>
                 <Tag color={getLevelColor(detailRecord.level)}>{detailRecord.level}</Tag>

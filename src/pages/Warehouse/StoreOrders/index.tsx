@@ -156,6 +156,22 @@ function renderDateTag(value?: string, language?: string) {
   return <Tag className="store-order-nowrap" color={getDateTagColor(displayValue)}>{displayValue}</Tag>
 }
 
+function normalizeStoreFilterText(value: unknown) {
+  return String(value ?? '').trim().toLowerCase()
+}
+
+function filterStoreOption(input: string, option?: { label?: unknown; value?: unknown }) {
+  const keyword = normalizeStoreFilterText(input)
+  if (!keyword) {
+    return true
+  }
+
+  return (
+    normalizeStoreFilterText(option?.label).includes(keyword)
+    || normalizeStoreFilterText(option?.value).includes(keyword)
+  )
+}
+
 const DEFAULT_INCREMENTAL_CONFLICT_STRATEGY: StoreOrderSyncConflictStrategy = 'LatestWins'
 const DEFAULT_STATUS_LIST = [FlowStatus.Submitted, FlowStatus.Picking]
 const STATUS_FILTER_ORDER = [FlowStatus.Submitted, FlowStatus.Picking, FlowStatus.Completed]
@@ -449,6 +465,20 @@ export default function StoreOrdersPage() {
 
   const branchMap = useMemo(
     () => Object.fromEntries(branches.map((item) => [item.code, item.name])) as Record<string, string>,
+    [branches],
+  )
+
+  const storeFilterOptions = useMemo(
+    () =>
+      [...branches]
+        .sort((left, right) => {
+          const nameCompare = (left.name || '').localeCompare(right.name || '', 'zh-Hans-CN', { numeric: true, sensitivity: 'base' })
+          return nameCompare || left.code.localeCompare(right.code, 'zh-Hans-CN', { numeric: true, sensitivity: 'base' })
+        })
+        .map((item) => ({
+          value: item.code,
+          label: `${item.code} - ${item.name}`,
+        })),
     [branches],
   )
 
@@ -1084,12 +1114,12 @@ export default function StoreOrdersPage() {
             mode="multiple"
             value={selectedStoreCodes}
             allowClear
+            showSearch
             style={{ width: 280 }}
             placeholder={t('storeOrders.allStores')}
-            options={branches.map((item) => ({
-              value: item.code,
-              label: `${item.code} - ${item.name}`,
-            }))}
+            optionFilterProp="label"
+            filterOption={filterStoreOption}
+            options={storeFilterOptions}
             onChange={(value) => setSelectedStoreCodes(value)}
           />
           <Checkbox.Group
