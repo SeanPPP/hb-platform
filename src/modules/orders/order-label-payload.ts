@@ -1,4 +1,4 @@
-import type { WarehouseProductLabelPrintPayload } from "@/modules/printer/types";
+import type { ProductLabelPrintPayload } from "@/modules/printer/types";
 import type { StoreOrderDetailLine } from "./types";
 
 function cleanOptionalText(value?: string | null) {
@@ -16,22 +16,19 @@ function cleanOptionalNumber(value?: number | null) {
 
 export function buildOrderLineLabelPayload(
   line: StoreOrderDetailLine
-): WarehouseProductLabelPrintPayload {
+): ProductLabelPrintPayload {
   const productCode = cleanRequiredText(line.productCode);
 
+  // 订单明细打印改为走普通商品标签格式，仅映射普通标签所需字段。
   return {
-    productCode,
     productName: cleanRequiredText(line.productName, productCode),
     itemNumber: cleanOptionalText(line.itemNumber),
-    barcode: cleanOptionalText(line.barcode),
+    grade: null,
     supplierName: null,
-    middlePackageQuantity: null,
-    purchasePrice: null,
+    barcode: cleanOptionalText(line.barcode),
     retailPrice: cleanOptionalNumber(line.price),
-    domesticPrice: null,
-    oemPrice: null,
-    importPrice: cleanOptionalNumber(line.importPrice),
-    locationCode: cleanOptionalText(line.locationCode),
-    locationBarcode: null,
+    discountRate: null,
+    clearanceBarcode: null,
+    clearancePrice: null,
   };
 }

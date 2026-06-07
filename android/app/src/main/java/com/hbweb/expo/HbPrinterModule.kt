@@ -377,8 +377,9 @@ class HbPrinterModule(
     )
 
     if (barcode.isNotBlank()) {
+      val barcodeType = if (isValidEan13(barcode)) "EAN13" else "128"
       commands += "BARCODE-TEXT 7 0 5"
-      commands += "BARCODE 128 1 2 30 5 145 $barcode"
+      commands += "BARCODE $barcodeType 1 2 30 5 145 $barcode"
     }
 
     if (discountBitmap != null) {
@@ -401,6 +402,24 @@ class HbPrinterModule(
     commands += "PRINT"
 
     return commands.joinToString("\r\n", postfix = "\r\n")
+  }
+
+  // 只在普通商品标签里优先走合法 EAN13，其余情况回退到 CODE128。
+  private fun isValidEan13(barcode: String): Boolean {
+    if (barcode.length != 13 || barcode.any { !it.isDigit() }) {
+      return false
+    }
+
+    val expectedCheckDigit = barcode
+      .take(12)
+      .mapIndexed { index, char ->
+        val digit = char.digitToInt()
+        if (index % 2 == 0) digit else digit * 3
+      }
+      .sum()
+      .let { (10 - (it % 10)) % 10 }
+
+    return barcode.last().digitToInt() == expectedCheckDigit
   }
 
   private fun buildDiscountLabelCommand(payload: ReadableMap, printType: String = ""): String {

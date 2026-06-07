@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   FlatList,
   Image,
@@ -6,6 +6,7 @@ import {
   RefreshControl,
   ScrollView,
   StyleSheet,
+  type ViewToken,
   View,
 } from "react-native";
 import { useQuery } from "@tanstack/react-query";
@@ -42,7 +43,7 @@ import {
   type StoreOrderDetailLine,
   type StoreOrderListItem,
 } from "@/modules/orders/types";
-import { printWarehouseProductLabel } from "@/modules/printer/api";
+import { printProductLabelPayload } from "@/modules/printer/api";
 import { useStores } from "@/modules/shop/use-stores";
 
 const HISTORY_STATUS_VALUES: StoreOrderFlowStatus[] = [
@@ -126,24 +127,26 @@ function SummaryMetric({ label, value }: { label: string; value: string }) {
   );
 }
 
-function OrderLineCard({
+const OrderLineCard = memo(function OrderLineCard({
   isPrinting,
   item,
   index,
   onPrint,
+  renderMedia,
   t,
 }: {
   isPrinting: boolean;
   item: StoreOrderDetailLine;
   index: number;
   onPrint: (item: StoreOrderDetailLine) => void;
+  renderMedia: boolean;
   t: (key: string, options?: Record<string, unknown>) => string;
 }) {
   return (
     <Card mode="outlined" style={styles.detailItemCard}>
       <Card.Content style={styles.detailItemContent}>
         <View style={styles.detailItemHeader}>
-          {item.productImage ? (
+          {renderMedia && item.productImage ? (
             <Image source={{ uri: item.productImage }} style={styles.detailProductImage} resizeMode="cover" />
           ) : (
             <View style={[styles.detailProductImage, styles.detailProductImagePlaceholder]}>
@@ -199,7 +202,7 @@ function OrderLineCard({
         </View>
         {item.barcode ? (
           <View style={styles.detailBarcodeWrap}>
-            <ProductBarcodeImage value={item.barcode} />
+            {renderMedia ? <ProductBarcodeImage value={item.barcode} /> : <View style={styles.detailBarcodePlaceholder} />}
           </View>
         ) : null}
         <View style={styles.detailItemActions}>
@@ -217,7 +220,14 @@ function OrderLineCard({
       </Card.Content>
     </Card>
   );
-}
+}, (prevProps, nextProps) => (
+  prevProps.isPrinting === nextProps.isPrinting
+  && prevProps.index === nextProps.index
+  && prevProps.item === nextProps.item
+  && prevProps.onPrint === nextProps.onPrint
+  && prevProps.renderMedia === nextProps.renderMedia
+  && prevProps.t === nextProps.t
+));
 
 function OrderDetailContent({
   detail,
@@ -249,6 +259,153 @@ function OrderDetailContent({
   const filteredItems = useMemo(
     () => filterOrderDetailLinesByItemNumber(detail?.items ?? [], itemNumberFilter),
     [detail?.items, itemNumberFilter]
+  );
+  const [visibleDetailGuids, setVisibleDetailGuids] = useState<Set<string>>(() => new Set());
+  const viewabilityConfig = useRef({ itemVisiblePercentThreshold: 10 });
+
+  useEffect(() => {
+    setVisibleDetailGuids(new Set());
+  }, [detail?.orderGUID, itemNumberFilter]);
+
+  const onViewableItemsChanged = useRef(
+    ({ viewableItems }: { viewableItems: ViewToken[] }) => {
+      const nextVisibleGuids = new Set<string>();
+
+      for (const viewableItem of viewableItems) {
+        const detailLine = viewableItem.item as StoreOrderDetailLine | undefined;
+
+        if (detailLine?.detailGUID) {
+          nextVisibleGuids.add(detailLine.detailGUID);
+        }
+      }
+
+      setVisibleDetailGuids((previous) => {
+        if (previous.size === nextVisibleGuids.size) {
+          let changed = false;
+
+          for (const detailGuid of nextVisibleGuids) {
+            if (!previous.has(detailGuid)) {
+              changed = true;
+              break;
+            }
+          }
+
+          if (!changed) {
+            return previous;
+          }
+        }
+
+        return nextVisibleGuids;
+      });
+    }
+  );
+
+  // 只给可见行挂载重媒体内容，减少图片和条码组件同时存在的数量。
+  const renderDetailItem = useCallback(
+    ({ item, index }: { item: StoreOrderDetailLine; index: number }) => (
+      <OrderLineCard
+        isPrinting={printingDetailGuid === item.detailGUID}
+        item={item}
+        index={index}
+        onPrint={onPrintLine}
+        renderMedia={visibleDetailGuids.has(item.detailGUID)}
+        t={t}
+      />
+    ),
+    [onPrintLine, printingDetailGuid, t, visibleDetailGuids]
+  );
+
+  const renderDetailHeader = useCallback(
+    () => (
+      <View style={styles.detailHeaderContent}>
+        <Card mode="outlined" style={styles.detailSummaryCard}>
+          <Card.Content style={styles.detailSummaryContent}>
+            <View style={styles.detailTitleRow}>
+              <View style={styles.detailTitleWrap}>
+                <Text variant="titleLarge" style={styles.detailOrderNo}>
+                  {detail?.orderNo || "--"}
+                </Text>
+                <Text variant="bodyMedium" style={styles.detailStoreText}>
+                  {t("fields.store", { store: detail?.storeCode || "--" })}
+                </Text>
+              </View>
+              <StatusBadge status={detail?.flowStatus} label={statusLabel(detail?.flowStatus)} />
+            </View>
+
+            <View style={styles.detailInfoBlock}>
+              <Text variant="bodyMedium">
+                {t("fields.orderedAt", { value: formatDateTime(detail?.orderDate, localeTag) })}
+              </Text>
+              <Text variant="bodyMedium">
+                {t("fields.storeAddress", { value: detail?.storeAddress || "--" })}
+              </Text>
+              <Text variant="bodyMedium">{t("fields.remarks", { value: detail?.remarks || "--" })}</Text>
+            </View>
+
+            <View style={styles.summaryGrid}>
+              <SummaryMetric label={t("summary.sku")} value={formatNumber(detail?.totalSKU)} />
+              <SummaryMetric label={t("summary.orderedQty")} value={formatNumber(detail?.totalQuantity)} />
+              <SummaryMetric label={t("summary.allocQty")} value={formatNumber(detail?.totalAllocQuantity)} />
+              <SummaryMetric label={t("summary.orderAmount")} value={formatMoney(detail?.totalAmount)} />
+              <SummaryMetric label={t("summary.allocAmount")} value={formatMoney(detail?.totalImportAmount)} />
+              <SummaryMetric label={t("summary.orderVolume")} value={formatNumber(detail?.totalOrderVolume, 4)} />
+            </View>
+          </Card.Content>
+        </Card>
+
+        <View style={styles.detailListHeader}>
+          <View style={styles.detailListTitleWrap}>
+            <Text variant="titleMedium">{t("detailTitle")}</Text>
+            <Text variant="bodySmall" style={styles.detailListHint}>
+              {t("detailCount", { count: filteredItems.length })}
+            </Text>
+          </View>
+          {itemNumberFilter.trim() ? (
+            <Button compact onPress={() => onItemNumberFilterChange("")}>
+              {t("filters.clearItemNumber")}
+            </Button>
+          ) : null}
+        </View>
+
+        <TextInput
+          dense
+          mode="outlined"
+          label={t("filters.itemNumber")}
+          placeholder={t("filters.itemNumberPlaceholder")}
+          value={itemNumberFilter}
+          onChangeText={onItemNumberFilterChange}
+          autoCapitalize="none"
+          autoCorrect={false}
+          left={<TextInput.Icon icon="magnify" />}
+          right={
+            itemNumberFilter ? (
+              <TextInput.Icon icon="close" onPress={() => onItemNumberFilterChange("")} />
+            ) : undefined
+          }
+          style={styles.detailFilterInput}
+        />
+      </View>
+    ),
+    [detail, filteredItems.length, itemNumberFilter, localeTag, onItemNumberFilterChange, statusLabel, t]
+  );
+
+  const renderDetailEmpty = useCallback(
+    () => (itemNumberFilter.trim() ? (
+      <EmptyState
+        title={t("empty.noMatchingLinesTitle")}
+        description={t("empty.noMatchingLinesDescription")}
+      />
+    ) : (
+      <EmptyState title={t("empty.noLinesTitle")} description={t("empty.noLinesDescription")} />
+    )),
+    [itemNumberFilter, t]
+  );
+  const detailListExtraData = useMemo(
+    () => ({
+      printingDetailGuid,
+      visibleDetailGuids,
+    }),
+    [printingDetailGuid, visibleDetailGuids]
   );
 
   if (loading) {
@@ -282,95 +439,31 @@ function OrderDetailContent({
   }
 
   return (
-    <ScrollView contentContainerStyle={styles.detailScrollContent}>
-      <Card mode="outlined" style={styles.detailSummaryCard}>
-        <Card.Content style={styles.detailSummaryContent}>
-          <View style={styles.detailTitleRow}>
-            <View style={styles.detailTitleWrap}>
-              <Text variant="titleLarge" style={styles.detailOrderNo}>
-                {detail.orderNo || "--"}
-              </Text>
-              <Text variant="bodyMedium" style={styles.detailStoreText}>
-                {t("fields.store", { store: detail.storeCode || "--" })}
-              </Text>
-            </View>
-            <StatusBadge status={detail.flowStatus} label={statusLabel(detail.flowStatus)} />
-          </View>
-
-          <View style={styles.detailInfoBlock}>
-            <Text variant="bodyMedium">
-              {t("fields.orderedAt", { value: formatDateTime(detail.orderDate, localeTag) })}
-            </Text>
-            <Text variant="bodyMedium">
-              {t("fields.storeAddress", { value: detail.storeAddress || "--" })}
-            </Text>
-            <Text variant="bodyMedium">{t("fields.remarks", { value: detail.remarks || "--" })}</Text>
-          </View>
-
-          <View style={styles.summaryGrid}>
-            <SummaryMetric label={t("summary.sku")} value={formatNumber(detail.totalSKU)} />
-            <SummaryMetric label={t("summary.orderedQty")} value={formatNumber(detail.totalQuantity)} />
-            <SummaryMetric label={t("summary.allocQty")} value={formatNumber(detail.totalAllocQuantity)} />
-            <SummaryMetric label={t("summary.orderAmount")} value={formatMoney(detail.totalAmount)} />
-            <SummaryMetric label={t("summary.allocAmount")} value={formatMoney(detail.totalImportAmount)} />
-            <SummaryMetric label={t("summary.orderVolume")} value={formatNumber(detail.totalOrderVolume, 4)} />
-          </View>
-        </Card.Content>
-      </Card>
-
-      <View style={styles.detailListHeader}>
-        <View style={styles.detailListTitleWrap}>
-          <Text variant="titleMedium">{t("detailTitle")}</Text>
-          <Text variant="bodySmall" style={styles.detailListHint}>
-            {t("detailCount", { count: filteredItems.length })}
-          </Text>
-        </View>
-        {itemNumberFilter.trim() ? (
-          <Button compact onPress={() => onItemNumberFilterChange("")}>
-            {t("filters.clearItemNumber")}
-          </Button>
-        ) : null}
-      </View>
-
-      <TextInput
-        dense
-        mode="outlined"
-        label={t("filters.itemNumber")}
-        placeholder={t("filters.itemNumberPlaceholder")}
-        value={itemNumberFilter}
-        onChangeText={onItemNumberFilterChange}
-        autoCapitalize="none"
-        autoCorrect={false}
-        left={<TextInput.Icon icon="magnify" />}
-        right={
-          itemNumberFilter ? (
-            <TextInput.Icon icon="close" onPress={() => onItemNumberFilterChange("")} />
-          ) : undefined
-        }
-        style={styles.detailFilterInput}
-      />
-
-      {filteredItems.length ? (
-        filteredItems.map((item, index) => (
-          <OrderLineCard
-            key={item.detailGUID}
-            isPrinting={printingDetailGuid === item.detailGUID}
-            item={item}
-            index={index}
-            onPrint={onPrintLine}
-            t={t}
-          />
-        ))
-      ) : itemNumberFilter.trim() ? (
-        <EmptyState
-          title={t("empty.noMatchingLinesTitle")}
-          description={t("empty.noMatchingLinesDescription")}
-        />
-      ) : (
-        <EmptyState title={t("empty.noLinesTitle")} description={t("empty.noLinesDescription")} />
-      )}
-    </ScrollView>
+    <FlatList
+      data={filteredItems}
+      keyExtractor={(item) => item.detailGUID}
+      renderItem={renderDetailItem}
+      extraData={detailListExtraData}
+      contentContainerStyle={[
+        styles.detailListContent,
+        filteredItems.length ? null : styles.detailListContentEmpty,
+      ]}
+      ListHeaderComponent={renderDetailHeader}
+      ListEmptyComponent={renderDetailEmpty}
+      ItemSeparatorComponent={DetailItemSeparator}
+      initialNumToRender={4}
+      maxToRenderPerBatch={4}
+      windowSize={5}
+      removeClippedSubviews
+      keyboardShouldPersistTaps="handled"
+      onViewableItemsChanged={onViewableItemsChanged.current}
+      viewabilityConfig={viewabilityConfig.current}
+    />
   );
+}
+
+function DetailItemSeparator() {
+  return <View style={styles.detailItemSeparator} />;
 }
 
 export default function Orders() {
@@ -472,7 +565,8 @@ export default function Orders() {
     async (item: StoreOrderDetailLine) => {
       setPrintingDetailGuid(item.detailGUID);
       try {
-        await printWarehouseProductLabel(buildOrderLineLabelPayload(item));
+        // 订单明细中的 Print label 统一走普通商品标签模板。
+        await printProductLabelPayload(buildOrderLineLabelPayload(item));
         setSnackbar(t("messages.printSuccess"));
       } catch (error) {
         setSnackbar(getErrorMessage(error, "messages.printFailed"));
@@ -481,6 +575,10 @@ export default function Orders() {
       }
     },
     [getErrorMessage, t]
+  );
+  const handlePrintDetailLine = useCallback(
+    (item: StoreOrderDetailLine) => void handlePrintLine(item),
+    [handlePrintLine]
   );
 
   const renderOrderCard = ({ item, index }: { item: StoreOrderListItem; index: number }) => (
@@ -760,7 +858,7 @@ export default function Orders() {
             localeTag={localeTag}
             onClose={handleCloseDetail}
             onItemNumberFilterChange={setItemNumberFilter}
-            onPrintLine={(item) => void handlePrintLine(item)}
+            onPrintLine={handlePrintDetailLine}
             onRetry={() => void detailQuery.refetch()}
             printingDetailGuid={printingDetailGuid}
             statusLabel={statusLabel}
@@ -1030,9 +1128,16 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     minHeight: 240,
   },
-  detailScrollContent: {
+  detailListContent: {
     padding: 16,
+    paddingBottom: 24,
+  },
+  detailListContentEmpty: {
+    flexGrow: 1,
+  },
+  detailHeaderContent: {
     gap: 14,
+    marginBottom: 14,
   },
   detailSummaryCard: {
     backgroundColor: "#F8FAFC",
@@ -1085,6 +1190,9 @@ const styles = StyleSheet.create({
   detailItemCard: {
     backgroundColor: "#FFFFFF",
     borderRadius: 18,
+  },
+  detailItemSeparator: {
+    height: 14,
   },
   detailItemContent: {
     gap: 12,
@@ -1155,7 +1263,15 @@ const styles = StyleSheet.create({
   },
   detailBarcodeWrap: {
     alignSelf: "stretch",
+    height: 48,
     maxWidth: 220,
+  },
+  detailBarcodePlaceholder: {
+    flex: 1,
+    borderRadius: 8,
+    backgroundColor: "#F8FAFC",
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
   },
   detailItemActions: {
     alignItems: "flex-end",

@@ -16,6 +16,7 @@ import { PrinterStorage } from "@/modules/printer/storage";
 import { usePrinterStore } from "@/modules/printer/state";
 import type {
   PrinterDevice,
+  ProductLabelPrintPayload,
   SavedPrinter,
   WarehouseLocationLabelPrintPayload,
   WarehouseProductLabelPrintPayload,
@@ -253,6 +254,11 @@ export async function testPrinterConnection() {
 export async function printProductLabel(detail: ProductDetail, overrides?: ProductLabelOverrides, printType?: string | null) {
   await ensureConnectedPrinter();
   return printNativeProductLabel(buildPayload(detail, overrides), printType);
+}
+
+export async function printProductLabelPayload(payload: ProductLabelPrintPayload, printType?: string | null) {
+  await ensureConnectedPrinter();
+  return printNativeProductLabel(payload, printType);
 }
 
 export async function printDiscountLabel(detail: ProductDetail, printType?: string | null) {

@@ -7,6 +7,12 @@ function assertEqual(actual: unknown, expected: unknown, label: string) {
   }
 }
 
+function assertNotIn(key: string, value: object, label: string) {
+  if (key in value) {
+    throw new Error(`${label}: unexpected key ${key}`);
+  }
+}
+
 function makeLine(overrides: Partial<StoreOrderDetailLine> = {}): StoreOrderDetailLine {
   return {
     detailGUID: "detail-1",
@@ -28,22 +34,31 @@ function makeLine(overrides: Partial<StoreOrderDetailLine> = {}): StoreOrderDeta
 }
 
 const normalPayload = buildOrderLineLabelPayload(makeLine());
-assertEqual(normalPayload.productCode, "P001", "商品编码保持原值");
 assertEqual(normalPayload.productName, "Test Product", "商品名称去除首尾空格");
 assertEqual(normalPayload.itemNumber, "ITEM-001", "货号去除首尾空格");
 assertEqual(normalPayload.barcode, "9300012345678", "条码去除首尾空格");
-assertEqual(normalPayload.locationCode, "A-01-01-01", "货位去除首尾空格");
-assertEqual(normalPayload.importPrice, 2.25, "进口价使用订单行进口价");
 assertEqual(normalPayload.retailPrice, 3.5, "零售价使用订单行销售价");
+assertEqual(normalPayload.grade, null, "等级固定为空");
+assertEqual(normalPayload.supplierName, null, "供应商固定为空");
+assertEqual(normalPayload.discountRate, null, "折扣率固定为空");
+assertEqual(normalPayload.clearanceBarcode, null, "清仓条码固定为空");
+assertEqual(normalPayload.clearancePrice, null, "清仓价固定为空");
+assertNotIn("productCode", normalPayload, "普通商品标签不携带商品编码字段");
+assertNotIn("locationCode", normalPayload, "普通商品标签不携带货位字段");
+assertNotIn("importPrice", normalPayload, "普通商品标签不携带进口价字段");
 
 const emptyOptionalPayload = buildOrderLineLabelPayload(
-  makeLine({ itemNumber: " ", barcode: "", locationCode: "" })
+  makeLine({ itemNumber: " ", barcode: "" })
 );
 assertEqual(emptyOptionalPayload.itemNumber, null, "空货号转为 null");
 assertEqual(emptyOptionalPayload.barcode, null, "空条码转为 null");
-assertEqual(emptyOptionalPayload.locationCode, null, "空货位转为 null");
 
 const nameFallbackPayload = buildOrderLineLabelPayload(
   makeLine({ productCode: "P-FALLBACK", productName: " " })
 );
 assertEqual(nameFallbackPayload.productName, "P-FALLBACK", "商品名为空时回退商品编码");
+
+const invalidPricePayload = buildOrderLineLabelPayload(
+  makeLine({ price: Number.NaN })
+);
+assertEqual(invalidPricePayload.retailPrice, null, "非法零售价转为 null");
