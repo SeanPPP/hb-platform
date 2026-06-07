@@ -6,6 +6,13 @@
   "viewDetail": "查看明细",
   "detailTitle": "订单明细",
   "detailCount": "共 {{count}} 条",
+  "actions": {
+    "printLabel": "打印标签"
+  },
+  "messages": {
+    "printSuccess": "标签已发送到打印机",
+    "printFailed": "打印标签失败"
+  },
   "statuses": {
     "unknown": "未知",
     "shoppingCart": "购物车",
@@ -23,6 +30,8 @@
     "detailFailedTitle": "订单明细加载失败",
     "detailNotFoundTitle": "未找到订单明细",
     "detailNotFoundDescription": "请稍后重试",
+    "noMatchingLinesTitle": "未找到匹配货号",
+    "noMatchingLinesDescription": "请检查输入的货号或条码",
     "noLinesTitle": "暂无明细",
     "noLinesDescription": "这个订单还没有商品明细"
   },
@@ -55,7 +64,10 @@
     "currentStore": "当前分店: {{store}}",
     "noStores": "当前账号没有可用分店。",
     "status": "状态",
-    "allHistory": "全部历史"
+    "allHistory": "全部历史",
+    "itemNumber": "货号过滤",
+    "itemNumberPlaceholder": "输入货号，货号为空时可输入条码",
+    "clearItemNumber": "清空"
   },
   "pagination": {
     "previous": "上一页",

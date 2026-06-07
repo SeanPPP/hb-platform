@@ -1,4 +1,8 @@
 import { apiClient } from "@/shared/api/client";
+import {
+  buildOrderListRequest,
+  type StoreOrderListRequestParams,
+} from "./order-list-display";
 import type { StoreOrderCart, StoreOrderDetail, StoreOrderListResult } from "./types";
 
 function assertSuccess<T>(data: T | undefined, message?: string): T {
@@ -57,20 +61,8 @@ export async function submitStoreOrder(storeCode: string, remarks?: string): Pro
   return res.data;
 }
 
-export async function fetchOrderList(params: {
-  storeCode?: string;
-  pageNumber?: number;
-  pageSize?: number;
-  statusList?: number[];
-  keyword?: string;
-}): Promise<StoreOrderListResult> {
-  const res = await apiClient.post("/react/v1/store-order/list", {
-    storeCode: params.storeCode,
-    pageNumber: params.pageNumber ?? 1,
-    pageSize: params.pageSize ?? 20,
-    statusList: params.statusList ?? [1, 2, 3],
-    keyword: params.keyword,
-  });
+export async function fetchOrderList(params: StoreOrderListRequestParams): Promise<StoreOrderListResult> {
+  const res = await apiClient.post("/react/v1/store-order/list", buildOrderListRequest(params));
   return assertSuccess(res.data as StoreOrderListResult, "Order list");
 }
 

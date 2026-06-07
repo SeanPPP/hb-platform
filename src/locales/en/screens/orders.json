@@ -6,6 +6,13 @@
   "viewDetail": "View details",
   "detailTitle": "Order details",
   "detailCount": "{{count}} lines",
+  "actions": {
+    "printLabel": "Print label"
+  },
+  "messages": {
+    "printSuccess": "Label sent to printer",
+    "printFailed": "Failed to print label"
+  },
   "statuses": {
     "unknown": "Unknown",
     "shoppingCart": "Cart",
@@ -23,6 +30,8 @@
     "detailFailedTitle": "Failed to load order details",
     "detailNotFoundTitle": "Order details not found",
     "detailNotFoundDescription": "Please try again later.",
+    "noMatchingLinesTitle": "No matching item number",
+    "noMatchingLinesDescription": "Check the item number or barcode and try again.",
     "noLinesTitle": "No lines yet",
     "noLinesDescription": "This order does not contain any product lines."
   },
@@ -55,7 +64,10 @@
     "currentStore": "Current store: {{store}}",
     "noStores": "No stores are available for this account.",
     "status": "Status",
-    "allHistory": "All history"
+    "allHistory": "All history",
+    "itemNumber": "Item number filter",
+    "itemNumberPlaceholder": "Enter item number, or barcode when item number is empty",
+    "clearItemNumber": "Clear"
   },
   "pagination": {
     "previous": "Previous",

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   FlatList,
+  Image,
   Pressable,
   RefreshControl,
   ScrollView,
@@ -18,13 +19,22 @@ import {
   Portal,
   Modal,
   RadioButton,
+  Snackbar,
   Text,
+  TextInput,
 } from "react-native-paper";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { ProductBarcodeImage } from "@/components/product-maintenance/ProductBarcodeImage";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 import { resolveLocalizedErrorMessage } from "@/shared/i18n/error-message";
 import { resolveLocaleTag } from "@/shared/i18n/types";
+import {
+  DEFAULT_ORDER_LIST_PAGE_SIZE,
+  filterOrderDetailLinesByItemNumber,
+  getOrderRowNumber,
+} from "@/modules/orders/order-list-display";
+import { buildOrderLineLabelPayload } from "@/modules/orders/order-label-payload";
 import { fetchOrderDetail, fetchOrderList } from "@/modules/orders/store-order-api";
 import {
   StoreOrderFlowStatus,
@@ -32,6 +42,7 @@ import {
   type StoreOrderDetailLine,
   type StoreOrderListItem,
 } from "@/modules/orders/types";
+import { printWarehouseProductLabel } from "@/modules/printer/api";
 import { useStores } from "@/modules/shop/use-stores";
 
 const HISTORY_STATUS_VALUES: StoreOrderFlowStatus[] = [
@@ -39,7 +50,7 @@ const HISTORY_STATUS_VALUES: StoreOrderFlowStatus[] = [
   StoreOrderFlowStatus.Completed,
   StoreOrderFlowStatus.Picking,
 ];
-const PAGE_SIZE = 20;
+const PAGE_SIZE = DEFAULT_ORDER_LIST_PAGE_SIZE;
 
 function formatDateTime(value: string | undefined, localeTag: string) {
   if (!value) {
@@ -116,37 +127,53 @@ function SummaryMetric({ label, value }: { label: string; value: string }) {
 }
 
 function OrderLineCard({
+  isPrinting,
   item,
   index,
+  onPrint,
   t,
 }: {
+  isPrinting: boolean;
   item: StoreOrderDetailLine;
   index: number;
+  onPrint: (item: StoreOrderDetailLine) => void;
   t: (key: string, options?: Record<string, unknown>) => string;
 }) {
   return (
     <Card mode="outlined" style={styles.detailItemCard}>
       <Card.Content style={styles.detailItemContent}>
         <View style={styles.detailItemHeader}>
-          <View style={styles.detailItemTitleWrap}>
-            <Text variant="labelSmall" style={styles.detailItemIndex}>
-              #{index + 1}
-            </Text>
-            <Text variant="titleSmall" style={styles.detailItemTitle}>
-              {item.productName || item.productCode}
-            </Text>
-            <Text variant="bodySmall" style={styles.detailItemSubTitle}>
-              {t("fields.itemNumber", { value: item.itemNumber || "--" })} |{" "}
-              {t("fields.location", { value: item.locationCode || "--" })}
-            </Text>
-          </View>
-          <View style={styles.detailItemStatusWrap}>
-            <Text variant="bodyMedium" style={styles.detailQtyText}>
-              {t("fields.orderedQty", { value: formatNumber(item.quantity) })}
-            </Text>
-            <Text variant="bodySmall" style={styles.detailAllocText}>
-              {t("fields.allocQty", { value: formatNumber(item.allocQuantity) })}
-            </Text>
+          {item.productImage ? (
+            <Image source={{ uri: item.productImage }} style={styles.detailProductImage} resizeMode="cover" />
+          ) : (
+            <View style={[styles.detailProductImage, styles.detailProductImagePlaceholder]}>
+              <Text variant="labelSmall" style={styles.detailProductImageText} numberOfLines={2}>
+                {item.itemNumber || item.productCode}
+              </Text>
+            </View>
+          )}
+          <View style={styles.detailItemMain}>
+            <View style={styles.detailItemTopRow}>
+              <View style={styles.detailItemTitleWrap}>
+                <Text variant="labelSmall" style={styles.detailItemIndex}>
+                  #{index + 1}
+                </Text>
+                <Text variant="titleSmall" style={styles.detailItemTitle} numberOfLines={3}>
+                  {item.productName || item.productCode}
+                </Text>
+                <Text variant="bodySmall" style={styles.detailItemSubTitle}>
+                  {t("fields.itemNumber", { value: item.itemNumber || "--" })}
+                </Text>
+              </View>
+              <View style={styles.detailItemStatusWrap}>
+                <Text variant="bodyMedium" style={styles.detailQtyText}>
+                  {t("fields.orderedQty", { value: formatNumber(item.quantity) })}
+                </Text>
+                <Text variant="bodySmall" style={styles.detailAllocText}>
+                  {t("fields.allocQty", { value: formatNumber(item.allocQuantity) })}
+                </Text>
+              </View>
+            </View>
           </View>
         </View>
 
@@ -165,16 +192,27 @@ function OrderLineCard({
           </View>
           <View style={styles.detailMetaCell}>
             <Text variant="labelSmall" style={styles.detailMetaLabel}>
-              {t("fields.orderAmount")}
-            </Text>
-            <Text variant="bodyMedium">{formatMoney(item.amount)}</Text>
-          </View>
-          <View style={styles.detailMetaCell}>
-            <Text variant="labelSmall" style={styles.detailMetaLabel}>
               {t("fields.allocAmount")}
             </Text>
             <Text variant="bodyMedium">{formatMoney(item.importAmount)}</Text>
           </View>
+        </View>
+        {item.barcode ? (
+          <View style={styles.detailBarcodeWrap}>
+            <ProductBarcodeImage value={item.barcode} />
+          </View>
+        ) : null}
+        <View style={styles.detailItemActions}>
+          <Button
+            compact
+            disabled={isPrinting}
+            icon="printer-outline"
+            loading={isPrinting}
+            mode="contained-tonal"
+            onPress={() => onPrint(item)}
+          >
+            {t("actions.printLabel")}
+          </Button>
         </View>
       </Card.Content>
     </Card>
@@ -183,23 +221,36 @@ function OrderLineCard({
 
 function OrderDetailContent({
   detail,
+  itemNumberFilter,
   loading,
   errorMessage,
   localeTag,
   onClose,
+  onItemNumberFilterChange,
+  onPrintLine,
   onRetry,
+  printingDetailGuid,
   statusLabel,
   t,
 }: {
   detail?: StoreOrderDetail;
+  itemNumberFilter: string;
   loading: boolean;
   errorMessage?: string;
   localeTag: string;
   onClose: () => void;
+  onItemNumberFilterChange: (value: string) => void;
+  onPrintLine: (item: StoreOrderDetailLine) => void;
   onRetry: () => void;
+  printingDetailGuid: string | null;
   statusLabel: (status?: StoreOrderFlowStatus) => string;
   t: (key: string, options?: Record<string, unknown>) => string;
 }) {
+  const filteredItems = useMemo(
+    () => filterOrderDetailLinesByItemNumber(detail?.items ?? [], itemNumberFilter),
+    [detail?.items, itemNumberFilter]
+  );
+
   if (loading) {
     return (
       <View style={styles.detailLoadingWrap}>
@@ -268,16 +319,53 @@ function OrderDetailContent({
       </Card>
 
       <View style={styles.detailListHeader}>
-        <Text variant="titleMedium">{t("detailTitle")}</Text>
-        <Text variant="bodySmall" style={styles.detailListHint}>
-          {t("detailCount", { count: detail.items.length })}
-        </Text>
+        <View style={styles.detailListTitleWrap}>
+          <Text variant="titleMedium">{t("detailTitle")}</Text>
+          <Text variant="bodySmall" style={styles.detailListHint}>
+            {t("detailCount", { count: filteredItems.length })}
+          </Text>
+        </View>
+        {itemNumberFilter.trim() ? (
+          <Button compact onPress={() => onItemNumberFilterChange("")}>
+            {t("filters.clearItemNumber")}
+          </Button>
+        ) : null}
       </View>
 
-      {detail.items.length ? (
-        detail.items.map((item, index) => (
-          <OrderLineCard key={item.detailGUID} item={item} index={index} t={t} />
+      <TextInput
+        dense
+        mode="outlined"
+        label={t("filters.itemNumber")}
+        placeholder={t("filters.itemNumberPlaceholder")}
+        value={itemNumberFilter}
+        onChangeText={onItemNumberFilterChange}
+        autoCapitalize="none"
+        autoCorrect={false}
+        left={<TextInput.Icon icon="magnify" />}
+        right={
+          itemNumberFilter ? (
+            <TextInput.Icon icon="close" onPress={() => onItemNumberFilterChange("")} />
+          ) : undefined
+        }
+        style={styles.detailFilterInput}
+      />
+
+      {filteredItems.length ? (
+        filteredItems.map((item, index) => (
+          <OrderLineCard
+            key={item.detailGUID}
+            isPrinting={printingDetailGuid === item.detailGUID}
+            item={item}
+            index={index}
+            onPrint={onPrintLine}
+            t={t}
+          />
         ))
+      ) : itemNumberFilter.trim() ? (
+        <EmptyState
+          title={t("empty.noMatchingLinesTitle")}
+          description={t("empty.noMatchingLinesDescription")}
+        />
       ) : (
         <EmptyState title={t("empty.noLinesTitle")} description={t("empty.noLinesDescription")} />
       )}
@@ -301,7 +389,10 @@ export default function Orders() {
   const [selectedOrderGuid, setSelectedOrderGuid] = useState<string | null>(null);
   const [filtersVisible, setFiltersVisible] = useState(false);
   const [storePickerVisible, setStorePickerVisible] = useState(false);
+  const [itemNumberFilter, setItemNumberFilter] = useState("");
   const [ordersRefreshing, setOrdersRefreshing] = useState(false);
+  const [printingDetailGuid, setPrintingDetailGuid] = useState<string | null>(null);
+  const [snackbar, setSnackbar] = useState("");
 
   const statusLabel = useCallback(
     (status?: StoreOrderFlowStatus) => {
@@ -367,18 +458,56 @@ export default function Orders() {
   const canGoPrevPage = pageNumber > 1;
   const canGoNextPage = pageNumber * PAGE_SIZE < total;
 
-  const renderOrderCard = ({ item }: { item: StoreOrderListItem }) => (
-    <Pressable onPress={() => setSelectedOrderGuid(item.orderGUID)}>
+  const handleCloseDetail = useCallback(() => {
+    setSelectedOrderGuid(null);
+    setItemNumberFilter("");
+  }, []);
+
+  const handleSelectOrder = useCallback((orderGuid: string) => {
+    setItemNumberFilter("");
+    setSelectedOrderGuid(orderGuid);
+  }, []);
+
+  const handlePrintLine = useCallback(
+    async (item: StoreOrderDetailLine) => {
+      setPrintingDetailGuid(item.detailGUID);
+      try {
+        await printWarehouseProductLabel(buildOrderLineLabelPayload(item));
+        setSnackbar(t("messages.printSuccess"));
+      } catch (error) {
+        setSnackbar(getErrorMessage(error, "messages.printFailed"));
+      } finally {
+        setPrintingDetailGuid(null);
+      }
+    },
+    [getErrorMessage, t]
+  );
+
+  const renderOrderCard = ({ item, index }: { item: StoreOrderListItem; index: number }) => (
+    <Pressable onPress={() => handleSelectOrder(item.orderGUID)}>
       <Card mode="outlined" style={styles.orderCard}>
         <Card.Content style={styles.orderCardContent}>
           <View style={styles.orderHeader}>
             <View style={styles.orderHeaderLeft}>
-              <Text variant="titleMedium" style={styles.orderNo}>
-                {item.orderNo || "--"}
-              </Text>
-              <Text variant="bodySmall" style={styles.orderMetaText}>
-                {item.storeName || item.storeCode || "--"} | {formatDateTime(item.orderDate, localeTag)}
-              </Text>
+              <View style={styles.orderNoRow}>
+                <Text variant="labelMedium" style={styles.orderRowNumber}>
+                  #{getOrderRowNumber(pageNumber, PAGE_SIZE, index)}
+                </Text>
+                <Text variant="titleMedium" style={styles.orderNo}>
+                  {item.orderNo || "--"}
+                </Text>
+              </View>
+              <View style={styles.orderMetaRow}>
+                <Text variant="bodySmall" style={styles.orderStoreText}>
+                  {item.storeName || item.storeCode || "--"}
+                </Text>
+                <Text variant="bodySmall" style={styles.orderMetaSeparator}>
+                  |
+                </Text>
+                <Text variant="bodySmall" style={styles.orderDateText}>
+                  {formatDateTime(item.orderDate, localeTag)}
+                </Text>
+              </View>
             </View>
             <StatusBadge status={item.flowStatus} label={statusLabel(item.flowStatus)} />
           </View>
@@ -616,11 +745,12 @@ export default function Orders() {
         </Modal>
         <Modal
           visible={Boolean(selectedOrderGuid)}
-          onDismiss={() => setSelectedOrderGuid(null)}
+          onDismiss={handleCloseDetail}
           contentContainerStyle={styles.modalContent}
         >
           <OrderDetailContent
             detail={detailQuery.data}
+            itemNumberFilter={itemNumberFilter}
             loading={!detailQuery.data && (detailQuery.isLoading || detailQuery.isFetching)}
             errorMessage={
               detailQuery.error
@@ -628,13 +758,19 @@ export default function Orders() {
                 : undefined
             }
             localeTag={localeTag}
-            onClose={() => setSelectedOrderGuid(null)}
+            onClose={handleCloseDetail}
+            onItemNumberFilterChange={setItemNumberFilter}
+            onPrintLine={(item) => void handlePrintLine(item)}
             onRetry={() => void detailQuery.refetch()}
+            printingDetailGuid={printingDetailGuid}
             statusLabel={statusLabel}
             t={t}
           />
         </Modal>
       </Portal>
+      <Snackbar visible={Boolean(snackbar)} onDismiss={() => setSnackbar("")} duration={3000}>
+        {snackbar}
+      </Snackbar>
     </SafeAreaView>
   );
 }
@@ -713,12 +849,36 @@ const styles = StyleSheet.create({
     flex: 1,
     gap: 4,
   },
+  orderNoRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  orderRowNumber: {
+    color: "#1677FF",
+    fontWeight: "700",
+  },
   orderNo: {
+    flex: 1,
     color: "#0F172A",
     fontWeight: "700",
   },
-  orderMetaText: {
+  orderMetaRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    flexWrap: "wrap",
+    columnGap: 6,
+    rowGap: 2,
+  },
+  orderStoreText: {
     color: "#64748B",
+  },
+  orderMetaSeparator: {
+    color: "#64748B",
+  },
+  orderDateText: {
+    color: "#B45309",
+    fontWeight: "700",
   },
   statusBadge: {
     alignSelf: "flex-start",
@@ -910,9 +1070,17 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
+    gap: 12,
+  },
+  detailListTitleWrap: {
+    flex: 1,
+    minWidth: 0,
   },
   detailListHint: {
     color: "#64748B",
+  },
+  detailFilterInput: {
+    backgroundColor: "#FFFFFF",
   },
   detailItemCard: {
     backgroundColor: "#FFFFFF",
@@ -923,11 +1091,37 @@ const styles = StyleSheet.create({
   },
   detailItemHeader: {
     flexDirection: "row",
-    justifyContent: "space-between",
     gap: 12,
+  },
+  detailProductImage: {
+    width: 72,
+    height: 72,
+    borderRadius: 10,
+    backgroundColor: "#F1F5F9",
+  },
+  detailProductImagePlaceholder: {
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 6,
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+  },
+  detailProductImageText: {
+    color: "#64748B",
+    textAlign: "center",
+  },
+  detailItemMain: {
+    flex: 1,
+    minWidth: 0,
+  },
+  detailItemTopRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    gap: 10,
   },
   detailItemTitleWrap: {
     flex: 1,
+    minWidth: 0,
     gap: 4,
   },
   detailItemIndex: {
@@ -958,6 +1152,13 @@ const styles = StyleSheet.create({
     flexWrap: "wrap",
     rowGap: 10,
     columnGap: 12,
+  },
+  detailBarcodeWrap: {
+    alignSelf: "stretch",
+    maxWidth: 220,
+  },
+  detailItemActions: {
+    alignItems: "flex-end",
   },
   detailMetaCell: {
     width: "47%",
