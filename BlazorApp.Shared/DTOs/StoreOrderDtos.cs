@@ -190,6 +190,8 @@ namespace BlazorApp.Shared.DTOs
 
     public DateTime? OrderDate { get; set; }
 
+    public DateTime? OutboundDate { get; set; }
+
     public int TotalAllocQuantity { get; set; }
 
     public int TotalSKU { get; set; }
@@ -422,6 +424,7 @@ namespace BlazorApp.Shared.DTOs
     public string? StoreCode { get; set; }
     public string? StoreName { get; set; }
     public DateTime? OrderDate { get; set; }
+    public DateTime? OutboundDate { get; set; }
     public int FlowStatus { get; set; }
 
     /// <summary>
@@ -604,6 +607,19 @@ namespace BlazorApp.Shared.DTOs
     public decimal? ShippingFee { get; set; }
     public DateTime? OrderDate { get; set; }
     public string? StoreCode { get; set; }
+  }
+
+  /// <summary>
+  /// 更新订单出库日期请求
+  /// </summary>
+  public class UpdateOrderOutboundDateDto
+  {
+    [Required]
+    public string OrderGuid { get; set; } = string.Empty;
+
+    public DateTime? OutboundDate { get; set; }
+
+    public bool CompleteOrder { get; set; }
   }
 }
 

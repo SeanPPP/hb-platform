@@ -1,20 +1,25 @@
 using System.Reflection;
+using System.Runtime.CompilerServices;
 using System.Security.Claims;
 using System.Text.Json;
 using BlazorApp.Api.Cache;
 using BlazorApp.Api.Controllers.React;
+using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Api.Services.React;
 using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.DTOs;
+using BlazorApp.Shared.Models;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Moq;
+using SqlSugar;
 using Xunit;
 
 namespace BlazorApp.Api.Tests;
@@ -93,8 +98,31 @@ internal static class StoreOrderCacheWarmerTestFactory
     }
 }
 
-public class ReactStoreOrderAuthorizationTests
+public class ReactStoreOrderAuthorizationTests : IDisposable
 {
+    private readonly SqliteConnection _sqliteConnection;
+    private readonly SqlSugarClient _db;
+
+    public ReactStoreOrderAuthorizationTests()
+    {
+        _sqliteConnection = new SqliteConnection("Data Source=:memory:");
+        _sqliteConnection.Open();
+        _db = new SqlSugarClient(new ConnectionConfig
+        {
+            ConnectionString = _sqliteConnection.ConnectionString,
+            DbType = DbType.Sqlite,
+            IsAutoCloseConnection = false,
+            InitKeyType = InitKeyType.Attribute,
+        });
+        _db.CodeFirst.InitTables(typeof(WareHouseOrder));
+    }
+
+    public void Dispose()
+    {
+        _db.Dispose();
+        _sqliteConnection.Dispose();
+    }
+
     [Fact]
     public void ProductCacheKey_IgnoresStoreCodeForSameProductFilters()
     {
@@ -1247,6 +1275,129 @@ public class ReactStoreOrderAuthorizationTests
     }
 
     [Fact]
+    public async Task GetOrderDetail_AllowsAssignedStoreOrder_WhenManageableOrderScopeFails()
+    {
+        await SeedOrderAsync("order-assigned", "1024");
+        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        service
+            .Setup(item =>
+                item.GetOrderDetailAsync(
+                    "order-assigned",
+                    It.Is<StoreOrderDetailQueryDto>(query =>
+                        query.PageNumber == 1 && query.PageSize == 50
+                    )
+                )
+            )
+            .ReturnsAsync(
+                new ApiResponse<StoreOrderDetailDto?>
+                {
+                    Success = true,
+                    Data = new StoreOrderDetailDto
+                    {
+                        OrderGUID = "order-assigned",
+                        StoreCode = "1024",
+                    },
+                }
+            );
+        var scopeService = CreateScopeService();
+        scopeService.Setup(item => item.CanAccessOrderAsync("order-assigned")).ReturnsAsync(false);
+        scopeService.Setup(item => item.CanAccessStoreCodeAsync("1024")).ReturnsAsync(false);
+        var userService = CreateAssignedStoreUserService("1024");
+
+        var controller = CreateController(
+            service,
+            CreateAuthorizationService(Permissions.OrderFront.View),
+            scopeService,
+            userService: userService,
+            dbContext: CreateSqlSugarContext(_db)
+        );
+
+        var result = await controller.GetOrderDetail(
+            "order-assigned",
+            new StoreOrderDetailQueryDto()
+        );
+
+        Assert.IsType<OkObjectResult>(result);
+        service.VerifyAll();
+        userService.Verify(item => item.GetUserStoresAsync("user-1"), Times.Once);
+    }
+
+    [Fact]
+    public async Task GetOrderDetailFull_AllowsAssignedStoreOrder_WhenManageableOrderScopeFails()
+    {
+        await SeedOrderAsync("order-assigned-full", "1024");
+        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        service
+            .Setup(item => item.GetOrderDetailFullAsync("order-assigned-full"))
+            .ReturnsAsync(
+                new ApiResponse<StoreOrderCartDto?>
+                {
+                    Success = true,
+                    Data = new StoreOrderCartDto
+                    {
+                        OrderGUID = "order-assigned-full",
+                        StoreCode = "1024",
+                    },
+                }
+            );
+        var scopeService = CreateScopeService();
+        scopeService
+            .Setup(item => item.CanAccessOrderAsync("order-assigned-full"))
+            .ReturnsAsync(false);
+        scopeService.Setup(item => item.CanAccessStoreCodeAsync("1024")).ReturnsAsync(false);
+        var userService = CreateAssignedStoreUserService("1024");
+
+        var controller = CreateController(
+            service,
+            CreateAuthorizationService(Permissions.OrderFront.View),
+            scopeService,
+            userService: userService,
+            dbContext: CreateSqlSugarContext(_db)
+        );
+
+        var result = await controller.GetOrderDetailFull("order-assigned-full");
+
+        Assert.IsType<OkObjectResult>(result);
+        service.VerifyAll();
+        userService.Verify(item => item.GetUserStoresAsync("user-1"), Times.Once);
+    }
+
+    [Theory]
+    [InlineData("order-outside", "S999")]
+    [InlineData("order-missing", null)]
+    public async Task GetOrderDetail_ForbidsWhenAssignedStoreScopeDoesNotMatch(
+        string orderGuid,
+        string? storeCode
+    )
+    {
+        if (storeCode != null)
+        {
+            await SeedOrderAsync(orderGuid, storeCode);
+        }
+        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        var scopeService = CreateScopeService();
+        scopeService.Setup(item => item.CanAccessOrderAsync(orderGuid)).ReturnsAsync(false);
+        if (storeCode != null)
+        {
+            scopeService.Setup(item => item.CanAccessStoreCodeAsync(storeCode)).ReturnsAsync(false);
+        }
+        var userService = CreateAssignedStoreUserService("S001");
+
+        var controller = CreateController(
+            service,
+            CreateAuthorizationService(Permissions.OrderFront.View),
+            scopeService,
+            userService: userService,
+            dbContext: CreateSqlSugarContext(_db)
+        );
+
+        var result = await controller.GetOrderDetail(orderGuid, new StoreOrderDetailQueryDto());
+
+        Assert.IsType<ForbidResult>(result);
+        service.VerifyNoOtherCalls();
+    }
+
+    [Fact]
     public async Task UpdateStoreContact_RequiresEditPermissionAndScopesBeforeCallingService()
     {
         var request = new UpdateStoreOrderStoreContactDto
@@ -1285,6 +1436,31 @@ public class ReactStoreOrderAuthorizationTests
 
         Assert.IsType<OkObjectResult>(result);
         service.Verify(item => item.UpdateStoreContactAsync(request), Times.Once);
+    }
+
+    [Fact]
+    public async Task UpdateOrderOutboundDate_ForbidsWhenOrderScopeRejectsBeforeCallingService()
+    {
+        var request = new UpdateOrderOutboundDateDto
+        {
+            OrderGuid = "order-outside",
+            OutboundDate = new DateTime(2026, 6, 7),
+            CompleteOrder = true,
+        };
+        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        var scopeService = CreateScopeService();
+        scopeService.Setup(item => item.CanAccessOrderAsync("order-outside")).ReturnsAsync(false);
+
+        var controller = CreateController(
+            service,
+            CreateAuthorizationService(Permissions.Orders.Edit),
+            scopeService
+        );
+
+        var result = await controller.UpdateOrderOutboundDate(request);
+
+        Assert.IsType<ForbidResult>(result);
+        service.VerifyNoOtherCalls();
     }
 
     [Fact]
@@ -1416,13 +1592,15 @@ public class ReactStoreOrderAuthorizationTests
         Mock<IStoreOrderSyncJobService>? jobService = null,
         Mock<IStoreOrderInvoiceEmailJobService>? invoiceEmailJobService = null,
         Mock<IStoreOrderInvoiceEmailTextTranslationService>? invoiceEmailTextTranslationService = null,
-        Mock<IUserService>? userService = null
+        Mock<IUserService>? userService = null,
+        SqlSugarContext? dbContext = null
     )
     {
         var controller = new ReactStoreOrderController(
             service.Object,
             Mock.Of<ILogger<ReactStoreOrderController>>(),
             new MemoryCache(new MemoryCacheOptions()),
+            dbContext ?? CreateUninitializedSqlSugarContext(),
             (userService ?? new Mock<IUserService>()).Object,
             Mock.Of<BlazorApp.Api.Interfaces.IStoreService>(),
             authorizationService.Object,
@@ -1462,6 +1640,51 @@ public class ReactStoreOrderAuthorizationTests
         }
 
         return controller;
+    }
+
+    private async Task SeedOrderAsync(string orderGuid, string storeCode)
+    {
+        await _db.Insertable(
+            new WareHouseOrder
+            {
+                OrderGUID = orderGuid,
+                StoreCode = storeCode,
+                OrderNo = orderGuid,
+                IsDeleted = false,
+            }
+        ).ExecuteCommandAsync();
+    }
+
+    private static Mock<IUserService> CreateAssignedStoreUserService(string storeCode)
+    {
+        var userService = new Mock<IUserService>(MockBehavior.Strict);
+        userService
+            .Setup(item => item.GetUserStoresAsync("user-1"))
+            .ReturnsAsync(
+                ApiResponse<List<UserStoreDto>>.OK(
+                    new List<UserStoreDto>
+                    {
+                        new() { StoreCode = storeCode, IsPrimary = false },
+                    }
+                )
+            );
+        return userService;
+    }
+
+    private static SqlSugarContext CreateSqlSugarContext(ISqlSugarClient db)
+    {
+        var context = (SqlSugarContext)RuntimeHelpers.GetUninitializedObject(typeof(SqlSugarContext));
+        var dbField = typeof(SqlSugarContext).GetField(
+            "_db",
+            BindingFlags.Instance | BindingFlags.NonPublic
+        );
+        dbField!.SetValue(context, db);
+        return context;
+    }
+
+    private static SqlSugarContext CreateUninitializedSqlSugarContext()
+    {
+        return (SqlSugarContext)RuntimeHelpers.GetUninitializedObject(typeof(SqlSugarContext));
     }
 
     private static Mock<IAuthorizationService> CreateAuthorizationService(

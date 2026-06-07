@@ -1,8 +1,10 @@
 using BlazorApp.Api.Cache;
+using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.DTOs;
+using BlazorApp.Shared.Models;
 using System.Diagnostics;
 using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
@@ -22,6 +24,7 @@ namespace BlazorApp.Api.Controllers.React
         private readonly IStoreOrderReactService _service;
         private readonly ILogger<ReactStoreOrderController> _logger;
         private readonly IMemoryCache _cache;
+        private readonly SqlSugarContext _dbContext;
         private readonly IUserService _userService;
         private readonly IAuthorizationService _authorizationService;
         private readonly ICurrentUserManageableStoreScopeService _storeScopeService;
@@ -105,6 +108,7 @@ namespace BlazorApp.Api.Controllers.React
             IStoreOrderReactService service,
             ILogger<ReactStoreOrderController> logger,
             IMemoryCache cache,
+            SqlSugarContext dbContext,
             IUserService userService,
             IStoreService storeService,
             IAuthorizationService authorizationService,
@@ -117,6 +121,7 @@ namespace BlazorApp.Api.Controllers.React
             _service = service;
             _logger = logger;
             _cache = cache;
+            _dbContext = dbContext;
             _userService = userService;
             _authorizationService = authorizationService;
             _storeScopeService = storeScopeService;
@@ -465,6 +470,23 @@ namespace BlazorApp.Api.Controllers.React
         private async Task<IActionResult?> RequireOrderScopeAsync(string orderGuid)
         {
             return await _storeScopeService.CanAccessOrderAsync(orderGuid) ? null : Forbid();
+        }
+
+        private async Task<IActionResult?> RequireOrderReadScopeAsync(string orderGuid)
+        {
+            var forbidden = await RequireOrderScopeAsync(orderGuid);
+            if (forbidden == null)
+            {
+                return null;
+            }
+
+            var storeCode = await _dbContext.Db.Queryable<WareHouseOrder>()
+                .Where(item => item.OrderGUID == orderGuid && !item.IsDeleted)
+                .Select(item => item.StoreCode)
+                .FirstAsync();
+
+            // 移动端订单列表按已分配分店授权；详情查看保持同一读权限语义。
+            return await RequireAssignedStoreScopeAsync(storeCode);
         }
 
         private async Task<IActionResult?> RequireOrderScopesAsync(IEnumerable<string> orderGuids)
@@ -1076,7 +1098,7 @@ namespace BlazorApp.Api.Controllers.React
             {
                 var forbidden =
                     await RequireAnyPermissionAsync(OrderReadPermissions)
-                    ?? await RequireOrderScopeAsync(orderGuid);
+                    ?? await RequireOrderReadScopeAsync(orderGuid);
                 if (forbidden != null)
                 {
                     return forbidden;
@@ -1109,7 +1131,7 @@ namespace BlazorApp.Api.Controllers.React
             {
                 var forbidden =
                     await RequireAnyPermissionAsync(OrderReadPermissions)
-                    ?? await RequireOrderScopeAsync(orderGuid);
+                    ?? await RequireOrderReadScopeAsync(orderGuid);
                 if (forbidden != null)
                 {
                     return forbidden;
@@ -1604,6 +1626,38 @@ namespace BlazorApp.Api.Controllers.React
             catch (Exception ex)
             {
                 _logger.LogError(ex, "UpdateOrderHeader failed");
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
+        /// <summary>
+        /// 更新订单出库日期，可选同步完成订单。
+        /// </summary>
+        [HttpPost("outbound-date")]
+        public async Task<IActionResult> UpdateOrderOutboundDate(
+            [FromBody] UpdateOrderOutboundDateDto request
+        )
+        {
+            try
+            {
+                var forbidden =
+                    await RequireAnyPermissionAsync(OrderEditPermissions)
+                    ?? await RequireOrderScopeAsync(request.OrderGuid);
+                if (forbidden != null)
+                {
+                    return forbidden;
+                }
+
+                var result = await _service.UpdateOrderOutboundDateAsync(request);
+                if (result.Success)
+                {
+                    return Ok(new { success = true, data = result.Data });
+                }
+                return BadRequest(new { success = false, message = result.Message });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "UpdateOrderOutboundDate failed");
                 return StatusCode(500, new { success = false, message = "服务器内部错误" });
             }
         }

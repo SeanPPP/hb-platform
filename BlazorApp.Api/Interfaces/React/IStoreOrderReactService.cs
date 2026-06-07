@@ -136,6 +136,11 @@ namespace BlazorApp.Api.Interfaces.React
         Task<ApiResponse<bool>> UpdateOrderHeaderAsync(UpdateOrderHeaderDto request);
 
         /// <summary>
+        /// 更新订单出库日期，可选同步标记为已完成。
+        /// </summary>
+        Task<ApiResponse<bool>> UpdateOrderOutboundDateAsync(UpdateOrderOutboundDateDto request);
+
+        /// <summary>
         /// 软删除订单
         /// </summary>
         Task<ApiResponse<bool>> DeleteOrderAsync(string orderGuid);

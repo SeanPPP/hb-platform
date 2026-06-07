@@ -605,6 +605,83 @@ public sealed class StoreOrderProductListTests : IDisposable
         Assert.False(inactiveItem.IsActive);
     }
 
+    [Fact]
+    public async Task GetOrderListAsync_ReturnsOutboundDate()
+    {
+        var outboundDate = new DateTime(2026, 6, 7);
+        await SeedStoreOrderAsync("ORDER-OUT-LIST", outboundDate: outboundDate);
+        await SeedOrderLineAsync("ORDER-OUT-LIST", "P001", "ITEM-001", quantity: 3m, allocQuantity: 2m);
+
+        var result = await CreateService().GetOrderListAsync(new StoreOrderListFilterDto
+        {
+            PageNumber = 1,
+            PageSize = 20,
+            StatusList = new List<int> { 1 },
+        });
+
+        var item = Assert.Single(result.Items);
+        Assert.Equal(outboundDate, item.OutboundDate);
+    }
+
+    [Fact]
+    public async Task GetOrderDetailAsync_ReturnsOutboundDate()
+    {
+        var outboundDate = new DateTime(2026, 6, 8);
+        await SeedStoreOrderAsync("ORDER-OUT-DETAIL", outboundDate: outboundDate);
+        await SeedOrderLineAsync("ORDER-OUT-DETAIL", "P001", "ITEM-001", quantity: 3m, allocQuantity: 2m);
+
+        var result = await CreateService().GetOrderDetailAsync(
+            "ORDER-OUT-DETAIL",
+            new StoreOrderDetailQueryDto { PageNumber = 1, PageSize = 20 }
+        );
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        Assert.Equal(outboundDate, result.Data.OutboundDate);
+    }
+
+    [Fact]
+    public async Task UpdateOrderOutboundDateAsync_CanCompletePickingOrderAndOnlyUpdatesOutboundFields()
+    {
+        var originalOrderDate = new DateTime(2026, 6, 1);
+        var outboundDate = new DateTime(2026, 6, 9);
+        await SeedStoreOrderAsync(
+            "ORDER-OUT-UPDATE",
+            flowStatus: 3,
+            orderDate: originalOrderDate,
+            outboundDate: new DateTime(2026, 6, 2)
+        );
+
+        var result = await CreateService().UpdateOrderOutboundDateAsync(new UpdateOrderOutboundDateDto
+        {
+            OrderGuid = "ORDER-OUT-UPDATE",
+            OutboundDate = outboundDate,
+            CompleteOrder = true,
+        });
+
+        Assert.True(result.Success, result.Message);
+        var order = await _db.Queryable<WareHouseOrder>()
+            .Where(item => item.OrderGUID == "ORDER-OUT-UPDATE")
+            .FirstAsync();
+        Assert.Equal(outboundDate, order.OutboundDate);
+        Assert.Equal(2, order.FlowStatus);
+        Assert.Equal(originalOrderDate, order.OrderDate);
+    }
+
+    [Fact]
+    public async Task UpdateOrderOutboundDateAsync_ReturnsFailureWhenOrderDoesNotExist()
+    {
+        var result = await CreateService().UpdateOrderOutboundDateAsync(new UpdateOrderOutboundDateDto
+        {
+            OrderGuid = "ORDER-MISSING",
+            OutboundDate = new DateTime(2026, 6, 10),
+            CompleteOrder = true,
+        });
+
+        Assert.False(result.Success);
+        Assert.Equal("Order not found", result.Message);
+    }
+
     public void Dispose()
     {
         _db.Dispose();
@@ -679,6 +756,7 @@ public sealed class StoreOrderProductListTests : IDisposable
         string orderGuid,
         int flowStatus = 1,
         DateTime? orderDate = null,
+        DateTime? outboundDate = null,
         bool insertStore = true
     )
     {
@@ -701,6 +779,7 @@ public sealed class StoreOrderProductListTests : IDisposable
             StoreCode = "S001",
             OrderNo = $"{orderGuid}-NO",
             OrderDate = orderDate ?? new DateTime(2026, 6, 1),
+            OutboundDate = outboundDate,
             FlowStatus = flowStatus,
             IsDeleted = false,
         }).ExecuteCommandAsync();

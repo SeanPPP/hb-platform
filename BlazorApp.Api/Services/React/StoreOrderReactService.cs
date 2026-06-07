@@ -2244,6 +2244,7 @@ namespace BlazorApp.Api.Services.React
                             .Where(s => s.StoreCode == o.StoreCode || s.StoreGUID == o.StoreCode)
                             .Select(s => s.StoreName),
                         OrderDate = o.OrderDate,
+                        OutboundDate = o.OutboundDate,
                         FlowStatus = o.FlowStatus ?? 0,
 
                         // TotalAmount -> 实际发货金额
@@ -2489,6 +2490,7 @@ namespace BlazorApp.Api.Services.React
                         StoreAddress = result.Data.StoreAddress,
                         StoreContactEmail = result.Data.StoreContactEmail,
                         OrderDate = result.Data.OrderDate,
+                        OutboundDate = result.Data.OutboundDate,
                         TotalAllocQuantity = result.Data.TotalAllocQuantity,
                         TotalSKU = result.Data.TotalSKU,
                         FlowStatus = result.Data.FlowStatus,
@@ -2823,6 +2825,7 @@ namespace BlazorApp.Api.Services.React
                 OrderNo = order.Order.OrderNo,
                 StoreCode = order.Order.StoreCode,
                 OrderDate = order.Order.OrderDate,
+                OutboundDate = order.Order.OutboundDate,
                 TotalAmount = order.Order.OEMTotalAmount ?? 0,
                 TotalQuantity = (int)(summary?.TotalQuantity ?? 0),
                 TotalAllocQuantity = (int)(summary?.TotalAllocQuantity ?? 0),
@@ -3389,6 +3392,53 @@ namespace BlazorApp.Api.Services.React
             catch (Exception ex)
             {
                 _logger.LogError(ex, "UpdateOrderHeaderAsync failed");
+                return new ApiResponse<bool> { Success = false, Message = ex.Message };
+            }
+        }
+
+        public async Task<ApiResponse<bool>> UpdateOrderOutboundDateAsync(
+            UpdateOrderOutboundDateDto request
+        )
+        {
+            try
+            {
+                var order = await _db.Queryable<WareHouseOrder>()
+                    .Where(o => o.OrderGUID == request.OrderGuid && !o.IsDeleted)
+                    .FirstAsync();
+
+                if (order == null)
+                {
+                    return new ApiResponse<bool>
+                    {
+                        Success = false,
+                        Message = "Order not found",
+                    };
+                }
+
+                order.OutboundDate = request.OutboundDate;
+                if (request.CompleteOrder)
+                {
+                    order.FlowStatus = 2;
+                }
+                order.UpdatedAt = DateTime.Now;
+                order.UpdatedBy =
+                    _httpContextAccessor.HttpContext?.User?.Identity?.Name ?? "System";
+
+                await _db.Updateable(order)
+                    .UpdateColumns(o => new
+                    {
+                        o.OutboundDate,
+                        o.FlowStatus,
+                        o.UpdatedAt,
+                        o.UpdatedBy,
+                    })
+                    .ExecuteCommandAsync();
+
+                return new ApiResponse<bool> { Success = true, Data = true };
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "UpdateOrderOutboundDateAsync failed");
                 return new ApiResponse<bool> { Success = false, Message = ex.Message };
             }
         }
