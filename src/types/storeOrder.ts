@@ -209,6 +209,7 @@ export interface StoreOrderDetail {
   remarks?: string
   shippingFee?: number
   orderDate?: string
+  outboundDate?: string
   storeAddress?: string
   storeContactEmail?: string
   flowStatus?: StoreOrderFlowStatus
@@ -294,6 +295,7 @@ export interface StoreOrderCart {
   remarks?: string
   shippingFee?: number
   orderDate?: string
+  outboundDate?: string
   storeAddress?: string
   storeContactEmail?: string
   flowStatus?: StoreOrderFlowStatus
@@ -380,6 +382,12 @@ export interface UpdateStoreOrderHeaderPayload {
   shippingFee?: number
   storeCode?: string
   orderDate?: string
+}
+
+export interface UpdateStoreOrderOutboundDatePayload {
+  orderGUID: string
+  outboundDate?: string
+  completeOrder?: boolean
 }
 
 export interface UpdateStoreOrderStoreContactPayload {

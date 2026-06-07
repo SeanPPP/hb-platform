@@ -19,6 +19,7 @@ runTest('已提交和配货中订单应允许编辑明细', () => {
     deriveStoreOrderDetailPermissions(StoreOrderFlowStatus.Submitted),
     {
       canEditOrder: true,
+      canEditOutboundDate: true,
       canStartPicking: true,
       canCompleteOrder: true,
       isReadonlyOrder: false,
@@ -29,6 +30,7 @@ runTest('已提交和配货中订单应允许编辑明细', () => {
     deriveStoreOrderDetailPermissions(StoreOrderFlowStatus.Picking),
     {
       canEditOrder: true,
+      canEditOutboundDate: true,
       canStartPicking: false,
       canCompleteOrder: true,
       isReadonlyOrder: false,
@@ -42,6 +44,7 @@ runTest('购物车 已完成 未知状态都应按只读处理', () => {
     deriveStoreOrderDetailPermissions(StoreOrderFlowStatus.ShoppingCart),
     {
       canEditOrder: false,
+      canEditOutboundDate: true,
       canStartPicking: false,
       canCompleteOrder: false,
       isReadonlyOrder: true,
@@ -52,6 +55,7 @@ runTest('购物车 已完成 未知状态都应按只读处理', () => {
     deriveStoreOrderDetailPermissions(StoreOrderFlowStatus.Completed),
     {
       canEditOrder: false,
+      canEditOutboundDate: true,
       canStartPicking: false,
       canCompleteOrder: false,
       isReadonlyOrder: true,
@@ -62,6 +66,7 @@ runTest('购物车 已完成 未知状态都应按只读处理', () => {
     deriveStoreOrderDetailPermissions(undefined),
     {
       canEditOrder: false,
+      canEditOutboundDate: true,
       canStartPicking: false,
       canCompleteOrder: false,
       isReadonlyOrder: true,
@@ -72,6 +77,7 @@ runTest('购物车 已完成 未知状态都应按只读处理', () => {
     deriveStoreOrderDetailPermissions(999 as StoreOrderFlowStatus),
     {
       canEditOrder: false,
+      canEditOutboundDate: true,
       canStartPicking: false,
       canCompleteOrder: false,
       isReadonlyOrder: true,

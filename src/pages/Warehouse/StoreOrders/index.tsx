@@ -41,6 +41,7 @@ import {
   getStoreOrderHqSyncJob,
   getStoreOrderList,
   getUsedStoreOrderBranches,
+  updateStoreOrderOutboundDate,
   updateStoreOrderStatus,
 } from '../../../services/storeOrderService'
 import { getStores } from '../../../services/storeService'
@@ -438,6 +439,9 @@ export default function StoreOrdersPage() {
     useState<StoreOrderSyncConflictStrategy>(DEFAULT_INCREMENTAL_CONFLICT_STRATEGY)
   const [storePickerOpen, setStorePickerOpen] = useState(false)
   const [copyModalOpen, setCopyModalOpen] = useState(false)
+  const [shippingOrder, setShippingOrder] = useState<StoreOrderListItem | null>(null)
+  const [shippingDate, setShippingDate] = useState<Dayjs>(() => dayjs())
+  const [shippingLoading, setShippingLoading] = useState(false)
   // 记录当前轮询停止函数，确保重复触发和页面卸载时都能清理定时器。
   const stopSyncPollingRef = useRef<(() => void) | null>(null)
   // 避免卸载后继续 setState，防止轮询尾声触发无效更新。
@@ -750,6 +754,39 @@ export default function StoreOrdersPage() {
     })
   }
 
+  const openShippingModal = (record: StoreOrderListItem) => {
+    setShippingOrder(record)
+    setShippingDate(record.outboundDate ? dayjs(record.outboundDate) : dayjs())
+  }
+
+  const closeShippingModal = () => {
+    setShippingOrder(null)
+    setShippingDate(dayjs())
+  }
+
+  const handleConfirmShipping = async () => {
+    if (!shippingOrder) {
+      return
+    }
+
+    setShippingLoading(true)
+    try {
+      await updateStoreOrderOutboundDate({
+        orderGUID: shippingOrder.orderGUID,
+        outboundDate: shippingDate.format('YYYY-MM-DD'),
+        completeOrder: true,
+      })
+      message.success(t('storeOrders.shipOrderSuccess'))
+      closeShippingModal()
+      void loadData()
+    } catch (error) {
+      console.error(error)
+      message.error(error instanceof Error ? error.message : t('storeOrders.shipOrderFailed'))
+    } finally {
+      setShippingLoading(false)
+    }
+  }
+
   const columns = useMemo<ColumnsType<StoreOrderListItem>>(
     () => [
       {
@@ -910,9 +947,14 @@ export default function StoreOrdersPage() {
         title: t('column.action'),
         key: 'action',
         fixed: 'right',
-        width: 128,
+        width: 172,
         render: (_, record) => (
           <Space size={0} wrap={false}>
+            {record.flowStatus === FlowStatus.Submitted || record.flowStatus === FlowStatus.Picking ? (
+              <Button size="small" type="link" onClick={() => openShippingModal(record)}>
+                {t('storeOrders.shipOrder')}
+              </Button>
+            ) : null}
             <Button size="small" type="link" onClick={() => openDetail(record)}>
               {t('common.view')}
             </Button>
@@ -1169,6 +1211,30 @@ export default function StoreOrdersPage() {
           }
         }}
       />
+
+      <Modal
+        title={t('storeOrders.shipOrderTitle')}
+        open={Boolean(shippingOrder)}
+        okText={t('storeOrders.confirmShipOrder')}
+        cancelText={t('common.cancel')}
+        confirmLoading={shippingLoading}
+        destroyOnHidden
+        onCancel={closeShippingModal}
+        onOk={() => void handleConfirmShipping()}
+      >
+        <Space direction="vertical" size={12} style={{ width: '100%' }}>
+          <Typography.Text>
+            {t('storeOrders.shipOrderConfirm', {
+              orderNo: shippingOrder?.orderNo || '--',
+            })}
+          </Typography.Text>
+          <DatePicker
+            style={{ width: '100%' }}
+            value={shippingDate}
+            onChange={(value) => setShippingDate(value ?? dayjs())}
+          />
+        </Space>
+      </Modal>
 
       <Modal
         title={t('storeOrders.syncIncrementalTitle')}

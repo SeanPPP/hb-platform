@@ -272,13 +272,13 @@ async function main() {
   const readonlyCopyFailure = await runTest('只读状态应提供中英文提示文案', () => {
     assert(
       zhSource.includes('"orderReadonlyTitle": "当前订单为只读状态"') &&
-        zhSource.includes('"orderReadonlyDescription": "已完成订单不可编辑，请更改状态后再操作。"') &&
+        zhSource.includes('"orderReadonlyDescription": "已完成订单不可编辑，请更改状态后再操作。但仍可补录或修正出库日期。"') &&
         zhSource.includes('"orderReadonlyRefresh": "当前订单状态不可编辑，请刷新确认状态。"'),
       '中文文案缺少订单只读提示',
     )
     assert(
       enSource.includes('"orderReadonlyTitle": "Order is read-only"') &&
-        enSource.includes('"orderReadonlyDescription": "Completed orders cannot be edited. Change the status before editing."') &&
+        enSource.includes('"orderReadonlyDescription": "Completed orders cannot be edited. Change the status before editing. The outbound date can still be corrected."') &&
         enSource.includes('"orderReadonlyRefresh": "The current order status is not editable. Please refresh and confirm the status."'),
       '英文文案缺少订单只读提示',
     )

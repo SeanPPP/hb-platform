@@ -37,6 +37,7 @@ import type {
   TranslateStoreOrderInvoiceEmailTextResult,
   UpdateStoreOrderStoreContactPayload,
   UpdateStoreOrderHeaderPayload,
+  UpdateStoreOrderOutboundDatePayload,
   UpdateStoreOrderLinePayload,
   UpdateStoreOrderProductStatusPayload,
 } from '../types/storeOrder'
@@ -127,6 +128,7 @@ function normalizeCart(payload: unknown): StoreOrderCart | null {
     remarks: result.remarks,
     shippingFee: result.shippingFee,
     orderDate: result.orderDate,
+    outboundDate: result.outboundDate,
     storeAddress: result.storeAddress,
     flowStatus: result.flowStatus,
     items: Array.isArray(result.items) ? result.items : [],
@@ -577,6 +579,16 @@ export async function batchUpdateStoreOrderProductStatus(payload: BatchUpdateSto
 
 export async function updateStoreOrderHeader(payload: UpdateStoreOrderHeaderPayload) {
   await request<ApiResponse<unknown> | unknown>(`${API_BASE}/header/update`, {
+    method: 'POST',
+    data: {
+      ...payload,
+      orderGuid: payload.orderGUID,
+    },
+  })
+}
+
+export async function updateStoreOrderOutboundDate(payload: UpdateStoreOrderOutboundDatePayload) {
+  await request<ApiResponse<unknown> | unknown>(`${API_BASE}/outbound-date`, {
     method: 'POST',
     data: {
       ...payload,

@@ -7,6 +7,7 @@ import {
   translateStoreOrderInvoiceEmailText,
   updateStoreOrderStatus,
   updateStoreOrderStoreContact,
+  updateStoreOrderOutboundDate,
   updateStoreOrderLine,
 } from './storeOrderService'
 
@@ -44,6 +45,7 @@ try {
         data: {
           orderGUID: 'order-1',
           orderNo: 'SO-001',
+          outboundDate: '2026-06-07T00:00:00',
           totalAmount: 100,
           totalQuantity: 8,
           totalImportAmount: 88,
@@ -96,6 +98,7 @@ try {
     {
       orderGUID: 'order-1',
       orderNo: 'SO-001',
+      outboundDate: '2026-06-07T00:00:00',
       totalAmount: 100,
       totalQuantity: 8,
       totalImportAmount: 88,
@@ -116,6 +119,54 @@ try {
       ],
     },
     '订货明细接口应保留服务端返回的当前页 items 与 itemsTotal',
+  )
+} finally {
+  globalThis.fetch = originalFetch
+}
+
+try {
+  let capturedUrl = ''
+  let capturedMethod = ''
+  let capturedBody: unknown = null
+
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    capturedUrl = String(input)
+    capturedMethod = String(init?.method)
+    capturedBody = init?.body ? JSON.parse(String(init.body)) : null
+
+    return new Response(
+      JSON.stringify({
+        success: true,
+        data: true,
+      }),
+      {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      },
+    )
+  }) as typeof fetch
+
+  await updateStoreOrderOutboundDate({
+    orderGUID: 'order-1',
+    outboundDate: '2026-06-07',
+    completeOrder: true,
+  })
+
+  assertEqual(
+    capturedUrl,
+    '/api/react/v1/store-order/outbound-date',
+    '出库日期接口路径应保持契约一致',
+  )
+  assertEqual(capturedMethod, 'POST', '出库日期接口应使用 POST')
+  assertDeepEqual(
+    capturedBody,
+    {
+      orderGUID: 'order-1',
+      outboundDate: '2026-06-07',
+      completeOrder: true,
+      orderGuid: 'order-1',
+    },
+    '出库日期接口应发送订单、日期和是否完成订单',
   )
 } finally {
   globalThis.fetch = originalFetch

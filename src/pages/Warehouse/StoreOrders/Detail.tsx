@@ -59,6 +59,7 @@ import {
   startPickingStoreOrder,
   updateStoreOrderHeader,
   updateStoreOrderLine,
+  updateStoreOrderOutboundDate,
   updateStoreOrderStatus,
   updateStoreOrderStoreContact,
   updateStoreOrderProductStatus,
@@ -655,6 +656,7 @@ export default function StoreOrderDetailPage() {
   const [headerForm, setHeaderForm] = useState<{
     storeCode?: string
     orderDate?: string
+    outboundDate?: string
     shippingFee?: number
     address: string
     contactEmail: string
@@ -662,6 +664,7 @@ export default function StoreOrderDetailPage() {
   }>({
     storeCode: undefined,
     orderDate: undefined,
+    outboundDate: undefined,
     shippingFee: undefined,
     address: '',
     contactEmail: '',
@@ -738,6 +741,7 @@ export default function StoreOrderDetailPage() {
       setHeaderForm({
         storeCode: result?.storeCode,
         orderDate: result?.orderDate,
+        outboundDate: result?.outboundDate,
         shippingFee: result?.shippingFee,
         address: result?.storeAddress || '',
         contactEmail: result?.storeContactEmail || '',
@@ -941,6 +945,7 @@ export default function StoreOrderDetailPage() {
 
   const {
     canEditOrder,
+    canEditOutboundDate,
     canStartPicking,
     canCompleteOrder,
     isReadonlyOrder,
@@ -959,37 +964,47 @@ export default function StoreOrderDetailPage() {
     if (!detail) {
       return
     }
-    if (!ensureOrderEditable()) {
-      return
-    }
     setSavingHeader(true)
     try {
-      await updateStoreOrderHeader({
-        orderGUID: detail.orderGUID,
-        storeCode: headerForm.storeCode,
-        orderDate: headerForm.orderDate,
-        shippingFee: headerForm.shippingFee,
-        remarks: headerForm.remarks,
-      })
-      const nextStoreAddress = headerForm.address.trim() ? headerForm.address : ''
-      const nextStoreContactEmail = headerForm.contactEmail.trim() ? headerForm.contactEmail : ''
-      const hasStoreContactChanged =
-        (nextStoreAddress || '') !== storeContactBaseline.address ||
-        (nextStoreContactEmail || '') !== storeContactBaseline.contactEmail
-
-      if (hasStoreContactChanged && detail.orderGUID && headerForm.storeCode) {
-        await updateStoreOrderStoreContact({
+      if (canEditOrder) {
+        await updateStoreOrderHeader({
           orderGUID: detail.orderGUID,
           storeCode: headerForm.storeCode,
-          address: nextStoreAddress,
-          contactEmail: nextStoreContactEmail,
+          orderDate: headerForm.orderDate,
+          shippingFee: headerForm.shippingFee,
+          remarks: headerForm.remarks,
         })
-        // 保存成功后把当前编辑值视为这家分店的最新默认值，避免继续误判成旧默认值。
-        setStoreContactBaseline({
-          address: nextStoreAddress,
-          contactEmail: nextStoreContactEmail,
+        const nextStoreAddress = headerForm.address.trim() ? headerForm.address : ''
+        const nextStoreContactEmail = headerForm.contactEmail.trim() ? headerForm.contactEmail : ''
+        const hasStoreContactChanged =
+          (nextStoreAddress || '') !== storeContactBaseline.address ||
+          (nextStoreContactEmail || '') !== storeContactBaseline.contactEmail
+
+        if (hasStoreContactChanged && detail.orderGUID && headerForm.storeCode) {
+          await updateStoreOrderStoreContact({
+            orderGUID: detail.orderGUID,
+            storeCode: headerForm.storeCode,
+            address: nextStoreAddress,
+            contactEmail: nextStoreContactEmail,
+          })
+          // 保存成功后把当前编辑值视为这家分店的最新默认值，避免继续误判成旧默认值。
+          setStoreContactBaseline({
+            address: nextStoreAddress,
+            contactEmail: nextStoreContactEmail,
+          })
+        }
+      }
+
+      const currentOutboundDate = detail.outboundDate?.slice(0, 10) || ''
+      const nextOutboundDate = headerForm.outboundDate?.slice(0, 10) || ''
+      if (currentOutboundDate !== nextOutboundDate) {
+        await updateStoreOrderOutboundDate({
+          orderGUID: detail.orderGUID,
+          outboundDate: nextOutboundDate || undefined,
+          completeOrder: false,
         })
       }
+
       message.success(t('storeOrders.detail.headerSaveSuccess'))
       await loadDetail(false)
     } catch (error) {
@@ -1758,7 +1773,6 @@ export default function StoreOrderDetailPage() {
                     <Button
                       icon={<SaveOutlined />}
                       loading={savingHeader}
-                      disabled={isReadonlyOrder}
                       onClick={() => void handleSaveHeader()}
                     >
                       {t('storeOrders.saveOrderHeader')}
@@ -1849,6 +1863,19 @@ export default function StoreOrderDetailPage() {
                       setHeaderForm((current) => ({
                         ...current,
                         orderDate: event.target.value ? new Date(event.target.value).toISOString() : undefined,
+                      }))
+                    }
+                  />
+                </Descriptions.Item>
+                <Descriptions.Item label={t('storeOrders.outboundDate')}>
+                  <Input
+                    type="date"
+                    disabled={!canEditOutboundDate}
+                    value={headerForm.outboundDate ? headerForm.outboundDate.slice(0, 10) : ''}
+                    onChange={(event) =>
+                      setHeaderForm((current) => ({
+                        ...current,
+                        outboundDate: event.target.value || undefined,
                       }))
                     }
                   />

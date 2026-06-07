@@ -2,6 +2,7 @@ import { StoreOrderFlowStatus } from '../../../types/storeOrder'
 
 export interface StoreOrderDetailPermissions {
   canEditOrder: boolean
+  canEditOutboundDate: boolean
   canStartPicking: boolean
   canCompleteOrder: boolean
   isReadonlyOrder: boolean
@@ -18,6 +19,7 @@ export function deriveStoreOrderDetailPermissions(flowStatus?: StoreOrderFlowSta
 
   return {
     canEditOrder,
+    canEditOutboundDate: true,
     canStartPicking,
     canCompleteOrder,
     isReadonlyOrder: !canEditOrder,
