@@ -103,6 +103,32 @@ async function main() {
   })
   if (defaultSortFailure) failures.push(defaultSortFailure)
 
+  const storeScopeFailure = await runTest('商城首页商品查询必须带当前分店并等待分店选中', () => {
+    const fetchProductsBody = extractFunctionBody(
+      shopHomeSource,
+      'const fetchProducts = async',
+      'void fetchProducts()',
+    )
+
+    assert(
+      fetchProductsBody.includes('if (!selectedStore?.storeCode)') &&
+        fetchProductsBody.includes('setProducts([])') &&
+        fetchProductsBody.includes('setTotal(0)') &&
+        fetchProductsBody.includes('storeCode: selectedStore.storeCode'),
+      '商城首页商品查询未等待当前分店，或未把 selectedStore.storeCode 传给后端',
+    )
+  })
+  if (storeScopeFailure) failures.push(storeScopeFailure)
+
+  const storeScopeDependencyFailure = await runTest('商城首页切换分店后应重新加载商品列表', () => {
+    assert(
+      shopHomeSource.includes('selectedStore?.storeCode, gradeFilter, t') ||
+        shopHomeSource.includes('gradeFilter, selectedStore?.storeCode, t'),
+      '商品加载 effect 依赖缺少 selectedStore.storeCode，切换分店后不会重新按门店加载',
+    )
+  })
+  if (storeScopeDependencyFailure) failures.push(storeScopeDependencyFailure)
+
   if (failures.length > 0) {
     throw new Error(`共有 ${failures.length} 个测试失败\n- ${failures.join('\n- ')}`)
   }

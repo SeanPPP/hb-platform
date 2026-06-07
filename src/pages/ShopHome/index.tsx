@@ -100,9 +100,17 @@ export default function ShopHomePage() {
     let cancelled = false
 
     const fetchProducts = async () => {
+      if (!selectedStore?.storeCode) {
+        setProducts([])
+        setTotal(0)
+        setLoading(false)
+        return
+      }
+
       setLoading(true)
       try {
         const result = await getStoreOrderProducts({
+          storeCode: selectedStore.storeCode,
           pageNumber: currentPage,
           pageSize,
           categoryGUID: categoryId || undefined,
@@ -141,7 +149,7 @@ export default function ShopHomePage() {
     return () => {
       cancelled = true
     }
-  }, [categoryId, currentPage, keyword, pageSize, gradeFilter, t])
+  }, [categoryId, currentPage, keyword, pageSize, selectedStore?.storeCode, gradeFilter, t])
 
   useEffect(() => {
     let cancelled = false

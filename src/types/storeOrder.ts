@@ -221,6 +221,7 @@ export interface StoreOrderDetail {
 }
 
 export interface StoreOrderProductQuery {
+  storeCode?: string
   itemNumber?: string
   productName?: string
   categoryGUID?: string
