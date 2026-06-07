@@ -326,6 +326,7 @@ function ProductQueryContent() {
   const [autoPricingDialog, setAutoPricingDialog] = useState<AutoPricingDialogState | null>(null);
   const [autoPricingDialogSaving, setAutoPricingDialogSaving] = useState(false);
   const [createProductVisible, setCreateProductVisible] = useState(false);
+  const [createSupplierPickerVisible, setCreateSupplierPickerVisible] = useState(false);
   const [createProductSaving, setCreateProductSaving] = useState(false);
   const [createSuppliers, setCreateSuppliers] = useState<LocalSupplierOption[]>([]);
   const [createSuppliersLoading, setCreateSuppliersLoading] = useState(false);
@@ -606,6 +607,19 @@ function ProductQueryContent() {
     []
   );
 
+  const closeCreateProductModal = useCallback(() => {
+    setCreateSupplierPickerVisible(false);
+    setCreateProductVisible(false);
+  }, []);
+
+  const handleSelectCreateSupplier = useCallback(
+    (supplier: LocalSupplierOption) => {
+      updateCreateProductDraft({ localSupplierCode: supplier.supplierCode });
+      setCreateSupplierPickerVisible(false);
+    },
+    [updateCreateProductDraft]
+  );
+
   const handleCreateProductSubmit = useCallback(async () => {
     const validation = validateCreateProductForm(createProductDraft);
     if (!validation.ok) {
@@ -620,6 +634,7 @@ function ProductQueryContent() {
       const nextKeyword =
         result.productCode || validation.payload.itemNumber || validation.payload.barcode;
       createdProductCode = result.productCode;
+      setCreateSupplierPickerVisible(false);
       setCreateProductVisible(false);
       setCreateProductDraft(EMPTY_CREATE_PRODUCT_DRAFT);
       setKeyword(nextKeyword);
@@ -2078,7 +2093,7 @@ function ProductQueryContent() {
       <Portal>
         <Modal
           visible={createProductVisible}
-          onDismiss={createProductSaving ? undefined : () => setCreateProductVisible(false)}
+          onDismiss={createProductSaving ? undefined : closeCreateProductModal}
           contentContainerStyle={styles.createProductModal}
         >
           <ScrollView
@@ -2098,40 +2113,17 @@ function ProductQueryContent() {
                   {t("createProduct.messages.suppliersLoading")}
                 </Text>
               ) : createSuppliers.length ? (
-                <ScrollView
-                  style={styles.createSupplierList}
-                  nestedScrollEnabled
-                  keyboardShouldPersistTaps="handled"
+                <Button
+                  mode="outlined"
+                  onPress={() => setCreateSupplierPickerVisible(true)}
+                  disabled={createProductSaving}
+                  style={styles.createSupplierSelectButton}
+                  contentStyle={styles.createSupplierSelectContent}
                 >
-                  {createSuppliers.map((supplier) => (
-                    <View key={supplier.supplierCode} style={styles.createSupplierItem}>
-                      <RadioButton
-                        value={supplier.supplierCode}
-                        status={
-                          supplier.supplierCode === createProductDraft.localSupplierCode
-                            ? "checked"
-                            : "unchecked"
-                        }
-                        onPress={() =>
-                          updateCreateProductDraft({ localSupplierCode: supplier.supplierCode })
-                        }
-                        disabled={createProductSaving}
-                      />
-                      <Button
-                        mode="text"
-                        compact
-                        onPress={() =>
-                          updateCreateProductDraft({ localSupplierCode: supplier.supplierCode })
-                        }
-                        disabled={createProductSaving}
-                        style={styles.createSupplierButton}
-                        contentStyle={styles.createSupplierButtonContent}
-                      >
-                        {supplier.supplierName || supplier.supplierCode}
-                      </Button>
-                    </View>
-                  ))}
-                </ScrollView>
+                  {selectedCreateSupplier
+                    ? `${selectedCreateSupplier.supplierCode} - ${selectedCreateSupplier.supplierName || selectedCreateSupplier.supplierCode}`
+                    : t("createProduct.selectSupplier")}
+                </Button>
               ) : (
                 <Button
                   mode="outlined"
@@ -2210,7 +2202,7 @@ function ProductQueryContent() {
             <View style={styles.createProductFooter}>
               <Button
                 mode="text"
-                onPress={() => setCreateProductVisible(false)}
+                onPress={closeCreateProductModal}
                 disabled={createProductSaving}
               >
                 {t("common:actions.cancel")}
@@ -2225,6 +2217,69 @@ function ProductQueryContent() {
               </Button>
             </View>
           </ScrollView>
+        </Modal>
+
+        <Modal
+          visible={createSupplierPickerVisible}
+          onDismiss={createProductSaving ? undefined : () => setCreateSupplierPickerVisible(false)}
+          contentContainerStyle={styles.createSupplierPickerModal}
+        >
+          <View style={styles.createSupplierPickerHeader}>
+            <View style={styles.createSupplierPickerTitleWrap}>
+              <Text variant="titleMedium" style={styles.createProductTitle}>
+                {t("createProduct.supplierPickerTitle")}
+              </Text>
+              <Text variant="bodySmall" style={styles.createHint}>
+                {selectedCreateSupplier
+                  ? `${selectedCreateSupplier.supplierCode} - ${selectedCreateSupplier.supplierName || selectedCreateSupplier.supplierCode}`
+                  : t("createProduct.selectSupplier")}
+              </Text>
+            </View>
+            <Button compact onPress={() => setCreateSupplierPickerVisible(false)} disabled={createProductSaving}>
+              {t("common:actions.close")}
+            </Button>
+          </View>
+          {createSuppliersLoading ? (
+            <View style={styles.createSupplierPickerLoading}>
+              <Text variant="bodyMedium">{t("createProduct.messages.suppliersLoading")}</Text>
+            </View>
+          ) : createSuppliers.length ? (
+            <ScrollView style={styles.createSupplierPickerList} keyboardShouldPersistTaps="handled">
+              {createSuppliers.map((supplier) => {
+                const selected = supplier.supplierCode === createProductDraft.localSupplierCode;
+
+                return (
+                  <View key={supplier.supplierCode} style={styles.createSupplierPickerRow}>
+                    <RadioButton
+                      value={supplier.supplierCode}
+                      status={selected ? "checked" : "unchecked"}
+                      onPress={() => handleSelectCreateSupplier(supplier)}
+                      disabled={createProductSaving}
+                    />
+                    <Button
+                      mode={selected ? "contained-tonal" : "text"}
+                      compact
+                      icon={selected ? "check" : undefined}
+                      onPress={() => handleSelectCreateSupplier(supplier)}
+                      disabled={createProductSaving}
+                      style={styles.createSupplierPickerButton}
+                      contentStyle={styles.createSupplierPickerButtonContent}
+                    >
+                      {supplier.supplierCode} - {supplier.supplierName || supplier.supplierCode}
+                    </Button>
+                  </View>
+                );
+              })}
+            </ScrollView>
+          ) : (
+            <Button
+              mode="outlined"
+              onPress={() => void loadCreateSuppliers()}
+              disabled={createProductSaving}
+            >
+              {t("createProduct.reloadSuppliers")}
+            </Button>
+          )}
         </Modal>
 
         <Modal
@@ -2621,23 +2676,49 @@ const styles = StyleSheet.create({
   createHint: {
     color: "#667085",
   },
-  createSupplierList: {
-    maxHeight: 180,
-    borderWidth: 1,
-    borderColor: "#E2E8F0",
-    borderRadius: 8,
-    paddingVertical: 4,
+  createSupplierSelectButton: {
+    alignSelf: "stretch",
   },
-  createSupplierItem: {
+  createSupplierSelectContent: {
+    justifyContent: "flex-start",
+  },
+  createSupplierPickerModal: {
+    marginHorizontal: 16,
+    maxHeight: "78%",
+    borderRadius: 16,
+    backgroundColor: "#fff",
+    padding: 16,
+    gap: 12,
+  },
+  createSupplierPickerHeader: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+  createSupplierPickerTitleWrap: {
+    flex: 1,
+    minWidth: 0,
+    gap: 4,
+  },
+  createSupplierPickerLoading: {
+    minHeight: 96,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  createSupplierPickerList: {
+    maxHeight: 360,
+  },
+  createSupplierPickerRow: {
+    minHeight: 48,
     flexDirection: "row",
     alignItems: "center",
-    minHeight: 44,
   },
-  createSupplierButton: {
+  createSupplierPickerButton: {
     flex: 1,
     minWidth: 0,
   },
-  createSupplierButtonContent: {
+  createSupplierPickerButtonContent: {
     justifyContent: "flex-start",
   },
   createTextInput: {

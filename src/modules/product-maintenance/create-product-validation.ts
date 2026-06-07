@@ -18,7 +18,7 @@ export type CreateProductValidationResult =
     }
   | {
       ok: false;
-      reason: "required" | "priceInvalid" | "manualRetailPriceInvalid";
+      reason: "required" | "priceInvalid" | "itemNumberTooShort" | "barcodeTooShort" | "retailPriceTooLow";
     };
 
 function parsePrice(value: string): number | null {
@@ -38,11 +38,21 @@ export function validateCreateProductForm(
   const itemNumber = values.itemNumber.trim();
   const barcode = values.barcode.trim();
   const productName = values.productName.trim();
+  const purchasePriceText = values.purchasePrice.trim();
+  const retailPriceText = values.retailPrice.trim();
   const purchasePrice = parsePrice(values.purchasePrice);
   const retailPrice = parsePrice(values.retailPrice);
 
-  if (!localSupplierCode || !itemNumber || !barcode || !productName) {
+  if (!localSupplierCode || !itemNumber || !barcode || !productName || !purchasePriceText || !retailPriceText) {
     return { ok: false, reason: "required" };
+  }
+
+  if (itemNumber.length < 5) {
+    return { ok: false, reason: "itemNumberTooShort" };
+  }
+
+  if (barcode.length < 7) {
+    return { ok: false, reason: "barcodeTooShort" };
   }
 
   if (
@@ -54,8 +64,8 @@ export function validateCreateProductForm(
     return { ok: false, reason: "priceInvalid" };
   }
 
-  if (!values.isAutoPricing && retailPrice <= 0) {
-    return { ok: false, reason: "manualRetailPriceInvalid" };
+  if (!values.isAutoPricing && retailPrice < purchasePrice * 2) {
+    return { ok: false, reason: "retailPriceTooLow" };
   }
 
   return {

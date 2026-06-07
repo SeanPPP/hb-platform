@@ -12,6 +12,8 @@
     "action": "创建商品",
     "title": "创建商品",
     "submit": "创建",
+    "selectSupplier": "选择供应商",
+    "supplierPickerTitle": "选择供应商",
     "reloadSuppliers": "重新加载供应商",
     "fields": {
       "supplier": "供应商",
@@ -27,6 +29,9 @@
       "required": "供应商、货号、条码、名称、进货价、零售价必填",
       "priceInvalid": "进货价和零售价必须是大于等于 0 的数字",
       "manualRetailPriceInvalid": "关闭自动价格时零售价必须大于 0",
+      "itemNumberTooShort": "货号不能少于 5 个字符",
+      "barcodeTooShort": "条码不能少于 7 个字符",
+      "retailPriceTooLow": "关闭自动价格时，零售价不能小于进货价的 2 倍",
       "suppliersLoading": "正在加载供应商...",
       "suppliersLoadFailed": "供应商加载失败",
       "created": "商品已创建",

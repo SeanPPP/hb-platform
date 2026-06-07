@@ -6,7 +6,9 @@ import {
   RefreshControl,
   ScrollView,
   StyleSheet,
+  type StyleProp,
   type ViewToken,
+  type ViewStyle,
   View,
 } from "react-native";
 import { useQuery } from "@tanstack/react-query";
@@ -114,13 +116,27 @@ function StatusBadge({
   );
 }
 
-function SummaryMetric({ label, value }: { label: string; value: string }) {
+function SummaryMetric({
+  label,
+  style,
+  value,
+}: {
+  label: string;
+  style?: StyleProp<ViewStyle>;
+  value: string;
+}) {
   return (
-    <View style={styles.summaryMetric}>
-      <Text variant="labelMedium" style={styles.summaryLabel}>
+    <View style={[styles.summaryMetric, style]}>
+      <Text variant="labelMedium" style={styles.summaryLabel} numberOfLines={1}>
         {label}
       </Text>
-      <Text variant="titleMedium" style={styles.summaryValue}>
+      <Text
+        variant="titleMedium"
+        style={styles.summaryValue}
+        numberOfLines={1}
+        adjustsFontSizeToFit
+        minimumFontScale={0.72}
+      >
         {value}
       </Text>
     </View>
@@ -342,14 +358,18 @@ function OrderDetailContent({
               <Text variant="bodyMedium">{t("fields.remarks", { value: detail?.remarks || "--" })}</Text>
             </View>
 
-            <View style={styles.summaryGrid}>
-              <SummaryMetric label={t("summary.sku")} value={formatNumber(detail?.totalSKU)} />
-              <SummaryMetric label={t("summary.orderedQty")} value={formatNumber(detail?.totalQuantity)} />
-              <SummaryMetric label={t("summary.allocQty")} value={formatNumber(detail?.totalAllocQuantity)} />
-              <SummaryMetric label={t("summary.orderAmount")} value={formatMoney(detail?.totalAmount)} />
-              <SummaryMetric label={t("summary.allocAmount")} value={formatMoney(detail?.totalImportAmount)} />
-              <SummaryMetric label={t("summary.orderVolume")} value={formatNumber(detail?.totalOrderVolume, 4)} />
-            </View>
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.summaryGrid}
+            >
+              <SummaryMetric style={styles.detailSummaryMetric} label={t("summary.sku")} value={formatNumber(detail?.totalSKU)} />
+              <SummaryMetric style={styles.detailSummaryMetric} label={t("summary.orderedQty")} value={formatNumber(detail?.totalQuantity)} />
+              <SummaryMetric style={styles.detailSummaryMetric} label={t("summary.allocQty")} value={formatNumber(detail?.totalAllocQuantity)} />
+              <SummaryMetric style={styles.detailSummaryMetric} label={t("summary.orderAmount")} value={formatMoney(detail?.totalAmount)} />
+              <SummaryMetric style={styles.detailSummaryMetric} label={t("summary.allocAmount")} value={formatMoney(detail?.totalImportAmount)} />
+              <SummaryMetric style={styles.detailSummaryMetric} label={t("summary.orderVolume")} value={formatNumber(detail?.totalOrderVolume, 4)} />
+            </ScrollView>
           </Card.Content>
         </Card>
 
@@ -1144,7 +1164,7 @@ const styles = StyleSheet.create({
     borderRadius: 20,
   },
   detailSummaryContent: {
-    gap: 14,
+    gap: 10,
   },
   detailTitleRow: {
     flexDirection: "row",
@@ -1163,13 +1183,20 @@ const styles = StyleSheet.create({
     color: "#475569",
   },
   detailInfoBlock: {
-    gap: 6,
+    gap: 4,
   },
   summaryGrid: {
     flexDirection: "row",
-    flexWrap: "wrap",
-    rowGap: 12,
-    columnGap: 12,
+    gap: 8,
+    paddingRight: 4,
+  },
+  detailSummaryMetric: {
+    flex: 0,
+    width: 112,
+    borderRadius: 10,
+    backgroundColor: "#FFFFFF",
+    paddingHorizontal: 9,
+    paddingVertical: 7,
   },
   detailListHeader: {
     flexDirection: "row",

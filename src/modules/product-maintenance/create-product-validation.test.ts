@@ -1,4 +1,4 @@
-import { validateCreateProductForm } from "./create-product-validation";
+import { validateCreateProductForm, type CreateProductFormValues } from "./create-product-validation";
 
 function assertEqual(actual: unknown, expected: unknown, label: string) {
   if (actual !== expected) {
@@ -14,16 +14,34 @@ function assertDeepEqual(actual: unknown, expected: unknown, label: string) {
   }
 }
 
-const valid = validateCreateProductForm({
-  localSupplierCode: " SUP-01 ",
-  itemNumber: " ITEM-01 ",
-  barcode: " BAR-01 ",
-  productName: " Green Tea ",
-  purchasePrice: "3.50",
-  retailPrice: "5",
-  isSpecialProduct: false,
-  isAutoPricing: false,
-});
+function makeValues(overrides: Partial<CreateProductFormValues> = {}): CreateProductFormValues {
+  return {
+    localSupplierCode: " SUP-01 ",
+    itemNumber: " ITEM-01 ",
+    barcode: " BAR-001 ",
+    productName: " Green Tea ",
+    purchasePrice: "3.50",
+    retailPrice: "7",
+    isSpecialProduct: false,
+    isAutoPricing: false,
+    ...overrides,
+  };
+}
+
+function assertInvalid(
+  overrides: Partial<CreateProductFormValues>,
+  reason: Exclude<ReturnType<typeof validateCreateProductForm>, { ok: true }>["reason"],
+  label: string
+) {
+  const result = validateCreateProductForm(makeValues(overrides));
+
+  assertEqual(result.ok, false, `${label} fails`);
+  if (!result.ok) {
+    assertEqual(result.reason, reason, `${label} reports ${reason}`);
+  }
+}
+
+const valid = validateCreateProductForm(makeValues());
 
 assertEqual(valid.ok, true, "valid form passes");
 if (valid.ok) {
@@ -32,10 +50,10 @@ if (valid.ok) {
     {
       localSupplierCode: "SUP-01",
       itemNumber: "ITEM-01",
-      barcode: "BAR-01",
+      barcode: "BAR-001",
       productName: "Green Tea",
       purchasePrice: 3.5,
-      retailPrice: 5,
+      retailPrice: 7,
       isSpecialProduct: false,
       isAutoPricing: false,
     },
@@ -43,67 +61,21 @@ if (valid.ok) {
   );
 }
 
-const missing = validateCreateProductForm({
-  localSupplierCode: "",
-  itemNumber: "ITEM-01",
-  barcode: "BAR-01",
-  productName: "Green Tea",
-  purchasePrice: "3.50",
-  retailPrice: "5",
-  isSpecialProduct: false,
-  isAutoPricing: false,
-});
+assertInvalid({ localSupplierCode: "" }, "required", "missing supplier");
+assertInvalid({ itemNumber: "" }, "required", "missing item number");
+assertInvalid({ barcode: "" }, "required", "missing barcode");
+assertInvalid({ purchasePrice: "" }, "required", "missing purchase price");
+assertInvalid({ retailPrice: "" }, "required", "missing retail price");
+assertInvalid({ itemNumber: "ABCD" }, "itemNumberTooShort", "short item number");
+assertInvalid({ barcode: "123456" }, "barcodeTooShort", "short barcode");
+assertInvalid({ purchasePrice: "-1" }, "priceInvalid", "negative purchase price");
+assertInvalid({ retailPrice: "6.99" }, "retailPriceTooLow", "manual retail below double purchase");
 
-assertEqual(missing.ok, false, "missing required fields fail");
-if (!missing.ok) {
-  assertEqual(missing.reason, "required", "missing supplier reports required");
-}
+const autoLowRetail = validateCreateProductForm(
+  makeValues({
+    retailPrice: "1",
+    isAutoPricing: true,
+  })
+);
 
-const invalidPrice = validateCreateProductForm({
-  localSupplierCode: "SUP-01",
-  itemNumber: "ITEM-01",
-  barcode: "BAR-01",
-  productName: "Green Tea",
-  purchasePrice: "-1",
-  retailPrice: "5",
-  isSpecialProduct: false,
-  isAutoPricing: false,
-});
-
-assertEqual(invalidPrice.ok, false, "negative purchase price fails");
-if (!invalidPrice.ok) {
-  assertEqual(invalidPrice.reason, "priceInvalid", "negative purchase price reports priceInvalid");
-}
-
-const manualZeroRetail = validateCreateProductForm({
-  localSupplierCode: "SUP-01",
-  itemNumber: "ITEM-01",
-  barcode: "BAR-01",
-  productName: "Green Tea",
-  purchasePrice: "0",
-  retailPrice: "0",
-  isSpecialProduct: false,
-  isAutoPricing: false,
-});
-
-assertEqual(manualZeroRetail.ok, false, "manual pricing with zero retail fails before API request");
-if (!manualZeroRetail.ok) {
-  assertEqual(
-    manualZeroRetail.reason,
-    "manualRetailPriceInvalid",
-    "manual pricing zero retail matches backend rule before submit"
-  );
-}
-
-const autoZeroRetail = validateCreateProductForm({
-  localSupplierCode: "SUP-01",
-  itemNumber: "ITEM-01",
-  barcode: "BAR-01",
-  productName: "Green Tea",
-  purchasePrice: "0",
-  retailPrice: "0",
-  isSpecialProduct: false,
-  isAutoPricing: true,
-});
-
-assertEqual(autoZeroRetail.ok, true, "auto pricing allows zero retail because backend rule only applies to manual pricing");
+assertEqual(autoLowRetail.ok, true, "auto pricing allows retail below double purchase");
