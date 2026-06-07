@@ -2154,7 +2154,9 @@ namespace BlazorApp.Api.Services.React
 
                                 if (userStoreCodes.Any())
                                 {
-                                    q = q.Where(o => userStoreCodes.Contains(o.StoreCode));
+                                    q = q.Where(o =>
+                                        o.StoreCode != null && userStoreCodes.Contains(o.StoreCode)
+                                    );
                                 }
                             }
                         }
