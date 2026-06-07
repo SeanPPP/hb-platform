@@ -38,6 +38,8 @@
   "fields": {
     "store": "分店 {{store}}",
     "orderedAt": "下单时间 {{value}}",
+    "orderDate": "订货日期",
+    "outboundDate": "发货日期",
     "storeAddress": "分店地址 {{value}}",
     "remarks": "备注 {{value}}",
     "itemNumber": "货号 {{value}}",

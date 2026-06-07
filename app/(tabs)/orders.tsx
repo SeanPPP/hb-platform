@@ -35,6 +35,7 @@ import { resolveLocaleTag } from "@/shared/i18n/types";
 import {
   DEFAULT_ORDER_LIST_PAGE_SIZE,
   filterOrderDetailLinesByItemNumber,
+  formatOrderDate,
   getOrderRowNumber,
 } from "@/modules/orders/order-list-display";
 import { buildOrderLineLabelPayload } from "@/modules/orders/order-label-payload";
@@ -137,6 +138,19 @@ function SummaryMetric({
         adjustsFontSizeToFit
         minimumFontScale={0.72}
       >
+        {value}
+      </Text>
+    </View>
+  );
+}
+
+function OrderCardMetric({ label, value }: { label: string; value: string }) {
+  return (
+    <View style={styles.orderCardMetric}>
+      <Text variant="labelMedium" style={styles.orderCardMetricLabel} numberOfLines={1}>
+        {label}
+      </Text>
+      <Text variant="titleMedium" style={styles.orderCardMetricValue} numberOfLines={1}>
         {value}
       </Text>
     </View>
@@ -619,21 +633,33 @@ export default function Orders() {
                 <Text variant="bodySmall" style={styles.orderStoreText}>
                   {item.storeName || item.storeCode || "--"}
                 </Text>
-                <Text variant="bodySmall" style={styles.orderMetaSeparator}>
-                  |
-                </Text>
-                <Text variant="bodySmall" style={styles.orderDateText}>
-                  {formatDateTime(item.orderDate, localeTag)}
-                </Text>
+              </View>
+              <View style={styles.orderDateGrid}>
+                <View style={styles.orderDateItem}>
+                  <Text variant="labelSmall" style={styles.orderDateLabel}>
+                    {t("fields.orderDate")}
+                  </Text>
+                  <Text variant="bodySmall" style={styles.orderDateText}>
+                    {formatOrderDate(item.orderDate, localeTag)}
+                  </Text>
+                </View>
+                <View style={styles.orderDateItem}>
+                  <Text variant="labelSmall" style={styles.orderDateLabel}>
+                    {t("fields.outboundDate")}
+                  </Text>
+                  <Text variant="bodySmall" style={styles.orderDateText}>
+                    {formatOrderDate(item.outboundDate, localeTag)}
+                  </Text>
+                </View>
               </View>
             </View>
             <StatusBadge status={item.flowStatus} label={statusLabel(item.flowStatus)} />
           </View>
 
           <View style={styles.orderSummaryRow}>
-            <SummaryMetric label={t("summary.orderedQty")} value={formatNumber(item.totalQuantity)} />
-            <SummaryMetric label={t("summary.allocQty")} value={formatNumber(item.totalAllocQuantity)} />
-            <SummaryMetric label={t("summary.orderAmount")} value={formatMoney(item.totalOrderAmount)} />
+            <OrderCardMetric label={t("summary.orderedQty")} value={formatNumber(item.totalQuantity)} />
+            <OrderCardMetric label={t("summary.allocQty")} value={formatNumber(item.totalAllocQuantity)} />
+            <OrderCardMetric label={t("summary.orderAmount")} value={formatMoney(item.totalOrderAmount)} />
           </View>
 
           <Divider style={styles.orderDivider} />
@@ -991,8 +1017,19 @@ const styles = StyleSheet.create({
   orderStoreText: {
     color: "#64748B",
   },
-  orderMetaSeparator: {
-    color: "#64748B",
+  orderDateGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 10,
+  },
+  orderDateItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+  },
+  orderDateLabel: {
+    color: "#94A3B8",
+    fontWeight: "700",
   },
   orderDateText: {
     color: "#B45309",
@@ -1011,6 +1048,22 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     justifyContent: "space-between",
     gap: 10,
+  },
+  orderCardMetric: {
+    flex: 1,
+    minWidth: 0,
+    gap: 6,
+  },
+  orderCardMetricLabel: {
+    color: "#94A3B8",
+    fontWeight: "700",
+    lineHeight: 18,
+  },
+  orderCardMetricValue: {
+    color: "#0F172A",
+    fontSize: 20,
+    fontWeight: "700",
+    lineHeight: 26,
   },
   summaryMetric: {
     flex: 1,

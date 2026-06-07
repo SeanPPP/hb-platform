@@ -24,6 +24,20 @@ export function getOrderRowNumber(pageNumber: number, pageSize: number, index: n
   return (Math.max(1, pageNumber) - 1) * pageSize + index + 1;
 }
 
+export function formatOrderDate(value: string | undefined, localeTag: string) {
+  if (!value) {
+    return "--";
+  }
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+
+  // 列表日期只展示业务日期，避免后端零点时间污染卡片信息。
+  return date.toLocaleDateString(localeTag);
+}
+
 export function filterOrderDetailLinesByItemNumber(
   items: StoreOrderDetailLine[],
   keyword: string

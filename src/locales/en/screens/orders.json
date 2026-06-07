@@ -38,6 +38,8 @@
   "fields": {
     "store": "Store {{store}}",
     "orderedAt": "Ordered at {{value}}",
+    "orderDate": "Order date",
+    "outboundDate": "Dispatch date",
     "storeAddress": "Address {{value}}",
     "remarks": "Remarks {{value}}",
     "itemNumber": "Item {{value}}",

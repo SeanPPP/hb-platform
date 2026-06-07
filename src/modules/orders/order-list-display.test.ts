@@ -1,6 +1,7 @@
 import {
   buildOrderListRequest,
   filterOrderDetailLinesByItemNumber,
+  formatOrderDate,
   getOrderRowNumber,
 } from "./order-list-display";
 import type { StoreOrderDetailLine } from "./types";
@@ -40,6 +41,17 @@ function makeLine(
 assertEqual(getOrderRowNumber(1, 10, 0), 1, "第一页第一行行号为 1");
 assertEqual(getOrderRowNumber(2, 10, 0), 11, "第二页第一行行号为 11");
 assertEqual(getOrderRowNumber(2, 10, 9), 20, "第二页第十行行号为 20");
+
+assertEqual(formatOrderDate(undefined, "en-AU"), "--", "空订单日期显示占位符");
+assertEqual(formatOrderDate("not-a-date", "en-AU"), "not-a-date", "无法解析的订单日期保持原值");
+
+const formattedOrderDate = formatOrderDate("2026-06-01T00:00:00", "en-AU");
+if (formattedOrderDate.includes("00:00") || formattedOrderDate.includes(":")) {
+  throw new Error(`订单日期不能包含时间: got ${formattedOrderDate}`);
+}
+if (!formattedOrderDate.includes("2026")) {
+  throw new Error(`订单日期应保留年份: got ${formattedOrderDate}`);
+}
 
 const defaultRequest = buildOrderListRequest();
 assertEqual(defaultRequest.pageNumber, 1, "默认订单列表页码为 1");
