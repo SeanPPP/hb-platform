@@ -12,6 +12,7 @@ using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
 using BlazorApp.Shared.Models.HqEntities;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Configuration;
@@ -45,6 +46,7 @@ public sealed class ProductPushToHqServiceTests : IDisposable
         _hqDb = new SqlSugarClient(CreateConnectionConfig(_hqConnection.ConnectionString));
         _localDb.CodeFirst.InitTables(
             typeof(Product),
+            typeof(DomesticProduct),
             typeof(ProductSetCode),
             typeof(StoreMultiCodeProduct)
         );
@@ -129,6 +131,101 @@ public sealed class ProductPushToHqServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task PushToHqAsync_带货柜候选_商品分店价格和库存以货柜明细为准()
+    {
+        await SeedProductGraphAsync();
+        await _localDb.Updateable<Product>()
+            .SetColumns(row => new Product
+            {
+                Barcode = "LOCAL-BARCODE",
+                ProductName = "本地商品名",
+                EnglishName = "Local English",
+                ProductImage = "local-image.jpg",
+                PurchasePrice = 2.5m,
+                RetailPrice = null,
+            })
+            .Where(row => row.ProductCode == "HB001")
+            .ExecuteCommandAsync();
+
+        var response = await CreateService().PushToHqAsync(new PushProductsToHqRequest
+        {
+            ProductCodes = new List<string> { "HB001" },
+            Items = new List<PushProductsToHqItem>
+            {
+                CreatePushItem(
+                    productCode: "HB001",
+                    localSupplierCode: "CARGO-SUP",
+                    itemNumber: "CARGO-ITEM",
+                    productName: "货柜商品名",
+                    englishName: "Cargo English",
+                    barcode: "CARGO-BARCODE",
+                    imageUrl: "cargo-image.jpg",
+                    domesticPrice: 8.88m,
+                    importPrice: 1.23m,
+                    oemPrice: 4.99m,
+                    warehouseIsActive: false
+                ),
+            },
+        });
+
+        Assert.True(response.Success, response.Message);
+
+        var product = await _hqDb.Queryable<DIC_商品信息字典表>()
+            .SingleAsync(row => row.H商品编码 == "HB001");
+        Assert.Equal("CARGO-ITEM", product.H货号);
+        Assert.Equal("CARGO-BARCODE", product.H主条形码);
+        Assert.Equal("Cargo English", product.H商品名称);
+        Assert.Equal("货柜商品名", product.H大写名称);
+        Assert.Equal(1.23m, product.H进货价);
+        Assert.Equal(4.99m, product.H零售价);
+        Assert.Equal("cargo-image.jpg", product.H商品图片);
+        Assert.False(product.H使用状态);
+        Assert.Equal("CARGO-SUP", product.CBP供应商编码);
+
+        var prices = await _hqDb.Queryable<DIC_商品零售价表>()
+            .Where(row => row.H商品编码 == "HB001")
+            .ToListAsync();
+        Assert.Equal(2, prices.Count);
+        Assert.All(prices, row =>
+        {
+            Assert.Equal(1.23m, row.H进货价);
+            Assert.Equal(4.99m, row.H分店零售价);
+            Assert.False(row.H使用状态);
+            Assert.EndsWith("CARGO-SUP", row.H分店供应商编码);
+        });
+
+        var inventory = await _hqDb.Queryable<CBP_DIC_商品库存表>()
+            .SingleAsync(row => row.H商品编码 == "HB001");
+        Assert.Equal(8.88m, inventory.H国内价格);
+        Assert.Equal(1.23m, inventory.H进口价格);
+        Assert.Equal(4.99m, inventory.H贴牌价格);
+        Assert.Equal(0, inventory.H使用状态);
+    }
+
+    [Fact]
+    public async Task PushToHqAsync_货柜候选无图且商品主档无图_回退国内商品图片()
+    {
+        await SeedProductGraphAsync();
+        await _localDb.Updateable<Product>()
+            .SetColumns(row => new Product { ProductImage = null })
+            .Where(row => row.ProductCode == "HB001")
+            .ExecuteCommandAsync();
+
+        var response = await CreateService().PushToHqAsync(new PushProductsToHqRequest
+        {
+            Items = new List<PushProductsToHqItem>
+            {
+                CreatePushItem(productCode: "HB001", itemNumber: "HB001-ITEM"),
+            },
+        });
+
+        Assert.True(response.Success, response.Message);
+        var product = await _hqDb.Queryable<DIC_商品信息字典表>()
+            .SingleAsync(row => row.H商品编码 == "HB001");
+        Assert.Equal("HB001-domestic.jpg", product.H商品图片);
+    }
+
+    [Fact]
     public async Task PushToHqAsync_重复推送_更新既有记录且不重复创建()
     {
         await SeedProductGraphAsync();
@@ -206,6 +303,80 @@ public sealed class ProductPushToHqServiceTests : IDisposable
             && row.H一品多码零售价 == 4.6m
             && row.H使用状态 == false
         );
+    }
+
+    [Fact]
+    public async Task PushToHqAsync_Item带供应商且本地商品为空_写入Item供应商编码()
+    {
+        await SeedProductGraphAsync();
+        await _localDb.Updateable<Product>()
+            .SetColumns(row => new Product { LocalSupplierCode = null })
+            .Where(row => row.ProductCode == "HB001")
+            .ExecuteCommandAsync();
+
+        var response = await CreateService().PushToHqAsync(new PushProductsToHqRequest
+        {
+            Items = new List<PushProductsToHqItem>
+            {
+                CreatePushItem(productCode: "HB001", localSupplierCode: " SUP-ITEM "),
+            },
+        });
+
+        Assert.True(response.Success, response.Message);
+        Assert.Equal(1, response.Data?.ProductsAdded);
+        var product = await _hqDb.Queryable<DIC_商品信息字典表>()
+            .SingleAsync(row => row.H商品编码 == "HB001");
+        Assert.Equal("SUP-ITEM", product.CBP供应商编码);
+    }
+
+    [Fact]
+    public async Task PushToHqAsync_Hq已有商品时_Item供应商覆盖旧Cbp供应商编码()
+    {
+        await SeedProductGraphAsync();
+        var service = CreateService();
+        var first = await service.PushToHqAsync(new PushProductsToHqRequest
+        {
+            ProductCodes = new List<string> { "HB001" },
+        });
+        Assert.True(first.Success, first.Message);
+        await _localDb.Updateable<Product>()
+            .SetColumns(row => new Product { LocalSupplierCode = null })
+            .Where(row => row.ProductCode == "HB001")
+            .ExecuteCommandAsync();
+        await _hqDb.Updateable<DIC_商品信息字典表>()
+            .SetColumns(row => new DIC_商品信息字典表 { CBP供应商编码 = "OLD-SUP" })
+            .Where(row => row.H商品编码 == "HB001")
+            .ExecuteCommandAsync();
+
+        var second = await service.PushToHqAsync(new PushProductsToHqRequest
+        {
+            Items = new List<PushProductsToHqItem>
+            {
+                CreatePushItem(productCode: "HB001", localSupplierCode: "SUP-ITEM"),
+            },
+        });
+
+        Assert.True(second.Success, second.Message);
+        Assert.Equal(1, second.Data?.ProductsUpdated);
+        var product = await _hqDb.Queryable<DIC_商品信息字典表>()
+            .SingleAsync(row => row.H商品编码 == "HB001");
+        Assert.Equal("SUP-ITEM", product.CBP供应商编码);
+    }
+
+    [Fact]
+    public async Task PushToHqAsync_旧ProductCodes入口_仍回退本地商品供应商编码()
+    {
+        await SeedProductGraphAsync();
+
+        var response = await CreateService().PushToHqAsync(new PushProductsToHqRequest
+        {
+            ProductCodes = new List<string> { "HB001" },
+        });
+
+        Assert.True(response.Success, response.Message);
+        var product = await _hqDb.Queryable<DIC_商品信息字典表>()
+            .SingleAsync(row => row.H商品编码 == "HB001");
+        Assert.Equal("SUP01", product.CBP供应商编码);
     }
 
     [Fact]
@@ -627,6 +798,44 @@ public sealed class ProductPushToHqServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task PushToHqAsync_业务失败时_记录结构化失败日志()
+    {
+        await SeedProductGraphAsync();
+        var logger = new Mock<ILogger<ProductHqSyncService>>();
+
+        var response = await CreateService(logger.Object).PushToHqAsync(new PushProductsToHqRequest
+        {
+            Items = new List<PushProductsToHqItem>
+            {
+                CreatePushItem(
+                    productCode: "HB001",
+                    domesticPrice: 15.5m,
+                    importPrice: 25.5m,
+                    oemPrice: 35.5m,
+                    warehouseIsActive: true
+                ),
+                CreatePushItem(
+                    localSupplierCode: "SUP404",
+                    itemNumber: "ITEM404",
+                    domesticPrice: 1.1m
+                ),
+            },
+        });
+
+        Assert.False(response.Success);
+        Assert.Equal("PRODUCT_HQ_PUSH_ITEM_ERRORS", response.ErrorCode);
+        VerifyLogWritten(
+            logger,
+            LogLevel.Warning,
+            state =>
+                HasStateValue(state, "ErrorCode", "PRODUCT_HQ_PUSH_ITEM_ERRORS")
+                && HasStateValue(state, "FailedCount", 2)
+                && HasStateValue(state, "FirstFailureReason", "商品不存在")
+                && HasNumericStateAtLeast(state, "DurationMs", 0)
+        );
+    }
+
+    [Fact]
     public async Task PushToHqAsync_商品编码缺失且无匹配_返回错误明细()
     {
         await SeedProductGraphAsync();
@@ -799,6 +1008,148 @@ public sealed class ProductPushToHqServiceTests : IDisposable
         service.VerifyAll();
     }
 
+    [Fact]
+    public async Task StartPushToHqJob_控制器使用Pos商品管理权限并委托Job服务()
+    {
+        var authorize = typeof(ReactProductController)
+            .GetMethod(nameof(ReactProductController.StartPushToHqJob))!
+            .GetCustomAttribute<AuthorizeAttribute>();
+        Assert.Equal(Permissions.PosProducts.Manage, authorize?.Policy);
+        var jobService = new Mock<IProductPushToHqJobService>(MockBehavior.Strict);
+        jobService
+            .Setup(service => service.StartJobAsync(
+                It.Is<PushProductsToHqRequest>(payload =>
+                    payload.Items.Count == 1 && payload.Items[0].ProductCode == "HB001"
+                ),
+                It.IsAny<CancellationToken>()
+            ))
+            .ReturnsAsync(new PushProductsToHqJobDto
+            {
+                JobId = "job-001",
+                Status = ProductPushToHqJobStatusConstants.Running,
+            });
+        var controller = new ReactProductController(
+            Mock.Of<IProductReactService>(),
+            Mock.Of<IProductStoreSyncService>(),
+            Mock.Of<IProductHqSyncService>(),
+            Mock.Of<ICurrentUserManageableStoreScopeService>(),
+            Mock.Of<ILogger<ReactProductController>>(),
+            productPushToHqJobService: jobService.Object
+        );
+
+        var response = await controller.StartPushToHqJob(
+            new PushProductsToHqRequest
+            {
+                Items = new List<PushProductsToHqItem> { new() { ProductCode = "HB001" } },
+            },
+            CancellationToken.None
+        );
+
+        Assert.IsType<OkObjectResult>(response);
+        jobService.VerifyAll();
+    }
+
+    [Fact]
+    public async Task GetPushToHqJob_控制器查询Job服务并返回快照()
+    {
+        var jobService = new Mock<IProductPushToHqJobService>(MockBehavior.Strict);
+        jobService
+            .Setup(service => service.GetJobAsync("job-001", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new PushProductsToHqJobDto
+            {
+                JobId = "job-001",
+                Status = ProductPushToHqJobStatusConstants.Succeeded,
+                Result = new PushProductsToHqResult { ProductsUpdated = 1 },
+            });
+        var controller = new ReactProductController(
+            Mock.Of<IProductReactService>(),
+            Mock.Of<IProductStoreSyncService>(),
+            Mock.Of<IProductHqSyncService>(),
+            Mock.Of<ICurrentUserManageableStoreScopeService>(),
+            Mock.Of<ILogger<ReactProductController>>(),
+            productPushToHqJobService: jobService.Object
+        );
+
+        var response = await controller.GetPushToHqJob("job-001", CancellationToken.None);
+
+        Assert.IsType<OkObjectResult>(response);
+        jobService.VerifyAll();
+    }
+
+    [Fact]
+    public async Task PushToHq_控制器业务失败时_记录RequestPath和TraceId且不泄露请求明细()
+    {
+        var service = new Mock<IProductHqSyncService>(MockBehavior.Strict);
+        service
+            .Setup(item => item.PushToHqAsync(It.IsAny<PushProductsToHqRequest>()))
+            .ReturnsAsync(
+                ApiResponse<PushProductsToHqResult>.Error(
+                    "推送候选包含错误，未写入HQ",
+                    "PRODUCT_HQ_PUSH_ITEM_ERRORS",
+                    new PushProductsToHqResult
+                    {
+                        FailedCount = 2,
+                        TotalCount = 2,
+                        DurationMs = 123,
+                        Errors = new List<string>
+                        {
+                            "商品不存在或已删除: HB001",
+                            "商品不存在或已删除: HB404",
+                        },
+                    }
+                )
+            );
+        var logger = new Mock<ILogger<ReactProductController>>();
+        var controller = new ReactProductController(
+            Mock.Of<IProductReactService>(),
+            Mock.Of<IProductStoreSyncService>(),
+            service.Object,
+            Mock.Of<ICurrentUserManageableStoreScopeService>(),
+            logger.Object
+        )
+        {
+            ControllerContext = new ControllerContext
+            {
+                HttpContext = new DefaultHttpContext(),
+            },
+        };
+        controller.HttpContext.TraceIdentifier = "trace-push-001";
+        controller.HttpContext.Request.Path = "/api/react/v1/products/push-to-hq";
+
+        var response = await controller.PushToHq(new PushProductsToHqRequest
+        {
+            Items = new List<PushProductsToHqItem>
+            {
+                new()
+                {
+                    ProductCode = "HB001",
+                    LocalSupplierCode = "SUP01",
+                    ItemNumber = "ITEM-001",
+                },
+            },
+        });
+
+        Assert.IsType<BadRequestObjectResult>(response);
+        VerifyLogWritten(
+            logger,
+            LogLevel.Warning,
+            state =>
+                HasStateValue(
+                    state,
+                    "RequestPath",
+                    "/api/react/v1/products/push-to-hq"
+                )
+                && HasStateValue(state, "TraceId", "trace-push-001")
+                && HasStateValue(state, "ErrorCode", "PRODUCT_HQ_PUSH_ITEM_ERRORS")
+                && HasStateValue(state, "FailedCount", 2)
+                && HasNumericStateAtLeast(state, "DurationMs", 123)
+                && !RenderState(state).Contains("HB001", StringComparison.Ordinal)
+                && !RenderState(state).Contains("SUP01", StringComparison.Ordinal)
+                && !RenderState(state).Contains("ITEM-001", StringComparison.Ordinal)
+        );
+        service.VerifyAll();
+    }
+
     public void Dispose()
     {
         _localDb.Dispose();
@@ -834,6 +1185,19 @@ public sealed class ProductPushToHqServiceTests : IDisposable
             IsActive = true,
             IsAutoPricing = true,
             IsSpecialProduct = true,
+            IsDeleted = false,
+            CreatedAt = DateTime.UtcNow,
+            UpdatedAt = DateTime.UtcNow,
+        }).ExecuteCommandAsync();
+
+        await _localDb.Insertable(new DomesticProduct
+        {
+            ProductCode = "HB001",
+            HBProductNo = "HB001-ITEM",
+            ProductName = "测试国内商品中文",
+            EnglishProductName = "测试国内商品英文",
+            ProductImage = "HB001-domestic.jpg",
+            Barcode = "952700000001",
             IsDeleted = false,
             CreatedAt = DateTime.UtcNow,
             UpdatedAt = DateTime.UtcNow,
@@ -985,13 +1349,13 @@ public sealed class ProductPushToHqServiceTests : IDisposable
         }).ExecuteCommandAsync();
     }
 
-    private ProductHqSyncService CreateService()
+    private ProductHqSyncService CreateService(ILogger<ProductHqSyncService>? logger = null)
     {
         return new ProductHqSyncService(
             CreateSqlSugarContext(_localDb),
             CreateHqSqlSugarContext(_hqDb, CreateHqConfiguration(_hqConnection.ConnectionString)),
             Mock.Of<IMapper>(),
-            Mock.Of<ILogger<ProductHqSyncService>>()
+            logger ?? Mock.Of<ILogger<ProductHqSyncService>>()
         );
     }
 
@@ -1002,6 +1366,10 @@ public sealed class ProductPushToHqServiceTests : IDisposable
         string? productCode = null,
         string? localSupplierCode = null,
         string? itemNumber = null,
+        string? productName = null,
+        string? englishName = null,
+        string? barcode = null,
+        string? imageUrl = null,
         decimal? domesticPrice = null,
         decimal? importPrice = null,
         decimal? oemPrice = null,
@@ -1014,6 +1382,10 @@ public sealed class ProductPushToHqServiceTests : IDisposable
             ProductCode = productCode,
             LocalSupplierCode = localSupplierCode,
             ItemNumber = itemNumber,
+            ProductName = productName,
+            EnglishName = englishName,
+            Barcode = barcode,
+            ImageUrl = imageUrl,
             DomesticPrice = domesticPrice,
             ImportPrice = importPrice,
             OemPrice = oemPrice,
@@ -1079,5 +1451,114 @@ public sealed class ProductPushToHqServiceTests : IDisposable
         );
         configurationField!.SetValue(context, configuration);
         return context;
+    }
+
+    private static void VerifyLogWritten<TLogger>(
+        Mock<ILogger<TLogger>> logger,
+        LogLevel expectedLevel,
+        Func<IReadOnlyList<KeyValuePair<string, object?>>, bool> predicate
+    )
+    {
+        logger.Verify(
+            item => item.Log(
+                expectedLevel,
+                It.IsAny<EventId>(),
+                It.Is<It.IsAnyType>((state, _) => MatchLogState(state, predicate)),
+                It.IsAny<Exception?>(),
+                It.IsAny<Func<It.IsAnyType, Exception?, string>>()
+            ),
+            Times.AtLeastOnce
+        );
+    }
+
+    private static bool MatchLogState(
+        object state,
+        Func<IReadOnlyList<KeyValuePair<string, object?>>, bool> predicate
+    )
+    {
+        if (state is IEnumerable<KeyValuePair<string, object?>> pairs)
+        {
+            return predicate(pairs.ToList());
+        }
+
+        return false;
+    }
+
+    private static bool HasStateValue(
+        IReadOnlyList<KeyValuePair<string, object?>> state,
+        string key,
+        string expectedValue
+    )
+    {
+        var pair = state.FirstOrDefault(item => item.Key == key);
+        return string.Equals(pair.Value?.ToString(), expectedValue, StringComparison.Ordinal);
+    }
+
+    private static bool HasStateValue(
+        IReadOnlyList<KeyValuePair<string, object?>> state,
+        string key,
+        int expectedValue
+    )
+    {
+        var pair = state.FirstOrDefault(item => item.Key == key);
+        return TryConvertToLong(pair.Value, out var actual) && actual == expectedValue;
+    }
+
+    private static bool HasNumericStateAtLeast(
+        IReadOnlyList<KeyValuePair<string, object?>> state,
+        string key,
+        long minimumValue
+    )
+    {
+        var pair = state.FirstOrDefault(item => item.Key == key);
+        return TryConvertToLong(pair.Value, out var actual) && actual >= minimumValue;
+    }
+
+    private static bool TryConvertToLong(object? value, out long number)
+    {
+        switch (value)
+        {
+            case byte byteValue:
+                number = byteValue;
+                return true;
+            case short shortValue:
+                number = shortValue;
+                return true;
+            case int intValue:
+                number = intValue;
+                return true;
+            case long longValue:
+                number = longValue;
+                return true;
+            default:
+                number = 0;
+                return false;
+        }
+    }
+
+    private static string RenderState(IReadOnlyList<KeyValuePair<string, object?>> state)
+    {
+        var originalFormat = state.FirstOrDefault(item => item.Key == "{OriginalFormat}").Value?.ToString();
+        if (string.IsNullOrWhiteSpace(originalFormat))
+        {
+            return string.Join(
+                ", ",
+                state
+                    .Where(item => item.Key != "{OriginalFormat}")
+                    .Select(item => $"{item.Key}={item.Value}")
+            );
+        }
+
+        var rendered = originalFormat;
+        foreach (var pair in state.Where(item => item.Key != "{OriginalFormat}"))
+        {
+            rendered = rendered.Replace(
+                "{" + pair.Key + "}",
+                pair.Value?.ToString(),
+                StringComparison.Ordinal
+            );
+        }
+
+        return rendered;
     }
 }

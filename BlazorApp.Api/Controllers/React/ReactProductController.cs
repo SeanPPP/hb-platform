@@ -21,6 +21,7 @@ namespace BlazorApp.Api.Controllers.React
         private readonly IProductReactService _service;
         private readonly IProductStoreSyncService _productStoreSyncService;
         private readonly IProductHqSyncService _productHqSyncService;
+        private readonly IProductPushToHqJobService? _productPushToHqJobService;
         private readonly ICurrentUserManageableStoreScopeService _storeScopeService;
         private readonly IProductSupplierImageBatchUpdateJobService? _supplierImageJobService;
         private readonly IProductStoreSyncJobService? _productStoreSyncJobService;
@@ -33,12 +34,14 @@ namespace BlazorApp.Api.Controllers.React
             ICurrentUserManageableStoreScopeService storeScopeService,
             ILogger<ReactProductController> logger,
             IProductSupplierImageBatchUpdateJobService? supplierImageJobService = null,
-            IProductStoreSyncJobService? productStoreSyncJobService = null
+            IProductStoreSyncJobService? productStoreSyncJobService = null,
+            IProductPushToHqJobService? productPushToHqJobService = null
         )
         {
             _service = service;
             _productStoreSyncService = productStoreSyncService;
             _productHqSyncService = productHqSyncService;
+            _productPushToHqJobService = productPushToHqJobService;
             _storeScopeService = storeScopeService;
             _supplierImageJobService = supplierImageJobService;
             _productStoreSyncJobService = productStoreSyncJobService;
@@ -460,6 +463,50 @@ namespace BlazorApp.Api.Controllers.React
                 ?? throw new InvalidOperationException("商品同步到分店任务服务未注册");
         }
 
+        private void LogPushToHqBusinessFailure(ApiResponse<PushProductsToHqResult> result)
+        {
+            // 失败结果历史上既可能放在 Data，也可能放在 Details，这里同时兼容，避免日志统计丢失。
+            var failedCount = result.Data?.FailedCount ?? ReadPushToHqIntValue(result.Details, "FailedCount");
+            var durationMs = result.Data?.DurationMs ?? ReadPushToHqLongValue(result.Details, "DurationMs");
+
+            // 控制器层只记录请求定位字段和聚合统计，避免把请求明细或商品编码直接打进中心日志。
+            _logger.LogWarning(
+                "推送商品到HQ业务失败: RequestPath={RequestPath}, TraceId={TraceId}, ErrorCode={ErrorCode}, FailedCount={FailedCount}, DurationMs={DurationMs}, HttpStatusCode={HttpStatusCode}",
+                HttpContext?.Request?.Path.Value ?? "unknown",
+                HttpContext?.TraceIdentifier ?? string.Empty,
+                result.ErrorCode ?? string.Empty,
+                failedCount,
+                durationMs,
+                result.Success ? 200 : 400
+            );
+        }
+
+        private static int ReadPushToHqIntValue(object? payload, string propertyName)
+        {
+            var rawValue = payload?.GetType().GetProperty(propertyName)?.GetValue(payload);
+            return rawValue switch
+            {
+                byte value => value,
+                short value => value,
+                int value => value,
+                long value => (int)value,
+                _ => 0,
+            };
+        }
+
+        private static long ReadPushToHqLongValue(object? payload, string propertyName)
+        {
+            var rawValue = payload?.GetType().GetProperty(propertyName)?.GetValue(payload);
+            return rawValue switch
+            {
+                byte value => value,
+                short value => value,
+                int value => value,
+                long value => value,
+                _ => 0,
+            };
+        }
+
         /// <summary>
         /// 高级过滤查询商品列表（支持商品信息表与分店价格表的组合过滤）
         /// 所有过滤参数通过 QueryString 传递,支持同时生效
@@ -730,6 +777,11 @@ namespace BlazorApp.Api.Controllers.React
                     items.Count
                 );
                 var result = await _productHqSyncService.PushToHqAsync(request);
+                if (!result.Success)
+                {
+                    LogPushToHqBusinessFailure(result);
+                }
+
                 return result.Success ? Ok(result) : BadRequest(result);
             }
             catch (Exception ex)
@@ -743,6 +795,99 @@ namespace BlazorApp.Api.Controllers.React
                     )
                 );
             }
+        }
+
+        /// <summary>
+        /// 创建商品推送到 HQ 的后台任务，HTTP 请求立即返回。
+        /// </summary>
+        [HttpPost("push-to-hq/jobs")]
+        [Authorize(Policy = Permissions.PosProducts.Manage)]
+        public async Task<IActionResult> StartPushToHqJob(
+            [FromBody] PushProductsToHqRequest request,
+            CancellationToken cancellationToken
+        )
+        {
+            try
+            {
+                var validationError = ValidatePushToHqRequest(request);
+                if (validationError != null)
+                {
+                    return validationError;
+                }
+
+                if (_productPushToHqJobService == null)
+                {
+                    return StatusCode(500, new { success = false, message = "商品推送 HQ 后台服务未启用" });
+                }
+
+                var job = await _productPushToHqJobService.StartJobAsync(request, cancellationToken);
+                return Ok(new { success = true, data = job, message = "商品推送 HQ 任务已提交" });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "提交商品推送 HQ job 失败");
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
+        /// <summary>
+        /// 查询商品推送到 HQ 的后台任务。
+        /// </summary>
+        [HttpGet("push-to-hq/jobs/{jobId}")]
+        [Authorize(Policy = Permissions.PosProducts.Manage)]
+        public async Task<IActionResult> GetPushToHqJob(
+            string jobId,
+            CancellationToken cancellationToken
+        )
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(jobId))
+                {
+                    return BadRequest(new { success = false, message = "jobId 不能为空" });
+                }
+
+                if (_productPushToHqJobService == null)
+                {
+                    return StatusCode(500, new { success = false, message = "商品推送 HQ 后台服务未启用" });
+                }
+
+                var job = await _productPushToHqJobService.GetJobAsync(jobId, cancellationToken);
+                if (job == null)
+                {
+                    return NotFound(new { success = false, message = "推送任务不存在或已过期" });
+                }
+
+                return Ok(new { success = true, data = job, message = "查询成功" });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "查询商品推送 HQ job 失败: {JobId}", jobId);
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
+        private IActionResult? ValidatePushToHqRequest(PushProductsToHqRequest? request)
+        {
+            var productCodes = request?.ProductCodes ?? new List<string>();
+            var items = request?.Items ?? new List<PushProductsToHqItem>();
+            if (request == null || (!productCodes.Any() && !items.Any()))
+            {
+                return BadRequest(new { success = false, message = "请选择要推送的商品" });
+            }
+
+            var hasLegacyCodes = productCodes.Any(code => !string.IsNullOrWhiteSpace(code));
+            var hasItems = items.Any(item =>
+                item != null
+                && (
+                    !string.IsNullOrWhiteSpace(item.ProductCode)
+                    || !string.IsNullOrWhiteSpace(item.LocalSupplierCode)
+                    || !string.IsNullOrWhiteSpace(item.ItemNumber)
+                )
+            );
+            return !hasLegacyCodes && !hasItems
+                ? BadRequest(new { success = false, message = "请选择有效的推送商品" })
+                : null;
         }
 
         /// <summary>

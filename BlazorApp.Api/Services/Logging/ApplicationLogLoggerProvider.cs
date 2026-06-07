@@ -89,6 +89,7 @@ namespace BlazorApp.Api.Services.Logging
             var properties = ExtractProperties(state);
             var message = formatter(state, exception);
 
+            // 队列内部会自己累积入队失败/DropOldest 计数，这里保持无阻塞写入，不再做同步补偿。
             _queue.TryEnqueue(
                 new()
                 {

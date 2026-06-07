@@ -331,6 +331,11 @@ namespace BlazorApp.Shared.DTOs
         public string? 英文名称 { get; set; }
 
         /// <summary>
+        /// 清空英文名称（商品信息）
+        /// </summary>
+        public bool? ClearEnglishName { get; set; }
+
+        /// <summary>
         /// 贴牌价格
         /// </summary>
         public decimal? 贴牌价格 { get; set; }

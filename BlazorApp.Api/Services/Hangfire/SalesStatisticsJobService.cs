@@ -1,3 +1,4 @@
+using System.Runtime.ExceptionServices;
 using BlazorApp.Api.Data;
 using BlazorApp.Shared.Models;
 using BlazorApp.Shared.Models.POSM;
@@ -167,6 +168,60 @@ namespace BlazorApp.Api.Services
             );
             // 从配置中读取每个并发块包含的最大天数，默认值为7
             _maxDaysPerChunk = _configuration.GetValue<int>("ScheduledTasks:MaxDaysPerChunk", 7);
+        }
+
+        /// <summary>
+        /// 统一执行统计事务，并在提交/回滚失败时保留最原始的业务异常
+        /// </summary>
+        private static async Task ExecuteTransactionSafelyAsync(
+            Func<Task> beginAsync,
+            Func<Task> workAsync,
+            Func<Task> commitAsync,
+            Func<Task> rollbackAsync,
+            ILogger logger,
+            string operationName
+        )
+        {
+            await beginAsync();
+
+            Exception? originalException = null;
+
+            try
+            {
+                await workAsync();
+
+                try
+                {
+                    await commitAsync();
+                }
+                catch (Exception commitException)
+                {
+                    // 提交失败时，提交异常本身就是最重要的原始异常，后续回滚失败不能覆盖它。
+                    originalException = commitException;
+                    logger.LogError(commitException, "{OperationName} 提交事务失败，准备尝试回滚", operationName);
+                    throw;
+                }
+            }
+            catch (Exception ex)
+            {
+                originalException ??= ex;
+
+                try
+                {
+                    await rollbackAsync();
+                }
+                catch (Exception rollbackException)
+                {
+                    logger.LogError(
+                        rollbackException,
+                        "{OperationName} 回滚事务失败，将保留原始异常继续抛出",
+                        operationName
+                    );
+                }
+
+                ExceptionDispatchInfo.Capture(originalException).Throw();
+                throw;
+            }
         }
 
         /// <summary>
@@ -435,39 +490,35 @@ namespace BlazorApp.Api.Services
                     statisticsList.Add(storeStatistic);
                 }
 
-                // 开始事务
-                await _context.Db.Ado.BeginTranAsync();
-                try
-                {
-                    // 删除指定日期和小时的旧记录
-                    var deletedCount = await _context
-                        .Db.Deleteable<HourlySalesStatistic>()
-                        .Where(s => s.Date == date && targetHours.Contains(s.Hour))
-                        .ExecuteCommandAsync();
-                    _logger.LogInformation("删除 {Count} 条分时统计旧记录", deletedCount);
+                await ExecuteTransactionSafelyAsync(
+                    beginAsync: () => _context.Db.Ado.BeginTranAsync(),
+                    workAsync: async () =>
+                    {
+                        // 删除指定日期和小时的旧记录
+                        var deletedCount = await _context
+                            .Db.Deleteable<HourlySalesStatistic>()
+                            .Where(s => s.Date == date && targetHours.Contains(s.Hour))
+                            .ExecuteCommandAsync();
+                        _logger.LogInformation("删除 {Count} 条分时统计旧记录", deletedCount);
 
-                    // 批量插入新记录
-                    _context
-                        .Db.Fastest<HourlySalesStatistic>()
-                        .PageSize(BatchSize)
-                        .BulkCopy(statisticsList);
+                        // 批量插入新记录
+                        _context
+                            .Db.Fastest<HourlySalesStatistic>()
+                            .PageSize(BatchSize)
+                            .BulkCopy(statisticsList);
+                    },
+                    commitAsync: () => _context.Db.Ado.CommitTranAsync(),
+                    rollbackAsync: () => _context.Db.Ado.RollbackTranAsync(),
+                    logger: _logger,
+                    operationName: "分时统计数据更新"
+                );
 
-                    // 提交事务
-                    await _context.Db.Ado.CommitTranAsync();
-
-                    _logger.LogInformation(
-                        "分时统计数据更新完成: {Date}, 小时: {Hours}, 总记录: {Total}",
-                        date,
-                        hour.HasValue ? hour.Value.ToString() : "0-23",
-                        statisticsList.Count
-                    );
-                }
-                catch
-                {
-                    // 回滚事务
-                    await _context.Db.Ado.RollbackTranAsync();
-                    throw;
-                }
+                _logger.LogInformation(
+                    "分时统计数据更新完成: {Date}, 小时: {Hours}, 总记录: {Total}",
+                    date,
+                    hour.HasValue ? hour.Value.ToString() : "0-23",
+                    statisticsList.Count
+                );
             }
             catch (Exception ex)
             {
@@ -555,38 +606,34 @@ namespace BlazorApp.Api.Services
                     statisticsList.Add(statistic);
                 }
 
-                // 开始事务
-                await _context.Db.Ado.BeginTranAsync();
-                try
-                {
-                    // 删除该日期的所有旧记录
-                    var deletedCount = await _context
-                        .Db.Deleteable<StoreSalesStatistic>()
-                        .Where(s => s.Date == targetDate)
-                        .ExecuteCommandAsync();
-                    _logger.LogInformation("删除 {Count} 条分店统计旧记录", deletedCount);
+                await ExecuteTransactionSafelyAsync(
+                    beginAsync: () => _context.Db.Ado.BeginTranAsync(),
+                    workAsync: async () =>
+                    {
+                        // 删除该日期的所有旧记录
+                        var deletedCount = await _context
+                            .Db.Deleteable<StoreSalesStatistic>()
+                            .Where(s => s.Date == targetDate)
+                            .ExecuteCommandAsync();
+                        _logger.LogInformation("删除 {Count} 条分店统计旧记录", deletedCount);
 
-                    // 批量插入新记录
-                    _context
-                        .Db.Fastest<StoreSalesStatistic>()
-                        .PageSize(BatchSize)
-                        .BulkCopy(statisticsList);
+                        // 批量插入新记录
+                        _context
+                            .Db.Fastest<StoreSalesStatistic>()
+                            .PageSize(BatchSize)
+                            .BulkCopy(statisticsList);
+                    },
+                    commitAsync: () => _context.Db.Ado.CommitTranAsync(),
+                    rollbackAsync: () => _context.Db.Ado.RollbackTranAsync(),
+                    logger: _logger,
+                    operationName: "分店统计数据更新"
+                );
 
-                    // 提交事务
-                    await _context.Db.Ado.CommitTranAsync();
-
-                    _logger.LogInformation(
-                        "分店统计数据更新完成: {Date}, 总记录: {Total}",
-                        targetDate,
-                        statisticsList.Count
-                    );
-                }
-                catch
-                {
-                    // 回滚事务
-                    await _context.Db.Ado.RollbackTranAsync();
-                    throw;
-                }
+                _logger.LogInformation(
+                    "分店统计数据更新完成: {Date}, 总记录: {Total}",
+                    targetDate,
+                    statisticsList.Count
+                );
             }
             catch (Exception ex)
             {
@@ -794,38 +841,34 @@ namespace BlazorApp.Api.Services
                     statisticsList.Add(statistic);
                 }
 
-                // 开始事务
-                await _context.Db.Ado.BeginTranAsync();
-                try
-                {
-                    // 删除该日期的所有旧记录
-                    var deletedCount = await _context
-                        .Db.Deleteable<StoreSalesStatistic>()
-                        .Where(s => s.Date == date)
-                        .ExecuteCommandAsync();
-                    _logger.LogInformation("删除 {Count} 条分店统计旧记录", deletedCount);
+                await ExecuteTransactionSafelyAsync(
+                    beginAsync: () => _context.Db.Ado.BeginTranAsync(),
+                    workAsync: async () =>
+                    {
+                        // 删除该日期的所有旧记录
+                        var deletedCount = await _context
+                            .Db.Deleteable<StoreSalesStatistic>()
+                            .Where(s => s.Date == date)
+                            .ExecuteCommandAsync();
+                        _logger.LogInformation("删除 {Count} 条分店统计旧记录", deletedCount);
 
-                    // 批量插入新记录
-                    _context
-                        .Db.Fastest<StoreSalesStatistic>()
-                        .PageSize(BatchSize)
-                        .BulkCopy(statisticsList);
+                        // 批量插入新记录
+                        _context
+                            .Db.Fastest<StoreSalesStatistic>()
+                            .PageSize(BatchSize)
+                            .BulkCopy(statisticsList);
+                    },
+                    commitAsync: () => _context.Db.Ado.CommitTranAsync(),
+                    rollbackAsync: () => _context.Db.Ado.RollbackTranAsync(),
+                    logger: _logger,
+                    operationName: "指定分店统计数据更新"
+                );
 
-                    // 提交事务
-                    await _context.Db.Ado.CommitTranAsync();
-
-                    _logger.LogInformation(
-                        "指定分店统计数据更新完成: {Date}, 总记录: {Total}",
-                        date,
-                        statisticsList.Count
-                    );
-                }
-                catch
-                {
-                    // 回滚事务
-                    await _context.Db.Ado.RollbackTranAsync();
-                    throw;
-                }
+                _logger.LogInformation(
+                    "指定分店统计数据更新完成: {Date}, 总记录: {Total}",
+                    date,
+                    statisticsList.Count
+                );
             }
             catch (Exception ex)
             {
@@ -1016,39 +1059,35 @@ namespace BlazorApp.Api.Services
 
                 var allSupplierCodes = allStats.Select(s => s.SupplierCode).Distinct().ToList();
 
-                // 开始事务
-                await _context.Db.Ado.BeginTranAsync();
-                try
-                {
-                    // 删除日期范围内的旧记录
-                    var deletedCount = await _context
-                        .Db.Deleteable<SupplierSalesStatistic>()
-                        .Where(s => s.Date >= targetStartDate && s.Date <= targetEndDate)
-                        .ExecuteCommandAsync();
-                    _logger.LogInformation("删除 {Count} 条供应商统计旧记录", deletedCount);
+                await ExecuteTransactionSafelyAsync(
+                    beginAsync: () => _context.Db.Ado.BeginTranAsync(),
+                    workAsync: async () =>
+                    {
+                        // 删除日期范围内的旧记录
+                        var deletedCount = await _context
+                            .Db.Deleteable<SupplierSalesStatistic>()
+                            .Where(s => s.Date >= targetStartDate && s.Date <= targetEndDate)
+                            .ExecuteCommandAsync();
+                        _logger.LogInformation("删除 {Count} 条供应商统计旧记录", deletedCount);
 
-                    // 批量插入新记录
-                    _context
-                        .Db.Fastest<SupplierSalesStatistic>()
-                        .PageSize(BatchSize)
-                        .BulkCopy(allStats);
+                        // 批量插入新记录
+                        _context
+                            .Db.Fastest<SupplierSalesStatistic>()
+                            .PageSize(BatchSize)
+                            .BulkCopy(allStats);
+                    },
+                    commitAsync: () => _context.Db.Ado.CommitTranAsync(),
+                    rollbackAsync: () => _context.Db.Ado.RollbackTranAsync(),
+                    logger: _logger,
+                    operationName: "指定供应商统计数据更新"
+                );
 
-                    // 提交事务
-                    await _context.Db.Ado.CommitTranAsync();
-
-                    _logger.LogInformation(
-                        "指定供应商统计数据更新完成: {StartDate} 至 {EndDate}, 总记录: {Total}",
-                        targetStartDate.ToString("yyyy-MM-dd"),
-                        targetEndDate.ToString("yyyy-MM-dd"),
-                        allStats.Count
-                    );
-                }
-                catch
-                {
-                    // 回滚事务
-                    await _context.Db.Ado.RollbackTranAsync();
-                    throw;
-                }
+                _logger.LogInformation(
+                    "指定供应商统计数据更新完成: {StartDate} 至 {EndDate}, 总记录: {Total}",
+                    targetStartDate.ToString("yyyy-MM-dd"),
+                    targetEndDate.ToString("yyyy-MM-dd"),
+                    allStats.Count
+                );
             }
             catch (Exception ex)
             {
@@ -1917,38 +1956,34 @@ namespace BlazorApp.Api.Services
                     statisticsList.Add(statistic);
                 }
 
-                // 开始事务
-                await _context.Db.Ado.BeginTranAsync();
-                try
-                {
-                    // 删除该日期的所有旧记录
-                    var deletedCount = await _context
-                        .Db.Deleteable<StoreSupplierSalesDetail>()
-                        .Where(s => s.Date == targetDate)
-                        .ExecuteCommandAsync();
-                    _logger.LogInformation("删除 {Count} 条门店供应商统计旧记录", deletedCount);
+                await ExecuteTransactionSafelyAsync(
+                    beginAsync: () => _context.Db.Ado.BeginTranAsync(),
+                    workAsync: async () =>
+                    {
+                        // 删除该日期的所有旧记录
+                        var deletedCount = await _context
+                            .Db.Deleteable<StoreSupplierSalesDetail>()
+                            .Where(s => s.Date == targetDate)
+                            .ExecuteCommandAsync();
+                        _logger.LogInformation("删除 {Count} 条门店供应商统计旧记录", deletedCount);
 
-                    // 批量插入新记录
-                    _context
-                        .Db.Fastest<StoreSupplierSalesDetail>()
-                        .PageSize(BatchSize)
-                        .BulkCopy(statisticsList);
+                        // 批量插入新记录
+                        _context
+                            .Db.Fastest<StoreSupplierSalesDetail>()
+                            .PageSize(BatchSize)
+                            .BulkCopy(statisticsList);
+                    },
+                    commitAsync: () => _context.Db.Ado.CommitTranAsync(),
+                    rollbackAsync: () => _context.Db.Ado.RollbackTranAsync(),
+                    logger: _logger,
+                    operationName: "门店供应商统计数据更新"
+                );
 
-                    // 提交事务
-                    await _context.Db.Ado.CommitTranAsync();
-
-                    _logger.LogInformation(
-                        "门店供应商统计数据更新完成: {Date}, 总记录: {Total}",
-                        targetDate,
-                        statisticsList.Count
-                    );
-                }
-                catch
-                {
-                    // 回滚事务
-                    await _context.Db.Ado.RollbackTranAsync();
-                    throw;
-                }
+                _logger.LogInformation(
+                    "门店供应商统计数据更新完成: {Date}, 总记录: {Total}",
+                    targetDate,
+                    statisticsList.Count
+                );
             }
             catch (Exception ex)
             {
@@ -3407,38 +3442,34 @@ namespace BlazorApp.Api.Services
                     return;
                 }
 
-                // 开始事务
-                await _context.Db.Ado.BeginTranAsync();
-                try
-                {
-                    // 按日期删除该日期的所有旧数据
-                    var deletedCount = await _context
-                        .Db.Deleteable<AustralianSupplierStoreSalesDetail>()
-                        .Where(s => s.Date == targetDate)
-                        .ExecuteCommandAsync();
-                    _logger.LogInformation("删除 {Count} 条澳洲供应商门店统计旧记录", deletedCount);
+                await ExecuteTransactionSafelyAsync(
+                    beginAsync: () => _context.Db.Ado.BeginTranAsync(),
+                    workAsync: async () =>
+                    {
+                        // 按日期删除该日期的所有旧数据
+                        var deletedCount = await _context
+                            .Db.Deleteable<AustralianSupplierStoreSalesDetail>()
+                            .Where(s => s.Date == targetDate)
+                            .ExecuteCommandAsync();
+                        _logger.LogInformation("删除 {Count} 条澳洲供应商门店统计旧记录", deletedCount);
 
-                    // 批量插入新记录
-                    _context
-                        .Db.Fastest<AustralianSupplierStoreSalesDetail>()
-                        .PageSize(BatchSize)
-                        .BulkCopy(statisticsList);
+                        // 批量插入新记录
+                        _context
+                            .Db.Fastest<AustralianSupplierStoreSalesDetail>()
+                            .PageSize(BatchSize)
+                            .BulkCopy(statisticsList);
+                    },
+                    commitAsync: () => _context.Db.Ado.CommitTranAsync(),
+                    rollbackAsync: () => _context.Db.Ado.RollbackTranAsync(),
+                    logger: _logger,
+                    operationName: "澳洲供应商门店统计数据更新"
+                );
 
-                    // 提交事务
-                    await _context.Db.Ado.CommitTranAsync();
-
-                    _logger.LogInformation(
-                        "澳洲供应商门店统计数据更新完成: {Date}, 总记录: {Total}",
-                        targetDate,
-                        statisticsList.Count
-                    );
-                }
-                catch
-                {
-                    // 回滚事务
-                    await _context.Db.Ado.RollbackTranAsync();
-                    throw;
-                }
+                _logger.LogInformation(
+                    "澳洲供应商门店统计数据更新完成: {Date}, 总记录: {Total}",
+                    targetDate,
+                    statisticsList.Count
+                );
             }
             catch (Exception ex)
             {
@@ -3592,38 +3623,34 @@ namespace BlazorApp.Api.Services
                     return;
                 }
 
-                // 开始事务
-                await _context.Db.Ado.BeginTranAsync();
-                try
-                {
-                    // 按日期删除该日期的所有旧数据
-                    var deletedCount = await _context
-                        .Db.Deleteable<ChinaSupplierStoreSalesDetail>()
-                        .Where(s => s.Date == targetDate)
-                        .ExecuteCommandAsync();
-                    _logger.LogInformation("删除 {Count} 条中国供应商门店统计旧记录", deletedCount);
+                await ExecuteTransactionSafelyAsync(
+                    beginAsync: () => _context.Db.Ado.BeginTranAsync(),
+                    workAsync: async () =>
+                    {
+                        // 按日期删除该日期的所有旧数据
+                        var deletedCount = await _context
+                            .Db.Deleteable<ChinaSupplierStoreSalesDetail>()
+                            .Where(s => s.Date == targetDate)
+                            .ExecuteCommandAsync();
+                        _logger.LogInformation("删除 {Count} 条中国供应商门店统计旧记录", deletedCount);
 
-                    // 批量插入新记录
-                    _context
-                        .Db.Fastest<ChinaSupplierStoreSalesDetail>()
-                        .PageSize(BatchSize)
-                        .BulkCopy(statisticsList);
+                        // 批量插入新记录
+                        _context
+                            .Db.Fastest<ChinaSupplierStoreSalesDetail>()
+                            .PageSize(BatchSize)
+                            .BulkCopy(statisticsList);
+                    },
+                    commitAsync: () => _context.Db.Ado.CommitTranAsync(),
+                    rollbackAsync: () => _context.Db.Ado.RollbackTranAsync(),
+                    logger: _logger,
+                    operationName: "中国供应商门店统计数据更新"
+                );
 
-                    // 提交事务
-                    await _context.Db.Ado.CommitTranAsync();
-
-                    _logger.LogInformation(
-                        "中国供应商门店统计数据更新完成: {Date}, 总记录: {Total}",
-                        targetDate,
-                        statisticsList.Count
-                    );
-                }
-                catch
-                {
-                    // 回滚事务
-                    await _context.Db.Ado.RollbackTranAsync();
-                    throw;
-                }
+                _logger.LogInformation(
+                    "中国供应商门店统计数据更新完成: {Date}, 总记录: {Total}",
+                    targetDate,
+                    statisticsList.Count
+                );
             }
             catch (Exception ex)
             {

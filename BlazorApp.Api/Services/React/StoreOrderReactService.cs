@@ -15,6 +15,7 @@ namespace BlazorApp.Api.Services.React
 {
     public class StoreOrderReactService : IStoreOrderReactService
     {
+        private const int HomePageWarmUpCommandTimeoutSeconds = 30;
         private readonly ISqlSugarClient _db;
         private readonly ILogger<StoreOrderReactService> _logger;
         private readonly Microsoft.AspNetCore.Http.IHttpContextAccessor _httpContextAccessor;
@@ -149,15 +150,7 @@ namespace BlazorApp.Api.Services.React
                 return await GetProductMasterRowsNotInWarehouseAsync(filter, normalizedGrades);
             }
 
-            var q = _db.Queryable<Product>()
-                .InnerJoin<WarehouseProduct>((p, wp) => p.ProductCode == wp.ProductCode)
-                .LeftJoin<WarehouseCategory>(
-                    (p, wp, wc) => p.WarehouseCategoryGUID == wc.CategoryGUID
-                )
-                .LeftJoin<HBLocalSupplier>(
-                    (p, wp, wc, ls) => p.LocalSupplierCode == ls.LocalSupplierCode && !ls.IsDeleted
-                )
-                .Where((p, wp, wc, ls) => p.IsActive && !p.IsDeleted && !wp.IsDeleted && wp.IsActive);
+            var q = CreateDefaultWarehouseProductQuery(_db);
 
             if (!string.IsNullOrWhiteSpace(filter.CategoryGUID))
             {
@@ -277,40 +270,7 @@ namespace BlazorApp.Api.Services.React
                 .Take(filter.PageSize)
                 .ToListAsync();
 
-            var productCodes = items
-                .Select(item => item.ProductCode)
-                .Where(code => !string.IsNullOrWhiteSpace(code))
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToList();
-
-            if (productCodes.Count > 0)
-            {
-                var gradeRows = await _db.Queryable<ProductGrade>()
-                    .Where(pg => productCodes.Contains(pg.ProductCode) && !pg.IsDeleted)
-                    .OrderBy(pg => pg.Grade)
-                    .Select(pg => new { pg.ProductCode, pg.Grade })
-                    .ToListAsync();
-
-                var gradeMap = gradeRows
-                    .GroupBy(row => row.ProductCode, StringComparer.OrdinalIgnoreCase)
-                    .ToDictionary(
-                        group => group.Key,
-                        group =>
-                            normalizedGrades.Count > 0
-                                ? group.FirstOrDefault(row => normalizedGrades.Contains(row.Grade))?.Grade
-                                    ?? group.First().Grade
-                                : group.First().Grade,
-                        StringComparer.OrdinalIgnoreCase
-                    );
-
-                foreach (var item in items)
-                {
-                    if (gradeMap.TryGetValue(item.ProductCode, out var grade))
-                    {
-                        item.Grade = grade;
-                    }
-                }
-            }
+            await PopulateGradesAsync(_db, items, normalizedGrades);
 
             return new PagedListReactDto<StoreOrderProductDto>
             {
@@ -319,6 +279,77 @@ namespace BlazorApp.Api.Services.React
                 PageNumber = filter.PageNumber,
                 PageSize = filter.PageSize,
             };
+        }
+
+        /// <summary>
+        /// 首页缓存预热只需要首屏商品，走独立短超时连接，避免重查询长期占住后台线程。
+        /// </summary>
+        public async Task<PagedListReactDto<StoreOrderProductDto>> GetHomePageWarmUpPageAsync(
+            int pageSize,
+            CancellationToken cancellationToken = default
+        )
+        {
+            if (pageSize <= 0)
+            {
+                throw new ValidationException("首页预热页大小必须大于 0");
+            }
+
+            // 预热使用独立查询连接，并把命令超时压到 30 秒左右，避免后台预热拖住调用方。
+            using var warmUpDb = CreateHomePageWarmUpQueryConnection();
+            var originalTimeout = warmUpDb.Ado.CommandTimeOut;
+
+            try
+            {
+                warmUpDb.Ado.CommandTimeOut = originalTimeout > 0
+                    ? Math.Min(originalTimeout, HomePageWarmUpCommandTimeoutSeconds)
+                    : HomePageWarmUpCommandTimeoutSeconds;
+
+                var items = await CreateDefaultWarehouseProductQuery(warmUpDb)
+                    .OrderBy((p, wp, wc, ls) => p.ItemNumber, OrderByType.Asc)
+                    .Select(
+                        (p, wp, wc, ls) =>
+                            new StoreOrderProductDto
+                            {
+                                ProductCode = p.ProductCode ?? string.Empty,
+                                ItemNumber = p.ItemNumber,
+                                Barcode = p.Barcode,
+                                ProductName = p.ProductName,
+                                ProductImage = p.ProductImage,
+                                CategoryName = wc.CategoryName,
+                                WarehouseCategoryGUID = p.WarehouseCategoryGUID,
+                                LocalSupplierCode = p.LocalSupplierCode,
+                                LocalSupplierName = ls.Name,
+                                OEMPrice = wp.OEMPrice,
+                                MinOrderQuantity = wp.MinOrderQuantity ?? 1,
+                                StockQuantity = wp.StockQuantity ?? 0,
+                                PackQty = p.MiddlePackageQuantity,
+                                ImportPrice = wp.ImportPrice,
+                            }
+                    )
+                    .Take(pageSize)
+                    .ToListAsync();
+
+                cancellationToken.ThrowIfCancellationRequested();
+                await PopulateGradesAsync(
+                    warmUpDb,
+                    items,
+                    new List<string>(capacity: 0),
+                    cancellationToken
+                );
+
+                return new PagedListReactDto<StoreOrderProductDto>
+                {
+                    Items = items,
+                    // 预热缓存只保证首屏可用，避免为估算总数再追加一次重 Count 查询。
+                    Total = items.Count,
+                    PageNumber = 1,
+                    PageSize = pageSize,
+                };
+            }
+            finally
+            {
+                warmUpDb.Ado.CommandTimeOut = originalTimeout;
+            }
         }
 
         private async Task<PagedListReactDto<StoreOrderProductDto>>
@@ -464,6 +495,94 @@ namespace BlazorApp.Api.Services.React
                 PageNumber = filter.PageNumber,
                 PageSize = filter.PageSize,
             };
+        }
+
+        private ISugarQueryable<Product, WarehouseProduct, WarehouseCategory, HBLocalSupplier>
+            CreateDefaultWarehouseProductQuery(ISqlSugarClient db)
+        {
+            return db.Queryable<Product>()
+                .InnerJoin<WarehouseProduct>((p, wp) => p.ProductCode == wp.ProductCode)
+                .LeftJoin<WarehouseCategory>(
+                    (p, wp, wc) => p.WarehouseCategoryGUID == wc.CategoryGUID
+                )
+                .LeftJoin<HBLocalSupplier>(
+                    (p, wp, wc, ls) => p.LocalSupplierCode == ls.LocalSupplierCode && !ls.IsDeleted
+                )
+                .Where((p, wp, wc, ls) => p.IsActive && !p.IsDeleted && !wp.IsDeleted && wp.IsActive);
+        }
+
+        private ISqlSugarClient CreateHomePageWarmUpQueryConnection()
+        {
+            var config = _db.CurrentConnectionConfig;
+            var moreSettings = config.MoreSettings;
+            var concurrentDb = new SqlSugarClient(
+                new ConnectionConfig
+                {
+                    ConnectionString = config.ConnectionString,
+                    DbType = config.DbType,
+                    IsAutoCloseConnection = false,
+                    InitKeyType = config.InitKeyType,
+                    MoreSettings = new ConnMoreSettings
+                    {
+                        IsAutoRemoveDataCache = moreSettings?.IsAutoRemoveDataCache ?? false,
+                        IsWithNoLockQuery = moreSettings?.IsWithNoLockQuery ?? false,
+                        SqlServerCodeFirstNvarchar =
+                            moreSettings?.SqlServerCodeFirstNvarchar ?? false,
+                        DefaultCacheDurationInSeconds = 0,
+                    },
+                    ConfigureExternalServices = config.ConfigureExternalServices,
+                }
+            );
+            concurrentDb.Ado.CommandTimeOut = _db.Ado.CommandTimeOut;
+
+            return concurrentDb;
+        }
+
+        private async Task PopulateGradesAsync(
+            ISqlSugarClient db,
+            List<StoreOrderProductDto> items,
+            List<string> normalizedGrades,
+            CancellationToken cancellationToken = default
+        )
+        {
+            var productCodes = items
+                .Select(item => item.ProductCode)
+                .Where(code => !string.IsNullOrWhiteSpace(code))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            if (productCodes.Count == 0)
+            {
+                return;
+            }
+
+            var gradeRows = await db.Queryable<ProductGrade>()
+                .Where(pg => productCodes.Contains(pg.ProductCode) && !pg.IsDeleted)
+                .OrderBy(pg => pg.Grade)
+                .Select(pg => new { pg.ProductCode, pg.Grade })
+                .ToListAsync();
+
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var gradeMap = gradeRows
+                .GroupBy(row => row.ProductCode, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(
+                    group => group.Key,
+                    group =>
+                        normalizedGrades.Count > 0
+                            ? group.FirstOrDefault(row => normalizedGrades.Contains(row.Grade))?.Grade
+                                ?? group.First().Grade
+                            : group.First().Grade,
+                    StringComparer.OrdinalIgnoreCase
+                );
+
+            foreach (var item in items)
+            {
+                if (gradeMap.TryGetValue(item.ProductCode, out var grade))
+                {
+                    item.Grade = grade;
+                }
+            }
         }
 
         private async Task FillProductGradesAsync(

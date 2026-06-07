@@ -390,7 +390,8 @@ builder.Services.AddScoped<ApplicationLogService>(sp =>
     var context = sp.GetRequiredService<SqlSugarContext>();
     var options = sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<ApplicationLoggingOptions>>();
     var logger = sp.GetRequiredService<ILogger<ApplicationLogService>>();
-    return new ApplicationLogService(context.Db, options, logger);
+    var queue = sp.GetRequiredService<IApplicationLogQueue>();
+    return new ApplicationLogService(context.Db, options, logger, queue);
 });
 builder.Services.AddScoped(typeof(IRepository<>), typeof(SqlSugarRepository<>));
 builder.Services.AddScoped<IStoreRetailPriceRepository, StoreRetailPriceRepository>();
@@ -506,6 +507,7 @@ builder.Services.AddSingleton<
     ProductSupplierImageBatchUpdateJobService
 >();
 builder.Services.AddSingleton<IProductStoreSyncJobService, ProductStoreSyncJobService>();
+builder.Services.AddSingleton<IProductPushToHqJobService, ProductPushToHqJobService>();
 builder.Services.AddScoped<IProductHqSyncService, ProductHqSyncService>(); // 商品HQ解耦同步服务
 builder.Services.AddScoped<IProductSetCodeReactService, ProductSetCodeReactService>();
 builder.Services.Configure<StoreRetailPriceHqSyncOptions>(

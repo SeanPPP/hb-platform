@@ -77,9 +77,16 @@ public sealed class ContainerProductCreationServiceTests : IDisposable
         Assert.Equal(0, result.SkippedCount);
         Assert.Equal(0, result.FailedCount);
         Assert.Contains(result.Created, item => item.ProductCode == "P001" && item.DetailHguid == "D001");
-        Assert.Equal(1, await _db.Queryable<Product>().Where(p => p.ProductCode == "P001").CountAsync());
-        Assert.Equal(1, await _db.Queryable<WarehouseProduct>().Where(p => p.ProductCode == "P001").CountAsync());
-        Assert.Equal(1, await _db.Queryable<StoreRetailPrice>().Where(p => p.ProductCode == "P001").CountAsync());
+        var product = await _db.Queryable<Product>().SingleAsync(p => p.ProductCode == "P001");
+        var warehouseProduct = await _db.Queryable<WarehouseProduct>().SingleAsync(p => p.ProductCode == "P001");
+        var storeRetailPrice = await _db.Queryable<StoreRetailPrice>().SingleAsync(p => p.ProductCode == "P001");
+
+        Assert.Equal(1.2m, product.PurchasePrice);
+        Assert.Equal(3.4m, product.RetailPrice);
+        Assert.Equal(1.2m, warehouseProduct.ImportPrice);
+        Assert.Equal(3.4m, warehouseProduct.OEMPrice);
+        Assert.Equal(1.2m, storeRetailPrice.PurchasePrice);
+        Assert.Equal(3.4m, storeRetailPrice.StoreRetailPriceValue);
     }
 
     [Fact]

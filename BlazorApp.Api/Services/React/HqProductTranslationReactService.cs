@@ -22,6 +22,44 @@ namespace BlazorApp.Api.Services.React
             _logger = logger;
         }
 
+        private bool TryNormalizeValidEnglishTranslation(
+            string chinese,
+            string? english,
+            out string normalizedEnglish
+        )
+        {
+            normalizedEnglish = string.Empty;
+            if (string.IsNullOrWhiteSpace(english))
+            {
+                return false;
+            }
+
+            normalizedEnglish = english.Trim();
+            return !string.Equals(normalizedEnglish, chinese.Trim(), StringComparison.Ordinal)
+                && !_translationService.ContainsChinese(normalizedEnglish);
+        }
+
+        private string? GetTranslationSource(string? chineseName, string? englishName)
+        {
+            if (
+                !string.IsNullOrWhiteSpace(englishName)
+                && _translationService.ContainsChinese(englishName)
+            )
+            {
+                return englishName.Trim();
+            }
+
+            if (
+                !string.IsNullOrWhiteSpace(chineseName)
+                && _translationService.ContainsChinese(chineseName)
+            )
+            {
+                return chineseName.Trim();
+            }
+
+            return null;
+        }
+
         public async Task<TranslationResultDto> TranslateNamesByContainersAsync(
             List<string> containerGuids,
             bool overwriteExisting = false
@@ -52,13 +90,11 @@ namespace BlazorApp.Api.Services.React
                 })
                 .ToListAsync();
 
-            // 待翻译的中文文本（过滤空与非中文）
+            // 英文名称栏若仍含中文，优先翻译英文名称本身，避免继续保留污染值。
             var textsToTranslate = products
-                .Where(x =>
-                    !string.IsNullOrWhiteSpace(x.中文名称)
-                    && _translationService.ContainsChinese(x.中文名称)
-                )
-                .Select(x => x.中文名称!)
+                .Select(x => GetTranslationSource(x.中文名称, x.英文名称))
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .Select(x => x!)
                 .Distinct()
                 .ToList();
 
@@ -73,19 +109,24 @@ namespace BlazorApp.Api.Services.React
             {
                 try
                 {
-                    var chinese = row.中文名称 ?? string.Empty;
-                    if (string.IsNullOrWhiteSpace(chinese))
+                    var sourceText = GetTranslationSource(row.中文名称, row.英文名称);
+                    if (string.IsNullOrWhiteSpace(sourceText))
                     {
                         result.TotalSkipped++;
                         continue;
                     }
 
                     if (
-                        !translations.TryGetValue(chinese, out var english)
-                        || string.IsNullOrWhiteSpace(english)
-                        || english == chinese
+                        !translations.TryGetValue(sourceText, out var english)
+                        || !TryNormalizeValidEnglishTranslation(sourceText, english, out var normalizedEnglish)
                     )
                     {
+                        _logger.LogWarning(
+                            "跳过无效 HQ 英文名称译文: ProductCode={ProductCode}, Chinese={Chinese}, English={English}",
+                            row.商品编码,
+                            sourceText,
+                            english
+                        );
                         result.TotalSkipped++;
                         continue;
                     }
@@ -103,7 +144,7 @@ namespace BlazorApp.Api.Services.React
 
                     await _hq
                         .Db.Updateable<CPT_DIC_商品信息字典表>()
-                        .SetColumns(p => new CPT_DIC_商品信息字典表 { 英文名称 = english })
+                        .SetColumns(p => new CPT_DIC_商品信息字典表 { 英文名称 = normalizedEnglish })
                         .Where(p => p.商品编码 == row.商品编码)
                         .ExecuteCommandAsync();
 
@@ -111,7 +152,7 @@ namespace BlazorApp.Api.Services.React
 
                     if (result.Samples.Count < 10)
                     {
-                        result.Samples[chinese] = english;
+                        result.Samples[sourceText] = normalizedEnglish;
                     }
                 }
                 catch (Exception ex)
@@ -145,11 +186,9 @@ namespace BlazorApp.Api.Services.React
                 .ToListAsync();
 
             var textsToTranslate = products
-                .Where(x =>
-                    !string.IsNullOrWhiteSpace(x.中文名称)
-                    && _translationService.ContainsChinese(x.中文名称)
-                )
-                .Select(x => x.中文名称!)
+                .Select(x => GetTranslationSource(x.中文名称, x.英文名称))
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .Select(x => x!)
                 .Distinct()
                 .ToList();
 
@@ -164,19 +203,24 @@ namespace BlazorApp.Api.Services.React
             {
                 try
                 {
-                    var chinese = row.中文名称 ?? string.Empty;
-                    if (string.IsNullOrWhiteSpace(chinese))
+                    var sourceText = GetTranslationSource(row.中文名称, row.英文名称);
+                    if (string.IsNullOrWhiteSpace(sourceText))
                     {
                         result.TotalSkipped++;
                         continue;
                     }
 
                     if (
-                        !translations.TryGetValue(chinese, out var english)
-                        || string.IsNullOrWhiteSpace(english)
-                        || english == chinese
+                        !translations.TryGetValue(sourceText, out var english)
+                        || !TryNormalizeValidEnglishTranslation(sourceText, english, out var normalizedEnglish)
                     )
                     {
+                        _logger.LogWarning(
+                            "跳过无效 HQ 英文名称译文(全量): ProductCode={ProductCode}, Chinese={Chinese}, English={English}",
+                            row.商品编码,
+                            sourceText,
+                            english
+                        );
                         result.TotalSkipped++;
                         continue;
                     }
@@ -193,7 +237,7 @@ namespace BlazorApp.Api.Services.React
 
                     await _hq
                         .Db.Updateable<CPT_DIC_商品信息字典表>()
-                        .SetColumns(p => new CPT_DIC_商品信息字典表 { 英文名称 = english })
+                        .SetColumns(p => new CPT_DIC_商品信息字典表 { 英文名称 = normalizedEnglish })
                         .Where(p => p.商品编码 == row.商品编码)
                         .ExecuteCommandAsync();
 
@@ -201,7 +245,7 @@ namespace BlazorApp.Api.Services.React
 
                     if (result.Samples.Count < 10)
                     {
-                        result.Samples[chinese] = english;
+                        result.Samples[sourceText] = normalizedEnglish;
                     }
                 }
                 catch (Exception ex)
@@ -238,11 +282,9 @@ namespace BlazorApp.Api.Services.React
                 .ToListAsync();
 
             var textsToTranslate = products
-                .Where(x =>
-                    !string.IsNullOrWhiteSpace(x.中文名称)
-                    && _translationService.ContainsChinese(x.中文名称)
-                )
-                .Select(x => x.中文名称!)
+                .Select(x => GetTranslationSource(x.中文名称, x.英文名称))
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .Select(x => x!)
                 .Distinct()
                 .ToList();
 
@@ -257,19 +299,24 @@ namespace BlazorApp.Api.Services.React
             {
                 try
                 {
-                    var chinese = row.中文名称 ?? string.Empty;
-                    if (string.IsNullOrWhiteSpace(chinese))
+                    var sourceText = GetTranslationSource(row.中文名称, row.英文名称);
+                    if (string.IsNullOrWhiteSpace(sourceText))
                     {
                         result.TotalSkipped++;
                         continue;
                     }
 
                     if (
-                        !translations.TryGetValue(chinese, out var english)
-                        || string.IsNullOrWhiteSpace(english)
-                        || english == chinese
+                        !translations.TryGetValue(sourceText, out var english)
+                        || !TryNormalizeValidEnglishTranslation(sourceText, english, out var normalizedEnglish)
                     )
                     {
+                        _logger.LogWarning(
+                            "跳过无效 HQ 英文名称译文(按容器商品编码): ProductCode={ProductCode}, Chinese={Chinese}, English={English}",
+                            row.商品编码,
+                            sourceText,
+                            english
+                        );
                         result.TotalSkipped++;
                         continue;
                     }
@@ -286,7 +333,7 @@ namespace BlazorApp.Api.Services.React
 
                     await _hq
                         .Db.Updateable<CPT_DIC_商品信息字典表>()
-                        .SetColumns(p => new CPT_DIC_商品信息字典表 { 英文名称 = english })
+                        .SetColumns(p => new CPT_DIC_商品信息字典表 { 英文名称 = normalizedEnglish })
                         .Where(p => p.商品编码 == row.商品编码)
                         .ExecuteCommandAsync();
 
@@ -294,7 +341,7 @@ namespace BlazorApp.Api.Services.React
 
                     if (result.Samples.Count < 10)
                     {
-                        result.Samples[chinese] = english;
+                        result.Samples[sourceText] = normalizedEnglish;
                     }
                 }
                 catch (Exception ex)
@@ -350,8 +397,13 @@ namespace BlazorApp.Api.Services.React
                     var chinese = kvp.Key;
                     var english = kvp.Value;
 
-                    if (string.IsNullOrWhiteSpace(english) || english == chinese)
+                    if (!TryNormalizeValidEnglishTranslation(chinese, english, out var normalizedEnglish))
                     {
+                        _logger.LogWarning(
+                            "跳过无效 HQ 英文名称译文(按中文名): Chinese={Chinese}, English={English}",
+                            chinese,
+                            english
+                        );
                         result.TotalSkipped++;
                         continue;
                     }
@@ -384,7 +436,7 @@ namespace BlazorApp.Api.Services.React
 
                         await _hq
                             .Db.Updateable<CPT_DIC_商品信息字典表>()
-                            .SetColumns(p => new CPT_DIC_商品信息字典表 { 英文名称 = english })
+                            .SetColumns(p => new CPT_DIC_商品信息字典表 { 英文名称 = normalizedEnglish })
                             .Where(p => p.ID == row.ID)
                             .ExecuteCommandAsync();
                         result.TotalTranslated++;
@@ -392,7 +444,7 @@ namespace BlazorApp.Api.Services.React
 
                     if (result.Samples.Count < 10)
                     {
-                        result.Samples[chinese] = english;
+                        result.Samples[chinese] = normalizedEnglish;
                     }
                 }
                 catch (Exception ex)

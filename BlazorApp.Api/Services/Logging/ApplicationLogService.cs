@@ -23,16 +23,19 @@ namespace BlazorApp.Api.Services.Logging
         private readonly ISqlSugarClient _db;
         private readonly ApplicationLoggingOptions _options;
         private readonly ILogger<ApplicationLogService> _logger;
+        private readonly IApplicationLogQueue? _queue;
 
         public ApplicationLogService(
             ISqlSugarClient db,
             IOptions<ApplicationLoggingOptions> options,
-            ILogger<ApplicationLogService> logger
+            ILogger<ApplicationLogService> logger,
+            IApplicationLogQueue? queue = null
         )
         {
             _db = db;
             _options = options.Value;
             _logger = logger;
+            _queue = queue;
         }
 
         public Task<ApplicationLoggingProjectOptions?> AuthenticateProjectAsync(
@@ -125,6 +128,7 @@ namespace BlazorApp.Api.Services.Logging
 
         public async Task<ApplicationLogSummaryDto> GetSummaryAsync(ApplicationLogQueryDto query)
         {
+            var runtimeSnapshot = _queue?.GetRuntimeSnapshot() ?? new ApplicationLogQueueRuntimeSnapshot();
             return new ApplicationLogSummaryDto
             {
                 Total = await ApplyQuery(_db.Queryable<ApplicationLog>(), query).CountAsync(),
@@ -132,6 +136,15 @@ namespace BlazorApp.Api.Services.Logging
                 ByLevel = await QueryGroupAsync(query, "Level"),
                 ByExceptionType = await QueryGroupAsync(query, "ExceptionType"),
                 ByRequestPath = await QueryGroupAsync(query, "RequestPath"),
+                Pipeline = new ApplicationLogPipelineRuntimeDto
+                {
+                    DroppedOldestCount = runtimeSnapshot.DroppedOldestCount,
+                    EnqueueFailureCount = runtimeSnapshot.EnqueueFailureCount,
+                    FailedFlushBatchCount = runtimeSnapshot.FailedFlushBatchCount,
+                    FailedFlushLogCount = runtimeSnapshot.FailedFlushLogCount,
+                    LastFailedFlushBatchSize = runtimeSnapshot.LastFailedFlushBatchSize,
+                    LastFailedFlushReason = runtimeSnapshot.LastFailedFlushReason,
+                },
             };
         }
 
@@ -231,7 +244,8 @@ namespace BlazorApp.Api.Services.Logging
             if (query.StartUtc.HasValue)
                 dbQuery = dbQuery.Where(x => x.TimestampUtc >= query.StartUtc.Value);
             if (query.EndUtc.HasValue)
-                dbQuery = dbQuery.Where(x => x.TimestampUtc <= query.EndUtc.Value);
+                // 时间窗统一按 [StartUtc, EndUtc) 处理，方便前端直接传“下一本地日开始时刻”做整日本地统计。
+                dbQuery = dbQuery.Where(x => x.TimestampUtc < query.EndUtc.Value);
             if (!string.IsNullOrWhiteSpace(query.Keyword))
             {
                 dbQuery = dbQuery.Where(x =>

@@ -89,6 +89,17 @@ namespace BlazorApp.Shared.DTOs
         public List<ApplicationLogGroupCountDto> ByLevel { get; set; } = new();
         public List<ApplicationLogGroupCountDto> ByExceptionType { get; set; } = new();
         public List<ApplicationLogGroupCountDto> ByRequestPath { get; set; } = new();
+        public ApplicationLogPipelineRuntimeDto Pipeline { get; set; } = new();
+    }
+
+    public class ApplicationLogPipelineRuntimeDto
+    {
+        public int DroppedOldestCount { get; set; }
+        public int EnqueueFailureCount { get; set; }
+        public int FailedFlushBatchCount { get; set; }
+        public int FailedFlushLogCount { get; set; }
+        public int LastFailedFlushBatchSize { get; set; }
+        public string? LastFailedFlushReason { get; set; }
     }
 
     public class ApplicationLogGroupCountDto

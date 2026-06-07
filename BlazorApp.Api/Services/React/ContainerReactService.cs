@@ -22,6 +22,7 @@ namespace BlazorApp.Api.Services.React
         private readonly IMapper _mapper;
         private readonly ILogger<ContainerReactService> _logger;
         private readonly IContainerHqSyncService _containerHqSyncService;
+        private readonly ITranslationService _translationService;
 
         public ContainerReactService(
             SqlSugarContext context,
@@ -30,7 +31,8 @@ namespace BlazorApp.Api.Services.React
             IConfiguration configuration,
             IMapper mapper,
             ILogger<ContainerReactService> logger,
-            IContainerHqSyncService containerHqSyncService
+            IContainerHqSyncService containerHqSyncService,
+            ITranslationService translationService
         )
         {
             _context = context;
@@ -40,6 +42,42 @@ namespace BlazorApp.Api.Services.React
             _mapper = mapper;
             _logger = logger;
             _containerHqSyncService = containerHqSyncService;
+            _translationService = translationService;
+        }
+
+        private bool IsValidEnglishName(string? englishName)
+        {
+            return !string.IsNullOrWhiteSpace(englishName)
+                && !_translationService.ContainsChinese(englishName);
+        }
+
+        private async Task<string?> NormalizeEnglishNameForWriteAsync(string? englishName)
+        {
+            if (string.IsNullOrWhiteSpace(englishName))
+            {
+                return null;
+            }
+
+            var normalized = englishName.Trim();
+            if (!_translationService.ContainsChinese(normalized))
+            {
+                return normalized;
+            }
+
+            // 英文名称栏本身可能被中文污染，先翻译后再进入最终英文校验。
+            var translations = await _translationService.BatchTranslateToEnglishAsync(
+                new List<string> { normalized }
+            );
+            if (
+                translations.TryGetValue(normalized, out var translated)
+                && !string.Equals(translated?.Trim(), normalized, StringComparison.Ordinal)
+                && IsValidEnglishName(translated)
+            )
+            {
+                return translated!.Trim();
+            }
+
+            return null;
         }
 
         /// <summary>
@@ -730,17 +768,40 @@ namespace BlazorApp.Api.Services.React
                     .Where(x =>
                         !string.IsNullOrWhiteSpace(x.Update.商品名称)
                         || !string.IsNullOrWhiteSpace(x.Update.英文名称)
+                        || x.Update.ClearEnglishName == true
                     )
                     .GroupBy(x => x.ProductCode!)
-                    .Select(group => new
+                    .Select(group =>
                     {
-                        ProductCode = group.Key,
-                        商品名称 = group
-                            .Select(x => x.Update.商品名称)
-                            .LastOrDefault(value => !string.IsNullOrWhiteSpace(value)),
-                        英文名称 = group
-                            .Select(x => x.Update.英文名称)
-                            .LastOrDefault(value => !string.IsNullOrWhiteSpace(value)),
+                        string? englishName = null;
+                        var hasEnglishNameIntent = false;
+
+                        foreach (var item in group)
+                        {
+                            if (item.Update.ClearEnglishName == true)
+                            {
+                                // 清空是显式意图，必须覆盖前面同商品的英文名称更新。
+                                englishName = null;
+                                hasEnglishNameIntent = true;
+                                continue;
+                            }
+
+                            if (!string.IsNullOrWhiteSpace(item.Update.英文名称))
+                            {
+                                englishName = item.Update.英文名称!.Trim();
+                                hasEnglishNameIntent = true;
+                            }
+                        }
+
+                        return new
+                        {
+                            ProductCode = group.Key,
+                            商品名称 = group
+                                .Select(x => x.Update.商品名称)
+                                .LastOrDefault(value => !string.IsNullOrWhiteSpace(value)),
+                            英文名称 = englishName,
+                            HasEnglishNameIntent = hasEnglishNameIntent,
+                        };
                     })
                     .ToList();
 
@@ -763,12 +824,39 @@ namespace BlazorApp.Api.Services.React
                         productChanged = true;
                     }
                     if (
-                        !string.IsNullOrWhiteSpace(productUpdate.英文名称)
-                        && product.EnglishProductName != productUpdate.英文名称
+                        productUpdate.HasEnglishNameIntent
+                        && string.IsNullOrWhiteSpace(productUpdate.英文名称)
+                        && product.EnglishProductName != null
                     )
                     {
-                        product.EnglishProductName = productUpdate.英文名称;
+                        product.EnglishProductName = null;
                         productChanged = true;
+                    }
+                    else if (
+                        productUpdate.HasEnglishNameIntent
+                        && !string.IsNullOrWhiteSpace(productUpdate.英文名称)
+                    )
+                    {
+                        var normalizedEnglishName = await NormalizeEnglishNameForWriteAsync(
+                            productUpdate.英文名称
+                        );
+                        if (
+                            normalizedEnglishName != null
+                            && product.EnglishProductName != normalizedEnglishName
+                        )
+                        {
+                            product.EnglishProductName = normalizedEnglishName;
+                            productChanged = true;
+                        }
+                        else if (normalizedEnglishName == null)
+                        {
+                            // 翻译失败或 mock 降级时可能返回中文/中英混合，不能污染英文名称字段。
+                            _logger.LogWarning(
+                                "跳过仍包含中文的货柜明细英文名称写回: ProductCode={ProductCode}, EnglishName={EnglishName}",
+                                productUpdate.ProductCode,
+                                productUpdate.英文名称
+                            );
+                        }
                     }
 
                     if (productChanged)
@@ -782,7 +870,8 @@ namespace BlazorApp.Api.Services.React
                 {
                     var hasNameUpdate =
                         !string.IsNullOrWhiteSpace(item.Update.商品名称)
-                        || !string.IsNullOrWhiteSpace(item.Update.英文名称);
+                        || !string.IsNullOrWhiteSpace(item.Update.英文名称)
+                        || item.Update.ClearEnglishName == true;
                     if (hasNameUpdate && changedProductCodes.Contains(item.ProductCode!))
                     {
                         updatedRequestGuids.Add(item.Update.HGUID);
@@ -937,62 +1026,99 @@ namespace BlazorApp.Api.Services.React
                                 }
                             }
 
-                            // 4.2 批量更新 Product 表（进口价格 -> 进货价 PurchasePrice）
+                            // 4.2 批量更新 Product 表（进口价格 -> 进货价，贴牌价格 -> 零售价）
                             // 使用 CASE WHEN 语句批量更新，避免 N+1 查询问题
                             var importPriceUpdates = existingProductUpdates
                                 .Where(x => x.Update.进口价格.HasValue)
                                 .ToList();
-                            if (importPriceUpdates.Count > 0)
+                            var oemPriceUpdates = existingProductUpdates
+                                .Where(x => x.Update.贴牌价格.HasValue)
+                                .ToList();
+                            if (importPriceUpdates.Count > 0 || oemPriceUpdates.Count > 0)
                             {
-                                var caseBuilder = new System.Text.StringBuilder();
+                                var purchaseCaseBuilder = new System.Text.StringBuilder();
+                                var retailCaseBuilder = new System.Text.StringBuilder();
                                 var pList = new List<SugarParameter>();
+                                var priceProductCodes = existingProductUpdates
+                                    .Where(x => x.Update.进口价格.HasValue || x.Update.贴牌价格.HasValue)
+                                    .Select(x => x.Detail.ProductCode)
+                                    .Where(code => !string.IsNullOrWhiteSpace(code))
+                                    .Distinct()
+                                    .ToList();
+                                for (int i = 0; i < priceProductCodes.Count; i++)
+                                {
+                                    pList.Add(new SugarParameter($"@Pc{i}", priceProductCodes[i]));
+                                }
                                 for (int i = 0; i < importPriceUpdates.Count; i++)
                                 {
-                                    var item = importPriceUpdates[i];
-                                    caseBuilder.Append($" WHEN ProductCode = @Pc{i} THEN @Pp{i}");
-                                    pList.Add(
-                                        new SugarParameter($"@Pc{i}", item.Detail.ProductCode)
-                                    );
-                                    pList.Add(
-                                        new SugarParameter($"@Pp{i}", item.Update.进口价格!.Value)
-                                    );
+                                    purchaseCaseBuilder.Append($" WHEN ProductCode = @PurchasePc{i} THEN @PurchasePrice{i}");
+                                    pList.Add(new SugarParameter($"@PurchasePc{i}", importPriceUpdates[i].Detail.ProductCode));
+                                    pList.Add(new SugarParameter($"@PurchasePrice{i}", importPriceUpdates[i].Update.进口价格!.Value));
+                                }
+                                for (int i = 0; i < oemPriceUpdates.Count; i++)
+                                {
+                                    retailCaseBuilder.Append($" WHEN ProductCode = @RetailPc{i} THEN @RetailPrice{i}");
+                                    pList.Add(new SugarParameter($"@RetailPc{i}", oemPriceUpdates[i].Detail.ProductCode));
+                                    pList.Add(new SugarParameter($"@RetailPrice{i}", oemPriceUpdates[i].Update.贴牌价格!.Value));
                                 }
                                 var inClause = string.Join(
                                     ", ",
                                     Enumerable
-                                        .Range(0, importPriceUpdates.Count)
+                                        .Range(0, priceProductCodes.Count)
                                         .Select(i => $"@Pc{i}")
                                 );
+                                var setClause = new List<string>();
+                                if (importPriceUpdates.Count > 0)
+                                    setClause.Add($"PurchasePrice = CASE {purchaseCaseBuilder} ELSE PurchasePrice END");
+                                if (oemPriceUpdates.Count > 0)
+                                    setClause.Add($"RetailPrice = CASE {retailCaseBuilder} ELSE RetailPrice END");
                                 var sql =
-                                    $"UPDATE Product SET PurchasePrice = CASE {caseBuilder} ELSE PurchasePrice END WHERE ProductCode IN ({inClause})";
+                                    $"UPDATE Product SET {string.Join(", ", setClause)} WHERE ProductCode IN ({inClause})";
                                 await _context.Db.Ado.ExecuteCommandAsync(sql, pList);
                             }
 
-                            // 4.3 批量更新 StoreRetailPrice 表（进口价格 -> 进货价 PurchasePrice）
+                            // 4.3 批量更新 StoreRetailPrice 表（进口价格 -> 进货价，贴牌价格 -> 分店零售价）
                             // 使用 CASE WHEN 语句批量更新，避免 N+1 查询问题
-                            if (importPriceUpdates.Count > 0)
+                            if (importPriceUpdates.Count > 0 || oemPriceUpdates.Count > 0)
                             {
-                                var caseBuilder = new System.Text.StringBuilder();
+                                var purchaseCaseBuilder = new System.Text.StringBuilder();
+                                var retailCaseBuilder = new System.Text.StringBuilder();
                                 var pList = new List<SugarParameter>();
+                                var storePriceProductCodes = existingProductUpdates
+                                    .Where(x => x.Update.进口价格.HasValue || x.Update.贴牌价格.HasValue)
+                                    .Select(x => x.Detail.ProductCode)
+                                    .Where(code => !string.IsNullOrWhiteSpace(code))
+                                    .Distinct()
+                                    .ToList();
+                                for (int i = 0; i < storePriceProductCodes.Count; i++)
+                                {
+                                    pList.Add(new SugarParameter($"@Pc{i}", storePriceProductCodes[i]));
+                                }
                                 for (int i = 0; i < importPriceUpdates.Count; i++)
                                 {
-                                    var item = importPriceUpdates[i];
-                                    caseBuilder.Append($" WHEN ProductCode = @Pc{i} THEN @Pp{i}");
-                                    pList.Add(
-                                        new SugarParameter($"@Pc{i}", item.Detail.ProductCode)
-                                    );
-                                    pList.Add(
-                                        new SugarParameter($"@Pp{i}", item.Update.进口价格!.Value)
-                                    );
+                                    purchaseCaseBuilder.Append($" WHEN ProductCode = @PurchasePc{i} THEN @PurchasePrice{i}");
+                                    pList.Add(new SugarParameter($"@PurchasePc{i}", importPriceUpdates[i].Detail.ProductCode));
+                                    pList.Add(new SugarParameter($"@PurchasePrice{i}", importPriceUpdates[i].Update.进口价格!.Value));
+                                }
+                                for (int i = 0; i < oemPriceUpdates.Count; i++)
+                                {
+                                    retailCaseBuilder.Append($" WHEN ProductCode = @RetailPc{i} THEN @RetailPrice{i}");
+                                    pList.Add(new SugarParameter($"@RetailPc{i}", oemPriceUpdates[i].Detail.ProductCode));
+                                    pList.Add(new SugarParameter($"@RetailPrice{i}", oemPriceUpdates[i].Update.贴牌价格!.Value));
                                 }
                                 var inClause = string.Join(
                                     ", ",
                                     Enumerable
-                                        .Range(0, importPriceUpdates.Count)
+                                        .Range(0, storePriceProductCodes.Count)
                                         .Select(i => $"@Pc{i}")
                                 );
+                                var setClause = new List<string>();
+                                if (importPriceUpdates.Count > 0)
+                                    setClause.Add($"PurchasePrice = CASE {purchaseCaseBuilder} ELSE PurchasePrice END");
+                                if (oemPriceUpdates.Count > 0)
+                                    setClause.Add($"StoreRetailPriceValue = CASE {retailCaseBuilder} ELSE StoreRetailPriceValue END");
                                 var sql =
-                                    $"UPDATE StoreRetailPrice SET PurchasePrice = CASE {caseBuilder} ELSE PurchasePrice END WHERE ProductCode IN ({inClause})";
+                                    $"UPDATE StoreRetailPrice SET {string.Join(", ", setClause)} WHERE ProductCode IN ({inClause})";
                                 await _context.Db.Ado.ExecuteCommandAsync(sql, pList);
                             }
 

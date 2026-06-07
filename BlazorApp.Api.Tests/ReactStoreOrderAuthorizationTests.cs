@@ -19,6 +19,80 @@ using Xunit;
 
 namespace BlazorApp.Api.Tests;
 
+internal sealed class TestLogger<T> : ILogger<T>
+    , ITestLoggerSink
+{
+    private readonly object _syncRoot = new();
+    private readonly List<TestLogEntry> _entries = new();
+
+    public IReadOnlyList<TestLogEntry> Entries
+    {
+        get
+        {
+            lock (_syncRoot)
+            {
+                return _entries.ToList();
+            }
+        }
+    }
+
+    public IDisposable? BeginScope<TState>(TState state)
+        where TState : notnull
+    {
+        return NullScope.Instance;
+    }
+
+    public bool IsEnabled(LogLevel logLevel) => true;
+
+    public void Log<TState>(
+        LogLevel logLevel,
+        EventId eventId,
+        TState state,
+        Exception? exception,
+        Func<TState, Exception?, string> formatter
+    )
+    {
+        lock (_syncRoot)
+        {
+            _entries.Add(new TestLogEntry(logLevel, formatter(state, exception), exception));
+        }
+    }
+}
+
+internal sealed record TestLogEntry(LogLevel LogLevel, string Message, Exception? Exception);
+
+internal sealed class NullScope : IDisposable
+{
+    public static NullScope Instance { get; } = new();
+
+    public void Dispose() { }
+}
+
+internal interface ITestLoggerSink
+{
+    IReadOnlyList<TestLogEntry> Entries { get; }
+}
+
+internal static class StoreOrderCacheWarmerTestFactory
+{
+    public static IStoreOrderCacheWarmer Create(
+        IStoreOrderReactService service,
+        IMemoryCache cache,
+        out ITestLoggerSink loggerSink
+    )
+    {
+        var warmerType = typeof(IStoreOrderCacheWarmer).Assembly.GetType(
+            "BlazorApp.Api.Cache.StoreOrderCacheWarmer",
+            throwOnError: true
+        )!;
+        var loggerType = typeof(TestLogger<>).MakeGenericType(warmerType);
+        loggerSink = (ITestLoggerSink)Activator.CreateInstance(loggerType)!;
+
+        return (IStoreOrderCacheWarmer)
+            Activator.CreateInstance(warmerType, service, loggerSink, cache)!;
+    }
+}
+
 public class ReactStoreOrderAuthorizationTests
 {
     [Fact]
@@ -55,13 +129,11 @@ public class ReactStoreOrderAuthorizationTests
 
         var cache = new MemoryCache(new MemoryCacheOptions());
         var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
-        var warmer = new StoreOrderCacheWarmer(
-            service.Object,
-            Mock.Of<ILogger<StoreOrderCacheWarmer>>(),
-            cache
-        );
+        var warmer = StoreOrderCacheWarmerTestFactory.Create(service.Object, cache, out _);
         var webHomeKey = StoreOrderCacheKeys.GetHomePageCacheKey(50);
         var expoHomeKey = StoreOrderCacheKeys.GetHomePageCacheKey(18);
+        var webWarmUpKey = StoreOrderCacheKeys.GetHomePageWarmUpCacheKey(50);
+        var expoWarmUpKey = StoreOrderCacheKeys.GetHomePageWarmUpCacheKey(18);
         var customKey = StoreOrderCacheKeys.Products(
             new StoreOrderFilterDto
             {
@@ -73,13 +145,135 @@ public class ReactStoreOrderAuthorizationTests
 
         cache.Set(webHomeKey, "web");
         cache.Set(expoHomeKey, "expo");
+        cache.Set(webWarmUpKey, "web-warm-up");
+        cache.Set(expoWarmUpKey, "expo-warm-up");
         cache.Set(customKey, "custom");
 
         await warmer.ClearCacheAsync();
 
         Assert.True(cache.TryGetValue(webHomeKey, out _));
         Assert.True(cache.TryGetValue(expoHomeKey, out _));
+        Assert.True(cache.TryGetValue(webWarmUpKey, out _));
+        Assert.True(cache.TryGetValue(expoWarmUpKey, out _));
         Assert.False(cache.TryGetValue(customKey, out _));
+    }
+
+    [Fact]
+    public async Task WarmUpHomePageAsync_轻量结果只写预热专用缓存键_避免污染正常分页总数()
+    {
+        StoreOrderCacheKeys.ClearActiveKeys();
+
+        var cache = new MemoryCache(new MemoryCacheOptions());
+        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        service
+            .Setup(item => item.GetPagedListAsync(It.IsAny<StoreOrderFilterDto>()))
+            .Returns<StoreOrderFilterDto>(filter =>
+                Task.FromResult(
+                    new PagedListReactDto<StoreOrderProductDto>
+                    {
+                        Items = new List<StoreOrderProductDto>
+                        {
+                            new() { ProductCode = $"P-{filter.PageSize}" },
+                        },
+                        Total = filter.PageSize,
+                        PageNumber = 1,
+                        PageSize = filter.PageSize,
+                    }
+                )
+            );
+
+        var warmer = StoreOrderCacheWarmerTestFactory.Create(service.Object, cache, out _);
+
+        await warmer.WarmUpHomePageAsync();
+
+        var normalWebKey = StoreOrderCacheKeys.GetHomePageCacheKey(50);
+        var normalExpoKey = StoreOrderCacheKeys.GetHomePageCacheKey(18);
+        var warmWebKey = StoreOrderCacheKeys.GetHomePageWarmUpCacheKey(50);
+        var warmExpoKey = StoreOrderCacheKeys.GetHomePageWarmUpCacheKey(18);
+
+        Assert.False(cache.TryGetValue(normalWebKey, out _));
+        Assert.False(cache.TryGetValue(normalExpoKey, out _));
+        Assert.True(cache.TryGetValue(warmWebKey, out _));
+        Assert.True(cache.TryGetValue(warmExpoKey, out _));
+    }
+
+    [Fact]
+    public async Task WarmUpHomePageAsync_已有预热运行时_应跳过并记录警告()
+    {
+        StoreOrderCacheKeys.ClearActiveKeys();
+
+        var cache = new MemoryCache(new MemoryCacheOptions());
+        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        var firstCallEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseFirstCall = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var invocationCount = 0;
+
+        service
+            .Setup(item => item.GetPagedListAsync(It.IsAny<StoreOrderFilterDto>()))
+            .Returns<StoreOrderFilterDto>(async filter =>
+            {
+                var currentCount = Interlocked.Increment(ref invocationCount);
+                if (currentCount == 1)
+                {
+                    firstCallEntered.TrySetResult();
+                    await releaseFirstCall.Task;
+                }
+
+                return new PagedListReactDto<StoreOrderProductDto>
+                {
+                    Items = new List<StoreOrderProductDto>
+                    {
+                        new() { ProductCode = $"P-{filter.PageSize}" },
+                    },
+                    Total = 1,
+                    PageNumber = 1,
+                    PageSize = filter.PageSize,
+                };
+            });
+
+        var warmer = StoreOrderCacheWarmerTestFactory.Create(service.Object, cache, out var logger);
+
+        var firstWarmUpTask = warmer.WarmUpHomePageAsync();
+        await firstCallEntered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        await warmer.WarmUpHomePageAsync().WaitAsync(TimeSpan.FromMilliseconds(200));
+
+        Assert.Equal(1, Volatile.Read(ref invocationCount));
+        Assert.Contains(
+            logger.Entries,
+            entry =>
+                entry.LogLevel == LogLevel.Warning
+                && entry.Message.Contains("已有首页商品列表缓存预热正在运行", StringComparison.Ordinal)
+        );
+
+        releaseFirstCall.TrySetResult();
+        await firstWarmUpTask.WaitAsync(TimeSpan.FromSeconds(2));
+    }
+
+    [Fact]
+    public async Task WarmUpHomePageAsync_预热查询已取消时_应记录警告且不向外抛出()
+    {
+        StoreOrderCacheKeys.ClearActiveKeys();
+
+        var cache = new MemoryCache(new MemoryCacheOptions());
+        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        using var cancellationSource = new CancellationTokenSource();
+        cancellationSource.Cancel();
+
+        service
+            .Setup(item => item.GetPagedListAsync(It.IsAny<StoreOrderFilterDto>()))
+            .Returns(Task.FromCanceled<PagedListReactDto<StoreOrderProductDto>>(cancellationSource.Token));
+
+        var warmer = StoreOrderCacheWarmerTestFactory.Create(service.Object, cache, out var logger);
+
+        await warmer.WarmUpHomePageAsync();
+
+        Assert.Contains(
+            logger.Entries,
+            entry =>
+                entry.LogLevel == LogLevel.Warning
+                && entry.Message.Contains("首页商品列表缓存预热已取消", StringComparison.Ordinal)
+        );
     }
 
     [Fact]
@@ -1522,6 +1716,11 @@ public class StoreOrderSyncJobServiceTests
             StoreOrderSyncJobStatusConstants.Succeeded
         );
         var secondJob = await jobService.StartJobAsync("user-1", request);
+        await WaitForJobStatusAsync(
+            jobService,
+            secondJob.JobId,
+            StoreOrderSyncJobStatusConstants.Succeeded
+        );
 
         Assert.NotEqual(firstJob.JobId, secondJob.JobId);
         Assert.False(secondJob.IsDuplicateRequest);
@@ -1685,4 +1884,5 @@ public class StoreOrderSyncJobServiceTests
             _utcNow = _utcNow.Add(offset);
         }
     }
+
 }

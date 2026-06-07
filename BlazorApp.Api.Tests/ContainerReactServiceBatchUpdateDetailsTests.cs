@@ -2,6 +2,7 @@ using System.Reflection;
 using System.Runtime.CompilerServices;
 using AutoMapper;
 using BlazorApp.Api.Data;
+using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Api.Services.React;
 using BlazorApp.Shared.DTOs;
@@ -123,6 +124,25 @@ public sealed class ContainerReactServiceBatchUpdateDetailsTests : IDisposable
     }
 
     [Fact]
+    public async Task BatchUpdateDetailsAsync_清空英文名称_应清空DomesticProduct()
+    {
+        await SeedDetailAndProductAsync("D-CLEAR-EN", "P-CLEAR-EN", englishName: "Existing English");
+        var service = CreateService();
+
+        var totalUpdated = await service.BatchUpdateDetailsAsync(
+            new List<UpdateContainerDetailDto>
+            {
+                new() { HGUID = "D-CLEAR-EN", ClearEnglishName = true },
+            }
+        );
+
+        var product = await _localDb.Queryable<DomesticProduct>()
+            .SingleAsync(x => x.ProductCode == "P-CLEAR-EN");
+        Assert.Equal(1, totalUpdated);
+        Assert.Null(product.EnglishProductName);
+    }
+
+    [Fact]
     public async Task BatchUpdateDetailsAsync_同一商品多条明细_应聚合回写名称并统计请求行()
     {
         await SeedDetailAndProductAsync("D-SAME-1", "P-SAME", englishName: "Old English");
@@ -147,6 +167,29 @@ public sealed class ContainerReactServiceBatchUpdateDetailsTests : IDisposable
     }
 
     [Fact]
+    public async Task BatchUpdateDetailsAsync_同一商品多条明细最后清空英文名称_应清空并统计请求行()
+    {
+        await SeedDetailAndProductAsync("D-SAME-CLEAR-1", "P-SAME-CLEAR", englishName: "Old English");
+        await SeedDetailAsync("D-SAME-CLEAR-2", "P-SAME-CLEAR");
+        await SeedDetailAsync("D-SAME-CLEAR-3", "P-SAME-CLEAR");
+        var service = CreateService();
+
+        var totalUpdated = await service.BatchUpdateDetailsAsync(
+            new List<UpdateContainerDetailDto>
+            {
+                new() { HGUID = "D-SAME-CLEAR-1", 英文名称 = "First English" },
+                new() { HGUID = "D-SAME-CLEAR-2", 英文名称 = "Last English" },
+                new() { HGUID = "D-SAME-CLEAR-3", ClearEnglishName = true },
+            }
+        );
+
+        var product = await _localDb.Queryable<DomesticProduct>()
+            .SingleAsync(x => x.ProductCode == "P-SAME-CLEAR");
+        Assert.Equal(3, totalUpdated);
+        Assert.Null(product.EnglishProductName);
+    }
+
+    [Fact]
     public async Task BatchUpdateDetailsAsync_价格和英文名称同时变化_应同时更新明细和DomesticProduct()
     {
         await SeedDetailAndProductAsync("D-PRICE-EN", "P-PRICE-EN", englishName: "Old English");
@@ -166,6 +209,47 @@ public sealed class ContainerReactServiceBatchUpdateDetailsTests : IDisposable
         Assert.Equal(1, totalUpdated);
         Assert.Equal(3.45m, detail.ImportPrice);
         Assert.Equal("Translated Name", product.EnglishProductName);
+    }
+
+    [Fact]
+    public async Task BatchUpdateDetailsAsync_英文名称仍含中文_不覆盖DomesticProduct但保留其它明细更新()
+    {
+        await SeedDetailAndProductAsync("D-MIXED-EN", "P-MIXED-EN", englishName: "Old English");
+        var service = CreateService();
+
+        var totalUpdated = await service.BatchUpdateDetailsAsync(
+            new List<UpdateContainerDetailDto>
+            {
+                new() { HGUID = "D-MIXED-EN", 进口价格 = 4.56m, 英文名称 = "Large 草莓" },
+            }
+        );
+
+        var detail = await _localDb.Queryable<ContainerDetail>()
+            .SingleAsync(x => x.DetailCode == "D-MIXED-EN");
+        var product = await _localDb.Queryable<DomesticProduct>()
+            .SingleAsync(x => x.ProductCode == "P-MIXED-EN");
+        Assert.Equal(1, totalUpdated);
+        Assert.Equal(4.56m, detail.ImportPrice);
+        Assert.Equal("Old English", product.EnglishProductName);
+    }
+
+    [Fact]
+    public async Task BatchUpdateDetailsAsync_英文名称为中文_应翻译后回写DomesticProduct()
+    {
+        await SeedDetailAndProductAsync("D-ZH-EN", "P-ZH-EN", englishName: "Old English");
+        var service = CreateService();
+
+        var totalUpdated = await service.BatchUpdateDetailsAsync(
+            new List<UpdateContainerDetailDto>
+            {
+                new() { HGUID = "D-ZH-EN", 英文名称 = "草莓玩具" },
+            }
+        );
+
+        var product = await _localDb.Queryable<DomesticProduct>()
+            .SingleAsync(x => x.ProductCode == "P-ZH-EN");
+        Assert.Equal(1, totalUpdated);
+        Assert.Equal("Strawberry Toy", product.EnglishProductName);
     }
 
     [Fact]
@@ -345,7 +429,9 @@ public sealed class ContainerReactServiceBatchUpdateDetailsTests : IDisposable
         Assert.Equal(9.99m, warehouseProduct.OEMPrice);
         Assert.False(warehouseProduct.IsActive);
         Assert.Equal(8.88m, product.PurchasePrice);
+        Assert.Equal(9.99m, product.RetailPrice);
         Assert.All(storeRetailPrices, row => Assert.Equal(8.88m, row.PurchasePrice));
+        Assert.All(storeRetailPrices, row => Assert.Equal(9.99m, row.StoreRetailPriceValue));
     }
 
     [Fact]
@@ -387,7 +473,9 @@ public sealed class ContainerReactServiceBatchUpdateDetailsTests : IDisposable
         Assert.Equal(2.22m, warehouseProduct.OEMPrice);
         Assert.True(warehouseProduct.IsActive);
         Assert.Equal(1.11m, product.PurchasePrice);
+        Assert.Equal(2.22m, product.RetailPrice);
         Assert.All(storeRetailPrices, row => Assert.Equal(1.11m, row.PurchasePrice));
+        Assert.All(storeRetailPrices, row => Assert.Equal(2.22m, row.StoreRetailPriceValue));
     }
 
     [Fact]
@@ -426,8 +514,26 @@ public sealed class ContainerReactServiceBatchUpdateDetailsTests : IDisposable
             new ConfigurationBuilder().Build(),
             Mock.Of<IMapper>(),
             NullLogger<ContainerReactService>.Instance,
-            Mock.Of<IContainerHqSyncService>()
+            Mock.Of<IContainerHqSyncService>(),
+            CreateTranslationServiceMock()
         );
+    }
+
+    private static ITranslationService CreateTranslationServiceMock()
+    {
+        var translationService = new Mock<ITranslationService>();
+        translationService
+            .Setup(x => x.ContainsChinese(It.IsAny<string>()))
+            .Returns<string>(value => value.Any(c => c >= '\u4e00' && c <= '\u9fff'));
+        translationService
+            .Setup(x => x.BatchTranslateToEnglishAsync(It.IsAny<List<string>>()))
+            .ReturnsAsync((List<string> texts) =>
+                texts.ToDictionary(
+                    text => text,
+                    text => text == "草莓玩具" ? "Strawberry Toy" : text
+                )
+            );
+        return translationService.Object;
     }
 
     private async Task SeedDetailAndProductAsync(
@@ -467,6 +573,7 @@ public sealed class ContainerReactServiceBatchUpdateDetailsTests : IDisposable
                 ProductCode = productCode,
                 ProductName = $"本地商品 {productCode}",
                 PurchasePrice = 1.11m,
+                RetailPrice = 2.22m,
                 IsActive = true,
             }
         ).ExecuteCommandAsync();
@@ -479,6 +586,7 @@ public sealed class ContainerReactServiceBatchUpdateDetailsTests : IDisposable
                     StoreCode = "001",
                     ProductCode = productCode,
                     PurchasePrice = 1.11m,
+                    StoreRetailPriceValue = 2.22m,
                     IsActive = true,
                 },
                 new()
@@ -486,6 +594,7 @@ public sealed class ContainerReactServiceBatchUpdateDetailsTests : IDisposable
                     StoreCode = "002",
                     ProductCode = productCode,
                     PurchasePrice = 1.11m,
+                    StoreRetailPriceValue = 2.22m,
                     IsActive = true,
                 },
             }

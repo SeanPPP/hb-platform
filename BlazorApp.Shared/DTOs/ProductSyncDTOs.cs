@@ -379,6 +379,32 @@ namespace BlazorApp.Shared.DTOs
     }
 
     /// <summary>
+    /// POS 商品推送到 HQ 后台任务状态常量。
+    /// </summary>
+    public static class ProductPushToHqJobStatusConstants
+    {
+        public const string Queued = "Queued";
+        public const string Running = "Running";
+        public const string Succeeded = "Succeeded";
+        public const string Failed = "Failed";
+    }
+
+    /// <summary>
+    /// POS 商品推送到 HQ 后台任务快照。
+    /// </summary>
+    public class PushProductsToHqJobDto
+    {
+        public string JobId { get; set; } = string.Empty;
+        public string Status { get; set; } = ProductPushToHqJobStatusConstants.Queued;
+        public bool IsDuplicateRequest { get; set; }
+        public DateTime CreatedAt { get; set; }
+        public DateTime? CompletedAt { get; set; }
+        public DateTime? ExpiresAt { get; set; }
+        public string? Message { get; set; }
+        public PushProductsToHqResult? Result { get; set; }
+    }
+
+    /// <summary>
     /// POS 商品推送到 HQ 的单项明细。
     /// </summary>
     public class PushProductsToHqItem
@@ -397,6 +423,26 @@ namespace BlazorApp.Shared.DTOs
         /// 货号，当 ProductCode 缺失时参与候选匹配。
         /// </summary>
         public string? ItemNumber { get; set; }
+
+        /// <summary>
+        /// 货柜明细商品名称。
+        /// </summary>
+        public string? ProductName { get; set; }
+
+        /// <summary>
+        /// 货柜明细英文名称。
+        /// </summary>
+        public string? EnglishName { get; set; }
+
+        /// <summary>
+        /// 货柜明细条码。
+        /// </summary>
+        public string? Barcode { get; set; }
+
+        /// <summary>
+        /// 货柜明细商品图片地址。
+        /// </summary>
+        public string? ImageUrl { get; set; }
 
         /// <summary>
         /// 国内价格。

@@ -2,6 +2,7 @@ using System.Reflection;
 using System.Runtime.CompilerServices;
 using AutoMapper;
 using BlazorApp.Api.Data;
+using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Api.Mappings.Profiles;
 using BlazorApp.Api.Services.React;
@@ -100,7 +101,8 @@ public sealed class ContainerReactServiceLocalSupplierCodeTests : IDisposable
             new ConfigurationBuilder().Build(),
             _mapper,
             NullLogger<ContainerReactService>.Instance,
-            Mock.Of<IContainerHqSyncService>()
+            Mock.Of<IContainerHqSyncService>(),
+            Mock.Of<ITranslationService>()
         );
     }
 

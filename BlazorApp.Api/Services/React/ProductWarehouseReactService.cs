@@ -944,6 +944,7 @@ namespace BlazorApp.Api.Services.React
                                 : item.ItemNumber,
                             EnglishName = item.EnglishName,
                             PurchasePrice = item.ImportPrice,
+                            RetailPrice = item.OEMPrice,
                             ProductImage = ProductImageUrlHelper.EnsureImageUrl(
                                 item.ImageUrl,
                                 item.ItemNumber ?? code
@@ -1047,7 +1048,7 @@ namespace BlazorApp.Api.Services.React
                                     StoreProductCode = storeCode + product.ProductCode,
                                     SupplierCode = product.LocalSupplierCode,
                                     PurchasePrice = product.PurchasePrice,
-                                    StoreRetailPriceValue = null,
+                                    StoreRetailPriceValue = product.RetailPrice,
                                     DiscountRate = null,
                                     IsActive = true,
                                     IsAutoPricing = false,

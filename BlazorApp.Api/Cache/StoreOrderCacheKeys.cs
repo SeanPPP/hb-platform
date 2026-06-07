@@ -91,6 +91,20 @@ namespace BlazorApp.Api.Cache
         }
 
         /// <summary>
+        /// 获取首页预热专用缓存键
+        /// </summary>
+        public static string GetHomePageWarmUpCacheKey(int pageSize)
+        {
+            var key = $"{PREFIX}:WarmUp:HomePage:{pageSize}";
+            lock (_activeKeysLock)
+            {
+                _activeKeys.Add(key);
+            }
+            LogKeyGenerated("HomePageWarmUp", key, pageSize);
+            return key;
+        }
+
+        /// <summary>
         /// 记录缓存键生成日志
         /// </summary>
         private static void LogKeyGenerated(string keyType, string key, params object?[] parameters)

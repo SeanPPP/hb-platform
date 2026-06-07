@@ -1,5 +1,6 @@
 using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Interfaces.React;
+using BlazorApp.Api.Services.React;
 using BlazorApp.Shared.DTOs;
 using Microsoft.Extensions.Caching.Memory;
 
@@ -16,6 +17,8 @@ namespace BlazorApp.Api.Cache
         private readonly IMemoryCache _cache;
 
         private static readonly TimeSpan CACHE_DURATION = TimeSpan.FromMinutes(10);
+        private static readonly TimeSpan HOME_PAGE_WARM_UP_TIMEOUT = TimeSpan.FromSeconds(30);
+        private int _isHomePageWarmUpRunning;
 
         public StoreOrderCacheWarmer(
             IStoreOrderReactService service,
@@ -33,21 +36,48 @@ namespace BlazorApp.Api.Cache
         /// </summary>
         public async Task WarmUpHomePageAsync()
         {
+            // 同一时刻只允许一个首页预热任务运行，避免后台重复打满同一条查询链路。
+            if (Interlocked.CompareExchange(ref _isHomePageWarmUpRunning, 1, 0) != 0)
+            {
+                _logger.LogWarning("已有首页商品列表缓存预热正在运行，本次请求跳过");
+                return;
+            }
+
             _logger.LogInformation("开始预热首页商品列表缓存");
+            using var timeoutSource = new CancellationTokenSource(HOME_PAGE_WARM_UP_TIMEOUT);
 
             try
             {
-                await WarmUpProductListAsync(50);
-                await WarmUpProductListAsync(18);
+                await WarmUpProductListAsync(50, timeoutSource.Token);
+                timeoutSource.Token.ThrowIfCancellationRequested();
+                await WarmUpProductListAsync(18, timeoutSource.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                if (timeoutSource.IsCancellationRequested)
+                {
+                    _logger.LogWarning(
+                        "首页商品列表缓存预热已取消，已在 {TimeoutSeconds} 秒超时边界内结束",
+                        (int)HOME_PAGE_WARM_UP_TIMEOUT.TotalSeconds
+                    );
+                }
+                else
+                {
+                    _logger.LogWarning("首页商品列表缓存预热已取消");
+                }
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "预热首页商品列表缓存失败");
                 throw;
             }
+            finally
+            {
+                Volatile.Write(ref _isHomePageWarmUpRunning, 0);
+            }
         }
 
-        private async Task WarmUpProductListAsync(int pageSize)
+        private async Task WarmUpProductListAsync(int pageSize, CancellationToken cancellationToken)
         {
             var filter = new StoreOrderFilterDto
             {
@@ -59,8 +89,12 @@ namespace BlazorApp.Api.Cache
                 SortBy = "Default"
             };
 
-            var result = await _service.GetPagedListAsync(filter);
-            var cacheKey = StoreOrderCacheKeys.Products(filter);
+            // 真实运行时优先走轻量预热路径；单元测试里的 mock 仍可回退到旧接口，便于验证互斥与取消行为。
+            var result = _service is StoreOrderReactService concreteService
+                ? await concreteService.GetHomePageWarmUpPageAsync(pageSize, cancellationToken)
+                : await _service.GetPagedListAsync(filter).WaitAsync(cancellationToken);
+            // 轻量预热结果没有真实 Total，必须写入专用键，避免污染正常分页缓存。
+            var cacheKey = StoreOrderCacheKeys.GetHomePageWarmUpCacheKey(pageSize);
             var cacheOptions = new MemoryCacheEntryOptions()
                 .SetAbsoluteExpiration(CACHE_DURATION)
                 .SetPriority(Microsoft.Extensions.Caching.Memory.CacheItemPriority.High);
@@ -85,6 +119,8 @@ namespace BlazorApp.Api.Cache
             {
                 StoreOrderCacheKeys.GetHomePageCacheKey(50),
                 StoreOrderCacheKeys.GetHomePageCacheKey(18),
+                StoreOrderCacheKeys.GetHomePageWarmUpCacheKey(50),
+                StoreOrderCacheKeys.GetHomePageWarmUpCacheKey(18),
             };
             var keysToClear = StoreOrderCacheKeys.ActiveKeys.ToList();
 
@@ -102,6 +138,7 @@ namespace BlazorApp.Api.Cache
             foreach (var pageSize in new[] { 50, 18 })
             {
                 _ = StoreOrderCacheKeys.GetHomePageCacheKey(pageSize);
+                _ = StoreOrderCacheKeys.GetHomePageWarmUpCacheKey(pageSize);
             }
 
             _logger.LogInformation(

@@ -73,9 +73,22 @@ namespace BlazorApp.Api.Services.Logging
             }
             catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
             {
+                // 落库失败时只累积内存态统计并打普通日志，避免反向阻塞业务线程或递归写回中心日志。
+                _queue.RecordFlushFailure(batch.Count, BuildSafeFailureReason(ex));
                 // 日志中心不能反向影响业务请求；后台写入失败只输出到普通日志提供器。
-                _logger.LogWarning(ex, "中心日志后台写入失败，本批次已丢弃: {Count}", batch.Count);
+                _logger.LogWarning(
+                    ex,
+                    "中心日志后台写入失败，本批次已丢弃: {Count}，累计失败批次: {FailedBatchCount}",
+                    batch.Count,
+                    _queue.GetRuntimeSnapshot().FailedFlushBatchCount
+                );
             }
+        }
+
+        private static string BuildSafeFailureReason(Exception ex)
+        {
+            // Summary 接口会返回该字段，只暴露异常类型，避免把 SQL、连接或日志内容带给前端。
+            return ex.GetType().Name;
         }
     }
 }

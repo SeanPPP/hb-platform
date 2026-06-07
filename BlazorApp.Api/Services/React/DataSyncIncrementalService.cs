@@ -52,11 +52,8 @@ namespace BlazorApp.Api.Services.React
         )
         {
             var result = new SyncResult();
-            var taskLog = await _taskLogService.LogTaskStartAsync(
-                "SyncPosmProductSupplierMappingsIncremental",
-                new TaskParameters(),
-                TaskTrigger.Manual
-            );
+            ScheduledTaskLog? taskLog = null;
+            const string taskType = TaskType.SyncPosmProductSupplierMappingsIncremental;
 
             try
             {
@@ -73,10 +70,8 @@ namespace BlazorApp.Api.Services.React
                 }
                 else
                 {
-                    var recentTasks = await _taskLogService.GetRecentTasksAsync(
-                        1,
-                        "SyncPosmProductSupplierMappingsIncremental"
-                    );
+                    // 先从历史成功任务里找增量起点，避免当前运行中的任务把最近成功记录顶掉。
+                    var recentTasks = await _taskLogService.GetRecentTasksAsync(10, taskType);
                     var lastSuccessTask = recentTasks.FirstOrDefault(t =>
                         t.Status == BlazorApp.Shared.Models.HBweb.TaskStatus.Success
                     );
@@ -108,136 +103,143 @@ namespace BlazorApp.Api.Services.React
                     effectiveStart = startDate;
                 }
 
+                taskLog = await StartPosmIncrementalTaskLogAsync(taskType);
+
                 var updatedCount = 0;
                 var insertedCount = 0;
                 var deletedCount = 0;
 
-                await _posmContext.Db.Ado.BeginTranAsync();
+                _logger.LogInformation("[ReactSync] 查询现有映射数据");
+                var existingMappings = await _posmContext
+                    .Db.Queryable<PosmProductSupplierMapping>()
+                    .Where(m => !m.IsDeleted)
+                    .ToListAsync();
+
+                var existingDict = existingMappings.ToDictionary(m => m.ProductCode, m => m);
+                _logger.LogInformation(
+                    "[ReactSync] 现有映射数据 {Count} 条",
+                    existingMappings.Count
+                );
+
+                var productsWithSupplier200 = await _localContext
+                    .Db.Queryable<Product>()
+                    .Where(p =>
+                        p.LocalSupplierCode == "200"
+                        && !string.IsNullOrEmpty(p.ProductCode)
+                        && p.UpdatedAt >= effectiveStart
+                        && !p.IsDeleted
+                    )
+                    .Select(p => p.ProductCode!)
+                    .Distinct()
+                    .ToListAsync();
+
+                _logger.LogInformation(
+                    "[ReactSync] 找到 {Count} 个本地供应商为200的商品需要更新",
+                    productsWithSupplier200.Count
+                );
+
+                var productChinaSupplierDict = new Dictionary<string, string>();
+                if (productsWithSupplier200.Any())
+                {
+                    var warehouseProducts = await _localContext
+                        .Db.Queryable<WarehouseProduct>()
+                        .Includes(wp => wp.DomesticProduct)
+                        .Where(wp =>
+                            wp.ProductCode != null
+                            && productsWithSupplier200.Contains(wp.ProductCode)
+                            && !wp.IsDeleted
+                        )
+                        .ToListAsync();
+
+                    foreach (var wp in warehouseProducts)
+                    {
+                        if (
+                            !string.IsNullOrEmpty(wp.ProductCode)
+                            && wp.DomesticProduct != null
+                            && !string.IsNullOrEmpty(wp.DomesticProduct.SupplierCode)
+                        )
+                        {
+                            productChinaSupplierDict[wp.ProductCode] =
+                                wp.DomesticProduct.SupplierCode;
+                        }
+                    }
+                }
+
+                _logger.LogInformation(
+                    "[ReactSync] 找到 {Count} 个商品关联了中国供应商",
+                    productChinaSupplierDict.Count
+                );
+
+                var updatedProducts = await _localContext
+                    .Db.Queryable<Product>()
+                    .Where(p => p.UpdatedAt >= effectiveStart && !p.IsDeleted)
+                    .ToListAsync();
+
+                _logger.LogInformation(
+                    "[ReactSync] 读取到 {Count} 个最近更新的商品",
+                    updatedProducts.Count
+                );
+
+                var toUpdate = new List<PosmProductSupplierMapping>();
+                var toInsert = new List<PosmProductSupplierMapping>();
+
+                foreach (var product in updatedProducts)
+                {
+                    if (string.IsNullOrEmpty(product.ProductCode))
+                        continue;
+
+                    var mapping = new PosmProductSupplierMapping
+                    {
+                        ProductCode = product.ProductCode,
+                        LocalSupplierCode = product.LocalSupplierCode ?? string.Empty,
+                        ChinaSupplierCode = null,
+                        LastUpdateTime = DateTime.Now,
+                        IsDeleted = false,
+                    };
+
+                    if (product.LocalSupplierCode == "200")
+                    {
+                        if (
+                            productChinaSupplierDict.TryGetValue(product.ProductCode, out var chinaCode)
+                        )
+                        {
+                            mapping.ChinaSupplierCode = chinaCode;
+                        }
+                    }
+
+                    if (existingDict.TryGetValue(mapping.ProductCode, out var existing))
+                    {
+                        if (
+                            existing.LocalSupplierCode != mapping.LocalSupplierCode
+                            || existing.ChinaSupplierCode != mapping.ChinaSupplierCode
+                        )
+                        {
+                            mapping.CreatedAt = existing.CreatedAt;
+                            toUpdate.Add(mapping);
+                        }
+                    }
+                    else
+                    {
+                        toInsert.Add(mapping);
+                    }
+                }
+
+                _logger.LogInformation(
+                    "[ReactSync] 需要更新 {UpdateCount} 条，插入 {InsertCount} 条",
+                    toUpdate.Count,
+                    toInsert.Count
+                );
+
+                var transactionStarted = false;
+                var transactionCompleted = false;
                 try
                 {
-                    _logger.LogInformation("[ReactSync] 查询现有映射数据");
-                    var existingMappings = await _posmContext
-                        .Db.Queryable<PosmProductSupplierMapping>()
-                        .Where(m => !m.IsDeleted)
-                        .ToListAsync();
-
-                    var existingDict = existingMappings.ToDictionary(m => m.ProductCode, m => m);
-                    _logger.LogInformation(
-                        "[ReactSync] 现有映射数据 {Count} 条",
-                        existingMappings.Count
-                    );
-
-                    var productsWithSupplier200 = await _localContext
-                        .Db.Queryable<Product>()
-                        .Where(p =>
-                            p.LocalSupplierCode == "200"
-                            && !string.IsNullOrEmpty(p.ProductCode)
-                            && p.UpdatedAt >= effectiveStart
-                            && !p.IsDeleted
-                        )
-                        .Select(p => p.ProductCode!)
-                        .Distinct()
-                        .ToListAsync();
-
-                    _logger.LogInformation(
-                        "[ReactSync] 找到 {Count} 个本地供应商为200的商品需要更新",
-                        productsWithSupplier200.Count
-                    );
-
-                    var productChinaSupplierDict = new Dictionary<string, string>();
-                    if (productsWithSupplier200.Any())
+                    // 关键：所有读取和待写集合构造都放在事务外，POSM 事务只包裹真正的写操作。
+                    if (toUpdate.Any() || toInsert.Any())
                     {
-                        var warehouseProducts = await _localContext
-                            .Db.Queryable<WarehouseProduct>()
-                            .Includes(wp => wp.DomesticProduct)
-                            .Where(wp =>
-                                wp.ProductCode != null
-                                && productsWithSupplier200.Contains(wp.ProductCode)
-                                && !wp.IsDeleted
-                            )
-                            .ToListAsync();
-
-                        foreach (var wp in warehouseProducts)
-                        {
-                            if (
-                                !string.IsNullOrEmpty(wp.ProductCode)
-                                && wp.DomesticProduct != null
-                                && !string.IsNullOrEmpty(wp.DomesticProduct.SupplierCode)
-                            )
-                            {
-                                productChinaSupplierDict[wp.ProductCode] =
-                                    wp.DomesticProduct.SupplierCode;
-                            }
-                        }
+                        await _posmContext.Db.Ado.BeginTranAsync();
+                        transactionStarted = true;
                     }
-
-                    _logger.LogInformation(
-                        "[ReactSync] 找到 {Count} 个商品关联了中国供应商",
-                        productChinaSupplierDict.Count
-                    );
-
-                    var updatedProducts = await _localContext
-                        .Db.Queryable<Product>()
-                        .Where(p => p.UpdatedAt >= effectiveStart && !p.IsDeleted)
-                        .ToListAsync();
-
-                    _logger.LogInformation(
-                        "[ReactSync] 读取到 {Count} 个最近更新的商品",
-                        updatedProducts.Count
-                    );
-
-                    var toUpdate = new List<PosmProductSupplierMapping>();
-                    var toInsert = new List<PosmProductSupplierMapping>();
-
-                    foreach (var product in updatedProducts)
-                    {
-                        if (string.IsNullOrEmpty(product.ProductCode))
-                            continue;
-
-                        var mapping = new PosmProductSupplierMapping
-                        {
-                            ProductCode = product.ProductCode,
-                            LocalSupplierCode = product.LocalSupplierCode ?? string.Empty,
-                            ChinaSupplierCode = null,
-                            LastUpdateTime = DateTime.Now,
-                            IsDeleted = false,
-                        };
-
-                        if (product.LocalSupplierCode == "200")
-                        {
-                            if (
-                                productChinaSupplierDict.TryGetValue(
-                                    product.ProductCode,
-                                    out var chinaCode
-                                )
-                            )
-                            {
-                                mapping.ChinaSupplierCode = chinaCode;
-                            }
-                        }
-
-                        if (existingDict.TryGetValue(mapping.ProductCode, out var existing))
-                        {
-                            if (
-                                existing.LocalSupplierCode != mapping.LocalSupplierCode
-                                || existing.ChinaSupplierCode != mapping.ChinaSupplierCode
-                            )
-                            {
-                                mapping.CreatedAt = existing.CreatedAt;
-                                toUpdate.Add(mapping);
-                            }
-                        }
-                        else
-                        {
-                            toInsert.Add(mapping);
-                        }
-                    }
-
-                    _logger.LogInformation(
-                        "[ReactSync] 需要更新 {UpdateCount} 条，插入 {InsertCount} 条",
-                        toUpdate.Count,
-                        toInsert.Count
-                    );
 
                     if (toUpdate.Any())
                     {
@@ -253,7 +255,7 @@ namespace BlazorApp.Api.Services.React
                     {
                         var productCodesToInsert = toInsert.Select(m => m.ProductCode).ToList();
 
-                        await _posmContext
+                        deletedCount += await _posmContext
                             .Db.Deleteable<PosmProductSupplierMapping>()
                             .In(productCodesToInsert)
                             .ExecuteCommandAsync();
@@ -274,7 +276,11 @@ namespace BlazorApp.Api.Services.React
                         );
                     }
 
-                    await _posmContext.Db.Ado.CommitTranAsync();
+                    if (transactionStarted)
+                    {
+                        await _posmContext.Db.Ado.CommitTranAsync();
+                        transactionCompleted = true;
+                    }
 
                     result.IsSuccess = true;
                     result.Message =
@@ -283,11 +289,30 @@ namespace BlazorApp.Api.Services.React
                     result.UpdatedCount = updatedCount;
                     result.DeletedCount = deletedCount;
 
-                    await _taskLogService.LogTaskSuccessAsync(taskLog.Id);
+                    if (taskLog != null)
+                    {
+                        await _taskLogService.LogTaskSuccessAsync(taskLog.Id);
+                    }
                 }
                 catch (Exception exTran)
                 {
-                    await _posmContext.Db.Ado.RollbackTranAsync();
+                    // 只有事务已启动且尚未完成时才允许回滚，避免再次操作已结束的事务对象。
+                    if (transactionStarted && !transactionCompleted)
+                    {
+                        try
+                        {
+                            await _posmContext.Db.Ado.RollbackTranAsync();
+                            transactionCompleted = true;
+                        }
+                        catch (Exception rollbackEx)
+                        {
+                            _logger.LogError(
+                                rollbackEx,
+                                "[ReactSync] 商品-供应商映射增量同步回滚失败"
+                            );
+                        }
+                    }
+
                     throw new Exception("商品-供应商映射增量同步事务失败", exTran);
                 }
 
@@ -300,11 +325,46 @@ namespace BlazorApp.Api.Services.React
                     "[ReactSync] 商品-供应商映射增量同步异常: {Error}",
                     ex.Message
                 );
-                await _taskLogService.LogTaskFailureAsync(taskLog.Id, ex.Message);
+                if (taskLog != null)
+                {
+                    await _taskLogService.LogTaskFailureAsync(taskLog.Id, ex.Message);
+                }
                 result.IsSuccess = false;
                 result.Message = $"同步失败: {ex.Message}";
                 return result;
             }
+        }
+
+        private async Task<ScheduledTaskLog> StartPosmIncrementalTaskLogAsync(string taskType)
+        {
+            var existingScheduledTask = await TryGetRunningScheduledTaskLogAsync(taskType);
+            if (existingScheduledTask != null)
+            {
+                _logger.LogInformation(
+                    "[ReactSync] 商品-供应商映射增量：复用外层定时任务日志 {TaskId}",
+                    existingScheduledTask.Id
+                );
+                return existingScheduledTask;
+            }
+
+            return await _taskLogService.LogTaskStartAsync(
+                taskType,
+                new TaskParameters(),
+                TaskTrigger.Manual
+            );
+        }
+
+        private async Task<ScheduledTaskLog?> TryGetRunningScheduledTaskLogAsync(string taskType)
+        {
+            // 只复用刚刚由调度外层创建的运行中任务，避免手动入口误复用历史脏日志。
+            var cutoff = DateTime.UtcNow.AddMinutes(-10);
+            var recentTasks = await _taskLogService.GetRecentTasksAsync(5, taskType);
+            return recentTasks.FirstOrDefault(task =>
+                task.Status == BlazorApp.Shared.Models.HBweb.TaskStatus.Running
+                && task.TriggeredBy == TaskTrigger.Scheduled
+                && task.CompletedAt == null
+                && task.StartedAt >= cutoff
+            );
         }
 
         public async Task<SyncResult> SyncStoreLocalSupplierInvoicesFromHqIncrementalAsync(

@@ -210,6 +210,41 @@ public sealed class StoreOrderProductListTests : IDisposable
     }
 
     [Fact]
+    public async Task 首页预热轻量查询_不执行Count且只取首屏商品()
+    {
+        for (var index = 1; index <= 25; index++)
+        {
+            var itemNumber = $"ITEM-{index:D3}";
+            var productCode = $"P{index:D3}";
+            await SeedProductAsync(productCode, itemNumber);
+            await SeedWarehouseProductAsync(productCode, oemPrice: index, importPrice: index / 2m);
+        }
+
+        var service = CreateService();
+        var warmUpMethod = typeof(StoreOrderReactService).GetMethod(
+            "GetHomePageWarmUpPageAsync",
+            BindingFlags.Instance | BindingFlags.Public
+        );
+
+        Assert.NotNull(warmUpMethod);
+
+        _sqlLogs.Clear();
+        var task =
+            (Task<PagedListReactDto<StoreOrderProductDto>>)warmUpMethod!.Invoke(
+                service,
+                new object[] { 18, CancellationToken.None }
+            )!;
+        var result = await task;
+
+        Assert.Equal(18, result.Items.Count);
+        Assert.Equal(18, result.PageSize);
+        Assert.DoesNotContain(
+            _sqlLogs,
+            log => log.Contains("COUNT(", StringComparison.OrdinalIgnoreCase)
+        );
+    }
+
+    [Fact]
     public async Task GetPagedListAsync_ExcludeOrderGUID_AlsoAppliesToDefaultWarehouseQuery()
     {
         await SeedProductAsync("P001", "ITEM-001");

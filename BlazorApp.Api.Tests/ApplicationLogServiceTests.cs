@@ -347,6 +347,93 @@ public class ApplicationLogServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task GetSummaryAsync_按Brisbane本地日窗口统计_只包含当天UTC范围内的日志()
+    {
+        await InsertLogAsync(
+            "HBBBackend",
+            "Error",
+            "/api/before",
+            "窗口开始前",
+            "trace-before",
+            new DateTime(2026, 6, 5, 13, 59, 59, DateTimeKind.Utc)
+        );
+        await InsertLogAsync(
+            "HBBBackend",
+            "Error",
+            "/api/start",
+            "窗口开始",
+            "trace-start",
+            new DateTime(2026, 6, 5, 14, 0, 0, DateTimeKind.Utc)
+        );
+        await InsertLogAsync(
+            "HBBBackend",
+            "Critical",
+            "/api/inside",
+            "窗口内",
+            "trace-inside",
+            new DateTime(2026, 6, 6, 13, 59, 59, DateTimeKind.Utc)
+        );
+        await InsertLogAsync(
+            "HBBBackend",
+            "Error",
+            "/api/end",
+            "下一本地日开始",
+            "trace-end",
+            new DateTime(2026, 6, 6, 14, 0, 0, DateTimeKind.Utc)
+        );
+
+        var service = CreateService();
+        var result = await service.GetSummaryAsync(
+            new ApplicationLogQueryDto
+            {
+                StartUtc = new DateTime(2026, 6, 5, 14, 0, 0, DateTimeKind.Utc),
+                EndUtc = new DateTime(2026, 6, 6, 14, 0, 0, DateTimeKind.Utc),
+            }
+        );
+
+        Assert.Equal(2, result.Total);
+        Assert.Contains(result.ByRequestPath, item => item.Name == "/api/start" && item.Count == 1);
+        Assert.Contains(result.ByRequestPath, item => item.Name == "/api/inside" && item.Count == 1);
+        Assert.DoesNotContain(result.ByRequestPath, item => item.Name == "/api/before");
+        Assert.DoesNotContain(result.ByRequestPath, item => item.Name == "/api/end");
+    }
+
+    [Theory]
+    [InlineData("Error", "trace-error")]
+    [InlineData("Critical", "trace-critical")]
+    public async Task GetSummaryAsync_按等级筛选_返回对应等级统计(
+        string level,
+        string expectedTraceId
+    )
+    {
+        await InsertLogAsync("HBBBackend", "Error", "/api/error", "错误日志", "trace-error");
+        await InsertLogAsync("HBBBackend", "Critical", "/api/critical", "严重日志", "trace-critical");
+        await InsertLogAsync("HBBBackend", "Warning", "/api/warning", "警告日志", "trace-warning");
+
+        var service = CreateService();
+        var summary = await service.GetSummaryAsync(
+            new ApplicationLogQueryDto
+            {
+                Level = level,
+            }
+        );
+        var query = await service.QueryAsync(
+            new ApplicationLogQueryDto
+            {
+                Level = level,
+                PageNumber = 1,
+                PageSize = 10,
+            }
+        );
+
+        Assert.Equal(1, summary.Total);
+        Assert.Single(summary.ByLevel);
+        Assert.Equal(level, summary.ByLevel[0].Name);
+        Assert.Single(query.Items);
+        Assert.Equal(expectedTraceId, query.Items[0].TraceId);
+    }
+
+    [Fact]
     public async Task CleanupExpiredLogsAsync_按项目保留天数删除过期日志()
     {
         var now = new DateTime(2026, 6, 5, 0, 0, 0, DateTimeKind.Utc);

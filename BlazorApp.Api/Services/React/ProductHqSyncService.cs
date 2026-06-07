@@ -686,8 +686,15 @@ namespace BlazorApp.Api.Services.React
                 var resolvedSelection = await ResolvePushSelectionAsync(localDb, request, result);
                 var products = resolvedSelection.Products;
                 var inventoryCandidates = resolvedSelection.InventoryCandidates;
+                var domesticProductImages = resolvedSelection.DomesticProductImages;
                 if (result.TotalCount == 0)
                 {
+                    // 统一在服务层记录业务失败关键信息，方便中心日志按错误码和耗时检索。
+                    LogPushToHqBusinessFailure(
+                        "PRODUCT_HQ_PUSH_EMPTY_CODES",
+                        result,
+                        "推送商品列表不能为空"
+                    );
                     return ApiResponse<PushProductsToHqResult>.Error(
                         "推送商品列表不能为空",
                         "PRODUCT_HQ_PUSH_EMPTY_CODES"
@@ -699,6 +706,11 @@ namespace BlazorApp.Api.Services.React
                 {
                     result.FailedCount = result.TotalCount;
                     result.DurationMs = (long)(DateTime.UtcNow - startedAt).TotalMilliseconds;
+                    LogPushToHqBusinessFailure(
+                        "PRODUCT_HQ_PUSH_NO_PRODUCTS",
+                        result,
+                        "未找到有效的本地商品"
+                    );
                     return new ApiResponse<PushProductsToHqResult>
                     {
                         Success = false,
@@ -714,6 +726,11 @@ namespace BlazorApp.Api.Services.React
                     result.SuccessCount = 0;
                     result.FailedCount = result.TotalCount;
                     result.DurationMs = (long)(DateTime.UtcNow - startedAt).TotalMilliseconds;
+                    LogPushToHqBusinessFailure(
+                        "PRODUCT_HQ_PUSH_ITEM_ERRORS",
+                        result,
+                        "推送候选包含错误，未写入HQ"
+                    );
                     return new ApiResponse<PushProductsToHqResult>
                     {
                         Success = false,
@@ -769,8 +786,20 @@ namespace BlazorApp.Api.Services.React
                 hqDb.Ado.BeginTran();
                 try
                 {
-                    await UpsertHqProductsAsync(hqDb, products, result);
-                    await UpsertHqRetailPricesAsync(hqDb, products, activeStoreCodes, result);
+                    await UpsertHqProductsAsync(
+                        hqDb,
+                        products,
+                        inventoryCandidates,
+                        domesticProductImages,
+                        result
+                    );
+                    await UpsertHqRetailPricesAsync(
+                        hqDb,
+                        products,
+                        inventoryCandidates,
+                        activeStoreCodes,
+                        result
+                    );
                     await UpsertHqProductSetCodesAsync(hqDb, products, productSetCodes, result);
                     await UpsertHqStoreMultiCodesAsync(
                         hqDb,
@@ -801,10 +830,17 @@ namespace BlazorApp.Api.Services.React
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "商品推送HQ失败");
                 result.DurationMs = (long)(DateTime.UtcNow - startedAt).TotalMilliseconds;
                 result.Errors.Add(ex.Message);
                 result.FailedCount = result.TotalCount;
+                _logger.LogError(
+                    ex,
+                    "商品推送HQ异常失败: ErrorCode={ErrorCode}, FailedCount={FailedCount}, FirstFailureReason={FirstFailureReason}, DurationMs={DurationMs}",
+                    "PRODUCT_HQ_PUSH_ERROR",
+                    result.FailedCount,
+                    GetFirstPushFailureReason(result, ex.Message),
+                    result.DurationMs
+                );
                 return new ApiResponse<PushProductsToHqResult>
                 {
                     Success = false,
@@ -819,6 +855,58 @@ namespace BlazorApp.Api.Services.React
                 hqDb.Ado.CommandTimeOut = originalTimeout;
                 SyncLock.Release();
             }
+        }
+
+        private void LogPushToHqBusinessFailure(
+            string errorCode,
+            PushProductsToHqResult result,
+            string fallbackReason
+        )
+        {
+            // 业务失败不带请求明细，只保留可检索字段，避免日志噪音和额外敏感暴露。
+            _logger.LogWarning(
+                "商品推送HQ业务失败: ErrorCode={ErrorCode}, FailedCount={FailedCount}, FirstFailureReason={FirstFailureReason}, DurationMs={DurationMs}",
+                errorCode,
+                result.FailedCount,
+                GetFirstPushFailureReason(result, fallbackReason),
+                result.DurationMs
+            );
+        }
+
+        private static string GetFirstPushFailureReason(
+            PushProductsToHqResult result,
+            string fallbackReason
+        )
+        {
+            var rawReason = result.Errors.FirstOrDefault(error => !string.IsNullOrWhiteSpace(error))
+                ?? fallbackReason;
+            return NormalizePushFailureReason(rawReason);
+        }
+
+        private static string NormalizePushFailureReason(string rawReason)
+        {
+            if (rawReason.Contains("商品不存在或已删除", StringComparison.Ordinal))
+            {
+                return "商品不存在";
+            }
+
+            if (rawReason.Contains("未找到匹配商品", StringComparison.Ordinal))
+            {
+                return "商品不存在";
+            }
+
+            if (rawReason.Contains("多条本地商品", StringComparison.Ordinal))
+            {
+                return "商品匹配冲突";
+            }
+
+            if (rawReason.Contains("商品编码为空", StringComparison.Ordinal))
+            {
+                return "商品编码为空";
+            }
+
+            var separatorIndex = rawReason.IndexOf(':');
+            return separatorIndex > 0 ? rawReason[..separatorIndex].Trim() : rawReason;
         }
 
         private async Task<PushToHqSelection> ResolvePushSelectionAsync(
@@ -984,6 +1072,10 @@ namespace BlazorApp.Api.Services.React
                         ProductCode = finalProductCode,
                         LocalSupplierCode = NormalizeCode(item.LocalSupplierCode),
                         ItemNumber = NormalizeCode(item.ItemNumber),
+                        ProductName = NormalizeCode(item.ProductName),
+                        EnglishName = NormalizeCode(item.EnglishName),
+                        Barcode = NormalizeCode(item.Barcode),
+                        ImageUrl = NormalizeCode(item.ImageUrl),
                         DomesticPrice = item.DomesticPrice,
                         ImportPrice = item.ImportPrice,
                         OemPrice = item.OemPrice,
@@ -1008,6 +1100,10 @@ namespace BlazorApp.Api.Services.React
                 inventoryCandidates[resolvedProductCode] = new PushProductsToHqItem
                 {
                     ProductCode = resolvedProductCode,
+                    ProductName = NormalizeCode(resolvedProduct.ProductName),
+                    EnglishName = NormalizeCode(resolvedProduct.EnglishName),
+                    Barcode = NormalizeCode(resolvedProduct.Barcode),
+                    ImageUrl = NormalizeCode(resolvedProduct.ProductImage),
                     WarehouseIsActive = resolvedProduct.IsActive,
                     IsNewProduct = false,
                 };
@@ -1018,7 +1114,35 @@ namespace BlazorApp.Api.Services.React
                 .Where(productsByCode.ContainsKey)
                 .Select(code => productsByCode[code])
                 .ToList();
-            return new PushToHqSelection(products, inventoryCandidates, itemFailureCount);
+            var productCodesForDomesticImage = products
+                .Select(row => NormalizeCode(row.ProductCode))
+                .Where(code => code != null)
+                .Select(code => code!)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            var domesticProductImages = productCodesForDomesticImage.Count == 0
+                ? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                : (await localDb.Queryable<DomesticProduct>()
+                    .Where(row =>
+                        productCodesForDomesticImage.Contains(row.ProductCode)
+                        && !row.IsDeleted
+                        && row.ProductImage != null
+                        && row.ProductImage != ""
+                    )
+                    .Select(row => new { row.ProductCode, row.ProductImage })
+                    .ToListAsync())
+                    .GroupBy(row => row.ProductCode, StringComparer.OrdinalIgnoreCase)
+                    .ToDictionary(
+                        group => group.Key,
+                        group => NormalizeCode(group.First().ProductImage) ?? string.Empty,
+                        StringComparer.OrdinalIgnoreCase
+                    );
+            return new PushToHqSelection(
+                products,
+                inventoryCandidates,
+                domesticProductImages,
+                itemFailureCount
+            );
         }
 
         private static Product? ResolveMatchedProduct(
@@ -1090,6 +1214,8 @@ namespace BlazorApp.Api.Services.React
         private static async Task UpsertHqProductsAsync(
             ISqlSugarClient hqDb,
             List<Product> products,
+            IReadOnlyDictionary<string, PushProductsToHqItem> pushCandidates,
+            IReadOnlyDictionary<string, string> domesticProductImages,
             HqProductSyncResult result
         )
         {
@@ -1114,7 +1240,12 @@ namespace BlazorApp.Api.Services.React
                     continue;
                 }
 
-                var hqProduct = MapProductToHqProduct(product);
+                var hqProduct = MapProductToHqProduct(
+                    product,
+                    ResolvePushSupplierCode(product, pushCandidates),
+                    ResolvePushCandidate(product, pushCandidates),
+                    ResolveDomesticProductImage(product, domesticProductImages)
+                );
                 if (!existingCodes.Contains(code))
                 {
                     inserts.Add(hqProduct);
@@ -1253,6 +1384,7 @@ namespace BlazorApp.Api.Services.React
         private static async Task UpsertHqRetailPricesAsync(
             ISqlSugarClient hqDb,
             List<Product> products,
+            IReadOnlyDictionary<string, PushProductsToHqItem> pushCandidates,
             List<string> activeStoreCodes,
             HqProductSyncResult result
         )
@@ -1296,7 +1428,11 @@ namespace BlazorApp.Api.Services.React
                         continue;
                     }
 
-                    var hqPrice = MapProductToHqRetailPrice(product, storeCode);
+                    var hqPrice = MapProductToHqRetailPrice(
+                        product,
+                        storeCode,
+                        ResolvePushCandidate(product, pushCandidates)
+                    );
                     if (!existingKeys.Contains(key))
                     {
                         inserts.Add(hqPrice);
@@ -2091,37 +2227,92 @@ namespace BlazorApp.Api.Services.React
                 .ToList();
         }
 
-        private static DIC_商品信息字典表 MapProductToHqProduct(Product product)
+        private static string ResolvePushSupplierCode(
+            Product product,
+            IReadOnlyDictionary<string, PushProductsToHqItem> pushCandidates
+        )
+        {
+            var candidate = ResolvePushCandidate(product, pushCandidates);
+            if (candidate != null)
+            {
+                // 关键位置：货柜发送 HQ 时，以本次明细候选的国内供应商代码优先。
+                return NormalizeCode(candidate.LocalSupplierCode)
+                    ?? NormalizeCode(product.LocalSupplierCode)
+                    ?? string.Empty;
+            }
+
+            return NormalizeCode(product.LocalSupplierCode) ?? string.Empty;
+        }
+
+        private static PushProductsToHqItem? ResolvePushCandidate(
+            Product product,
+            IReadOnlyDictionary<string, PushProductsToHqItem> pushCandidates
+        )
+        {
+            var productCode = NormalizeCode(product.ProductCode);
+            return productCode != null && pushCandidates.TryGetValue(productCode, out var candidate)
+                ? candidate
+                : null;
+        }
+
+        private static string? ResolveDomesticProductImage(
+            Product product,
+            IReadOnlyDictionary<string, string> domesticProductImages
+        )
+        {
+            var productCode = NormalizeCode(product.ProductCode);
+            return productCode != null && domesticProductImages.TryGetValue(productCode, out var imageUrl)
+                ? NormalizeCode(imageUrl)
+                : null;
+        }
+
+        private static DIC_商品信息字典表 MapProductToHqProduct(
+            Product product,
+            string supplierCode,
+            PushProductsToHqItem? candidate = null,
+            string? domesticProductImage = null
+        )
         {
             var now = DateTime.Now;
             var productCode = NormalizeCode(product.ProductCode) ?? string.Empty;
-            var displayName = NormalizeCode(product.EnglishName) ?? product.ProductName;
+            var productName = NormalizeCode(candidate?.ProductName)
+                ?? NormalizeCode(product.ProductName)
+                ?? string.Empty;
+            var displayName = NormalizeCode(candidate?.EnglishName)
+                ?? NormalizeCode(product.EnglishName)
+                ?? productName;
+            var purchasePrice = candidate?.ImportPrice ?? product.PurchasePrice ?? 0;
+            var retailPrice = candidate?.OemPrice ?? product.RetailPrice ?? 0;
             return new DIC_商品信息字典表
             {
                 HGUID = NormalizeCode(product.UUID) ?? UuidHelper.GenerateUuid7(),
                 H商品标签GUID = string.Empty,
                 H商品分类码GUID = string.Empty,
                 H商品编码 = productCode,
-                H货号 = NormalizeCode(product.ItemNumber) ?? string.Empty,
-                H主条形码 = NormalizeCode(product.Barcode) ?? string.Empty,
-                H商品名称 = displayName ?? string.Empty,
-                H大写名称 = product.ProductName ?? string.Empty,
+                H货号 = NormalizeCode(candidate?.ItemNumber) ?? NormalizeCode(product.ItemNumber) ?? string.Empty,
+                H主条形码 = NormalizeCode(candidate?.Barcode) ?? NormalizeCode(product.Barcode) ?? string.Empty,
+                H商品名称 = displayName,
+                H大写名称 = productName,
                 H商品类型 = product.ProductType ?? 0,
                 H规格 = string.Empty,
                 H单位 = "个",
-                H进货价 = product.PurchasePrice ?? 0,
-                H零售价 = product.RetailPrice ?? 0,
+                H进货价 = purchasePrice,
+                H零售价 = retailPrice,
                 H是否自动定价 = product.IsAutoPricing,
-                H商品图片 = NormalizeCode(product.ProductImage) ?? string.Empty,
+                // 货柜页图片来自 DomesticProduct；Product 主档未补图时不能把 HQ 图片覆盖为空。
+                H商品图片 = NormalizeCode(candidate?.ImageUrl)
+                    ?? NormalizeCode(product.ProductImage)
+                    ?? NormalizeCode(domesticProductImage)
+                    ?? string.Empty,
                 H腾讯云图地址 = string.Empty,
                 中包数量 = product.MiddlePackageQuantity ?? 0,
-                H使用状态 = product.IsActive,
+                H使用状态 = candidate?.WarehouseIsActive ?? product.IsActive,
                 H是否特殊商品 = product.IsSpecialProduct,
                 H进货单主表GUID = string.Empty,
                 H进货单详情GUID = string.Empty,
                 H供货商编码 = "200",
-                CBP商品中文名称 = product.ProductName ?? string.Empty,
-                CBP供应商编码 = NormalizeCode(product.LocalSupplierCode) ?? string.Empty,
+                CBP商品中文名称 = productName,
+                CBP供应商编码 = supplierCode,
                 CBP商品分类码GUID = string.Empty,
                 FGC_Creator = "HBweb",
                 FGC_CreateDate = now,
@@ -2133,13 +2324,16 @@ namespace BlazorApp.Api.Services.React
 
         private static DIC_商品零售价表 MapProductToHqRetailPrice(
             Product product,
-            string storeCode
+            string storeCode,
+            PushProductsToHqItem? candidate = null
         )
         {
             var now = DateTime.Now;
             var defaultDate = new DateTime(1900, 1, 1);
             var productCode = NormalizeCode(product.ProductCode) ?? string.Empty;
-            var supplierCode = NormalizeCode(product.LocalSupplierCode) ?? "200";
+            var supplierCode = NormalizeCode(candidate?.LocalSupplierCode)
+                ?? NormalizeCode(product.LocalSupplierCode)
+                ?? "200";
             return new DIC_商品零售价表
             {
                 HGUID = UuidHelper.GenerateUuid7(),
@@ -2148,8 +2342,8 @@ namespace BlazorApp.Api.Services.React
                 H分店商品编码 = storeCode + productCode,
                 H供应商编码 = "200",
                 H分店供应商编码 = storeCode + supplierCode,
-                H进货价 = product.PurchasePrice ?? 0,
-                H分店零售价 = product.RetailPrice ?? 0,
+                H进货价 = candidate?.ImportPrice ?? product.PurchasePrice ?? 0,
+                H分店零售价 = candidate?.OemPrice ?? product.RetailPrice ?? 0,
                 H库存 = 0,
                 H库存金额 = 0,
                 H库存预警数 = 0,
@@ -2165,7 +2359,7 @@ namespace BlazorApp.Api.Services.React
                 H满减数量 = 0,
                 H满减金额 = 0,
                 H多码数量 = 0,
-                H使用状态 = product.IsActive,
+                H使用状态 = candidate?.WarehouseIsActive ?? product.IsActive,
                 H是否自动定价 = product.IsAutoPricing,
                 H自动新价格 = 0,
                 H盘点入库记录数 = 0,
@@ -2413,6 +2607,7 @@ namespace BlazorApp.Api.Services.React
         private sealed record PushToHqSelection(
             List<Product> Products,
             Dictionary<string, PushProductsToHqItem> InventoryCandidates,
+            Dictionary<string, string> DomesticProductImages,
             int ItemFailureCount
         );
 
