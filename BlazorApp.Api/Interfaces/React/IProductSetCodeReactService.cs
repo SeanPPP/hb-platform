@@ -6,7 +6,7 @@ namespace BlazorApp.Api.Interfaces.React
 {
     public interface IProductSetCodeReactService
     {
-        Task<GridResponseDto<ProductSetCodeGridDto>> GetGridDataAsync(GridRequestDto request);
+        Task<GridResponseDto<ProductSetCodeGridDto>> GetGridDataAsync(ProductSetCodeGridRequestDto request);
         Task<ApiResponse<bool>> BatchUpdateStatusAsync(
             List<string> ids,
             bool isActive,

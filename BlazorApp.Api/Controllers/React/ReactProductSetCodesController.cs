@@ -29,7 +29,7 @@ namespace BlazorApp.Api.Controllers.React
 
         [HttpPost("grid")]
         [Authorize(Roles = "Admin,WarehouseManager")]
-        public async Task<IActionResult> GetGrid([FromBody] GridRequestDto request)
+        public async Task<IActionResult> GetGrid([FromBody] ProductSetCodeGridRequestDto request)
         {
             try
             {

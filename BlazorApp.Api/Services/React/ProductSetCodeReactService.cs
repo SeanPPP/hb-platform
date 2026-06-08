@@ -30,7 +30,7 @@ namespace BlazorApp.Api.Services.React
         }
 
         public async Task<GridResponseDto<ProductSetCodeGridDto>> GetGridDataAsync(
-            GridRequestDto request
+            ProductSetCodeGridRequestDto request
         )
         {
             try
@@ -43,6 +43,12 @@ namespace BlazorApp.Api.Services.React
                         (psc, p, ls) => p.LocalSupplierCode == ls.LocalSupplierCode
                     )
                     .Where((psc, p, ls) => !psc.IsDeleted);
+
+                var productCodeFilter = ResolveProductCodeFilter(request);
+                if (!string.IsNullOrWhiteSpace(productCodeFilter))
+                {
+                    query = query.Where((psc, p, ls) => psc.ProductCode == productCodeFilter);
+                }
 
                 if (!string.IsNullOrWhiteSpace(request.GlobalSearch))
                 {
@@ -78,6 +84,18 @@ namespace BlazorApp.Api.Services.React
 
                         switch (col.ToLower())
                         {
+                            case "productcode":
+                                query = type switch
+                                {
+                                    "equals" => query.Where(
+                                        (psc, p, ls) => psc.ProductCode == value
+                                    ),
+                                    _ => query.Where(
+                                        (psc, p, ls) =>
+                                            psc.ProductCode != null && psc.ProductCode.Contains(v)
+                                    ),
+                                };
+                                break;
                             case "suppliername":
                                 query = type switch
                                 {
@@ -188,6 +206,8 @@ namespace BlazorApp.Api.Services.React
                     }
                 }
 
+                var total = await query.CountAsync();
+
                 if (request.SortModel != null && request.SortModel.Any())
                 {
                     var s = request.SortModel.First();
@@ -232,31 +252,6 @@ namespace BlazorApp.Api.Services.React
                     query = query.OrderBy((psc, p, ls) => psc.UpdatedAt, OrderByType.Desc);
                 }
 
-                var countQuery = db.Queryable<ProductSetCode>()
-                    .InnerJoin<Product>((psc, p) => psc.ProductCode == p.ProductCode)
-                    .LeftJoin<HBLocalSupplier>(
-                        (psc, p, ls) => p.LocalSupplierCode == ls.LocalSupplierCode
-                    )
-                    .Where((psc, p, ls) => !psc.IsDeleted);
-
-                if (!string.IsNullOrWhiteSpace(request.GlobalSearch))
-                {
-                    var keyword = request.GlobalSearch.Trim();
-                    countQuery = countQuery.Where(
-                        (psc, p, ls) =>
-                            (ls.Name != null && ls.Name.Contains(keyword))
-                            || (
-                                p.LocalSupplierCode != null && p.LocalSupplierCode.Contains(keyword)
-                            )
-                            || (p.ItemNumber != null && p.ItemNumber.Contains(keyword))
-                            || (p.Barcode != null && p.Barcode.Contains(keyword))
-                            || (psc.SetItemNumber != null && psc.SetItemNumber.Contains(keyword))
-                            || (psc.SetBarcode != null && psc.SetBarcode.Contains(keyword))
-                    );
-                }
-
-                var total = await countQuery.CountAsync();
-
                 var start = Math.Max(0, request.StartRow);
                 var pageSize = request.PageSize > 0 ? request.PageSize : 100;
 
@@ -291,6 +286,25 @@ namespace BlazorApp.Api.Services.React
             {
                 return GridResponseDto<ProductSetCodeGridDto>.Error($"获取数据失败: {ex.Message}");
             }
+        }
+
+        private static string? ResolveProductCodeFilter(ProductSetCodeGridRequestDto request)
+        {
+            if (!string.IsNullOrWhiteSpace(request.ProductCode))
+            {
+                return request.ProductCode.Trim();
+            }
+
+            if (
+                request.FilterModel != null
+                && request.FilterModel.TryGetValue("productCode", out var productCodeFilter)
+                && !string.IsNullOrWhiteSpace(productCodeFilter.Filter)
+            )
+            {
+                return productCodeFilter.Filter.Trim();
+            }
+
+            return null;
         }
 
         public async Task<ApiResponse<bool>> BatchUpdateStatusAsync(

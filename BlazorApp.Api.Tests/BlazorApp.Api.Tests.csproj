@@ -70,6 +70,7 @@
     <Compile Include="SyncProductsToStoresRequestTests.cs" />
     <Compile Include="ProductHqSyncSplitTests.cs" />
     <Compile Include="ProductSetCodeHqIncrementalSyncTests.cs" />
+    <Compile Include="ProductSetCodeReactServiceTests.cs" />
     <Compile Include="ReactProductHqSyncContractTests.cs" />
     <Compile Include="StoreRetailPriceHqSyncContractTests.cs" />
     <Compile Include="LocalSupplierInvoiceHqSyncContractTests.cs" />

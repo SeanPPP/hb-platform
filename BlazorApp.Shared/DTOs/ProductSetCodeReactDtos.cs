@@ -2,6 +2,14 @@ using System.Collections.Generic;
 
 namespace BlazorApp.Shared.DTOs
 {
+    public class ProductSetCodeGridRequestDto : GridRequestDto
+    {
+        /// <summary>
+        /// 当前商品编码；商品编辑弹窗必须按它隔离多码明细。
+        /// </summary>
+        public string? ProductCode { get; set; }
+    }
+
     public class ProductSetCodeGridDto
     {
         public string SetCodeId { get; set; } = string.Empty;

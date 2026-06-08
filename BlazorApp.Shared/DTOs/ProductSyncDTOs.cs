@@ -461,8 +461,9 @@ namespace BlazorApp.Shared.DTOs
 
         /// <summary>
         /// 仓库启用状态。
-        /// true 写入 HQ 启用，false 写入 HQ 停用；为空时按旧链路回退。
+        /// 仅兼容旧请求字段；货柜发送 HQ 服务会忽略该字段，不再据此更新 HQ/POS 商品启用状态。
         /// </summary>
+        [Obsolete("仅兼容旧请求字段，货柜发送 HQ 服务会忽略 WarehouseIsActive。")]
         public bool? WarehouseIsActive { get; set; }
 
         /// <summary>

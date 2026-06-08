@@ -1079,14 +1079,13 @@ namespace BlazorApp.Api.Services.React
                         DomesticPrice = item.DomesticPrice,
                         ImportPrice = item.ImportPrice,
                         OemPrice = item.OemPrice,
-                        WarehouseIsActive = item.WarehouseIsActive,
                         IsNewProduct = false,
                     };
                 }
             }
 
-            // 旧 ProductCodes 入口没有候选价格/状态时，补一个仅带商品启用状态的库存候选，
-            // 这样既能同步 H使用状态，也不会抢走 items 已明确给出的价格候选。
+            // 旧 ProductCodes 入口没有候选价格时，补一个仅带商品资料的库存候选，
+            // 这样仍能创建/更新价格记录，但不会伪造仓库状态去改 HQ/POS 启用状态。
             foreach (var resolvedProductCode in resolvedProductCodes)
             {
                 if (
@@ -1104,7 +1103,6 @@ namespace BlazorApp.Api.Services.React
                     EnglishName = NormalizeCode(resolvedProduct.EnglishName),
                     Barcode = NormalizeCode(resolvedProduct.Barcode),
                     ImageUrl = NormalizeCode(resolvedProduct.ProductImage),
-                    WarehouseIsActive = resolvedProduct.IsActive,
                     IsNewProduct = false,
                 };
             }
@@ -1269,7 +1267,6 @@ namespace BlazorApp.Api.Services.React
                         H是否自动定价 = hqProduct.H是否自动定价,
                         H商品图片 = hqProduct.H商品图片,
                         中包数量 = hqProduct.中包数量,
-                        H使用状态 = hqProduct.H使用状态,
                         H是否特殊商品 = hqProduct.H是否特殊商品,
                         H供货商编码 = hqProduct.H供货商编码,
                         CBP供应商编码 = hqProduct.CBP供应商编码,
@@ -1328,7 +1325,6 @@ namespace BlazorApp.Api.Services.React
                     continue;
                 }
 
-                var inventoryStatus = ResolveInventoryStatus(candidate, product);
                 if (existingInventoryByCode.TryGetValue(productCode, out var existingInventory))
                 {
                     await hqDb.Updateable<CBP_DIC_商品库存表>()
@@ -1337,7 +1333,6 @@ namespace BlazorApp.Api.Services.React
                             H国内价格 = candidate.DomesticPrice ?? existingInventory.H国内价格,
                             H进口价格 = candidate.ImportPrice ?? existingInventory.H进口价格,
                             H贴牌价格 = candidate.OemPrice ?? existingInventory.H贴牌价格,
-                            H使用状态 = inventoryStatus,
                             FGC_LastModifier = "HBweb",
                             FGC_LastModifyDate = now,
                         })
@@ -1358,7 +1353,8 @@ namespace BlazorApp.Api.Services.React
                     H最小订货量 = 0,
                     H库存金额 = 0,
                     H库存预警数 = 0,
-                    H使用状态 = inventoryStatus,
+                    // 新增库存记录仍按本地商品启用状态初始化，后续货柜发送不再改动该状态。
+                    H使用状态 = product.IsActive ? 1 : 0,
                     FGC_Creator = "HBweb",
                     FGC_CreateDate = now,
                     FGC_LastModifier = "HBweb",
@@ -1373,12 +1369,6 @@ namespace BlazorApp.Api.Services.React
                     .ExecuteCommandAsync();
                 result.WarehouseInventoriesCreated += inserts.Count;
             }
-        }
-
-        private static int ResolveInventoryStatus(PushProductsToHqItem candidate, Product product)
-        {
-            // 新候选优先带自己的仓库启用状态；旧 ProductCodes 入口没有该字段时回退本地商品状态。
-            return (candidate.WarehouseIsActive ?? product.IsActive) ? 1 : 0;
         }
 
         private static async Task UpsertHqRetailPricesAsync(
@@ -1449,7 +1439,6 @@ namespace BlazorApp.Api.Services.React
                             H分店供应商编码 = hqPrice.H分店供应商编码,
                             H进货价 = hqPrice.H进货价,
                             H分店零售价 = hqPrice.H分店零售价,
-                            H使用状态 = hqPrice.H使用状态,
                             H是否自动定价 = hqPrice.H是否自动定价,
                             H是否特殊商品 = hqPrice.H是否特殊商品,
                             FGC_LastModifier = hqPrice.FGC_LastModifier,
@@ -2306,7 +2295,8 @@ namespace BlazorApp.Api.Services.React
                     ?? string.Empty,
                 H腾讯云图地址 = string.Empty,
                 中包数量 = product.MiddlePackageQuantity ?? 0,
-                H使用状态 = candidate?.WarehouseIsActive ?? product.IsActive,
+                // 货柜发送 HQ 不再使用仓库上下架状态覆盖 HQ/POS 商品启用状态。
+                H使用状态 = product.IsActive,
                 H是否特殊商品 = product.IsSpecialProduct,
                 H进货单主表GUID = string.Empty,
                 H进货单详情GUID = string.Empty,
@@ -2359,7 +2349,8 @@ namespace BlazorApp.Api.Services.React
                 H满减数量 = 0,
                 H满减金额 = 0,
                 H多码数量 = 0,
-                H使用状态 = candidate?.WarehouseIsActive ?? product.IsActive,
+                // 分店价格新增记录按本地商品状态初始化，后续货柜发送不再更新该字段。
+                H使用状态 = product.IsActive,
                 H是否自动定价 = product.IsAutoPricing,
                 H自动新价格 = 0,
                 H盘点入库记录数 = 0,
