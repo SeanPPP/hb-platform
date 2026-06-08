@@ -156,10 +156,10 @@ async function main() {
 
   const bestSellerVirtualFailure = await runTest('热销商品列表应使用 AntD Table 虚拟滚动', () => {
     assert(
-      bestSellersSource.includes('import type { ColumnsType }') &&
+        bestSellersSource.includes('import type { ColumnsType }') &&
         bestSellersSource.includes('Table') &&
         bestSellersSource.includes('virtual') &&
-        bestSellersSource.includes('scroll={{ x: 1640, y: 560 }}') &&
+        bestSellersSource.includes('scroll={{ x: 1080, y: 560 }}') &&
         bestSellersSource.includes('className="shop-best-sellers-table"') &&
         bestSellersSource.includes('rowKey={(record) => record.productCode || record.itemNumber || String(record.rank)}') &&
         !bestSellersSource.includes('virtualWindow.visibleProducts.map') &&
@@ -198,6 +198,17 @@ async function main() {
   })
   if (bestSellerTableColumnsFailure) failures.push(bestSellerTableColumnsFailure)
 
+  const bestSellerStatsAlwaysVisibleFailure = await runTest('热销商品 Stats 列应保留给所有订货前台用户', () => {
+    assert(
+      bestSellersSource.includes("title: 'Stats'") &&
+        !bestSellersSource.includes("import { useAuthStore } from '../../../store/auth'") &&
+        !bestSellersSource.includes('const isAdmin = useAuthStore') &&
+        !bestSellersSource.includes('...(isAdmin ? ['),
+      '热销商品 Stats 列不应按管理员条件隐藏，普通订货前台用户也要保留完整列',
+    )
+  })
+  if (bestSellerStatsAlwaysVisibleFailure) failures.push(bestSellerStatsAlwaysVisibleFailure)
+
   const bestSellerBranchSalesFailure = await runTest('热销商品分店销量明细应按销量倒序展示', () => {
     assert(
         bestSellersSource.includes('function getBranchSalesRows(product: BestSellerProduct)') &&
@@ -227,24 +238,44 @@ async function main() {
   })
   if (bestSellerAddGuardFailure) failures.push(bestSellerAddGuardFailure)
 
-  const bestSellerTableLayoutFailure = await runTest('热销商品表格应水平排列所有字段并限制文本图片尺寸', () => {
+  const bestSellerTableLayoutFailure = await runTest('热销商品表格应保留全列并使用紧凑列宽', () => {
     assert(
-      globalCssSource.includes('.shop-best-sellers-table') &&
+      bestSellersSource.includes("title: 'Rank'") &&
+        bestSellersSource.includes("title: 'Image'") &&
+        bestSellersSource.includes("title: 'Barcode'") &&
+        bestSellersSource.includes("title: 'Item No.'") &&
+        bestSellersSource.includes("title: 'Product Name'") &&
+        bestSellersSource.includes("title: 'Units Sold'") &&
+        bestSellersSource.includes("title: 'Sales Amount'") &&
+        bestSellersSource.includes("title: 'Gross Profit'") &&
+        bestSellersSource.includes("title: 'Gross Margin'") &&
+        bestSellersSource.includes("title: 'Stats'") &&
+        bestSellersSource.includes("title: 'Status'") &&
+        bestSellersSource.includes("title: 'Stores Sold'") &&
+        bestSellersSource.includes("title: 'Action'") &&
+        bestSellersSource.includes('scroll={{ x: 1080, y: 560 }}') &&
+        bestSellersSource.includes('width: 44') &&
+        bestSellersSource.includes('width: 50') &&
+        bestSellersSource.includes('width: 104') &&
+        bestSellersSource.includes('width: 155') &&
+        globalCssSource.includes('.shop-best-sellers-table') &&
         globalCssSource.includes('.shop-best-sellers-image-cell') &&
-        globalCssSource.includes('width: 56px') &&
-        globalCssSource.includes('height: 56px') &&
+        globalCssSource.includes('width: 42px') &&
+        globalCssSource.includes('height: 42px') &&
         globalCssSource.includes('.shop-best-sellers-barcode-cell') &&
+        globalCssSource.includes('max-width: 98px') &&
         globalCssSource.includes('.shop-best-sellers-item-number') &&
         globalCssSource.includes('.shop-best-sellers-store-count') &&
         globalCssSource.includes('width: 560px') &&
         globalCssSource.includes('.shop-best-sellers-product-name') &&
-        globalCssSource.includes('max-height: calc(1.4em * 2)') &&
+        globalCssSource.includes('max-height: calc(1.3em * 2)') &&
         globalCssSource.includes('-webkit-line-clamp: 2') &&
         globalCssSource.includes('.shop-best-sellers-rank') &&
         globalCssSource.includes('.shop-best-sellers-table .ant-table-cell') &&
+        globalCssSource.includes('padding: 7px 6px !important') &&
         !globalCssSource.includes('.shop-best-sellers-virtual-list') &&
         !globalCssSource.includes('.shop-best-seller-card'),
-      '热销商品表格缺少水平滚动、固定图片尺寸或商品名截断样式，或仍保留旧卡片样式',
+      '热销商品表格未保留全列、紧凑列宽和固定图片条码尺寸，或仍保留旧卡片样式',
     )
   })
   if (bestSellerTableLayoutFailure) failures.push(bestSellerTableLayoutFailure)

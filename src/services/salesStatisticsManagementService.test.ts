@@ -65,6 +65,34 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     )
   }
 
+  if (url.includes('/2026-06-10/summary')) {
+    return new Response(
+      JSON.stringify({
+        success: true,
+        data: {
+          Date: '2026-06-10',
+          Status: 'Fresh',
+          RecordCount: 8,
+          TotalQuantity: 21,
+          TotalAmount: 123.45,
+          GrossProfit: 9.87,
+          ReconciliationStatus: 'Passed',
+          SalesReconciliationStatus: 'Failed',
+          ProductTotalAmount: 120.45,
+          StoreTotalAmount: 119.45,
+          AmountDifference: 1,
+          ProductTotalQuantity: 22,
+          StoreTotalQuantity: 20,
+          QuantityDifference: 2,
+          UnmatchedSupplierAmount: 15.5,
+          UnmatchedSupplierQuantity: 3,
+          UnmatchedSupplierProductCount: 2,
+        },
+      }),
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    )
+  }
+
   if (url.includes('/summary')) {
     return new Response(
       JSON.stringify({
@@ -77,6 +105,16 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
           totalAmount: 56.7,
           grossProfit: 8.9,
           reconciliationStatus: 'Passed',
+          salesReconciliationStatus: 'Passed',
+          productTotalAmount: 50.7,
+          storeTotalAmount: 49.7,
+          amountDifference: 1,
+          productTotalQuantity: 34,
+          storeTotalQuantity: 33,
+          quantityDifference: 1,
+          unmatchedSupplierAmount: 6.5,
+          unmatchedSupplierQuantity: 2,
+          unmatchedSupplierProductCount: 1,
         },
       }),
       { status: 200, headers: { 'content-type': 'application/json' } },
@@ -122,9 +160,31 @@ try {
   assertEqual(summary.totalAmount, 56.7, '应解包销售额合计')
   assertEqual(summary.grossProfit, 8.9, '应解包毛利合计')
   assertEqual(summary.reconciliationStatus, 'Passed', '应解包对账状态')
+  assertEqual(summary.salesReconciliationStatus, 'Passed', '应兼容 camelCase 销售对账状态字段')
+  assertEqual(summary.productTotalAmount, 50.7, '应兼容 camelCase 商品销售额字段')
+  assertEqual(summary.storeTotalAmount, 49.7, '应兼容 camelCase 分店销售额字段')
+  assertEqual(summary.amountDifference, 1, '应兼容 camelCase 销售额差异字段')
+  assertEqual(summary.productTotalQuantity, 34, '应兼容 camelCase 商品销量字段')
+  assertEqual(summary.storeTotalQuantity, 33, '应兼容 camelCase 分店销量字段')
+  assertEqual(summary.quantityDifference, 1, '应兼容 camelCase 销量差异字段')
+  assertEqual(summary.unmatchedSupplierAmount, 6.5, '应兼容 camelCase 未匹配供应商销售额字段')
+  assertEqual(summary.unmatchedSupplierQuantity, 2, '应兼容 camelCase 未匹配供应商销量字段')
+  assertEqual(summary.unmatchedSupplierProductCount, 1, '应兼容 camelCase 未匹配供应商商品数字段')
 
   const pendingSummary = await getProductStoreDailyStatisticSummary('2026-06-09')
   assertEqual(pendingSummary.grossProfit, null, '毛利为空时应保留 null 而不是归一成 0')
+
+  const pascalSummary = await getProductStoreDailyStatisticSummary('2026-06-10')
+  assertEqual(pascalSummary.salesReconciliationStatus, 'Failed', '应兼容 PascalCase 销售对账状态字段')
+  assertEqual(pascalSummary.productTotalAmount, 120.45, '应兼容 PascalCase 商品销售额字段')
+  assertEqual(pascalSummary.storeTotalAmount, 119.45, '应兼容 PascalCase 分店销售额字段')
+  assertEqual(pascalSummary.amountDifference, 1, '应兼容 PascalCase 销售额差异字段')
+  assertEqual(pascalSummary.productTotalQuantity, 22, '应兼容 PascalCase 商品销量字段')
+  assertEqual(pascalSummary.storeTotalQuantity, 20, '应兼容 PascalCase 分店销量字段')
+  assertEqual(pascalSummary.quantityDifference, 2, '应兼容 PascalCase 销量差异字段')
+  assertEqual(pascalSummary.unmatchedSupplierAmount, 15.5, '应兼容 PascalCase 未匹配供应商销售额字段')
+  assertEqual(pascalSummary.unmatchedSupplierQuantity, 3, '应兼容 PascalCase 未匹配供应商销量字段')
+  assertEqual(pascalSummary.unmatchedSupplierProductCount, 2, '应兼容 PascalCase 未匹配供应商商品数字段')
 
   const recentResult = await recalculateRecentProductStoreDaily(7)
   const recentCall = calls[calls.length - 1]

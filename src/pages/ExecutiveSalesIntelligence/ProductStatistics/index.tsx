@@ -36,6 +36,8 @@ const { RangePicker } = DatePicker
 export const MAX_PRODUCT_STATISTIC_RANGE_DAYS = 31
 
 type RangeValue = [Dayjs, Dayjs] | null
+type ProductStatisticTablePagination = { current: number; pageSize: number }
+type ProductStatisticLoadOptions = { resetPage?: boolean }
 
 const statusOptions: Array<{ label: string; value: SalesStatisticStatus | '' }> = [
   { label: '全部状态', value: '' },
@@ -47,10 +49,10 @@ const statusOptions: Array<{ label: string; value: SalesStatisticStatus | '' }> 
   { label: '失败', value: 'Failed' },
 ]
 
-const statusColorMap: Record<string, string> = {
+const statusColorMap: Record<SalesStatisticStatus, string> = {
   Queued: 'purple',
   Running: 'processing',
-  Pending: 'blue',
+  Pending: 'cyan',
   Fresh: 'green',
   Stale: 'orange',
   Failed: 'red',
@@ -62,13 +64,43 @@ const reconciliationColorMap: Record<string, string> = {
   Failed: 'red',
 }
 
+// 商品统计状态页固定使用中文星期标签，方便运营按周末/工作日快速判断。
+const weekdayLabels = ['周日', '周一', '周二', '周三', '周四', '周五', '周六']
+const productStatisticDatePattern = /^\d{4}-\d{2}-\d{2}$/
+
+function parseProductStatisticDate(value: string) {
+  const parsed = dayjs(value)
+  if (!parsed.isValid()) {
+    return null
+  }
+
+  if (productStatisticDatePattern.test(value) && parsed.format('YYYY-MM-DD') !== value) {
+    return null
+  }
+
+  return parsed
+}
+
 function formatDate(value?: string) {
   if (!value) {
     return '--'
   }
 
-  const parsed = dayjs(value)
-  return parsed.isValid() ? parsed.format('YYYY-MM-DD') : value
+  const parsed = parseProductStatisticDate(value)
+  return parsed ? parsed.format('YYYY-MM-DD') : value
+}
+
+export function formatProductStatisticDateWithWeekday(value?: string) {
+  if (!value) {
+    return '--'
+  }
+
+  const parsed = parseProductStatisticDate(value)
+  if (!parsed) {
+    return value
+  }
+
+  return `${parsed.format('YYYY-MM-DD')} ${weekdayLabels[parsed.day()]}`
 }
 
 function formatDateTime(value?: string) {
@@ -101,12 +133,20 @@ function formatCurrency(value?: number | null) {
 
 function renderStatus(status?: string) {
   const normalizedStatus = status || 'Pending'
-  return <Tag color={statusColorMap[normalizedStatus] ?? 'default'}>{normalizedStatus}</Tag>
+  return <Tag color={getProductStatisticStatusTagColor(normalizedStatus)}>{normalizedStatus}</Tag>
 }
 
 function renderReconciliationStatus(status?: string) {
   const normalizedStatus = status || 'Pending'
   return <Tag color={reconciliationColorMap[normalizedStatus] ?? 'default'}>{normalizedStatus}</Tag>
+}
+
+function renderOptionalReconciliationStatus(status?: string) {
+  if (!status) {
+    return '--'
+  }
+
+  return renderReconciliationStatus(status)
 }
 
 export function getProductStatisticRangeDays(dateRange?: RangeValue) {
@@ -120,6 +160,19 @@ export function getProductStatisticRangeDays(dateRange?: RangeValue) {
 export function isProductStatisticRangeWithinLimit(dateRange?: RangeValue) {
   const requestedDays = getProductStatisticRangeDays(dateRange)
   return requestedDays > 0 && requestedDays <= MAX_PRODUCT_STATISTIC_RANGE_DAYS
+}
+
+export function getProductStatisticRowNumber(rowIndex: number, currentPage = 1, pageSize = 20) {
+  const safeCurrentPage = Number.isFinite(currentPage) && currentPage > 0 ? currentPage : 1
+  const safePageSize = Number.isFinite(pageSize) && pageSize > 0 ? pageSize : 20
+  return (safeCurrentPage - 1) * safePageSize + rowIndex + 1
+}
+
+export function getProductStatisticPaginationAfterLoad(
+  current: ProductStatisticTablePagination,
+  options: ProductStatisticLoadOptions = {},
+) {
+  return options.resetPage ? { ...current, current: 1 } : current
 }
 
 export function getProductStatisticActionErrorMessage(error: unknown) {
@@ -151,6 +204,11 @@ export function getProductStatisticActionErrorMessage(error: unknown) {
   return '统计重算触发失败'
 }
 
+export function getProductStatisticStatusTagColor(status?: string) {
+  const normalizedStatus = status || 'Pending'
+  return statusColorMap[normalizedStatus as SalesStatisticStatus] ?? 'default'
+}
+
 function buildProductStatisticSubmitMessage(result: JobTriggerResponse, fallback: string) {
   const parts = [result.message || fallback]
   if (result.skippedDates?.length) {
@@ -176,10 +234,11 @@ export default function ProductStatisticsPage() {
   const [summaryLoading, setSummaryLoading] = useState(false)
   const [summary, setSummary] = useState<ProductStoreDailyStatisticSummary | null>(null)
   const [activePollDates, setActivePollDates] = useState<string[]>([])
+  const [tablePagination, setTablePagination] = useState<ProductStatisticTablePagination>({ current: 1, pageSize: 20 })
 
   const defaultRange = useMemo<RangeValue>(() => [dayjs().subtract(6, 'day'), dayjs()], [])
 
-  const loadStates = useCallback(async () => {
+  const loadStates = useCallback(async (options: ProductStatisticLoadOptions = {}) => {
     const values = form.getFieldsValue() as {
       statisticType?: string
       dateRange?: RangeValue
@@ -197,6 +256,7 @@ export default function ProductStatisticsPage() {
         status: values.status,
       })
       setRows(data)
+      setTablePagination((current) => getProductStatisticPaginationAfterLoad(current, options))
     } catch (error) {
       console.error(error)
       message.error('加载商品统计状态失败')
@@ -211,7 +271,7 @@ export default function ProductStatisticsPage() {
       dateRange: defaultRange,
       status: '',
     })
-    void loadStates()
+    void loadStates({ resetPage: true })
   }, [defaultRange, form, loadStates])
 
   const openDetail = useCallback(async (record: SalesStatisticRefreshState) => {
@@ -334,10 +394,17 @@ export default function ProductStatisticsPage() {
 
   const columns = useMemo<ColumnsType<SalesStatisticRefreshState>>(() => [
     {
+      title: '序号',
+      key: 'rowNumber',
+      width: 72,
+      align: 'center',
+      render: (_, __, index) => getProductStatisticRowNumber(index, tablePagination.current, tablePagination.pageSize),
+    },
+    {
       title: '日期',
       dataIndex: 'date',
-      width: 130,
-      render: (value?: string) => formatDate(value),
+      width: 150,
+      render: (value?: string) => formatProductStatisticDateWithWeekday(value),
     },
     {
       title: '状态',
@@ -393,7 +460,7 @@ export default function ProductStatisticsPage() {
         </Space>
       ),
     },
-  ], [actionLoading, openDetail, runAction])
+  ], [actionLoading, openDetail, runAction, tablePagination.current, tablePagination.pageSize])
 
   return (
     <div style={{ padding: 24 }}>
@@ -407,7 +474,7 @@ export default function ProductStatisticsPage() {
           </Typography.Text>
         </div>
 
-        <Form form={form} layout="inline" onFinish={loadStates}>
+        <Form form={form} layout="inline" onFinish={() => loadStates({ resetPage: true })}>
           <Form.Item name="statisticType" label="统计类型">
             <Select
               style={{ width: 190 }}
@@ -449,8 +516,12 @@ export default function ProductStatisticsPage() {
           columns={columns}
           dataSource={rows}
           loading={loading}
-          scroll={{ x: 1080 }}
-          pagination={{ pageSize: 20, showSizeChanger: true }}
+          scroll={{ x: 1160 }}
+          pagination={{
+            ...tablePagination,
+            showSizeChanger: true,
+            onChange: (current, pageSize) => setTablePagination({ current, pageSize }),
+          }}
         />
       </Space>
 
@@ -475,6 +546,36 @@ export default function ProductStatisticsPage() {
           </Descriptions.Item>
           <Descriptions.Item label="对账状态">
             {summaryLoading ? '加载中...' : renderReconciliationStatus(summary?.reconciliationStatus)}
+          </Descriptions.Item>
+          <Descriptions.Item label="营业额对账状态">
+            {summaryLoading ? '加载中...' : renderOptionalReconciliationStatus(summary?.salesReconciliationStatus)}
+          </Descriptions.Item>
+          <Descriptions.Item label="商品统计销售额">
+            {summaryLoading ? '加载中...' : formatCurrency(summary?.productTotalAmount)}
+          </Descriptions.Item>
+          <Descriptions.Item label="分店营业额统计销售额">
+            {summaryLoading ? '加载中...' : formatCurrency(summary?.storeTotalAmount)}
+          </Descriptions.Item>
+          <Descriptions.Item label="销售额差异">
+            {summaryLoading ? '加载中...' : formatCurrency(summary?.amountDifference)}
+          </Descriptions.Item>
+          <Descriptions.Item label="商品统计销量">
+            {summaryLoading ? '加载中...' : formatNumber(summary?.productTotalQuantity)}
+          </Descriptions.Item>
+          <Descriptions.Item label="分店营业额统计销量">
+            {summaryLoading ? '加载中...' : formatNumber(summary?.storeTotalQuantity)}
+          </Descriptions.Item>
+          <Descriptions.Item label="销量差异">
+            {summaryLoading ? '加载中...' : formatNumber(summary?.quantityDifference)}
+          </Descriptions.Item>
+          <Descriptions.Item label="未匹配供应商销售额">
+            {summaryLoading ? '加载中...' : formatCurrency(summary?.unmatchedSupplierAmount)}
+          </Descriptions.Item>
+          <Descriptions.Item label="未匹配供应商销量">
+            {summaryLoading ? '加载中...' : formatNumber(summary?.unmatchedSupplierQuantity)}
+          </Descriptions.Item>
+          <Descriptions.Item label="未匹配供应商商品数">
+            {summaryLoading ? '加载中...' : formatNumber(summary?.unmatchedSupplierProductCount)}
           </Descriptions.Item>
           <Descriptions.Item label="POSM水位">
             {summaryLoading ? '加载中...' : formatDateTime(summary?.lastSourceUploadTime)}

@@ -31,6 +31,16 @@ export interface ProductStoreDailyStatisticSummary extends SalesStatisticRefresh
   totalAmount: number
   grossProfit?: number | null
   reconciliationStatus?: string
+  salesReconciliationStatus?: string
+  productTotalAmount?: number
+  storeTotalAmount?: number
+  amountDifference?: number
+  productTotalQuantity?: number
+  storeTotalQuantity?: number
+  quantityDifference?: number
+  unmatchedSupplierAmount?: number
+  unmatchedSupplierQuantity?: number
+  unmatchedSupplierProductCount?: number
 }
 
 export interface JobTriggerResponse {
@@ -136,6 +146,16 @@ function normalizeSummary(raw: unknown): ProductStoreDailyStatisticSummary {
     totalAmount: readNumber(record.totalAmount ?? record.TotalAmount),
     grossProfit: readNullableNumber(grossProfitValue),
     reconciliationStatus: readString(record.reconciliationStatus ?? record.ReconciliationStatus),
+    salesReconciliationStatus: readString(record.salesReconciliationStatus ?? record.SalesReconciliationStatus),
+    productTotalAmount: readNullableNumber(record.productTotalAmount ?? record.ProductTotalAmount),
+    storeTotalAmount: readNullableNumber(record.storeTotalAmount ?? record.StoreTotalAmount),
+    amountDifference: readNullableNumber(record.amountDifference ?? record.AmountDifference),
+    productTotalQuantity: readNullableNumber(record.productTotalQuantity ?? record.ProductTotalQuantity),
+    storeTotalQuantity: readNullableNumber(record.storeTotalQuantity ?? record.StoreTotalQuantity),
+    quantityDifference: readNullableNumber(record.quantityDifference ?? record.QuantityDifference),
+    unmatchedSupplierAmount: readNullableNumber(record.unmatchedSupplierAmount ?? record.UnmatchedSupplierAmount),
+    unmatchedSupplierQuantity: readNullableNumber(record.unmatchedSupplierQuantity ?? record.UnmatchedSupplierQuantity),
+    unmatchedSupplierProductCount: readNullableNumber(record.unmatchedSupplierProductCount ?? record.UnmatchedSupplierProductCount),
   }
 }
 

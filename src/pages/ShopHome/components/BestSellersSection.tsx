@@ -241,7 +241,7 @@ export default function BestSellersSection() {
         title: 'Rank',
         dataIndex: 'rank',
         key: 'rank',
-        width: 72,
+        width: 44,
         align: 'center',
         render: (_rank, _record, index) => {
           const rank = (currentPage - 1) * pageSize + index + 1
@@ -252,7 +252,7 @@ export default function BestSellersSection() {
         title: 'Image',
         dataIndex: 'productImage',
         key: 'productImage',
-        width: 88,
+        width: 50,
         align: 'center',
         render: (value: string | undefined, record) => (
           <div className="shop-best-sellers-image-cell">
@@ -274,7 +274,7 @@ export default function BestSellersSection() {
         title: 'Barcode',
         dataIndex: 'barcode',
         key: 'barcode',
-        width: 170,
+        width: 104,
         render: (value: string | undefined) => (
           <BarcodePreview
             value={value}
@@ -282,9 +282,9 @@ export default function BestSellersSection() {
             className="shop-best-sellers-barcode-cell"
             compactCopy={false}
             gap={2}
-            options={{ height: 22, width: 1, margin: 0 }}
+            options={{ height: 18, width: 1, margin: 0 }}
             showCopy={false}
-            textMaxWidth={140}
+            textMaxWidth={96}
             textNoWrap
           />
         ),
@@ -293,7 +293,7 @@ export default function BestSellersSection() {
         title: 'Item No.',
         dataIndex: 'itemNumber',
         key: 'itemNumber',
-        width: 150,
+        width: 92,
         render: (value: string | undefined) =>
           value ? (
             <Space size={4} className="shop-best-sellers-item-number">
@@ -315,7 +315,7 @@ export default function BestSellersSection() {
         title: 'Product Name',
         dataIndex: 'productName',
         key: 'productName',
-        width: 260,
+        width: 155,
         render: (value: string | undefined) => (
           <div className="shop-best-sellers-product-name">{value || 'Unknown Product'}</div>
         ),
@@ -324,7 +324,7 @@ export default function BestSellersSection() {
         title: 'Units Sold',
         dataIndex: 'quantity',
         key: 'quantity',
-        width: 120,
+        width: 76,
         align: 'right',
         render: (value: number | undefined) => value ?? 0,
       },
@@ -332,7 +332,7 @@ export default function BestSellersSection() {
         title: 'Sales Amount',
         dataIndex: 'salesAmount',
         key: 'salesAmount',
-        width: 150,
+        width: 96,
         align: 'right',
         render: (value: number | undefined) => <Text strong>{formatCurrency(value)}</Text>,
       },
@@ -340,7 +340,7 @@ export default function BestSellersSection() {
         title: 'Gross Profit',
         dataIndex: 'grossProfit',
         key: 'grossProfit',
-        width: 140,
+        width: 84,
         align: 'right',
         render: (value: number | undefined) => <Text>{formatOptionalCurrency(value)}</Text>,
       },
@@ -348,7 +348,7 @@ export default function BestSellersSection() {
         title: 'Gross Margin',
         dataIndex: 'grossMarginRate',
         key: 'grossMarginRate',
-        width: 130,
+        width: 80,
         align: 'right',
         render: (value: number | undefined) => <Text>{formatPercent(value)}</Text>,
       },
@@ -356,7 +356,7 @@ export default function BestSellersSection() {
         title: 'Stats',
         dataIndex: 'statisticStatus',
         key: 'statisticStatus',
-        width: 100,
+        width: 64,
         align: 'center',
         render: (value: string | undefined) => (
           <Tag color={getStatisticStatusColor(value || statisticStatus)}>
@@ -368,7 +368,7 @@ export default function BestSellersSection() {
         title: 'Status',
         dataIndex: 'isActive',
         key: 'isActive',
-        width: 110,
+        width: 68,
         align: 'center',
         render: (value: boolean | undefined) => {
           if (value === true) {
@@ -385,7 +385,7 @@ export default function BestSellersSection() {
       {
         title: 'Stores Sold',
         key: 'branchSalesCount',
-        width: 120,
+        width: 66,
         align: 'center',
         render: (_value, record) => {
           const rows = getBranchSalesRows(record)
@@ -422,7 +422,7 @@ export default function BestSellersSection() {
       {
         title: 'Action',
         key: 'action',
-        width: 130,
+        width: 72,
         align: 'center',
         render: (_value, record) => {
           const disabled = record.isActive !== true || !selectedStore?.storeCode
@@ -526,7 +526,7 @@ export default function BestSellersSection() {
         loading={loading}
         size="small"
         virtual
-        scroll={{ x: 1640, y: 560 }}
+        scroll={{ x: 1080, y: 560 }}
         pagination={{
           current: currentPage,
           pageSize,
