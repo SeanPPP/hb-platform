@@ -428,8 +428,9 @@ export function buildSupplierImageBatchUpdateOperationId(data: BatchUpdateSuppli
     data.updateHq ? 'hq' : '',
     data.saveSupplierImageBaseUrl ? 'save-url' : '',
   ].filter(Boolean).join('+') || 'none'
+  const productScope = data.productCodes?.length ? `selected:${data.productCodes.join(',')}` : 'supplier-all'
 
-  return `supplier-image:${data.localSupplierCode}:${targets}:${data.urlTemplate}`
+  return `supplier-image:${data.localSupplierCode}:${targets}:${productScope}:${data.urlTemplate}`
 }
 
 export async function createSupplierImageBatchUpdateJob(

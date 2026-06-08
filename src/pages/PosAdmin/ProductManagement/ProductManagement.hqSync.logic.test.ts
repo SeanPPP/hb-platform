@@ -159,6 +159,135 @@ async function main() {
   })
   if (editSetCodesIsolationFailure) failures.push(editSetCodesIsolationFailure)
 
+  const editProductImageFailure = await runTest('商品编辑弹窗应显示并保留商品图片字段', () => {
+    const openEditStart = pageSource.indexOf('const openEdit = (record: PosProductDto) => {')
+    const openEditEnd = pageSource.indexOf('const openStoreRecords', openEditStart)
+    assert(openEditStart >= 0 && openEditEnd > openEditStart, '页面应保留 openEdit 编辑入口')
+    const openEditSource = pageSource.slice(openEditStart, openEditEnd)
+    assert(
+      openEditSource.includes('productImage: record.productImage || buildDefaultProductImageUrl(record.itemNumber || record.productCode)'),
+      '打开编辑弹窗时应优先回填商品图片 URL，无图时按货号生成默认图片 URL',
+    )
+    assert(
+      pageSource.includes("const DEFAULT_PRODUCT_IMAGE_BASE_URL = 'https://hotbargain-yw-2023-1300114625.cos.ap-shanghai.myqcloud.com/YW200'") &&
+        pageSource.includes('function buildDefaultProductImageUrl') &&
+        pageSource.includes("`${DEFAULT_PRODUCT_IMAGE_BASE_URL}/${encodeURIComponent(normalizedItemNumber)}.jpg`"),
+      '商品图片默认 URL 应使用 YW200 COS 地址并按货号生成 jpg',
+    )
+
+    const handleEditSaveStart = pageSource.indexOf('const handleEditSave = async () => {')
+    const handleEditSaveEnd = pageSource.indexOf('const handleBatchEnable', handleEditSaveStart)
+    assert(handleEditSaveStart >= 0 && handleEditSaveEnd > handleEditSaveStart, '页面应保留 handleEditSave 保存入口')
+    const handleEditSaveSource = pageSource.slice(handleEditSaveStart, handleEditSaveEnd)
+    assert(
+      handleEditSaveSource.includes("productImage: values.productImage ?? editingProduct.productImage ?? ''"),
+      '商品保存 payload 应显式带回 productImage，避免添加多码后覆盖清空图片字段',
+    )
+
+    const editModalStart = pageSource.indexOf('<Modal\n        open={editVisible}')
+    const editModalEnd = pageSource.indexOf('{productTypeWatch === 1 &&', editModalStart)
+    assert(editModalStart >= 0 && editModalEnd > editModalStart, '页面应保留编辑商品弹窗表单')
+    const editModalSource = pageSource.slice(editModalStart, editModalEnd)
+    assert(
+      editModalSource.includes('name="productImage"') &&
+        editModalSource.includes('pos-products-edit-image-preview') &&
+        editModalSource.includes('prev.productImage !== cur.productImage'),
+      '编辑弹窗应提供商品图片 URL 输入和随表单值变化的图片预览',
+    )
+  })
+  if (editProductImageFailure) failures.push(editProductImageFailure)
+
+  const editSupplierFailure = await runTest('商品编辑弹窗供应商应允许修改并随保存提交', () => {
+    const handleEditSaveStart = pageSource.indexOf('const handleEditSave = async () => {')
+    const handleEditSaveEnd = pageSource.indexOf('const handleBatchEnable', handleEditSaveStart)
+    assert(handleEditSaveStart >= 0 && handleEditSaveEnd > handleEditSaveStart, '页面应保留 handleEditSave 保存入口')
+    const handleEditSaveSource = pageSource.slice(handleEditSaveStart, handleEditSaveEnd)
+    assert(
+      handleEditSaveSource.includes('localSupplierCode: values.localSupplierCode'),
+      '商品保存 payload 应提交编辑表单中的供应商编码',
+    )
+
+    const editModalStart = pageSource.indexOf('<Modal\n        open={editVisible}')
+    const editModalEnd = pageSource.indexOf('{productTypeWatch === 1 &&', editModalStart)
+    assert(editModalStart >= 0 && editModalEnd > editModalStart, '页面应保留编辑商品弹窗表单')
+    const editModalSource = pageSource.slice(editModalStart, editModalEnd)
+    const supplierFieldStart = editModalSource.indexOf('name="localSupplierCode"')
+    const supplierFieldEnd = editModalSource.indexOf('name="productType"', supplierFieldStart)
+    assert(supplierFieldStart >= 0 && supplierFieldEnd > supplierFieldStart, '编辑弹窗应保留供应商下拉表单项')
+    const supplierFieldSource = editModalSource.slice(supplierFieldStart, supplierFieldEnd)
+    assert(
+      supplierFieldSource.includes('options={supplierOptions}') &&
+        supplierFieldSource.includes("placeholder={t('posAdmin.products.selectSupplier', '请选择供应商')}") &&
+        !supplierFieldSource.includes('disabled'),
+      '编辑弹窗供应商下拉应打开编辑，不能禁用',
+    )
+  })
+  if (editSupplierFailure) failures.push(editSupplierFailure)
+
+  const productTypeColumnFailure = await runTest('商品列表应显示商品类型并按类型显示条码记录数量', () => {
+    assert(
+      pageSource.includes('function normalizeProductType(productType: unknown): 0 | 1 | 2') &&
+        pageSource.includes('function getProductTypeColor(productType: unknown): string') &&
+        pageSource.includes('const getProductTypeLabel = useCallback((productType: unknown) => {'),
+      '页面应集中定义商品类型归一、颜色和文案函数',
+    )
+    assert(
+      pageSource.includes("if (normalizedType === 1) return t('posAdmin.products.setProduct', '套装')") &&
+        pageSource.includes("if (normalizedType === 2) return t('posAdmin.products.multiCodeProductShort', '多码')") &&
+        pageSource.includes("return t('posAdmin.products.normalProduct', '普通')"),
+      '商品类型文案应覆盖普通、套装和多码',
+    )
+
+    const productTypeColumnStart = pageSource.indexOf("title: t('posAdmin.products.productTypeLabel', '商品类型')")
+    const barcodeRecordColumnStart = pageSource.indexOf("title: t('posAdmin.products.barcodeRecordCount', '条码记录')")
+    const storeRecordColumnStart = pageSource.indexOf("title: t('posAdmin.products.storeRecords', '分店记录')")
+    assert(productTypeColumnStart >= 0, '表格应存在商品类型列')
+    assert(barcodeRecordColumnStart > productTypeColumnStart, '条码记录列应位于商品类型列之后')
+    assert(storeRecordColumnStart > barcodeRecordColumnStart, '分店记录列应位于条码记录列之后')
+
+    const productTypeColumnSource = pageSource.slice(productTypeColumnStart, barcodeRecordColumnStart)
+    assert(
+      productTypeColumnSource.includes("dataIndex: 'productType'") &&
+        productTypeColumnSource.includes('getProductTypeColor(v)') &&
+        productTypeColumnSource.includes('getProductTypeLabel(v)'),
+      '商品类型列应读取 productType 并显示类型 Tag',
+    )
+
+    const barcodeRecordColumnSource = pageSource.slice(barcodeRecordColumnStart, storeRecordColumnStart)
+    assert(
+      barcodeRecordColumnSource.includes("dataIndex: 'setCount'") &&
+        barcodeRecordColumnSource.includes('if (!isBarcodeManagedProduct(record.productType))') &&
+        barcodeRecordColumnSource.includes('return <span>0</span>') &&
+        barcodeRecordColumnSource.includes('openSetCodeManager(record)'),
+      '条码记录列应读取 setCount，多码/套装按 productType 判断，普通商品显示 0',
+    )
+    assert(
+      !barcodeRecordColumnSource.includes("dataIndex: 'isSet'") &&
+        !barcodeRecordColumnSource.includes('record.isSet'),
+      '条码记录列不能再依赖 isSet，否则多码商品数量会漏显示',
+    )
+  })
+  if (productTypeColumnFailure) failures.push(productTypeColumnFailure)
+
+  const productTypeActionFailure = await runTest('商品列表操作列应允许套装和多码进入条码管理', () => {
+    const actionColumnStart = pageSource.indexOf("key: 'actions'")
+    const columnsEnd = pageSource.indexOf('  ]', actionColumnStart)
+    assert(actionColumnStart >= 0 && columnsEnd > actionColumnStart, '页面应保留操作列')
+    const actionColumnSource = pageSource.slice(actionColumnStart, columnsEnd)
+    assert(
+      actionColumnSource.includes('isBarcodeManagedProduct(record.productType)') &&
+        actionColumnSource.includes('normalizeProductType(record.productType) === 2') &&
+        actionColumnSource.includes("t('posAdmin.products.multiBarcodeManagement', '多码管理')") &&
+        actionColumnSource.includes("t('posAdmin.products.setManagement', '套装管理')"),
+      '操作列应按 productType 允许套装和多码进入条码管理，并按类型显示按钮文案',
+    )
+    assert(
+      !actionColumnSource.includes('record.isSet &&'),
+      '操作列不能继续只按 isSet 展示条码管理入口',
+    )
+  })
+  if (productTypeActionFailure) failures.push(productTypeActionFailure)
+
   const categoryParentValueFailure = await runTest('商品分类父级 Cascader 应只提交叶子 GUID', () => {
     assert(
       pageSource.includes('resolveCascaderLeafValue') &&
@@ -578,6 +707,16 @@ async function main() {
         pageSource.includes('affectedRowCount') &&
         pageSource.includes('商品成功 {{success}}'),
       '发送到 HQ 结果应区分商品成功数和 HQ 影响记录数，避免统计语义混淆',
+    )
+    assert(
+      pageSource.includes("t('posAdmin.products.productSetCodesCreated', '套装编码新增')") &&
+        pageSource.includes("t('posAdmin.products.productSetCodesUpdated', '套装编码更新')") &&
+        pageSource.includes("t('posAdmin.products.storeMultiCodesCreated', '门店多码新增')") &&
+        pageSource.includes("t('posAdmin.products.storeMultiCodesUpdated', '门店多码更新')") &&
+        serviceSource.includes('Number(payload.productSetCodesCreated ?? payload.productSetCodesAdded ?? 0)') &&
+        serviceSource.includes('Number(payload.storeMultiCodesCreated ?? 0)') &&
+        serviceSource.includes('Number(payload.storeMultiCodesUpdated ?? 0)'),
+      '发送到 HQ 成功弹窗和服务归一化应覆盖套装编码与门店多码统计',
     )
     assert(
       pageSource.includes('if (!ensureCanManagePosProducts()) return') &&

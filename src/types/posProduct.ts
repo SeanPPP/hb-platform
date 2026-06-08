@@ -136,6 +136,7 @@ export interface PushProductsToHqItem {
   importPrice?: number
   oemPrice?: number
   isNewProduct: boolean
+  warehouseIsActive?: boolean
 }
 
 export interface PushProductsToHqRequest {
@@ -172,6 +173,7 @@ export interface BatchUpdateSupplierImagesRequest {
   updateHbweb: boolean
   updateHq: boolean
   saveSupplierImageBaseUrl?: boolean
+  productCodes?: string[]
 }
 
 export interface BatchUpdateSupplierImagesJobRequest extends BatchUpdateSupplierImagesRequest {

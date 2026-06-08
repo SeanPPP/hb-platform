@@ -386,6 +386,7 @@ try {
     updateHbweb: true,
     updateHq: false,
     saveSupplierImageBaseUrl: false,
+    productCodes: ['P001', 'P002'],
     operationId: 'supplier-image:DATS',
   })
   assertEqual(
@@ -402,9 +403,10 @@ try {
       updateHbweb: true,
       updateHq: false,
       saveSupplierImageBaseUrl: false,
+      productCodes: ['P001', 'P002'],
       operationId: 'supplier-image:DATS',
     },
-    '供应商图片批量修改 job 请求应保留模板、目标库、保存标记和 operationId',
+    '供应商图片批量修改 job 请求应保留模板、目标库、选择商品、保存标记和 operationId',
   )
   assertEqual(imageJob.status, 'Queued', '供应商图片批量修改 job queued 应归一为 Queued')
 

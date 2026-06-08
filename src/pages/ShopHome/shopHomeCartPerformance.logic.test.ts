@@ -198,10 +198,13 @@ async function main() {
   const bestSellerBranchSalesFailure = await runTest('热销商品分店销量明细应按销量倒序展示', () => {
     assert(
       bestSellersSource.includes('function getBranchSalesRows(product: BestSellerProduct)') &&
+        bestSellersSource.includes('function getBranchSalesCount(product: BestSellerProduct)') &&
+        bestSellersSource.includes('return product.branchSalesCount ?? product.branchSales?.length ?? 0') &&
         bestSellersSource.includes('].sort((a, b) => (b.quantity ?? 0) - (a.quantity ?? 0))') &&
         bestSellersSource.includes("defaultSortOrder: 'descend'") &&
+        bestSellersSource.includes('const count = getBranchSalesCount(record)') &&
         bestSellersSource.includes('shop-best-sellers-branch-sales-popover'),
-      '分店销量明细缺少默认销量倒序排序或紧凑弹层',
+      '分店销量明细缺少默认销量倒序排序、branchSalesCount 优先级或紧凑弹层',
     )
   })
   if (bestSellerBranchSalesFailure) failures.push(bestSellerBranchSalesFailure)

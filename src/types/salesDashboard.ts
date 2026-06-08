@@ -13,9 +13,13 @@ export interface BestSellerProduct {
   quantity: number
   salesAmount: number
   rank: number
+  // 是否上架，前端用它控制状态展示和加购按钮禁用态。
   isActive?: boolean
+  // 最小起订量，用于热销商品快捷加购默认数量。
   minOrderQuantity?: number
+  // 销售过该商品的分店数，优先使用后端聚合值而不是前端现算长度。
   branchSalesCount?: number
+  // 分店销量明细，用于 Stores Sold 弹层展示。
   branchSales?: BestSellerBranchSale[]
 }
 

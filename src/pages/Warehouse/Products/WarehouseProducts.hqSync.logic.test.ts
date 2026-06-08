@@ -95,6 +95,112 @@ async function main() {
   })
   if (nonAdminAccessFailure) failures.push(nonAdminAccessFailure)
 
+  const shelfStatusTextFailure = await runTest('仓库商品状态文案应使用上架和下架', () => {
+    assert(
+      pageSource.includes("function getShelfStatusLabel(isActive: boolean") &&
+        pageSource.includes("t('warehouse.onShelf', '上架')") &&
+        pageSource.includes("t('warehouse.offShelf', '下架')"),
+      '页面应通过 getShelfStatusLabel 统一仓库商品上下架文案',
+    )
+
+    const formModalSection = extractSection(
+      pageSource,
+      'function ProductFormModal',
+      'function SetItemsModal',
+    )
+    assert(
+      formModalSection.includes("label={t('warehouse.isListed')}") &&
+        formModalSection.includes('checkedChildren={getShelfStatusLabel(true, t)}') &&
+        formModalSection.includes('unCheckedChildren={getShelfStatusLabel(false, t)}'),
+      '编辑弹窗状态字段应显示是否上架和上架/下架 Switch 文案',
+    )
+
+    const columnsSection = extractSection(
+      pageSource,
+      'const columns = useMemo',
+      'return (<>',
+    )
+    assert(
+      columnsSection.includes('checkedChildren={getShelfStatusLabel(true, t)}') &&
+        columnsSection.includes('unCheckedChildren={getShelfStatusLabel(false, t)}') &&
+        !columnsSection.includes("t('warehouse.active')") &&
+        !columnsSection.includes("t('warehouse.inactive')"),
+      '主表状态列应显示上架/下架，不能继续使用启用/停用文案',
+    )
+
+    const batchSection = extractSection(
+      pageSource,
+      'const handleBatchToggleActive = async',
+      'const handleToggleSingleActive',
+    )
+    const singleSection = extractSection(
+      pageSource,
+      'const handleToggleSingleActive = async',
+      'const handleOpenSetItems',
+    )
+    assert(
+      batchSection.includes('status: getShelfStatusLabel(nextIsActive, t)') &&
+        singleSection.includes('status: getShelfStatusLabel(nextIsActive, t)'),
+      '批量和单条状态成功提示应统一使用上架/下架文案',
+    )
+  })
+  if (shelfStatusTextFailure) failures.push(shelfStatusTextFailure)
+
+  const productTypeAndActionFailure = await runTest('仓库商品类型列和操作入口应区分普通套装多码', () => {
+    assert(
+      pageSource.includes('function getProductTypeTagColor(value: ProductType)') &&
+        pageSource.includes('if (value === ProductType.SET) return') &&
+        pageSource.includes('if (value === ProductType.MULTICODE) return') &&
+        pageSource.includes('function canManageProductDetails(productType: ProductType)'),
+      '页面应声明商品类型颜色和可管理类型判断',
+    )
+
+    const columnsSection = extractSection(
+      pageSource,
+      'const columns = useMemo',
+      'return (<>',
+    )
+    assert(
+      columnsSection.includes("title: t('column.productType')") &&
+        columnsSection.includes('dataIndex: \'productType\'') &&
+        columnsSection.includes('<Tag color={getProductTypeTagColor(value)}>{getProductTypeLabel(value, t)}</Tag>'),
+      '商品类型列应以 Tag 显示普通、套装和多码',
+    )
+    assert(
+      columnsSection.includes('canManageProductDetails(record.productType)') &&
+        columnsSection.includes('getProductDetailsActionLabel(record.productType, t)') &&
+        columnsSection.includes('getProductDetailsDisabledHint(t)') &&
+        !columnsSection.includes('record.productType === 1 ?'),
+      '操作列应允许套装和多码进入管理入口，不能再只判断 productType === 1',
+    )
+    assert(
+      pageSource.includes("t('warehouse.multiCodeManagement', '多码管理')") &&
+        pageSource.includes("t('warehouse.normalProductNoDetails', '普通商品没有套装或多码明细')"),
+      '多码商品和普通商品应有明确操作文案',
+    )
+  })
+  if (productTypeAndActionFailure) failures.push(productTypeAndActionFailure)
+
+  const productDetailsModalFailure = await runTest('套装和多码应复用明细弹窗但按类型显示标题和提示', () => {
+    const modalSection = extractSection(
+      pageSource,
+      'function SetItemsModal',
+      'export default function WarehouseProductsPage',
+    )
+    assert(
+      modalSection.includes('title={getProductDetailsModalTitle(product, t)}') &&
+        modalSection.includes('getProductDetailsHint(product?.productType, t)') &&
+        modalSection.includes("t('warehouse.addMultiCodeDetail', '新增多码')"),
+      '明细弹窗应按商品类型展示套装或多码标题、提示和新增按钮',
+    )
+    assert(
+      pageSource.includes("t('warehouse.multiCodeDetailsTitle', '多码管理 - {{name}}'") &&
+        pageSource.includes("t('warehouse.multiCodeEditHint', '多码商品可维护多码条码、价格和分店同步使用的明细。')"),
+      '多码明细弹窗应有独立标题和说明文案',
+    )
+  })
+  if (productDetailsModalFailure) failures.push(productDetailsModalFailure)
+
   const adminOnlyButtonFailure = await runTest('页面应仅对 Admin 渲染从 HQ 同步按钮', () => {
     assert(
       pageSource.includes('CloudSyncOutlined'),

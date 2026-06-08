@@ -11,8 +11,8 @@ import { getDomesticProductSetItems, getSupplierOptions, updateDomesticProductSe
 import { exportDomesticProductsToExcel, type ExportResult } from '../../../services/exportService';
 import { HqProductSyncPollingCancelledError, HqProductSyncPollingTimeoutError, batchToggleWarehouseProductsActive, createWarehouseProductHqSyncJob, createWarehouseProductHqSyncJobPoller, getWarehouseProductHqSyncJob, getWarehouseProductsTable, updateWarehouseProductFull, type WarehouseProductHqSyncJobResult, type WarehouseProductHqSyncJobStatus, type WarehouseProductListItem, type WarehouseProductsTableQuery, } from '../../../services/warehouseProductService';
 import { useAuthStore } from '../../../store/auth';
-import type { DomesticProductSetItem, ProductType, SupplierOption, } from '../../../types/domesticProduct';
-import { ProductTypeLabels } from '../../../types/domesticProduct';
+import type { DomesticProductSetItem, SupplierOption, } from '../../../types/domesticProduct';
+import { ProductType, ProductTypeLabels } from '../../../types/domesticProduct';
 import { copyTextToClipboard } from '../../../utils/clipboard';
 import CreateProductModal from './CreateProductModal';
 import ImportFromDomesticModal from './ImportFromDomesticModal';
@@ -38,9 +38,12 @@ interface ProductFormValues {
     isActive: boolean;
 }
 const getStatusOptions = (t: ReturnType<typeof useTranslation>['t']) => [
-    { value: true, label: t('warehouse.active') },
-    { value: false, label: t('warehouse.inactive') },
+    { value: true, label: getShelfStatusLabel(true, t) },
+    { value: false, label: getShelfStatusLabel(false, t) },
 ];
+function getShelfStatusLabel(isActive: boolean, t: ReturnType<typeof useTranslation>['t']) {
+    return isActive ? t('warehouse.onShelf', '上架') : t('warehouse.offShelf', '下架');
+}
 function getProductTypeLabel(value: ProductType, t: ReturnType<typeof useTranslation>['t']) {
     const keyMap: Record<ProductType, string> = {
         [0]: 'warehouse.normal',
@@ -48,6 +51,34 @@ function getProductTypeLabel(value: ProductType, t: ReturnType<typeof useTransla
         [2]: 'warehouse.hasMultiCode',
     };
     return t(keyMap[value]) || ProductTypeLabels[value] || '--';
+}
+function getProductTypeTagColor(value: ProductType) {
+    if (value === ProductType.SET) return 'gold';
+    if (value === ProductType.MULTICODE) return 'blue';
+    return 'default';
+}
+function canManageProductDetails(productType: ProductType) {
+    return productType === ProductType.SET || productType === ProductType.MULTICODE;
+}
+function getProductDetailsActionLabel(productType: ProductType, t: ReturnType<typeof useTranslation>['t']) {
+    return productType === ProductType.MULTICODE
+        ? t('warehouse.multiCodeManagement', '多码管理')
+        : t('warehouse.setSubItems');
+}
+function getProductDetailsDisabledHint(t: ReturnType<typeof useTranslation>['t']) {
+    return t('warehouse.normalProductNoDetails', '普通商品没有套装或多码明细');
+}
+function getProductDetailsModalTitle(product: WarehouseProductListItem | null, t: ReturnType<typeof useTranslation>['t']) {
+    const name = product?.itemNumber || product?.name;
+    if (!product) return t('warehouse.setDetails');
+    return product.productType === ProductType.MULTICODE
+        ? t('warehouse.multiCodeDetailsTitle', '多码管理 - {{name}}', { name })
+        : t('warehouse.setDetailsTitle', { name });
+}
+function getProductDetailsHint(productType: ProductType | undefined, t: ReturnType<typeof useTranslation>['t']) {
+    return productType === ProductType.MULTICODE
+        ? t('warehouse.multiCodeEditHint', '多码商品可维护多码条码、价格和分店同步使用的明细。')
+        : t('warehouse.setEditHint');
 }
 function getProductTypeOptions(t: ReturnType<typeof useTranslation>['t']) {
     return Object.keys(ProductTypeLabels).map((value) => ({
@@ -207,8 +238,8 @@ function ProductFormModal({ open, saving, editingItem, suppliers, form, onCancel
           <Form.Item name="productType" label={t('warehouse.productType')} style={{ width: 180 }} rules={[{ required: true, message: t('warehouse.selectProductType') }]}>
             <Select placeholder={t('warehouse.selectProductType')} options={productTypeOptions}/>
           </Form.Item>
-          <Form.Item name="isActive" label={t('domesticProducts.status')} valuePropName="checked" style={{ width: 120 }}>
-            <Switch checkedChildren={t('warehouse.active')} unCheckedChildren={t('warehouse.inactive')}/>
+          <Form.Item name="isActive" label={t('warehouse.isListed')} valuePropName="checked" style={{ width: 120 }}>
+            <Switch checkedChildren={getShelfStatusLabel(true, t)} unCheckedChildren={getShelfStatusLabel(false, t)}/>
           </Form.Item>
         </Space>
 
@@ -334,13 +365,13 @@ function SetItemsModal({ open, loading, saving, product, items, canEdit, onCance
           </Button>) : null,
         },
     ];
-    return (<Modal title={product ? t('warehouse.setDetailsTitle', { name: product.itemNumber || product.name }) : t('warehouse.setDetails')} open={open} width={1100} destroyOnClose onCancel={onCancel} onOk={onSubmit} okText={t('common.save')} cancelText={t('common.close')} confirmLoading={saving} okButtonProps={{ disabled: !canEdit }}>
+    return (<Modal title={getProductDetailsModalTitle(product, t)} open={open} width={1100} destroyOnClose onCancel={onCancel} onOk={onSubmit} okText={t('common.save')} cancelText={t('common.close')} confirmLoading={saving} okButtonProps={{ disabled: !canEdit }}>
       <Space style={{ marginBottom: 16 }}>
         <Typography.Text type="secondary">
-          {t('warehouse.setEditHint')}
+          {getProductDetailsHint(product?.productType, t)}
         </Typography.Text>
         {canEdit ? (<Button type="dashed" onClick={onAddRow}>
-            {t('warehouse.addSubItem')}
+            {product?.productType === ProductType.MULTICODE ? t('warehouse.addMultiCodeDetail', '新增多码') : t('warehouse.addSubItem')}
           </Button>) : null}
       </Space>
       <Table rowKey="id" loading={loading} columns={columns} dataSource={items} pagination={false} scroll={{ x: 980, y: 420 }}/>
@@ -654,7 +685,7 @@ export default function WarehouseProductsPage() {
                 message.error(result.message || t('warehouse.batchStatusUpdateFailed'));
                 return;
             }
-            message.success(result.message || t('warehouse.batchStatusUpdated', { status: nextIsActive ? t('warehouse.active') : t('warehouse.inactive'), count: selectedRowKeys.length }));
+            message.success(result.message || t('warehouse.batchStatusUpdated', { status: getShelfStatusLabel(nextIsActive, t), count: selectedRowKeys.length }));
             void loadData({ page });
         }
         catch (error) {
@@ -677,7 +708,7 @@ export default function WarehouseProductsPage() {
                 return;
             }
             setData((current) => current.map((item) => (item.productCode === record.productCode ? { ...item, isActive: nextIsActive } : item)));
-            message.success(result.message || t('warehouse.statusToggled', { status: nextIsActive ? t('warehouse.active') : t('warehouse.inactive') }));
+            message.success(result.message || t('warehouse.statusToggled', { status: getShelfStatusLabel(nextIsActive, t) }));
         }
         catch (error) {
             console.error(error);
@@ -904,13 +935,13 @@ export default function WarehouseProductsPage() {
             title: t('column.status'),
             dataIndex: 'isActive',
             width: 110,
-            render: (value: boolean, record) => (<Switch checked={value} checkedChildren={t('warehouse.active')} unCheckedChildren={t('warehouse.inactive')} disabled={!access.canWriteProduct || togglingProductCodes.includes(record.productCode)} loading={togglingProductCodes.includes(record.productCode)} onChange={(nextChecked) => void handleToggleSingleActive(record, nextChecked)}/>),
+            render: (value: boolean, record) => (<Switch checked={value} checkedChildren={getShelfStatusLabel(true, t)} unCheckedChildren={getShelfStatusLabel(false, t)} disabled={!access.canWriteProduct || togglingProductCodes.includes(record.productCode)} loading={togglingProductCodes.includes(record.productCode)} onChange={(nextChecked) => void handleToggleSingleActive(record, nextChecked)}/>),
         },
         {
             title: t('column.productType'),
             dataIndex: 'productType',
             width: 120,
-            render: (value: ProductType) => getProductTypeLabel(value, t),
+            render: (value: ProductType) => <Tag color={getProductTypeTagColor(value)}>{getProductTypeLabel(value, t)}</Tag>,
         },
         {
             title: t('column.domesticPrice'),
@@ -979,11 +1010,11 @@ export default function WarehouseProductsPage() {
             {access.canWriteProduct ? (<Button type="link" icon={<EditOutlined />} onClick={() => handleOpenEdit(record)}>
                 {t('common.edit')}
               </Button>) : null}
-            {record.productType === 1 ? (<Button type="link" icon={<GiftOutlined />} onClick={() => void handleOpenSetItems(record)}>
-                {t('warehouse.setSubItems')}
-              </Button>) : (<Tooltip title={t('warehouse.setEditOnlyHint')}>
+            {canManageProductDetails(record.productType) ? (<Button type="link" icon={<GiftOutlined />} onClick={() => void handleOpenSetItems(record)}>
+                {getProductDetailsActionLabel(record.productType, t)}
+              </Button>) : (<Tooltip title={getProductDetailsDisabledHint(t)}>
                 <Button type="link" icon={<GiftOutlined />} disabled>
-                  {t('warehouse.setSubItems')}
+                  {getProductDetailsActionLabel(ProductType.SET, t)}
                 </Button>
               </Tooltip>)}
           </Space>),
@@ -1010,12 +1041,12 @@ export default function WarehouseProductsPage() {
           <Button icon={<UploadOutlined />} onClick={() => message.info(t('warehouse.batchImageUploadMigrated'))}>
             {t('warehouse.batchImageUpload')}
           </Button>
-          {access.canWriteProduct ? (<Popconfirm title={t('warehouse.confirmBatchActivate')} okText={t('warehouse.active')} cancelText={t('common.cancel')} disabled={!selectedRowKeys.length} onConfirm={() => void handleBatchToggleActive(true)}>
+          {access.canWriteProduct ? (<Popconfirm title={t('warehouse.confirmBatchActivate')} okText={getShelfStatusLabel(true, t)} cancelText={t('common.cancel')} disabled={!selectedRowKeys.length} onConfirm={() => void handleBatchToggleActive(true)}>
               <Button loading={batchActionLoading} disabled={!selectedRowKeys.length || batchActionLoading}>
                 {t('warehouse.batchActivate')}
               </Button>
             </Popconfirm>) : null}
-          {access.canWriteProduct ? (<Popconfirm title={t('warehouse.confirmBatchDeactivate')} okText={t('warehouse.inactive')} cancelText={t('common.cancel')} disabled={!selectedRowKeys.length} onConfirm={() => void handleBatchToggleActive(false)}>
+          {access.canWriteProduct ? (<Popconfirm title={t('warehouse.confirmBatchDeactivate')} okText={getShelfStatusLabel(false, t)} cancelText={t('common.cancel')} disabled={!selectedRowKeys.length} onConfirm={() => void handleBatchToggleActive(false)}>
               <Button loading={batchActionLoading} disabled={!selectedRowKeys.length || batchActionLoading}>
                 {t('warehouse.batchDeactivate')}
               </Button>

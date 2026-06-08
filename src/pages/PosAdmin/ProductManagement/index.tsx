@@ -106,6 +106,11 @@ import {
   validateSupplierImageTemplate,
   type SupplierImageMode,
 } from './productImageTemplate'
+import {
+  buildSupplierImageBatchScopeRequest,
+  getDefaultSupplierImageBatchScope,
+  type SupplierImageBatchScope,
+} from './productImageBatchScope'
 
 type ProductRow = PosProductDto & { key: string }
 type HqSyncMode = Parameters<typeof buildProductHqSyncOperationId>[0]
@@ -140,6 +145,8 @@ const PRODUCT_HQ_SYNC_POLL_INTERVAL_MS = 2000
 const PRODUCT_HQ_SYNC_TIMEOUT_MS = 10 * 60 * 1000
 const SUPPLIER_IMAGE_BATCH_POLL_INTERVAL_MS = 2000
 const SUPPLIER_IMAGE_BATCH_TIMEOUT_MS = 30 * 60 * 1000
+const PRODUCT_IMAGE_FALLBACK = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNDAiIGhlaWdodD0iNDAiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+PHJlY3Qgd2lkdGg9IjQwIiBoZWlnaHQ9IjQwIiBmaWxsPSIjZjBmMGYwIi8+PHRleHQgeD0iMjAiIHk9IjI0IiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBmb250LXNpemU9IjEwIiBmaWxsPSIjY2NjIj7ml6DnvKk8L3RleHQ+PC9zdmc+'
+const DEFAULT_PRODUCT_IMAGE_BASE_URL = 'https://hotbargain-yw-2023-1300114625.cos.ap-shanghai.myqcloud.com/YW200'
 
 function readActiveProductHqSyncJob(): ActiveProductHqSyncJob | null {
   if (typeof window === 'undefined') return null
@@ -169,6 +176,29 @@ function resolveCascaderLeafValue(value: unknown): string | undefined {
     return leaf === undefined || leaf === null || leaf === '' ? undefined : String(leaf)
   }
   return typeof value === 'string' && value ? value : undefined
+}
+
+function buildDefaultProductImageUrl(itemNumber: unknown): string {
+  const normalizedItemNumber = String(itemNumber ?? '').trim()
+  return normalizedItemNumber
+    ? `${DEFAULT_PRODUCT_IMAGE_BASE_URL}/${encodeURIComponent(normalizedItemNumber)}.jpg`
+    : ''
+}
+
+function normalizeProductType(productType: unknown): 0 | 1 | 2 {
+  return productType === 1 || productType === 2 ? productType : 0
+}
+
+function getProductTypeColor(productType: unknown): string {
+  const normalizedType = normalizeProductType(productType)
+  if (normalizedType === 1) return 'blue'
+  if (normalizedType === 2) return 'purple'
+  return 'default'
+}
+
+function isBarcodeManagedProduct(productType: unknown): boolean {
+  const normalizedType = normalizeProductType(productType)
+  return normalizedType === 1 || normalizedType === 2
 }
 
 function collectCategoryGuids(nodes: ProductCategoryDto[] | undefined): string[] {
@@ -235,6 +265,7 @@ const SORT_FIELD_MAP: Record<string, string> = {
   purchasePrice: 'purchaseprice',
   retailPrice: 'retailprice',
   isActive: 'isactive',
+  productType: 'producttype',
   storeRecordCount: 'storerecordcount',
   createdAt: 'createdat',
   updatedAt: 'updatedat',
@@ -1088,6 +1119,13 @@ export default function ProductManagementPage() {
     return fields
   }
 
+  const getProductTypeLabel = useCallback((productType: unknown) => {
+    const normalizedType = normalizeProductType(productType)
+    if (normalizedType === 1) return t('posAdmin.products.setProduct', '套装')
+    if (normalizedType === 2) return t('posAdmin.products.multiCodeProductShort', '多码')
+    return t('posAdmin.products.normalProduct', '普通')
+  }, [t])
+
   const showPushToHqResult = useCallback((result: PushProductsToHqResult) => {
     const errors = result.errors ?? []
     const detailStats = [
@@ -1237,6 +1275,7 @@ export default function ProductManagementPage() {
       barcode: record.barcode,
       productName: record.productName,
       productNameCn: record.productNameCn,
+      productImage: record.productImage || buildDefaultProductImageUrl(record.itemNumber || record.productCode),
       itemNumber: record.itemNumber,
       localSupplierCode: record.localSupplierCode,
       productType: record.productType ?? 0,
@@ -1384,6 +1423,7 @@ export default function ProductManagementPage() {
         productName: values.productName,
         itemNumber: values.itemNumber,
         barcode: values.barcode,
+        localSupplierCode: values.localSupplierCode,
         purchasePrice: values.purchasePrice,
         retailPrice: values.retailPrice,
         unitWeight: values.unitWeight,
@@ -1393,6 +1433,8 @@ export default function ProductManagementPage() {
         isSpecialProduct: values.isSpecialProduct,
         isActive: values.isActive,
         categoryGuid: resolvedCategoryGuid,
+        // 后端商品更新可能是覆盖式 PUT，保存多码前必须带回原图片字段。
+        productImage: values.productImage ?? editingProduct.productImage ?? '',
       }
       await updateProduct(editingProduct.productCode, updateData)
 
@@ -1487,10 +1529,12 @@ export default function ProductManagementPage() {
     if (!ensureCanManagePosProducts()) return
     const defaultMode: SupplierImageMode = 'supplier'
     const defaultSupplierCode = supplierCodeInput || supplierCode
+    const defaultScope = getDefaultSupplierImageBatchScope(selectedRowKeys)
     imageBatchForm.resetFields()
     imageBatchForm.setFieldsValue({
       localSupplierCode: defaultSupplierCode,
       mode: defaultMode,
+      scope: defaultScope,
       updateTargets: ['hbweb', 'hq'],
       saveSupplierImageBaseUrl: false,
     })
@@ -1520,6 +1564,10 @@ export default function ProductManagementPage() {
         updateHbweb: targets.includes('hbweb'),
         updateHq: targets.includes('hq'),
         saveSupplierImageBaseUrl: values.saveSupplierImageBaseUrl ?? false,
+        ...buildSupplierImageBatchScopeRequest(
+          (values.scope || 'supplier') as SupplierImageBatchScope,
+          selectedRowKeys,
+        ),
       }
       const operationId = buildSupplierImageBatchUpdateOperationId(request)
       const job = await createSupplierImageBatchUpdateJob({
@@ -2125,7 +2173,7 @@ export default function ProductManagementPage() {
       align: 'center',
       render: (v: string) =>
         v ? (
-          <Image className="pos-products-image-cell" src={v} width={34} height={34} style={{ objectFit: 'contain' }} preview={{ mask: '' }} fallback="data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNDAiIGhlaWdodD0iNDAiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+PHJlY3Qgd2lkdGg9IjQwIiBoZWlnaHQ9IjQwIiBmaWxsPSIjZjBmMGYwIi8+PHRleHQgeD0iMjAiIHk9IjI0IiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBmb250LXNpemU9IjEwIiBmaWxsPSIjY2NjIj7ml6DnvKk8L3RleHQ+PC9zdmc+" />
+          <Image className="pos-products-image-cell" src={v} width={34} height={34} style={{ objectFit: 'contain' }} preview={{ mask: '' }} fallback={PRODUCT_IMAGE_FALLBACK} />
         ) : (
           <span className="pos-products-image-cell">-</span>
         ),
@@ -2234,26 +2282,44 @@ export default function ProductManagementPage() {
       render: (v: boolean) => <Tag color={v ? 'green' : 'red'}>{v ? t('posAdmin.products.enable', '启用') : t('posAdmin.products.disable', '禁用')}</Tag>,
     },
     {
-      title: t('posAdmin.products.multiBarcodeProduct', '套装'),
-      dataIndex: 'isSet',
-      width: 64,
+      title: t('posAdmin.products.productTypeLabel', '商品类型'),
+      dataIndex: 'productType',
+      width: 74,
       align: 'center',
-      render: (v: boolean, record) =>
-        v ? (
-          <Tooltip title={t('posAdmin.products.setTooltip', '套装 ({{count}} 个子码)', { count: record.setCount ?? 0 })}>
-            <Tag
-              color="blue"
-              style={{ cursor: canManagePosProducts ? 'pointer' : 'default' }}
-              onClick={() => {
-                if (canManagePosProducts) openSetCodeManager(record)
-              }}
-            >
-              {t('posAdmin.products.setProduct', '套装')}
-            </Tag>
-          </Tooltip>
+      sorter: true,
+      sortOrder: sortBy === 'productType' ? sortOrder : undefined,
+      render: (v: number | undefined) => (
+        <Tag color={getProductTypeColor(v)}>
+          {getProductTypeLabel(v)}
+        </Tag>
+      ),
+    },
+    {
+      title: t('posAdmin.products.barcodeRecordCount', '条码记录'),
+      dataIndex: 'setCount',
+      width: 74,
+      align: 'center',
+      render: (v: number | undefined, record) => {
+        const count = Number(v ?? 0)
+        if (!isBarcodeManagedProduct(record.productType)) {
+          return <span>0</span>
+        }
+
+        const typeLabel = getProductTypeLabel(record.productType)
+        const content = canManagePosProducts ? (
+          <Button type="link" size="small" onClick={() => openSetCodeManager(record)}>
+            {count}
+          </Button>
         ) : (
-          '-'
-        ),
+          <span>{count}</span>
+        )
+
+        return (
+          <Tooltip title={t('posAdmin.products.barcodeRecordTooltip', '{{type}} ({{count}} 条记录)', { type: typeLabel, count })}>
+            {content}
+          </Tooltip>
+        )
+      },
     },
     {
       title: t('posAdmin.products.storeRecords', '分店记录'),
@@ -2311,9 +2377,11 @@ export default function ProductManagementPage() {
               <Button type="link" size="small" onClick={() => openEdit(record)}>
                 {t('posAdmin.products.edit', '编辑')}
               </Button>
-              {record.isSet && (
+              {isBarcodeManagedProduct(record.productType) && (
                 <Button type="link" size="small" onClick={() => openSetCodeManager(record)}>
-                  {t('posAdmin.products.setManagement', '套装管理')}
+                  {normalizeProductType(record.productType) === 2
+                    ? t('posAdmin.products.multiBarcodeManagement', '多码管理')
+                    : t('posAdmin.products.setManagement', '套装管理')}
                 </Button>
               )}
             </>
@@ -2614,6 +2682,31 @@ export default function ProductManagementPage() {
           <Form.Item name="productName" label={t('posAdmin.products.productName', '商品名称')} rules={[{ required: true, message: t('posAdmin.products.inputProductName', '请输入商品名称') }]}>
             <Input />
           </Form.Item>
+          <Form.Item label={t('posAdmin.invoiceDetail.image', '图片')}>
+            <Space align="start" className="pos-products-edit-image-field">
+              <Form.Item shouldUpdate={(prev, cur) => prev.productImage !== cur.productImage} noStyle>
+                {({ getFieldValue }) => {
+                  const productImage = String(getFieldValue('productImage') ?? '').trim()
+                  return productImage ? (
+                    <Image
+                      className="pos-products-edit-image-preview"
+                      src={productImage}
+                      width={64}
+                      height={64}
+                      style={{ objectFit: 'contain' }}
+                      preview={{ mask: '' }}
+                      fallback={PRODUCT_IMAGE_FALLBACK}
+                    />
+                  ) : (
+                    <span className="pos-products-edit-image-preview">-</span>
+                  )
+                }}
+              </Form.Item>
+              <Form.Item name="productImage" noStyle>
+                <Input allowClear placeholder={t('posAdmin.products.productImageUrlPlaceholder', '请输入商品图片 URL')} />
+              </Form.Item>
+            </Space>
+          </Form.Item>
           <Row gutter={16}>
             <Col span={12}>
               <Form.Item label={t('posAdmin.products.addItemNumber', '货号')}>
@@ -2639,7 +2732,7 @@ export default function ProductManagementPage() {
           <Row gutter={16}>
             <Col span={12}>
               <Form.Item name="localSupplierCode" label={t('posAdmin.products.supplier', '供应商')}>
-                <Select allowClear showSearch optionFilterProp="label" options={supplierOptions} disabled />
+                <Select allowClear showSearch optionFilterProp="label" options={supplierOptions} placeholder={t('posAdmin.products.selectSupplier', '请选择供应商')} />
               </Form.Item>
             </Col>
             <Col span={12}>
@@ -2803,6 +2896,14 @@ export default function ProductManagementPage() {
               <Radio.Button value="cos">{t('posAdmin.products.cosImageTemplate', 'COS 地址')}</Radio.Button>
             </Radio.Group>
           </Form.Item>
+          <Form.Item name="scope" label={t('posAdmin.products.imageUpdateScope', '更新范围')} initialValue="supplier">
+            <Radio.Group>
+              <Radio.Button value="supplier">{t('posAdmin.products.imageUpdateSupplierScope', '供应商全部商品')}</Radio.Button>
+              <Radio.Button value="selected" disabled={!selectedRowKeys.length}>
+                {t('posAdmin.products.imageUpdateSelectedScope', '选中商品 ({{count}})', { count: selectedRowKeys.length })}
+              </Radio.Button>
+            </Radio.Group>
+          </Form.Item>
           <Form.Item
             name="urlTemplate"
             label={t('posAdmin.suppliers.imageBaseUrl', '图片基础 URL')}
@@ -2834,7 +2935,7 @@ export default function ProductManagementPage() {
           </Form.Item>
           <div style={{ color: '#666', paddingLeft: 150 }}>
             <p style={{ marginBottom: 4 }}>
-              {t('posAdmin.products.batchImageScopeTip', '仅为该供应商未删除且图片为空的商品补图，Hbweb/HQ 已有图片分别跳过。')}
+              {t('posAdmin.products.batchImageScopeTip', '供应商全部商品会为该供应商未删除且图片为空的商品补图；选中商品只更新当前勾选商品。Hbweb/HQ 已有图片分别跳过。')}
             </p>
             {imageBatchSupplier?.imageBaseUrl ? (
               <p style={{ marginBottom: 4 }}>

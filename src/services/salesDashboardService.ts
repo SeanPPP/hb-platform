@@ -1,5 +1,7 @@
 import type { ApiResponse } from '../types/api'
 import type {
+  BestSellerBranchSale,
+  BestSellerProduct,
   BestSellerResponse,
   BranchSalesAggregate,
   ChinaSupplierSalesRank,
@@ -13,6 +15,8 @@ import type {
 import request from '../utils/request'
 
 export type {
+  BestSellerBranchSale,
+  BestSellerProduct,
   BranchSalesAggregate,
   ChinaSupplierSalesRank,
   DateRange,
@@ -22,6 +26,73 @@ export type {
   SupplierSalesRank,
   WeeklyHierarchyData,
 } from '../types/salesDashboard'
+
+function readNumber(value: unknown, fallback = 0) {
+  return typeof value === 'number' && Number.isFinite(value) ? value : fallback
+}
+
+function readOptionalNumber(value: unknown) {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
+}
+
+function readString(value: unknown) {
+  return typeof value === 'string' && value.trim() ? value : undefined
+}
+
+function normalizeBestSellerBranchSale(raw: unknown): BestSellerBranchSale | null {
+  if (!raw || typeof raw !== 'object') {
+    return null
+  }
+
+  const record = raw as Record<string, unknown>
+  const branchCode = readString(record.branchCode ?? record.BranchCode)
+
+  if (!branchCode) {
+    return null
+  }
+
+  return {
+    branchCode,
+    branchName: readString(record.branchName ?? record.BranchName),
+    quantity: readNumber(record.quantity ?? record.Quantity),
+  }
+}
+
+function normalizeBestSellerProduct(raw: unknown): BestSellerProduct | null {
+  if (!raw || typeof raw !== 'object') {
+    return null
+  }
+
+  const record = raw as Record<string, unknown>
+  const productCode = readString(record.productCode ?? record.ProductCode)
+
+  if (!productCode) {
+    return null
+  }
+
+  const branchSales = Array.isArray(record.branchSales ?? record.BranchSales)
+    ? ((record.branchSales ?? record.BranchSales) as unknown[])
+        .map(normalizeBestSellerBranchSale)
+        .filter((item): item is BestSellerBranchSale => item !== null)
+    : undefined
+
+  return {
+    productCode,
+    itemNumber: readString(record.itemNumber ?? record.ItemNumber),
+    barcode: readString(record.barcode ?? record.Barcode),
+    productImage: readString(record.productImage ?? record.ProductImage),
+    productName: readString(record.productName ?? record.ProductName),
+    quantity: readNumber(record.quantity ?? record.Quantity),
+    salesAmount: readNumber(record.salesAmount ?? record.SalesAmount),
+    rank: readNumber(record.rank ?? record.Rank),
+    isActive: typeof (record.isActive ?? record.IsActive) === 'boolean'
+      ? (record.isActive ?? record.IsActive) as boolean
+      : undefined,
+    minOrderQuantity: readOptionalNumber(record.minOrderQuantity ?? record.MinOrderQuantity),
+    branchSalesCount: readOptionalNumber(record.branchSalesCount ?? record.BranchSalesCount),
+    branchSales,
+  }
+}
 
 function unwrapBestSellerResponse(payload: ApiResponse<BestSellerResponse> | BestSellerResponse): BestSellerResponse {
   let current: unknown = payload
@@ -51,13 +122,18 @@ function unwrapBestSellerResponse(payload: ApiResponse<BestSellerResponse> | Bes
   }
 
   const result = (current ?? {}) as Partial<BestSellerResponse>
+  const products = Array.isArray(result.products ?? (result as Record<string, unknown>).Products)
+    ? ((result.products ?? (result as Record<string, unknown>).Products) as unknown[])
+        .map(normalizeBestSellerProduct)
+        .filter((item): item is BestSellerProduct => item !== null)
+    : []
 
   return {
-    products: Array.isArray(result.products) ? result.products : [],
-    total: result.total ?? 0,
-    pageIndex: result.pageIndex ?? 1,
-    pageSize: result.pageSize ?? 0,
-    totalPages: result.totalPages ?? 0,
+    products,
+    total: readNumber(result.total ?? (result as Record<string, unknown>).Total),
+    pageIndex: readNumber(result.pageIndex ?? (result as Record<string, unknown>).PageIndex, 1),
+    pageSize: readNumber(result.pageSize ?? (result as Record<string, unknown>).PageSize),
+    totalPages: readNumber(result.totalPages ?? (result as Record<string, unknown>).TotalPages),
   }
 }
 
