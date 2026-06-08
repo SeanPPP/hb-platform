@@ -31,6 +31,21 @@ namespace BlazorApp.Shared.Models
 
         [SugarColumn(Length = 1000, IsNullable = true)]
         public string? ErrorMessage { get; set; }
+
+        [SugarColumn(IsNullable = true)]
+        public Guid? JobId { get; set; }
+
+        [SugarColumn(Length = 100, IsNullable = true)]
+        public string? RequestedBy { get; set; }
+
+        [SugarColumn(IsNullable = true)]
+        public DateTime? RequestedAtUtc { get; set; }
+
+        [SugarColumn(IsNullable = true)]
+        public DateTime? StartedAtUtc { get; set; }
+
+        [SugarColumn(IsNullable = true)]
+        public DateTime? CompletedAtUtc { get; set; }
     }
 
     public static class SalesStatisticType
@@ -40,6 +55,8 @@ namespace BlazorApp.Shared.Models
 
     public static class SalesStatisticRefreshStatus
     {
+        public const string Queued = "Queued";
+        public const string Running = "Running";
         public const string Pending = "Pending";
         public const string Fresh = "Fresh";
         public const string Stale = "Stale";

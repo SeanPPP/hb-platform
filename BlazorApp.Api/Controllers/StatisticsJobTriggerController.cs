@@ -1,8 +1,11 @@
 using BlazorApp.Api.Services;
 using BlazorApp.Api.Services.Background;
+using BlazorApp.Api.Data;
+using BlazorApp.Shared.Models;
 using BlazorApp.Shared.Models.HBweb;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using SqlSugar;
 
 namespace BlazorApp.Api.Controllers
 {
@@ -13,17 +16,20 @@ namespace BlazorApp.Api.Controllers
     {
         private readonly SalesStatisticsJobService _statisticsJobService;
         private readonly ScheduledTaskLogService _taskLogService;
+        private readonly SqlSugarContext _context;
         private readonly ILogger<StatisticsJobTriggerController> _logger;
         private const int MaxProductStoreDailyBatchDays = 31;
 
         public StatisticsJobTriggerController(
             SalesStatisticsJobService statisticsJobService,
             ScheduledTaskLogService taskLogService,
+            SqlSugarContext context,
             ILogger<StatisticsJobTriggerController> logger
         )
         {
             _statisticsJobService = statisticsJobService;
             _taskLogService = taskLogService;
+            _context = context;
             _logger = logger;
         }
 
@@ -301,39 +307,18 @@ namespace BlazorApp.Api.Controllers
             [FromBody] ProductStoreDailyJobTriggerRequest request
         )
         {
-            Guid taskId = Guid.Empty;
             try
             {
-                var taskLog = await _taskLogService.LogTaskStartAsync(
-                    BlazorApp.Shared.Models.HBweb.TaskType.UpdateProductStoreDailyStatistics,
-                    new TaskParameters { Date = request.Date.ToString("yyyy-MM-dd") },
-                    TaskTrigger.Manual
+                var result = await _statisticsJobService.SubmitProductStoreDailyRecalculationAsync(
+                    new[] { request.Date.Date },
+                    HttpContext?.User?.Identity?.Name
                 );
-                taskId = taskLog.Id;
 
-                _logger.LogInformation("商品分店每日统计任务已触发: Date={Date}", request.Date);
-
-                await _statisticsJobService.UpdateProductStoreDailyStatistics(request.Date);
-
-                await _taskLogService.LogTaskSuccessAsync(taskId);
-
-                return Ok(
-                    new
-                    {
-                        success = true,
-                        message = "商品分店每日统计任务执行完成",
-                        date = request.Date,
-                        jobId = taskId,
-                    }
-                );
+                return Ok(BuildProductStoreDailySubmitResponse(result));
             }
             catch (Exception ex)
             {
-                if (taskId != Guid.Empty)
-                {
-                    await _taskLogService.LogTaskFailureAsync(taskId, ex.Message);
-                }
-                _logger.LogError(ex, "触发商品分店每日统计任务失败");
+                _logger.LogError(ex, "提交商品分店每日统计任务失败");
                 return StatusCode(
                     500,
                     new { success = false, message = "触发任务失败: " + ex.Message }
@@ -341,12 +326,189 @@ namespace BlazorApp.Api.Controllers
             }
         }
 
+        [HttpPost("recent-product-store-daily")]
+        public async Task<IActionResult> RecentProductStoreDailyStatistics(
+            [FromBody] RecentProductStoreDailyJobTriggerRequest? request
+        )
+        {
+            var days = Math.Clamp(request?.Days ?? 7, 1, MaxProductStoreDailyBatchDays);
+            try
+            {
+                var endDate = DateTime.Now.Date;
+                var dates = EnumerateDates(endDate.AddDays(-(days - 1)), endDate);
+                var result = await _statisticsJobService.SubmitProductStoreDailyRecalculationAsync(
+                    dates,
+                    HttpContext?.User?.Identity?.Name
+                );
+
+                return Ok(BuildProductStoreDailySubmitResponse(result));
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "提交最近商品分店每日统计任务失败");
+                return StatusCode(
+                    500,
+                    new { success = false, message = "触发任务失败: " + ex.Message }
+                );
+            }
+        }
+
+        [HttpGet("product-store-daily/states")]
+        public async Task<IActionResult> GetProductStoreDailyStatisticStates(
+            [FromQuery] string? statisticType,
+            [FromQuery] DateTime? startDate,
+            [FromQuery] DateTime? endDate,
+            [FromQuery] string? status
+        )
+        {
+            var targetType = NormalizeProductStatisticType(statisticType);
+            if (targetType == null)
+            {
+                return BadRequest(new { success = false, message = "不支持的统计类型" });
+            }
+
+            var targetStatus = NormalizeStatisticStatus(status);
+            if (!string.IsNullOrWhiteSpace(status) && targetStatus == null)
+            {
+                return BadRequest(new { success = false, message = "不支持的统计状态" });
+            }
+
+            var query = _context.Db.Queryable<SalesStatisticRefreshState>()
+                .Where(s => s.StatisticType == targetType);
+
+            if (startDate.HasValue)
+            {
+                var start = startDate.Value.Date;
+                query = query.Where(s => s.Date >= start);
+            }
+
+            if (endDate.HasValue)
+            {
+                var end = endDate.Value.Date;
+                query = query.Where(s => s.Date <= end);
+            }
+
+            if (!string.IsNullOrWhiteSpace(targetStatus))
+            {
+                query = query.Where(s => s.Status == targetStatus);
+            }
+
+            var rows = await query
+                .OrderBy(s => s.Date, OrderByType.Desc)
+                .Select(s => new SalesStatisticRefreshStateListItemDto
+                {
+                    StatisticType = s.StatisticType,
+                    Date = s.Date,
+                    Status = s.Status,
+                    LastSourceUploadTime = s.LastSourceUploadTime,
+                    SourceTimeZone = s.SourceTimeZone,
+                    LastAggregatedAtUtc = s.LastAggregatedAtUtc,
+                    LastCheckedAtUtc = s.LastCheckedAtUtc,
+                    ErrorMessage = s.ErrorMessage,
+                    JobId = s.JobId,
+                    RequestedAtUtc = s.RequestedAtUtc,
+                    StartedAtUtc = s.StartedAtUtc,
+                    CompletedAtUtc = s.CompletedAtUtc,
+                })
+                .ToListAsync();
+
+            return Ok(new { success = true, data = rows });
+        }
+
+        [HttpGet("product-store-daily/{date:datetime}/summary")]
+        public async Task<IActionResult> GetProductStoreDailyStatisticSummary(DateTime date)
+        {
+            var targetDate = date.Date;
+            var state = await _context.Db.Queryable<SalesStatisticRefreshState>()
+                .Where(s => s.StatisticType == SalesStatisticType.ProductStoreDaily && s.Date == targetDate)
+                .FirstAsync();
+
+            var rows = await _context.Db.Queryable<ProductStoreDailySalesStatistic>()
+                .Where(s => s.Date == targetDate)
+                .Select(s => new
+                {
+                    s.TotalQuantity,
+                    s.TotalAmount,
+                    s.GrossProfit,
+                })
+                .ToListAsync();
+
+            var summary = new ProductStoreDailyStatisticSummaryDto
+            {
+                Date = targetDate,
+                Status = state?.Status ?? SalesStatisticRefreshStatus.Pending,
+                RecordCount = rows.Count,
+                TotalQuantity = rows.Sum(x => x.TotalQuantity),
+                TotalAmount = rows.Sum(x => x.TotalAmount),
+                GrossProfit = rows.Any(x => x.GrossProfit.HasValue)
+                    ? rows.Sum(x => x.GrossProfit ?? 0m)
+                    : null,
+                ReconciliationStatus = ResolveProductStatisticReconciliationStatus(state?.Status, rows.Any()),
+                LastSourceUploadTime = state?.LastSourceUploadTime,
+                SourceTimeZone = state?.SourceTimeZone,
+                LastAggregatedAtUtc = state?.LastAggregatedAtUtc,
+                LastCheckedAtUtc = state?.LastCheckedAtUtc,
+                ErrorMessage = state?.ErrorMessage,
+                JobId = state?.JobId,
+                RequestedAtUtc = state?.RequestedAtUtc,
+                StartedAtUtc = state?.StartedAtUtc,
+                CompletedAtUtc = state?.CompletedAtUtc,
+            };
+
+            return Ok(new { success = true, data = summary });
+        }
+
+        private static string? NormalizeProductStatisticType(string? statisticType)
+        {
+            if (string.IsNullOrWhiteSpace(statisticType))
+            {
+                return SalesStatisticType.ProductStoreDaily;
+            }
+
+            return string.Equals(
+                statisticType.Trim(),
+                SalesStatisticType.ProductStoreDaily,
+                StringComparison.OrdinalIgnoreCase
+            )
+                ? SalesStatisticType.ProductStoreDaily
+                : null;
+        }
+
+        private static string? NormalizeStatisticStatus(string? status)
+        {
+            if (string.IsNullOrWhiteSpace(status))
+            {
+                return null;
+            }
+
+            var normalized = status.Trim();
+            return normalized.ToLowerInvariant() switch
+            {
+                "queued" => SalesStatisticRefreshStatus.Queued,
+                "running" => SalesStatisticRefreshStatus.Running,
+                "pending" => SalesStatisticRefreshStatus.Pending,
+                "fresh" => SalesStatisticRefreshStatus.Fresh,
+                "stale" => SalesStatisticRefreshStatus.Stale,
+                "failed" => SalesStatisticRefreshStatus.Failed,
+                _ => null,
+            };
+        }
+
+        private static string ResolveProductStatisticReconciliationStatus(string? status, bool hasRows)
+        {
+            return status switch
+            {
+                SalesStatisticRefreshStatus.Fresh when hasRows => "Passed",
+                SalesStatisticRefreshStatus.Failed => "Failed",
+                _ => "Pending",
+            };
+        }
+
         [HttpPost("batch-product-store-daily")]
         public async Task<IActionResult> BatchProductStoreDailyStatistics(
             [FromBody] BatchProductStoreDailyUpdateRequest request
         )
         {
-            Guid taskId = Guid.Empty;
             try
             {
                 if (request.StartDate > request.EndDate)
@@ -363,50 +525,46 @@ namespace BlazorApp.Api.Controllers
                     });
                 }
 
-                var taskLog = await _taskLogService.LogTaskStartAsync(
-                    BlazorApp.Shared.Models.HBweb.TaskType.UpdateProductStoreDailyStatisticsBatch,
-                    new TaskParameters
-                    {
-                        StartDate = request.StartDate.ToString("yyyy-MM-dd"),
-                        EndDate = request.EndDate.ToString("yyyy-MM-dd"),
-                    },
-                    TaskTrigger.Manual
+                var result = await _statisticsJobService.SubmitProductStoreDailyRecalculationAsync(
+                    EnumerateDates(request.StartDate, request.EndDate),
+                    HttpContext?.User?.Identity?.Name
                 );
-                taskId = taskLog.Id;
 
-                var processedDays = 0;
-                for (var date = request.StartDate.Date; date <= request.EndDate.Date; date = date.AddDays(1))
-                {
-                    await _statisticsJobService.UpdateProductStoreDailyStatistics(date);
-                    processedDays++;
-                }
-
-                await _taskLogService.LogTaskSuccessAsync(taskId);
-
-                return Ok(
-                    new
-                    {
-                        success = true,
-                        message = "商品分店每日统计批量任务执行完成",
-                        startDate = request.StartDate,
-                        endDate = request.EndDate,
-                        processedDays,
-                        jobId = taskId,
-                    }
-                );
+                return Ok(BuildProductStoreDailySubmitResponse(result));
             }
             catch (Exception ex)
             {
-                if (taskId != Guid.Empty)
-                {
-                    await _taskLogService.LogTaskFailureAsync(taskId, ex.Message);
-                }
-                _logger.LogError(ex, "批量触发商品分店每日统计任务失败");
+                _logger.LogError(ex, "批量提交商品分店每日统计任务失败");
                 return StatusCode(
                     500,
                     new { success = false, message = "触发任务失败: " + ex.Message }
                 );
             }
+        }
+
+        private static List<DateTime> EnumerateDates(DateTime startDate, DateTime endDate)
+        {
+            var dates = new List<DateTime>();
+            for (var date = startDate.Date; date <= endDate.Date; date = date.AddDays(1))
+            {
+                dates.Add(date);
+            }
+            return dates;
+        }
+
+        private static object BuildProductStoreDailySubmitResponse(
+            ProductStoreDailyRecalculationSubmitResult result
+        )
+        {
+            return new
+            {
+                success = true,
+                message = result.Message,
+                jobId = result.JobId,
+                status = result.Status,
+                submittedDates = result.SubmittedDates.Select(date => date.ToString("yyyy-MM-dd")).ToList(),
+                skippedDates = result.SkippedDates.Select(date => date.ToString("yyyy-MM-dd")).ToList(),
+            };
         }
 
         [HttpPost("batch-update-store")]
@@ -985,10 +1143,51 @@ namespace BlazorApp.Api.Controllers
         public DateTime Date { get; set; }
     }
 
+    public class RecentProductStoreDailyJobTriggerRequest
+    {
+        public int Days { get; set; } = 7;
+    }
+
     public class BatchProductStoreDailyUpdateRequest
     {
         public DateTime StartDate { get; set; }
         public DateTime EndDate { get; set; }
+    }
+
+    public class SalesStatisticRefreshStateListItemDto
+    {
+        public string StatisticType { get; set; } = string.Empty;
+        public DateTime Date { get; set; }
+        public string Status { get; set; } = string.Empty;
+        public DateTime? LastSourceUploadTime { get; set; }
+        public string? SourceTimeZone { get; set; }
+        public DateTime? LastAggregatedAtUtc { get; set; }
+        public DateTime? LastCheckedAtUtc { get; set; }
+        public string? ErrorMessage { get; set; }
+        public Guid? JobId { get; set; }
+        public DateTime? RequestedAtUtc { get; set; }
+        public DateTime? StartedAtUtc { get; set; }
+        public DateTime? CompletedAtUtc { get; set; }
+    }
+
+    public class ProductStoreDailyStatisticSummaryDto
+    {
+        public DateTime Date { get; set; }
+        public string Status { get; set; } = string.Empty;
+        public int RecordCount { get; set; }
+        public int TotalQuantity { get; set; }
+        public decimal TotalAmount { get; set; }
+        public decimal? GrossProfit { get; set; }
+        public string ReconciliationStatus { get; set; } = string.Empty;
+        public DateTime? LastSourceUploadTime { get; set; }
+        public string? SourceTimeZone { get; set; }
+        public DateTime? LastAggregatedAtUtc { get; set; }
+        public DateTime? LastCheckedAtUtc { get; set; }
+        public string? ErrorMessage { get; set; }
+        public Guid? JobId { get; set; }
+        public DateTime? RequestedAtUtc { get; set; }
+        public DateTime? StartedAtUtc { get; set; }
+        public DateTime? CompletedAtUtc { get; set; }
     }
 
     public class BatchStoreUpdateRequest

@@ -58,6 +58,15 @@ namespace BlazorApp.Api.Services
         public Guid TaskId { get; set; }
     }
 
+    public class ProductStoreDailyRecalculationSubmitResult
+    {
+        public Guid JobId { get; set; }
+        public List<DateTime> SubmittedDates { get; set; } = new();
+        public List<DateTime> SkippedDates { get; set; } = new();
+        public string Status { get; set; } = SalesStatisticRefreshStatus.Queued;
+        public string Message { get; set; } = string.Empty;
+    }
+
     /// <summary>
     /// 日期范围
     /// </summary>
@@ -1144,6 +1153,83 @@ namespace BlazorApp.Api.Services
             );
         }
 
+        public async Task<ProductStoreDailyRecalculationSubmitResult> SubmitProductStoreDailyRecalculationAsync(
+            IEnumerable<DateTime> dates,
+            string? requestedBy
+        )
+        {
+            var targetDates = dates
+                .Select(date => date.Date)
+                .Distinct()
+                .OrderBy(date => date)
+                .ToList();
+            var jobId = Guid.NewGuid();
+
+            if (!targetDates.Any())
+            {
+                return new ProductStoreDailyRecalculationSubmitResult
+                {
+                    JobId = jobId,
+                    Status = SalesStatisticRefreshStatus.Pending,
+                    Message = "没有可提交的商品统计日期",
+                };
+            }
+
+            var minDate = targetDates.Min();
+            var maxDate = targetDates.Max();
+
+            // 避免 DateTime 列表 Contains 在不同数据库方言下漏匹配，先按范围取回再按日期精确过滤。
+            var existingStates = await _context.Db.Queryable<SalesStatisticRefreshState>()
+                .Where(s =>
+                    s.StatisticType == SalesStatisticType.ProductStoreDaily
+                    && s.Date >= minDate
+                    && s.Date <= maxDate
+                )
+                .ToListAsync();
+            existingStates = existingStates
+                .Where(s => targetDates.Contains(s.Date.Date))
+                .ToList();
+            var runningDates = existingStates
+                .Where(s =>
+                    s.Status == SalesStatisticRefreshStatus.Queued
+                    || s.Status == SalesStatisticRefreshStatus.Running
+                )
+                .Select(s => s.Date.Date)
+                .ToHashSet();
+            var submittedDates = targetDates
+                .Where(date => !runningDates.Contains(date))
+                .ToList();
+            var skippedDates = targetDates
+                .Where(date => runningDates.Contains(date))
+                .ToList();
+
+            foreach (var date in submittedDates)
+            {
+                await UpsertProductStatisticQueuedStateAsync(
+                    _context,
+                    date,
+                    jobId,
+                    requestedBy
+                );
+            }
+
+            if (submittedDates.Any())
+            {
+                _ = Task.Run(() => RunProductStoreDailyRecalculationJobAsync(jobId, submittedDates));
+            }
+
+            return new ProductStoreDailyRecalculationSubmitResult
+            {
+                JobId = jobId,
+                SubmittedDates = submittedDates,
+                SkippedDates = skippedDates,
+                Status = submittedDates.Any()
+                    ? SalesStatisticRefreshStatus.Queued
+                    : SalesStatisticRefreshStatus.Running,
+                Message = BuildProductStoreDailySubmitMessage(submittedDates.Count, skippedDates.Count),
+            };
+        }
+
         /// <summary>
         /// 滚动刷新最近几天的商品分店每日统计，处理 POSM 延迟上传。
         /// </summary>
@@ -1157,6 +1243,52 @@ namespace BlazorApp.Api.Services
             {
                 await UpdateProductStoreDailyStatistics(date);
             }
+        }
+
+        private async Task RunProductStoreDailyRecalculationJobAsync(Guid jobId, List<DateTime> dates)
+        {
+            try
+            {
+                using var scope = _serviceScopeFactory.CreateScope();
+                var service = scope.ServiceProvider.GetRequiredService<SalesStatisticsJobService>();
+
+                foreach (var date in dates)
+                {
+                    try
+                    {
+                        await service.MarkProductStatisticJobRunningAsync(jobId, date);
+                        await service.UpdateProductStoreDailyStatistics(date);
+                    }
+                    catch (Exception ex)
+                    {
+                        service._logger.LogError(ex, "商品分店每日统计异步重算失败: JobId={JobId}, Date={Date}", jobId, date);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "商品分店每日统计异步任务启动失败: JobId={JobId}", jobId);
+            }
+        }
+
+        private async Task MarkProductStatisticJobRunningAsync(Guid jobId, DateTime date)
+        {
+            var targetDate = date.Date;
+            var existing = await _context.Db.Queryable<SalesStatisticRefreshState>()
+                .Where(s => s.StatisticType == SalesStatisticType.ProductStoreDaily && s.Date == targetDate)
+                .FirstAsync();
+
+            if (existing == null || existing.JobId != jobId)
+            {
+                return;
+            }
+
+            existing.Status = SalesStatisticRefreshStatus.Running;
+            existing.StartedAtUtc = DateTime.UtcNow;
+            existing.CompletedAtUtc = null;
+            existing.LastCheckedAtUtc = DateTime.UtcNow;
+            existing.ErrorMessage = null;
+            await _context.Db.Updateable(existing).ExecuteCommandAsync();
         }
 
         /// <summary>
@@ -1553,6 +1685,13 @@ namespace BlazorApp.Api.Services
                 existing.LastAggregatedAtUtc = DateTime.UtcNow;
                 existing.LastCheckedAtUtc = DateTime.UtcNow;
                 existing.ErrorMessage = status.ErrorMessage;
+                if (
+                    status.Status == SalesStatisticRefreshStatus.Fresh
+                    || status.Status == SalesStatisticRefreshStatus.Failed
+                )
+                {
+                    existing.CompletedAtUtc = DateTime.UtcNow;
+                }
                 await context.Db.Insertable(existing).ExecuteCommandAsync();
                 return;
             }
@@ -1563,6 +1702,67 @@ namespace BlazorApp.Api.Services
             existing.LastAggregatedAtUtc = DateTime.UtcNow;
             existing.LastCheckedAtUtc = DateTime.UtcNow;
             existing.ErrorMessage = status.ErrorMessage;
+            if (
+                status.Status == SalesStatisticRefreshStatus.Fresh
+                || status.Status == SalesStatisticRefreshStatus.Failed
+            )
+            {
+                existing.CompletedAtUtc = DateTime.UtcNow;
+            }
+            await context.Db.Updateable(existing).ExecuteCommandAsync();
+        }
+
+        private static string BuildProductStoreDailySubmitMessage(int submittedCount, int skippedCount)
+        {
+            if (submittedCount == 0 && skippedCount > 0)
+            {
+                return $"所选 {skippedCount} 天商品统计已有任务执行中，未重复提交";
+            }
+
+            if (skippedCount > 0)
+            {
+                return $"已提交 {submittedCount} 天商品统计重算，跳过 {skippedCount} 天执行中的任务";
+            }
+
+            return $"已提交 {submittedCount} 天商品统计重算任务";
+        }
+
+        private static async Task UpsertProductStatisticQueuedStateAsync(
+            SqlSugarContext context,
+            DateTime targetDate,
+            Guid jobId,
+            string? requestedBy
+        )
+        {
+            var now = DateTime.UtcNow;
+            var existing = await context.Db.Queryable<SalesStatisticRefreshState>()
+                .Where(s => s.StatisticType == SalesStatisticType.ProductStoreDaily && s.Date == targetDate)
+                .FirstAsync();
+
+            if (existing == null)
+            {
+                await context.Db.Insertable(new SalesStatisticRefreshState
+                {
+                    StatisticType = SalesStatisticType.ProductStoreDaily,
+                    Date = targetDate,
+                    Status = SalesStatisticRefreshStatus.Queued,
+                    SourceTimeZone = "POSM_LOCAL",
+                    JobId = jobId,
+                    RequestedBy = requestedBy,
+                    RequestedAtUtc = now,
+                    LastCheckedAtUtc = now,
+                }).ExecuteCommandAsync();
+                return;
+            }
+
+            existing.Status = SalesStatisticRefreshStatus.Queued;
+            existing.JobId = jobId;
+            existing.RequestedBy = requestedBy;
+            existing.RequestedAtUtc = now;
+            existing.StartedAtUtc = null;
+            existing.CompletedAtUtc = null;
+            existing.LastCheckedAtUtc = now;
+            existing.ErrorMessage = null;
             await context.Db.Updateable(existing).ExecuteCommandAsync();
         }
 

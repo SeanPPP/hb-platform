@@ -2,11 +2,13 @@ using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Security.Claims;
 using AutoMapper;
+using BlazorApp.Api.Controllers;
 using BlazorApp.Api.Controllers.React;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Api.Services;
+using BlazorApp.Api.Services.Background;
 using BlazorApp.Api.Services.React;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
@@ -483,6 +485,176 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
     }
 
     [Fact]
+    public async Task GetProductStoreDailyStatisticStates_按日期状态筛选返回状态列表()
+    {
+        await _localDb.Insertable(new SalesStatisticRefreshState
+        {
+            StatisticType = SalesStatisticType.ProductStoreDaily,
+            Date = new DateTime(2026, 6, 1),
+            Status = SalesStatisticRefreshStatus.Fresh,
+            LastSourceUploadTime = new DateTime(2026, 6, 1, 23, 0, 0),
+            SourceTimeZone = "POSM_LOCAL",
+            LastAggregatedAtUtc = new DateTime(2026, 6, 1, 14, 0, 0),
+            LastCheckedAtUtc = new DateTime(2026, 6, 1, 14, 5, 0),
+        }).ExecuteCommandAsync();
+        await _localDb.Insertable(new SalesStatisticRefreshState
+        {
+            StatisticType = SalesStatisticType.ProductStoreDaily,
+            Date = new DateTime(2026, 6, 2),
+            Status = SalesStatisticRefreshStatus.Failed,
+            SourceTimeZone = "POSM_LOCAL",
+            ErrorMessage = "对账失败",
+        }).ExecuteCommandAsync();
+
+        var result = await CreateStatisticsController().GetProductStoreDailyStatisticStates(
+            SalesStatisticType.ProductStoreDaily,
+            new DateTime(2026, 6, 1),
+            new DateTime(2026, 6, 1),
+            SalesStatisticRefreshStatus.Fresh
+        );
+
+        var ok = AssertOk(result);
+        var data = ExtractAnonymousData<List<SalesStatisticRefreshStateListItemDto>>(ok.Value);
+        var row = Assert.Single(data);
+        Assert.Equal(new DateTime(2026, 6, 1), row.Date);
+        Assert.Equal(SalesStatisticRefreshStatus.Fresh, row.Status);
+        Assert.Equal(new DateTime(2026, 6, 1, 23, 0, 0), row.LastSourceUploadTime);
+    }
+
+    [Fact]
+    public async Task GetProductStoreDailyStatisticStates_大小写不同的筛选值仍能匹配()
+    {
+        await _localDb.Insertable(new SalesStatisticRefreshState
+        {
+            StatisticType = SalesStatisticType.ProductStoreDaily,
+            Date = new DateTime(2026, 6, 1),
+            Status = SalesStatisticRefreshStatus.Fresh,
+        }).ExecuteCommandAsync();
+
+        var result = await CreateStatisticsController().GetProductStoreDailyStatisticStates(
+            "productstoredaily",
+            new DateTime(2026, 6, 1),
+            new DateTime(2026, 6, 1),
+            "fresh"
+        );
+
+        var ok = AssertOk(result);
+        var data = ExtractAnonymousData<List<SalesStatisticRefreshStateListItemDto>>(ok.Value);
+        var row = Assert.Single(data);
+        Assert.Equal(SalesStatisticType.ProductStoreDaily, row.StatisticType);
+        Assert.Equal(SalesStatisticRefreshStatus.Fresh, row.Status);
+    }
+
+    [Fact]
+    public async Task GetProductStoreDailyStatisticSummary_返回单日汇总和对账状态()
+    {
+        await SeedStatisticStateAsync(new DateTime(2026, 6, 1), SalesStatisticRefreshStatus.Fresh);
+        await _localDb.Insertable(new ProductStoreDailySalesStatistic
+        {
+            Date = new DateTime(2026, 6, 1),
+            BranchCode = "S1",
+            SupplierCode = "200",
+            ProductCode = "P-SUM-1",
+            TotalQuantity = 3,
+            TotalAmount = 15m,
+            GrossProfit = 6m,
+        }).ExecuteCommandAsync();
+        await _localDb.Insertable(new ProductStoreDailySalesStatistic
+        {
+            Date = new DateTime(2026, 6, 1),
+            BranchCode = "S2",
+            SupplierCode = "200",
+            ProductCode = "P-SUM-2",
+            TotalQuantity = 5,
+            TotalAmount = 25m,
+            GrossProfit = 10m,
+        }).ExecuteCommandAsync();
+
+        var result = await CreateStatisticsController()
+            .GetProductStoreDailyStatisticSummary(new DateTime(2026, 6, 1));
+
+        var ok = AssertOk(result);
+        var data = ExtractAnonymousData<ProductStoreDailyStatisticSummaryDto>(ok.Value);
+        Assert.Equal(2, data.RecordCount);
+        Assert.Equal(8, data.TotalQuantity);
+        Assert.Equal(40m, data.TotalAmount);
+        Assert.Equal(16m, data.GrossProfit);
+        Assert.Equal("Passed", data.ReconciliationStatus);
+    }
+
+    [Fact]
+    public async Task GetProductStoreDailyStatisticSummary_非Fresh状态有旧统计行时不显示对账通过()
+    {
+        await SeedStatisticStateAsync(new DateTime(2026, 6, 1), SalesStatisticRefreshStatus.Stale);
+        await _localDb.Insertable(new ProductStoreDailySalesStatistic
+        {
+            Date = new DateTime(2026, 6, 1),
+            BranchCode = "S1",
+            SupplierCode = "200",
+            ProductCode = "P-STALE-1",
+            TotalQuantity = 3,
+            TotalAmount = 15m,
+            GrossProfit = 6m,
+        }).ExecuteCommandAsync();
+
+        var result = await CreateStatisticsController()
+            .GetProductStoreDailyStatisticSummary(new DateTime(2026, 6, 1));
+
+        var ok = AssertOk(result);
+        var data = ExtractAnonymousData<ProductStoreDailyStatisticSummaryDto>(ok.Value);
+        Assert.Equal(SalesStatisticRefreshStatus.Stale, data.Status);
+        Assert.Equal("Pending", data.ReconciliationStatus);
+    }
+
+    [Fact]
+    public async Task BatchProductStoreDailyStatistics_超过范围上限返回BadRequest()
+    {
+        var result = await CreateStatisticsController().BatchProductStoreDailyStatistics(
+            new BatchProductStoreDailyUpdateRequest
+            {
+                StartDate = new DateTime(2026, 1, 1),
+                EndDate = new DateTime(2026, 2, 15),
+            }
+        );
+
+        var badRequest = Assert.IsType<BadRequestObjectResult>(result);
+        Assert.Contains("一次最多重算", badRequest.Value?.ToString());
+    }
+
+    [Fact]
+    public async Task TriggerProductStoreDailyStatistics_提交后立即返回排队日期()
+    {
+        var result = await CreateStatisticsController().TriggerProductStoreDailyStatistics(
+            new ProductStoreDailyJobTriggerRequest
+            {
+                Date = new DateTime(2026, 6, 1),
+            }
+        );
+
+        var ok = AssertOk(result);
+        Assert.Equal(SalesStatisticRefreshStatus.Queued, ReadAnonymousProperty<string>(ok.Value, "status"));
+        Assert.Contains("2026-06-01", ReadAnonymousProperty<List<string>>(ok.Value, "submittedDates"));
+    }
+
+    [Fact]
+    public async Task BatchProductStoreDailyStatistics_执行中日期不重复提交()
+    {
+        await SeedStatisticStateAsync(new DateTime(2026, 6, 1), SalesStatisticRefreshStatus.Queued);
+
+        var result = await CreateStatisticsController().BatchProductStoreDailyStatistics(
+            new BatchProductStoreDailyUpdateRequest
+            {
+                StartDate = new DateTime(2026, 6, 1),
+                EndDate = new DateTime(2026, 6, 1),
+            }
+        );
+
+        var ok = AssertOk(result);
+        Assert.Empty(ReadAnonymousProperty<List<string>>(ok.Value, "submittedDates"));
+        Assert.Contains("2026-06-01", ReadAnonymousProperty<List<string>>(ok.Value, "skippedDates"));
+    }
+
+    [Fact]
     public async Task GetBestSellers_普通用户传入请求分店时只把权限交集传给服务()
     {
         List<string>? capturedBranchCodes = null;
@@ -734,6 +906,52 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
             configuration,
             Mock.Of<IServiceScopeFactory>()
         );
+    }
+
+    private StatisticsJobTriggerController CreateStatisticsController()
+    {
+        var context = CreateSqlSugarContext(_localDb);
+        return new StatisticsJobTriggerController(
+            CreateStatisticsJobService(),
+            new ScheduledTaskLogService(context, NullLogger<ScheduledTaskLogService>.Instance),
+            context,
+            NullLogger<StatisticsJobTriggerController>.Instance
+        );
+    }
+
+    private static T ExtractAnonymousData<T>(object? value)
+    {
+        Assert.NotNull(value);
+        var dataProperty = value!.GetType().GetProperty("data");
+        Assert.NotNull(dataProperty);
+        var data = dataProperty!.GetValue(value);
+        return Assert.IsType<T>(data);
+    }
+
+    private static T ReadAnonymousProperty<T>(object? value, string propertyName)
+    {
+        Assert.NotNull(value);
+        var property = value!.GetType().GetProperty(propertyName);
+        Assert.NotNull(property);
+        var propertyValue = property!.GetValue(value);
+        return Assert.IsType<T>(propertyValue);
+    }
+
+    private static OkObjectResult AssertOk(IActionResult result)
+    {
+        if (result is OkObjectResult ok)
+        {
+            return ok;
+        }
+
+        if (result is ObjectResult objectResult)
+        {
+            throw new Xunit.Sdk.XunitException(
+                $"Expected OkObjectResult, got {result.GetType().Name}: {objectResult.Value}"
+            );
+        }
+
+        throw new Xunit.Sdk.XunitException($"Expected OkObjectResult, got {result.GetType().Name}");
     }
 
     private static SalesDashboardController CreateController(
