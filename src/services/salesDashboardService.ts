@@ -55,6 +55,11 @@ function normalizeBestSellerBranchSale(raw: unknown): BestSellerBranchSale | nul
     branchCode,
     branchName: readString(record.branchName ?? record.BranchName),
     quantity: readNumber(record.quantity ?? record.Quantity),
+    salesAmount: readNumber(record.salesAmount ?? record.SalesAmount),
+    totalCost: readOptionalNumber(record.totalCost ?? record.TotalCost),
+    grossProfit: readOptionalNumber(record.grossProfit ?? record.GrossProfit),
+    grossMarginRate: readOptionalNumber(record.grossMarginRate ?? record.GrossMarginRate),
+    costSource: readString(record.costSource ?? record.CostSource),
   }
 }
 
@@ -84,6 +89,10 @@ function normalizeBestSellerProduct(raw: unknown): BestSellerProduct | null {
     productName: readString(record.productName ?? record.ProductName),
     quantity: readNumber(record.quantity ?? record.Quantity),
     salesAmount: readNumber(record.salesAmount ?? record.SalesAmount),
+    totalCost: readOptionalNumber(record.totalCost ?? record.TotalCost),
+    grossProfit: readOptionalNumber(record.grossProfit ?? record.GrossProfit),
+    grossMarginRate: readOptionalNumber(record.grossMarginRate ?? record.GrossMarginRate),
+    costSource: readString(record.costSource ?? record.CostSource),
     rank: readNumber(record.rank ?? record.Rank),
     isActive: typeof (record.isActive ?? record.IsActive) === 'boolean'
       ? (record.isActive ?? record.IsActive) as boolean
@@ -91,6 +100,7 @@ function normalizeBestSellerProduct(raw: unknown): BestSellerProduct | null {
     minOrderQuantity: readOptionalNumber(record.minOrderQuantity ?? record.MinOrderQuantity),
     branchSalesCount: readOptionalNumber(record.branchSalesCount ?? record.BranchSalesCount),
     branchSales,
+    statisticStatus: readString(record.statisticStatus ?? record.StatisticStatus),
   }
 }
 
@@ -134,6 +144,8 @@ function unwrapBestSellerResponse(payload: ApiResponse<BestSellerResponse> | Bes
     pageIndex: readNumber(result.pageIndex ?? (result as Record<string, unknown>).PageIndex, 1),
     pageSize: readNumber(result.pageSize ?? (result as Record<string, unknown>).PageSize),
     totalPages: readNumber(result.totalPages ?? (result as Record<string, unknown>).TotalPages),
+    statisticStatus: readString(result.statisticStatus ?? (result as Record<string, unknown>).StatisticStatus),
+    statisticMessage: readString(result.statisticMessage ?? (result as Record<string, unknown>).StatisticMessage),
   }
 }
 

@@ -2,6 +2,11 @@ export interface BestSellerBranchSale {
   branchCode: string
   branchName?: string
   quantity: number
+  salesAmount: number
+  totalCost?: number
+  grossProfit?: number
+  grossMarginRate?: number
+  costSource?: string
 }
 
 export interface BestSellerProduct {
@@ -12,6 +17,10 @@ export interface BestSellerProduct {
   productName?: string
   quantity: number
   salesAmount: number
+  totalCost?: number
+  grossProfit?: number
+  grossMarginRate?: number
+  costSource?: string
   rank: number
   // 是否上架，前端用它控制状态展示和加购按钮禁用态。
   isActive?: boolean
@@ -21,6 +30,8 @@ export interface BestSellerProduct {
   branchSalesCount?: number
   // 分店销量明细，用于 Stores Sold 弹层展示。
   branchSales?: BestSellerBranchSale[]
+  // 商品统计状态，用于提示数据是否完整。
+  statisticStatus?: string
 }
 
 export interface BestSellerResponse {
@@ -29,6 +40,8 @@ export interface BestSellerResponse {
   pageIndex: number
   pageSize: number
   totalPages: number
+  statisticStatus?: string
+  statisticMessage?: string
 }
 
 export type CompareMode = 'ByWeek' | 'ByDate'

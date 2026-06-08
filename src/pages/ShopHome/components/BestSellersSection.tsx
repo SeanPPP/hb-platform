@@ -45,6 +45,30 @@ const BRANCH_SALES_COLUMNS: ColumnsType<BestSellerBranchSale> = [
     defaultSortOrder: 'descend',
     render: (value: number | undefined) => value ?? 0,
   },
+  {
+    title: 'Sales Amount',
+    dataIndex: 'salesAmount',
+    key: 'salesAmount',
+    width: 120,
+    align: 'right',
+    render: (value: number | undefined) => formatCurrency(value),
+  },
+  {
+    title: 'Gross Profit',
+    dataIndex: 'grossProfit',
+    key: 'grossProfit',
+    width: 120,
+    align: 'right',
+    render: (value: number | undefined) => formatOptionalCurrency(value),
+  },
+  {
+    title: 'Gross Margin',
+    dataIndex: 'grossMarginRate',
+    key: 'grossMarginRate',
+    width: 110,
+    align: 'right',
+    render: (value: number | undefined) => formatPercent(value),
+  },
 ]
 
 function formatCurrency(amount?: number) {
@@ -53,6 +77,34 @@ function formatCurrency(amount?: number) {
     currency: 'AUD',
     minimumFractionDigits: 2,
   }).format(amount ?? 0)
+}
+
+function formatOptionalCurrency(amount?: number) {
+  if (typeof amount !== 'number' || !Number.isFinite(amount)) {
+    return '--'
+  }
+
+  return formatCurrency(amount)
+}
+
+function formatPercent(value?: number) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return '--'
+  }
+
+  return new Intl.NumberFormat('en-AU', {
+    style: 'percent',
+    minimumFractionDigits: 1,
+    maximumFractionDigits: 1,
+  }).format(value)
+}
+
+function getStatisticStatusColor(status?: string) {
+  if (status === 'Fresh') return 'green'
+  if (status === 'Stale') return 'orange'
+  if (status === 'Failed') return 'red'
+  if (status === 'Pending') return 'blue'
+  return 'default'
 }
 
 function getBranchSalesRows(product: BestSellerProduct) {
@@ -73,6 +125,8 @@ export default function BestSellersSection() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [total, setTotal] = useState(0)
+  const [statisticStatus, setStatisticStatus] = useState<string | undefined>()
+  const [statisticMessage, setStatisticMessage] = useState<string | undefined>()
   const [currentPage, setCurrentPage] = useState(1)
   const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE)
   const [timeRange, setTimeRange] = useState(30)
@@ -106,6 +160,8 @@ export default function BestSellersSection() {
 
         setProducts(result.products)
         setTotal(result.total)
+        setStatisticStatus(result.statisticStatus)
+        setStatisticMessage(result.statisticMessage)
       } catch (fetchError) {
         if (cancelled || (fetchError instanceof DOMException && fetchError.name === 'AbortError')) {
           return
@@ -113,6 +169,8 @@ export default function BestSellersSection() {
 
         setProducts([])
         setTotal(0)
+        setStatisticStatus(undefined)
+        setStatisticMessage(undefined)
         setError(fetchError instanceof Error ? 'Failed to load best sellers.' : 'Failed to load best sellers.')
       } finally {
         if (!cancelled) {
@@ -138,6 +196,20 @@ export default function BestSellersSection() {
     () => products.reduce((sum, item) => sum + (item.quantity ?? 0), 0),
     [products],
   )
+
+  const totalGrossProfit = useMemo(
+    () => {
+      const rowsWithGrossProfit = products.filter((item) => typeof item.grossProfit === 'number')
+      if (!rowsWithGrossProfit.length) {
+        return undefined
+      }
+
+      return rowsWithGrossProfit.reduce((sum, item) => sum + (item.grossProfit ?? 0), 0)
+    },
+    [products],
+  )
+
+  const grossMarginRate = totalSales > 0 && typeof totalGrossProfit === 'number' ? totalGrossProfit / totalSales : undefined
 
   const handleAddToCart = useCallback(
     async (product: BestSellerProduct) => {
@@ -265,6 +337,34 @@ export default function BestSellersSection() {
         render: (value: number | undefined) => <Text strong>{formatCurrency(value)}</Text>,
       },
       {
+        title: 'Gross Profit',
+        dataIndex: 'grossProfit',
+        key: 'grossProfit',
+        width: 140,
+        align: 'right',
+        render: (value: number | undefined) => <Text>{formatOptionalCurrency(value)}</Text>,
+      },
+      {
+        title: 'Gross Margin',
+        dataIndex: 'grossMarginRate',
+        key: 'grossMarginRate',
+        width: 130,
+        align: 'right',
+        render: (value: number | undefined) => <Text>{formatPercent(value)}</Text>,
+      },
+      {
+        title: 'Stats',
+        dataIndex: 'statisticStatus',
+        key: 'statisticStatus',
+        width: 100,
+        align: 'center',
+        render: (value: string | undefined) => (
+          <Tag color={getStatisticStatusColor(value || statisticStatus)}>
+            {value || statisticStatus || 'Live'}
+          </Tag>
+        ),
+      },
+      {
         title: 'Status',
         dataIndex: 'isActive',
         key: 'isActive',
@@ -304,7 +404,7 @@ export default function BestSellersSection() {
                     columns={BRANCH_SALES_COLUMNS}
                     dataSource={rows}
                     pagination={false}
-                    scroll={{ y: 320 }}
+                    scroll={{ x: 520, y: 320 }}
                     locale={{
                       emptyText: t('shop.noBranchSales', 'No sales by store'),
                     }}
@@ -350,7 +450,7 @@ export default function BestSellersSection() {
         },
       },
     ],
-    [currentPage, handleAddToCart, pageSize, selectedStore?.storeCode, t],
+    [currentPage, handleAddToCart, pageSize, selectedStore?.storeCode, statisticStatus, t],
   )
 
   return (
@@ -368,6 +468,11 @@ export default function BestSellersSection() {
         </div>
 
         <div className="shop-best-sellers-toolbar">
+          {statisticStatus ? (
+            <Tooltip title={statisticMessage}>
+              <Tag color={getStatisticStatusColor(statisticStatus)}>{statisticStatus}</Tag>
+            </Tooltip>
+          ) : null}
           <div className="shop-best-sellers-filter">
             <FilterOutlined />
             <span>Time Range</span>
@@ -398,6 +503,14 @@ export default function BestSellersSection() {
           <Title level={4}>{formatCurrency(totalSales)}</Title>
         </Card>
         <Card size="small" className="shop-home-stat-card">
+          <Text type="secondary">Gross Profit</Text>
+          <Title level={4}>{formatOptionalCurrency(totalGrossProfit)}</Title>
+        </Card>
+        <Card size="small" className="shop-home-stat-card">
+          <Text type="secondary">Gross Margin</Text>
+          <Title level={4}>{formatPercent(grossMarginRate)}</Title>
+        </Card>
+        <Card size="small" className="shop-home-stat-card">
           <Text type="secondary">Total Ranked Items</Text>
           <Title level={4}>{total}</Title>
         </Card>
@@ -413,7 +526,7 @@ export default function BestSellersSection() {
         loading={loading}
         size="small"
         virtual
-        scroll={{ x: 1240, y: 560 }}
+        scroll={{ x: 1640, y: 560 }}
         pagination={{
           current: currentPage,
           pageSize,

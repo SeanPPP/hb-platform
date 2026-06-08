@@ -1396,9 +1396,9 @@ body {
 }
 
 .shop-best-sellers-branch-sales-popover {
-  width: 300px;
+  width: 560px;
   max-height: 360px;
-  overflow: hidden;
+  overflow: auto;
 }
 
 .shop-best-sellers-branch-sales-popover .ant-table-cell {

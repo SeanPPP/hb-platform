@@ -32,14 +32,19 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
             ProductName: 'Best Seller',
             Quantity: 12,
             SalesAmount: 34.5,
+            TotalCost: 12.5,
+            GrossProfit: 22,
+            GrossMarginRate: 0.637681,
+            CostSource: 'StoreRetailPrice',
             Rank: 1,
             IsActive: true,
             MinOrderQuantity: 2,
             // 用不同于明细长度的聚合值，锁定前端优先消费后端返回的销售分店数。
             BranchSalesCount: 5,
+            StatisticStatus: 'Fresh',
             BranchSales: [
-              { BranchCode: 'S2', BranchName: 'Store 2', Quantity: 8 },
-              { BranchCode: 'S1', BranchName: 'Store 1', Quantity: 4 },
+              { BranchCode: 'S2', BranchName: 'Store 2', Quantity: 8, SalesAmount: 24, GrossProfit: 16, GrossMarginRate: 0.666667 },
+              { BranchCode: 'S1', BranchName: 'Store 1', Quantity: 4, SalesAmount: 10.5, GrossProfit: 6, GrossMarginRate: 0.571429 },
             ],
           },
         ],
@@ -47,6 +52,8 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
         pageIndex: 2,
         pageSize: 100,
         totalPages: 1,
+        StatisticStatus: 'Fresh',
+        StatisticMessage: 'Ready',
       },
     }),
     {
@@ -73,9 +80,19 @@ try {
   assertEqual(result.products[0]?.barcode, '9340000000012', '热销商品应接收条码字段')
   assertEqual(result.products[0]?.isActive, true, '热销商品应接收上下架字段')
   assertEqual(result.products[0]?.minOrderQuantity, 2, '热销商品应接收最小起订量')
+  assertEqual(result.products[0]?.totalCost, 12.5, '热销商品应接收成本金额')
+  assertEqual(result.products[0]?.grossProfit, 22, '热销商品应接收毛利额')
+  assertEqual(result.products[0]?.grossMarginRate, 0.637681, '热销商品应接收毛利率')
+  assertEqual(result.products[0]?.costSource, 'StoreRetailPrice', '热销商品应接收成本来源')
+  assertEqual(result.products[0]?.statisticStatus, 'Fresh', '热销商品应接收商品统计状态')
   assertEqual(result.products[0]?.branchSalesCount, 5, '热销商品应接收销售分店数量')
   assertEqual(result.products[0]?.branchSales?.length, 2, '热销商品应继续保留分店销量明细列表')
   assertEqual(result.products[0]?.branchSales?.[0]?.branchCode, 'S2', '热销商品应接收分店销量明细')
+  assertEqual(result.products[0]?.branchSales?.[0]?.salesAmount, 24, '热销商品应接收分店销售额')
+  assertEqual(result.products[0]?.branchSales?.[0]?.grossProfit, 16, '热销商品应接收分店毛利额')
+  assertEqual(result.products[0]?.branchSales?.[0]?.grossMarginRate, 0.666667, '热销商品应接收分店毛利率')
+  assertEqual(result.statisticStatus, 'Fresh', '热销商品响应应接收统计状态')
+  assertEqual(result.statisticMessage, 'Ready', '热销商品响应应接收统计提示')
   assertEqual(result.pageIndex, 2, '热销商品响应应继续解包 pageIndex')
 
   console.log('salesDashboardService.test: ok')

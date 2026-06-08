@@ -159,7 +159,7 @@ async function main() {
       bestSellersSource.includes('import type { ColumnsType }') &&
         bestSellersSource.includes('Table') &&
         bestSellersSource.includes('virtual') &&
-        bestSellersSource.includes('scroll={{ x: 1240, y: 560 }}') &&
+        bestSellersSource.includes('scroll={{ x: 1640, y: 560 }}') &&
         bestSellersSource.includes('className="shop-best-sellers-table"') &&
         bestSellersSource.includes('rowKey={(record) => record.productCode || record.itemNumber || String(record.rank)}') &&
         !bestSellersSource.includes('virtualWindow.visibleProducts.map') &&
@@ -187,6 +187,9 @@ async function main() {
         bestSellersSource.includes('CopyOutlined') &&
         bestSellersSource.includes('ShoppingCartOutlined') &&
         bestSellersSource.includes('Popover') &&
+        bestSellersSource.includes("title: 'Gross Profit'") &&
+        bestSellersSource.includes("title: 'Gross Margin'") &&
+        bestSellersSource.includes("title: 'Stats'") &&
         bestSellersSource.includes('addStoreOrderCartItem') &&
         bestSellersSource.includes('setCart(nextCart)') &&
         !bestSellersSource.includes("title: 'Product Code'"),
@@ -197,11 +200,14 @@ async function main() {
 
   const bestSellerBranchSalesFailure = await runTest('热销商品分店销量明细应按销量倒序展示', () => {
     assert(
-      bestSellersSource.includes('function getBranchSalesRows(product: BestSellerProduct)') &&
+        bestSellersSource.includes('function getBranchSalesRows(product: BestSellerProduct)') &&
         bestSellersSource.includes('function getBranchSalesCount(product: BestSellerProduct)') &&
         bestSellersSource.includes('return product.branchSalesCount ?? product.branchSales?.length ?? 0') &&
         bestSellersSource.includes('].sort((a, b) => (b.quantity ?? 0) - (a.quantity ?? 0))') &&
         bestSellersSource.includes("defaultSortOrder: 'descend'") &&
+        bestSellersSource.includes("dataIndex: 'salesAmount'") &&
+        bestSellersSource.includes("dataIndex: 'grossProfit'") &&
+        bestSellersSource.includes("dataIndex: 'grossMarginRate'") &&
         bestSellersSource.includes('const count = getBranchSalesCount(record)') &&
         bestSellersSource.includes('shop-best-sellers-branch-sales-popover'),
       '分店销量明细缺少默认销量倒序排序、branchSalesCount 优先级或紧凑弹层',
@@ -230,6 +236,7 @@ async function main() {
         globalCssSource.includes('.shop-best-sellers-barcode-cell') &&
         globalCssSource.includes('.shop-best-sellers-item-number') &&
         globalCssSource.includes('.shop-best-sellers-store-count') &&
+        globalCssSource.includes('width: 560px') &&
         globalCssSource.includes('.shop-best-sellers-product-name') &&
         globalCssSource.includes('max-height: calc(1.4em * 2)') &&
         globalCssSource.includes('-webkit-line-clamp: 2') &&
