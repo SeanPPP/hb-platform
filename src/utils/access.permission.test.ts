@@ -141,6 +141,18 @@ assertEqual(
   'System.ViewLogs should unlock center log page visibility',
 )
 
+const scheduledTaskManagerAccess = buildAccess(
+  createCurrentUser({
+    permissions: [P.System.ManageScheduledTasks],
+  }),
+)
+
+assertEqual(
+  scheduledTaskManagerAccess.canManageScheduledTasks,
+  true,
+  'System.ManageScheduledTasks should unlock scheduled task runtime control writes',
+)
+
 const legacyAliasAccess = buildAccess(
   createCurrentUser({
     permissions: ['LocalInvocie.View', 'LocalInvocie.Edit'],
@@ -447,6 +459,12 @@ assertEqual(
   rolesMenu?.accessKey,
   'canReadRole',
   'Web menu preview should expose the accessKey that controls the system roles menu',
+)
+
+assertEqual(
+  getAccessKeyPermissionCodes('canManageScheduledTasks').join(','),
+  P.System.ManageScheduledTasks,
+  'Web menu preview should map scheduled task management access to System.ManageScheduledTasks',
 )
 
 assertEqual(

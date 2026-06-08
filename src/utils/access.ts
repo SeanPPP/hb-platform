@@ -98,6 +98,7 @@ function createEmptyAccess(): AccessControl {
     canEditAttendanceSettings: false,
     canViewEmployeeProfiles: false,
     canViewSystemLogs: false,
+    canManageScheduledTasks: false,
     canViewDeviceRegistration: false,
     canManageDeviceRegistration: false,
     canViewPosProducts: false,
@@ -283,6 +284,7 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
   const canEditAttendanceSettings = isAdmin || hasPermission(P.Attendance.SettingsEdit)
   const canViewEmployeeProfiles = isAdmin || hasPermission(P.EmployeeProfiles.View)
   const canViewSystemLogs = isAdmin || hasPermission(P.System.ViewLogs)
+  const canManageScheduledTasks = isAdmin || hasPermission(P.System.ManageScheduledTasks)
   const canManageDeviceRegistration = isAdmin || hasPermission(P.DeviceRegistration.Manage)
   const canViewDeviceRegistration =
     canManageDeviceRegistration || isAdmin || hasPermission(P.DeviceRegistration.View)
@@ -360,6 +362,7 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
     canEditAttendanceSettings,
     canViewEmployeeProfiles,
     canViewSystemLogs,
+    canManageScheduledTasks,
     canViewDeviceRegistration,
     canManageDeviceRegistration,
     canViewPosProducts,

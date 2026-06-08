@@ -2754,6 +2754,21 @@
       "loadingDetail": "正在加载日志详情...",
       "runtimeErrorTitle": "页面发生异常",
       "runtimeErrorSubtitle": "系统已尝试上报异常日志，请刷新页面后重试。",
+      "scheduler": {
+        "title": "定时任务调度",
+        "loadFailed": "加载调度状态失败",
+        "updateSuccess": "调度状态已更新",
+        "updateFailed": "更新调度状态失败",
+        "effectiveStatus": "当前实例状态",
+        "running": "运行中",
+        "stopped": "已停止",
+        "currentInstance": "当前实例",
+        "activeInstance": "调度实例",
+        "enabled": "调度开关",
+        "current": "当前",
+        "readOnly": "只读：需要管理定时任务权限",
+        "disabledByConfig": "配置已禁用"
+      },
       "filters": {
         "projectCode": "项目",
         "projectPlaceholder": "选择项目，可多选",

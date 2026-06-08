@@ -44,6 +44,7 @@ const accessKeyPermissionMap: Partial<Record<keyof AccessControl, string[]>> = {
   canReadStore: [P.Stores.View],
   canViewEmployeeProfiles: [P.EmployeeProfiles.View],
   canViewSystemLogs: [P.System.ViewLogs],
+  canManageScheduledTasks: [P.System.ManageScheduledTasks],
   canReadUser: [P.Users.View],
   canReadRole: [P.Roles.View],
   canViewDeviceRegistration: [P.DeviceRegistration.View, P.DeviceRegistration.Manage],

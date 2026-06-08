@@ -79,6 +79,7 @@ export const P = {
   },
   System: {
     ViewLogs: 'System.ViewLogs',
+    ManageScheduledTasks: 'System.ManageScheduledTasks',
     ManageSettings: 'System.ManageSettings',
   },
   DeviceRegistration: {

@@ -90,6 +90,7 @@ export interface AccessControl {
   canEditAttendanceSettings: boolean
   canViewEmployeeProfiles: boolean
   canViewSystemLogs: boolean
+  canManageScheduledTasks: boolean
   canViewDeviceRegistration: boolean
   canManageDeviceRegistration: boolean
   canViewPosProducts: boolean
