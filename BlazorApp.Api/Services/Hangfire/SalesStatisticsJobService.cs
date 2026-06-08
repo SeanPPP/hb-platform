@@ -119,6 +119,23 @@ namespace BlazorApp.Api.Services
             public decimal? ImportPrice { get; set; }
         }
 
+        private sealed class ProductStatisticDiagnosticRow
+        {
+            public string BranchCode { get; set; } = string.Empty;
+            public decimal UnmatchedSupplierAmount { get; set; }
+            public int UnmatchedSupplierQuantity { get; set; }
+            public int UnmatchedSupplierProductCount { get; set; }
+        }
+
+        private sealed class ProductStatisticDiagnostics
+        {
+            public decimal UnmatchedSupplierAmount { get; set; }
+            public int UnmatchedSupplierQuantity { get; set; }
+            public int UnmatchedSupplierProductCount { get; set; }
+            public Dictionary<string, ProductStatisticDiagnosticRow> BranchDiagnostics { get; set; } =
+                new();
+        }
+
         /// <summary>
         /// 批量操作每批处理数量
         /// </summary>
@@ -1245,6 +1262,54 @@ namespace BlazorApp.Api.Services
             };
         }
 
+        public async Task<int> RecoverTimedOutProductStoreDailyRecalculationJobsAsync(
+            TimeSpan timeout,
+            DateTime? nowUtc = null
+        )
+        {
+            var currentUtc = nowUtc ?? DateTime.UtcNow;
+            var activeStates = await _context.Db.Queryable<SalesStatisticRefreshState>()
+                .Where(s =>
+                    s.StatisticType == SalesStatisticType.ProductStoreDaily
+                    && (
+                        s.Status == SalesStatisticRefreshStatus.Queued
+                        || s.Status == SalesStatisticRefreshStatus.Running
+                    )
+                )
+                .ToListAsync();
+
+            var timedOutStates = activeStates
+                .Where(state => IsProductStatisticRecoveryTimedOut(state, currentUtc, timeout))
+                .ToList();
+
+            foreach (var state in timedOutStates)
+            {
+                state.Status = SalesStatisticRefreshStatus.Pending;
+                state.JobId = null;
+                state.StartedAtUtc = null;
+                state.CompletedAtUtc = null;
+                state.ErrorMessage = null;
+                state.LastCheckedAtUtc = currentUtc;
+                await _context.Db.Updateable(state).ExecuteCommandAsync();
+            }
+
+            return timedOutStates.Count;
+        }
+
+        private static bool IsProductStatisticRecoveryTimedOut(
+            SalesStatisticRefreshState state,
+            DateTime nowUtc,
+            TimeSpan timeout
+        )
+        {
+            var referenceTime = state.Status == SalesStatisticRefreshStatus.Running
+                ? state.StartedAtUtc ?? state.LastCheckedAtUtc ?? state.RequestedAtUtc
+                : state.RequestedAtUtc ?? state.LastCheckedAtUtc;
+
+            // 缺少时间水位的执行中状态无法证明仍有后台任务，启动时优先解锁避免永久卡住。
+            return referenceTime == null || nowUtc - referenceTime.Value >= timeout;
+        }
+
         /// <summary>
         /// 滚动刷新最近几天的商品分店每日统计，处理 POSM 延迟上传。
         /// </summary>
@@ -1460,7 +1525,8 @@ namespace BlazorApp.Api.Services
                         x => x.Select(row => (decimal?)row.ImportPrice).FirstOrDefault(price => price.HasValue && price.Value > 0)
                     );
 
-                var statisticsList = rawRows
+                // 先统一解析分店，再把空供应商留在诊断里，避免污染商品统计主表。
+                var resolvedRows = rawRows
                     .Select(x => new
                     {
                         Row = x,
@@ -1469,8 +1535,42 @@ namespace BlazorApp.Api.Services
                     .Where(x =>
                         !string.IsNullOrWhiteSpace(x.ResolvedBranchCode)
                         && !string.IsNullOrWhiteSpace(x.Row.ProductCode)
-                        && !string.IsNullOrWhiteSpace(x.Row.SupplierCode)
                     )
+                    .ToList();
+
+                var diagnostics = new ProductStatisticDiagnostics();
+                var unmatchedSupplierRows = resolvedRows
+                    .Where(x => string.IsNullOrWhiteSpace(x.Row.SupplierCode))
+                    .ToList();
+                if (unmatchedSupplierRows.Any())
+                {
+                    diagnostics.UnmatchedSupplierAmount = unmatchedSupplierRows.Sum(x => x.Row.ActualAmount);
+                    diagnostics.UnmatchedSupplierQuantity = unmatchedSupplierRows.Sum(x => x.Row.Quantity);
+                    diagnostics.UnmatchedSupplierProductCount = unmatchedSupplierRows
+                        .Select(x => x.Row.ProductCode)
+                        .Where(code => !string.IsNullOrWhiteSpace(code))
+                        .Distinct()
+                        .Count();
+                    diagnostics.BranchDiagnostics = unmatchedSupplierRows
+                        .GroupBy(x => x.ResolvedBranchCode)
+                        .ToDictionary(
+                            group => group.Key,
+                            group => new ProductStatisticDiagnosticRow
+                            {
+                                BranchCode = group.Key,
+                                UnmatchedSupplierAmount = group.Sum(x => x.Row.ActualAmount),
+                                UnmatchedSupplierQuantity = group.Sum(x => x.Row.Quantity),
+                                UnmatchedSupplierProductCount = group
+                                    .Select(x => x.Row.ProductCode)
+                                    .Where(code => !string.IsNullOrWhiteSpace(code))
+                                    .Distinct()
+                                    .Count(),
+                            }
+                        );
+                }
+
+                var statisticsList = resolvedRows
+                    .Where(x => !string.IsNullOrWhiteSpace(x.Row.SupplierCode))
                     .GroupBy(x => new
                     {
                         x.Row.Date,
@@ -1527,6 +1627,7 @@ namespace BlazorApp.Api.Services
                     context,
                     targetDate,
                     statisticsList,
+                    diagnostics,
                     lastSourceUploadTime
                 );
 
@@ -1627,53 +1728,49 @@ namespace BlazorApp.Api.Services
             SqlSugarContext context,
             DateTime targetDate,
             List<ProductStoreDailySalesStatistic> statisticsList,
+            ProductStatisticDiagnostics diagnostics,
             DateTime? lastSourceUploadTime
         )
         {
-            if (!statisticsList.Any())
-            {
-                return new ProductStatisticStatusResult(SalesStatisticRefreshStatus.Pending, null);
-            }
-
-            var existingStoreSupplier = await context.Db.Queryable<StoreSupplierSalesDetail>()
+            var existingStoreSales = await context.Db.Queryable<StoreSalesStatistic>()
                 .Where(s => s.Date == targetDate)
-                .Select(s => new { s.BranchCode, s.SupplierCode, s.TotalAmount, s.TotalQuantity })
+                .Select(s => new { s.BranchCode, s.TotalAmount, s.TotalQuantity })
                 .ToListAsync();
 
-            var existingMap = existingStoreSupplier
-                .Where(x => !string.IsNullOrWhiteSpace(x.BranchCode) && !string.IsNullOrWhiteSpace(x.SupplierCode))
-                .ToDictionary(x => $"{x.BranchCode}|{x.SupplierCode}", x => x);
+            var storeRollups = existingStoreSales
+                .Where(x => !string.IsNullOrWhiteSpace(x.BranchCode))
+                .Select(x => new ProductStoreDailyBranchRollup(
+                    x.BranchCode!,
+                    x.TotalAmount,
+                    x.TotalQuantity
+                ));
 
-            if (existingMap.Any())
-            {
-                var productRollup = statisticsList
-                    .GroupBy(x => new { x.BranchCode, x.SupplierCode })
-                    .Select(group => new
-                    {
-                        group.Key.BranchCode,
-                        group.Key.SupplierCode,
-                        TotalAmount = group.Sum(x => x.TotalAmount),
-                        TotalQuantity = group.Sum(x => x.TotalQuantity),
-                    });
+            var productRollups = statisticsList
+                .Where(x => !string.IsNullOrWhiteSpace(x.BranchCode))
+                .Select(x => new ProductStoreDailyBranchRollup(
+                    x.BranchCode,
+                    x.TotalAmount,
+                    x.TotalQuantity
+                ));
 
-                foreach (var row in productRollup)
-                {
-                    if (!existingMap.TryGetValue($"{row.BranchCode}|{row.SupplierCode}", out var existing))
-                        continue;
+            var branchDiagnostics = diagnostics.BranchDiagnostics
+                .ToDictionary(
+                    item => item.Key,
+                    item => new ProductStoreDailyBranchDiagnostic(
+                        item.Value.UnmatchedSupplierAmount,
+                        item.Value.UnmatchedSupplierQuantity,
+                        item.Value.UnmatchedSupplierProductCount
+                    )
+                );
 
-                    var amountDiff = Math.Abs(row.TotalAmount - existing.TotalAmount);
-                    var quantityDiff = Math.Abs(row.TotalQuantity - existing.TotalQuantity);
-                    if (amountDiff > 0.01m || quantityDiff > 0)
-                    {
-                        return new ProductStatisticStatusResult(
-                            SalesStatisticRefreshStatus.Failed,
-                            $"商品统计与门店供应商统计不一致: {targetDate:yyyy-MM-dd} {row.BranchCode}/{row.SupplierCode}, 金额差 {amountDiff}, 数量差 {quantityDiff}"
-                        );
-                    }
-                }
-            }
+            var reconciliation = ProductStoreDailyReconciliationCalculator.Calculate(
+                targetDate,
+                productRollups,
+                storeRollups,
+                branchDiagnostics
+            );
 
-            return new ProductStatisticStatusResult(SalesStatisticRefreshStatus.Fresh, null);
+            return new ProductStatisticStatusResult(reconciliation.Status, reconciliation.ErrorMessage);
         }
 
         private async Task UpsertProductStatisticStateAsync(

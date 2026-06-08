@@ -62,6 +62,7 @@ namespace BlazorApp.Api.Services.React
 
         private static readonly TimeSpan SUMMARY_CACHE_DURATION = TimeSpan.FromMinutes(10);
         private static readonly TimeSpan RANKING_CACHE_DURATION = TimeSpan.FromMinutes(10);
+        private static readonly TimeSpan BEST_SELLERS_CACHE_DURATION = TimeSpan.FromMinutes(30);
         private static readonly TimeSpan DETAIL_CACHE_DURATION = TimeSpan.FromMinutes(3);
 
         public SalesDashboardReactService(
@@ -3407,6 +3408,19 @@ namespace BlazorApp.Api.Services.React
                     };
                 }
 
+                var cacheKey = branchCodes == null
+                    ? SalesDashboardCacheKeys.BestSellers(dateRange, pageIndex, pageSize)
+                    : null;
+                if (
+                    cacheKey != null
+                    && _cache.TryGetValue<BestSellerResponseDto>(cacheKey, out var cachedResult)
+                    && cachedResult != null
+                )
+                {
+                    _logger.LogInformation("从缓存获取热销商品全平台排名: {CacheKey}", cacheKey);
+                    return cachedResult;
+                }
+
                 try
                 {
                     var statisticResult = await GetBestSellersFromStatisticsAsync(
@@ -3417,6 +3431,7 @@ namespace BlazorApp.Api.Services.React
                     );
                     if (statisticResult != null)
                     {
+                        CacheBestSellerResult(cacheKey, statisticResult);
                         return statisticResult;
                     }
                 }
@@ -3431,6 +3446,7 @@ namespace BlazorApp.Api.Services.React
                         SalesStatisticRefreshStatus.Failed,
                         $"商品统计查询失败，已使用 POSM 实时回退数据: {ex.Message}"
                     );
+                    CacheBestSellerResult(cacheKey, fallbackResult);
                     return fallbackResult;
                 }
 
@@ -3448,6 +3464,7 @@ namespace BlazorApp.Api.Services.React
                     result.Total, result.Products.Count, pageIndex
                 );
 
+                CacheBestSellerResult(cacheKey, result);
                 return result;
             }
             catch (Exception ex)
@@ -3455,6 +3472,23 @@ namespace BlazorApp.Api.Services.React
                 _logger.LogError(ex, "[BestSellers] GetBestSellersAsync failed");
                 throw;
             }
+        }
+
+        private void CacheBestSellerResult(string? cacheKey, BestSellerResponseDto result)
+        {
+            if (cacheKey == null)
+                return;
+
+            var cacheOptions = new MemoryCacheEntryOptions()
+                .SetAbsoluteExpiration(BEST_SELLERS_CACHE_DURATION)
+                .SetSlidingExpiration(TimeSpan.FromMinutes(5));
+
+            _cache.Set(cacheKey, result, cacheOptions);
+            _logger.LogInformation(
+                "热销商品全平台排名已缓存: {CacheKey}, 过期时间: {Expiration}",
+                cacheKey,
+                DateTime.Now.Add(BEST_SELLERS_CACHE_DURATION)
+            );
         }
 
         private async Task<BestSellerResponseDto?> GetBestSellersFromStatisticsAsync(

@@ -1278,7 +1278,6 @@ namespace BlazorApp.Api.Controllers.React
         {
             try
             {
-                // 验证分店权限
                 var userBranchCodes = await GetUserBranchCodesAsync();
                 List<string>? targetBranchCodes = userBranchCodes;
 
@@ -1313,7 +1312,7 @@ namespace BlazorApp.Api.Controllers.React
                     StartDate = startDate,
                     EndDate = endDate
                 };
-                //所有分店数据
+
                 var result = await _service.GetBestSellersAsync(
                     dateRange,
                     targetBranchCodes,

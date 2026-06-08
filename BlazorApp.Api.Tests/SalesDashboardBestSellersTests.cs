@@ -52,6 +52,7 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
             typeof(WarehouseProduct),
             typeof(Store),
             typeof(StoreRetailPrice),
+            typeof(StoreSalesStatistic),
             typeof(StoreSupplierSalesDetail),
             typeof(ProductStoreDailySalesStatistic),
             typeof(SalesStatisticRefreshState)
@@ -290,6 +291,63 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
     }
 
     [Fact]
+    public async Task GetBestSellersAsync_全平台同日期同分页命中缓存()
+    {
+        await SeedProductAsync("P-CACHE-1", "ITEM-CACHE-1", "BAR-CACHE-1", "缓存商品一", productIsActive: true, warehouseIsActive: true, minOrderQuantity: 1);
+        await SeedSaleAsync("O-CACHE-1", "D-CACHE-1", "P-CACHE-1", "S1", new DateTime(2026, 6, 1), 5, 10m);
+
+        var service = CreateService();
+        var dateRange = new DateRangeDto { StartDate = new DateTime(2026, 6, 1), EndDate = new DateTime(2026, 6, 8) };
+        var first = await service.GetBestSellersAsync(dateRange, null, pageIndex: 1, pageSize: 50);
+
+        await SeedProductAsync("P-CACHE-2", "ITEM-CACHE-2", "BAR-CACHE-2", "缓存商品二", productIsActive: true, warehouseIsActive: true, minOrderQuantity: 1);
+        await SeedSaleAsync("O-CACHE-2", "D-CACHE-2", "P-CACHE-2", "S1", new DateTime(2026, 6, 2), 99, 198m);
+
+        var second = await service.GetBestSellersAsync(dateRange, null, pageIndex: 1, pageSize: 50);
+
+        var product = Assert.Single(second.Products);
+        Assert.Equal(1, first.Total);
+        Assert.Equal(1, second.Total);
+        Assert.Equal("P-CACHE-1", product.ProductCode);
+        Assert.Equal(5, product.Quantity);
+    }
+
+    [Fact]
+    public async Task GetBestSellersAsync_不同分页参数使用独立缓存键()
+    {
+        await SeedProductAsync("P-CACHE-PAGE-1", "ITEM-CACHE-PAGE-1", "BAR-CACHE-PAGE-1", "分页缓存一", productIsActive: true, warehouseIsActive: true, minOrderQuantity: 1);
+        await SeedProductAsync("P-CACHE-PAGE-2", "ITEM-CACHE-PAGE-2", "BAR-CACHE-PAGE-2", "分页缓存二", productIsActive: true, warehouseIsActive: true, minOrderQuantity: 1);
+        await SeedSaleAsync("O-CACHE-PAGE-1", "D-CACHE-PAGE-1", "P-CACHE-PAGE-1", "S1", new DateTime(2026, 6, 1), 20, 40m);
+        await SeedSaleAsync("O-CACHE-PAGE-2", "D-CACHE-PAGE-2", "P-CACHE-PAGE-2", "S1", new DateTime(2026, 6, 1), 10, 20m);
+
+        var service = CreateService();
+        var dateRange = new DateRangeDto { StartDate = new DateTime(2026, 6, 1), EndDate = new DateTime(2026, 6, 8) };
+        var firstPage = await service.GetBestSellersAsync(dateRange, null, pageIndex: 1, pageSize: 1);
+
+        await SeedProductAsync("P-CACHE-PAGE-3", "ITEM-CACHE-PAGE-3", "BAR-CACHE-PAGE-3", "分页缓存三", productIsActive: true, warehouseIsActive: true, minOrderQuantity: 1);
+        await SeedSaleAsync("O-CACHE-PAGE-3", "D-CACHE-PAGE-3", "P-CACHE-PAGE-3", "S1", new DateTime(2026, 6, 2), 99, 198m);
+
+        var widerPage = await service.GetBestSellersAsync(dateRange, null, pageIndex: 1, pageSize: 2);
+
+        Assert.Equal("P-CACHE-PAGE-1", Assert.Single(firstPage.Products).ProductCode);
+        Assert.Equal(2, widerPage.Products.Count);
+        Assert.Equal(3, widerPage.Total);
+        Assert.Equal("P-CACHE-PAGE-3", widerPage.Products[0].ProductCode);
+    }
+
+    [Fact]
+    public void GetBestSellersAsync_热销商品缓存时间为30分钟()
+    {
+        var field = typeof(SalesDashboardReactService).GetField(
+            "BEST_SELLERS_CACHE_DURATION",
+            BindingFlags.NonPublic | BindingFlags.Static
+        );
+
+        Assert.NotNull(field);
+        Assert.Equal(TimeSpan.FromMinutes(30), field!.GetValue(null));
+    }
+
+    [Fact]
     public async Task GetBestSellersAsync_优先读取商品统计表并返回毛利和分店明细()
     {
         await SeedProductAsync("P-STAT", "ITEM-STAT", "BAR-HB", "统计商品", productIsActive: true, warehouseIsActive: true, minOrderQuantity: 2);
@@ -462,6 +520,17 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
             IsDeleted = false,
         }).ExecuteCommandAsync();
         await SeedSaleAsync("O-MARGIN", "D-MARGIN", "P-MARGIN", "S1", new DateTime(2026, 6, 1), 5, 25m);
+        await _localDb.Insertable(new StoreSalesStatistic
+        {
+            Date = new DateTime(2026, 6, 1),
+            BranchCode = "S1",
+            BranchName = "Store 1",
+            TotalQuantity = 5,
+            TotalAmount = 25m,
+            OrderCount = 1,
+            CustomerCount = 1,
+            AverageOrderValue = 25m,
+        }).ExecuteCommandAsync();
 
         await CreateStatisticsJobService().UpdateProductStoreDailyStatistics(new DateTime(2026, 6, 1));
 
@@ -583,6 +652,28 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
     public async Task GetProductStoreDailyStatisticSummary_返回单日汇总和对账状态()
     {
         await SeedStatisticStateAsync(new DateTime(2026, 6, 1), SalesStatisticRefreshStatus.Fresh);
+        await _localDb.Insertable(new StoreSalesStatistic
+        {
+            Date = new DateTime(2026, 6, 1),
+            BranchCode = "S1",
+            BranchName = "Store 1",
+            TotalQuantity = 3,
+            TotalAmount = 15m,
+            OrderCount = 2,
+            CustomerCount = 2,
+            AverageOrderValue = 15m,
+        }).ExecuteCommandAsync();
+        await _localDb.Insertable(new StoreSalesStatistic
+        {
+            Date = new DateTime(2026, 6, 1),
+            BranchCode = "S2",
+            BranchName = "Store 2",
+            TotalQuantity = 6,
+            TotalAmount = 25m,
+            OrderCount = 2,
+            CustomerCount = 2,
+            AverageOrderValue = 12.5m,
+        }).ExecuteCommandAsync();
         await _localDb.Insertable(new ProductStoreDailySalesStatistic
         {
             Date = new DateTime(2026, 6, 1),
@@ -614,12 +705,134 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
         Assert.Equal(40m, data.TotalAmount);
         Assert.Equal(16m, data.GrossProfit);
         Assert.Equal("Passed", data.ReconciliationStatus);
+        Assert.Equal("Passed", data.SalesReconciliationStatus);
+        Assert.Equal(40m, data.ProductTotalAmount);
+        Assert.Equal(40m, data.StoreTotalAmount);
+        Assert.Equal(0m, data.AmountDifference);
+        Assert.Equal(8, data.ProductTotalQuantity);
+        Assert.Equal(9, data.StoreTotalQuantity);
+        Assert.Equal(1, data.QuantityDifference);
+    }
+
+    [Fact]
+    public async Task GetProductStoreDailyStatisticSummary_返回营业额差异和空供应商诊断()
+    {
+        await SeedStatisticStateAsync(
+            new DateTime(2026, 6, 1),
+            SalesStatisticRefreshStatus.Failed,
+            "商品统计与分店营业额统计不一致: 2026-06-01 S1, 商品金额 30, 分店营业额 40, 金额差 10, 未匹配供应商金额 15.5, 未匹配供应商数量 3, 未匹配商品数 2"
+        );
+        await _localDb.Insertable(new StoreSalesStatistic
+        {
+            Date = new DateTime(2026, 6, 1),
+            BranchCode = "S1",
+            BranchName = "Store 1",
+            TotalQuantity = 7,
+            TotalAmount = 40m,
+            OrderCount = 2,
+            CustomerCount = 2,
+            AverageOrderValue = 20m,
+        }).ExecuteCommandAsync();
+        await _localDb.Insertable(new ProductStoreDailySalesStatistic
+        {
+            Date = new DateTime(2026, 6, 1),
+            BranchCode = "S1",
+            SupplierCode = "200",
+            ProductCode = "P-DIFF-1",
+            TotalQuantity = 4,
+            TotalAmount = 30m,
+            GrossProfit = 6m,
+        }).ExecuteCommandAsync();
+
+        var result = await CreateStatisticsController()
+            .GetProductStoreDailyStatisticSummary(new DateTime(2026, 6, 1));
+
+        var ok = AssertOk(result);
+        var data = ExtractAnonymousData<ProductStoreDailyStatisticSummaryDto>(ok.Value);
+        Assert.Equal("Failed", data.ReconciliationStatus);
+        Assert.Equal("Failed", data.SalesReconciliationStatus);
+        Assert.Equal(30m, data.ProductTotalAmount);
+        Assert.Equal(40m, data.StoreTotalAmount);
+        Assert.Equal(10m, data.AmountDifference);
+        Assert.Equal(4, data.ProductTotalQuantity);
+        Assert.Equal(7, data.StoreTotalQuantity);
+        Assert.Equal(3, data.QuantityDifference);
+        Assert.Equal(15.5m, data.UnmatchedSupplierAmount);
+        Assert.Equal(3, data.UnmatchedSupplierQuantity);
+        Assert.Equal(2, data.UnmatchedSupplierProductCount);
+    }
+
+    [Fact]
+    public async Task GetProductStoreDailyStatisticSummary_分店差异互相抵消时营业额对账仍Failed()
+    {
+        await SeedStatisticStateAsync(new DateTime(2026, 6, 1), SalesStatisticRefreshStatus.Failed);
+        await _localDb.Insertable(new StoreSalesStatistic
+        {
+            Date = new DateTime(2026, 6, 1),
+            BranchCode = "S1",
+            BranchName = "Store 1",
+            TotalQuantity = 10,
+            TotalAmount = 80m,
+            OrderCount = 1,
+            CustomerCount = 1,
+            AverageOrderValue = 80m,
+        }).ExecuteCommandAsync();
+        await _localDb.Insertable(new StoreSalesStatistic
+        {
+            Date = new DateTime(2026, 6, 1),
+            BranchCode = "S2",
+            BranchName = "Store 2",
+            TotalQuantity = 10,
+            TotalAmount = 120m,
+            OrderCount = 1,
+            CustomerCount = 1,
+            AverageOrderValue = 120m,
+        }).ExecuteCommandAsync();
+        await _localDb.Insertable(new ProductStoreDailySalesStatistic
+        {
+            Date = new DateTime(2026, 6, 1),
+            BranchCode = "S1",
+            SupplierCode = "200",
+            ProductCode = "P-OFFSET-1",
+            TotalQuantity = 5,
+            TotalAmount = 100m,
+        }).ExecuteCommandAsync();
+        await _localDb.Insertable(new ProductStoreDailySalesStatistic
+        {
+            Date = new DateTime(2026, 6, 1),
+            BranchCode = "S2",
+            SupplierCode = "200",
+            ProductCode = "P-OFFSET-2",
+            TotalQuantity = 5,
+            TotalAmount = 100m,
+        }).ExecuteCommandAsync();
+
+        var result = await CreateStatisticsController()
+            .GetProductStoreDailyStatisticSummary(new DateTime(2026, 6, 1));
+
+        var ok = AssertOk(result);
+        var data = ExtractAnonymousData<ProductStoreDailyStatisticSummaryDto>(ok.Value);
+        Assert.Equal(200m, data.ProductTotalAmount);
+        Assert.Equal(200m, data.StoreTotalAmount);
+        Assert.Equal(40m, data.AmountDifference);
+        Assert.Equal("Failed", data.SalesReconciliationStatus);
     }
 
     [Fact]
     public async Task GetProductStoreDailyStatisticSummary_非Fresh状态有旧统计行时不显示对账通过()
     {
         await SeedStatisticStateAsync(new DateTime(2026, 6, 1), SalesStatisticRefreshStatus.Stale);
+        await _localDb.Insertable(new StoreSalesStatistic
+        {
+            Date = new DateTime(2026, 6, 1),
+            BranchCode = "S1",
+            BranchName = "Store 1",
+            TotalQuantity = 3,
+            TotalAmount = 15m,
+            OrderCount = 1,
+            CustomerCount = 1,
+            AverageOrderValue = 15m,
+        }).ExecuteCommandAsync();
         await _localDb.Insertable(new ProductStoreDailySalesStatistic
         {
             Date = new DateTime(2026, 6, 1),
@@ -638,6 +851,7 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
         var data = ExtractAnonymousData<ProductStoreDailyStatisticSummaryDto>(ok.Value);
         Assert.Equal(SalesStatisticRefreshStatus.Stale, data.Status);
         Assert.Equal("Pending", data.ReconciliationStatus);
+        Assert.Equal("Pending", data.SalesReconciliationStatus);
     }
 
     [Fact]
@@ -658,7 +872,8 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
     [Fact]
     public async Task TriggerProductStoreDailyStatistics_提交后立即返回排队日期()
     {
-        var result = await CreateStatisticsController().TriggerProductStoreDailyStatistics(
+        var cacheWarmerMock = new Mock<ISalesDashboardCacheWarmer>();
+        var result = await CreateStatisticsController(cacheWarmerMock.Object).TriggerProductStoreDailyStatistics(
             new ProductStoreDailyJobTriggerRequest
             {
                 Date = new DateTime(2026, 6, 1),
@@ -668,6 +883,7 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
         var ok = AssertOk(result);
         Assert.Equal(SalesStatisticRefreshStatus.Queued, ReadAnonymousProperty<string>(ok.Value, "status"));
         Assert.Contains("2026-06-01", ReadAnonymousProperty<List<string>>(ok.Value, "submittedDates"));
+        cacheWarmerMock.Verify(x => x.ClearCacheAsync(), Times.Once);
     }
 
     [Fact]
@@ -675,7 +891,8 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
     {
         await SeedStatisticStateAsync(new DateTime(2026, 6, 1), SalesStatisticRefreshStatus.Queued);
 
-        var result = await CreateStatisticsController().BatchProductStoreDailyStatistics(
+        var cacheWarmerMock = new Mock<ISalesDashboardCacheWarmer>();
+        var result = await CreateStatisticsController(cacheWarmerMock.Object).BatchProductStoreDailyStatistics(
             new BatchProductStoreDailyUpdateRequest
             {
                 StartDate = new DateTime(2026, 6, 1),
@@ -686,6 +903,7 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
         var ok = AssertOk(result);
         Assert.Empty(ReadAnonymousProperty<List<string>>(ok.Value, "submittedDates"));
         Assert.Contains("2026-06-01", ReadAnonymousProperty<List<string>>(ok.Value, "skippedDates"));
+        cacheWarmerMock.Verify(x => x.ClearCacheAsync(), Times.Once);
     }
 
     [Fact]
@@ -961,14 +1179,17 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
         );
     }
 
-    private StatisticsJobTriggerController CreateStatisticsController()
+    private StatisticsJobTriggerController CreateStatisticsController(
+        ISalesDashboardCacheWarmer? cacheWarmer = null
+    )
     {
         var context = CreateSqlSugarContext(_localDb);
         return new StatisticsJobTriggerController(
             CreateStatisticsJobService(),
             new ScheduledTaskLogService(context, NullLogger<ScheduledTaskLogService>.Instance),
             context,
-            NullLogger<StatisticsJobTriggerController>.Instance
+            NullLogger<StatisticsJobTriggerController>.Instance,
+            cacheWarmer ?? Mock.Of<ISalesDashboardCacheWarmer>()
         );
     }
 

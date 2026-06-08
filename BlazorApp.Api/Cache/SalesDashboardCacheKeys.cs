@@ -176,6 +176,18 @@ namespace BlazorApp.Api.Cache
         }
 
         /// <summary>
+        /// 生成热销商品全平台排名缓存键
+        /// 热销排名不按分店拆分，只按日期和分页缓存。
+        /// </summary>
+        public static string BestSellers(DateRangeDto dateRange, int pageIndex, int pageSize)
+        {
+            var key = $"{PREFIX}:BestSellers:{Hash(dateRange, pageIndex, pageSize)}";
+            _activeKeys.Add(key);
+            LogKeyGenerated("BestSellers", key, dateRange, pageIndex, pageSize);
+            return key;
+        }
+
+        /// <summary>
         /// 清除所有活动缓存键
         /// </summary>
         public static void ClearActiveKeys()

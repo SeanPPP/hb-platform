@@ -45,6 +45,7 @@ namespace BlazorApp.Api.Services
                 _service.GetStoreSalesRankAsync(dateRange),
                 _service.GetSupplierSalesRankAsync(dateRange),
                 _service.GetChinaSupplierSalesRankAsync(dateRange),
+                _service.GetBestSellersAsync(dateRange, null, 1, 50),
             };
 
             await Task.WhenAll(tasks);

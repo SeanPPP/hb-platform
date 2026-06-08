@@ -363,6 +363,7 @@ namespace BlazorApp.Api.Data
                 EnsureEmployeeProfilePhoneColumn();
                 EnsureLocalSupplierImageBaseUrlColumn();
                 EnsureStoreContactEmailColumn();
+                EnsureSalesStatisticRefreshStateJobColumns();
                 CreateNormalIndexes();
 
                 Console.WriteLine("数据库表检查完成！");
@@ -653,6 +654,60 @@ namespace BlazorApp.Api.Data
             {
                 _db.Ado.ExecuteCommand($"ALTER TABLE [{tableName}] ADD COLUMN [ContactEmail] varchar(100) NULL");
                 Console.WriteLine($"✓ {tableName}.ContactEmail 列已补齐");
+            }
+        }
+
+        private void EnsureSalesStatisticRefreshStateJobColumns()
+        {
+            var tableName = _db.EntityMaintenance.GetTableName(typeof(SalesStatisticRefreshState));
+            if (!_db.DbMaintenance.IsAnyTable(tableName))
+            {
+                return;
+            }
+
+            EnsureColumn(tableName, "JobId", "uniqueidentifier", "uuid", "varchar(36)");
+            EnsureColumn(tableName, "RequestedBy", "nvarchar(100)", "varchar(100)", "varchar(100)");
+            EnsureColumn(tableName, "RequestedAtUtc", "datetime2", "timestamp", "datetime");
+            EnsureColumn(tableName, "StartedAtUtc", "datetime2", "timestamp", "datetime");
+            EnsureColumn(tableName, "CompletedAtUtc", "datetime2", "timestamp", "datetime");
+        }
+
+        private void EnsureColumn(
+            string tableName,
+            string columnName,
+            string sqlServerType,
+            string postgreSqlType,
+            string sqliteType
+        )
+        {
+            var columns = _db.DbMaintenance.GetColumnInfosByTableName(tableName, false);
+            if (columns.Any(column => string.Equals(column.DbColumnName, columnName, StringComparison.OrdinalIgnoreCase)))
+            {
+                return;
+            }
+
+            if (_db.CurrentConnectionConfig.DbType == DbType.SqlServer)
+            {
+                _db.Ado.ExecuteCommand(
+                    $"IF COL_LENGTH('{tableName}', '{columnName}') IS NULL ALTER TABLE [{tableName}] ADD [{columnName}] {sqlServerType} NULL"
+                );
+                Console.WriteLine($"✓ {tableName}.{columnName} 列已补齐");
+                return;
+            }
+
+            if (_db.CurrentConnectionConfig.DbType == DbType.PostgreSQL)
+            {
+                _db.Ado.ExecuteCommand(
+                    $"ALTER TABLE \"{tableName}\" ADD COLUMN IF NOT EXISTS \"{columnName}\" {postgreSqlType} NULL"
+                );
+                Console.WriteLine($"✓ {tableName}.{columnName} 列已补齐");
+                return;
+            }
+
+            if (_db.CurrentConnectionConfig.DbType == DbType.Sqlite)
+            {
+                _db.Ado.ExecuteCommand($"ALTER TABLE [{tableName}] ADD COLUMN [{columnName}] {sqliteType} NULL");
+                Console.WriteLine($"✓ {tableName}.{columnName} 列已补齐");
             }
         }
 

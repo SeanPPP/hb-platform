@@ -367,6 +367,36 @@ public sealed class ProductSupplierImageBatchUpdateTests : IDisposable
     }
 
     [Fact]
+    public void SqlSugarContext_既有销售统计状态表缺少任务跟踪列时自动补齐()
+    {
+        _localDb.Ado.ExecuteCommand("DROP TABLE IF EXISTS SalesStatisticRefreshState");
+        _localDb.Ado.ExecuteCommand("""
+            CREATE TABLE SalesStatisticRefreshState (
+                StatisticType TEXT NOT NULL,
+                Date TEXT NOT NULL,
+                Status TEXT NOT NULL,
+                LastSourceUploadTime TEXT NULL,
+                SourceTimeZone TEXT NOT NULL,
+                LastAggregatedAtUtc TEXT NULL,
+                LastCheckedAtUtc TEXT NULL,
+                ErrorMessage TEXT NULL
+            )
+            """);
+
+        var context = CreateSqlSugarContext(_localDb);
+        typeof(SqlSugarContext)
+            .GetMethod("EnsureSalesStatisticRefreshStateJobColumns", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(context, null);
+
+        var columns = _localDb.DbMaintenance.GetColumnInfosByTableName("SalesStatisticRefreshState", false);
+        Assert.Contains(columns, column => string.Equals(column.DbColumnName, "JobId", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(columns, column => string.Equals(column.DbColumnName, "RequestedBy", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(columns, column => string.Equals(column.DbColumnName, "RequestedAtUtc", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(columns, column => string.Equals(column.DbColumnName, "StartedAtUtc", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(columns, column => string.Equals(column.DbColumnName, "CompletedAtUtc", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
     public async Task BatchUpdateSupplierImages_兼容入口使用Pos商品管理权限并委托Job服务()
     {
         var authorize = typeof(ReactProductController)

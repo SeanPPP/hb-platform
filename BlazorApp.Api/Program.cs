@@ -159,6 +159,7 @@ builder.Services.AddScoped<ScheduledTaskRetryService>();
 builder.Services.Configure<ScheduledTaskOptions>(
     builder.Configuration.GetSection("ScheduledTasks")
 );
+builder.Services.AddHostedService<ProductStoreDailyStatisticRecoveryService>();
 builder.Services.AddHostedService<ScheduledTaskService>();
 
 // --------------------- CORS配置 ---------------------

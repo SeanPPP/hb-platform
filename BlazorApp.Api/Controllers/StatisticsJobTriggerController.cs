@@ -1,6 +1,7 @@
 using BlazorApp.Api.Services;
 using BlazorApp.Api.Services.Background;
 using BlazorApp.Api.Data;
+using BlazorApp.Api.Interfaces;
 using BlazorApp.Shared.Models;
 using BlazorApp.Shared.Models.HBweb;
 using Microsoft.AspNetCore.Authorization;
@@ -18,19 +19,22 @@ namespace BlazorApp.Api.Controllers
         private readonly ScheduledTaskLogService _taskLogService;
         private readonly SqlSugarContext _context;
         private readonly ILogger<StatisticsJobTriggerController> _logger;
+        private readonly ISalesDashboardCacheWarmer _cacheWarmer;
         private const int MaxProductStoreDailyBatchDays = 31;
 
         public StatisticsJobTriggerController(
             SalesStatisticsJobService statisticsJobService,
             ScheduledTaskLogService taskLogService,
             SqlSugarContext context,
-            ILogger<StatisticsJobTriggerController> logger
+            ILogger<StatisticsJobTriggerController> logger,
+            ISalesDashboardCacheWarmer cacheWarmer
         )
         {
             _statisticsJobService = statisticsJobService;
             _taskLogService = taskLogService;
             _context = context;
             _logger = logger;
+            _cacheWarmer = cacheWarmer;
         }
 
         [HttpPost("trigger-store")]
@@ -313,6 +317,7 @@ namespace BlazorApp.Api.Controllers
                     new[] { request.Date.Date },
                     HttpContext?.User?.Identity?.Name
                 );
+                await ClearSalesDashboardCacheAfterProductStatisticSubmitAsync();
 
                 return Ok(BuildProductStoreDailySubmitResponse(result));
             }
@@ -340,6 +345,7 @@ namespace BlazorApp.Api.Controllers
                     dates,
                     HttpContext?.User?.Identity?.Name
                 );
+                await ClearSalesDashboardCacheAfterProductStatisticSubmitAsync();
 
                 return Ok(BuildProductStoreDailySubmitResponse(result));
             }
@@ -427,23 +433,61 @@ namespace BlazorApp.Api.Controllers
                 .Where(s => s.Date == targetDate)
                 .Select(s => new
                 {
+                    s.BranchCode,
                     s.TotalQuantity,
                     s.TotalAmount,
                     s.GrossProfit,
                 })
                 .ToListAsync();
 
+            var storeRows = await _context.Db.Queryable<StoreSalesStatistic>()
+                .Where(s => s.Date == targetDate)
+                .Select(s => new
+                {
+                    s.BranchCode,
+                    s.TotalQuantity,
+                    s.TotalAmount,
+                })
+                .ToListAsync();
+
+            var reconciliation = ProductStoreDailyReconciliationCalculator.Calculate(
+                targetDate,
+                rows.Select(row => new ProductStoreDailyBranchRollup(
+                    row.BranchCode,
+                    row.TotalAmount,
+                    row.TotalQuantity
+                )),
+                storeRows.Select(row => new ProductStoreDailyBranchRollup(
+                    row.BranchCode,
+                    row.TotalAmount,
+                    row.TotalQuantity
+                ))
+            );
+
             var summary = new ProductStoreDailyStatisticSummaryDto
             {
                 Date = targetDate,
                 Status = state?.Status ?? SalesStatisticRefreshStatus.Pending,
                 RecordCount = rows.Count,
-                TotalQuantity = rows.Sum(x => x.TotalQuantity),
-                TotalAmount = rows.Sum(x => x.TotalAmount),
+                TotalQuantity = reconciliation.ProductTotalQuantity,
+                TotalAmount = reconciliation.ProductTotalAmount,
                 GrossProfit = rows.Any(x => x.GrossProfit.HasValue)
                     ? rows.Sum(x => x.GrossProfit ?? 0m)
                     : null,
                 ReconciliationStatus = ResolveProductStatisticReconciliationStatus(state?.Status, rows.Any()),
+                SalesReconciliationStatus = ResolveProductStatisticSalesReconciliationStatus(
+                    state?.Status,
+                    reconciliation.Status
+                ),
+                ProductTotalAmount = reconciliation.ProductTotalAmount,
+                StoreTotalAmount = reconciliation.StoreTotalAmount,
+                AmountDifference = reconciliation.AmountDifference,
+                ProductTotalQuantity = reconciliation.ProductTotalQuantity,
+                StoreTotalQuantity = reconciliation.StoreTotalQuantity,
+                QuantityDifference = reconciliation.QuantityDifference,
+                UnmatchedSupplierAmount = ExtractDecimalFromMessage(state?.ErrorMessage, "未匹配供应商金额"),
+                UnmatchedSupplierQuantity = ExtractIntFromMessage(state?.ErrorMessage, "未匹配供应商数量"),
+                UnmatchedSupplierProductCount = ExtractIntFromMessage(state?.ErrorMessage, "未匹配商品数"),
                 LastSourceUploadTime = state?.LastSourceUploadTime,
                 SourceTimeZone = state?.SourceTimeZone,
                 LastAggregatedAtUtc = state?.LastAggregatedAtUtc,
@@ -504,6 +548,67 @@ namespace BlazorApp.Api.Controllers
             };
         }
 
+        private static string ResolveProductStatisticSalesReconciliationStatus(
+            string? stateStatus,
+            string reconciliationStatus
+        )
+        {
+            if (
+                stateStatus != SalesStatisticRefreshStatus.Fresh
+                && stateStatus != SalesStatisticRefreshStatus.Failed
+            )
+            {
+                return "Pending";
+            }
+
+            return reconciliationStatus switch
+            {
+                SalesStatisticRefreshStatus.Fresh => "Passed",
+                SalesStatisticRefreshStatus.Failed => "Failed",
+                _ => "Pending",
+            };
+        }
+
+        private static decimal? ExtractDecimalFromMessage(string? message, string marker)
+        {
+            var token = ExtractTokenAfterMarker(message, marker);
+            return decimal.TryParse(token, out var value) ? value : null;
+        }
+
+        private static int? ExtractIntFromMessage(string? message, string marker)
+        {
+            var token = ExtractTokenAfterMarker(message, marker);
+            return int.TryParse(token, out var value) ? value : null;
+        }
+
+        private static string? ExtractTokenAfterMarker(string? message, string marker)
+        {
+            if (string.IsNullOrWhiteSpace(message))
+            {
+                return null;
+            }
+
+            var markerIndex = message.IndexOf(marker, StringComparison.Ordinal);
+            if (markerIndex < 0)
+            {
+                return null;
+            }
+
+            var tokenStart = markerIndex + marker.Length;
+            while (tokenStart < message.Length && char.IsWhiteSpace(message[tokenStart]))
+            {
+                tokenStart++;
+            }
+
+            var tokenEnd = tokenStart;
+            while (tokenEnd < message.Length && message[tokenEnd] != ',')
+            {
+                tokenEnd++;
+            }
+
+            return message[tokenStart..tokenEnd].Trim();
+        }
+
         [HttpPost("batch-product-store-daily")]
         public async Task<IActionResult> BatchProductStoreDailyStatistics(
             [FromBody] BatchProductStoreDailyUpdateRequest request
@@ -529,6 +634,7 @@ namespace BlazorApp.Api.Controllers
                     EnumerateDates(request.StartDate, request.EndDate),
                     HttpContext?.User?.Identity?.Name
                 );
+                await ClearSalesDashboardCacheAfterProductStatisticSubmitAsync();
 
                 return Ok(BuildProductStoreDailySubmitResponse(result));
             }
@@ -550,6 +656,12 @@ namespace BlazorApp.Api.Controllers
                 dates.Add(date);
             }
             return dates;
+        }
+
+        private async Task ClearSalesDashboardCacheAfterProductStatisticSubmitAsync()
+        {
+            // 商品统计重算会影响热销榜，提交后立即清理看板缓存，避免页面继续读取旧排名。
+            await _cacheWarmer.ClearCacheAsync();
         }
 
         private static object BuildProductStoreDailySubmitResponse(
@@ -1179,6 +1291,16 @@ namespace BlazorApp.Api.Controllers
         public decimal TotalAmount { get; set; }
         public decimal? GrossProfit { get; set; }
         public string ReconciliationStatus { get; set; } = string.Empty;
+        public string SalesReconciliationStatus { get; set; } = string.Empty;
+        public decimal ProductTotalAmount { get; set; }
+        public decimal? StoreTotalAmount { get; set; }
+        public decimal? AmountDifference { get; set; }
+        public int ProductTotalQuantity { get; set; }
+        public int? StoreTotalQuantity { get; set; }
+        public int? QuantityDifference { get; set; }
+        public decimal? UnmatchedSupplierAmount { get; set; }
+        public int? UnmatchedSupplierQuantity { get; set; }
+        public int? UnmatchedSupplierProductCount { get; set; }
         public DateTime? LastSourceUploadTime { get; set; }
         public string? SourceTimeZone { get; set; }
         public DateTime? LastAggregatedAtUtc { get; set; }
