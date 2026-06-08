@@ -1136,6 +1136,26 @@ namespace BlazorApp.Shared.DTOs
         public decimal SalesAmount { get; set; }
 
         /// <summary>
+        /// 成本金额
+        /// </summary>
+        public decimal? TotalCost { get; set; }
+
+        /// <summary>
+        /// 毛利额
+        /// </summary>
+        public decimal? GrossProfit { get; set; }
+
+        /// <summary>
+        /// 毛利率
+        /// </summary>
+        public decimal? GrossMarginRate { get; set; }
+
+        /// <summary>
+        /// 成本来源
+        /// </summary>
+        public string? CostSource { get; set; }
+
+        /// <summary>
         /// 排名
         /// </summary>
         public int Rank { get; set; }
@@ -1159,6 +1179,11 @@ namespace BlazorApp.Shared.DTOs
         /// 当前统计范围内的分店销量明细
         /// </summary>
         public List<BestSellerBranchSaleDto> BranchSales { get; set; } = new();
+
+        /// <summary>
+        /// 商品统计刷新状态
+        /// </summary>
+        public string? StatisticStatus { get; set; }
     }
 
     /// <summary>
@@ -1180,6 +1205,31 @@ namespace BlazorApp.Shared.DTOs
         /// 销售数量
         /// </summary>
         public int Quantity { get; set; }
+
+        /// <summary>
+        /// 销售金额
+        /// </summary>
+        public decimal SalesAmount { get; set; }
+
+        /// <summary>
+        /// 成本金额
+        /// </summary>
+        public decimal? TotalCost { get; set; }
+
+        /// <summary>
+        /// 毛利额
+        /// </summary>
+        public decimal? GrossProfit { get; set; }
+
+        /// <summary>
+        /// 毛利率
+        /// </summary>
+        public decimal? GrossMarginRate { get; set; }
+
+        /// <summary>
+        /// 成本来源
+        /// </summary>
+        public string? CostSource { get; set; }
     }
 
     /// <summary>
@@ -1211,5 +1261,15 @@ namespace BlazorApp.Shared.DTOs
         /// 总页数
         /// </summary>
         public int TotalPages => PageSize > 0 ? (int)Math.Ceiling((double)Total / PageSize) : 0;
+
+        /// <summary>
+        /// 当前日期范围内商品统计状态
+        /// </summary>
+        public string? StatisticStatus { get; set; }
+
+        /// <summary>
+        /// 统计状态提示
+        /// </summary>
+        public string? StatisticMessage { get; set; }
     }
 }

@@ -6,6 +6,7 @@ using BlazorApp.Api.Controllers.React;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Interfaces.React;
+using BlazorApp.Api.Services;
 using BlazorApp.Api.Services.React;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
@@ -14,6 +15,8 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Caching.Memory;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using SqlSugar;
@@ -42,7 +45,15 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
         _localDb = new SqlSugarClient(CreateConnectionConfig(_localConnection.ConnectionString));
         _posmDb = new SqlSugarClient(CreateConnectionConfig(_posmConnection.ConnectionString));
 
-        _localDb.CodeFirst.InitTables(typeof(Product), typeof(WarehouseProduct), typeof(Store));
+        _localDb.CodeFirst.InitTables(
+            typeof(Product),
+            typeof(WarehouseProduct),
+            typeof(Store),
+            typeof(StoreRetailPrice),
+            typeof(StoreSupplierSalesDetail),
+            typeof(ProductStoreDailySalesStatistic),
+            typeof(SalesStatisticRefreshState)
+        );
         _posmDb.CodeFirst.InitTables(typeof(SalesOrder), typeof(SalesOrderDetail), typeof(POSM_设备注册信息表));
     }
 
@@ -277,6 +288,201 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
     }
 
     [Fact]
+    public async Task GetBestSellersAsync_优先读取商品统计表并返回毛利和分店明细()
+    {
+        await SeedProductAsync("P-STAT", "ITEM-STAT", "BAR-HB", "统计商品", productIsActive: true, warehouseIsActive: true, minOrderQuantity: 2);
+        await SeedStoreAsync("S1", "Store 1");
+        await SeedStoreAsync("S2", "Store 2");
+        await _localDb.Insertable(new ProductStoreDailySalesStatistic
+        {
+            Date = new DateTime(2026, 6, 1),
+            BranchCode = "S1",
+            SupplierCode = "200",
+            ProductCode = "P-STAT",
+            ProductName = "POSM 统计商品",
+            Barcode = "BAR-POSM",
+            TotalQuantity = 4,
+            TotalAmount = 20m,
+            OrderCount = 1,
+            UnitCostSnapshot = 2m,
+            TotalCost = 8m,
+            GrossProfit = 12m,
+            GrossMarginRate = 0.6m,
+            CostSource = "StoreRetailPrice",
+        }).ExecuteCommandAsync();
+        await _localDb.Insertable(new ProductStoreDailySalesStatistic
+        {
+            Date = new DateTime(2026, 6, 1),
+            BranchCode = "S2",
+            SupplierCode = "200",
+            ProductCode = "P-STAT",
+            ProductName = "POSM 统计商品",
+            Barcode = "BAR-POSM",
+            TotalQuantity = 6,
+            TotalAmount = 30m,
+            OrderCount = 1,
+            UnitCostSnapshot = 2m,
+            TotalCost = 12m,
+            GrossProfit = 18m,
+            GrossMarginRate = 0.6m,
+            CostSource = "StoreRetailPrice",
+        }).ExecuteCommandAsync();
+        await SeedStatisticStateAsync(new DateTime(2026, 6, 1), SalesStatisticRefreshStatus.Fresh);
+
+        var result = await CreateService().GetBestSellersAsync(
+            new DateRangeDto { StartDate = new DateTime(2026, 6, 1), EndDate = new DateTime(2026, 6, 1).AddDays(1).AddTicks(-1) },
+            null,
+            pageIndex: 1,
+            pageSize: 50
+        );
+
+        var product = Assert.Single(result.Products);
+        Assert.Equal(SalesStatisticRefreshStatus.Fresh, result.StatisticStatus);
+        Assert.Equal("P-STAT", product.ProductCode);
+        Assert.Equal("BAR-HB", product.Barcode);
+        Assert.Equal(10, product.Quantity);
+        Assert.Equal(50m, product.SalesAmount);
+        Assert.Equal(20m, product.TotalCost);
+        Assert.Equal(30m, product.GrossProfit);
+        Assert.Equal(0.6m, product.GrossMarginRate);
+        Assert.Equal(2, product.BranchSalesCount);
+        Assert.Collection(
+            product.BranchSales,
+            row =>
+            {
+                Assert.Equal("S2", row.BranchCode);
+                Assert.Equal(6, row.Quantity);
+                Assert.Equal(30m, row.SalesAmount);
+                Assert.Equal(18m, row.GrossProfit);
+            },
+            row =>
+            {
+                Assert.Equal("S1", row.BranchCode);
+                Assert.Equal(4, row.Quantity);
+                Assert.Equal(20m, row.SalesAmount);
+                Assert.Equal(12m, row.GrossProfit);
+            }
+        );
+    }
+
+    [Fact]
+    public async Task GetBestSellersAsync_统计状态失败时回退POSM查询避免页面失败()
+    {
+        await SeedProductAsync("P-FALLBACK", "ITEM-FALLBACK", "BAR-FALLBACK", "回退商品", productIsActive: true, warehouseIsActive: true, minOrderQuantity: 1);
+        await SeedSaleAsync("O-FALLBACK", "D-FALLBACK", "P-FALLBACK", "S1", new DateTime(2026, 6, 1), 8, 16m);
+        await SeedStatisticStateAsync(new DateTime(2026, 6, 1), SalesStatisticRefreshStatus.Failed, "对账失败");
+
+        var result = await CreateService().GetBestSellersAsync(
+            new DateRangeDto { StartDate = new DateTime(2026, 6, 1), EndDate = new DateTime(2026, 6, 8) },
+            null,
+            pageIndex: 1,
+            pageSize: 50
+        );
+
+        var product = Assert.Single(result.Products);
+        Assert.Equal("P-FALLBACK", product.ProductCode);
+        Assert.Equal(8, product.Quantity);
+        Assert.Equal(16m, product.SalesAmount);
+        Assert.Equal(SalesStatisticRefreshStatus.Failed, result.StatisticStatus);
+        Assert.Contains("对账失败", result.StatisticMessage);
+    }
+
+    [Fact]
+    public async Task GetBestSellersAsync_POSM回退包含结束日整天销售()
+    {
+        await SeedProductAsync("P-END-DATE", "ITEM-END-DATE", "BAR-END-DATE", "结束日商品", productIsActive: true, warehouseIsActive: true, minOrderQuantity: 1);
+        await SeedSaleAsync("O-END-DATE", "D-END-DATE", "P-END-DATE", "S1", new DateTime(2026, 6, 8, 18, 30, 0), 5, 25m);
+
+        var result = await CreateService().GetBestSellersAsync(
+            new DateRangeDto { StartDate = new DateTime(2026, 6, 1), EndDate = new DateTime(2026, 6, 8) },
+            null,
+            pageIndex: 1,
+            pageSize: 50
+        );
+
+        var product = Assert.Single(result.Products);
+        Assert.Equal("P-END-DATE", product.ProductCode);
+        Assert.Equal(5, product.Quantity);
+        Assert.Equal(25m, product.SalesAmount);
+    }
+
+    [Fact]
+    public async Task GetBestSellersAsync_POSM回退分店过滤使用设备映射参与排名()
+    {
+        await SeedProductAsync("P-DEVICE-RANK", "ITEM-DEVICE-RANK", "BAR-DEVICE-RANK", "设备分店商品", productIsActive: true, warehouseIsActive: true, minOrderQuantity: 1);
+        await SeedStoreAsync("S1", "Store 1");
+        await SeedDeviceAsync("DEVICE-S1", "S1");
+        await SeedSaleAsync(
+            "O-DEVICE-RANK",
+            "D-DEVICE-RANK",
+            "P-DEVICE-RANK",
+            null,
+            new DateTime(2026, 6, 1, 10, 0, 0),
+            9,
+            45m,
+            deviceCode: "DEVICE-S1"
+        );
+
+        var result = await CreateService().GetBestSellersAsync(
+            new DateRangeDto { StartDate = new DateTime(2026, 6, 1), EndDate = new DateTime(2026, 6, 1) },
+            new List<string> { "S1" },
+            pageIndex: 1,
+            pageSize: 50
+        );
+
+        var product = Assert.Single(result.Products);
+        Assert.Equal("P-DEVICE-RANK", product.ProductCode);
+        Assert.Equal(9, product.Quantity);
+        Assert.Equal(1, product.BranchSalesCount);
+        Assert.Equal("S1", Assert.Single(product.BranchSales).BranchCode);
+    }
+
+    [Fact]
+    public async Task UpdateProductStoreDailyStatistics_按分店进货价优先计算毛利并写入状态()
+    {
+        await SeedProductAsync("P-MARGIN", "ITEM-MARGIN", "BAR-MARGIN", "毛利商品", productIsActive: true, warehouseIsActive: true, minOrderQuantity: 1);
+        await _localDb.Updateable<Product>()
+            .SetColumns(p => p.PurchasePrice == 9m)
+            .Where(p => p.ProductCode == "P-MARGIN")
+            .ExecuteCommandAsync();
+        await _localDb.Updateable<WarehouseProduct>()
+            .SetColumns(p => p.ImportPrice == 8m)
+            .Where(p => p.ProductCode == "P-MARGIN")
+            .ExecuteCommandAsync();
+        await _localDb.Insertable(new StoreRetailPrice
+        {
+            UUID = "srp-margin",
+            StoreCode = "S1",
+            ProductCode = "P-MARGIN",
+            SupplierCode = "200",
+            PurchasePrice = 2m,
+            IsActive = true,
+            IsDeleted = false,
+        }).ExecuteCommandAsync();
+        await SeedSaleAsync("O-MARGIN", "D-MARGIN", "P-MARGIN", "S1", new DateTime(2026, 6, 1), 5, 25m);
+
+        await CreateStatisticsJobService().UpdateProductStoreDailyStatistics(new DateTime(2026, 6, 1));
+
+        var stat = await _localDb.Queryable<ProductStoreDailySalesStatistic>()
+            .Where(x => x.Date == new DateTime(2026, 6, 1) && x.ProductCode == "P-MARGIN")
+            .FirstAsync();
+        Assert.NotNull(stat);
+        Assert.Equal("StoreRetailPrice", stat.CostSource);
+        Assert.Equal(2m, stat.UnitCostSnapshot);
+        Assert.Equal(10m, stat.TotalCost);
+        Assert.Equal(15m, stat.GrossProfit);
+        Assert.Equal(0.6m, stat.GrossMarginRate);
+
+        var state = await _localDb.Queryable<SalesStatisticRefreshState>()
+            .Where(x => x.StatisticType == SalesStatisticType.ProductStoreDaily && x.Date == new DateTime(2026, 6, 1))
+            .FirstAsync();
+        Assert.NotNull(state);
+        Assert.Equal(SalesStatisticRefreshStatus.Fresh, state.Status);
+        Assert.Equal("POSM_LOCAL", state.SourceTimeZone);
+        Assert.NotNull(state.LastAggregatedAtUtc);
+    }
+
+    [Fact]
     public async Task GetBestSellers_普通用户传入请求分店时只把权限交集传给服务()
     {
         List<string>? capturedBranchCodes = null;
@@ -446,6 +652,24 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
         }).ExecuteCommandAsync();
     }
 
+    private async Task SeedStatisticStateAsync(
+        DateTime date,
+        string status,
+        string? errorMessage = null
+    )
+    {
+        await _localDb.Insertable(new SalesStatisticRefreshState
+        {
+            StatisticType = SalesStatisticType.ProductStoreDaily,
+            Date = date.Date,
+            Status = status,
+            SourceTimeZone = "POSM_LOCAL",
+            LastAggregatedAtUtc = DateTime.UtcNow,
+            LastCheckedAtUtc = DateTime.UtcNow,
+            ErrorMessage = errorMessage,
+        }).ExecuteCommandAsync();
+    }
+
     private async Task SeedSaleAsync(
         string orderGuid,
         string detailGuid,
@@ -489,6 +713,26 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
             Mock.Of<IMapper>(),
             NullLogger<SalesDashboardReactService>.Instance,
             new MemoryCache(new MemoryCacheOptions())
+        );
+    }
+
+    private SalesStatisticsJobService CreateStatisticsJobService()
+    {
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["ScheduledTasks:MaxConcurrentUpdates"] = "2",
+                ["ScheduledTasks:MaxDaysForConcurrentUpdate"] = "30",
+                ["ScheduledTasks:MaxDaysPerChunk"] = "7",
+            })
+            .Build();
+
+        return new SalesStatisticsJobService(
+            CreatePosmSqlSugarContext(_posmDb),
+            CreateSqlSugarContext(_localDb),
+            NullLogger<SalesStatisticsJobService>.Instance,
+            configuration,
+            Mock.Of<IServiceScopeFactory>()
         );
     }
 

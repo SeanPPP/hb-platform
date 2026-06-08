@@ -14,6 +14,7 @@ namespace BlazorApp.Api.Controllers
         private readonly SalesStatisticsJobService _statisticsJobService;
         private readonly ScheduledTaskLogService _taskLogService;
         private readonly ILogger<StatisticsJobTriggerController> _logger;
+        private const int MaxProductStoreDailyBatchDays = 31;
 
         public StatisticsJobTriggerController(
             SalesStatisticsJobService statisticsJobService,
@@ -288,6 +289,119 @@ namespace BlazorApp.Api.Controllers
                     await _taskLogService.LogTaskFailureAsync(taskId, ex.Message);
                 }
                 _logger.LogError(ex, "触发全量刷新当天数据任务失败");
+                return StatusCode(
+                    500,
+                    new { success = false, message = "触发任务失败: " + ex.Message }
+                );
+            }
+        }
+
+        [HttpPost("trigger-product-store-daily")]
+        public async Task<IActionResult> TriggerProductStoreDailyStatistics(
+            [FromBody] ProductStoreDailyJobTriggerRequest request
+        )
+        {
+            Guid taskId = Guid.Empty;
+            try
+            {
+                var taskLog = await _taskLogService.LogTaskStartAsync(
+                    BlazorApp.Shared.Models.HBweb.TaskType.UpdateProductStoreDailyStatistics,
+                    new TaskParameters { Date = request.Date.ToString("yyyy-MM-dd") },
+                    TaskTrigger.Manual
+                );
+                taskId = taskLog.Id;
+
+                _logger.LogInformation("商品分店每日统计任务已触发: Date={Date}", request.Date);
+
+                await _statisticsJobService.UpdateProductStoreDailyStatistics(request.Date);
+
+                await _taskLogService.LogTaskSuccessAsync(taskId);
+
+                return Ok(
+                    new
+                    {
+                        success = true,
+                        message = "商品分店每日统计任务执行完成",
+                        date = request.Date,
+                        jobId = taskId,
+                    }
+                );
+            }
+            catch (Exception ex)
+            {
+                if (taskId != Guid.Empty)
+                {
+                    await _taskLogService.LogTaskFailureAsync(taskId, ex.Message);
+                }
+                _logger.LogError(ex, "触发商品分店每日统计任务失败");
+                return StatusCode(
+                    500,
+                    new { success = false, message = "触发任务失败: " + ex.Message }
+                );
+            }
+        }
+
+        [HttpPost("batch-product-store-daily")]
+        public async Task<IActionResult> BatchProductStoreDailyStatistics(
+            [FromBody] BatchProductStoreDailyUpdateRequest request
+        )
+        {
+            Guid taskId = Guid.Empty;
+            try
+            {
+                if (request.StartDate > request.EndDate)
+                {
+                    return BadRequest(new { success = false, message = "开始日期不能大于结束日期" });
+                }
+                var requestedDays = (int)(request.EndDate.Date - request.StartDate.Date).TotalDays + 1;
+                if (requestedDays > MaxProductStoreDailyBatchDays)
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = $"商品分店每日统计一次最多重算 {MaxProductStoreDailyBatchDays} 天，请分段执行",
+                    });
+                }
+
+                var taskLog = await _taskLogService.LogTaskStartAsync(
+                    BlazorApp.Shared.Models.HBweb.TaskType.UpdateProductStoreDailyStatisticsBatch,
+                    new TaskParameters
+                    {
+                        StartDate = request.StartDate.ToString("yyyy-MM-dd"),
+                        EndDate = request.EndDate.ToString("yyyy-MM-dd"),
+                    },
+                    TaskTrigger.Manual
+                );
+                taskId = taskLog.Id;
+
+                var processedDays = 0;
+                for (var date = request.StartDate.Date; date <= request.EndDate.Date; date = date.AddDays(1))
+                {
+                    await _statisticsJobService.UpdateProductStoreDailyStatistics(date);
+                    processedDays++;
+                }
+
+                await _taskLogService.LogTaskSuccessAsync(taskId);
+
+                return Ok(
+                    new
+                    {
+                        success = true,
+                        message = "商品分店每日统计批量任务执行完成",
+                        startDate = request.StartDate,
+                        endDate = request.EndDate,
+                        processedDays,
+                        jobId = taskId,
+                    }
+                );
+            }
+            catch (Exception ex)
+            {
+                if (taskId != Guid.Empty)
+                {
+                    await _taskLogService.LogTaskFailureAsync(taskId, ex.Message);
+                }
+                _logger.LogError(ex, "批量触发商品分店每日统计任务失败");
                 return StatusCode(
                     500,
                     new { success = false, message = "触发任务失败: " + ex.Message }
@@ -865,6 +979,17 @@ namespace BlazorApp.Api.Controllers
     public class FullRefreshRequest { }
 
     public class FullRefreshCurrentDayRequest { }
+
+    public class ProductStoreDailyJobTriggerRequest
+    {
+        public DateTime Date { get; set; }
+    }
+
+    public class BatchProductStoreDailyUpdateRequest
+    {
+        public DateTime StartDate { get; set; }
+        public DateTime EndDate { get; set; }
+    }
 
     public class BatchStoreUpdateRequest
     {

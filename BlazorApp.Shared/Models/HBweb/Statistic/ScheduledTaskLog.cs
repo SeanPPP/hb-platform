@@ -92,6 +92,8 @@ namespace BlazorApp.Shared.Models.HBweb
         public const string UpdateSupplierStatisticsBatch = "UpdateSupplierStatisticsBatch";
         public const string UpdateStoreSupplierStatistics = "UpdateStoreSupplierStatistics";
         public const string UpdateStoreSupplierStatisticsBatch = "UpdateStoreSupplierStatisticsBatch";
+        public const string UpdateProductStoreDailyStatistics = "UpdateProductStoreDailyStatistics";
+        public const string UpdateProductStoreDailyStatisticsBatch = "UpdateProductStoreDailyStatisticsBatch";
         public const string FullRefreshPreviousDay = "FullRefreshPreviousDay";
         public const string FullRefreshCurrentDay = "FullRefreshCurrentDay";
         public const string FullRefreshCurrentWeek = "FullRefreshCurrentWeek";

@@ -321,6 +321,10 @@ namespace BlazorApp.Api.Data
             new SimpleClient<AustralianSupplierStoreSalesDetail>(_db);
         public SimpleClient<ChinaSupplierStoreSalesDetail> ChinaSupplierStoreSalesDetailDb =>
             new SimpleClient<ChinaSupplierStoreSalesDetail>(_db);
+        public SimpleClient<ProductStoreDailySalesStatistic> ProductStoreDailySalesStatisticDb =>
+            new SimpleClient<ProductStoreDailySalesStatistic>(_db);
+        public SimpleClient<SalesStatisticRefreshState> SalesStatisticRefreshStateDb =>
+            new SimpleClient<SalesStatisticRefreshState>(_db);
 
         // 定时任务日志实体
         public SimpleClient<ScheduledTaskLog> ScheduledTaskLogDb =>
@@ -446,6 +450,8 @@ namespace BlazorApp.Api.Data
                 typeof(StoreSupplierSalesDetail),
                 typeof(AustralianSupplierStoreSalesDetail),
                 typeof(ChinaSupplierStoreSalesDetail),
+                typeof(ProductStoreDailySalesStatistic),
+                typeof(SalesStatisticRefreshState),
                 typeof(ScheduledTaskLog),
                 typeof(ApplicationLog),
                 typeof(HolidayProduct),
@@ -1038,6 +1044,14 @@ namespace BlazorApp.Api.Data
                     "CREATE INDEX IF NOT EXISTS \"IX_SupplierSalesStatistic_Date_IsDomestic_TotalAmount\" ON \"SupplierSalesStatistic\" (\"Date\", \"IsDomestic\", \"TotalAmount\")",
                 ["IX_StoreSupplierSalesDetail_Date_BranchCode_SupplierCode"] =
                     "CREATE INDEX IF NOT EXISTS \"IX_StoreSupplierSalesDetail_Date_BranchCode_SupplierCode\" ON \"StoreSupplierSalesDetail\" (\"Date\", \"BranchCode\", \"SupplierCode\")",
+                ["IX_ProductStoreDailySalesStatistic_Date_Supplier_Product"] =
+                    "CREATE INDEX IF NOT EXISTS \"IX_ProductStoreDailySalesStatistic_Date_Supplier_Product\" ON \"ProductStoreDailySalesStatistic\" (\"Date\", \"SupplierCode\", \"ProductCode\")",
+                ["IX_ProductStoreDailySalesStatistic_Date_Supplier_Quantity"] =
+                    "CREATE INDEX IF NOT EXISTS \"IX_ProductStoreDailySalesStatistic_Date_Supplier_Quantity\" ON \"ProductStoreDailySalesStatistic\" (\"Date\", \"SupplierCode\", \"TotalQuantity\")",
+                ["IX_ProductStoreDailySalesStatistic_Date_Branch_Supplier_Product"] =
+                    "CREATE INDEX IF NOT EXISTS \"IX_ProductStoreDailySalesStatistic_Date_Branch_Supplier_Product\" ON \"ProductStoreDailySalesStatistic\" (\"Date\", \"BranchCode\", \"SupplierCode\", \"ProductCode\")",
+                ["IX_SalesStatisticRefreshState_Type_Date"] =
+                    "CREATE INDEX IF NOT EXISTS \"IX_SalesStatisticRefreshState_Type_Date\" ON \"SalesStatisticRefreshState\" (\"StatisticType\", \"Date\")",
                 ["IX_ScheduledTaskLog_TaskType"] =
                     "CREATE INDEX IF NOT EXISTS \"IX_ScheduledTaskLog_TaskType\" ON \"ScheduledTaskLog\" (\"TaskType\")",
                 ["IX_ScheduledTaskLog_Status"] =
@@ -1352,6 +1366,12 @@ namespace BlazorApp.Api.Data
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_SupplierSalesStatistic_Date_IsDomestic_TotalAmount' AND object_id = OBJECT_ID('SupplierSalesStatistic')) CREATE INDEX IX_SupplierSalesStatistic_Date_IsDomestic_TotalAmount ON [SupplierSalesStatistic](Date, IsDomestic, TotalAmount)",
                 // StoreSupplierSalesDetail表的普通索引
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_StoreSupplierSalesDetail_Date_BranchCode_SupplierCode' AND object_id = OBJECT_ID('StoreSupplierSalesDetail')) CREATE INDEX IX_StoreSupplierSalesDetail_Date_BranchCode_SupplierCode ON [StoreSupplierSalesDetail](Date, BranchCode, SupplierCode)",
+                // ProductStoreDailySalesStatistic表的普通索引
+                "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_ProductStoreDailySalesStatistic_Date_Supplier_Product' AND object_id = OBJECT_ID('ProductStoreDailySalesStatistic')) CREATE INDEX IX_ProductStoreDailySalesStatistic_Date_Supplier_Product ON [ProductStoreDailySalesStatistic](Date, SupplierCode, ProductCode)",
+                "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_ProductStoreDailySalesStatistic_Date_Supplier_Quantity' AND object_id = OBJECT_ID('ProductStoreDailySalesStatistic')) CREATE INDEX IX_ProductStoreDailySalesStatistic_Date_Supplier_Quantity ON [ProductStoreDailySalesStatistic](Date, SupplierCode, TotalQuantity)",
+                "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_ProductStoreDailySalesStatistic_Date_Branch_Supplier_Product' AND object_id = OBJECT_ID('ProductStoreDailySalesStatistic')) CREATE INDEX IX_ProductStoreDailySalesStatistic_Date_Branch_Supplier_Product ON [ProductStoreDailySalesStatistic](Date, BranchCode, SupplierCode, ProductCode)",
+                // SalesStatisticRefreshState表的普通索引
+                "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_SalesStatisticRefreshState_Type_Date' AND object_id = OBJECT_ID('SalesStatisticRefreshState')) CREATE INDEX IX_SalesStatisticRefreshState_Type_Date ON [SalesStatisticRefreshState](StatisticType, Date)",
                 // StoreRetailPrice表的普通索引
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_StoreRetailPrice_ProductCode_StoreCode' AND object_id = OBJECT_ID('StoreRetailPrice')) CREATE INDEX IX_StoreRetailPrice_ProductCode_StoreCode ON [StoreRetailPrice](ProductCode, StoreCode)",
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_StoreRetailPrice_ProductCode_IsDeleted' AND object_id = OBJECT_ID('StoreRetailPrice')) CREATE INDEX IX_StoreRetailPrice_ProductCode_IsDeleted ON [StoreRetailPrice](ProductCode, IsDeleted) INCLUDE(StoreCode)",

@@ -85,6 +85,26 @@ namespace BlazorApp.Api.Services
     /// </summary>
     public class SalesStatisticsJobService
     {
+        private sealed class StoreCostRow
+        {
+            public string? StoreCode { get; set; }
+            public string? SupplierCode { get; set; }
+            public string? ProductCode { get; set; }
+            public decimal? PurchasePrice { get; set; }
+        }
+
+        private sealed class ProductCostRow
+        {
+            public string? ProductCode { get; set; }
+            public decimal? PurchasePrice { get; set; }
+        }
+
+        private sealed class WarehouseCostRow
+        {
+            public string ProductCode { get; set; } = string.Empty;
+            public decimal? ImportPrice { get; set; }
+        }
+
         /// <summary>
         /// 批量操作每批处理数量
         /// </summary>
@@ -665,6 +685,8 @@ namespace BlazorApp.Api.Services
 
                 // 更新分店统计
                 await UpdateStoreStatistics(previousDay);
+                // 更新商品分店每日统计，热销页优先读取该统计表。
+                await UpdateProductStoreDailyStatistics(previousDay);
                 // await UpdateSupplierStatistics(previousDay);
                 // await UpdateStoreSupplierStatistics(previousDay);
                 // 更新澳洲供应商门店统计
@@ -701,6 +723,13 @@ namespace BlazorApp.Api.Services
 
                 // 更新分店统计
                 await UpdateStoreStatistics(currentDay);
+                // 更新商品分店每日统计，热销页优先读取该统计表。
+                await UpdateProductStoreDailyStatistics(currentDay);
+                // POSM 可能延迟上传，商品统计额外滚动补算最近 7 天。
+                for (var offset = 1; offset < 7; offset++)
+                {
+                    await UpdateProductStoreDailyStatistics(currentDay.AddDays(-offset));
+                }
                 // await UpdateSupplierStatistics(currentDay);
                 //  await UpdateStoreSupplierStatistics(currentDay);
                 // 更新澳洲供应商门店统计
@@ -1099,6 +1128,442 @@ namespace BlazorApp.Api.Services
                 );
                 throw;
             }
+        }
+
+        /// <summary>
+        /// 更新商品分店每日统计数据，用于热销商品和毛利率查询。
+        /// </summary>
+        public async Task UpdateProductStoreDailyStatistics(DateTime? date = null)
+        {
+            var targetDate = (date ?? DateTime.Now.Date).Date;
+            await UpdateProductStoreDailyStatisticsWithContext(
+                _context,
+                _posmContext,
+                _logger,
+                targetDate
+            );
+        }
+
+        /// <summary>
+        /// 滚动刷新最近几天的商品分店每日统计，处理 POSM 延迟上传。
+        /// </summary>
+        public async Task RefreshRecentProductStoreDailyStatistics(int days = 7)
+        {
+            var safeDays = Math.Max(1, days);
+            var endDate = DateTime.Now.Date;
+            var startDate = endDate.AddDays(-(safeDays - 1));
+
+            for (var date = startDate; date <= endDate; date = date.AddDays(1))
+            {
+                await UpdateProductStoreDailyStatistics(date);
+            }
+        }
+
+        /// <summary>
+        /// 带上下文更新商品分店每日统计数据（用于并发处理）。
+        /// </summary>
+        private async Task UpdateProductStoreDailyStatisticsWithContext(
+            SqlSugarContext context,
+            POSMSqlSugarContext posmContext,
+            ILogger logger,
+            DateTime date
+        )
+        {
+            var targetDate = date.Date;
+            var nextDate = targetDate.AddDays(1);
+            try
+            {
+                logger.LogInformation("开始更新商品分店每日统计: {Date}", targetDate);
+
+                // POSM 上传水位只和 POSM 自己比较，不和 HBweb UTC 时间直接比较。
+                var lastSourceUploadTime = await posmContext
+                    .Db.Queryable<SalesOrder>()
+                    .Where(o =>
+                        o.Status != null
+                        && (o.Status == 1 || o.Status == 4)
+                        && o.OrderTime != null
+                        && o.OrderTime >= targetDate
+                        && o.OrderTime < nextDate
+                    )
+                    .MaxAsync(o => o.LastUploadTime);
+
+                // 商品统计以稳定的单日明细读取为基础，分店 fallback 和成本快照在内存中处理。
+                var rawRows = await posmContext
+                    .Db.Queryable<SalesOrder>()
+                    .LeftJoin<SalesOrderDetail>((o, d) => o.OrderGuid == d.OrderGuid)
+                    .Where(o =>
+                        o.Status != null
+                        && (o.Status == 1 || o.Status == 4)
+                        && o.OrderTime != null
+                        && o.OrderTime >= targetDate
+                        && o.OrderTime < nextDate
+                    )
+                    .Select((o, d) => new
+                    {
+                        Date = o.OrderTime!.Value.Date,
+                        o.OrderGuid,
+                        o.BranchCode,
+                        o.DeviceCode,
+                        OrderLastUploadTime = o.LastUploadTime,
+                        d.ProductCode,
+                        d.SupplierCode,
+                        d.ProductName,
+                        d.Barcode,
+                        Quantity = d.Quantity ?? 0,
+                        ActualAmount = d.ActualAmount ?? 0m,
+                        DetailLastUploadTime = d.LastUploadTime,
+                    })
+                    .ToListAsync();
+
+                var deviceCodes = rawRows
+                    .Where(x => string.IsNullOrWhiteSpace(x.BranchCode) && !string.IsNullOrWhiteSpace(x.DeviceCode))
+                    .Select(x => x.DeviceCode!)
+                    .Distinct()
+                    .ToList();
+                var deviceBranchMap = deviceCodes.Any()
+                    ? (await posmContext.Db.Queryable<POSM_设备注册信息表>()
+                        .Where(d => deviceCodes.Contains(d.系统设备编号))
+                        .Select(d => new { d.系统设备编号, d.分店代码 })
+                        .ToListAsync())
+                        .Where(x => !string.IsNullOrWhiteSpace(x.系统设备编号))
+                        .GroupBy(x => x.系统设备编号)
+                        .ToDictionary(
+                            x => x.Key,
+                            x => x.Select(row => row.分店代码).FirstOrDefault(code => !string.IsNullOrWhiteSpace(code)) ?? string.Empty
+                        )
+                    : new Dictionary<string, string>();
+
+                var productCodes = rawRows
+                    .Select(x => x.ProductCode)
+                    .Where(code => !string.IsNullOrWhiteSpace(code))
+                    .Select(code => code!)
+                    .Distinct()
+                    .ToList();
+                var branchCodes = rawRows
+                    .Select(x => ResolveBranchCode(x.BranchCode, x.DeviceCode, deviceBranchMap))
+                    .Where(code => !string.IsNullOrWhiteSpace(code))
+                    .Distinct()
+                    .ToList();
+
+                var storeCosts = productCodes.Any() && branchCodes.Any()
+                    ? await context.Db.Queryable<StoreRetailPrice>()
+                        .Where(p =>
+                            p.ProductCode != null
+                            && p.StoreCode != null
+                            && productCodes.Contains(p.ProductCode)
+                            && branchCodes.Contains(p.StoreCode)
+                            && p.SupplierCode != null
+                            && p.IsDeleted == false
+                            && p.IsActive == true
+                        )
+                        .Select(p => new StoreCostRow
+                        {
+                            StoreCode = p.StoreCode,
+                            SupplierCode = p.SupplierCode,
+                            ProductCode = p.ProductCode,
+                            PurchasePrice = p.PurchasePrice,
+                        })
+                        .ToListAsync()
+                    : new List<StoreCostRow>();
+                var storeCostMap = storeCosts
+                    .Where(x =>
+                        !string.IsNullOrWhiteSpace(x.StoreCode)
+                        && !string.IsNullOrWhiteSpace(x.SupplierCode)
+                        && !string.IsNullOrWhiteSpace(x.ProductCode)
+                    )
+                    .GroupBy(x => $"{x.StoreCode}|{x.SupplierCode}|{x.ProductCode}")
+                    .ToDictionary(
+                        x => x.Key,
+                        x => x.Select(row => (decimal?)row.PurchasePrice).FirstOrDefault(price => price.HasValue && price.Value > 0)
+                    );
+
+                var productCosts = productCodes.Any()
+                    ? await context.Db.Queryable<Product>()
+                        .Where(p => p.ProductCode != null && productCodes.Contains(p.ProductCode) && p.IsDeleted == false)
+                        .Select(p => new ProductCostRow
+                        {
+                            ProductCode = p.ProductCode,
+                            PurchasePrice = p.PurchasePrice,
+                        })
+                        .ToListAsync()
+                    : new List<ProductCostRow>();
+                var productCostMap = productCosts
+                    .Where(x => !string.IsNullOrWhiteSpace(x.ProductCode))
+                    .GroupBy(x => x.ProductCode!)
+                    .ToDictionary(
+                        x => x.Key,
+                        x => x.Select(row => (decimal?)row.PurchasePrice).FirstOrDefault(price => price.HasValue && price.Value > 0)
+                    );
+
+                var warehouseCosts = productCodes.Any()
+                    ? await context.Db.Queryable<WarehouseProduct>()
+                        .Where(p => productCodes.Contains(p.ProductCode) && p.IsDeleted == false)
+                        .Select(p => new WarehouseCostRow
+                        {
+                            ProductCode = p.ProductCode,
+                            ImportPrice = p.ImportPrice,
+                        })
+                        .ToListAsync()
+                    : new List<WarehouseCostRow>();
+                var warehouseCostMap = warehouseCosts
+                    .Where(x => !string.IsNullOrWhiteSpace(x.ProductCode))
+                    .GroupBy(x => x.ProductCode)
+                    .ToDictionary(
+                        x => x.Key,
+                        x => x.Select(row => (decimal?)row.ImportPrice).FirstOrDefault(price => price.HasValue && price.Value > 0)
+                    );
+
+                var statisticsList = rawRows
+                    .Select(x => new
+                    {
+                        Row = x,
+                        ResolvedBranchCode = ResolveBranchCode(x.BranchCode, x.DeviceCode, deviceBranchMap),
+                    })
+                    .Where(x =>
+                        !string.IsNullOrWhiteSpace(x.ResolvedBranchCode)
+                        && !string.IsNullOrWhiteSpace(x.Row.ProductCode)
+                        && !string.IsNullOrWhiteSpace(x.Row.SupplierCode)
+                    )
+                    .GroupBy(x => new
+                    {
+                        x.Row.Date,
+                        BranchCode = x.ResolvedBranchCode,
+                        SupplierCode = x.Row.SupplierCode!,
+                        ProductCode = x.Row.ProductCode!,
+                    })
+                    .Select(group =>
+                    {
+                        var quantity = group.Sum(x => x.Row.Quantity);
+                        var totalAmount = group.Sum(x => x.Row.ActualAmount);
+                        var unitCost = ResolveUnitCost(
+                            group.Key.BranchCode,
+                            group.Key.SupplierCode,
+                            group.Key.ProductCode,
+                            storeCostMap,
+                            productCostMap,
+                            warehouseCostMap,
+                            out var costSource
+                        );
+                        var totalCost = unitCost.HasValue ? unitCost.Value * quantity : (decimal?)null;
+                        var grossProfit = totalCost.HasValue ? totalAmount - totalCost.Value : (decimal?)null;
+
+                        return new ProductStoreDailySalesStatistic
+                        {
+                            Date = group.Key.Date,
+                            BranchCode = group.Key.BranchCode,
+                            SupplierCode = group.Key.SupplierCode,
+                            ProductCode = group.Key.ProductCode,
+                            ProductName = group.Select(x => x.Row.ProductName).FirstOrDefault(name => !string.IsNullOrWhiteSpace(name)),
+                            Barcode = group.Select(x => x.Row.Barcode).FirstOrDefault(barcode => !string.IsNullOrWhiteSpace(barcode)),
+                            TotalQuantity = quantity,
+                            TotalAmount = totalAmount,
+                            OrderCount = group.Select(x => x.Row.OrderGuid).Where(id => !string.IsNullOrWhiteSpace(id)).Distinct().Count(),
+                            UnitCostSnapshot = unitCost,
+                            TotalCost = totalCost,
+                            GrossProfit = grossProfit,
+                            GrossMarginRate = totalAmount > 0m && grossProfit.HasValue
+                                ? grossProfit.Value / totalAmount
+                                : null,
+                            CostSource = costSource,
+                            LastSourceUploadTime = group
+                                .SelectMany(x => new[] { x.Row.OrderLastUploadTime, x.Row.DetailLastUploadTime })
+                                .Where(value => value.HasValue)
+                                .Select(value => value!.Value)
+                                .DefaultIfEmpty(lastSourceUploadTime ?? DateTime.MinValue)
+                                .Max(),
+                            UpdateTime = DateTime.Now,
+                        };
+                    })
+                    .ToList();
+
+                var status = await BuildProductStatisticStatusAsync(
+                    context,
+                    targetDate,
+                    statisticsList,
+                    lastSourceUploadTime
+                );
+
+                await ExecuteTransactionSafelyAsync(
+                    beginAsync: () => context.Db.Ado.BeginTranAsync(),
+                    workAsync: async () =>
+                    {
+                        var deletedCount = await context.Db.Deleteable<ProductStoreDailySalesStatistic>()
+                            .Where(s => s.Date == targetDate)
+                            .ExecuteCommandAsync();
+                        logger.LogInformation("删除 {Count} 条商品分店每日统计旧记录", deletedCount);
+
+                        if (statisticsList.Any())
+                        {
+                            context.Db.Fastest<ProductStoreDailySalesStatistic>()
+                                .PageSize(BatchSize)
+                                .BulkCopy(statisticsList);
+                        }
+
+                        await UpsertProductStatisticStateAsync(context, targetDate, status, lastSourceUploadTime);
+                    },
+                    commitAsync: () => context.Db.Ado.CommitTranAsync(),
+                    rollbackAsync: () => context.Db.Ado.RollbackTranAsync(),
+                    logger: logger,
+                    operationName: "商品分店每日统计更新"
+                );
+
+                logger.LogInformation(
+                    "商品分店每日统计更新完成: {Date}, 总记录: {Total}, 状态: {Status}",
+                    targetDate,
+                    statisticsList.Count,
+                    status.Status
+                );
+            }
+            catch (Exception ex)
+            {
+                await UpsertProductStatisticStateAsync(
+                    context,
+                    targetDate,
+                    new ProductStatisticStatusResult(SalesStatisticRefreshStatus.Failed, ex.Message),
+                    null
+                );
+                logger.LogError(ex, "更新商品分店每日统计失败: {Date}", targetDate);
+                throw;
+            }
+        }
+
+        private static string ResolveBranchCode(
+            string? branchCode,
+            string? deviceCode,
+            Dictionary<string, string> deviceBranchMap
+        )
+        {
+            if (!string.IsNullOrWhiteSpace(branchCode))
+                return branchCode;
+
+            if (!string.IsNullOrWhiteSpace(deviceCode) && deviceBranchMap.TryGetValue(deviceCode, out var mappedBranch))
+                return mappedBranch ?? string.Empty;
+
+            return string.Empty;
+        }
+
+        private static decimal? ResolveUnitCost(
+            string branchCode,
+            string supplierCode,
+            string productCode,
+            Dictionary<string, decimal?> storeCostMap,
+            Dictionary<string, decimal?> productCostMap,
+            Dictionary<string, decimal?> warehouseCostMap,
+            out string costSource
+        )
+        {
+            if (storeCostMap.TryGetValue($"{branchCode}|{supplierCode}|{productCode}", out var storeCost) && storeCost.HasValue && storeCost.Value > 0)
+            {
+                costSource = "StoreRetailPrice";
+                return storeCost;
+            }
+
+            if (productCostMap.TryGetValue(productCode, out var productCost) && productCost.HasValue && productCost.Value > 0)
+            {
+                costSource = "ProductPurchasePrice";
+                return productCost;
+            }
+
+            if (warehouseCostMap.TryGetValue(productCode, out var warehouseCost) && warehouseCost.HasValue && warehouseCost.Value > 0)
+            {
+                costSource = "WarehouseImportPrice";
+                return warehouseCost;
+            }
+
+            costSource = "Missing";
+            return null;
+        }
+
+        private sealed record ProductStatisticStatusResult(string Status, string? ErrorMessage);
+
+        private async Task<ProductStatisticStatusResult> BuildProductStatisticStatusAsync(
+            SqlSugarContext context,
+            DateTime targetDate,
+            List<ProductStoreDailySalesStatistic> statisticsList,
+            DateTime? lastSourceUploadTime
+        )
+        {
+            if (!statisticsList.Any())
+            {
+                return new ProductStatisticStatusResult(SalesStatisticRefreshStatus.Pending, null);
+            }
+
+            var existingStoreSupplier = await context.Db.Queryable<StoreSupplierSalesDetail>()
+                .Where(s => s.Date == targetDate)
+                .Select(s => new { s.BranchCode, s.SupplierCode, s.TotalAmount, s.TotalQuantity })
+                .ToListAsync();
+
+            var existingMap = existingStoreSupplier
+                .Where(x => !string.IsNullOrWhiteSpace(x.BranchCode) && !string.IsNullOrWhiteSpace(x.SupplierCode))
+                .ToDictionary(x => $"{x.BranchCode}|{x.SupplierCode}", x => x);
+
+            if (existingMap.Any())
+            {
+                var productRollup = statisticsList
+                    .GroupBy(x => new { x.BranchCode, x.SupplierCode })
+                    .Select(group => new
+                    {
+                        group.Key.BranchCode,
+                        group.Key.SupplierCode,
+                        TotalAmount = group.Sum(x => x.TotalAmount),
+                        TotalQuantity = group.Sum(x => x.TotalQuantity),
+                    });
+
+                foreach (var row in productRollup)
+                {
+                    if (!existingMap.TryGetValue($"{row.BranchCode}|{row.SupplierCode}", out var existing))
+                        continue;
+
+                    var amountDiff = Math.Abs(row.TotalAmount - existing.TotalAmount);
+                    var quantityDiff = Math.Abs(row.TotalQuantity - existing.TotalQuantity);
+                    if (amountDiff > 0.01m || quantityDiff > 0)
+                    {
+                        return new ProductStatisticStatusResult(
+                            SalesStatisticRefreshStatus.Failed,
+                            $"商品统计与门店供应商统计不一致: {targetDate:yyyy-MM-dd} {row.BranchCode}/{row.SupplierCode}, 金额差 {amountDiff}, 数量差 {quantityDiff}"
+                        );
+                    }
+                }
+            }
+
+            return new ProductStatisticStatusResult(SalesStatisticRefreshStatus.Fresh, null);
+        }
+
+        private async Task UpsertProductStatisticStateAsync(
+            SqlSugarContext context,
+            DateTime targetDate,
+            ProductStatisticStatusResult status,
+            DateTime? lastSourceUploadTime
+        )
+        {
+            var existing = await context.Db.Queryable<SalesStatisticRefreshState>()
+                .Where(s => s.StatisticType == SalesStatisticType.ProductStoreDaily && s.Date == targetDate)
+                .FirstAsync();
+
+            if (existing == null)
+            {
+                existing = new SalesStatisticRefreshState
+                {
+                    StatisticType = SalesStatisticType.ProductStoreDaily,
+                    Date = targetDate,
+                };
+                existing.Status = status.Status;
+                existing.LastSourceUploadTime = lastSourceUploadTime;
+                existing.SourceTimeZone = "POSM_LOCAL";
+                existing.LastAggregatedAtUtc = DateTime.UtcNow;
+                existing.LastCheckedAtUtc = DateTime.UtcNow;
+                existing.ErrorMessage = status.ErrorMessage;
+                await context.Db.Insertable(existing).ExecuteCommandAsync();
+                return;
+            }
+
+            existing.Status = status.Status;
+            existing.LastSourceUploadTime = lastSourceUploadTime ?? existing.LastSourceUploadTime;
+            existing.SourceTimeZone = "POSM_LOCAL";
+            existing.LastAggregatedAtUtc = DateTime.UtcNow;
+            existing.LastCheckedAtUtc = DateTime.UtcNow;
+            existing.ErrorMessage = status.ErrorMessage;
+            await context.Db.Updateable(existing).ExecuteCommandAsync();
         }
 
         /// <summary>
@@ -2517,6 +2982,14 @@ namespace BlazorApp.Api.Services
                             date,
                             null,
                             null
+                        );
+
+                        // 更新商品分店每日统计，供热销商品和毛利率查询使用。
+                        await UpdateProductStoreDailyStatisticsWithContext(
+                            context,
+                            posmContext,
+                            logger,
+                            date
                         );
 
                         // 更新澳洲供应商门店统计
