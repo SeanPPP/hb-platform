@@ -389,6 +389,31 @@ const roleReaderWebPreview = buildWebRoleMenuPreview(
 )
 const systemMenu = roleReaderWebPreview.find((node) => node.path === '/system')
 const rolesMenu = systemMenu?.children?.find((node) => node.path === '/system/roles')
+const adminProductStatisticPreview = buildWebRoleMenuPreview(adminAccess, translate, {
+  includeHidden: true,
+})
+const productStatisticMenu = findWebMenuNode(
+  adminProductStatisticPreview,
+  '/executive-sales-intelligence/product-statistics',
+)
+const reportOnlyWebPreview = buildWebRoleMenuPreview(
+  buildRolePreviewAccess({
+    roleGuid: 'report-only-role',
+    roleName: 'ReportOnlyRole',
+    isSuperAdmin: false,
+    implicitAllPermissions: false,
+    explicitPermissionCodes: [P.Reports.View],
+    effectivePermissionCodes: [P.Reports.View],
+  }),
+  translate,
+  {
+    includeHidden: true,
+  },
+)
+const reportOnlyProductStatisticMenu = findWebMenuNode(
+  reportOnlyWebPreview,
+  '/executive-sales-intelligence/product-statistics',
+)
 const roleReaderCompleteWebPreview = buildWebRoleMenuPreview(
   buildRolePreviewAccess({
     roleGuid: 'role-reader-role',
@@ -422,6 +447,24 @@ assertEqual(
   rolesMenu?.accessKey,
   'canReadRole',
   'Web menu preview should expose the accessKey that controls the system roles menu',
+)
+
+assertEqual(
+  productStatisticMenu?.accessKey,
+  'isAdmin',
+  '商品统计状态 Web 菜单应声明为管理员工具',
+)
+
+assertEqual(
+  productStatisticMenu?.visible,
+  true,
+  'Admin Web 菜单预览应显示商品统计状态',
+)
+
+assertEqual(
+  reportOnlyProductStatisticMenu?.visible,
+  false,
+  '仅 Reports.View 的角色不应看到商品统计状态管理员工具',
 )
 
 assertEqual(

@@ -42,6 +42,7 @@ import ProductGradeManagementPage from '../pages/Warehouse/ProductGradeManagemen
 import NotFoundPage from '../pages/NotFound'
 import ExecutiveSalesIntelligencePage from '../pages/ExecutiveSalesIntelligence'
 import SalesDetailAnalysisPage from '../pages/ExecutiveSalesIntelligence/SalesDetailAnalysisV2'
+import ProductStatisticsPage from '../pages/ExecutiveSalesIntelligence/ProductStatistics'
 import PosmSalesOrdersPage from '../pages/PosmSalesOrders'
 import PosAdminCashRegisterUsersPage from '../pages/PosAdmin/CashRegisterUsers'
 import PosAdminPricingStrategiesPage from '../pages/PosAdmin/PricingStrategies'
@@ -412,6 +413,16 @@ export const appRoutes: AppRouteItem[] = [
           accessKey: 'canViewReports',
         },
         element: <SalesDetailAnalysisPage />,
+      },
+      {
+        path: '/executive-sales-intelligence/product-statistics',
+        meta: {
+          title: 'menu.productSalesStatistics',
+          icon: 'DatabaseOutlined',
+          keepAlive: true,
+          accessKey: 'isAdmin',
+        },
+        element: <ProductStatisticsPage />,
       },
     ],
   },

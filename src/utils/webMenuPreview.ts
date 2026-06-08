@@ -38,6 +38,7 @@ interface BuildWebRoleMenuPreviewOptions {
 }
 
 const accessKeyPermissionMap: Partial<Record<keyof AccessControl, string[]>> = {
+  isAdmin: [],
   canAccessDashboard: [P.Dashboard.View],
   canAccessOrderFront: [P.OrderFront.View],
   canReadStore: [P.Stores.View],
@@ -114,6 +115,7 @@ const webMenuPreviewRoutes: WebMenuPreviewRoute[] = [
     children: [
       { path: '/executive-sales-intelligence/overview', title: 'menu.salesData', accessKey: 'canViewReports' },
       { path: '/executive-sales-intelligence/sales-detail-v2', title: 'menu.salesDetail', accessKey: 'canViewReports' },
+      { path: '/executive-sales-intelligence/product-statistics', title: 'menu.productSalesStatistics', accessKey: 'isAdmin' },
     ],
   },
   {

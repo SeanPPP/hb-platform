@@ -71,6 +71,7 @@
     "executiveSalesIntelligence": "Sales Dashboard",
     "salesData": "Sales Data",
     "salesDetail": "Sales Detail",
+    "productSalesStatistics": "Product Statistic Status",
     "pageNotFound": "Page Not Found"
   },
   "containers": {

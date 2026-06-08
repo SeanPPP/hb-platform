@@ -71,6 +71,7 @@
     "executiveSalesIntelligence": "销售看板",
     "salesData": "销售数据",
     "salesDetail": "销售明细",
+    "productSalesStatistics": "商品统计状态",
     "pageNotFound": "页面不存在"
   },
   "containers": {
