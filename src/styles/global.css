@@ -1305,106 +1305,138 @@ body {
   color: #1d4ed8;
 }
 
-.shop-best-sellers-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-  gap: 18px;
-}
-
-.shop-best-seller-card {
-  height: 100%;
-  border-radius: 18px;
+.shop-best-sellers-table {
   overflow: hidden;
+  border: 1px solid #eef2ff;
+  border-radius: 8px;
+  background: #fff;
 }
 
-.shop-best-seller-card .ant-card-body {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-  padding: 16px;
+.shop-best-sellers-table .ant-table-cell {
+  white-space: nowrap;
 }
 
-.shop-best-seller-card-top {
-  display: flex;
-  gap: 12px;
+.shop-best-sellers-table .ant-table-body {
+  scrollbar-gutter: stable;
 }
 
-.shop-best-seller-image-wrap {
+.shop-best-sellers-rank {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 42px;
+  height: 26px;
+  border-radius: 999px;
+  background: #eff6ff;
+  color: #1d4ed8;
+  font-weight: 700;
+}
+
+.shop-best-sellers-image-cell {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 96px;
-  min-width: 96px;
-  height: 96px;
-  padding: 8px;
-  border-radius: 16px;
+  width: 56px;
+  height: 56px;
+  overflow: hidden;
+  border-radius: 8px;
   background: #f8fafc;
 }
 
-.shop-best-seller-image {
-  width: 100%;
-  height: 100%;
+.shop-best-sellers-image {
+  display: block;
+  width: 56px;
+  height: 56px;
   object-fit: contain;
 }
 
-.shop-best-seller-sales {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  padding: 14px 16px;
-  border-radius: 16px;
-  background: linear-gradient(135deg, #1d4ed8 0%, #2563eb 100%);
-  color: #fff;
+.shop-best-sellers-image-placeholder {
+  padding: 0 6px;
+  color: #94a3b8;
+  font-size: 11px;
+  line-height: 1.2;
+  text-align: center;
+  white-space: normal;
 }
 
-.shop-best-seller-sales-label {
-  margin-bottom: 4px;
-  font-size: 12px;
-  opacity: 0.88;
+.shop-best-sellers-barcode-cell {
+  max-width: 150px;
 }
 
-.shop-best-seller-sales-value {
-  font-size: 28px;
-  font-weight: 700;
-  line-height: 1;
+.shop-best-sellers-barcode-cell canvas {
+  max-width: 148px;
 }
 
-.shop-best-seller-card-body {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
+.shop-best-sellers-item-number {
+  max-width: 132px;
 }
 
-.shop-best-seller-name {
-  min-height: 44px;
-  font-size: 15px;
-  font-weight: 600;
-  line-height: 1.45;
+.shop-best-sellers-item-number .ant-typography {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.shop-best-sellers-product-name {
+  overflow: hidden;
+  display: -webkit-box;
+  min-width: 0;
+  max-height: calc(1.4em * 2);
   color: #0f172a;
+  font-weight: 600;
+  line-height: 1.4;
+  white-space: normal;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
 }
 
-.shop-best-seller-meta {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+.shop-best-sellers-store-count {
+  min-width: 42px;
+  padding: 0;
+  font-weight: 700;
 }
 
-.shop-coming-soon-list {
-  display: flex;
-  flex-direction: column;
-  gap: 18px;
-}
-
-.shop-coming-soon-card {
-  border-radius: 20px;
+.shop-best-sellers-branch-sales-popover {
+  width: 300px;
+  max-height: 360px;
   overflow: hidden;
 }
 
+.shop-best-sellers-branch-sales-popover .ant-table-cell {
+  white-space: nowrap;
+}
+
+.shop-coming-soon-list {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: calc((100% - 36px) / 3);
+  gap: 18px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 2px 4px 12px;
+  scroll-snap-type: x proximity;
+  contain: layout paint;
+}
+
+.shop-coming-soon-card {
+  display: flex;
+  flex-direction: column;
+  height: 780px;
+  border-radius: 8px;
+  overflow: hidden;
+  scroll-snap-align: start;
+}
+
 .shop-coming-soon-card .ant-card-head {
+  flex: none;
   border-bottom: 1px solid #eef2ff;
   background: linear-gradient(135deg, #f8fbff 0%, #eef4ff 100%);
+}
+
+.shop-coming-soon-card .ant-card-body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
 }
 
 .shop-coming-soon-card-title {
@@ -1427,14 +1459,57 @@ body {
   font-size: 16px;
 }
 
+.shop-coming-soon-date-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px;
+  border: 1px solid #dbeafe;
+  border-radius: 999px;
+  background: #eff6ff;
+  color: #1d4ed8;
+  font-size: 12px;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.shop-coming-soon-date-badge strong {
+  color: inherit;
+  font-weight: 700;
+}
+
+.shop-coming-soon-date-badge--arrived {
+  border-color: #bbf7d0;
+  background: #f0fdf4;
+  color: #15803d;
+}
+
+.shop-coming-soon-date-badge--soon {
+  border-color: #fed7aa;
+  background: #fff7ed;
+  color: #c2410c;
+}
+
+.shop-coming-soon-date-badge--future {
+  border-color: #bfdbfe;
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
+.shop-coming-soon-date-badge--unknown {
+  border-color: #e2e8f0;
+  background: #f8fafc;
+  color: #64748b;
+}
+
 .shop-coming-soon-card-meta {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  margin-bottom: 18px;
+  margin-bottom: 12px;
   padding: 12px 16px;
-  border-radius: 16px;
+  border-radius: 8px;
   background: #f8fafc;
 }
 
@@ -1445,19 +1520,52 @@ body {
   color: #475569;
 }
 
+.shop-coming-soon-container-filters {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+
+.shop-coming-soon-container-filters .ant-btn {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+  min-width: 82px;
+  justify-content: center;
+  border-radius: 999px;
+  font-size: 12px;
+}
+
+.shop-coming-soon-container-filters .ant-btn strong {
+  font-variant-numeric: tabular-nums;
+}
+
 .shop-coming-soon-product-grid {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 16px;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 4px;
+  contain: strict;
 }
 
 .shop-coming-soon-product-card {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  padding: 14px;
+  flex: 0 0 176px;
+  display: grid;
+  grid-template-columns: 116px minmax(0, 1fr);
+  grid-template-rows: 96px 52px;
+  column-gap: 14px;
+  row-gap: 8px;
+  min-height: 176px;
+  max-height: 176px;
+  padding: 12px;
   border: 1px solid #e5e7eb;
-  border-radius: 16px;
+  border-radius: 8px;
   background: #fff;
 }
 
@@ -1465,10 +1573,11 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  height: 132px;
-  padding: 10px;
+  width: 116px;
+  height: 96px;
+  padding: 8px;
   overflow: hidden;
-  border-radius: 14px;
+  border-radius: 8px;
   background: #f8fafc;
 }
 
@@ -1500,17 +1609,21 @@ body {
 .shop-coming-soon-product-body {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 5px;
   min-width: 0;
 }
 
 .shop-coming-soon-product-name {
-  min-height: 42px;
+  display: -webkit-box;
+  min-height: 40px;
+  overflow: hidden;
   font-size: 14px;
   font-weight: 600;
   line-height: 1.45;
   word-break: break-word;
   color: #0f172a;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
 }
 
 .shop-coming-soon-product-row {
@@ -1518,6 +1631,47 @@ body {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+  min-width: 0;
+  font-size: 12px;
+}
+
+.shop-coming-soon-product-row .ant-typography {
+  min-width: 0;
+}
+
+.shop-coming-soon-product-row .ant-typography:last-child {
+  white-space: nowrap;
+}
+
+.shop-coming-soon-item-number-value {
+  flex: none;
+  white-space: nowrap;
+}
+
+.shop-coming-soon-barcode-cell {
+  grid-column: 1 / -1;
+  display: flex;
+  justify-content: center;
+  min-width: 0;
+  overflow: visible;
+}
+
+.shop-coming-soon-barcode-preview {
+  width: 100%;
+  min-width: 0;
+}
+
+.shop-coming-soon-barcode-preview canvas {
+  max-width: 100%;
+  height: 34px !important;
+}
+
+.shop-coming-soon-barcode-preview .ant-space {
+  max-width: 100%;
+}
+
+.shop-coming-soon-barcode-preview .ant-typography {
+  white-space: nowrap;
 }
 
 .shop-coming-soon-product-tags {
@@ -1527,6 +1681,7 @@ body {
 
 .shop-coming-soon-more-note {
   color: #64748b;
+  font-size: 12px;
 }
 
 .shop-coming-soon-card-footer {
@@ -1537,6 +1692,22 @@ body {
   margin-top: 16px;
   padding-top: 16px;
   border-top: 1px solid #eef2ff;
+}
+
+.shop-coming-soon-products-placeholder {
+  display: grid;
+  flex: 1;
+  grid-template-columns: 116px minmax(0, 1fr);
+  gap: 14px;
+  min-height: 0;
+  padding: 12px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.shop-coming-soon-virtual-spacer {
+  flex: none;
 }
 
 .shop-feature-page {
@@ -2411,11 +2582,38 @@ body {
     align-items: stretch;
   }
 
+  .shop-coming-soon-list {
+    grid-auto-columns: minmax(min(86vw, 340px), 1fr);
+    padding-left: 0;
+    padding-right: 0;
+  }
+
+  .shop-coming-soon-card {
+    height: 760px;
+  }
+
   .shop-home-section-head,
   .shop-coming-soon-card-title,
   .shop-coming-soon-card-meta {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .shop-coming-soon-card-title-main,
+  .shop-coming-soon-card-title-side {
+    width: 100%;
+  }
+
+  .shop-coming-soon-date-badge {
+    justify-content: center;
+    width: 100%;
+  }
+
+  .shop-coming-soon-container-filters {
+    margin-left: -2px;
+    margin-right: -2px;
+    padding-left: 2px;
+    padding-right: 2px;
   }
 
   .shop-home-stat-grid,
@@ -2424,17 +2622,27 @@ body {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .shop-best-seller-card-top {
-    flex-direction: column;
+  .shop-best-sellers-table {
+    margin-left: -4px;
+    margin-right: -4px;
   }
 
-  .shop-best-seller-image-wrap {
-    width: 100%;
-    height: 160px;
+  .shop-coming-soon-product-grid,
+  .shop-coming-soon-products-placeholder {
+    min-height: 0;
   }
 
-  .shop-coming-soon-product-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+  .shop-coming-soon-product-card {
+    grid-template-columns: 96px minmax(0, 1fr);
+    grid-template-rows: 92px 52px;
+    column-gap: 10px;
+    row-gap: 8px;
+    padding: 10px;
+  }
+
+  .shop-coming-soon-product-image-wrap {
+    width: 96px;
+    height: 92px;
   }
 
   .shop-orders-page {

@@ -315,6 +315,7 @@ export default function ProductManagementPage() {
   const [editSetCodesLoading, setEditSetCodesLoading] = useState(false)
   const [editSetPriceEdits, setEditSetPriceEdits] = useState<Record<string, { setItemNumber?: string; setBarcode?: string; setPurchasePrice?: number; setRetailPrice?: number }>>({})
   const [editPendingDeletes, setEditPendingDeletes] = useState<Record<string, any>>({})
+  const editSetCodesRequestSeqRef = useRef(0)
 
   const [setCodeVisible, setSetCodeVisible] = useState(false)
   const [setCodeProduct, setSetCodeProduct] = useState<PosProductDto | null>(null)
@@ -368,6 +369,14 @@ export default function ProductManagementPage() {
     () => storeRecordsData.filter((record) => storeRecordSelectedRowKeys.includes(`${record.storeCode || ''}-${record.storeProductCode || ''}`)),
     [storeRecordsData, storeRecordSelectedRowKeys],
   )
+  const editingProductCode = editingProduct?.productCode
+
+  const resetEditSetCodeState = useCallback(() => {
+    // 编辑弹窗会复用组件实例，打开新商品前必须清空条码明细，避免上一个商品残留。
+    setEditSetCodes([])
+    setEditSetPriceEdits({})
+    setEditPendingDeletes({})
+  }, [])
 
   const loadData = useCallback(async () => {
     setLoading(true)
@@ -1221,6 +1230,7 @@ export default function ProductManagementPage() {
 
   const openEdit = (record: PosProductDto) => {
     if (!ensureCanManagePosProducts()) return
+    resetEditSetCodeState()
     setEditingProduct(record)
     editForm.setFieldsValue({
       productCode: record.productCode,
@@ -1428,9 +1438,7 @@ export default function ProductManagementPage() {
       message.success(t('message.saveSuccess', '保存成功'))
       setEditVisible(false)
       setEditingProduct(null)
-      setEditSetCodes([])
-      setEditSetPriceEdits({})
-      setEditPendingDeletes({})
+      resetEditSetCodeState()
       await loadData()
     } catch {
       message.error(t('message.saveFailed', '保存失败'))
@@ -1778,21 +1786,33 @@ export default function ProductManagementPage() {
   }
 
   useEffect(() => {
-    if (editVisible && (productTypeWatch === 1 || productTypeWatch === 2) && editingProduct) {
+    const requestSeq = editSetCodesRequestSeqRef.current + 1
+    editSetCodesRequestSeqRef.current = requestSeq
+
+    if (editVisible && (productTypeWatch === 1 || productTypeWatch === 2) && editingProductCode) {
+      resetEditSetCodeState()
       setEditSetCodesLoading(true)
-      getGridData({ productCode: editingProduct.productCode, pageIndex: 1, pageSize: 200 })
+      getGridData({ productCode: editingProductCode, pageIndex: 1, pageSize: 200 })
         .then((result) => {
+          if (requestSeq !== editSetCodesRequestSeqRef.current) return
           const items = (result?.items ?? []).map((r: any) => ({ ...r, _rowId: r.id || `loaded_${Date.now()}_${Math.random().toString(36).slice(2)}` }))
           setEditSetCodes(items)
         })
-        .catch(() => message.error(t('posAdmin.products.loadBarcodeDataFailed', '加载条码数据失败')))
-        .finally(() => setEditSetCodesLoading(false))
+        .catch(() => {
+          if (requestSeq === editSetCodesRequestSeqRef.current) {
+            message.error(t('posAdmin.products.loadBarcodeDataFailed', '加载条码数据失败'))
+          }
+        })
+        .finally(() => {
+          if (requestSeq === editSetCodesRequestSeqRef.current) {
+            setEditSetCodesLoading(false)
+          }
+        })
     } else {
-      setEditSetCodes([])
-      setEditSetPriceEdits({})
-      setEditPendingDeletes({})
+      resetEditSetCodeState()
+      setEditSetCodesLoading(false)
     }
-  }, [editVisible, productTypeWatch])
+  }, [editVisible, productTypeWatch, editingProductCode, resetEditSetCodeState, t])
 
   const handleProductTypeChange = (newType: number) => {
     if (newType === 0 && editSetCodes.length > 0) {
@@ -2585,7 +2605,7 @@ export default function ProductManagementPage() {
       <Modal
         open={editVisible}
         title={editingProduct ? t('posAdmin.products.editProductWithCode', '编辑商品 - {{code}}', { code: editingProduct.productCode }) : t('posAdmin.products.editProduct', '编辑商品')}
-        onCancel={() => { setEditVisible(false); setEditingProduct(null) }}
+        onCancel={() => { setEditVisible(false); setEditingProduct(null); resetEditSetCodeState() }}
         onOk={handleEditSave}
         width={900}
         destroyOnHidden

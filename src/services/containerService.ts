@@ -1,6 +1,7 @@
 import type { ApiResponse } from '../types/api'
 import type {
   ComingSoonHomeContainer,
+  ComingSoonHomeContainerSummary,
   ComingSoonHomeProduct,
   ContainerDetail,
   CreateContainerRequest,
@@ -77,13 +78,36 @@ function toComingSoonProduct(item: ContainerDetail): ComingSoonHomeProduct {
     hguid: item.hguid,
     productCode: item.商品编码 ?? item.商品信息?.商品编码,
     itemNumber: item.商品信息?.货号,
+    barcode: item.商品信息?.条形码,
     productName: item.商品信息?.商品名称,
     englishName: item.商品信息?.英文名称,
     productImage: item.商品信息?.商品图片,
     quantity: item.装柜数量,
+    retailPrice: item.商品信息?.零售价格,
     isNewProduct: item.是否新商品 ?? item.warehouseIsActive === false,
     warehouseIsActive: item.warehouseIsActive,
   }
+}
+
+const itemNumberCollator = new Intl.Collator('en', {
+  numeric: true,
+  sensitivity: 'base',
+})
+
+function compareComingSoonProducts(left: ComingSoonHomeProduct, right: ComingSoonHomeProduct) {
+  const leftItemNumber = (left.itemNumber ?? '').trim()
+  const rightItemNumber = (right.itemNumber ?? '').trim()
+
+  if (leftItemNumber && !rightItemNumber) return -1
+  if (!leftItemNumber && rightItemNumber) return 1
+
+  const itemNumberCompare = itemNumberCollator.compare(leftItemNumber, rightItemNumber)
+  if (itemNumberCompare !== 0) return itemNumberCompare
+
+  const productCodeCompare = itemNumberCollator.compare(left.productCode ?? '', right.productCode ?? '')
+  if (productCodeCompare !== 0) return productCodeCompare
+
+  return itemNumberCollator.compare(left.productName ?? left.englishName ?? '', right.productName ?? right.englishName ?? '')
 }
 
 export async function getContainerList(query: ContainerQueryRequest): Promise<ContainerListResponse> {
@@ -315,7 +339,7 @@ export async function assignProductsToContainer(containerId: string, items: Assi
   return response
 }
 
-export async function getComingSoonContainers(): Promise<ComingSoonHomeContainer[]> {
+export async function getComingSoonContainerSummaries(): Promise<ComingSoonHomeContainerSummary[]> {
   const today = new Date()
   const upcomingStart = formatDateValue(today)
   const upcomingEnd = formatDateValue(addDays(today, 56))
@@ -354,14 +378,21 @@ export async function getComingSoonContainers(): Promise<ComingSoonHomeContainer
     return toTimestamp(leftDate) - toTimestamp(rightDate)
   })
 
+  return containers
+}
+
+export async function getComingSoonContainerProducts(containerGuid: string): Promise<ComingSoonHomeProduct[]> {
+  const products = await getContainerProducts(containerGuid)
+  return products.map(toComingSoonProduct).sort(compareComingSoonProducts)
+}
+
+export async function getComingSoonContainers(): Promise<ComingSoonHomeContainer[]> {
+  const containers = await getComingSoonContainerSummaries()
   const productsList = await Promise.all(
-    containers.map(async (container) => {
-      const products = await getContainerProducts(container.hguid)
-      return {
-        ...container,
-        商品列表: products.map(toComingSoonProduct),
-      } satisfies ComingSoonHomeContainer
-    }),
+    containers.map(async (container) => ({
+      ...container,
+      商品列表: await getComingSoonContainerProducts(container.hguid),
+    } satisfies ComingSoonHomeContainer)),
   )
 
   return productsList

@@ -616,7 +616,6 @@ assertDeepEqual(
         importPrice: undefined,
         oemPrice: undefined,
         isNewProduct: false,
-        warehouseIsActive: undefined,
       },
       {
         productCode: 'HB003',
@@ -630,7 +629,6 @@ assertDeepEqual(
         importPrice: undefined,
         oemPrice: undefined,
         isNewProduct: false,
-        warehouseIsActive: undefined,
       },
     ],
     skippedNewProductCount: 1,
@@ -682,7 +680,6 @@ assertDeepEqual(
         importPrice: 1.88,
         oemPrice: 2.01,
         isNewProduct: false,
-        warehouseIsActive: false,
       },
     ],
     skippedNewProductCount: 2,
@@ -721,7 +718,6 @@ assertDeepEqual(
         importPrice: 2.11,
         oemPrice: 2.34,
         isNewProduct: false,
-        warehouseIsActive: true,
       },
     ],
     skippedNewProductCount: 1,
@@ -768,7 +764,6 @@ assertDeepEqual(
       importPrice: 1.08,
       oemPrice: 1.2,
       isNewProduct: false,
-      warehouseIsActive: true,
     },
     {
       productCode: 'HB023',
@@ -782,10 +777,9 @@ assertDeepEqual(
       importPrice: 1.18,
       oemPrice: 1.3,
       isNewProduct: false,
-      warehouseIsActive: false,
     },
   ],
-  '发送到 HQ 的候选项应保留图片地址和上下架状态，供 HQ 按明细同步',
+  '发送到 HQ 的候选项应保留图片和价格，但不得携带仓库上下架状态',
 )
 
 const normalizedPushFailure = normalizeContainerDetailPushToHqPayload({

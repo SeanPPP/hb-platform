@@ -806,8 +806,6 @@ export function buildContainerDetailHqPushSelection(rows: ContainerDetail[]): Co
       importPrice: row.进口价格 == null ? undefined : Number(row.进口价格),
       oemPrice: row.贴牌价格 == null ? undefined : Number(row.贴牌价格),
       isNewProduct,
-      // 保留货柜上下架状态，兼容只传编码的旧链路同时让 HQ 候选契约更完整。
-      warehouseIsActive: row.warehouseIsActive,
     })
   })
 

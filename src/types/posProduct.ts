@@ -136,7 +136,6 @@ export interface PushProductsToHqItem {
   importPrice?: number
   oemPrice?: number
   isNewProduct: boolean
-  warehouseIsActive?: boolean
 }
 
 export interface PushProductsToHqRequest {

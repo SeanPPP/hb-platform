@@ -18,6 +18,7 @@ import { getCategoryTree, type WarehouseCategoryNode } from '../services/warehou
 import { getActiveStoreOrderCart } from '../services/storeOrderService'
 import { useAuthStore } from '../store/auth'
 import { useShopStore } from '../store/shop'
+import { resolveShopBannerCopy } from './shopBannerCopy'
 
 const { Search } = Input
 
@@ -38,6 +39,7 @@ export default function ShopLayout() {
   const isBestSellersPage = location.pathname.startsWith('/shop/best-sellers')
   const isComingSoonPage = location.pathname.startsWith('/shop/coming-soon')
   const isOrdersPage = location.pathname.startsWith('/shop/orders')
+  const shopBannerCopy = useMemo(() => resolveShopBannerCopy(location.pathname), [location.pathname])
 
   const userStores = useShopStore((state) => state.userStores)
   const selectedStore = useShopStore((state) => state.selectedStore)
@@ -405,9 +407,9 @@ export default function ShopLayout() {
         ) : (
           <div className="shop-orders-banner">
             <div className="shop-shell">
-              <div className="shop-orders-banner-title">{t('shop.orderHistory', '历史订单')}</div>
+              <div className="shop-orders-banner-title">{t(shopBannerCopy.titleKey, shopBannerCopy.titleFallback)}</div>
               <div className="shop-orders-banner-subtitle">
-                {t('shop.ordersBannerSubtitle', '查看分店提交过的订单、状态、数量和金额汇总。')}
+                {t(shopBannerCopy.subtitleKey, shopBannerCopy.subtitleFallback)}
               </div>
             </div>
           </div>

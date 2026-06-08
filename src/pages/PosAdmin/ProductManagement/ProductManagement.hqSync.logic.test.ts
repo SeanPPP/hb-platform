@@ -105,6 +105,60 @@ async function main() {
   })
   if (writePermissionGuardFailure) failures.push(writePermissionGuardFailure)
 
+  const editSetCodesIsolationFailure = await runTest('商品编辑弹窗应隔离套装和多码明细状态', () => {
+    assert(
+      pageSource.includes('resetEditSetCodeState') &&
+        pageSource.includes('setEditSetCodes([])') &&
+        pageSource.includes('setEditSetPriceEdits({})') &&
+        pageSource.includes('setEditPendingDeletes({})'),
+      '页面应提供统一重置函数，清空编辑弹窗条码明细、编辑缓存和待删缓存',
+    )
+
+    const openEditStart = pageSource.indexOf('const openEdit = (record: PosProductDto) => {')
+    const openEditEnd = pageSource.indexOf('const openStoreRecords', openEditStart)
+    assert(openEditStart >= 0 && openEditEnd > openEditStart, '页面应保留 openEdit 编辑入口')
+    const openEditSource = pageSource.slice(openEditStart, openEditEnd)
+    assertSourceOrder(
+      openEditSource,
+      'resetEditSetCodeState()',
+      'setEditingProduct(record)',
+      '打开新商品编辑弹窗前应先清空上一个商品的条码明细状态',
+    )
+
+    const effectStart = pageSource.indexOf('useEffect(() => {\n    const requestSeq = editSetCodesRequestSeqRef.current + 1')
+    const effectEnd = pageSource.indexOf('const handleProductTypeChange', effectStart)
+    assert(effectStart >= 0 && effectEnd > effectStart, '加载编辑弹窗条码明细的 effect 应使用请求序号保护')
+    const effectSource = pageSource.slice(effectStart, effectEnd)
+    assert(
+      pageSource.includes('const editSetCodesRequestSeqRef = useRef(0)'),
+      '页面应使用 ref 保存条码明细请求序号，避免旧请求覆盖新商品',
+    )
+    assert(
+      pageSource.includes('const editingProductCode = editingProduct?.productCode'),
+      '多码/套装明细加载依赖应绑定当前编辑商品 productCode',
+    )
+    assert(
+      effectSource.includes('getGridData({ productCode: editingProductCode, pageIndex: 1, pageSize: 200 })'),
+      '条码明细加载应使用当前编辑商品 productCode',
+    )
+    assert(
+      effectSource.includes('if (requestSeq === editSetCodesRequestSeqRef.current)') &&
+        effectSource.includes('setEditSetCodes(items)') &&
+        effectSource.includes('setEditSetCodesLoading(false)'),
+      '条码明细请求返回和 loading 收尾都应先校验请求序号',
+    )
+    assert(
+      pageSource.includes('}, [editVisible, productTypeWatch, editingProductCode, resetEditSetCodeState, t])'),
+      '条码明细加载 effect 依赖应包含当前商品 productCode、类型和重置函数',
+    )
+    assert(
+      effectSource.includes('resetEditSetCodeState()') &&
+        effectSource.includes('setEditSetCodesLoading(false)'),
+      '非套装/非多码状态应清空条码明细并退出 loading',
+    )
+  })
+  if (editSetCodesIsolationFailure) failures.push(editSetCodesIsolationFailure)
+
   const categoryParentValueFailure = await runTest('商品分类父级 Cascader 应只提交叶子 GUID', () => {
     assert(
       pageSource.includes('resolveCascaderLeafValue') &&

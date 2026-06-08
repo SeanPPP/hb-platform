@@ -67,11 +67,13 @@ export async function getBestSellers(
   branchCodes?: string[],
   pageIndex = 1,
   pageSize = 8,
+  signal?: AbortSignal,
 ): Promise<BestSellerResponse> {
   const response = await request<ApiResponse<BestSellerResponse> | BestSellerResponse>(
     '/api/react/v1/dashboard/best-sellers',
     {
       method: 'GET',
+      signal,
       params: {
         startDate,
         endDate,

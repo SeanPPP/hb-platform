@@ -1,5 +1,6 @@
 export interface MulticodeSetItem {
   id?: string
+  setCodeId?: string
   productCode: string
   setItemNumber?: string
   setBarcode?: string

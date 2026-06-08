@@ -31,6 +31,10 @@ const shopHomeFile = path.resolve(process.cwd(), 'src/pages/ShopHome/index.tsx')
 const shopHomeSource = readFileSync(shopHomeFile, 'utf8')
 const productCardFile = path.resolve(process.cwd(), 'src/pages/ShopHome/components/ProductCard.tsx')
 const productCardSource = readFileSync(productCardFile, 'utf8')
+const bestSellersFile = path.resolve(process.cwd(), 'src/pages/ShopHome/components/BestSellersSection.tsx')
+const bestSellersSource = readFileSync(bestSellersFile, 'utf8')
+const globalCssFile = path.resolve(process.cwd(), 'src/styles/global.css')
+const globalCssSource = readFileSync(globalCssFile, 'utf8')
 
 async function main() {
   const failures: string[] = []
@@ -138,6 +142,102 @@ async function main() {
     )
   })
   if (lazyImageFailure) failures.push(lazyImageFailure)
+
+  const bestSellerLazyImageFailure = await runTest('热销商品表格图片应懒加载避免拖慢首屏', () => {
+    assert(
+      bestSellersSource.includes('loading="lazy"') &&
+        bestSellersSource.includes('decoding="async"') &&
+        bestSellersSource.includes('className="shop-best-sellers-image"') &&
+        bestSellersSource.includes('shop-best-sellers-image-placeholder'),
+      '热销商品表格图片缺少 lazy loading、异步解码或稳定占位，首屏外图片仍可能抢占加载资源',
+    )
+  })
+  if (bestSellerLazyImageFailure) failures.push(bestSellerLazyImageFailure)
+
+  const bestSellerVirtualFailure = await runTest('热销商品列表应使用 AntD Table 虚拟滚动', () => {
+    assert(
+      bestSellersSource.includes('import type { ColumnsType }') &&
+        bestSellersSource.includes('Table') &&
+        bestSellersSource.includes('virtual') &&
+        bestSellersSource.includes('scroll={{ x: 1240, y: 560 }}') &&
+        bestSellersSource.includes('className="shop-best-sellers-table"') &&
+        bestSellersSource.includes('rowKey={(record) => record.productCode || record.itemNumber || String(record.rank)}') &&
+        !bestSellersSource.includes('virtualWindow.visibleProducts.map') &&
+        !bestSellersSource.includes('ResizeObserver') &&
+        !bestSellersSource.includes('Badge.Ribbon'),
+      '热销商品列表未切换到 AntD Table virtual，或仍保留手写 Card 虚拟列表',
+    )
+  })
+  if (bestSellerVirtualFailure) failures.push(bestSellerVirtualFailure)
+
+  const bestSellerAbortFailure = await runTest('热销商品切换筛选分页时应取消旧请求', () => {
+    assert(
+      bestSellersSource.includes('const controller = new AbortController()') &&
+        bestSellersSource.includes('controller.signal') &&
+        bestSellersSource.includes('controller.abort()') &&
+        bestSellersSource.includes("fetchError instanceof DOMException && fetchError.name === 'AbortError'"),
+      '热销商品请求缺少 AbortController，慢请求仍可能覆盖最新筛选结果',
+    )
+  })
+  if (bestSellerAbortFailure) failures.push(bestSellerAbortFailure)
+
+  const bestSellerTableColumnsFailure = await runTest('热销商品表格应显示条码、复制、状态、分店销量和加购操作', () => {
+    assert(
+      bestSellersSource.includes('BarcodePreview') &&
+        bestSellersSource.includes('CopyOutlined') &&
+        bestSellersSource.includes('ShoppingCartOutlined') &&
+        bestSellersSource.includes('Popover') &&
+        bestSellersSource.includes('addStoreOrderCartItem') &&
+        bestSellersSource.includes('setCart(nextCart)') &&
+        !bestSellersSource.includes("title: 'Product Code'"),
+      '热销商品表格列未包含条码、货号复制、分店销量弹层或加购操作，或仍显示 Product Code 列',
+    )
+  })
+  if (bestSellerTableColumnsFailure) failures.push(bestSellerTableColumnsFailure)
+
+  const bestSellerBranchSalesFailure = await runTest('热销商品分店销量明细应按销量倒序展示', () => {
+    assert(
+      bestSellersSource.includes('function getBranchSalesRows(product: BestSellerProduct)') &&
+        bestSellersSource.includes('].sort((a, b) => (b.quantity ?? 0) - (a.quantity ?? 0))') &&
+        bestSellersSource.includes("defaultSortOrder: 'descend'") &&
+        bestSellersSource.includes('shop-best-sellers-branch-sales-popover'),
+      '分店销量明细缺少默认销量倒序排序或紧凑弹层',
+    )
+  })
+  if (bestSellerBranchSalesFailure) failures.push(bestSellerBranchSalesFailure)
+
+  const bestSellerAddGuardFailure = await runTest('热销商品加购只允许上架且已选分店的商品', () => {
+    assert(
+      bestSellersSource.includes('record.isActive !== true || !selectedStore?.storeCode') &&
+        bestSellersSource.includes('disabled={disabled}') &&
+        bestSellersSource.includes('getAddQuantity(product)') &&
+        bestSellersSource.includes('message.warning(t(') &&
+        bestSellersSource.includes('setCart(nextCart)'),
+      '热销商品加购未限制上下架状态和分店，或未复用 cart/add 返回结果',
+    )
+  })
+  if (bestSellerAddGuardFailure) failures.push(bestSellerAddGuardFailure)
+
+  const bestSellerTableLayoutFailure = await runTest('热销商品表格应水平排列所有字段并限制文本图片尺寸', () => {
+    assert(
+      globalCssSource.includes('.shop-best-sellers-table') &&
+        globalCssSource.includes('.shop-best-sellers-image-cell') &&
+        globalCssSource.includes('width: 56px') &&
+        globalCssSource.includes('height: 56px') &&
+        globalCssSource.includes('.shop-best-sellers-barcode-cell') &&
+        globalCssSource.includes('.shop-best-sellers-item-number') &&
+        globalCssSource.includes('.shop-best-sellers-store-count') &&
+        globalCssSource.includes('.shop-best-sellers-product-name') &&
+        globalCssSource.includes('max-height: calc(1.4em * 2)') &&
+        globalCssSource.includes('-webkit-line-clamp: 2') &&
+        globalCssSource.includes('.shop-best-sellers-rank') &&
+        globalCssSource.includes('.shop-best-sellers-table .ant-table-cell') &&
+        !globalCssSource.includes('.shop-best-sellers-virtual-list') &&
+        !globalCssSource.includes('.shop-best-seller-card'),
+      '热销商品表格缺少水平滚动、固定图片尺寸或商品名截断样式，或仍保留旧卡片样式',
+    )
+  })
+  if (bestSellerTableLayoutFailure) failures.push(bestSellerTableLayoutFailure)
 
   const perfLogGateFailure = await runTest('首页性能 console 日志生产环境默认关闭', () => {
     const helperBody = extractFunctionBody(

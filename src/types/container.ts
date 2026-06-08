@@ -156,14 +156,20 @@ export interface ComingSoonHomeProduct {
   hguid: string
   productCode?: string
   itemNumber?: string
+  barcode?: string
   productName?: string
   englishName?: string
   productImage?: string
   quantity?: number
+  retailPrice?: number
   isNewProduct: boolean
   warehouseIsActive?: boolean
 }
 
-export interface ComingSoonHomeContainer extends ContainerMain {
+export type ComingSoonHomeContainerSummary = ContainerMain
+
+export interface ComingSoonLoadedContainer extends ComingSoonHomeContainerSummary {
   商品列表: ComingSoonHomeProduct[]
 }
+
+export type ComingSoonHomeContainer = ComingSoonLoadedContainer

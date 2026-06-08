@@ -1,4 +1,11 @@
-import { batchUpdateDetails, syncContainersFromHq, translateHqProductNamesByContainerNumber, updateContainer } from './containerService'
+import {
+  batchUpdateDetails,
+  getComingSoonContainerProducts,
+  getComingSoonContainerSummaries,
+  syncContainersFromHq,
+  translateHqProductNamesByContainerNumber,
+  updateContainer,
+} from './containerService'
 import type { UpdateContainerDetailRequest, UpdateContainerRequest } from '../types/container'
 
 function assertEqual<T>(actual: T, expected: T, label: string) {
@@ -31,6 +38,7 @@ async function assertRejects(execute: () => Promise<unknown>, expectedMessage: s
 const originalFetch = globalThis.fetch
 let capturedUrl = ''
 let capturedInit: RequestInit | undefined
+const capturedUrls: string[] = []
 
 globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
   capturedUrl = String(input)
@@ -202,6 +210,101 @@ try {
     () => syncContainersFromHq(),
     'HQ 同步失败：HTTP 错误',
     'syncContainersFromHq should throw backend message when HTTP status is not 2xx',
+  )
+
+  capturedUrls.length = 0
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    capturedUrl = String(input)
+    capturedInit = init
+    capturedUrls.push(capturedUrl)
+
+    return new Response(JSON.stringify({
+      success: true,
+      data: {
+        items: [
+          { id: 1, hguid: 'ARRIVED-GUID', 货柜编号: 'ARRIVED-1', 实际到货日期: '2026-06-01' },
+          { id: 2, hguid: 'UPCOMING-GUID', 货柜编号: 'UPCOMING-1', 预计到岸日期: '2026-06-16' },
+        ],
+        total: 2,
+        page: 1,
+        pageSize: 100,
+      },
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  }) as typeof fetch
+
+  const summaries = await getComingSoonContainerSummaries()
+
+  assertEqual(summaries.length, 2, 'Coming Soon 摘要应返回货柜头列表')
+  assertEqual(
+    capturedUrls.filter((url) => url.includes('/products')).length,
+    0,
+    'Coming Soon 摘要首屏不应提前请求货柜商品明细',
+  )
+  assertEqual(capturedInit?.method, 'POST', 'Coming Soon 摘要仍应使用列表 POST 接口')
+
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    capturedUrl = String(input)
+    capturedInit = init
+
+    return new Response(JSON.stringify({
+      success: true,
+      data: [
+        {
+          id: 1,
+          hguid: 'DETAIL-1',
+          商品编码: 'P-3',
+          商品信息: { 货号: 'HB10', 条形码: '9300000000100', 商品名称: 'Item 10', 零售价格: 1.99 },
+          装柜数量: 10,
+          是否新商品: false,
+        },
+        {
+          id: 2,
+          hguid: 'DETAIL-2',
+          商品编码: 'P-1',
+          商品信息: { 货号: 'HB2', 商品名称: 'Item 2' },
+          装柜数量: 20,
+          是否新商品: true,
+        },
+        {
+          id: 3,
+          hguid: 'DETAIL-3',
+          商品编码: 'P-2',
+          商品信息: { 商品名称: 'No Item Number' },
+          装柜数量: 30,
+          是否新商品: false,
+        },
+      ],
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  }) as typeof fetch
+
+  const products = await getComingSoonContainerProducts('CONTAINER-GUID')
+
+  assertEqual(
+    capturedUrl,
+    '/api/react/v1/containers/CONTAINER-GUID/products',
+    'Coming Soon 单货柜商品应复用现有明细接口',
+  )
+  assertEqual(capturedInit?.method, 'GET', 'Coming Soon 单货柜商品应使用 GET')
+  assertDeepEqual(
+    products.map((item) => item.itemNumber ?? ''),
+    ['HB2', 'HB10', ''],
+    'Coming Soon 单货柜商品应按货号自然排序，空货号排最后',
+  )
+  assertEqual(
+    products.find((item) => item.itemNumber === 'HB10')?.barcode,
+    '9300000000100',
+    'Coming Soon 单货柜商品应映射商品条形码用于生成条码图',
+  )
+  assertEqual(
+    products.find((item) => item.itemNumber === 'HB10')?.retailPrice,
+    1.99,
+    'Coming Soon 单货柜商品应映射商品建议零售价',
   )
 } finally {
   globalThis.fetch = originalFetch

@@ -1,11 +1,22 @@
+export interface BestSellerBranchSale {
+  branchCode: string
+  branchName?: string
+  quantity: number
+}
+
 export interface BestSellerProduct {
   productCode: string
   itemNumber?: string
+  barcode?: string
   productImage?: string
   productName?: string
   quantity: number
   salesAmount: number
   rank: number
+  isActive?: boolean
+  minOrderQuantity?: number
+  branchSalesCount?: number
+  branchSales?: BestSellerBranchSale[]
 }
 
 export interface BestSellerResponse {
