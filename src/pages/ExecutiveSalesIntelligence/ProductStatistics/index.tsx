@@ -56,10 +56,6 @@ const statusColorMap: Record<string, string> = {
   Failed: 'red',
 }
 
-function hasRunningProductStatisticRows(rows: SalesStatisticRefreshState[]) {
-  return rows.some((row) => row.status === 'Queued' || row.status === 'Running')
-}
-
 const reconciliationColorMap: Record<string, string> = {
   Passed: 'green',
   Pending: 'blue',
@@ -163,6 +159,14 @@ function buildProductStatisticSubmitMessage(result: JobTriggerResponse, fallback
   return parts.join('；')
 }
 
+export function isProductStatisticRunning(status?: string) {
+  return status === 'Queued' || status === 'Running'
+}
+
+export function mergeUniqueDates(currentDates: string[], submittedDates?: string[]) {
+  return Array.from(new Set([...currentDates, ...(submittedDates ?? [])])).sort()
+}
+
 export default function ProductStatisticsPage() {
   const [form] = Form.useForm()
   const [rows, setRows] = useState<SalesStatisticRefreshState[]>([])
@@ -171,6 +175,7 @@ export default function ProductStatisticsPage() {
   const [detailOpen, setDetailOpen] = useState(false)
   const [summaryLoading, setSummaryLoading] = useState(false)
   const [summary, setSummary] = useState<ProductStoreDailyStatisticSummary | null>(null)
+  const [activePollDates, setActivePollDates] = useState<string[]>([])
 
   const defaultRange = useMemo<RangeValue>(() => [dayjs().subtract(6, 'day'), dayjs()], [])
 
@@ -224,23 +229,62 @@ export default function ProductStatisticsPage() {
     }
   }, [])
 
+  const refreshActiveSubmissions = useCallback(async () => {
+    if (!activePollDates.length) {
+      return
+    }
+
+    try {
+      const data = await getProductStoreDailyStatisticStates({
+        statisticType: 'ProductStoreDaily',
+        startDate: activePollDates[0],
+        endDate: activePollDates[activePollDates.length - 1],
+      })
+      const activeDateSet = new Set(activePollDates)
+      const stateMap = new Map(
+        data
+          .filter((row) => activeDateSet.has(formatDate(row.date)))
+          .map((row) => [formatDate(row.date), row]),
+      )
+      const runningDates = activePollDates.filter((date) => {
+        const row = stateMap.get(date)
+        return row ? isProductStatisticRunning(row.status) : true
+      })
+
+      await loadStates()
+      if (runningDates.length) {
+        setActivePollDates(runningDates)
+        return
+      }
+
+      setActivePollDates([])
+      message.success('商品统计重算已完成')
+    } catch (error) {
+      console.error(error)
+      message.error('刷新商品统计任务状态失败')
+    }
+  }, [activePollDates, loadStates])
+
   useEffect(() => {
-    if (!hasRunningProductStatisticRows(rows)) {
+    if (!activePollDates.length) {
       return undefined
     }
 
     const timer = window.setInterval(() => {
-      void loadStates()
+      void refreshActiveSubmissions()
     }, 7000)
 
     return () => window.clearInterval(timer)
-  }, [loadStates, rows])
+  }, [activePollDates, refreshActiveSubmissions])
 
   const runAction = useCallback(async (action: () => Promise<JobTriggerResponse>, successText: string) => {
     setActionLoading(true)
     try {
       const result = await action()
       message.success(buildProductStatisticSubmitMessage(result, successText))
+      if (result.submittedDates?.length) {
+        setActivePollDates((currentDates) => mergeUniqueDates(currentDates, result.submittedDates))
+      }
       await loadStates()
     } catch (error) {
       console.error(error)
