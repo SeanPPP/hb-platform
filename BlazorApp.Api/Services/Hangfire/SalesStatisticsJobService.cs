@@ -94,6 +94,11 @@ namespace BlazorApp.Api.Services
     /// </summary>
     public class SalesStatisticsJobService
     {
+        /// <summary>
+        /// 商品统计提交串行锁，避免同一实例内并发请求重复提交相同日期。
+        /// </summary>
+        private static readonly SemaphoreSlim ProductStatisticSubmitLock = new(1, 1);
+
         private sealed class StoreCostRow
         {
             public string? StoreCode { get; set; }
@@ -1175,42 +1180,52 @@ namespace BlazorApp.Api.Services
                 };
             }
 
-            var minDate = targetDates.Min();
-            var maxDate = targetDates.Max();
-
-            // 避免 DateTime 列表 Contains 在不同数据库方言下漏匹配，先按范围取回再按日期精确过滤。
-            var existingStates = await _context.Db.Queryable<SalesStatisticRefreshState>()
-                .Where(s =>
-                    s.StatisticType == SalesStatisticType.ProductStoreDaily
-                    && s.Date >= minDate
-                    && s.Date <= maxDate
-                )
-                .ToListAsync();
-            existingStates = existingStates
-                .Where(s => targetDates.Contains(s.Date.Date))
-                .ToList();
-            var runningDates = existingStates
-                .Where(s =>
-                    s.Status == SalesStatisticRefreshStatus.Queued
-                    || s.Status == SalesStatisticRefreshStatus.Running
-                )
-                .Select(s => s.Date.Date)
-                .ToHashSet();
-            var submittedDates = targetDates
-                .Where(date => !runningDates.Contains(date))
-                .ToList();
-            var skippedDates = targetDates
-                .Where(date => runningDates.Contains(date))
-                .ToList();
-
-            foreach (var date in submittedDates)
+            List<DateTime> submittedDates;
+            List<DateTime> skippedDates;
+            await ProductStatisticSubmitLock.WaitAsync();
+            try
             {
-                await UpsertProductStatisticQueuedStateAsync(
-                    _context,
-                    date,
-                    jobId,
-                    requestedBy
-                );
+                var minDate = targetDates.Min();
+                var maxDate = targetDates.Max();
+
+                // 避免 DateTime 列表 Contains 在不同数据库方言下漏匹配，先按范围取回再按日期精确过滤。
+                var existingStates = await _context.Db.Queryable<SalesStatisticRefreshState>()
+                    .Where(s =>
+                        s.StatisticType == SalesStatisticType.ProductStoreDaily
+                        && s.Date >= minDate
+                        && s.Date <= maxDate
+                    )
+                    .ToListAsync();
+                existingStates = existingStates
+                    .Where(s => targetDates.Contains(s.Date.Date))
+                    .ToList();
+                var runningDates = existingStates
+                    .Where(s =>
+                        s.Status == SalesStatisticRefreshStatus.Queued
+                        || s.Status == SalesStatisticRefreshStatus.Running
+                    )
+                    .Select(s => s.Date.Date)
+                    .ToHashSet();
+                submittedDates = targetDates
+                    .Where(date => !runningDates.Contains(date))
+                    .ToList();
+                skippedDates = targetDates
+                    .Where(date => runningDates.Contains(date))
+                    .ToList();
+
+                foreach (var date in submittedDates)
+                {
+                    await UpsertProductStatisticQueuedStateAsync(
+                        _context,
+                        date,
+                        jobId,
+                        requestedBy
+                    );
+                }
+            }
+            finally
+            {
+                ProductStatisticSubmitLock.Release();
             }
 
             if (submittedDates.Any())

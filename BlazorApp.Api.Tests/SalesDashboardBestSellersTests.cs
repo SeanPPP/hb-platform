@@ -485,6 +485,40 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
     }
 
     [Fact]
+    public async Task GetBestSellersAsync_商品统计重算中使用POSM回退避免读取旧统计()
+    {
+        await SeedProductAsync("P-QUEUED", "ITEM-QUEUED", "BAR-QUEUED", "重算商品", productIsActive: true, warehouseIsActive: true, minOrderQuantity: 1);
+        await SeedSaleAsync("O-QUEUED", "D-QUEUED", "P-QUEUED", "S1", new DateTime(2026, 6, 1), 9, 18m);
+        await SeedStatisticStateAsync(new DateTime(2026, 6, 1), SalesStatisticRefreshStatus.Queued);
+        await _localDb.Insertable(new ProductStoreDailySalesStatistic
+        {
+            Date = new DateTime(2026, 6, 1),
+            BranchCode = "S1",
+            SupplierCode = "200",
+            ProductCode = "P-QUEUED",
+            ProductName = "旧统计商品",
+            Barcode = "BAR-QUEUED",
+            TotalQuantity = 100,
+            TotalAmount = 200m,
+            OrderCount = 1,
+            CostSource = "Missing",
+            UpdateTime = DateTime.Now,
+        }).ExecuteCommandAsync();
+
+        var result = await CreateService().GetBestSellersAsync(
+            new DateRangeDto { StartDate = new DateTime(2026, 6, 1), EndDate = new DateTime(2026, 6, 1) },
+            null,
+            pageIndex: 1,
+            pageSize: 10
+        );
+
+        var product = Assert.Single(result.Products);
+        Assert.Equal(9, product.Quantity);
+        Assert.Equal(18m, product.SalesAmount);
+        Assert.Equal(SalesStatisticRefreshStatus.Pending, result.StatisticStatus);
+    }
+
+    [Fact]
     public async Task GetProductStoreDailyStatisticStates_按日期状态筛选返回状态列表()
     {
         await _localDb.Insertable(new SalesStatisticRefreshState
@@ -652,6 +686,25 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
         var ok = AssertOk(result);
         Assert.Empty(ReadAnonymousProperty<List<string>>(ok.Value, "submittedDates"));
         Assert.Contains("2026-06-01", ReadAnonymousProperty<List<string>>(ok.Value, "skippedDates"));
+    }
+
+    [Fact]
+    public async Task SubmitProductStoreDailyRecalculationAsync_并发提交同一天只提交一次()
+    {
+        var service = CreateStatisticsJobService();
+
+        var results = await Task.WhenAll(
+            service.SubmitProductStoreDailyRecalculationAsync(new[] { new DateTime(2026, 6, 1) }, "admin-a"),
+            service.SubmitProductStoreDailyRecalculationAsync(new[] { new DateTime(2026, 6, 1) }, "admin-b")
+        );
+
+        Assert.Equal(1, results.Sum(result => result.SubmittedDates.Count));
+        Assert.Equal(1, results.Sum(result => result.SkippedDates.Count));
+        var state = await _localDb.Queryable<SalesStatisticRefreshState>()
+            .Where(s => s.StatisticType == SalesStatisticType.ProductStoreDaily && s.Date == new DateTime(2026, 6, 1))
+            .FirstAsync();
+        Assert.NotNull(state);
+        Assert.Equal(SalesStatisticRefreshStatus.Queued, state.Status);
     }
 
     [Fact]

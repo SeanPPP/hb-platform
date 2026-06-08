@@ -4029,6 +4029,9 @@ namespace BlazorApp.Api.Services.React
             if (states.Any(s => s.Status == SalesStatisticRefreshStatus.Failed))
                 return (SalesStatisticRefreshStatus.Failed, states.FirstOrDefault(s => s.Status == SalesStatisticRefreshStatus.Failed)?.ErrorMessage);
 
+            if (states.Any(s => s.Status == SalesStatisticRefreshStatus.Queued || s.Status == SalesStatisticRefreshStatus.Running))
+                return (SalesStatisticRefreshStatus.Pending, "商品统计正在重算中。");
+
             if (states.Any(s => s.Status == SalesStatisticRefreshStatus.Stale))
                 return (SalesStatisticRefreshStatus.Stale, "商品统计正在等待延迟上传数据补算。");
 
