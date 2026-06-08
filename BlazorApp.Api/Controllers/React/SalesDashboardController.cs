@@ -1303,6 +1303,11 @@ namespace BlazorApp.Api.Controllers.React
                 if (pageSize > 500) pageSize = 500;
                 if (pageIndex <= 0) pageIndex = 1;
 
+                if (targetBranchCodes != null && !targetBranchCodes.Any())
+                {
+                    return Ok(new { success = true, data = new { Products = new List<object>(), Total = 0, PageIndex = pageIndex, PageSize = pageSize, TotalPages = 0 } });
+                }
+
                 var dateRange = new DateRangeDto
                 {
                     StartDate = startDate,
@@ -1311,7 +1316,7 @@ namespace BlazorApp.Api.Controllers.React
                 //所有分店数据
                 var result = await _service.GetBestSellersAsync(
                     dateRange,
-                    null,
+                    targetBranchCodes,
                     pageIndex,
                     pageSize
                 );

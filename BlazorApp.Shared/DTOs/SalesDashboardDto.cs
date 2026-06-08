@@ -1111,6 +1111,11 @@ namespace BlazorApp.Shared.DTOs
         public string? ItemNumber { get; set; }
 
         /// <summary>
+        /// 商品条码
+        /// </summary>
+        public string? Barcode { get; set; }
+
+        /// <summary>
         /// 商品图片URL
         /// </summary>
         public string? ProductImage { get; set; }
@@ -1134,6 +1139,47 @@ namespace BlazorApp.Shared.DTOs
         /// 排名
         /// </summary>
         public int Rank { get; set; }
+
+        /// <summary>
+        /// 仓库库存表上下架状态
+        /// </summary>
+        public bool? IsActive { get; set; }
+
+        /// <summary>
+        /// 仓库库存表最小订货量
+        /// </summary>
+        public int? MinOrderQuantity { get; set; }
+
+        /// <summary>
+        /// 参与当前统计范围的分店数量
+        /// </summary>
+        public int BranchSalesCount { get; set; }
+
+        /// <summary>
+        /// 当前统计范围内的分店销量明细
+        /// </summary>
+        public List<BestSellerBranchSaleDto> BranchSales { get; set; } = new();
+    }
+
+    /// <summary>
+    /// Best Seller 分店销量 DTO
+    /// </summary>
+    public class BestSellerBranchSaleDto
+    {
+        /// <summary>
+        /// 分店代码
+        /// </summary>
+        public string BranchCode { get; set; } = string.Empty;
+
+        /// <summary>
+        /// 分店名称
+        /// </summary>
+        public string? BranchName { get; set; }
+
+        /// <summary>
+        /// 销售数量
+        /// </summary>
+        public int Quantity { get; set; }
     }
 
     /// <summary>

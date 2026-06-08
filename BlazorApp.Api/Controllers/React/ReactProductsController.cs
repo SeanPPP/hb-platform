@@ -31,6 +31,12 @@ namespace BlazorApp.Api.Controllers.React
             _logger = logger;
         }
 
+        private static string NormalizeLocalSupplierCode(string? value)
+        {
+            // 未选择本地供应商时统一归到默认供应商 200，保证商品和分店价格供应商一致。
+            return string.IsNullOrWhiteSpace(value) ? "200" : value.Trim();
+        }
+
         /// <summary>
         /// 创建商品并为所有启用分店初始化分店价格
         /// 不联动零售价更新逻辑
@@ -57,6 +63,7 @@ namespace BlazorApp.Api.Controllers.React
 
                 var db = _context.Db;
                 var now = DateTime.UtcNow;
+                var localSupplierCode = NormalizeLocalSupplierCode(dto.LocalSupplierCode);
                 await db.Ado.BeginTranAsync();
                 try
                 {
@@ -65,7 +72,7 @@ namespace BlazorApp.Api.Controllers.React
                         UUID = UuidHelper.GenerateUuid7(),
                         ProductCode = Guid.NewGuid().ToString(),
                         ProductCategoryGUID = dto.ProductCategoryGUID,
-                        LocalSupplierCode = dto.LocalSupplierCode,
+                        LocalSupplierCode = localSupplierCode,
                         ItemNumber = dto.ItemNumber,
                         Barcode = dto.Barcode,
                         ProductName = dto.ProductName,
@@ -100,7 +107,7 @@ namespace BlazorApp.Api.Controllers.React
                             StoreCode = s.StoreCode,
                             ProductCode = product.ProductCode,
                             StoreProductCode = spCode,
-                            SupplierCode = dto.LocalSupplierCode,
+                            SupplierCode = localSupplierCode,
                             PurchasePrice = dto.PurchasePrice,
                             StoreRetailPriceValue = dto.RetailPrice, // 初始零售价（可为空），不随更新进货价联动
                             DiscountRate = null,

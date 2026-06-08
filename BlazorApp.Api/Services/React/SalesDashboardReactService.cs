@@ -18,7 +18,11 @@ namespace BlazorApp.Api.Services.React
     {
         public string ProductCode { get; set; } = string.Empty;
         public string? ItemNumber { get; set; }
+        public string? Barcode { get; set; }
         public string? ProductImage { get; set; }
+        public string? ProductName { get; set; }
+        public bool? IsActive { get; set; }
+        public int? MinOrderQuantity { get; set; }
     }
 
     /// <summary>
@@ -3369,39 +3373,64 @@ namespace BlazorApp.Api.Services.React
                     pageIndex, pageSize
                 );
 
+                if (branchCodes != null && !branchCodes.Any())
+                {
+                    return new BestSellerResponseDto
+                    {
+                        Products = new List<BestSellerProductDto>(),
+                        Total = 0,
+                        PageIndex = pageIndex,
+                        PageSize = pageSize,
+                    };
+                }
+
                 // 第一步：从 HBPOSM 数据库查询销量数据（按商品编码分组）
                 var salesQuery = _posmContext.Db.Queryable<SalesOrderDetail>()
                     .LeftJoin<SalesOrder>((d, o) => d.OrderGuid == o.OrderGuid)
-                    .Where((d, o) => o.Status == 1) // 只查询已支付订单
-                    .Where((d, o) => d.SupplierCode == "200") // 只查询供应商200 (Hot Bargain)
-                    .Where((d, o) => o.OrderTime >= dateRange.StartDate && o.OrderTime <= dateRange.EndDate);
+                    .LeftJoin<POSM_设备注册信息表>((d, o, device) => o.DeviceCode == device.系统设备编号)
+                    .Where((d, o, device) => o.Status == 1) // 只查询已支付订单
+                    .Where((d, o, device) => d.SupplierCode == "200") // 只查询供应商200 (Hot Bargain)
+                    .Where((d, o, device) => o.OrderTime >= dateRange.StartDate && o.OrderTime <= dateRange.EndDate);
 
                 // 按分店过滤
                 if (branchCodes != null && branchCodes.Any())
                 {
-                    salesQuery = salesQuery.Where((d, o) => branchCodes.Contains(o.BranchCode ?? ""));
+                    salesQuery = salesQuery.Where((d, o, device) =>
+                        branchCodes.Contains(
+                            o.BranchCode != null && o.BranchCode != ""
+                                ? o.BranchCode
+                                : device.分店代码 ?? ""
+                        )
+                    );
                 }
 
-                // 按商品编码分组，统计销量和销售额
-                var salesData = await salesQuery
-                    .GroupBy((d, o) => d.ProductCode)
-                    .Select((d, o) => new
+                // 在数据库侧按商品聚合并分页，避免把全部热销商品拉回内存后再分页。
+                var groupedSalesQuery = salesQuery
+                    .GroupBy((d, o, device) => d.ProductCode)
+                    .Select((d, o, device) => new
                     {
                         ProductCode = d.ProductCode,
                         TotalQuantity = SqlFunc.AggregateSum(d.Quantity),
                         TotalSalesAmount = SqlFunc.AggregateSum(d.ActualAmount),
-                    })
-                    .OrderBy("TotalQuantity desc") // 按销量降序
-                    .ToListAsync();
+                    });
 
-                var total = salesData.Count;
+                var total = await groupedSalesQuery.Clone().CountAsync();
                 _logger.LogInformation("[BestSellers] Found {Total} products with sales data", total);
 
-                // 第二步：分页获取商品编码列表
-                var pagedData = salesData
+                var pagedData = await salesQuery.Clone()
+                    .GroupBy((d, o, device) => d.ProductCode)
+                    .OrderBy((d, o, device) => SqlFunc.AggregateSum(d.Quantity), OrderByType.Desc)
+                    .Select((d, o, device) => new
+                    {
+                        ProductCode = d.ProductCode,
+                        TotalQuantity = SqlFunc.AggregateSum(d.Quantity),
+                        TotalSalesAmount = SqlFunc.AggregateSum(d.ActualAmount),
+                        PosmBarcode = SqlFunc.AggregateMax(d.Barcode),
+                        PosmProductName = SqlFunc.AggregateMax(d.ProductName),
+                    })
                     .Skip((pageIndex - 1) * pageSize)
                     .Take(pageSize)
-                    .ToList();
+                    .ToListAsync();
 
                 if (!pagedData.Any())
                 {
@@ -3414,51 +3443,104 @@ namespace BlazorApp.Api.Services.React
                     };
                 }
 
-                // 第三步：从 HBweb 数据库查询商品信息（供应商=200，带缓存）
-                var productCodes = pagedData.Select(x => x.ProductCode).ToList();
-                var cacheKey = $"BestSellers_Products_{string.Join("_", productCodes.OrderBy(c => c))}";
-                
-                Dictionary<string, dynamic> productDict;
-                if (!_cache.TryGetValue(cacheKey, out productDict))
-                {
-                    var productsInfo = await _context.Db.Queryable<Product>()
-                        .Where(p => productCodes.Contains(p.ProductCode))
-                        .Where(p => p.LocalSupplierCode == "200") // 过滤供应商200
-                        .Select(p => new
-                        {
-                            p.ProductCode,
-                            p.ItemNumber,
-                            p.ProductImage,
-                            p.ProductName,
-                        })
-                        .ToListAsync();
+                // 批量补齐商品信息和仓库库存表状态，状态必须以 WarehouseProduct.IsActive 为准。
+                var productCodes = pagedData
+                    .Select(x => x.ProductCode)
+                    .Where(code => !string.IsNullOrWhiteSpace(code))
+                    .Select(code => code!)
+                    .Distinct()
+                    .ToList();
+                var productsInfo = await _context.Db.Queryable<Product>()
+                    .LeftJoin<WarehouseProduct>((p, wp) => p.ProductCode == wp.ProductCode && wp.IsDeleted == false)
+                    .Where(p => p.ProductCode != null && productCodes.Contains(p.ProductCode))
+                    .Where(p => p.IsDeleted == false)
+                    .Select((p, wp) => new ProductInfo
+                    {
+                        ProductCode = p.ProductCode ?? string.Empty,
+                        ItemNumber = p.ItemNumber,
+                        Barcode = p.Barcode,
+                        ProductImage = p.ProductImage,
+                        ProductName = p.ProductName,
+                        IsActive = wp.IsActive,
+                        MinOrderQuantity = wp.MinOrderQuantity,
+                    })
+                    .ToListAsync();
 
-                    productDict = productsInfo.ToDictionary(x => x.ProductCode ?? "", x => (dynamic)x);
+                var productDict = productsInfo
+                    .Where(x => !string.IsNullOrWhiteSpace(x.ProductCode))
+                    .ToDictionary(x => x.ProductCode, x => x);
 
-                    var cacheOptions = new MemoryCacheEntryOptions()
-                        .SetAbsoluteExpiration(TimeSpan.FromMinutes(30));
+                // 只对当前页商品做分店销量聚合，Stores Sold 表示参与当前统计范围的去重分店数。
+                var branchSalesData = await salesQuery.Clone()
+                    .Where((d, o, device) => productCodes.Contains(d.ProductCode))
+                    .GroupBy((d, o, device) => new
+                    {
+                        d.ProductCode,
+                        BranchCode = o.BranchCode != null && o.BranchCode != ""
+                            ? o.BranchCode
+                            : device.分店代码,
+                    })
+                    .Select((d, o, device) => new
+                    {
+                        ProductCode = d.ProductCode,
+                        BranchCode = o.BranchCode != null && o.BranchCode != ""
+                            ? o.BranchCode
+                            : device.分店代码,
+                        Quantity = SqlFunc.AggregateSum(d.Quantity),
+                    })
+                    .ToListAsync();
 
-                    _cache.Set(cacheKey, productDict, cacheOptions);
-                    _logger.LogInformation("[BestSellers] Product info cached with key: {CacheKey}", cacheKey);
-                }
-                else
-                {
-                    _logger.LogInformation("[BestSellers] Product info cache hit: {CacheKey}", cacheKey);
-                }
+                var branchCodesInPage = branchSalesData
+                    .Select(x => x.BranchCode)
+                    .Where(code => !string.IsNullOrWhiteSpace(code))
+                    .Select(code => code!)
+                    .Distinct()
+                    .ToList();
+                var storeNameMap = branchCodesInPage.Any()
+                    ? await GetStoreNameMapAsync(branchCodesInPage.ToHashSet())
+                    : new Dictionary<string, string>();
+                var branchSalesMap = branchSalesData
+                    .Where(x => !string.IsNullOrWhiteSpace(x.ProductCode) && !string.IsNullOrWhiteSpace(x.BranchCode))
+                    .GroupBy(x => x.ProductCode!)
+                    .ToDictionary(
+                        group => group.Key,
+                        group => group
+                            .OrderByDescending(x => x.Quantity ?? 0)
+                            .ThenBy(x => x.BranchCode)
+                            .Select(x => new BestSellerBranchSaleDto
+                            {
+                                BranchCode = x.BranchCode!,
+                                BranchName = storeNameMap.TryGetValue(x.BranchCode!, out var storeName) ? storeName : x.BranchCode!,
+                                Quantity = x.Quantity ?? 0,
+                            })
+                            .ToList()
+                    );
 
                 // 第四步：合并数据
                 var products = pagedData.Select((item, index) =>
                 {
                     var productInfo = productDict.TryGetValue(item.ProductCode ?? "", out var info) ? info : null;
+                    var branchSales = branchSalesMap.TryGetValue(item.ProductCode ?? "", out var rows)
+                        ? rows
+                        : new List<BestSellerBranchSaleDto>();
                     return new BestSellerProductDto
                     {
-                        ProductCode = item.ProductCode,
+                        ProductCode = item.ProductCode ?? string.Empty,
                         ItemNumber = productInfo?.ItemNumber,
+                        Barcode = !string.IsNullOrWhiteSpace(productInfo?.Barcode)
+                            ? productInfo.Barcode
+                            : item.PosmBarcode,
                         ProductImage = productInfo?.ProductImage,
-                        ProductName = productInfo?.ProductName,
+                        ProductName = !string.IsNullOrWhiteSpace(productInfo?.ProductName)
+                            ? productInfo.ProductName
+                            : item.PosmProductName,
                         Quantity = item.TotalQuantity ?? 0,
                         SalesAmount = item.TotalSalesAmount ?? 0,
                         Rank = (pageIndex - 1) * pageSize + index + 1,
+                        IsActive = productInfo?.IsActive,
+                        MinOrderQuantity = productInfo?.MinOrderQuantity,
+                        BranchSalesCount = branchSales.Count,
+                        BranchSales = branchSales,
                     };
                 }).ToList();
 

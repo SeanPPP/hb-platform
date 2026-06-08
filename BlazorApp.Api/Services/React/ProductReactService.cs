@@ -34,6 +34,7 @@ namespace BlazorApp.Api.Services.React
         private const int ProductHqSyncWriteBatchSize = 200;
         private const string ProductHqSyncLockResource = "HB:ProductReactService:SyncProductsFromHq";
         private static readonly SemaphoreSlim ProductHqSyncSemaphore = new(1, 1);
+        private const string DefaultLocalSupplierCode = "200";
 
         public ProductReactService(
             SqlSugarContext context,
@@ -74,6 +75,12 @@ namespace BlazorApp.Api.Services.React
             public DateTime? UpdatedAt { get; set; }
             public string? UpdatedBy { get; set; }
             public int StoreRecordCount { get; set; }
+        }
+
+        private static string NormalizeLocalSupplierCode(string? value)
+        {
+            // 本地商品未选择供应商时统一归到默认供应商 200，避免空值进入商品和分店价格链路。
+            return string.IsNullOrWhiteSpace(value) ? DefaultLocalSupplierCode : value.Trim();
         }
 
         /// <summary>
@@ -748,7 +755,7 @@ namespace BlazorApp.Api.Services.React
                 {
                     ProductCode = dto.ProductCode,
                     ProductCategoryGUID = dto.ProductCategoryGUID,
-                    LocalSupplierCode = dto.LocalSupplierCode,
+                    LocalSupplierCode = NormalizeLocalSupplierCode(dto.LocalSupplierCode),
                     ItemNumber = dto.ItemNumber,
                     Barcode = dto.Barcode,
                     ProductName = dto.ProductName,
@@ -774,9 +781,7 @@ namespace BlazorApp.Api.Services.React
                         .Select(s => s.StoreCode)
                         .ToListAsync();
 
-                    var supplierCode = !string.IsNullOrWhiteSpace(product.LocalSupplierCode)
-                        ? product.LocalSupplierCode
-                        : "200";
+                    var supplierCode = product.LocalSupplierCode;
                     var now = DateTime.Now;
                     var currentUser =
                         _httpContextAccessor.HttpContext?.User?.Identity?.Name ?? "System";
@@ -868,7 +873,7 @@ namespace BlazorApp.Api.Services.React
 
                 // 未改码：仅更新主表
                 product.ProductCategoryGUID = dto.ProductCategoryGUID;
-                product.LocalSupplierCode = dto.LocalSupplierCode;
+                product.LocalSupplierCode = NormalizeLocalSupplierCode(dto.LocalSupplierCode);
                 product.ItemNumber = dto.ItemNumber;
                 product.Barcode = dto.Barcode;
                 product.ProductName = dto.ProductName;
@@ -915,7 +920,7 @@ namespace BlazorApp.Api.Services.React
         {
             product.ProductCode = newProductCode;
             product.ProductCategoryGUID = dto.ProductCategoryGUID;
-            product.LocalSupplierCode = dto.LocalSupplierCode;
+            product.LocalSupplierCode = NormalizeLocalSupplierCode(dto.LocalSupplierCode);
             product.ItemNumber = dto.ItemNumber;
             product.Barcode = dto.Barcode;
             product.ProductName = dto.ProductName;
@@ -1203,7 +1208,7 @@ namespace BlazorApp.Api.Services.React
                             if (item.ProductCategoryGUID != null)
                                 product.ProductCategoryGUID = item.ProductCategoryGUID;
                             if (item.LocalSupplierCode != null)
-                                product.LocalSupplierCode = item.LocalSupplierCode;
+                                product.LocalSupplierCode = NormalizeLocalSupplierCode(item.LocalSupplierCode);
 
                             product.UpdatedAt = DateTime.Now;
                             var currentUser =

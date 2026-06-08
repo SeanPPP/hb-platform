@@ -3,12 +3,14 @@ using System.Runtime.CompilerServices;
 using System.Security.Claims;
 using AutoMapper;
 using BlazorApp.Api.Data;
+using BlazorApp.Api.Controllers.React;
 using BlazorApp.Api.Mappings.Profiles.React;
 using BlazorApp.Api.Services.React;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
 using BlazorApp.Shared.Models.HqEntities;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -43,7 +45,9 @@ public sealed class ProductStoreRecordsTests : IDisposable
         _localDb.CodeFirst.InitTables(
             typeof(Product),
             typeof(Store),
-            typeof(StoreRetailPrice)
+            typeof(StoreRetailPrice),
+            typeof(StoreMultiCodeProduct),
+            typeof(ProductSetCode)
         );
     }
 
@@ -478,6 +482,131 @@ public sealed class ProductStoreRecordsTests : IDisposable
         Assert.DoesNotContain("_db.Updateable(record).ExecuteCommandAsync()", source);
     }
 
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task CreateAsync_LocalSupplierCode为空时默认写入200到商品和分店价格(string? localSupplierCode)
+    {
+        await SeedStoreAsync("S01", "分店一");
+
+        var response = await CreateService("creator").CreateAsync(new CreateProductDto
+        {
+            ProductCode = $"P-CREATE-{Guid.NewGuid():N}",
+            ProductName = "默认供应商商品",
+            LocalSupplierCode = localSupplierCode,
+            PurchasePrice = 1.2m,
+            RetailPrice = 2.3m,
+            IsActive = true,
+        });
+
+        Assert.True(response.Success, response.Message);
+        var product = await _localDb.Queryable<Product>().SingleAsync(item => item.ProductCode == response.Data!.ProductCode);
+        var storePrice = await _localDb.Queryable<StoreRetailPrice>().SingleAsync(item => item.ProductCode == response.Data!.ProductCode);
+        Assert.Equal("200", product.LocalSupplierCode);
+        Assert.Equal("200", storePrice.SupplierCode);
+    }
+
+    [Fact]
+    public async Task UpdateAsync_LocalSupplierCode为空时默认写入200()
+    {
+        await SeedProductAsync("P-UPDATE", "A-UPDATE", localSupplierCode: "SUP01");
+
+        var response = await CreateService("updater").UpdateAsync("P-UPDATE", new UpdateProductDto
+        {
+            ProductCode = "P-UPDATE",
+            ProductName = "更新默认供应商",
+            LocalSupplierCode = "   ",
+            IsActive = true,
+        });
+
+        Assert.True(response.Success, response.Message);
+        var product = await _localDb.Queryable<Product>().SingleAsync(item => item.ProductCode == "P-UPDATE");
+        Assert.Equal("200", product.LocalSupplierCode);
+    }
+
+    [Fact]
+    public async Task UpdateAsync_改码时LocalSupplierCode为空默认写入200()
+    {
+        await SeedProductAsync("P-OLD", "A-OLD", localSupplierCode: "SUP01");
+
+        var response = await CreateService("updater").UpdateAsync("P-OLD", new UpdateProductDto
+        {
+            ProductCode = "P-NEW",
+            ProductName = "改码默认供应商",
+            LocalSupplierCode = "",
+            IsActive = true,
+        });
+
+        Assert.True(response.Success, response.Message);
+        var product = await _localDb.Queryable<Product>().SingleAsync(item => item.ProductCode == "P-NEW");
+        Assert.Equal("200", product.LocalSupplierCode);
+    }
+
+    [Fact]
+    public async Task BatchUpdateAsync_LocalSupplierCode显式空写200且未传字段保持原值()
+    {
+        await SeedProductAsync("P-BATCH-EMPTY", "A-BATCH-EMPTY", localSupplierCode: "SUP01");
+        await SeedProductAsync("P-BATCH-KEEP", "A-BATCH-KEEP", localSupplierCode: "KEEP01");
+
+        var response = await CreateService("batcher").BatchUpdateAsync(new List<BatchUpdateProductReactDto>
+        {
+            new()
+            {
+                ProductCode = "P-BATCH-EMPTY",
+                LocalSupplierCode = "   ",
+            },
+            new()
+            {
+                ProductCode = "P-BATCH-KEEP",
+                ProductName = "只改名称",
+            },
+        });
+
+        Assert.True(response.Success, response.Message);
+        var emptySupplierProduct = await _localDb.Queryable<Product>().SingleAsync(item => item.ProductCode == "P-BATCH-EMPTY");
+        var keepSupplierProduct = await _localDb.Queryable<Product>().SingleAsync(item => item.ProductCode == "P-BATCH-KEEP");
+        Assert.Equal("200", emptySupplierProduct.LocalSupplierCode);
+        Assert.Equal("KEEP01", keepSupplierProduct.LocalSupplierCode);
+    }
+
+    [Fact]
+    public async Task CreateWithPrices_LocalSupplierCode为空时默认写入200到商品和分店价格()
+    {
+        await SeedStoreAsync("S01", "分店一");
+        var controller = new ReactProductsController(
+            CreateSqlSugarContext(_localDb),
+            NullLogger<ReactProductsController>.Instance
+        )
+        {
+            ControllerContext = new ControllerContext
+            {
+                HttpContext = new DefaultHttpContext
+                {
+                    User = new ClaimsPrincipal(new ClaimsIdentity(new[]
+                    {
+                        new Claim(ClaimTypes.Name, "controller-user"),
+                    }, "TestAuth")),
+                },
+            },
+        };
+
+        var actionResult = await controller.CreateWithPrices(new CreateProductWithPricesDto
+        {
+            ProductName = "控制器默认供应商商品",
+            LocalSupplierCode = "   ",
+            PurchasePrice = 1.2m,
+            RetailPrice = 2.3m,
+            IsAutoPricing = false,
+        });
+
+        Assert.IsType<OkObjectResult>(actionResult);
+        var product = await _localDb.Queryable<Product>().SingleAsync(item => item.ProductName == "控制器默认供应商商品");
+        var storePrice = await _localDb.Queryable<StoreRetailPrice>().SingleAsync(item => item.ProductCode == product.ProductCode);
+        Assert.Equal("200", product.LocalSupplierCode);
+        Assert.Equal("200", storePrice.SupplierCode);
+    }
+
     public void Dispose()
     {
         _localDb.Dispose();
@@ -500,12 +629,13 @@ public sealed class ProductStoreRecordsTests : IDisposable
         );
     }
 
-    private async Task SeedProductAsync(string productCode, string itemNumber)
+    private async Task SeedProductAsync(string productCode, string itemNumber, string? localSupplierCode = null)
     {
         await _localDb.Insertable(new Product
         {
             UUID = $"product-{productCode}",
             ProductCode = productCode,
+            LocalSupplierCode = localSupplierCode,
             ItemNumber = itemNumber,
             Barcode = $"barcode-{productCode}",
             ProductName = $"商品{productCode}",

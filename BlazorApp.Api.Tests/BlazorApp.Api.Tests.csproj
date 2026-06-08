@@ -53,6 +53,7 @@
     <Compile Include="DataSyncIncrementalPosmSupplierMappingsTests.cs" />
     <Compile Include="ScheduledTaskServiceTests.cs" />
     <Compile Include="SalesStatisticsJobServiceTests.cs" />
+    <Compile Include="SalesDashboardBestSellersTests.cs" />
     <Compile Include="AuthServiceTests.cs" />
     <Compile Include="AuthSessionControllerTests.cs" />
     <Compile Include="StoreVoucherReactRouteTests.cs" />
