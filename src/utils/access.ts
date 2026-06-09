@@ -98,6 +98,7 @@ function createEmptyAccess(): AccessControl {
     canEditAttendanceSettings: false,
     canViewEmployeeProfiles: false,
     canViewSystemLogs: false,
+    canManageSystemSettings: false,
     canManageScheduledTasks: false,
     canViewDeviceRegistration: false,
     canManageDeviceRegistration: false,
