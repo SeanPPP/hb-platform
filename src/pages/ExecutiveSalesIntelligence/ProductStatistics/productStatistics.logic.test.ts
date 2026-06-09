@@ -4,6 +4,7 @@ import {
   formatProductStatisticDateWithWeekday,
   getProductStatisticPaginationAfterLoad,
   getProductStatisticActionErrorMessage,
+  getProductStatisticConcurrency,
   getProductStatisticRangeDays,
   getProductStatisticRowNumber,
   getProductStatisticStatusTagColor,
@@ -30,6 +31,10 @@ const validRange = [dayjs('2026-06-01'), dayjs('2026-06-30')] as [Dayjs, Dayjs]
 const tooLongRange = [dayjs('2026-06-01'), dayjs('2026-07-02')] as [Dayjs, Dayjs]
 
 assertEqual(MAX_PRODUCT_STATISTIC_RANGE_DAYS, 31, '商品统计重算前端上限应和后端保持一致')
+assertEqual(getProductStatisticConcurrency(), 3, '商品统计范围重算默认并发应为 3')
+assertEqual(getProductStatisticConcurrency(0), 3, '商品统计范围重算异常并发应回退默认值')
+assertEqual(getProductStatisticConcurrency(11), 10, '商品统计范围重算并发最大应限制为 10')
+assertEqual(getProductStatisticConcurrency(4.8), 4, '商品统计范围重算并发应取整数')
 assertEqual(getProductStatisticRangeDays(validRange), 30, '日期范围天数应按包含首尾计算')
 assertEqual(formatProductStatisticDateWithWeekday('2026-06-08'), '2026-06-08 周一', '统计日期应显示星期几')
 assertEqual(formatProductStatisticDateWithWeekday('bad-date'), 'bad-date', '无效日期应保留原值')

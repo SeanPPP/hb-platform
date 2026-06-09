@@ -60,6 +60,7 @@ import {
   buildProductHqSyncOperationId,
   buildSupplierImageBatchUpdateOperationId,
   createProductHqSyncJobPoller,
+  createProductWithPrices,
   createProductFullHqSyncJob,
   createProductIncrementalHqSyncJob,
   createSupplierImageBatchUpdateJob,
@@ -277,6 +278,7 @@ export default function ProductManagementPage() {
   const canManagePosProducts = useAuthStore((state) => state.access.canManagePosProducts)
   const canManageStoreProducts = useAuthStore((state) => state.access.canManageStoreProducts)
   const canEditStoreProducts = useAuthStore((state) => state.access.canEditStoreProducts)
+  const canCreateStoreProducts = useAuthStore((state) => state.access.canCreateStoreProducts)
 
   const [loading, setLoading] = useState(false)
   const [data, setData] = useState<ProductRow[]>([])
@@ -323,6 +325,9 @@ export default function ProductManagementPage() {
   const [editVisible, setEditVisible] = useState(false)
   const [editingProduct, setEditingProduct] = useState<PosProductDto | null>(null)
   const [editForm] = Form.useForm()
+  const [createVisible, setCreateVisible] = useState(false)
+  const [createSubmitting, setCreateSubmitting] = useState(false)
+  const [createForm] = Form.useForm()
 
   const [batchEditVisible, setBatchEditVisible] = useState(false)
   const [batchEditForm] = Form.useForm()
@@ -1110,6 +1115,12 @@ export default function ProductManagementPage() {
     return false
   }
 
+  const ensureCanCreateStoreProducts = () => {
+    if (canCreateStoreProducts) return true
+    message.warning(t('posAdmin.products.noCreatePermission', '无权限创建商品'))
+    return false
+  }
+
   const buildSyncProductsToStoresFields = (values: Record<string, unknown>): SyncProductsToStoresField[] => {
     const fields: SyncProductsToStoresField[] = []
     if (values.syncPurchasePrice) fields.push('purchasePrice')
@@ -1289,6 +1300,18 @@ export default function ProductManagementPage() {
       categoryGuid: getCategoryValueFromGuid(record.categoryGuid, categoryTree),
     })
     setEditVisible(true)
+  }
+
+  const openCreateModal = () => {
+    if (!ensureCanCreateStoreProducts()) return
+    createForm.resetFields()
+    createForm.setFieldsValue({
+      productType: 0,
+      isActive: true,
+      isAutoPricing: true,
+      isSpecialProduct: false,
+    })
+    setCreateVisible(true)
   }
 
   const openStoreRecords = async (record: PosProductDto) => {
@@ -1484,6 +1507,41 @@ export default function ProductManagementPage() {
       await loadData()
     } catch {
       message.error(t('message.saveFailed', '保存失败'))
+    }
+  }
+
+  const handleCreateSave = async () => {
+    if (!ensureCanCreateStoreProducts()) return
+    setCreateSubmitting(true)
+    try {
+      const values = await createForm.validateFields()
+      const resolvedCategoryGuid = resolveCascaderLeafValue(values.productCategoryGUID)
+      const result = await createProductWithPrices({
+        productName: values.productName,
+        productCategoryGUID: resolvedCategoryGuid,
+        localSupplierCode: values.localSupplierCode,
+        itemNumber: values.itemNumber,
+        barcode: values.barcode,
+        productImage: values.productImage,
+        purchasePrice: values.purchasePrice,
+        retailPrice: values.retailPrice,
+        isAutoPricing: values.isAutoPricing ?? true,
+        isSpecialProduct: values.isSpecialProduct ?? false,
+        isActive: true,
+        productType: 0,
+      })
+      const createdStoreCount = Object.keys(result.storeProductCodes ?? {}).length
+      message.success(t('posAdmin.products.createProductSuccess', '创建成功：商品 {{code}}，已创建 {{count}} 条分店记录', {
+        code: result.productCode,
+        count: createdStoreCount,
+      }))
+      setCreateVisible(false)
+      createForm.resetFields()
+      void loadData()
+    } catch {
+      message.error(t('posAdmin.products.createProductFailed', '创建商品失败'))
+    } finally {
+      setCreateSubmitting(false)
     }
   }
 
@@ -2541,6 +2599,11 @@ export default function ProductManagementPage() {
                 </Button>
               </>
             )}
+            {canCreateStoreProducts && (
+              <Button type="primary" icon={<PlusOutlined />} onClick={openCreateModal}>
+                {t('posAdmin.products.createProduct', '创建商品')}
+              </Button>
+            )}
             {canManagePosProducts && (
               <>
                 <Button
@@ -2642,6 +2705,81 @@ export default function ProductManagementPage() {
           />
         </div>
       </div>
+
+      <Modal
+        open={createVisible}
+        title={t('posAdmin.products.createProduct', '创建商品')}
+        onCancel={() => setCreateVisible(false)}
+        onOk={handleCreateSave}
+        confirmLoading={createSubmitting}
+        width={720}
+        destroyOnHidden
+      >
+        <Form form={createForm} labelCol={{ span: 6 }} wrapperCol={{ span: 18 }}>
+          <Form.Item name="productName" label={t('posAdmin.products.productName', '商品名称')} rules={[{ required: true, message: t('posAdmin.products.inputProductName', '请输入商品名称') }]}>
+            <Input />
+          </Form.Item>
+          <Form.Item name="productImage" label={t('posAdmin.invoiceDetail.image', '图片')}>
+            <Input allowClear placeholder={t('posAdmin.products.productImageUrlPlaceholder', '请输入商品图片 URL')} />
+          </Form.Item>
+          <Row gutter={16}>
+            <Col span={12}>
+              <Form.Item name="barcode" label={t('posAdmin.products.barcodeLabel', '条码')} rules={[{ required: true, message: t('posAdmin.products.inputBarcode', '请输入条码') }]}>
+                <Input />
+              </Form.Item>
+            </Col>
+            <Col span={12}>
+              <Form.Item name="itemNumber" label={t('posAdmin.products.addItemNumber', '货号')}>
+                <Input />
+              </Form.Item>
+            </Col>
+          </Row>
+          <Row gutter={16}>
+            <Col span={12}>
+              <Form.Item name="localSupplierCode" label={t('posAdmin.products.supplier', '供应商')}>
+                <Select allowClear showSearch optionFilterProp="label" options={supplierOptions} placeholder={t('posAdmin.products.selectSupplier', '请选择供应商')} />
+              </Form.Item>
+            </Col>
+            <Col span={12}>
+              <Form.Item name="productCategoryGUID" label={t('posAdmin.products.category', '分类')}>
+                <Cascader
+                  allowClear
+                  showSearch
+                  changeOnSelect
+                  options={buildCategoryCascaderOptions(categoryTree)}
+                  disabled={categoryLoadFailed}
+                  placeholder={t('posAdmin.products.selectCategory', '选择分类')}
+                  style={{ width: '100%' }}
+                />
+              </Form.Item>
+            </Col>
+          </Row>
+          <Row gutter={16}>
+            <Col span={12}>
+              <Form.Item name="purchasePrice" label={t('posAdmin.products.purchasePrice', '采购价')} rules={[{ required: true, message: t('posAdmin.products.inputPurchasePrice', '请输入采购价') }]}>
+                <InputNumber min={0} precision={2} prefix="$" style={{ width: '100%' }} />
+              </Form.Item>
+            </Col>
+            <Col span={12}>
+              <Form.Item name="retailPrice" label={t('posAdmin.products.retailPrice', '零售价')} rules={[{ required: true, message: t('posAdmin.products.inputRetailPrice', '请输入零售价') }]}>
+                <InputNumber min={0} precision={2} prefix="$" style={{ width: '100%' }} />
+              </Form.Item>
+            </Col>
+          </Row>
+          <Row gutter={16}>
+            <Col span={12}>
+              <Form.Item name="isAutoPricing" label={t('posAdmin.products.isAutoPricing', '自动定价')} valuePropName="checked" labelCol={{ span: 12 }} wrapperCol={{ span: 12 }}>
+                <Switch checkedChildren={t('posAdmin.products.yes', '是')} unCheckedChildren={t('posAdmin.products.no', '否')} />
+              </Form.Item>
+            </Col>
+            <Col span={12}>
+              <Form.Item name="isSpecialProduct" label={t('posAdmin.products.isSpecialProduct', '特殊商品')} valuePropName="checked" labelCol={{ span: 12 }} wrapperCol={{ span: 12 }}>
+                <Switch checkedChildren={t('posAdmin.products.yes', '是')} unCheckedChildren={t('posAdmin.products.no', '否')} />
+              </Form.Item>
+            </Col>
+          </Row>
+        </Form>
+      </Modal>
 
       <Modal
         open={hqSyncVisible}

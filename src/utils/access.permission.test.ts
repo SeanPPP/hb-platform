@@ -401,31 +401,10 @@ const roleReaderWebPreview = buildWebRoleMenuPreview(
 )
 const systemMenu = roleReaderWebPreview.find((node) => node.path === '/system')
 const rolesMenu = systemMenu?.children?.find((node) => node.path === '/system/roles')
-const adminProductStatisticPreview = buildWebRoleMenuPreview(adminAccess, translate, {
+const adminWebMenuPreview = buildWebRoleMenuPreview(adminAccess, translate, {
   includeHidden: true,
 })
-const productStatisticMenu = findWebMenuNode(
-  adminProductStatisticPreview,
-  '/executive-sales-intelligence/product-statistics',
-)
-const reportOnlyWebPreview = buildWebRoleMenuPreview(
-  buildRolePreviewAccess({
-    roleGuid: 'report-only-role',
-    roleName: 'ReportOnlyRole',
-    isSuperAdmin: false,
-    implicitAllPermissions: false,
-    explicitPermissionCodes: [P.Reports.View],
-    effectivePermissionCodes: [P.Reports.View],
-  }),
-  translate,
-  {
-    includeHidden: true,
-  },
-)
-const reportOnlyProductStatisticMenu = findWebMenuNode(
-  reportOnlyWebPreview,
-  '/executive-sales-intelligence/product-statistics',
-)
+const productStatisticMenu = findWebMenuNode(adminWebMenuPreview, '/executive-sales-intelligence/product-statistics')
 const roleReaderCompleteWebPreview = buildWebRoleMenuPreview(
   buildRolePreviewAccess({
     roleGuid: 'role-reader-role',
@@ -440,8 +419,23 @@ const roleReaderCompleteWebPreview = buildWebRoleMenuPreview(
     includeHidden: true,
   },
 )
+const completeSystemMenu = roleReaderCompleteWebPreview.find((node) => node.path === '/system')
+const scheduledStatisticsMenu = completeSystemMenu?.children?.find((node) => node.path === '/system/scheduled-statistics')
+const invoiceEmailSettingsMenu = completeSystemMenu?.children?.find((node) => node.path === '/system/invoice-email-settings')
 const roleReaderVisibleWebPreview = filterWebMenuNodesByVisibility(roleReaderCompleteWebPreview, 'visible')
 const roleReaderHiddenWebPreview = filterWebMenuNodesByVisibility(roleReaderCompleteWebPreview, 'hidden')
+
+const systemSettingsAccess = buildAccess(
+  createCurrentUser({
+    permissions: [P.System.ManageSettings],
+  }),
+)
+
+assertEqual(
+  systemSettingsAccess.canManageSystemSettings,
+  true,
+  'System.ManageSettings should unlock invoice email settings page visibility',
+)
 
 assertEqual(
   systemMenu?.permissionCodes.length,
@@ -468,21 +462,39 @@ assertEqual(
 )
 
 assertEqual(
-  productStatisticMenu?.accessKey,
-  'isAdmin',
-  '商品统计状态 Web 菜单应声明为管理员工具',
+  scheduledStatisticsMenu?.accessKey,
+  'canManageScheduledTasks',
+  '定时统计任务 Web 菜单应由 System.ManageScheduledTasks 控制',
 )
 
 assertEqual(
-  productStatisticMenu?.visible,
-  true,
-  'Admin Web 菜单预览应显示商品统计状态',
+  scheduledStatisticsMenu?.permissionCodes.join(','),
+  P.System.ManageScheduledTasks,
+  '定时统计任务 Web 菜单应展示 System.ManageScheduledTasks 权限',
 )
 
 assertEqual(
-  reportOnlyProductStatisticMenu?.visible,
+  getAccessKeyPermissionCodes('canManageSystemSettings').join(','),
+  P.System.ManageSettings,
+  'Web menu preview should map system settings access to System.ManageSettings',
+)
+
+assertEqual(
+  invoiceEmailSettingsMenu?.accessKey,
+  'canManageSystemSettings',
+  '发票邮箱配置 Web 菜单应由 System.ManageSettings 控制',
+)
+
+assertEqual(
+  invoiceEmailSettingsMenu?.permissionCodes.join(','),
+  P.System.ManageSettings,
+  '发票邮箱配置 Web 菜单应展示 System.ManageSettings 权限',
+)
+
+assertEqual(
+  Boolean(productStatisticMenu),
   false,
-  '仅 Reports.View 的角色不应看到商品统计状态管理员工具',
+  '销售看板 Web 菜单不应再显示旧商品统计状态入口',
 )
 
 assertEqual(

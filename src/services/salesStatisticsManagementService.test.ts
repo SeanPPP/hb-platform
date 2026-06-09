@@ -196,14 +196,15 @@ try {
   assertEqual(recentResult.submittedDates?.[0], '2026-06-01', '最近 7 天重算应解包已提交日期')
   assertEqual(recentResult.skippedDates?.[0], '2026-06-02', '最近 7 天重算应解包跳过日期')
 
-  await recalculateProductStoreDailyRange('2026-06-01', '2026-06-08')
+  await recalculateProductStoreDailyRange('2026-06-01', '2026-06-08', 3)
   const rangeCall = calls[calls.length - 1]
   assert(rangeCall, '应记录日期范围重算请求')
   assertEqual(new URL(rangeCall.url, 'http://localhost').pathname, '/api/StatisticsJobTrigger/batch-product-store-daily', '日期范围重算接口路径应正确')
   assertEqual(rangeCall.init?.method, 'POST', '日期范围重算应使用 POST')
-  const rangeBody = JSON.parse(String(rangeCall.init?.body)) as { startDate: string; endDate: string }
+  const rangeBody = JSON.parse(String(rangeCall.init?.body)) as { startDate: string; endDate: string; maxConcurrency: number }
   assertEqual(rangeBody.startDate, '2026-06-01', '日期范围重算应传递开始日期')
   assertEqual(rangeBody.endDate, '2026-06-08', '日期范围重算应传递结束日期')
+  assertEqual(rangeBody.maxConcurrency, 3, '日期范围重算应传递最大并发')
 
   console.log('salesStatisticsManagementService.test: ok')
 } finally {

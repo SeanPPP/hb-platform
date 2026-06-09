@@ -14,6 +14,7 @@ import {
   InboxOutlined,
   IdcardOutlined,
   KeyOutlined,
+  MailOutlined,
   MoneyCollectOutlined,
   NumberOutlined,
   PictureOutlined,
@@ -42,7 +43,6 @@ import ProductGradeManagementPage from '../pages/Warehouse/ProductGradeManagemen
 import NotFoundPage from '../pages/NotFound'
 import ExecutiveSalesIntelligencePage from '../pages/ExecutiveSalesIntelligence'
 import SalesDetailAnalysisPage from '../pages/ExecutiveSalesIntelligence/SalesDetailAnalysisV2'
-import ProductStatisticsPage from '../pages/ExecutiveSalesIntelligence/ProductStatistics'
 import PosmSalesOrdersPage from '../pages/PosmSalesOrders'
 import PosAdminCashRegisterUsersPage from '../pages/PosAdmin/CashRegisterUsers'
 import PosAdminPricingStrategiesPage from '../pages/PosAdmin/PricingStrategies'
@@ -57,6 +57,8 @@ import LocalSupplierInvoicesPage from '../pages/PosAdmin/LocalSupplierInvoices'
 import LocalSupplierInvoiceDetailPage from '../pages/PosAdmin/LocalSupplierInvoiceDetailPage'
 import InvoiceEditPage from '../pages/PosAdmin/LocalSupplierInvoices/InvoiceEdit'
 import SystemCenterLogsPage from '../pages/System/CenterLogs'
+import InvoiceEmailSettingsPage from '../pages/System/InvoiceEmailSettings'
+import SystemScheduledStatisticsPage from '../pages/System/ScheduledStatistics'
 import SystemRolesPage from '../pages/System/Roles'
 import SystemStoresPage from '../pages/System/Stores'
 import SystemEmployeeProfilesPage from '../pages/System/EmployeeProfiles'
@@ -102,6 +104,7 @@ const iconMap = {
   GiftOutlined: <GiftOutlined />,
   InboxOutlined: <InboxOutlined />,
   IdcardOutlined: <IdcardOutlined />,
+  MailOutlined: <MailOutlined />,
   UserOutlined: <UserOutlined />,
   TeamOutlined: <TeamOutlined />,
   NumberOutlined: <NumberOutlined />,
@@ -167,6 +170,26 @@ export const appRoutes: AppRouteItem[] = [
           accessKey: 'canViewSystemLogs',
         },
         element: <SystemCenterLogsPage />,
+      },
+      {
+        path: '/system/scheduled-statistics',
+        meta: {
+          title: 'menu.scheduledStatistics',
+          icon: 'ScheduleOutlined',
+          keepAlive: true,
+          accessKey: 'canManageScheduledTasks',
+        },
+        element: <SystemScheduledStatisticsPage />,
+      },
+      {
+        path: '/system/invoice-email-settings',
+        meta: {
+          title: 'menu.invoiceEmailSettings',
+          icon: 'MailOutlined',
+          keepAlive: true,
+          accessKey: 'canManageSystemSettings',
+        },
+        element: <InvoiceEmailSettingsPage />,
       },
       {
         path: '/system/users',
@@ -413,16 +436,6 @@ export const appRoutes: AppRouteItem[] = [
           accessKey: 'canViewReports',
         },
         element: <SalesDetailAnalysisPage />,
-      },
-      {
-        path: '/executive-sales-intelligence/product-statistics',
-        meta: {
-          title: 'menu.productSalesStatistics',
-          icon: 'DatabaseOutlined',
-          keepAlive: true,
-          accessKey: 'isAdmin',
-        },
-        element: <ProductStatisticsPage />,
       },
     ],
   },

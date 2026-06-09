@@ -45,6 +45,7 @@ const accessKeyPermissionMap: Partial<Record<keyof AccessControl, string[]>> = {
   canViewEmployeeProfiles: [P.EmployeeProfiles.View],
   canViewSystemLogs: [P.System.ViewLogs],
   canManageScheduledTasks: [P.System.ManageScheduledTasks],
+  canManageSystemSettings: [P.System.ManageSettings],
   canReadUser: [P.Users.View],
   canReadRole: [P.Roles.View],
   canViewDeviceRegistration: [P.DeviceRegistration.View, P.DeviceRegistration.Manage],
@@ -80,6 +81,8 @@ const webMenuPreviewRoutes: WebMenuPreviewRoute[] = [
       { path: '/system/stores', title: 'menu.systemStores', accessKey: 'canReadStore' },
       { path: '/system/employee-profiles', title: 'menu.systemEmployeeProfiles', accessKey: 'canViewEmployeeProfiles' },
       { path: '/system/center-logs', title: 'menu.systemCenterLogs', accessKey: 'canViewSystemLogs' },
+      { path: '/system/scheduled-statistics', title: 'menu.scheduledStatistics', accessKey: 'canManageScheduledTasks' },
+      { path: '/system/invoice-email-settings', title: 'menu.invoiceEmailSettings', accessKey: 'canManageSystemSettings' },
       { path: '/system/users', title: 'menu.systemUsers', accessKey: 'canReadUser' },
       { path: '/system/roles', title: 'menu.systemRoles', accessKey: 'canReadRole' },
       { path: '/system/permissions', title: 'menu.systemPermissions', accessKey: 'canReadRole' },
@@ -116,7 +119,6 @@ const webMenuPreviewRoutes: WebMenuPreviewRoute[] = [
     children: [
       { path: '/executive-sales-intelligence/overview', title: 'menu.salesData', accessKey: 'canViewReports' },
       { path: '/executive-sales-intelligence/sales-detail-v2', title: 'menu.salesDetail', accessKey: 'canViewReports' },
-      { path: '/executive-sales-intelligence/product-statistics', title: 'menu.productSalesStatistics', accessKey: 'isAdmin' },
     ],
   },
   {

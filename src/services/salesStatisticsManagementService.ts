@@ -32,15 +32,15 @@ export interface ProductStoreDailyStatisticSummary extends SalesStatisticRefresh
   grossProfit?: number | null
   reconciliationStatus?: string
   salesReconciliationStatus?: string
-  productTotalAmount?: number
-  storeTotalAmount?: number
-  amountDifference?: number
-  productTotalQuantity?: number
-  storeTotalQuantity?: number
-  quantityDifference?: number
-  unmatchedSupplierAmount?: number
-  unmatchedSupplierQuantity?: number
-  unmatchedSupplierProductCount?: number
+  productTotalAmount?: number | null
+  storeTotalAmount?: number | null
+  amountDifference?: number | null
+  productTotalQuantity?: number | null
+  storeTotalQuantity?: number | null
+  quantityDifference?: number | null
+  unmatchedSupplierAmount?: number | null
+  unmatchedSupplierQuantity?: number | null
+  unmatchedSupplierProductCount?: number | null
 }
 
 export interface JobTriggerResponse {
@@ -200,10 +200,10 @@ export async function recalculateRecentProductStoreDaily(days = 7) {
   return normalizeSubmitResponse(unwrapData(response))
 }
 
-export async function recalculateProductStoreDailyRange(startDate: string, endDate: string) {
+export async function recalculateProductStoreDailyRange(startDate: string, endDate: string, maxConcurrency?: number) {
   const response = await request.post<ApiResponse<JobTriggerResponse> | JobTriggerResponse>(
     '/api/StatisticsJobTrigger/batch-product-store-daily',
-    { startDate, endDate },
+    { startDate, endDate, maxConcurrency },
   )
   return normalizeSubmitResponse(unwrapData(response))
 }

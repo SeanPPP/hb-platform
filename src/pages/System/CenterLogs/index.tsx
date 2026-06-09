@@ -12,7 +12,6 @@ import {
   Select,
   Space,
   Statistic,
-  Switch,
   Table,
   Tag,
   Typography,
@@ -25,13 +24,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import PageContainer from '../../../components/PageContainer'
 import { getCenterLogDetail, getCenterLogs, getCenterLogSummary } from '../../../services/centerLogService'
-import {
-  getScheduledTaskRuntimeControl,
-  updateScheduledTaskRuntimeControl,
-} from '../../../services/scheduledTaskRuntimeControlService'
-import { useAuthStore } from '../../../store/auth'
 import type { ApplicationLogItem, ApplicationLogQueryParams, ApplicationLogSummaryGroup } from '../../../types/centerLog'
-import type { ScheduledTaskRuntimeControlStatus } from '../../../types/scheduledTaskRuntimeControl'
 import { formatCenterLogTimestamp } from './time'
 import {
   CENTER_LOG_LEVEL_OPTIONS,
@@ -104,14 +97,10 @@ function SummaryTagGroup({
 
 export default function SystemCenterLogsPage() {
   const { t } = useTranslation()
-  const canManageScheduledTasks = useAuthStore((state) => state.access.canManageScheduledTasks)
   const [form] = Form.useForm<CenterLogQueryFormValues>()
   const [loading, setLoading] = useState(false)
   const [detailLoading, setDetailLoading] = useState(false)
-  const [schedulerLoading, setSchedulerLoading] = useState(false)
-  const [schedulerSaving, setSchedulerSaving] = useState(false)
   const [data, setData] = useState<ApplicationLogItem[]>([])
-  const [schedulerStatus, setSchedulerStatus] = useState<ScheduledTaskRuntimeControlStatus | null>(null)
   const [summaryTotal, setSummaryTotal] = useState(0)
   const [summaryByLevel, setSummaryByLevel] = useState<ApplicationLogSummaryGroup[]>([])
   const [summaryByProject, setSummaryByProject] = useState<ApplicationLogSummaryGroup[]>([])
@@ -152,25 +141,9 @@ export default function SystemCenterLogsPage() {
     }
   }
 
-  const loadSchedulerStatus = async () => {
-    setSchedulerLoading(true)
-    try {
-      setSchedulerStatus(await getScheduledTaskRuntimeControl())
-    } catch (error) {
-      console.error(error)
-      message.error(t('system.centerLogs.scheduler.loadFailed'))
-    } finally {
-      setSchedulerLoading(false)
-    }
-  }
-
   useEffect(() => {
     void loadData(activeQuery)
   }, [activeQuery])
-
-  useEffect(() => {
-    void loadSchedulerStatus()
-  }, [])
 
   const handleQuery = () => {
     const values = form.getFieldsValue()
@@ -216,40 +189,6 @@ export default function SystemCenterLogsPage() {
     form.setFieldValue('projectCodes', projectCodes)
     setActiveQuery(buildCenterLogQueryParams({ ...form.getFieldsValue(), projectCodes }, 1, pageSize))
   }
-
-  const handleUpdateScheduler = async (next: {
-    schedulerEnabled?: boolean
-    activeInstanceId?: string | null
-  }) => {
-    if (!schedulerStatus) {
-      return
-    }
-    if (!canManageScheduledTasks) {
-      message.warning(t('system.centerLogs.scheduler.readOnly'))
-      return
-    }
-
-    setSchedulerSaving(true)
-    try {
-      const updated = await updateScheduledTaskRuntimeControl({
-        schedulerEnabled: next.schedulerEnabled ?? schedulerStatus.schedulerEnabled,
-        activeInstanceId: next.activeInstanceId ?? schedulerStatus.activeInstanceId,
-      })
-      setSchedulerStatus(updated)
-      message.success(t('system.centerLogs.scheduler.updateSuccess'))
-    } catch (error) {
-      console.error(error)
-      message.error(t('system.centerLogs.scheduler.updateFailed'))
-    } finally {
-      setSchedulerSaving(false)
-    }
-  }
-
-  const schedulerInstanceOptions =
-    schedulerStatus?.knownInstances.map((instance) => ({
-      value: instance.instanceId,
-      label: `${instance.instanceId}${instance.isCurrent ? ` (${t('system.centerLogs.scheduler.current')})` : ''}`,
-    })) ?? []
 
   const columns = useMemo<ColumnsType<ApplicationLogItem>>(
     () => [
@@ -336,86 +275,6 @@ export default function SystemCenterLogsPage() {
       }
     >
       <Space direction="vertical" size={16} style={{ width: '100%' }}>
-        <Card
-          title={t('system.centerLogs.scheduler.title')}
-          extra={
-            <Button
-              icon={<ReloadOutlined />}
-              loading={schedulerLoading}
-              onClick={() => void loadSchedulerStatus()}
-            >
-              {t('common.refresh')}
-            </Button>
-          }
-        >
-          <Row gutter={[16, 16]} align="middle">
-            <Col xs={24} md={6}>
-              <Statistic
-                title={t('system.centerLogs.scheduler.effectiveStatus')}
-                value={
-                  schedulerStatus?.effectiveSchedulerEnabled
-                    ? t('system.centerLogs.scheduler.running')
-                    : t('system.centerLogs.scheduler.stopped')
-                }
-                valueStyle={{
-                  color: schedulerStatus?.effectiveSchedulerEnabled ? '#1677ff' : '#cf1322',
-                  fontSize: 20,
-                }}
-              />
-            </Col>
-            <Col xs={24} md={6}>
-              <Typography.Text type="secondary">
-                {t('system.centerLogs.scheduler.currentInstance')}
-              </Typography.Text>
-              <Typography.Paragraph copyable style={{ marginBottom: 0 }}>
-                {schedulerStatus?.currentInstanceId ?? '-'}
-              </Typography.Paragraph>
-            </Col>
-            <Col xs={24} md={7}>
-              <Typography.Text type="secondary">
-                {t('system.centerLogs.scheduler.activeInstance')}
-              </Typography.Text>
-              <Select
-                loading={schedulerLoading}
-                disabled={!schedulerStatus || schedulerSaving || !canManageScheduledTasks}
-                value={schedulerStatus?.activeInstanceId}
-                options={schedulerInstanceOptions}
-                style={{ width: '100%', marginTop: 4 }}
-                onChange={(value) => void handleUpdateScheduler({ activeInstanceId: value })}
-              />
-              {!canManageScheduledTasks ? (
-                <Typography.Text type="secondary">
-                  {t('system.centerLogs.scheduler.readOnly')}
-                </Typography.Text>
-              ) : null}
-            </Col>
-            <Col xs={24} md={5}>
-              <Typography.Text type="secondary">
-                {t('system.centerLogs.scheduler.enabled')}
-              </Typography.Text>
-              <div style={{ marginTop: 8 }}>
-                <Switch
-                  checked={!!schedulerStatus?.schedulerEnabled}
-                  loading={schedulerSaving}
-                  disabled={
-                    !schedulerStatus
-                    || !schedulerStatus.schedulerEnabledByConfig
-                    || !canManageScheduledTasks
-                  }
-                  checkedChildren={t('common.enabled')}
-                  unCheckedChildren={t('common.disabled')}
-                  onChange={(checked) => void handleUpdateScheduler({ schedulerEnabled: checked })}
-                />
-              </div>
-              {!schedulerStatus?.schedulerEnabledByConfig ? (
-                <Typography.Text type="danger">
-                  {t('system.centerLogs.scheduler.disabledByConfig')}
-                </Typography.Text>
-              ) : null}
-            </Col>
-          </Row>
-        </Card>
-
         <Card>
           <Form form={form} layout="vertical" onFinish={() => void handleQuery()}>
             <Row gutter={16}>

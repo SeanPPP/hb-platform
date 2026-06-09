@@ -5,6 +5,7 @@ import {
   Descriptions,
   Drawer,
   Form,
+  InputNumber,
   Modal,
   Select,
   Space,
@@ -34,10 +35,19 @@ import { RequestError } from '../../../utils/request'
 
 const { RangePicker } = DatePicker
 export const MAX_PRODUCT_STATISTIC_RANGE_DAYS = 31
+export const DEFAULT_PRODUCT_STATISTIC_CONCURRENCY = 3
+export const MIN_PRODUCT_STATISTIC_CONCURRENCY = 1
+export const MAX_PRODUCT_STATISTIC_CONCURRENCY = 10
 
 type RangeValue = [Dayjs, Dayjs] | null
 type ProductStatisticTablePagination = { current: number; pageSize: number }
 type ProductStatisticLoadOptions = { resetPage?: boolean }
+type ProductStatisticFormValues = {
+  statisticType?: string
+  dateRange?: RangeValue
+  status?: SalesStatisticStatus | ''
+  maxConcurrency?: number | null
+}
 
 const statusOptions: Array<{ label: string; value: SalesStatisticStatus | '' }> = [
   { label: '全部状态', value: '' },
@@ -112,7 +122,7 @@ function formatDateTime(value?: string) {
   return parsed.isValid() ? parsed.format('YYYY-MM-DD HH:mm:ss') : value
 }
 
-function formatNumber(value?: number) {
+function formatNumber(value?: number | null) {
   if (typeof value !== 'number' || !Number.isFinite(value)) {
     return '--'
   }
@@ -160,6 +170,17 @@ export function getProductStatisticRangeDays(dateRange?: RangeValue) {
 export function isProductStatisticRangeWithinLimit(dateRange?: RangeValue) {
   const requestedDays = getProductStatisticRangeDays(dateRange)
   return requestedDays > 0 && requestedDays <= MAX_PRODUCT_STATISTIC_RANGE_DAYS
+}
+
+export function getProductStatisticConcurrency(value?: number | null) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return DEFAULT_PRODUCT_STATISTIC_CONCURRENCY
+  }
+
+  const integerValue = Math.floor(value)
+  return integerValue < MIN_PRODUCT_STATISTIC_CONCURRENCY
+    ? DEFAULT_PRODUCT_STATISTIC_CONCURRENCY
+    : Math.min(MAX_PRODUCT_STATISTIC_CONCURRENCY, integerValue)
 }
 
 export function getProductStatisticRowNumber(rowIndex: number, currentPage = 1, pageSize = 20) {
@@ -239,11 +260,7 @@ export default function ProductStatisticsPage() {
   const defaultRange = useMemo<RangeValue>(() => [dayjs().subtract(6, 'day'), dayjs()], [])
 
   const loadStates = useCallback(async (options: ProductStatisticLoadOptions = {}) => {
-    const values = form.getFieldsValue() as {
-      statisticType?: string
-      dateRange?: RangeValue
-      status?: SalesStatisticStatus | ''
-    }
+    const values = form.getFieldsValue() as ProductStatisticFormValues
     const dateRange = values.dateRange ?? defaultRange
 
     setLoading(true)
@@ -270,6 +287,7 @@ export default function ProductStatisticsPage() {
       statisticType: 'ProductStoreDaily',
       dateRange: defaultRange,
       status: '',
+      maxConcurrency: DEFAULT_PRODUCT_STATISTIC_CONCURRENCY,
     })
     void loadStates({ resetPage: true })
   }, [defaultRange, form, loadStates])
@@ -364,8 +382,9 @@ export default function ProductStatisticsPage() {
   }, [runAction])
 
   const handleRecalculateRange = useCallback(() => {
-    const values = form.getFieldsValue() as { dateRange?: RangeValue }
+    const values = form.getFieldsValue() as ProductStatisticFormValues
     const dateRange = values.dateRange
+    const maxConcurrency = getProductStatisticConcurrency(values.maxConcurrency)
 
     if (!dateRange?.[0] || !dateRange?.[1]) {
       message.warning('请先选择日期范围')
@@ -379,13 +398,14 @@ export default function ProductStatisticsPage() {
 
     Modal.confirm({
       title: '确认重算日期范围？',
-      content: `${dateRange[0].format('YYYY-MM-DD')} 至 ${dateRange[1].format('YYYY-MM-DD')}`,
+      content: `${dateRange[0].format('YYYY-MM-DD')} 至 ${dateRange[1].format('YYYY-MM-DD')}；并发数量：${maxConcurrency}`,
       okText: '重算',
       cancelText: '取消',
       onOk: () => runAction(
         () => recalculateProductStoreDailyRange(
           dateRange[0].format('YYYY-MM-DD'),
           dateRange[1].format('YYYY-MM-DD'),
+          maxConcurrency,
         ),
         '已触发日期范围商品统计重算',
       ),
@@ -486,6 +506,14 @@ export default function ProductStatisticsPage() {
           </Form.Item>
           <Form.Item name="status" label="状态">
             <Select style={{ width: 130 }} options={statusOptions} />
+          </Form.Item>
+          <Form.Item name="maxConcurrency" label="并发数量">
+            <InputNumber
+              min={MIN_PRODUCT_STATISTIC_CONCURRENCY}
+              max={MAX_PRODUCT_STATISTIC_CONCURRENCY}
+              precision={0}
+              style={{ width: 96 }}
+            />
           </Form.Item>
           <Form.Item>
             <Space>

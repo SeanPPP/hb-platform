@@ -1,5 +1,6 @@
 import {
   batchUpdateProductStoreRecords,
+  createProductWithPrices,
   createPushProductsToHqJob,
   createHqProductFullSyncJob,
   createHqProductIncrementalSyncJob,
@@ -588,6 +589,65 @@ try {
     '分店记录批量修改应返回 unwrap 后的统计结果',
   )
 
+  nextPayload = {
+    success: true,
+    data: {
+      productCode: 'HB10001',
+      storeProductCodes: {
+        S001: 'S001-HB10001',
+        S002: 'S002-HB10001',
+      },
+      product: {
+        productCode: 'HB10001',
+        productName: '测试新商品',
+      },
+    },
+  }
+
+  const createWithPricesResult = await createProductWithPrices({
+    barcode: '930000000001',
+    productName: '测试新商品',
+    productImage: 'https://img.example.com/HB10001.jpg',
+    purchasePrice: 5.2,
+    retailPrice: 9.9,
+    localSupplierCode: 'SUP01',
+    isAutoPricing: true,
+    isSpecialProduct: false,
+    isActive: true,
+  })
+  assertEqual(capturedUrl, '/api/react/v1/products/create-with-prices', '创建商品带分店价格应调用固定接口')
+  assertEqual(capturedInit?.method, 'POST', '创建商品带分店价格应使用 POST')
+  assertDeepEqual(
+    JSON.parse(String(capturedInit?.body)),
+    {
+      barcode: '930000000001',
+      productName: '测试新商品',
+      productImage: 'https://img.example.com/HB10001.jpg',
+      purchasePrice: 5.2,
+      retailPrice: 9.9,
+      localSupplierCode: 'SUP01',
+      isAutoPricing: true,
+      isSpecialProduct: false,
+      isActive: true,
+    },
+    '创建商品带分店价格请求体应原样提交 DTO',
+  )
+  assertDeepEqual(
+    createWithPricesResult,
+    {
+      productCode: 'HB10001',
+      storeProductCodes: {
+        S001: 'S001-HB10001',
+        S002: 'S002-HB10001',
+      },
+      product: {
+        productCode: 'HB10001',
+        productName: '测试新商品',
+      },
+    },
+    '创建商品带分店价格应返回 unwrap 后的结果',
+  )
+
   const jobFailurePayload = {
     isSuccess: false,
     message: '创建任务失败',
@@ -628,6 +688,31 @@ try {
     '创建同步到分店任务失败',
     syncToStoresJobFailurePayload,
     '同步到分店 job 接口 success:false',
+  )
+
+  const createWithPricesFailurePayload = {
+    success: false,
+    message: '创建商品失败',
+    data: {
+      errors: ['条码已存在'],
+    },
+  }
+  nextPayload = createWithPricesFailurePayload
+
+  await assertRequestError(
+    () =>
+      createProductWithPrices({
+        barcode: '930000000001',
+        productName: '测试新商品',
+        purchasePrice: 5.2,
+        retailPrice: 9.9,
+        isAutoPricing: true,
+        isSpecialProduct: false,
+        isActive: true,
+      }),
+    '创建商品失败',
+    createWithPricesFailurePayload,
+    '创建商品带分店价格接口 success:false',
   )
 } finally {
   globalThis.fetch = originalFetch

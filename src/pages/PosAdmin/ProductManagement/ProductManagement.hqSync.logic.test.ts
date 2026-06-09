@@ -105,6 +105,74 @@ async function main() {
   })
   if (writePermissionGuardFailure) failures.push(writePermissionGuardFailure)
 
+  const createProductModalFailure = await runTest('页面应提供创建商品弹窗并调用 create-with-prices 接口', () => {
+    assert(
+      typeSource.includes('CreateProductWithPricesDto') &&
+        typeSource.includes('CreateProductWithPricesResultDto') &&
+        typeSource.includes('storeProductCodes: Record<string, string>'),
+      '商品类型定义应声明创建商品请求和结果 DTO',
+    )
+    assert(
+      serviceSource.includes('createProductWithPrices') &&
+        serviceSource.includes("`${API_BASE}/create-with-prices`"),
+      '服务层应提供 createProductWithPrices 并调用 create-with-prices 接口',
+    )
+    assert(
+      pageSource.includes('canCreateStoreProducts') &&
+        pageSource.includes("t('posAdmin.products.createProduct', '创建商品')") &&
+        pageSource.includes('openCreateModal') &&
+        pageSource.includes('handleCreateSave'),
+      '页面应读取 canCreateStoreProducts，并提供创建商品按钮、打开弹窗和保存处理函数',
+    )
+    assert(
+      pageSource.includes('ensureCanCreateStoreProducts') &&
+        pageSource.includes("t('posAdmin.products.noCreatePermission'"),
+      '创建商品入口和提交都应有单独的创建权限守卫',
+    )
+    assert(
+      pageSource.includes('const [createVisible, setCreateVisible] = useState(false)') &&
+        pageSource.includes('const [createSubmitting, setCreateSubmitting] = useState(false)') &&
+        pageSource.includes('const [createForm] = Form.useForm()'),
+      '页面应维护创建商品弹窗、提交状态和独立表单实例',
+    )
+    assert(
+      pageSource.includes('await createProductWithPrices({') &&
+        pageSource.includes('productType: 0') &&
+        pageSource.includes('isActive: true'),
+      '创建商品提交应固定普通商品，并默认启用',
+    )
+    assert(
+      pageSource.includes('Object.keys(result.storeProductCodes ?? {}).length') &&
+        pageSource.includes('result.productCode') &&
+        pageSource.includes("t('posAdmin.products.createProductSuccess'"),
+      '创建成功提示应展示 productCode 和已创建分店商品数量',
+    )
+    assert(
+      pageSource.includes('setCreateVisible(false)') &&
+        pageSource.includes('createForm.resetFields()') &&
+        pageSource.includes('void loadData()'),
+      '创建成功后应关闭弹窗、清空表单并刷新列表',
+    )
+    assert(
+      pageSource.includes("title={t('posAdmin.products.createProduct', '创建商品')}") &&
+        pageSource.includes('open={createVisible}') &&
+        pageSource.includes('confirmLoading={createSubmitting}') &&
+        pageSource.includes("name=\"productName\"") &&
+        pageSource.includes("name=\"productImage\"") &&
+        pageSource.includes("name=\"barcode\"") &&
+        pageSource.includes("name=\"localSupplierCode\"") &&
+        pageSource.includes("name=\"purchasePrice\"") &&
+        pageSource.includes("name=\"retailPrice\""),
+      '创建商品弹窗应包含基础字段并绑定提交状态',
+    )
+    assert(
+      !pageSource.includes("t('posAdmin.products.setProduct', '套装商品')") ||
+        pageSource.includes('name="productType"'),
+      '创建商品弹窗范围内不应支持套装/多码切换',
+    )
+  })
+  if (createProductModalFailure) failures.push(createProductModalFailure)
+
   const editSetCodesIsolationFailure = await runTest('商品编辑弹窗应隔离套装和多码明细状态', () => {
     assert(
       pageSource.includes('resetEditSetCodeState') &&

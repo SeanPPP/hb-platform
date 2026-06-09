@@ -7,6 +7,8 @@ import type {
   BatchUpdateSupplierImagesJobResult,
   BatchUpdateSupplierImagesRequest,
   BatchUpdateSupplierImagesResult,
+  CreateProductWithPricesDto,
+  CreateProductWithPricesResultDto,
   HqProductFullSyncJobRequest,
   HqProductIncrementalSyncRequest,
   HqProductIncrementalSyncJobRequest,
@@ -265,6 +267,12 @@ export async function getProductStoreRecords(productCode: string): Promise<Produ
 
 export async function createProduct(data: Partial<PosProductDto> & Record<string, unknown>) {
   const response = await request.post<ApiResponse<PosProductDto>>(`${API_BASE}`, data)
+  return unwrapApiData(response)
+}
+
+export async function createProductWithPrices(data: CreateProductWithPricesDto): Promise<CreateProductWithPricesResultDto> {
+  const response = await request.post<ApiResponse<CreateProductWithPricesResultDto>>(`${API_BASE}/create-with-prices`, data)
+  assertApiSuccess(response, '创建商品失败')
   return unwrapApiData(response)
 }
 

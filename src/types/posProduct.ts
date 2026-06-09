@@ -70,6 +70,27 @@ export interface BatchUpdatePosProductDto {
   unitWeight?: number
 }
 
+export interface CreateProductWithPricesDto {
+  productName: string
+  productCategoryGUID?: string
+  productImage?: string
+  barcode?: string
+  itemNumber?: string
+  localSupplierCode?: string
+  purchasePrice?: number
+  retailPrice?: number
+  isAutoPricing: boolean
+  isSpecialProduct: boolean
+  isActive?: boolean
+  productType?: 0
+}
+
+export interface CreateProductWithPricesResultDto {
+  productCode: string
+  storeProductCodes: Record<string, string>
+  product?: PosProductDto
+}
+
 export interface SyncProductsToStoresRequest {
   productCodes: string[]
   storeCodes: string[]

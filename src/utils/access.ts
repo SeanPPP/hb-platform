@@ -285,6 +285,7 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
   const canViewEmployeeProfiles = isAdmin || hasPermission(P.EmployeeProfiles.View)
   const canViewSystemLogs = isAdmin || hasPermission(P.System.ViewLogs)
   const canManageScheduledTasks = isAdmin || hasPermission(P.System.ManageScheduledTasks)
+  const canManageSystemSettings = isAdmin || hasPermission(P.System.ManageSettings)
   const canManageDeviceRegistration = isAdmin || hasPermission(P.DeviceRegistration.Manage)
   const canViewDeviceRegistration =
     canManageDeviceRegistration || isAdmin || hasPermission(P.DeviceRegistration.View)
@@ -363,6 +364,7 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
     canViewEmployeeProfiles,
     canViewSystemLogs,
     canManageScheduledTasks,
+    canManageSystemSettings,
     canViewDeviceRegistration,
     canManageDeviceRegistration,
     canViewPosProducts,
