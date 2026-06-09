@@ -181,6 +181,29 @@ async function main() {
   })
   if (bestSellerAbortFailure) failures.push(bestSellerAbortFailure)
 
+  const bestSellerDateRangeFailure = await runTest('热销商品默认日期范围应从昨天开始且使用本地业务日期', () => {
+    assert(
+      bestSellersSource.includes("import { buildBestSellerDateRange } from '../../../utils/bestSellerDateRange'") &&
+        bestSellersSource.includes('buildBestSellerDateRange(timeRange)') &&
+        !bestSellersSource.includes('toISOString().slice(0, 10)') &&
+        !bestSellersSource.includes('start.setDate(start.getDate() - timeRange)'),
+      '热销商品日期范围未复用本地业务日期工具，或仍用 toISOString/今天作为结束日期',
+    )
+  })
+  if (bestSellerDateRangeFailure) failures.push(bestSellerDateRangeFailure)
+
+  const bestSellerStatusNoticeFailure = await runTest('热销商品非 Fresh 状态应提示统计未就绪或回退中', () => {
+    assert(
+      bestSellersSource.includes('const isBestSellerStatisticFresh = statisticStatus ===') &&
+        bestSellersSource.includes('bestSellerStatusNotice') &&
+        bestSellersSource.includes('商品统计未就绪或正在回退 POSM 实时数据，加载可能较慢。') &&
+        bestSellersSource.includes('getBestSellerEmptyText()') &&
+        bestSellersSource.includes('统计未就绪或正在回退 POSM，暂未返回热销商品。'),
+      '热销商品缺少非 Fresh 状态提示，或空数据文案没有区分统计未就绪和真无数据',
+    )
+  })
+  if (bestSellerStatusNoticeFailure) failures.push(bestSellerStatusNoticeFailure)
+
   const bestSellerTableColumnsFailure = await runTest('热销商品表格应显示条码、复制、状态、分店销量和加购操作', () => {
     assert(
       bestSellersSource.includes('BarcodePreview') &&

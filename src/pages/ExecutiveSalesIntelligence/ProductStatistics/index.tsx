@@ -31,6 +31,7 @@ import type {
   SalesStatisticRefreshState,
   SalesStatisticStatus,
 } from '../../../services/salesStatisticsManagementService'
+import { BEST_SELLERS_DEFAULT_DAYS, buildBestSellerDateRange } from '../../../utils/bestSellerDateRange'
 import { RequestError } from '../../../utils/request'
 
 const { RangePicker } = DatePicker
@@ -246,6 +247,11 @@ export function mergeUniqueDates(currentDates: string[], submittedDates?: string
   return Array.from(new Set([...currentDates, ...(submittedDates ?? [])])).sort()
 }
 
+export function getBestSellerDefaultStatisticRange(referenceDate = dayjs()): [Dayjs, Dayjs] {
+  const range = buildBestSellerDateRange(BEST_SELLERS_DEFAULT_DAYS, referenceDate.toDate())
+  return [dayjs(range.startDate), dayjs(range.endDate)]
+}
+
 export default function ProductStatisticsPage() {
   const [form] = Form.useForm()
   const [rows, setRows] = useState<SalesStatisticRefreshState[]>([])
@@ -380,6 +386,25 @@ export default function ProductStatisticsPage() {
   const handleRecalculateRecent = useCallback(() => {
     void runAction(() => recalculateRecentProductStoreDaily(7), '已触发最近 7 天商品统计重算')
   }, [runAction])
+
+  const handleRecalculateBestSellerDefaultRange = useCallback(() => {
+    const [startDate, endDate] = getBestSellerDefaultStatisticRange()
+    const maxConcurrency = getProductStatisticConcurrency(form.getFieldValue('maxConcurrency'))
+    Modal.confirm({
+      title: '确认重算前台热销默认范围？',
+      content: `${startDate.format('YYYY-MM-DD')} 至 ${endDate.format('YYYY-MM-DD')}；并发数量：${maxConcurrency}`,
+      okText: '重算',
+      cancelText: '取消',
+      onOk: () => runAction(
+        () => recalculateProductStoreDailyRange(
+          startDate.format('YYYY-MM-DD'),
+          endDate.format('YYYY-MM-DD'),
+          maxConcurrency,
+        ),
+        '已触发前台热销默认范围商品统计重算',
+      ),
+    })
+  }, [form, runAction])
 
   const handleRecalculateRange = useCallback(() => {
     const values = form.getFieldsValue() as ProductStatisticFormValues
@@ -525,6 +550,9 @@ export default function ProductStatisticsPage() {
               </Button>
               <Button onClick={handleRecalculateRecent} loading={actionLoading}>
                 重算最近7天
+              </Button>
+              <Button onClick={handleRecalculateBestSellerDefaultRange} loading={actionLoading}>
+                重算前台热销30天
               </Button>
               <Button onClick={handleRecalculateRange} loading={actionLoading}>
                 重算日期范围

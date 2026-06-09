@@ -220,15 +220,10 @@ try {
 
     return new Response(JSON.stringify({
       success: true,
-      data: {
-        items: [
-          { id: 1, hguid: 'ARRIVED-GUID', 货柜编号: 'ARRIVED-1', 实际到货日期: '2026-06-01' },
-          { id: 2, hguid: 'UPCOMING-GUID', 货柜编号: 'UPCOMING-1', 预计到岸日期: '2026-06-16' },
-        ],
-        total: 2,
-        page: 1,
-        pageSize: 100,
-      },
+      data: [
+        { id: 1, hguid: 'ARRIVED-GUID', 货柜编号: 'ARRIVED-1', 实际到货日期: '2026-06-01' },
+        { id: 2, hguid: 'UPCOMING-GUID', 货柜编号: 'UPCOMING-1', 预计到岸日期: '2026-06-16' },
+      ],
     }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
@@ -243,7 +238,12 @@ try {
     0,
     'Coming Soon 摘要首屏不应提前请求货柜商品明细',
   )
-  assertEqual(capturedInit?.method, 'POST', 'Coming Soon 摘要仍应使用列表 POST 接口')
+  assertEqual(
+    capturedUrl,
+    '/api/react/v1/containers/coming-soon/summaries',
+    'Coming Soon 摘要应调用后端共享缓存专用接口',
+  )
+  assertEqual(capturedInit?.method, 'GET', 'Coming Soon 摘要应使用 GET 缓存接口')
 
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     capturedUrl = String(input)
@@ -287,8 +287,8 @@ try {
 
   assertEqual(
     capturedUrl,
-    '/api/react/v1/containers/CONTAINER-GUID/products',
-    'Coming Soon 单货柜商品应复用现有明细接口',
+    '/api/react/v1/containers/coming-soon/CONTAINER-GUID/products',
+    'Coming Soon 单货柜商品应调用后端共享缓存专用接口',
   )
   assertEqual(capturedInit?.method, 'GET', 'Coming Soon 单货柜商品应使用 GET')
   assertDeepEqual(

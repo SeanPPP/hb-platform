@@ -13,6 +13,7 @@ import { addStoreOrderCartItem } from '../../../services/storeOrderService'
 import { getBestSellers } from '../../../services/salesDashboardService'
 import { useShopStore } from '../../../store/shop'
 import type { BestSellerBranchSale, BestSellerProduct } from '../../../types/salesDashboard'
+import { buildBestSellerDateRange } from '../../../utils/bestSellerDateRange'
 import { copyTextToClipboard } from '../../../utils/clipboard'
 
 const { Text, Title } = Typography
@@ -133,16 +134,7 @@ export default function BestSellersSection() {
   const selectedStore = useShopStore((state) => state.selectedStore)
   const setCart = useShopStore((state) => state.setCart)
 
-  const { startDate, endDate } = useMemo(() => {
-    const end = new Date()
-    const start = new Date()
-    start.setDate(start.getDate() - timeRange)
-
-    return {
-      startDate: start.toISOString().slice(0, 10),
-      endDate: end.toISOString().slice(0, 10),
-    }
-  }, [timeRange])
+  const { startDate, endDate } = useMemo(() => buildBestSellerDateRange(timeRange), [timeRange])
 
   useEffect(() => {
     let cancelled = false
@@ -210,6 +202,18 @@ export default function BestSellersSection() {
   )
 
   const grossMarginRate = totalSales > 0 && typeof totalGrossProfit === 'number' ? totalGrossProfit / totalSales : undefined
+  const isBestSellerStatisticFresh = statisticStatus === 'Fresh' || !statisticStatus
+  const bestSellerStatusNotice = !isBestSellerStatisticFresh
+    ? (statisticMessage || '商品统计未就绪或正在回退 POSM 实时数据，加载可能较慢。')
+    : null
+
+  const getBestSellerEmptyText = useCallback(() => {
+    const description = isBestSellerStatisticFresh
+      ? 'No best-seller data found.'
+      : '统计未就绪或正在回退 POSM，暂未返回热销商品。'
+
+    return <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={description} />
+  }, [isBestSellerStatisticFresh])
 
   const handleAddToCart = useCallback(
     async (product: BestSellerProduct) => {
@@ -517,6 +521,14 @@ export default function BestSellersSection() {
       </div>
 
       {error ? <Alert type="error" showIcon message={error} className="shop-home-alert" /> : null}
+      {bestSellerStatusNotice ? (
+        <Alert
+          type={statisticStatus === 'Failed' ? 'error' : 'warning'}
+          showIcon
+          message={bestSellerStatusNotice}
+          className="shop-home-alert"
+        />
+      ) : null}
 
       <Table<BestSellerProduct>
         rowKey={(record) => record.productCode || record.itemNumber || String(record.rank)}
@@ -544,7 +556,7 @@ export default function BestSellersSection() {
           },
         }}
         locale={{
-          emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="No best-seller data found." />,
+          emptyText: getBestSellerEmptyText(),
         }}
       />
     </section>

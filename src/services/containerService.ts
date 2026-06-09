@@ -37,20 +37,16 @@ interface ContainerListApiResponse {
   }
 }
 
+interface ContainerArrayApiResponse<T> {
+  success?: boolean
+  message?: string
+  data?: T[]
+}
+
 function ensureSuccess(success?: boolean, message?: string, fallback?: string) {
   if (success === false) {
     throw new Error(message || fallback || '请求失败')
   }
-}
-
-function formatDateValue(date: Date) {
-  return date.toISOString().slice(0, 10)
-}
-
-function addDays(date: Date, days: number) {
-  const next = new Date(date)
-  next.setDate(next.getDate() + days)
-  return next
 }
 
 function normalizeHqTranslationResult(result: RawHqTranslationResult = {}): HqTranslationResult {
@@ -340,49 +336,25 @@ export async function assignProductsToContainer(containerId: string, items: Assi
 }
 
 export async function getComingSoonContainerSummaries(): Promise<ComingSoonHomeContainerSummary[]> {
-  const today = new Date()
-  const upcomingStart = formatDateValue(today)
-  const upcomingEnd = formatDateValue(addDays(today, 56))
-  const arrivedStart = formatDateValue(addDays(today, -7))
-  const arrivedEnd = upcomingStart
+  const response = await request<ContainerArrayApiResponse<ContainerMain> | ContainerMain[]>(
+    `${API_BASE}/coming-soon/summaries`,
+    { method: 'GET' },
+  )
+  const containers = Array.isArray(response) ? response : response.data ?? []
 
-  const [upcomingResult, arrivedResult] = await Promise.all([
-    getContainerList({
-      dateType: '预计到岸日期',
-      startDate: upcomingStart,
-      endDate: upcomingEnd,
-      page: 1,
-      pageSize: 100,
-      sortBy: '预计到岸日期',
-      sortDirection: 'asc',
-    }),
-    getContainerList({
-      dateType: '实际到货日期',
-      startDate: arrivedStart,
-      endDate: arrivedEnd,
-      page: 1,
-      pageSize: 100,
-      sortBy: '实际到货日期',
-      sortDirection: 'desc',
-    }),
-  ])
-
-  const containerMap = new Map<string, ContainerMain>()
-  ;[...arrivedResult.containers, ...upcomingResult.containers].forEach((container) => {
-    containerMap.set(container.hguid, container)
-  })
-
-  const containers = [...containerMap.values()].sort((left, right) => {
+  return containers.sort((left, right) => {
     const leftDate = left.实际到货日期 || left.预计到岸日期
     const rightDate = right.实际到货日期 || right.预计到岸日期
     return toTimestamp(leftDate) - toTimestamp(rightDate)
   })
-
-  return containers
 }
 
 export async function getComingSoonContainerProducts(containerGuid: string): Promise<ComingSoonHomeProduct[]> {
-  const products = await getContainerProducts(containerGuid)
+  const response = await request<ContainerArrayApiResponse<ContainerDetail> | ContainerDetail[]>(
+    `${API_BASE}/coming-soon/${containerGuid}/products`,
+    { method: 'GET' },
+  )
+  const products = Array.isArray(response) ? response : response.data ?? []
   return products.map(toComingSoonProduct).sort(compareComingSoonProducts)
 }
 
