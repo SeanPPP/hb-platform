@@ -136,6 +136,29 @@ namespace BlazorApp.Api.Services
                 new();
         }
 
+        private sealed class StoreStatisticPaymentRow
+        {
+            public string? OrderGuid { get; set; }
+            public string? BranchCode { get; set; }
+            public string? DeviceCode { get; set; }
+            public decimal Amount { get; set; }
+        }
+
+        private sealed class StoreStatisticQuantityRow
+        {
+            public string? OrderGuid { get; set; }
+            public string? BranchCode { get; set; }
+            public string? DeviceCode { get; set; }
+            public int Quantity { get; set; }
+        }
+
+        private sealed class StoreStatisticOrderRow
+        {
+            public string? OrderGuid { get; set; }
+            public string? BranchCode { get; set; }
+            public string? DeviceCode { get; set; }
+        }
+
         /// <summary>
         /// 批量操作每批处理数量
         /// </summary>
@@ -591,71 +614,12 @@ namespace BlazorApp.Api.Services
 
                 _logger.LogInformation("开始更新分店统计数据: {Date}", targetDate);
 
-                // 从POSM数据库查询分店销售数据并聚合，按支付明细统计营业额
-                var storeData = await _posmContext
-                    .Db.Queryable<PaymentDetail, SalesOrder>(
-                        (pd, so) => pd.OrderGuid == so.OrderGuid
-                    )
-                    .Where(
-                        (pd, so) =>
-                            so.Status != null
-                            && (so.Status == 1 || so.Status == 4)
-                            && so.OrderTime != null
-                            && so.OrderTime.Value.Date == targetDate
-                    )
-                    .GroupBy((pd, so) => new { Date = so.OrderTime.Value.Date, so.BranchCode })
-                    .Select(
-                        (pd, so) =>
-                            new
-                            {
-                                Date = so.OrderTime.Value.Date,
-                                BranchCode = so.BranchCode,
-                                TotalAmount = SqlFunc.AggregateSum(pd.Amount) ?? 0m,
-                                TotalQuantity = SqlFunc.AggregateSum(so.ItemCount) ?? 0,
-                                OrderCount = SqlFunc.AggregateCount(so.OrderGuid),
-                                CustomerCount = SqlFunc.AggregateCount(so.OrderGuid),
-                            }
-                    )
-                    .ToListAsync();
-
-                // 获取所有分店代码
-                var allBranchCodes = storeData
-                    .Select(d => d.BranchCode)
-                    .Where(c => !string.IsNullOrEmpty(c))
-                    .Distinct()
-                    .ToList();
-
-                // 查询分店信息
-                var stores = await _context
-                    .Db.Queryable<Store>()
-                    .Where(s => allBranchCodes.Contains(s.StoreCode))
-                    .ToListAsync();
-
-                var storeDict = stores.ToDictionary(s => s.StoreCode, s => s);
-
-                var statisticsList = new List<StoreSalesStatistic>();
-
-                // 构建每个分店的统计记录
-                foreach (var data in storeData)
-                {
-                    var store = storeDict.GetValueOrDefault(data.BranchCode);
-
-                    var statistic = new StoreSalesStatistic
-                    {
-                        Date = data.Date,
-                        BranchCode = data.BranchCode,
-                        BranchName = store?.StoreName ?? data.BranchCode ?? string.Empty,
-                        TotalAmount = data.TotalAmount,
-                        TotalQuantity = (int)data.TotalQuantity,
-                        OrderCount = data.OrderCount,
-                        CustomerCount = data.CustomerCount,
-                        AverageOrderValue =
-                            data.OrderCount > 0 ? data.TotalAmount / data.OrderCount : 0m,
-                        UpdateTime = DateTime.Now,
-                    };
-
-                    statisticsList.Add(statistic);
-                }
+                var statisticsList = await BuildStoreStatisticsAsync(
+                    _context,
+                    _posmContext,
+                    targetDate,
+                    null
+                );
 
                 await ExecuteTransactionSafelyAsync(
                     beginAsync: () => _context.Db.Ado.BeginTranAsync(),
@@ -669,10 +633,13 @@ namespace BlazorApp.Api.Services
                         _logger.LogInformation("删除 {Count} 条分店统计旧记录", deletedCount);
 
                         // 批量插入新记录
-                        _context
-                            .Db.Fastest<StoreSalesStatistic>()
-                            .PageSize(BatchSize)
-                            .BulkCopy(statisticsList);
+                        if (statisticsList.Any())
+                        {
+                            _context
+                                .Db.Fastest<StoreSalesStatistic>()
+                                .PageSize(BatchSize)
+                                .BulkCopy(statisticsList);
+                        }
                     },
                     commitAsync: () => _context.Db.Ado.CommitTranAsync(),
                     rollbackAsync: () => _context.Db.Ado.RollbackTranAsync(),
@@ -826,97 +793,37 @@ namespace BlazorApp.Api.Services
                     branchCodes != null ? string.Join(", ", branchCodes) : "All"
                 );
 
-                // 构建查询，按支付明细统计营业额
-                var query = _posmContext
-                    .Db.Queryable<PaymentDetail, SalesOrder>(
-                        (pd, so) => pd.OrderGuid == so.OrderGuid
-                    )
-                    .Where(
-                        (pd, so) =>
-                            so.Status != null
-                            && (so.Status == 1 || so.Status == 4)
-                            && so.OrderTime != null
-                            && so.OrderTime.Value.Date == date
-                    );
-
-                // 如果指定了分店代码，添加过滤条件
-                if (branchCodes != null && branchCodes.Any())
-                {
-                    query = query.Where((pd, so) => branchCodes.Contains(so.BranchCode));
-                }
-
-                // 查询并聚合销售数据
-                var storeData = await query
-                    .GroupBy((pd, so) => new { Date = so.OrderTime.Value.Date, so.BranchCode })
-                    .Select(
-                        (pd, so) =>
-                            new
-                            {
-                                Date = so.OrderTime.Value.Date,
-                                BranchCode = so.BranchCode,
-                                TotalAmount = SqlFunc.AggregateSum(pd.Amount) ?? 0m,
-                                TotalQuantity = SqlFunc.AggregateSum(so.ItemCount) ?? 0,
-                                OrderCount = SqlFunc.AggregateCount(so.OrderGuid),
-                                CustomerCount = SqlFunc.AggregateCount(so.OrderGuid),
-                            }
-                    )
-                    .ToListAsync();
-
-                // 获取所有分店代码
-                var allBranchCodes = storeData
-                    .Select(d => d.BranchCode)
-                    .Where(c => !string.IsNullOrEmpty(c))
-                    .Distinct()
-                    .ToList();
-
-                // 查询分店信息
-                var stores = await _context
-                    .Db.Queryable<Store>()
-                    .Where(s => allBranchCodes.Contains(s.StoreCode))
-                    .ToListAsync();
-
-                var storeDict = stores.ToDictionary(s => s.StoreCode, s => s);
-
-                var statisticsList = new List<StoreSalesStatistic>();
-
-                // 构建每个分店的统计记录
-                foreach (var data in storeData)
-                {
-                    var store = storeDict.GetValueOrDefault(data.BranchCode);
-
-                    var statistic = new StoreSalesStatistic
-                    {
-                        Date = data.Date,
-                        BranchCode = data.BranchCode,
-                        BranchName = store?.StoreName ?? data.BranchCode ?? string.Empty,
-                        TotalAmount = data.TotalAmount,
-                        TotalQuantity = (int)data.TotalQuantity,
-                        OrderCount = data.OrderCount,
-                        CustomerCount = data.CustomerCount,
-                        AverageOrderValue =
-                            data.OrderCount > 0 ? data.TotalAmount / data.OrderCount : 0m,
-                        UpdateTime = DateTime.Now,
-                    };
-
-                    statisticsList.Add(statistic);
-                }
+                var statisticsList = await BuildStoreStatisticsAsync(
+                    _context,
+                    _posmContext,
+                    date,
+                    branchCodes
+                );
+                var targetBranchCodes = NormalizeBranchCodes(branchCodes);
 
                 await ExecuteTransactionSafelyAsync(
                     beginAsync: () => _context.Db.Ado.BeginTranAsync(),
                     workAsync: async () =>
                     {
-                        // 删除该日期的所有旧记录
-                        var deletedCount = await _context
-                            .Db.Deleteable<StoreSalesStatistic>()
-                            .Where(s => s.Date == date)
-                            .ExecuteCommandAsync();
+                        // 指定分店重算只替换对应分店，避免清掉同日其它分店统计。
+                        var deleteable = _context.Db.Deleteable<StoreSalesStatistic>()
+                            .Where(s => s.Date == date);
+                        if (targetBranchCodes.Any())
+                        {
+                            deleteable = deleteable.Where(s => targetBranchCodes.Contains(s.BranchCode));
+                        }
+
+                        var deletedCount = await deleteable.ExecuteCommandAsync();
                         _logger.LogInformation("删除 {Count} 条分店统计旧记录", deletedCount);
 
                         // 批量插入新记录
-                        _context
-                            .Db.Fastest<StoreSalesStatistic>()
-                            .PageSize(BatchSize)
-                            .BulkCopy(statisticsList);
+                        if (statisticsList.Any())
+                        {
+                            _context
+                                .Db.Fastest<StoreSalesStatistic>()
+                                .PageSize(BatchSize)
+                                .BulkCopy(statisticsList);
+                        }
                     },
                     commitAsync: () => _context.Db.Ado.CommitTranAsync(),
                     rollbackAsync: () => _context.Db.Ado.RollbackTranAsync(),
@@ -1177,7 +1084,8 @@ namespace BlazorApp.Api.Services
 
         public async Task<ProductStoreDailyRecalculationSubmitResult> SubmitProductStoreDailyRecalculationAsync(
             IEnumerable<DateTime> dates,
-            string? requestedBy
+            string? requestedBy,
+            int maxConcurrency = 3
         )
         {
             var targetDates = dates
@@ -1186,6 +1094,7 @@ namespace BlazorApp.Api.Services
                 .OrderBy(date => date)
                 .ToList();
             var jobId = Guid.NewGuid();
+            var normalizedMaxConcurrency = NormalizeProductStatisticMaxConcurrency(maxConcurrency);
 
             if (!targetDates.Any())
             {
@@ -1247,7 +1156,13 @@ namespace BlazorApp.Api.Services
 
             if (submittedDates.Any())
             {
-                _ = Task.Run(() => RunProductStoreDailyRecalculationJobAsync(jobId, submittedDates));
+                _ = Task.Run(() =>
+                    RunProductStoreDailyRecalculationJobAsync(
+                        jobId,
+                        submittedDates,
+                        normalizedMaxConcurrency
+                    )
+                );
             }
 
             return new ProductStoreDailyRecalculationSubmitResult
@@ -1260,6 +1175,11 @@ namespace BlazorApp.Api.Services
                     : SalesStatisticRefreshStatus.Running,
                 Message = BuildProductStoreDailySubmitMessage(submittedDates.Count, skippedDates.Count),
             };
+        }
+
+        private static int NormalizeProductStatisticMaxConcurrency(int maxConcurrency)
+        {
+            return maxConcurrency < 1 ? 3 : Math.Min(maxConcurrency, 10);
         }
 
         public async Task<int> RecoverTimedOutProductStoreDailyRecalculationJobsAsync(
@@ -1325,25 +1245,43 @@ namespace BlazorApp.Api.Services
             }
         }
 
-        private async Task RunProductStoreDailyRecalculationJobAsync(Guid jobId, List<DateTime> dates)
+        private async Task RunProductStoreDailyRecalculationJobAsync(
+            Guid jobId,
+            List<DateTime> dates,
+            int maxConcurrency
+        )
         {
             try
             {
-                using var scope = _serviceScopeFactory.CreateScope();
-                var service = scope.ServiceProvider.GetRequiredService<SalesStatisticsJobService>();
-
-                foreach (var date in dates)
+                var normalizedMaxConcurrency = NormalizeProductStatisticMaxConcurrency(maxConcurrency);
+                using var semaphore = new SemaphoreSlim(normalizedMaxConcurrency, normalizedMaxConcurrency);
+                var tasks = dates.Select(async date =>
                 {
+                    await semaphore.WaitAsync();
                     try
                     {
+                        // 每个日期独立创建作用域和服务，避免共享 DbContext/SqlSugarClient 造成并发污染。
+                        using var scope = _serviceScopeFactory.CreateScope();
+                        var service = scope.ServiceProvider.GetRequiredService<SalesStatisticsJobService>();
                         await service.MarkProductStatisticJobRunningAsync(jobId, date);
                         await service.UpdateProductStoreDailyStatistics(date);
                     }
                     catch (Exception ex)
                     {
-                        service._logger.LogError(ex, "商品分店每日统计异步重算失败: JobId={JobId}, Date={Date}", jobId, date);
+                        _logger.LogError(
+                            ex,
+                            "商品分店每日统计异步重算失败: JobId={JobId}, Date={Date}",
+                            jobId,
+                            date
+                        );
                     }
-                }
+                    finally
+                    {
+                        semaphore.Release();
+                    }
+                });
+
+                await Task.WhenAll(tasks);
             }
             catch (Exception ex)
             {
@@ -1688,6 +1626,176 @@ namespace BlazorApp.Api.Services
                 return mappedBranch ?? string.Empty;
 
             return string.Empty;
+        }
+
+        private async Task<List<StoreSalesStatistic>> BuildStoreStatisticsAsync(
+            SqlSugarContext context,
+            POSMSqlSugarContext posmContext,
+            DateTime date,
+            List<string>? branchCodes
+        )
+        {
+            var targetDate = date.Date;
+            var nextDate = targetDate.AddDays(1);
+            var targetBranchCodes = NormalizeBranchCodes(branchCodes);
+
+            var paymentRows = await posmContext.Db.Queryable<PaymentDetail, SalesOrder>(
+                    (pd, so) => pd.OrderGuid == so.OrderGuid
+                )
+                .Where((pd, so) =>
+                    so.Status != null
+                    && (so.Status == 1 || so.Status == 4)
+                    && so.OrderTime != null
+                    && so.OrderTime >= targetDate
+                    && so.OrderTime < nextDate
+                )
+                .Select((pd, so) => new StoreStatisticPaymentRow
+                {
+                    OrderGuid = so.OrderGuid,
+                    BranchCode = so.BranchCode,
+                    DeviceCode = so.DeviceCode,
+                    Amount = pd.Amount ?? 0m,
+                })
+                .ToListAsync();
+
+            var quantityRows = await posmContext.Db.Queryable<SalesOrderDetail, SalesOrder>(
+                    (d, so) => d.OrderGuid == so.OrderGuid
+                )
+                .Where((d, so) =>
+                    so.Status != null
+                    && (so.Status == 1 || so.Status == 4)
+                    && so.OrderTime != null
+                    && so.OrderTime >= targetDate
+                    && so.OrderTime < nextDate
+                )
+                .Select((d, so) => new StoreStatisticQuantityRow
+                {
+                    OrderGuid = so.OrderGuid,
+                    BranchCode = so.BranchCode,
+                    DeviceCode = so.DeviceCode,
+                    Quantity = d.Quantity ?? 0,
+                })
+                .ToListAsync();
+
+            var orderRows = await posmContext.Db.Queryable<SalesOrder>()
+                .Where(so =>
+                    so.Status != null
+                    && (so.Status == 1 || so.Status == 4)
+                    && so.OrderTime != null
+                    && so.OrderTime >= targetDate
+                    && so.OrderTime < nextDate
+                )
+                .Select(so => new StoreStatisticOrderRow
+                {
+                    OrderGuid = so.OrderGuid,
+                    BranchCode = so.BranchCode,
+                    DeviceCode = so.DeviceCode,
+                })
+                .ToListAsync();
+
+            var deviceCodes = paymentRows
+                .Select(row => row.BranchCode is null or "" ? row.DeviceCode : null)
+                .Concat(quantityRows.Select(row => row.BranchCode is null or "" ? row.DeviceCode : null))
+                .Concat(orderRows.Select(row => row.BranchCode is null or "" ? row.DeviceCode : null))
+                .Where(code => !string.IsNullOrWhiteSpace(code))
+                .Select(code => code!)
+                .Distinct()
+                .ToList();
+            var deviceBranchMap = deviceCodes.Any()
+                ? (await posmContext.Db.Queryable<POSM_设备注册信息表>()
+                    .Where(d => deviceCodes.Contains(d.系统设备编号))
+                    .Select(d => new { d.系统设备编号, d.分店代码 })
+                    .ToListAsync())
+                    .Where(x => !string.IsNullOrWhiteSpace(x.系统设备编号))
+                    .GroupBy(x => x.系统设备编号)
+                    .ToDictionary(
+                        x => x.Key,
+                        x => x.Select(row => row.分店代码).FirstOrDefault(code => !string.IsNullOrWhiteSpace(code)) ?? string.Empty
+                    )
+                : new Dictionary<string, string>();
+
+            bool IsTargetBranch(string branchCode) =>
+                !string.IsNullOrWhiteSpace(branchCode)
+                && (!targetBranchCodes.Any() || targetBranchCodes.Contains(branchCode));
+
+            // 金额仍以支付明细为准；只在内存中解析分店，避免订单分店为空时漏入统计。
+            var amountByBranch = paymentRows
+                .Select(row => new
+                {
+                    BranchCode = ResolveBranchCode(row.BranchCode, row.DeviceCode, deviceBranchMap),
+                    row.Amount,
+                })
+                .Where(row => IsTargetBranch(row.BranchCode))
+                .GroupBy(row => row.BranchCode)
+                .ToDictionary(group => group.Key, group => group.Sum(row => row.Amount));
+
+            // 销量使用销售明细 Quantity，不能使用订单头 ItemCount。
+            var quantityByBranch = quantityRows
+                .Select(row => new
+                {
+                    BranchCode = ResolveBranchCode(row.BranchCode, row.DeviceCode, deviceBranchMap),
+                    row.Quantity,
+                })
+                .Where(row => IsTargetBranch(row.BranchCode))
+                .GroupBy(row => row.BranchCode)
+                .ToDictionary(group => group.Key, group => group.Sum(row => row.Quantity));
+
+            var orderCountByBranch = orderRows
+                .Select(row => new
+                {
+                    row.OrderGuid,
+                    BranchCode = ResolveBranchCode(row.BranchCode, row.DeviceCode, deviceBranchMap),
+                })
+                .Where(row => IsTargetBranch(row.BranchCode) && !string.IsNullOrWhiteSpace(row.OrderGuid))
+                .GroupBy(row => row.BranchCode)
+                .ToDictionary(
+                    group => group.Key,
+                    group => group.Select(row => row.OrderGuid).Distinct().Count()
+                );
+
+            var statisticBranchCodes = amountByBranch.Keys
+                .Union(quantityByBranch.Keys)
+                .Union(orderCountByBranch.Keys)
+                .OrderBy(code => code, StringComparer.Ordinal)
+                .ToList();
+
+            var stores = statisticBranchCodes.Any()
+                ? await context.Db.Queryable<Store>()
+                    .Where(s => statisticBranchCodes.Contains(s.StoreCode))
+                    .ToListAsync()
+                : new List<Store>();
+            var storeDict = stores.ToDictionary(s => s.StoreCode, s => s);
+
+            return statisticBranchCodes
+                .Select(branchCode =>
+                {
+                    var totalAmount = amountByBranch.GetValueOrDefault(branchCode);
+                    var orderCount = orderCountByBranch.GetValueOrDefault(branchCode);
+                    var store = storeDict.GetValueOrDefault(branchCode);
+
+                    return new StoreSalesStatistic
+                    {
+                        Date = targetDate,
+                        BranchCode = branchCode,
+                        BranchName = store?.StoreName ?? branchCode,
+                        TotalAmount = totalAmount,
+                        TotalQuantity = quantityByBranch.GetValueOrDefault(branchCode),
+                        OrderCount = orderCount,
+                        CustomerCount = orderCount,
+                        AverageOrderValue = orderCount > 0 ? totalAmount / orderCount : 0m,
+                        UpdateTime = DateTime.Now,
+                    };
+                })
+                .ToList();
+        }
+
+        private static List<string> NormalizeBranchCodes(List<string>? branchCodes)
+        {
+            return branchCodes?
+                .Where(code => !string.IsNullOrWhiteSpace(code))
+                .Select(code => code.Trim())
+                .Distinct(StringComparer.Ordinal)
+                .ToList() ?? new List<string>();
         }
 
         private static decimal? ResolveUnitCost(
@@ -3678,86 +3786,21 @@ namespace BlazorApp.Api.Services
                     branchCodes != null ? string.Join(", ", branchCodes) : "All"
                 );
 
-                // 构建查询，按支付明细统计营业额
-                var query = posmContext
-                    .Db.Queryable<PaymentDetail, SalesOrder>(
-                        (pd, so) => pd.OrderGuid == so.OrderGuid
-                    )
-                    .Where(
-                        (pd, so) =>
-                            so.Status != null
-                            && (so.Status == 1 || so.Status == 4)
-                            && so.OrderTime != null
-                            && so.OrderTime.Value.Date == date
-                    );
-
-                // 如果指定了分店代码，添加过滤条件
-                if (branchCodes != null && branchCodes.Any())
-                {
-                    query = query.Where((pd, so) => branchCodes.Contains(so.BranchCode));
-                }
-
-                // 查询并聚合销售数据
-                var storeData = await query
-                    .GroupBy((pd, so) => new { Date = so.OrderTime.Value.Date, so.BranchCode })
-                    .Select(
-                        (pd, so) =>
-                            new
-                            {
-                                Date = so.OrderTime.Value.Date,
-                                BranchCode = so.BranchCode,
-                                TotalAmount = SqlFunc.AggregateSum(pd.Amount) ?? 0m,
-                                TotalQuantity = SqlFunc.AggregateSum(so.ItemCount) ?? 0,
-                                OrderCount = SqlFunc.AggregateCount(so.OrderGuid),
-                                CustomerCount = SqlFunc.AggregateCount(so.OrderGuid),
-                            }
-                    )
-                    .ToListAsync();
-
-                // 获取所有分店代码
-                var allBranchCodes = storeData
-                    .Select(d => d.BranchCode)
-                    .Where(c => !string.IsNullOrEmpty(c))
-                    .Distinct()
-                    .ToList();
-
-                // 查询分店信息
-                var stores = await context
-                    .Db.Queryable<Store>()
-                    .Where(s => allBranchCodes.Contains(s.StoreCode))
-                    .ToListAsync();
-
-                var storeDict = stores.ToDictionary(s => s.StoreCode, s => s);
-
-                var statisticsList = new List<StoreSalesStatistic>();
-
-                // 构建每个分店的统计记录
-                foreach (var data in storeData)
-                {
-                    var store = storeDict.GetValueOrDefault(data.BranchCode);
-
-                    var statistic = new StoreSalesStatistic
-                    {
-                        Date = data.Date,
-                        BranchCode = data.BranchCode,
-                        BranchName = store?.StoreName ?? data.BranchCode ?? string.Empty,
-                        TotalAmount = data.TotalAmount,
-                        TotalQuantity = (int)data.TotalQuantity,
-                        OrderCount = data.OrderCount,
-                        CustomerCount = data.CustomerCount,
-                        AverageOrderValue =
-                            data.OrderCount > 0 ? data.TotalAmount / data.OrderCount : 0m,
-                        UpdateTime = DateTime.Now,
-                    };
-
-                    statisticsList.Add(statistic);
-                }
+                var statisticsList = await BuildStoreStatisticsAsync(
+                    context,
+                    posmContext,
+                    date,
+                    branchCodes
+                );
 
                 // 查询数据库中已存在的记录
-                var existingRecords = await context
-                    .Db.Queryable<StoreSalesStatistic>()
-                    .Where(s => s.Date == date && allBranchCodes.Contains(s.BranchCode))
-                    .ToListAsync();
+                var allBranchCodes = statisticsList.Select(s => s.BranchCode).Distinct().ToList();
+                var existingRecords = allBranchCodes.Any()
+                    ? await context
+                        .Db.Queryable<StoreSalesStatistic>()
+                        .Where(s => s.Date == date && allBranchCodes.Contains(s.BranchCode))
+                        .ToListAsync()
+                    : new List<StoreSalesStatistic>();
 
                 // 构建已存在记录的字典，用于快速查找
                 var existingDict = existingRecords.ToDictionary(

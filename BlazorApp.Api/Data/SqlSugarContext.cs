@@ -330,6 +330,10 @@ namespace BlazorApp.Api.Data
         public SimpleClient<ScheduledTaskLog> ScheduledTaskLogDb =>
             new SimpleClient<ScheduledTaskLog>(_db);
 
+        // 发票邮件 SMTP 配置实体
+        public SimpleClient<InvoiceEmailConfiguration> InvoiceEmailConfigurationDb =>
+            new SimpleClient<InvoiceEmailConfiguration>(_db);
+
         // 多端中心应用日志实体
         public SimpleClient<ApplicationLog> ApplicationLogDb => new SimpleClient<ApplicationLog>(_db);
 
@@ -454,6 +458,9 @@ namespace BlazorApp.Api.Data
                 typeof(ProductStoreDailySalesStatistic),
                 typeof(SalesStatisticRefreshState),
                 typeof(ScheduledTaskLog),
+                typeof(ScheduledTaskRuntimeControl),
+                typeof(ScheduledTaskInstanceState),
+                typeof(InvoiceEmailConfiguration),
                 typeof(ApplicationLog),
                 typeof(HolidayProduct),
                 typeof(ProductCategory),
@@ -974,6 +981,7 @@ namespace BlazorApp.Api.Data
                 typeof(AttendanceStoreHoliday),
                 typeof(AttendanceLeaveRequest),
                 typeof(AttendanceSettings),
+                typeof(InvoiceEmailConfiguration),
                 typeof(SeasonalCardCatalog),
                 typeof(SeasonalCardRemainingSubmission)
             );
@@ -1117,6 +1125,8 @@ namespace BlazorApp.Api.Data
                     "CREATE INDEX IF NOT EXISTS \"IX_ScheduledTaskLog_TaskType_Status\" ON \"ScheduledTaskLog\" (\"TaskType\", \"Status\")",
                 ["IX_ScheduledTaskLog_ScheduledTime"] =
                     "CREATE INDEX IF NOT EXISTS \"IX_ScheduledTaskLog_ScheduledTime\" ON \"ScheduledTaskLog\" (\"ScheduledTime\")",
+                ["IX_ScheduledTaskInstanceState_LastSeenAtUtc"] =
+                    "CREATE INDEX IF NOT EXISTS \"IX_ScheduledTaskInstanceState_LastSeenAtUtc\" ON \"ScheduledTaskInstanceState\" (\"LastSeenAtUtc\")",
                 ["IX_ApplicationLog_TimestampUtc"] =
                     "CREATE INDEX IF NOT EXISTS \"IX_ApplicationLog_TimestampUtc\" ON \"ApplicationLog\" (\"TimestampUtc\")",
                 ["IX_ApplicationLog_Project_Level_Time"] =
@@ -1480,6 +1490,7 @@ namespace BlazorApp.Api.Data
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_ScheduledTaskLog_StartedAt' AND object_id = OBJECT_ID('ScheduledTaskLog')) CREATE INDEX IX_ScheduledTaskLog_StartedAt ON [ScheduledTaskLog](StartedAt)",
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_ScheduledTaskLog_TaskType_Status' AND object_id = OBJECT_ID('ScheduledTaskLog')) CREATE INDEX IX_ScheduledTaskLog_TaskType_Status ON [ScheduledTaskLog](TaskType, Status)",
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_ScheduledTaskLog_ScheduledTime' AND object_id = OBJECT_ID('ScheduledTaskLog')) CREATE INDEX IX_ScheduledTaskLog_ScheduledTime ON [ScheduledTaskLog](ScheduledTime)",
+                "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_ScheduledTaskInstanceState_LastSeenAtUtc' AND object_id = OBJECT_ID('ScheduledTaskInstanceState')) CREATE INDEX IX_ScheduledTaskInstanceState_LastSeenAtUtc ON [ScheduledTaskInstanceState](LastSeenAtUtc)",
                 // ApplicationLog表的普通索引，支撑按项目、等级、时间、TraceId 查询。
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_ApplicationLog_TimestampUtc' AND object_id = OBJECT_ID('ApplicationLog')) CREATE INDEX IX_ApplicationLog_TimestampUtc ON [ApplicationLog](TimestampUtc)",
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_ApplicationLog_Project_Level_Time' AND object_id = OBJECT_ID('ApplicationLog')) CREATE INDEX IX_ApplicationLog_Project_Level_Time ON [ApplicationLog](ProjectCode, Level, TimestampUtc)",

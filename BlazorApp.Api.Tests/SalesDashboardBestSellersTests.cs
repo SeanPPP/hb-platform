@@ -57,7 +57,7 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
             typeof(ProductStoreDailySalesStatistic),
             typeof(SalesStatisticRefreshState)
         );
-        _posmDb.CodeFirst.InitTables(typeof(SalesOrder), typeof(SalesOrderDetail), typeof(POSM_设备注册信息表));
+        _posmDb.CodeFirst.InitTables(typeof(SalesOrder), typeof(SalesOrderDetail), typeof(PaymentDetail), typeof(POSM_设备注册信息表));
     }
 
     [Fact]
@@ -668,7 +668,7 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
             Date = new DateTime(2026, 6, 1),
             BranchCode = "S2",
             BranchName = "Store 2",
-            TotalQuantity = 6,
+            TotalQuantity = 5,
             TotalAmount = 25m,
             OrderCount = 2,
             CustomerCount = 2,
@@ -710,8 +710,8 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
         Assert.Equal(40m, data.StoreTotalAmount);
         Assert.Equal(0m, data.AmountDifference);
         Assert.Equal(8, data.ProductTotalQuantity);
-        Assert.Equal(9, data.StoreTotalQuantity);
-        Assert.Equal(1, data.QuantityDifference);
+        Assert.Equal(8, data.StoreTotalQuantity);
+        Assert.Equal(0, data.QuantityDifference);
     }
 
     [Fact]
@@ -720,7 +720,7 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
         await SeedStatisticStateAsync(
             new DateTime(2026, 6, 1),
             SalesStatisticRefreshStatus.Failed,
-            "商品统计与分店营业额统计不一致: 2026-06-01 S1, 商品金额 30, 分店营业额 40, 金额差 10, 未匹配供应商金额 15.5, 未匹配供应商数量 3, 未匹配商品数 2"
+            "商品统计与分店营业额统计不一致: 2026-06-01 S1, 商品金额 30, 分店营业额 160, 金额差 130, 未匹配供应商金额 15.5, 未匹配供应商数量 3, 未匹配商品数 2"
         );
         await _localDb.Insertable(new StoreSalesStatistic
         {
@@ -728,10 +728,10 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
             BranchCode = "S1",
             BranchName = "Store 1",
             TotalQuantity = 7,
-            TotalAmount = 40m,
+            TotalAmount = 160m,
             OrderCount = 2,
             CustomerCount = 2,
-            AverageOrderValue = 20m,
+            AverageOrderValue = 80m,
         }).ExecuteCommandAsync();
         await _localDb.Insertable(new ProductStoreDailySalesStatistic
         {
@@ -752,14 +752,50 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
         Assert.Equal("Failed", data.ReconciliationStatus);
         Assert.Equal("Failed", data.SalesReconciliationStatus);
         Assert.Equal(30m, data.ProductTotalAmount);
-        Assert.Equal(40m, data.StoreTotalAmount);
-        Assert.Equal(10m, data.AmountDifference);
+        Assert.Equal(160m, data.StoreTotalAmount);
+        Assert.Equal(130m, data.AmountDifference);
         Assert.Equal(4, data.ProductTotalQuantity);
         Assert.Equal(7, data.StoreTotalQuantity);
         Assert.Equal(3, data.QuantityDifference);
         Assert.Equal(15.5m, data.UnmatchedSupplierAmount);
         Assert.Equal(3, data.UnmatchedSupplierQuantity);
         Assert.Equal(2, data.UnmatchedSupplierProductCount);
+    }
+
+    [Fact]
+    public async Task GetProductStoreDailyStatisticSummary_分店金额差异在绝对容差内时营业额对账Passed()
+    {
+        await SeedStatisticStateAsync(new DateTime(2026, 6, 1), SalesStatisticRefreshStatus.Fresh);
+        await _localDb.Insertable(new StoreSalesStatistic
+        {
+            Date = new DateTime(2026, 6, 1),
+            BranchCode = "S1",
+            BranchName = "Store 1",
+            TotalQuantity = 10,
+            TotalAmount = 1000m,
+            OrderCount = 1,
+            CustomerCount = 1,
+            AverageOrderValue = 1000m,
+        }).ExecuteCommandAsync();
+        await _localDb.Insertable(new ProductStoreDailySalesStatistic
+        {
+            Date = new DateTime(2026, 6, 1),
+            BranchCode = "S1",
+            SupplierCode = "200",
+            ProductCode = "P-TOLERANCE-1",
+            TotalQuantity = 10,
+            TotalAmount = 920m,
+        }).ExecuteCommandAsync();
+
+        var result = await CreateStatisticsController()
+            .GetProductStoreDailyStatisticSummary(new DateTime(2026, 6, 1));
+
+        var ok = AssertOk(result);
+        var data = ExtractAnonymousData<ProductStoreDailyStatisticSummaryDto>(ok.Value);
+        Assert.Equal(920m, data.ProductTotalAmount);
+        Assert.Equal(1000m, data.StoreTotalAmount);
+        Assert.Equal(80m, data.AmountDifference);
+        Assert.Equal("Passed", data.SalesReconciliationStatus);
     }
 
     [Fact]
@@ -772,10 +808,10 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
             BranchCode = "S1",
             BranchName = "Store 1",
             TotalQuantity = 10,
-            TotalAmount = 80m,
+            TotalAmount = 100m,
             OrderCount = 1,
             CustomerCount = 1,
-            AverageOrderValue = 80m,
+            AverageOrderValue = 100m,
         }).ExecuteCommandAsync();
         await _localDb.Insertable(new StoreSalesStatistic
         {
@@ -783,10 +819,10 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
             BranchCode = "S2",
             BranchName = "Store 2",
             TotalQuantity = 10,
-            TotalAmount = 120m,
+            TotalAmount = 400m,
             OrderCount = 1,
             CustomerCount = 1,
-            AverageOrderValue = 120m,
+            AverageOrderValue = 400m,
         }).ExecuteCommandAsync();
         await _localDb.Insertable(new ProductStoreDailySalesStatistic
         {
@@ -795,7 +831,7 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
             SupplierCode = "200",
             ProductCode = "P-OFFSET-1",
             TotalQuantity = 5,
-            TotalAmount = 100m,
+            TotalAmount = 250m,
         }).ExecuteCommandAsync();
         await _localDb.Insertable(new ProductStoreDailySalesStatistic
         {
@@ -804,7 +840,7 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
             SupplierCode = "200",
             ProductCode = "P-OFFSET-2",
             TotalQuantity = 5,
-            TotalAmount = 100m,
+            TotalAmount = 250m,
         }).ExecuteCommandAsync();
 
         var result = await CreateStatisticsController()
@@ -812,9 +848,9 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
 
         var ok = AssertOk(result);
         var data = ExtractAnonymousData<ProductStoreDailyStatisticSummaryDto>(ok.Value);
-        Assert.Equal(200m, data.ProductTotalAmount);
-        Assert.Equal(200m, data.StoreTotalAmount);
-        Assert.Equal(40m, data.AmountDifference);
+        Assert.Equal(500m, data.ProductTotalAmount);
+        Assert.Equal(500m, data.StoreTotalAmount);
+        Assert.Equal(300m, data.AmountDifference);
         Assert.Equal("Failed", data.SalesReconciliationStatus);
     }
 
@@ -870,6 +906,14 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
     }
 
     [Fact]
+    public void BatchProductStoreDailyUpdateRequest_MaxConcurrency默认值为3()
+    {
+        var request = new BatchProductStoreDailyUpdateRequest();
+
+        Assert.Equal(3, request.MaxConcurrency);
+    }
+
+    [Fact]
     public async Task TriggerProductStoreDailyStatistics_提交后立即返回排队日期()
     {
         var cacheWarmerMock = new Mock<ISalesDashboardCacheWarmer>();
@@ -907,6 +951,25 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
     }
 
     [Fact]
+    public async Task BatchProductStoreDailyStatistics_允许指定MaxConcurrency并返回排队日期()
+    {
+        var cacheWarmerMock = new Mock<ISalesDashboardCacheWarmer>();
+        var result = await CreateStatisticsController(cacheWarmerMock.Object).BatchProductStoreDailyStatistics(
+            new BatchProductStoreDailyUpdateRequest
+            {
+                StartDate = new DateTime(2026, 6, 2),
+                EndDate = new DateTime(2026, 6, 2),
+                MaxConcurrency = 4,
+            }
+        );
+
+        var ok = AssertOk(result);
+        Assert.Equal(SalesStatisticRefreshStatus.Queued, ReadAnonymousProperty<string>(ok.Value, "status"));
+        Assert.Contains("2026-06-02", ReadAnonymousProperty<List<string>>(ok.Value, "submittedDates"));
+        cacheWarmerMock.Verify(x => x.ClearCacheAsync(), Times.Once);
+    }
+
+    [Fact]
     public async Task SubmitProductStoreDailyRecalculationAsync_并发提交同一天只提交一次()
     {
         var service = CreateStatisticsJobService();
@@ -923,6 +986,93 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
             .FirstAsync();
         Assert.NotNull(state);
         Assert.Equal(SalesStatisticRefreshStatus.Queued, state.Status);
+    }
+
+    [Fact]
+    public async Task UpdateStoreStatistics_分店销量使用明细数量而不是订单头ItemCount()
+    {
+        await SeedStoreAsync("S1", "Store 1");
+        await SeedPosmOrderAsync(
+            "O-STORE-QTY",
+            "S1",
+            new DateTime(2026, 6, 1),
+            itemCount: 1,
+            details: new[]
+            {
+                ("D-STORE-QTY-1", "P-STORE-QTY-1", 2, 20m),
+                ("D-STORE-QTY-2", "P-STORE-QTY-2", 3, 30m),
+            },
+            payments: new[] { ("PAY-STORE-QTY-1", 50m) }
+        );
+
+        await CreateStatisticsJobService().UpdateStoreStatistics(new DateTime(2026, 6, 1));
+
+        var stat = await _localDb.Queryable<StoreSalesStatistic>()
+            .Where(s => s.Date == new DateTime(2026, 6, 1) && s.BranchCode == "S1")
+            .FirstAsync();
+        Assert.NotNull(stat);
+        Assert.Equal(5, stat.TotalQuantity);
+        Assert.Equal(50m, stat.TotalAmount);
+        Assert.Equal(1, stat.OrderCount);
+        Assert.Equal(1, stat.CustomerCount);
+    }
+
+    [Fact]
+    public async Task UpdateStoreStatistics_多支付明细不重复放大销量和订单数()
+    {
+        await SeedStoreAsync("S1", "Store 1");
+        await SeedPosmOrderAsync(
+            "O-MULTI-PAY",
+            "S1",
+            new DateTime(2026, 6, 1),
+            itemCount: 1,
+            details: new[] { ("D-MULTI-PAY-1", "P-MULTI-PAY-1", 4, 40m) },
+            payments: new[]
+            {
+                ("PAY-MULTI-PAY-1", 25m),
+                ("PAY-MULTI-PAY-2", 15m),
+            }
+        );
+
+        await CreateStatisticsJobService().UpdateStoreStatistics(new DateTime(2026, 6, 1));
+
+        var stat = await _localDb.Queryable<StoreSalesStatistic>()
+            .Where(s => s.Date == new DateTime(2026, 6, 1) && s.BranchCode == "S1")
+            .FirstAsync();
+        Assert.NotNull(stat);
+        Assert.Equal(4, stat.TotalQuantity);
+        Assert.Equal(40m, stat.TotalAmount);
+        Assert.Equal(1, stat.OrderCount);
+        Assert.Equal(1, stat.CustomerCount);
+    }
+
+    [Fact]
+    public async Task UpdateStoreStatistics_空订单分店时使用设备分店并支持分店过滤()
+    {
+        await SeedStoreAsync("S2", "Store 2");
+        await SeedDeviceAsync("POS-S2", "S2");
+        await SeedPosmOrderAsync(
+            "O-DEVICE-STORE-STAT",
+            null,
+            new DateTime(2026, 6, 1),
+            itemCount: 1,
+            details: new[] { ("D-DEVICE-STORE-STAT-1", "P-DEVICE-STORE-STAT-1", 6, 60m) },
+            payments: new[] { ("PAY-DEVICE-STORE-STAT-1", 60m) },
+            deviceCode: "POS-S2"
+        );
+
+        await CreateStatisticsJobService().UpdateStoreStatistics(
+            new DateTime(2026, 6, 1),
+            new List<string> { "S2" }
+        );
+
+        var stat = await _localDb.Queryable<StoreSalesStatistic>()
+            .Where(s => s.Date == new DateTime(2026, 6, 1) && s.BranchCode == "S2")
+            .FirstAsync();
+        Assert.NotNull(stat);
+        Assert.Equal("Store 2", stat.BranchName);
+        Assert.Equal(6, stat.TotalQuantity);
+        Assert.Equal(60m, stat.TotalAmount);
     }
 
     [Fact]
@@ -1146,6 +1296,50 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
             Quantity = quantity,
             ActualAmount = actualAmount,
         }).ExecuteCommandAsync();
+    }
+
+    private async Task SeedPosmOrderAsync(
+        string orderGuid,
+        string? branchCode,
+        DateTime orderTime,
+        int itemCount,
+        IEnumerable<(string DetailGuid, string ProductCode, int Quantity, decimal ActualAmount)> details,
+        IEnumerable<(string PaymentGuid, decimal Amount)> payments,
+        string? deviceCode = null
+    )
+    {
+        await _posmDb.Insertable(new SalesOrder
+        {
+            OrderGuid = orderGuid,
+            BranchCode = branchCode,
+            DeviceCode = deviceCode,
+            OrderTime = orderTime,
+            Status = 1,
+            ItemCount = itemCount,
+        }).ExecuteCommandAsync();
+
+        foreach (var detail in details)
+        {
+            await _posmDb.Insertable(new SalesOrderDetail
+            {
+                OrderDetailGuid = detail.DetailGuid,
+                OrderGuid = orderGuid,
+                ProductCode = detail.ProductCode,
+                SupplierCode = "200",
+                Quantity = detail.Quantity,
+                ActualAmount = detail.ActualAmount,
+            }).ExecuteCommandAsync();
+        }
+
+        foreach (var payment in payments)
+        {
+            await _posmDb.Insertable(new PaymentDetail
+            {
+                PaymentGuid = payment.PaymentGuid,
+                OrderGuid = orderGuid,
+                Amount = payment.Amount,
+            }).ExecuteCommandAsync();
+        }
     }
 
     private SalesDashboardReactService CreateService()

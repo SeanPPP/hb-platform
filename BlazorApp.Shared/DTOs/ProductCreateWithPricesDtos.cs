@@ -8,6 +8,7 @@ namespace BlazorApp.Shared.DTOs
         [Required]
         public string ProductName { get; set; } = string.Empty;
         public string? ProductCategoryGUID { get; set; }
+        public string? ProductImage { get; set; }
         public string? LocalSupplierCode { get; set; }
         public string? ItemNumber { get; set; }
         public string? Barcode { get; set; }
@@ -15,6 +16,7 @@ namespace BlazorApp.Shared.DTOs
         public decimal? RetailPrice { get; set; }
         public bool IsAutoPricing { get; set; }
         public bool IsSpecialProduct { get; set; }
+        public int? ProductType { get; set; }
     }
 
     public class CreateProductWithPricesResultDto

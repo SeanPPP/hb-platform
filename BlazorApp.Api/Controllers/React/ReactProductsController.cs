@@ -76,6 +76,8 @@ namespace BlazorApp.Api.Controllers.React
                         ItemNumber = dto.ItemNumber,
                         Barcode = dto.Barcode,
                         ProductName = dto.ProductName,
+                        ProductImage = dto.ProductImage,
+                        ProductType = dto.ProductType ?? 0,
                         PurchasePrice = dto.PurchasePrice,
                         RetailPrice = dto.RetailPrice,
                         IsAutoPricing = dto.IsAutoPricing,

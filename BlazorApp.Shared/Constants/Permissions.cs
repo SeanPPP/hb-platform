@@ -236,6 +236,7 @@ namespace BlazorApp.Shared.Constants
         public static class System
         {
             public const string ViewLogs = "System.ViewLogs";
+            public const string ManageScheduledTasks = "System.ManageScheduledTasks";
             public const string ManageSettings = "System.ManageSettings";
         }
 

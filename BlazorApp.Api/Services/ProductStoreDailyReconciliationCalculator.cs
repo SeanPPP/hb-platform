@@ -27,7 +27,8 @@ namespace BlazorApp.Api.Services
 
     internal static class ProductStoreDailyReconciliationCalculator
     {
-        private const decimal AmountToleranceRate = 0.0005m;
+        private const decimal AmountToleranceRate = 0.001m;
+        private const decimal AmountAbsoluteTolerance = 100m;
 
         public static ProductStoreDailyReconciliationResult Calculate(
             DateTime targetDate,
@@ -118,7 +119,8 @@ namespace BlazorApp.Api.Services
 
         private static decimal CalculateAmountTolerance(decimal storeAmount)
         {
-            return Math.Abs(storeAmount) * AmountToleranceRate;
+            // 金额对账同时允许 0.1% 比例容差和 100 元绝对容差，避免小额差异误判失败。
+            return Math.Max(Math.Abs(storeAmount) * AmountToleranceRate, AmountAbsoluteTolerance);
         }
 
         private static Dictionary<string, ProductStoreDailyBranchRollup> AggregateByBranch(

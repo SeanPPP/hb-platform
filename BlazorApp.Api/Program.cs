@@ -21,6 +21,7 @@ using BlazorApp.Api.Services.React; // React 专用服务层
 using BlazorApp.Api.Utils; // Cookie 配置辅助类
 using BlazorApp.Shared.Models;
 using Microsoft.AspNetCore.Authentication.JwtBearer; // JWT Bearer认证
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.IdentityModel.Tokens; // JWT令牌验证
 
 // ===================== 应用程序入口点 =====================
@@ -142,6 +143,26 @@ CookieOptionsHelper.Initialize(builder.Configuration, builder.Environment);
 
 // 注册内存缓存服务
 builder.Services.AddMemoryCache();
+var dataProtectionKeysPath = builder.Configuration.GetValue<string>("DataProtection:KeysPath");
+if (string.IsNullOrWhiteSpace(dataProtectionKeysPath))
+{
+    dataProtectionKeysPath = Path.Combine("App_Data", "DataProtectionKeys");
+}
+
+if (!Path.IsPathRooted(dataProtectionKeysPath))
+{
+    dataProtectionKeysPath = Path.Combine(builder.Environment.ContentRootPath, dataProtectionKeysPath);
+}
+
+Directory.CreateDirectory(dataProtectionKeysPath);
+builder.Services
+    .AddDataProtection()
+    .SetApplicationName(
+        builder.Configuration.GetValue<string>("DataProtection:ApplicationName")
+        ?? "HB.AdminPlatform"
+    )
+    // SMTP 密码需要跨重启/部署解密，key ring 必须落在稳定目录，目录本身不提交到 git。
+    .PersistKeysToFileSystem(new DirectoryInfo(dataProtectionKeysPath));
 
 builder.Services.Configure<TencentCloudSettings>(builder.Configuration.GetSection("TencentCloud"));
 builder.Services.Configure<ApplicationLoggingOptions>(
@@ -156,6 +177,7 @@ builder.Services.AddScoped<SalesStatisticsJobService>();
 builder.Services.AddScoped<HBSalesRecordStatisticsService>();
 builder.Services.AddScoped<ScheduledTaskLogService>();
 builder.Services.AddScoped<ScheduledTaskRetryService>();
+builder.Services.AddScoped<ScheduledTaskRuntimeControlService>();
 builder.Services.Configure<ScheduledTaskOptions>(
     builder.Configuration.GetSection("ScheduledTasks")
 );
@@ -438,6 +460,7 @@ builder.Services.AddScoped<StoreSyncService>(); // 分店数据同步服务
 builder.Services.AddScoped<SeedDataService>(); // 种子数据初始化服务
 builder.Services.AddScoped<IDataInitializationService, DataInitializationService>(); // 数据初始化服务
 builder.Services.Configure<InvoiceEmailOptions>(builder.Configuration.GetSection("InvoiceEmail"));
+builder.Services.AddScoped<IInvoiceEmailSettingsService, InvoiceEmailSettingsService>();
 builder.Services.AddScoped<IInvoiceEmailService, InvoiceEmailService>();
 builder.Services.AddScoped<IChinaSupplierService, ChinaSupplierService>(); // 国内供应商管理服务
 builder.Services.AddScoped<IDomesticSupplierService, DomesticSupplierService>(); // 义乌采购国内供应商服务

@@ -52,6 +52,7 @@
     <Compile Include="DataSyncFullServiceWarehouseProductsTests.cs" />
     <Compile Include="DataSyncIncrementalPosmSupplierMappingsTests.cs" />
     <Compile Include="ScheduledTaskServiceTests.cs" />
+    <Compile Include="ScheduledTaskRuntimeControlServiceTests.cs" />
     <Compile Include="SalesStatisticsJobServiceTests.cs" />
     <Compile Include="SalesDashboardBestSellersTests.cs" />
     <Compile Include="AuthServiceTests.cs" />
@@ -60,6 +61,7 @@
     <Compile Include="ReactStoreOrderAuthorizationTests.cs" />
     <Compile Include="StoreOrderProductListTests.cs" />
     <Compile Include="StoreOrderContactAndInvoiceTests.cs" />
+    <Compile Include="InvoiceEmailSettingsServiceTests.cs" />
     <Compile Include="StoreOrderHqSyncTests.cs" />
     <Compile Include="AdvertisementReactServiceTests.cs" />
     <Compile Include="ProductReactServiceHqSyncTests.cs" />

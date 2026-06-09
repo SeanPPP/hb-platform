@@ -161,6 +161,7 @@ namespace BlazorApp.Shared.Constants
                 new(Permissions.Store.ManageOperations, "管理分店运营", "分店运营", "页面 /pos-admin/cash-register-users - 管理收银用户条码"),
                 new(Permissions.Store.ManageInfo, "管理分店信息", "分店运营", "分店运营 - 管理分店信息"),
                 new(Permissions.System.ViewLogs, "查看日志", "系统管理", "系统管理 - 查看日志"),
+                new(Permissions.System.ManageScheduledTasks, "管理定时任务", "系统管理", "系统管理 - 切换定时任务调度实例和运行开关"),
                 new(Permissions.System.ManageSettings, "管理设置", "系统管理", "系统管理 - 管理设置"),
                 new(Permissions.Dashboard.View, "访问后台", "后台管理", "页面 /dashboard - 访问后台工作台"),
                 new(Permissions.OrderFront.View, "前台订货", "前台订货", "前台订货 - 前台订货"),

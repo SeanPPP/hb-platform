@@ -630,9 +630,14 @@ namespace BlazorApp.Api.Controllers
                     });
                 }
 
+                // 控制器入口先做范围兜底，避免前端传入异常并发值放大后台压力。
+                var maxConcurrency = request.MaxConcurrency < 1
+                    ? 3
+                    : Math.Min(request.MaxConcurrency, 10);
                 var result = await _statisticsJobService.SubmitProductStoreDailyRecalculationAsync(
                     EnumerateDates(request.StartDate, request.EndDate),
-                    HttpContext?.User?.Identity?.Name
+                    HttpContext?.User?.Identity?.Name,
+                    maxConcurrency
                 );
                 await ClearSalesDashboardCacheAfterProductStatisticSubmitAsync();
 
@@ -1264,6 +1269,7 @@ namespace BlazorApp.Api.Controllers
     {
         public DateTime StartDate { get; set; }
         public DateTime EndDate { get; set; }
+        public int MaxConcurrency { get; set; } = 3;
     }
 
     public class SalesStatisticRefreshStateListItemDto

@@ -118,7 +118,7 @@ public sealed class SalesStatisticsJobServiceTests : IDisposable
             actualAmount: 88.63m,
             supplierCode: "200"
         );
-        await SeedStoreSalesStatisticAsync(targetDate, "1018", 80m, 6);
+        await SeedStoreSalesStatisticAsync(targetDate, "1018", 220m, 6);
         await SeedStoreSupplierSalesDetailAsync(targetDate, "1018", "200", 88.63m, 6);
 
         await CreateService().UpdateProductStoreDailyStatistics(targetDate);
@@ -136,7 +136,7 @@ public sealed class SalesStatisticsJobServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task UpdateProductStoreDailyStatistics_营业额差异不超过百分之零点零五时应Fresh()
+    public async Task UpdateProductStoreDailyStatistics_营业额差异在容差内时应Fresh()
     {
         var targetDate = new DateTime(2026, 5, 1);
         await SeedProductAsync("P-TOLERANCE");
@@ -161,7 +161,7 @@ public sealed class SalesStatisticsJobServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task UpdateProductStoreDailyStatistics_营业额差异超过百分之零点零五时仍应Failed()
+    public async Task UpdateProductStoreDailyStatistics_营业额差异超过百分之一且超过100时仍应Failed()
     {
         var targetDate = new DateTime(2026, 5, 1);
         await SeedProductAsync("P-TOLERANCE-FAILED");
@@ -172,7 +172,7 @@ public sealed class SalesStatisticsJobServiceTests : IDisposable
             branchCode: "1004",
             orderTime: targetDate.AddHours(12),
             quantity: 1,
-            actualAmount: 2152.50m,
+            actualAmount: 2020m,
             supplierCode: "200"
         );
         await SeedStoreSalesStatisticAsync(targetDate, "1004", 2154.04m, 1);
@@ -347,6 +347,54 @@ public sealed class SalesStatisticsJobServiceTests : IDisposable
         Assert.Single(result.SubmittedDates);
         Assert.Empty(result.SkippedDates);
         Assert.Equal(targetDate, result.SubmittedDates.Single());
+    }
+
+    [Fact]
+    public async Task SubmitProductStoreDailyRecalculationAsync_重复日期与执行中日期仍按唯一日期跳过()
+    {
+        var queuedDate = new DateTime(2026, 6, 1);
+        var freshDate = new DateTime(2026, 6, 2);
+        var service = CreateService();
+        await SeedRefreshStateAsync(
+            queuedDate,
+            SalesStatisticRefreshStatus.Running,
+            requestedAtUtc: new DateTime(2026, 6, 8, 6, 0, 0, DateTimeKind.Utc),
+            startedAtUtc: new DateTime(2026, 6, 8, 6, 1, 0, DateTimeKind.Utc),
+            jobId: Guid.NewGuid()
+        );
+
+        var result = await service.SubmitProductStoreDailyRecalculationAsync(
+            new[] { queuedDate, queuedDate, freshDate, freshDate },
+            "admin",
+            4
+        );
+
+        Assert.Equal(new[] { freshDate }, result.SubmittedDates);
+        Assert.Equal(new[] { queuedDate }, result.SkippedDates);
+    }
+
+    [Fact]
+    public void SubmitProductStoreDailyRecalculationAsync_保留默认并发参数并提供夹取帮助方法()
+    {
+        var submitMethod = typeof(SalesStatisticsJobService).GetMethod(
+            nameof(SalesStatisticsJobService.SubmitProductStoreDailyRecalculationAsync)
+        );
+        Assert.NotNull(submitMethod);
+
+        var parameters = submitMethod!.GetParameters();
+        Assert.Equal(3, parameters.Length);
+        Assert.Equal("maxConcurrency", parameters[2].Name);
+        Assert.True(parameters[2].IsOptional);
+        Assert.Equal(3, Assert.IsType<int>(parameters[2].DefaultValue));
+
+        var clampMethod = typeof(SalesStatisticsJobService).GetMethod(
+            "NormalizeProductStatisticMaxConcurrency",
+            BindingFlags.Static | BindingFlags.NonPublic
+        );
+        Assert.NotNull(clampMethod);
+        Assert.Equal(3, Assert.IsType<int>(clampMethod!.Invoke(null, new object[] { 0 })));
+        Assert.Equal(4, Assert.IsType<int>(clampMethod.Invoke(null, new object[] { 4 })));
+        Assert.Equal(10, Assert.IsType<int>(clampMethod.Invoke(null, new object[] { 11 })));
     }
 
     [Fact]

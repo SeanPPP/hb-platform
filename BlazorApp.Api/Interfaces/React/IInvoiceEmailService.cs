@@ -1,3 +1,4 @@
+using BlazorApp.Api.Services.React;
 using BlazorApp.Shared.DTOs;
 
 namespace BlazorApp.Api.Interfaces.React
@@ -11,5 +12,13 @@ namespace BlazorApp.Api.Interfaces.React
         /// 发送带 PDF 附件的发票邮件。
         /// </summary>
         Task<ApiResponse<bool>> SendInvoiceAsync(StoreOrderInvoiceEmailMessage message);
+
+        /// <summary>
+        /// 使用临时 SMTP 配置发送带附件的发票邮件。
+        /// </summary>
+        Task<ApiResponse<bool>> SendInvoiceAsync(
+            StoreOrderInvoiceEmailMessage message,
+            InvoiceEmailOptions options
+        );
     }
 }

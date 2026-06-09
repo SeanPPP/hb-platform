@@ -13,6 +13,7 @@ using ClosedXML.Excel;
 using iTextSharp.text.pdf;
 using MailKit.Net.Smtp;
 using MailKit.Security;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Configuration;
@@ -22,6 +23,7 @@ using Microsoft.Extensions.Options;
 using Moq;
 using SqlSugar;
 using Xunit;
+using BlazorApp.Shared.Models.HBweb;
 
 namespace BlazorApp.Api.Tests;
 
@@ -56,7 +58,8 @@ public sealed class StoreOrderContactAndInvoiceTests : IDisposable
             typeof(Location),
             typeof(ProductGrade),
             typeof(User),
-            typeof(UserStore)
+            typeof(UserStore),
+            typeof(InvoiceEmailConfiguration)
         );
     }
 
@@ -153,7 +156,7 @@ public sealed class StoreOrderContactAndInvoiceTests : IDisposable
     {
         var service = new InvoiceEmailService(
             NullLogger<InvoiceEmailService>.Instance,
-            Options.Create(new InvoiceEmailOptions())
+            CreateSettingsService(new InvoiceEmailOptions())
         );
 
         var result = await service.SendInvoiceAsync(
@@ -349,7 +352,7 @@ public sealed class StoreOrderContactAndInvoiceTests : IDisposable
     public void InvoiceEmailService_BuildsMessageWithPdfAndExcelAttachments()
     {
         var service = new TestableInvoiceEmailService(
-            Options.Create(new InvoiceEmailOptions
+            CreateSettingsService(new InvoiceEmailOptions
             {
                 Host = "smtp.example.com",
                 Port = 465,
@@ -462,7 +465,7 @@ public sealed class StoreOrderContactAndInvoiceTests : IDisposable
     public void InvoiceEmailService_CreateSmtpClient_AppliesRevocationOption()
     {
         var service = new TestableInvoiceEmailService(
-            Options.Create(new InvoiceEmailOptions
+            CreateSettingsService(new InvoiceEmailOptions
             {
                 CheckCertificateRevocation = false,
             })
@@ -477,7 +480,7 @@ public sealed class StoreOrderContactAndInvoiceTests : IDisposable
     public async Task InvoiceEmailService_WhenTlsHandshakeFails_ReturnsClearFailure()
     {
         var service = new TlsFailingInvoiceEmailService(
-            Options.Create(new InvoiceEmailOptions
+            CreateSettingsService(new InvoiceEmailOptions
             {
                 Host = "mail.hotbargain.com.au",
                 Port = 465,
@@ -510,6 +513,101 @@ public sealed class StoreOrderContactAndInvoiceTests : IDisposable
             "发票邮件 TLS 握手失败，请检查 SMTP 证书或 InvoiceEmail.CheckCertificateRevocation 配置",
             result.Message
         );
+    }
+
+    [Fact]
+    public async Task InvoiceEmailService_WhenPasswordDecryptFails_ReturnsClearFailure()
+    {
+        var settingsService = CreateSettingsService();
+        await _db.Insertable(
+            new InvoiceEmailConfiguration
+            {
+                Id = InvoiceEmailConfiguration.DefaultId,
+                Host = "mail.hotbargain.com.au",
+                Port = 465,
+                UseSsl = true,
+                Username = "sender@hotbargain.com.au",
+                EncryptedPassword = "invalid-protected-payload",
+                FromEmail = "sender@hotbargain.com.au",
+                MaxAttachmentBytes = 5_242_880,
+            }
+        ).ExecuteCommandAsync();
+        var service = new InvoiceEmailService(
+            NullLogger<InvoiceEmailService>.Instance,
+            settingsService
+        );
+
+        var result = await service.SendInvoiceAsync(
+            new StoreOrderInvoiceEmailMessage
+            {
+                ToEmail = "customer@example.com",
+                Subject = "invoice",
+                Body = "body",
+                Attachments = new List<StoreOrderInvoiceEmailAttachment>
+                {
+                    new()
+                    {
+                        FileName = "invoice.pdf",
+                        ContentType = "application/pdf",
+                        Bytes = new byte[] { 1, 2, 3, 4 },
+                    },
+                },
+            }
+        );
+
+        Assert.False(result.Success);
+        Assert.Equal("INVOICE_EMAIL_PASSWORD_DECRYPT_FAILED", result.ErrorCode);
+        Assert.Equal("发票邮件 SMTP 密码解密失败，请重新保存发票邮箱配置", result.Message);
+    }
+
+    [Fact]
+    public async Task InvoiceEmailService_UsesDatabaseSettingsForSmtpAndSender()
+    {
+        var settingsService = CreateSettingsService();
+        await settingsService.UpdateSettingsAsync(
+            new UpdateInvoiceEmailSettingsDto
+            {
+                Host = "db.smtp.example.com",
+                Port = 587,
+                UseSsl = false,
+                CheckCertificateRevocation = false,
+                Username = "db-user",
+                Password = "db-secret",
+                FromEmail = "configured@example.com",
+                FromName = "Configured Sender",
+                MaxAttachmentBytes = 5_242_880,
+            },
+            "admin"
+        );
+        var service = new SendingCaptureInvoiceEmailService(settingsService);
+
+        var result = await service.SendInvoiceAsync(
+            new StoreOrderInvoiceEmailMessage
+            {
+                ToEmail = "customer@example.com",
+                Subject = "invoice",
+                Body = "body",
+                Attachments = new List<StoreOrderInvoiceEmailAttachment>
+                {
+                    new()
+                    {
+                        FileName = "invoice.pdf",
+                        ContentType = "application/pdf",
+                        Bytes = new byte[] { 1, 2, 3, 4 },
+                    },
+                },
+            }
+        );
+
+        Assert.True(result.Success);
+        Assert.Equal("db.smtp.example.com", service.ConnectedHost);
+        Assert.Equal(587, service.ConnectedPort);
+        Assert.Equal(SecureSocketOptions.StartTls, service.ConnectedSocketOptions);
+        Assert.Equal("db-user", service.AuthenticatedUsername);
+        Assert.Equal("db-secret", service.AuthenticatedPassword);
+        Assert.False(service.CreatedClientRevocationCheck);
+        Assert.Equal("Configured Sender", service.SentMessage!.From.Mailboxes.Single().Name);
+        Assert.Equal("configured@example.com", service.SentMessage.From.Mailboxes.Single().Address);
     }
 
     public void Dispose()
@@ -664,37 +762,109 @@ public sealed class StoreOrderContactAndInvoiceTests : IDisposable
         return context;
     }
 
+    private IInvoiceEmailSettingsService CreateSettingsService(InvoiceEmailOptions? fallback = null)
+    {
+        return new InvoiceEmailSettingsService(
+            CreateSqlSugarContext(_db),
+            Options.Create(fallback ?? new InvoiceEmailOptions()),
+            DataProtectionProvider.Create("StoreOrderContactAndInvoiceTests"),
+            NullLogger<InvoiceEmailSettingsService>.Instance
+        );
+    }
+
     private sealed class TestableInvoiceEmailService : InvoiceEmailService
     {
-        public TestableInvoiceEmailService(IOptions<InvoiceEmailOptions> options)
-            : base(NullLogger<InvoiceEmailService>.Instance, options)
+        public TestableInvoiceEmailService(IInvoiceEmailSettingsService settingsService)
+            : base(NullLogger<InvoiceEmailService>.Instance, settingsService)
         {
+            SettingsService = settingsService;
         }
 
         public SmtpClient CreateConfiguredClientForTest()
         {
-            return CreateSmtpClient();
+            var options = SettingsService.GetEffectiveOptionsAsync().GetAwaiter().GetResult();
+            return CreateSmtpClient(options);
         }
 
         public MimeKit.MimeMessage BuildMimeMessageForTest(StoreOrderInvoiceEmailMessage message)
         {
             return BuildMimeMessage(message);
         }
+
+        private IInvoiceEmailSettingsService SettingsService { get; }
     }
 
     private sealed class TlsFailingInvoiceEmailService : InvoiceEmailService
     {
-        public TlsFailingInvoiceEmailService(IOptions<InvoiceEmailOptions> options)
-            : base(NullLogger<InvoiceEmailService>.Instance, options)
+        public TlsFailingInvoiceEmailService(IInvoiceEmailSettingsService settingsService)
+            : base(NullLogger<InvoiceEmailService>.Instance, settingsService)
         {
         }
 
         protected override Task ConnectSmtpClientAsync(
             SmtpClient smtpClient,
+            InvoiceEmailOptions options,
             SecureSocketOptions secureSocketOptions
         )
         {
             throw new SslHandshakeException("handshake failed");
+        }
+    }
+
+    private sealed class SendingCaptureInvoiceEmailService : InvoiceEmailService
+    {
+        public SendingCaptureInvoiceEmailService(IInvoiceEmailSettingsService settingsService)
+            : base(NullLogger<InvoiceEmailService>.Instance, settingsService)
+        {
+        }
+
+        public string? ConnectedHost { get; private set; }
+        public int ConnectedPort { get; private set; }
+        public SecureSocketOptions ConnectedSocketOptions { get; private set; }
+        public string? AuthenticatedUsername { get; private set; }
+        public string? AuthenticatedPassword { get; private set; }
+        public bool? CreatedClientRevocationCheck { get; private set; }
+        public MimeKit.MimeMessage? SentMessage { get; private set; }
+
+        protected override SmtpClient CreateSmtpClient(InvoiceEmailOptions options)
+        {
+            var client = base.CreateSmtpClient(options);
+            CreatedClientRevocationCheck = client.CheckCertificateRevocation;
+            return client;
+        }
+
+        protected override Task ConnectSmtpClientAsync(
+            SmtpClient smtpClient,
+            InvoiceEmailOptions options,
+            SecureSocketOptions secureSocketOptions
+        )
+        {
+            ConnectedHost = options.Host;
+            ConnectedPort = options.Port;
+            ConnectedSocketOptions = secureSocketOptions;
+            return Task.CompletedTask;
+        }
+
+        protected override Task AuthenticateSmtpClientAsync(
+            SmtpClient smtpClient,
+            string username,
+            string password
+        )
+        {
+            AuthenticatedUsername = username;
+            AuthenticatedPassword = password;
+            return Task.CompletedTask;
+        }
+
+        protected override Task SendSmtpMessageAsync(SmtpClient smtpClient, MimeKit.MimeMessage email)
+        {
+            SentMessage = email;
+            return Task.CompletedTask;
+        }
+
+        protected override Task DisconnectSmtpClientAsync(SmtpClient smtpClient)
+        {
+            return Task.CompletedTask;
         }
     }
 

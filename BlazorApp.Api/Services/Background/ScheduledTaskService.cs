@@ -14,6 +14,16 @@ namespace BlazorApp.Api.Services.Background
     public class ScheduledTaskOptions
     {
         /// <summary>
+        /// 是否允许当前进程参与定时任务调度（默认 true）。
+        /// </summary>
+        public bool Enabled { get; set; } = true;
+
+        /// <summary>
+        /// 当前 API 实例标识；为空时使用机器名和进程号。
+        /// </summary>
+        public string? InstanceId { get; set; }
+
+        /// <summary>
         /// 每小时任务间隔分钟数（默认 60 分钟）
         /// </summary>
         public int HourlyTaskIntervalMinutes { get; set; } = 20;
@@ -295,6 +305,11 @@ namespace BlazorApp.Api.Services.Background
         /// </summary>
         private async Task ExecuteHourlyTask()
         {
+            if (!await IsCurrentInstanceSchedulerEnabledAsync("每小时定时任务"))
+            {
+                return;
+            }
+
             var now = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, _sydneyTimeZone);
             var startHour = 7;
             var endHour = now.DayOfWeek == DayOfWeek.Thursday ? 23 : 20;
@@ -468,6 +483,11 @@ namespace BlazorApp.Api.Services.Background
         /// </summary>
         private async Task ExecuteDailyTask()
         {
+            if (!await IsCurrentInstanceSchedulerEnabledAsync("每日全量刷新任务"))
+            {
+                return;
+            }
+
             using (var scope = _scopeFactory.CreateScope())
             {
                 var taskLogService =
@@ -540,6 +560,11 @@ namespace BlazorApp.Api.Services.Background
         /// </summary>
         private async Task ExecuteWeeklyTask()
         {
+            if (!await IsCurrentInstanceSchedulerEnabledAsync("每周全量刷新任务"))
+            {
+                return;
+            }
+
             using (var scope = _scopeFactory.CreateScope())
             {
                 var taskLogService =
@@ -604,6 +629,11 @@ namespace BlazorApp.Api.Services.Background
         /// </summary>
         private async Task ExecuteMonthlyTask()
         {
+            if (!await IsCurrentInstanceSchedulerEnabledAsync("每月全量刷新任务"))
+            {
+                return;
+            }
+
             using (var scope = _scopeFactory.CreateScope())
             {
                 var taskLogService =
@@ -716,6 +746,33 @@ namespace BlazorApp.Api.Services.Background
             _weeklyTimer?.Dispose();
             _monthlyTimer?.Dispose();
             await base.StopAsync(cancellationToken);
+        }
+
+        private async Task<bool> IsCurrentInstanceSchedulerEnabledAsync(string taskName)
+        {
+            try
+            {
+                using var scope = _scopeFactory.CreateScope();
+                var controlService =
+                    scope.ServiceProvider.GetService<ScheduledTaskRuntimeControlService>();
+                if (controlService == null)
+                {
+                    return _options.Enabled;
+                }
+
+                var enabled = await controlService.IsCurrentInstanceSchedulerEnabledAsync();
+                if (!enabled)
+                {
+                    _logger.LogInformation("{TaskName} 已被后台运行时控制关闭，当前实例跳过执行", taskName);
+                }
+
+                return enabled;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "{TaskName} 检查运行时控制失败，当前实例跳过执行", taskName);
+                return false;
+            }
         }
     }
 }

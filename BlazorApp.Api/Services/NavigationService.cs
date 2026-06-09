@@ -74,6 +74,7 @@ namespace BlazorApp.Api.Services
                     new() { Path = "/system/employee-profiles", TitleKey = "menu.employeeProfiles", Icon = "IdcardOutlined", Permission = Permissions.EmployeeProfiles.View },
                     new() { Path = "/system/roles",    TitleKey = "menu.systemRoles",       Icon = "TeamOutlined",     Permission = Permissions.Roles.View },
                     new() { Path = "/system/permissions", TitleKey = "menu.systemPermissions", Icon = "KeyOutlined", Permission = Permissions.Roles.View },
+                    new() { Path = "/system/invoice-email-settings", TitleKey = "menu.invoiceEmailSettings", Icon = "SettingOutlined", Permission = Permissions.System.ManageSettings },
                     new() { Path = "/system/device-registration", TitleKey = "menu.deviceRegistration", Icon = "BuildOutlined", Permission = Permissions.DeviceRegistration.View },
                 },
             },

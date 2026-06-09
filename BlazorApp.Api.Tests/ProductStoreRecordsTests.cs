@@ -607,6 +607,61 @@ public sealed class ProductStoreRecordsTests : IDisposable
         Assert.Equal("200", storePrice.SupplierCode);
     }
 
+    [Fact]
+    public async Task CreateWithPrices_只为启用且未删除分店创建分店价格并默认供应商为200()
+    {
+        await SeedStoreAsync("S01", "启用分店");
+        await SeedStoreAsync("S02", "禁用分店", isActive: false);
+        await SeedStoreAsync("S03", "已删分店", isDeleted: true);
+
+        var controller = new ReactProductsController(
+            CreateSqlSugarContext(_localDb),
+            NullLogger<ReactProductsController>.Instance
+        )
+        {
+            ControllerContext = new ControllerContext
+            {
+                HttpContext = new DefaultHttpContext
+                {
+                    User = new ClaimsPrincipal(new ClaimsIdentity(new[]
+                    {
+                        new Claim(ClaimTypes.Name, "controller-user"),
+                    }, "TestAuth")),
+                },
+            },
+        };
+
+        var actionResult = await controller.CreateWithPrices(new CreateProductWithPricesDto
+        {
+            ProductName = "控制器分店过滤商品",
+            ProductImage = "https://img.example.com/create-product.jpg",
+            LocalSupplierCode = null,
+            PurchasePrice = 3.2m,
+            RetailPrice = 5.6m,
+            IsAutoPricing = false,
+            ProductType = 0,
+        });
+
+        var okResult = Assert.IsType<OkObjectResult>(actionResult);
+        Assert.NotNull(okResult.Value);
+
+        var product = await _localDb.Queryable<Product>()
+            .SingleAsync(item => item.ProductName == "控制器分店过滤商品");
+        var storePrices = await _localDb.Queryable<StoreRetailPrice>()
+            .Where(item => item.ProductCode == product.ProductCode)
+            .OrderBy(item => item.StoreCode)
+            .ToListAsync();
+
+        Assert.Equal("200", product.LocalSupplierCode);
+        Assert.Equal("https://img.example.com/create-product.jpg", product.ProductImage);
+        Assert.Equal(0, product.ProductType);
+        Assert.Single(storePrices);
+        Assert.Equal("S01", storePrices[0].StoreCode);
+        Assert.Equal("200", storePrices[0].SupplierCode);
+        Assert.DoesNotContain(storePrices, item => item.StoreCode == "S02");
+        Assert.DoesNotContain(storePrices, item => item.StoreCode == "S03");
+    }
+
     public void Dispose()
     {
         _localDb.Dispose();
@@ -648,17 +703,21 @@ public sealed class ProductStoreRecordsTests : IDisposable
         }).ExecuteCommandAsync();
     }
 
-    private async Task SeedStoreAsync(string storeCode, string storeName)
+    private async Task SeedStoreAsync(
+        string storeCode,
+        string storeName,
+        bool isActive = true,
+        bool isDeleted = false)
     {
         await _localDb.Insertable(new Store
         {
             StoreGUID = $"store-{storeCode}",
             StoreCode = storeCode,
             StoreName = storeName,
-            IsActive = true,
+            IsActive = isActive,
             CreatedAt = DateTime.UtcNow,
             UpdatedAt = DateTime.UtcNow,
-            IsDeleted = false,
+            IsDeleted = isDeleted,
         }).ExecuteCommandAsync();
     }
 

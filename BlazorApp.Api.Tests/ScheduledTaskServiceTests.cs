@@ -61,6 +61,7 @@ public sealed class ScheduledTaskServiceTests : IDisposable
             .Returns(Task.CompletedTask);
 
         var scopeFactory = CreateScopeFactory(
+            CreateScope(new Dictionary<Type, object?>()),
             CreateScope(
                 new Dictionary<Type, object?>
                 {
@@ -88,7 +89,7 @@ public sealed class ScheduledTaskServiceTests : IDisposable
 
         await InvokeExecuteHourlyTaskAsync(service);
 
-        Assert.Equal(3, scopeFactory.Invocations.Count(x => x.Method.Name == nameof(IServiceScopeFactory.CreateScope)));
+        Assert.Equal(4, scopeFactory.Invocations.Count(x => x.Method.Name == nameof(IServiceScopeFactory.CreateScope)));
         Assert.True(cacheWarmExecuted);
         cacheWarmer.Verify(x => x.WarmUpHomePageAsync(), Times.Once);
     }
@@ -111,6 +112,7 @@ public sealed class ScheduledTaskServiceTests : IDisposable
         cacheWarmer.Setup(x => x.WarmUpHomePageAsync()).Returns(Task.CompletedTask);
 
         var scopeFactory = CreateScopeFactory(
+            CreateScope(new Dictionary<Type, object?>()),
             CreateScope(
                 new Dictionary<Type, object?>
                 {

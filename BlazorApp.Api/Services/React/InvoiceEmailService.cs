@@ -2,7 +2,6 @@ using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Shared.DTOs;
 using MailKit.Net.Smtp;
 using MailKit.Security;
-using Microsoft.Extensions.Options;
 using MimeKit;
 
 namespace BlazorApp.Api.Services.React
@@ -13,20 +12,42 @@ namespace BlazorApp.Api.Services.React
     public class InvoiceEmailService : IInvoiceEmailService
     {
         private readonly ILogger<InvoiceEmailService> _logger;
-        private readonly InvoiceEmailOptions _options;
+        private readonly IInvoiceEmailSettingsService _settingsService;
 
         public InvoiceEmailService(
             ILogger<InvoiceEmailService> logger,
-            IOptions<InvoiceEmailOptions> options
+            IInvoiceEmailSettingsService settingsService
         )
         {
             _logger = logger;
-            _options = options.Value ?? new InvoiceEmailOptions();
+            _settingsService = settingsService;
         }
 
         public async Task<ApiResponse<bool>> SendInvoiceAsync(StoreOrderInvoiceEmailMessage message)
         {
-            var configError = GetConfigurationError();
+            InvoiceEmailOptions options;
+            try
+            {
+                options = await _settingsService.GetEffectiveOptionsAsync();
+            }
+            catch (InvoiceEmailPasswordDecryptException ex)
+            {
+                _logger.LogError(ex, "发票邮件 SMTP 密码解密失败，收件人：{ToEmail}", message.ToEmail);
+                return ApiResponse<bool>.Error(
+                    "发票邮件 SMTP 密码解密失败，请重新保存发票邮箱配置",
+                    "INVOICE_EMAIL_PASSWORD_DECRYPT_FAILED"
+                );
+            }
+
+            return await SendInvoiceAsync(message, options);
+        }
+
+        public async Task<ApiResponse<bool>> SendInvoiceAsync(
+            StoreOrderInvoiceEmailMessage message,
+            InvoiceEmailOptions options
+        )
+        {
+            var configError = GetConfigurationError(options);
             if (configError != null)
             {
                 return ApiResponse<bool>.Error(configError, "INVOICE_EMAIL_NOT_CONFIGURED");
@@ -43,32 +64,33 @@ namespace BlazorApp.Api.Services.React
             }
 
             var totalAttachmentBytes = message.Attachments.Sum(attachment => attachment.Bytes.LongLength);
-            if (totalAttachmentBytes > _options.MaxAttachmentBytes)
+            if (totalAttachmentBytes > options.MaxAttachmentBytes)
             {
                 return ApiResponse<bool>.Error("发票附件不能超过配置限制", "INVOICE_EMAIL_ATTACHMENT_TOO_LARGE");
             }
 
             try
             {
-                var email = BuildMimeMessage(message);
+                var email = BuildMimeMessage(message, options);
 
-                using var smtpClient = CreateSmtpClient();
-                var secureSocketOptions = _options.UseSsl
+                using var smtpClient = CreateSmtpClient(options);
+                var secureSocketOptions = options.UseSsl
                     ? SecureSocketOptions.SslOnConnect
                     : SecureSocketOptions.StartTls;
 
-                await ConnectSmtpClientAsync(smtpClient, secureSocketOptions);
+                await ConnectSmtpClientAsync(smtpClient, options, secureSocketOptions);
 
-                if (!string.IsNullOrWhiteSpace(_options.Username))
+                if (!string.IsNullOrWhiteSpace(options.Username))
                 {
-                    await smtpClient.AuthenticateAsync(
-                        _options.Username,
-                        _options.Password ?? string.Empty
+                    await AuthenticateSmtpClientAsync(
+                        smtpClient,
+                        options.Username,
+                        options.Password ?? string.Empty
                     );
                 }
 
-                await smtpClient.SendAsync(email);
-                await smtpClient.DisconnectAsync(true);
+                await SendSmtpMessageAsync(smtpClient, email);
+                await DisconnectSmtpClientAsync(smtpClient);
 
                 return ApiResponse<bool>.OK(true, "发票邮件发送成功");
             }
@@ -87,20 +109,28 @@ namespace BlazorApp.Api.Services.React
             }
         }
 
-        protected virtual SmtpClient CreateSmtpClient()
+        protected virtual SmtpClient CreateSmtpClient(InvoiceEmailOptions options)
         {
             // 部分服务器无法完成 CRL/OCSP 查询时，只允许通过配置关闭吊销检查，仍保留证书主体校验。
             return new SmtpClient
             {
-                CheckCertificateRevocation = _options.CheckCertificateRevocation,
+                CheckCertificateRevocation = options.CheckCertificateRevocation,
             };
         }
 
         protected virtual MimeMessage BuildMimeMessage(StoreOrderInvoiceEmailMessage message)
         {
+            return BuildMimeMessage(message, _settingsService.GetEffectiveOptionsAsync().GetAwaiter().GetResult());
+        }
+
+        protected virtual MimeMessage BuildMimeMessage(
+            StoreOrderInvoiceEmailMessage message,
+            InvoiceEmailOptions options
+        )
+        {
             var email = new MimeMessage();
             email.From.Add(
-                new MailboxAddress(_options.FromName ?? _options.FromEmail!, _options.FromEmail!)
+                new MailboxAddress(options.FromName ?? options.FromEmail!, options.FromEmail!)
             );
             email.To.Add(MailboxAddress.Parse(message.ToEmail));
             email.Subject = message.Subject;
@@ -123,25 +153,45 @@ namespace BlazorApp.Api.Services.React
 
         protected virtual Task ConnectSmtpClientAsync(
             SmtpClient smtpClient,
+            InvoiceEmailOptions options,
             SecureSocketOptions secureSocketOptions
         )
         {
-            return smtpClient.ConnectAsync(_options.Host, _options.Port, secureSocketOptions);
+            return smtpClient.ConnectAsync(options.Host, options.Port, secureSocketOptions);
         }
 
-        private string? GetConfigurationError()
+        protected virtual Task AuthenticateSmtpClientAsync(
+            SmtpClient smtpClient,
+            string username,
+            string password
+        )
         {
-            if (string.IsNullOrWhiteSpace(_options.Host) || _options.Port <= 0)
+            return smtpClient.AuthenticateAsync(username, password);
+        }
+
+        protected virtual Task SendSmtpMessageAsync(SmtpClient smtpClient, MimeMessage email)
+        {
+            return smtpClient.SendAsync(email);
+        }
+
+        protected virtual Task DisconnectSmtpClientAsync(SmtpClient smtpClient)
+        {
+            return smtpClient.DisconnectAsync(true);
+        }
+
+        private static string? GetConfigurationError(InvoiceEmailOptions options)
+        {
+            if (string.IsNullOrWhiteSpace(options.Host) || options.Port <= 0)
             {
                 return "未配置发票邮件 SMTP，请先完成 InvoiceEmail 配置";
             }
 
-            if (string.IsNullOrWhiteSpace(_options.FromEmail))
+            if (string.IsNullOrWhiteSpace(options.FromEmail))
             {
                 return "未配置发件邮箱，请先完成 InvoiceEmail 配置";
             }
 
-            if (_options.MaxAttachmentBytes <= 0)
+            if (options.MaxAttachmentBytes <= 0)
             {
                 return "InvoiceEmail.MaxAttachmentBytes 配置无效";
             }

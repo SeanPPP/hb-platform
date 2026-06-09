@@ -94,6 +94,26 @@ public class ControllerAuthorizationMetadataTests
             nameof(ReactLocalSupplierInvoicesController.GetUpdateHqProductsJob),
             LocalPurchasePushToHq
         );
+        yield return Policy<ScheduledTaskRuntimeControlController>(
+            nameof(ScheduledTaskRuntimeControlController.GetStatus),
+            Permissions.System.ViewLogs
+        );
+        yield return Policy<ScheduledTaskRuntimeControlController>(
+            nameof(ScheduledTaskRuntimeControlController.Update),
+            Permissions.System.ManageScheduledTasks
+        );
+        yield return Policy<ReactInvoiceEmailSettingsController>(
+            nameof(ReactInvoiceEmailSettingsController.Get),
+            Permissions.System.ManageSettings
+        );
+        yield return Policy<ReactInvoiceEmailSettingsController>(
+            nameof(ReactInvoiceEmailSettingsController.Update),
+            Permissions.System.ManageSettings
+        );
+        yield return Policy<ReactInvoiceEmailSettingsController>(
+            nameof(ReactInvoiceEmailSettingsController.Test),
+            Permissions.System.ManageSettings
+        );
 
         yield return Policy<DomesticProductsController>(
             nameof(DomesticProductsController.GetDomesticProducts),

@@ -194,6 +194,9 @@ publish/
 # in these scripts will be unencrypted
 PublishScripts/
 
+# ASP.NET Core Data Protection key ring
+**/App_Data/DataProtectionKeys/
+
 # NuGet Packages
 *.nupkg
 # NuGet Symbol Packages
