@@ -1076,7 +1076,7 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
     }
 
     [Fact]
-    public async Task GetBestSellers_普通用户传入请求分店时只把权限交集传给服务()
+    public async Task GetBestSellers_普通用户传入请求分店时仍查询全平台热销榜()
     {
         List<string>? capturedBranchCodes = null;
         var serviceMock = new Mock<ISalesDashboardReactService>();
@@ -1115,13 +1115,24 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
         );
 
         Assert.IsType<OkObjectResult>(response);
-        Assert.Equal(new[] { "S1" }, capturedBranchCodes);
+        Assert.Null(capturedBranchCodes);
     }
 
     [Fact]
-    public async Task GetBestSellers_普通用户请求分店无权限交集时返回空结果且不调用服务()
+    public async Task GetBestSellers_普通用户请求无权限分店时仍查询全平台热销榜()
     {
+        List<string>? capturedBranchCodes = new List<string> { "unexpected" };
         var serviceMock = new Mock<ISalesDashboardReactService>();
+        serviceMock
+            .Setup(x => x.GetBestSellersAsync(
+                It.IsAny<DateRangeDto>(),
+                It.IsAny<List<string>?>(),
+                It.IsAny<int>(),
+                It.IsAny<int>()
+            ))
+            .Callback<DateRangeDto, List<string>?, int, int>((_, branchCodes, _, _) => capturedBranchCodes = branchCodes)
+            .ReturnsAsync(new BestSellerResponseDto());
+
         var userServiceMock = new Mock<IUserService>();
         userServiceMock
             .Setup(x => x.GetUserByGuidAsync("user-1"))
@@ -1147,17 +1158,27 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
 
         serviceMock.Verify(
             x => x.GetBestSellersAsync(It.IsAny<DateRangeDto>(), It.IsAny<List<string>?>(), It.IsAny<int>(), It.IsAny<int>()),
-            Times.Never
+            Times.Once
         );
-        var ok = Assert.IsType<OkObjectResult>(response);
-        Assert.Contains("Total = 0", ok.Value?.ToString());
-        Assert.Contains("PageIndex = 2", ok.Value?.ToString());
+        Assert.IsType<OkObjectResult>(response);
+        Assert.Null(capturedBranchCodes);
     }
 
     [Fact]
-    public async Task GetBestSellers_普通用户没有关联分店时返回空结果且不调用服务()
+    public async Task GetBestSellers_普通用户没有关联分店时仍查询全平台热销榜()
     {
+        List<string>? capturedBranchCodes = new List<string> { "unexpected" };
         var serviceMock = new Mock<ISalesDashboardReactService>();
+        serviceMock
+            .Setup(x => x.GetBestSellersAsync(
+                It.IsAny<DateRangeDto>(),
+                It.IsAny<List<string>?>(),
+                It.IsAny<int>(),
+                It.IsAny<int>()
+            ))
+            .Callback<DateRangeDto, List<string>?, int, int>((_, branchCodes, _, _) => capturedBranchCodes = branchCodes)
+            .ReturnsAsync(new BestSellerResponseDto());
+
         var userServiceMock = new Mock<IUserService>();
         userServiceMock
             .Setup(x => x.GetUserByGuidAsync("user-1"))
@@ -1180,10 +1201,10 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
 
         serviceMock.Verify(
             x => x.GetBestSellersAsync(It.IsAny<DateRangeDto>(), It.IsAny<List<string>?>(), It.IsAny<int>(), It.IsAny<int>()),
-            Times.Never
+            Times.Once
         );
-        var ok = Assert.IsType<OkObjectResult>(response);
-        Assert.Contains("Total = 0", ok.Value?.ToString());
+        Assert.IsType<OkObjectResult>(response);
+        Assert.Null(capturedBranchCodes);
     }
 
     private async Task SeedProductAsync(

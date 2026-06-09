@@ -2,9 +2,11 @@ using System.Reflection;
 using BlazorApp.Api.Controllers.React;
 using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Shared.Constants;
+using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging;
 using Moq;
 using Xunit;
@@ -13,6 +15,62 @@ namespace BlazorApp.Api.Tests;
 
 public class ReactContainerControllerSyncContractTests
 {
+    [Fact]
+    public async Task GetComingSoonContainerSummaries_多用户共享30分钟缓存()
+    {
+        var cache = new MemoryCache(new MemoryCacheOptions());
+        var containerService = new Mock<IContainerReactService>();
+        containerService
+            .Setup(service => service.GetContainersAsync(It.IsAny<ContainerQueryRequest>()))
+            .ReturnsAsync(
+                new ContainerListResponse
+                {
+                    Containers = new List<ContainerMainDto>
+                    {
+                        new ContainerMainDto { HGUID = "CACHED-SUMMARY", 货柜编号 = "CS-1" },
+                    },
+                    TotalCount = 1,
+                    Page = 1,
+                    PageSize = 100,
+                }
+            );
+
+        var firstController = CreateController(containerService: containerService.Object, cache: cache);
+        var secondController = CreateController(containerService: containerService.Object, cache: cache);
+
+        var firstResponse = await firstController.GetComingSoonContainerSummaries();
+        var secondResponse = await secondController.GetComingSoonContainerSummaries();
+
+        Assert.IsType<OkObjectResult>(firstResponse);
+        Assert.IsType<OkObjectResult>(secondResponse);
+        containerService.Verify(service => service.GetContainersAsync(It.IsAny<ContainerQueryRequest>()), Times.Exactly(2));
+        Assert.Equal(TimeSpan.FromMinutes(30), ReactContainerController.ComingSoonCacheDuration);
+    }
+
+    [Fact]
+    public async Task GetComingSoonContainerProducts_同一货柜共享缓存且不同货柜独立()
+    {
+        var cache = new MemoryCache(new MemoryCacheOptions());
+        var containerService = new Mock<IContainerReactService>();
+        containerService
+            .Setup(service => service.GetContainerProductsAsync("CONTAINER-A"))
+            .ReturnsAsync(new List<ContainerDetailDto> { new ContainerDetailDto { HGUID = "DETAIL-A" } });
+        containerService
+            .Setup(service => service.GetContainerProductsAsync("CONTAINER-B"))
+            .ReturnsAsync(new List<ContainerDetailDto> { new ContainerDetailDto { HGUID = "DETAIL-B" } });
+
+        var firstController = CreateController(containerService: containerService.Object, cache: cache);
+        var secondController = CreateController(containerService: containerService.Object, cache: cache);
+
+        await firstController.GetComingSoonContainerProducts("CONTAINER-A");
+        await secondController.GetComingSoonContainerProducts("CONTAINER-A");
+        await secondController.GetComingSoonContainerProducts("CONTAINER-B");
+
+        containerService.Verify(service => service.GetContainerProductsAsync("CONTAINER-A"), Times.Once);
+        containerService.Verify(service => service.GetContainerProductsAsync("CONTAINER-B"), Times.Once);
+        Assert.Equal(TimeSpan.FromMinutes(30), ReactContainerController.ComingSoonCacheDuration);
+    }
+
     [Fact]
     public void SyncContainersFromHq_使用货柜编辑权限策略()
     {
@@ -143,12 +201,15 @@ public class ReactContainerControllerSyncContractTests
     }
 
     private static ReactContainerController CreateController(
-        IContainerHqSyncService? syncService = null
+        IContainerHqSyncService? syncService = null,
+        IContainerReactService? containerService = null,
+        IMemoryCache? cache = null
     )
     {
         return new ReactContainerController(
-            Mock.Of<IContainerReactService>(),
+            containerService ?? Mock.Of<IContainerReactService>(),
             syncService ?? Mock.Of<IContainerHqSyncService>(),
+            cache ?? new MemoryCache(new MemoryCacheOptions()),
             Mock.Of<ILogger<ReactContainerController>>()
         );
     }

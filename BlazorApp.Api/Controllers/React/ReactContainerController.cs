@@ -5,6 +5,7 @@ using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Caching.Memory;
 
 namespace BlazorApp.Api.Controllers.React
 {
@@ -19,17 +20,82 @@ namespace BlazorApp.Api.Controllers.React
     {
         private readonly IContainerReactService _containerReactService;
         private readonly IContainerHqSyncService _containerHqSyncService;
+        private readonly IMemoryCache _cache;
         private readonly ILogger<ReactContainerController> _logger;
+        public static readonly TimeSpan ComingSoonCacheDuration = TimeSpan.FromMinutes(30);
 
         public ReactContainerController(
             IContainerReactService containerReactService,
             IContainerHqSyncService containerHqSyncService,
+            IMemoryCache cache,
             ILogger<ReactContainerController> logger
         )
         {
             _containerReactService = containerReactService;
             _containerHqSyncService = containerHqSyncService;
+            _cache = cache;
             _logger = logger;
+        }
+
+        private static MemoryCacheEntryOptions CreateComingSoonCacheOptions()
+        {
+            return new MemoryCacheEntryOptions()
+                .SetAbsoluteExpiration(ComingSoonCacheDuration);
+        }
+
+        private static ContainerQueryRequest CreateComingSoonContainerQuery(
+            string dateType,
+            DateTime startDate,
+            DateTime endDate,
+            string sortDirection
+        )
+        {
+            return new ContainerQueryRequest
+            {
+                DateType = dateType,
+                StartDate = startDate,
+                EndDate = endDate,
+                Page = 1,
+                PageSize = 100,
+                SortBy = dateType,
+                SortDirection = sortDirection,
+            };
+        }
+
+        private async Task<List<ContainerMainDto>> LoadComingSoonSummariesAsync()
+        {
+            var today = DateTime.Today;
+            var upcomingTask = _containerReactService.GetContainersAsync(
+                CreateComingSoonContainerQuery(
+                    "预计到岸日期",
+                    today,
+                    today.AddDays(56),
+                    "asc"
+                )
+            );
+            var arrivedTask = _containerReactService.GetContainersAsync(
+                CreateComingSoonContainerQuery(
+                    "实际到货日期",
+                    today.AddDays(-7),
+                    today,
+                    "desc"
+                )
+            );
+
+            await Task.WhenAll(upcomingTask, arrivedTask);
+
+            var containerMap = new Dictionary<string, ContainerMainDto>();
+            foreach (var container in arrivedTask.Result.Containers.Concat(upcomingTask.Result.Containers))
+            {
+                if (!string.IsNullOrWhiteSpace(container.HGUID))
+                {
+                    containerMap[container.HGUID] = container;
+                }
+            }
+
+            return containerMap.Values
+                .OrderBy(container => container.实际到货日期 ?? container.预计到岸日期 ?? DateTime.MaxValue)
+                .ToList();
         }
 
         /// <summary>
@@ -276,6 +342,85 @@ namespace BlazorApp.Api.Controllers.React
             catch (Exception ex)
             {
                 _logger.LogError(ex, "获取货柜商品明细列表失败");
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
+        /// <summary>
+        /// 获取 Coming Soon 货柜摘要（多用户共享 30 分钟缓存）。
+        /// </summary>
+        [HttpGet("coming-soon/summaries")]
+        [Authorize(Roles = "Admin,WarehouseManager,User")]
+        public async Task<IActionResult> GetComingSoonContainerSummaries()
+        {
+            try
+            {
+                var cacheKey = $"ComingSoon:Summaries:{DateTime.Today:yyyy-MM-dd}";
+                var result = await _cache.GetOrCreateAsync(
+                    cacheKey,
+                    async entry =>
+                    {
+                        entry.SetOptions(CreateComingSoonCacheOptions());
+                        return await LoadComingSoonSummariesAsync();
+                    }
+                ) ?? new List<ContainerMainDto>();
+
+                return Ok(
+                    new
+                    {
+                        success = true,
+                        data = result,
+                        message = $"获取成功，共 {result.Count} 个货柜",
+                    }
+                );
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "获取 Coming Soon 货柜摘要失败");
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
+        /// <summary>
+        /// 获取 Coming Soon 单货柜商品明细（多用户共享 30 分钟缓存）。
+        /// </summary>
+        [HttpGet("coming-soon/{containerGuid}/products")]
+        [Authorize(Roles = "Admin,WarehouseManager,User")]
+        public async Task<IActionResult> GetComingSoonContainerProducts(string containerGuid)
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(containerGuid))
+                {
+                    return BadRequest(new { success = false, message = "货柜GUID不能为空" });
+                }
+
+                var cacheKey = $"ComingSoon:Products:{containerGuid}";
+                var result = await _cache.GetOrCreateAsync(
+                    cacheKey,
+                    async entry =>
+                    {
+                        entry.SetOptions(CreateComingSoonCacheOptions());
+                        return await _containerReactService.GetContainerProductsAsync(containerGuid);
+                    }
+                ) ?? new List<ContainerDetailDto>();
+
+                return Ok(
+                    new
+                    {
+                        success = true,
+                        data = result,
+                        message = "获取商品列表成功",
+                    }
+                );
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(
+                    ex,
+                    "获取 Coming Soon 货柜商品明细失败, ContainerGuid: {ContainerGuid}",
+                    containerGuid
+                );
                 return StatusCode(500, new { success = false, message = "服务器内部错误" });
             }
         }

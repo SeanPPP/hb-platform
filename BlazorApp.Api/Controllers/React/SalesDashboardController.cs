@@ -1262,12 +1262,12 @@ namespace BlazorApp.Api.Controllers.React
         /// </summary>
         /// <param name="startDate">开始日期</param>
         /// <param name="endDate">结束日期</param>
-        /// <param name="branchCodes">分店代码列表（可选）</param>
+        /// <param name="branchCodes">分店代码列表（接口兼容参数，热销榜固定查询全平台数据，不按分店过滤）</param>
         /// <param name="pageIndex">页码（默认1）</param>
         /// <param name="pageSize">每页记录数（默认50）</param>
         /// <returns>Best Sellers 分页响应</returns>
         [HttpGet("best-sellers")]
-       // [Authorize(Roles = "Admin,WarehouseManager,User")]
+        // [Authorize(Roles = "Admin,WarehouseManager,User")]
         public async Task<IActionResult> GetBestSellers(
             [FromQuery] DateTime startDate,
             [FromQuery] DateTime endDate,
@@ -1278,44 +1278,21 @@ namespace BlazorApp.Api.Controllers.React
         {
             try
             {
-                var userBranchCodes = await GetUserBranchCodesAsync();
-                List<string>? targetBranchCodes = userBranchCodes;
-
-                if (branchCodes != null && branchCodes.Any())
-                {
-                    if (userBranchCodes != null)
-                    {
-                        targetBranchCodes = branchCodes.Intersect(userBranchCodes).ToList();
-                        if (!targetBranchCodes.Any())
-                        {
-                            return Ok(new { success = true, data = new { Products = new List<object>(), Total = 0, PageIndex = pageIndex, PageSize = pageSize, TotalPages = 0 } });
-                        }
-                    }
-                    else
-                    {
-                        targetBranchCodes = branchCodes;
-                    }
-                }
-
                 // 限制页大小
                 if (pageSize <= 0) pageSize = 50;
                 if (pageSize > 500) pageSize = 500;
                 if (pageIndex <= 0) pageIndex = 1;
 
-                if (targetBranchCodes != null && !targetBranchCodes.Any())
-                {
-                    return Ok(new { success = true, data = new { Products = new List<object>(), Total = 0, PageIndex = pageIndex, PageSize = pageSize, TotalPages = 0 } });
-                }
-
                 var dateRange = new DateRangeDto
                 {
                     StartDate = startDate,
-                    EndDate = endDate
+                    EndDate = endDate,
                 };
 
+                // 热销榜面向所有已登录用户展示全平台排名，忽略请求分店和用户门店权限范围。
                 var result = await _service.GetBestSellersAsync(
                     dateRange,
-                    targetBranchCodes,
+                    null,
                     pageIndex,
                     pageSize
                 );
