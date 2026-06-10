@@ -30,6 +30,11 @@ namespace BlazorApp.Api.Interfaces.React
         Task<List<ContainerDetailDto>> GetContainerProductsAsync(string containerGuid);
 
         /// <summary>
+        /// 按服务端筛选、排序和内部分页查询货柜商品明细（React）
+        /// </summary>
+        Task<ContainerDetailQueryResultDto> QueryContainerDetailsAsync(ContainerDetailQueryDto request);
+
+        /// <summary>
         /// 获取符合条件的所有货柜商品明细列表（React）
         /// </summary>
         Task<List<ContainerDetailDto>> GetFilteredContainerProductsAsync(ContainerQueryRequest request);
@@ -45,6 +50,21 @@ namespace BlazorApp.Api.Interfaces.React
         /// <param name="updates">明细更新列表</param>
         /// <returns>成功更新的行数</returns>
         Task<int> BatchUpdateDetailsAsync(List<UpdateContainerDetailDto> updates);
+
+        /// <summary>
+        /// 按当前筛选范围批量调浮率并重算成本。
+        /// </summary>
+        Task<int> ApplyFloatRateByScopeAsync(string containerGuid, ContainerDetailApplyFloatRateRequestDto request);
+
+        /// <summary>
+        /// 按当前筛选范围批量改进口价/贴牌价。
+        /// </summary>
+        Task<int> ApplyPricesByScopeAsync(string containerGuid, ContainerDetailApplyPricesRequestDto request);
+
+        /// <summary>
+        /// 按当前筛选范围重算运输成本和进口价。
+        /// </summary>
+        Task<int> RecalculateCostsByScopeAsync(string containerGuid, ContainerDetailBatchScopeDto request);
 
         /// <summary>
         /// 创建新货柜（React）

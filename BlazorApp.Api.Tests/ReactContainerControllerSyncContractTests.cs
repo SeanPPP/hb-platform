@@ -72,6 +72,42 @@ public class ReactContainerControllerSyncContractTests
     }
 
     [Fact]
+    public async Task QueryContainerProducts_应使用路由货柜GUID并返回标准响应()
+    {
+        ContainerDetailQueryDto? actualRequest = null;
+        var expectedResult = new ContainerDetailQueryResultDto
+        {
+            Items = new List<ContainerDetailDto> { new() { HGUID = "DETAIL-1" } },
+            ItemsTotal = 1,
+            PageNumber = 1,
+            PageSize = 50,
+            HasMore = false,
+            TagStats = new ContainerDetailTagStatsDto { All = 1 },
+        };
+        var containerService = new Mock<IContainerReactService>();
+        containerService
+            .Setup(service => service.QueryContainerDetailsAsync(It.IsAny<ContainerDetailQueryDto>()))
+            .Callback<ContainerDetailQueryDto>(request => actualRequest = request)
+            .ReturnsAsync(expectedResult);
+        var controller = CreateController(containerService: containerService.Object);
+
+        var response = await controller.QueryContainerProducts(
+            "ROUTE-GUID",
+            new ContainerDetailQueryDto
+            {
+                ContainerGuid = "BODY-GUID",
+                PageNumber = 1,
+                PageSize = 50,
+            }
+        );
+
+        var ok = Assert.IsType<OkObjectResult>(response);
+        Assert.NotNull(actualRequest);
+        Assert.Equal("ROUTE-GUID", actualRequest!.ContainerGuid);
+        AssertPayload(ok.Value, true, "获取货柜商品明细成功", expectedResult);
+    }
+
+    [Fact]
     public void SyncContainersFromHq_使用货柜编辑权限策略()
     {
         var method = typeof(ReactContainerController).GetMethod(

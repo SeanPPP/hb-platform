@@ -291,6 +291,114 @@ namespace BlazorApp.Shared.DTOs
     }
 
     /// <summary>
+    /// 货柜明细数字区间筛选
+    /// </summary>
+    public class ContainerDetailNumberRangeDto
+    {
+        public decimal? Min { get; set; }
+        public decimal? Max { get; set; }
+    }
+
+    /// <summary>
+    /// 货柜明细服务端查询请求（前端无可见分页，内部按块懒加载）
+    /// </summary>
+    public class ContainerDetailQueryDto
+    {
+        public string ContainerGuid { get; set; } = string.Empty;
+        public int PageNumber { get; set; } = 1;
+        public int PageSize { get; set; } = 50;
+        public string? ItemNumber { get; set; }
+        public string? Barcode { get; set; }
+        public string? ProductName { get; set; }
+        public string? EnglishName { get; set; }
+        public string? Remark { get; set; }
+        public List<string> ProductTypes { get; set; } = new();
+        public List<string> NewProductStates { get; set; } = new();
+        public List<string> MatchTypes { get; set; } = new();
+        public List<string> WarehouseStatus { get; set; } = new();
+        public ContainerDetailNumberRangeDto? ContainerPieces { get; set; }
+        public decimal? ContainerPiecesMin { get; set; }
+        public decimal? ContainerPiecesMax { get; set; }
+        public ContainerDetailNumberRangeDto? ContainerQuantity { get; set; }
+        public decimal? ContainerQuantityMin { get; set; }
+        public decimal? ContainerQuantityMax { get; set; }
+        public ContainerDetailNumberRangeDto? DomesticPrice { get; set; }
+        public decimal? DomesticPriceMin { get; set; }
+        public decimal? DomesticPriceMax { get; set; }
+        public ContainerDetailNumberRangeDto? FloatRate { get; set; }
+        public decimal? FloatRateMin { get; set; }
+        public decimal? FloatRateMax { get; set; }
+        public ContainerDetailNumberRangeDto? TransportCost { get; set; }
+        public decimal? TransportCostMin { get; set; }
+        public decimal? TransportCostMax { get; set; }
+        public ContainerDetailNumberRangeDto? WarehouseImportPrice { get; set; }
+        public decimal? WarehouseImportPriceMin { get; set; }
+        public decimal? WarehouseImportPriceMax { get; set; }
+        public ContainerDetailNumberRangeDto? ImportPrice { get; set; }
+        public decimal? ImportPriceMin { get; set; }
+        public decimal? ImportPriceMax { get; set; }
+        public ContainerDetailNumberRangeDto? OemPrice { get; set; }
+        public decimal? OemPriceMin { get; set; }
+        public decimal? OemPriceMax { get; set; }
+        public List<string> SelectedTags { get; set; } = new();
+        public string? SortBy { get; set; }
+        public string? SortOrder { get; set; }
+    }
+
+    /// <summary>
+    /// 货柜明细标签统计（基于当前服务端筛选口径）
+    /// </summary>
+    public class ContainerDetailTagStatsDto
+    {
+        public int All { get; set; }
+        public int New { get; set; }
+        public int Existing { get; set; }
+        public int NoOemPrice { get; set; }
+        public int AbnormalImport { get; set; }
+        public int Active { get; set; }
+        public int Inactive { get; set; }
+    }
+
+    /// <summary>
+    /// 货柜明细服务端查询响应
+    /// </summary>
+    public class ContainerDetailQueryResultDto
+    {
+        public List<ContainerDetailDto> Items { get; set; } = new();
+        public int ItemsTotal { get; set; }
+        public int PageNumber { get; set; }
+        public int PageSize { get; set; }
+        public bool HasMore { get; set; }
+        public ContainerDetailTagStatsDto TagStats { get; set; } = new();
+    }
+
+    /// <summary>
+    /// 货柜明细批量操作作用范围
+    /// </summary>
+    public class ContainerDetailBatchScopeDto
+    {
+        public List<string> SelectedHguids { get; set; } = new();
+        public ContainerDetailQueryDto? Query { get; set; }
+    }
+
+    /// <summary>
+    /// 货柜明细批量调浮率请求
+    /// </summary>
+    public class ContainerDetailApplyFloatRateRequestDto : ContainerDetailBatchScopeDto
+    {
+        public decimal? FloatRate { get; set; }
+    }
+
+    /// <summary>
+    /// 货柜明细批量改价请求
+    /// </summary>
+    public class ContainerDetailApplyPricesRequestDto : ContainerDetailBatchScopeDto
+    {
+        public decimal? ImportPrice { get; set; }
+        public decimal? OemPrice { get; set; }
+    }
+
+    /// <summary>
     /// 更新货柜明细DTO
     /// </summary>
     public class UpdateContainerDetailDto

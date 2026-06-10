@@ -68,15 +68,21 @@ public sealed class ContainerReactServiceLocalSupplierCodeTests : IDisposable
     }
 
     [Fact]
-    public async Task GetContainerDetailAsync_应通过映射返回本地供应商编码到明细和商品信息()
+    public async Task QueryContainerDetailsAsync_应返回本地供应商编码到明细和商品信息()
     {
         await SeedContainerGraphAsync("C-SUP-DETAIL", "D-SUP-DETAIL", "P-SUP-DETAIL", "SUP01");
         var service = CreateService();
 
-        var result = await service.GetContainerDetailAsync("C-SUP-DETAIL");
+        var result = await service.QueryContainerDetailsAsync(
+            new ContainerDetailQueryDto
+            {
+                ContainerGuid = "C-SUP-DETAIL",
+                PageNumber = 1,
+                PageSize = 50,
+            }
+        );
 
-        var container = Assert.IsType<ContainerMainDto>(result);
-        var detail = Assert.Single(container.Details);
+        var detail = Assert.Single(result.Items);
         Assert.Equal("SUP01", ReadLocalSupplierCode(detail));
         Assert.NotNull(detail.商品信息);
         Assert.Equal("SUP01", ReadLocalSupplierCode(detail.商品信息!));

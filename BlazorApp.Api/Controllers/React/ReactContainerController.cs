@@ -303,6 +303,48 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         /// <summary>
+        /// 服务端筛选、排序并按块返回货柜商品明细（React专用）
+        /// </summary>
+        [HttpPost("{containerGuid}/products/query")]
+        [Authorize(Roles = "Admin,WarehouseManager,User")]
+        public async Task<IActionResult> QueryContainerProducts(
+            string containerGuid,
+            [FromBody] ContainerDetailQueryDto? request
+        )
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(containerGuid))
+                {
+                    return BadRequest(new { success = false, message = "货柜GUID不能为空" });
+                }
+
+                request ??= new ContainerDetailQueryDto();
+                request.ContainerGuid = containerGuid;
+
+                var result = await _containerReactService.QueryContainerDetailsAsync(request);
+
+                return Ok(
+                    new
+                    {
+                        success = true,
+                        data = result,
+                        message = "获取货柜商品明细成功",
+                    }
+                );
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(
+                    ex,
+                    "查询货柜商品明细失败, ContainerGuid: {ContainerGuid}",
+                    containerGuid
+                );
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
+        /// <summary>
         /// 获取符合条件的所有货柜商品明细列表（React专用）
         /// </summary>
         /// <param name="request">查询请求</param>
@@ -457,6 +499,113 @@ namespace BlazorApp.Api.Controllers.React
             catch (Exception ex)
             {
                 _logger.LogError(ex, "批量更新货柜明细失败");
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
+        /// <summary>
+        /// 按当前筛选范围批量调浮率（React专用）
+        /// </summary>
+        [HttpPost("{containerGuid}/actions/apply-float-rate")]
+        [Authorize(Roles = "Admin,WarehouseManager")]
+        public async Task<IActionResult> ApplyFloatRateByScope(
+            string containerGuid,
+            [FromBody] ContainerDetailApplyFloatRateRequestDto request
+        )
+        {
+            try
+            {
+                if (request == null || !request.FloatRate.HasValue)
+                {
+                    return BadRequest(new { success = false, message = "调整浮率不能为空" });
+                }
+
+                var totalUpdated = await _containerReactService.ApplyFloatRateByScopeAsync(
+                    containerGuid,
+                    request
+                );
+                return Ok(
+                    new
+                    {
+                        success = true,
+                        message = $"成功更新 {totalUpdated} 条明细",
+                        data = new { totalUpdated },
+                    }
+                );
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "按筛选范围批量调浮率失败");
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
+        /// <summary>
+        /// 按当前筛选范围批量改价（React专用）
+        /// </summary>
+        [HttpPost("{containerGuid}/actions/apply-prices")]
+        [Authorize(Roles = "Admin,WarehouseManager")]
+        public async Task<IActionResult> ApplyPricesByScope(
+            string containerGuid,
+            [FromBody] ContainerDetailApplyPricesRequestDto request
+        )
+        {
+            try
+            {
+                if (request == null || (!request.ImportPrice.HasValue && !request.OemPrice.HasValue))
+                {
+                    return BadRequest(new { success = false, message = "进口价格或贴牌价格不能为空" });
+                }
+
+                var totalUpdated = await _containerReactService.ApplyPricesByScopeAsync(
+                    containerGuid,
+                    request
+                );
+                return Ok(
+                    new
+                    {
+                        success = true,
+                        message = $"成功更新 {totalUpdated} 条明细",
+                        data = new { totalUpdated },
+                    }
+                );
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "按筛选范围批量改价失败");
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
+        /// <summary>
+        /// 按当前筛选范围重算成本（React专用）
+        /// </summary>
+        [HttpPost("{containerGuid}/actions/recalculate-costs")]
+        [Authorize(Roles = "Admin,WarehouseManager")]
+        public async Task<IActionResult> RecalculateCostsByScope(
+            string containerGuid,
+            [FromBody] ContainerDetailBatchScopeDto request
+        )
+        {
+            try
+            {
+                request ??= new ContainerDetailBatchScopeDto();
+                var totalUpdated = await _containerReactService.RecalculateCostsByScopeAsync(
+                    containerGuid,
+                    request
+                );
+                return Ok(
+                    new
+                    {
+                        success = true,
+                        message = $"成功更新 {totalUpdated} 条明细",
+                        data = new { totalUpdated },
+                    }
+                );
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "按筛选范围重算成本失败");
                 return StatusCode(500, new { success = false, message = "服务器内部错误" });
             }
         }

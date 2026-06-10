@@ -143,6 +143,229 @@ namespace BlazorApp.Api.Services.React
                 .ExecuteCommandAsync();
         }
 
+        private static ContainerMainDto MapContainerHeader(Container container)
+        {
+            return new ContainerMainDto
+            {
+                HGUID = container.ContainerCode,
+                货柜编号 = container.ContainerNumber,
+                装柜日期 = container.LoadingDate,
+                预计到岸日期 = container.EstimatedArrivalDate,
+                实际到货日期 = container.ActualArrivalDate,
+                合计件数 = container.TotalPieces,
+                合计数量 = container.TotalQuantity,
+                合计金额 = container.TotalAmount,
+                总体积 = container.TotalVolume,
+                成本浮率 = container.CostFloatRate,
+                汇率 = container.ExchangeRate,
+                运费 = container.ShippingFee,
+                备注 = container.Remarks,
+                状态 = container.Status,
+                // 详情页首屏只需要头部信息，明细由 products/query 独立懒加载。
+                Details = new List<ContainerDetailDto>(),
+            };
+        }
+
+        private static string? NormalizeKeyword(string? value)
+        {
+            return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+        }
+
+        private static bool HasAny(IReadOnlyCollection<string>? values)
+        {
+            return values != null && values.Count > 0;
+        }
+
+        private static string NormalizeProductTypeFilter(string value)
+        {
+            return value switch
+            {
+                "normal" => "普通商品",
+                "set" => "套装商品",
+                "setChild" => "套装子商品",
+                _ => value,
+            };
+        }
+
+        private ISugarQueryable<ContainerDetail, WarehouseProduct, DomesticProduct, Product> BuildContainerDetailQuery(
+            ContainerDetailQueryDto request
+        )
+        {
+            var itemNumber = NormalizeKeyword(request.ItemNumber);
+            var barcode = NormalizeKeyword(request.Barcode);
+            var productName = NormalizeKeyword(request.ProductName);
+            var englishName = NormalizeKeyword(request.EnglishName);
+            var remark = NormalizeKeyword(request.Remark);
+
+            var query = _context
+                .Db.Queryable<ContainerDetail>()
+                .LeftJoin<WarehouseProduct>((cd, wp) => cd.ProductCode == wp.ProductCode)
+                .LeftJoin<DomesticProduct>((cd, wp, dp) => cd.ProductCode == dp.ProductCode)
+                .LeftJoin<Product>((cd, wp, dp, lp) => cd.ProductCode == lp.ProductCode)
+                .Where((cd, wp, dp, lp) => cd.ContainerCode == request.ContainerGuid)
+                .Where((cd, wp, dp, lp) => !cd.IsDeleted)
+                .Where((cd, wp, dp, lp) => cd.ProductCode != null);
+
+            if (itemNumber != null)
+            {
+                query = query.Where((cd, wp, dp, lp) => dp.HBProductNo != null && dp.HBProductNo.Contains(itemNumber));
+            }
+            if (barcode != null)
+            {
+                query = query.Where((cd, wp, dp, lp) => dp.Barcode != null && dp.Barcode.Contains(barcode));
+            }
+            if (productName != null)
+            {
+                query = query.Where((cd, wp, dp, lp) => dp.ProductName != null && dp.ProductName.Contains(productName));
+            }
+            if (englishName != null)
+            {
+                query = query.Where((cd, wp, dp, lp) => dp.EnglishProductName != null && dp.EnglishProductName.Contains(englishName));
+            }
+            if (remark != null)
+            {
+                query = query.Where((cd, wp, dp, lp) => cd.Remarks != null && cd.Remarks.Contains(remark));
+            }
+
+            if (HasAny(request.ProductTypes))
+            {
+                var productTypes = request.ProductTypes.Select(NormalizeProductTypeFilter).ToList();
+                query = query.Where((cd, wp, dp, lp) => productTypes.Contains(cd.ProductType ?? "普通商品"));
+            }
+            if (HasAny(request.NewProductStates))
+            {
+                var states = request.NewProductStates;
+                query = query.Where((cd, wp, dp, lp) =>
+                    (states.Contains("new") && lp.ProductCode == null)
+                    || (states.Contains("existing") && lp.ProductCode != null)
+                );
+            }
+            if (HasAny(request.MatchTypes))
+            {
+                var matchTypes = request.MatchTypes;
+                query = query.Where((cd, wp, dp, lp) =>
+                    (matchTypes.Contains("productCode") && lp.ProductCode != null)
+                    || (matchTypes.Contains("unmatched") && lp.ProductCode == null)
+                    || (matchTypes.Contains("supplierItem") && lp.ProductCode == null && dp.HBProductNo != null)
+                );
+            }
+            if (HasAny(request.WarehouseStatus))
+            {
+                var statuses = request.WarehouseStatus;
+                query = query.Where((cd, wp, dp, lp) =>
+                    (statuses.Contains("active") && wp.IsActive == true)
+                    || (statuses.Contains("inactive") && wp.IsActive != true)
+                );
+            }
+            if (HasAny(request.SelectedTags))
+            {
+                var tags = request.SelectedTags;
+                if (tags.Contains("new") || tags.Contains("existing"))
+                {
+                    // 标签筛选同组取并集，不同组取交集，保持与前端旧本地筛选语义一致。
+                    query = query.Where((cd, wp, dp, lp) =>
+                        (tags.Contains("new") && lp.ProductCode == null)
+                        || (tags.Contains("existing") && lp.ProductCode != null)
+                    );
+                }
+                if (tags.Contains("noOemPrice") || tags.Contains("abnormalImport"))
+                {
+                    query = query.Where((cd, wp, dp, lp) =>
+                        (tags.Contains("noOemPrice") && lp.ProductCode == null && (cd.OEMPrice == null || cd.OEMPrice <= 0))
+                        || (tags.Contains("abnormalImport") && (cd.ImportPrice == null || cd.ImportPrice <= 0))
+                    );
+                }
+                if (tags.Contains("active") || tags.Contains("inactive"))
+                {
+                    query = query.Where((cd, wp, dp, lp) =>
+                        (tags.Contains("active") && wp.IsActive == true)
+                        || (tags.Contains("inactive") && wp.IsActive != true)
+                    );
+                }
+            }
+
+            var containerPiecesMin = request.ContainerPiecesMin ?? request.ContainerPieces?.Min;
+            var containerPiecesMax = request.ContainerPiecesMax ?? request.ContainerPieces?.Max;
+            var containerQuantityMin = request.ContainerQuantityMin ?? request.ContainerQuantity?.Min;
+            var containerQuantityMax = request.ContainerQuantityMax ?? request.ContainerQuantity?.Max;
+            var domesticPriceMin = request.DomesticPriceMin ?? request.DomesticPrice?.Min;
+            var domesticPriceMax = request.DomesticPriceMax ?? request.DomesticPrice?.Max;
+            var floatRateMin = request.FloatRateMin ?? request.FloatRate?.Min;
+            var floatRateMax = request.FloatRateMax ?? request.FloatRate?.Max;
+            var transportCostMin = request.TransportCostMin ?? request.TransportCost?.Min;
+            var transportCostMax = request.TransportCostMax ?? request.TransportCost?.Max;
+            var warehouseImportPriceMin = request.WarehouseImportPriceMin ?? request.WarehouseImportPrice?.Min;
+            var warehouseImportPriceMax = request.WarehouseImportPriceMax ?? request.WarehouseImportPrice?.Max;
+            var importPriceMin = request.ImportPriceMin ?? request.ImportPrice?.Min;
+            var importPriceMax = request.ImportPriceMax ?? request.ImportPrice?.Max;
+            var oemPriceMin = request.OemPriceMin ?? request.OemPrice?.Min;
+            var oemPriceMax = request.OemPriceMax ?? request.OemPrice?.Max;
+
+            if (containerPiecesMin != null)
+                query = query.Where((cd, wp, dp, lp) => cd.LoadingPieces >= containerPiecesMin);
+            if (containerPiecesMax != null)
+                query = query.Where((cd, wp, dp, lp) => cd.LoadingPieces <= containerPiecesMax);
+            if (containerQuantityMin != null)
+                query = query.Where((cd, wp, dp, lp) => cd.LoadingQuantity >= containerQuantityMin);
+            if (containerQuantityMax != null)
+                query = query.Where((cd, wp, dp, lp) => cd.LoadingQuantity <= containerQuantityMax);
+            if (domesticPriceMin != null)
+                query = query.Where((cd, wp, dp, lp) => cd.DomesticPrice >= domesticPriceMin);
+            if (domesticPriceMax != null)
+                query = query.Where((cd, wp, dp, lp) => cd.DomesticPrice <= domesticPriceMax);
+            if (floatRateMin != null)
+                query = query.Where((cd, wp, dp, lp) => cd.AdjustmentRate >= floatRateMin);
+            if (floatRateMax != null)
+                query = query.Where((cd, wp, dp, lp) => cd.AdjustmentRate <= floatRateMax);
+            if (transportCostMin != null)
+                query = query.Where((cd, wp, dp, lp) => cd.TransportCost >= transportCostMin);
+            if (transportCostMax != null)
+                query = query.Where((cd, wp, dp, lp) => cd.TransportCost <= transportCostMax);
+            if (warehouseImportPriceMin != null)
+                query = query.Where((cd, wp, dp, lp) => wp.ImportPrice >= warehouseImportPriceMin);
+            if (warehouseImportPriceMax != null)
+                query = query.Where((cd, wp, dp, lp) => wp.ImportPrice <= warehouseImportPriceMax);
+            if (importPriceMin != null)
+                query = query.Where((cd, wp, dp, lp) => cd.ImportPrice >= importPriceMin);
+            if (importPriceMax != null)
+                query = query.Where((cd, wp, dp, lp) => cd.ImportPrice <= importPriceMax);
+            if (oemPriceMin != null)
+                query = query.Where((cd, wp, dp, lp) => cd.OEMPrice >= oemPriceMin);
+            if (oemPriceMax != null)
+                query = query.Where((cd, wp, dp, lp) => cd.OEMPrice <= oemPriceMax);
+
+            return query;
+        }
+
+        private static ISugarQueryable<ContainerDetail, WarehouseProduct, DomesticProduct, Product> ApplyContainerDetailSort(
+            ISugarQueryable<ContainerDetail, WarehouseProduct, DomesticProduct, Product> query,
+            ContainerDetailQueryDto request
+        )
+        {
+            var descending = string.Equals(request.SortOrder, "descend", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(request.SortOrder, "desc", StringComparison.OrdinalIgnoreCase);
+            var orderType = descending ? OrderByType.Desc : OrderByType.Asc;
+
+            return (request.SortBy ?? "itemNumber").Trim() switch
+            {
+                "barcode" => query.OrderBy((cd, wp, dp, lp) => dp.Barcode, orderType).OrderBy((cd, wp, dp, lp) => cd.DetailCode),
+                "productName" => query.OrderBy((cd, wp, dp, lp) => dp.ProductName, orderType).OrderBy((cd, wp, dp, lp) => cd.DetailCode),
+                "englishName" => query.OrderBy((cd, wp, dp, lp) => dp.EnglishProductName, orderType).OrderBy((cd, wp, dp, lp) => cd.DetailCode),
+                "productType" => query.OrderBy((cd, wp, dp, lp) => cd.ProductType, orderType).OrderBy((cd, wp, dp, lp) => cd.DetailCode),
+                "containerPieces" => query.OrderBy((cd, wp, dp, lp) => cd.LoadingPieces, orderType).OrderBy((cd, wp, dp, lp) => cd.DetailCode),
+                "containerQuantity" => query.OrderBy((cd, wp, dp, lp) => cd.LoadingQuantity, orderType).OrderBy((cd, wp, dp, lp) => cd.DetailCode),
+                "domesticPrice" => query.OrderBy((cd, wp, dp, lp) => cd.DomesticPrice, orderType).OrderBy((cd, wp, dp, lp) => cd.DetailCode),
+                "floatRate" => query.OrderBy((cd, wp, dp, lp) => cd.AdjustmentRate, orderType).OrderBy((cd, wp, dp, lp) => cd.DetailCode),
+                "transportCost" => query.OrderBy((cd, wp, dp, lp) => cd.TransportCost, orderType).OrderBy((cd, wp, dp, lp) => cd.DetailCode),
+                "warehouseImportPrice" => query.OrderBy((cd, wp, dp, lp) => wp.ImportPrice, orderType).OrderBy((cd, wp, dp, lp) => cd.DetailCode),
+                "importPrice" => query.OrderBy((cd, wp, dp, lp) => cd.ImportPrice, orderType).OrderBy((cd, wp, dp, lp) => cd.DetailCode),
+                "oemPrice" => query.OrderBy((cd, wp, dp, lp) => cd.OEMPrice, orderType).OrderBy((cd, wp, dp, lp) => cd.DetailCode),
+                "warehouseStatus" => query.OrderBy((cd, wp, dp, lp) => wp.IsActive, orderType).OrderBy((cd, wp, dp, lp) => cd.DetailCode),
+                "remark" => query.OrderBy((cd, wp, dp, lp) => cd.Remarks, orderType).OrderBy((cd, wp, dp, lp) => cd.DetailCode),
+                _ => query.OrderBy((cd, wp, dp, lp) => dp.HBProductNo, orderType).OrderBy((cd, wp, dp, lp) => cd.DetailCode),
+            };
+        }
+
         /// <summary>
         /// 获取货柜列表（支持分页、日期过滤、货号筛选）
         /// </summary>
@@ -257,7 +480,7 @@ namespace BlazorApp.Api.Services.React
         {
             try
             {
-                // 先取主表，再单独补齐明细导航，确保 AutoMapper 能拿到本地供应商编码。
+                // 详情头部接口只返回货柜主表，明细改由 QueryContainerDetailsAsync 懒加载。
                 var container = await _context
                     .Db.Queryable<Container>()
                     .Where(x => x.ContainerCode == containerGuid)
@@ -268,14 +491,7 @@ namespace BlazorApp.Api.Services.React
                     return null;
                 }
 
-                container.Details = await _context
-                    .Db.Queryable<ContainerDetail>()
-                    .Includes(x => x.Product)
-                    .Includes(x => x.LocalProduct)
-                    .Where(x => x.ContainerCode == containerGuid)
-                    .ToListAsync();
-
-                return _mapper.Map<ContainerMainDto>(container);
+                return MapContainerHeader(container);
             }
             catch (Exception ex)
             {
@@ -433,6 +649,111 @@ namespace BlazorApp.Api.Services.React
                     ex,
                     "获取货柜商品列表失败, ContainerGuid: {ContainerGuid}",
                     containerGuid
+                );
+                throw;
+            }
+        }
+
+        /// <summary>
+        /// 按服务端筛选、排序和内部分页查询货柜商品明细
+        /// </summary>
+        public async Task<ContainerDetailQueryResultDto> QueryContainerDetailsAsync(
+            ContainerDetailQueryDto request
+        )
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(request.ContainerGuid))
+                {
+                    return new ContainerDetailQueryResultDto
+                    {
+                        PageNumber = Math.Max(1, request.PageNumber),
+                        PageSize = Math.Clamp(request.PageSize, 1, 500),
+                    };
+                }
+
+                var pageNumber = Math.Max(1, request.PageNumber);
+                var pageSize = Math.Clamp(request.PageSize <= 0 ? 50 : request.PageSize, 1, 500);
+                var query = BuildContainerDetailQuery(request);
+                var total = await query.Clone().CountAsync();
+
+                // tagStats 必须按当前服务端筛选口径统计，不能只统计当前懒加载块。
+                var stats = new ContainerDetailTagStatsDto
+                {
+                    All = total,
+                    New = await query.Clone().Where((cd, wp, dp, lp) => lp.ProductCode == null).CountAsync(),
+                    Existing = await query.Clone().Where((cd, wp, dp, lp) => lp.ProductCode != null).CountAsync(),
+                    NoOemPrice = await query.Clone().Where((cd, wp, dp, lp) => lp.ProductCode == null && (cd.OEMPrice == null || cd.OEMPrice <= 0)).CountAsync(),
+                    AbnormalImport = await query.Clone().Where((cd, wp, dp, lp) => cd.ImportPrice == null || cd.ImportPrice <= 0).CountAsync(),
+                    Active = await query.Clone().Where((cd, wp, dp, lp) => wp.IsActive == true).CountAsync(),
+                    Inactive = await query.Clone().Where((cd, wp, dp, lp) => wp.IsActive != true).CountAsync(),
+                };
+
+                var items = await ApplyContainerDetailSort(query.Clone(), request)
+                    .Select(
+                        (cd, wp, dp, lp) =>
+                            new ContainerDetailDto
+                            {
+                                HGUID = cd.DetailCode,
+                                主表GUID = cd.ContainerCode,
+                                商品编码 = cd.ProductCode,
+                                LocalSupplierCode = lp.LocalSupplierCode,
+                                装柜类型 = cd.LoadingType,
+                                商品类型 = cd.ProductType,
+                                套装数量 = cd.SetQuantity,
+                                装柜件数 = cd.LoadingPieces,
+                                装柜数量 = cd.LoadingQuantity,
+                                国内价格 = cd.DomesticPrice,
+                                调整浮率 = cd.AdjustmentRate,
+                                进口价格 = cd.ImportPrice,
+                                贴牌价格 = cd.OEMPrice,
+                                单件装箱数 = cd.PackingQuantity,
+                                单件体积 = cd.UnitVolume,
+                                合计装柜金额 = cd.TotalAmount,
+                                合计装柜体积 = cd.TotalVolume,
+                                运输成本 = cd.TransportCost,
+                                备注 = cd.Remarks,
+                                是否新商品 = lp.ProductCode == null,
+                                WarehouseImportPrice = wp.ImportPrice,
+                                WarehouseOEMPrice = wp.OEMPrice,
+                                WarehouseIsActive = wp.IsActive,
+                                商品信息 = new ContainerProductInfoDto
+                                {
+                                    商品编码 = dp.ProductCode,
+                                    LocalSupplierCode = lp.LocalSupplierCode,
+                                    货号 = dp.HBProductNo,
+                                    商品名称 = dp.ProductName,
+                                    英文名称 = dp.EnglishProductName,
+                                    商品图片 = dp.ProductImage,
+                                    条形码 = dp.Barcode,
+                                    商品规格 = dp.ProductSpecification,
+                                    单件装箱数 = cd.PackingQuantity,
+                                    单件体积 = cd.UnitVolume,
+                                    商品类型 = cd.ProductType,
+                                    套装数量 = cd.SetQuantity,
+                                },
+                            }
+                    )
+                    .Skip((pageNumber - 1) * pageSize)
+                    .Take(pageSize)
+                    .ToListAsync();
+
+                return new ContainerDetailQueryResultDto
+                {
+                    Items = items,
+                    ItemsTotal = total,
+                    PageNumber = pageNumber,
+                    PageSize = pageSize,
+                    HasMore = pageNumber * pageSize < total,
+                    TagStats = stats,
+                };
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(
+                    ex,
+                    "查询货柜商品明细失败, ContainerGuid: {ContainerGuid}",
+                    request.ContainerGuid
                 );
                 throw;
             }
@@ -1152,6 +1473,199 @@ namespace BlazorApp.Api.Services.React
                 _logger.LogError(ex, "[React] 批量更新货柜明细失败");
                 throw;
             }
+        }
+
+        private async Task<List<string>> ResolveContainerDetailBatchScopeHguidsAsync(
+            string containerGuid,
+            ContainerDetailBatchScopeDto request
+        )
+        {
+            var selectedHguids = request.SelectedHguids
+                .Where(value => !string.IsNullOrWhiteSpace(value))
+                .Distinct()
+                .ToList();
+            if (selectedHguids.Count > 0)
+            {
+                return selectedHguids;
+            }
+
+            if (request.Query == null)
+            {
+                return new List<string>();
+            }
+
+            // 未勾选时以当前服务端筛选条件为作用范围，避免前端为了批量操作补拉整柜明细。
+            request.Query.ContainerGuid = containerGuid;
+            return await BuildContainerDetailQuery(request.Query)
+                .Select((cd, wp, dp, lp) => cd.DetailCode)
+                .ToListAsync();
+        }
+
+        private static decimal? CalculateScopedTransportCost(
+            ContainerDetail detail,
+            Container container
+        )
+        {
+            if (
+                !container.ShippingFee.HasValue
+                || !container.TotalVolume.HasValue
+                || container.TotalVolume.Value <= 0
+                || !detail.TotalVolume.HasValue
+                || !detail.LoadingQuantity.HasValue
+                || detail.LoadingQuantity.Value <= 0
+            )
+            {
+                return detail.TransportCost;
+            }
+
+            var cost =
+                container.ShippingFee.Value
+                * detail.TotalVolume.Value
+                / detail.LoadingQuantity.Value
+                / container.TotalVolume.Value;
+            return Math.Round(cost, 2, MidpointRounding.AwayFromZero);
+        }
+
+        private static decimal? CalculateScopedImportPrice(
+            ContainerDetail detail,
+            Container container,
+            decimal floatRate,
+            decimal? transportCost
+        )
+        {
+            if (
+                !container.ExchangeRate.HasValue
+                || container.ExchangeRate.Value <= 0
+                || !detail.DomesticPrice.HasValue
+            )
+            {
+                return detail.ImportPrice;
+            }
+
+            var price =
+                ((detail.DomesticPrice.Value / container.ExchangeRate.Value + (transportCost ?? 0m))
+                    * floatRate
+                    * 10m)
+                / 11m;
+            return Math.Round(price, 2, MidpointRounding.AwayFromZero);
+        }
+
+        private async Task<List<ContainerDetail>> GetScopedDetailsAsync(
+            string containerGuid,
+            ContainerDetailBatchScopeDto request
+        )
+        {
+            var hguids = await ResolveContainerDetailBatchScopeHguidsAsync(containerGuid, request);
+            if (hguids.Count == 0)
+            {
+                return new List<ContainerDetail>();
+            }
+
+            return await _context
+                .Db.Queryable<ContainerDetail>()
+                .Where(detail => hguids.Contains(detail.DetailCode))
+                .ToListAsync();
+        }
+
+        public async Task<int> ApplyFloatRateByScopeAsync(
+            string containerGuid,
+            ContainerDetailApplyFloatRateRequestDto request
+        )
+        {
+            if (!request.FloatRate.HasValue)
+            {
+                return 0;
+            }
+
+            var container = await _context
+                .Db.Queryable<Container>()
+                .FirstAsync(c => c.ContainerCode == containerGuid);
+            if (container == null)
+            {
+                return 0;
+            }
+
+            var details = await GetScopedDetailsAsync(containerGuid, request);
+            var updates = details
+                .Select(detail =>
+                {
+                    var transportCost = CalculateScopedTransportCost(detail, container);
+                    return new UpdateContainerDetailDto
+                    {
+                        HGUID = detail.DetailCode,
+                        调整浮率 = request.FloatRate,
+                        运输成本 = transportCost,
+                        进口价格 = CalculateScopedImportPrice(
+                            detail,
+                            container,
+                            request.FloatRate.Value,
+                            transportCost
+                        ),
+                    };
+                })
+                .ToList();
+
+            return await BatchUpdateDetailsAsync(updates);
+        }
+
+        public async Task<int> ApplyPricesByScopeAsync(
+            string containerGuid,
+            ContainerDetailApplyPricesRequestDto request
+        )
+        {
+            if (!request.ImportPrice.HasValue && !request.OemPrice.HasValue)
+            {
+                return 0;
+            }
+
+            var details = await GetScopedDetailsAsync(containerGuid, request);
+            var updates = details
+                .Select(detail => new UpdateContainerDetailDto
+                {
+                    HGUID = detail.DetailCode,
+                    进口价格 = request.ImportPrice ?? detail.ImportPrice,
+                    贴牌价格 = request.OemPrice ?? detail.OEMPrice,
+                })
+                .ToList();
+
+            return await BatchUpdateDetailsAsync(updates);
+        }
+
+        public async Task<int> RecalculateCostsByScopeAsync(
+            string containerGuid,
+            ContainerDetailBatchScopeDto request
+        )
+        {
+            var container = await _context
+                .Db.Queryable<Container>()
+                .FirstAsync(c => c.ContainerCode == containerGuid);
+            if (container == null)
+            {
+                return 0;
+            }
+
+            var details = await GetScopedDetailsAsync(containerGuid, request);
+            var updates = details
+                .Select(detail =>
+                {
+                    var floatRate = detail.AdjustmentRate ?? 1m;
+                    var transportCost = CalculateScopedTransportCost(detail, container);
+                    return new UpdateContainerDetailDto
+                    {
+                        HGUID = detail.DetailCode,
+                        调整浮率 = floatRate,
+                        运输成本 = transportCost,
+                        进口价格 = CalculateScopedImportPrice(
+                            detail,
+                            container,
+                            floatRate,
+                            transportCost
+                        ),
+                    };
+                })
+                .ToList();
+
+            return await BatchUpdateDetailsAsync(updates);
         }
 
         /// <summary>

@@ -86,6 +86,7 @@
     <Compile Include="ContainerHqSyncServiceTests.cs" />
     <Compile Include="HqProductTranslationReactServiceTests.cs" />
     <Compile Include="ContainerReactServiceBatchUpdateDetailsTests.cs" />
+    <Compile Include="ContainerReactServiceDetailQueryTests.cs" />
     <Compile Include="ContainerReactServiceLocalSupplierCodeTests.cs" />
     <Compile Include="ContainerProductCreationServiceTests.cs" />
     <Compile Include="ReactContainerControllerSyncContractTests.cs" />
