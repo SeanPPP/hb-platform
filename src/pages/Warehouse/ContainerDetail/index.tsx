@@ -249,6 +249,7 @@ function renderColumnTitle(key: ContainerDetailSortField, value: ReactNode) {
 
 const CONTAINER_DETAIL_TABLE_SCROLL_X = 1940
 const CONTAINER_DETAIL_TABLE_SCROLL_Y = 620
+const DEFAULT_CONTAINER_DETAIL_SORT: ContainerDetailSortState = { field: 'itemNumber', order: 'ascend' }
 
 function getContainerDetailViewport() {
   if (typeof window === 'undefined') {
@@ -303,7 +304,9 @@ export default function ContainerDetailPage() {
   const [productTypeFilter, setProductTypeFilter] = useState<ProductTypeFilter>('all')
   const [selectedTagFilters, setSelectedTagFilters] = useState<ContainerDetailTagFilter[]>([])
   const [columnFilters, setColumnFilters] = useState<ContainerDetailColumnFilters>({})
-  const [sortState, setSortState] = useState<ContainerDetailSortState | undefined>()
+  // 默认按货号升序展示，保证每次打开货柜明细时列表顺序稳定。
+  const [sortState, setSortState] = useState<ContainerDetailSortState>(DEFAULT_CONTAINER_DETAIL_SORT)
+  const [showReadonlyOemPrice, setShowReadonlyOemPrice] = useState(false)
   const [batchFloatRate, setBatchFloatRate] = useState<number | null>(null)
   const [batchImportPrice, setBatchImportPrice] = useState<number | null>(null)
   const [batchOemPrice, setBatchOemPrice] = useState<number | null>(null)
@@ -1341,11 +1344,12 @@ export default function ContainerDetailPage() {
   }
 
   const hasNumberRangeFilter = (value?: ContainerDetailNumberRangeFilter) => value?.min != null || value?.max != null
+  const hasCustomSortState = sortState.field !== DEFAULT_CONTAINER_DETAIL_SORT.field || sortState.order !== DEFAULT_CONTAINER_DETAIL_SORT.order
   const hasActiveColumnState = Object.values(columnFilters).some((value) => {
     if (Array.isArray(value)) return value.length > 0
     if (value && typeof value === 'object') return hasNumberRangeFilter(value as ContainerDetailNumberRangeFilter)
     return typeof value === 'string' ? Boolean(value.trim()) : value != null
-  }) || Boolean(sortState)
+  }) || hasCustomSortState
 
   const filterIcon = (active?: boolean) => <SearchOutlined style={{ color: active ? '#1677ff' : undefined }} />
 
@@ -1455,7 +1459,7 @@ export default function ContainerDetailPage() {
       return
     }
 
-    setSortState(undefined)
+    setSortState(DEFAULT_CONTAINER_DETAIL_SORT)
   }
 
   const handleWarehouseStatusChange = async (row: ContainerDetail, isActive: boolean) => {
@@ -1492,6 +1496,15 @@ export default function ContainerDetailPage() {
         return next
       })
     }
+  }
+
+  const readonlyOemPriceColumn: ColumnsType<ContainerDetail>[number] = {
+    // 只读快览列由开关控制，靠近固定条码显示，方便横向滚动时核对条码和价格。
+    title: renderCompactHeader(t('containers.fields.oemPrice')),
+    width: 96,
+    fixed: 'left',
+    align: 'right',
+    render: (_, row) => renderNumericCell(formatNumber(row.贴牌价格)),
   }
 
   const baseColumns: ColumnsType<ContainerDetail> = [
@@ -1544,14 +1557,7 @@ export default function ContainerDetailPage() {
         ) : '--'
       },
     },
-    {
-      // 只读快览列：贴牌价格靠近固定条码显示，方便横向滚动时核对条码和价格；实际编辑仍使用后面的价格编辑列。
-      title: renderCompactHeader(t('containers.fields.oemPrice')),
-      width: 96,
-      fixed: 'left',
-      align: 'right',
-      render: (_, row) => renderNumericCell(formatNumber(row.贴牌价格)),
-    },
+    ...(showReadonlyOemPrice ? [readonlyOemPriceColumn] : []),
     {
       title: renderColumnTitle('productName', t('containers.fields.productName')),
       width: 180,
@@ -1889,11 +1895,19 @@ export default function ContainerDetailPage() {
                   {hasActiveColumnState ? (
                     <Button size="small" onClick={() => {
                       setColumnFilters({})
-                      setSortState(undefined)
+                      setSortState(DEFAULT_CONTAINER_DETAIL_SORT)
                     }}>
                       {t('containers.actions.clearColumnFilters', '清空列过滤')}
                     </Button>
                   ) : null}
+                  <Space size={6}>
+                    <Typography.Text type="secondary">{t('containers.actions.showReadonlyOemPrice', '只读贴牌价格')}</Typography.Text>
+                    <Switch
+                      size="small"
+                      checked={showReadonlyOemPrice}
+                      onChange={setShowReadonlyOemPrice}
+                    />
+                  </Space>
                 </Space>
                 <Space wrap>
                   <Button icon={<DownloadOutlined />} loading={exporting} onClick={() => void exportExcel()}>{t('common.export')}</Button>

@@ -294,6 +294,16 @@ assertDeepEqual(columnState({ domesticPrice: { min: 0, max: 0 } }), ['column-202
 assertDeepEqual(columnState({ transportCost: { min: 0 } }), ['column-201', 'column-203'], '数字列头范围过滤应排除空值')
 assertDeepEqual(columnState({ oemPrice: { min: 2 } }, { field: 'containerPieces', order: 'ascend' }), ['column-203', 'column-201'], '列头过滤后排序应只作用于过滤后的可见行')
 assertDeepEqual(columnState({}, { field: 'itemNumber', order: 'ascend' }), ['column-201', 'column-203', 'column-202'], '货号排序应按文本升序且保持稳定输出')
+assertDeepEqual(
+  applyContainerDetailColumnState([
+    { id: 211, hguid: 'sort-211', 商品信息: { 货号: 'HB2' } },
+    { id: 212, hguid: 'sort-212', 商品信息: { 货号: '' } },
+    { id: 213, hguid: 'sort-213', 商品信息: { 货号: 'HB10' } },
+    { id: 214, hguid: 'sort-214', 商品信息: { 货号: 'HB2' } },
+  ], {}, { field: 'itemNumber', order: 'ascend' }).map((row) => row.hguid),
+  ['sort-211', 'sort-214', 'sort-213', 'sort-212'],
+  '货号升序应按自然排序、空货号排最后，并保持相同货号原始顺序',
+)
 assertDeepEqual(columnState({}, { field: 'transportCost', order: 'ascend' }), ['column-203', 'column-201', 'column-202'], '数字排序应把空值排在最后')
 assertDeepEqual(columnState({}, { field: 'warehouseStatus', order: 'descend' }), ['column-201', 'column-202', 'column-203'], '仓库状态排序应支持上架优先且同值保持原始顺序')
 assertDeepEqual(columnState({}, { field: 'matchType', order: 'ascend' }), ['column-201', 'column-203', 'column-202'], '匹配方式排序应按商品编码、供应商货号、未匹配稳定排序')
@@ -421,6 +431,32 @@ const pageSource = readFileSync('src/pages/Warehouse/ContainerDetail/index.tsx',
 const pageStyleSource = readFileSync('src/pages/Warehouse/ContainerDetail/index.css', 'utf8')
 const containerDetailLogicSource = readFileSync('src/pages/Warehouse/ContainerDetail/containerDetailLogic.ts', 'utf8')
 const warehouseProductServiceSource = readFileSync('src/services/warehouseProductService.ts', 'utf8')
+
+assertEqual(
+  pageSource.includes("const DEFAULT_CONTAINER_DETAIL_SORT: ContainerDetailSortState = { field: 'itemNumber', order: 'ascend' }"),
+  true,
+  '货柜明细页应声明货号升序默认排序',
+)
+assertEqual(
+  pageSource.includes('useState<ContainerDetailSortState>(DEFAULT_CONTAINER_DETAIL_SORT)'),
+  true,
+  '货柜明细页初始排序应默认使用货号升序',
+)
+assertEqual(
+  pageSource.includes('setSortState(DEFAULT_CONTAINER_DETAIL_SORT)'),
+  true,
+  '清空表格排序或列状态时应恢复货号升序默认排序',
+)
+assertEqual(
+  pageSource.includes('const [showReadonlyOemPrice, setShowReadonlyOemPrice] = useState(false)'),
+  true,
+  '只读贴牌价格快览列应默认关闭',
+)
+assertEqual(
+  pageSource.includes('showReadonlyOemPrice ? [readonlyOemPriceColumn] : []'),
+  true,
+  '只读贴牌价格快览列应只在开关打开时插入表格列',
+)
 
 const matchedPriceContainer = { 汇率: 4.5, 运费: 100, 总体积: 10 }
 const matchedPriceRows: ContainerDetail[] = [
@@ -1586,11 +1622,12 @@ assertEqual(
   '条码列应固定在左侧，横向滚动时保持可见',
 )
 assertEqual(
-  barcodeColumnSource.includes("title: renderCompactHeader(t('containers.fields.oemPrice'))") &&
-    barcodeColumnSource.includes('renderNumericCell(formatNumber(row.贴牌价格))') &&
-    !barcodeColumnSource.includes('<InputNumber'),
+  barcodeColumnSource.includes('showReadonlyOemPrice ? [readonlyOemPriceColumn] : []') &&
+    pageSource.includes("const readonlyOemPriceColumn: ColumnsType<ContainerDetail>[number]") &&
+    pageSource.includes('renderNumericCell(formatNumber(row.贴牌价格))') &&
+    !pageSource.slice(pageSource.indexOf('const readonlyOemPriceColumn'), pageSource.indexOf('const baseColumns')).includes('<InputNumber'),
   true,
-  '条码列后应显示只读贴牌价格列，便于横向滚动前快速核价',
+  '条码列后应按开关插入只读贴牌价格列，便于横向滚动前快速核价',
 )
 assertEqual(
   pageSource.includes('rowSelection={{ selectedRowKeys, onChange: setSelectedRowKeys, fixed: !viewport.isSmallPortrait }}') &&
