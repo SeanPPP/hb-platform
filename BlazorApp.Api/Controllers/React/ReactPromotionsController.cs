@@ -1,6 +1,7 @@
 using System;
 using System.Threading.Tasks;
 using BlazorApp.Api.Interfaces.React;
+using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.DTOs;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -20,6 +21,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPost("grid")]
+        [Authorize(Policy = Permissions.Promotions.View)]
         public async Task<ActionResult<GridResponseDto<PromotionListDto>>> Grid(
             [FromBody] GridRequestDto request
         )
@@ -29,13 +31,37 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpGet("{id}")]
+        [Authorize(Policy = Permissions.Promotions.View)]
         public async Task<ActionResult<ApiResponse<PromotionDetailDto>>> Get(string id)
         {
             var res = await _service.GetByIdAsync(id);
             return Ok(res);
         }
 
+        [HttpPost("store/grid")]
+        [Authorize(Policy = Permissions.Promotions.View)]
+        public async Task<ActionResult<GridResponseDto<PromotionListDto>>> StoreGrid(
+            [FromBody] StorePromotionGridRequestDto request
+        )
+        {
+            var res = await _service.GetStoreGridAsync(request);
+            return Ok(res);
+        }
+
+        [HttpGet("store/{id}")]
+        [Authorize(Policy = Permissions.Promotions.View)]
+        public async Task<ActionResult<ApiResponse<PromotionDetailDto>>> GetStorePromotion(
+            string id,
+            [FromQuery] string storeCode
+        )
+        {
+            var res = await _service.GetStoreByIdAsync(id, storeCode);
+            return Ok(res);
+        }
+
         [HttpPost]
+        [Authorize(Policy = Permissions.Promotions.Edit)]
+        [Authorize(Roles = "Admin,管理员")]
         public async Task<ActionResult<ApiResponse<PromotionDetailDto>>> Create(
             [FromBody] CreatePromotionDto dto
         )
@@ -44,7 +70,20 @@ namespace BlazorApp.Api.Controllers.React
             return Ok(res);
         }
 
+        [HttpPost("store")]
+        [Authorize(Policy = Permissions.Promotions.Edit)]
+        public async Task<ActionResult<ApiResponse<PromotionDetailDto>>> CreateStorePromotion(
+            [FromQuery] string storeCode,
+            [FromBody] CreatePromotionDto dto
+        )
+        {
+            var res = await _service.CreateStorePromotionAsync(storeCode, dto);
+            return Ok(res);
+        }
+
         [HttpPut("{id}")]
+        [Authorize(Policy = Permissions.Promotions.Edit)]
+        [Authorize(Roles = "Admin,管理员")]
         public async Task<ActionResult<ApiResponse<PromotionDetailDto>>> Update(
             string id,
             [FromBody] UpdatePromotionDto dto
@@ -54,7 +93,31 @@ namespace BlazorApp.Api.Controllers.React
             return Ok(res);
         }
 
+        [HttpPut("store/{id}")]
+        [Authorize(Policy = Permissions.Promotions.Edit)]
+        public async Task<ActionResult<ApiResponse<PromotionDetailDto>>> UpdateStorePromotion(
+            string id,
+            [FromQuery] string storeCode,
+            [FromBody] UpdatePromotionDto dto
+        )
+        {
+            var res = await _service.UpdateStorePromotionAsync(id, storeCode, dto);
+            return Ok(res);
+        }
+
+        [HttpPost("store/copy")]
+        [Authorize(Policy = Permissions.Promotions.Edit)]
+        public async Task<ActionResult<ApiResponse<PromotionDetailDto>>> CopyToStore(
+            [FromBody] CopyStorePromotionRequestDto dto
+        )
+        {
+            var res = await _service.CopyToStoreAsync(dto);
+            return Ok(res);
+        }
+
         [HttpDelete("{id}")]
+        [Authorize(Policy = Permissions.Promotions.Edit)]
+        [Authorize(Roles = "Admin,管理员")]
         public async Task<ActionResult<ApiResponse<bool>>> Delete(string id)
         {
             var res = await _service.DeleteAsync(id);
@@ -62,12 +125,26 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPost("{id}/enable")]
+        [Authorize(Policy = Permissions.Promotions.Edit)]
+        [Authorize(Roles = "Admin,管理员")]
         public async Task<ActionResult<ApiResponse<bool>>> Enable(
             string id,
             [FromQuery] bool enable = true
         )
         {
             var res = await _service.EnableAsync(id, enable);
+            return Ok(res);
+        }
+
+        [HttpPost("store/{id}/enable")]
+        [Authorize(Policy = Permissions.Promotions.Edit)]
+        public async Task<ActionResult<ApiResponse<bool>>> EnableStorePromotion(
+            string id,
+            [FromQuery] string storeCode,
+            [FromQuery] bool enable = true
+        )
+        {
+            var res = await _service.EnableStorePromotionAsync(id, storeCode, enable);
             return Ok(res);
         }
 

@@ -300,7 +300,7 @@ public class NavigationServiceTests
 
         var menu = _service.BuildAppMenu(user);
 
-        Assert.Equal(17, menu.Count);
+        Assert.Equal(18, menu.Count);
         Assert.Contains(menu, item => item.RouteName == "users");
         Assert.Contains(menu, item => item.RouteName == "employee-profile");
         Assert.Contains(menu, item => item.RouteName == "device-management");
@@ -308,6 +308,7 @@ public class NavigationServiceTests
         Assert.Contains(menu, item => item.RouteName == "attendance-management");
         Assert.Contains(menu, item => item.RouteName == "seasonal-cards");
         Assert.Contains(menu, item => item.RouteName == "advertisements");
+        Assert.Contains(menu, item => item.RouteName == "promotions");
         Assert.DoesNotContain(menu, item => item.RouteName == "attendance");
         Assert.Contains(menu, item => item.RouteName == "local-supplier-invoices");
         Assert.Contains(menu, item => item.RouteName == "warehouse");

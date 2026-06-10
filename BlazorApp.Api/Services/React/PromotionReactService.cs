@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
 using BlazorApp.Api.Data;
+using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Helper;
@@ -14,10 +15,15 @@ namespace BlazorApp.Api.Services.React
     public class PromotionReactService : IPromotionReactService
     {
         private readonly SqlSugarContext _context;
+        private readonly ICurrentUserManageableStoreScopeService? _storeScopeService;
 
-        public PromotionReactService(SqlSugarContext context)
+        public PromotionReactService(
+            SqlSugarContext context,
+            ICurrentUserManageableStoreScopeService? storeScopeService = null
+        )
         {
             _context = context;
+            _storeScopeService = storeScopeService;
         }
 
         public async Task<GridResponseDto<PromotionListDto>> GetGridAsync(GridRequestDto request)
@@ -319,6 +325,265 @@ namespace BlazorApp.Api.Services.React
             };
         }
 
+        public async Task<GridResponseDto<PromotionListDto>> GetStoreGridAsync(
+            StorePromotionGridRequestDto request
+        )
+        {
+            var storeCode = NormalizeStoreCode(request.StoreCode);
+            if (!await CanAccessStoreAsync(storeCode))
+            {
+                return GridResponseDto<PromotionListDto>.Error("STORE_FORBIDDEN");
+            }
+
+            var promotionsQuery = _context.PromotionDb.AsQueryable();
+            if (!string.IsNullOrWhiteSpace(request.GlobalSearch))
+            {
+                var keyword = request.GlobalSearch.Trim();
+                promotionsQuery = promotionsQuery.Where(s => s.Name.Contains(keyword));
+            }
+
+            // 范围筛选下推到数据库：当前店关联 + 无门店关系的总部促销。
+            promotionsQuery = promotionsQuery.Where(promotion =>
+                SqlFunc
+                    .Subqueryable<PromotionStore>()
+                    .Where(store =>
+                        store.PromotionId == promotion.Id && store.StoreCode == storeCode
+                    )
+                    .Any()
+                || !SqlFunc
+                    .Subqueryable<PromotionStore>()
+                    .Where(store => store.PromotionId == promotion.Id)
+                    .Any()
+            );
+
+            promotionsQuery = ApplyStoreGridQuerySorting(promotionsQuery, request.SortModel);
+            var total = await promotionsQuery.CountAsync();
+            var pageSize = request.PageSize > 0 ? request.PageSize : 50;
+            var promotions = await promotionsQuery
+                .Skip(Math.Max(0, request.StartRow))
+                .Take(pageSize)
+                .ToListAsync();
+            var promotionIds = promotions.Select(item => item.Id).ToList();
+            var promotionStores =
+                promotionIds.Count > 0
+                    ? await _context
+                        .PromotionStoreDb.AsQueryable()
+                        .Where(item => promotionIds.Contains(item.PromotionId))
+                        .ToListAsync()
+                    : new List<PromotionStore>();
+            var promotionProducts =
+                promotionIds.Count > 0
+                    ? await _context
+                        .PromotionProductDb.AsQueryable()
+                        .Where(item => promotionIds.Contains(item.PromotionId))
+                        .ToListAsync()
+                    : new List<PromotionProduct>();
+
+            var items = promotions
+                .Select(promotion =>
+                {
+                    var stores = promotionStores
+                        .Where(item => item.PromotionId == promotion.Id)
+                        .ToList();
+                    var scopeType = ResolveScopeType(stores, storeCode);
+                    return new { Promotion = promotion, Stores = stores, ScopeType = scopeType };
+                })
+                .Where(item => item.ScopeType != null)
+                .Select(item =>
+                    ToListDto(
+                        item.Promotion,
+                        promotionProducts.Count(product => product.PromotionId == item.Promotion.Id),
+                        item.Stores.Count,
+                        item.ScopeType!
+                    )
+                )
+                .ToList();
+            return GridResponseDto<PromotionListDto>.OK(items, total);
+        }
+
+        public async Task<ApiResponse<PromotionDetailDto>> GetStoreByIdAsync(
+            string id,
+            string storeCode
+        )
+        {
+            storeCode = NormalizeStoreCode(storeCode);
+            if (!await CanAccessStoreAsync(storeCode))
+            {
+                return ApiResponse<PromotionDetailDto>.Error("无权访问当前分店", "STORE_FORBIDDEN");
+            }
+
+            var detail = await BuildDetailAsync(id, storeCode);
+            return detail == null
+                ? ApiResponse<PromotionDetailDto>.Error("促销不存在或不属于当前分店", "PROMOTION_NOT_RELATED")
+                : ApiResponse<PromotionDetailDto>.OK(detail);
+        }
+
+        public async Task<ApiResponse<PromotionDetailDto>> CreateStorePromotionAsync(
+            string storeCode,
+            CreatePromotionDto dto
+        )
+        {
+            storeCode = NormalizeStoreCode(storeCode);
+            if (!await CanAccessStoreAsync(storeCode))
+            {
+                return ApiResponse<PromotionDetailDto>.Error("无权访问当前分店", "STORE_FORBIDDEN");
+            }
+
+            // 店级创建只允许落到当前分店，优先级默认低于总部/多店模板，避免误覆盖。
+            dto.Priority = 0;
+            dto.Stores = BuildSingleStoreItems(storeCode);
+            if (
+                await HasExclusiveConflictAsync(
+                    null,
+                    dto.IsEnabled,
+                    dto.IsExclusive,
+                    dto.EffectiveStart,
+                    dto.EffectiveEnd,
+                    dto.Priority,
+                    new[] { storeCode }
+                )
+            )
+            {
+                return ApiResponse<PromotionDetailDto>.Error("排他促销优先级冲突", "exclusive_conflict");
+            }
+
+            var result = await CreateAsync(dto);
+            return result.Success && result.Data != null
+                ? ApiResponse<PromotionDetailDto>.OK(
+                    (await BuildDetailAsync(result.Data.Id, storeCode)) ?? result.Data
+                )
+                : result;
+        }
+
+        public async Task<ApiResponse<PromotionDetailDto>> UpdateStorePromotionAsync(
+            string id,
+            string storeCode,
+            UpdatePromotionDto dto
+        )
+        {
+            storeCode = NormalizeStoreCode(storeCode);
+            if (!await CanAccessStoreAsync(storeCode))
+            {
+                return ApiResponse<PromotionDetailDto>.Error("无权访问当前分店", "STORE_FORBIDDEN");
+            }
+
+            var scopeType = await GetScopeTypeAsync(id, storeCode);
+            if (scopeType != PromotionStoreScopeTypes.StoreOnly)
+            {
+                return ApiResponse<PromotionDetailDto>.Error(
+                    "只有本店促销可以直接修改",
+                    "PROMOTION_NOT_STORE_ONLY"
+                );
+            }
+
+            // 店级更新继续强制单店归属，防止前端把本店促销扩成多店促销。
+            dto.Stores = BuildSingleStoreItems(storeCode);
+            if (
+                await HasExclusiveConflictAsync(
+                    id,
+                    dto.IsEnabled,
+                    dto.IsExclusive,
+                    dto.EffectiveStart,
+                    dto.EffectiveEnd,
+                    dto.Priority,
+                    new[] { storeCode }
+                )
+            )
+            {
+                return ApiResponse<PromotionDetailDto>.Error("排他促销优先级冲突", "exclusive_conflict");
+            }
+
+            return await UpdateAsync(id, dto);
+        }
+
+        public async Task<ApiResponse<PromotionDetailDto>> CopyToStoreAsync(
+            CopyStorePromotionRequestDto dto
+        )
+        {
+            var storeCode = NormalizeStoreCode(dto.StoreCode);
+            if (!await CanAccessStoreAsync(storeCode))
+            {
+                return ApiResponse<PromotionDetailDto>.Error("无权访问当前分店", "STORE_FORBIDDEN");
+            }
+
+            var source = await _context.PromotionDb.AsQueryable().InSingleAsync(dto.SourcePromotionId);
+            if (source == null)
+            {
+                return ApiResponse<PromotionDetailDto>.Error("源促销不存在", "PROMOTION_NOT_FOUND");
+            }
+
+            var sourceStores = await _context.PromotionStoreDb.GetListAsync(item =>
+                item.PromotionId == dto.SourcePromotionId
+            );
+            var scopeType = ResolveScopeType(sourceStores ?? new List<PromotionStore>(), storeCode);
+            if (
+                scopeType != PromotionStoreScopeTypes.MultiStore
+                && scopeType != PromotionStoreScopeTypes.Headquarters
+            )
+            {
+                return ApiResponse<PromotionDetailDto>.Error(
+                    "只能复制总部或多店促销",
+                    "PROMOTION_NOT_COPYABLE"
+                );
+            }
+
+            var sourceProducts = await _context.PromotionProductDb.GetListAsync(item =>
+                item.PromotionId == dto.SourcePromotionId
+            );
+
+            var createDto = new CreatePromotionDto
+            {
+                Name = string.IsNullOrWhiteSpace(dto.Name) ? $"{source.Name} - 本店副本" : dto.Name.Trim(),
+                Description = source.Description,
+                EffectiveStart = source.EffectiveStart,
+                EffectiveEnd = source.EffectiveEnd,
+                // 复制出的店级促销先停用，避免绕过启用时的排他冲突校验。
+                IsEnabled = false,
+                IsExclusive = source.IsExclusive,
+                Priority = 0,
+                ApplyQuantity = source.ApplyQuantity,
+                FixedPrice = source.FixedPrice,
+                MaxApplicationsPerOrder = source.MaxApplicationsPerOrder,
+                Products = (sourceProducts ?? new List<PromotionProduct>())
+                    .Select(item => new PromotionProductItemDto
+                    {
+                        ProductCode = item.ProductCode,
+                        UnitWeight = item.UnitWeight,
+                    })
+                    .ToList(),
+                Stores = BuildSingleStoreItems(storeCode),
+            };
+
+            // 复制不修改源促销，只生成当前分店可独立维护的新促销。
+            var result = await CreateAsync(createDto);
+            return result.Success && result.Data != null
+                ? ApiResponse<PromotionDetailDto>.OK(
+                    (await BuildDetailAsync(result.Data.Id, storeCode)) ?? result.Data
+                )
+                : result;
+        }
+
+        public async Task<ApiResponse<bool>> EnableStorePromotionAsync(
+            string id,
+            string storeCode,
+            bool enable
+        )
+        {
+            storeCode = NormalizeStoreCode(storeCode);
+            if (!await CanAccessStoreAsync(storeCode))
+            {
+                return ApiResponse<bool>.Error("无权访问当前分店", "STORE_FORBIDDEN");
+            }
+
+            var scopeType = await GetScopeTypeAsync(id, storeCode);
+            if (scopeType != PromotionStoreScopeTypes.StoreOnly)
+            {
+                return ApiResponse<bool>.Error("只有本店促销可以直接启停", "PROMOTION_NOT_STORE_ONLY");
+            }
+
+            return await EnableAsync(id, enable);
+        }
+
         public async Task<ApiResponse<PromotionEvaluateResponse>> EvaluateAsync(
             PromotionEvaluateRequest req
         )
@@ -364,6 +629,9 @@ namespace BlazorApp.Api.Services.React
 
             foreach (var promo in candidates)
             {
+                if (promo.ApplyQuantity <= 0)
+                    continue;
+
                 if (!groupByPromotion.TryGetValue(promo.Id, out var pproducts))
                     continue;
 
@@ -393,10 +661,6 @@ namespace BlazorApp.Api.Services.React
                 if (bundles <= 0)
                     continue;
 
-                resp.AppliedPromotions.Add(
-                    new AppliedPromotionInfo { PromotionId = promo.Id, AppliedBundles = bundles }
-                );
-
                 var remaining = bundles * promo.ApplyQuantity;
 
                 var cartUnits = new List<(string code, decimal price)>();
@@ -409,6 +673,8 @@ namespace BlazorApp.Api.Services.React
                 }
 
                 int index = 0;
+                var appliedBundles = 0;
+                var adjustedItems = new List<PriceAdjustmentDto>();
                 while (remaining > 0 && index < cartUnits.Count)
                 {
                     var take = Math.Min(remaining, promo.ApplyQuantity);
@@ -416,13 +682,21 @@ namespace BlazorApp.Api.Services.React
                     var sum = group.Sum(g => g.price);
                     var target = promo.FixedPrice;
                     var discount = sum - target;
+                    if (discount <= 0)
+                    {
+                        index += take;
+                        remaining -= take;
+                        continue;
+                    }
+
                     resp.TotalDiscount += discount;
+                    appliedBundles++;
 
                     foreach (var g in group)
                     {
                         var ratio = sum == 0 ? 0m : g.price / sum;
                         var newPrice = g.price - (discount * ratio);
-                        resp.AdjustedItems.Add(
+                        adjustedItems.Add(
                             new PriceAdjustmentDto
                             {
                                 ProductCode = g.code,
@@ -438,6 +712,18 @@ namespace BlazorApp.Api.Services.React
 
                     index += take;
                     remaining -= take;
+                }
+
+                if (appliedBundles > 0)
+                {
+                    resp.AppliedPromotions.Add(
+                        new AppliedPromotionInfo
+                        {
+                            PromotionId = promo.Id,
+                            AppliedBundles = appliedBundles,
+                        }
+                    );
+                    resp.AdjustedItems.AddRange(adjustedItems);
                 }
             }
 
@@ -555,6 +841,263 @@ namespace BlazorApp.Api.Services.React
                 .ToList();
 
             return ApiResponse<List<PromotionListDto>>.OK(list);
+        }
+
+        private async Task<bool> CanAccessStoreAsync(string storeCode)
+        {
+            if (string.IsNullOrWhiteSpace(storeCode))
+            {
+                return false;
+            }
+
+            return _storeScopeService != null
+                && await _storeScopeService.CanAccessStoreCodeAsync(storeCode);
+        }
+
+        private async Task<bool> HasExclusiveConflictAsync(
+            string? promotionId,
+            bool isEnabled,
+            bool isExclusive,
+            DateTime effectiveStart,
+            DateTime effectiveEnd,
+            int priority,
+            IReadOnlyCollection<string> storeCodes
+        )
+        {
+            if (!isEnabled || !isExclusive || storeCodes.Count == 0)
+            {
+                return false;
+            }
+
+            var query = _context
+                .PromotionDb.AsQueryable()
+                .Where(p => p.IsEnabled && p.IsExclusive)
+                .Where(p => p.EffectiveStart <= effectiveEnd && p.EffectiveEnd >= effectiveStart);
+
+            if (!string.IsNullOrWhiteSpace(promotionId))
+            {
+                query = query.Where(p => p.Id != promotionId);
+            }
+
+            var overlaps = await query
+                .Where(p =>
+                    SqlFunc
+                        .Subqueryable<PromotionStore>()
+                        .Where(ps =>
+                            ps.PromotionId == p.Id && storeCodes.Contains(ps.StoreCode)
+                        )
+                        .Any()
+                )
+                .ToListAsync();
+
+            return overlaps.Any(item => item.Priority >= priority);
+        }
+
+        private async Task<string?> GetScopeTypeAsync(string promotionId, string storeCode)
+        {
+            var stores = await _context.PromotionStoreDb.GetListAsync(item =>
+                item.PromotionId == promotionId
+            );
+            return ResolveScopeType(stores ?? new List<PromotionStore>(), storeCode);
+        }
+
+        private async Task<PromotionDetailDto?> BuildDetailAsync(string promotionId, string storeCode)
+        {
+            var promotion = await _context.PromotionDb.AsQueryable().InSingleAsync(promotionId);
+            if (promotion == null)
+            {
+                return null;
+            }
+
+            var products = await _context.PromotionProductDb.GetListAsync(item =>
+                item.PromotionId == promotionId
+            );
+            var stores = await _context.PromotionStoreDb.GetListAsync(item =>
+                item.PromotionId == promotionId
+            );
+            var scopeType = ResolveScopeType(stores ?? new List<PromotionStore>(), storeCode);
+            if (scopeType == null)
+            {
+                return null;
+            }
+
+            return ToDetailDto(promotion, products ?? new List<PromotionProduct>(), stores ?? new List<PromotionStore>(), scopeType);
+        }
+
+        private static string NormalizeStoreCode(string? storeCode) => storeCode?.Trim() ?? string.Empty;
+
+        private static List<PromotionStoreItemDto> BuildSingleStoreItems(string storeCode) =>
+            new() { new PromotionStoreItemDto { StoreCode = storeCode } };
+
+        private static string? ResolveScopeType(
+            IReadOnlyCollection<PromotionStore> stores,
+            string storeCode
+        )
+        {
+            // 范围判定是店级页面的权限边界：只有本店可编辑，多店/总部只能复制。
+            if (stores.Count == 0)
+            {
+                return PromotionStoreScopeTypes.Headquarters;
+            }
+
+            var containsCurrentStore = stores.Any(item =>
+                item.StoreCode.Equals(storeCode, StringComparison.OrdinalIgnoreCase)
+            );
+            if (!containsCurrentStore)
+            {
+                return null;
+            }
+
+            return stores.Count == 1
+                ? PromotionStoreScopeTypes.StoreOnly
+                : PromotionStoreScopeTypes.MultiStore;
+        }
+
+        private static PromotionListDto ToListDto(
+            Promotion promotion,
+            int productsCount,
+            int storesCount,
+            string? scopeType = null
+        )
+        {
+            return new PromotionListDto
+            {
+                Id = promotion.Id,
+                Name = promotion.Name,
+                EffectiveStart = promotion.EffectiveStart,
+                EffectiveEnd = promotion.EffectiveEnd,
+                IsEnabled = promotion.IsEnabled,
+                IsExclusive = promotion.IsExclusive,
+                Priority = promotion.Priority,
+                ApplyQuantity = promotion.ApplyQuantity,
+                FixedPrice = promotion.FixedPrice,
+                ProductsCount = productsCount,
+                StoresCount = storesCount,
+                ScopeType = scopeType,
+                CanEditInStoreScope = scopeType == PromotionStoreScopeTypes.StoreOnly,
+                CanCopyToStore =
+                    scopeType == PromotionStoreScopeTypes.MultiStore
+                    || scopeType == PromotionStoreScopeTypes.Headquarters,
+            };
+        }
+
+        private static PromotionDetailDto ToDetailDto(
+            Promotion promotion,
+            IReadOnlyCollection<PromotionProduct> products,
+            IReadOnlyCollection<PromotionStore> stores,
+            string? scopeType = null
+        )
+        {
+            return new PromotionDetailDto
+            {
+                Id = promotion.Id,
+                Name = promotion.Name,
+                Description = promotion.Description,
+                EffectiveStart = promotion.EffectiveStart,
+                EffectiveEnd = promotion.EffectiveEnd,
+                IsEnabled = promotion.IsEnabled,
+                IsExclusive = promotion.IsExclusive,
+                Priority = promotion.Priority,
+                ApplyQuantity = promotion.ApplyQuantity,
+                FixedPrice = promotion.FixedPrice,
+                MaxApplicationsPerOrder = promotion.MaxApplicationsPerOrder,
+                Products = products
+                    .Select(item => new PromotionProductItemDto
+                    {
+                        Id = item.Id,
+                        ProductCode = item.ProductCode,
+                        UnitWeight = item.UnitWeight,
+                    })
+                    .ToList(),
+                Stores = stores
+                    .Select(item => new PromotionStoreItemDto
+                    {
+                        Id = item.Id,
+                        StoreCode = item.StoreCode,
+                    })
+                    .ToList(),
+                ScopeType = scopeType,
+                CanEditInStoreScope = scopeType == PromotionStoreScopeTypes.StoreOnly,
+                CanCopyToStore =
+                    scopeType == PromotionStoreScopeTypes.MultiStore
+                    || scopeType == PromotionStoreScopeTypes.Headquarters,
+            };
+        }
+
+        private static ISugarQueryable<Promotion> ApplyStoreGridQuerySorting(
+            ISugarQueryable<Promotion> query,
+            List<SortModelDto>? sortModel
+        )
+        {
+            if (sortModel == null || sortModel.Count == 0)
+            {
+                return query.OrderBy(item => item.EffectiveStart, OrderByType.Desc).OrderBy(item => item.Name);
+            }
+
+            foreach (var sort in sortModel)
+            {
+                var descending = sort.Sort.Equals("desc", StringComparison.OrdinalIgnoreCase);
+                query = sort.ColId.ToLowerInvariant() switch
+                {
+                    "name" => descending
+                        ? query.OrderBy(item => item.Name, OrderByType.Desc)
+                        : query.OrderBy(item => item.Name),
+                    "priority" => descending
+                        ? query.OrderBy(item => item.Priority, OrderByType.Desc)
+                        : query.OrderBy(item => item.Priority),
+                    "effectivestart" => descending
+                        ? query.OrderBy(item => item.EffectiveStart, OrderByType.Desc)
+                        : query.OrderBy(item => item.EffectiveStart),
+                    "effectiveend" => descending
+                        ? query.OrderBy(item => item.EffectiveEnd, OrderByType.Desc)
+                        : query.OrderBy(item => item.EffectiveEnd),
+                    _ => descending
+                        ? query.OrderBy(item => item.EffectiveStart, OrderByType.Desc)
+                        : query.OrderBy(item => item.EffectiveStart),
+                };
+            }
+
+            return query;
+        }
+
+        private static List<PromotionListDto> ApplyStoreGridSorting(
+            List<PromotionListDto> items,
+            List<SortModelDto>? sortModel
+        )
+        {
+            if (sortModel == null || sortModel.Count == 0)
+            {
+                return items
+                    .OrderByDescending(item => item.EffectiveStart)
+                    .ThenBy(item => item.Name)
+                    .ToList();
+            }
+
+            IOrderedEnumerable<PromotionListDto>? ordered = null;
+            foreach (var sort in sortModel)
+            {
+                Func<PromotionListDto, object> selector = sort.ColId.ToLowerInvariant() switch
+                {
+                    "name" => item => item.Name,
+                    "priority" => item => item.Priority,
+                    "effectivestart" => item => item.EffectiveStart,
+                    "effectiveend" => item => item.EffectiveEnd,
+                    "scopetype" => item => item.ScopeType ?? string.Empty,
+                    _ => item => item.EffectiveStart,
+                };
+
+                var descending = sort.Sort.Equals("desc", StringComparison.OrdinalIgnoreCase);
+                ordered =
+                    ordered == null
+                        ? descending
+                            ? items.OrderByDescending(selector)
+                            : items.OrderBy(selector)
+                        : descending
+                            ? ordered.ThenByDescending(selector)
+                            : ordered.ThenBy(selector);
+            }
+
+            return (ordered ?? items.OrderBy(item => item.Name)).ToList();
         }
     }
 }

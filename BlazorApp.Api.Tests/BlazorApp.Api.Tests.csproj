@@ -64,6 +64,7 @@
     <Compile Include="InvoiceEmailSettingsServiceTests.cs" />
     <Compile Include="StoreOrderHqSyncTests.cs" />
     <Compile Include="AdvertisementReactServiceTests.cs" />
+    <Compile Include="PromotionReactServiceTests.cs" />
     <Compile Include="ProductReactServiceHqSyncTests.cs" />
     <Compile Include="ProductStoreRecordsTests.cs" />
     <Compile Include="ProductPushToHqServiceTests.cs" />

@@ -42,6 +42,39 @@ public class ControllerAuthorizationMetadataTests
             Permissions.Users.ResetPassword
         );
 
+        yield return Policy<ReactPromotionsController>(
+            nameof(ReactPromotionsController.Grid),
+            Permissions.Promotions.View
+        );
+        yield return Policy<ReactPromotionsController>(
+            nameof(ReactPromotionsController.Get),
+            Permissions.Promotions.View
+        );
+        yield return Policy<ReactPromotionsController>(
+            nameof(ReactPromotionsController.StoreGrid),
+            Permissions.Promotions.View
+        );
+        yield return Policy<ReactPromotionsController>(
+            nameof(ReactPromotionsController.GetStorePromotion),
+            Permissions.Promotions.View
+        );
+        yield return Policy<ReactPromotionsController>(
+            nameof(ReactPromotionsController.CreateStorePromotion),
+            Permissions.Promotions.Edit
+        );
+        yield return Policy<ReactPromotionsController>(
+            nameof(ReactPromotionsController.UpdateStorePromotion),
+            Permissions.Promotions.Edit
+        );
+        yield return Policy<ReactPromotionsController>(
+            nameof(ReactPromotionsController.CopyToStore),
+            Permissions.Promotions.Edit
+        );
+        yield return Policy<ReactPromotionsController>(
+            nameof(ReactPromotionsController.EnableStorePromotion),
+            Permissions.Promotions.Edit
+        );
+
         yield return Policy<ReactLocalSupplierInvoicesController>(
             nameof(ReactLocalSupplierInvoicesController.CheckProducts),
             Permissions.LocalPurchase.Edit
@@ -499,6 +532,22 @@ public class ControllerAuthorizationMetadataTests
 
         Assert.Null(authorizeAttribute.Policy);
         Assert.True(string.IsNullOrWhiteSpace(authorizeAttribute.Roles));
+    }
+
+    [Theory]
+    [InlineData(nameof(ReactPromotionsController.Create))]
+    [InlineData(nameof(ReactPromotionsController.Update))]
+    [InlineData(nameof(ReactPromotionsController.Delete))]
+    [InlineData(nameof(ReactPromotionsController.Enable))]
+    public void ReactPromotionsController_GlobalWriteEndpointsRequireAdminRole(string methodName)
+    {
+        var method = GetDeclaredMethod(typeof(ReactPromotionsController), methodName);
+        var authorizeAttributes = method
+            .GetCustomAttributes<AuthorizeAttribute>(inherit: false)
+            .ToList();
+
+        Assert.Contains(authorizeAttributes, attribute => attribute.Policy == Permissions.Promotions.Edit);
+        Assert.Contains(authorizeAttributes, attribute => attribute.Roles == "Admin,管理员");
     }
 
     [Fact]

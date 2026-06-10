@@ -199,6 +199,14 @@ namespace BlazorApp.Api.Services
             },
             new()
             {
+                RouteName = "promotions",
+                TitleKey = "tabs.promotions",
+                Icon = "ticket-percent-outline",
+                Permission = Permissions.Promotions.View,
+                Order = 48,
+            },
+            new()
+            {
                 RouteName = "product-query",
                 TitleKey = "tabs.productQuery",
                 Icon = "barcode-scan",

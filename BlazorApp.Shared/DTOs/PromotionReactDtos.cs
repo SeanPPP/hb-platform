@@ -3,6 +3,13 @@ using System.Collections.Generic;
 
 namespace BlazorApp.Shared.DTOs
 {
+    public static class PromotionStoreScopeTypes
+    {
+        public const string StoreOnly = "StoreOnly";
+        public const string MultiStore = "MultiStore";
+        public const string Headquarters = "Headquarters";
+    }
+
     public class PromotionListDto
     {
         public string Id { get; set; } = string.Empty;
@@ -16,6 +23,9 @@ namespace BlazorApp.Shared.DTOs
         public decimal FixedPrice { get; set; }
         public int ProductsCount { get; set; }
         public int StoresCount { get; set; }
+        public string? ScopeType { get; set; }
+        public bool CanEditInStoreScope { get; set; }
+        public bool CanCopyToStore { get; set; }
     }
 
     public class PromotionDetailDto
@@ -33,6 +43,9 @@ namespace BlazorApp.Shared.DTOs
         public int? MaxApplicationsPerOrder { get; set; }
         public List<PromotionProductItemDto> Products { get; set; } = new();
         public List<PromotionStoreItemDto> Stores { get; set; } = new();
+        public string? ScopeType { get; set; }
+        public bool CanEditInStoreScope { get; set; }
+        public bool CanCopyToStore { get; set; }
     }
 
     public class PromotionProductItemDto
@@ -78,6 +91,18 @@ namespace BlazorApp.Shared.DTOs
         public int? MaxApplicationsPerOrder { get; set; }
         public List<PromotionProductItemDto> Products { get; set; } = new();
         public List<PromotionStoreItemDto> Stores { get; set; } = new();
+    }
+
+    public class StorePromotionGridRequestDto : GridRequestDto
+    {
+        public string StoreCode { get; set; } = string.Empty;
+    }
+
+    public class CopyStorePromotionRequestDto
+    {
+        public string SourcePromotionId { get; set; } = string.Empty;
+        public string StoreCode { get; set; } = string.Empty;
+        public string? Name { get; set; }
     }
 
     public class PromotionEvaluateRequest
