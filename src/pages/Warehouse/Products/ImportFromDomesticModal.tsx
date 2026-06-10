@@ -38,6 +38,32 @@ function sortByItemNumber<T extends { itemNumber?: string }>(items: T[]) {
   )
 }
 
+interface CurrentPageSelectableItem {
+  productCode: string
+}
+
+export function mergeCurrentPageSelection<T extends CurrentPageSelectableItem>(
+  selectedKeys: React.Key[],
+  currentPageItems: T[],
+) {
+  const mergedKeys = new Set(selectedKeys.map(String))
+
+  currentPageItems.forEach((item) => {
+    mergedKeys.add(item.productCode)
+  })
+
+  return Array.from(mergedKeys)
+}
+
+export function removeCurrentPageSelection<T extends CurrentPageSelectableItem>(
+  selectedKeys: React.Key[],
+  currentPageItems: T[],
+) {
+  const currentPageKeys = new Set(currentPageItems.map((item) => item.productCode))
+
+  return selectedKeys.map(String).filter((key) => !currentPageKeys.has(key))
+}
+
 export default function ImportFromDomesticModal({
   open,
   onCancel,
@@ -101,6 +127,16 @@ export default function ImportFromDomesticModal({
       setSyncMultiCodes(true)
     }
   }, [open])
+
+  const handleSelectCurrentPage = () => {
+    // 只全选当前页已展示商品，避免误选分页或搜索结果中用户还没看到的商品。
+    setSelectedRowKeys((current) => mergeCurrentPageSelection(current, items))
+  }
+
+  const handleClearCurrentPageSelection = () => {
+    // 只取消当前页商品，保留其他分页中已经手动选择的商品。
+    setSelectedRowKeys((current) => removeCurrentPageSelection(current, items))
+  }
 
   const columns = useMemo<ColumnsType<DomesticProductNotInWarehouseItem>>(
     () => [
@@ -368,6 +404,12 @@ export default function ImportFromDomesticModal({
             {t('warehouse.importDomestic.syncMultiCode', '同步多码价格')}
           </Checkbox>
           <Button onClick={() => void loadItems({ page: 1 })}>{t('common.refresh', '刷新')}</Button>
+          <Button disabled={!items.length} onClick={handleSelectCurrentPage}>
+            {t('warehouse.importDomestic.selectCurrentPage', '全选当前页')}
+          </Button>
+          <Button disabled={!items.length} onClick={handleClearCurrentPageSelection}>
+            {t('warehouse.importDomestic.clearCurrentPageSelection', '取消当前页选择')}
+          </Button>
         </Space>
 
         <Space size={24}>
@@ -395,6 +437,7 @@ export default function ImportFromDomesticModal({
             selectedRowKeys,
             onChange: setSelectedRowKeys,
             preserveSelectedRowKeys: true,
+            columnWidth: 64,
           }}
           pagination={{
             current: page,
