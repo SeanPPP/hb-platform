@@ -25,6 +25,11 @@
   white-space: normal;
 }
 
+.container-detail-draggable-header {
+  cursor: move;
+  user-select: none;
+}
+
 .container-detail-table .ant-table-thead > tr > th .ant-table-column-title,
 .container-detail-header-title {
   display: -webkit-box;

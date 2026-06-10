@@ -10,6 +10,20 @@ import {
   SearchOutlined,
 } from '@ant-design/icons'
 import {
+  DndContext,
+  PointerSensor,
+  closestCenter,
+  type DragEndEvent,
+  useSensor,
+  useSensors,
+} from '@dnd-kit/core'
+import {
+  SortableContext,
+  horizontalListSortingStrategy,
+  useSortable,
+} from '@dnd-kit/sortable'
+import { CSS } from '@dnd-kit/utilities'
+import {
   Alert,
   Button,
   Card,
@@ -38,7 +52,7 @@ import type { TFunction } from 'i18next'
 import type { Dayjs } from 'dayjs'
 import dayjs from 'dayjs'
 import { useKeepAliveContext } from 'keepalive-for-react'
-import { useEffect, useMemo, useRef, useState, type Key, type ReactNode, type UIEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type HTMLAttributes, type Key, type ReactNode, type UIEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useNavigate } from 'react-router-dom'
 import BarcodePreview from '../../../components/BarcodePreview'
@@ -109,7 +123,9 @@ import {
   getContainerDetailWarehouseActionFailureMessage,
   getContainerDetailWarehouseStatusFilterKey,
   isContainerDetailSortField,
+  mergeContainerDetailColumnOrder,
   mergeContainerDetailLoadedItems,
+  moveContainerDetailColumnOrder,
   mergeContainerDetailPatch,
   rollbackContainerDetailWarehouseStatuses,
   type ContainerDetailColumnFilters,
@@ -119,6 +135,7 @@ import {
   type ContainerDetailProductTypeFilter,
   type ContainerDetailSortField,
   type ContainerDetailSortState,
+  type ContainerDetailTableColumnKey,
   type ContainerDetailTagFilter,
   type ContainerDetailTagStats,
   type ContainerDetailWarehouseStatusFilter,
@@ -248,6 +265,7 @@ const CONTAINER_DETAIL_TABLE_SCROLL_X = 1950
 const CONTAINER_DETAIL_TABLE_SCROLL_Y = 620
 const CONTAINER_DETAIL_SELECTION_COLUMN_WIDTH = 56
 const CONTAINER_DETAIL_PAGE_SIZE = 50
+const CONTAINER_DETAIL_COLUMN_ORDER_STORAGE_KEY = 'hbweb_rv.containerDetail.columnOrder.v1'
 const DEFAULT_CONTAINER_DETAIL_SORT: ContainerDetailSortState = { field: 'itemNumber', order: 'ascend' }
 const EMPTY_CONTAINER_DETAIL_TAG_STATS = {
   all: 0,
@@ -292,6 +310,46 @@ function useContainerDetailViewport() {
   return viewport
 }
 
+interface DraggableHeaderCellProps extends HTMLAttributes<HTMLTableCellElement> {
+  'data-column-key'?: string
+}
+
+function DraggableHeaderCell({ children, style, ...props }: DraggableHeaderCellProps) {
+  const columnKey = props['data-column-key']
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({
+    id: columnKey ?? '__container-detail-static-column__',
+    disabled: !columnKey,
+  })
+
+  if (!columnKey) {
+    return <th style={style} {...props}>{children}</th>
+  }
+
+  const headerStyle: CSSProperties = {
+    ...style,
+    transform: CSS.Translate.toString(transform),
+    transition,
+    cursor: 'move',
+    zIndex: isDragging ? 3 : style?.zIndex,
+    opacity: isDragging ? 0.85 : style?.opacity,
+  }
+
+  return (
+    <th ref={setNodeRef} style={headerStyle} {...props} {...attributes} {...listeners}>
+      <div className="container-detail-draggable-header">
+        {children}
+      </div>
+    </th>
+  )
+}
+
 export default function ContainerDetailPage() {
   const { t } = useTranslation()
   const navigate = useNavigate()
@@ -324,6 +382,7 @@ export default function ContainerDetailPage() {
   const [columnFilters, setColumnFilters] = useState<ContainerDetailColumnFilters>({})
   // 默认按货号升序展示，保证每次打开货柜明细时列表顺序稳定。
   const [sortState, setSortState] = useState<ContainerDetailSortState>(DEFAULT_CONTAINER_DETAIL_SORT)
+  const [columnOrder, setColumnOrder] = useState<ContainerDetailTableColumnKey[]>([])
   const [showReadonlyOemPrice, setShowReadonlyOemPrice] = useState(false)
   const [batchFloatRate, setBatchFloatRate] = useState<number | null>(null)
   const [batchImportPrice, setBatchImportPrice] = useState<number | null>(null)
@@ -356,6 +415,13 @@ export default function ContainerDetailPage() {
     备注?: string
     状态?: number
   }>({})
+  const columnDragSensors = useSensors(
+    useSensor(PointerSensor, {
+      activationConstraint: {
+        distance: 6,
+      },
+    }),
+  )
 
   useDynamicTabTitle(container?.货柜编号 ? t('containers.detailTitleWithNumber', { number: container.货柜编号 }) : undefined)
 
@@ -1647,6 +1713,7 @@ export default function ContainerDetailPage() {
 
   const readonlyOemPriceColumn: ColumnsType<ContainerDetail>[number] = {
     // 只读快览列由开关控制，靠近固定条码显示，方便横向滚动时核对条码和价格。
+    key: 'readonlyOemPrice',
     title: renderCompactHeader(t('containers.fields.oemPrice')),
     width: 96,
     fixed: 'left',
@@ -1655,8 +1722,9 @@ export default function ContainerDetailPage() {
   }
 
   const baseColumns: ColumnsType<ContainerDetail> = [
-    { title: renderCompactHeader(t('containers.columns.index')), width: 56, fixed: 'left', render: (_v, _r, index) => renderNumericCell(index + 1) },
+    { key: 'index', title: renderCompactHeader(t('containers.columns.index')), width: 56, fixed: 'left', render: (_v, _r, index) => renderNumericCell(index + 1) },
     {
+      key: 'image',
       title: renderCompactHeader(t('containers.columns.image')),
       width: 64,
       fixed: 'left',
@@ -1935,10 +2003,60 @@ export default function ContainerDetailPage() {
     },
   ]
 
+  const draggableColumnKeys = baseColumns.map((column) => String(column.key) as ContainerDetailTableColumnKey)
+
+  useEffect(() => {
+    setColumnOrder((current) => {
+      let savedOrder: unknown[] | null = null
+      if (!current.length && typeof window !== 'undefined') {
+        try {
+          const raw = localStorage.getItem(CONTAINER_DETAIL_COLUMN_ORDER_STORAGE_KEY)
+          savedOrder = raw ? JSON.parse(raw) : null
+        } catch {
+          savedOrder = null
+        }
+      }
+
+      // 列顺序持久化只影响业务列；选择列仍交给 rowSelection，新增/废弃列在这里自动兼容。
+      const nextOrder = mergeContainerDetailColumnOrder(current.length ? current : savedOrder, draggableColumnKeys)
+      if (current.length === nextOrder.length && current.every((key, index) => key === nextOrder[index])) {
+        return current
+      }
+      return nextOrder
+    })
+  }, [draggableColumnKeys.join('|')])
+
+  const handleColumnDragEnd = ({ active, over }: DragEndEvent) => {
+    if (!over || active.id === over.id) return
+    setColumnOrder((current) => {
+      const nextOrder = moveContainerDetailColumnOrder(current, active.id, over.id)
+      try {
+        localStorage.setItem(CONTAINER_DETAIL_COLUMN_ORDER_STORAGE_KEY, JSON.stringify(nextOrder))
+      } catch {
+        // localStorage 不可用时不影响当前页面内拖拽排序。
+      }
+      return nextOrder
+    })
+  }
+
+  const orderedBaseColumns = useMemo(() => {
+    const activeOrder = columnOrder.length ? columnOrder : draggableColumnKeys
+    const columnMap = new Map(baseColumns.map((column) => [String(column.key), column]))
+    return activeOrder
+      .map((key) => columnMap.get(key))
+      .filter((column): column is ColumnsType<ContainerDetail>[number] => Boolean(column))
+  }, [baseColumns, columnOrder, draggableColumnKeys])
+
   // 小屏竖屏时取消 AntD 固定列，避免固定选择列和左侧列占掉主要阅读空间。
-  const columns = viewport.isSmallPortrait
-    ? baseColumns.map((column) => ({ ...column, fixed: undefined })) as ColumnsType<ContainerDetail>
-    : baseColumns
+  const columns = (viewport.isSmallPortrait
+    ? orderedBaseColumns.map((column) => ({ ...column, fixed: undefined }))
+    : orderedBaseColumns
+  ).map((column) => ({
+    ...column,
+    onHeaderCell: () => ({
+      'data-column-key': String(column.key),
+    }),
+  })) as ColumnsType<ContainerDetail>
   const isSmallScreen = viewport.isSmallPortrait || viewport.isSmallLandscape
   const tableScrollY = viewport.isSmallLandscape
     ? Math.max(180, Math.min(CONTAINER_DETAIL_TABLE_SCROLL_Y, viewport.height - 208))
@@ -2185,33 +2303,38 @@ export default function ContainerDetailPage() {
 
               {exporting ? <Progress percent={exportProgress} size="small" /> : null}
 
-              <Table
-                className="container-detail-table"
-                rowKey={rowKey}
-                rowClassName={(_, index) => index % 2 === 1 ? 'container-detail-row-striped' : ''}
-                size="small"
-                columns={columns}
-                dataSource={displayRows}
-                loading={detailLoading && rows.length === 0}
-                rowSelection={{
-                  selectedRowKeys,
-                  onChange: setSelectedRowKeys,
-                  fixed: !viewport.isSmallPortrait,
-                  // 紧凑表格中默认选择列过窄，显式留出复选框点击空间。
-                  columnWidth: CONTAINER_DETAIL_SELECTION_COLUMN_WIDTH,
-                }}
-                pagination={false}
-                virtual
-                scroll={{ x: CONTAINER_DETAIL_TABLE_SCROLL_X, y: tableScrollY }}
-                onChange={handleTableChange}
-                onScroll={handleDetailTableScroll}
-                footer={() => (
-                  <Space direction="vertical" size={2}>
-                    <Typography.Text type="secondary">{t('containers.formulas.transportCost', '运输成本 = 运费 × 明细体积 ÷ 装柜数量 ÷ 总体积')}</Typography.Text>
-                    <Typography.Text type="secondary">{t('containers.formulas.importPrice', '进口价格 = ((国内价格 ÷ 汇率 + 运输成本) × 调整浮率 × 10) ÷ 11')}</Typography.Text>
-                  </Space>
-                )}
-              />
+              <DndContext sensors={columnDragSensors} collisionDetection={closestCenter} onDragEnd={handleColumnDragEnd}>
+                <SortableContext items={columnOrder} strategy={horizontalListSortingStrategy}>
+                  <Table
+                    className="container-detail-table"
+                    rowKey={rowKey}
+                    rowClassName={(_, index) => index % 2 === 1 ? 'container-detail-row-striped' : ''}
+                    size="small"
+                    components={{ header: { cell: DraggableHeaderCell } }}
+                    columns={columns}
+                    dataSource={displayRows}
+                    loading={detailLoading && rows.length === 0}
+                    rowSelection={{
+                      selectedRowKeys,
+                      onChange: setSelectedRowKeys,
+                      fixed: !viewport.isSmallPortrait,
+                      // 紧凑表格中默认选择列过窄，显式留出复选框点击空间。
+                      columnWidth: CONTAINER_DETAIL_SELECTION_COLUMN_WIDTH,
+                    }}
+                    pagination={false}
+                    virtual
+                    scroll={{ x: CONTAINER_DETAIL_TABLE_SCROLL_X, y: tableScrollY }}
+                    onChange={handleTableChange}
+                    onScroll={handleDetailTableScroll}
+                    footer={() => (
+                      <Space direction="vertical" size={2}>
+                        <Typography.Text type="secondary">{t('containers.formulas.transportCost', '运输成本 = 运费 × 明细体积 ÷ 装柜数量 ÷ 总体积')}</Typography.Text>
+                        <Typography.Text type="secondary">{t('containers.formulas.importPrice', '进口价格 = ((国内价格 ÷ 汇率 + 运输成本) × 调整浮率 × 10) ÷ 11')}</Typography.Text>
+                      </Space>
+                    )}
+                  />
+                </SortableContext>
+              </DndContext>
             </Space>
           </Card>
         </Space>

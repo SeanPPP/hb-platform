@@ -29,6 +29,12 @@ export type ContainerDetailSortField =
   | 'warehouseStatus'
   | 'remark'
 
+export type ContainerDetailTableColumnKey =
+  | 'index'
+  | 'image'
+  | 'readonlyOemPrice'
+  | ContainerDetailSortField
+
 const containerDetailSortFields = new Set<string>([
   'itemNumber',
   'barcode',
@@ -61,6 +67,56 @@ export function isValidContainerDetailEnglishTranslation(value?: string) {
 
 export function isContainerDetailSortField(value: unknown): value is ContainerDetailSortField {
   return typeof value === 'string' && containerDetailSortFields.has(value)
+}
+
+export function mergeContainerDetailColumnOrder(
+  savedOrder: readonly unknown[] | null | undefined,
+  availableOrder: readonly ContainerDetailTableColumnKey[],
+): ContainerDetailTableColumnKey[] {
+  const availableSet = new Set(availableOrder)
+  const seen = new Set<ContainerDetailTableColumnKey>()
+  const merged: ContainerDetailTableColumnKey[] = []
+
+  for (const value of savedOrder ?? []) {
+    if (typeof value !== 'string' || !availableSet.has(value as ContainerDetailTableColumnKey)) {
+      continue
+    }
+    const key = value as ContainerDetailTableColumnKey
+    if (seen.has(key)) {
+      continue
+    }
+    seen.add(key)
+    merged.push(key)
+  }
+
+  for (const key of availableOrder) {
+    if (!seen.has(key)) {
+      merged.push(key)
+    }
+  }
+
+  return merged
+}
+
+export function moveContainerDetailColumnOrder(
+  currentOrder: readonly ContainerDetailTableColumnKey[],
+  activeKey: unknown,
+  overKey: unknown,
+): ContainerDetailTableColumnKey[] {
+  if (typeof activeKey !== 'string' || typeof overKey !== 'string' || activeKey === overKey) {
+    return [...currentOrder]
+  }
+
+  const fromIndex = currentOrder.indexOf(activeKey as ContainerDetailTableColumnKey)
+  const toIndex = currentOrder.indexOf(overKey as ContainerDetailTableColumnKey)
+  if (fromIndex < 0 || toIndex < 0) {
+    return [...currentOrder]
+  }
+
+  const nextOrder = [...currentOrder]
+  const [moved] = nextOrder.splice(fromIndex, 1)
+  nextOrder.splice(toIndex, 0, moved)
+  return nextOrder
 }
 
 export interface ContainerDetailNumberRangeFilter {

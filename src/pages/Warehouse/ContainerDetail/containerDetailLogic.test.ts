@@ -11,7 +11,9 @@ import {
   buildContainerDetailEnglishNameUpdates,
   buildContainerDetailMatchedDomesticDataUpdates,
   buildContainerDetailMatchStatusUpdates,
+  mergeContainerDetailColumnOrder,
   buildContainerDetailSaveFailureKeys,
+  moveContainerDetailColumnOrder,
   getContainerDetailRemoteQueryResetState,
   findContainerDetailRowsMissingChineseName,
   buildContainerDetailTagStats,
@@ -33,6 +35,7 @@ import {
   matchesContainerDetailSelectedTags,
   matchesContainerDetailTagFilter,
   normalizeContainerDetailPushToHqPayload,
+  type ContainerDetailTableColumnKey,
   type ContainerDetailColumnFilters,
   type ContainerDetailSortField,
   type ContainerDetailSortState,
@@ -526,6 +529,27 @@ assertDeepEqual(
     { hguid: 'code-305', active: false },
   ],
   '仓库状态本地更新应按 trim 后商品编码同步同商品行',
+)
+const defaultColumnOrder: ContainerDetailTableColumnKey[] = ['index', 'image', 'itemNumber', 'barcode', 'productName', 'englishName']
+assertDeepEqual(
+  mergeContainerDetailColumnOrder(['barcode', 'unknown', 'barcode', 'image'], defaultColumnOrder),
+  ['barcode', 'image', 'index', 'itemNumber', 'productName', 'englishName'],
+  '货柜明细列顺序应过滤未知列、去重并补齐新增列',
+)
+assertDeepEqual(
+  moveContainerDetailColumnOrder(defaultColumnOrder, 'barcode', 'image'),
+  ['index', 'barcode', 'image', 'itemNumber', 'productName', 'englishName'],
+  '货柜明细列拖拽应把 active 列移动到 over 列位置',
+)
+assertDeepEqual(
+  moveContainerDetailColumnOrder(defaultColumnOrder, 'missing', 'image'),
+  defaultColumnOrder,
+  '货柜明细列拖拽遇到未知列时应保持原顺序',
+)
+assertDeepEqual(
+  moveContainerDetailColumnOrder(defaultColumnOrder, 'image', 'image'),
+  defaultColumnOrder,
+  '货柜明细列拖拽 active 与 over 相同时应保持原顺序',
 )
 assertEqual(
   getContainerDetailWarehouseActionFailureMessage({ success: true, failedCount: 1, errors: ['HB303 更新失败'] }, '批量上下架失败'),
@@ -1754,7 +1778,7 @@ assertEqual(
     pageSource.includes('selectedRowKeys,') &&
     pageSource.includes('onChange: setSelectedRowKeys,') &&
     pageSource.includes('fixed: !viewport.isSmallPortrait,') &&
-    pageSource.includes("baseColumns.map((column) => ({ ...column, fixed: undefined }))"),
+    pageSource.includes("orderedBaseColumns.map((column) => ({ ...column, fixed: undefined }))"),
   true,
   '选择框列默认随左侧列固定，小屏竖屏时应随表格列一起取消固定',
 )
@@ -1769,6 +1793,35 @@ assertEqual(
   pageSource.includes('isContainerDetailSortField(nextSortField)'),
   true,
   '表格排序回调应通过运行时白名单过滤 sorter 字段',
+)
+assertEqual(
+  pageSource.includes('DndContext') &&
+    pageSource.includes('SortableContext') &&
+    pageSource.includes('useSortable') &&
+    pageSource.includes('horizontalListSortingStrategy'),
+  true,
+  '货柜明细表头列拖拽应复用 @dnd-kit 横向排序能力',
+)
+assertEqual(
+  pageSource.includes('components={{ header: { cell: DraggableHeaderCell } }}') &&
+    pageSource.includes('<SortableContext items={columnOrder} strategy={horizontalListSortingStrategy}>') &&
+    pageSource.includes('<DndContext sensors={columnDragSensors} collisionDetection={closestCenter} onDragEnd={handleColumnDragEnd}>'),
+  true,
+  '货柜明细表格应接入可拖拽表头 cell 与横向 SortableContext',
+)
+assertEqual(
+  pageSource.includes("const CONTAINER_DETAIL_COLUMN_ORDER_STORAGE_KEY = 'hbweb_rv.containerDetail.columnOrder.v1'") &&
+    pageSource.includes('localStorage.setItem(CONTAINER_DETAIL_COLUMN_ORDER_STORAGE_KEY') &&
+    pageSource.includes('mergeContainerDetailColumnOrder('),
+  true,
+  '货柜明细列顺序应保存到固定 localStorage key，并兼容列增删',
+)
+assertEqual(
+  pageSource.includes('const draggableColumnKeys = baseColumns.map((column) => String(column.key) as ContainerDetailTableColumnKey)') &&
+    pageSource.includes('rowSelection={{') &&
+    !pageSource.includes("columnOrder.includes('selection')"),
+  true,
+  '货柜明细选择列仍应由 rowSelection 管理，不能进入业务列拖拽顺序',
 )
 assertEqual(pageSource.includes('className="container-detail-table"'), true, '货柜明细表格应挂载专属 class 以隔离垂直对齐样式')
 assertEqual(
