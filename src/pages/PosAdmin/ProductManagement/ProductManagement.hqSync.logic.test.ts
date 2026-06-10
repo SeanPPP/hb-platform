@@ -839,6 +839,45 @@ async function main() {
   })
   if (selectedFromHqFailure) failures.push(selectedFromHqFailure)
 
+  const batchTranslateFailure = await runTest('选中商品批量翻译应默认中文到英文并覆盖商品名称', () => {
+    assert(
+      pageSource.includes("../../../services/translationService") &&
+        pageSource.includes('batchTranslate'),
+      '页面应引入批量翻译服务',
+    )
+    assert(
+      pageSource.includes('const [translating, setTranslating] = useState(false)') &&
+        pageSource.includes('setTranslating(true)') &&
+        pageSource.includes('setTranslating(false)'),
+      '页面应维护批量翻译 loading 状态',
+    )
+    assert(
+      pageSource.includes('containsChineseText') &&
+        pageSource.includes('buildProductNameTranslationUpdates') &&
+        pageSource.includes('!containsChineseText(translatedName)'),
+      '批量翻译应过滤空结果、未变化结果和仍包含中文的结果',
+    )
+    assert(
+      pageSource.includes('const selectedRows = data.filter((row) => selectedRowKeys.includes(row.key))') &&
+        pageSource.includes('Array.from(new Set(selectedRows.map((row) => row.productName.trim())') &&
+        pageSource.includes('const translations = await batchTranslate(names)'),
+      '批量翻译应只使用当前页选中商品名称去重后调用翻译接口',
+    )
+    assert(
+      pageSource.includes('const result = await batchUpdateProducts(updates)') &&
+        pageSource.includes('productCode: row.productCode') &&
+        pageSource.includes('productName: translatedName'),
+      '批量翻译应通过批量更新接口提交 productCode 和翻译后的 productName',
+    )
+    assert(
+      pageSource.includes("t('posAdmin.products.batchTranslate', '批量翻译')") &&
+        pageSource.includes('disabled={!selectedRowKeys.length || translating}') &&
+        pageSource.includes('loading={translating}'),
+      '工具栏应提供受选中状态和 loading 控制的批量翻译按钮',
+    )
+  })
+  if (batchTranslateFailure) failures.push(batchTranslateFailure)
+
   const jobEndpointFailure = await runTest('全量和增量应创建后台 job 而不是直接等待长同步请求', () => {
     assert(
       serviceSource.includes("`${SYNC_API_BASE}/products/jobs`") &&
