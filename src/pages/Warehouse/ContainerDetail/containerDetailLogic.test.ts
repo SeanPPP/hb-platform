@@ -10,6 +10,7 @@ import {
   buildContainerDetailEnglishNameUpdates,
   buildContainerDetailMatchedDomesticDataUpdates,
   buildContainerDetailMatchStatusUpdates,
+  buildContainerDetailSaveFailureKeys,
   findContainerDetailRowsMissingChineseName,
   buildContainerDetailTagStats,
   buildContainerDetailFloatRateUpdates,
@@ -74,6 +75,16 @@ assertEqual(
   getContainerDetailEnglishName(rows[0]),
   'Detail Strawberry',
   '英文名称展示应优先读取货柜明细字段',
+)
+assertDeepEqual(
+  buildContainerDetailSaveFailureKeys('row-1', { 商品名称: '皮带' }),
+  ['row-1:商品名称'],
+  '明细保存失败 key 应区分商品名称字段，避免被同一行其它保存清除',
+)
+assertDeepEqual(
+  buildContainerDetailSaveFailureKeys('row-1', { 备注: '已确认' }),
+  ['row-1:备注'],
+  '同一行备注保存应使用独立失败 key，不能清除商品名称保存失败状态',
 )
 
 assertDeepEqual(
@@ -1217,6 +1228,29 @@ assertEqual(
   pageSource.includes('createProductsLoadingRef.current'),
   true,
   '创建新商品应使用 ref 锁防止连续点击重复提交',
+)
+assertEqual(
+  pageSource.includes('pendingDetailSavePromisesRef') &&
+    pageSource.includes('failedDetailSaveKeysRef') &&
+    pageSource.includes('buildContainerDetailSaveFailureKeys(saveKey, patch)') &&
+    pageSource.includes('flushPendingDetailSaves') &&
+    pageSource.includes('failedDetailSaveKeysRef.current.size > 0') &&
+    pageSource.indexOf('await flushPendingDetailSaves()') < pageSource.indexOf('const missingChineseNameRows = findContainerDetailRowsMissingChineseName(targetRows)') &&
+    pageSource.indexOf('await flushPendingDetailSaves()') < pageSource.indexOf('const job = await createContainerProductCreationJob({'),
+  true,
+  '创建新商品前必须等待货柜明细保存完成，避免页面已显示中文名但后台 job 读取旧库值',
+)
+assertEqual(
+  pageSource.includes('pendingDetailSaveCount > 0') &&
+    pageSource.includes('disabled: createProductsLoading || pendingDetailSaveCount > 0'),
+  true,
+  '创建新商品入口应在明细保存中禁用，避免保存竞态',
+)
+assertEqual(
+  pageSource.includes('handleDetailSaveError') &&
+    pageSource.includes('.catch(handleDetailSaveError)'),
+  true,
+  '行内保存的 fire-and-forget 调用应捕获失败，避免未处理 Promise 拒绝',
 )
 assertEqual(
   pageSource.includes('await createProduct({'),

@@ -88,6 +88,7 @@ import {
   buildContainerDetailEnglishNameUpdates,
   buildContainerDetailMatchedDomesticDataUpdates,
   buildContainerDetailMatchStatusUpdates,
+  buildContainerDetailSaveFailureKeys,
   buildContainerDetailTagStats,
   buildContainerDetailFloatRateUpdates,
   buildContainerDetailHqPushSelection,
@@ -318,9 +319,12 @@ export default function ContainerDetailPage() {
   const [recalculateCostsLoading, setRecalculateCostsLoading] = useState(false)
   const [matchDomesticDataLoading, setMatchDomesticDataLoading] = useState(false)
   const [createProductsLoading, setCreateProductsLoading] = useState(false)
+  const [pendingDetailSaveCount, setPendingDetailSaveCount] = useState(0)
   const [pendingWarehouseStatusCodes, setPendingWarehouseStatusCodes] = useState<Set<string>>(() => new Set())
   const pushToHqLoadingRef = useRef(false)
   const createProductsLoadingRef = useRef(false)
+  const pendingDetailSavePromisesRef = useRef<Set<Promise<unknown>>>(new Set())
+  const failedDetailSaveKeysRef = useRef<Set<string>>(new Set())
   const ignoreProductNameBlurRef = useRef(false)
   const [headerEditing, setHeaderEditing] = useState(false)
   const [headerForm, setHeaderForm] = useState<{
@@ -499,10 +503,47 @@ export default function ContainerDetailPage() {
     setRows((items) => items.map((item) => (rowKey(item) === key ? mergeContainerDetailPatch(item, patch) : item)))
   }
 
+  const getDetailSaveFailedMessage = () => t('containers.messages.detailSaveFailed', '货柜明细保存失败，请稍后重试')
+
+  const handleDetailSaveError = (error: unknown) => {
+    message.error(error instanceof Error ? error.message : getDetailSaveFailedMessage())
+  }
+
+  const trackDetailSavePromise = <T,>(saveKeys: string[], promise: Promise<T>) => {
+    const trackedPromise = promise.catch((error) => {
+      saveKeys.forEach((saveKey) => failedDetailSaveKeysRef.current.add(saveKey))
+      throw error
+    }).then((value) => {
+      saveKeys.forEach((saveKey) => failedDetailSaveKeysRef.current.delete(saveKey))
+      return value
+    }).finally(() => {
+      pendingDetailSavePromisesRef.current.delete(trackedPromise)
+      setPendingDetailSaveCount(pendingDetailSavePromisesRef.current.size)
+    })
+    pendingDetailSavePromisesRef.current.add(trackedPromise)
+    setPendingDetailSaveCount(pendingDetailSavePromisesRef.current.size)
+    return trackedPromise
+  }
+
+  const flushPendingDetailSaves = async () => {
+    const pendingSaves = Array.from(pendingDetailSavePromisesRef.current)
+    if (pendingSaves.length) {
+      await Promise.all(pendingSaves)
+    }
+    if (failedDetailSaveKeysRef.current.size > 0) {
+      throw new Error(getDetailSaveFailedMessage())
+    }
+  }
+
   const saveRowPatch = async (row: ContainerDetail, patch: Partial<ContainerDetail>) => {
     if (!access.canEditContainer || !row.hguid) return
-    patchRow(rowKey(row), patch)
-    await batchUpdateDetails([{ hguid: row.hguid, ...patch } as UpdateContainerDetailRequest])
+    const saveKey = rowKey(row)
+    patchRow(saveKey, patch)
+    // 商品名称最终写回 DomesticProduct；创建新商品前必须等待这里落库，避免后台 job 读取旧中文名。
+    await trackDetailSavePromise(
+      buildContainerDetailSaveFailureKeys(saveKey, patch),
+      batchUpdateDetails([{ hguid: row.hguid, ...patch } as UpdateContainerDetailRequest]),
+    )
   }
 
   const startEditingProductName = (row: ContainerDetail) => {
@@ -530,7 +571,7 @@ export default function ContainerDetailPage() {
       ignoreProductNameBlurRef.current = false
       return
     }
-    void commitProductNameEdit(row)
+    void commitProductNameEdit(row).catch(handleDetailSaveError)
   }
 
   const applyDetailUpdatesToRows = (updates: UpdateContainerDetailRequest[]) => {
@@ -575,7 +616,7 @@ export default function ContainerDetailPage() {
     const update = updates[0]
     if (!update) return
     applyDetailUpdatesToRows(updates)
-    await batchUpdateDetails(updates)
+    await trackDetailSavePromise(buildContainerDetailSaveFailureKeys(rowKey(row), update), batchUpdateDetails(updates))
   }
 
   const applyFloatRate = async () => {
@@ -1184,6 +1225,12 @@ export default function ContainerDetailPage() {
       message.warning(t('containers.messages.noEligibleNewProducts'))
       return
     }
+    try {
+      await flushPendingDetailSaves()
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : t('containers.messages.detailSaveFailed', '货柜明细保存失败，请稍后重试'))
+      return
+    }
     const missingChineseNameRows = findContainerDetailRowsMissingChineseName(targetRows)
     if (missingChineseNameRows.length) {
       message.warning(t(
@@ -1549,7 +1596,7 @@ export default function ContainerDetailPage() {
                 }
                 if (event.key === 'Enter' && !event.shiftKey) {
                   event.preventDefault()
-                  void commitProductNameEdit(row)
+                  void commitProductNameEdit(row).catch(handleDetailSaveError)
                 }
               }}
             />
@@ -1578,7 +1625,7 @@ export default function ContainerDetailPage() {
           autoSize={{ minRows: 1, maxRows: 2 }}
           style={{ resize: 'none' }}
           onChange={(event) => patchRow(rowKey(row), { 英文名称: event.target.value })}
-          onBlur={(event) => void saveRowPatch(row, { 英文名称: event.target.value })}
+          onBlur={(event) => void saveRowPatch(row, { 英文名称: event.target.value }).catch(handleDetailSaveError)}
         />
       ) : <TwoLineText value={getContainerDetailEnglishName(row)} />,
     },
@@ -1655,7 +1702,7 @@ export default function ContainerDetailPage() {
             onChange={(value) => patchRow(rowKey(row), { 调整浮率: value == null ? undefined : Number(value) })}
             onBlur={(event) => {
               const value = event.target.value ? Number(event.target.value) : undefined
-              void saveFloatRatePatch(row, value)
+              void saveFloatRatePatch(row, value).catch(handleDetailSaveError)
             }}
           />
         ) : renderNumericCell(formatNumber(row.调整浮率, 4)),
@@ -1693,7 +1740,7 @@ export default function ContainerDetailPage() {
             precision={2}
             style={{ width: 78 }}
             onChange={(value) => patchRow(rowKey(row), { 进口价格: value == null ? undefined : Number(value) })}
-            onBlur={(event) => void saveRowPatch(row, { 进口价格: event.target.value ? Number(event.target.value) : undefined })}
+            onBlur={(event) => void saveRowPatch(row, { 进口价格: event.target.value ? Number(event.target.value) : undefined }).catch(handleDetailSaveError)}
           />
         ) : renderNumericCell(formatNumber(row.进口价格)),
     },
@@ -1705,7 +1752,7 @@ export default function ContainerDetailPage() {
       ...makeSortProps('oemPrice'),
       ...numberFilterProps('oemPrice'),
       render: (_value, row) =>
-        access.canEditContainer ? <InputNumber defaultValue={row.贴牌价格} min={0} precision={2} style={{ width: 78 }} onBlur={(event) => void saveRowPatch(row, { 贴牌价格: event.target.value ? Number(event.target.value) : undefined })} /> : renderNumericCell(formatNumber(row.贴牌价格)),
+        access.canEditContainer ? <InputNumber defaultValue={row.贴牌价格} min={0} precision={2} style={{ width: 78 }} onBlur={(event) => void saveRowPatch(row, { 贴牌价格: event.target.value ? Number(event.target.value) : undefined }).catch(handleDetailSaveError)} /> : renderNumericCell(formatNumber(row.贴牌价格)),
     },
     {
       title: renderColumnTitle('warehouseStatus', t('containers.fields.warehouseStatus')),
@@ -1743,7 +1790,7 @@ export default function ContainerDetailPage() {
       ...makeSortProps('remark'),
       ...textFilterProps('remark', t('containers.placeholders.filterRemark', '备注过滤')),
       render: (_, row) =>
-        access.canEditContainer ? <Input defaultValue={row.备注} onBlur={(event) => void saveRowPatch(row, { 备注: event.target.value })} /> : row.备注 || '--',
+        access.canEditContainer ? <Input defaultValue={row.备注} onBlur={(event) => void saveRowPatch(row, { 备注: event.target.value }).catch(handleDetailSaveError)} /> : row.备注 || '--',
     },
   ]
 
@@ -1894,7 +1941,7 @@ export default function ContainerDetailPage() {
                           { key: 'editEnglishName', label: t('containers.actions.batchEditEnglishName') },
                           { key: 'clearEnglishName', label: t('containers.actions.clearEnglishNames') },
                           ...(canCreateContainerProducts
-                            ? [{ key: 'createNew', label: t('containers.actions.createNewProducts'), disabled: createProductsLoading }]
+                            ? [{ key: 'createNew', label: t('containers.actions.createNewProducts'), disabled: createProductsLoading || pendingDetailSaveCount > 0 }]
                             : []),
                           { key: 'updatePurchase', label: t('containers.actions.updateExistingPurchase') },
                           { key: 'active', label: t('containers.actions.batchActivate') },

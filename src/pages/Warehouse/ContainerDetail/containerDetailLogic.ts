@@ -201,6 +201,14 @@ export function mergeContainerDetailPatch(row: ContainerDetail, patch: Partial<C
   return next
 }
 
+export function buildContainerDetailSaveFailureKeys(rowKey: string, patch: object) {
+  const fields = Object.keys(patch).filter((key) => key !== 'hguid').sort()
+  if (!fields.length) {
+    return [`${rowKey}:__row__`]
+  }
+  return fields.map((field) => `${rowKey}:${field}`)
+}
+
 export function matchesContainerDetailTagFilter(row: ContainerDetail, filter: ContainerDetailTagFilter) {
   if (filter === 'new') return Boolean(row.是否新商品)
   if (filter === 'existing') return !row.是否新商品
