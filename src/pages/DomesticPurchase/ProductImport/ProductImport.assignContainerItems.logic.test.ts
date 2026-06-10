@@ -64,6 +64,16 @@ assertDeepEqual(
 )
 
 assertDeepEqual(
+  [
+    pageSource.includes('searchText: [s.supplierCode, s.supplierName, s.shopNumber]'),
+    pageSource.includes('String(option?.searchText || option?.label || option?.value || \'\').toLowerCase()'),
+    pageSource.includes('label: `${s.supplierCode} - ${s.supplierName}${s.shopNumber ? ` - ${s.shopNumber}` : \'\'}'),
+  ],
+  [true, true, true],
+  '商品导入供应商搜索应覆盖编码、名称、店号和完整展示文本',
+)
+
+assertDeepEqual(
   buildAssignContainerItems([
     createProduct({
       newProduct: {

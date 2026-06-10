@@ -812,11 +812,17 @@ export default function ProductImportPage() {
           showSearch
           loading={loadingSuppliers}
           filterOption={(input, option) => {
-            const supplier = suppliers.find((s) => s.supplierCode === option?.value)
-            if (!supplier) return false
-            return supplier.supplierName?.toLowerCase().includes(input.toLowerCase()) || supplier.supplierCode?.toLowerCase().includes(input.toLowerCase()) || false
+            const keyword = input.trim().toLowerCase()
+            if (!keyword) return true
+            const searchText = String(option?.searchText || option?.label || option?.value || '').toLowerCase()
+            return searchText.includes(keyword)
           }}
-          options={suppliers.sort((a, b) => (a.supplierCode || '').localeCompare(b.supplierCode || '')).map((s) => ({ label: `${s.supplierCode} - ${s.supplierName}${s.shopNumber ? ` - ${s.shopNumber}` : ''}`, value: s.supplierCode }))}
+          options={suppliers.sort((a, b) => (a.supplierCode || '').localeCompare(b.supplierCode || '')).map((s) => ({
+            label: `${s.supplierCode} - ${s.supplierName}${s.shopNumber ? ` - ${s.shopNumber}` : ''}`,
+            value: s.supplierCode,
+            // 供应商下拉搜索覆盖完整展示信息，店号/附加编码也能直接命中。
+            searchText: [s.supplierCode, s.supplierName, s.shopNumber].filter(Boolean).join(' '),
+          }))}
         />
       </div>
 
