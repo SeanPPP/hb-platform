@@ -24,6 +24,9 @@ const COLUMN_KEY_TO_EDITABLE: Record<string, string | null> = {
   casePackQuantity: 'casePackQuantity', volume: 'volume',
 }
 
+const PRODUCT_IMPORT_BASE_TABLE_SCROLL_X = 1280
+const PRODUCT_IMPORT_DETECTED_TABLE_SCROLL_X = 2500
+
 export default function ProductImportPage() {
   const { t } = useTranslation()
   const [state, setState] = useState<PageState>({
@@ -52,6 +55,8 @@ export default function ProductImportPage() {
   const [duplicateGroups, setDuplicateGroups] = useState<DuplicateGroup[]>([])
   const [selectedColumnKey, setSelectedColumnKey] = useState<string | null>(null)
   const [tableScrollY, setTableScrollY] = useState(500)
+  // 检测前列数少，不能沿用检测后宽度，否则 AntD 会把基础列横向拉宽。
+  const productImportTableScrollX = showStatistics ? PRODUCT_IMPORT_DETECTED_TABLE_SCROLL_X : PRODUCT_IMPORT_BASE_TABLE_SCROLL_X
 
   useEffect(() => {
     const load = async () => {
@@ -873,11 +878,12 @@ export default function ProductImportPage() {
       <div ref={productImportTableRef}>
         <Table
           className="product-import-table"
+          style={{ '--product-import-table-body-height': `${tableScrollY}px` } as React.CSSProperties}
           columns={columns}
           dataSource={state.products}
           rowKey="id"
           size="small"
-          scroll={{ x: 2200, y: tableScrollY }}
+          scroll={{ x: productImportTableScrollX, y: tableScrollY }}
           rowClassName={getRowClassName}
           rowSelection={{ selectedRowKeys: state.selectedIds, onChange: (keys) => setState((prev) => ({ ...prev, selectedIds: keys as string[], statistics: calculateStatistics(prev.products, keys as string[]) })) }}
           pagination={false}

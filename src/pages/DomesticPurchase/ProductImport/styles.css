@@ -16,3 +16,9 @@
 td.col-selected {
   background-color: #e6f7ff !important;
 }
+
+/* 导入明细表需要占满页面剩余高度，行数少时也保留固定工作区。 */
+.product-import-table .ant-table-body {
+  height: var(--product-import-table-body-height) !important;
+  overflow-y: auto !important;
+}

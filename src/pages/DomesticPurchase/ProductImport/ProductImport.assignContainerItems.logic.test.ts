@@ -36,6 +36,7 @@ function createProduct(overrides: Partial<ProductImportItem>): ProductImportItem
 }
 
 const pageSource = readFileSync('src/pages/DomesticPurchase/ProductImport/index.tsx', 'utf8')
+const pageStyleSource = readFileSync('src/pages/DomesticPurchase/ProductImport/styles.css', 'utf8')
 
 assertDeepEqual(
   [
@@ -54,13 +55,19 @@ assertDeepEqual(
     pageSource.includes('window.addEventListener(\'resize\', updateTableScrollY)'),
     pageSource.includes('window.removeEventListener(\'resize\', updateTableScrollY)'),
     pageSource.includes('className="product-import-table"'),
-    pageSource.includes('scroll={{ x: 2200, y: tableScrollY }}'),
+    pageSource.includes('const PRODUCT_IMPORT_BASE_TABLE_SCROLL_X = 1280'),
+    pageSource.includes('const PRODUCT_IMPORT_DETECTED_TABLE_SCROLL_X = 2500'),
+    pageSource.includes('const productImportTableScrollX = showStatistics ? PRODUCT_IMPORT_DETECTED_TABLE_SCROLL_X : PRODUCT_IMPORT_BASE_TABLE_SCROLL_X'),
+    pageSource.includes('scroll={{ x: productImportTableScrollX, y: tableScrollY }}'),
+    pageSource.includes('\'--product-import-table-body-height\': `${tableScrollY}px`'),
+    pageStyleSource.includes('.product-import-table .ant-table-body'),
+    pageStyleSource.includes('height: var(--product-import-table-body-height) !important;'),
     pageSource.includes('rowSelection={{ selectedRowKeys: state.selectedIds'),
     pageSource.includes('const handlePaste = useCallback((e: ClipboardEvent) => {'),
     pageSource.includes('const resolveColumnKeyFromTd = useCallback((td: HTMLTableCellElement): string | null => {'),
   ],
-  [true, true, true, true, true, true, true, true, true],
-  '商品导入表格应使用视口剩余高度并保留粘贴和选择交互',
+  [true, true, true, true, true, true, true, true, true, true, true, true, true, true, true],
+  '商品导入表格应使用视口剩余高度和当前列宽填满页面并保留粘贴和选择交互',
 )
 
 assertDeepEqual(
