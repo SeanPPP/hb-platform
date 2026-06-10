@@ -282,6 +282,16 @@ export default function TabsLayout() {
         }}
       />
       <Tabs.Screen
+        name="promotions"
+        options={{
+          href: isRouteVisible("promotions") ? undefined : null,
+          title: t("tabs.promotions"),
+          tabBarIcon: ({ color, size }) => (
+            <MaterialCommunityIcons name="ticket-percent-outline" color={color} size={size} />
+          ),
+        }}
+      />
+      <Tabs.Screen
         name="store-vouchers"
         options={{
           href: isRouteVisible("store-vouchers") ? undefined : null,

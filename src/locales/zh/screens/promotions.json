@@ -1,0 +1,80 @@
+{
+  "title": "促销",
+  "subtitle": "当前门店：{{store}}",
+  "actions": {
+    "create": "新建促销",
+    "edit": "编辑",
+    "copyToStore": "复制到本店",
+    "addProduct": "添加商品"
+  },
+  "filters": {
+    "keyword": "搜索促销名称"
+  },
+  "scope": {
+    "storeOnly": "本店",
+    "multiStore": "多店",
+    "headquarters": "总部",
+    "unknown": "未知"
+  },
+  "status": {
+    "enabled": "已启用",
+    "disabled": "已停用",
+    "exclusive": "排他",
+    "stackable": "可叠加"
+  },
+  "fields": {
+    "unnamed": "未命名促销",
+    "name": "促销名称",
+    "description": "说明",
+    "effectiveStart": "开始时间",
+    "effectiveEnd": "结束时间",
+    "applyQuantity": "满足数量",
+    "fixedPrice": "组合价",
+    "priority": "优先级",
+    "enabled": "启用",
+    "exclusive": "排他促销",
+    "productCode": "商品编码",
+    "unitWeight": "权重",
+    "priorityValue": "优先级 {{value}}",
+    "ruleValue": "满 {{count}} 件 ${{price}}",
+    "productsAndStores": "{{products}} 个商品 · {{stores}} 个门店"
+  },
+  "form": {
+    "createTitle": "新建本店促销",
+    "editTitle": "编辑本店促销",
+    "storeReadonly": "只应用于：{{store}}",
+    "priorityHint": "新建和复制默认优先级为 0；调高后可能影响排他促销启用冲突。",
+    "products": "商品明细"
+  },
+  "copy": {
+    "title": "复制到本店",
+    "description": "将“{{name}}”复制成只属于当前门店的新促销，然后再修改。"
+  },
+  "empty": {
+    "selectStoreTitle": "请选择门店",
+    "selectStoreDescription": "选择门店后查看本店、多店和总部促销。",
+    "noDataTitle": "暂无促销",
+    "noDataDescription": "当前门店还没有相关促销。"
+  },
+  "pagination": {
+    "previous": "上一页",
+    "next": "下一页",
+    "page": "第 {{page}} / {{pageCount}} 页"
+  },
+  "store": {
+    "empty": "未选择"
+  },
+  "messages": {
+    "selectStoreFirst": "请先选择门店",
+    "loadFailed": "加载促销失败",
+    "detailFailed": "加载促销详情失败",
+    "detailMissing": "未找到促销详情",
+    "nameRequired": "请输入促销名称",
+    "saveFailed": "保存促销失败",
+    "saved": "促销已保存",
+    "copyFailed": "复制促销失败",
+    "copied": "已复制为本店促销",
+    "copyBeforeEdit": "多店/总部促销需要先复制到本店后再修改",
+    "enableFailed": "更新启用状态失败"
+  }
+}

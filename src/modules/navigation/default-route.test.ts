@@ -194,6 +194,12 @@ assertEqual(
 );
 
 assertEqual(
+  TAB_PATHS.promotions,
+  "/(tabs)/promotions",
+  "promotions route is registered as a valid tab path"
+);
+
+assertEqual(
   TAB_PATHS["store-vouchers"],
   "/(tabs)/store-vouchers",
   "store vouchers route is registered as a valid tab path"
@@ -236,6 +242,17 @@ assertEqual(
   }),
   null,
   "advertisements route is allowed when app menu exposes it"
+);
+
+assertEqual(
+  resolveTabRouteCorrection({
+    currentRouteName: "promotions",
+    hasAppliedDefaultRoute: true,
+    isDeviceMode: false,
+    routeNames: ["home", "promotions", "settings"],
+  }),
+  null,
+  "promotions route is allowed when app menu exposes it"
 );
 
 assertEqual(
