@@ -2,6 +2,7 @@ using System.Reflection;
 using System.Runtime.CompilerServices;
 using AutoMapper;
 using BlazorApp.Api.Data;
+using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Api.Services;
 using BlazorApp.Api.Services.React;
@@ -146,6 +147,37 @@ public sealed class ContainerProductCreationServiceTests : IDisposable
         Assert.Equal(2, result.SkippedCount);
         Assert.Contains(result.Skipped, item => item.DetailHguid == "D-MISSING-EN" && item.ReasonCode == "MISSING_ENGLISH_NAME");
         Assert.Contains(result.Skipped, item => item.DetailHguid == "D-SET-CHILD" && item.ReasonCode == "MISSING_SET_RELATION");
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_UsesChineseNameWrittenByBatchUpdateDetails()
+    {
+        await InsertActiveStoreAsync("S001");
+        await InsertContainerDetailAsync("D-NAME-SAVED", "C001", "P-NAME-SAVED", "普通商品", 1.2m, 3.4m);
+        await InsertDomesticProductAsync("P-NAME-SAVED", "HB-NAME-SAVED", null, "Saved Belt", 0);
+        var containerReactService = CreateContainerReactService();
+        await containerReactService.BatchUpdateDetailsAsync(
+            new List<UpdateContainerDetailDto>
+            {
+                new() { HGUID = "D-NAME-SAVED", 商品名称 = "保存后的皮带" },
+            }
+        );
+        var service = CreateService();
+
+        var result = await service.ExecuteAsync(
+            new ContainerProductCreationJobRequestDto
+            {
+                OperationId = "op-name-saved",
+                ContainerGuid = "C001",
+                DetailHguids = new List<string> { "D-NAME-SAVED" },
+            }
+        );
+
+        Assert.Equal(1, result.CreatedCount);
+        Assert.Equal(0, result.SkippedCount);
+        Assert.DoesNotContain(result.Skipped, item => item.ReasonCode == "MISSING_CHINESE_NAME");
+        var domesticProduct = await _db.Queryable<DomesticProduct>().SingleAsync(p => p.ProductCode == "P-NAME-SAVED");
+        Assert.Equal("保存后的皮带", domesticProduct.ProductName);
     }
 
     [Fact]
@@ -436,6 +468,32 @@ public sealed class ContainerProductCreationServiceTests : IDisposable
         );
     }
 
+    private ContainerReactService CreateContainerReactService()
+    {
+        return new ContainerReactService(
+            CreateSqlSugarContext(_db),
+            CreateHqSqlSugarContext(),
+            CreateHBSalesSqlSugarContext(),
+            new ConfigurationBuilder().Build(),
+            Mock.Of<IMapper>(),
+            NullLogger<ContainerReactService>.Instance,
+            Mock.Of<IContainerHqSyncService>(),
+            CreateTranslationServiceMock()
+        );
+    }
+
+    private static ITranslationService CreateTranslationServiceMock()
+    {
+        var translationService = new Mock<ITranslationService>();
+        translationService
+            .Setup(service => service.ContainsChinese(It.IsAny<string>()))
+            .Returns((string value) => value.Any(ch => ch >= '\u4e00' && ch <= '\u9fff'));
+        translationService
+            .Setup(service => service.BatchTranslateToEnglishAsync(It.IsAny<List<string>>()))
+            .ReturnsAsync((List<string> values) => values.ToDictionary(value => value, value => value));
+        return translationService.Object;
+    }
+
     private static SqlSugarContext CreateSqlSugarContext(ISqlSugarClient db)
     {
         var context = (SqlSugarContext)RuntimeHelpers.GetUninitializedObject(
@@ -459,6 +517,25 @@ public sealed class ContainerProductCreationServiceTests : IDisposable
             BindingFlags.Instance | BindingFlags.NonPublic
         );
         dbField!.SetValue(context, new Mock<ISqlSugarClient>().Object);
+        return context;
+    }
+
+    private static HBSalesSqlSugarContext CreateHBSalesSqlSugarContext()
+    {
+        var context = (HBSalesSqlSugarContext)RuntimeHelpers.GetUninitializedObject(
+            typeof(HBSalesSqlSugarContext)
+        );
+        var dbField = typeof(HBSalesSqlSugarContext).GetField(
+            "_db",
+            BindingFlags.Instance | BindingFlags.NonPublic
+        );
+        dbField!.SetValue(context, new SqlSugarScope(new ConnectionConfig
+        {
+            ConnectionString = "Data Source=:memory:",
+            DbType = DbType.Sqlite,
+            IsAutoCloseConnection = true,
+            InitKeyType = InitKeyType.Attribute,
+        }));
         return context;
     }
 
