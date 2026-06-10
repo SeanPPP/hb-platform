@@ -64,6 +64,8 @@ export interface ContainerDetail {
   warehouseImportPrice?: number
   warehouseOEMPrice?: number
   warehouseIsActive?: boolean
+  matchType?: 'productCode' | 'supplierItem' | 'unmatched'
+  MatchType?: string
 }
 
 export interface ContainerQueryRequest {
@@ -115,6 +117,8 @@ export interface UpdateContainerDetailRequest {
   合计装柜金额?: number
   IsActive?: boolean
   SkipRelatedProductSync?: boolean
+  matchType?: ContainerDetail['matchType']
+  是否新商品?: boolean
 }
 
 export interface CreateContainerRequest {

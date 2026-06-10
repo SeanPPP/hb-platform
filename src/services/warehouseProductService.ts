@@ -224,13 +224,19 @@ export interface DetectionItem {
   ProductCode?: string
   ItemNumber?: string
   Barcode?: string
+  SupplierCode?: string
+  supplierCode?: string
 }
 
 export interface DetectionResult {
   ProductCode?: string
   ItemNumber?: string
+  SupplierCode?: string
+  Barcode?: string
   Exists?: boolean
   MatchType?: string
+  exists?: boolean
+  matchType?: string
   ProductName?: string
   EnglishName?: string
   WarehouseDomesticPrice?: number
@@ -243,6 +249,9 @@ export interface DetectionResult {
   DomesticImportPrice?: number
   WarehouseIsActive?: boolean
   productCode?: string
+  itemNumber?: string
+  supplierCode?: string
+  barcode?: string
   productName?: string
   englishName?: string
   warehouseDomesticPrice?: number

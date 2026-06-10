@@ -84,17 +84,21 @@ import {
   applyContainerDetailWarehouseStatusByProductCodes,
   applyContainerDetailColumnState,
   buildContainerDetailClearEnglishNameUpdates,
+  buildContainerDetailDetectionItems,
   buildContainerDetailEnglishNameUpdates,
   buildContainerDetailMatchedDomesticDataUpdates,
+  buildContainerDetailMatchStatusUpdates,
   buildContainerDetailTagStats,
   buildContainerDetailFloatRateUpdates,
   buildContainerDetailHqPushSelection,
   buildContainerDetailTranslationUpdates,
   countContainerDetailInvalidTranslationResults,
   extractPushToHqErrorResult,
+  findContainerDetailRowsMissingChineseName,
   getContainerDetailBarcode,
   getContainerDetailEnglishName,
   getContainerDetailItemNumber,
+  getContainerDetailMatchType,
   getContainerDetailProductCode,
   getContainerDetailProductName,
   getContainerDetailTranslationSource,
@@ -105,6 +109,7 @@ import {
   mergeContainerDetailPatch,
   rollbackContainerDetailWarehouseStatuses,
   type ContainerDetailColumnFilters,
+  type ContainerDetailMatchTypeFilter,
   type ContainerDetailNewProductFilter,
   type ContainerDetailNumberRangeFilter,
   type ContainerDetailProductTypeFilter,
@@ -119,7 +124,7 @@ import './index.css'
 type ProductTypeFilter = 'all' | 'normal' | 'set' | 'setChild'
 type TextColumnFilterKey = 'itemNumber' | 'barcode' | 'productName' | 'englishName' | 'remark'
 type NumberColumnFilterKey = 'containerPieces' | 'containerQuantity' | 'domesticPrice' | 'floatRate' | 'transportCost' | 'warehouseImportPrice' | 'importPrice' | 'oemPrice'
-type EnumColumnFilterKey = 'productTypes' | 'newProductStates' | 'warehouseStatus'
+type EnumColumnFilterKey = 'productTypes' | 'newProductStates' | 'matchTypes' | 'warehouseStatus'
 
 function formatDate(value?: string) {
   return value ? dayjs(value).format('YYYY-MM-DD') : '--'
@@ -174,6 +179,21 @@ function getProductTypeFilterLabel(value: ProductTypeFilter, t: TFunction) {
   return t(map[value])
 }
 
+function getMatchTypeLabel(value: ContainerDetailMatchTypeFilter, t: TFunction) {
+  const map: Record<ContainerDetailMatchTypeFilter, string> = {
+    productCode: 'containers.matchTypes.productCode',
+    supplierItem: 'containers.matchTypes.supplierItem',
+    unmatched: 'containers.matchTypes.unmatched',
+  }
+  return t(map[value])
+}
+
+function getMatchTypeTagColor(value: ContainerDetailMatchTypeFilter) {
+  if (value === 'productCode') return 'green'
+  if (value === 'supplierItem') return 'gold'
+  return 'red'
+}
+
 function CopyableText({ value, maxWidth }: { value?: string; maxWidth?: number }) {
   if (!value) {
     return <>--</>
@@ -226,7 +246,7 @@ function renderColumnTitle(key: ContainerDetailSortField, value: ReactNode) {
   return <span data-column-key={key} className="container-detail-header-title">{value}</span>
 }
 
-const CONTAINER_DETAIL_TABLE_SCROLL_X = 1840
+const CONTAINER_DETAIL_TABLE_SCROLL_X = 1940
 const CONTAINER_DETAIL_TABLE_SCROLL_Y = 620
 
 function getContainerDetailViewport() {
@@ -289,6 +309,8 @@ export default function ContainerDetailPage() {
   const [batchEnglishName, setBatchEnglishName] = useState('')
   const [batchEnglishNameModalOpen, setBatchEnglishNameModalOpen] = useState(false)
   const [batchEnglishNameSaving, setBatchEnglishNameSaving] = useState(false)
+  const [editingProductNameRowKey, setEditingProductNameRowKey] = useState<string | null>(null)
+  const [editingProductNameValue, setEditingProductNameValue] = useState('')
   const [exporting, setExporting] = useState(false)
   const [exportProgress, setExportProgress] = useState(0)
   const [hqTranslating, setHqTranslating] = useState(false)
@@ -299,6 +321,7 @@ export default function ContainerDetailPage() {
   const [pendingWarehouseStatusCodes, setPendingWarehouseStatusCodes] = useState<Set<string>>(() => new Set())
   const pushToHqLoadingRef = useRef(false)
   const createProductsLoadingRef = useRef(false)
+  const ignoreProductNameBlurRef = useRef(false)
   const [headerEditing, setHeaderEditing] = useState(false)
   const [headerForm, setHeaderForm] = useState<{
     实际到货日期?: Dayjs | null
@@ -309,6 +332,30 @@ export default function ContainerDetailPage() {
   }>({})
 
   useDynamicTabTitle(container?.货柜编号 ? t('containers.detailTitleWithNumber', { number: container.货柜编号 }) : undefined)
+
+  const reconcileLoadedMatchStatus = async (products: ContainerDetail[], requestId: number) => {
+    const rowsNeedingMatchStatus = products.filter((row) => getContainerDetailProductCode(row) || getContainerDetailItemNumber(row))
+    const detectionItems = buildContainerDetailDetectionItems(rowsNeedingMatchStatus)
+    if (!detectionItems.length) return
+
+    try {
+      const detected = await detectProducts(detectionItems)
+      if (containerDetailLoadRequestIdRef.current !== requestId) {
+        return
+      }
+      const updates = buildContainerDetailMatchStatusUpdates(rowsNeedingMatchStatus, detected)
+      if (!updates.length) return
+      // 加载态只校正表格展示状态，不写库，避免打开页面时产生业务字段副作用。
+      setRows((items) =>
+        items.map((item) => {
+          const match = updates.find((update) => update.hguid === item.hguid)
+          return match ? mergeContainerDetailPatch(item, match as Partial<ContainerDetail>) : item
+        }),
+      )
+    } catch (error) {
+      console.error('货柜明细匹配状态校正失败', error)
+    }
+  }
 
   const loadData = async (showLoading = true) => {
     if (!containerGuid) {
@@ -339,6 +386,7 @@ export default function ContainerDetailPage() {
       })
       setRows(products)
       setSelectedRowKeys([])
+      void reconcileLoadedMatchStatus(products, currentRequestId)
     } catch (error) {
       if (containerDetailLoadRequestIdRef.current !== currentRequestId) {
         return
@@ -457,6 +505,34 @@ export default function ContainerDetailPage() {
     await batchUpdateDetails([{ hguid: row.hguid, ...patch } as UpdateContainerDetailRequest])
   }
 
+  const startEditingProductName = (row: ContainerDetail) => {
+    if (!access.canEditContainer) return
+    ignoreProductNameBlurRef.current = false
+    setEditingProductNameRowKey(rowKey(row))
+    setEditingProductNameValue(getContainerDetailProductName(row) ?? '')
+  }
+
+  const cancelEditingProductName = () => {
+    ignoreProductNameBlurRef.current = true
+    setEditingProductNameRowKey(null)
+    setEditingProductNameValue('')
+  }
+
+  const commitProductNameEdit = async (row: ContainerDetail) => {
+    const productName = editingProductNameValue.trim()
+    ignoreProductNameBlurRef.current = true
+    cancelEditingProductName()
+    await saveRowPatch(row, { 商品名称: productName })
+  }
+
+  const handleProductNameEditBlur = (row: ContainerDetail) => {
+    if (ignoreProductNameBlurRef.current) {
+      ignoreProductNameBlurRef.current = false
+      return
+    }
+    void commitProductNameEdit(row)
+  }
+
   const applyDetailUpdatesToRows = (updates: UpdateContainerDetailRequest[]) => {
     setRows((items) =>
       items.map((item) => {
@@ -557,16 +633,10 @@ export default function ContainerDetailPage() {
       return
     }
 
-    const detectionItems = targetRows
-      .map((row) => ({
-        ProductCode: getContainerDetailProductCode(row),
-        ItemNumber: getContainerDetailItemNumber(row),
-        Barcode: getContainerDetailBarcode(row),
-      }))
-      .filter((item) => item.ProductCode || item.ItemNumber || item.Barcode)
+    const detectionItems = buildContainerDetailDetectionItems(targetRows)
 
     if (!detectionItems.length) {
-      message.warning('当前明细缺少可匹配的商品编码、货号或条码')
+      message.warning('当前明细缺少可匹配的商品编码或货号')
       return
     }
 
@@ -580,9 +650,24 @@ export default function ContainerDetailPage() {
         return
       }
 
-      await batchUpdateDetails(updates)
+      const writableUpdates = updates.filter((update) => (
+        update.国内价格 != null ||
+        update.贴牌价格 != null ||
+        update.商品名称 != null ||
+        update.英文名称 != null ||
+        update.单件装箱数 != null ||
+        update.装柜数量 != null ||
+        update.单件体积 != null ||
+        update.合计装柜体积 != null ||
+        update.合计装柜金额 != null ||
+        update.运输成本 != null ||
+        update.进口价格 != null
+      ))
+      if (writableUpdates.length) {
+        // 匹配方式只用于当前表格展示，批量保存接口只提交它支持的业务字段。
+        await batchUpdateDetails(writableUpdates)
+      }
       applyDetailUpdatesToRows(updates)
-      await loadData(false)
       const pricePatchCount = updates.filter((update) => update.国内价格 != null || update.贴牌价格 != null).length
       message.success(`已更新 ${updates.length} 条明细，补齐价格 ${pricePatchCount} 条`)
     } catch (error) {
@@ -1099,6 +1184,15 @@ export default function ContainerDetailPage() {
       message.warning(t('containers.messages.noEligibleNewProducts'))
       return
     }
+    const missingChineseNameRows = findContainerDetailRowsMissingChineseName(targetRows)
+    if (missingChineseNameRows.length) {
+      message.warning(t(
+        'containers.messages.createProductsMissingChineseName',
+        '请双击商品名称列填写中文商品名后再创建新商品：{{items}}',
+        { items: missingChineseNameRows.map((row) => row.label).join('、') },
+      ))
+      return
+    }
     const operationId = buildContainerCreateProductsOperationId(containerGuid, detailHguids)
 
     try {
@@ -1435,7 +1529,42 @@ export default function ContainerDetailPage() {
       width: 180,
       ...makeSortProps('productName'),
       ...textFilterProps('productName', t('containers.placeholders.filterProductName', '商品名称过滤')),
-      render: (_, row) => <TwoLineText value={getContainerDetailProductName(row)} />,
+      render: (_, row) => {
+        const key = rowKey(row)
+        if (access.canEditContainer && editingProductNameRowKey === key) {
+          return (
+            <Input.TextArea
+              autoFocus
+              className="container-detail-product-name-input"
+              value={editingProductNameValue}
+              autoSize={{ minRows: 1, maxRows: 2 }}
+              style={{ resize: 'none' }}
+              onChange={(event) => setEditingProductNameValue(event.target.value)}
+              onBlur={() => handleProductNameEditBlur(row)}
+              onKeyDown={(event) => {
+                if (event.key === 'Escape') {
+                  event.preventDefault()
+                  cancelEditingProductName()
+                  return
+                }
+                if (event.key === 'Enter' && !event.shiftKey) {
+                  event.preventDefault()
+                  void commitProductNameEdit(row)
+                }
+              }}
+            />
+          )
+        }
+
+        return (
+          <div
+            className={access.canEditContainer ? 'container-detail-product-name-editable' : undefined}
+            onDoubleClick={() => startEditingProductName(row)}
+          >
+            <TwoLineText value={getContainerDetailProductName(row)} />
+          </div>
+        )
+      },
     },
     {
       title: renderColumnTitle('englishName', t('containers.fields.englishName')),
@@ -1469,6 +1598,19 @@ export default function ContainerDetailPage() {
         label: value === 'new' ? t('containers.tags.newProduct') : t('containers.tags.existingProduct'),
       }))),
       render: (_, row) => (row.是否新商品 ? <Tag color="blue">{t('containers.tags.new')}</Tag> : <Tag>{t('containers.tags.existing')}</Tag>),
+    },
+    {
+      title: renderColumnTitle('matchType', t('containers.fields.matchType')),
+      width: 116,
+      ...makeSortProps('matchType'),
+      ...enumFilterProps('matchTypes', (['productCode', 'supplierItem', 'unmatched'] as ContainerDetailMatchTypeFilter[]).map((value) => ({
+        value,
+        label: getMatchTypeLabel(value, t),
+      }))),
+      render: (_, row) => {
+        const matchType = getContainerDetailMatchType(row)
+        return <Tag color={getMatchTypeTagColor(matchType)}>{getMatchTypeLabel(matchType, t)}</Tag>
+      },
     },
     {
       title: renderColumnTitle('containerPieces', t('containers.fields.containerPieces')),

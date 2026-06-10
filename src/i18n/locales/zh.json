@@ -128,6 +128,7 @@
       "englishName": "英文名称",
       "productType": "类型",
       "newProduct": "新商品",
+      "matchType": "匹配方式",
       "containerPieces": "装柜件数",
       "containerQuantity": "装柜数量",
       "domesticPrice": "国内价格",
@@ -137,6 +138,11 @@
       "importPrice": "进口价格",
       "oemPrice": "贴牌价格",
       "warehouseStatus": "仓库状态"
+    },
+    "matchTypes": {
+      "productCode": "商品编码匹配",
+      "supplierItem": "供应商编码+货号",
+      "unmatched": "未匹配"
     },
     "columns": {
       "index": "编号",
@@ -228,6 +234,7 @@
       "hqTranslationFailed": "翻译 HQ 数据失败",
       "hqTranslationResultSummary": "候选 {{candidates}} 条，已翻译 {{translated}} 条，跳过 {{skipped}} 条，失败 {{failed}} 条",
       "noEligibleNewProducts": "没有符合条件的新商品",
+      "createProductsMissingChineseName": "请双击商品名称列填写中文商品名后再创建新商品：{{items}}",
       "newProductsCreated": "已创建 {{count}} 个新商品",
       "noExistingProductsToUpdate": "没有可更新的已存在商品",
       "noPurchasePriceDiff": "没有可更新的有效价格",

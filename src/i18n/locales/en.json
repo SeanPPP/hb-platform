@@ -128,6 +128,7 @@
       "englishName": "English Name",
       "productType": "Type",
       "newProduct": "New Product",
+      "matchType": "Match Type",
       "containerPieces": "Container Pieces",
       "containerQuantity": "Container Qty",
       "domesticPrice": "Domestic Price",
@@ -137,6 +138,11 @@
       "importPrice": "Import Price",
       "oemPrice": "OEM Price",
       "warehouseStatus": "Warehouse Status"
+    },
+    "matchTypes": {
+      "productCode": "Product Code",
+      "supplierItem": "Supplier Code + Item No.",
+      "unmatched": "Unmatched"
     },
     "columns": {
       "index": "No.",
@@ -228,6 +234,7 @@
       "hqTranslationFailed": "Failed to translate HQ data",
       "hqTranslationResultSummary": "{{candidates}} candidates, {{translated}} translated, {{skipped}} skipped, {{failed}} failed",
       "noEligibleNewProducts": "No eligible new products",
+      "createProductsMissingChineseName": "Double-click the Product Name column and enter a Chinese product name before creating new products: {{items}}",
       "newProductsCreated": "Created {{count}} new products",
       "noExistingProductsToUpdate": "No existing products to update",
       "noPurchasePriceDiff": "No valid product price to update",

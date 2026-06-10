@@ -75,6 +75,16 @@
   word-break: break-word;
 }
 
+.container-detail-product-name-editable {
+  min-height: 32px;
+  cursor: text;
+}
+
+.container-detail-product-name-editable:hover {
+  color: #1677ff;
+}
+
+.container-detail-product-name-input,
 .container-detail-english-name-input {
   line-height: 1.25;
   padding: 3px 6px;
