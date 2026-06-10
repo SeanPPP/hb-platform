@@ -29,5 +29,26 @@ namespace BlazorApp.Api.Interfaces.React
             string jobId,
             CancellationToken cancellationToken = default
         );
+
+        Task<LocalSupplierInvoicePasteDetailsJobDto> StartPasteDetailsJobAsync(
+            PasteDetailsRequest request,
+            string updatedBy,
+            CancellationToken cancellationToken = default
+        );
+
+        Task<LocalSupplierInvoicePasteDetailsJobDto?> GetPasteDetailsJobAsync(
+            string jobId,
+            CancellationToken cancellationToken = default
+        );
+
+        Task<LocalSupplierInvoiceCheckProductsJobDto> StartCheckProductsJobAsync(
+            CheckProductsRequest request,
+            CancellationToken cancellationToken = default
+        );
+
+        Task<LocalSupplierInvoiceCheckProductsJobDto?> GetCheckProductsJobAsync(
+            string jobId,
+            CancellationToken cancellationToken = default
+        );
     }
 }

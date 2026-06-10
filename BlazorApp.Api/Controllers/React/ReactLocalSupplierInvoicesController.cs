@@ -624,6 +624,58 @@ namespace BlazorApp.Api.Controllers.React
             return BadRequest(new { success = false, message = result.Message });
         }
 
+        [HttpPost("check-products/jobs")]
+        [Authorize(Policy = Permissions.LocalPurchase.Edit)]
+        public async Task<IActionResult> StartCheckProductsJob(
+            [FromBody] CheckProductsRequest? dto,
+            CancellationToken cancellationToken
+        )
+        {
+            if (dto == null)
+                return BadRequest(new { success = false, message = "请求参数不能为空" });
+            if (_batchUpdateJobService == null)
+                return BadRequest(new { success = false, message = "本地进货单后台任务服务未注册" });
+            if (!await CanAccessInvoiceAsync(dto.InvoiceGuid))
+                return Forbid();
+
+            try
+            {
+                var job = await _batchUpdateJobService.StartCheckProductsJobAsync(
+                    dto,
+                    cancellationToken
+                );
+                return Ok(new { success = true, data = job, message = "商品检测任务已提交" });
+            }
+            catch (LocalSupplierInvoiceBatchUpdateJobConflictException ex)
+            {
+                return Conflict(new { success = false, message = ex.Message, data = new { ex.ExistingJobId } });
+            }
+        }
+
+        [HttpGet("{invoiceGuid}/check-products/jobs/{jobId}")]
+        [Authorize(Policy = Permissions.LocalPurchase.Edit)]
+        public async Task<IActionResult> GetCheckProductsJob(
+            [FromRoute] string invoiceGuid,
+            [FromRoute] string jobId,
+            CancellationToken cancellationToken
+        )
+        {
+            if (_batchUpdateJobService == null)
+                return BadRequest(new { success = false, message = "本地进货单后台任务服务未注册" });
+            if (string.IsNullOrWhiteSpace(jobId))
+                return BadRequest(new { success = false, message = "jobId 不能为空" });
+            if (!await CanAccessInvoiceAsync(invoiceGuid))
+                return Forbid();
+
+            var job = await _batchUpdateJobService.GetCheckProductsJobAsync(jobId, cancellationToken);
+            if (job == null)
+                return NotFound(new { success = false, message = "商品检测任务不存在或已过期" });
+            if (!string.Equals(job.InvoiceGuid, invoiceGuid, StringComparison.OrdinalIgnoreCase))
+                return NotFound(new { success = false, message = "商品检测任务不存在或已过期" });
+
+            return Ok(new { success = true, data = job, message = "查询成功" });
+        }
+
         [HttpPost("{invoiceGuid}/details/ensure-hq-products")]
         [Authorize(Policy = Permissions.LocalPurchase.Edit)]
         public async Task<IActionResult> EnsureHqProducts(
@@ -784,6 +836,62 @@ namespace BlazorApp.Api.Controllers.React
                     }
                 );
             return BadRequest(new { success = false, message = result.Message });
+        }
+
+        [HttpPost("{invoiceGuid}/details/paste/jobs")]
+        [Authorize(Policy = Permissions.LocalPurchase.Edit)]
+        public async Task<IActionResult> StartPasteDetailsJob(
+            [FromRoute] string invoiceGuid,
+            [FromBody] PasteDetailsRequest? dto,
+            CancellationToken cancellationToken
+        )
+        {
+            if (dto == null)
+                return BadRequest(new { success = false, message = "请求参数不能为空" });
+            if (_batchUpdateJobService == null)
+                return BadRequest(new { success = false, message = "本地进货单后台任务服务未注册" });
+            if (!await CanAccessInvoiceAsync(invoiceGuid))
+                return Forbid();
+
+            var user = User.Identity?.Name ?? "system";
+            dto.InvoiceGuid = invoiceGuid;
+            try
+            {
+                var job = await _batchUpdateJobService.StartPasteDetailsJobAsync(
+                    dto,
+                    user,
+                    cancellationToken
+                );
+                return Ok(new { success = true, data = job, message = "粘贴明细任务已提交" });
+            }
+            catch (LocalSupplierInvoiceBatchUpdateJobConflictException ex)
+            {
+                return Conflict(new { success = false, message = ex.Message, data = new { ex.ExistingJobId } });
+            }
+        }
+
+        [HttpGet("{invoiceGuid}/details/paste/jobs/{jobId}")]
+        [Authorize(Policy = Permissions.LocalPurchase.Edit)]
+        public async Task<IActionResult> GetPasteDetailsJob(
+            [FromRoute] string invoiceGuid,
+            [FromRoute] string jobId,
+            CancellationToken cancellationToken
+        )
+        {
+            if (_batchUpdateJobService == null)
+                return BadRequest(new { success = false, message = "本地进货单后台任务服务未注册" });
+            if (string.IsNullOrWhiteSpace(jobId))
+                return BadRequest(new { success = false, message = "jobId 不能为空" });
+            if (!await CanAccessInvoiceAsync(invoiceGuid))
+                return Forbid();
+
+            var job = await _batchUpdateJobService.GetPasteDetailsJobAsync(jobId, cancellationToken);
+            if (job == null)
+                return NotFound(new { success = false, message = "粘贴明细任务不存在或已过期" });
+            if (!string.Equals(job.InvoiceGuid, invoiceGuid, StringComparison.OrdinalIgnoreCase))
+                return NotFound(new { success = false, message = "粘贴明细任务不存在或已过期" });
+
+            return Ok(new { success = true, data = job, message = "查询成功" });
         }
 
         [HttpPost("{invoiceGuid}/details/batch-update")]

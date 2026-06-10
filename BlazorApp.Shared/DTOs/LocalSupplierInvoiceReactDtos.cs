@@ -291,6 +291,24 @@ namespace BlazorApp.Shared.DTOs
     }
 
     /// <summary>
+    /// 粘贴明细后台任务状态。
+    /// </summary>
+    public class LocalSupplierInvoicePasteDetailsJobDto
+        : LocalSupplierInvoiceBatchUpdateJobDtoBase
+    {
+        public BatchResultDto? Result { get; set; }
+    }
+
+    /// <summary>
+    /// 商品检测后台任务状态。
+    /// </summary>
+    public class LocalSupplierInvoiceCheckProductsJobDto
+        : LocalSupplierInvoiceBatchUpdateJobDtoBase
+    {
+        public CheckProductsResponseDto? Result { get; set; }
+    }
+
+    /// <summary>
     /// 同步本地进货单明细商品到HQ请求DTO
     /// </summary>
     public class EnsureHqProductsRequest

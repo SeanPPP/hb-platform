@@ -199,6 +199,63 @@ public sealed class LocalSupplierInvoiceBatchUpdateJobServiceTests
         Assert.Contains("HQ 连接超时", completed.Message);
     }
 
+    [Fact]
+    public async Task StartPasteDetailsJobAsync_提交后立即返回运行中任务并可查询完成结果()
+    {
+        var release = new TaskCompletionSource<ApiResponse<BatchResultDto>>(
+            TaskCreationOptions.RunContinuationsAsynchronously
+        );
+        var storeService = new Mock<ILocalSupplierInvoicesReactService>();
+        storeService
+            .Setup(service => service.PasteDetailsAsync(It.IsAny<PasteDetailsRequest>(), "tester"))
+            .Returns(release.Task);
+
+        var service = CreateService(storeService: storeService);
+
+        var started = await service.StartPasteDetailsJobAsync(BuildPasteRequest(), "tester");
+
+        Assert.Equal(LocalSupplierInvoiceBatchUpdateJobStatusConstants.Running, started.Status);
+        Assert.False(string.IsNullOrWhiteSpace(started.JobId));
+        Assert.Equal("invoice-1", started.InvoiceGuid);
+
+        release.SetResult(ApiResponse<BatchResultDto>.OK(new BatchResultDto { Inserted = 2, Updated = 1 }));
+        var completed = await WaitForPasteJobAsync(service, started.JobId);
+
+        Assert.Equal(LocalSupplierInvoiceBatchUpdateJobStatusConstants.Succeeded, completed.Status);
+        Assert.Equal(2, completed.Result?.Inserted);
+        Assert.Equal(1, completed.Result?.Updated);
+    }
+
+    [Fact]
+    public async Task StartCheckProductsJobAsync_提交后立即返回运行中任务并可查询完成结果()
+    {
+        var release = new TaskCompletionSource<ApiResponse<CheckProductsResponseDto>>(
+            TaskCreationOptions.RunContinuationsAsynchronously
+        );
+        var storeService = new Mock<ILocalSupplierInvoicesReactService>();
+        storeService
+            .Setup(service => service.CheckProductsAsync(It.IsAny<CheckProductsRequest>()))
+            .Returns(release.Task);
+
+        var service = CreateService(storeService: storeService);
+
+        var started = await service.StartCheckProductsJobAsync(BuildCheckProductsRequest());
+
+        Assert.Equal(LocalSupplierInvoiceBatchUpdateJobStatusConstants.Running, started.Status);
+        Assert.False(string.IsNullOrWhiteSpace(started.JobId));
+        Assert.Equal("invoice-1", started.InvoiceGuid);
+
+        release.SetResult(ApiResponse<CheckProductsResponseDto>.OK(new CheckProductsResponseDto
+        {
+            Summary = new CheckProductsSummaryDto { Total = 2, ProductExists = 1, ProductNotExists = 1 },
+        }));
+        var completed = await WaitForCheckProductsJobAsync(service, started.JobId);
+
+        Assert.Equal(LocalSupplierInvoiceBatchUpdateJobStatusConstants.Succeeded, completed.Status);
+        Assert.Equal(2, completed.Result?.Summary.Total);
+        Assert.Equal(1, completed.Result?.Summary.ProductExists);
+    }
+
     private static LocalSupplierInvoiceBatchUpdateJobService CreateService(
         Mock<ILocalSupplierInvoicesReactService>? storeService = null,
         Mock<ILocalSupplierInvoiceHqProductSyncService>? hqService = null
@@ -237,6 +294,35 @@ public sealed class LocalSupplierInvoiceBatchUpdateJobServiceTests
         };
     }
 
+    private static PasteDetailsRequest BuildPasteRequest()
+    {
+        return new PasteDetailsRequest
+        {
+            InvoiceGuid = "invoice-1",
+            Mode = "append",
+            Items =
+            [
+                new PastedDetailItemDto
+                {
+                    ItemNumber = "ITEM-1",
+                    Barcode = "BAR-1",
+                    ProductName = "Paste Item",
+                    Quantity = 2,
+                    PurchasePrice = 1.5m,
+                },
+            ],
+        };
+    }
+
+    private static CheckProductsRequest BuildCheckProductsRequest()
+    {
+        return new CheckProductsRequest
+        {
+            InvoiceGuid = "invoice-1",
+            DetailGuids = ["detail-1", "detail-2"],
+        };
+    }
+
     private static async Task<LocalSupplierInvoiceUpdateToStorePricesJobDto> WaitForStoreJobAsync(
         ILocalSupplierInvoiceBatchUpdateJobService service,
         string jobId
@@ -267,5 +353,37 @@ public sealed class LocalSupplierInvoiceBatchUpdateJobServiceTests
         }
 
         throw new TimeoutException("等待更新HQ商品 job 完成超时");
+    }
+
+    private static async Task<LocalSupplierInvoicePasteDetailsJobDto> WaitForPasteJobAsync(
+        ILocalSupplierInvoiceBatchUpdateJobService service,
+        string jobId
+    )
+    {
+        for (var attempt = 0; attempt < 50; attempt++)
+        {
+            var job = await service.GetPasteDetailsJobAsync(jobId);
+            if (job?.Status is LocalSupplierInvoiceBatchUpdateJobStatusConstants.Succeeded or LocalSupplierInvoiceBatchUpdateJobStatusConstants.Failed)
+                return job;
+            await Task.Delay(20);
+        }
+
+        throw new TimeoutException("等待粘贴明细 job 完成超时");
+    }
+
+    private static async Task<LocalSupplierInvoiceCheckProductsJobDto> WaitForCheckProductsJobAsync(
+        ILocalSupplierInvoiceBatchUpdateJobService service,
+        string jobId
+    )
+    {
+        for (var attempt = 0; attempt < 50; attempt++)
+        {
+            var job = await service.GetCheckProductsJobAsync(jobId);
+            if (job?.Status is LocalSupplierInvoiceBatchUpdateJobStatusConstants.Succeeded or LocalSupplierInvoiceBatchUpdateJobStatusConstants.Failed)
+                return job;
+            await Task.Delay(20);
+        }
+
+        throw new TimeoutException("等待商品检测 job 完成超时");
     }
 }

@@ -1635,6 +1635,119 @@ namespace BlazorApp.Api.Tests
             Assert.IsType<ForbidResult>(actionResult);
         }
 
+        [Fact]
+        public async Task PasteDetailsJobEndpoints_创建和查询任务委托后台服务()
+        {
+            await SeedStoreAndSupplierAsync();
+            await InsertInvoiceAsync("invoice-job", "INV-JOB", new DateTime(2026, 1, 20));
+            var jobService = new Mock<ILocalSupplierInvoiceBatchUpdateJobService>(MockBehavior.Strict);
+            jobService
+                .Setup(service => service.StartPasteDetailsJobAsync(
+                    It.Is<PasteDetailsRequest>(request =>
+                        request.InvoiceGuid == "invoice-job"
+                        && request.Mode == "append"
+                        && request.Items.Count == 1
+                    ),
+                    "tester",
+                    It.IsAny<CancellationToken>()
+                ))
+                .ReturnsAsync(new LocalSupplierInvoicePasteDetailsJobDto
+                {
+                    JobId = "paste-job-1",
+                    InvoiceGuid = "invoice-job",
+                    OperationId = "paste|invoice-job",
+                    Status = LocalSupplierInvoiceBatchUpdateJobStatusConstants.Running,
+                });
+            jobService
+                .Setup(service => service.GetPasteDetailsJobAsync("paste-job-1", It.IsAny<CancellationToken>()))
+                .ReturnsAsync(new LocalSupplierInvoicePasteDetailsJobDto
+                {
+                    JobId = "paste-job-1",
+                    InvoiceGuid = "invoice-job",
+                    OperationId = "paste|invoice-job",
+                    Status = LocalSupplierInvoiceBatchUpdateJobStatusConstants.Succeeded,
+                    Result = new BatchResultDto { Inserted = 1 },
+                });
+
+            var controller = CreateControllerWithJobService(jobService.Object);
+
+            var createResult = await controller.StartPasteDetailsJob(
+                "invoice-job",
+                new PasteDetailsRequest
+                {
+                    Mode = "append",
+                    Items = new List<PastedDetailItemDto> { new() { ItemNumber = "ITEM-1" } },
+                },
+                CancellationToken.None
+            );
+            var getResult = await controller.GetPasteDetailsJob(
+                "invoice-job",
+                "paste-job-1",
+                CancellationToken.None
+            );
+
+            Assert.IsType<OkObjectResult>(createResult);
+            Assert.IsType<OkObjectResult>(getResult);
+            jobService.VerifyAll();
+        }
+
+        [Fact]
+        public async Task CheckProductsJobEndpoints_创建和查询任务委托后台服务()
+        {
+            await SeedStoreAndSupplierAsync();
+            await InsertInvoiceAsync("invoice-job", "INV-JOB", new DateTime(2026, 1, 20));
+            var jobService = new Mock<ILocalSupplierInvoiceBatchUpdateJobService>(MockBehavior.Strict);
+            jobService
+                .Setup(service => service.StartCheckProductsJobAsync(
+                    It.Is<CheckProductsRequest>(request =>
+                        request.InvoiceGuid == "invoice-job"
+                        && request.DetailGuids != null
+                        && request.DetailGuids.SequenceEqual(new[] { "detail-1" })
+                    ),
+                    It.IsAny<CancellationToken>()
+                ))
+                .ReturnsAsync(new LocalSupplierInvoiceCheckProductsJobDto
+                {
+                    JobId = "check-job-1",
+                    InvoiceGuid = "invoice-job",
+                    OperationId = "check-products|invoice-job",
+                    Status = LocalSupplierInvoiceBatchUpdateJobStatusConstants.Running,
+                });
+            jobService
+                .Setup(service => service.GetCheckProductsJobAsync("check-job-1", It.IsAny<CancellationToken>()))
+                .ReturnsAsync(new LocalSupplierInvoiceCheckProductsJobDto
+                {
+                    JobId = "check-job-1",
+                    InvoiceGuid = "invoice-job",
+                    OperationId = "check-products|invoice-job",
+                    Status = LocalSupplierInvoiceBatchUpdateJobStatusConstants.Succeeded,
+                    Result = new CheckProductsResponseDto
+                    {
+                        Summary = new CheckProductsSummaryDto { Total = 1 },
+                    },
+                });
+
+            var controller = CreateControllerWithJobService(jobService.Object);
+
+            var createResult = await controller.StartCheckProductsJob(
+                new CheckProductsRequest
+                {
+                    InvoiceGuid = "invoice-job",
+                    DetailGuids = new List<string> { "detail-1" },
+                },
+                CancellationToken.None
+            );
+            var getResult = await controller.GetCheckProductsJob(
+                "invoice-job",
+                "check-job-1",
+                CancellationToken.None
+            );
+
+            Assert.IsType<OkObjectResult>(createResult);
+            Assert.IsType<OkObjectResult>(getResult);
+            jobService.VerifyAll();
+        }
+
         public void Dispose()
         {
             _db.Dispose();
@@ -1867,11 +1980,28 @@ namespace BlazorApp.Api.Tests
 
         private ReactLocalSupplierInvoicesController CreateController(params Claim[] claims)
         {
+            return CreateControllerCore(null, claims);
+        }
+
+        private ReactLocalSupplierInvoicesController CreateControllerWithJobService(
+            ILocalSupplierInvoiceBatchUpdateJobService batchUpdateJobService,
+            params Claim[] claims
+        )
+        {
+            return CreateControllerCore(batchUpdateJobService, claims);
+        }
+
+        private ReactLocalSupplierInvoicesController CreateControllerCore(
+            ILocalSupplierInvoiceBatchUpdateJobService? batchUpdateJobService,
+            Claim[] claims
+        )
+        {
             var controller = new ReactLocalSupplierInvoicesController(
                 CreateService(),
                 CreateSqlSugarContext(_db),
                 Mock.Of<ILocalSupplierInvoiceHqSyncService>(),
-                null
+                null,
+                batchUpdateJobService
             );
 
             var effectiveClaims = claims.Length > 0

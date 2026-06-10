@@ -30,6 +30,8 @@ namespace BlazorApp.Api.Services.React
 
         private readonly ConcurrentDictionary<string, JobState<UpdateToStorePricesResultDto>> _storePriceJobs = new();
         private readonly ConcurrentDictionary<string, JobState<UpdateHqProductsResult>> _hqProductJobs = new();
+        private readonly ConcurrentDictionary<string, JobState<BatchResultDto>> _pasteDetailsJobs = new();
+        private readonly ConcurrentDictionary<string, JobState<CheckProductsResponseDto>> _checkProductsJobs = new();
         private readonly ConcurrentDictionary<string, string> _runningOperationJobIds = new();
         private readonly ConcurrentDictionary<string, string> _runningInvoiceFamilyJobIds = new();
         private readonly IServiceScopeFactory _serviceScopeFactory;
@@ -173,6 +175,119 @@ namespace BlazorApp.Api.Services.React
             );
         }
 
+        public Task<LocalSupplierInvoicePasteDetailsJobDto> StartPasteDetailsJobAsync(
+            PasteDetailsRequest request,
+            string updatedBy,
+            CancellationToken cancellationToken = default
+        )
+        {
+            CleanupExpiredJobs();
+
+            var operationId = BuildPasteDetailsOperationId(request);
+            var duplicate = GetRunningPasteDetailsJob(operationId);
+            if (duplicate != null)
+            {
+                duplicate.IsDuplicateRequest = true;
+                return Task.FromResult(duplicate);
+            }
+
+            var familyKey = BuildInvoiceFamilyKey("paste-details", request.InvoiceGuid);
+            var jobState = CreateJobState<BatchResultDto>(
+                request.InvoiceGuid,
+                new List<string>(),
+                operationId,
+                familyKey,
+                "粘贴明细任务已提交"
+            );
+            lock (_jobStartSyncRoot)
+            {
+                duplicate = GetRunningPasteDetailsJob(operationId);
+                if (duplicate != null)
+                {
+                    duplicate.IsDuplicateRequest = true;
+                    return Task.FromResult(duplicate);
+                }
+                ThrowIfInvoiceFamilyRunning(familyKey, operationId, _pasteDetailsJobs);
+
+                // 关键位置：粘贴会批量写入明细，必须先登记 job 再后台执行，避免请求线程被长事务阻塞。
+                _pasteDetailsJobs[jobState.JobId] = jobState;
+                _runningOperationJobIds[operationId] = jobState.JobId;
+                _runningInvoiceFamilyJobIds[familyKey] = jobState.JobId;
+            }
+
+            _ = Task.Run(() => ExecutePasteDetailsJobAsync(jobState, ClonePasteDetailsRequest(request), updatedBy), CancellationToken.None);
+            return Task.FromResult(CreatePasteDetailsSnapshot(jobState, false));
+        }
+
+        public Task<LocalSupplierInvoicePasteDetailsJobDto?> GetPasteDetailsJobAsync(
+            string jobId,
+            CancellationToken cancellationToken = default
+        )
+        {
+            CleanupExpiredJobs();
+            return Task.FromResult(
+                _pasteDetailsJobs.TryGetValue(jobId, out var jobState)
+                    ? CreatePasteDetailsSnapshot(jobState, false)
+                    : null
+            );
+        }
+
+        public Task<LocalSupplierInvoiceCheckProductsJobDto> StartCheckProductsJobAsync(
+            CheckProductsRequest request,
+            CancellationToken cancellationToken = default
+        )
+        {
+            CleanupExpiredJobs();
+
+            var operationId = BuildCheckProductsOperationId(request);
+            var duplicate = GetRunningCheckProductsJob(operationId);
+            if (duplicate != null)
+            {
+                duplicate.IsDuplicateRequest = true;
+                return Task.FromResult(duplicate);
+            }
+
+            var familyKey = BuildInvoiceFamilyKey("check-products", request.InvoiceGuid);
+            var jobState = CreateJobState<CheckProductsResponseDto>(
+                request.InvoiceGuid,
+                new List<string>(),
+                operationId,
+                familyKey,
+                "商品检测任务已提交"
+            );
+            lock (_jobStartSyncRoot)
+            {
+                duplicate = GetRunningCheckProductsJob(operationId);
+                if (duplicate != null)
+                {
+                    duplicate.IsDuplicateRequest = true;
+                    return Task.FromResult(duplicate);
+                }
+                ThrowIfInvoiceFamilyRunning(familyKey, operationId, _checkProductsJobs);
+
+                // 关键位置：商品检测可能进行大量商品/条码查询，后台执行后由前端轮询终态。
+                _checkProductsJobs[jobState.JobId] = jobState;
+                _runningOperationJobIds[operationId] = jobState.JobId;
+                _runningInvoiceFamilyJobIds[familyKey] = jobState.JobId;
+            }
+
+            _ = Task.Run(() => ExecuteCheckProductsJobAsync(jobState, CloneCheckProductsRequest(request)), CancellationToken.None);
+            return Task.FromResult(CreateCheckProductsSnapshot(jobState, false));
+        }
+
+        public Task<LocalSupplierInvoiceCheckProductsJobDto?> GetCheckProductsJobAsync(
+            string jobId,
+            CancellationToken cancellationToken = default
+        )
+        {
+            CleanupExpiredJobs();
+            return Task.FromResult(
+                _checkProductsJobs.TryGetValue(jobId, out var jobState)
+                    ? CreateCheckProductsSnapshot(jobState, false)
+                    : null
+            );
+        }
+
         private async Task ExecuteUpdateToStorePricesJobAsync(
             JobState<UpdateToStorePricesResultDto> jobState,
             UpdateToStorePricesRequest request,
@@ -205,6 +320,75 @@ namespace BlazorApp.Api.Services.React
                         Failed = 1,
                         Errors = [ex.Message],
                     },
+                    ex.Message
+                );
+            }
+        }
+
+        private async Task ExecutePasteDetailsJobAsync(
+            JobState<BatchResultDto> jobState,
+            PasteDetailsRequest request,
+            string updatedBy
+        )
+        {
+            try
+            {
+                using var scope = _serviceScopeFactory.CreateScope();
+                var service = scope.ServiceProvider.GetRequiredService<ILocalSupplierInvoicesReactService>();
+                var response = await service.PasteDetailsAsync(request, updatedBy);
+                var result = response.Data ?? response.Details as BatchResultDto;
+                CompleteJob(
+                    jobState,
+                    response.Success
+                        ? LocalSupplierInvoiceBatchUpdateJobStatusConstants.Succeeded
+                        : LocalSupplierInvoiceBatchUpdateJobStatusConstants.Failed,
+                    result,
+                    response.Message
+                );
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "执行粘贴明细 job 失败: {JobId}", jobState.JobId);
+                CompleteJob(
+                    jobState,
+                    LocalSupplierInvoiceBatchUpdateJobStatusConstants.Failed,
+                    new BatchResultDto
+                    {
+                        Failed = 1,
+                        Errors = [ex.Message],
+                    },
+                    ex.Message
+                );
+            }
+        }
+
+        private async Task ExecuteCheckProductsJobAsync(
+            JobState<CheckProductsResponseDto> jobState,
+            CheckProductsRequest request
+        )
+        {
+            try
+            {
+                using var scope = _serviceScopeFactory.CreateScope();
+                var service = scope.ServiceProvider.GetRequiredService<ILocalSupplierInvoicesReactService>();
+                var response = await service.CheckProductsAsync(request);
+                var result = response.Data ?? response.Details as CheckProductsResponseDto;
+                CompleteJob(
+                    jobState,
+                    response.Success
+                        ? LocalSupplierInvoiceBatchUpdateJobStatusConstants.Succeeded
+                        : LocalSupplierInvoiceBatchUpdateJobStatusConstants.Failed,
+                    result,
+                    response.Message
+                );
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "执行商品检测 job 失败: {JobId}", jobState.JobId);
+                CompleteJob(
+                    jobState,
+                    LocalSupplierInvoiceBatchUpdateJobStatusConstants.Failed,
+                    new CheckProductsResponseDto(),
                     ex.Message
                 );
             }
@@ -277,6 +461,8 @@ namespace BlazorApp.Api.Services.React
             var now = _timeProvider.GetUtcNow().UtcDateTime;
             CleanupExpiredJobs(_storePriceJobs, now);
             CleanupExpiredJobs(_hqProductJobs, now);
+            CleanupExpiredJobs(_pasteDetailsJobs, now);
+            CleanupExpiredJobs(_checkProductsJobs, now);
         }
 
         private void CleanupExpiredJobs<T>(
@@ -330,6 +516,24 @@ namespace BlazorApp.Api.Services.React
                 && _hqProductJobs.TryGetValue(jobId, out var jobState)
                 && IsRunning(jobState)
                     ? CreateHqProductSnapshot(jobState, true)
+                    : null;
+        }
+
+        private LocalSupplierInvoicePasteDetailsJobDto? GetRunningPasteDetailsJob(string operationId)
+        {
+            return _runningOperationJobIds.TryGetValue(operationId, out var jobId)
+                && _pasteDetailsJobs.TryGetValue(jobId, out var jobState)
+                && IsRunning(jobState)
+                    ? CreatePasteDetailsSnapshot(jobState, true)
+                    : null;
+        }
+
+        private LocalSupplierInvoiceCheckProductsJobDto? GetRunningCheckProductsJob(string operationId)
+        {
+            return _runningOperationJobIds.TryGetValue(operationId, out var jobId)
+                && _checkProductsJobs.TryGetValue(jobId, out var jobState)
+                && IsRunning(jobState)
+                    ? CreateCheckProductsSnapshot(jobState, true)
                     : null;
         }
 
@@ -409,6 +613,54 @@ namespace BlazorApp.Api.Services.React
             }
         }
 
+        private static LocalSupplierInvoicePasteDetailsJobDto CreatePasteDetailsSnapshot(
+            JobState<BatchResultDto> jobState,
+            bool isDuplicateRequest
+        )
+        {
+            lock (jobState.SyncRoot)
+            {
+                return new LocalSupplierInvoicePasteDetailsJobDto
+                {
+                    JobId = jobState.JobId,
+                    InvoiceGuid = jobState.InvoiceGuid,
+                    TargetStoreCodes = jobState.TargetStoreCodes.ToList(),
+                    OperationId = jobState.OperationId,
+                    Status = jobState.Status,
+                    IsDuplicateRequest = isDuplicateRequest,
+                    CreatedAt = jobState.CreatedAt,
+                    CompletedAt = jobState.CompletedAt,
+                    ExpiresAt = jobState.ExpiresAt,
+                    Message = jobState.Message,
+                    Result = jobState.Result,
+                };
+            }
+        }
+
+        private static LocalSupplierInvoiceCheckProductsJobDto CreateCheckProductsSnapshot(
+            JobState<CheckProductsResponseDto> jobState,
+            bool isDuplicateRequest
+        )
+        {
+            lock (jobState.SyncRoot)
+            {
+                return new LocalSupplierInvoiceCheckProductsJobDto
+                {
+                    JobId = jobState.JobId,
+                    InvoiceGuid = jobState.InvoiceGuid,
+                    TargetStoreCodes = jobState.TargetStoreCodes.ToList(),
+                    OperationId = jobState.OperationId,
+                    Status = jobState.Status,
+                    IsDuplicateRequest = isDuplicateRequest,
+                    CreatedAt = jobState.CreatedAt,
+                    CompletedAt = jobState.CompletedAt,
+                    ExpiresAt = jobState.ExpiresAt,
+                    Message = jobState.Message,
+                    Result = jobState.Result,
+                };
+            }
+        }
+
         private static string BuildUpdateToStoreOperationId(UpdateToStorePricesRequest request)
         {
             return string.Join(
@@ -434,6 +686,27 @@ namespace BlazorApp.Api.Services.React
                 JoinSorted(request.TargetStoreCodes),
                 BuildUpdateFieldsKey(request.UpdateFields),
                 request.IdempotencyKey ?? string.Empty
+            );
+        }
+
+        private static string BuildPasteDetailsOperationId(PasteDetailsRequest request)
+        {
+            return string.Join(
+                "|",
+                "paste-details",
+                request.InvoiceGuid,
+                request.Mode,
+                BuildPasteItemsKey(request.Items)
+            );
+        }
+
+        private static string BuildCheckProductsOperationId(CheckProductsRequest request)
+        {
+            return string.Join(
+                "|",
+                "check-products",
+                request.InvoiceGuid,
+                JoinSorted(request.DetailGuids)
             );
         }
 
@@ -496,6 +769,36 @@ namespace BlazorApp.Api.Services.React
             };
         }
 
+        private static PasteDetailsRequest ClonePasteDetailsRequest(PasteDetailsRequest request)
+        {
+            return new PasteDetailsRequest
+            {
+                InvoiceGuid = request.InvoiceGuid,
+                Mode = request.Mode,
+                Items = request.Items
+                    .Select(item => new PastedDetailItemDto
+                    {
+                        ItemNumber = item.ItemNumber,
+                        Barcode = item.Barcode,
+                        ProductName = item.ProductName,
+                        Quantity = item.Quantity,
+                        PurchasePrice = item.PurchasePrice,
+                        NewAutoRetailPrice = item.NewAutoRetailPrice,
+                        RetailPrice = item.RetailPrice,
+                    })
+                    .ToList(),
+            };
+        }
+
+        private static CheckProductsRequest CloneCheckProductsRequest(CheckProductsRequest request)
+        {
+            return new CheckProductsRequest
+            {
+                InvoiceGuid = request.InvoiceGuid,
+                DetailGuids = request.DetailGuids?.ToList(),
+            };
+        }
+
         private static UpdateToStorePricesFields CloneUpdateFields(UpdateToStorePricesFields fields)
         {
             return new UpdateToStorePricesFields
@@ -511,6 +814,24 @@ namespace BlazorApp.Api.Services.React
                 UpdateDiscountRate = fields.UpdateDiscountRate,
                 DiscountRate = fields.DiscountRate,
             };
+        }
+
+        private static string BuildPasteItemsKey(IEnumerable<PastedDetailItemDto>? items)
+        {
+            return string.Join(
+                ";",
+                (items ?? [])
+                    .Select(item => string.Join(
+                        ",",
+                        item.ItemNumber,
+                        item.Barcode,
+                        item.ProductName,
+                        item.Quantity,
+                        item.PurchasePrice,
+                        item.NewAutoRetailPrice,
+                        item.RetailPrice
+                    ))
+            );
         }
 
         private sealed class JobState<T>
