@@ -48,8 +48,10 @@ export default function ProductImportPage() {
   const [conflictItems, setConflictItems] = useState<Array<{ productCode: string; existingPieces?: number }>>([])
   const [pendingSend, setPendingSend] = useState<{ containerId: string; notes: string; products: ProductImportItem[] } | null>(null)
   const syncIncludeImageRef = useRef(false)
+  const productImportTableRef = useRef<HTMLDivElement | null>(null)
   const [duplicateGroups, setDuplicateGroups] = useState<DuplicateGroup[]>([])
   const [selectedColumnKey, setSelectedColumnKey] = useState<string | null>(null)
+  const [tableScrollY, setTableScrollY] = useState(500)
 
   useEffect(() => {
     const load = async () => {
@@ -76,6 +78,21 @@ export default function ProductImportPage() {
   useEffect(() => {
     void loadContainers()
   }, [loadContainers])
+
+  useEffect(() => {
+    const updateTableScrollY = () => {
+      const tableTop = productImportTableRef.current?.getBoundingClientRect().top ?? 0
+      const bottomPadding = 24
+      const minTableBodyHeight = 260
+      const nextScrollY = Math.max(Math.floor(window.innerHeight - tableTop - bottomPadding), minTableBodyHeight)
+      setTableScrollY(nextScrollY)
+    }
+
+    // 表格高度跟随视口剩余空间，避免导入多行时撑高整个页面，只让表格内部滚动。
+    updateTableScrollY()
+    window.addEventListener('resize', updateTableScrollY)
+    return () => window.removeEventListener('resize', updateTableScrollY)
+  }, [showStatistics, state.products.length])
 
   const formatDate = (d?: string) => {
     if (!d) return '-'
@@ -847,16 +864,19 @@ export default function ProductImportPage() {
         </div>
       )}
 
-      <Table
-        columns={columns}
-        dataSource={state.products}
-        rowKey="id"
-        size="small"
-        scroll={{ x: 2200, y: 500 }}
-        rowClassName={getRowClassName}
-        rowSelection={{ selectedRowKeys: state.selectedIds, onChange: (keys) => setState((prev) => ({ ...prev, selectedIds: keys as string[], statistics: calculateStatistics(prev.products, keys as string[]) })) }}
-        pagination={false}
-      />
+      <div ref={productImportTableRef}>
+        <Table
+          className="product-import-table"
+          columns={columns}
+          dataSource={state.products}
+          rowKey="id"
+          size="small"
+          scroll={{ x: 2200, y: tableScrollY }}
+          rowClassName={getRowClassName}
+          rowSelection={{ selectedRowKeys: state.selectedIds, onChange: (keys) => setState((prev) => ({ ...prev, selectedIds: keys as string[], statistics: calculateStatistics(prev.products, keys as string[]) })) }}
+          pagination={false}
+        />
+      </div>
 
       <DuplicateDialog open={duplicateDialogOpen} duplicateGroups={duplicateGroups} onClose={() => setDuplicateDialogOpen(false)} onConfirm={handleMergeDuplicates} />
       <ConflictResolutionDialog open={conflictDialogOpen} conflicts={conflictItems} onClose={() => setConflictDialogOpen(false)} onConfirm={handleResolveConflicts} />

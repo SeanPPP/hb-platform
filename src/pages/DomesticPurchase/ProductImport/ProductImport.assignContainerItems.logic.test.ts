@@ -48,6 +48,22 @@ assertDeepEqual(
 )
 
 assertDeepEqual(
+  [
+    pageSource.includes('const productImportTableRef = useRef<HTMLDivElement | null>(null)'),
+    pageSource.includes('const [tableScrollY, setTableScrollY] = useState(500)'),
+    pageSource.includes('window.addEventListener(\'resize\', updateTableScrollY)'),
+    pageSource.includes('window.removeEventListener(\'resize\', updateTableScrollY)'),
+    pageSource.includes('className="product-import-table"'),
+    pageSource.includes('scroll={{ x: 2200, y: tableScrollY }}'),
+    pageSource.includes('rowSelection={{ selectedRowKeys: state.selectedIds'),
+    pageSource.includes('const handlePaste = useCallback((e: ClipboardEvent) => {'),
+    pageSource.includes('const resolveColumnKeyFromTd = useCallback((td: HTMLTableCellElement): string | null => {'),
+  ],
+  [true, true, true, true, true, true, true, true, true],
+  '商品导入表格应使用视口剩余高度并保留粘贴和选择交互',
+)
+
+assertDeepEqual(
   buildAssignContainerItems([
     createProduct({
       newProduct: {
