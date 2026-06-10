@@ -16,7 +16,6 @@ import {
   DatePicker,
   Descriptions,
   Dropdown,
-  Image,
   Input,
   InputNumber,
   Modal,
@@ -37,7 +36,7 @@ import type { FilterDropdownProps, SorterResult } from 'antd/es/table/interface'
 import type { TFunction } from 'i18next'
 import type { Dayjs } from 'dayjs'
 import dayjs from 'dayjs'
-import { useEffect, useMemo, useRef, useState, type Key, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type Key, type ReactNode, type UIEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useNavigate } from 'react-router-dom'
 import BarcodePreview from '../../../components/BarcodePreview'
@@ -45,10 +44,13 @@ import PageContainer from '../../../components/PageContainer'
 import { useDynamicTabTitle } from '../../../hooks/useDynamicTabTitle'
 import { useStableRouteContext } from '../../../hooks/useStableRouteContext'
 import {
+  applyContainerFloatRateByScope,
+  applyContainerPricesByScope,
   batchDeleteDetails,
   batchUpdateDetails,
   getContainerDetail,
-  getContainerProducts,
+  queryContainerProducts,
+  recalculateContainerCostsByScope,
   translateHqProductNamesByContainerNumber,
   updateContainer,
 } from '../../../services/containerService'
@@ -76,20 +78,19 @@ import {
   detectProducts,
 } from '../../../services/warehouseProductService'
 import { useAuthStore } from '../../../store/auth'
-import type { ContainerDetail, ContainerMain, HqTranslationResult, UpdateContainerDetailRequest, UpdateContainerRequest } from '../../../types/container'
+import type { ContainerDetail, ContainerDetailBatchScope, ContainerMain, HqTranslationResult, UpdateContainerDetailRequest, UpdateContainerRequest } from '../../../types/container'
 import { copyTextToClipboard } from '../../../utils/clipboard'
 import { shouldShowDetailInitialLoading, shouldSkipDetailAutoReload } from '../../../utils/detailLoadState'
 import {
   applyContainerDetailEnglishNameUpdates,
   applyContainerDetailWarehouseStatusByProductCodes,
-  applyContainerDetailColumnState,
+  buildContainerDetailQuery,
   buildContainerDetailClearEnglishNameUpdates,
   buildContainerDetailDetectionItems,
   buildContainerDetailEnglishNameUpdates,
   buildContainerDetailMatchedDomesticDataUpdates,
   buildContainerDetailMatchStatusUpdates,
   buildContainerDetailSaveFailureKeys,
-  buildContainerDetailTagStats,
   buildContainerDetailFloatRateUpdates,
   buildContainerDetailHqPushSelection,
   buildContainerDetailTranslationUpdates,
@@ -106,7 +107,7 @@ import {
   getContainerDetailWarehouseActionFailureMessage,
   getContainerDetailWarehouseStatusFilterKey,
   isContainerDetailSortField,
-  matchesContainerDetailSelectedTags,
+  mergeContainerDetailLoadedItems,
   mergeContainerDetailPatch,
   rollbackContainerDetailWarehouseStatuses,
   type ContainerDetailColumnFilters,
@@ -117,6 +118,7 @@ import {
   type ContainerDetailSortField,
   type ContainerDetailSortState,
   type ContainerDetailTagFilter,
+  type ContainerDetailTagStats,
   type ContainerDetailWarehouseStatusFilter,
 } from './containerDetailLogic'
 import type { PushProductsToHqResult } from '../../../types/posProduct'
@@ -161,13 +163,6 @@ function getProductTypeLabel(value: string | undefined, t: TFunction) {
     套装子商品: 'containers.productTypes.setChild',
   }
   return map[type] ? t(map[type]) : type
-}
-
-function getProductTypeFilterKey(value: string | undefined): ProductTypeFilter {
-  const type = value || '普通商品'
-  if (type === '套装商品') return 'set'
-  if (type === '套装子商品') return 'setChild'
-  return 'normal'
 }
 
 function getProductTypeFilterLabel(value: ProductTypeFilter, t: TFunction) {
@@ -249,7 +244,17 @@ function renderColumnTitle(key: ContainerDetailSortField, value: ReactNode) {
 
 const CONTAINER_DETAIL_TABLE_SCROLL_X = 1940
 const CONTAINER_DETAIL_TABLE_SCROLL_Y = 620
+const CONTAINER_DETAIL_PAGE_SIZE = 50
 const DEFAULT_CONTAINER_DETAIL_SORT: ContainerDetailSortState = { field: 'itemNumber', order: 'ascend' }
+const EMPTY_CONTAINER_DETAIL_TAG_STATS = {
+  all: 0,
+  new: 0,
+  existing: 0,
+  noOemPrice: 0,
+  abnormalImport: 0,
+  active: 0,
+  inactive: 0,
+}
 
 function getContainerDetailViewport() {
   if (typeof window === 'undefined') {
@@ -294,8 +299,15 @@ export default function ContainerDetailPage() {
   // 记录当前货柜已完成首次加载，保活 Tab 恢复时保留旧内容并静默刷新。
   const loadedContainerGuidRef = useRef<string | null>(null)
   const visibleContainerGuidRef = useRef<string | null>(null)
+  const headerLoadRequestIdRef = useRef(0)
   const containerDetailLoadRequestIdRef = useRef(0)
   const [loading, setLoading] = useState(false)
+  const [detailLoading, setDetailLoading] = useState(false)
+  const [detailLoadingMore, setDetailLoadingMore] = useState(false)
+  const [detailItemsTotal, setDetailItemsTotal] = useState(0)
+  const [detailHasMore, setDetailHasMore] = useState(false)
+  const [detailPageNumber, setDetailPageNumber] = useState(1)
+  const [remoteTagStats, setRemoteTagStats] = useState<ContainerDetailTagStats>(EMPTY_CONTAINER_DETAIL_TAG_STATS)
   const [savingHeader, setSavingHeader] = useState(false)
   const [container, setContainer] = useState<ContainerMain | null>(null)
   const [rows, setRows] = useState<ContainerDetail[]>([])
@@ -326,6 +338,7 @@ export default function ContainerDetailPage() {
   const [pendingWarehouseStatusCodes, setPendingWarehouseStatusCodes] = useState<Set<string>>(() => new Set())
   const pushToHqLoadingRef = useRef(false)
   const createProductsLoadingRef = useRef(false)
+  const detailAbortControllerRef = useRef<AbortController | null>(null)
   const pendingDetailSavePromisesRef = useRef<Set<Promise<unknown>>>(new Set())
   const failedDetailSaveKeysRef = useRef<Set<string>>(new Set())
   const ignoreProductNameBlurRef = useRef(false)
@@ -339,6 +352,31 @@ export default function ContainerDetailPage() {
   }>({})
 
   useDynamicTabTitle(container?.货柜编号 ? t('containers.detailTitleWithNumber', { number: container.货柜编号 }) : undefined)
+
+  const remoteColumnFilters = useMemo<ContainerDetailColumnFilters>(() => {
+    const productTypeFilters = productTypeFilter === 'all'
+      ? columnFilters.productTypes
+      : columnFilters.productTypes?.length
+        ? columnFilters.productTypes.filter((value) => value === productTypeFilter)
+        : [productTypeFilter]
+
+    return {
+      ...columnFilters,
+      itemNumber: itemNumberFilter.trim() || columnFilters.itemNumber,
+      productTypes: productTypeFilters,
+    }
+  }, [columnFilters, itemNumberFilter, productTypeFilter])
+
+  const detailQuery = useMemo(() => buildContainerDetailQuery({
+    containerGuid,
+    filters: remoteColumnFilters,
+    selectedTags: selectedTagFilters,
+    sortState,
+    pageNumber: 1,
+    pageSize: CONTAINER_DETAIL_PAGE_SIZE,
+  }), [containerGuid, remoteColumnFilters, selectedTagFilters, sortState])
+
+  const detailQueryKey = useMemo(() => JSON.stringify(detailQuery), [detailQuery])
 
   const reconcileLoadedMatchStatus = async (products: ContainerDetail[], requestId: number) => {
     const rowsNeedingMatchStatus = products.filter((row) => getContainerDetailProductCode(row) || getContainerDetailItemNumber(row))
@@ -364,21 +402,18 @@ export default function ContainerDetailPage() {
     }
   }
 
-  const loadData = async (showLoading = true) => {
+  const loadHeader = async (showLoading = true) => {
     if (!containerGuid) {
       return
     }
-    const currentRequestId = containerDetailLoadRequestIdRef.current + 1
-    containerDetailLoadRequestIdRef.current = currentRequestId
+    const currentRequestId = headerLoadRequestIdRef.current + 1
+    headerLoadRequestIdRef.current = currentRequestId
     if (showLoading) {
       setLoading(true)
     }
     try {
-      const [info, products] = await Promise.all([
-        getContainerDetail(containerGuid),
-        getContainerProducts(containerGuid),
-      ])
-      if (containerDetailLoadRequestIdRef.current !== currentRequestId) {
+      const info = await getContainerDetail(containerGuid)
+      if (headerLoadRequestIdRef.current !== currentRequestId) {
         return
       }
       loadedContainerGuidRef.current = containerGuid
@@ -391,11 +426,8 @@ export default function ContainerDetailPage() {
         备注: info.备注,
         状态: info.状态,
       })
-      setRows(products)
-      setSelectedRowKeys([])
-      void reconcileLoadedMatchStatus(products, currentRequestId)
     } catch (error) {
-      if (containerDetailLoadRequestIdRef.current !== currentRequestId) {
+      if (headerLoadRequestIdRef.current !== currentRequestId) {
         return
       }
       const errorMessage = error instanceof Error ? error.message : t('containers.messages.loadDetailFailed')
@@ -407,13 +439,72 @@ export default function ContainerDetailPage() {
         console.error('货柜详情静默刷新失败', error)
       }
     } finally {
-      if (containerDetailLoadRequestIdRef.current !== currentRequestId) {
+      if (headerLoadRequestIdRef.current !== currentRequestId) {
         return
       }
       if (showLoading) {
         setLoading(false)
       }
     }
+  }
+
+  const loadDetailChunk = async (pageNumber: number, mode: 'reset' | 'append' = 'reset') => {
+    if (!containerGuid) return
+    if (mode === 'append' && (detailLoading || detailLoadingMore || !detailHasMore)) return
+
+    const currentRequestId = containerDetailLoadRequestIdRef.current + 1
+    containerDetailLoadRequestIdRef.current = currentRequestId
+    const controller = new AbortController()
+
+    if (mode === 'reset') {
+      detailAbortControllerRef.current?.abort()
+      detailAbortControllerRef.current = controller
+      setDetailLoading(true)
+      setRows([])
+      setSelectedRowKeys([])
+    } else {
+      setDetailLoadingMore(true)
+    }
+
+    try {
+      const result = await queryContainerProducts(
+        containerGuid,
+        { ...detailQuery, pageNumber, pageSize: CONTAINER_DETAIL_PAGE_SIZE },
+        controller.signal,
+      )
+      if (controller.signal.aborted || containerDetailLoadRequestIdRef.current !== currentRequestId) {
+        return
+      }
+
+      setRows((items) => mode === 'reset' ? result.items : mergeContainerDetailLoadedItems(items, result.items))
+      setDetailItemsTotal(result.itemsTotal)
+      setDetailPageNumber(result.pageNumber)
+      setDetailHasMore(result.hasMore)
+      setRemoteTagStats(result.tagStats)
+      void reconcileLoadedMatchStatus(result.items, currentRequestId)
+    } catch (error) {
+      if (controller.signal.aborted || containerDetailLoadRequestIdRef.current !== currentRequestId) {
+        return
+      }
+      console.error(error)
+      message.error(error instanceof Error ? error.message : t('containers.messages.loadDetailFailed'))
+    } finally {
+      if (controller.signal.aborted || containerDetailLoadRequestIdRef.current !== currentRequestId) {
+        return
+      }
+      if (mode === 'reset') {
+        setDetailLoading(false)
+      } else {
+        setDetailLoadingMore(false)
+      }
+    }
+  }
+
+  const loadData = async (showLoading = true) => {
+    await Promise.all([
+      loadHeader(showLoading),
+      loadDetailChunk(1, 'reset'),
+    ])
   }
 
   useEffect(() => {
@@ -431,33 +522,33 @@ export default function ContainerDetailPage() {
       loadedDetailId: loadedContainerGuidRef.current,
       visibleDetailId: visibleContainerGuidRef.current,
     })
-    void loadData(shouldShowInitialLoading)
+    void loadHeader(shouldShowInitialLoading)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [containerGuid])
 
   useEffect(() => {
-    setSelectedRowKeys([])
-  }, [itemNumberFilter, productTypeFilter, selectedTagFilters, columnFilters, sortState])
+    void loadDetailChunk(1, 'reset')
+    return () => {
+      detailAbortControllerRef.current?.abort()
+    }
+    // detailQueryKey 已包含货柜、筛选、排序和 tag，避免依赖对象引用导致重复请求。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [detailQueryKey])
 
   const baseFilteredRows = useMemo(() => {
-    return rows.filter((row) => {
-      const itemNumber = row.商品信息?.货号 || ''
-      if (itemNumberFilter && !itemNumber.toLowerCase().includes(itemNumberFilter.toLowerCase())) return false
-      if (productTypeFilter !== 'all' && getProductTypeFilterKey(row.商品类型 || row.商品信息?.商品类型) !== productTypeFilter) return false
-      return true
-    })
-  }, [itemNumberFilter, productTypeFilter, rows])
+    return rows
+  }, [rows])
 
   const filteredRows = useMemo(() => {
-    return baseFilteredRows.filter((row) => matchesContainerDetailSelectedTags(row, selectedTagFilters))
-  }, [baseFilteredRows, selectedTagFilters])
+    return baseFilteredRows
+  }, [baseFilteredRows])
 
   const displayRows = useMemo(
-    () => applyContainerDetailColumnState(filteredRows, columnFilters, sortState),
-    [columnFilters, filteredRows, sortState],
+    () => filteredRows,
+    [filteredRows],
   )
 
-  const tagStats = useMemo(() => buildContainerDetailTagStats(baseFilteredRows), [baseFilteredRows])
+  const tagStats = remoteTagStats
 
   const tagStatOptions = useMemo<Array<{ value: ContainerDetailTagFilter; label: string; color?: string }>>(() => [
     { value: 'all', label: t('containers.filters.allTags'), color: 'blue' },
@@ -503,6 +594,32 @@ export default function ContainerDetailPage() {
 
   const hasHiddenSelectedRows = selectedRowKeys.length > 0 && selectedRows.length < selectedRowKeys.length
   const targetRows = selectedRowKeys.length ? selectedRows : displayRows
+
+  const buildDetailBatchScope = (): ContainerDetailBatchScope => (
+    selectedRowKeys.length
+      ? { selectedHguids: selectedRowKeys.map(String) }
+      : { query: detailQuery }
+  )
+
+  const fetchAllRowsForCurrentQuery = async () => {
+    const allRows: ContainerDetail[] = []
+    let pageNumber = 1
+    let hasMore = true
+
+    while (hasMore) {
+      // 导出和上下架必须作用于当前筛选结果全量，不能只拿虚拟表格已加载块。
+      const result = await queryContainerProducts(containerGuid, {
+        ...detailQuery,
+        pageNumber,
+        pageSize: 500,
+      })
+      allRows.push(...result.items)
+      hasMore = result.hasMore
+      pageNumber += 1
+    }
+
+    return allRows
+  }
 
   const ensureTargetRowsVisible = () => {
     if (!hasHiddenSelectedRows) return true
@@ -632,22 +749,19 @@ export default function ContainerDetailPage() {
   }
 
   const applyFloatRate = async () => {
-    if (!ensureTargetRowsVisible()) return
     if (batchFloatRate == null) {
       message.warning(t('containers.messages.enterFloatRate'))
       return
     }
-    const updates = buildContainerDetailFloatRateUpdates(targetRows, container, batchFloatRate)
-    if (!updates.length) return
-    await batchUpdateDetails(updates)
-    applyDetailUpdatesToRows(updates)
+    const result = await applyContainerFloatRateByScope(containerGuid, buildDetailBatchScope(), batchFloatRate)
+    await loadDetailChunk(1, 'reset')
     setBatchFloatRate(null)
-    message.success(t('containers.messages.detailsUpdated', { count: updates.length }))
+    setSelectedRowKeys([])
+    message.success(t('containers.messages.detailsUpdated', { count: result.totalUpdated }))
   }
 
   const handleRecalculateCosts = async () => {
     if (!access.canEditContainer) return
-    if (!ensureTargetRowsVisible()) return
     if (container?.运费 == null) {
       message.warning('缺少运费，无法重算成本')
       return
@@ -656,23 +770,12 @@ export default function ContainerDetailPage() {
       message.warning('缺少总体积，无法重算成本')
       return
     }
-    if (!targetRows.length) {
-      message.warning('没有可重算的明细')
-      return
-    }
-
-    const updates = buildContainerDetailFloatRateUpdates(targetRows, container)
-    if (!updates.length) {
-      message.warning('没有可写回的成本更新')
-      return
-    }
-
     setRecalculateCostsLoading(true)
     try {
-      // 手动入口只处理当前目标行，避免页面加载或头部保存时意外批量写库。
-      await batchUpdateDetails(updates)
-      applyDetailUpdatesToRows(updates)
-      message.success(t('containers.messages.detailsUpdated', { count: updates.length }))
+      const result = await recalculateContainerCostsByScope(containerGuid, buildDetailBatchScope())
+      await loadDetailChunk(1, 'reset')
+      setSelectedRowKeys([])
+      message.success(t('containers.messages.detailsUpdated', { count: result.totalUpdated }))
     } finally {
       setRecalculateCostsLoading(false)
     }
@@ -680,23 +783,25 @@ export default function ContainerDetailPage() {
 
   const handleMatchDomesticData = async () => {
     if (!access.canEditContainer) return
-    if (!ensureTargetRowsVisible()) return
-    if (!targetRows.length) {
-      message.warning('没有可匹配的明细')
-      return
-    }
-
-    const detectionItems = buildContainerDetailDetectionItems(targetRows)
-
-    if (!detectionItems.length) {
-      message.warning('当前明细缺少可匹配的商品编码或货号')
-      return
-    }
-
     setMatchDomesticDataLoading(true)
     try {
+      if (!ensureTargetRowsVisible()) return
+      // 未勾选时按当前远程筛选结果全量匹配，避免虚拟表格只处理已加载块。
+      const scopedRows = selectedRowKeys.length ? targetRows : await fetchAllRowsForCurrentQuery()
+      if (!scopedRows.length) {
+        message.warning('没有可匹配的明细')
+        return
+      }
+
+      const detectionItems = buildContainerDetailDetectionItems(scopedRows)
+
+      if (!detectionItems.length) {
+        message.warning('当前明细缺少可匹配的商品编码或货号')
+        return
+      }
+
       const detected = await detectProducts(detectionItems)
-      const updates = buildContainerDetailMatchedDomesticDataUpdates(targetRows, detected, container)
+      const updates = buildContainerDetailMatchedDomesticDataUpdates(scopedRows, detected, container)
         .map((update) => ({ ...update, SkipRelatedProductSync: true }))
       if (!updates.length) {
         message.info('没有需要更新的国内数据')
@@ -721,6 +826,9 @@ export default function ContainerDetailPage() {
         await batchUpdateDetails(writableUpdates)
       }
       applyDetailUpdatesToRows(updates)
+      if (!selectedRowKeys.length) {
+        await loadDetailChunk(1, 'reset')
+      }
       const pricePatchCount = updates.filter((update) => update.国内价格 != null || update.贴牌价格 != null).length
       message.success(`已更新 ${updates.length} 条明细，补齐价格 ${pricePatchCount} 条`)
     } catch (error) {
@@ -731,44 +839,35 @@ export default function ContainerDetailPage() {
   }
 
   const applyPrices = async () => {
-    if (!ensureTargetRowsVisible()) return
     if (batchImportPrice == null && batchOemPrice == null) {
       message.warning(t('containers.messages.enterImportOrOemPrice'))
       return
     }
-    if (!targetRows.length) {
-      message.warning(t('containers.messages.selectProducts'))
-      return
-    }
-    const updates = targetRows
-      .filter((row) => row.hguid)
-      .map((row) => ({ hguid: row.hguid, 进口价格: batchImportPrice ?? row.进口价格, 贴牌价格: batchOemPrice ?? row.贴牌价格 }))
-    await batchUpdateDetails(updates)
-    setRows((items) =>
-      items.map((item) => {
-        const match = updates.find((update) => update.hguid === item.hguid)
-        return match ? { ...item, 进口价格: match.进口价格, 贴牌价格: match.贴牌价格 } : item
-      }),
-    )
+    const result = await applyContainerPricesByScope(containerGuid, buildDetailBatchScope(), {
+      importPrice: batchImportPrice,
+      oemPrice: batchOemPrice,
+    })
+    await loadDetailChunk(1, 'reset')
     setBatchImportPrice(null)
     setBatchOemPrice(null)
     setSelectedRowKeys([])
-    message.success(t('containers.messages.detailPricesUpdated', { count: updates.length }))
+    message.success(t('containers.messages.detailPricesUpdated', { count: result.totalUpdated }))
   }
 
   const applyActive = async (isActive: boolean) => {
     if (!ensureTargetRowsVisible()) return
-    if (!targetRows.length) {
+    const scopedRows = selectedRowKeys.length ? targetRows : await fetchAllRowsForCurrentQuery()
+    if (!scopedRows.length) {
       message.warning(t('containers.messages.selectProducts'))
       return
     }
-    const productCodes = targetRows
+    const productCodes = scopedRows
       .map(getContainerDetailProductCode)
       .filter((value): value is string => Boolean(value))
       .filter((value) => !pendingWarehouseStatusCodes.has(value))
     if (!productCodes.length) {
       message.warning(
-        targetRows.some((row) => {
+        scopedRows.some((row) => {
           const productCode = getContainerDetailProductCode(row)
           return productCode ? pendingWarehouseStatusCodes.has(productCode) : false
         })
@@ -1314,7 +1413,7 @@ export default function ContainerDetailPage() {
 
   const exportExcel = async () => {
     if (!ensureTargetRowsVisible()) return
-    const exportRows = targetRows
+    const exportRows = selectedRowKeys.length ? targetRows : await fetchAllRowsForCurrentQuery()
     if (!exportRows.length) {
       message.warning(t('containers.messages.noDataToExport'))
       return
@@ -1471,6 +1570,18 @@ export default function ContainerDetailPage() {
     setSortState(DEFAULT_CONTAINER_DETAIL_SORT)
   }
 
+  const loadNextDetailChunk = async () => {
+    if (detailLoading || detailLoadingMore || !detailHasMore) return
+    await loadDetailChunk(detailPageNumber + 1, 'append')
+  }
+
+  const handleDetailTableScroll = (event: UIEvent<HTMLDivElement>) => {
+    const target = event.currentTarget
+    if (target.scrollTop + target.clientHeight >= target.scrollHeight - 96) {
+      void loadNextDetailChunk()
+    }
+  }
+
   const handleWarehouseStatusChange = async (row: ContainerDetail, isActive: boolean) => {
     if (!access.canEditContainer) return
     const productCode = getContainerDetailProductCode(row)
@@ -1524,7 +1635,14 @@ export default function ContainerDetailPage() {
       fixed: 'left',
       render: (_, row) =>
         row.商品信息?.商品图片 ? (
-          <Image width={40} height={40} src={row.商品信息.商品图片} style={{ objectFit: 'cover', borderRadius: 4 }} />
+          <img
+            width={40}
+            height={40}
+            src={row.商品信息.商品图片}
+            alt={row.商品信息?.货号 || row.商品信息?.商品名称 || ''}
+            loading="lazy"
+            style={{ objectFit: 'cover', borderRadius: 4, display: 'block' }}
+          />
         ) : (
           <span style={{ color: '#999' }}>{t('containers.empty.noImage')}</span>
         ),
@@ -1900,7 +2018,13 @@ export default function ContainerDetailPage() {
                     onChange={setTagFiltersFromSelect}
                     options={tagSelectOptions}
                   />
-                  <Typography.Text type="secondary">{t('containers.text.showingRows', { filtered: displayRows.length, total: rows.length })}</Typography.Text>
+                  <Typography.Text type="secondary">
+                    {t('containers.text.loadedRows', '已加载 {{loaded}} / 共 {{total}} 条', {
+                      loaded: rows.length,
+                      total: detailItemsTotal,
+                    })}
+                    {detailLoadingMore ? ` ${t('common.loading', '加载中')}` : ''}
+                  </Typography.Text>
                   {hasActiveColumnState ? (
                     <Button size="small" onClick={() => {
                       setColumnFilters({})
@@ -2041,15 +2165,13 @@ export default function ContainerDetailPage() {
                 size="small"
                 columns={columns}
                 dataSource={displayRows}
+                loading={detailLoading && rows.length === 0}
                 rowSelection={{ selectedRowKeys, onChange: setSelectedRowKeys, fixed: !viewport.isSmallPortrait }}
-                pagination={{
-                  pageSize: 500,
-                  pageSizeOptions: ['50', '100', '500', '1000'],
-                  showSizeChanger: true,
-                  showTotal: (total) => t('common.total', { count: total }),
-                }}
+                pagination={false}
+                virtual
                 scroll={{ x: CONTAINER_DETAIL_TABLE_SCROLL_X, y: tableScrollY }}
                 onChange={handleTableChange}
+                onScroll={handleDetailTableScroll}
                 footer={() => (
                   <Space direction="vertical" size={2}>
                     <Typography.Text type="secondary">{t('containers.formulas.transportCost', '运输成本 = 运费 × 明细体积 ÷ 装柜数量 ÷ 总体积')}</Typography.Text>

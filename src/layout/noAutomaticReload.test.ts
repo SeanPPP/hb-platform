@@ -60,8 +60,12 @@ if (viewportHookMatch) {
   )
 }
 assert(
-  /void loadData\(shouldShowInitialLoading\)[\s\S]{0,160}\}, \[containerGuid\]\)/.test(containerDetailSource),
-  '货柜明细首次加载 effect 应只依赖 containerGuid，避免横竖屏切换重新加载',
+  /void loadHeader\(shouldShowInitialLoading\)[\s\S]{0,160}\}, \[containerGuid\]\)/.test(containerDetailSource),
+  '货柜明细表头首次加载 effect 应只依赖 containerGuid，避免横竖屏切换重新加载',
+)
+assert(
+  /void loadDetailChunk\(1, 'reset'\)[\s\S]{0,260}\}, \[detailQueryKey\]\)/.test(containerDetailSource),
+  '货柜明细远程分页加载 effect 应只依赖 detailQueryKey，避免横竖屏切换重新加载',
 )
 
 console.log('noAutomaticReload.test: ok')

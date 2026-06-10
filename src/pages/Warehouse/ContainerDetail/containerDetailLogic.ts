@@ -1,4 +1,4 @@
-import type { ContainerDetail, ContainerMain, UpdateContainerDetailRequest } from '../../../types/container'
+import type { ContainerDetail, ContainerDetailQuery, ContainerMain, UpdateContainerDetailRequest } from '../../../types/container'
 import type { PushProductsToHqItem, PushProductsToHqResult } from '../../../types/posProduct'
 
 export type ContainerDetailTagFilter = 'all' | 'new' | 'existing' | 'noOemPrice' | 'abnormalImport' | 'active' | 'inactive'
@@ -376,6 +376,150 @@ export function applyContainerDetailColumnState(
       return sortState.order === 'ascend' ? result : -result
     })
     .map((item) => item.row)
+}
+
+export interface BuildContainerDetailQueryOptions {
+  containerGuid: string
+  filters: ContainerDetailColumnFilters
+  selectedTags: ContainerDetailTagFilter[]
+  sortState?: ContainerDetailSortState
+  pageNumber: number
+  pageSize: number
+}
+
+function assignQueryValue<K extends keyof ContainerDetailQuery>(
+  target: ContainerDetailQuery,
+  key: K,
+  value: ContainerDetailQuery[K],
+) {
+  target[key] = value
+}
+
+function assignTrimmedText<K extends keyof ContainerDetailQuery>(
+  target: ContainerDetailQuery,
+  key: K,
+  value?: string,
+) {
+  const normalized = value?.trim()
+  if (normalized) {
+    assignQueryValue(target, key, normalized as ContainerDetailQuery[K])
+  }
+}
+
+function assignNonEmptyArray<K extends keyof ContainerDetailQuery, V>(
+  target: ContainerDetailQuery,
+  key: K,
+  value?: V[],
+) {
+  if (value?.length) {
+    assignQueryValue(target, key, [...value] as unknown as ContainerDetailQuery[K])
+  }
+}
+
+function assignNumberRange(
+  target: ContainerDetailQuery,
+  minKey: keyof ContainerDetailQuery,
+  maxKey: keyof ContainerDetailQuery,
+  range?: ContainerDetailNumberRangeFilter,
+) {
+  // 0 是有效筛选值，不能用 truthy 判断丢掉。
+  if (range?.min != null) {
+    assignQueryValue(target, minKey, range.min as ContainerDetailQuery[typeof minKey])
+  }
+  if (range?.max != null) {
+    assignQueryValue(target, maxKey, range.max as ContainerDetailQuery[typeof maxKey])
+  }
+}
+
+export function buildContainerDetailQuery({
+  containerGuid,
+  filters,
+  selectedTags,
+  sortState,
+  pageNumber,
+  pageSize,
+}: BuildContainerDetailQueryOptions): ContainerDetailQuery {
+  const query: ContainerDetailQuery = {
+    containerGuid,
+    pageNumber,
+    pageSize,
+  }
+
+  assignTrimmedText(query, 'itemNumber', filters.itemNumber)
+  assignTrimmedText(query, 'barcode', filters.barcode)
+  assignTrimmedText(query, 'productName', filters.productName)
+  assignTrimmedText(query, 'englishName', filters.englishName)
+  assignTrimmedText(query, 'remark', filters.remark)
+  assignNonEmptyArray(query, 'productTypes', filters.productTypes)
+  assignNonEmptyArray(query, 'newProductStates', filters.newProductStates)
+  assignNonEmptyArray(query, 'matchTypes', filters.matchTypes)
+  assignNonEmptyArray(query, 'warehouseStatus', filters.warehouseStatus)
+
+  assignNumberRange(query, 'containerPiecesMin', 'containerPiecesMax', filters.containerPieces)
+  assignNumberRange(query, 'containerQuantityMin', 'containerQuantityMax', filters.containerQuantity)
+  assignNumberRange(query, 'domesticPriceMin', 'domesticPriceMax', filters.domesticPrice)
+  assignNumberRange(query, 'floatRateMin', 'floatRateMax', filters.floatRate)
+  assignNumberRange(query, 'transportCostMin', 'transportCostMax', filters.transportCost)
+  assignNumberRange(query, 'warehouseImportPriceMin', 'warehouseImportPriceMax', filters.warehouseImportPrice)
+  assignNumberRange(query, 'importPriceMin', 'importPriceMax', filters.importPrice)
+  assignNumberRange(query, 'oemPriceMin', 'oemPriceMax', filters.oemPrice)
+
+  const remoteTags = selectedTags.filter((tag) => tag !== 'all')
+  assignNonEmptyArray(query, 'selectedTags', remoteTags)
+
+  if (sortState) {
+    query.sortBy = sortState.field
+    query.sortOrder = sortState.order
+  }
+
+  return query
+}
+
+export function mergeContainerDetailLoadedItems(
+  loadedItems: ContainerDetail[],
+  nextItems: ContainerDetail[],
+): ContainerDetail[] {
+  const merged = [...loadedItems]
+  const indexByGuid = new Map<string, number>()
+
+  merged.forEach((item, index) => {
+    if (item.hguid) {
+      indexByGuid.set(item.hguid, index)
+    }
+  })
+
+  nextItems.forEach((item) => {
+    const existingIndex = item.hguid ? indexByGuid.get(item.hguid) : undefined
+    if (existingIndex == null) {
+      if (item.hguid) {
+        indexByGuid.set(item.hguid, merged.length)
+      }
+      merged.push(item)
+      return
+    }
+
+    // 重复明细保留原位置，但以后端最新页数据覆盖，避免编辑后刷新显示旧值。
+    merged[existingIndex] = item
+  })
+
+  return merged
+}
+
+export interface ContainerDetailRemoteQueryResetState<Key = string> {
+  selectedRowKeys: Key[]
+  loadedItems: ContainerDetail[]
+  pageNumber: number
+}
+
+export function getContainerDetailRemoteQueryResetState<Key = string>(
+  _state?: Partial<ContainerDetailRemoteQueryResetState<Key>>,
+): ContainerDetailRemoteQueryResetState<Key> {
+  // 远程查询条件变化后，旧选择和旧分页块都不再代表当前结果集。
+  return {
+    selectedRowKeys: [],
+    loadedItems: [],
+    pageNumber: 1,
+  }
 }
 
 export function applyContainerDetailWarehouseStatusByProductCodes(

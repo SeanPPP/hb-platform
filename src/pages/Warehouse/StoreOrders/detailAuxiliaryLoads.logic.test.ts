@@ -290,6 +290,8 @@ async function main() {
         containerDetailSource.includes('visibleContainerGuidRef') &&
         containerDetailSource.includes('const loadData = async (showLoading = true)') &&
         containerDetailSource.includes('shouldSkipDetailAutoReload({') &&
+        containerDetailSource.includes('void loadHeader(shouldShowInitialLoading)') &&
+        containerDetailSource.includes("loadDetailChunk(1, 'reset')") &&
         containerDetailSource.includes('loadedContainerGuidRef.current = containerGuid') &&
         containerDetailSource.includes('visibleContainerGuidRef.current = containerGuid'),
       '货柜详情缺少同货柜 Tab 恢复跳过自动刷新保护',

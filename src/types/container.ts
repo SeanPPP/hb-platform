@@ -68,6 +68,76 @@ export interface ContainerDetail {
   MatchType?: string
 }
 
+export type ContainerDetailQueryTag = 'all' | 'new' | 'existing' | 'noOemPrice' | 'abnormalImport' | 'active' | 'inactive'
+export type ContainerDetailQueryProductType = 'normal' | 'set' | 'setChild'
+export type ContainerDetailQueryNewProductState = 'new' | 'existing'
+export type ContainerDetailQueryMatchType = 'productCode' | 'supplierItem' | 'unmatched'
+export type ContainerDetailQueryWarehouseStatus = 'active' | 'inactive'
+export type ContainerDetailQuerySortOrder = 'ascend' | 'descend'
+
+export interface ContainerDetailQuery {
+  containerGuid: string
+  pageNumber: number
+  pageSize: number
+  itemNumber?: string
+  barcode?: string
+  productName?: string
+  englishName?: string
+  remark?: string
+  productTypes?: ContainerDetailQueryProductType[]
+  newProductStates?: ContainerDetailQueryNewProductState[]
+  matchTypes?: ContainerDetailQueryMatchType[]
+  warehouseStatus?: ContainerDetailQueryWarehouseStatus[]
+  containerPiecesMin?: number
+  containerPiecesMax?: number
+  containerQuantityMin?: number
+  containerQuantityMax?: number
+  domesticPriceMin?: number
+  domesticPriceMax?: number
+  floatRateMin?: number
+  floatRateMax?: number
+  transportCostMin?: number
+  transportCostMax?: number
+  warehouseImportPriceMin?: number
+  warehouseImportPriceMax?: number
+  importPriceMin?: number
+  importPriceMax?: number
+  oemPriceMin?: number
+  oemPriceMax?: number
+  selectedTags?: ContainerDetailQueryTag[]
+  sortBy?: string
+  sortOrder?: ContainerDetailQuerySortOrder
+}
+
+export interface ContainerDetailTagStats {
+  all: number
+  new: number
+  existing: number
+  noOemPrice: number
+  abnormalImport: number
+  active: number
+  inactive: number
+}
+
+export interface ContainerDetailQueryResult {
+  items: ContainerDetail[]
+  itemsTotal: number
+  pageNumber: number
+  pageSize: number
+  hasMore: boolean
+  tagStats: ContainerDetailTagStats
+}
+
+export interface ContainerDetailBatchScope {
+  selectedHguids?: string[]
+  query?: ContainerDetailQuery
+}
+
+export interface ContainerDetailBatchActionResult {
+  totalUpdated: number
+  totalRequested?: number
+}
+
 export interface ContainerQueryRequest {
   dateType?: string
   startDate?: string

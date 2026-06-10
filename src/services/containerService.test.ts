@@ -2,6 +2,7 @@ import {
   batchUpdateDetails,
   getComingSoonContainerProducts,
   getComingSoonContainerSummaries,
+  queryContainerProducts,
   syncContainersFromHq,
   translateHqProductNamesByContainerNumber,
   updateContainer,
@@ -106,6 +107,69 @@ try {
     JSON.parse(String(capturedInit?.body)),
     [{ HGUID: 'D-CLEAR-EN', ClearEnglishName: true }],
     'batchUpdateDetails should send the explicit English-name clear marker',
+  )
+
+  const abortController = new AbortController()
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    capturedUrl = String(input)
+    capturedInit = init
+
+    return new Response(JSON.stringify({
+      success: true,
+      data: {
+        items: [{ id: 101, hguid: 'remote-101', 商品名称: '远程明细' }],
+        itemsTotal: 12,
+        pageNumber: 2,
+        pageSize: 20,
+        hasMore: true,
+        tagStats: { all: 12, new: 3, existing: 9, noOemPrice: 1, abnormalImport: 2, active: 8, inactive: 4 },
+      },
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  }) as typeof fetch
+
+  const queryResult = await queryContainerProducts('GUID/需要编码', {
+    pageNumber: 2,
+    pageSize: 20,
+    itemNumber: 'HB308',
+    selectedTags: ['new', 'inactive'],
+    sortBy: 'itemNumber',
+    sortOrder: 'ascend',
+  }, abortController.signal)
+
+  assertEqual(
+    capturedUrl,
+    '/api/react/v1/containers/GUID%2F%E9%9C%80%E8%A6%81%E7%BC%96%E7%A0%81/products/query',
+    'queryContainerProducts 应调用按货柜 GUID 编码后的远程查询接口',
+  )
+  assertEqual(capturedInit?.method, 'POST', 'queryContainerProducts 应使用 POST')
+  assertEqual(capturedInit?.signal, abortController.signal, 'queryContainerProducts 应透传 AbortSignal')
+  assertDeepEqual(
+    JSON.parse(String(capturedInit?.body)),
+    {
+      containerGuid: 'GUID/需要编码',
+      pageNumber: 2,
+      pageSize: 20,
+      itemNumber: 'HB308',
+      selectedTags: ['new', 'inactive'],
+      sortBy: 'itemNumber',
+      sortOrder: 'ascend',
+    },
+    'queryContainerProducts 应发送远程查询 body 且保留 containerGuid',
+  )
+  assertDeepEqual(
+    queryResult,
+    {
+      items: [{ id: 101, hguid: 'remote-101', 商品名称: '远程明细' }],
+      itemsTotal: 12,
+      pageNumber: 2,
+      pageSize: 20,
+      hasMore: true,
+      tagStats: { all: 12, new: 3, existing: 9, noOemPrice: 1, abnormalImport: 2, active: 8, inactive: 4 },
+    },
+    'queryContainerProducts 应返回 data 内的分页明细结果',
   )
 
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {

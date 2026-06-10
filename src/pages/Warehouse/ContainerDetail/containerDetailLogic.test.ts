@@ -5,12 +5,14 @@ import {
   applyContainerDetailEnglishNameUpdates,
   applyContainerDetailWarehouseStatusByProductCodes,
   applyContainerDetailColumnState,
+  buildContainerDetailQuery,
   buildContainerDetailClearEnglishNameUpdates,
   buildContainerDetailDetectionItems,
   buildContainerDetailEnglishNameUpdates,
   buildContainerDetailMatchedDomesticDataUpdates,
   buildContainerDetailMatchStatusUpdates,
   buildContainerDetailSaveFailureKeys,
+  getContainerDetailRemoteQueryResetState,
   findContainerDetailRowsMissingChineseName,
   buildContainerDetailTagStats,
   buildContainerDetailFloatRateUpdates,
@@ -20,6 +22,7 @@ import {
   calculateContainerDetailTransportCost,
   countContainerDetailInvalidTranslationResults,
   extractPushToHqErrorResult,
+  mergeContainerDetailLoadedItems,
   getContainerDetailEnglishName,
   getContainerDetailMatchType,
   getContainerDetailProductCode,
@@ -307,6 +310,119 @@ assertDeepEqual(
 assertDeepEqual(columnState({}, { field: 'transportCost', order: 'ascend' }), ['column-203', 'column-201', 'column-202'], '数字排序应把空值排在最后')
 assertDeepEqual(columnState({}, { field: 'warehouseStatus', order: 'descend' }), ['column-201', 'column-202', 'column-203'], '仓库状态排序应支持上架优先且同值保持原始顺序')
 assertDeepEqual(columnState({}, { field: 'matchType', order: 'ascend' }), ['column-201', 'column-203', 'column-202'], '匹配方式排序应按商品编码、供应商货号、未匹配稳定排序')
+
+assertDeepEqual(
+  buildContainerDetailQuery({
+    containerGuid: 'CONTAINER-QUERY',
+    filters: {
+      itemNumber: ' HB308 ',
+      barcode: '',
+      productName: ' 梳子 ',
+      englishName: ' Grooming ',
+      remark: ' 需确认 ',
+      productTypes: ['normal', 'set'],
+      newProductStates: ['new'],
+      matchTypes: ['productCode', 'supplierItem'],
+      warehouseStatus: ['active'],
+      containerPieces: { min: 1, max: 8 },
+      containerQuantity: { min: 0, max: 1200 },
+      domesticPrice: { min: 2.5 },
+      floatRate: { max: 1.3 },
+      transportCost: { min: 0 },
+      warehouseImportPrice: { max: 9.99 },
+      importPrice: { min: 1.11, max: 3.33 },
+      oemPrice: { min: 4.44, max: 5.55 },
+    },
+    selectedTags: ['all', 'new', 'inactive'],
+    sortState: { field: 'itemNumber', order: 'ascend' },
+    pageNumber: 3,
+    pageSize: 80,
+  }),
+  {
+    containerGuid: 'CONTAINER-QUERY',
+    pageNumber: 3,
+    pageSize: 80,
+    itemNumber: 'HB308',
+    productName: '梳子',
+    englishName: 'Grooming',
+    remark: '需确认',
+    productTypes: ['normal', 'set'],
+    newProductStates: ['new'],
+    matchTypes: ['productCode', 'supplierItem'],
+    warehouseStatus: ['active'],
+    containerPiecesMin: 1,
+    containerPiecesMax: 8,
+    containerQuantityMin: 0,
+    containerQuantityMax: 1200,
+    domesticPriceMin: 2.5,
+    floatRateMax: 1.3,
+    transportCostMin: 0,
+    warehouseImportPriceMax: 9.99,
+    importPriceMin: 1.11,
+    importPriceMax: 3.33,
+    oemPriceMin: 4.44,
+    oemPriceMax: 5.55,
+    selectedTags: ['new', 'inactive'],
+    sortBy: 'itemNumber',
+    sortOrder: 'ascend',
+  },
+  '远程查询参数应由列筛选、tag、排序和分页状态生成，并裁剪空文本与 all tag',
+)
+
+assertDeepEqual(
+  buildContainerDetailQuery({
+    containerGuid: 'CONTAINER-NO-SORT',
+    filters: { barcode: ' 9300 ' },
+    selectedTags: [],
+    pageNumber: 1,
+    pageSize: 50,
+  }),
+  {
+    containerGuid: 'CONTAINER-NO-SORT',
+    pageNumber: 1,
+    pageSize: 50,
+    barcode: '9300',
+  },
+  '远程查询参数没有排序和 tag 时不应提交空字段',
+)
+
+assertDeepEqual(
+  mergeContainerDetailLoadedItems(
+    [
+      { id: 401, hguid: 'merge-401', 商品名称: '旧 401' },
+      { id: 402, hguid: 'merge-402', 商品名称: '旧 402' },
+    ],
+    [
+      { id: 402, hguid: 'merge-402', 商品名称: '新 402' },
+      { id: 403, hguid: 'merge-403', 商品名称: '新 403' },
+    ],
+  ).map((row) => ({ hguid: row.hguid, name: row.商品名称 })),
+  [
+    { hguid: 'merge-401', name: '旧 401' },
+    { hguid: 'merge-402', name: '新 402' },
+    { hguid: 'merge-403', name: '新 403' },
+  ],
+  '懒加载追加明细时应按 hguid 去重并用新页数据覆盖重复行',
+)
+
+assertDeepEqual(
+  mergeContainerDetailLoadedItems(
+    [{ id: 501, hguid: '', 商品名称: '无 GUID 旧行' }],
+    [{ id: 501, hguid: '', 商品名称: '无 GUID 新行' }],
+  ).map((row) => row.商品名称),
+  ['无 GUID 旧行', '无 GUID 新行'],
+  '缺少 hguid 的明细不能被误判为同一行',
+)
+
+assertDeepEqual(
+  getContainerDetailRemoteQueryResetState({ selectedRowKeys: ['a', 'b'] }),
+  {
+    selectedRowKeys: [],
+    loadedItems: [],
+    pageNumber: 1,
+  },
+  '远程 query 变化时应重置选择、已加载明细和页码',
+)
 const sortableFields: ContainerDetailSortField[] = [
   'itemNumber',
   'barcode',
@@ -843,9 +959,10 @@ assertEqual(
   '货柜明细应独立显示仓库当前进货价格列',
 )
 assertEqual(
-  pageSource.includes('buildContainerDetailMatchedDomesticDataUpdates(targetRows, detected, container)'),
+  pageSource.includes('buildContainerDetailMatchedDomesticDataUpdates(scopedRows, detected, container)') &&
+  pageSource.includes('const scopedRows = selectedRowKeys.length ? targetRows : await fetchAllRowsForCurrentQuery()'),
   true,
-  '页面应调用匹配国内数据 helper 并沿用当前目标行范围',
+  '页面应调用匹配国内数据 helper，未勾选时按当前筛选结果全量处理',
 )
 assertEqual(
   pageSource.includes('findContainerDetailRowsMissingChineseName(targetRows)') &&
@@ -869,7 +986,7 @@ assertEqual(
   '商品名称双击编辑应有稳定样式类，避免输入态改变表格布局',
 )
 assertEqual(
-  pageSource.includes('const detectionItems = buildContainerDetailDetectionItems(targetRows)'),
+  pageSource.includes('const detectionItems = buildContainerDetailDetectionItems(scopedRows)'),
   true,
   '页面匹配国内数据检测请求应复用统一检测项 helper',
 )
@@ -879,12 +996,12 @@ assertEqual(
   '匹配国内数据检测请求应固定供应商编码 200 且不再提交条码兜底',
 )
 assertEqual(
-  pageSource.includes('void reconcileLoadedMatchStatus(products, currentRequestId)') &&
+  pageSource.includes('void reconcileLoadedMatchStatus(result.items, currentRequestId)') &&
     pageSource.includes('products.filter((row) => getContainerDetailProductCode(row) || getContainerDetailItemNumber(row))') &&
     pageSource.includes('buildContainerDetailMatchStatusUpdates(rowsNeedingMatchStatus, detected)') &&
     pageSource.includes('加载态只校正表格展示状态，不写库'),
   true,
-  '页面加载后应对所有可检测明细只读校正匹配状态，避免旧错误 MatchType 留在表格中且避免写库',
+  '页面加载后应对当前懒加载块只读校正匹配状态，避免旧错误 MatchType 留在表格中且避免写库',
 )
 assertEqual(
   pageSource.includes('SkipRelatedProductSync: true'),
@@ -917,9 +1034,10 @@ assertEqual(
   '筛选条件变化时应清空已选明细，避免隐藏选中行后批量操作退回作用于当前全部可见行',
 )
 assertEqual(
-  pageSource.includes('[itemNumberFilter, productTypeFilter, selectedTagFilters, columnFilters, sortState]'),
+  pageSource.includes('[detailQueryKey]') &&
+    pageSource.includes('detailQueryKey 已包含货柜、筛选、排序和 tag'),
   true,
-  '清空已选明细的 effect 应监听顶部筛选、列头过滤和列头排序',
+  '清空已选明细的 effect 应监听远程查询 key，覆盖顶部筛选、列头过滤和列头排序',
 )
 assertEqual(
   pageSource.includes("{ value: 'all', label: t('containers.filters.allTags'), color: 'blue' }"),
@@ -1493,9 +1611,9 @@ assertEqual(
   '页面应提供重算成本的手动处理入口',
 )
 assertEqual(
-  pageSource.includes('buildContainerDetailFloatRateUpdates(targetRows, container)'),
+  pageSource.includes('recalculateContainerCostsByScope(containerGuid, buildDetailBatchScope())'),
   true,
-  '重算成本应基于当前最终可见目标行和货柜信息计算更新',
+  '重算成本应按当前筛选 scope 交给后端计算更新',
 )
 assertEqual(
   pageSource.includes('dataSource={displayRows}'),
@@ -1503,9 +1621,11 @@ assertEqual(
   '货柜明细表格应使用列头过滤和排序后的 displayRows',
 )
 assertEqual(
-  pageSource.includes('applyContainerDetailColumnState(filteredRows, columnFilters, sortState)'),
+  pageSource.includes('buildContainerDetailQuery({') &&
+    pageSource.includes('filters: remoteColumnFilters') &&
+    pageSource.includes('sortState'),
   true,
-  '顶部筛选结果应继续叠加列头过滤和排序生成 displayRows',
+  '顶部筛选、列头过滤和排序应转换为服务端查询条件',
 )
 assertEqual(
   pageSource.includes('columnFilters') && pageSource.includes('sortState'),
@@ -1569,10 +1689,11 @@ assertEqual(
   '批量和行内仓库状态更新都应复用同商品编码本地更新 helper',
 )
 assertEqual(
-  pageSource.includes('const updates = targetRows') &&
-    pageSource.includes('const productCodes = targetRows'),
+  pageSource.includes('applyContainerPricesByScope(containerGuid, buildDetailBatchScope()') &&
+    pageSource.includes('const scopedRows = selectedRowKeys.length ? targetRows : await fetchAllRowsForCurrentQuery()') &&
+    pageSource.includes('const productCodes = scopedRows'),
   true,
-  '应用价格和批量上下架应在未选择时作用于最终可见行',
+  '应用价格应使用服务端 scope，批量上下架未选择时应作用于当前筛选结果全量',
 )
 assertEqual(
   pageSource.includes('data-column-key="image"') || pageSource.includes('data-column-key="index"'),
@@ -1585,21 +1706,19 @@ assertEqual(
   '单行保存浮率应使用原始行计算变化，不能提前覆盖浮率导致不写库',
 )
 assertEqual(
-  pageSource.includes('await batchUpdateDetails(updates)'),
+  pageSource.includes('recalculateContainerCostsByScope(containerGuid, buildDetailBatchScope())'),
   true,
-  '重算成本应通过明细批量更新接口写回后端',
+  '重算成本应通过服务端 scope 接口写回后端',
 )
 assertEqual(
-  pageSource.includes('applyDetailUpdatesToRows(updates)'),
+  pageSource.includes("await loadDetailChunk(1, 'reset')"),
   true,
-  '重算成本写回成功后应同步更新本地行状态',
+  '重算成本写回成功后应重载当前查询首块',
 )
 assertEqual(pageSource.includes('缺少运费，无法重算成本'), true, '缺少运费时应提示 warning 且不写库')
 assertEqual(pageSource.includes('缺少总体积，无法重算成本'), true, '缺少总体积时应提示 warning 且不写库')
-assertEqual(pageSource.includes('没有可重算的明细'), true, '无目标行时应提示 warning 且不写库')
-assertEqual(pageSource.includes('没有可写回的成本更新'), true, '没有生成更新时应提示 warning 且不写库')
 assertEqual(
-  pageSource.includes("message.success(t('containers.messages.detailsUpdated', { count: updates.length }))"),
+  pageSource.includes("message.success(t('containers.messages.detailsUpdated', { count: result.totalUpdated }))"),
   true,
   '重算成本成功后应提示更新条数',
 )
@@ -1654,10 +1773,12 @@ assertEqual(
   '货柜明细表格应按当前显示顺序给偶数视觉行添加隔行色 class',
 )
 assertEqual(
-  pageSource.includes('pageSize: 500') &&
-    pageSource.includes("pageSizeOptions: ['50', '100', '500', '1000']"),
+  pageSource.includes('const CONTAINER_DETAIL_PAGE_SIZE = 50') &&
+    pageSource.includes('pagination={false}') &&
+    pageSource.includes('virtual') &&
+    pageSource.includes('onScroll={handleDetailTableScroll}'),
   true,
-  '货柜明细分页默认应显示 500 条，并保留常用分页大小选项',
+  '货柜明细应关闭可见分页器，使用 50 条内部懒加载块和虚拟滚动',
 )
 assertEqual(
   pageStyleSource.includes('.container-detail-table .ant-table-thead > tr > th'),
@@ -1745,14 +1866,15 @@ assertEqual(
   '未选中的统计标签应有弱化样式，保留颜色同时避免和选中态混淆',
 )
 assertEqual(
-  pageSource.includes('const containerDetailLoadRequestIdRef = useRef(0)') &&
-    pageSource.includes('const currentRequestId = containerDetailLoadRequestIdRef.current + 1') &&
-    pageSource.includes('containerDetailLoadRequestIdRef.current = currentRequestId'),
+  pageSource.includes('const headerLoadRequestIdRef = useRef(0)') &&
+    pageSource.includes('const containerDetailLoadRequestIdRef = useRef(0)') &&
+    pageSource.includes('detailAbortControllerRef.current?.abort()'),
   true,
-  '货柜详情加载应使用递增 request id 标记当前请求，避免旧请求覆盖新页面',
+  '货柜详情头部和明细加载应分别使用 request id 与 AbortController 防止旧请求覆盖新页面',
 )
 assertEqual(
-  pageSource.includes('if (containerDetailLoadRequestIdRef.current !== currentRequestId)') &&
+  pageSource.includes('if (headerLoadRequestIdRef.current !== currentRequestId)') &&
+    pageSource.includes('if (controller.signal.aborted || containerDetailLoadRequestIdRef.current !== currentRequestId)') &&
     pageSource.includes('return'),
   true,
   '货柜详情过期请求完成或失败后应直接忽略，不能写入 state 或弹失败提示',
