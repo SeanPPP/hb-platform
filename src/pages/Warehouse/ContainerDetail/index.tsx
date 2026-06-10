@@ -78,7 +78,7 @@ import {
 import { useAuthStore } from '../../../store/auth'
 import type { ContainerDetail, ContainerMain, HqTranslationResult, UpdateContainerDetailRequest, UpdateContainerRequest } from '../../../types/container'
 import { copyTextToClipboard } from '../../../utils/clipboard'
-import { shouldShowDetailInitialLoading } from '../../../utils/detailLoadState'
+import { shouldShowDetailInitialLoading, shouldSkipDetailAutoReload } from '../../../utils/detailLoadState'
 import {
   applyContainerDetailEnglishNameUpdates,
   applyContainerDetailWarehouseStatusByProductCodes,
@@ -417,6 +417,15 @@ export default function ContainerDetailPage() {
   }
 
   useEffect(() => {
+    if (shouldSkipDetailAutoReload({
+      requestedDetailId: containerGuid,
+      loadedDetailId: loadedContainerGuidRef.current,
+      visibleDetailId: visibleContainerGuidRef.current,
+    })) {
+      // 保活 Tab 切回同一货柜时复用缓存，避免自动请求导致页面闪动。
+      return
+    }
+
     const shouldShowInitialLoading = shouldShowDetailInitialLoading({
       requestedDetailId: containerGuid,
       loadedDetailId: loadedContainerGuidRef.current,

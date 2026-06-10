@@ -44,7 +44,7 @@ import type {
   UpdateToStorePricesRequest,
 } from '../../../types/localSupplierInvoice'
 import { copyTextToClipboard } from '../../../utils/clipboard'
-import { shouldShowDetailInitialLoading } from '../../../utils/detailLoadState'
+import { shouldShowDetailInitialLoading, shouldSkipDetailAutoReload } from '../../../utils/detailLoadState'
 import { discountRateToDecimal, formatDiscountRate } from '../../../utils/discountRate'
 import {
   buildStoreOptionsFromUserStores,
@@ -163,6 +163,7 @@ export default function LocalSupplierInvoiceDetailPage() {
   // 记录当前发票已完成首次加载，保活 Tab 恢复时保留订单头和明细表。
   const loadedInvoiceGuidRef = useRef<string | null>(null)
   const visibleInvoiceGuidRef = useRef<string | null>(null)
+  const lastLoadedManagedStoreCodeKeyRef = useRef<string | null>(null)
   const invoiceSnapshotRef = useRef<LocalSupplierInvoiceDetailDto | null>(null)
   const detailsSnapshotRef = useRef<LocalSupplierInvoiceItemDto[]>([])
 
@@ -210,6 +211,7 @@ export default function LocalSupplierInvoiceDetailPage() {
       if (!isStoreCodeInManagedScope(data.storeCode, managedStoreCodes)) {
         loadedInvoiceGuidRef.current = null
         visibleInvoiceGuidRef.current = null
+        lastLoadedManagedStoreCodeKeyRef.current = null
         invoiceSnapshotRef.current = null
         detailsSnapshotRef.current = []
         setCanAccessInvoice(false)
@@ -222,6 +224,7 @@ export default function LocalSupplierInvoiceDetailPage() {
       }
       loadedInvoiceGuidRef.current = invoiceGuid
       visibleInvoiceGuidRef.current = invoiceGuid
+      lastLoadedManagedStoreCodeKeyRef.current = managedStoreCodeKey
       setCanAccessInvoice(true)
       if (!areLocalSupplierInvoicesEqual(invoiceSnapshotRef.current, data)) {
         invoiceSnapshotRef.current = data
@@ -269,12 +272,21 @@ export default function LocalSupplierInvoiceDetailPage() {
   }
 
   useEffect(() => {
-    const shouldShowInitialLoading = shouldShowDetailInitialLoading({
+    if (!shouldSkipDetailAutoReload({
       requestedDetailId: invoiceGuid || '',
       loadedDetailId: loadedInvoiceGuidRef.current,
       visibleDetailId: visibleInvoiceGuidRef.current,
-    })
-    void loadInvoiceAndDetails(shouldShowInitialLoading)
+      requestedDetailQueryKey: managedStoreCodeKey,
+      loadedDetailQueryKey: lastLoadedManagedStoreCodeKeyRef.current,
+    })) {
+      // 未命中保活缓存或权限范围变化时才自动加载；同一进货单 Tab 切回直接复用现有内容。
+      const shouldShowInitialLoading = shouldShowDetailInitialLoading({
+        requestedDetailId: invoiceGuid || '',
+        loadedDetailId: loadedInvoiceGuidRef.current,
+        visibleDetailId: visibleInvoiceGuidRef.current,
+      })
+      void loadInvoiceAndDetails(shouldShowInitialLoading)
+    }
     if (managedStoreCodes === null) {
       getActiveStores()
         .then((stores) => {

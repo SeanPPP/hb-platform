@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
-import { shouldShowDetailInitialLoading } from '../../../utils/detailLoadState'
+import { shouldShowDetailInitialLoading, shouldSkipDetailAutoReload } from '../../../utils/detailLoadState'
 import { shouldShowStoreOrderDetailInitialLoading } from './detailLoadState'
 
 function assert(condition: unknown, message: string): asserts condition {
@@ -131,27 +131,32 @@ async function main() {
   })
   if (statusChangeFailure) failures.push(statusChangeFailure)
 
-  const keepAliveSilentReloadFailure = await runTest('详情页 Tab 切回已有数据时应静默刷新', () => {
+  const keepAliveSkipAutoReloadFailure = await runTest('详情页 Tab 切回已有数据时应跳过自动刷新', () => {
     assert(
       detailSource.includes('loadedDetailIdRef') &&
         detailSource.includes('visibleDetailIdRef') &&
+        detailSource.includes('lastLoadedDetailQueryKeyRef') &&
+        detailSource.includes('shouldSkipDetailAutoReload({') &&
         detailSource.includes('shouldShowStoreOrderDetailInitialLoading({') &&
-        detailSource.includes('void loadDetail(shouldShowInitialLoading)'),
-      '详情页缺少按订单 id 区分首次加载和保活恢复刷新，切回 Tab 会重新进入主 loading',
+        detailSource.includes('return () => {') &&
+        detailSource.includes('detailRequestControllerRef.current?.abort()'),
+      '详情页缺少按订单 id 和查询参数跳过保活恢复自动刷新，切回 Tab 会重新请求',
     )
     assert(
       detailSource.includes('loadedDetailIdRef.current = result.orderGUID || id') &&
-        detailSource.includes('visibleDetailIdRef.current = result.orderGUID || id'),
-      '详情页加载成功后应记录已加载订单 id，后续同订单刷新才能保持当前内容',
+        detailSource.includes('visibleDetailIdRef.current = result.orderGUID || id') &&
+        detailSource.includes('lastLoadedDetailQueryKeyRef.current = detailQueryKey'),
+      '详情页加载成功后应记录已加载订单 id 和查询参数，后续同订单同查询才能跳过自动刷新',
     )
   })
-  if (keepAliveSilentReloadFailure) failures.push(keepAliveSilentReloadFailure)
+  if (keepAliveSkipAutoReloadFailure) failures.push(keepAliveSkipAutoReloadFailure)
 
-  const initialLoadingDecisionFailure = await runTest('详情页初始加载判断应覆盖切回和换单边界', () => {
+  const initialLoadingDecisionFailure = await runTest('详情页初始加载和自动刷新跳过判断应覆盖切回和换单边界', () => {
     assert(
       sharedDetailLoadStateSource.includes('loadedDetailId !== requestedDetailId || visibleDetailId !== requestedDetailId') &&
+        sharedDetailLoadStateSource.includes('export function shouldSkipDetailAutoReload') &&
         detailLoadStateSource.includes('shouldShowDetailInitialLoading'),
-      '初始加载判断应沉到通用 helper，并同时检查已加载记录和当前可展示记录',
+      '初始加载和自动刷新跳过判断应沉到通用 helper，并同时检查已加载记录和当前可展示记录',
     )
     assert(
       !shouldShowDetailInitialLoading({
@@ -165,6 +170,14 @@ async function main() {
         visibleDetailId: 'order-a',
       }),
       '同订单且当前仍有可展示明细时应静默刷新',
+    )
+    assert(
+      shouldSkipDetailAutoReload({
+        requestedDetailId: 'detail-a',
+        loadedDetailId: 'detail-a',
+        visibleDetailId: 'detail-a',
+      }),
+      '同详情且当前仍有可展示内容时应跳过自动刷新',
     )
     assert(
       shouldShowStoreOrderDetailInitialLoading({
@@ -190,6 +203,41 @@ async function main() {
       }),
       '当前可展示明细属于其他订单时应显示主加载，避免短暂展示错误订单状态',
     )
+    assert(
+      !shouldSkipDetailAutoReload({
+        requestedDetailId: 'detail-b',
+        loadedDetailId: 'detail-a',
+        visibleDetailId: 'detail-a',
+      }) &&
+      !shouldSkipDetailAutoReload({
+        requestedDetailId: '',
+        loadedDetailId: 'detail-a',
+        visibleDetailId: 'detail-a',
+      }) &&
+      !shouldSkipDetailAutoReload({
+        requestedDetailId: 'detail-a',
+        loadedDetailId: 'detail-a',
+        visibleDetailId: null,
+      }),
+      '换详情、空 id 或没有可展示内容时不应跳过自动刷新',
+    )
+    assert(
+      shouldSkipDetailAutoReload({
+        requestedDetailId: 'detail-a',
+        loadedDetailId: 'detail-a',
+        visibleDetailId: 'detail-a',
+        requestedDetailQueryKey: '{"pageNumber":1}',
+        loadedDetailQueryKey: '{"pageNumber":1}',
+      }) &&
+      !shouldSkipDetailAutoReload({
+        requestedDetailId: 'detail-a',
+        loadedDetailId: 'detail-a',
+        visibleDetailId: 'detail-a',
+        requestedDetailQueryKey: '{"pageNumber":2}',
+        loadedDetailQueryKey: '{"pageNumber":1}',
+      }),
+      '门店订单详情查询参数一致才应跳过自动刷新，分页搜索排序变化必须重新请求',
+    )
   })
   if (initialLoadingDecisionFailure) failures.push(initialLoadingDecisionFailure)
 
@@ -206,21 +254,21 @@ async function main() {
   })
   if (silentFailurePreserveFailure) failures.push(silentFailurePreserveFailure)
 
-  const storeOrderPrintPagesKeepAliveFailure = await runTest('配货单和发票 Tab 切回已有数据时应静默刷新', () => {
+  const storeOrderPrintPagesKeepAliveFailure = await runTest('配货单和发票 Tab 切回已有数据时应跳过自动刷新', () => {
     for (const [pageName, source, loadFailureKey] of [
       ['配货单', pickingListSource, 'warehouse.pickingList.loadFailed'],
       ['发票', invoiceSource, 'warehouse.invoice.loadFailed'],
     ] as const) {
       assert(
-        source.includes("import { shouldShowStoreOrderDetailInitialLoading } from './detailLoadState'") &&
+        source.includes("import { shouldSkipDetailAutoReload } from '../../../utils/detailLoadState'") &&
           source.includes('loadedOrderIdRef') &&
           source.includes('visibleOrderIdRef') &&
           source.includes('const load = async (showLoading = true)') &&
           source.includes('if (showLoading) {') &&
           source.includes('setLoading(true)') &&
-          source.includes('shouldShowStoreOrderDetailInitialLoading({') &&
-          source.includes('void load(shouldShowInitialLoading)'),
-        `${pageName}缺少同订单 Tab 恢复静默刷新保护`,
+          source.includes('shouldSkipDetailAutoReload({') &&
+          source.includes('return'),
+        `${pageName}缺少同订单 Tab 恢复跳过自动刷新保护`,
       )
       assert(
         source.includes('loadedOrderIdRef.current = detail.orderGUID || id') &&
@@ -229,42 +277,42 @@ async function main() {
           source.includes('if (showLoading) {') &&
           source.includes('setOrder(null)') &&
           source.includes('setStore(null)'),
-        `${pageName}应在成功后记录可展示订单，且静默失败不清空当前内容`,
+        `${pageName}应在成功后记录可展示订单，且首次加载失败才清空当前内容`,
       )
     }
   })
   if (storeOrderPrintPagesKeepAliveFailure) failures.push(storeOrderPrintPagesKeepAliveFailure)
 
-  const lowRiskDetailPagesKeepAliveFailure = await runTest('低风险详情页 Tab 切回应保留已有内容并静默刷新', () => {
+  const lowRiskDetailPagesKeepAliveFailure = await runTest('低风险详情页 Tab 切回应保留已有内容并跳过自动刷新', () => {
     assert(
-      containerDetailSource.includes("import { shouldShowDetailInitialLoading } from '../../../utils/detailLoadState'") &&
+      containerDetailSource.includes("import { shouldShowDetailInitialLoading, shouldSkipDetailAutoReload } from '../../../utils/detailLoadState'") &&
         containerDetailSource.includes('loadedContainerGuidRef') &&
         containerDetailSource.includes('visibleContainerGuidRef') &&
         containerDetailSource.includes('const loadData = async (showLoading = true)') &&
-        containerDetailSource.includes('void loadData(shouldShowInitialLoading)') &&
+        containerDetailSource.includes('shouldSkipDetailAutoReload({') &&
         containerDetailSource.includes('loadedContainerGuidRef.current = containerGuid') &&
         containerDetailSource.includes('visibleContainerGuidRef.current = containerGuid'),
-      '货柜详情缺少同货柜 Tab 恢复静默刷新保护',
+      '货柜详情缺少同货柜 Tab 恢复跳过自动刷新保护',
     )
     assert(
-      localSupplierInvoiceDetailSource.includes("import { shouldShowDetailInitialLoading } from '../../../utils/detailLoadState'") &&
+      localSupplierInvoiceDetailSource.includes("import { shouldShowDetailInitialLoading, shouldSkipDetailAutoReload } from '../../../utils/detailLoadState'") &&
         localSupplierInvoiceDetailSource.includes('loadedInvoiceGuidRef') &&
         localSupplierInvoiceDetailSource.includes('visibleInvoiceGuidRef') &&
         localSupplierInvoiceDetailSource.includes('const loadInvoice = async (showLoading = true)') &&
-        localSupplierInvoiceDetailSource.includes('void loadInvoiceAndDetails(shouldShowInitialLoading)') &&
+        localSupplierInvoiceDetailSource.includes('shouldSkipDetailAutoReload({') &&
         localSupplierInvoiceDetailSource.includes('loadedInvoiceGuidRef.current = invoiceGuid') &&
         localSupplierInvoiceDetailSource.includes('visibleInvoiceGuidRef.current = invoiceGuid'),
-      '本地供应商发票只读详情缺少同发票 Tab 恢复静默刷新保护',
+      '本地供应商发票只读详情缺少同发票 Tab 恢复跳过自动刷新保护',
     )
     assert(
-      localSupplierInvoiceEditSource.includes("import { shouldShowDetailInitialLoading } from '../../../../utils/detailLoadState'") &&
+      localSupplierInvoiceEditSource.includes("import { shouldShowDetailInitialLoading, shouldSkipDetailAutoReload } from '../../../../utils/detailLoadState'") &&
         localSupplierInvoiceEditSource.includes('loadedInvoiceGuidRef') &&
         localSupplierInvoiceEditSource.includes('visibleInvoiceGuidRef') &&
         localSupplierInvoiceEditSource.includes('const loadInvoice = useCallback(async (showLoading = true)') &&
-        localSupplierInvoiceEditSource.includes('void loadInvoiceAndDetails(shouldShowInitialLoading)') &&
+        localSupplierInvoiceEditSource.includes('shouldSkipDetailAutoReload({') &&
         localSupplierInvoiceEditSource.includes('loadedInvoiceGuidRef.current = invoiceGuid') &&
         localSupplierInvoiceEditSource.includes('visibleInvoiceGuidRef.current = invoiceGuid'),
-      '本地供应商发票编辑页缺少同发票 Tab 恢复静默刷新保护',
+      '本地供应商发票编辑页缺少同发票 Tab 恢复跳过自动刷新保护',
     )
   })
   if (lowRiskDetailPagesKeepAliveFailure) failures.push(lowRiskDetailPagesKeepAliveFailure)
