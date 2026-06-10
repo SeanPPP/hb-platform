@@ -6,6 +6,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { getContainerList, getContainerProducts } from '../../../../services/containerService'
 import type { ContainerDetail, ContainerMain } from '../../../../types/container'
+import { formatSydneyDate, getSydneyDateTagColor } from '../../../../utils/sydneyDate'
 
 interface ContainerProductPickerProps {
   open: boolean
@@ -185,6 +186,15 @@ export default function ContainerProductPicker({
     }
   }
 
+  const renderSydneyDateTag = (value?: string) => {
+    const displayDate = formatSydneyDate(value)
+    if (displayDate === '--') {
+      return '--'
+    }
+
+    return <Tag color={getSydneyDateTagColor(value)}>{displayDate}</Tag>
+  }
+
   const containerColumns: ColumnsType<ContainerRow> = [
     {
       title: t('containers.fields.containerNumber'),
@@ -196,7 +206,7 @@ export default function ContainerProductPicker({
       title: t('containers.fields.estimatedArrivalDate'),
       dataIndex: '预计到岸日期',
       width: 140,
-      render: (value?: string) => value || '--',
+      render: renderSydneyDateTag,
     },
     {
       title: t('containers.fields.totalPieces'),
