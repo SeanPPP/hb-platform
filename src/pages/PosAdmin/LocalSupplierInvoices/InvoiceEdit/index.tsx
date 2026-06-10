@@ -50,14 +50,16 @@ import {
   batchUpdateDetailAction,
   batchUpdateDetails,
   batchUpsertDetails,
-  checkProducts,
   deleteDetails,
+  getCheckProductsJob,
+  getPasteDetailsJob,
   getProductsByBarcode,
   getInvoice,
   getInvoiceDetails,
-  pasteDetails,
   getUpdateHqProductsJob,
   getUpdateToStorePricesJob,
+  startCheckProductsJob,
+  startPasteDetailsJob,
   startUpdateHqProductsJob,
   startUpdateToStorePricesJob,
   updateDetailAction,
@@ -72,6 +74,8 @@ import { useAuthStore } from '../../../../store/auth'
 import type {
   BatchEditFields,
   BatchExecuteActionsResult,
+  BatchResultDto,
+  CheckProductsJobResult,
   CheckProductsResponse,
   BarcodeAbnormalMatchedProductDto,
   DetailAction,
@@ -79,6 +83,7 @@ import type {
   InvoiceDetailUpsertItemDto,
   LocalSupplierInvoiceDetailDto,
   LocalSupplierInvoiceItemDto,
+  PasteDetailsJobResult,
   UpdateHqProductsResult,
   UpdateHqProductsJobResult,
   UpdateToStorePricesFields,
@@ -87,7 +92,7 @@ import type {
   UpdateToStorePricesJobResult,
 } from '../../../../types/localSupplierInvoice'
 import { copyTextToClipboard } from '../../../../utils/clipboard'
-import { shouldShowDetailInitialLoading } from '../../../../utils/detailLoadState'
+import { shouldShowDetailInitialLoading, shouldSkipDetailAutoReload } from '../../../../utils/detailLoadState'
 import { discountRateToDecimal, discountRateToPercent, formatDiscountRate } from '../../../../utils/discountRate'
 import { RequestError } from '../../../../utils/request'
 import { DetailAction as DetailActionEnum } from '../../../../types/localSupplierInvoice'
@@ -120,6 +125,10 @@ import {
   constrainSelectedRowKeysToVisibleDetails,
   getBatchExecuteErrorFeedback,
 } from './batchExecuteConfirm'
+import {
+  canApplyCheckProductsJobResult,
+  canApplyInvoiceJobResult,
+} from './backgroundJobGuards'
 import {
   applyInvoiceDetailInlineEdit,
   buildInvoiceDetailSaveItems,
@@ -644,6 +653,9 @@ export default function InvoiceEditPage() {
   // 记录当前发票已完成首次加载，保活 Tab 恢复时保留订单头和明细表。
   const loadedInvoiceGuidRef = useRef<string | null>(null)
   const visibleInvoiceGuidRef = useRef<string | null>(null)
+  const currentInvoiceGuidRef = useRef<string | undefined>(invoiceGuid)
+  currentInvoiceGuidRef.current = invoiceGuid
+  const lastLoadedManagedStoreCodeKeyRef = useRef<string | null>(null)
   const invoiceSnapshotRef = useRef<LocalSupplierInvoiceDetailDto | null>(null)
   const detailsSnapshotRef = useRef<LocalSupplierInvoiceItemDto[]>([])
 
@@ -682,6 +694,7 @@ export default function InvoiceEditPage() {
   const [pasteMode, setPasteMode] = useState<'append' | 'replace'>('append')
   const [pasteText, setPasteText] = useState('')
   const [pasteLoading, setPasteLoading] = useState(false)
+  const activePasteJobIdRef = useRef<string | null>(null)
   const [pasteFieldOrder, setPasteFieldOrder] = useState<PasteFieldKey[]>(loadSavedPasteFieldOrder)
   const [normalizeRetailPriceOnPaste, setNormalizeRetailPriceOnPaste] = useState(true)
 
@@ -717,6 +730,7 @@ export default function InvoiceEditPage() {
 
   /* ---- 商品检测 ---- */
   const [checking, setChecking] = useState(false)
+  const activeCheckProductsJobIdRef = useRef<string | null>(null)
 
   /* ---- 批量执行操作 ---- */
   const [executing, setExecuting] = useState(false)
@@ -730,6 +744,12 @@ export default function InvoiceEditPage() {
   /*  数据加载                                                         */
   /* ================================================================ */
 
+  useEffect(() => {
+    activePasteJobIdRef.current = null
+    activeCheckProductsJobIdRef.current = null
+    setChecking(false)
+  }, [invoiceGuid])
+
   const loadInvoice = useCallback(async (showLoading = true) => {
     if (!invoiceGuid) return false
     if (showLoading) {
@@ -740,6 +760,7 @@ export default function InvoiceEditPage() {
       if (!isStoreCodeInManagedScope(data.storeCode, managedStoreCodes)) {
         loadedInvoiceGuidRef.current = null
         visibleInvoiceGuidRef.current = null
+        lastLoadedManagedStoreCodeKeyRef.current = null
         invoiceSnapshotRef.current = null
         detailsSnapshotRef.current = []
         setCanAccessInvoice(false)
@@ -753,6 +774,7 @@ export default function InvoiceEditPage() {
       }
       loadedInvoiceGuidRef.current = invoiceGuid
       visibleInvoiceGuidRef.current = invoiceGuid
+      lastLoadedManagedStoreCodeKeyRef.current = managedStoreCodeKey
       setCanAccessInvoice(true)
       if (!areLocalSupplierInvoicesEqual(invoiceSnapshotRef.current, data)) {
         invoiceSnapshotRef.current = data
@@ -801,12 +823,21 @@ export default function InvoiceEditPage() {
   }, [loadInvoice, loadDetails])
 
   useEffect(() => {
-    const shouldShowInitialLoading = shouldShowDetailInitialLoading({
+    if (!shouldSkipDetailAutoReload({
       requestedDetailId: invoiceGuid || '',
       loadedDetailId: loadedInvoiceGuidRef.current,
       visibleDetailId: visibleInvoiceGuidRef.current,
-    })
-    void loadInvoiceAndDetails(shouldShowInitialLoading)
+      requestedDetailQueryKey: managedStoreCodeKey,
+      loadedDetailQueryKey: lastLoadedManagedStoreCodeKeyRef.current,
+    })) {
+      // 未命中保活缓存或权限范围变化时才自动加载；同一编辑进货单 Tab 切回直接复用表格状态。
+      const shouldShowInitialLoading = shouldShowDetailInitialLoading({
+        requestedDetailId: invoiceGuid || '',
+        loadedDetailId: loadedInvoiceGuidRef.current,
+        visibleDetailId: visibleInvoiceGuidRef.current,
+      })
+      void loadInvoiceAndDetails(shouldShowInitialLoading)
+    }
     if (managedStoreCodes === null) {
       getActiveStores()
         .then((stores) => {
@@ -1098,19 +1129,63 @@ export default function InvoiceEditPage() {
     }
     setPasteLoading(true)
     try {
-      const result = await pasteDetails({
-        invoiceGuid,
+      const submittedInvoiceGuid = invoiceGuid
+      const job = await startPasteDetailsJob({
+        invoiceGuid: submittedInvoiceGuid,
         mode: pasteMode,
         items: parsed,
       })
-      message.success(
-        t('posAdmin.invoiceDetail.pasteComplete', '粘贴完成：新增 {{inserted}} 条，更新 {{updated}} 条，失败 {{failed}} 条', { inserted: result?.inserted ?? 0, updated: result?.updated ?? 0, failed: result?.failed ?? 0 }),
-      )
+      activePasteJobIdRef.current = job.jobId
       setPasteVisible(false)
       setPasteText('')
-      loadDetails()
-    } catch {
-      message.error(t('posAdmin.invoiceDetail.pasteFailed', '粘贴数据失败'))
+      notifyBackgroundTaskSubmitted(t('posAdmin.invoiceDetail.pasteJobSubmitted', '粘贴数据任务已提交'))
+
+      void (async () => {
+        try {
+          const completedJob = await pollPasteDetailsJob(submittedInvoiceGuid, job.jobId)
+          if (activePasteJobIdRef.current !== job.jobId) {
+            return
+          }
+          const result = completedJob.result
+          if (!result) {
+            throw new Error(completedJob.message || t('posAdmin.invoiceDetail.pasteFailed', '粘贴数据失败'))
+          }
+
+          const description = formatPasteDetailsResult(result)
+          if (completedJob.status === 'Failed') {
+            notification.error({
+              message: t('posAdmin.invoiceDetail.pasteFailed', '粘贴数据失败'),
+              description: completedJob.message || description,
+              duration: 0,
+            })
+          } else {
+            notification[result.failed > 0 ? 'warning' : 'success']({
+              message: t('posAdmin.invoiceDetail.pasteCompletedTitle', '粘贴数据完成'),
+              description,
+              duration: result.failed > 0 ? 0 : 4,
+            })
+          }
+          if (canApplyInvoiceJobResult(currentInvoiceGuidRef.current, submittedInvoiceGuid)) {
+            await loadDetails()
+          }
+        } catch (error) {
+          if (error instanceof HqProductSyncPollingTimeoutError) {
+            notifyBatchJobTimeout()
+            return
+          }
+          notification.error({
+            message: t('posAdmin.invoiceDetail.pasteFailed', '粘贴数据失败'),
+            description: error instanceof Error ? error.message : t('posAdmin.invoiceDetail.pasteFailed', '粘贴数据失败'),
+            duration: 0,
+          })
+        } finally {
+          if (activePasteJobIdRef.current === job.jobId) {
+            activePasteJobIdRef.current = null
+          }
+        }
+      })()
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : t('posAdmin.invoiceDetail.pasteFailed', '粘贴数据失败'))
     } finally {
       setPasteLoading(false)
     }
@@ -1234,6 +1309,32 @@ export default function InvoiceEditPage() {
       description: t('posAdmin.invoiceDetail.localSupplierInvoiceBatchJobTimeout', '前端已停止轮询该任务。你可以稍后刷新页面查看结果，或使用相同条件重新提交以接管后台任务。'),
       duration: 0,
     })
+  }
+
+  const formatPasteDetailsResult = (result: BatchResultDto) => {
+    return t('posAdmin.invoiceDetail.pasteComplete', '粘贴完成：新增 {{inserted}} 条，更新 {{updated}} 条，失败 {{failed}} 条', {
+      inserted: result.inserted ?? 0,
+      updated: result.updated ?? 0,
+      failed: result.failed ?? 0,
+    })
+  }
+
+  const pollPasteDetailsJob = async (submittedInvoiceGuid: string, jobId: string) => {
+    // 关键位置：粘贴数据可能触发大量写入，只保留 job 查询，避免弹窗确认一直等待长请求。
+    const poller = createHqSyncJobPoller<PasteDetailsJobResult>({
+      jobId,
+      getJob: () => getPasteDetailsJob(submittedInvoiceGuid, jobId),
+    })
+    return poller.promise
+  }
+
+  const pollCheckProductsJob = async (submittedInvoiceGuid: string, jobId: string) => {
+    // 关键位置：商品检测改为后台执行，前台只轮询终态并合并结果。
+    const poller = createHqSyncJobPoller<CheckProductsJobResult>({
+      jobId,
+      getJob: () => getCheckProductsJob(submittedInvoiceGuid, jobId),
+    })
+    return poller.promise
   }
 
   const pollUpdateToStorePricesJob = async (jobId: string) => {
@@ -1500,8 +1601,43 @@ export default function InvoiceEditPage() {
     })()
   }
 
+  const applyCheckProductsResponse = (result: CheckProductsResponse) => {
+    // 更新每行的商品状态和条码状态
+    const statusMap = new Map(result.results.map((r) => [r.detailGuid, r]))
+    setDetails((prev) =>
+      prev.map((d) => {
+        const checkResult = statusMap.get(d.detailGUID)
+        if (!checkResult) return d
+        return {
+          ...d,
+          productCode: checkResult.productInfo?.productCode ?? undefined,
+          storeProductCode: checkResult.productInfo?.storeProductCode ?? checkResult.storeProductCode ?? undefined,
+          existingProductCount: checkResult.existingProductCount,
+          barcodeStatus: checkResult.barcodeStatus,
+          barcodeMatchCount: checkResult.barcodeMatchCount,
+          autoPricing: checkResult.autoPricing ?? undefined,
+          isSpecialProduct: checkResult.isSpecialProduct ?? undefined,
+          discountRate: checkResult.discountRate ?? undefined,
+          pricingFloatRate: checkResult.pricingFloatRate ?? undefined,
+          newAutoRetailPrice: checkResult.newAutoRetailPrice ?? undefined,
+          lastPurchasePrice: checkResult.lastPurchasePrice ?? undefined,
+          activityType: checkResult.defaultAction ?? d.activityType,
+        } as LocalSupplierInvoiceItemDto
+      }),
+    )
+    // 更新行内操作类型
+    const newActions: Record<string, number> = {}
+    result.results.forEach((r) => {
+      if (r.defaultAction !== undefined) {
+        newActions[r.detailGuid] = r.defaultAction
+      }
+    })
+    setRowActions((prev) => ({ ...prev, ...newActions }))
+  }
+
   // ---- 商品检测 ----
   const handleCheckProducts = async () => {
+    if (checking) return
     if (!invoiceGuid || !ensureCanAccessInvoice()) return
     if (!details.length) {
       message.warning(t('posAdmin.invoiceDetail.noDetailToDetect', '没有明细数据可检测'))
@@ -1509,48 +1645,67 @@ export default function InvoiceEditPage() {
     }
     setChecking(true)
     try {
-      const result: CheckProductsResponse = await checkProducts({
-        invoiceGuid,
+      const submittedInvoiceGuid = invoiceGuid
+      const job = await startCheckProductsJob({
+        invoiceGuid: submittedInvoiceGuid,
         detailGuids: selectedRowKeys.length > 0 ? selectedRowKeys.map(String) : undefined,
       })
-      // 更新每行的商品状态和条码状态
-      const statusMap = new Map(result.results.map((r) => [r.detailGuid, r]))
-      setDetails((prev) =>
-        prev.map((d) => {
-          const checkResult = statusMap.get(d.detailGUID)
-          if (!checkResult) return d
-          return {
-            ...d,
-            productCode: checkResult.productInfo?.productCode ?? undefined,
-            storeProductCode: checkResult.productInfo?.storeProductCode ?? checkResult.storeProductCode ?? undefined,
-            existingProductCount: checkResult.existingProductCount,
-            barcodeStatus: checkResult.barcodeStatus,
-            barcodeMatchCount: checkResult.barcodeMatchCount,
-            autoPricing: checkResult.autoPricing ?? undefined,
-            isSpecialProduct: checkResult.isSpecialProduct ?? undefined,
-            discountRate: checkResult.discountRate ?? undefined,
-            pricingFloatRate: checkResult.pricingFloatRate ?? undefined,
-            newAutoRetailPrice: checkResult.newAutoRetailPrice ?? undefined,
-            lastPurchasePrice: checkResult.lastPurchasePrice ?? undefined,
-            activityType: checkResult.defaultAction ?? d.activityType,
-          } as LocalSupplierInvoiceItemDto
-        }),
-      )
-      // 更新行内操作类型
-      const newActions: Record<string, number> = {}
-      result.results.forEach((r) => {
-        if (r.defaultAction !== undefined) {
-          newActions[r.detailGuid] = r.defaultAction
-        }
-      })
-      setRowActions((prev) => ({ ...prev, ...newActions }))
+      activeCheckProductsJobIdRef.current = job.jobId
+      notifyBackgroundTaskSubmitted(t('posAdmin.invoiceDetail.checkProductsJobSubmitted', '商品检测任务已提交'))
 
-      message.success(
-        t('posAdmin.invoiceDetail.detectCompleteMsg', '检测完成：共 {{total}}条，商品存在 {{productExists}}条，不存在 {{productNotExists}}条，条码正常 {{barcodeNormal}}条，异常 {{barcodeAbnormal}}条', result.summary),
-      )
-    } catch {
-      message.error(t('posAdmin.invoiceDetail.detectFailed', '商品检测失败'))
-    } finally {
+      void (async () => {
+        try {
+          const completedJob = await pollCheckProductsJob(submittedInvoiceGuid, job.jobId)
+          if (activeCheckProductsJobIdRef.current !== job.jobId) {
+            return
+          }
+          const result = completedJob.result
+          if (completedJob.status === 'Failed') {
+            notification.error({
+              message: t('posAdmin.invoiceDetail.detectFailed', '商品检测失败'),
+              description: completedJob.message || t('posAdmin.invoiceDetail.detectFailed', '商品检测失败'),
+              duration: 0,
+            })
+            return
+          }
+          if (!result) {
+            throw new Error(completedJob.message || t('posAdmin.invoiceDetail.detectFailed', '商品检测失败'))
+          }
+
+          const description = t('posAdmin.invoiceDetail.detectCompleteMsg', '检测完成：共 {{total}}条，商品存在 {{productExists}}条，不存在 {{productNotExists}}条，条码正常 {{barcodeNormal}}条，异常 {{barcodeAbnormal}}条', result.summary)
+          notification.success({
+            message: t('posAdmin.invoiceDetail.detectCompletedTitle', '商品检测完成'),
+            description,
+            duration: 4,
+          })
+          if (canApplyCheckProductsJobResult({
+            currentInvoiceGuid: currentInvoiceGuidRef.current,
+            submittedInvoiceGuid,
+            status: completedJob.status,
+            hasResult: true,
+          })) {
+            applyCheckProductsResponse(result)
+            await loadDetails()
+          }
+        } catch (error) {
+          if (error instanceof HqProductSyncPollingTimeoutError) {
+            notifyBatchJobTimeout()
+            return
+          }
+          notification.error({
+            message: t('posAdmin.invoiceDetail.detectFailed', '商品检测失败'),
+            description: error instanceof Error ? error.message : t('posAdmin.invoiceDetail.detectFailed', '商品检测失败'),
+            duration: 0,
+          })
+        } finally {
+          if (activeCheckProductsJobIdRef.current === job.jobId) {
+            activeCheckProductsJobIdRef.current = null
+            setChecking(false)
+          }
+        }
+      })()
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : t('posAdmin.invoiceDetail.detectFailed', '商品检测失败'))
       setChecking(false)
     }
   }
@@ -2561,6 +2716,7 @@ export default function InvoiceEditPage() {
               <Button
                 icon={<CheckCircleOutlined />}
                 loading={checking}
+                disabled={checking}
                 onClick={() => void handleCheckProducts()}
               >
                 {t('posAdmin.invoiceDetail.productDetectBtn', '商品检测')}

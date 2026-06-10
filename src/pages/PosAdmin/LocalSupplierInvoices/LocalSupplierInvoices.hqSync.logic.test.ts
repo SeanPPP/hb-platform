@@ -1,11 +1,16 @@
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
+import { shouldSkipDetailAutoReload } from '../../../utils/detailLoadState'
 import {
   batchExecuteActions,
   batchUpdateDetailAction,
   batchUpdateDetails,
   batchUpsertDetails,
+  getCheckProductsJob,
+  getPasteDetailsJob,
   ensureHqProducts,
+  startCheckProductsJob,
+  startPasteDetailsJob,
   syncInvoicesFromHq,
   updateDetailAction,
   updateHqProducts,
@@ -142,10 +147,14 @@ async function main() {
     assert(typeSource.includes('UpdateToStorePricesJobResult'), '更新到分店应声明后台任务结果类型')
     assert(typeSource.includes('UpdateHqProductsJobResult'), '更新HQ商品应声明后台任务结果类型')
     assert(typeSource.includes('isDuplicateRequest?: boolean'), '后台任务结果应支持重复提交标记')
+    assert(typeSource.includes('PasteDetailsJobResult'), '粘贴明细应声明后台任务结果类型')
+    assert(typeSource.includes('result?: BatchResultDto'), '粘贴明细后台任务 result 应复用 BatchResultDto')
+    assert(typeSource.includes('CheckProductsJobResult'), '商品检测应声明后台任务结果类型')
+    assert(typeSource.includes('result?: CheckProductsResponse'), '商品检测后台任务 result 应复用 CheckProductsResponse')
   })
   if (ensureHqTypeFailure) failures.push(ensureHqTypeFailure)
 
-  const invoiceDetailKeepAliveFailure = await runTest('分店进货单详情 Tab 切回已有进货单时应静默刷新且跳过相同数据写入', () => {
+  const invoiceDetailKeepAliveFailure = await runTest('分店进货单详情 Tab 切回已有进货单时应跳过自动刷新', () => {
     for (const [pageName, source] of [
       ['编辑页', editPageSource],
       ['只读详情页', detailPageSource],
@@ -153,9 +162,13 @@ async function main() {
       assert(
         source.includes('loadedInvoiceGuidRef') &&
           source.includes('visibleInvoiceGuidRef') &&
+          source.includes('lastLoadedManagedStoreCodeKeyRef') &&
+          source.includes('shouldSkipDetailAutoReload({') &&
+          source.includes('requestedDetailQueryKey: managedStoreCodeKey') &&
+          source.includes('loadedDetailQueryKey: lastLoadedManagedStoreCodeKeyRef.current') &&
           source.includes('shouldShowDetailInitialLoading({') &&
-          source.includes('void loadInvoiceAndDetails(shouldShowInitialLoading)'),
-        `${pageName} 缺少按发票 id 区分首次加载和保活恢复刷新，切回 Tab 会重新进入主 loading`,
+          source.includes('return'),
+        `${pageName} 缺少按发票 id 跳过保活恢复自动刷新，切回 Tab 会重新请求`,
       )
       assert(
         source.includes('const loadDetails') &&
@@ -164,7 +177,7 @@ async function main() {
           source.includes('setDetailLoading(true)') &&
           source.includes('setDetailLoading(false)') &&
           source.includes('await loadDetails(showLoading)'),
-        `${pageName} 明细加载应跟随 showLoading 静默刷新；同进货单 Tab 恢复不应让表格进入 loading 闪白`,
+        `${pageName} 明细加载应保留 showLoading 参数；手动或业务显式刷新仍应可显示 loading`,
       )
       assert(
         source.includes('invoiceSnapshotRef') &&
@@ -174,6 +187,28 @@ async function main() {
         `${pageName} 后台返回相同订单头和明细时应跳过 setFieldsValue/setDetails，避免相同数据重绘一闪`,
       )
     }
+    assert(
+      shouldSkipDetailAutoReload({
+        requestedDetailId: 'invoice-1',
+        loadedDetailId: 'invoice-1',
+        visibleDetailId: 'invoice-1',
+        requestedDetailQueryKey: '1012',
+        loadedDetailQueryKey: '1012',
+      }) &&
+        !shouldSkipDetailAutoReload({
+          requestedDetailId: 'invoice-2',
+          loadedDetailId: 'invoice-1',
+          visibleDetailId: 'invoice-1',
+        }) &&
+        !shouldSkipDetailAutoReload({
+          requestedDetailId: 'invoice-1',
+          loadedDetailId: 'invoice-1',
+          visibleDetailId: 'invoice-1',
+          requestedDetailQueryKey: '1012',
+          loadedDetailQueryKey: '1033',
+        }),
+      '同进货单且权限范围一致时应跳过自动刷新，切换新进货单或权限范围变化时不应跳过',
+    )
   })
   if (invoiceDetailKeepAliveFailure) failures.push(invoiceDetailKeepAliveFailure)
 
@@ -266,6 +301,36 @@ async function main() {
     assert(editPageSource.includes("t('posAdmin.invoiceDetail.updateHqProductsResultTitle'"), '更新HQ商品应有独立结果弹窗')
   })
   if (updateToStoreHqFailure) failures.push(updateToStoreHqFailure)
+
+  const pasteAndCheckJobPageFailure = await runTest('编辑页粘贴和商品检测应提交后台 Job 并轮询完成通知', () => {
+    assert(editPageSource.includes('startPasteDetailsJob,'), '编辑页应静态导入粘贴后台任务创建接口')
+    assert(editPageSource.includes('getPasteDetailsJob,'), '编辑页应静态导入粘贴后台任务查询接口')
+    assert(editPageSource.includes('startCheckProductsJob,'), '编辑页应静态导入商品检测后台任务创建接口')
+    assert(editPageSource.includes('getCheckProductsJob,'), '编辑页应静态导入商品检测后台任务查询接口')
+    assert(editPageSource.includes('pollPasteDetailsJob'), '编辑页应为粘贴明细提供后台任务轮询 helper')
+    assert(editPageSource.includes('pollCheckProductsJob'), '编辑页应为商品检测提供后台任务轮询 helper')
+    assert(editPageSource.includes('createHqSyncJobPoller<PasteDetailsJobResult>'), '粘贴明细应复用后台 Job 轮询器')
+    assert(editPageSource.includes('createHqSyncJobPoller<CheckProductsJobResult>'), '商品检测应复用后台 Job 轮询器')
+    assert(editPageSource.includes('startPasteDetailsJob({'), '粘贴确认应创建后台任务')
+    assert(editPageSource.includes('startCheckProductsJob({'), '商品检测应创建后台任务')
+    assert(editPageSource.includes('getPasteDetailsJob(') && editPageSource.includes('getPasteDetailsJob(submittedInvoiceGuid, jobId)'), '粘贴任务应按提交时的发票 id 和 jobId 查询最终状态')
+    assert(editPageSource.includes('getCheckProductsJob(') && editPageSource.includes('getCheckProductsJob(submittedInvoiceGuid, jobId)'), '商品检测任务应按提交时的发票 id 和 jobId 查询最终状态')
+    assert(!editPageSource.includes('const result = await pasteDetails({'), '粘贴确认不应再直接等待同步长请求')
+    assert(!editPageSource.includes('const result: CheckProductsResponse = await checkProducts({'), '商品检测不应再直接等待同步长请求')
+    assert(editPageSource.includes("t('posAdmin.invoiceDetail.pasteJobSubmitted'"), '粘贴任务提交后应提示后台执行')
+    assert(editPageSource.includes("t('posAdmin.invoiceDetail.checkProductsJobSubmitted'"), '商品检测任务提交后应提示后台执行')
+    assert(editPageSource.includes('canApplyInvoiceJobResult(currentInvoiceGuidRef.current, submittedInvoiceGuid)'), '粘贴任务完成后应确认仍在同一张进货单再刷新')
+    assert(editPageSource.includes('canApplyCheckProductsJobResult({'), '商品检测任务完成后应通过 guard 判断是否可写回')
+    assert(editPageSource.includes('currentInvoiceGuidRef.current = invoiceGuid'), '当前发票 ref 应在 render 阶段同步更新，避免 useEffect 前的窄窗口竞态')
+    assert(editPageSource.includes('activePasteJobIdRef.current = null') && editPageSource.includes('activeCheckProductsJobIdRef.current = null'), '切换进货单时应清空旧后台 job，避免旧任务写回新页面')
+    assert(editPageSource.includes("completedJob.status === 'Failed'") && editPageSource.indexOf("completedJob.status === 'Failed'") < editPageSource.indexOf('applyCheckProductsResponse(result)'), '商品检测失败任务不应先合并 result')
+    assert(editPageSource.includes('if (checking) return'), '商品检测运行中应阻止重复提交')
+    assert(editPageSource.includes('disabled={checking}'), '商品检测按钮在后台任务运行中应禁用')
+    assert(editPageSource.includes('setPasteVisible(false)') && editPageSource.includes("setPasteText('')"), '粘贴任务提交成功后应关闭弹窗并清空输入')
+    assert(editPageSource.includes('applyCheckProductsResponse(result)'), '商品检测后台完成后应复用结果合并逻辑更新表格')
+    assert(editPageSource.includes('await loadDetails()'), '后台任务完成后应刷新明细')
+  })
+  if (pasteAndCheckJobPageFailure) failures.push(pasteAndCheckJobPageFailure)
 
   const batchExecuteConfirmFailure = await runTest('批量执行操作应先展示二次确认并突出新建商品数量', () => {
     assert(editPageSource.includes('Modal.confirm({'), '批量执行操作应使用确认框')
@@ -966,6 +1031,94 @@ async function main() {
     assertEqual(result.hqRetailPricesUpdated, 2, '字段级更新 HQ 应保留零售价更新统计')
   })
   if (updateHqProductsPayloadFailure) failures.push(updateHqProductsPayloadFailure)
+
+  const pasteDetailsJobServiceFailure = await runTest('pasteDetails 后台 Job 接口应调用任务创建和查询地址', async () => {
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      capturedUrl = String(input)
+      capturedInit = init
+      return new Response(JSON.stringify({
+        success: true,
+        data: {
+          jobId: 'paste-job-1',
+          invoiceGuid: 'invoice-1',
+          operationId: 'paste-op-1',
+          status: 'Queued',
+          result: { inserted: 1, updated: 0, failed: 0 },
+        },
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }) as typeof fetch
+
+    const created = await startPasteDetailsJob({
+      invoiceGuid: 'invoice-1',
+      mode: 'append',
+      items: [{ itemNumber: 'SKU-1', quantity: 2, purchasePrice: 1.5 }],
+    })
+
+    assertEqual(capturedUrl, '/api/react/v1/local-supplier-invoices/invoice-1/details/paste/jobs', '粘贴明细应调用后台任务创建接口')
+    assertEqual(capturedInit?.method, 'POST', '粘贴明细后台任务创建应使用 POST')
+    assertDeepEqual(
+      JSON.parse(String(capturedInit?.body)),
+      { mode: 'append', items: [{ itemNumber: 'SKU-1', quantity: 2, purchasePrice: 1.5 }] },
+      '粘贴明细后台任务创建 body 只应包含 mode 和 items',
+    )
+    assertEqual(created.jobId, 'paste-job-1', '粘贴明细后台任务应返回 jobId')
+
+    await getPasteDetailsJob('invoice-1', 'paste-job-1')
+    assertEqual(capturedUrl, '/api/react/v1/local-supplier-invoices/invoice-1/details/paste/jobs/paste-job-1', '粘贴明细应调用后台任务查询接口')
+    assertEqual(capturedInit?.method, 'GET', '粘贴明细后台任务查询应使用 GET')
+  })
+  if (pasteDetailsJobServiceFailure) failures.push(pasteDetailsJobServiceFailure)
+
+  const checkProductsJobServiceFailure = await runTest('checkProducts 后台 Job 接口应调用任务创建和查询地址', async () => {
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      capturedUrl = String(input)
+      capturedInit = init
+      return new Response(JSON.stringify({
+        success: true,
+        data: {
+          jobId: 'check-job-1',
+          invoiceGuid: 'invoice-1',
+          operationId: 'check-op-1',
+          status: 'Succeeded',
+          result: {
+            results: [],
+            summary: {
+              total: 0,
+              productExists: 0,
+              productNotExists: 0,
+              barcodeNormal: 0,
+              barcodeAbnormal: 0,
+            },
+          },
+        },
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }) as typeof fetch
+
+    const created = await startCheckProductsJob({
+      invoiceGuid: 'invoice-1',
+      detailGuids: ['detail-1'],
+    })
+
+    assertEqual(capturedUrl, '/api/react/v1/local-supplier-invoices/check-products/jobs', '商品检测应调用后台任务创建接口')
+    assertEqual(capturedInit?.method, 'POST', '商品检测后台任务创建应使用 POST')
+    assertDeepEqual(
+      JSON.parse(String(capturedInit?.body)),
+      { invoiceGuid: 'invoice-1', detailGuids: ['detail-1'] },
+      '商品检测后台任务创建 body 应保留原检测请求',
+    )
+    assertEqual(created.jobId, 'check-job-1', '商品检测后台任务应返回 jobId')
+
+    await getCheckProductsJob('invoice-1', 'check-job-1')
+    assertEqual(capturedUrl, '/api/react/v1/local-supplier-invoices/invoice-1/check-products/jobs/check-job-1', '商品检测应调用后台任务查询接口')
+    assertEqual(capturedInit?.method, 'GET', '商品检测后台任务查询应使用 GET')
+  })
+  if (checkProductsJobServiceFailure) failures.push(checkProductsJobServiceFailure)
 
   const batchExecuteBusinessFailure = await runTest('batchExecuteActions 遇到业务失败应抛出后端消息', async () => {
     globalThis.fetch = (async () => new Response(JSON.stringify({

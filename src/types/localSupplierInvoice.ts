@@ -228,6 +228,18 @@ export interface UpdateHqProductsJobDto extends LocalSupplierInvoiceJobBase {
 
 export type UpdateHqProductsJobResult = UpdateHqProductsJobDto
 
+export interface PasteDetailsJobDto extends LocalSupplierInvoiceJobBase {
+  result?: BatchResultDto
+}
+
+export type PasteDetailsJobResult = PasteDetailsJobDto
+
+export interface CheckProductsJobDto extends LocalSupplierInvoiceJobBase {
+  result?: CheckProductsResponse
+}
+
+export type CheckProductsJobResult = CheckProductsJobDto
+
 export interface LocalSupplierInvoiceHqSyncRequest {
   selectedStoreCodes?: string[]
   startDate?: string
