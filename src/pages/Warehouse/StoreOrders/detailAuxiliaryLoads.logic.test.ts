@@ -134,13 +134,17 @@ async function main() {
   const keepAliveSkipAutoReloadFailure = await runTest('详情页 Tab 切回已有数据时应跳过自动刷新', () => {
     assert(
       detailSource.includes('loadedDetailIdRef') &&
+        detailSource.includes('useKeepAliveContext') &&
+        detailSource.includes('const { active } = useKeepAliveContext()') &&
+        detailSource.includes('if (!active) return') &&
         detailSource.includes('visibleDetailIdRef') &&
         detailSource.includes('lastLoadedDetailQueryKeyRef') &&
         detailSource.includes('shouldSkipDetailAutoReload({') &&
         detailSource.includes('shouldShowStoreOrderDetailInitialLoading({') &&
+        detailSource.includes('active,') &&
         detailSource.includes('return () => {') &&
         detailSource.includes('detailRequestControllerRef.current?.abort()'),
-      '详情页缺少按订单 id 和查询参数跳过保活恢复自动刷新，切回 Tab 会重新请求',
+      '详情页缺少 KeepAlive active 守卫，隐藏 Tab 会跟随全局路由变化重新请求',
     )
     assert(
       detailSource.includes('loadedDetailIdRef.current = result.orderGUID || id') &&
@@ -286,15 +290,22 @@ async function main() {
   const lowRiskDetailPagesKeepAliveFailure = await runTest('低风险详情页 Tab 切回应保留已有内容并跳过自动刷新', () => {
     assert(
       containerDetailSource.includes("import { shouldShowDetailInitialLoading, shouldSkipDetailAutoReload } from '../../../utils/detailLoadState'") &&
+        containerDetailSource.includes('useKeepAliveContext') &&
+        containerDetailSource.includes('const { active } = useKeepAliveContext()') &&
+        containerDetailSource.includes('if (!active) return') &&
         containerDetailSource.includes('loadedContainerGuidRef') &&
         containerDetailSource.includes('visibleContainerGuidRef') &&
+        containerDetailSource.includes('lastLoadedContainerDetailQueryKeyRef') &&
         containerDetailSource.includes('const loadData = async (showLoading = true)') &&
         containerDetailSource.includes('shouldSkipDetailAutoReload({') &&
+        containerDetailSource.includes('requestedDetailQueryKey: detailQueryKey') &&
+        containerDetailSource.includes('loadedDetailQueryKey: lastLoadedContainerDetailQueryKeyRef.current') &&
         containerDetailSource.includes('void loadHeader(shouldShowInitialLoading)') &&
         containerDetailSource.includes("loadDetailChunk(1, 'reset')") &&
         containerDetailSource.includes('loadedContainerGuidRef.current = containerGuid') &&
-        containerDetailSource.includes('visibleContainerGuidRef.current = containerGuid'),
-      '货柜详情缺少同货柜 Tab 恢复跳过自动刷新保护',
+        containerDetailSource.includes('visibleContainerGuidRef.current = containerGuid') &&
+        containerDetailSource.includes('lastLoadedContainerDetailQueryKeyRef.current = detailQueryKey'),
+      '货柜详情缺少 KeepAlive active 守卫或明细查询条件缓存保护',
     )
     assert(
       localSupplierInvoiceDetailSource.includes("import { shouldShowDetailInitialLoading, shouldSkipDetailAutoReload } from '../../../utils/detailLoadState'") &&

@@ -36,6 +36,7 @@ import type { FilterDropdownProps, SorterResult } from 'antd/es/table/interface'
 import type { TFunction } from 'i18next'
 import type { Dayjs } from 'dayjs'
 import dayjs from 'dayjs'
+import { useKeepAliveContext } from 'keepalive-for-react'
 import { useEffect, useMemo, useRef, useState, type Key, type ReactNode, type UIEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useNavigate } from 'react-router-dom'
@@ -293,12 +294,14 @@ export default function ContainerDetailPage() {
   const { t } = useTranslation()
   const navigate = useNavigate()
   const route = useStableRouteContext()
+  const { active } = useKeepAliveContext()
   const [containerGuid] = useState(() => route?.params.containerGuid || '')
   const viewport = useContainerDetailViewport()
   const access = useAuthStore((state) => state.access)
   // 记录当前货柜已完成首次加载，保活 Tab 恢复时保留旧内容并静默刷新。
   const loadedContainerGuidRef = useRef<string | null>(null)
   const visibleContainerGuidRef = useRef<string | null>(null)
+  const lastLoadedContainerDetailQueryKeyRef = useRef<string | null>(null)
   const headerLoadRequestIdRef = useRef(0)
   const containerDetailLoadRequestIdRef = useRef(0)
   const [loading, setLoading] = useState(false)
@@ -481,6 +484,9 @@ export default function ContainerDetailPage() {
       setDetailPageNumber(result.pageNumber)
       setDetailHasMore(result.hasMore)
       setRemoteTagStats(result.tagStats)
+      if (mode === 'reset') {
+        lastLoadedContainerDetailQueryKeyRef.current = detailQueryKey
+      }
       void reconcileLoadedMatchStatus(result.items, currentRequestId)
     } catch (error) {
       if (controller.signal.aborted || containerDetailLoadRequestIdRef.current !== currentRequestId) {
@@ -508,6 +514,8 @@ export default function ContainerDetailPage() {
   }
 
   useEffect(() => {
+    if (!active) return
+
     if (shouldSkipDetailAutoReload({
       requestedDetailId: containerGuid,
       loadedDetailId: loadedContainerGuidRef.current,
@@ -517,6 +525,7 @@ export default function ContainerDetailPage() {
       return
     }
 
+    // 隐藏的 KeepAlive 节点也会收到全局路由变化，必须只让当前激活节点发起请求。
     const shouldShowInitialLoading = shouldShowDetailInitialLoading({
       requestedDetailId: containerGuid,
       loadedDetailId: loadedContainerGuidRef.current,
@@ -524,16 +533,28 @@ export default function ContainerDetailPage() {
     })
     void loadHeader(shouldShowInitialLoading)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [containerGuid])
+  }, [active, containerGuid])
 
   useEffect(() => {
+    if (!active) return
+
+    if (shouldSkipDetailAutoReload({
+      requestedDetailId: containerGuid,
+      loadedDetailId: loadedContainerGuidRef.current,
+      visibleDetailId: visibleContainerGuidRef.current,
+      requestedDetailQueryKey: detailQueryKey,
+      loadedDetailQueryKey: lastLoadedContainerDetailQueryKeyRef.current,
+    })) {
+      return
+    }
+
     void loadDetailChunk(1, 'reset')
     return () => {
       detailAbortControllerRef.current?.abort()
     }
     // detailQueryKey 已包含货柜、筛选、排序和 tag，避免依赖对象引用导致重复请求。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [detailQueryKey])
+  }, [active, detailQueryKey])
 
   const baseFilteredRows = useMemo(() => {
     return rows

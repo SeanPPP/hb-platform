@@ -1034,10 +1034,10 @@ assertEqual(
   '筛选条件变化时应清空已选明细，避免隐藏选中行后批量操作退回作用于当前全部可见行',
 )
 assertEqual(
-  pageSource.includes('[detailQueryKey]') &&
+  pageSource.includes('[active, detailQueryKey]') &&
     pageSource.includes('detailQueryKey 已包含货柜、筛选、排序和 tag'),
   true,
-  '清空已选明细的 effect 应监听远程查询 key，覆盖顶部筛选、列头过滤和列头排序',
+  '清空已选明细的 effect 应监听 active 和远程查询 key，覆盖顶部筛选、列头过滤和列头排序',
 )
 assertEqual(
   pageSource.includes("{ value: 'all', label: t('containers.filters.allTags'), color: 'blue' }"),

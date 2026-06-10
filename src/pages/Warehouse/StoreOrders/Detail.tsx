@@ -34,6 +34,7 @@ import {
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import type { SortOrder, SorterResult } from 'antd/es/table/interface'
+import { useKeepAliveContext } from 'keepalive-for-react'
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useLocation, useNavigate } from 'react-router-dom'
@@ -610,6 +611,7 @@ function BatchEditModal({ open, loading, selectedCount, onCancel, onConfirm }: B
 export default function StoreOrderDetailPage() {
   const { t } = useTranslation()
   const route = useStableRouteContext()
+  const { active } = useKeepAliveContext()
   const location = useLocation()
   const navigate = useNavigate()
   const screens = Grid.useBreakpoint()
@@ -621,6 +623,7 @@ export default function StoreOrderDetailPage() {
   const loadedDetailIdRef = useRef<string | null>(null)
   const visibleDetailIdRef = useRef<string | null>(null)
   const lastLoadedDetailQueryKeyRef = useRef<string | null>(null)
+  const lastLoadedStoresQueryKeyRef = useRef<string | null>(null)
   const [detailLoadStatus, setDetailLoadStatus] = useState<DetailLoadStatus>('idle')
   const [detailErrorMessage, setDetailErrorMessage] = useState('')
   const [detail, setDetail] = useState<StoreOrderDetail | null>(null)
@@ -701,6 +704,16 @@ export default function StoreOrderDetailPage() {
     [detailItemFilter, detailPage, detailPageSize, detailSortField, detailSortOrder, detailStatFilter],
   )
   const detailQueryKey = useMemo(() => JSON.stringify(detailQuery), [detailQuery])
+  const storesQueryKey = useMemo(
+    () =>
+      JSON.stringify({
+        id,
+        isAdmin: access.isAdmin,
+        isWarehouseManager: access.isWarehouseManager,
+        userGUID: currentUser?.userGUID ?? '',
+      }),
+    [access.isAdmin, access.isWarehouseManager, currentUser?.userGUID, id],
+  )
 
   const loadDetail = async (showLoading = true) => {
     if (!id) {
@@ -800,6 +813,7 @@ export default function StoreOrderDetailPage() {
         sortOrder: 'ascend',
       })
       setStores(result.items)
+      lastLoadedStoresQueryKeyRef.current = storesQueryKey
     } catch (error) {
       console.error(error)
       // 分店下拉是辅助数据，加载失败不应误导用户以为订货明细主数据失败。
@@ -810,9 +824,12 @@ export default function StoreOrderDetailPage() {
   }
 
   useEffect(() => {
+    if (!active) return
+
     if (!id) {
       return
     }
+    // 隐藏的 KeepAlive 节点也会收到全局路由变化，必须只让当前激活节点发起请求。
     // 保活 Tab 切回时只有同订单且同查询条件命中才跳过，分页/搜索/排序变化必须重新请求。
     if (shouldSkipDetailAutoReload({
       requestedDetailId: id,
@@ -833,14 +850,19 @@ export default function StoreOrderDetailPage() {
     return () => {
       detailRequestControllerRef.current?.abort()
     }
-  }, [detailQuery, detailQueryKey, id])
+  }, [active, detailQuery, detailQueryKey, id])
 
   useEffect(() => {
+    if (!active) return
+
     if (!id) {
       return
     }
+    if (lastLoadedStoresQueryKeyRef.current === storesQueryKey) {
+      return
+    }
     void loadStores()
-  }, [access.isAdmin, access.isWarehouseManager, currentUser?.userGUID, id])
+  }, [active, storesQueryKey, id])
 
   useEffect(() => {
     if (!containerPickerOpen) {
