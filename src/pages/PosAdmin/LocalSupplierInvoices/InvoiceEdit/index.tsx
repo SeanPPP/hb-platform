@@ -38,6 +38,7 @@ import {
 } from 'antd'
 import type { ColumnType, ColumnsType, TableProps } from 'antd/es/table'
 import dayjs from 'dayjs'
+import { useKeepAliveContext } from 'keepalive-for-react'
 import type { CSSProperties, KeyboardEvent, MouseEvent as ReactMouseEvent, ReactNode } from 'react'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
@@ -648,6 +649,7 @@ function EditableBooleanCell({
 export default function InvoiceEditPage() {
   const { t } = useTranslation()
   const route = useStableRouteContext()
+  const { active } = useKeepAliveContext()
   const invoiceGuid = route?.params.id
   const navigate = useNavigate()
   const { access, currentUser } = useAuthStore()
@@ -830,6 +832,8 @@ export default function InvoiceEditPage() {
   }, [loadInvoice, loadDetails])
 
   useEffect(() => {
+    if (!active) return
+
     if (!shouldSkipDetailAutoReload({
       requestedDetailId: invoiceGuid || '',
       loadedDetailId: loadedInvoiceGuidRef.current,
@@ -838,6 +842,7 @@ export default function InvoiceEditPage() {
       loadedDetailQueryKey: lastLoadedManagedStoreCodeKeyRef.current,
     })) {
       // 未命中保活缓存或权限范围变化时才自动加载；同一编辑进货单 Tab 切回直接复用表格状态。
+      // 隐藏的 KeepAlive 节点也会收到全局路由变化，必须只让当前激活节点发起请求。
       const shouldShowInitialLoading = shouldShowDetailInitialLoading({
         requestedDetailId: invoiceGuid || '',
         loadedDetailId: loadedInvoiceGuidRef.current,
@@ -854,7 +859,7 @@ export default function InvoiceEditPage() {
     } else {
       setStoreOptions(buildStoreOptionsFromUserStores(currentUser?.stores, { manageableOnly: true }))
     }
-  }, [currentUser?.stores, invoiceGuid, loadInvoiceAndDetails, managedStoreCodeKey])
+  }, [active, currentUser?.stores, invoiceGuid, loadInvoiceAndDetails, managedStoreCodeKey])
 
   useEffect(() => {
     if (typeof window === 'undefined') return

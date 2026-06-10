@@ -23,6 +23,7 @@ import {
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import dayjs from 'dayjs'
+import { useKeepAliveContext } from 'keepalive-for-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useStableRouteContext } from '../../../hooks/useStableRouteContext'
@@ -155,6 +156,7 @@ function getPriceChangeBg(lastPrice?: number, currentPrice?: number): string {
 export default function LocalSupplierInvoiceDetailPage() {
   const { t } = useTranslation()
   const route = useStableRouteContext()
+  const { active } = useKeepAliveContext()
   const invoiceGuid = route?.params.id
   const { access, currentUser } = useAuthStore()
   const isAdmin = access.isAdmin
@@ -272,6 +274,8 @@ export default function LocalSupplierInvoiceDetailPage() {
   }
 
   useEffect(() => {
+    if (!active) return
+
     if (!shouldSkipDetailAutoReload({
       requestedDetailId: invoiceGuid || '',
       loadedDetailId: loadedInvoiceGuidRef.current,
@@ -280,6 +284,7 @@ export default function LocalSupplierInvoiceDetailPage() {
       loadedDetailQueryKey: lastLoadedManagedStoreCodeKeyRef.current,
     })) {
       // 未命中保活缓存或权限范围变化时才自动加载；同一进货单 Tab 切回直接复用现有内容。
+      // 隐藏的 KeepAlive 节点也会收到全局路由变化，必须只让当前激活节点发起请求。
       const shouldShowInitialLoading = shouldShowDetailInitialLoading({
         requestedDetailId: invoiceGuid || '',
         loadedDetailId: loadedInvoiceGuidRef.current,
@@ -296,7 +301,7 @@ export default function LocalSupplierInvoiceDetailPage() {
     } else {
       setStoreOptions(buildStoreOptionsFromUserStores(currentUser?.stores, { manageableOnly: true }))
     }
-  }, [currentUser?.stores, invoiceGuid, managedStoreCodeKey])
+  }, [active, currentUser?.stores, invoiceGuid, managedStoreCodeKey])
 
   // 涨跌统计
   const priceStats = useMemo(() => {

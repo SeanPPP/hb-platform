@@ -161,14 +161,18 @@ async function main() {
     ] as const) {
       assert(
         source.includes('loadedInvoiceGuidRef') &&
+          source.includes('useKeepAliveContext') &&
+          source.includes('const { active } = useKeepAliveContext()') &&
+          source.includes('if (!active) return') &&
           source.includes('visibleInvoiceGuidRef') &&
           source.includes('lastLoadedManagedStoreCodeKeyRef') &&
           source.includes('shouldSkipDetailAutoReload({') &&
           source.includes('requestedDetailQueryKey: managedStoreCodeKey') &&
           source.includes('loadedDetailQueryKey: lastLoadedManagedStoreCodeKeyRef.current') &&
           source.includes('shouldShowDetailInitialLoading({') &&
+          source.includes('active,') &&
           source.includes('return'),
-        `${pageName} 缺少按发票 id 跳过保活恢复自动刷新，切回 Tab 会重新请求`,
+        `${pageName} 缺少 KeepAlive active 守卫，隐藏 Tab 会跟随全局路由变化重新请求`,
       )
       assert(
         source.includes('const loadDetails') &&
