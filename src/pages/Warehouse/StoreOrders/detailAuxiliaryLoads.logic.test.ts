@@ -295,16 +295,16 @@ async function main() {
         containerDetailSource.includes('if (!active) return') &&
         containerDetailSource.includes('loadedContainerGuidRef') &&
         containerDetailSource.includes('visibleContainerGuidRef') &&
-        containerDetailSource.includes('lastLoadedContainerDetailQueryKeyRef') &&
+        containerDetailSource.includes('lastLoadedContainerDetailSuccessRef') &&
         containerDetailSource.includes('const loadData = async (showLoading = true)') &&
         containerDetailSource.includes('shouldSkipDetailAutoReload({') &&
         containerDetailSource.includes('requestedDetailQueryKey: detailQueryKey') &&
-        containerDetailSource.includes('loadedDetailQueryKey: lastLoadedContainerDetailQueryKeyRef.current') &&
+        containerDetailSource.includes('loadedDetailQueryKey: lastLoadedContainerDetailSuccessRef.current?.containerGuid === containerGuid') &&
         containerDetailSource.includes('void loadHeader(shouldShowInitialLoading)') &&
         containerDetailSource.includes("loadDetailChunk(1, 'reset')") &&
         containerDetailSource.includes('loadedContainerGuidRef.current = containerGuid') &&
         containerDetailSource.includes('visibleContainerGuidRef.current = containerGuid') &&
-        containerDetailSource.includes('lastLoadedContainerDetailQueryKeyRef.current = detailQueryKey'),
+        containerDetailSource.includes('lastLoadedContainerDetailSuccessRef.current = { containerGuid, queryKey: detailQueryKey }'),
       '货柜详情缺少 KeepAlive active 守卫或明细查询条件缓存保护',
     )
     assert(

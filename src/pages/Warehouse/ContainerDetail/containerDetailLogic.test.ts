@@ -545,6 +545,7 @@ assertEqual(
 
 const pageSource = readFileSync('src/pages/Warehouse/ContainerDetail/index.tsx', 'utf8')
 const pageStyleSource = readFileSync('src/pages/Warehouse/ContainerDetail/index.css', 'utf8')
+const mobileLayoutSource = readFileSync('src/layout/MobileLayout.tsx', 'utf8')
 const containerDetailLogicSource = readFileSync('src/pages/Warehouse/ContainerDetail/containerDetailLogic.ts', 'utf8')
 const warehouseProductServiceSource = readFileSync('src/services/warehouseProductService.ts', 'utf8')
 
@@ -1749,7 +1750,10 @@ assertEqual(
   '条码列后应按开关插入只读贴牌价格列，便于横向滚动前快速核价',
 )
 assertEqual(
-  pageSource.includes('rowSelection={{ selectedRowKeys, onChange: setSelectedRowKeys, fixed: !viewport.isSmallPortrait }}') &&
+  pageSource.includes('rowSelection={{') &&
+    pageSource.includes('selectedRowKeys,') &&
+    pageSource.includes('onChange: setSelectedRowKeys,') &&
+    pageSource.includes('fixed: !viewport.isSmallPortrait,') &&
     pageSource.includes("baseColumns.map((column) => ({ ...column, fixed: undefined }))"),
   true,
   '选择框列默认随左侧列固定，小屏竖屏时应随表格列一起取消固定',
@@ -1821,6 +1825,14 @@ assertEqual(
   '条码列应显示条码文本，不能隐藏条码文本',
 )
 assertEqual(
+  pageSource.includes('Image,') &&
+    pageSource.includes('<Image') &&
+    pageSource.includes('className="container-detail-product-image"') &&
+    pageSource.includes('preview={{ mask: t(\'containers.actions.previewImage\', \'查看大图\') }}'),
+  true,
+  '货柜明细商品图片应可点击放大预览',
+)
+assertEqual(
   pageStyleSource.includes('.container-detail-barcode-cell .ant-typography'),
   true,
   '条码文本应使用专属样式保持完整显示',
@@ -1887,6 +1899,30 @@ assertEqual(
     pageSource.includes("console.error('货柜详情静默刷新失败', error)"),
   true,
   '货柜详情静默刷新失败应保留当前内容，不弹明显失败提示；首次加载失败才展示错误',
+)
+assertEqual(
+  pageSource.includes("const [containerGuid] = useState(() => route?.params.containerGuid || '')"),
+  false,
+  '货柜 GUID 不能用 useState 固定首次路由参数，移动端切换详情时必须跟随当前 URL',
+)
+assertEqual(
+  pageSource.includes('移动端布局可能复用 route element，货柜 GUID 必须每次跟随当前 URL'),
+  true,
+  '货柜详情应有中文注释说明移动端 route element 复用时 GUID 必须跟随当前 URL',
+)
+assertEqual(
+  pageSource.includes('const lastLoadedContainerDetailSuccessRef = useRef<{ containerGuid: string; queryKey: string } | null>(null)') &&
+    pageSource.includes('lastLoadedContainerDetailSuccessRef.current = { containerGuid, queryKey: detailQueryKey }') &&
+    pageSource.includes('loadedDetailQueryKey: lastLoadedContainerDetailSuccessRef.current?.containerGuid === containerGuid') &&
+    pageSource.includes('lastLoadedContainerDetailSuccessRef.current?.queryKey') &&
+    !pageSource.includes('loadedDetailQueryKey: lastLoadedContainerDetailQueryKeyRef.current'),
+  true,
+  '明细自动跳过判断只能使用明细成功加载记录，不能沿用头部加载状态或旧查询 key',
+)
+assertEqual(
+  mobileLayoutSource.includes('<div className="mobile-content" key={location.pathname}>'),
+  true,
+  '移动端布局应按 pathname 重建当前页面，避免不同货柜详情复用同一个组件实例',
 )
 
 console.log('containerDetailLogic.test: ok')

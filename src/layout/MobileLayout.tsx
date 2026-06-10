@@ -32,7 +32,7 @@ export default function MobileLayout() {
     <div className="mobile-layout">
       <MobileNavBar onRefresh={handleRefresh} onMenuClick={() => setMenuOpen(true)} />
 
-      <div className="mobile-content">
+      <div className="mobile-content" key={location.pathname}>
         {currentElement}
       </div>
 

@@ -16,6 +16,7 @@ import {
   DatePicker,
   Descriptions,
   Dropdown,
+  Image,
   Input,
   InputNumber,
   Modal,
@@ -243,8 +244,9 @@ function renderColumnTitle(key: ContainerDetailSortField, value: ReactNode) {
   return <span data-column-key={key} className="container-detail-header-title">{value}</span>
 }
 
-const CONTAINER_DETAIL_TABLE_SCROLL_X = 1940
+const CONTAINER_DETAIL_TABLE_SCROLL_X = 1950
 const CONTAINER_DETAIL_TABLE_SCROLL_Y = 620
+const CONTAINER_DETAIL_SELECTION_COLUMN_WIDTH = 56
 const CONTAINER_DETAIL_PAGE_SIZE = 50
 const DEFAULT_CONTAINER_DETAIL_SORT: ContainerDetailSortState = { field: 'itemNumber', order: 'ascend' }
 const EMPTY_CONTAINER_DETAIL_TAG_STATS = {
@@ -295,13 +297,14 @@ export default function ContainerDetailPage() {
   const navigate = useNavigate()
   const route = useStableRouteContext()
   const { active } = useKeepAliveContext()
-  const [containerGuid] = useState(() => route?.params.containerGuid || '')
+  // 移动端布局可能复用 route element，货柜 GUID 必须每次跟随当前 URL。
+  const containerGuid = route?.params.containerGuid || ''
   const viewport = useContainerDetailViewport()
   const access = useAuthStore((state) => state.access)
   // 记录当前货柜已完成首次加载，保活 Tab 恢复时保留旧内容并静默刷新。
   const loadedContainerGuidRef = useRef<string | null>(null)
   const visibleContainerGuidRef = useRef<string | null>(null)
-  const lastLoadedContainerDetailQueryKeyRef = useRef<string | null>(null)
+  const lastLoadedContainerDetailSuccessRef = useRef<{ containerGuid: string; queryKey: string } | null>(null)
   const headerLoadRequestIdRef = useRef(0)
   const containerDetailLoadRequestIdRef = useRef(0)
   const [loading, setLoading] = useState(false)
@@ -462,6 +465,7 @@ export default function ContainerDetailPage() {
     if (mode === 'reset') {
       detailAbortControllerRef.current?.abort()
       detailAbortControllerRef.current = controller
+      lastLoadedContainerDetailSuccessRef.current = null
       setDetailLoading(true)
       setRows([])
       setSelectedRowKeys([])
@@ -485,7 +489,7 @@ export default function ContainerDetailPage() {
       setDetailHasMore(result.hasMore)
       setRemoteTagStats(result.tagStats)
       if (mode === 'reset') {
-        lastLoadedContainerDetailQueryKeyRef.current = detailQueryKey
+        lastLoadedContainerDetailSuccessRef.current = { containerGuid, queryKey: detailQueryKey }
       }
       void reconcileLoadedMatchStatus(result.items, currentRequestId)
     } catch (error) {
@@ -543,7 +547,9 @@ export default function ContainerDetailPage() {
       loadedDetailId: loadedContainerGuidRef.current,
       visibleDetailId: visibleContainerGuidRef.current,
       requestedDetailQueryKey: detailQueryKey,
-      loadedDetailQueryKey: lastLoadedContainerDetailQueryKeyRef.current,
+      loadedDetailQueryKey: lastLoadedContainerDetailSuccessRef.current?.containerGuid === containerGuid
+        ? lastLoadedContainerDetailSuccessRef.current?.queryKey
+        : null,
     })) {
       return
     }
@@ -1656,13 +1662,13 @@ export default function ContainerDetailPage() {
       fixed: 'left',
       render: (_, row) =>
         row.商品信息?.商品图片 ? (
-          <img
+          <Image
+            className="container-detail-product-image"
             width={40}
             height={40}
             src={row.商品信息.商品图片}
             alt={row.商品信息?.货号 || row.商品信息?.商品名称 || ''}
-            loading="lazy"
-            style={{ objectFit: 'cover', borderRadius: 4, display: 'block' }}
+            preview={{ mask: t('containers.actions.previewImage', '查看大图') }}
           />
         ) : (
           <span style={{ color: '#999' }}>{t('containers.empty.noImage')}</span>
@@ -2187,7 +2193,13 @@ export default function ContainerDetailPage() {
                 columns={columns}
                 dataSource={displayRows}
                 loading={detailLoading && rows.length === 0}
-                rowSelection={{ selectedRowKeys, onChange: setSelectedRowKeys, fixed: !viewport.isSmallPortrait }}
+                rowSelection={{
+                  selectedRowKeys,
+                  onChange: setSelectedRowKeys,
+                  fixed: !viewport.isSmallPortrait,
+                  // 紧凑表格中默认选择列过窄，显式留出复选框点击空间。
+                  columnWidth: CONTAINER_DETAIL_SELECTION_COLUMN_WIDTH,
+                }}
                 pagination={false}
                 virtual
                 scroll={{ x: CONTAINER_DETAIL_TABLE_SCROLL_X, y: tableScrollY }}

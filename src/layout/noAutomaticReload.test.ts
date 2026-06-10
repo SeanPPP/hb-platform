@@ -48,6 +48,10 @@ assert(
   '移动端手动刷新按钮应继续保留主动刷新能力',
 )
 assert(
+  mobileLayoutSource.includes('<div className="mobile-content" key={location.pathname}>'),
+  '移动端当前页面容器应按 pathname 设置 key，避免不同详情页复用同一组件实例',
+)
+assert(
   errorBoundarySource.includes('window.location.reload()'),
   '错误恢复按钮应继续保留主动刷新能力',
 )

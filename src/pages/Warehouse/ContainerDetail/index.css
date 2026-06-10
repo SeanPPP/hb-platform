@@ -7,6 +7,19 @@
   padding: 4px 6px !important;
 }
 
+/* 选择列需要完整显示复选框，避免被紧凑单元格挤压。 */
+.container-detail-table .ant-table-selection-column {
+  width: 56px;
+  min-width: 56px;
+  text-align: center;
+}
+
+.container-detail-table .ant-table-selection-column .ant-checkbox-wrapper {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
 .container-detail-table .ant-table-thead > tr > th {
   line-height: 1.2;
   white-space: normal;
@@ -46,6 +59,12 @@
 .container-detail-table .ant-table-tbody > tr > td .ant-image {
   display: inline-flex;
   align-items: center;
+}
+
+/* 商品图保持缩略图比例，点击后由 AntD Image 打开放大预览。 */
+.container-detail-product-image {
+  border-radius: 4px;
+  object-fit: cover;
 }
 
 .container-detail-nowrap {
